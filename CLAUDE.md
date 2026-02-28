@@ -1,36 +1,46 @@
-# AI Context - Working Agreement
+# KexEdit
 
-<project-description>
-Advanced Unity-based roller coaster editor using Force Vector Design (FVD) with Unity DOTS/ECS for high-performance track computation and rendering
-</project-description>
+Roller coaster editor using Force Vector Design (FVD).
 
-**Required**: Read [layers/structure.md](layers/structure.md) before proceeding with any task
+## Structure
 
-## Context Management System
+- `packages/core/` — Rust crate. Physics simulation, node graph, binary format (.kex). Only runtime dep: `approx`
+- `plugins/blender/` — Blender 4.2+ addon. `kexedit/` is the addon package (name required by Blender). Flat: ffi.py, types.py, coords.py (no bpy), operators.py, panels.py, properties.py, curve.py, fcurve.py (bpy). Loads core via handle-based FFI (`kex_load` → `kex_build` → `kex_output_read_*`). Python-side `.kex` serializer in `ffi.py` mirrors the format in `packages/core/src/persistence/`
+- `app/` — placeholder for the Shallot-based web editor (not yet implemented)
+- `kex2d/` — 2D coaster solver prototype (Shallot + Svelte + canvas2D). Free-drag nodes → stored-heading cubic Hermite → physical F_n; an F_n optimizer (convex, two-draft) is the committed refinement. Parallel to `app/`. Model + code map: `kex2d/CLAUDE.md` (auto-loads in-tree). Next steps: `roadmap.md` "kex2d". Design rationale: `scratch.md` "kex2d solver"
 
-- **Tier 0 — global**: `CLAUDE.md` (root). Global standards and system overview
-- **Tier 1 — project**: `layers/structure.md`. Project map (stack, commands, layout, entry points)
-- **Tier 2 — folder context**: `context.md` in any folder; one per folder; explains purpose/structure of that folder
-- **Tier 3 — implementation**: Code files (scripts)
+## Architecture
 
-## Rules
+```
+app (shallot + UI) → core (rust/wasm)
+blender (python)   → core (rust/cdylib via FFI)
+```
 
-- **Priority**: Your number one priority is to manage your own context; always load appropriate context before doing anything else
-- **No History**: CRITICAL - Code and context must NEVER reference their own history. Write everything as the current, final state. Never include comments like "changed from X to Y" or "previously was Z". This is a severe form of context rot
-- **Simplicity**: Keep code simple, elegant, concise, and readable
-- **Structure**: Keep files small and single-responsibility; separate concerns (MVC/ECS as appropriate)
-- **Reuse**: Reuse before adding new code; avoid repetition
-- **Comments**: Code should be self-explanatory without comments; use concise comments only when necessary
-- **State**: Single source of truth; caches/derivations only
-- **Data**: Favor data-driven/declarative design
-- **Fail Fast**: Make bugs immediately visible rather than hiding them; favor simplicity over defensive patterns
-- **Backwards Compatibility**: Unless stated otherwise, favor simplicity over backwards compatibility; the design rules above should make breaking changes easy to trace and fix
+Core is the shared truth. Frontends never leak into core.
 
-## Security
+## Core Modules
 
-- **Inputs & secrets**: Validate inputs; secrets only in env; never log sensitive data
-- **Auth**: Gateway auth; server-side token validation; sanitize inputs
+sim → graph → nodes → track → persistence → ffi
 
-## Tools
+sim is pure math (zero deps). Each layer only depends on layers to its left. FFI is feature-gated.
 
-- **Context7**: Use as needed to fetch documentation
+## Build
+
+```bash
+plugins/blender/scripts/build_lib.sh           # host platform
+plugins/blender/scripts/build_lib.sh windows   # cross-compile DLL (mingw, runs from Linux/WSL)
+plugins/blender/scripts/build_lib.sh all       # host + Windows
+```
+
+`build_lib.sh` builds the Rust crate and copies the artifact + `.kex` fixtures into `plugins/blender/kexedit/{lib,fixtures}/` (both gitignored — single source of truth lives in `packages/core/`).
+
+Set `KEXEDIT_DEV_INSTALL=path1[:path2]` to also rsync the addon dir to a Blender extensions location after building. Useful for syncing into a Windows-side Blender from WSL where cross-filesystem symlinks don't behave.
+
+## Verify
+
+```bash
+cd packages/core && cargo test
+cd packages/core && cargo clippy
+cd plugins/blender && uvx pytest tests/ -v
+cd kex2d && bun check && bun test
+```

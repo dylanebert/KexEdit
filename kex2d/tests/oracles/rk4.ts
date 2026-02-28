@@ -1,0 +1,95 @@
+import type { SampleState } from "../helpers/forward64";
+
+const G = 9.80665;
+
+export interface RK4Options {
+    /** sub-step in time. RK4 truncation error per step is O(dt⁵); default 1e-4
+     * keeps cumulative error well below f64 noise on the trajectories tests
+     * exercise. Smaller dt buys nothing once dominated by f64. */
+    dt?: number;
+    /** safety cap on total substeps. Default 10⁷ — enough for any realistic
+     * trajectory with default dt; trips early on a stuck integration (e.g. v→0
+     * outside the differentiable regime). */
+    maxSubsteps?: number;
+}
+
+/**
+ * RK4 oracle of the cart-on-track ODE, parameterized by time. Integrates
+ *
+ *   dx/dt = v · cos θ
+ *   dy/dt = v · sin θ
+ *   dθ/dt = (F_n(σ) − cos θ) · g / v
+ *   dv/dt = −g · sin θ
+ *   dσ/dt = v
+ *
+ * with substeps of `dt`, shrinking the last substep before each σ = i · Δs
+ * crossing to land on the grid (σ snapped to suppress drift). Independent
+ * cross-validation for `src/forward.ts`. Caller must keep v strictly positive
+ * — no v_min clamp; throws via `maxSubsteps` if the regime breaks.
+ */
+export function rk4(
+    x0: number,
+    y0: number,
+    theta0: number,
+    v0: number,
+    N: number,
+    ds: number,
+    fN: (sigma: number) => number,
+    g: number = G,
+    options: RK4Options = {},
+): SampleState[] {
+    const dt = options.dt ?? 1e-4;
+    const maxSubsteps = options.maxSubsteps ?? 10_000_000;
+
+    const out: SampleState[] = new Array(N);
+    out[0] = [x0, y0, theta0, v0];
+
+    let x = x0;
+    let y = y0;
+    let theta = theta0;
+    let v = v0;
+    let sigma = 0;
+    let next = 1;
+
+    const deriv = (th: number, vv: number, sg: number) => {
+        const c = Math.cos(th);
+        const s = Math.sin(th);
+        return [vv * c, vv * s, ((fN(sg) - c) * g) / vv, -g * s, vv] as const;
+    };
+
+    const rk4Step = (h: number): void => {
+        const k1 = deriv(theta, v, sigma);
+        const k2 = deriv(theta + 0.5 * h * k1[2], v + 0.5 * h * k1[3], sigma + 0.5 * h * k1[4]);
+        const k3 = deriv(theta + 0.5 * h * k2[2], v + 0.5 * h * k2[3], sigma + 0.5 * h * k2[4]);
+        const k4 = deriv(theta + h * k3[2], v + h * k3[3], sigma + h * k3[4]);
+
+        x += (h / 6) * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]);
+        y += (h / 6) * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]);
+        theta += (h / 6) * (k1[2] + 2 * k2[2] + 2 * k3[2] + k4[2]);
+        v += (h / 6) * (k1[3] + 2 * k2[3] + 2 * k3[3] + k4[3]);
+        sigma += (h / 6) * (k1[4] + 2 * k2[4] + 2 * k3[4] + k4[4]);
+    };
+
+    for (let step = 0; step < maxSubsteps && next < N; step++) {
+        const target = next * ds;
+        const remaining = target - sigma;
+        // v ≤ 0 or remaining ≤ 0 → skip landing and dt-step; maxSubsteps catches runaway.
+        if (v > 0 && remaining > 0 && remaining / v <= dt) {
+            rk4Step(remaining / v);
+            sigma = target;
+            out[next] = [x, y, theta, v];
+            next++;
+        } else {
+            rk4Step(dt);
+        }
+    }
+
+    if (next < N) {
+        throw new Error(
+            `rk4 did not reach sample ${next}/${N} after ${maxSubsteps} substeps ` +
+                `(σ=${sigma}, v=${v}). Caller likely left the differentiable regime.`,
+        );
+    }
+
+    return out;
+}
