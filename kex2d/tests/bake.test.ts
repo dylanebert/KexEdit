@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { forces, invert, invertRange, replay } from "../src/bake";
+import { forces, invert, invertRange, replay, resampleByTime } from "../src/bake";
 import { integrate, step } from "../src/forward";
 import { sampleChain } from "../src/spline";
 import { withThetas } from "./helpers/chain";
@@ -234,5 +234,24 @@ describe("spline round-trip", () => {
             expect(dst.posX[i]).toBeCloseTo(src.posX[i], 2);
             expect(dst.posY[i]).toBeCloseTo(src.posY[i], 2);
         }
+    });
+});
+
+describe("resampleByTime — continuous (linear) read", () => {
+    test("interpolates between edge-center anchors and clamps flat past the ends", () => {
+        // 3 edges with distinct forces at uniform unit times. edge e is anchored
+        // at its mid-time (0.5, 1.5, 2.5); a query before/after the first/last
+        // anchor clamps flat, in between it ramps linearly. continuity here is
+        // what stops a node nudge from stair-stepping the optimizer's prior.
+        const t = new Float32Array([0, 1, 2, 3]);
+        const fN = new Float32Array([0, 2, 4]);
+        const grid = resampleByTime(fN, t, 4, 7, 3); // τ = 0, 0.5, 1, 1.5, 2, 2.5, 3
+        const want = [0, 0, 1, 2, 3, 4, 4];
+        for (let i = 0; i < want.length; i++) expect(grid[i]).toBeCloseTo(want[i], 5);
+    });
+
+    test("a single edge reads constant", () => {
+        const grid = resampleByTime(new Float32Array([1.7]), new Float32Array([0, 2]), 2, 5, 2);
+        for (let i = 0; i < grid.length; i++) expect(grid[i]).toBeCloseTo(1.7, 6);
     });
 });

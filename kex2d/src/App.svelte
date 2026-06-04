@@ -1,9 +1,10 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
-import { cartState, sampleFNOverTime } from "./cart";
+import { cartPose, cartState, sampleFNOverTime } from "./cart";
 import { attachControls } from "./controls";
 import { editor, select } from "./editor";
+import { OPT_GRID, solveOut } from "./optimize";
 import { bakeOut, extend, Handle, lastHandle, removeTrailingHandle, Track } from "./track";
 import { attachCanvas2D, viewTransform } from "./view";
 
@@ -39,23 +40,36 @@ onMount(() => {
     };
 });
 
-// F_n resampled to a uniform-time grid — what the rider experiences. the
-// underlying samples are uniform-in-arclength; this resample maps them to
-// equal-time x positions on the strip.
-const N_STRIP = 256;
+// the baked draft F_n on the uniform draft-time grid — what the rider feels. the
+// dots; the solved line below is the optimizer's output on the same grid.
 const fN = $derived.by((): Float32Array | null => {
     void tick;
     if (trackEid === null) return null;
-    return sampleFNOverTime(trackEid, N_STRIP);
+    return sampleFNOverTime(trackEid, OPT_GRID);
 });
+// the solved curve (Phase 1 — data prior + always-on curvature smoothing + the
+// soft force band), read from the same solveOut that drives the realized track.
+const solved = $derived.by((): Float32Array | null => {
+    void tick;
+    if (trackEid === null) return null;
+    return solveOut.get(trackEid)?.fN ?? null;
+});
+const solvedPath = $derived.by((): string => {
+    if (!solved) return "";
+    let d = "";
+    for (let i = 0; i < solved.length; i++) {
+        d += `${i === 0 ? "M" : "L"}${xOf(i, solved.length, 1000).toFixed(2)} ${yOf(solved[i], STRIP_H).toFixed(2)} `;
+    }
+    return d.trimEnd();
+});
+// the cart's strip cursor: its progress as a draft-time grid fraction (the strip
+// x-axis), mapped through the cart's realized-time position on the solved track.
 const cartTFrac = $derived.by((): number | null => {
     void tick;
     if (trackEid === null) return null;
-    const out = bakeOut.get(trackEid);
-    if (!out || out.tTotal <= 0) return null;
     const st = cartState.get(trackEid);
     if (!st) return null;
-    return st.t / out.tTotal;
+    return cartPose(trackEid, st.t)?.u ?? null;
 });
 const infeasible = $derived.by((): boolean => {
     void tick;
@@ -197,6 +211,9 @@ function onDelete(): void {
                     r="1.6"
                 />
             {/each}
+            {#if solvedPath}
+                <path class="solved" d={solvedPath} />
+            {/if}
             {#if cartTFrac !== null}
                 <line
                     class="cart-cursor"
@@ -348,7 +365,15 @@ function onDelete(): void {
 
     .dot {
         fill: #cdc5bc;
-        opacity: 0.85;
+        opacity: 0.55;
+    }
+
+    /* the solved (optimized) F_n over the baked draft dots */
+    .solved {
+        fill: none;
+        stroke: var(--accent);
+        stroke-width: 1.6;
+        vector-effect: non-scaling-stroke;
     }
 
     .cart-cursor {

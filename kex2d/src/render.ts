@@ -1,6 +1,7 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
 import { editor } from "./editor";
+import { solveOut } from "./optimize";
 import { bakeOut, Handle, samples, sortedHandles, Track } from "./track";
 import { Canvas2D, resize, viewTransform } from "./view";
 
@@ -10,6 +11,7 @@ const CART_W = 14;
 const CART_H = 7;
 const COLOR_TRACK = "#cce5ff";
 const COLOR_INFEASIBLE = "#e26d5c";
+const COLOR_REALIZED = "#d49560";
 
 const GridSystem: System = {
     group: "draw",
@@ -83,8 +85,12 @@ const TrackDrawSystem: System = {
             }
 
             ctx.save();
-            ctx.lineWidth = 2;
+            // the position draft (the original authored geometry) — dotted +
+            // de-emphasized. the solid realized line below is what's ridden.
+            ctx.lineWidth = 1.5;
             ctx.strokeStyle = COLOR_TRACK;
+            ctx.globalAlpha = 0.7;
+            ctx.setLineDash([2, 3]);
             ctx.beginPath();
             let inPath = false;
             for (let i = 0; i < count - 1; i++) {
@@ -120,6 +126,27 @@ const TrackDrawSystem: System = {
             }
             ctx.stroke();
             ctx.restore();
+
+            // the realized track: forward-integrating the *solved* (optimized)
+            // F_n — what the cart rides. it peels off the dotted draft wherever
+            // the optimizer reshapes the force. clipped at the realized track's
+            // first infeasible sample so an energy-depleted tail doesn't creep.
+            const so = solveOut.get(trackEid);
+            if (so) {
+                const clipN = so.firstInfeasible >= 0 ? so.firstInfeasible + 1 : so.count;
+                ctx.save();
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = COLOR_REALIZED;
+                ctx.beginPath();
+                for (let i = 0; i < clipN; i++) {
+                    const px = ox + so.posX[i] * sx;
+                    const py = oy + so.posY[i] * sy;
+                    if (i === 0) ctx.moveTo(px, py);
+                    else ctx.lineTo(px, py);
+                }
+                ctx.stroke();
+                ctx.restore();
+            }
         }
     },
 };

@@ -1,5 +1,7 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
-import { bakeOut, samples, Track } from "./track";
+import { resampleByTime } from "./bake";
+import { solveOut } from "./optimize";
+import { bakeOut, Track } from "./track";
 
 /** per-track cart state: cumulative time `t` (mod tTotal) and the last
  *  wall-clock reading the advance loop saw. plain Map — purely transient,
@@ -27,8 +29,6 @@ const CartSystem: System = {
     update(ecs: State): void {
         const now = performance.now();
         for (const trackEid of ecs.query([Track])) {
-            const out = bakeOut.get(trackEid);
-            if (!out) continue;
             let st = cartState.get(trackEid);
             if (!st) {
                 st = { t: 0, lastClock: now };
@@ -37,7 +37,11 @@ const CartSystem: System = {
             }
             const dt = Math.min(MAX_DT, (now - st.lastClock) / 1000);
             st.lastClock = now;
-            const loopT = loopTime(out);
+            // the cart rides the realized (solved) track, paced by its own
+            // velocity profile — not the position draft's.
+            const so = solveOut.get(trackEid);
+            if (!so) continue;
+            const loopT = loopTime(so);
             if (loopT <= 0) {
                 st.t = 0;
                 continue;
@@ -62,45 +66,36 @@ function findInterval(tBuf: Float32Array, count: number, t: number): number {
     return lo;
 }
 
-/** interpolate (x, y, θ) at cart-time `t` on the given track. linear interp
- *  on chord-mid positions matches the bake's discretization — the cart sits
- *  on the same polyline the renderer draws. */
+/** interpolate the cart pose at realized-time `t` on the *realized* (solved)
+ *  track — the geometry the cart actually rides, `forward(solved F_n)`, not the
+ *  position draft. `u` is the cart's progress as a draft-time grid fraction
+ *  [0, 1] (the strip cursor reads it). null until the solve has a chain. */
 export function cartPose(
     trackEid: number,
     t: number,
-): { x: number; y: number; theta: number } | null {
-    const s = samples.get(trackEid);
-    const out = bakeOut.get(trackEid);
-    if (!s || !out) return null;
-    const count = Track.count.get(trackEid);
-    if (count < 2) return null;
-    const i = findInterval(out.t, count, t);
-    const denom = out.t[i + 1] - out.t[i];
-    const alpha = denom > 1e-9 ? (t - out.t[i]) / denom : 0;
+): { x: number; y: number; theta: number; u: number } | null {
+    const so = solveOut.get(trackEid);
+    if (!so || so.count < 2) return null;
+    const i = findInterval(so.t, so.count, t);
+    const denom = so.t[i + 1] - so.t[i];
+    const alpha = denom > 1e-9 ? (t - so.t[i]) / denom : 0;
     return {
-        x: s.posX[i] + alpha * (s.posX[i + 1] - s.posX[i]),
-        y: s.posY[i] + alpha * (s.posY[i + 1] - s.posY[i]),
-        theta: s.theta[i] + alpha * (s.theta[i + 1] - s.theta[i]),
+        x: so.posX[i] + alpha * (so.posX[i + 1] - so.posX[i]),
+        y: so.posY[i] + alpha * (so.posY[i + 1] - so.posY[i]),
+        theta: so.theta[i] + alpha * (so.theta[i + 1] - so.theta[i]),
+        u: (i + alpha) / (so.count - 1),
     };
 }
 
-/** sample F_n on a uniform time grid of `N` points. piecewise-constant
- *  reading (F_n is per-edge): grid point at time `t` returns `fN[i]` where
- *  edge `i` contains `t`. used for the time-axis strip — equal-spacing in t
- *  is what the rider experiences, not equal-spacing in arclength. */
+/** sample F_n on a uniform time grid of `N` points (`resampleByTime`, linearly
+ *  interpolated). used for the time-axis strip — equal-spacing in t is what the
+ *  rider experiences, not equal-spacing in arclength. */
 export function sampleFNOverTime(trackEid: number, N: number): Float32Array | null {
     const out = bakeOut.get(trackEid);
     if (!out) return null;
     const count = Track.count.get(trackEid);
     if (count < 2 || out.tTotal <= 0) return null;
-    const grid = new Float32Array(N);
-    let cur = 0;
-    for (let g = 0; g < N; g++) {
-        const t = (g / Math.max(1, N - 1)) * out.tTotal;
-        while (cur < count - 2 && out.t[cur + 1] < t) cur++;
-        grid[g] = out.fN[cur];
-    }
-    return grid;
+    return resampleByTime(out.fN, out.t, count, N, out.tTotal);
 }
 
 export const CartPlugin: Plugin = {
