@@ -27,7 +27,7 @@
 export const DEFAULT_BAND: readonly [number, number] = [-2, 6];
 
 /** live-overlay feel weights against the unit posWeight — tuned by eye on the
- *  strip (only the ratios matter), not yet visually settled. */
+ *  timeline (only the ratios matter), not yet visually settled. */
 export const DEFAULT_SMOOTH = 40;
 export const DEFAULT_BAND_WEIGHT = 4;
 

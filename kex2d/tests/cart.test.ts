@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import { cartPose, loopTime, sampleFNOverTime } from "../src/cart";
+import { cartPose, cartTimeAtU, loopTime, sampleFNOverTime } from "../src/cart";
 import { SolveSystem, solveOut } from "../src/optimize";
 import { addNode, BakeSystem, bakeOut, createTrack } from "../src/track";
 
@@ -81,5 +81,30 @@ test("cartPose rides the realized track flat, anchor to end", () => {
     expect(mid.x).toBeCloseTo(0, 1); // flat at constant v ⇒ half-time is x = 0
     expect(mid.y).toBeCloseTo(0, 3);
     expect(mid.theta).toBeCloseTo(0, 3);
-    expect(mid.u).toBeCloseTo(0.5, 2); // grid-fraction progress for the strip cursor
+    expect(mid.u).toBeCloseTo(0.5, 2); // grid-fraction progress for the playhead
+});
+
+test("cartTimeAtU inverts cartPose's u (grid-fraction → realized time)", () => {
+    // the scrub maps a playhead grid-fraction back to a realized cart time; feeding
+    // it through cartPose must recover the same u.
+    const { eid } = baked();
+    for (const u of [0, 0.25, 0.5, 0.75, 1]) {
+        const t = cartTimeAtU(eid, u);
+        if (t === null) throw new Error("cartTimeAtU returned null after solve");
+        expect(cartPose(eid, t)?.u).toBeCloseTo(u, 6);
+    }
+});
+
+test("cartTimeAtU clamps u to [0,1] and is null before the solve", () => {
+    const state = new State();
+    const eid = createTrack(state);
+    solveOut.delete(eid);
+    expect(cartTimeAtU(eid, 0.5)).toBeNull();
+
+    const { eid: e2 } = baked();
+    const lo = cartTimeAtU(e2, 0);
+    const hi = cartTimeAtU(e2, 1);
+    if (lo === null || hi === null) throw new Error("cartTimeAtU returned null after solve");
+    expect(cartTimeAtU(e2, -1)).toBeCloseTo(lo, 10);
+    expect(cartTimeAtU(e2, 2)).toBeCloseTo(hi, 10);
 });

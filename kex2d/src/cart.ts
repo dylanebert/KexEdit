@@ -3,10 +3,11 @@ import { resampleByTime } from "./bake";
 import { solveOut } from "./optimize";
 import { bakeOut, Track } from "./track";
 
-/** per-track cart state: cumulative time `t` (mod tTotal) and the last
- *  wall-clock reading the advance loop saw. plain Map — purely transient,
- *  not part of the canonical bake state, so it lives outside ECS. */
-export const cartState = new Map<number, { t: number; lastClock: number }>();
+/** per-track cart state: cumulative time `t` (mod tTotal), the last wall-clock
+ *  reading the advance loop saw, and `held` — set while the playhead is scrubbed
+ *  or playback is paused, so the advance loop yields ownership of `t`. plain Map —
+ *  purely transient, not part of the canonical bake state, so it lives outside ECS. */
+export const cartState = new Map<number, { t: number; lastClock: number; held: boolean }>();
 
 /** clamp per-frame Δt so a backgrounded tab returning to the foreground
  *  doesn't jump the cart by several seconds the moment focus comes back. */
@@ -31,12 +32,13 @@ const CartSystem: System = {
         for (const trackEid of ecs.query([Track])) {
             let st = cartState.get(trackEid);
             if (!st) {
-                st = { t: 0, lastClock: now };
+                st = { t: 0, lastClock: now, held: false };
                 cartState.set(trackEid, st);
                 continue;
             }
             const dt = Math.min(MAX_DT, (now - st.lastClock) / 1000);
-            st.lastClock = now;
+            st.lastClock = now; // refresh even when held, so release doesn't replay the gap
+            if (st.held) continue;
             // the cart rides the realized (solved) track, paced by its own
             // velocity profile — not the position draft's.
             const so = solveOut.get(trackEid);
@@ -54,7 +56,7 @@ const CartSystem: System = {
 /** locate sample interval `[i, i+1]` containing time `t` on `tBuf` of length
  *  `count`. linear scan with last-index memo would be faster for the cart's
  *  monotonic progression; binary search is fine here and stays correct when
- *  the strip queries arbitrary t. */
+ *  the timeline queries arbitrary t. */
 function findInterval(tBuf: Float32Array, count: number, t: number): number {
     let lo = 0;
     let hi = count - 1;
@@ -69,7 +71,7 @@ function findInterval(tBuf: Float32Array, count: number, t: number): number {
 /** interpolate the cart pose at realized-time `t` on the *realized* (solved)
  *  track — the geometry the cart actually rides, `forward(solved F_n)`, not the
  *  position draft. `u` is the cart's progress as a draft-time grid fraction
- *  [0, 1] (the strip cursor reads it). null until the solve has a chain. */
+ *  [0, 1] (the timeline playhead reads it). null until the solve has a chain. */
 export function cartPose(
     trackEid: number,
     t: number,
@@ -87,8 +89,21 @@ export function cartPose(
     };
 }
 
+/** inverse of `cartPose`'s `u`: the realized cart time at draft-time grid-fraction
+ *  `u ∈ [0, 1]`, interpolating the realized cumulative-time `solveOut.t` at index
+ *  `u·(count−1)`. the scrub writes this into `cartState.t`. null until the solve
+ *  has a chain. */
+export function cartTimeAtU(trackEid: number, u: number): number | null {
+    const so = solveOut.get(trackEid);
+    if (!so || so.count < 2) return null;
+    const f = Math.min(Math.max(u, 0), 1) * (so.count - 1);
+    const i = Math.min(so.count - 2, Math.floor(f));
+    const a = f - i;
+    return so.t[i] + a * (so.t[i + 1] - so.t[i]);
+}
+
 /** sample F_n on a uniform time grid of `N` points (`resampleByTime`, linearly
- *  interpolated). used for the time-axis strip — equal-spacing in t is what the
+ *  interpolated). used for the timeline — equal-spacing in t is what the
  *  rider experiences, not equal-spacing in arclength. */
 export function sampleFNOverTime(trackEid: number, N: number): Float32Array | null {
     const out = bakeOut.get(trackEid);

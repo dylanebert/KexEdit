@@ -4,13 +4,13 @@ import { DEFAULT_BAND, DEFAULT_BAND_WEIGHT, DEFAULT_SMOOTH, solve } from "./solv
 import { bakeOut, samples, Track } from "./track";
 
 /** draft-time DOF resolution for the solved force / realized track. matches the
- *  F_n strip so the solved line and the baked dots share an x-axis. */
+ *  timeline so the solved line and the baked dots share an x-axis. */
 export const OPT_GRID = 256;
 
 /** the realized (ridden) track: the convex F_n optimizer solved on the draft-time
  *  grid, then forward-integrated from the draft's launch. this is what the cart
  *  rides — `forward(solved F_n)` — distinct from the dotted position draft it
- *  peels off. `fN` is the solved force on the draft-time grid (the strip line);
+ *  peels off. `fN` is the solved force on the draft-time grid (the timeline line);
  *  `posX`/`posY`/`theta`/`v` are the realized per-sample state; `t` is the
  *  realized cumulative time (the cart's own pacing, from the realized velocity,
  *  not the draft's); `firstInfeasible` is the first realized sample below V_WARN
@@ -43,7 +43,7 @@ function computeSolve(trackEid: number): void {
     const N = OPT_GRID;
 
     // the position-draft prior: baked F_n resampled onto the uniform draft-time
-    // grid — the optimizer's DOF (same resample as the strip's draft dots).
+    // grid — the optimizer's DOF (same resample as the timeline's draft dots).
     const prior = resampleByTime(out.fN, out.t, count, N, out.tTotal);
     const { fN } = solve(prior, {
         smooth: DEFAULT_SMOOTH,

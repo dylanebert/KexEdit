@@ -26,7 +26,7 @@ const EPS = 1e-9;
 /**
  * upper bound on the per-edge turning angle. without it a short, tight bend
  * (small arc length, large total turning) would get too few edges and the F_n
- * strip would read near-flat across real curvature. the sampler floors a
+ * timeline would read near-flat across real curvature. the sampler floors a
  * segment's edge count at `⌈turning / (2·MAX_U_PER_EDGE)⌉`. π/24 → ≥12 edges
  * per half-turn.
  */

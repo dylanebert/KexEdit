@@ -26,7 +26,7 @@ export const samples = new Map<number, Samples>();
 /** baked per-edge state for each track. `fN` is force in g (per-edge, length
  *  MAX_SAMPLES − 1). `ds` is per-edge actual spacing. `t` is per-sample
  *  cumulative time `t[i] = Σ_{k<i} ds_k / v_safe_k`, length MAX_SAMPLES —
- *  the cart and the time-axis strip read from it. `tTotal = t[count − 1]`.
+ *  the cart and the timeline read from it. `tTotal = t[count − 1]`.
  *  `feasible[i]` is 1 when `|v[i]| ≥ V_WARN`, 0 otherwise — drives the red
  *  track / red handle / warning banner UX. `firstInfeasible` is the first
  *  sample below V_WARN, or -1 if the whole chain is feasible.

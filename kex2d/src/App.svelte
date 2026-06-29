@@ -1,10 +1,9 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
-import { cartPose, cartState, sampleFNOverTime } from "./cart";
 import { attachControls } from "./controls";
 import { editor, select } from "./editor";
-import { OPT_GRID, solveOut } from "./optimize";
+import Timeline from "./Timeline.svelte";
 import { bakeOut, extend, Handle, lastHandle, removeTrailingHandle, Track } from "./track";
 import { attachCanvas2D, viewTransform } from "./view";
 
@@ -13,13 +12,6 @@ let canvas: HTMLCanvasElement;
 
 let trackEid = $state<number | null>(null);
 let tick = $state(0);
-
-const Y_MIN = -2;
-const Y_MAX = 3;
-const Y_BASE = 1;
-const PAD_X = 8;
-const PAD_Y = 8;
-const STRIP_H = 88;
 
 onMount(() => {
     attachCanvas2D(canvas);
@@ -40,37 +32,6 @@ onMount(() => {
     };
 });
 
-// the baked draft F_n on the uniform draft-time grid — what the rider feels. the
-// dots; the solved line below is the optimizer's output on the same grid.
-const fN = $derived.by((): Float32Array | null => {
-    void tick;
-    if (trackEid === null) return null;
-    return sampleFNOverTime(trackEid, OPT_GRID);
-});
-// the solved curve (Phase 1 — data prior + always-on curvature smoothing + the
-// soft force band), read from the same solveOut that drives the realized track.
-const solved = $derived.by((): Float32Array | null => {
-    void tick;
-    if (trackEid === null) return null;
-    return solveOut.get(trackEid)?.fN ?? null;
-});
-const solvedPath = $derived.by((): string => {
-    if (!solved) return "";
-    let d = "";
-    for (let i = 0; i < solved.length; i++) {
-        d += `${i === 0 ? "M" : "L"}${xOf(i, solved.length, 1000).toFixed(2)} ${yOf(solved[i], STRIP_H).toFixed(2)} `;
-    }
-    return d.trimEnd();
-});
-// the cart's strip cursor: its progress as a draft-time grid fraction (the strip
-// x-axis), mapped through the cart's realized-time position on the solved track.
-const cartTFrac = $derived.by((): number | null => {
-    void tick;
-    if (trackEid === null) return null;
-    const st = cartState.get(trackEid);
-    if (!st) return null;
-    return cartPose(trackEid, st.t)?.u ?? null;
-});
 const infeasible = $derived.by((): boolean => {
     void tick;
     if (trackEid === null) return false;
@@ -106,11 +67,6 @@ const endUI = $derived.by((): EndUI | null => {
         del: { x: RADIAL_R * Math.cos(ang + TRASH_OFFSET), y: RADIAL_R * Math.sin(ang + TRASH_OFFSET) },
     };
 });
-
-const xOf = (i: number, n: number, w: number): number =>
-    PAD_X + (i / Math.max(1, n - 1)) * (w - 2 * PAD_X);
-const yOf = (v: number, h: number): number =>
-    PAD_Y + (1 - (v - Y_MIN) / (Y_MAX - Y_MIN)) * (h - 2 * PAD_Y);
 
 function onExtend(): void {
     select(extend(ecs));
@@ -189,53 +145,11 @@ function onDelete(): void {
     </div>
 {/if}
 
-{#if fN}
-    <aside class="strip" aria-hidden="true">
-        <svg
-            class="chart"
-            viewBox="0 0 1000 {STRIP_H}"
-            preserveAspectRatio="none"
-        >
-            <line
-                class="baseline"
-                x1={PAD_X}
-                x2={1000 - PAD_X}
-                y1={yOf(Y_BASE, STRIP_H)}
-                y2={yOf(Y_BASE, STRIP_H)}
-            />
-            {#each fN as v, i (i)}
-                <circle
-                    class="dot"
-                    cx={xOf(i, fN.length, 1000)}
-                    cy={yOf(v, STRIP_H)}
-                    r="1.6"
-                />
-            {/each}
-            {#if solvedPath}
-                <path class="solved" d={solvedPath} />
-            {/if}
-            {#if cartTFrac !== null}
-                <line
-                    class="cart-cursor"
-                    x1={PAD_X + cartTFrac * (1000 - 2 * PAD_X)}
-                    x2={PAD_X + cartTFrac * (1000 - 2 * PAD_X)}
-                    y1={PAD_Y}
-                    y2={STRIP_H - PAD_Y}
-                />
-            {/if}
-        </svg>
-        <div class="legend">
-            <span class="tick top">+3g</span>
-            <span class="tick base">1g</span>
-            <span class="tick bot">−2g</span>
-        </div>
-    </aside>
-{/if}
+<Timeline eid={trackEid} {tick} />
 
 <style>
     :root,
     :global(:root) {
-        --bg: rgba(14, 13, 12, 0.85);
         --bg-solid: #161413;
         --fg: #f0ece8;
         --muted: #a09890;
@@ -327,89 +241,4 @@ function onDelete(): void {
         border-color: var(--danger);
     }
 
-    .strip {
-        /* extra-wide but capped for readability: centered, gutters on narrow
-           screens, max 1280px (the standard wide-container ceiling). */
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        width: calc(100% - 32px);
-        max-width: 1280px;
-        bottom: 16px;
-        height: 88px;
-        padding: 6px 12px;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(4px);
-        font-family: "Outfit", system-ui, sans-serif;
-        user-select: none;
-        -webkit-user-select: none;
-        pointer-events: none;
-    }
-
-    .chart {
-        display: block;
-        width: 100%;
-        height: 100%;
-        overflow: visible;
-    }
-
-    .baseline {
-        stroke: var(--accent);
-        stroke-width: 1;
-        stroke-dasharray: 2 4;
-        opacity: 0.5;
-    }
-
-    .dot {
-        fill: #cdc5bc;
-        opacity: 0.55;
-    }
-
-    /* the solved (optimized) F_n over the baked draft dots */
-    .solved {
-        fill: none;
-        stroke: var(--accent);
-        stroke-width: 1.6;
-        vector-effect: non-scaling-stroke;
-    }
-
-    .cart-cursor {
-        stroke: #d49560;
-        stroke-width: 1.2;
-        opacity: 0.9;
-        vector-effect: non-scaling-stroke;
-    }
-
-    .legend {
-        position: absolute;
-        inset: 6px 12px;
-        pointer-events: none;
-    }
-
-    .tick {
-        position: absolute;
-        right: 0;
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 9px;
-        color: var(--muted);
-        opacity: 0.55;
-    }
-
-    .tick.top {
-        top: 0;
-    }
-
-    .tick.base {
-        top: 50%;
-        transform: translateY(-50%);
-        color: var(--accent);
-        opacity: 0.7;
-    }
-
-    .tick.bot {
-        bottom: 0;
-    }
 </style>

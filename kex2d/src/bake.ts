@@ -197,7 +197,7 @@ export function replay(
  * rather than stair-stepping. piecewise-constant sampling flickers — the moving
  * edge boundaries flip grid points between adjacent edge values, and the forward
  * ride amplifies that into a visible swing. `t` is the per-sample cumulative time
- * (length `count`). the strip's draft dots and the optimizer's draft-time prior
+ * (length `count`). the timeline's draft dots and the optimizer's draft-time prior
  * are the same resample.
  */
 export function resampleByTime(
