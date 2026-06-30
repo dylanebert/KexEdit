@@ -63,23 +63,26 @@ describe("clampView — extent + margin", () => {
     const T = 10;
     test("never zooms out past the whole-track fit", () => {
         const fitted = clampView({ pan: 0, pxPerSec: 0 }, W, T);
-        const min = W / (T + 2 * marginSec(T));
+        const min = W / (T + marginSec(T)); // one-sided lead-out
         expect(fitted.pxPerSec).toBeCloseTo(min, 9);
         // a request to zoom further out is held at the fit
         expect(clampView({ pan: 0, pxPerSec: min / 2 }, W, T).pxPerSec).toBeCloseTo(min, 9);
     });
-    test("the fitted view shows exactly [-margin, tTotal+margin]", () => {
+    test("the fitted view shows exactly [0, tTotal+margin] — left anchored at the launch", () => {
         const m = marginSec(T);
         const v = clampView({ pan: -Number.MAX_VALUE, pxPerSec: 0 }, W, T);
-        expect(pxToSec(v, 0)).toBeCloseTo(-m, 6);
+        expect(pxToSec(v, 0)).toBeCloseTo(0, 6); // no negative time before launch
         expect(pxToSec(v, W)).toBeCloseTo(T + m, 6);
     });
-    test("pan stays within the extent when zoomed in", () => {
+    test("pan never reveals time before the launch (t=0) or past the lead-out", () => {
         const m = marginSec(T);
         const zoomed: View = { pan: 1e6, pxPerSec: 400 }; // pan way past the right edge
         const c = clampView(zoomed, W, T);
-        expect(pxToSec(c, 0)).toBeGreaterThanOrEqual(-m - 1e-6);
+        expect(pxToSec(c, 0)).toBeGreaterThanOrEqual(-1e-6); // left can't cross 0
         expect(pxToSec(c, W)).toBeLessThanOrEqual(T + m + 1e-6);
+        // panning hard left holds at t=0, not negative
+        const left = clampView({ pan: -1e6, pxPerSec: 400 }, W, T);
+        expect(pxToSec(left, 0)).toBeCloseTo(0, 6);
     });
 });
 

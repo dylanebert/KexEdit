@@ -27,21 +27,23 @@ const TARGET_TICK_PX = 80;
 export const secToPx = (v: View, t: number): number => t * v.pxPerSec - v.pan;
 export const pxToSec = (v: View, px: number): number => (px + v.pan) / v.pxPerSec;
 
-/** margin (seconds) added either side of [0, tTotal] — proportional, with a floor. */
+/** lead-out (seconds) past the track end — proportional, with a floor. one-sided:
+ *  the launch is t=0, so there's no lead-*in* (no negative time on the ruler). */
 export const marginSec = (tTotal: number): number => Math.max(0.12 * tTotal, MIN_MARGIN_SEC);
 
 const minScale = (width: number, tTotal: number): number =>
-    width > 0 ? width / (tTotal + 2 * marginSec(tTotal)) : 1;
+    width > 0 ? width / (tTotal + marginSec(tTotal)) : 1;
 
-/** clamp a view to the track extent + margin: scale no smaller than fits the whole
- *  track + both margins, pan within [-margin, tTotal+margin]. when the track is
- *  smaller than the view that pan range collapses to a point → the track centers. */
+/** clamp a view to the track extent: scale no smaller than fits [0, tTotal+margin],
+ *  the left edge anchored at t=0. a coaster ride starts at launch, so the ruler never
+ *  shows negative time (the After Effects / NLE convention); the margin is a right-side
+ *  lead-out only, so the last node isn't jammed against the edge. when the track is
+ *  smaller than the view the pan range collapses to 0 → the track sits left-aligned. */
 export function clampView(v: View, width: number, tTotal: number): View {
     const m = marginSec(tTotal);
     const pxPerSec = Math.min(MAX_PX_PER_SEC, Math.max(minScale(width, tTotal), v.pxPerSec));
-    const panMin = -m * pxPerSec;
-    const panMax = (tTotal + m) * pxPerSec - width;
-    const pan = panMax <= panMin ? panMin : Math.min(panMax, Math.max(panMin, v.pan));
+    const panMax = Math.max(0, (tTotal + m) * pxPerSec - width);
+    const pan = Math.min(panMax, Math.max(0, v.pan));
     return { pan, pxPerSec };
 }
 
@@ -63,7 +65,7 @@ export function zoomAt(
     return clampView({ pan: secAnchor * pxPerSec - anchorPx, pxPerSec }, width, tTotal);
 }
 
-/** the view that frames the whole track + margins (min scale, centered). */
+/** the view that frames the whole track + lead-out (min scale, left-anchored at t=0). */
 export const frameAll = (width: number, tTotal: number): View =>
     clampView({ pan: -Number.MAX_VALUE, pxPerSec: 0 }, width, tTotal);
 

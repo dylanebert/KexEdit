@@ -43,4 +43,5 @@ cd packages/core && cargo test
 cd packages/core && cargo clippy
 cd plugins/blender && uvx pytest tests/ -v
 cd kex2d && bun check && bun test
+cd kex2d && bun run capture   # Playwright UI screenshots → harness/shots/ (display-gated)
 ```

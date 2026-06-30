@@ -19,4 +19,5 @@ App is a Shallot Plugin. Follows Shallot conventions: dependencies, initialize/w
 
 ## UI
 
-`config.editorUI` pattern. Framework-agnostic: `(container, channel) => cleanup`.
+`config.editorUI` pattern. Framework-agnostic: `(container, channel) => cleanup`. Editor posture
+(attention economy, the gates, the always-present force curve) is `editor-ui.md`.

@@ -8,6 +8,7 @@
         "build": "vite build",
         "preview": "vite preview",
         "test": "bun test",
+        "capture": "bun run harness/capture.ts",
         "check": "bun run format && tsc && svelte-check && biome check",
         "format": "biome check --write"
     },

@@ -11,8 +11,15 @@ import { resize } from "./view";
 
 const { eid, tick }: { eid: number | null; tick: number } = $props();
 
-const PAD = 10; // chart inset, top
-const AXIS_H = 18; // bottom band for time labels
+// timeline bands, top → bottom: a scrubbable RULER (ticks + labels + playhead
+// handle, the dedicated scrub zone), a demarcating GAP the playhead passes through,
+// then the curve chart. The After Effects / animation-timeline / kexedit-main layout
+// (time ruler on top, click-anywhere-to-scrub), not a plot with a bottom axis.
+const RULER_H = 18; // top scrub band: ticks, labels, playhead handle
+const GAP_H = 8; // demarcation channel between ruler and chart
+const TOP = RULER_H + GAP_H; // chart top
+const BOT_PAD = 8; // chart inset, bottom
+const LABEL_EDGE = 22; // px; ruler labels within this of an edge align inward, not centered
 // vertical range tracks the solve's force band, not a hardcoded window, so a curve
 // riding the band's edge is never clipped. headroom shows near-/over-limit excursions.
 const Y_HEADROOM = 1;
@@ -38,6 +45,8 @@ let h = $state(0);
 // resize or a track edit never writes back into `view` (which would loop the effect).
 let view: View = $state({ pan: 0, pxPerSec: 100 });
 let framed = false;
+
+const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 
 // total draft-time seconds — the X-axis domain. grid index i ↔ sec (i/(N-1))·tTotal.
 const tTotal = $derived.by((): number => {
@@ -77,14 +86,19 @@ const paused = $derived.by((): boolean => {
     void tick;
     return eid === null ? false : (cartState.get(eid)?.held ?? false);
 });
+// the player slider's fill — the cart's global fraction of the whole track. distinct
+// from the timeline playhead (`playPx`), which is local to the zoomed view.
+const frac = $derived.by((): number => {
+    if (cartSec === null || tTotal <= 0) return 0;
+    return clamp(cartSec / tTotal, 0, 1);
+});
 
 const yOf = (val: number): number =>
-    PAD + (1 - (val - Y_MIN) / (Y_MAX - Y_MIN)) * (h - AXIS_H - PAD);
+    TOP + (1 - (val - Y_MIN) / (Y_MAX - Y_MIN)) * (h - BOT_PAD - TOP);
 // inverse of yOf: screen-Y → force value (for placing / dragging pins).
 const valOf = (py: number): number =>
-    Y_MIN + (1 - (py - PAD) / (h - AXIS_H - PAD)) * (Y_MAX - Y_MIN);
+    Y_MIN + (1 - (py - TOP) / (h - BOT_PAD - TOP)) * (Y_MAX - Y_MIN);
 
-const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 // pin draft-time grid index ↔ screen-X, value ↔ screen-Y (clamped to the chart).
 const pxOfIndex = (i: number): number => secToPx(clamped, (i / (N - 1)) * tTotal);
 const indexAt = (px: number): number =>
@@ -294,22 +308,51 @@ function autofocus(node: HTMLInputElement): void {
 function render(ctx: CanvasRenderingContext2D): void {
     const v = clamped;
     ctx.clearRect(0, 0, w, h);
-    const bot = h - AXIS_H;
     ctx.font = "9px 'JetBrains Mono', ui-monospace, monospace";
-    ctx.textBaseline = "middle";
+
+    // ruler + gap bands: a lighter scrub strip over a darker channel, demarcating the
+    // scrub zone from the curve chart (a 1px seam marks the chart top).
+    ctx.fillStyle = "rgba(255, 255, 255, 0.04)";
+    ctx.fillRect(0, 0, w, RULER_H);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
+    ctx.fillRect(0, RULER_H, w, GAP_H);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, TOP + 0.5);
+    ctx.lineTo(w, TOP + 0.5);
+    ctx.stroke();
 
     for (const tk of tickList) {
         if (tk.px < -1 || tk.px > w + 1) continue;
+        // faint gridline through the chart — read the curve against time
         ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(tk.px, PAD);
-        ctx.lineTo(tk.px, bot);
+        ctx.moveTo(tk.px, TOP);
+        ctx.lineTo(tk.px, h - BOT_PAD);
         ctx.stroke();
-        ctx.fillStyle = "rgba(160, 152, 144, 0.7)";
-        ctx.textAlign = "center";
-        ctx.fillText(tk.label, tk.px, bot + AXIS_H / 2);
+        // tick mark + label in the ruler
+        ctx.strokeStyle = "rgba(160, 152, 144, 0.5)";
+        ctx.beginPath();
+        ctx.moveTo(tk.px, RULER_H - 5);
+        ctx.lineTo(tk.px, RULER_H);
+        ctx.stroke();
+        // align the first/last labels inward so the edge tick (0s now sits at px=0) isn't clipped
+        ctx.fillStyle = "rgba(160, 152, 144, 0.8)";
+        ctx.textBaseline = "top";
+        if (tk.px < LABEL_EDGE) {
+            ctx.textAlign = "left";
+            ctx.fillText(tk.label, Math.max(2, tk.px), 2);
+        } else if (tk.px > w - LABEL_EDGE) {
+            ctx.textAlign = "right";
+            ctx.fillText(tk.label, Math.min(w - 2, tk.px), 2);
+        } else {
+            ctx.textAlign = "center";
+            ctx.fillText(tk.label, tk.px, 2);
+        }
     }
+    ctx.textBaseline = "middle"; // restore for the Y-legend
 
     // force band limits — the feasible region the solve lives in
     ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
@@ -415,22 +458,21 @@ $effect(() => {
     render(ctx);
 });
 
+// ── ruler scrub: click/drag anywhere in the top band positions the playhead. it
+// freezes playback while held and *parks* on release — never auto-resumes (the After
+// Effects / animation-timeline convention: scrubbing sets time, play is separate).
 let scrubbing = false;
 function scrubTo(e: PointerEvent): void {
     if (eid === null || !scrubbing) return;
     const rect = canvas.getBoundingClientRect();
     const sec = pxToSec(clamped, e.clientX - rect.left);
-    const u = tTotal > 0 ? Math.min(Math.max(sec / tTotal, 0), 1) : 0;
+    const u = tTotal > 0 ? clamp(sec / tTotal, 0, 1) : 0;
     const t = cartTimeAtU(eid, u);
     const st = cartState.get(eid);
     if (st && t !== null) st.t = t;
 }
 function endScrub(): void {
-    scrubbing = false;
-    if (eid !== null) {
-        const st = cartState.get(eid);
-        if (st) st.held = false;
-    }
+    scrubbing = false; // leave st.held true — parked + paused, no auto-resume
     window.removeEventListener("pointermove", scrubTo);
     window.removeEventListener("pointerup", endScrub);
 }
@@ -440,7 +482,7 @@ function startScrub(e: PointerEvent): void {
     if (!st) return;
     e.preventDefault();
     scrubbing = true;
-    st.held = true;
+    st.held = true; // freeze playback while scrubbing
     scrubTo(e);
     window.addEventListener("pointermove", scrubTo);
     window.addEventListener("pointerup", endScrub);
@@ -450,6 +492,60 @@ function togglePlay(): void {
     if (eid === null) return;
     const st = cartState.get(eid);
     if (st) st.held = !st.held;
+}
+
+// ── player slider: the full-track scrubber. drag maps screen-X → grid-fraction →
+// realized time (same bridge as the timeline grip, but global, not view-relative).
+// holding while dragging freezes the cart; release restores the pre-grab play state
+// (grab while paused stays paused — the media-player convention).
+let scrubEl: HTMLDivElement;
+let sliding = false;
+let sliderResume = false;
+function sliderTo(e: PointerEvent): void {
+    if (eid === null || !sliding) return;
+    const rect = scrubEl.getBoundingClientRect();
+    const u = rect.width > 0 ? clamp((e.clientX - rect.left) / rect.width, 0, 1) : 0;
+    const t = cartTimeAtU(eid, u);
+    const st = cartState.get(eid);
+    if (st && t !== null) st.t = t;
+}
+function sliderUp(): void {
+    if (!sliding) return; // not dragging → nothing to restore (cleanup no-op)
+    sliding = false;
+    if (eid !== null) {
+        const st = cartState.get(eid);
+        if (st) st.held = sliderResume;
+    }
+    window.removeEventListener("pointermove", sliderTo);
+    window.removeEventListener("pointerup", sliderUp);
+}
+function sliderDown(e: PointerEvent): void {
+    if (eid === null || tTotal <= 0) return;
+    const st = cartState.get(eid);
+    if (!st) return;
+    e.preventDefault();
+    sliderResume = st.held; // resume playing only if it was playing before the grab
+    sliding = true;
+    st.held = true;
+    sliderTo(e);
+    window.addEventListener("pointermove", sliderTo);
+    window.addEventListener("pointerup", sliderUp);
+}
+// arrow-step the playhead — shared by both scrub controls (the ruler and the slider).
+function stepKey(e: KeyboardEvent): void {
+    if (eid === null || tTotal <= 0) return;
+    const st = cartState.get(eid);
+    if (!st) return;
+    const step = e.shiftKey ? 1 : 0.1; // seconds; shift = coarse
+    const d = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+    if (d === 0) return;
+    e.preventDefault();
+    const u = clamp(((cartSec ?? 0) + d) / tTotal, 0, 1);
+    const t = cartTimeAtU(eid, u);
+    if (t !== null) {
+        st.held = true; // stepping pauses, like a frame-step
+        st.t = t;
+    }
 }
 onMount(() => {
     const onWheel = (e: WheelEvent): void => {
@@ -490,6 +586,7 @@ onMount(() => {
         host.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKey);
         endScrub(); // drop any in-flight scrub listeners if we unmount mid-drag
+        sliderUp(); // and any in-flight player-slider drag
         window.removeEventListener("pointermove", pinDrag);
         window.removeEventListener("pointerup", pinUp);
         window.removeEventListener("pointermove", handleDrag);
@@ -499,22 +596,6 @@ onMount(() => {
 </script>
 
 <aside class="dock">
-    <div class="transport">
-        <button
-            class="play"
-            type="button"
-            onclick={togglePlay}
-            title={paused ? "Play (Space)" : "Pause (Space)"}
-            aria-label={paused ? "Play" : "Pause"}
-        >
-            {#if paused}
-                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3 L13 8 L5 13 Z" fill="currentColor" /></svg>
-            {:else}
-                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3 L5.5 13 M10.5 3 L10.5 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
-            {/if}
-        </button>
-        <span class="readout">{(cartSec ?? 0).toFixed(2)}s / {tTotal.toFixed(2)}s</span>
-    </div>
     <!-- leaving the chart clears the hovered pin (its tangent handles stay summoned
          while the pointer rests on the pin or a handle, so the dot→nub travel never
          loses them; only leaving the dock dismisses them). -->
@@ -528,17 +609,35 @@ onMount(() => {
     >
         <canvas bind:this={canvas}></canvas>
         <svg class="overlay" width={w} height={h}>
-            <!-- empty force band: click to drop a pin. below the pins + grip in
-                 DOM, so those take the pointer when hit. -->
+            <!-- the chart force band: click to drop a pin. the ruler (above) owns
+                 scrubbing, so pin-drop and scrub never compete. below the pins + grip
+                 in DOM, so those take the pointer when hit. -->
             {#if eid !== null && tTotal > 0}
                 <rect
                     class="dropzone"
                     x="0"
-                    y={PAD}
+                    y={TOP}
                     width={w}
-                    height={Math.max(0, h - AXIS_H - PAD)}
+                    height={Math.max(0, h - BOT_PAD - TOP)}
                     onpointerdown={bandDown}
                     role="presentation"
+                />
+                <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere
+                     here moves the playhead (the time ruler is the scrubber). -->
+                <rect
+                    class="rulerzone"
+                    x="0"
+                    y="0"
+                    width={w}
+                    height={TOP}
+                    onpointerdown={startScrub}
+                    onkeydown={stepKey}
+                    role="slider"
+                    tabindex="0"
+                    aria-label="Scrub playhead"
+                    aria-valuemin={0}
+                    aria-valuemax={Math.round(tTotal * 100) / 100}
+                    aria-valuenow={Math.round((cartSec ?? 0) * 100) / 100}
                 />
             {/if}
             {#each pinView as p (p.id)}
@@ -573,16 +672,13 @@ onMount(() => {
                 />
                 <circle class="handle-nub" cx={hd.x} cy={hd.y} r={HANDLE_NUB_R} />
             {/each}
+            <!-- playhead: a handle in the ruler + a line down through the gap and
+                 chart. visual only — the rulerzone above owns the scrub interaction. -->
             {#if playPx !== null}
-                <line class="playhead" x1={playPx} x2={playPx} y1={PAD} y2={h - AXIS_H} />
+                <line class="playhead" x1={playPx} x2={playPx} y1={RULER_H} y2={h - BOT_PAD} />
                 <polygon
                     class="grip"
-                    points="{playPx - 5},{PAD - 2} {playPx + 5},{PAD - 2} {playPx},{PAD + 6}"
-                    onpointerdown={startScrub}
-                    role="slider"
-                    tabindex="0"
-                    aria-label="Scrub playhead"
-                    aria-valuenow={Math.round((cartSec ?? 0) * 100) / 100}
+                    points="{playPx - 5},{RULER_H - 10} {playPx + 5},{RULER_H - 10} {playPx},{RULER_H}"
                 />
             {/if}
         </svg>
@@ -633,6 +729,46 @@ onMount(() => {
     </div>
 </aside>
 
+<!-- the player: a standard media transport (play/pause · global scrub · timecode)
+     floated as its own surface above the timeline. the slider is the *full-track*
+     scrubber — global scope, distinct from the timeline's zoomed-local playhead
+     (the After Effects comp-vs-timeline split). controls the cart; authoring lives
+     in the timeline below. -->
+<div class="player" class:idle={eid === null || tTotal <= 0}>
+    <button
+        class="play"
+        type="button"
+        onclick={togglePlay}
+        title={paused ? "Play (Space)" : "Pause (Space)"}
+        aria-label={paused ? "Play" : "Pause"}
+    >
+        {#if paused}
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3 L13 8 L5 13 Z" fill="currentColor" /></svg>
+        {:else}
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3 L5.5 13 M10.5 3 L10.5 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+        {/if}
+    </button>
+    <div
+        class="scrub"
+        bind:this={scrubEl}
+        onpointerdown={sliderDown}
+        onkeydown={stepKey}
+        role="slider"
+        tabindex="0"
+        aria-label="Playback position"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(tTotal * 100) / 100}
+        aria-valuenow={Math.round((cartSec ?? 0) * 100) / 100}
+    >
+        <div class="rail"></div>
+        <div class="fill" style="width: {frac * 100}%"></div>
+        <div class="thumb" style="left: {frac * 100}%"></div>
+    </div>
+    <span class="time">
+        {(cartSec ?? 0).toFixed(2)}<span class="sep">/{tTotal.toFixed(2)}s</span>
+    </span>
+</div>
+
 <style>
     .dock {
         position: absolute;
@@ -681,11 +817,29 @@ onMount(() => {
 
     .grip {
         fill: var(--accent);
-        pointer-events: auto;
-        cursor: ew-resize;
+        pointer-events: none; /* visual handle; the rulerzone owns the scrub */
     }
 
-    /* click-to-drop surface over the force band */
+    /* the scrub zone: the whole top ruler + gap band. click/drag anywhere here moves
+       the playhead. the body keeps the DEFAULT cursor — the editor-ruler convention
+       (After Effects / animation-timeline: the ruler is default, not a resize edge). */
+    .rulerzone {
+        fill: transparent;
+        pointer-events: all;
+        cursor: default;
+    }
+    /* keyboard focus rings the playhead grip, not a full-width box on the ruler
+       (mirrors the player slider's thumb focus ring) */
+    .rulerzone:focus-visible {
+        outline: none;
+    }
+    .rulerzone:focus-visible ~ .grip {
+        stroke: var(--accent-soft);
+        stroke-width: 4;
+        paint-order: stroke;
+    }
+
+    /* click-to-drop surface over the chart force band (scrub lives in the ruler) */
     .dropzone {
         fill: transparent;
         pointer-events: all;
@@ -781,46 +935,125 @@ onMount(() => {
         height: 13px;
     }
 
-    /* persistent transport: play/pause centered, time readout in the right corner
-       (ambient status). visible always — transport is a primary control. */
-    .transport {
-        position: relative;
+    /* the player: a media transport (play · global scrub · timecode) floated as its
+       own opaque surface above the timeline, aligned to the dock's width — a player
+       over its scrubber-timeline. elevation from border + shadow, never glass. */
+    .player {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: 164px; /* dock bottom 16 + dock height 140 + 8 gap */
+        width: calc(100% - 32px);
+        max-width: 1280px;
+        box-sizing: border-box;
+        height: 36px;
         display: flex;
         align-items: center;
-        justify-content: center;
-        flex: none;
-        height: 30px;
-        border-bottom: 1px solid var(--border);
+        gap: 12px;
+        padding: 0 14px 0 7px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: var(--shadow);
+        font-family: "Outfit", system-ui, sans-serif;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    /* no track → the player goes quiet, not loud (gate 2) */
+    .player.idle {
+        opacity: 0.45;
+        pointer-events: none;
     }
 
     .play {
         all: unset;
         box-sizing: border-box;
-        width: 24px;
-        height: 24px;
+        width: 26px;
+        height: 26px;
+        flex: none;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border-radius: 5px;
+        border-radius: 50%;
         color: var(--accent);
         cursor: pointer;
-        transition: background 120ms ease;
+        transition: background 120ms ease, transform 80ms ease;
     }
     .play:hover {
         background: var(--accent-soft);
+    }
+    .play:active {
+        background: var(--accent-soft);
+        transform: scale(0.94);
     }
     .play svg {
         width: 15px;
         height: 15px;
     }
 
-    .readout {
+    /* global scrubber: a thin rail + accent fill + grabbable thumb. the 26px-tall
+       row is a fat hit area over a 3px rail (the same fat-zone/thin-mark pattern as
+       the pins). */
+    .scrub {
+        position: relative;
+        flex: 1;
+        height: 26px;
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        touch-action: none;
+    }
+    .rail,
+    .fill {
         position: absolute;
-        right: 10px;
         top: 50%;
+        height: 3px;
+        border-radius: 999px;
         transform: translateY(-50%);
+        pointer-events: none;
+    }
+    .rail {
+        left: 0;
+        right: 0;
+        background: rgba(255, 255, 255, 0.12);
+    }
+    .fill {
+        left: 0;
+        background: var(--accent);
+    }
+    .thumb {
+        position: absolute;
+        top: 50%;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: var(--accent);
+        border: 2px solid var(--bg-solid);
+        transform: translate(-50%, -50%);
+        transition: transform 100ms ease;
+        pointer-events: none;
+    }
+    .scrub:hover .thumb,
+    .scrub:active .thumb {
+        transform: translate(-50%, -50%) scale(1.3);
+    }
+    .scrub:focus-visible {
+        outline: none;
+    }
+    .scrub:focus-visible .thumb {
+        box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    .time {
+        flex: none;
         font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 10px;
+        font-size: 11px;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        color: var(--fg);
+    }
+    .time .sep {
         color: var(--muted);
     }
 </style>
