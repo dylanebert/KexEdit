@@ -1,5 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { recoveryRows } from "./anchor";
+import { constraintTargets } from "./bezier";
 import { replay, resampleByTime, V_FLOOR, V_WARN } from "./bake";
 import { pinRev, pinsOf } from "./pins";
 import {
@@ -77,21 +78,24 @@ function computeSolve(trackEid: number): void {
         sigPrev = sig;
     }
 
-    // authored force pins → point constraints + one endpoint recovery anchor.
-    // with no pins the solve is byte-identical to the unconstrained path (con +
-    // anchors stay empty). a pin pulls the solved F_n toward its value at a fixed
-    // grid index; the unbalanced bump swings the whole downstream geometry, so the
-    // anchor pins the rollout's (x, y, θ) at the endpoint back to the draft — three
-    // DOF at one point fix the rigid downstream transform, healing the full tail.
-    // single-shoot endpoint anchoring is the prototype regime (multiple-shooting
-    // is the deferred scale fix; see scratch.md "Optimizer design").
+    // authored force pins → the bezier constraint draft + one endpoint recovery
+    // anchor. `constraintTargets` evaluates the piecewise cubic through the pins on
+    // the draft-time grid — one target per covered index (a lone pin stays a single
+    // point, Phase 2b). with no pins the solve is byte-identical to the
+    // unconstrained path (con + anchors stay empty). each target pulls the solved
+    // F_n toward its value at a fixed grid index; the unbalanced bump swings the
+    // whole downstream geometry, so the anchor pins the rollout's (x, y, θ) at the
+    // endpoint back to the draft — three DOF at one point fix the rigid downstream
+    // transform, healing the full tail. single-shoot endpoint anchoring is the
+    // prototype regime (multiple-shooting is the deferred scale fix; see scratch.md
+    // "Optimizer design").
     const pins = pinsOf(trackEid);
     let con: PointCon[] | undefined;
     let anchors: Anchor[] | undefined;
     if (pins.length > 0) {
-        con = pins.map((p) => ({
-            index: Math.min(Math.max(p.index, 0), N - 1),
-            value: p.value,
+        con = constraintTargets(pins).map((t) => ({
+            index: Math.min(Math.max(t.index, 0), N - 1),
+            value: t.value,
             weight: DEFAULT_PIN_WEIGHT,
         }));
         // the draft rollout is the anchor's linearization point.

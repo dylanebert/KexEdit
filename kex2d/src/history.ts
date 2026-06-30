@@ -15,9 +15,10 @@ import {
     insertPin,
     type Pin,
     type PinState,
+    pinSnapshot,
     pinsOf,
     removePin,
-    setPin,
+    restorePin,
 } from "./pins";
 
 type Cmd =
@@ -48,13 +49,13 @@ function record(h: History, cmd: Cmd): void {
 function apply(cmd: Cmd): void {
     if (cmd.type === "add") insertPin(cmd.eid, cmd.pin, cmd.at);
     else if (cmd.type === "remove") removePin(cmd.eid, cmd.pin.id);
-    else setPin(cmd.eid, cmd.id, cmd.next.index, cmd.next.value);
+    else restorePin(cmd.eid, cmd.id, cmd.next);
 }
 
 function reverse(cmd: Cmd): void {
     if (cmd.type === "add") removePin(cmd.eid, cmd.pin.id);
     else if (cmd.type === "remove") insertPin(cmd.eid, cmd.pin, cmd.at);
-    else setPin(cmd.eid, cmd.id, cmd.prev.index, cmd.prev.value);
+    else restorePin(cmd.eid, cmd.id, cmd.prev);
 }
 
 /** drop a new pin (the do-path appends it live, then records an undoable add). */
@@ -92,23 +93,24 @@ export function redo(h: History): void {
 // at a time (one pin under the cursor).
 let gesture: { eid: number; id: number; prev: PinState } | null = null;
 
-/** open a gesture on a pin, capturing its pristine state for commit/cancel. */
+/** open a gesture on a pin, deep-capturing its pristine state for commit/cancel
+ *  (handles are objects — a shallow copy would alias the live pin). */
 export function begin(eid: number, id: number): void {
-    const pin = findPin(eid, id);
-    if (!pin) return;
-    gesture = { eid, id, prev: { index: pin.index, value: pin.value } };
+    const prev = pinSnapshot(eid, id);
+    if (!prev) return;
+    gesture = { eid, id, prev };
 }
 
 /** commit the open gesture: record one `set` (prev → the pin's current state) if
- *  it actually changed; the live writes already applied it. */
+ *  any field changed — index, value, or either handle; the live writes already
+ *  applied it. */
 export function commit(h: History): void {
     const g = gesture;
     gesture = null;
     if (!g) return;
-    const pin = findPin(g.eid, g.id);
-    if (!pin) return;
-    const next: PinState = { index: pin.index, value: pin.value };
-    if (next.index === g.prev.index && next.value === g.prev.value) return; // no-op (a click)
+    const next = pinSnapshot(g.eid, g.id);
+    if (!next) return;
+    if (same(next, g.prev)) return; // no-op (a click, or a handle nudge back to start)
     record(h, { type: "set", eid: g.eid, id: g.id, prev: g.prev, next });
 }
 
@@ -117,5 +119,16 @@ export function cancel(): void {
     const g = gesture;
     gesture = null;
     if (!g) return;
-    setPin(g.eid, g.id, g.prev.index, g.prev.value);
+    restorePin(g.eid, g.id, g.prev);
+}
+
+function same(a: PinState, b: PinState): boolean {
+    return (
+        a.index === b.index &&
+        a.value === b.value &&
+        a.hl.dx === b.hl.dx &&
+        a.hl.dy === b.hl.dy &&
+        a.hr.dx === b.hr.dx &&
+        a.hr.dy === b.hr.dy
+    );
 }

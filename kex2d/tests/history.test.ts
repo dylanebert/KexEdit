@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { begin, cancel, commit, createHistory, drop, erase, redo, undo } from "../src/history";
-import { clearPins, pinsOf, setPin } from "../src/pins";
+import { clearPins, findPin, pinsOf, setHandle, setPin } from "../src/pins";
 
 // undo/redo over the pin store. each test uses a distinct trackEid + a fresh
 // History; the pin store is a module singleton so we clear the track first.
@@ -92,4 +92,63 @@ test("a new edit clears the redo branch", () => {
     expect(h.redo.length).toBe(1);
     drop(h, eid, 40, 5); // a fresh edit
     expect(h.redo.length).toBe(0); // the prior redo branch is gone
+});
+
+test("a handle-drag gesture collapses to one undo entry; undo/redo restore the handle", () => {
+    const eid = 206;
+    const h = fresh(eid);
+    const pin = drop(h, eid, 10, 2); // entry 1
+
+    begin(eid, pin.id);
+    setHandle(eid, pin.id, "r", 0.5, 1); // live preview frames — not recorded individually
+    setHandle(eid, pin.id, "r", 0.7, 2.5);
+    commit(h); // entry 2 (the whole handle drag)
+
+    expect(h.undo.length).toBe(2);
+    expect(findPin(eid, pin.id)?.hr).toEqual({ dx: 0.7, dy: 2.5 });
+
+    undo(h); // back to the default handle
+    expect(findPin(eid, pin.id)?.hr).toEqual({ dx: 1 / 3, dy: 0 });
+    redo(h);
+    expect(findPin(eid, pin.id)?.hr).toEqual({ dx: 0.7, dy: 2.5 });
+});
+
+test("commit records a pure-handle change (index/value unchanged)", () => {
+    const eid = 207;
+    const h = fresh(eid);
+    const pin = drop(h, eid, 10, 2);
+    const before = h.undo.length;
+
+    begin(eid, pin.id);
+    setHandle(eid, pin.id, "l", 0.2, -1); // only a handle moved
+    commit(h);
+
+    expect(h.undo.length).toBe(before + 1); // the four-field compare caught it
+});
+
+test("cancel restores both handles to their pre-gesture state", () => {
+    const eid = 208;
+    const h = fresh(eid);
+    const pin = drop(h, eid, 10, 2);
+    const before = h.undo.length;
+
+    begin(eid, pin.id);
+    setHandle(eid, pin.id, "r", 0.9, 4); // dragged
+    cancel();
+
+    expect(findPin(eid, pin.id)?.hr).toEqual({ dx: 1 / 3, dy: 0 }); // restored
+    expect(h.undo.length).toBe(before); // nothing recorded
+});
+
+test("the captured prev does not alias the live pin (deep-copy guard)", () => {
+    const eid = 209;
+    const h = fresh(eid);
+    const pin = drop(h, eid, 10, 2);
+
+    begin(eid, pin.id); // snapshots the default handle
+    setHandle(eid, pin.id, "r", 0.8, 3); // mutate after begin — must not bleed into prev
+    commit(h);
+
+    undo(h); // if prev aliased the pin, this would restore the *mutated* state
+    expect(findPin(eid, pin.id)?.hr).toEqual({ dx: 1 / 3, dy: 0 });
 });

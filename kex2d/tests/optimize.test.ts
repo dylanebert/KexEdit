@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
+import { constraintTargets } from "../src/bezier";
 import { OPT_GRID, SolveSystem, solveOut } from "../src/optimize";
-import { addPin, removePin } from "../src/pins";
+import { addPin, pinsOf, removePin, setHandle } from "../src/pins";
 import { addNode, BakeSystem, bakeOut, createTrack, Track } from "../src/track";
 
 const G = 9.80665;
@@ -147,6 +148,85 @@ test("the recovery anchor heals the downstream swing a pin causes", () => {
     // ...yet the realized endpoint holds to the draft (the anchor healed it).
     const drift = Math.hypot(so.posX[so.count - 1] - endX, so.posY[so.count - 1] - endY);
     expect(drift).toBeLessThan(0.15); // metres — orders below the un-anchored swing
+});
+
+test("a dominant-weight bezier draft pulls the solved force onto the drawn curve", () => {
+    // two pins ⇒ a piecewise bezier across the span. the pin weight (1e4) dominates
+    // the unit prior + smoothness, so the solved force tracks the drawn curve at
+    // every covered grid index — "full bezier at dominant weight → solved ≈ drawn".
+    const { state, eid } = hill();
+    const a = addPin(eid, Math.floor(OPT_GRID * 0.3), 2.5);
+    const b = addPin(eid, Math.floor(OPT_GRID * 0.6), 0.5);
+    state.step(0);
+    const so = solveOut.get(eid);
+    if (!so) throw new Error("solveOut missing after pins");
+
+    const targets = constraintTargets(pinsOf(eid));
+    // a non-trivial curve (the two pins differ), spanning the interior.
+    expect(targets.length).toBeGreaterThan(40);
+    let maxGap = 0;
+    for (const t of targets) maxGap = Math.max(maxGap, Math.abs(so.fN[t.index] - t.value));
+    expect(maxGap).toBeLessThan(0.1); // solved hugs the drawn curve across the whole span
+    // every target sits inside the band, and so does the solved force there.
+    for (const t of targets) {
+        expect(t.value).toBeGreaterThan(-2);
+        expect(t.value).toBeLessThan(6);
+        expect(so.fN[t.index]).toBeLessThan(6.05);
+    }
+    void a;
+    void b;
+});
+
+test("the recovery anchor heals the downstream swing of a full-span bezier draft", () => {
+    // a balanced (doublet) bezier reshape across the span — above the draft on the
+    // first half, below on the second. the single endpoint anchor pins (x,y,θ) to
+    // the draft, so the realized endpoint barely moves: the 2b point-heal
+    // generalizes to a curve in the single-shoot regime. (a *sustained* same-sign
+    // reshape integrates a larger net heading change and drifts further — the
+    // multiple-shooting regime, scratch.md "Optimizer design".)
+    const { state, eid } = hill();
+    const base = solveOut.get(eid);
+    if (!base) throw new Error("solveOut missing after solve");
+    const endX = base.posX[base.count - 1];
+    const endY = base.posY[base.count - 1];
+
+    const k0 = Math.floor(OPT_GRID * 0.3);
+    const k1 = Math.floor(OPT_GRID * 0.6);
+    addPin(eid, k0, base.fN[k0] + 0.5);
+    addPin(eid, k1, base.fN[k1] - 0.5);
+    state.step(0);
+    const so = solveOut.get(eid);
+    if (!so) throw new Error("solveOut missing after pins");
+
+    // the curve really reshaped the force across the span...
+    let reshape = 0;
+    for (let i = 0; i < so.count; i++) reshape = Math.max(reshape, Math.abs(so.fN[i] - base.fN[i]));
+    expect(reshape).toBeGreaterThan(0.4);
+    // ...yet the realized endpoint holds to the draft (measured ≈0.14 m; the
+    // un-anchored swing of a reshape this wide is metres).
+    const drift = Math.hypot(so.posX[so.count - 1] - endX, so.posY[so.count - 1] - endY);
+    expect(drift).toBeLessThan(0.2);
+});
+
+test("authored overshoot survives: a bezier pulled above the ceiling rides above the band", () => {
+    // handles dragged up push the curve above the 6g ceiling. the pin weight (1e4)
+    // dominates the band hinge (≈4), so the authored overshoot survives in the
+    // solved force — the absolute-g deviation, end to end.
+    const { state, eid } = hill();
+    const a = addPin(eid, Math.floor(OPT_GRID * 0.35), 5.5);
+    const b = addPin(eid, Math.floor(OPT_GRID * 0.55), 5.5);
+    // bow the segment well above the ceiling via the tangent handles (free dy).
+    setHandle(eid, a.id, "r", 1 / 3, 3);
+    setHandle(eid, b.id, "l", 1 / 3, 3);
+    state.step(0);
+    const so = solveOut.get(eid);
+    if (!so) throw new Error("solveOut missing after pins");
+
+    const targets = constraintTargets(pinsOf(eid));
+    const peak = Math.max(...targets.map((t) => t.value));
+    expect(peak).toBeGreaterThan(6); // the drawn curve overshoots the band
+    const midIdx = targets.find((t) => t.value === peak)?.index ?? a.index;
+    expect(so.fN[midIdx]).toBeGreaterThan(6); // and the solved force follows it over
 });
 
 test("a re-solve is skipped while the bake is unchanged (hash gate)", () => {

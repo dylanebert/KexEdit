@@ -3,7 +3,7 @@ import { onMount } from "svelte";
 import { cartPose, cartState, cartTimeAtU, sampleFNOverTime } from "./cart";
 import { begin, cancel, commit, drop, erase, history, redo, undo } from "./history";
 import { OPT_GRID, solveOut } from "./optimize";
-import { findPin, pinsOf, setPin } from "./pins";
+import { findPin, type Pin, pinsOf, setHandle, setPin } from "./pins";
 import { DEFAULT_BAND } from "./solve";
 import { bakeOut } from "./track";
 import { clampView, frameAll, pxToSec, secToPx, ticks, type View, zoomAt } from "./timeline";
@@ -24,6 +24,11 @@ const N = OPT_GRID; // draft-time grid size — a pin's index domain [0, N−1]
 const PIN_HIT_R = 8; // fat transparent hit-zone (theatre GraphEditorDotScalar)
 const PIN_DOT_R = 3; // thin visible dot
 const EDITOR_FLIP_PX = 48; // pin nearer the top than this → editor opens below it
+const HANDLE_HIT_R = 7; // tangent-handle fat hit-zone
+const HANDLE_NUB_R = 2.5; // thin handle nub
+// the drawn constraint curve — cool blue, distinct from the warm-orange solved
+// result so "what you drew" reads apart from "what the solver produced".
+const CON_COLOR = "rgba(120, 175, 205, 0.9)";
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -93,12 +98,68 @@ const pinView = $derived.by((): { id: number; x: number; y: number }[] => {
     return pinsOf(eid).map((p) => ({ id: p.id, x: pxOfIndex(p.index), y: yOf(p.value) }));
 });
 
+// the pins sorted by draft-time index — the constraint curve and the handle
+// neighbor lookup walk them in time order (the store keeps insertion order).
+const sortedPins = $derived.by((): Pin[] => {
+    void tick;
+    if (eid === null || tTotal <= 0) return [];
+    return [...pinsOf(eid)].sort((a, b) => a.index - b.index || a.id - b.id);
+});
+
 // ── pin authoring: drop on the empty band, drag a pin (live re-solve), click to
 // open an inline value editor, delete. all routed through the undo history.
 let dragId: number | null = null;
 let dragMoved = false;
 let editing = $state<{ id: number; x: number; y: number } | null>(null);
 let editVal = $state(0);
+let hoverId = $state<number | null>(null);
+let hDrag = $state<{ id: number; side: "l" | "r" } | null>(null);
+
+// the pin whose tangent handles are shown: the one being edited, the one whose
+// handle is mid-drag, or the hovered one — handles are summoned, not always-on.
+const activeId = $derived(editing?.id ?? hDrag?.id ?? hoverId);
+
+// the active pin's tangent handles in screen space. the right handle reaches
+// toward the next pin, the left toward the previous; the first pin has no left
+// handle, the last no right (no neighbor on that side).
+const handleView = $derived.by(
+    (): { id: number; side: "l" | "r"; x0: number; y0: number; x: number; y: number }[] => {
+        void tick;
+        if (eid === null || tTotal <= 0 || activeId === null) return [];
+        const pins = sortedPins;
+        const i = pins.findIndex((p) => p.id === activeId);
+        if (i < 0) return [];
+        const p = pins[i];
+        const x0 = pxOfIndex(p.index);
+        const y0 = yOf(p.value);
+        const out: { id: number; side: "l" | "r"; x0: number; y0: number; x: number; y: number }[] = [];
+        if (i < pins.length - 1) {
+            const span = pins[i + 1].index - p.index;
+            if (span > 0)
+                out.push({
+                    id: p.id,
+                    side: "r",
+                    x0,
+                    y0,
+                    x: pxOfIndex(p.index + p.hr.dx * span),
+                    y: yOf(p.value + p.hr.dy),
+                });
+        }
+        if (i > 0) {
+            const span = p.index - pins[i - 1].index;
+            if (span > 0)
+                out.push({
+                    id: p.id,
+                    side: "l",
+                    x0,
+                    y0,
+                    x: pxOfIndex(p.index - p.hl.dx * span),
+                    y: yOf(p.value + p.hl.dy),
+                });
+        }
+        return out;
+    },
+);
 
 function bandDown(e: PointerEvent): void {
     // a click on empty force band drops a new pin at the cursor.
@@ -137,6 +198,52 @@ function pinUp(): void {
         cancel(); // a no-move click: discard the empty gesture, open the editor
         openEditor(id);
     }
+}
+
+// ── tangent-handle drag: X-clamped to the segment (function-of-time), Y free in
+// g (overshoot), live re-solve, commit-on-release. routed through the same gesture
+// history as a pin drag.
+function handleDown(e: PointerEvent, id: number, side: "l" | "r"): void {
+    if (eid === null) return;
+    e.preventDefault();
+    e.stopPropagation(); // not a pin drag / band drop
+    editCommit(); // close any open editor first
+    hDrag = { id, side };
+    begin(eid, id); // gesture: commit/cancel on release
+    window.addEventListener("pointermove", handleDrag);
+    window.addEventListener("pointerup", handleUp);
+}
+function handleDrag(e: PointerEvent): void {
+    if (eid === null || hDrag === null) return;
+    const pins = sortedPins;
+    const i = pins.findIndex((p) => p.id === hDrag?.id);
+    if (i < 0) return;
+    // the side's neighbor must exist (an endpoint has no handle on its bare side).
+    if (hDrag.side === "r" ? i >= pins.length - 1 : i <= 0) return;
+    const p = pins[i];
+    const rect = host.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const x0 = pxOfIndex(p.index);
+    // dx is the fraction from the pin toward its neighbor on that side; clamping to
+    // [0,1] keeps the segment a function of time. dy uses valOf (unclamped), so a
+    // handle can author overshoot past the band.
+    let dx: number;
+    if (hDrag.side === "r") {
+        const seg = pxOfIndex(pins[i + 1].index) - x0;
+        dx = seg > 0 ? (cx - x0) / seg : 0;
+    } else {
+        const seg = x0 - pxOfIndex(pins[i - 1].index);
+        dx = seg > 0 ? (x0 - cx) / seg : 0;
+    }
+    setHandle(eid, hDrag.id, hDrag.side, dx, valOf(cy) - p.value);
+}
+function handleUp(): void {
+    window.removeEventListener("pointermove", handleDrag);
+    window.removeEventListener("pointerup", handleUp);
+    if (hDrag === null) return;
+    hDrag = null;
+    commit(history); // a handle drag always intends an edit; commit no-ops if unchanged
 }
 
 function openEditor(id: number): void {
@@ -234,6 +341,37 @@ function render(ctx: CanvasRenderingContext2D): void {
             ctx.arc(x, yOf(fN[i]), 1.5, 0, Math.PI * 2);
             ctx.fill();
         }
+    }
+
+    // the drawn constraint curve: the piecewise bezier through the pins (≥2). drawn
+    // with native bezierCurveTo on the screen-mapped control points — pxOfIndex /
+    // yOf are affine, so the screen cubic equals the value-space cubic exactly.
+    const cpins = sortedPins;
+    if (cpins.length >= 2) {
+        ctx.strokeStyle = CON_COLOR;
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pxOfIndex(cpins[0].index), yOf(cpins[0].value));
+        for (let s = 0; s < cpins.length - 1; s++) {
+            const a = cpins[s];
+            const b = cpins[s + 1];
+            const span = b.index - a.index;
+            if (span <= 0) {
+                ctx.moveTo(pxOfIndex(b.index), yOf(b.value)); // skip a zero-width segment
+                continue;
+            }
+            ctx.bezierCurveTo(
+                pxOfIndex(a.index + a.hr.dx * span),
+                yOf(a.value + a.hr.dy),
+                pxOfIndex(b.index - b.hl.dx * span),
+                yOf(b.value + b.hl.dy),
+                pxOfIndex(b.index),
+                yOf(b.value),
+            );
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
     }
 
     // solved F_n curve
@@ -354,6 +492,8 @@ onMount(() => {
         endScrub(); // drop any in-flight scrub listeners if we unmount mid-drag
         window.removeEventListener("pointermove", pinDrag);
         window.removeEventListener("pointerup", pinUp);
+        window.removeEventListener("pointermove", handleDrag);
+        window.removeEventListener("pointerup", handleUp);
     };
 });
 </script>
@@ -375,7 +515,17 @@ onMount(() => {
         </button>
         <span class="readout">{(cartSec ?? 0).toFixed(2)}s / {tTotal.toFixed(2)}s</span>
     </div>
-    <div class="body" bind:this={host} bind:clientWidth={w} bind:clientHeight={h}>
+    <!-- leaving the chart clears the hovered pin (its tangent handles stay summoned
+         while the pointer rests on the pin or a handle, so the dot→nub travel never
+         loses them; only leaving the dock dismisses them). -->
+    <div
+        class="body"
+        bind:this={host}
+        bind:clientWidth={w}
+        bind:clientHeight={h}
+        onpointerleave={() => (hoverId = null)}
+        role="presentation"
+    >
         <canvas bind:this={canvas}></canvas>
         <svg class="overlay" width={w} height={h}>
             <!-- empty force band: click to drop a pin. below the pins + grip in
@@ -398,11 +548,30 @@ onMount(() => {
                     cy={p.y}
                     r={PIN_HIT_R}
                     onpointerdown={(e) => pinDown(e, p.id)}
+                    onpointerenter={() => (hoverId = p.id)}
                     role="button"
                     tabindex="-1"
                     aria-label="Force pin"
                 />
                 <circle class="pin-dot" cx={p.x} cy={p.y} r={PIN_DOT_R} />
+            {/each}
+            <!-- the active pin's tangent handles: a stem from the pin to a grabbable
+                 nub. drag to bend the constraint curve (X-clamped, Y-free). above the
+                 pins in DOM so the nub takes the pointer when they overlap. -->
+            {#each handleView as hd (hd.id + hd.side)}
+                <line class="handle-stem" x1={hd.x0} y1={hd.y0} x2={hd.x} y2={hd.y} />
+                <circle
+                    class="handle-hit"
+                    cx={hd.x}
+                    cy={hd.y}
+                    r={HANDLE_HIT_R}
+                    onpointerdown={(e) => handleDown(e, hd.id, hd.side)}
+                    onpointerenter={() => (hoverId = hd.id)}
+                    role="button"
+                    tabindex="-1"
+                    aria-label="Tangent handle"
+                />
+                <circle class="handle-nub" cx={hd.x} cy={hd.y} r={HANDLE_NUB_R} />
             {/each}
             {#if playPx !== null}
                 <line class="playhead" x1={playPx} x2={playPx} y1={PAD} y2={h - AXIS_H} />
@@ -540,6 +709,30 @@ onMount(() => {
     }
     .pin-hit:hover + .pin-dot {
         r: 5;
+    }
+
+    /* tangent handle: a thin stem to a grabbable nub, in the drawn-curve blue */
+    .handle-stem {
+        stroke: rgba(120, 175, 205, 0.6);
+        stroke-width: 1;
+        pointer-events: none;
+    }
+    .handle-hit {
+        fill: transparent;
+        pointer-events: all;
+        cursor: grab;
+    }
+    .handle-hit:active {
+        cursor: grabbing;
+    }
+    .handle-nub {
+        fill: rgba(120, 175, 205, 0.95);
+        stroke: var(--bg-solid);
+        stroke-width: 1;
+        pointer-events: none;
+    }
+    .handle-hit:hover + .handle-nub {
+        r: 4;
     }
 
     /* inline value editor, anchored at the pin */
