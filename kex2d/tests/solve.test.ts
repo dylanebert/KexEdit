@@ -115,6 +115,30 @@ describe("solve — convex F_n optimizer", () => {
         expect(warm.iters).toBe(1);
     });
 
+    test("a point constraint pulls its sample toward the pin and leaves the rest at the prior", () => {
+        // constant prior + no smoothing/band ⇒ samples decouple. the pinned sample
+        // minimizes w_pos(F−Fpos)² + w_con(F−value)² ⇒ F = (w_pos·Fpos + w_con·value)
+        // /(w_pos+w_con); every other sample is its own fixed point at Fpos.
+        const n = 8;
+        const wPos = 1;
+        const wCon = 9;
+        const k = 3;
+        const value = 4.5;
+        const Fpos = new Float32Array(n).fill(1.2);
+        const { fN } = solve(Fpos, {
+            posWeight: wPos,
+            smooth: 0,
+            bandWeight: 0,
+            con: [{ index: k, value, weight: wCon }],
+        });
+
+        const expected = (wPos * Fpos[k] + wCon * value) / (wPos + wCon);
+        for (let i = 0; i < n; i++) {
+            if (i === k) expect(fN[i]).toBeCloseTo(expected, 5);
+            else expect(fN[i]).toBeCloseTo(Fpos[i], 5);
+        }
+    });
+
     test("riding the solved F_n reproduces the independent RK4 oracle trajectory", () => {
         // gate the *positions* the solved force produces against the oracle, not
         // against forward.ts self-consistency: solve a gentle prior, then sample
