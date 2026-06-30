@@ -78,39 +78,38 @@ function computeSolve(trackEid: number): void {
         sigPrev = sig;
     }
 
-    // authored force pins → the bezier constraint draft + one endpoint recovery
-    // anchor. `constraintTargets` evaluates the piecewise cubic through the pins on
-    // the draft-time grid — one target per covered index (a lone pin stays a single
-    // point, Phase 2b). with no pins the solve is byte-identical to the
-    // unconstrained path (con + anchors stay empty). each target pulls the solved
-    // F_n toward its value at a fixed grid index; the unbalanced bump swings the
-    // whole downstream geometry, so the anchor pins the rollout's (x, y, θ) at the
-    // endpoint back to the draft — three DOF at one point fix the rigid downstream
-    // transform, healing the full tail. single-shoot endpoint anchoring is the
-    // prototype regime (multiple-shooting is the deferred scale fix; see scratch.md
+    // one unified solve. smoothness, the soft band, and the recovery anchor are
+    // structural — always present; authored pins are just an extra data term that
+    // contributes nothing when there are none. there is no separate "no-pin" path.
+    // any force-space deviation (the band clamping the draft's own out-of-band
+    // forces, smoothness, or a pin) reshapes the downstream geometry, and the
+    // always-on recovery anchor pulls the rollout's (x, y, θ) at the endpoint back
+    // to the draft — three DOF at one point fix the rigid downstream transform — so
+    // the realized track recovers the drawn shape instead of diverging. flexibility
+    // is the continuous weights (band vs anchor), not a branch. `constraintTargets`
+    // evaluates the piecewise cubic through the pins on the draft-time grid (a lone
+    // pin stays a single point; no pins → []). single-shoot endpoint anchoring is
+    // the prototype regime — it heals localized/balanced reshapes; wide sustained
+    // ones under-heal (multiple-shooting is the deferred scale fix, scratch.md
     // "Optimizer design").
     const pins = pinsOf(trackEid);
-    let con: PointCon[] | undefined;
-    let anchors: Anchor[] | undefined;
-    if (pins.length > 0) {
-        con = constraintTargets(pins).map((t) => ({
-            index: Math.min(Math.max(t.index, 0), N - 1),
-            value: t.value,
-            weight: DEFAULT_PIN_WEIGHT,
-        }));
-        // the draft rollout is the anchor's linearization point.
-        const dX = new Float32Array(N);
-        const dY = new Float32Array(N);
-        const dT = new Float32Array(N);
-        const dV = new Float32Array(N);
-        replay(dX, dY, dT, dV, prior, dsGrid, s.posX[0], s.posY[0], s.theta[0], s.v[0], N);
-        const rows = recoveryRows(Float64Array.from(dT), Float64Array.from(dV), dsGrid, N - 1);
-        anchors = [
-            { row: rows.x, weight: DEFAULT_ANCHOR_WEIGHT },
-            { row: rows.y, weight: DEFAULT_ANCHOR_WEIGHT },
-            { row: rows.theta, weight: DEFAULT_ANCHOR_WEIGHT },
-        ];
-    }
+    const con: PointCon[] = constraintTargets(pins).map((t) => ({
+        index: Math.min(Math.max(t.index, 0), N - 1),
+        value: t.value,
+        weight: DEFAULT_PIN_WEIGHT,
+    }));
+    // the draft rollout is the anchor's linearization point.
+    const dX = new Float32Array(N);
+    const dY = new Float32Array(N);
+    const dT = new Float32Array(N);
+    const dV = new Float32Array(N);
+    replay(dX, dY, dT, dV, prior, dsGrid, s.posX[0], s.posY[0], s.theta[0], s.v[0], N);
+    const rows = recoveryRows(Float64Array.from(dT), Float64Array.from(dV), dsGrid, N - 1);
+    const anchors: Anchor[] = [
+        { row: rows.x, weight: DEFAULT_ANCHOR_WEIGHT },
+        { row: rows.y, weight: DEFAULT_ANCHOR_WEIGHT },
+        { row: rows.theta, weight: DEFAULT_ANCHOR_WEIGHT },
+    ];
 
     const { fN } = solve(prior, {
         smooth: DEFAULT_SMOOTH,

@@ -2,11 +2,15 @@ import { describe, expect, test } from "bun:test";
 import {
     clampView,
     marginSec,
+    mirrorTangent,
     niceStep,
     pxToSec,
     secToPx,
     ticks,
     type View,
+    yFit,
+    type YFit,
+    yGrow,
     zoomAt,
 } from "../src/timeline";
 
@@ -121,5 +125,95 @@ describe("ticks — visible 1-2-5 grid", () => {
     test("empty when degenerate", () => {
         expect(ticks({ pan: 0, pxPerSec: 0 }, 1000)).toHaveLength(0);
         expect(ticks({ pan: 0, pxPerSec: 100 }, 0)).toHaveLength(0);
+    });
+});
+
+describe("yFit — stable default frame that expands to fit", () => {
+    const isClean = (s: number, m: number): boolean => {
+        const r = Math.log10(s / m);
+        return Math.abs(r - Math.round(r)) < 1e-9;
+    };
+
+    test("bounds are nice 1-2-5 multiples and bracket the data + base", () => {
+        const f = yFit(0.2, 4.4, 1);
+        expect([1, 2, 5].some((m) => isClean(f.step, m))).toBe(true);
+        expect(f.lo).toBeLessThanOrEqual(0.2);
+        expect(f.hi).toBeGreaterThanOrEqual(4.4);
+        expect(f.lo).toBeLessThanOrEqual(1); // base (1g) always in range
+        expect(f.hi).toBeGreaterThanOrEqual(1);
+    });
+
+    test("a gentle near-1g curve shows the same stable frame regardless of small data", () => {
+        // the whole point: zero vs one keyframe near 1g must NOT rescale the axis.
+        const flat = yFit(1, 1, 1); // no spread (e.g. no pins)
+        const tiny = yFit(0.8, 1.3, 1); // a small authored bump
+        expect(tiny.lo).toBe(flat.lo);
+        expect(tiny.hi).toBe(flat.hi);
+        expect(flat.lo).toBeLessThan(0); // a calm window, not a hug of [1,1]
+        expect(flat.hi).toBeGreaterThan(2);
+    });
+
+    test("data beyond the frame expands the view (never clips)", () => {
+        expect(yFit(1, 6, 1).hi).toBeGreaterThanOrEqual(6); // strong positive g shown
+        expect(yFit(-2.5, 1, 1).lo).toBeLessThanOrEqual(-2.5); // airtime shown
+    });
+
+    test("always includes the base even when data sits away from it", () => {
+        expect(yFit(4, 6, 1).lo).toBeLessThanOrEqual(1);
+    });
+});
+
+describe("yGrow — edge-triggered grow-to-follow", () => {
+    const Cap: [number, number] = [-3, 7];
+    const Top = 34;
+    const Bot = 174; // 140px chart
+    const Rate = 0.2;
+    const view: YFit = { lo: 0.4, hi: 1.4, step: 0.2 };
+
+    test("a cursor anywhere inside the chart leaves the range unchanged (grab is stable)", () => {
+        expect(yGrow(view, (Top + Bot) / 2, Top, Bot, Rate, Cap)).toBe(view); // middle
+        expect(yGrow(view, Top, Top, Bot, Rate, Cap)).toBe(view); // resting AT the top edge
+        expect(yGrow(view, Bot, Top, Bot, Rate, Cap)).toBe(view); // resting AT the bottom edge
+    });
+
+    test("dragging below the bottom edge grows lo downward, hi fixed", () => {
+        const g = yGrow(view, Bot + 20, Top, Bot, Rate, Cap);
+        expect(g).not.toBe(view);
+        expect(g.lo).toBeLessThan(view.lo);
+        expect(g.hi).toBe(view.hi);
+    });
+
+    test("dragging above the top edge grows hi upward, lo fixed", () => {
+        const g = yGrow(view, Top - 20, Top, Bot, Rate, Cap);
+        expect(g.hi).toBeGreaterThan(view.hi);
+        expect(g.lo).toBe(view.lo);
+    });
+
+    test("further past the edge grows faster (speed ∝ distance outside)", () => {
+        const shallow = yGrow(view, Bot + 5, Top, Bot, Rate, Cap);
+        const deep = yGrow(view, Bot + 40, Top, Bot, Rate, Cap);
+        expect(view.lo - deep.lo).toBeGreaterThan(view.lo - shallow.lo);
+    });
+
+    test("never grows past the cap", () => {
+        const atCap: YFit = { lo: Cap[0], hi: Cap[1], step: 2 };
+        expect(yGrow(atCap, Bot + 20, Top, Bot, Rate, Cap)).toBe(atCap); // lo already at cap
+        // a huge single step still clamps to the cap, never beyond
+        const g = yGrow({ lo: -2.9, hi: 1, step: 1 }, Bot + 20, Top, Bot, 100, Cap);
+        expect(g.lo).toBe(Cap[0]);
+    });
+});
+
+describe("mirrorTangent — auto/continuous handle", () => {
+    test("opposite direction, same length (collinear through the keyframe)", () => {
+        const m = mirrorTangent(3, 4, 10); // dragged vec (3,4) len 5; other length 10
+        expect(m).not.toBeNull();
+        if (!m) return;
+        expect(Math.hypot(m.x, m.y)).toBeCloseTo(10, 9); // preserves the other length
+        expect(3 * m.y - 4 * m.x).toBeCloseTo(0, 9); // cross product 0 → collinear
+        expect(3 * m.x + 4 * m.y).toBeLessThan(0); // dot < 0 → opposite side of the pin
+    });
+    test("null when the dragged vector has no direction", () => {
+        expect(mirrorTangent(0, 0, 5)).toBeNull();
     });
 });

@@ -180,6 +180,49 @@ describe("anchor — downstream geometry heal (red → green)", () => {
         expect(off(green, k)).toBeLessThan(redEnd / 3);
     });
 
+    test("the recovery anchor heals a band-clamp swing with no pins (empty con)", () => {
+        // the screenshot bug: a draft whose OWN geometry exceeds the band (here a
+        // -7g dip below the -2g floor). the always-on band hinge clamps it — a large
+        // sustained ΔF_n — and with no pins there is no data term, so the only thing
+        // referencing the draft geometry is the recovery anchor. without it the
+        // downstream rigidly swings off (RED, metres); with it the realized endpoint
+        // returns to the draft (GREEN). this is the *unified* path: recovery is
+        // structural, not pin-gated.
+        const n = 200;
+        const ds = 0.5;
+        const v0 = 30;
+        const opts = { posWeight: 1, smooth: 40, band: DEFAULT_BAND, bandWeight: 4 };
+
+        const Fpos = new Float64Array(n);
+        for (let i = 0; i < n; i++) Fpos[i] = 1 - 7 * Math.exp(-(((i / n - 0.35) / 0.05) ** 2)); // dip to -6g
+        const fpos32 = Float32Array.from(Fpos);
+        expect(Math.min(...Fpos)).toBeLessThan(DEFAULT_BAND[0]); // the draft is out-of-band
+
+        const draft = rollout(Fpos, ds, n, v0);
+        const theta = Float64Array.from(draft, (s) => s[2]);
+        const vD = Float64Array.from(draft, (s) => s[3]);
+        const dsArr = new Float32Array(n - 1).fill(ds);
+        const wA = 1e4;
+        const rows = recoveryRows(theta, vD, dsArr, n - 1);
+        const anchors: Anchor[] = [
+            { row: rows.x, weight: wA },
+            { row: rows.y, weight: wA },
+            { row: rows.theta, weight: wA },
+        ];
+
+        const off = (a: SampleState[], i: number): number =>
+            Math.hypot(a[i][0] - draft[i][0], a[i][1] - draft[i][1]);
+
+        // RED: band-clamping the draft's own forces swings the endpoint metres off.
+        const red = off(rollout(solve(fpos32, opts).fN, ds, n, v0), n - 1);
+        expect(red).toBeGreaterThan(1);
+
+        // GREEN: the always-on anchor returns the endpoint to the draft, orders below
+        // the swing (heal factor ≫40 here; heal.lab.ts characterizes it vs magnitude).
+        const green = off(rollout(solve(fpos32, { ...opts, anchors }).fN, ds, n, v0), n - 1);
+        expect(green).toBeLessThan(red / 40);
+    });
+
     test("anchorWeight 0 leaves the base solve unchanged", () => {
         const n = 40;
         const Fpos = new Float32Array(n);

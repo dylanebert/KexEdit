@@ -83,6 +83,76 @@ function fmtSec(sec: number, step: number): string {
     return `${sec.toFixed(decimals)}s`;
 }
 
+/** the auto-fit g-range for the force axis. `lo`/`hi` bound the display, `step` is
+ *  the nice gridline spacing. */
+export interface YFit {
+    lo: number;
+    hi: number;
+    step: number;
+}
+
+/** the stable default frame the force axis falls back to (a calm window around 1g),
+ *  so a gentle near-1g curve always shows the SAME range — no jarring rescale between
+ *  zero and one keyframe. it is a floor, not a clamp: data beyond it expands the view. */
+const FIT_FLOOR: [number, number] = [-1, 4];
+const FIT_PAD = 0.4; // g of breathing room past the data extremes
+
+/** fit a g-range to the data `[min, max]` (and always `base`, the 1g line). The view
+ *  is anchored to the stable `FIT_FLOOR` frame and only EXPANDS to include data beyond
+ *  it — it never hugs tight, the way After Effects / Unity keep the curve view steady
+ *  and grow only when content would clip. Rounds OUTWARD to a nice 1-2-5 step (a pin
+ *  wiggle within a step leaves the axis still). The caller eases toward this and
+ *  contracts lazily, so an edit grows the view promptly but never snaps it back. */
+export function yFit(min: number, max: number, base: number): YFit {
+    const lo = Math.min(FIT_FLOOR[0], base, min - FIT_PAD);
+    const hi = Math.max(FIT_FLOOR[1], base, max + FIT_PAD);
+    const step = niceStep((hi - lo) / 5);
+    return { lo: Math.floor(lo / step) * step, hi: Math.ceil(hi / step) * step, step };
+}
+
+/** edge-scroll grow-to-follow for a value drag (the standard "scroll only when the
+ *  pointer leaves the viewport" rule): grow the range ONLY when the dragged cursor `cy`
+ *  is dragged BEYOND the chart — above `top` or below `bot` — by an amount proportional
+ *  to how far past the edge it is (× `rate`), clamped to `cap`. a cursor inside the
+ *  chart, even resting on a keyframe at the very edge, returns the range UNCHANGED by
+ *  identity (so grabbing a near-boundary keyframe never moves the axis — only dragging
+ *  past it does). per-frame application keeps it growing while held beyond the edge. */
+export function yGrow(
+    v: YFit,
+    cy: number,
+    top: number,
+    bot: number,
+    rate: number,
+    cap: [number, number],
+): YFit {
+    const valPerPx = (v.hi - v.lo) / Math.max(1, bot - top);
+    let lo = v.lo;
+    let hi = v.hi;
+    if (cy < top && hi < cap[1]) {
+        hi = Math.min(cap[1], hi + (top - cy) * valPerPx * rate);
+    } else if (cy > bot && lo > cap[0]) {
+        lo = Math.max(cap[0], lo - (cy - bot) * valPerPx * rate);
+    } else {
+        return v; // cursor within the chart — unchanged (same reference → caller skips)
+    }
+    return { lo, hi, step: niceStep((hi - lo) / 5) };
+}
+
+/** the opposite-direction tangent vector of a given length — the auto/continuous
+ *  handle mirror (After Effects default): given the dragged handle's screen vector
+ *  `(vx, vy)` from the keyframe and the other handle's length `otherLen`, return the
+ *  other handle's vector, collinear through the keyframe so the curve stays smooth.
+ *  null when the dragged vector has no direction (nothing to mirror onto). */
+export function mirrorTangent(
+    vx: number,
+    vy: number,
+    otherLen: number,
+): { x: number; y: number } | null {
+    const len = Math.hypot(vx, vy);
+    if (len < 1e-6) return null;
+    return { x: (-vx / len) * otherLen, y: (-vy / len) * otherLen };
+}
+
 /** the labeled major ticks visible in [0, width], on the 1-2-5 grid. */
 export function ticks(v: View, width: number): Tick[] {
     if (!(v.pxPerSec > 0) || width <= 0) return [];

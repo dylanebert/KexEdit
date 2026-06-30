@@ -155,6 +155,9 @@ function onDelete(): void {
         --muted: #a09890;
         --accent: #d49560;
         --accent-soft: rgba(212, 149, 96, 0.18);
+        --pin: #ece8e3; /* authored force-pin marker (light, not accent) */
+        --neutral: #b8b1a8; /* chrome: player icon, slider fill/thumb */
+        --neutral-soft: rgba(255, 255, 255, 0.1);
         --danger: #e26d5c;
         --danger-soft: rgba(226, 109, 92, 0.16);
         --border: rgba(255, 255, 255, 0.08);

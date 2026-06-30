@@ -1,12 +1,25 @@
 <script lang="ts">
-import { onMount } from "svelte";
+import { onMount, untrack } from "svelte";
 import { cartPose, cartState, cartTimeAtU, sampleFNOverTime } from "./cart";
 import { begin, cancel, commit, drop, erase, history, redo, undo } from "./history";
 import { OPT_GRID, solveOut } from "./optimize";
 import { findPin, type Pin, pinsOf, setHandle, setPin } from "./pins";
 import { DEFAULT_BAND } from "./solve";
 import { bakeOut } from "./track";
-import { clampView, frameAll, pxToSec, secToPx, ticks, type View, zoomAt } from "./timeline";
+import {
+    clampView,
+    frameAll,
+    mirrorTangent,
+    niceStep,
+    pxToSec,
+    secToPx,
+    ticks,
+    type View,
+    yFit,
+    type YFit,
+    yGrow,
+    zoomAt,
+} from "./timeline";
 import { resize } from "./view";
 
 const { eid, tick }: { eid: number | null; tick: number } = $props();
@@ -15,16 +28,18 @@ const { eid, tick }: { eid: number | null; tick: number } = $props();
 // handle, the dedicated scrub zone), a demarcating GAP the playhead passes through,
 // then the curve chart. The After Effects / animation-timeline / kexedit-main layout
 // (time ruler on top, click-anywhere-to-scrub), not a plot with a bottom axis.
-const RULER_H = 18; // top scrub band: ticks, labels, playhead handle
+const RULER_H = 26; // top scrub band: ticks, labels, playhead handle
 const GAP_H = 8; // demarcation channel between ruler and chart
 const TOP = RULER_H + GAP_H; // chart top
 const BOT_PAD = 8; // chart inset, bottom
+const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
 const LABEL_EDGE = 22; // px; ruler labels within this of an edge align inward, not centered
-// vertical range tracks the solve's force band, not a hardcoded window, so a curve
-// riding the band's edge is never clipped. headroom shows near-/over-limit excursions.
+// CAP = the force band + 1g headroom. it clamps authored pin values and caps a pin
+// drag's edge-grow; it is NOT the display range (that's `yView`, a FIT_FLOOR frame).
 const Y_HEADROOM = 1;
-const Y_MIN = DEFAULT_BAND[0] - Y_HEADROOM;
-const Y_MAX = DEFAULT_BAND[1] + Y_HEADROOM;
+const CAP_LO = DEFAULT_BAND[0] - Y_HEADROOM;
+const CAP_HI = DEFAULT_BAND[1] + Y_HEADROOM;
+const CAP: [number, number] = [CAP_LO, CAP_HI];
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 const N = OPT_GRID; // draft-time grid size — a pin's index domain [0, N−1]
@@ -54,8 +69,11 @@ const tTotal = $derived.by((): number => {
     if (eid === null) return 0;
     return bakeOut.get(eid)?.tTotal ?? 0;
 });
-const clamped = $derived(clampView(view, w, tTotal));
-const tickList = $derived(ticks(clamped, w));
+// the chart insets past the left g-gutter; the time affine lives in [LEFT_GUT, w],
+// so every timeline.ts call takes `chartW` and screen-X adds/subtracts LEFT_GUT.
+const chartW = $derived(Math.max(0, w - LEFT_GUT));
+const clamped = $derived(clampView(view, chartW, tTotal));
+const tickList = $derived(ticks(clamped, chartW));
 
 const fN = $derived.by((): Float32Array | null => {
     void tick;
@@ -79,8 +97,8 @@ const cartSec = $derived.by((): number | null => {
 });
 const playPx = $derived.by((): number | null => {
     if (cartSec === null) return null;
-    const x = secToPx(clamped, cartSec);
-    return x < 0 || x > w ? null : x;
+    const x = LEFT_GUT + secToPx(clamped, cartSec);
+    return x < LEFT_GUT || x > w ? null : x;
 });
 const paused = $derived.by((): boolean => {
     void tick;
@@ -93,19 +111,112 @@ const frac = $derived.by((): number => {
     return clamp(cartSec / tTotal, 0, 1);
 });
 
+// ── pin authoring + gesture state. declared up here because the value-axis ease
+// reads `manipulating`. double-click adds a pin, drag moves it (live re-solve),
+// double-click a pin edits its value, right-click / Del deletes. routed through undo.
+let dragId: number | null = null;
+let dragMoved = false;
+let editing = $state<{ id: number; x: number; y: number } | null>(null);
+let editVal = $state(0);
+let hoverId = $state<number | null>(null);
+let hDrag = $state<{ id: number; side: "l" | "r" } | null>(null);
+let selectedId = $state<number | null>(null); // the clicked pin: handles stay shown
+let manipulating = $state(false); // a pin/handle drag is in flight
+let dragCx = 0; // last cursor in chart space — the per-frame edge-grow re-maps it
+let dragCy = 0;
+
+// the auto-fit g-range *target*: scans the solved curve, the baked dots, the pin
+// values AND their tangent-handle control points (handles are first-class points for
+// scaling — the After Effects rule — so a handle can never settle off-screen). always
+// keeps 1g; `yView` (below) eases toward this — the target itself is never drawn.
+const yTarget = $derived.by((): YFit => {
+    void tick;
+    let lo = Y_BASE;
+    let hi = Y_BASE;
+    const at = (v: number): void => {
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+    };
+    const scan = (a: Float32Array | null): void => {
+        if (!a) return;
+        for (let i = 0; i < a.length; i++) at(a[i]);
+    };
+    scan(solved);
+    scan(fN);
+    if (eid !== null)
+        for (const p of pinsOf(eid)) {
+            at(p.value);
+            at(p.value + p.hl.dy); // the handle nubs scale the axis too
+            at(p.value + p.hr.dy);
+        }
+    return yFit(lo, hi, Y_BASE);
+});
+
+// the *displayed* g-range. `yTarget` is a stable default frame that only expands to
+// fit data (it never hugs tight), and `yView` approaches it ASYMMETRICALLY: it grows
+// fast and contracts lazily — the AE/Unity "grow when content needs it, never snap
+// back" feel, smoothed for the web. While a pin/handle is dragged the axis holds
+// steady (no jitter from the live re-solve, and grabbing a near-edge keyframe doesn't
+// move it) UNTIL the cursor is dragged PAST the chart edge, where `yGrow` edge-scrolls
+// to follow (speed ∝ distance past the edge, applied per frame).
+let yView: YFit = $state({ lo: CAP_LO, hi: CAP_HI, step: 1 });
+let yInit = false;
+const Y_OUT = 0.3; // per-frame approach when EXPANDING the view (snappy)
+const Y_IN = 0.05; // per-frame approach when CONTRACTING (lazy — no snap-back)
+const EDGE_RATE = 0.2; // edge-scroll speed (∝ distance past the edge); a by-eye feel constant
+// a pin clamps to CAP, so its edge-grow caps there; a tangent handle authors overshoot
+// PAST the band, so its edge-grow follows further before it stops.
+const HANDLE_CAP: [number, number] = [-8, 12];
+$effect(() => {
+    void tick; // the ONLY dependency: one run per animation frame
+    // everything else is untracked — the body reads + writes yView and calls the
+    // drag appliers (which read yView via valOf), so a tracked read would make the
+    // effect depend on its own write and loop. tick alone paces it.
+    untrack(() => {
+        const t = yTarget;
+        const cur = yView;
+        if (!yInit) {
+            yView = t; // first valid range appears instantly, no ease-in from CAP
+            yInit = true;
+            return;
+        }
+        if (manipulating) {
+            // edge-scroll grow-to-follow: stable until the cursor is dragged past the
+            // chart edge. a handle follows past CAP (overshoot is authorable); a pin caps at CAP.
+            const cap = dragId !== null ? CAP : HANDLE_CAP;
+            const grown = yGrow(cur, dragCy, TOP, h - BOT_PAD, EDGE_RATE, cap);
+            if (grown !== cur) {
+                yView = grown;
+                applyDrag(); // re-map the held cursor through the grown axis → element follows
+            }
+            return;
+        }
+        // grow toward an out-of-view bound fast; ooze back from an over-wide one slow.
+        const lo = cur.lo + (t.lo - cur.lo) * (t.lo < cur.lo ? Y_OUT : Y_IN);
+        const hi = cur.hi + (t.hi - cur.hi) * (t.hi > cur.hi ? Y_OUT : Y_IN);
+        const span = Math.max(1e-6, hi - lo);
+        const nlo = Math.abs(lo - t.lo) < span * 1e-3 ? t.lo : lo; // snap when within ε
+        const nhi = Math.abs(hi - t.hi) < span * 1e-3 ? t.hi : hi;
+        const step = niceStep((nhi - nlo) / 5); // step from the displayed span, not the target
+        if (nlo !== cur.lo || nhi !== cur.hi || step !== cur.step)
+            yView = { lo: nlo, hi: nhi, step };
+    });
+});
+
 const yOf = (val: number): number =>
-    TOP + (1 - (val - Y_MIN) / (Y_MAX - Y_MIN)) * (h - BOT_PAD - TOP);
+    TOP + (1 - (val - yView.lo) / (yView.hi - yView.lo)) * (h - BOT_PAD - TOP);
 // inverse of yOf: screen-Y → force value (for placing / dragging pins).
 const valOf = (py: number): number =>
-    Y_MIN + (1 - (py - TOP) / (h - BOT_PAD - TOP)) * (Y_MAX - Y_MIN);
+    yView.lo + (1 - (py - TOP) / (h - BOT_PAD - TOP)) * (yView.hi - yView.lo);
 
-// pin draft-time grid index ↔ screen-X, value ↔ screen-Y (clamped to the chart).
-const pxOfIndex = (i: number): number => secToPx(clamped, (i / (N - 1)) * tTotal);
+// pin draft-time grid index ↔ screen-X, value ↔ screen-Y. screen-X insets past the
+// gutter; value clamps to the stable CAP (not yView, or a drag would move the clamp).
+const pxOfIndex = (i: number): number => LEFT_GUT + secToPx(clamped, (i / (N - 1)) * tTotal);
 const indexAt = (px: number): number =>
-    clamp(Math.round((pxToSec(clamped, px) / tTotal) * (N - 1)), 0, N - 1);
-const valAt = (py: number): number => clamp(valOf(py), Y_MIN, Y_MAX);
+    clamp(Math.round((pxToSec(clamped, px - LEFT_GUT) / tTotal) * (N - 1)), 0, N - 1);
+const valAt = (py: number): number => clamp(valOf(py), CAP_LO, CAP_HI);
 
-// authored force pins, projected to screen space — the draggable handles.
+// authored force pins, projected to screen space — the draggable pin dots.
 const pinView = $derived.by((): { id: number; x: number; y: number }[] => {
     void tick;
     if (eid === null || tTotal <= 0) return [];
@@ -120,98 +231,174 @@ const sortedPins = $derived.by((): Pin[] => {
     return [...pinsOf(eid)].sort((a, b) => a.index - b.index || a.id - b.id);
 });
 
-// ── pin authoring: drop on the empty band, drag a pin (live re-solve), click to
-// open an inline value editor, delete. all routed through the undo history.
-let dragId: number | null = null;
-let dragMoved = false;
-let editing = $state<{ id: number; x: number; y: number } | null>(null);
-let editVal = $state(0);
-let hoverId = $state<number | null>(null);
-let hDrag = $state<{ id: number; side: "l" | "r" } | null>(null);
+// the pin whose tangent handles are emphasized (all pins' handles always show; this
+// brightens one): edited, mid-handle-drag, the selected one (persists after a click),
+// or the hovered one.
+const activeId = $derived(editing?.id ?? hDrag?.id ?? selectedId ?? hoverId);
 
-// the pin whose tangent handles are shown: the one being edited, the one whose
-// handle is mid-drag, or the hovered one — handles are summoned, not always-on.
-const activeId = $derived(editing?.id ?? hDrag?.id ?? hoverId);
-
-// the active pin's tangent handles in screen space. the right handle reaches
-// toward the next pin, the left toward the previous; the first pin has no left
-// handle, the last no right (no neighbor on that side).
-const handleView = $derived.by(
-    (): { id: number; side: "l" | "r"; x0: number; y0: number; x: number; y: number }[] => {
-        void tick;
-        if (eid === null || tTotal <= 0 || activeId === null) return [];
-        const pins = sortedPins;
-        const i = pins.findIndex((p) => p.id === activeId);
-        if (i < 0) return [];
+// every pin's two tangent handles in screen space, always shown (After Effects keeps
+// keyframe tangents visible). a handle's length basis is the segment on that side;
+// an endpoint borrows its one adjacent segment so BOTH handles exist (the outer one
+// has no curve to bend but, in auto mode, rotating it steers the shared tangent). the
+// active pin's handles draw brighter. spans come from `spanOf`, shared with the drag.
+type HandleV = { id: number; side: "l" | "r"; x0: number; y0: number; x: number; y: number; active: boolean };
+// a handle's length basis = the gap to the neighbor on that side. with no neighbor on
+// either side (an endpoint's outer side, or a lone pin), fall back to DEFAULT_SPAN so
+// the handles ALWAYS exist — no pin-count branch that hides them.
+const DEFAULT_SPAN = N * 0.12; // index units
+function spanOf(i: number, side: "l" | "r"): number {
+    const pins = sortedPins;
+    const near = side === "r" ? i + 1 : i - 1; // the neighbor this side prefers
+    const far = side === "r" ? i - 1 : i + 1; // the other neighbor, borrowed at an endpoint
+    if (near >= 0 && near < pins.length) return Math.abs(pins[near].index - pins[i].index);
+    if (far >= 0 && far < pins.length) return Math.abs(pins[far].index - pins[i].index);
+    return DEFAULT_SPAN; // lone pin
+}
+const handleView = $derived.by((): HandleV[] => {
+    void tick;
+    if (eid === null || tTotal <= 0) return [];
+    const pins = sortedPins;
+    const out: HandleV[] = [];
+    for (let i = 0; i < pins.length; i++) {
         const p = pins[i];
         const x0 = pxOfIndex(p.index);
         const y0 = yOf(p.value);
-        const out: { id: number; side: "l" | "r"; x0: number; y0: number; x: number; y: number }[] = [];
-        if (i < pins.length - 1) {
-            const span = pins[i + 1].index - p.index;
-            if (span > 0)
-                out.push({
-                    id: p.id,
-                    side: "r",
-                    x0,
-                    y0,
-                    x: pxOfIndex(p.index + p.hr.dx * span),
-                    y: yOf(p.value + p.hr.dy),
-                });
-        }
-        if (i > 0) {
-            const span = p.index - pins[i - 1].index;
-            if (span > 0)
-                out.push({
-                    id: p.id,
-                    side: "l",
-                    x0,
-                    y0,
-                    x: pxOfIndex(p.index - p.hl.dx * span),
-                    y: yOf(p.value + p.hl.dy),
-                });
-        }
-        return out;
-    },
-);
+        const active = p.id === activeId;
+        const spanR = spanOf(i, "r");
+        const spanL = spanOf(i, "l");
+        if (spanR > 0)
+            out.push({ id: p.id, side: "r", x0, y0, x: pxOfIndex(p.index + p.hr.dx * spanR), y: yOf(p.value + p.hr.dy), active });
+        if (spanL > 0)
+            out.push({ id: p.id, side: "l", x0, y0, x: pxOfIndex(p.index - p.hl.dx * spanL), y: yOf(p.value + p.hl.dy), active });
+    }
+    return out;
+});
 
-function bandDown(e: PointerEvent): void {
-    // a click on empty force band drops a new pin at the cursor.
+// clear selection + close any open editor — a single click on empty chart.
+function deselect(): void {
+    editCommit();
+    selectedId = null;
+}
+
+// ── middle-button drag pans the view. intercepted at the host's capture phase so it
+// fires before the pointer-events:all SVG rects; each rect handler also routes a
+// middle press here as a backstop.
+let panning = false;
+let panX0 = 0;
+let pan0 = 0;
+function panDown(e: PointerEvent): void {
+    if (eid === null) return;
+    e.preventDefault();
+    panning = true;
+    panX0 = e.clientX;
+    pan0 = clamped.pan;
+    window.addEventListener("pointermove", panMove);
+    window.addEventListener("pointerup", panUp);
+}
+function panMove(e: PointerEvent): void {
+    if (!panning) return; // drag content right → reveal earlier time → pan decreases
+    view = clampView({ pan: pan0 - (e.clientX - panX0), pxPerSec: clamped.pxPerSec }, chartW, tTotal);
+}
+function panUp(): void {
+    panning = false;
+    window.removeEventListener("pointermove", panMove);
+    window.removeEventListener("pointerup", panUp);
+}
+
+// empty chart: a single left-click deselects; a double-click adds a pin (Unity / AE
+// curve-editor convention — deliberate, never a misfire on a single press).
+function chartDown(e: PointerEvent): void {
+    if (e.button === 1) {
+        panDown(e);
+        return;
+    }
+    if (e.button !== 0) return; // right → oncontextmenu (host suppresses the menu)
+    deselect();
+}
+function chartAdd(e: MouseEvent): void {
     if (eid === null || tTotal <= 0) return;
     e.preventDefault();
     editCommit(); // close any open editor first (preventDefault suppresses its blur)
     const rect = host.getBoundingClientRect();
-    drop(history, eid, indexAt(e.clientX - rect.left), valAt(e.clientY - rect.top));
+    const index = indexAt(e.clientX - rect.left);
+    // drop ON the curve at the clicked time, not at the cursor's height: pin the value
+    // the user sees (the solved curve, or the baked draft), so the add doesn't jolt the
+    // shape — they nudge it from there. cursor height is only the fallback (no curve yet).
+    const onCurve = solved ?? fN;
+    const v = onCurve && index < onCurve.length ? onCurve[index] : valAt(e.clientY - rect.top);
+    const pin = drop(history, eid, index, clamp(v, CAP_LO, CAP_HI));
+    selectedId = pin.id; // select the new pin so its handles show
+}
+
+// delete a pin (right-click or Del), dropping an open edit gesture on it first.
+function deletePin(id: number): void {
+    if (eid === null) return;
+    if (editing?.id === id) {
+        cancel();
+        editing = null;
+    }
+    erase(history, eid, id);
+    if (selectedId === id) selectedId = null;
 }
 
 function pinDown(e: PointerEvent, id: number): void {
     if (eid === null) return;
+    if (e.button === 1) {
+        panDown(e); // middle pans even when starting on a pin
+        return;
+    }
+    if (e.button !== 0) return; // right → oncontextmenu deletes
     e.preventDefault();
-    e.stopPropagation(); // not a band drop
+    e.stopPropagation(); // not a chart click
     editCommit(); // close any open editor first (preventDefault suppresses its blur)
     dragId = id;
     dragMoved = false;
+    trackCursor(e); // seed the cursor so a pre-move frame doesn't read a stale edge
+    manipulating = true; // steady axis until the cursor hits an edge (then grow-follow)
     begin(eid, id); // open the gesture; commit/cancel on release
     window.addEventListener("pointermove", pinDrag);
     window.addEventListener("pointerup", pinUp);
 }
-function pinDrag(e: PointerEvent): void {
-    if (eid === null || dragId === null) return;
+// the active drag's screen→data application, factored out of the pointermove so the
+// per-frame edge-grow can re-run it against the held cursor as the axis follows.
+function trackCursor(e: PointerEvent): void {
     const rect = host.getBoundingClientRect();
-    setPin(eid, dragId, indexAt(e.clientX - rect.left), valAt(e.clientY - rect.top));
+    dragCx = e.clientX - rect.left;
+    dragCy = e.clientY - rect.top;
+}
+function applyDrag(): void {
+    if (dragId !== null) applyPinDrag();
+    else if (hDrag !== null) applyHandleDrag();
+}
+function pinDrag(e: PointerEvent): void {
+    trackCursor(e);
+    applyDrag();
+}
+function applyPinDrag(): void {
+    if (eid === null || dragId === null) return;
+    // clamp the cursor Y to the chart so the pin sticks to the edge (the edge-scroll
+    // grows the axis from there) rather than overflowing off the dock — same as a handle.
+    setPin(eid, dragId, indexAt(dragCx), valAt(clamp(dragCy, TOP, h - BOT_PAD)));
     dragMoved = true;
 }
 function pinUp(): void {
     window.removeEventListener("pointermove", pinDrag);
     window.removeEventListener("pointerup", pinUp);
+    manipulating = false; // release the axis (it re-fits smoothly toward the target)
     const id = dragId;
     dragId = null;
     if (id === null) return;
     if (dragMoved) commit(history); // one drag → one undo entry
     else {
-        cancel(); // a no-move click: discard the empty gesture, open the editor
-        openEditor(id);
+        cancel(); // a no-move click: discard the empty gesture, just select
+        selectedId = id;
     }
+}
+// double-click a pin to type a precise value (the standard "double-click to edit",
+// distinct from a single click which only selects).
+function pinDblClick(id: number): void {
+    selectedId = id;
+    openEditor(id);
 }
 
 // ── tangent-handle drag: X-clamped to the segment (function-of-time), Y free in
@@ -219,42 +406,68 @@ function pinUp(): void {
 // history as a pin drag.
 function handleDown(e: PointerEvent, id: number, side: "l" | "r"): void {
     if (eid === null) return;
+    if (e.button === 1) {
+        panDown(e);
+        return;
+    }
+    if (e.button !== 0) return;
     e.preventDefault();
-    e.stopPropagation(); // not a pin drag / band drop
+    e.stopPropagation(); // not a pin drag / chart click
     editCommit(); // close any open editor first
     hDrag = { id, side };
+    trackCursor(e); // seed the cursor so a pre-move frame doesn't read a stale edge
+    manipulating = true; // steady axis until the cursor hits an edge (then grow-follow)
     begin(eid, id); // gesture: commit/cancel on release
     window.addEventListener("pointermove", handleDrag);
     window.addEventListener("pointerup", handleUp);
 }
 function handleDrag(e: PointerEvent): void {
+    trackCursor(e);
+    applyDrag();
+}
+function applyHandleDrag(): void {
     if (eid === null || hDrag === null) return;
     const pins = sortedPins;
     const i = pins.findIndex((p) => p.id === hDrag?.id);
     if (i < 0) return;
-    // the side's neighbor must exist (an endpoint has no handle on its bare side).
-    if (hDrag.side === "r" ? i >= pins.length - 1 : i <= 0) return;
     const p = pins[i];
-    const rect = host.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
     const x0 = pxOfIndex(p.index);
-    // dx is the fraction from the pin toward its neighbor on that side; clamping to
-    // [0,1] keeps the segment a function of time. dy uses valOf (unclamped), so a
-    // handle can author overshoot past the band.
-    let dx: number;
-    if (hDrag.side === "r") {
-        const seg = pxOfIndex(pins[i + 1].index) - x0;
-        dx = seg > 0 ? (cx - x0) / seg : 0;
-    } else {
-        const seg = x0 - pxOfIndex(pins[i - 1].index);
-        dx = seg > 0 ? (x0 - cx) / seg : 0;
-    }
-    setHandle(eid, hDrag.id, hDrag.side, dx, valOf(cy) - p.value);
+    const y0 = yOf(p.value);
+    // each side's screen reach (pin → where dx=1 lands); endpoints borrow their one
+    // adjacent segment via spanOf, so both handles are draggable.
+    const reachR = pxOfIndex(p.index + spanOf(i, "r")) - x0;
+    const reachL = x0 - pxOfIndex(p.index - spanOf(i, "l"));
+    const dReach = hDrag.side === "r" ? reachR : reachL;
+    if (dReach <= 0) return;
+    // clamp the cursor Y to the chart: the nub sticks to the edge instead of flying
+    // off the dock, and the edge-grow ($effect) drives its value past the band while
+    // it's held there — so a handle is never dragged out of reach.
+    const cy = clamp(dragCy, TOP, h - BOT_PAD);
+    // the dragged handle follows the cursor: x clamped to [0,1] of its segment (keeps
+    // it a function of time), y via valOf (overshoot grows the axis, not off-screen).
+    const ddx = clamp(hDrag.side === "r" ? (dragCx - x0) / reachR : (x0 - dragCx) / reachL, 0, 1);
+    setHandle(eid, hDrag.id, hDrag.side, ddx, valOf(cy) - p.value);
+
+    // auto/continuous mode (After Effects default): mirror the OTHER handle to the
+    // opposite screen direction, preserving its own length (free lengths) — a smooth
+    // tangent through the pin. collinearity is affine-invariant, so screen space = ok.
+    const oReach = hDrag.side === "r" ? reachL : reachR;
+    if (oReach <= 0) return;
+    const other: "l" | "r" = hDrag.side === "r" ? "l" : "r";
+    const oh = other === "r" ? p.hr : p.hl;
+    const vx = hDrag.side === "r" ? ddx * reachR : -ddx * reachL; // dragged screen vector
+    const vy = cy - y0;
+    const ox = other === "r" ? oh.dx * reachR : -oh.dx * reachL; // other handle's length
+    const oy = yOf(p.value + oh.dy) - y0;
+    const m = mirrorTangent(vx, vy, Math.hypot(ox, oy)); // opposite dir, same length
+    if (!m) return; // dragged vector had no direction
+    const odx = clamp(other === "r" ? m.x / reachR : -m.x / reachL, 0, 1);
+    setHandle(eid, hDrag.id, other, odx, valOf(y0 + m.y) - p.value);
 }
 function handleUp(): void {
     window.removeEventListener("pointermove", handleDrag);
     window.removeEventListener("pointerup", handleUp);
+    manipulating = false; // release the axis
     if (hDrag === null) return;
     hDrag = null;
     commit(history); // a handle drag always intends an edit; commit no-ops if unchanged
@@ -265,14 +478,14 @@ function openEditor(id: number): void {
     const pin = findPin(eid, id);
     const p = pinView.find((q) => q.id === id);
     if (!pin || !p) return;
-    editVal = pin.value;
+    editVal = Math.round(pin.value * 100) / 100; // the stored value is a long float
     editing = { id, x: p.x, y: p.y };
     begin(eid, id); // edits are a gesture too (live preview, commit on close)
 }
 function editLive(): void {
     if (eid === null || editing === null || !Number.isFinite(editVal)) return;
     const pin = findPin(eid, editing.id);
-    if (pin) setPin(eid, editing.id, pin.index, clamp(editVal, Y_MIN, Y_MAX));
+    if (pin) setPin(eid, editing.id, pin.index, clamp(editVal, CAP_LO, CAP_HI));
 }
 function editCommit(): void {
     if (editing === null) return;
@@ -282,12 +495,6 @@ function editCommit(): void {
 function editCancel(): void {
     if (editing === null) return;
     cancel(); // restore the pre-edit value
-    editing = null;
-}
-function editTrash(): void {
-    if (eid === null || editing === null) return;
-    cancel(); // drop the open edit gesture, then delete as its own entry
-    erase(history, eid, editing.id);
     editing = null;
 }
 function editorKey(e: KeyboardEvent): void {
@@ -324,51 +531,71 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.stroke();
 
     for (const tk of tickList) {
-        if (tk.px < -1 || tk.px > w + 1) continue;
+        const x = LEFT_GUT + tk.px; // tick px is chart-local; the chart insets past the gutter
+        if (x < LEFT_GUT - 1 || x > w + 1) continue;
         // faint gridline through the chart — read the curve against time
         ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(tk.px, TOP);
-        ctx.lineTo(tk.px, h - BOT_PAD);
+        ctx.moveTo(x, TOP);
+        ctx.lineTo(x, h - BOT_PAD);
         ctx.stroke();
         // tick mark + label in the ruler
         ctx.strokeStyle = "rgba(160, 152, 144, 0.5)";
         ctx.beginPath();
-        ctx.moveTo(tk.px, RULER_H - 5);
-        ctx.lineTo(tk.px, RULER_H);
+        ctx.moveTo(x, RULER_H - 5);
+        ctx.lineTo(x, RULER_H);
         ctx.stroke();
-        // align the first/last labels inward so the edge tick (0s now sits at px=0) isn't clipped
+        // align the first/last labels inward so an edge tick isn't clipped
         ctx.fillStyle = "rgba(160, 152, 144, 0.8)";
         ctx.textBaseline = "top";
-        if (tk.px < LABEL_EDGE) {
+        if (x < LEFT_GUT + LABEL_EDGE) {
             ctx.textAlign = "left";
-            ctx.fillText(tk.label, Math.max(2, tk.px), 2);
-        } else if (tk.px > w - LABEL_EDGE) {
+            ctx.fillText(tk.label, Math.max(LEFT_GUT + 2, x), 8);
+        } else if (x > w - LABEL_EDGE) {
             ctx.textAlign = "right";
-            ctx.fillText(tk.label, Math.min(w - 2, tk.px), 2);
+            ctx.fillText(tk.label, Math.min(w - 2, x), 8);
         } else {
             ctx.textAlign = "center";
-            ctx.fillText(tk.label, tk.px, 2);
+            ctx.fillText(tk.label, x, 8);
         }
     }
-    ctx.textBaseline = "middle"; // restore for the Y-legend
 
-    // force band limits — the feasible region the solve lives in
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+    // g gridlines + left-gutter labels, on the displayed range's nice step. labels
+    // round to the step's decimals (a raw float prints 0.6000…1, which clips).
+    const { lo, hi, step } = yView;
+    const dec = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (let g = Math.ceil(lo / step) * step; g <= hi + step * 1e-6; g += step) {
+        const gv = Math.abs(g) < step * 1e-6 ? 0 : g; // snap fp drift to a clean 0
+        const y = yOf(gv);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(LEFT_GUT, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(160, 152, 144, 0.7)";
+        ctx.fillText(`${gv.toFixed(dec)}g`, LEFT_GUT - 6, y);
+    }
+
+    // force band limits — drawn only when within the visible range
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
     ctx.lineWidth = 1;
     for (const lim of DEFAULT_BAND) {
+        if (lim < lo || lim > hi) continue;
         ctx.beginPath();
-        ctx.moveTo(0, yOf(lim));
+        ctx.moveTo(LEFT_GUT, yOf(lim));
         ctx.lineTo(w, yOf(lim));
         ctx.stroke();
     }
 
-    // 1g gravity baseline
-    ctx.strokeStyle = "rgba(212, 149, 96, 0.5)";
+    // 1g gravity baseline — neutral (accent is reserved for the result + playhead)
+    ctx.strokeStyle = "rgba(205, 197, 188, 0.45)";
     ctx.setLineDash([2, 4]);
     ctx.beginPath();
-    ctx.moveTo(0, yOf(Y_BASE));
+    ctx.moveTo(LEFT_GUT, yOf(Y_BASE));
     ctx.lineTo(w, yOf(Y_BASE));
     ctx.stroke();
     ctx.setLineDash([]);
@@ -378,8 +605,8 @@ function render(ctx: CanvasRenderingContext2D): void {
         ctx.fillStyle = "rgba(205, 197, 188, 0.55)";
         const n = fN.length;
         for (let i = 0; i < n; i++) {
-            const x = secToPx(v, (i / (n - 1)) * tTotal);
-            if (x < -2 || x > w + 2) continue;
+            const x = LEFT_GUT + secToPx(v, (i / (n - 1)) * tTotal);
+            if (x < LEFT_GUT - 2 || x > w + 2) continue;
             ctx.beginPath();
             ctx.arc(x, yOf(fN[i]), 1.5, 0, Math.PI * 2);
             ctx.fill();
@@ -417,35 +644,26 @@ function render(ctx: CanvasRenderingContext2D): void {
         ctx.setLineDash([]);
     }
 
-    // solved F_n curve
+    // solved F_n curve — accent: the canonical result the cart rides
     if (solved) {
         ctx.strokeStyle = "rgb(212, 149, 96)";
         ctx.lineWidth = 1.6;
         ctx.beginPath();
         const n = solved.length;
         for (let i = 0; i < n; i++) {
-            const x = secToPx(v, (i / (n - 1)) * tTotal);
+            const x = LEFT_GUT + secToPx(v, (i / (n - 1)) * tTotal);
             const y = yOf(solved[i]);
             if (i === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
         }
         ctx.stroke();
     }
-
-    // Y legend — the band edges + the gravity baseline
-    ctx.textAlign = "right";
-    ctx.fillStyle = "rgba(160, 152, 144, 0.55)";
-    ctx.fillText(`${DEFAULT_BAND[1]}g`, w - 4, yOf(DEFAULT_BAND[1]) - 5);
-    ctx.fillStyle = "rgba(212, 149, 96, 0.7)";
-    ctx.fillText("1g", w - 4, yOf(Y_BASE) - 6);
-    ctx.fillStyle = "rgba(160, 152, 144, 0.55)";
-    ctx.fillText(`${DEFAULT_BAND[0]}g`, w - 4, yOf(DEFAULT_BAND[0]) + 5);
 }
 
 $effect(() => {
     // frame the whole track once, when width + a track first exist.
-    if (!framed && w > 0 && tTotal > 0) {
-        view = frameAll(w, tTotal);
+    if (!framed && chartW > 0 && tTotal > 0) {
+        view = frameAll(chartW, tTotal);
         framed = true;
     }
 });
@@ -465,7 +683,7 @@ let scrubbing = false;
 function scrubTo(e: PointerEvent): void {
     if (eid === null || !scrubbing) return;
     const rect = canvas.getBoundingClientRect();
-    const sec = pxToSec(clamped, e.clientX - rect.left);
+    const sec = pxToSec(clamped, e.clientX - rect.left - LEFT_GUT);
     const u = tTotal > 0 ? clamp(sec / tTotal, 0, 1) : 0;
     const t = cartTimeAtU(eid, u);
     const st = cartState.get(eid);
@@ -478,6 +696,11 @@ function endScrub(): void {
 }
 function startScrub(e: PointerEvent): void {
     if (eid === null) return;
+    if (e.button === 1) {
+        panDown(e);
+        return;
+    }
+    if (e.button !== 0) return; // left-only scrub; right suppressed by the host
     const st = cartState.get(eid);
     if (!st) return;
     e.preventDefault();
@@ -550,12 +773,12 @@ function stepKey(e: KeyboardEvent): void {
 onMount(() => {
     const onWheel = (e: WheelEvent): void => {
         e.preventDefault();
-        const x = e.clientX - canvas.getBoundingClientRect().left;
+        const x = e.clientX - canvas.getBoundingClientRect().left - LEFT_GUT; // chart-local anchor
         if (e.ctrlKey || e.metaKey) {
-            view = zoomAt(clamped, x, 2 ** (-e.deltaY / ZOOM_DIV), w, tTotal);
+            view = zoomAt(clamped, x, 2 ** (-e.deltaY / ZOOM_DIV), chartW, tTotal);
         } else {
             const dx = e.shiftKey ? e.deltaY : e.deltaX || e.deltaY;
-            view = clampView({ pan: clamped.pan + dx, pxPerSec: clamped.pxPerSec }, w, tTotal);
+            view = clampView({ pan: clamped.pan + dx, pxPerSec: clamped.pxPerSec }, chartW, tTotal);
         }
     };
     const onKey = (e: KeyboardEvent): void => {
@@ -575,6 +798,12 @@ onMount(() => {
             }
             return;
         }
+        if ((e.key === "Delete" || e.key === "Backspace") && selectedId !== null) {
+            e.preventDefault();
+            e.stopImmediatePropagation(); // not a track-node trim (controls.ts also binds Del)
+            deletePin(selectedId);
+            return;
+        }
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
@@ -587,6 +816,7 @@ onMount(() => {
         window.removeEventListener("keydown", onKey);
         endScrub(); // drop any in-flight scrub listeners if we unmount mid-drag
         sliderUp(); // and any in-flight player-slider drag
+        panUp(); // and any in-flight middle-drag pan
         window.removeEventListener("pointermove", pinDrag);
         window.removeEventListener("pointerup", pinUp);
         window.removeEventListener("pointermove", handleDrag);
@@ -596,30 +826,38 @@ onMount(() => {
 </script>
 
 <aside class="dock">
-    <!-- leaving the chart clears the hovered pin (its tangent handles stay summoned
-         while the pointer rests on the pin or a handle, so the dot→nub travel never
-         loses them; only leaving the dock dismisses them). -->
+    <!-- leaving the dock clears the hover emphasis (the selected pin keeps its bright
+         handles); pointerleave on the dock, not the chart, so the dot→nub travel
+         doesn't drop it mid-reach. -->
     <div
         class="body"
         bind:this={host}
         bind:clientWidth={w}
         bind:clientHeight={h}
         onpointerleave={() => (hoverId = null)}
+        onpointerdowncapture={(e) => {
+            if (e.button === 1) {
+                panDown(e);
+                e.stopPropagation();
+            }
+        }}
+        oncontextmenu={(e) => e.preventDefault()}
         role="presentation"
     >
         <canvas bind:this={canvas}></canvas>
         <svg class="overlay" width={w} height={h}>
-            <!-- the chart force band: click to drop a pin. the ruler (above) owns
-                 scrubbing, so pin-drop and scrub never compete. below the pins + grip
-                 in DOM, so those take the pointer when hit. -->
+            <!-- the chart force band: double-click drops a pin, single click
+                 deselects (Unity/AE convention). the ruler (above) owns scrubbing.
+                 below the pins + grip in DOM, so those take the pointer when hit. -->
             {#if eid !== null && tTotal > 0}
                 <rect
                     class="dropzone"
-                    x="0"
+                    x={LEFT_GUT}
                     y={TOP}
-                    width={w}
+                    width={chartW}
                     height={Math.max(0, h - BOT_PAD - TOP)}
-                    onpointerdown={bandDown}
+                    onpointerdown={chartDown}
+                    ondblclick={chartAdd}
                     role="presentation"
                 />
                 <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere
@@ -647,18 +885,30 @@ onMount(() => {
                     cy={p.y}
                     r={PIN_HIT_R}
                     onpointerdown={(e) => pinDown(e, p.id)}
+                    ondblclick={() => pinDblClick(p.id)}
                     onpointerenter={() => (hoverId = p.id)}
+                    oncontextmenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        deletePin(p.id);
+                    }}
                     role="button"
                     tabindex="-1"
                     aria-label="Force pin"
                 />
-                <circle class="pin-dot" cx={p.x} cy={p.y} r={PIN_DOT_R} />
+                <circle
+                    class="pin-dot"
+                    class:selected={p.id === selectedId}
+                    cx={p.x}
+                    cy={p.y}
+                    r={PIN_DOT_R}
+                />
             {/each}
-            <!-- the active pin's tangent handles: a stem from the pin to a grabbable
-                 nub. drag to bend the constraint curve (X-clamped, Y-free). above the
-                 pins in DOM so the nub takes the pointer when they overlap. -->
+            <!-- every pin's tangent handles (always shown, auto/continuous mode): a stem
+                 to a grabbable nub. the active pin's draw brighter; the rest sit quiet so
+                 the chart isn't busy. above the pins in DOM so the nub takes the pointer. -->
             {#each handleView as hd (hd.id + hd.side)}
-                <line class="handle-stem" x1={hd.x0} y1={hd.y0} x2={hd.x} y2={hd.y} />
+                <line class="handle-stem" class:active={hd.active} x1={hd.x0} y1={hd.y0} x2={hd.x} y2={hd.y} />
                 <circle
                     class="handle-hit"
                     cx={hd.x}
@@ -670,7 +920,7 @@ onMount(() => {
                     tabindex="-1"
                     aria-label="Tangent handle"
                 />
-                <circle class="handle-nub" cx={hd.x} cy={hd.y} r={HANDLE_NUB_R} />
+                <circle class="handle-nub" class:active={hd.active} cx={hd.x} cy={hd.y} r={HANDLE_NUB_R} />
             {/each}
             <!-- playhead: a handle in the ruler + a line down through the gap and
                  chart. visual only — the rulerzone above owns the scrub interaction. -->
@@ -703,27 +953,6 @@ onMount(() => {
                     aria-label="Pin force (g)"
                 />
                 <span class="unit">g</span>
-                <button
-                    type="button"
-                    class="pin-trash"
-                    title="Delete pin"
-                    aria-label="Delete pin"
-                    onpointerdown={(e) => {
-                        e.preventDefault();
-                        editTrash();
-                    }}
-                >
-                    <svg viewBox="0 0 14 14" aria-hidden="true">
-                        <path
-                            d="M3 4 L11 4 M5.5 4 L5.5 2.5 L8.5 2.5 L8.5 4 M4.5 4 L5 11.5 L9 11.5 L9.5 4"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.3"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                        />
-                    </svg>
-                </button>
             </div>
         {/if}
     </div>
@@ -777,7 +1006,7 @@ onMount(() => {
         width: calc(100% - 32px);
         max-width: 1280px;
         bottom: 16px;
-        height: 140px;
+        height: 184px;
         display: flex;
         flex-direction: column;
         background: var(--bg-solid);
@@ -839,24 +1068,24 @@ onMount(() => {
         paint-order: stroke;
     }
 
-    /* click-to-drop surface over the chart force band (scrub lives in the ruler) */
+    /* chart surface: double-click adds a pin, single click deselects. default
+       cursor (the editor-ruler convention — not a crosshair; add is deliberate). */
     .dropzone {
         fill: transparent;
         pointer-events: all;
-        cursor: crosshair;
+        cursor: default;
     }
 
-    /* fat transparent hit-zone over a thin visible dot (theatre pattern) */
+    /* fat transparent hit-zone over a thin visible dot (theatre pattern). `move`
+       (4-way) is the graph-editor standard for a point dragged in x+y — not `grab`,
+       which is the canvas-panning hand. */
     .pin-hit {
         fill: transparent;
         pointer-events: all;
-        cursor: grab;
-    }
-    .pin-hit:active {
-        cursor: grabbing;
+        cursor: move;
     }
     .pin-dot {
-        fill: var(--accent);
+        fill: var(--pin);
         stroke: var(--bg-solid);
         stroke-width: 1;
         pointer-events: none;
@@ -864,87 +1093,89 @@ onMount(() => {
     .pin-hit:hover + .pin-dot {
         r: 5;
     }
+    /* the selected pin reads brighter + ringed, distinct from a plain hover */
+    .pin-dot.selected {
+        r: 4.5;
+        stroke: var(--fg);
+        stroke-width: 1.5;
+    }
 
-    /* tangent handle: a thin stem to a grabbable nub, in the drawn-curve blue */
+    /* tangent handle: a thin stem to a grabbable nub, in the drawn-curve blue. all
+       pins' handles show, so the inactive ones stay quiet; the active pin's brighten. */
     .handle-stem {
-        stroke: rgba(120, 175, 205, 0.6);
+        stroke: rgba(120, 175, 205, 0.28);
         stroke-width: 1;
         pointer-events: none;
+    }
+    .handle-stem.active {
+        stroke: rgba(120, 175, 205, 0.6);
     }
     .handle-hit {
         fill: transparent;
         pointer-events: all;
-        cursor: grab;
-    }
-    .handle-hit:active {
-        cursor: grabbing;
+        cursor: move;
     }
     .handle-nub {
-        fill: rgba(120, 175, 205, 0.95);
+        fill: rgba(120, 175, 205, 0.5);
         stroke: var(--bg-solid);
         stroke-width: 1;
         pointer-events: none;
     }
+    .handle-nub.active {
+        fill: rgba(120, 175, 205, 0.95);
+    }
     .handle-hit:hover + .handle-nub {
         r: 4;
+        fill: rgba(120, 175, 205, 0.95);
     }
 
-    /* inline value editor, anchored at the pin */
+    /* inline value editor — a single clean numeric field anchored at the pin (delete
+       is right-click / Del, so no in-popup chrome). a small notch ties it to the pin. */
     .pin-editor {
         position: absolute;
         display: flex;
-        align-items: center;
-        gap: 4px;
-        padding: 3px 4px 3px 6px;
+        align-items: baseline;
+        gap: 1px;
+        padding: 5px 8px;
         background: var(--bg-solid);
-        border: 1px solid var(--border);
-        border-radius: 5px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 6px;
         box-shadow: var(--shadow);
         z-index: 3;
     }
     .pin-editor input {
         all: unset;
-        width: 44px;
+        width: 40px;
         font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 11px;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
         color: var(--fg);
         text-align: right;
+        -moz-appearance: textfield;
+        appearance: textfield;
+    }
+    /* hide the native number spinners — they read as clunky web chrome */
+    .pin-editor input::-webkit-outer-spin-button,
+    .pin-editor input::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
     }
     .pin-editor .unit {
         font-family: "JetBrains Mono", ui-monospace, monospace;
         font-size: 11px;
         color: var(--muted);
     }
-    .pin-trash {
-        all: unset;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 20px;
-        height: 20px;
-        border-radius: 4px;
-        color: var(--danger);
-        cursor: pointer;
-        transition: background 120ms ease;
-    }
-    .pin-trash:hover {
-        background: var(--danger-soft);
-    }
-    .pin-trash svg {
-        width: 13px;
-        height: 13px;
-    }
 
     /* the player: a media transport (play · global scrub · timecode) floated as its
-       own opaque surface above the timeline, aligned to the dock's width — a player
-       over its scrubber-timeline. elevation from border + shadow, never glass. */
+       own opaque surface above the timeline — narrower than the dock and clearly
+       detached, a player over its scrubber-timeline. elevation from border + shadow. */
     .player {
         position: absolute;
         left: 50%;
         transform: translateX(-50%);
-        bottom: 164px; /* dock bottom 16 + dock height 140 + 8 gap */
-        width: calc(100% - 32px);
-        max-width: 1280px;
+        bottom: 220px; /* dock bottom 16 + dock height 184 + 20 gap */
+        width: min(calc(100% - 32px), 560px);
         box-sizing: border-box;
         height: 36px;
         display: flex;
@@ -975,15 +1206,15 @@ onMount(() => {
         align-items: center;
         justify-content: center;
         border-radius: 50%;
-        color: var(--accent);
+        color: var(--neutral);
         cursor: pointer;
         transition: background 120ms ease, transform 80ms ease;
     }
     .play:hover {
-        background: var(--accent-soft);
+        background: var(--neutral-soft);
     }
     .play:active {
-        background: var(--accent-soft);
+        background: var(--neutral-soft);
         transform: scale(0.94);
     }
     .play svg {
@@ -991,7 +1222,7 @@ onMount(() => {
         height: 15px;
     }
 
-    /* global scrubber: a thin rail + accent fill + grabbable thumb. the 26px-tall
+    /* global scrubber: a thin rail + neutral fill + grabbable thumb. the 26px-tall
        row is a fat hit area over a 3px rail (the same fat-zone/thin-mark pattern as
        the pins). */
     .scrub {
@@ -1019,7 +1250,7 @@ onMount(() => {
     }
     .fill {
         left: 0;
-        background: var(--accent);
+        background: var(--neutral);
     }
     .thumb {
         position: absolute;
@@ -1027,7 +1258,7 @@ onMount(() => {
         width: 11px;
         height: 11px;
         border-radius: 50%;
-        background: var(--accent);
+        background: var(--neutral);
         border: 2px solid var(--bg-solid);
         transform: translate(-50%, -50%);
         transition: transform 100ms ease;
@@ -1041,7 +1272,7 @@ onMount(() => {
         outline: none;
     }
     .scrub:focus-visible .thumb {
-        box-shadow: 0 0 0 3px var(--accent-soft);
+        box-shadow: 0 0 0 3px var(--neutral-soft);
     }
 
     .time {

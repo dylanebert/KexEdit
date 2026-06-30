@@ -3,6 +3,7 @@ import { State } from "@dylanebert/shallot";
 import { constraintTargets } from "../src/bezier";
 import { OPT_GRID, SolveSystem, solveOut } from "../src/optimize";
 import { addPin, pinsOf, removePin, setHandle } from "../src/pins";
+import { DEFAULT_BAND } from "../src/solve";
 import { addNode, BakeSystem, bakeOut, createTrack, Track } from "../src/track";
 
 const G = 9.80665;
@@ -148,6 +149,44 @@ test("the recovery anchor heals the downstream swing a pin causes", () => {
     // ...yet the realized endpoint holds to the draft (the anchor healed it).
     const drift = Math.hypot(so.posX[so.count - 1] - endX, so.posY[so.count - 1] - endY);
     expect(drift).toBeLessThan(0.15); // metres — orders below the un-anchored swing
+});
+
+test("a no-pin out-of-band track recovers (the always-on anchor, no pin-gate)", () => {
+    // the screenshot bug + the unification guard: a draft whose OWN geometry exceeds
+    // the band (a tight V dips to ≈-5g, below the -2g floor), no pins. the band clamps
+    // it; the recovery anchor — now structural, not pin-gated — holds the realized
+    // endpoint to the drawn shape. re-adding the `pins.length > 0` gate would drop the
+    // anchor here and the endpoint swings off (measured 0.8 m with the anchor vs 6.9 m
+    // without; the 2 m bound sits between, with margin). this goes red on that revert,
+    // unlike the solve-level mechanism test in anchor.test.ts.
+    const state = new State();
+    state.addSystem(BakeSystem);
+    state.addSystem(SolveSystem);
+    const eid = createTrack(state);
+    for (const [x, y] of [
+        [-16, 0],
+        [-0.9, 0.7],
+        [0.9, -0.6],
+        [16, 0],
+    ])
+        addNode(state, x, y);
+    state.step(0);
+    const out = bakeOut.get(eid);
+    const so = solveOut.get(eid);
+    if (!out || !so) throw new Error("missing bake/solve output");
+
+    // the draft genuinely violates the band — else there is nothing to recover from.
+    let minF = Number.POSITIVE_INFINITY;
+    const count = Track.count.get(eid);
+    for (let i = 0; i < count - 1; i++) minF = Math.min(minF, out.fN[i]);
+    expect(minF).toBeLessThan(DEFAULT_BAND[0]);
+
+    // the realized ride stays feasible (no stall to NaN) and its endpoint tracks the
+    // drawn shape (the last node) instead of swinging metres off.
+    expect(so.firstInfeasible).toBe(-1);
+    expect(Number.isFinite(so.posX[so.count - 1])).toBe(true);
+    const endDrift = Math.hypot(so.posX[so.count - 1] - 16, so.posY[so.count - 1] - 0);
+    expect(endDrift).toBeLessThan(2);
 });
 
 test("a dominant-weight bezier draft pulls the solved force onto the drawn curve", () => {
