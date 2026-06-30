@@ -1,7 +1,9 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import { cartPose, cartState, cartTimeAtU, sampleFNOverTime } from "./cart";
+import { begin, cancel, commit, drop, erase, history, redo, undo } from "./history";
 import { OPT_GRID, solveOut } from "./optimize";
+import { findPin, pinsOf, setPin } from "./pins";
 import { DEFAULT_BAND } from "./solve";
 import { bakeOut } from "./track";
 import { clampView, frameAll, pxToSec, secToPx, ticks, type View, zoomAt } from "./timeline";
@@ -18,6 +20,10 @@ const Y_MIN = DEFAULT_BAND[0] - Y_HEADROOM;
 const Y_MAX = DEFAULT_BAND[1] + Y_HEADROOM;
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
+const N = OPT_GRID; // draft-time grid size — a pin's index domain [0, N−1]
+const PIN_HIT_R = 8; // fat transparent hit-zone (theatre GraphEditorDotScalar)
+const PIN_DOT_R = 3; // thin visible dot
+const EDITOR_FLIP_PX = 48; // pin nearer the top than this → editor opens below it
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -69,6 +75,114 @@ const paused = $derived.by((): boolean => {
 
 const yOf = (val: number): number =>
     PAD + (1 - (val - Y_MIN) / (Y_MAX - Y_MIN)) * (h - AXIS_H - PAD);
+// inverse of yOf: screen-Y → force value (for placing / dragging pins).
+const valOf = (py: number): number =>
+    Y_MIN + (1 - (py - PAD) / (h - AXIS_H - PAD)) * (Y_MAX - Y_MIN);
+
+const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
+// pin draft-time grid index ↔ screen-X, value ↔ screen-Y (clamped to the chart).
+const pxOfIndex = (i: number): number => secToPx(clamped, (i / (N - 1)) * tTotal);
+const indexAt = (px: number): number =>
+    clamp(Math.round((pxToSec(clamped, px) / tTotal) * (N - 1)), 0, N - 1);
+const valAt = (py: number): number => clamp(valOf(py), Y_MIN, Y_MAX);
+
+// authored force pins, projected to screen space — the draggable handles.
+const pinView = $derived.by((): { id: number; x: number; y: number }[] => {
+    void tick;
+    if (eid === null || tTotal <= 0) return [];
+    return pinsOf(eid).map((p) => ({ id: p.id, x: pxOfIndex(p.index), y: yOf(p.value) }));
+});
+
+// ── pin authoring: drop on the empty band, drag a pin (live re-solve), click to
+// open an inline value editor, delete. all routed through the undo history.
+let dragId: number | null = null;
+let dragMoved = false;
+let editing = $state<{ id: number; x: number; y: number } | null>(null);
+let editVal = $state(0);
+
+function bandDown(e: PointerEvent): void {
+    // a click on empty force band drops a new pin at the cursor.
+    if (eid === null || tTotal <= 0) return;
+    e.preventDefault();
+    editCommit(); // close any open editor first (preventDefault suppresses its blur)
+    const rect = host.getBoundingClientRect();
+    drop(history, eid, indexAt(e.clientX - rect.left), valAt(e.clientY - rect.top));
+}
+
+function pinDown(e: PointerEvent, id: number): void {
+    if (eid === null) return;
+    e.preventDefault();
+    e.stopPropagation(); // not a band drop
+    editCommit(); // close any open editor first (preventDefault suppresses its blur)
+    dragId = id;
+    dragMoved = false;
+    begin(eid, id); // open the gesture; commit/cancel on release
+    window.addEventListener("pointermove", pinDrag);
+    window.addEventListener("pointerup", pinUp);
+}
+function pinDrag(e: PointerEvent): void {
+    if (eid === null || dragId === null) return;
+    const rect = host.getBoundingClientRect();
+    setPin(eid, dragId, indexAt(e.clientX - rect.left), valAt(e.clientY - rect.top));
+    dragMoved = true;
+}
+function pinUp(): void {
+    window.removeEventListener("pointermove", pinDrag);
+    window.removeEventListener("pointerup", pinUp);
+    const id = dragId;
+    dragId = null;
+    if (id === null) return;
+    if (dragMoved) commit(history); // one drag → one undo entry
+    else {
+        cancel(); // a no-move click: discard the empty gesture, open the editor
+        openEditor(id);
+    }
+}
+
+function openEditor(id: number): void {
+    if (eid === null) return;
+    const pin = findPin(eid, id);
+    const p = pinView.find((q) => q.id === id);
+    if (!pin || !p) return;
+    editVal = pin.value;
+    editing = { id, x: p.x, y: p.y };
+    begin(eid, id); // edits are a gesture too (live preview, commit on close)
+}
+function editLive(): void {
+    if (eid === null || editing === null || !Number.isFinite(editVal)) return;
+    const pin = findPin(eid, editing.id);
+    if (pin) setPin(eid, editing.id, pin.index, clamp(editVal, Y_MIN, Y_MAX));
+}
+function editCommit(): void {
+    if (editing === null) return;
+    commit(history);
+    editing = null;
+}
+function editCancel(): void {
+    if (editing === null) return;
+    cancel(); // restore the pre-edit value
+    editing = null;
+}
+function editTrash(): void {
+    if (eid === null || editing === null) return;
+    cancel(); // drop the open edit gesture, then delete as its own entry
+    erase(history, eid, editing.id);
+    editing = null;
+}
+function editorKey(e: KeyboardEvent): void {
+    e.stopPropagation(); // typing never reaches the timeline shortcuts
+    if (e.key === "Enter") {
+        e.preventDefault();
+        editCommit();
+    } else if (e.key === "Escape") {
+        e.preventDefault();
+        editCancel();
+    }
+}
+function autofocus(node: HTMLInputElement): void {
+    node.focus();
+    node.select();
+}
 
 function render(ctx: CanvasRenderingContext2D): void {
     const v = clamped;
@@ -211,6 +325,22 @@ onMount(() => {
         }
     };
     const onKey = (e: KeyboardEvent): void => {
+        const t = e.target as HTMLElement | null;
+        const inField =
+            !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+        if (inField) return; // let the field own its keys (incl. native text undo)
+        if (e.ctrlKey || e.metaKey) {
+            const k = e.key.toLowerCase();
+            if (k === "z") {
+                e.preventDefault();
+                if (e.shiftKey) redo(history);
+                else undo(history);
+            } else if (k === "y") {
+                e.preventDefault();
+                redo(history);
+            }
+            return;
+        }
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
@@ -222,6 +352,8 @@ onMount(() => {
         host.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKey);
         endScrub(); // drop any in-flight scrub listeners if we unmount mid-drag
+        window.removeEventListener("pointermove", pinDrag);
+        window.removeEventListener("pointerup", pinUp);
     };
 });
 </script>
@@ -246,6 +378,32 @@ onMount(() => {
     <div class="body" bind:this={host} bind:clientWidth={w} bind:clientHeight={h}>
         <canvas bind:this={canvas}></canvas>
         <svg class="overlay" width={w} height={h}>
+            <!-- empty force band: click to drop a pin. below the pins + grip in
+                 DOM, so those take the pointer when hit. -->
+            {#if eid !== null && tTotal > 0}
+                <rect
+                    class="dropzone"
+                    x="0"
+                    y={PAD}
+                    width={w}
+                    height={Math.max(0, h - AXIS_H - PAD)}
+                    onpointerdown={bandDown}
+                    role="presentation"
+                />
+            {/if}
+            {#each pinView as p (p.id)}
+                <circle
+                    class="pin-hit"
+                    cx={p.x}
+                    cy={p.y}
+                    r={PIN_HIT_R}
+                    onpointerdown={(e) => pinDown(e, p.id)}
+                    role="button"
+                    tabindex="-1"
+                    aria-label="Force pin"
+                />
+                <circle class="pin-dot" cx={p.x} cy={p.y} r={PIN_DOT_R} />
+            {/each}
             {#if playPx !== null}
                 <line class="playhead" x1={playPx} x2={playPx} y1={PAD} y2={h - AXIS_H} />
                 <polygon
@@ -259,6 +417,50 @@ onMount(() => {
                 />
             {/if}
         </svg>
+        {#if editing}
+            <!-- flip below the pin when it sits too near the top to clear the dock
+                 (overflow is hidden), so high-g pins' editors aren't clipped. -->
+            <div
+                class="pin-editor"
+                style="left: {editing.x}px; top: {editing.y}px; transform: translate(-50%, {editing.y <
+                EDITOR_FLIP_PX
+                    ? 'calc(100% + 10px)'
+                    : 'calc(-100% - 10px)'});"
+            >
+                <input
+                    type="number"
+                    step="0.1"
+                    bind:value={editVal}
+                    oninput={editLive}
+                    onkeydown={editorKey}
+                    onblur={editCommit}
+                    use:autofocus
+                    aria-label="Pin force (g)"
+                />
+                <span class="unit">g</span>
+                <button
+                    type="button"
+                    class="pin-trash"
+                    title="Delete pin"
+                    aria-label="Delete pin"
+                    onpointerdown={(e) => {
+                        e.preventDefault();
+                        editTrash();
+                    }}
+                >
+                    <svg viewBox="0 0 14 14" aria-hidden="true">
+                        <path
+                            d="M3 4 L11 4 M5.5 4 L5.5 2.5 L8.5 2.5 L8.5 4 M4.5 4 L5 11.5 L9 11.5 L9.5 4"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.3"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                        />
+                    </svg>
+                </button>
+            </div>
+        {/if}
     </div>
 </aside>
 
@@ -312,6 +514,78 @@ onMount(() => {
         fill: var(--accent);
         pointer-events: auto;
         cursor: ew-resize;
+    }
+
+    /* click-to-drop surface over the force band */
+    .dropzone {
+        fill: transparent;
+        pointer-events: all;
+        cursor: crosshair;
+    }
+
+    /* fat transparent hit-zone over a thin visible dot (theatre pattern) */
+    .pin-hit {
+        fill: transparent;
+        pointer-events: all;
+        cursor: grab;
+    }
+    .pin-hit:active {
+        cursor: grabbing;
+    }
+    .pin-dot {
+        fill: var(--accent);
+        stroke: var(--bg-solid);
+        stroke-width: 1;
+        pointer-events: none;
+    }
+    .pin-hit:hover + .pin-dot {
+        r: 5;
+    }
+
+    /* inline value editor, anchored at the pin */
+    .pin-editor {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 4px 3px 6px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        box-shadow: var(--shadow);
+        z-index: 3;
+    }
+    .pin-editor input {
+        all: unset;
+        width: 44px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 11px;
+        color: var(--fg);
+        text-align: right;
+    }
+    .pin-editor .unit {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 11px;
+        color: var(--muted);
+    }
+    .pin-trash {
+        all: unset;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 4px;
+        color: var(--danger);
+        cursor: pointer;
+        transition: background 120ms ease;
+    }
+    .pin-trash:hover {
+        background: var(--danger-soft);
+    }
+    .pin-trash svg {
+        width: 13px;
+        height: 13px;
     }
 
     /* persistent transport: play/pause centered, time readout in the right corner

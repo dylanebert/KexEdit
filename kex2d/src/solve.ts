@@ -36,6 +36,13 @@ export const DEFAULT_BAND: readonly [number, number] = [-2, 6];
 export const DEFAULT_SMOOTH = 40;
 export const DEFAULT_BAND_WEIGHT = 4;
 
+/** an authored pin's pull weight and the recovery anchor's stiffness, both
+ *  against the unit posWeight. large so a pin nearly hits its value and the
+ *  endpoint geometry holds firmly to the draft; validated at this magnitude in
+ *  `anchor.test.ts` (heals the downstream swing to ~1/50th). ratios only. */
+export const DEFAULT_PIN_WEIGHT = 1e4;
+export const DEFAULT_ANCHOR_WEIGHT = 1e4;
+
 /** a point force constraint: pull F at a fixed grid index toward `value`. an
  *  authored force pin — a one-sample constraint draft (roadmap "kex2d Phase 2a").
  *  draft-time addressing keeps `index` fixed, so the term stays a constant

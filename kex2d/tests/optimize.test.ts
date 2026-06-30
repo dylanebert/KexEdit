@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import { OPT_GRID, SolveSystem, solveOut } from "../src/optimize";
+import { addPin, removePin } from "../src/pins";
 import { addNode, BakeSystem, bakeOut, createTrack, Track } from "../src/track";
 
 const G = 9.80665;
@@ -83,6 +84,69 @@ test("the realized ride preserves draft arclength and conserves energy on a vary
         if (so.v[i] <= 0) break; // past an energy-out point v clamps to 0
         expect(0.5 * so.v[i] * so.v[i] + G * so.posY[i]).toBeCloseTo(E0, 2);
     }
+});
+
+/** a fresh hill track (anchor (−16,0) → crest (0,2) → (16,0)), baked + solved.
+ *  varying curvature, so a pin off the draft visibly reshapes force + swings
+ *  geometry — the flat track is degenerate. */
+function hill(): { state: State; eid: number } {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    state.addSystem(SolveSystem);
+    const eid = createTrack(state);
+    addNode(state, -16, 0);
+    addNode(state, 0, 2);
+    addNode(state, 16, 0);
+    state.step(0);
+    return { state, eid };
+}
+
+test("an authored pin pulls the solved force toward its value at the pinned index", () => {
+    const { state, eid } = hill();
+    const base = solveOut.get(eid);
+    if (!base) throw new Error("solveOut missing after solve");
+    const k = Math.floor(OPT_GRID * 0.4);
+    const target = base.fN[k] + 1.5; // well off the draft
+
+    const pin = addPin(eid, k, target);
+    state.step(0); // pin bumps the gate → re-solve
+    const so = solveOut.get(eid);
+    if (!so || so === base) throw new Error("a pin must trigger a re-solve");
+
+    // the pin weight (1e4) dominates the unit prior + smoothness, so the solved
+    // force nearly hits the pinned value and is far closer than the draft was.
+    expect(Math.abs(so.fN[k] - target)).toBeLessThan(0.2);
+    expect(Math.abs(so.fN[k] - target)).toBeLessThan(Math.abs(base.fN[k] - target) / 4);
+
+    removePin(eid, pin.id);
+    state.step(0);
+    const back = solveOut.get(eid);
+    if (!back) throw new Error("solveOut missing after pin removal");
+    for (let i = 0; i < back.count; i++) expect(back.fN[i]).toBeCloseTo(base.fN[i], 5);
+});
+
+test("the recovery anchor heals the downstream swing a pin causes", () => {
+    // an unbalanced off-draft pin would rigidly swing the whole downstream (the
+    // realized endpoint moves metres). the wired endpoint anchor pins (x,y,θ)
+    // back to the draft, so the endpoint barely moves *even though* the pin
+    // reshapes the force by ~2g — large force change, no geometry swing.
+    const { state, eid } = hill();
+    const base = solveOut.get(eid);
+    if (!base) throw new Error("solveOut missing after solve");
+    const endX = base.posX[base.count - 1];
+    const endY = base.posY[base.count - 1];
+
+    const k = Math.floor(OPT_GRID * 0.35);
+    addPin(eid, k, base.fN[k] + 2); // a stiff, off-draft pin
+    state.step(0);
+    const so = solveOut.get(eid);
+    if (!so) throw new Error("solveOut missing after pin");
+
+    // the pin really moved the force (not a no-op heal)...
+    expect(Math.abs(so.fN[k] - base.fN[k])).toBeGreaterThan(1.5);
+    // ...yet the realized endpoint holds to the draft (the anchor healed it).
+    const drift = Math.hypot(so.posX[so.count - 1] - endX, so.posY[so.count - 1] - endY);
+    expect(drift).toBeLessThan(0.15); // metres — orders below the un-anchored swing
 });
 
 test("a re-solve is skipped while the bake is unchanged (hash gate)", () => {

@@ -1,6 +1,17 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
+import { recoveryRows } from "./anchor";
 import { replay, resampleByTime, V_FLOOR, V_WARN } from "./bake";
-import { DEFAULT_BAND, DEFAULT_BAND_WEIGHT, DEFAULT_SMOOTH, solve } from "./solve";
+import { pinRev, pinsOf } from "./pins";
+import {
+    type Anchor,
+    DEFAULT_ANCHOR_WEIGHT,
+    DEFAULT_BAND,
+    DEFAULT_BAND_WEIGHT,
+    DEFAULT_PIN_WEIGHT,
+    DEFAULT_SMOOTH,
+    type PointCon,
+    solve,
+} from "./solve";
 import { bakeOut, samples, Track } from "./track";
 
 /** draft-time DOF resolution for the solved force / realized track. matches the
@@ -14,7 +25,8 @@ export const OPT_GRID = 256;
  *  `posX`/`posY`/`theta`/`v` are the realized per-sample state; `t` is the
  *  realized cumulative time (the cart's own pacing, from the realized velocity,
  *  not the draft's); `firstInfeasible` is the first realized sample below V_WARN
- *  (-1 if none). `hash` mirrors the bake that produced it — a miss re-solves. */
+ *  (-1 if none). `gate` is the bake hash plus the pin revision — a miss (the bake
+ *  moved or a pin changed) re-solves. */
 export const solveOut = new Map<
     number,
     {
@@ -27,7 +39,7 @@ export const solveOut = new Map<
         t: Float32Array;
         tTotal: number;
         firstInfeasible: number;
-        hash: string;
+        gate: string;
     }
 >();
 
@@ -45,15 +57,11 @@ function computeSolve(trackEid: number): void {
     // the position-draft prior: baked F_n resampled onto the uniform draft-time
     // grid — the optimizer's DOF (same resample as the timeline's draft dots).
     const prior = resampleByTime(out.fN, out.t, count, N, out.tTotal);
-    const { fN } = solve(prior, {
-        smooth: DEFAULT_SMOOTH,
-        band: DEFAULT_BAND,
-        bandWeight: DEFAULT_BAND_WEIGHT,
-    });
 
     // each draft-time grid point owns the draft arclength interval to the next;
     // riding the solved force over those intervals is the realized geometry. σ is
-    // the per-sample arclength (prefix sum of per-edge ds).
+    // the per-sample arclength (prefix sum of per-edge ds). built before the solve
+    // because the recovery anchor linearizes the ride about the draft over it.
     const sigma = new Float64Array(count);
     for (let i = 1; i < count; i++) sigma[i] = sigma[i - 1] + out.ds[i - 1];
     const dsGrid = new Float32Array(N - 1);
@@ -68,6 +76,45 @@ function computeSolve(trackEid: number): void {
         dsGrid[g] = Math.max(sig - sigPrev, 0);
         sigPrev = sig;
     }
+
+    // authored force pins → point constraints + one endpoint recovery anchor.
+    // with no pins the solve is byte-identical to the unconstrained path (con +
+    // anchors stay empty). a pin pulls the solved F_n toward its value at a fixed
+    // grid index; the unbalanced bump swings the whole downstream geometry, so the
+    // anchor pins the rollout's (x, y, θ) at the endpoint back to the draft — three
+    // DOF at one point fix the rigid downstream transform, healing the full tail.
+    // single-shoot endpoint anchoring is the prototype regime (multiple-shooting
+    // is the deferred scale fix; see scratch.md "Optimizer design").
+    const pins = pinsOf(trackEid);
+    let con: PointCon[] | undefined;
+    let anchors: Anchor[] | undefined;
+    if (pins.length > 0) {
+        con = pins.map((p) => ({
+            index: Math.min(Math.max(p.index, 0), N - 1),
+            value: p.value,
+            weight: DEFAULT_PIN_WEIGHT,
+        }));
+        // the draft rollout is the anchor's linearization point.
+        const dX = new Float32Array(N);
+        const dY = new Float32Array(N);
+        const dT = new Float32Array(N);
+        const dV = new Float32Array(N);
+        replay(dX, dY, dT, dV, prior, dsGrid, s.posX[0], s.posY[0], s.theta[0], s.v[0], N);
+        const rows = recoveryRows(Float64Array.from(dT), Float64Array.from(dV), dsGrid, N - 1);
+        anchors = [
+            { row: rows.x, weight: DEFAULT_ANCHOR_WEIGHT },
+            { row: rows.y, weight: DEFAULT_ANCHOR_WEIGHT },
+            { row: rows.theta, weight: DEFAULT_ANCHOR_WEIGHT },
+        ];
+    }
+
+    const { fN } = solve(prior, {
+        smooth: DEFAULT_SMOOTH,
+        band: DEFAULT_BAND,
+        bandWeight: DEFAULT_BAND_WEIGHT,
+        con,
+        anchors,
+    });
 
     const posX = new Float32Array(N);
     const posY = new Float32Array(N);
@@ -96,19 +143,20 @@ function computeSolve(trackEid: number): void {
         t,
         tTotal: t[N - 1],
         firstInfeasible,
-        hash: out.hash,
+        gate: `${out.hash}|${pinRev()}`,
     });
 }
 
-/** re-solve each track's realized curve when its bake changes (same hash gate as
- *  the bake). runs after BakeSystem, before the cart reads the result. */
+/** re-solve each track's realized curve when its bake or pins change (the bake
+ *  hash plus the pin revision). runs after BakeSystem, before the cart reads the
+ *  result. */
 export const SolveSystem: System = {
     update(ecs: State): void {
         for (const trackEid of ecs.query([Track])) {
             const out = bakeOut.get(trackEid);
             if (!out) continue;
             const cur = solveOut.get(trackEid);
-            if (cur && cur.hash === out.hash) continue;
+            if (cur && cur.gate === `${out.hash}|${pinRev()}`) continue;
             computeSolve(trackEid);
         }
     },
