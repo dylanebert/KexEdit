@@ -3,28 +3,14 @@
  *  commands on a dual stack, plus a `begin`/`commit`/`cancel` gesture lifecycle so
  *  one drag collapses to a single entry.
  *
- *  the substrate is domain-agnostic — a `Command` is just a do/undo pair. two
- *  authoring surfaces record onto the one stack: the force pins (`pins.ts`,
- *  canonical store, addressed by stable `id`) and the track nodes (`track.ts`,
- *  ECS `Handle` entities, addressed by stable `order` — the append/delete-trailing
- *  chain never changes an interior node's order, so order survives eid recycling
- *  across a delete→undo the way the pin `id` does).
- *
- *  do-paths mutate the live data (the re-solve / re-bake is instant via the pin
- *  `rev` / bake `hash` gates) and record an already-applied command; only undo/redo
- *  replay through apply/reverse. */
+ *  the substrate is domain-agnostic — a `Command` is just a do/undo pair. today the
+ *  track nodes (`track.ts`, ECS `Handle` entities, addressed by stable `order` — the
+ *  append/delete-trailing chain never changes an interior node's order, so order
+ *  survives eid recycling across a delete→undo) are the only surface recording onto
+ *  it. do-paths mutate the live data (the re-bake is instant via the bake `hash`
+ *  gate) and record an already-applied command; only undo/redo replay through
+ *  apply/reverse. */
 
-import {
-    addPin,
-    findPin,
-    insertPin,
-    type Pin,
-    type PinState,
-    pinSnapshot,
-    pinsOf,
-    removePin,
-    restorePin,
-} from "./pins";
 import {
     extend,
     Handle,
@@ -126,51 +112,6 @@ export function cancel(): void {
     const g = gesture;
     gesture = null;
     if (g) g.restore(g.prev);
-}
-
-// ── pins ─────────────────────────────────────────────────────────────────────
-
-/** drop a new pin (the do-path appends it live, then records an undoable add). */
-export function drop(h: History, eid: number, index: number, value: number): Pin {
-    const at = pinsOf(eid).length; // the append position, restored on redo
-    const pin = addPin(eid, index, value);
-    record(h, {
-        apply: () => insertPin(eid, pin, at),
-        reverse: () => removePin(eid, pin.id),
-    });
-    return pin;
-}
-
-/** delete a pin by id, recording it (with its position) so undo restores it. */
-export function erase(h: History, eid: number, id: number): void {
-    const pin = findPin(eid, id);
-    if (!pin) return;
-    const at = removePin(eid, id);
-    record(h, {
-        apply: () => removePin(eid, pin.id),
-        reverse: () => insertPin(eid, pin, at),
-    });
-}
-
-/** open a gesture on a pin — a drag (index+value), a tangent-handle drag, or an
- *  inline value edit — coalescing the live writes into one `set`. */
-export function beginPin(eid: number, id: number): void {
-    begin(
-        () => pinSnapshot(eid, id),
-        (s: PinState) => restorePin(eid, id, s),
-        samePin,
-    );
-}
-
-function samePin(a: PinState, b: PinState): boolean {
-    return (
-        a.index === b.index &&
-        a.value === b.value &&
-        a.hl.dx === b.hl.dx &&
-        a.hl.dy === b.hl.dy &&
-        a.hr.dx === b.hr.dx &&
-        a.hr.dy === b.hr.dy
-    );
 }
 
 // ── track nodes ────────────────────────────────────────────────────────────────

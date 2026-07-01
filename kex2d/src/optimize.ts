@@ -1,16 +1,12 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { recoveryRows } from "./anchor";
-import { constraintTargets } from "./bezier";
 import { replay, resampleByTime, V_FLOOR, V_WARN } from "./bake";
-import { pinRev, pinsOf } from "./pins";
 import {
     type Anchor,
     DEFAULT_ANCHOR_WEIGHT,
     DEFAULT_BAND,
     DEFAULT_BAND_WEIGHT,
-    DEFAULT_PIN_WEIGHT,
     DEFAULT_SMOOTH,
-    type PointCon,
     solve,
 } from "./solve";
 import { bakeOut, samples, Track } from "./track";
@@ -26,8 +22,7 @@ export const OPT_GRID = 256;
  *  `posX`/`posY`/`theta`/`v` are the realized per-sample state; `t` is the
  *  realized cumulative time (the cart's own pacing, from the realized velocity,
  *  not the draft's); `firstInfeasible` is the first realized sample below V_WARN
- *  (-1 if none). `gate` is the bake hash plus the pin revision — a miss (the bake
- *  moved or a pin changed) re-solves. */
+ *  (-1 if none). `gate` is the bake hash — a miss (the bake moved) re-solves. */
 export const solveOut = new Map<
     number,
     {
@@ -78,26 +73,15 @@ function computeSolve(trackEid: number): void {
         sigPrev = sig;
     }
 
-    // one unified solve. smoothness, the soft band, and the recovery anchor are
-    // structural — always present; authored pins are just an extra data term that
-    // contributes nothing when there are none. there is no separate "no-pin" path.
-    // any force-space deviation (the band clamping the draft's own out-of-band
-    // forces, smoothness, or a pin) reshapes the downstream geometry, and the
-    // always-on recovery anchor pulls the rollout's (x, y, θ) at the endpoint back
-    // to the draft — three DOF at one point fix the rigid downstream transform — so
-    // the realized track recovers the drawn shape instead of diverging. flexibility
-    // is the continuous weights (band vs anchor), not a branch. `constraintTargets`
-    // evaluates the piecewise cubic through the pins on the draft-time grid (a lone
-    // pin stays a single point; no pins → []). single-shoot endpoint anchoring is
-    // the prototype regime — it heals localized/balanced reshapes; wide sustained
-    // ones under-heal (multiple-shooting is the deferred scale fix, scratch.md
-    // "Optimizer design").
-    const pins = pinsOf(trackEid);
-    const con: PointCon[] = constraintTargets(pins).map((t) => ({
-        index: Math.min(Math.max(t.index, 0), N - 1),
-        value: t.value,
-        weight: DEFAULT_PIN_WEIGHT,
-    }));
+    // smoothness, the soft band, and the recovery anchor produce the realized curve
+    // from the draft. any force-space deviation (the band clamping the draft's own
+    // out-of-band forces, or smoothness) reshapes the downstream geometry, and the
+    // always-on recovery anchor pulls the rollout's (x, y, θ) at the endpoint back to
+    // the draft — three DOF at one point fix the rigid downstream transform — so the
+    // realized track recovers the drawn shape instead of diverging. single-shoot
+    // endpoint anchoring is the prototype regime — it heals localized/balanced
+    // reshapes; wide sustained ones under-heal (position-space collocation is the
+    // deferred fix, specs/kex2d-collocation.md).
     // the draft rollout is the anchor's linearization point.
     const dX = new Float32Array(N);
     const dY = new Float32Array(N);
@@ -115,7 +99,6 @@ function computeSolve(trackEid: number): void {
         smooth: DEFAULT_SMOOTH,
         band: DEFAULT_BAND,
         bandWeight: DEFAULT_BAND_WEIGHT,
-        con,
         anchors,
     });
 
@@ -146,20 +129,19 @@ function computeSolve(trackEid: number): void {
         t,
         tTotal: t[N - 1],
         firstInfeasible,
-        gate: `${out.hash}|${pinRev()}`,
+        gate: out.hash,
     });
 }
 
-/** re-solve each track's realized curve when its bake or pins change (the bake
- *  hash plus the pin revision). runs after BakeSystem, before the cart reads the
- *  result. */
+/** re-solve each track's realized curve when its bake changes (the bake hash).
+ *  runs after BakeSystem, before the cart reads the result. */
 export const SolveSystem: System = {
     update(ecs: State): void {
         for (const trackEid of ecs.query([Track])) {
             const out = bakeOut.get(trackEid);
             if (!out) continue;
             const cur = solveOut.get(trackEid);
-            if (cur && cur.gate === `${out.hash}|${pinRev()}`) continue;
+            if (cur && cur.gate === out.hash) continue;
             computeSolve(trackEid);
         }
     },

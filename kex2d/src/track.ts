@@ -1,6 +1,5 @@
 import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@dylanebert/shallot";
 import { forces, V_FLOOR, V_WARN } from "./bake";
-import { clearPins } from "./pins";
 import { type Node, reflect, sampleChain } from "./spline";
 
 /** per-track scalars. `count` is the total sample count (bake output, varies
@@ -99,7 +98,6 @@ export function createTrack(ecs: State): number {
         lastBakedOrder: -1,
         hash: "",
     });
-    clearPins(trackEid); // a fresh track carries no authored pins
     return trackEid;
 }
 
