@@ -144,9 +144,11 @@ function pentaSolveFactored(
     for (let i = n - 3; i >= 0; i--) x[i] = y[i] - alpha[i + 1] * x[i + 1] - beta[i + 2] * x[i + 2];
 }
 
-/** solve a small dense SPD system M λ = b (K ≤ a few) by Cholesky — the Woodbury
- *  capacitance solve for the recovery anchor. M is row-major K×K, overwritten. */
-function denseSolveSpd(M: Float64Array, b: Float64Array, K: number): Float64Array {
+/** solve a dense SPD system M λ = b by Cholesky. M is row-major K×K, overwritten
+ *  with its factor. the Woodbury capacitance solve for the recovery anchor; also
+ *  the dense reference `banded.test.ts` cross-validates the banded factorization
+ *  against (spec `kex/specs/kex2d-collocation.md`). */
+export function denseSolveSpd(M: Float64Array, b: Float64Array, K: number): Float64Array {
     // M = L Lᵀ in place (lower triangle).
     for (let j = 0; j < K; j++) {
         let dsum = M[j * K + j];
