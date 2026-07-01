@@ -18,8 +18,8 @@
  *
  *  the sampled positions feed the kinematic recovery (`bake.ts`) → canonical
  *  F_n; the curve is only F_n's input, so this module stays geometry-only (no
- *  physics). a Hermite cubic's curvature varies within a span, so F_n is
- *  smoothly varying — the target shape for the jerk-minimizing optimizer. */
+ *  physics). a Hermite cubic's curvature varies within a span, so the recovered
+ *  F_n is smoothly varying. */
 
 const EPS = 1e-9;
 

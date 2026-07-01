@@ -102,9 +102,10 @@ export function forces(
  * sample θ via chord-angle propagation `θ_{i+1} = 2·atan2(dy,dx) − θ_i` from
  * `theta0`, v via the energy delta `v_{i+1}² = v_i² − 2g·(y_{i+1} − y_i)`.
  *
- * this is the integrator's matched inverse (used for round-trip validation and
- * the future F_n optimizer), NOT the app bake — see `forces` above for why
- * (the reflection's leapfrog mode oscillates on arbitrary curves).
+ * this is the integrator's matched inverse (used for round-trip validation — it
+ * exactly reproduces the force that drove a forward step), NOT the app bake — see
+ * `forces` above for why (the reflection's leapfrog mode oscillates on arbitrary
+ * curves).
  *
  * writes theta[offset..offset+M], v[offset..offset+M], fN[offset..offset+M−1]
  * given posX/posY[offset..offset+M] already laid out and a per-edge `dsArr`.
@@ -195,10 +196,9 @@ export function replay(
  * linearly interpolated between those anchors (clamped flat past the first/last
  * edge centers). a *continuous* read: a node nudge slides the curve smoothly
  * rather than stair-stepping. piecewise-constant sampling flickers — the moving
- * edge boundaries flip grid points between adjacent edge values, and the forward
- * ride amplifies that into a visible swing. `t` is the per-sample cumulative time
- * (length `count`). the timeline's draft dots and the optimizer's draft-time prior
- * are the same resample.
+ * edge boundaries flip grid points between adjacent edge values. `t` is the
+ * per-sample cumulative time (length `count`). the timeline reads the force curve
+ * through this resample (equal spacing in t, what the rider experiences).
  */
 export function resampleByTime(
     fN: Float32Array,

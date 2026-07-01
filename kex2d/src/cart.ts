@@ -1,7 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { resampleByTime } from "./bake";
-import { solveOut } from "./optimize";
-import { bakeOut, Track } from "./track";
+import { bakeOut, samples, Track } from "./track";
 
 /** per-track cart state: cumulative time `t` (mod tTotal), the last wall-clock
  *  reading the advance loop saw, and `held` — set while the playhead is scrubbed
@@ -39,11 +38,10 @@ const CartSystem: System = {
             const dt = Math.min(MAX_DT, (now - st.lastClock) / 1000);
             st.lastClock = now; // refresh even when held, so release doesn't replay the gap
             if (st.held) continue;
-            // the cart rides the realized (solved) track, paced by its own
-            // velocity profile — not the position draft's.
-            const so = solveOut.get(trackEid);
-            if (!so) continue;
-            const loopT = loopTime(so);
+            // the cart rides the baked track, paced by its recovered velocity profile.
+            const out = bakeOut.get(trackEid);
+            if (!out || Track.count.get(trackEid) < 2) continue;
+            const loopT = loopTime(out);
             if (loopT <= 0) {
                 st.t = 0;
                 continue;
@@ -68,38 +66,24 @@ function findInterval(tBuf: Float32Array, count: number, t: number): number {
     return lo;
 }
 
-/** interpolate the cart pose at realized-time `t` on the *realized* (solved)
- *  track — the geometry the cart actually rides, `forward(solved F_n)`, not the
- *  position draft. `u` is the cart's progress as a draft-time grid fraction
- *  [0, 1] (the timeline playhead reads it). null until the solve has a chain. */
+/** interpolate the cart pose at time `t` on the baked track — the authored
+ *  geometry the cart rides. null until the bake has a chain. */
 export function cartPose(
     trackEid: number,
     t: number,
-): { x: number; y: number; theta: number; u: number } | null {
-    const so = solveOut.get(trackEid);
-    if (!so || so.count < 2) return null;
-    const i = findInterval(so.t, so.count, t);
-    const denom = so.t[i + 1] - so.t[i];
-    const alpha = denom > 1e-9 ? (t - so.t[i]) / denom : 0;
+): { x: number; y: number; theta: number } | null {
+    const out = bakeOut.get(trackEid);
+    const s = samples.get(trackEid);
+    const count = Track.count.get(trackEid);
+    if (!out || !s || count < 2) return null;
+    const i = findInterval(out.t, count, t);
+    const denom = out.t[i + 1] - out.t[i];
+    const alpha = denom > 1e-9 ? (t - out.t[i]) / denom : 0;
     return {
-        x: so.posX[i] + alpha * (so.posX[i + 1] - so.posX[i]),
-        y: so.posY[i] + alpha * (so.posY[i + 1] - so.posY[i]),
-        theta: so.theta[i] + alpha * (so.theta[i + 1] - so.theta[i]),
-        u: (i + alpha) / (so.count - 1),
+        x: s.posX[i] + alpha * (s.posX[i + 1] - s.posX[i]),
+        y: s.posY[i] + alpha * (s.posY[i + 1] - s.posY[i]),
+        theta: s.theta[i] + alpha * (s.theta[i + 1] - s.theta[i]),
     };
-}
-
-/** inverse of `cartPose`'s `u`: the realized cart time at draft-time grid-fraction
- *  `u ∈ [0, 1]`, interpolating the realized cumulative-time `solveOut.t` at index
- *  `u·(count−1)`. the scrub writes this into `cartState.t`. null until the solve
- *  has a chain. */
-export function cartTimeAtU(trackEid: number, u: number): number | null {
-    const so = solveOut.get(trackEid);
-    if (!so || so.count < 2) return null;
-    const f = Math.min(Math.max(u, 0), 1) * (so.count - 1);
-    const i = Math.min(so.count - 2, Math.floor(f));
-    const a = f - i;
-    return so.t[i] + a * (so.t[i + 1] - so.t[i]);
 }
 
 /** sample F_n on a uniform time grid of `N` points (`resampleByTime`, linearly

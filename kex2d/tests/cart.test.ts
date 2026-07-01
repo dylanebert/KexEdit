@@ -1,20 +1,17 @@
 import { expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import { cartPose, cartTimeAtU, loopTime, sampleFNOverTime } from "../src/cart";
-import { SolveSystem, solveOut } from "../src/optimize";
+import { cartPose, loopTime, sampleFNOverTime } from "../src/cart";
 import { addNode, BakeSystem, bakeOut, createTrack } from "../src/track";
 
-// cartPose rides the realized (solved) track; sampleFNOverTime resamples the
-// baked draft onto the time axis. driven against the seeded flat chain, where
-// the realized track coincides with the draft and constant speed makes t linear
-// in arclength — so the cart's x is a closed-form check, not a fixture.
-// device-free harness, like track.test.ts. Bake then Solve (registration order).
+// cartPose rides the baked track; sampleFNOverTime resamples the baked force onto
+// the time axis. driven against the seeded flat chain, where constant speed makes t
+// linear in arclength — so the cart's x is a closed-form check, not a fixture.
+// device-free harness, like track.test.ts.
 
-/** a fresh flat track (anchor (−16,0) → node (16,0)), baked + solved. */
+/** a fresh flat track (anchor (−16,0) → node (16,0)), baked. */
 function baked(): { eid: number; tTotal: number } {
     const state = new State();
     state.addSystem(BakeSystem);
-    state.addSystem(SolveSystem);
     const eid = createTrack(state);
     addNode(state, -16, 0);
     addNode(state, 16, 0);
@@ -24,13 +21,10 @@ function baked(): { eid: number; tTotal: number } {
     return { eid, tTotal: out.tTotal };
 }
 
-test("cartPose returns null before the first solve; sampleFNOverTime before the bake", () => {
-    // a track with no bake/solve yet: nothing to ride, nothing to sample. the
-    // solveOut Map is module-global and keyed by eid (reused across States), so
-    // clear this track's entry to assert the no-output precondition.
+test("cartPose + sampleFNOverTime are null before the bake has a chain", () => {
+    // a fresh track with no nodes baked: Track.count is 0, so nothing to ride or sample.
     const state = new State();
     const eid = createTrack(state);
-    solveOut.delete(eid);
     expect(cartPose(eid, 0)).toBeNull();
     expect(sampleFNOverTime(eid, 16)).toBeNull();
 });
@@ -67,44 +61,17 @@ test("sampleFNOverTime returns N points at ~1g on the flat chain", () => {
     for (let i = 0; i < grid.length; i++) expect(grid[i]).toBeCloseTo(1, 3);
 });
 
-test("cartPose rides the realized track flat, anchor to end", () => {
-    // the flat draft solves to ≈ 1g (constant in → constant out, inside the
-    // band), so the realized track the cart rides coincides with the flat draft.
+test("cartPose rides the baked track flat, anchor to end", () => {
+    // the flat chain bakes to ≈ 1g at constant speed, so t is linear in arclength.
     const { eid, tTotal } = baked();
     const start = cartPose(eid, 0);
     const mid = cartPose(eid, tTotal / 2);
     const end = cartPose(eid, tTotal);
-    if (!start || !mid || !end) throw new Error("cartPose returned null after solve");
+    if (!start || !mid || !end) throw new Error("cartPose returned null after bake");
 
     expect(start.x).toBeCloseTo(-16, 2);
     expect(end.x).toBeCloseTo(16, 2);
     expect(mid.x).toBeCloseTo(0, 1); // flat at constant v ⇒ half-time is x = 0
     expect(mid.y).toBeCloseTo(0, 3);
     expect(mid.theta).toBeCloseTo(0, 3);
-    expect(mid.u).toBeCloseTo(0.5, 2); // grid-fraction progress for the playhead
-});
-
-test("cartTimeAtU inverts cartPose's u (grid-fraction → realized time)", () => {
-    // the scrub maps a playhead grid-fraction back to a realized cart time; feeding
-    // it through cartPose must recover the same u.
-    const { eid } = baked();
-    for (const u of [0, 0.25, 0.5, 0.75, 1]) {
-        const t = cartTimeAtU(eid, u);
-        if (t === null) throw new Error("cartTimeAtU returned null after solve");
-        expect(cartPose(eid, t)?.u).toBeCloseTo(u, 6);
-    }
-});
-
-test("cartTimeAtU clamps u to [0,1] and is null before the solve", () => {
-    const state = new State();
-    const eid = createTrack(state);
-    solveOut.delete(eid);
-    expect(cartTimeAtU(eid, 0.5)).toBeNull();
-
-    const { eid: e2 } = baked();
-    const lo = cartTimeAtU(e2, 0);
-    const hi = cartTimeAtU(e2, 1);
-    if (lo === null || hi === null) throw new Error("cartTimeAtU returned null after solve");
-    expect(cartTimeAtU(e2, -1)).toBeCloseTo(lo, 10);
-    expect(cartTimeAtU(e2, 2)).toBeCloseTo(hi, 10);
 });

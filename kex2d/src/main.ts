@@ -3,12 +3,11 @@ import { ProfilePlugin } from "@dylanebert/shallot/extras";
 import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { CartPlugin } from "./cart";
-import { OptimizePlugin } from "./optimize";
 import { RenderPlugin } from "./render";
 import { TrackPlugin } from "./track";
 
 const { state: ecs, dispose } = await run({
-    plugins: [ProfilePlugin, TrackPlugin, OptimizePlugin, CartPlugin, RenderPlugin],
+    plugins: [ProfilePlugin, TrackPlugin, CartPlugin, RenderPlugin],
     defaults: false,
 });
 

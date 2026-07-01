@@ -1,9 +1,7 @@
 <script lang="ts">
 import { onMount, untrack } from "svelte";
-import { cartPose, cartState, cartTimeAtU, sampleFNOverTime } from "./cart";
+import { cartState, sampleFNOverTime } from "./cart";
 import { history, redo, undo } from "./history";
-import { OPT_GRID, solveOut } from "./optimize";
-import { DEFAULT_BAND } from "./solve";
 import { bakeOut } from "./track";
 import {
     clampView,
@@ -24,10 +22,9 @@ import { resize } from "./view";
 
 const { eid, tick }: { eid: number | null; tick: number } = $props();
 
-// the timeline is READ-ONLY: it shows the baked position draft (dotted) and the
-// realized/solved result curve (accent), with scrub + zoom/pan navigation. force
-// constraints are not yet authored here — that UX is being re-scoped
-// (specs/kex2d-collocation.md).
+// the timeline is READ-ONLY: it shows the baked F_n force curve the authored track
+// produces, with scrub + zoom/pan navigation. authoring forces here (constraints the
+// solver satisfies) is a future scope-first spike (roadmap "kex2d").
 
 // timeline bands, top → bottom: a scrubbable RULER (ticks + labels + playhead
 // handle, the dedicated scrub zone), a demarcating GAP the playhead passes through,
@@ -40,10 +37,14 @@ const BOT_PAD = 8; // chart inset, bottom
 const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
 const LABEL_EDGE = 22; // px; ruler labels within this of an edge align inward, not centered
 const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer than this to the plot edge
-// the initial y-frame before real data arrives: the force band + 1g headroom.
+// reference comfort limits (g) — drawn as faint lines to read the force curve against.
+const BAND: [number, number] = [-2, 6];
+// force curve display resolution: baked F_n resampled onto this many uniform-time points.
+const DISPLAY_GRID = 256;
+// the initial y-frame before real data arrives: the reference band + 1g headroom.
 const Y_HEADROOM = 1;
-const CAP_LO = DEFAULT_BAND[0] - Y_HEADROOM;
-const CAP_HI = DEFAULT_BAND[1] + Y_HEADROOM;
+const CAP_LO = BAND[0] - Y_HEADROOM;
+const CAP_HI = BAND[1] + Y_HEADROOM;
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 
@@ -59,7 +60,7 @@ let framed = false;
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 
-// total draft-time seconds — the X-axis domain. grid index i ↔ sec (i/(N-1))·tTotal.
+// total track seconds — the X-axis domain. force-curve point i ↔ sec (i/(N-1))·tTotal.
 const tTotal = $derived.by((): number => {
     void tick;
     if (eid === null) return 0;
@@ -74,22 +75,13 @@ const tickList = $derived(ticks(clamped, chartW));
 const fN = $derived.by((): Float32Array | null => {
     void tick;
     if (eid === null) return null;
-    return sampleFNOverTime(eid, OPT_GRID);
+    return sampleFNOverTime(eid, DISPLAY_GRID);
 });
-const solved = $derived.by((): Float32Array | null => {
-    void tick;
-    if (eid === null) return null;
-    return solveOut.get(eid)?.fN ?? null;
-});
-// the cart's draft-time second. `u` is its grid-fraction on the realized track;
-// u·tTotal is its draft-second only because the axis samples at OPT_GRID.
+// the cart's time — its own second on the baked track's clock, the same axis units.
 const cartSec = $derived.by((): number | null => {
     void tick;
     if (eid === null) return null;
-    const st = cartState.get(eid);
-    if (!st) return null;
-    const u = cartPose(eid, st.t)?.u;
-    return u == null ? null : u * tTotal;
+    return cartState.get(eid)?.t ?? null;
 });
 const playPx = $derived.by((): number | null => {
     if (cartSec === null) return null;
@@ -107,21 +99,19 @@ const frac = $derived.by((): number => {
     return clamp(cartSec / tTotal, 0, 1);
 });
 
-// the auto-fit g-range *target*: scans the solved curve + the baked draft dots. always
-// keeps 1g; `yView` (below) eases toward this — the target itself is never drawn.
+// the auto-fit g-range *target*: scans the baked force curve. always keeps 1g;
+// `yView` (below) eases toward this — the target itself is never drawn.
 const yTarget = $derived.by((): YFit => {
     void tick;
     let lo = Y_BASE;
     let hi = Y_BASE;
-    const scan = (a: Float32Array | null): void => {
-        if (!a) return;
+    const a = fN;
+    if (a) {
         for (let i = 0; i < a.length; i++) {
             if (a[i] < lo) lo = a[i];
             if (a[i] > hi) hi = a[i];
         }
-    };
-    scan(solved);
-    scan(fN);
+    }
     return yFit(lo, hi, Y_BASE);
 });
 
@@ -289,10 +279,10 @@ function render(ctx: CanvasRenderingContext2D): void {
         }
     }
 
-    // force band limits — drawn only when within the visible range
+    // reference comfort limits — drawn only when within the visible range
     ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
     ctx.lineWidth = 1;
-    for (const lim of DEFAULT_BAND) {
+    for (const lim of BAND) {
         if (lim < lo || lim > hi) continue;
         ctx.beginPath();
         ctx.moveTo(LEFT_GUT, yOf(lim));
@@ -316,28 +306,15 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.rect(LEFT_GUT, TOP, w - LEFT_GUT, h - BOT_PAD - TOP);
     ctx.clip();
 
-    // baked F_n draft dots — the position curve
+    // the baked F_n force curve — accent: the force the authored track produces
     if (fN) {
-        ctx.fillStyle = "rgba(205, 197, 188, 0.55)";
-        const n = fN.length;
-        for (let i = 0; i < n; i++) {
-            const x = LEFT_GUT + secToPx(v, (i / (n - 1)) * tTotal);
-            if (x < LEFT_GUT - 2 || x > w + 2) continue;
-            ctx.beginPath();
-            ctx.arc(x, yOf(fN[i]), 1.5, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-
-    // solved F_n curve — accent: the realized result the cart rides
-    if (solved) {
         ctx.strokeStyle = "rgb(212, 149, 96)";
         ctx.lineWidth = 1.6;
         ctx.beginPath();
-        const n = solved.length;
+        const n = fN.length;
         for (let i = 0; i < n; i++) {
             const x = LEFT_GUT + secToPx(v, (i / (n - 1)) * tTotal);
-            const y = yOf(solved[i]);
+            const y = yOf(fN[i]);
             if (i === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
         }
@@ -348,12 +325,12 @@ function render(ctx: CanvasRenderingContext2D): void {
 }
 
 // the navigator preview (VSCode-minimap / DAW-overview style): a faint miniature of
-// the whole solved F_n curve across the full track, so the viewport bracket reads
+// the whole F_n force curve across the full track, so the viewport bracket reads
 // against the curve's shape. y-range tracks the chart's `yView`; the curve occupies
 // only [0, tTotal] of the width (the lead-out margin stays empty).
 function renderNav(nav: CanvasRenderingContext2D, cw: number, ch: number): void {
     nav.clearRect(0, 0, cw, ch);
-    const data = solved ?? fN;
+    const data = fN;
     if (!data || data.length < 2 || tTotal <= 0) return;
     const trackFrac = tTotal / (tTotal + marginSec(tTotal)); // curve span within the bar
     const { lo, hi } = yView;
@@ -404,10 +381,8 @@ function scrubTo(e: PointerEvent): void {
     if (eid === null || !scrubbing) return;
     const rect = canvas.getBoundingClientRect();
     const sec = pxToSec(clamped, e.clientX - rect.left - LEFT_GUT);
-    const u = tTotal > 0 ? clamp(sec / tTotal, 0, 1) : 0;
-    const t = cartTimeAtU(eid, u);
     const st = cartState.get(eid);
-    if (st && t !== null) st.t = t;
+    if (st) st.t = clamp(sec, 0, tTotal);
 }
 function endScrub(): void {
     scrubbing = false; // leave st.held true — parked + paused, no auto-resume
@@ -437,20 +412,19 @@ function togglePlay(): void {
     if (st) st.held = !st.held;
 }
 
-// ── player slider: the full-track scrubber. drag maps screen-X → grid-fraction →
-// realized time (same bridge as the timeline grip, but global, not view-relative).
-// holding while dragging freezes the cart; release restores the pre-grab play state
-// (grab while paused stays paused — the media-player convention).
+// ── player slider: the full-track scrubber. drag maps screen-X → track fraction →
+// time (global, not view-relative). holding while dragging freezes the cart; release
+// restores the pre-grab play state (grab while paused stays paused — the media-player
+// convention).
 let scrubEl: HTMLDivElement;
 let sliding = false;
 let sliderResume = false;
 function sliderTo(e: PointerEvent): void {
     if (eid === null || !sliding) return;
     const rect = scrubEl.getBoundingClientRect();
-    const u = rect.width > 0 ? clamp((e.clientX - rect.left) / rect.width, 0, 1) : 0;
-    const t = cartTimeAtU(eid, u);
+    const f = rect.width > 0 ? clamp((e.clientX - rect.left) / rect.width, 0, 1) : 0;
     const st = cartState.get(eid);
-    if (st && t !== null) st.t = t;
+    if (st) st.t = f * tTotal;
 }
 function sliderUp(): void {
     if (!sliding) return; // not dragging → nothing to restore (cleanup no-op)
@@ -483,12 +457,8 @@ function stepKey(e: KeyboardEvent): void {
     const d = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
     if (d === 0) return;
     e.preventDefault();
-    const u = clamp(((cartSec ?? 0) + d) / tTotal, 0, 1);
-    const t = cartTimeAtU(eid, u);
-    if (t !== null) {
-        st.held = true; // stepping pauses, like a frame-step
-        st.t = t;
-    }
+    st.held = true; // stepping pauses, like a frame-step
+    st.t = clamp((cartSec ?? 0) + d, 0, tTotal);
 }
 onMount(() => {
     const onWheel = (e: WheelEvent): void => {

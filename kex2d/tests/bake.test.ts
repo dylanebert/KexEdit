@@ -150,6 +150,51 @@ describe("forces — smooth physical normal force", () => {
         }
     });
 
+    test("the baked force integrates back to the shape (round-trip through `forces`)", () => {
+        // the timeline shows `forces` output; feeding that F_n through the forward
+        // integrator must reproduce the authored geometry — the bidirectional
+        // integration the whole tool rests on. on a constant-curvature arc the
+        // bisector tangent equals the integrator's exact reflection, so the
+        // recovered force is integrator-exact and the ride reproduces the arc to
+        // f32 precision (loose digits=2 covers the accumulated rounding over R=10).
+        const R = 10;
+        const cx = 0;
+        const cy = 10;
+        const a0 = -Math.PI / 2;
+        const da = 0.1;
+        const N = 12;
+        const b = makeBuf(N);
+        for (let i = 0; i < N; i++) {
+            const a = a0 + i * da;
+            b.posX[i] = cx + R * Math.cos(a);
+            b.posY[i] = cy + R * Math.sin(a);
+        }
+        const dsArr = new Float32Array(N - 1);
+        for (let i = 0; i < N - 1; i++) {
+            dsArr[i] = Math.hypot(b.posX[i + 1] - b.posX[i], b.posY[i + 1] - b.posY[i]);
+        }
+        forces(b.posX, b.posY, b.theta, b.v, b.fN, dsArr, 0, N - 1, V0);
+
+        const dst = makeBuf(N);
+        replay(
+            dst.posX,
+            dst.posY,
+            dst.theta,
+            dst.v,
+            b.fN,
+            dsArr,
+            b.posX[0],
+            b.posY[0],
+            b.theta[0],
+            V0,
+            N,
+        );
+        for (let i = 0; i < N; i++) {
+            expect(dst.posX[i]).toBeCloseTo(b.posX[i], 2);
+            expect(dst.posY[i]).toBeCloseTo(b.posY[i], 2);
+        }
+    });
+
     test("θ stays continuous as the heading sweeps past the ±π branch cut", () => {
         // a wide circular arc whose tangent angle crosses π (a leftward, then
         // downward turn). raw atan2 chord angles wrap from +π to −π there; the
@@ -242,7 +287,7 @@ describe("resampleByTime — continuous (linear) read", () => {
         // 3 edges with distinct forces at uniform unit times. edge e is anchored
         // at its mid-time (0.5, 1.5, 2.5); a query before/after the first/last
         // anchor clamps flat, in between it ramps linearly. continuity here is
-        // what stops a node nudge from stair-stepping the optimizer's prior.
+        // what stops a node nudge from stair-stepping the timeline's force curve.
         const t = new Float32Array([0, 1, 2, 3]);
         const fN = new Float32Array([0, 2, 4]);
         const grid = resampleByTime(fN, t, 4, 7, 3); // τ = 0, 0.5, 1, 1.5, 2, 2.5, 3
