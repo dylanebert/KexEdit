@@ -61,8 +61,10 @@ test("kex2d timeline", async ({ page }) => {
             await page.waitForTimeout(200);
             await page.screenshot({ path: join(OUT, "pins.png") });
 
-            // double-click the first pin to open the inline value editor
-            await page.mouse.dblclick(ax, box.y + 85);
+            // double-click the first pin to open the inline value editor. target the pin's
+            // hit-circle directly: pins snap to the curve value on add, so a fixed click
+            // height misses them (and the band positions shift with the dock layout).
+            await page.locator(".pin-hit").first().dblclick();
             await page.waitForTimeout(250);
             const ed = await page.locator(".pin-editor").boundingBox();
             if (ed) {

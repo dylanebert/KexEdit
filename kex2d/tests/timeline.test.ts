@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
     clampView,
     marginSec,
+    MAX_PX_PER_SEC,
     mirrorTangent,
+    navDragView,
+    navWindow,
     niceStep,
     pxToSec,
     secToPx,
@@ -106,6 +109,52 @@ describe("zoomAt — cursor-anchored", () => {
         const inView = zoomAt(fitted, W / 2, 4, W, T);
         const out = zoomAt(inView, W / 2, 0.001, W, T); // clamps to min scale
         expect(out.pxPerSec).toBeCloseTo(fitted.pxPerSec, 6);
+    });
+});
+
+describe("navWindow — overview bracket fractions", () => {
+    const W = 1000;
+    const T = 10; // total = T + margin = 11.2
+    test("the fitted view fills the whole bar", () => {
+        const fitted = clampView({ pan: -Number.MAX_VALUE, pxPerSec: 0 }, W, T);
+        const win = navWindow(fitted, W, T);
+        expect(win.l).toBeCloseTo(0, 6);
+        expect(win.r).toBeCloseTo(1, 6);
+    });
+    test("a zoomed-in view is a sub-span", () => {
+        const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerSec: W / 3 }, W, T); // shows [2,5]s
+        const win = navWindow(zoomed, W, T);
+        const total = T + marginSec(T);
+        expect(win.l).toBeCloseTo(2 / total, 6);
+        expect(win.r).toBeCloseTo(5 / total, 6);
+    });
+});
+
+describe("navDragView — overview drag", () => {
+    const W = 1000;
+    const T = 10;
+    const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerSec: W / 3 }, W, T); // shows [2,5]s
+    test("pan slides the window and preserves the span", () => {
+        const lo = pxToSec(zoomed, 0);
+        const out = navDragView(zoomed, W, T, "pan", lo + 1, 0); // grab=0 → newLo = cur
+        expect(pxToSec(out, 0)).toBeCloseTo(3, 6);
+        expect(pxToSec(out, W)).toBeCloseTo(6, 6);
+        expect(out.pxPerSec).toBeCloseTo(zoomed.pxPerSec, 6); // zoom unchanged
+    });
+    test("left-edge drag anchors the right edge (a zoom)", () => {
+        const out = navDragView(zoomed, W, T, "l", 1, 0); // pull left edge to 1s
+        expect(pxToSec(out, 0)).toBeCloseTo(1, 6);
+        expect(pxToSec(out, W)).toBeCloseTo(5, 6); // right edge held
+    });
+    test("right-edge drag anchors the left edge (a zoom)", () => {
+        const out = navDragView(zoomed, W, T, "r", 8, 0); // push right edge to 8s
+        expect(pxToSec(out, 0)).toBeCloseTo(2, 6); // left edge held
+        expect(pxToSec(out, W)).toBeCloseTo(8, 6);
+    });
+    test("an edge can't cross the opposite one — span floors at the zoom ceiling", () => {
+        const out = navDragView(zoomed, W, T, "r", 2, 0); // collapse right onto left (2s)
+        expect(pxToSec(out, W)).toBeGreaterThan(pxToSec(out, 0)); // never inverts
+        expect(out.pxPerSec).toBeCloseTo(MAX_PX_PER_SEC, 6); // capped at max zoom-in
     });
 });
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onMount, untrack } from "svelte";
 import { cartPose, cartState, cartTimeAtU, sampleFNOverTime } from "./cart";
-import { begin, cancel, commit, drop, erase, history, redo, undo } from "./history";
+import { beginPin, cancel, commit, drop, erase, history, redo, undo } from "./history";
 import { OPT_GRID, solveOut } from "./optimize";
 import { findPin, type Pin, pinsOf, setHandle, setPin } from "./pins";
 import { DEFAULT_BAND } from "./solve";
@@ -9,7 +9,10 @@ import { bakeOut } from "./track";
 import {
     clampView,
     frameAll,
+    marginSec,
     mirrorTangent,
+    navDragView,
+    navWindow,
     niceStep,
     pxToSec,
     secToPx,
@@ -29,11 +32,12 @@ const { eid, tick }: { eid: number | null; tick: number } = $props();
 // then the curve chart. The After Effects / animation-timeline / kexedit-main layout
 // (time ruler on top, click-anywhere-to-scrub), not a plot with a bottom axis.
 const RULER_H = 26; // top scrub band: ticks, labels, playhead handle
-const GAP_H = 8; // demarcation channel between ruler and chart
+const GAP_H = 20; // marker lane between ruler and chart — a full row (event markers later)
 const TOP = RULER_H + GAP_H; // chart top
 const BOT_PAD = 8; // chart inset, bottom
 const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
 const LABEL_EDGE = 22; // px; ruler labels within this of an edge align inward, not centered
+const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer than this to the plot edge
 // CAP = the force band + 1g headroom. it clamps authored pin values and caps a pin
 // drag's edge-grow; it is NOT the display range (that's `yView`, a FIT_FLOOR frame).
 const Y_HEADROOM = 1;
@@ -54,6 +58,7 @@ const CON_COLOR = "rgba(120, 175, 205, 0.9)";
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
+let navCanvas: HTMLCanvasElement | undefined = $state();
 let w = $state(0);
 let h = $state(0);
 // the user's view intent; `clamped` re-fits it to the live width/track length, so a
@@ -305,6 +310,38 @@ function panUp(): void {
     window.removeEventListener("pointerup", panUp);
 }
 
+// ── time navigator: a full-track overview below the chart, drawn as a preview minimap
+// (see renderNav). a window-bracket marks the portion the chart shows; drag the body to
+// pan, drag an edge to zoom (the opposite edge anchored). the bar spans [0, tTotal +
+// lead-out], so framing the whole track fills it.
+let navEl: HTMLDivElement | undefined = $state();
+const navWin = $derived(
+    eid === null || tTotal <= 0 || chartW <= 0 ? null : navWindow(clamped, chartW, tTotal),
+);
+let navDrag: { mode: "pan" | "l" | "r"; grab: number } | null = null;
+function navSecAt(clientX: number): number {
+    const rect = navEl!.getBoundingClientRect();
+    const total = tTotal + marginSec(tTotal);
+    return clamp(((clientX - rect.left) / Math.max(1, rect.width)) * total, 0, total);
+}
+function navDown(e: PointerEvent, mode: "pan" | "l" | "r"): void {
+    if (eid === null || tTotal <= 0) return;
+    e.preventDefault();
+    e.stopPropagation(); // an edge press must not also start a window pan
+    navDrag = { mode, grab: navSecAt(e.clientX) - pxToSec(clamped, 0) };
+    window.addEventListener("pointermove", navMove);
+    window.addEventListener("pointerup", navUp);
+}
+function navMove(e: PointerEvent): void {
+    if (!navDrag) return;
+    view = navDragView(clamped, chartW, tTotal, navDrag.mode, navSecAt(e.clientX), navDrag.grab);
+}
+function navUp(): void {
+    navDrag = null;
+    window.removeEventListener("pointermove", navMove);
+    window.removeEventListener("pointerup", navUp);
+}
+
 // empty chart: a single left-click deselects; a double-click adds a pin (Unity / AE
 // curve-editor convention — deliberate, never a misfire on a single press).
 function chartDown(e: PointerEvent): void {
@@ -355,7 +392,7 @@ function pinDown(e: PointerEvent, id: number): void {
     dragMoved = false;
     trackCursor(e); // seed the cursor so a pre-move frame doesn't read a stale edge
     manipulating = true; // steady axis until the cursor hits an edge (then grow-follow)
-    begin(eid, id); // open the gesture; commit/cancel on release
+    beginPin(eid, id); // open the gesture; commit/cancel on release
     window.addEventListener("pointermove", pinDrag);
     window.addEventListener("pointerup", pinUp);
 }
@@ -417,7 +454,7 @@ function handleDown(e: PointerEvent, id: number, side: "l" | "r"): void {
     hDrag = { id, side };
     trackCursor(e); // seed the cursor so a pre-move frame doesn't read a stale edge
     manipulating = true; // steady axis until the cursor hits an edge (then grow-follow)
-    begin(eid, id); // gesture: commit/cancel on release
+    beginPin(eid, id); // gesture: commit/cancel on release
     window.addEventListener("pointermove", handleDrag);
     window.addEventListener("pointerup", handleUp);
 }
@@ -480,7 +517,7 @@ function openEditor(id: number): void {
     if (!pin || !p) return;
     editVal = Math.round(pin.value * 100) / 100; // the stored value is a long float
     editing = { id, x: p.x, y: p.y };
-    begin(eid, id); // edits are a gesture too (live preview, commit on close)
+    beginPin(eid, id); // edits are a gesture too (live preview, commit on close)
 }
 function editLive(): void {
     if (eid === null || editing === null || !Number.isFinite(editVal)) return;
@@ -576,8 +613,12 @@ function render(ctx: CanvasRenderingContext2D): void {
         ctx.moveTo(LEFT_GUT, y);
         ctx.lineTo(w, y);
         ctx.stroke();
-        ctx.fillStyle = "rgba(160, 152, 144, 0.7)";
-        ctx.fillText(`${gv.toFixed(dec)}g`, LEFT_GUT - 6, y);
+        // skip a label that would bleed past the plot band (the extreme top/bottom
+        // gridlines) rather than cram it inward — the interior labels carry the scale.
+        if (y >= TOP + LABEL_HALF && y <= h - BOT_PAD - LABEL_HALF) {
+            ctx.fillStyle = "rgba(160, 152, 144, 0.7)";
+            ctx.fillText(`${gv.toFixed(dec)}g`, LEFT_GUT - 6, y);
+        }
     }
 
     // force band limits — drawn only when within the visible range
@@ -591,7 +632,7 @@ function render(ctx: CanvasRenderingContext2D): void {
         ctx.stroke();
     }
 
-    // 1g gravity baseline — neutral (accent is reserved for the result + playhead)
+    // 1g gravity baseline — neutral (accent is reserved for the result curve)
     ctx.strokeStyle = "rgba(205, 197, 188, 0.45)";
     ctx.setLineDash([2, 4]);
     ctx.beginPath();
@@ -599,6 +640,13 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.lineTo(w, yOf(Y_BASE));
     ctx.stroke();
     ctx.setLineDash([]);
+
+    // clip the data series to the inner chart rect: a panned/zoomed curve must not
+    // paint over the left g-gutter labels or bleed past the ruler / bottom inset.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(LEFT_GUT, TOP, w - LEFT_GUT, h - BOT_PAD - TOP);
+    ctx.clip();
 
     // baked F_n draft dots
     if (fN) {
@@ -658,6 +706,35 @@ function render(ctx: CanvasRenderingContext2D): void {
         }
         ctx.stroke();
     }
+
+    ctx.restore();
+}
+
+// the navigator preview (VSCode-minimap / DAW-overview style): a faint miniature of
+// the whole solved F_n curve across the full track, so the viewport bracket reads
+// against the curve's shape. y-range tracks the chart's `yView`; the curve occupies
+// only [0, tTotal] of the width (the lead-out margin stays empty).
+function renderNav(nav: CanvasRenderingContext2D, cw: number, ch: number): void {
+    nav.clearRect(0, 0, cw, ch);
+    const data = solved ?? fN;
+    if (!data || data.length < 2 || tTotal <= 0) return;
+    const trackFrac = tTotal / (tTotal + marginSec(tTotal)); // curve span within the bar
+    const { lo, hi } = yView;
+    const span = Math.max(1e-6, hi - lo);
+    const pad = 2; // vertical inset so the curve doesn't touch the lane edges
+    const ny = (val: number): number =>
+        pad + (1 - (clamp(val, lo, hi) - lo) / span) * (ch - 2 * pad);
+    nav.strokeStyle = "rgba(212, 149, 96, 0.55)"; // dim accent
+    nav.lineWidth = 1;
+    nav.beginPath();
+    const n = data.length;
+    for (let i = 0; i < n; i++) {
+        const x = (i / (n - 1)) * trackFrac * cw;
+        const y = ny(data[i]);
+        if (i === 0) nav.moveTo(x, y);
+        else nav.lineTo(x, y);
+    }
+    nav.stroke();
 }
 
 $effect(() => {
@@ -674,6 +751,12 @@ $effect(() => {
     if (!ctx) return;
     resize(canvas, ctx);
     render(ctx);
+    const nav = navCanvas;
+    const nctx = nav?.getContext("2d");
+    if (nav && nctx) {
+        resize(nav, nctx);
+        renderNav(nctx, nav.clientWidth, nav.clientHeight);
+    }
 });
 
 // ── ruler scrub: click/drag anywhere in the top band positions the playhead. it
@@ -774,11 +857,14 @@ onMount(() => {
     const onWheel = (e: WheelEvent): void => {
         e.preventDefault();
         const x = e.clientX - canvas.getBoundingClientRect().left - LEFT_GUT; // chart-local anchor
-        if (e.ctrlKey || e.metaKey) {
-            view = zoomAt(clamped, x, 2 ** (-e.deltaY / ZOOM_DIV), chartW, tTotal);
-        } else {
-            const dx = e.shiftKey ? e.deltaY : e.deltaX || e.deltaY;
+        // curve-editor standard (Unity/AE): plain wheel zooms, shift+wheel pans.
+        // a trackpad's horizontal axis pans too; pinch arrives as ctrl+wheel → zoom.
+        const panH = e.shiftKey || (!e.ctrlKey && !e.metaKey && Math.abs(e.deltaX) > Math.abs(e.deltaY));
+        if (panH) {
+            const dx = e.shiftKey ? e.deltaY : e.deltaX;
             view = clampView({ pan: clamped.pan + dx, pxPerSec: clamped.pxPerSec }, chartW, tTotal);
+        } else {
+            view = zoomAt(clamped, x, 2 ** (-e.deltaY / ZOOM_DIV), chartW, tTotal);
         }
     };
     const onKey = (e: KeyboardEvent): void => {
@@ -817,6 +903,7 @@ onMount(() => {
         endScrub(); // drop any in-flight scrub listeners if we unmount mid-drag
         sliderUp(); // and any in-flight player-slider drag
         panUp(); // and any in-flight middle-drag pan
+        navUp(); // and any in-flight navigator drag
         window.removeEventListener("pointermove", pinDrag);
         window.removeEventListener("pointerup", pinUp);
         window.removeEventListener("pointermove", handleDrag);
@@ -956,13 +1043,33 @@ onMount(() => {
             </div>
         {/if}
     </div>
+    <!-- the time navigator: a full-track overview below the chart (Premiere placement)
+         rendered as a preview minimap (VSCode / DAW-overview style) — a miniature of the
+         F_n curve with the viewport as a draggable, edge-resizable window. the inner
+         track insets by LEFT_GUT so its time axis aligns with the chart above. -->
+    <div class="nav" class:idle={navWin === null}>
+        <div class="nav-track" bind:this={navEl} style="margin-left: {LEFT_GUT}px">
+            <canvas class="nav-canvas" bind:this={navCanvas}></canvas>
+            {#if navWin}
+                <div
+                    class="nav-window"
+                    style="left: {navWin.l * 100}%; width: {(navWin.r - navWin.l) * 100}%"
+                    onpointerdown={(e) => navDown(e, "pan")}
+                    role="presentation"
+                >
+                    <div class="nav-edge l" onpointerdown={(e) => navDown(e, "l")} role="presentation"></div>
+                    <div class="nav-edge r" onpointerdown={(e) => navDown(e, "r")} role="presentation"></div>
+                </div>
+            {/if}
+        </div>
+    </div>
 </aside>
 
 <!-- the player: a standard media transport (play/pause · global scrub · timecode)
-     floated as its own surface above the timeline. the slider is the *full-track*
+     floated as its own surface below the timeline. the slider is the *full-track*
      scrubber — global scope, distinct from the timeline's zoomed-local playhead
      (the After Effects comp-vs-timeline split). controls the cart; authoring lives
-     in the timeline below. -->
+     in the timeline above. -->
 <div class="player" class:idle={eid === null || tTotal <= 0}>
     <button
         class="play"
@@ -994,7 +1101,7 @@ onMount(() => {
         <div class="thumb" style="left: {frac * 100}%"></div>
     </div>
     <span class="time">
-        {(cartSec ?? 0).toFixed(2)}<span class="sep">/{tTotal.toFixed(2)}s</span>
+        {(cartSec ?? 0).toFixed(2)}<span class="sep">/</span><span class="total">{tTotal.toFixed(2)}s</span>
     </span>
 </div>
 
@@ -1006,7 +1113,7 @@ onMount(() => {
         width: calc(100% - 32px);
         max-width: 1280px;
         bottom: 16px;
-        height: 184px;
+        height: 206px;
         display: flex;
         flex-direction: column;
         background: var(--bg-solid);
@@ -1025,6 +1132,63 @@ onMount(() => {
         min-height: 0;
     }
 
+    /* time navigator: a preview-minimap overview strip below the chart. dims only
+       when there's no track (nothing to preview). */
+    .nav {
+        flex: none;
+        padding: 2px 0 6px;
+        transition: opacity 150ms ease;
+    }
+    .nav.idle {
+        opacity: 0.4;
+    }
+    .nav-track {
+        position: relative;
+        height: 22px;
+        background: rgba(0, 0, 0, 0.28);
+        border-radius: 3px;
+    }
+    .nav-canvas {
+        position: absolute;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        border-radius: 3px; /* clips the preview curve to the lane's rounded corners */
+    }
+    /* the viewport window: a translucent highlight over the preview (VSCode-minimap
+       style), not a solid block — the curve reads through it. */
+    .nav-window {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        min-width: 8px;
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        border-radius: 3px;
+        cursor: grab;
+        transition: background 120ms ease;
+    }
+    .nav-window:hover {
+        background: rgba(255, 255, 255, 0.12);
+    }
+    .nav-window:active {
+        cursor: grabbing;
+    }
+    .nav-edge {
+        position: absolute;
+        top: -2px;
+        bottom: -2px;
+        width: 7px;
+        cursor: ew-resize;
+    }
+    .nav-edge.l {
+        left: -3px;
+    }
+    .nav-edge.r {
+        right: -3px;
+    }
+
     canvas {
         display: block;
         width: 100%;
@@ -1039,13 +1203,13 @@ onMount(() => {
     }
 
     .playhead {
-        stroke: var(--accent);
+        stroke: var(--neutral);
         stroke-width: 1.2;
         opacity: 0.9;
     }
 
     .grip {
-        fill: var(--accent);
+        fill: var(--neutral); /* matches the player knob; accent is reserved for the result curve */
         pointer-events: none; /* visual handle; the rulerzone owns the scrub */
     }
 
@@ -1063,7 +1227,7 @@ onMount(() => {
         outline: none;
     }
     .rulerzone:focus-visible ~ .grip {
-        stroke: var(--accent-soft);
+        stroke: var(--neutral-soft);
         stroke-width: 4;
         paint-order: stroke;
     }
@@ -1174,7 +1338,7 @@ onMount(() => {
         position: absolute;
         left: 50%;
         transform: translateX(-50%);
-        bottom: 220px; /* dock bottom 16 + dock height 184 + 20 gap */
+        bottom: 254px; /* above the dock (bottom 16 + height 206) + 32 gap */
         width: min(calc(100% - 32px), 560px);
         box-sizing: border-box;
         height: 36px;
@@ -1285,6 +1449,10 @@ onMount(() => {
         color: var(--fg);
     }
     .time .sep {
+        color: var(--muted);
+        margin: 0 0.4em; /* breathing room around the slash */
+    }
+    .time .total {
         color: var(--muted);
     }
 </style>

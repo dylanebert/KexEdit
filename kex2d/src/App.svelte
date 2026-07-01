@@ -3,8 +3,9 @@ import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
 import { attachControls } from "./controls";
 import { editor, select } from "./editor";
+import { extendTrack, history, trimTrack } from "./history";
 import Timeline from "./Timeline.svelte";
-import { bakeOut, extend, Handle, lastHandle, removeTrailingHandle, Track } from "./track";
+import { bakeOut, Handle, lastHandle, Track } from "./track";
 import { attachCanvas2D, viewTransform } from "./view";
 
 const { ecs }: { ecs: State } = $props();
@@ -69,10 +70,10 @@ const endUI = $derived.by((): EndUI | null => {
 });
 
 function onExtend(): void {
-    select(extend(ecs));
+    select(extendTrack(history, ecs));
 }
 function onDelete(): void {
-    if (removeTrailingHandle(ecs)) select(lastHandle(ecs));
+    if (trimTrack(history, ecs)) select(lastHandle(ecs));
 }
 </script>
 

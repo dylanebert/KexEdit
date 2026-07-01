@@ -126,6 +126,67 @@ export function addNode(ecs: State, x: number, y: number): number {
     return eid;
 }
 
+/** resolve a node by its stable `order` to its ECS eid, or null. undo/redo
+ *  address nodes by order — a stable identity for this append/delete-trailing
+ *  chain (an interior node's order never changes), the way pins address by a
+ *  stable `id` — so a recycled eid across a delete→undo can't alias the wrong
+ *  node. */
+export function handleAt(ecs: State, order: number): number | null {
+    for (const eid of ecs.query([Handle])) {
+        if (Handle.order.get(eid) === order) return eid;
+    }
+    return null;
+}
+
+/** re-create a node at an *exact* order / position / heading — no `reflect`, no
+ *  rehead. restores a node deleted by a trim (undo) or re-adds one dropped by an
+ *  extend (redo); the saved state is replayed verbatim so the bake reproduces the
+ *  same curve. */
+export function spawnNode(ecs: State, order: number, x: number, y: number, theta: number): number {
+    const eid = ecs.create();
+    ecs.add(eid, Handle);
+    Handle.order.set(eid, order);
+    Handle.sample.set(eid, 0);
+    Handle.pos.set(eid, x, y);
+    Handle.theta.set(eid, theta);
+    return eid;
+}
+
+/** a node's undoable pose — position + stored heading, keyed by stable order. */
+export interface NodeState {
+    order: number;
+    x: number;
+    y: number;
+    theta: number;
+}
+
+/** snapshot every node's pose (the whole chain — a handful of nodes). the move
+ *  gesture captures this before/after a drag; a drag never adds or removes a
+ *  node, so the two snapshots share the same order set. */
+export function nodeSnapshot(ecs: State): NodeState[] {
+    const snap: NodeState[] = [];
+    for (const eid of ecs.query([Handle])) {
+        snap.push({
+            order: Handle.order.get(eid),
+            x: Handle.pos.x.get(eid),
+            y: Handle.pos.y.get(eid),
+            theta: Handle.theta.get(eid),
+        });
+    }
+    return snap;
+}
+
+/** write a chain snapshot back onto the live nodes by order (move undo/redo and
+ *  gesture cancel). only pose is touched — the node set is unchanged. */
+export function restoreNodes(ecs: State, snap: NodeState[]): void {
+    for (const s of snap) {
+        const eid = handleAt(ecs, s.order);
+        if (eid === null) continue;
+        Handle.pos.set(eid, s.x, s.y);
+        Handle.theta.set(eid, s.theta);
+    }
+}
+
 function seed(ecs: State): void {
     createTrack(ecs);
     // a flat horizontal start, one extension-length long (matches `extend`).

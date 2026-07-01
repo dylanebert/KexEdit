@@ -20,7 +20,7 @@ export interface Tick {
  *  has visible margin. */
 const MIN_MARGIN_SEC = 0.5;
 /** zoom-in ceiling — a pixel-per-second cap so the axis can't blow up. */
-const MAX_PX_PER_SEC = 4000;
+export const MAX_PX_PER_SEC = 4000;
 /** target spacing between labeled major ticks, in px. */
 const TARGET_TICK_PX = 80;
 
@@ -68,6 +68,42 @@ export function zoomAt(
 /** the view that frames the whole track + lead-out (min scale, left-anchored at t=0). */
 export const frameAll = (width: number, tTotal: number): View =>
     clampView({ pan: -Number.MAX_VALUE, pxPerSec: 0 }, width, tTotal);
+
+/** the time-navigator window: the visible span [0, width] expressed as `{l, r}`
+ *  fractions of the full track + lead-out (the viewport bracket over the overview). */
+export function navWindow(v: View, width: number, tTotal: number): { l: number; r: number } {
+    const total = tTotal + marginSec(tTotal);
+    const frac = (s: number): number => Math.min(1, Math.max(0, s / total));
+    return { l: frac(pxToSec(v, 0)), r: frac(pxToSec(v, width)) };
+}
+
+/** apply a navigator drag and return the clamped view. `pan` slides the window (`grab`
+ *  is the seconds from the window's left edge to the cursor, held constant); `l`/`r`
+ *  drag one edge with the opposite edge anchored — a cursor-anchored zoom. */
+export function navDragView(
+    v: View,
+    width: number,
+    tTotal: number,
+    mode: "pan" | "l" | "r",
+    curSec: number,
+    grabSec: number,
+): View {
+    const lo = pxToSec(v, 0);
+    const hi = pxToSec(v, width);
+    const minSpan = width / MAX_PX_PER_SEC; // the zoom-in ceiling, as a second-span floor
+    if (mode === "pan")
+        return clampView(
+            { pan: (curSec - grabSec) * v.pxPerSec, pxPerSec: v.pxPerSec },
+            width,
+            tTotal,
+        );
+    if (mode === "l") {
+        const pps = width / (hi - Math.min(curSec, hi - minSpan)); // anchor the right edge
+        return clampView({ pan: hi * pps - width, pxPerSec: pps }, width, tTotal);
+    }
+    const pps = width / (Math.max(curSec, lo + minSpan) - lo); // anchor the left edge
+    return clampView({ pan: lo * pps, pxPerSec: pps }, width, tTotal);
+}
 
 /** nearest 1-2-5×10ⁿ to `x` — the nice-number tick step. breakpoints are the
  *  geometric means (√2, √10, √50), so each mantissa snaps to its closest of 1/2/5/10. */

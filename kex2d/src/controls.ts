@@ -1,6 +1,7 @@
 import type { State } from "@dylanebert/shallot";
 import { editor, select } from "./editor";
-import { extend, Handle, lastHandle, reheadOnDrag, removeTrailingHandle } from "./track";
+import { beginMove, cancel, commit, extendTrack, history, trimTrack } from "./history";
+import { Handle, lastHandle, reheadOnDrag } from "./track";
 import { pointerToCanvas, screenToWorld, viewTransform, type ViewTx } from "./view";
 
 const PICK_R = 16;
@@ -59,6 +60,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         dragNode = eid;
         grabX = Handle.pos.x.get(eid) - wx;
         grabY = Handle.pos.y.get(eid) - wy;
+        beginMove(ecs); // open the drag gesture; commit/cancel on release
         canvas.setPointerCapture(e.pointerId);
     };
 
@@ -74,6 +76,14 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     const endDrag = (e: PointerEvent): void => {
         if (dragNode === null) return;
         dragNode = null;
+        commit(history); // one drag → one undo entry (a no-move click records nothing)
+        if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    };
+
+    const cancelDrag = (e: PointerEvent): void => {
+        if (dragNode === null) return;
+        dragNode = null;
+        cancel(); // interrupted drag: restore the pre-gesture pose
         if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     };
 
@@ -91,10 +101,10 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         if (!endSelected(ecs)) return;
         if (e.key === "Enter") {
             e.preventDefault();
-            select(extend(ecs)); // lay a node, select it
+            select(extendTrack(history, ecs)); // lay a node, select it
         } else if (e.key === "Delete" || e.key === "Backspace") {
             e.preventDefault();
-            if (removeTrailingHandle(ecs)) select(lastHandle(ecs));
+            if (trimTrack(history, ecs)) select(lastHandle(ecs));
         }
     };
 
@@ -102,7 +112,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", endDrag);
-    canvas.addEventListener("pointercancel", endDrag);
+    canvas.addEventListener("pointercancel", cancelDrag);
     window.addEventListener("keydown", onKeyDown);
 
     return () => {
@@ -110,7 +120,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         canvas.removeEventListener("pointerdown", onPointerDown);
         canvas.removeEventListener("pointermove", onPointerMove);
         canvas.removeEventListener("pointerup", endDrag);
-        canvas.removeEventListener("pointercancel", endDrag);
+        canvas.removeEventListener("pointercancel", cancelDrag);
         window.removeEventListener("keydown", onKeyDown);
     };
 }
