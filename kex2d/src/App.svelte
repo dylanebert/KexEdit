@@ -4,6 +4,8 @@ import { onMount } from "svelte";
 import { attachControls } from "./controls";
 import { editor, select } from "./editor";
 import { extendTrack, history, trimTrack } from "./history";
+import { relaxTrack } from "./relax";
+import { type ConstraintReport, solveState } from "./solve";
 import Timeline from "./Timeline.svelte";
 import { bakeOut, Handle, lastHandle, Track } from "./track";
 import { attachCanvas2D, viewTransform } from "./view";
@@ -45,6 +47,21 @@ const handleCount = $derived.by((): number => {
     for (const _ of ecs.query([Handle])) n++;
     return n;
 });
+// the worst losing constraint, when a solve is live — the one-line "this
+// demand is losing by X" summary. rendered only when something is actually
+// unsatisfied (gate 2); the per-constraint detail lives on the timeline curve.
+const losing = $derived.by((): ConstraintReport | null => {
+    void tick;
+    if (trackEid === null) return null;
+    const st = solveState.get(trackEid);
+    if (!st || st.suspended) return null;
+    let worst: ConstraintReport | null = null;
+    for (const r of st.report) {
+        if (r.satisfied) continue;
+        if (!worst || Math.abs(r.residual) > Math.abs(worst.residual)) worst = r;
+    }
+    return worst;
+});
 // the chain end carries a radial action cluster when selected: an extend button
 // along the heading (where the next piece lays) and a delete button rotated off
 // it. positions are in canvas/CSS pixels at the node's screen point.
@@ -75,6 +92,19 @@ function onExtend(): void {
 function onDelete(): void {
     if (trimTrack(history, ecs)) select(lastHandle(ecs));
 }
+// the relax verb (summoned only while a solve is live): re-baseline the
+// sketch toward what the solve wants. the chain rebuild recycles node eids,
+// so the selection clears.
+const solveLive = $derived.by((): boolean => {
+    void tick;
+    if (trackEid === null) return false;
+    const st = solveState.get(trackEid);
+    return !!st && !st.suspended;
+});
+function onRelax(): void {
+    if (trackEid === null) return;
+    if (relaxTrack(history, ecs, trackEid)) select(null);
+}
 </script>
 
 <canvas bind:this={canvas}></canvas>
@@ -98,6 +128,29 @@ function onDelete(): void {
         </svg>
         <span>Insufficient velocity</span>
     </div>
+{/if}
+
+<!-- a constraint the solve can't satisfy: amber (a negotiation, not a failure),
+     one line, only while it's actually losing. detail is on the timeline curve. -->
+{#if losing}
+    <div class="warning losing" class:below={infeasible} role="status">
+        <span>
+            {losing.kind === "pin"
+                ? "Force pin"
+                : losing.kind === "pos"
+                  ? "Position pin"
+                  : "Comfort band"} losing by
+            {Math.abs(losing.residual).toFixed(1)}{losing.kind === "pos" ? "m" : "g"}
+        </span>
+    </div>
+{/if}
+
+<!-- the relax verb: summoned only while a solve is live (the sketch and the
+     solve have diverged — the ghost shows it). one undoable commit. -->
+{#if solveLive}
+    <button type="button" class="relax" onclick={onRelax} title="Relax the sketch toward the solve">
+        Relax
+    </button>
 {/if}
 
 <!-- contextual actions radially around the selected chain end: extend along the
@@ -146,7 +199,7 @@ function onDelete(): void {
     </div>
 {/if}
 
-<Timeline eid={trackEid} {tick} />
+<Timeline eid={trackEid} {tick} {ecs} />
 
 <style>
     :root,
@@ -196,6 +249,46 @@ function onDelete(): void {
         width: 14px;
         height: 14px;
         color: #e26d5c;
+    }
+    /* the losing-constraint chip: amber, not red — the solver is negotiating,
+       not broken. stacks below the velocity banner when both are up. */
+    .warning.losing {
+        background: rgba(212, 149, 96, 0.12);
+        border-color: rgba(212, 149, 96, 0.5);
+        color: #ecd0b4;
+    }
+    .warning.losing.below {
+        top: 52px;
+    }
+
+    /* the relax verb: a quiet corner action, present only while a solve is
+       live. opaque surface, no dock. */
+    .relax {
+        all: unset;
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        box-sizing: border-box;
+        padding: 5px 14px;
+        border-radius: 999px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow);
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 12px;
+        color: var(--fg);
+        cursor: pointer;
+        transition:
+            background 120ms ease,
+            border-color 120ms ease,
+            transform 80ms ease;
+    }
+    .relax:hover {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+    }
+    .relax:active {
+        transform: scale(0.96);
     }
 
     /* zero-size anchor pinned at the node's screen point; buttons orbit it. */

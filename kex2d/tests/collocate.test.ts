@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { bandFactor, bandSolve, bandStore } from "../src/banded";
 import { forces as bakeForces, invert } from "../src/bake";
-import { collocate, collocateAL, evaluate, normalBand } from "../src/collocate";
+import {
+    collocate,
+    collocateAL,
+    collocateRTI,
+    createRTIState,
+    evaluate,
+    normalBand,
+} from "../src/collocate";
 import { forceJacobian, forces64 } from "../src/force";
 import { denseSolveSpd } from "./helpers/dense";
 import { forward64 } from "./helpers/forward64";
@@ -389,15 +396,379 @@ describe("collocate — forward-oracle self-consistency", () => {
     });
 });
 
+describe("collocateRTI — one AL outer per frame, λ as the carry", () => {
+    const Lo = -1;
+    const Hi = 4;
+    const Rho = 50;
+
+    function frameOpts(t: ReturnType<typeof loopTrack>, xw?: Float64Array, yw?: Float64Array) {
+        const wF = new Float64Array(t.n);
+        wF[t.apex] = 100;
+        return {
+            fTarget: new Float64Array(t.n),
+            x0: t.x,
+            y0: t.y,
+            ds: t.ds,
+            v0: t.v0,
+            wData: 0,
+            terms: {
+                wF,
+                band: { lo: Lo, hi: Hi, w: Rho },
+                shape: { w: 0.1 },
+                chord: { w: 1 },
+            },
+            xInit: xw,
+            yInit: yw,
+            maxIters: 15,
+        };
+    }
+
+    test("converges across frames to the collocateAL solution", () => {
+        // the Stage-2 loop scenario driven one budget-bound outer per
+        // "frame": the λ state must carry the outer loop across calls, so a
+        // bounded frame count reaches the same band satisfaction collocateAL
+        // reaches in one call (its own outer cap is 40 — the same bound).
+        const t = loopTrack(10, 0.5, 15);
+        const rti = createRTIState(t.n, Rho);
+        let xw: Float64Array | undefined;
+        let yw: Float64Array | undefined;
+        let frames = 0;
+        let viol = Number.POSITIVE_INFINITY;
+        for (; frames < 40 && viol >= 1e-3; frames++) {
+            const r = collocateRTI(frameOpts(t, xw, yw), rti);
+            xw = r.x;
+            yw = r.y;
+            viol = r.viol;
+            for (let i = 0; i < t.n; i++) {
+                expect(Number.isFinite(r.x[i])).toBe(true);
+                expect(Number.isFinite(r.y[i])).toBe(true);
+            }
+        }
+        expect(viol).toBeLessThan(1e-3);
+
+        // the frozen-λ fixpoint is STABLE: post-satisfaction frames neither
+        // re-violate nor keep moving the geometry (the millimeter limit
+        // cycle the freeze exists to kill).
+        for (let f = 0; f < 25; f++) {
+            if (!xw || !yw) throw new Error("no frames ran");
+            const px = Float64Array.from(xw);
+            const py = Float64Array.from(yw);
+            const r = collocateRTI(frameOpts(t, xw, yw), rti);
+            xw = r.x;
+            yw = r.y;
+            expect(r.viol).toBeLessThan(1e-3);
+            if (f >= 5) {
+                let drift = 0;
+                for (let i = 0; i < t.n; i++) {
+                    drift = Math.max(drift, Math.abs(r.x[i] - px[i]), Math.abs(r.y[i] - py[i]));
+                }
+                expect(drift).toBeLessThan(5e-3);
+            }
+        }
+
+        // the contract shared with the one-call outer loop: the band met to
+        // tol AND the pin at its target. (the full force profile is NOT
+        // asserted equal — the soft riding level inside the band is
+        // schedule-dependent, bounded ~0.25 g; see the collocateRTI freeze
+        // note.)
+        const ref = collocateAL(frameOpts(t), { tol: 1e-3, outers: 40 });
+        expect(ref.converged).toBe(true);
+        if (!xw || !yw) throw new Error("no frames ran");
+        const fRti = forces64(xw, yw, t.n, t.v0).fN;
+        const fRef = forces64(ref.x, ref.y, t.n, t.v0).fN;
+        expect(Math.abs(fRti[t.apex])).toBeLessThan(1e-2); // the pin, like the ref
+        expect(Math.abs(fRef[t.apex])).toBeLessThan(1e-2);
+    });
+
+    test("a 30-frame pin drag stays finite and lands converged", () => {
+        // slide the apex pin target 0 → −0.3 linearly over 30 frames, one
+        // outer per frame from the previous frame's solution — the drag
+        // pattern the wire stage runs. every frame finite; after the drag
+        // rests, a handful of polish frames reach the band and the pin.
+        const t = loopTrack(10, 0.5, 15);
+        const rti = createRTIState(t.n, Rho);
+        let xw: Float64Array | undefined;
+        let yw: Float64Array | undefined;
+        for (let f = 0; f < 30; f++) {
+            const o = frameOpts(t, xw, yw);
+            o.fTarget[t.apex] = -0.3 * ((f + 1) / 30);
+            const r = collocateRTI(o, rti);
+            xw = r.x;
+            yw = r.y;
+            for (let i = 0; i < t.n; i++) {
+                expect(Number.isFinite(r.x[i])).toBe(true);
+                expect(Number.isFinite(r.y[i])).toBe(true);
+            }
+        }
+        let viol = Number.POSITIVE_INFINITY;
+        for (let f = 0; f < 20 && viol >= 1e-3; f++) {
+            const o = frameOpts(t, xw, yw);
+            o.fTarget[t.apex] = -0.3;
+            const r = collocateRTI(o, rti);
+            xw = r.x;
+            yw = r.y;
+            viol = r.viol;
+        }
+        expect(viol).toBeLessThan(1e-3);
+        if (!xw || !yw) throw new Error("no frames ran");
+        const f = forces64(xw, yw, t.n, t.v0).fN;
+        expect(Math.abs(f[t.apex] - -0.3)).toBeLessThan(1e-2);
+    });
+
+    test("no band ⇒ a plain collocate pass, rti untouched", () => {
+        const ds = 0.25;
+        const N = Math.floor(15 / ds) + 1;
+        const { x, y, fStar } = arc(N, ds);
+        const { px, py } = perturb(x, y, ds, 0.1);
+        const plain = collocate({ fTarget: fStar, x0: px, y0: py, ds, v0: V0 });
+        const rti = createRTIState(N, 50);
+        const r = collocateRTI({ fTarget: fStar, x0: px, y0: py, ds, v0: V0 }, rti);
+        expect(r.viol).toBe(0);
+        expect(rti.prevViol).toBe(Number.POSITIVE_INFINITY); // untouched
+        for (let i = 0; i < N; i++) {
+            expect(r.x[i]).toBe(plain.x[i]);
+            expect(r.y[i]).toBe(plain.y[i]);
+        }
+    });
+
+    test("a length-infeasible band stays loud and finite across frames", () => {
+        // band hi=2 needs more arclength than the grid supplies (the Stage-2
+        // finding); frames must neither NaN nor silently claim satisfaction,
+        // and ρ escalation must not spiral the geometry.
+        const t = loopTrack(10, 0.5, 15);
+        const rti = createRTIState(t.n, Rho);
+        let xw: Float64Array | undefined;
+        let yw: Float64Array | undefined;
+        let viol = 0;
+        for (let f = 0; f < 20; f++) {
+            const o = frameOpts(t, xw, yw);
+            o.terms.band.hi = 2;
+            const r = collocateRTI(o, rti);
+            xw = r.x;
+            yw = r.y;
+            viol = r.viol;
+            for (let i = 0; i < t.n; i++) {
+                expect(Number.isFinite(r.x[i])).toBe(true);
+                expect(Number.isFinite(r.y[i])).toBe(true);
+            }
+        }
+        expect(viol).toBeGreaterThan(0.1); // loud, not silently "satisfied"
+    });
+});
+
+describe("stage 3 — the FVD limit (full-curve force target)", () => {
+    // the claim (spec Approach §3): a full-curve F(σ) target over the fixed
+    // N·ds grid with free interior positions IS the FVD parameterization —
+    // the solve must land on the geometry forward-integrating that profile
+    // produces. the data weight is density-scaled at the call site
+    // (wData = ds): the full-curve target is an interval term.
+
+    /** undulating force profile F(σ) = 1 + A·sin(2πσ/Λ) over S=60 m. */
+    function hills(A: number, ds: number) {
+        const N = Math.round(60 / ds) + 1;
+        const fT = new Float64Array(N);
+        for (let i = 0; i < N; i++) fT[i] = 1 + A * Math.sin((2 * Math.PI * i * ds) / 30);
+        return { fT, N };
+    }
+
+    /** the FVD oracle: forward-integrate the profile from the flat launch. */
+    function fvdOracle(fT: Float64Array, N: number, ds: number, v0: number) {
+        const st = forward64(0, 0, 0, v0, N, ds, (s) => fT[Math.round(s / ds)]);
+        const x = new Float64Array(N);
+        const y = new Float64Array(N);
+        for (let i = 0; i < N; i++) {
+            x[i] = st[i][0];
+            y[i] = st[i][1];
+        }
+        return { x, y };
+    }
+
+    /** sketch draft: the oracle warped along its local normal at low
+     *  frequency (a hand sketch errs in proportions, not wiggles). */
+    function sketchDraft(x: Float64Array, y: Float64Array, ds: number, amp: number) {
+        const N = x.length;
+        const lambda = 0.4 * (N - 1) * ds;
+        const wx = Float64Array.from(x);
+        const wy = Float64Array.from(y);
+        for (let i = 1; i < N - 1; i++) {
+            const tx = x[i + 1] - x[i - 1];
+            const ty = y[i + 1] - y[i - 1];
+            const len = Math.hypot(tx, ty) || 1;
+            const w = amp * Math.sin((2 * Math.PI * i * ds) / lambda);
+            wx[i] += (w * -ty) / len;
+            wy[i] += (w * tx) / len;
+        }
+        return { wx, wy };
+    }
+
+    /** max interior distance to the oracle polyline — the parametrization-
+     *  invariant tracking metric (sliding along the curve is the gauge). */
+    function maxDev(sx: Float64Array, sy: Float64Array, ox: Float64Array, oy: Float64Array) {
+        const N = sx.length;
+        let max = 0;
+        for (let i = 1; i < N - 1; i++) {
+            let best = Number.POSITIVE_INFINITY;
+            for (let j = 0; j < N - 1; j++) {
+                const ex = ox[j + 1] - ox[j];
+                const ey = oy[j + 1] - oy[j];
+                const ee = ex * ex + ey * ey;
+                let t = ee > 0 ? ((sx[i] - ox[j]) * ex + (sy[i] - oy[j]) * ey) / ee : 0;
+                t = Math.max(0, Math.min(1, t));
+                best = Math.min(
+                    best,
+                    Math.hypot(sx[i] - (ox[j] + t * ex), sy[i] - (oy[j] + t * ey)),
+                );
+            }
+            max = Math.max(max, best);
+        }
+        return max;
+    }
+
+    test("the solve tracks the FVD forward oracle within the conditioning envelope", () => {
+        // solved = forward64(invert(solved)) EXACTLY (invert is the
+        // integrator's reflection inverse), and oracle = forward64(F*), so
+        // the solved-vs-oracle gap is the integrator's sensitivity σ_pos
+        // acting on δF = invert(solved) − F* (the source-vs-central
+        // convention gap, O(ds), plus the solve residual). the bound is the
+        // same derived envelope as the self-consistency test — the FVD-limit
+        // gap is discretization, not a modeling error (the lab's ds sweep
+        // shows the exact 2× halving).
+        const ds = 0.5;
+        const { fT, N } = hills(1.0, ds);
+        const o = fvdOracle(fT, N, ds, V0);
+        const { wx, wy } = sketchDraft(o.x, o.y, ds, 1.5);
+        // prior OFF isolates the envelope mechanism; the hills family is
+        // degeneracy-safe without it (the prior's FVD-limit role — keeping
+        // LM off the Menger singularities — is pinned by the loop test).
+        const res = collocate({
+            fTarget: fT,
+            x0: wx,
+            y0: wy,
+            ds,
+            v0: V0,
+            wData: ds,
+            terms: { chord: { w: 1 } },
+            maxIters: 200,
+        });
+        expect(res.converged).toBe(true);
+        const f = forces64(res.x, res.y, N, V0).fN;
+        for (let i = 1; i < N - 1; i++) expect(Math.abs(f[i] - fT[i])).toBeLessThan(1e-6);
+
+        // δF: source-convention force of the solved geometry vs the target.
+        const src = new Float32Array(N);
+        invert(
+            Float32Array.from(res.x),
+            Float32Array.from(res.y),
+            new Float32Array(N),
+            new Float32Array(N),
+            src,
+            N,
+            ds,
+            0,
+            V0,
+        );
+        let dF2 = 0;
+        for (let i = 1; i < N - 1; i++) dF2 += (src[i] - fT[i]) ** 2;
+        dF2 = Math.sqrt(dF2);
+
+        // σ_pos: largest singular value of ∂(x,y)_end/∂F via central FD.
+        const h = 1e-5;
+        let aa = 0;
+        let bb = 0;
+        let cc = 0;
+        for (let i = 0; i < N - 1; i++) {
+            const fp = Float64Array.from(fT);
+            const fm = Float64Array.from(fT);
+            fp[i] += h;
+            fm[i] -= h;
+            const ep = forward64(0, 0, 0, V0, N, ds, (s) => fp[Math.round(s / ds)])[N - 1];
+            const em = forward64(0, 0, 0, V0, N, ds, (s) => fm[Math.round(s / ds)])[N - 1];
+            const jx = (ep[0] - em[0]) / (2 * h);
+            const jy = (ep[1] - em[1]) / (2 * h);
+            aa += jx * jx;
+            cc += jy * jy;
+            bb += jx * jy;
+        }
+        const disc = Math.sqrt(Math.max((aa + cc) ** 2 / 4 - (aa * cc - bb * bb), 0));
+        const sigmaPos = Math.sqrt((aa + cc) / 2 + disc);
+
+        const dev = maxDev(res.x, res.y, o.x, o.y);
+        expect(dev).toBeGreaterThan(1e-9); // the convention gap is real, not exact
+        expect(dev).toBeLessThan(5 * sigmaPos * dF2);
+    });
+
+    test("a warm re-solve after a local target edit fits the interactive budget", () => {
+        // the RTI preview on the aggressive end: solve the 0g-loop profile
+        // from a sketch draft (standard config — the shape prior stays ON in
+        // the FVD limit as the Menger-degeneracy regularizer, measured in the
+        // lab), then dip the apex target −0.3g and re-solve warm. asserts the
+        // achieved force lands under the residual-readout threshold (0.05 g,
+        // half the documented forces64-vs-bake display gap) within a bounded
+        // iteration count (≤30, a bound not a tuned count; measured ~17).
+        const t = loopTrack(10, 0.5, 15);
+        const fT = new Float64Array(t.n);
+        for (let i = 0; i < t.n; i++) {
+            const s = i * t.ds;
+            const lead = 15;
+            if (s < lead || s >= lead + 2 * Math.PI * 10) {
+                fT[i] = 1;
+            } else {
+                const phi = (s - lead) / 10;
+                fT[i] = (t.v0 * t.v0 - 2 * G * 10 * (1 - Math.cos(phi))) / (10 * G) + Math.cos(phi);
+            }
+        }
+        const o = fvdOracle(fT, t.n, t.ds, t.v0);
+        const { wx, wy } = sketchDraft(o.x, o.y, t.ds, 1.5);
+        const terms = { shape: { w: 0.1 }, chord: { w: 1 } };
+        const base = collocate({
+            fTarget: fT,
+            x0: wx,
+            y0: wy,
+            ds: t.ds,
+            v0: t.v0,
+            wData: t.ds,
+            terms,
+            maxIters: 200,
+        });
+        expect(base.converged).toBe(true);
+
+        const fT2 = Float64Array.from(fT);
+        for (let k = -10; k <= 10; k++) fT2[t.apex + k] -= 0.3 * Math.exp(-(k * k) / 32);
+        const warm = collocate({
+            fTarget: fT2,
+            x0: wx,
+            y0: wy,
+            ds: t.ds,
+            v0: t.v0,
+            wData: t.ds,
+            terms,
+            xInit: base.x,
+            yInit: base.y,
+            maxIters: 30,
+        });
+        expect(warm.converged).toBe(true);
+        const f = forces64(warm.x, warm.y, t.n, t.v0).fN;
+        let err = 0;
+        for (let i = 1; i < t.n - 1; i++) err = Math.max(err, Math.abs(f[i] - fT2[i]));
+        expect(err).toBeLessThan(0.05);
+        for (let i = 0; i < t.n; i++) {
+            expect(Number.isFinite(warm.x[i])).toBe(true);
+            expect(Number.isFinite(warm.y[i])).toBe(true);
+        }
+    });
+});
+
 describe("stage 2 — residual-block assembly matches finite differences", () => {
-    test("−rhs equals ∇Φ over pins + shifted band + shape + chord", () => {
+    test("−rhs equals ∇Φ over pins + shifted band + shape + chord + pos + fRough", () => {
         // every block live at once, on a generic (perturbed-arc) geometry: pins
         // (sparse wF), a band tight enough that both hinge sides have active
         // rows, AL shifts nonzero (the shifted-kink path), the roughness prior
-        // toward the unperturbed draft, and the chord term. central FD of
-        // `evaluate().phi` vs `normalBand`'s −rhs. FD tol: h=1e-6 central ⇒
-        // O(h²·Φ''') ≈ 1e-9 relative to gradient scale; assert 1e-5 relative
-        // (4 orders of margin, still far below any real assembly error).
+        // toward the unperturbed draft, the chord term, explicit position pins,
+        // and the force-roughness comfort term (the widened 8-col stencil).
+        // central FD of `evaluate().phi` vs `normalBand`'s −rhs. FD tol:
+        // h=1e-6 central ⇒ O(h²·Φ''') ≈ 1e-9 relative to gradient scale;
+        // assert 1e-5 relative (4 orders of margin, still far below any real
+        // assembly error).
         for (const shape of [
             { w: 2, order: 2 as const },
             { w: 2, order: 3 as const },
@@ -418,6 +789,13 @@ describe("stage 2 — residual-block assembly matches finite differences", () =>
                 band: { lo: 0.9, hi: 1.6, w: 3, shiftLo, shiftHi },
                 shape,
                 chord: { w: 1.5 },
+                pos: {
+                    rows: [
+                        { i: 5, x: px[5] + 0.4, y: py[5] - 0.2, w: 6 },
+                        { i: 8, x: px[8] - 0.1, y: py[8] + 0.3, w: 2.5 },
+                    ],
+                },
+                fRough: { w: 1.2 },
             };
 
             // the band must actually clip somewhere for the test to mean anything.

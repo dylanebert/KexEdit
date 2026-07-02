@@ -77,6 +77,12 @@ export interface ShapeTerm {
     order?: 2 | 3;
 }
 
+/** explicit position pins: hold node `i` at `(x, y)` with weight `w` — a
+ *  point term (meters), the position analogue of a force data row. */
+export interface PosTerm {
+    rows: { i: number; x: number; y: number; w: number }[];
+}
+
 /** optional residual blocks past the data term. */
 export interface Terms {
     /** per-row data weights (length N, interior rows read; overrides `wData`).
@@ -84,6 +90,12 @@ export interface Terms {
     wF?: Float64Array;
     band?: BandTerm;
     shape?: ShapeTerm;
+    pos?: PosTerm;
+    /** force-roughness comfort term: first difference of F per edge between
+     *  interior rows, `(F_{i+1} − F_i)/ds`, an interval density. penalizes
+     *  the bang-bang band-riding profile (an authoring-level "smoothness"
+     *  knob, default absent). widens the stencil to half-bandwidth 7. */
+    fRough?: { w: number };
     /** chord-consistency `(|P_{i+1}−P_i| − ds)/ds` per edge — a GRID-QUALITY
      *  regularizer, kept SMALL (0.1–1). `forces64` is parametrization-invariant
      *  (Menger κ + neighbor-chord tangent), so force cannot be cheated by
@@ -102,6 +114,7 @@ export interface Terms {
 
 // half-bandwidth of the assembled normal system for a term set.
 function bandwidth(terms?: Terms): number {
+    if (terms?.fRough) return 7; // ΔF couples nodes i−1..i+2
     return terms?.shape?.kind !== "magnitude" && terms?.shape?.order === 3 ? 6 : 5;
 }
 
@@ -155,6 +168,22 @@ export function evaluate(
         }
     }
     if (maxViol < 0) maxViol = 0;
+
+    if (terms?.pos) {
+        for (const row of terms.pos.rows) {
+            const rx = x[row.i] - row.x;
+            const ry = y[row.i] - row.y;
+            phi += 0.5 * row.w * (rx * rx + ry * ry);
+        }
+    }
+
+    if (terms?.fRough) {
+        const w = terms.fRough.w * ds;
+        for (let i = 1; i < N - 2; i++) {
+            const r = (fN[i + 1] - fN[i]) / ds;
+            phi += 0.5 * w * r * r;
+        }
+    }
 
     if (terms?.chord) {
         const w = terms.chord.w * ds;
@@ -274,6 +303,34 @@ export function normalBand(
         }
     }
     if (maxViol < 0) maxViol = 0;
+
+    if (terms?.pos) {
+        for (const row of terms.pos.rows) {
+            addRow([col(row.i, 0)], [1], row.w, x[row.i] - row.x);
+            addRow([col(row.i, 1)], [1], row.w, y[row.i] - row.y);
+        }
+    }
+
+    if (terms?.fRough) {
+        // r_i = (F_{i+1} − F_i)/ds over the union stencil i−1..i+2 (8 cols).
+        const w = terms.fRough.w * ds;
+        const cols = new Array<number>(8);
+        const jac = new Array<number>(8);
+        for (let i = 1; i < N - 2; i++) {
+            const rA = i - 1; // F_i's jacobian row
+            const rB = i; // F_{i+1}'s jacobian row
+            for (let p = 0; p < 8; p++) {
+                const node = i - 1 + (p >> 1);
+                cols[p] = col(node, p % 2);
+                // F_i spans nodes i−1..i+1 (its cols 0..5); F_{i+1} spans
+                // i..i+2 (union cols 2..7).
+                const a = p < 6 ? J[rA * 6 + p] : 0;
+                const b = p >= 2 ? J[rB * 6 + (p - 2)] : 0;
+                jac[p] = (b - a) / ds;
+            }
+            addRow(cols, jac, w, (fN[i + 1] - fN[i]) / ds);
+        }
+    }
 
     if (terms?.chord) {
         const w = terms.chord.w * ds;
@@ -517,6 +574,41 @@ export function collocate(opts: CollocateOpts): CollocateResult {
     };
 }
 
+/** PHR shifts from the multipliers: `shift = λ/ρ`. */
+function alShifts(
+    lamLo: Float64Array,
+    lamHi: Float64Array,
+    rho: number,
+    shiftLo: Float64Array,
+    shiftHi: Float64Array,
+    N: number,
+): void {
+    for (let i = 0; i < N; i++) {
+        shiftLo[i] = lamLo[i] / rho;
+        shiftHi[i] = lamHi[i] / rho;
+    }
+}
+
+/** the PHR multiplier update `λ ← max(0, λ + ρ·c)` over interior rows;
+ *  returns the worst band violation (g) of the given force profile. */
+function alUpdate(
+    lamLo: Float64Array,
+    lamHi: Float64Array,
+    rho: number,
+    fN: Float64Array,
+    lo: number,
+    hi: number,
+    N: number,
+): number {
+    let viol = 0;
+    for (let i = 1; i < N - 1; i++) {
+        lamHi[i] = Math.max(0, lamHi[i] + rho * (fN[i] - hi));
+        lamLo[i] = Math.max(0, lamLo[i] + rho * (lo - fN[i]));
+        viol = Math.max(viol, fN[i] - hi, lo - fN[i]);
+    }
+    return Math.max(0, viol);
+}
+
 export interface ALOpts {
     /** band violation tolerance that ends the outer loop (g). */
     tol?: number;
@@ -563,10 +655,7 @@ export function collocateAL(opts: CollocateOpts, al: ALOpts = {}): ALResult {
     let outer = 0;
 
     for (outer = 0; outer < outers; outer++) {
-        for (let i = 0; i < N; i++) {
-            shiftLo[i] = lamLo[i] / rho;
-            shiftHi[i] = lamHi[i] / rho;
-        }
+        alShifts(lamLo, lamHi, rho, shiftLo, shiftHi, N);
         result = collocate({
             ...opts,
             xInit: xw,
@@ -577,13 +666,7 @@ export function collocateAL(opts: CollocateOpts, al: ALOpts = {}): ALResult {
         yw = result.y;
 
         const { fN } = forces64(result.x, result.y, N, opts.v0, g);
-        let viol = 0;
-        for (let i = 1; i < N - 1; i++) {
-            lamHi[i] = Math.max(0, lamHi[i] + rho * (fN[i] - band.hi));
-            lamLo[i] = Math.max(0, lamLo[i] + rho * (band.lo - fN[i]));
-            viol = Math.max(viol, fN[i] - band.hi, band.lo - fN[i]);
-        }
-        viol = Math.max(0, viol);
+        const viol = alUpdate(lamLo, lamHi, rho, fN, band.lo, band.hi, N);
         lastViol = viol;
         if (viol < tol) {
             outer++;
@@ -598,4 +681,91 @@ export function collocateAL(opts: CollocateOpts, al: ALOpts = {}): ALResult {
     // LM flag is budget-bound by design (cheap inners + frequent λ updates beat
     // long inner solves — measured 6× in the Stage-2 lab), so it stays local.
     return { ...result, converged: lastViol < tol, outers: outer, rho };
+}
+
+/** the caller-owned AL state that persists across RTI frames: the multipliers
+ *  ARE the carry — a drag converges across frames because λ keeps its memory
+ *  of which band rows are active. */
+export interface RTIState {
+    lamLo: Float64Array;
+    lamHi: Float64Array;
+    rho: number;
+    /** the base penalty ρ decays back to once the band is satisfied. */
+    rho0: number;
+    /** previous frame's violation, for the stall-escalation schedule. */
+    prevViol: number;
+}
+
+export function createRTIState(N: number, rho0: number): RTIState {
+    return {
+        lamLo: new Float64Array(N),
+        lamHi: new Float64Array(N),
+        rho: rho0,
+        rho0,
+        prevViol: Number.POSITIVE_INFINITY,
+    };
+}
+
+export interface RTIResult extends CollocateResult {
+    /** worst band violation after this outer (g); 0 with no band. */
+    viol: number;
+}
+
+/**
+ * one real-time-iteration frame: a single PHR-AL outer under the per-frame
+ * budget — shifts from the persisted `rti`, one budget-bound `collocate`
+ * (≤ `opts.maxIters` inners, warm-started via `opts.xInit/yInit`), then the λ
+ * update and stall escalation of ρ, mutating `rti` in place. `collocateAL`
+ * loops outers to tolerance in one call; this is the same mathematics spread
+ * across drag frames (Diehl's RTI). no band term ⇒ a plain `collocate` pass,
+ * `rti` untouched (pass null). `tol` gates BOTH the λ update and the stall
+ * escalation of ρ: once the band is satisfied to tol the multipliers freeze —
+ * updating them there only pumps a millimeter-scale limit cycle (measured
+ * ~1.5 mm/frame on the wire-stage valley) instead of letting the warm-started
+ * LM reach a fixpoint on the now-constant objective.
+ */
+export function collocateRTI(opts: CollocateOpts, rti: RTIState | null, tol = 1e-3): RTIResult {
+    const band = opts.terms?.band;
+    if (!band || !rti) {
+        const r = collocate(opts);
+        return { ...r, viol: r.maxViol };
+    }
+    const N = opts.x0.length;
+    const g = opts.g ?? G;
+    const shiftLo = new Float64Array(N);
+    const shiftHi = new Float64Array(N);
+    alShifts(rti.lamLo, rti.lamHi, rti.rho, shiftLo, shiftHi, N);
+    const result = collocate({
+        ...opts,
+        terms: { ...opts.terms, band: { ...band, w: rti.rho, shiftLo, shiftHi } },
+    });
+    const { fN } = forces64(result.x, result.y, N, opts.v0, g);
+    let viol = 0;
+    for (let i = 1; i < N - 1; i++) viol = Math.max(viol, fN[i] - band.hi, band.lo - fN[i]);
+    viol = Math.max(0, viol);
+    if (viol >= tol) {
+        alUpdate(rti.lamLo, rti.lamHi, rti.rho, fN, band.lo, band.hi, N);
+        // budget-bound outers escalate on weak progress (half collocateAL's
+        // shrink-by-4× bar — a ≤15-inner frame legitimately shrinks slower),
+        // CAPPED at 64×: AL with frequent λ updates converges at finite ρ
+        // (the stage-2 evidence), while runaway ρ inflates the LM's μ₀
+        // scale until every OTHER term's step falls under the drift stop —
+        // measured: a fresh 1-m position demand moved 1e-4 m/frame under a
+        // leftover ρ=51k and false-converged. at 64·ρ₀ the same step stays
+        // ~3× above STEP_TOL.
+        if (viol > rti.prevViol / 2) rti.rho = Math.min(rti.rho * 2, 64 * rti.rho0);
+    }
+    // satisfied ⇒ λ AND ρ freeze entirely: updating multipliers there pumps
+    // a millimeter limit cycle; decaying only interior λ trades it for a
+    // slow prior-vs-hinge orbit; and decaying ρ under frozen λ grows the
+    // shifts λ/ρ and wobbles the hinge (all three measured). the freeze's
+    // cost is a schedule-dependent riding level — leftover λ overshoot can
+    // hold the profile up to ~0.25 g INSIDE the band where the prior would
+    // ride the ceiling — a soft-preference bias, accepted for
+    // settle-stability. the escalation CAP is what protects later edits'
+    // trust regions (an uncapped ρ=51k inflated μ₀ until a fresh 1-m
+    // position demand moved 1e-4 m/frame and false-converged on the drift
+    // stop; at the cap the same step stays ~3× above it).
+    rti.prevViol = viol;
+    return { ...result, viol };
 }

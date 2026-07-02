@@ -254,15 +254,13 @@ const al = (t: LoopTrack, tm: Terms, fPin = 0) => {
 }
 
 // ── 4. ds robustness ────────────────────────────────────────────────────────
-{
-    console.log("panel 4 — ds sweep (the prior ds=0.5 stall, re-tested clean; AL 15/ρ50, wS=0.1)");
-    for (const ds of [1.0, 0.7, 0.5, 0.35]) {
-        const t = loopTrack(10, ds, 15);
-        const { r, ms } = al(t, terms(t, AL_RHO, 0.1));
-        row(`ds=${ds}`, r, measure(t, r), ms, ` outers=${r.outers} N=${t.n}`);
-    }
-    console.log("");
+console.log("panel 4 — ds sweep (the prior ds=0.5 stall, re-tested clean; AL 15/ρ50, wS=0.1)");
+for (const ds of [1.0, 0.7, 0.5, 0.35]) {
+    const t = loopTrack(10, ds, 15);
+    const { r, ms } = al(t, terms(t, AL_RHO, 0.1));
+    row(`ds=${ds}`, r, measure(t, r), ms, ` outers=${r.outers} N=${t.n}`);
 }
+console.log("");
 
 // ── 5. roughness order 2 vs 3 ───────────────────────────────────────────────
 {

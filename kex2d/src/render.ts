@@ -1,6 +1,8 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
+import { PosPin } from "./constraints";
 import { editor } from "./editor";
+import { solveState } from "./solve";
 import { bakeOut, Handle, samples, sortedHandles, Track } from "./track";
 import { Canvas2D, resize, viewTransform } from "./view";
 
@@ -83,7 +85,26 @@ const TrackDrawSystem: System = {
             }
 
             ctx.save();
-            // the authored track (the baked geometry the cart rides) — solid.
+            // with a live solve, the sketch is visibly separate from the
+            // result: a faint ghost of the authored draft under the solved
+            // track (the constraint reads as a target the solver satisfies).
+            const st = solveState.get(trackEid);
+            if (st && !st.suspended) {
+                ctx.strokeStyle = "rgba(204, 229, 255, 0.22)";
+                ctx.lineWidth = 1.2;
+                ctx.setLineDash([4, 4]);
+                ctx.beginPath();
+                for (let i = 0; i < st.n; i++) {
+                    const gx = ox + st.draftX[i] * sx;
+                    const gy = oy + st.draftY[i] * sy;
+                    if (i === 0) ctx.moveTo(gx, gy);
+                    else ctx.lineTo(gx, gy);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            // the realized track (the baked geometry the cart rides) — solid.
             ctx.lineWidth = 2;
             ctx.strokeStyle = COLOR_TRACK;
             ctx.beginPath();
@@ -154,6 +175,39 @@ const HandleDrawSystem: System = {
                     badHandles.add(eid);
                 }
             }
+        }
+
+        // position pins: a square target marker on/near the curve. losing →
+        // a dashed danger tie from the target to the achieved track point.
+        for (const eid of ecs.query([PosPin])) {
+            const px = ox + PosPin.x.get(eid) * sx;
+            const py = oy + PosPin.y.get(eid) * sy;
+            const st = solveState.get(PosPin.track.get(eid));
+            const rep = st?.report.find((r) => r.kind === "pos" && r.eid === eid);
+            if (st && rep && !rep.satisfied) {
+                const i = Math.max(
+                    0,
+                    Math.min(st.n - 1, Math.round(PosPin.sigma.get(eid) / st.ds)),
+                );
+                ctx.save();
+                ctx.strokeStyle = COLOR_INFEASIBLE;
+                ctx.setLineDash([2, 3]);
+                ctx.beginPath();
+                ctx.moveTo(px, py);
+                ctx.lineTo(ox + st.x[i] * sx, oy + st.y[i] * sy);
+                ctx.stroke();
+                ctx.restore();
+            }
+            ctx.save();
+            if (eid === sel) {
+                ctx.strokeStyle = "rgba(236, 232, 227, 0.4)";
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(px - 8, py - 8, 16, 16);
+            }
+            ctx.strokeStyle = "#ece8e3";
+            ctx.lineWidth = 1.4;
+            ctx.strokeRect(px - 4, py - 4, 8, 8);
+            ctx.restore();
         }
 
         for (const eid of ecs.query([Handle])) {

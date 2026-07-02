@@ -1,8 +1,21 @@
 <script lang="ts">
+import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, sampleFNOverTime } from "./cart";
-import { history, redo, undo } from "./history";
-import { bakeOut } from "./track";
+import { bandConfig, Pin, pinAt } from "./constraints";
+import { editor, select } from "./editor";
+import {
+    beginPinEdit,
+    commit,
+    deletePin,
+    gestureActive,
+    history,
+    placePin,
+    redo,
+    undo,
+} from "./history";
+import { type ConstraintReport, solveState } from "./solve";
+import { bakeOut, Track } from "./track";
 import {
     clampView,
     frameAll,
@@ -20,11 +33,13 @@ import {
 } from "./timeline";
 import { resize } from "./view";
 
-const { eid, tick }: { eid: number | null; tick: number } = $props();
+const { eid, tick, ecs }: { eid: number | null; tick: number; ecs: State } = $props();
 
-// the timeline is READ-ONLY: it shows the baked F_n force curve the authored track
-// produces, with scrub + zoom/pan navigation. authoring forces here (constraints the
-// solver satisfies) is a future scope-first spike (roadmap "kex2d").
+// the timeline shows the baked F_n force curve the realized track produces, with
+// scrub + zoom/pan navigation — and it is the FORCE-PIN AUTHORING surface (gate 3:
+// pins drop and drag on the curve itself): double-click adds a pin, drag slides its
+// anchor (x → σ) and target (y → g) together, Del removes it, the summoned chip on
+// the selected pin turns its weight. every gesture is one entry on the shared history.
 
 // timeline bands, top → bottom: a scrubbable RULER (ticks + labels + playhead
 // handle, the dedicated scrub zone), a demarcating GAP the playhead passes through,
@@ -98,6 +113,164 @@ const frac = $derived.by((): number => {
     if (cartSec === null || tTotal <= 0) return 0;
     return clamp(cartSec / tTotal, 0, 1);
 });
+
+// the solver's constraint readout: authored band + per-constraint residuals.
+// present only while a solve is live — quiet when silent (gate 2).
+const solverBand = $derived.by((): { lo: number; hi: number } | null => {
+    void tick;
+    if (eid === null) return null;
+    return bandConfig.get(eid) ?? null;
+});
+const report = $derived.by((): ConstraintReport[] => {
+    void tick;
+    if (eid === null) return [];
+    const st = solveState.get(eid);
+    return st && !st.suspended ? st.report : [];
+});
+// a constraint anchor's arclength σ → track seconds, via the realized bake
+// (realized = solved, so the solver grid index reads bakeOut.t directly).
+function sigmaSec(sigma: number): number | null {
+    if (eid === null) return null;
+    const st = solveState.get(eid);
+    const out = bakeOut.get(eid);
+    if (!st || !out) return null;
+    const i = clamp(Math.round(sigma / st.ds), 0, st.n - 1);
+    return out.t[i];
+}
+
+// ── pin authoring on the curve ──────────────────────────────────────────────
+type PinMark = { eid: number; id: number; x: number; yT: number; yA: number; f: number };
+const pinMarks = $derived.by((): PinMark[] => {
+    void tick;
+    const out: PinMark[] = [];
+    for (const r of report) {
+        if (r.kind !== "pin" || r.eid === undefined || r.id === undefined) continue;
+        const sec = sigmaSec(r.sigma);
+        if (sec === null) continue;
+        out.push({
+            eid: r.eid,
+            id: r.id,
+            x: LEFT_GUT + secToPx(clamped, sec),
+            yT: yOf(r.target),
+            yA: yOf(r.achieved),
+            f: r.target,
+        });
+    }
+    return out;
+});
+const selectedPin = $derived.by((): PinMark | null => {
+    void tick;
+    return pinMarks.find((m) => m.eid === editor.selection) ?? null;
+});
+const selectedPinW = $derived.by((): number => {
+    void tick;
+    const m = selectedPin;
+    return m ? Pin.w.get(m.eid) : 0;
+});
+
+/** screen x → arclength σ (m): invert the time axis through the realized
+ *  bake (t → sample interval → cumulative per-edge ds). */
+function sigmaAtX(clientX: number): number | null {
+    if (eid === null) return null;
+    const out = bakeOut.get(eid);
+    if (!out) return null;
+    const count = Track.count.get(eid);
+    if (count < 2 || tTotal <= 0) return null;
+    const rect = canvas.getBoundingClientRect();
+    const sec = clamp(pxToSec(clamped, clientX - rect.left - LEFT_GUT), 0, tTotal);
+    let lo = 0;
+    let hi = count - 1;
+    while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (out.t[mid] <= sec) lo = mid;
+        else hi = mid;
+    }
+    let sigma = 0;
+    for (let i = 0; i < lo; i++) sigma += out.ds[i];
+    const dt = out.t[lo + 1] - out.t[lo];
+    sigma += dt > 0 ? ((sec - out.t[lo]) / dt) * out.ds[lo] : 0;
+    return sigma;
+}
+
+/** screen y → force (g): invert `yOf`. */
+function gAtY(clientY: number): number {
+    const rect = canvas.getBoundingClientRect();
+    const y = clientY - rect.top;
+    return yView.lo + (1 - (y - TOP) / Math.max(1, h - BOT_PAD - TOP)) * (yView.hi - yView.lo);
+}
+
+const PIN_PICK = 12; // px
+const F_CAP = 10; // |g| authoring cap — far past anything rideable
+
+let pinDrag: { id: number } | null = null;
+function pinMove(e: PointerEvent): void {
+    if (!pinDrag) return;
+    const pe = pinAt(ecs, pinDrag.id);
+    if (pe === null) return;
+    const sigma = sigmaAtX(e.clientX);
+    if (sigma !== null) Pin.sigma.set(pe, sigma);
+    Pin.f.set(pe, clamp(gAtY(e.clientY), -F_CAP, F_CAP));
+}
+function pinUp(): void {
+    if (!pinDrag) return;
+    pinDrag = null;
+    commit(history); // one drag → one undo entry
+    window.removeEventListener("pointermove", pinMove);
+    window.removeEventListener("pointerup", pinUp);
+}
+function chartDown(e: PointerEvent): void {
+    if (eid === null) return;
+    if (e.button === 1) {
+        panDown(e);
+        return;
+    }
+    if (e.button !== 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    let best: PinMark | null = null;
+    let bestD = PIN_PICK * PIN_PICK;
+    for (const m of pinMarks) {
+        const d = (px - m.x) ** 2 + (py - m.yT) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            best = m;
+        }
+    }
+    if (!best) {
+        select(null); // empty chart click deselects (Figma-style)
+        return;
+    }
+    e.preventDefault();
+    select(best.eid);
+    pinDrag = { id: best.id };
+    beginPinEdit(ecs, best.eid);
+    window.addEventListener("pointermove", pinMove);
+    window.addEventListener("pointerup", pinUp);
+}
+function chartDblClick(e: MouseEvent): void {
+    if (eid === null) return;
+    const sigma = sigmaAtX(e.clientX);
+    if (sigma === null) return;
+    const f = clamp(gAtY(e.clientY), -F_CAP, F_CAP);
+    select(placePin(history, ecs, eid, sigma, f)); // a deliberate act
+}
+function deleteSelectedPin(): void {
+    const m = selectedPin;
+    if (!m) return;
+    const pe = pinAt(ecs, m.id);
+    if (pe !== null && deletePin(history, ecs, pe)) select(null);
+}
+function pinWeightInput(e: Event): void {
+    const m = selectedPin;
+    if (!m) return;
+    const pe = pinAt(ecs, m.id);
+    if (pe === null) return;
+    // keyboard slider changes arrive without the pointerdown that opens the
+    // gesture — open it here so the change still lands as one undo entry.
+    if (!gestureActive()) beginPinEdit(ecs, pe);
+    Pin.w.set(pe, Number((e.currentTarget as HTMLInputElement).value));
+}
 
 // the auto-fit g-range *target*: scans the baked force curve. always keeps 1g;
 // `yView` (below) eases toward this — the target itself is never drawn.
@@ -290,6 +463,23 @@ function render(ctx: CanvasRenderingContext2D): void {
         ctx.stroke();
     }
 
+    // the AUTHORED solver band — a soft region the solve keeps the curve
+    // inside, visually distinct from the faint reference limits above.
+    if (solverBand) {
+        const bandTop = yOf(clamp(solverBand.hi, lo, hi));
+        const bandBot = yOf(clamp(solverBand.lo, lo, hi));
+        ctx.fillStyle = "rgba(212, 149, 96, 0.06)";
+        ctx.fillRect(LEFT_GUT, bandTop, w - LEFT_GUT, bandBot - bandTop);
+        ctx.strokeStyle = "rgba(212, 149, 96, 0.3)";
+        for (const lim of [solverBand.lo, solverBand.hi]) {
+            if (lim < lo || lim > hi) continue;
+            ctx.beginPath();
+            ctx.moveTo(LEFT_GUT, yOf(lim));
+            ctx.lineTo(w, yOf(lim));
+            ctx.stroke();
+        }
+    }
+
     // 1g gravity baseline — neutral (accent is reserved for the result curve)
     ctx.strokeStyle = "rgba(205, 197, 188, 0.45)";
     ctx.setLineDash([2, 4]);
@@ -306,7 +496,7 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.rect(LEFT_GUT, TOP, w - LEFT_GUT, h - BOT_PAD - TOP);
     ctx.clip();
 
-    // the baked F_n force curve — accent: the force the authored track produces
+    // the baked F_n force curve — accent: the force the realized track produces
     if (fN) {
         ctx.strokeStyle = "rgb(212, 149, 96)";
         ctx.lineWidth = 1.6;
@@ -319,6 +509,72 @@ function render(ctx: CanvasRenderingContext2D): void {
             else ctx.lineTo(x, y);
         }
         ctx.stroke();
+    }
+
+    // per-constraint residuals ON the curve (gate 3): each pin draws its
+    // authored target (a --pin diamond) and, when losing, a danger whisker
+    // down to the achieved force — "which constraint is losing, by how much"
+    // read directly off the chart. the band contributes a marker only at its
+    // worst violation. quiet when everything is satisfied.
+    for (const r of report) {
+        if (r.kind === "pos") continue; // meters — its marker lives in the viewport
+        const sec = sigmaSec(r.sigma);
+        if (sec === null) continue;
+        const x = LEFT_GUT + secToPx(v, sec);
+        if (x < LEFT_GUT - 8 || x > w + 8) continue;
+        const yT = yOf(r.target);
+        const yA = yOf(r.achieved);
+        if (!r.satisfied) {
+            ctx.strokeStyle = "rgba(226, 109, 92, 0.9)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x, yT);
+            ctx.lineTo(x, yA);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = "rgba(226, 109, 92, 0.95)";
+            ctx.textAlign = x > w - 70 ? "right" : "left";
+            ctx.textBaseline = "middle";
+            ctx.fillText(
+                `${r.residual > 0 ? "+" : ""}${r.residual.toFixed(1)}g`,
+                x + (x > w - 70 ? -7 : 7),
+                (yT + yA) / 2,
+            );
+        }
+        if (r.kind === "pin") {
+            // the authored target — visibly a target, not the result curve.
+            // selected: filled + a soft ring (the node-handle convention).
+            const sel = r.eid !== undefined && r.eid === editor.selection;
+            ctx.strokeStyle = "#ece8e3";
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(x, yT - 4.5);
+            ctx.lineTo(x + 4.5, yT);
+            ctx.lineTo(x, yT + 4.5);
+            ctx.lineTo(x - 4.5, yT);
+            ctx.closePath();
+            if (sel) {
+                ctx.fillStyle = "#ece8e3";
+                ctx.fill();
+                ctx.strokeStyle = "rgba(236, 232, 227, 0.35)";
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                ctx.arc(x, yT, 8.5, 0, Math.PI * 2);
+            }
+            ctx.stroke();
+            // the achieved force — a filled dot on the result curve.
+            ctx.fillStyle = "rgb(212, 149, 96)";
+            ctx.beginPath();
+            ctx.arc(x, yA, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+        } else if (!r.satisfied) {
+            // band worst violation: a small danger marker at the excess.
+            ctx.fillStyle = "rgba(226, 109, 92, 0.95)";
+            ctx.beginPath();
+            ctx.arc(x, yA, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
     }
 
     ctx.restore();
@@ -493,6 +749,13 @@ onMount(() => {
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
+            return;
+        }
+        // Del removes the selected pin (node deletion lives in controls.ts,
+        // guarded to the chain end — a pin eid never matches it).
+        if ((e.key === "Delete" || e.key === "Backspace") && selectedPin) {
+            e.preventDefault();
+            deleteSelectedPin();
         }
     };
     host.addEventListener("wheel", onWheel, { passive: false });
@@ -504,6 +767,7 @@ onMount(() => {
         sliderUp(); // and any in-flight player-slider drag
         panUp(); // and any in-flight middle-drag pan
         navUp(); // and any in-flight navigator drag
+        pinUp(); // and any in-flight pin drag
     };
 });
 </script>
@@ -525,6 +789,21 @@ onMount(() => {
     >
         <canvas bind:this={canvas}></canvas>
         <svg class="overlay" width={w} height={h}>
+            <!-- the pin authoring zone: the chart itself. double-click drops a pin
+                 at (σ, g) under the cursor; press-drag near a pin marker slides its
+                 anchor + target; empty click deselects. -->
+            {#if eid !== null && tTotal > 0}
+                <rect
+                    class="chartzone"
+                    x={LEFT_GUT}
+                    y={TOP}
+                    width={Math.max(0, w - LEFT_GUT)}
+                    height={Math.max(0, h - BOT_PAD - TOP)}
+                    onpointerdown={chartDown}
+                    ondblclick={chartDblClick}
+                    role="presentation"
+                />
+            {/if}
             <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere here
                  moves the playhead (the time ruler is the scrubber). -->
             {#if eid !== null && tTotal > 0}
@@ -554,6 +833,50 @@ onMount(() => {
                 />
             {/if}
         </svg>
+        <!-- the selected pin's summoned controls: target value, weight, delete.
+             appears only with a selection (quiet when silent); weight turns are
+             one history entry via the same pin-edit gesture. -->
+        {#if selectedPin}
+            <div
+                class="pinchip"
+                style="left: {clamp(selectedPin.x, LEFT_GUT + 70, w - 70)}px; top: {clamp(
+                    selectedPin.yT,
+                    TOP + 34,
+                    h,
+                )}px"
+            >
+                <span class="pf">{selectedPin.f.toFixed(1)}g</span>
+                <input
+                    class="pw"
+                    type="range"
+                    min="10"
+                    max="300"
+                    step="5"
+                    value={selectedPinW}
+                    onpointerdown={() => selectedPin && beginPinEdit(ecs, selectedPin.eid)}
+                    oninput={pinWeightInput}
+                    onchange={() => commit(history)}
+                    title="Pin weight"
+                    aria-label="Pin weight"
+                />
+                <button
+                    class="pdel"
+                    type="button"
+                    onclick={deleteSelectedPin}
+                    title="Delete pin (Del)"
+                    aria-label="Delete pin"
+                >
+                    <svg viewBox="0 0 10 10" aria-hidden="true">
+                        <path
+                            d="M2 2 L8 8 M8 2 L2 8"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linecap="round"
+                        />
+                    </svg>
+                </button>
+            </div>
+        {/if}
     </div>
     <!-- the time navigator: a full-track overview below the chart (Premiere placement)
          rendered as a preview minimap (VSCode / DAW-overview style) — a miniature of the
@@ -722,6 +1045,62 @@ onMount(() => {
     .grip {
         fill: var(--neutral); /* matches the player knob; accent is reserved for the result curve */
         pointer-events: none; /* visual handle; the rulerzone owns the scrub */
+    }
+
+    /* the pin authoring zone: transparent hit surface over the chart. */
+    .chartzone {
+        fill: transparent;
+        pointer-events: all;
+        cursor: default;
+    }
+
+    /* the selected pin's summoned control chip: a small opaque surface floated
+       above the marker (translate keeps it clear of the diamond). */
+    .pinchip {
+        position: absolute;
+        transform: translate(-50%, calc(-100% - 12px));
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 26px;
+        padding: 0 6px 0 10px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: var(--shadow);
+        z-index: 2;
+    }
+    .pinchip .pf {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        color: var(--pin);
+        white-space: nowrap;
+    }
+    .pinchip .pw {
+        width: 72px;
+        accent-color: var(--neutral);
+        cursor: pointer;
+    }
+    .pinchip .pdel {
+        all: unset;
+        box-sizing: border-box;
+        width: 20px;
+        height: 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        color: var(--danger);
+        cursor: pointer;
+        transition: background 120ms ease;
+    }
+    .pinchip .pdel:hover {
+        background: var(--danger-soft);
+    }
+    .pinchip .pdel svg {
+        width: 10px;
+        height: 10px;
     }
 
     /* the scrub zone: the whole top ruler + gap band. click/drag anywhere here moves

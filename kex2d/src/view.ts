@@ -33,7 +33,7 @@ export function screenToWorld(tx: ViewTx, sx: number, sy: number): { x: number; 
 
 export function pointerToCanvas(
     canvas: HTMLCanvasElement,
-    e: PointerEvent,
+    e: MouseEvent,
 ): { x: number; y: number } {
     const rect = canvas.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };

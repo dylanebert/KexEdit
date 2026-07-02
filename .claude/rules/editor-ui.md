@@ -33,8 +33,8 @@ Every UI decision clears these.
 3. **On the object first.** If it can be manipulated in the viewport (drag a node, a handle), it
    belongs there, not in a panel. A panel control justifies itself only when the data has no
    spatial form. kex2d is the model: no tools, no modes — click a node and drag it, radial
-   extend/delete buttons summoned at the selected chain end (force pins authored on the curve
-   are the planned shape of the optimization spike).
+   extend/delete buttons summoned at the selected chain end, force pins authored on the
+   timeline curve, position pins on the track itself.
 4. **Low floor, high ceiling.** A newcomer drags nodes and sees the track react; an expert reaches
    it faster through the keyboard (Enter extends, Del trims, Space plays). Capability is summoned,
    not displayed.
@@ -51,9 +51,8 @@ wouldn't need.
 
 The bend is bounded, not a license for a cockpit: the timeline is the **only** earned permanent
 dock. It still clears gates 2–5 — the track shows a clean curve, not empty controls; every edit
-re-bakes live and undoes (and when the optimization spike lands, pins drop and drag on the curve
-itself, gate 3). A new surface is a popover or a viewport affordance summoned in context, never a
-second docked region.
+re-bakes live and undoes (pins drop and drag on the curve itself, gate 3). A new surface is a
+popover or a viewport affordance summoned in context, never a second docked region.
 
 **Playback is the player; authoring is the timeline — one clock, two scopes.** The ride plays
 continuously (no play/edit *mode*); the transport is a separate surface (a *global* full-track
