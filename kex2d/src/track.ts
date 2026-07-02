@@ -1,7 +1,5 @@
 import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@dylanebert/shallot";
 import { forces, V_FLOOR, V_WARN } from "./bake";
-import { constraintRev, hasConstraints, Pin, PosPin } from "./constraints";
-import { type DraftInput, solveState, solveStep } from "./solve";
 import { type Node, reflect, sampleChain } from "./spline";
 
 /** per-track scalars. `count` is the total sample count (bake output, varies
@@ -364,12 +362,6 @@ function bakeIdentity(
     computeTime(s, out, r.edges + 1);
 }
 
-// draft scratch for the constrained path — the solver consumes the sampled
-// chain without touching `samples` (which then carries the SOLVED geometry).
-const draftX = new Float32Array(MAX_SAMPLES);
-const draftY = new Float32Array(MAX_SAMPLES);
-const draftDs = new Float32Array(MAX_SAMPLES - 1);
-
 export const BakeSystem: System = {
     update(ecs: State): void {
         for (const trackEid of ecs.query([Track])) {
@@ -381,90 +373,18 @@ export const BakeSystem: System = {
             if (handles.length < 2) continue;
 
             const hash = bakeHash(ecs, handles);
-
-            if (!hasConstraints(ecs, trackEid)) {
-                // the identity short-circuit: no constraints, the pre-solver
-                // editor verbatim (byte-identical output, no solver state).
-                // deleting live solver state forces one rebake even on a hash
-                // match — the realized track must snap back to the draft.
-                const hadSolve = solveState.delete(trackEid);
-                if (hash === out.hash && !hadSolve) continue;
-                bakeIdentity(trackEid, s, out, handles, hash);
-                continue;
-            }
-
-            const st0 = solveState.get(trackEid);
-            const rev = constraintRev(ecs, trackEid);
-            const skip =
-                hash === out.hash && st0 && st0.rev === rev && (st0.settled || st0.suspended);
-            if (skip) continue;
-
-            // the draft re-samples only on a hash miss; polish ticks reuse
-            // the grid stored in SolveState.
-            let draft: DraftInput | null = null;
-            if (hash !== out.hash || !st0 || st0.suspended) {
-                const dsNominal = Track.ds.get(trackEid);
-                const nodes: Node[] = handles.map((eid) => ({
-                    x: Handle.pos.x.get(eid),
-                    y: Handle.pos.y.get(eid),
-                    theta: Handle.theta.get(eid),
-                }));
-                const r = sampleChain(nodes, dsNominal, draftX, draftY, draftDs, MAX_SAMPLES);
-                if (r.truncated) {
-                    console.warn(
-                        `kex2d: track ${trackEid} hit MAX_SAMPLES=${MAX_SAMPLES}; trailing nodes dropped`,
-                    );
-                }
-                if (r.edges < 1) continue;
-                draft = {
-                    posX: draftX,
-                    posY: draftY,
-                    dsArr: draftDs,
-                    count: r.edges + 1,
-                    offsets: r.offsets,
-                };
-            }
-
-            const st = solveStep(ecs, trackEid, draft, hash, V0, Track.ds.get(trackEid));
-
-            if (st.suspended) {
-                // energy-infeasible draft: realize the draft itself so the
-                // red-track / banner UX tells the story. (bakeIdentity owns
-                // the hash commit — a degenerate bake keeps retrying.)
-                bakeIdentity(trackEid, s, out, handles, hash);
-                continue;
-            }
-
-            // realized = solved: the display bake runs on the solver output.
-            const n = st.n;
-            for (let i = 0; i < n; i++) {
-                s.posX[i] = st.x[i];
-                s.posY[i] = st.y[i];
-            }
-            for (let i = 0; i < n - 1; i++) {
-                out.ds[i] = Math.hypot(st.x[i + 1] - st.x[i], st.y[i + 1] - st.y[i]);
-            }
-            forces(s.posX, s.posY, s.theta, s.v, out.fN, out.ds, 0, n - 1, V0);
-            const baked = Math.min(st.nodeFracs.length, handles.length);
-            for (let k = 0; k < baked; k++) {
-                Handle.sample.set(handles[k], Math.round(st.nodeFracs[k] * (n - 1)));
-            }
-            if (baked > 0) out.lastBakedOrder = Handle.order.get(handles[baked - 1]);
-            out.hash = hash;
-            Track.count.set(trackEid, n);
-            computeTime(s, out, n);
+            if (hash === out.hash) continue; // nothing moved — reuse the bake
+            bakeIdentity(trackEid, s, out, handles, hash);
         }
     },
 };
 
 export const TrackPlugin: Plugin = {
     name: "Track",
-    components: { Track, Handle, Pin, PosPin },
+    components: { Track, Handle },
     traits: {
         Track: { defaults: () => ({ count: 0, ds: 0 }) },
         Handle: { defaults: () => ({ order: 0, sample: 0, pos: [0, 0], theta: 0 }) },
-        Pin: { defaults: () => ({ track: 0, id: 0, sigma: 0, f: 0, w: 0, width: 0 }) },
-        PosPin: { defaults: () => ({ track: 0, id: 0, sigma: 0, x: 0, y: 0, w: 0 }) },
     },
     initialize(ecs) {
         seed(ecs);

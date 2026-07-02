@@ -12,16 +12,6 @@
  *  apply/reverse. */
 
 import {
-    addPin,
-    addPosPin,
-    Pin,
-    pinAt,
-    PosPin,
-    posPinAt,
-    spawnPin,
-    spawnPosPin,
-} from "./constraints";
-import {
     extend,
     Handle,
     handleAt,
@@ -56,8 +46,8 @@ export function createHistory(): History {
 export const history = createHistory();
 
 /** push an already-applied command (the do-path mutated live data first).
- *  exported for composed commands (the relax verb); gestures and the
- *  domain helpers below are the usual entry. */
+ *  the substrate primitive for composed commands; gestures and the domain
+ *  helpers below are the usual entry. */
 export function record(h: History, cmd: Command): void {
     h.undo.push(cmd);
     if (h.undo.length > MAX_UNDO) h.undo.shift();
@@ -118,12 +108,6 @@ export function commit(h: History): void {
     if (g.same(g.prev, next)) return; // a no-op (a click, or a nudge back to start)
     const { restore, prev } = g;
     record(h, { apply: () => restore(next), reverse: () => restore(prev) });
-}
-
-/** whether a gesture is open — the solver's rest signal: length adaptation
- *  re-grids only between gestures, never mid-drag. */
-export function gestureActive(): boolean {
-    return gesture !== null;
 }
 
 /** abort the open gesture, restoring the pre-gesture state. */
@@ -191,177 +175,6 @@ export function beginMove(ecs: State): void {
         () => nodeSnapshot(ecs),
         (s: NodeState[]) => restoreNodes(ecs, s),
         sameNodes,
-    );
-}
-
-// ── force pins ─────────────────────────────────────────────────────────────────
-// pins record onto the same stack, addressed by stable `Pin.id` (the `order`
-// convention: eids recycle across a delete→undo, ids never do).
-
-/** a pin's undoable state, keyed by stable id. */
-interface PinState {
-    id: number;
-    track: number;
-    sigma: number;
-    f: number;
-    w: number;
-    width: number;
-}
-
-function pinState(eid: number): PinState {
-    return {
-        id: Pin.id.get(eid),
-        track: Pin.track.get(eid),
-        sigma: Pin.sigma.get(eid),
-        f: Pin.f.get(eid),
-        w: Pin.w.get(eid),
-        width: Pin.width.get(eid),
-    };
-}
-
-function restorePin(ecs: State, s: PinState): void {
-    const eid = pinAt(ecs, s.id);
-    if (eid === null) return;
-    Pin.sigma.set(eid, s.sigma);
-    Pin.f.set(eid, s.f);
-    Pin.w.set(eid, s.w);
-    Pin.width.set(eid, s.width);
-}
-
-function samePin(a: PinState, b: PinState): boolean {
-    return a.sigma === b.sigma && a.f === b.f && a.w === b.w && a.width === b.width;
-}
-
-/** author a pin (the deliberate add gesture), recording an undoable command.
- *  undo destroys it; redo re-spawns it verbatim. returns the pin eid. */
-export function placePin(
-    h: History,
-    ecs: State,
-    trackEid: number,
-    sigma: number,
-    f: number,
-): number {
-    const eid = addPin(ecs, trackEid, sigma, f);
-    const s = pinState(eid);
-    record(h, {
-        apply: () => spawnPin(ecs, s.id, s.track, s.sigma, s.f, s.w, s.width),
-        reverse: () => {
-            const cur = pinAt(ecs, s.id);
-            if (cur !== null) ecs.destroy(cur);
-        },
-    });
-    return eid;
-}
-
-/** delete a pin by eid, recording an undoable command (undo re-spawns it
- *  verbatim, same id). returns true when a pin was deleted. */
-export function deletePin(h: History, ecs: State, eid: number): boolean {
-    const s = pinState(eid);
-    ecs.destroy(eid);
-    record(h, {
-        apply: () => {
-            const cur = pinAt(ecs, s.id);
-            if (cur !== null) ecs.destroy(cur);
-        },
-        reverse: () => spawnPin(ecs, s.id, s.track, s.sigma, s.f, s.w, s.width),
-    });
-    return true;
-}
-
-/** open a gesture on a pin drag/edit (slide the anchor, drag the value, turn
- *  the weight — any live pin mutation); commit coalesces it to one entry. */
-export function beginPinEdit(ecs: State, eid: number): void {
-    const id = Pin.id.get(eid);
-    begin(
-        () => {
-            const cur = pinAt(ecs, id);
-            return cur === null ? undefined : pinState(cur);
-        },
-        (s: PinState) => restorePin(ecs, s),
-        samePin,
-    );
-}
-
-// ── position pins: the same pattern, PosPin.id-addressed ───────────────────────
-
-interface PosPinState {
-    id: number;
-    track: number;
-    sigma: number;
-    x: number;
-    y: number;
-    w: number;
-}
-
-function posPinState(eid: number): PosPinState {
-    return {
-        id: PosPin.id.get(eid),
-        track: PosPin.track.get(eid),
-        sigma: PosPin.sigma.get(eid),
-        x: PosPin.x.get(eid),
-        y: PosPin.y.get(eid),
-        w: PosPin.w.get(eid),
-    };
-}
-
-function restorePosPin(ecs: State, s: PosPinState): void {
-    const eid = posPinAt(ecs, s.id);
-    if (eid === null) return;
-    PosPin.sigma.set(eid, s.sigma);
-    PosPin.x.set(eid, s.x);
-    PosPin.y.set(eid, s.y);
-    PosPin.w.set(eid, s.w);
-}
-
-function samePosPin(a: PosPinState, b: PosPinState): boolean {
-    return a.sigma === b.sigma && a.x === b.x && a.y === b.y && a.w === b.w;
-}
-
-/** author a position pin (the deliberate add), recording an undoable command. */
-export function placePosPin(
-    h: History,
-    ecs: State,
-    trackEid: number,
-    sigma: number,
-    x: number,
-    y: number,
-): number {
-    const eid = addPosPin(ecs, trackEid, sigma, x, y);
-    const s = posPinState(eid);
-    record(h, {
-        apply: () => spawnPosPin(ecs, s.id, s.track, s.sigma, s.x, s.y, s.w),
-        reverse: () => {
-            const cur = posPinAt(ecs, s.id);
-            if (cur !== null) ecs.destroy(cur);
-        },
-    });
-    return eid;
-}
-
-/** delete a position pin by eid, recording an undoable command. */
-export function deletePosPin(h: History, ecs: State, eid: number): boolean {
-    const s = posPinState(eid);
-    ecs.destroy(eid);
-    record(h, {
-        apply: () => {
-            const cur = posPinAt(ecs, s.id);
-            if (cur !== null) ecs.destroy(cur);
-        },
-        reverse: () => spawnPosPin(ecs, s.id, s.track, s.sigma, s.x, s.y, s.w),
-    });
-    return true;
-}
-
-/** open a gesture on a position-pin drag (move the target). */
-export function beginPosPinEdit(ecs: State, eid: number): void {
-    const id = PosPin.id.get(eid);
-    begin(
-        () => {
-            const cur = posPinAt(ecs, id);
-            return cur === null ? undefined : posPinState(cur);
-        },
-        (s: PosPinState) => restorePosPin(ecs, s),
-        samePosPin,
     );
 }
 
