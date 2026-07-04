@@ -66,7 +66,7 @@ export const Handle = {
     theta: sparse(f32),
 };
 
-const MAX_SAMPLES = 4096;
+export const MAX_SAMPLES = 4096;
 const DS_NOMINAL = 0.5;
 /** launch speed (m/s) — the bake's and the solver's v0 must be the same
  *  number or their force profiles disagree systematically. */
@@ -174,6 +174,18 @@ export function nodeSnapshot(ecs: State): NodeState[] {
         });
     }
     return snap;
+}
+
+/** whether two chain snapshots are pose-identical (matched by stable order — a
+ *  snapshot's query order isn't guaranteed). the gesture no-op test for any
+ *  surface that moves nodes (a drag, a solve commit). */
+export function sameNodes(a: NodeState[], b: NodeState[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const bi = b.find((n) => n.order === a[i].order);
+        if (!bi || bi.x !== a[i].x || bi.y !== a[i].y || bi.theta !== a[i].theta) return false;
+    }
+    return true;
 }
 
 /** write a chain snapshot back onto the live nodes by order (move undo/redo and

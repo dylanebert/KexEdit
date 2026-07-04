@@ -20,6 +20,7 @@ import {
     nodeSnapshot,
     removeTrailingHandle,
     restoreNodes,
+    sameNodes,
     spawnNode,
 } from "./track";
 import type { State } from "@dylanebert/shallot";
@@ -186,15 +187,4 @@ function destroyAt(ecs: State, order: number): void {
 function setTheta(ecs: State, order: number, theta: number): void {
     const eid = handleAt(ecs, order);
     if (eid !== null) Handle.theta.set(eid, theta);
-}
-
-function sameNodes(a: NodeState[], b: NodeState[]): boolean {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-        // both snapshots come from the same order set (a drag adds no nodes), but
-        // query order isn't guaranteed — match by order, not index.
-        const bi = b.find((n) => n.order === a[i].order);
-        if (!bi || bi.x !== a[i].x || bi.y !== a[i].y || bi.theta !== a[i].theta) return false;
-    }
-    return true;
 }
