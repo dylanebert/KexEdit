@@ -41,6 +41,26 @@ Every UI decision clears these.
 5. **Instant and reversible.** Edits re-bake and show immediately, no apply step, and
    undo cleanly (`history.ts`).
 
+## Layered expressiveness
+
+Two commitments, held together:
+
+1. **Full arbitrary expressiveness at the inner layer, accessible.** The substrate never caps what
+   a determined author can express — the solver takes arbitrary weighted residuals, the node chain
+   is free-form. Power is reachable, not fenced off.
+2. **Deliberately constrained upper layers.** The default authoring surface is *intentionally* less
+   expressive than the substrate — the constraint is the feature, not a compromise: inferred
+   arc-rule tangents instead of exposed bezier handles (the Planet Coaster lesson), a constant
+   target band before a keyframed profile. Upper layers optimize author strain, iteration speed,
+   and attention (the gates above); each step down toward the substrate is summoned, never default.
+
+Corollary for feature requests: users steeped in a traditional tool ask for its *mechanism* (a
+force/geometry mode switch, manual split/edit/reconnect surgery), which is usually the workaround
+their old tool required, not the want. Translate to the want — "edit the derived graph directly,"
+"local force edits that don't destroy the surroundings" — and serve it through the layers.
+Traditional FVD's vocabulary (piecewise section durations + easing types) is not the expressiveness
+ceiling; don't inherit its shape out of deference.
+
 ## The kexedit bend: the force curve earns persistence
 
 A coaster's canonical representation is its **F_n force curve**, not the node positions you drag to
