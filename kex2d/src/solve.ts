@@ -301,10 +301,16 @@ export interface SolveResult {
 
 /**
  * solve the freed node parameters to satisfy all `targets` over the frozen
- * `counts`, warm from the draft (`base`). assembles every target's force rows
- * over the freed-node union in one system (the coupled/composition case is one
- * assembled problem, not per-target). returns the full chain with the freed
- * nodes updated; `base` is unmodified.
+ * `counts`. assembles every target's force rows over the freed-node union in one
+ * system (the coupled/composition case is one assembled problem, not per-target).
+ * returns the full chain with the freed nodes updated; `base` is unmodified.
+ *
+ * `base` is the **draft**: it anchors the draft prior (the "minimum deformation
+ * of what the author drew" pull) and the node-spacing reference. `warm` is the
+ * starting iterate, defaulting to `base`; a live RTI drag passes the previous
+ * frame's already-deformed chain as `warm` while keeping `base` pinned to the
+ * gesture-start draft, so the prior stays anchored to the original shape instead
+ * of re-basing (and smearing) toward each frame's iterate.
  *
  * `converged` marks LM reaching a local minimum; `converged` is not a health
  * signal — the caller reads `spanResidual` for the achieved force.
@@ -318,6 +324,7 @@ export function solveTargets(
     w: Weights = DEFAULT_WEIGHTS,
     maxIters = 120,
     stepTol = 1e-7,
+    warm?: readonly Node[],
 ): SolveResult {
     const p0 = pack(base, freed);
     const spaceRef = freed.map((idx, k) => {
@@ -337,7 +344,7 @@ export function solveTargets(
         spaceRef,
     };
 
-    let p = Float64Array.from(p0);
+    let p = Float64Array.from(warm ? pack(warm, freed) : p0);
     const K = p.length;
     let mu = -1;
     let nu = 2;

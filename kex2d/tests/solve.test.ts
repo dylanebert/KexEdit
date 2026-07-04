@@ -164,6 +164,36 @@ test("solveTargets composes two coupled targets in one assembled system", () => 
     expect(spanResidual(bs, t1).err).toBeLessThan(INTERIOR_BUDGET);
 });
 
+test("warm start changes only the iterate, not the minimum (base anchors the prior)", () => {
+    // RTI correctness: `warm` seeds the starting point but `base` defines the
+    // prior anchor + spacing reference, so a warm solve from a chain nudged off
+    // the draft must land on the SAME minimum as a cold solve from the draft —
+    // else the live drag would smear path-dependently frame to frame.
+    const { draft, b, counts } = bakeHill();
+    const arc = sampleArc(b);
+    const { i0, i1 } = samplesForArc(b, arc, arc[b.offsets[2]], arc[b.offsets[4]]);
+    const freed = scopeForArc(b, arc, arc[b.offsets[2]], arc[b.offsets[4]]);
+    const target: SpanTarget = { i0, i1, g: 0, w: 1 };
+
+    const cold = solveTargets(draft.nodes, freed, counts, draft.v0, [target]);
+    const nudged = draft.nodes.map((n, k) => (freed.includes(k) ? { ...n, y: n.y + 2 } : { ...n }));
+    const hot = solveTargets(
+        draft.nodes,
+        freed,
+        counts,
+        draft.v0,
+        [target],
+        DEFAULT_WEIGHTS,
+        120,
+        1e-7,
+        nudged,
+    );
+    for (let k = 0; k < cold.nodes.length; k++) {
+        expect(hot.nodes[k].x).toBeCloseTo(cold.nodes[k].x, 3);
+        expect(hot.nodes[k].y).toBeCloseTo(cold.nodes[k].y, 3);
+    }
+});
+
 test("DEFAULT_WEIGHTS keeps the draft prior weak (does not bias a point demand)", () => {
     // the prior at w≈0.1 should not pull the achieved force off a satisfiable
     // target. hold 0g over a short span with the default weights.

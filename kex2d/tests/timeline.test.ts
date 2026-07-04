@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+    arcToTime,
+    chipLayout,
     clampView,
+    type Mapping,
     marginSec,
     MAX_PX_PER_SEC,
     mirrorTangent,
@@ -10,12 +13,56 @@ import {
     pxToSec,
     secToPx,
     ticks,
+    timeToArc,
     type View,
     yFit,
     type YFit,
     yGrow,
     zoomAt,
 } from "../src/timeline";
+
+describe("timeToArc / arcToTime — display mapping", () => {
+    // a non-uniform monotone table (arc accelerates while time is even): the
+    // shape of a real bake, where speed varies so equal times cover unequal arc.
+    const m: Mapping = {
+        arc: Float64Array.from([0, 1, 3, 6, 10]),
+        t: Float64Array.from([0, 0.5, 1, 2, 4]),
+        n: 5,
+    };
+    test("roundtrips at the sample knots", () => {
+        for (let i = 0; i < m.n; i++) {
+            expect(timeToArc(m, m.t[i])).toBeCloseTo(m.arc[i], 9);
+            expect(arcToTime(m, m.arc[i])).toBeCloseTo(m.t[i], 9);
+        }
+    });
+    test("interpolates linearly between knots", () => {
+        // midway in time between t=1 (arc 3) and t=2 (arc 6) → arc 4.5, and back.
+        expect(timeToArc(m, 1.5)).toBeCloseTo(4.5, 9);
+        expect(arcToTime(m, 4.5)).toBeCloseTo(1.5, 9);
+    });
+    test("clamps outside the range to the ends", () => {
+        expect(timeToArc(m, -1)).toBe(0);
+        expect(timeToArc(m, 99)).toBe(10);
+        expect(arcToTime(m, -1)).toBe(0);
+        expect(arcToTime(m, 99)).toBe(4);
+    });
+});
+
+describe("chipLayout — marker-lane de-overlap", () => {
+    test("well-spaced chips are left untouched", () => {
+        expect(chipLayout([10, 60, 120], 30)).toEqual([10, 60, 120]);
+    });
+    test("overlapping chips are nudged right to the min gap", () => {
+        // 10 and 20 collide (gap 30): the second pushes to 40; 45 then to 70.
+        expect(chipLayout([10, 20, 45], 30)).toEqual([10, 40, 70]);
+    });
+    test("adjusts in x order but returns aligned to input order", () => {
+        // input order [50, 10]: sorted the 10 anchors, the 50 is already clear.
+        expect(chipLayout([50, 10], 30)).toEqual([50, 10]);
+        // input order [20, 10]: 10 anchors, 20 must clear it → 40.
+        expect(chipLayout([20, 10], 30)).toEqual([40, 10]);
+    });
+});
 
 describe("secToPx / pxToSec — affine roundtrip", () => {
     const views: View[] = [

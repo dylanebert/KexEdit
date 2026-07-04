@@ -132,6 +132,7 @@ const HandleDrawSystem: System = {
         if (!ctx) return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
         const sel = editor.selection;
+        const freed = editor.highlight;
 
         // pre-compute the red set: nodes past the chain's first infeasibility
         // (energy-out reachable) plus orphan nodes (segment failed to bake —
@@ -161,6 +162,16 @@ const HandleDrawSystem: System = {
             const cy = oy + Handle.pos.y.get(eid) * sy;
             const highlighted = eid === sel;
             const bad = badHandles.has(eid);
+            // a freed node the active solve gesture is moving — an accent halo so
+            // the scope the optimizer touches is visible (§5).
+            if (freed.length > 0 && freed.includes(Handle.order.get(eid))) {
+                ctx.save();
+                ctx.fillStyle = "rgba(212, 149, 96, 0.16)";
+                ctx.beginPath();
+                ctx.arc(cx, cy, HANDLE_R_SEL + 6, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
 
             if (highlighted) {
                 ctx.save();

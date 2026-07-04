@@ -4,18 +4,25 @@ import { createHistory, redo, undo } from "../src/history";
 import { bakeNodes, sampleArc, samplesForArc, spanResidual } from "../src/solve";
 import { chainCounts } from "../src/spline";
 import {
+    beginDemand,
     createTarget,
     deleteTarget,
     demandTarget,
+    endDemand,
     resolveTarget,
+    stepDemand,
     Target,
     targetAt,
+    targetBands,
     targetDrift,
     targetsFor,
     solveTrack,
+    trackMapping,
 } from "../src/targets";
 import {
     addNode,
+    BakeSystem,
+    bakeOut,
     createTrack,
     Handle,
     handleAt,
@@ -244,6 +251,72 @@ test("solveTrack assembles two coupled targets in one system", () => {
     const d = targetDrift(state, track);
     expect(d.find((x) => x.id === t0)?.err).toBeLessThan(0.15);
     expect(d.find((x) => x.id === t1)?.err).toBeLessThan(0.15);
+});
+
+test("a multi-frame RTI demand lands where the batch demand does (draft-anchored)", () => {
+    // the live drag drives the same gesture as the batch, but through many small
+    // warm-started steps. the draft prior is pinned to the gesture-start chain in
+    // both, so both must converge to the SAME node solution — the RTI path is not
+    // allowed to smear frame-to-frame.
+    const A = ecsHill();
+    const hA = createHistory();
+    const arcA = nodeArc(A.state);
+    const idA = createTarget(hA, A.state, A.track, arcA[2], arcA[4]);
+    demandTarget(hA, A.state, A.track, idA, 0);
+    const batch = poses(A.state);
+
+    const B = ecsHill();
+    const hB = createHistory();
+    const arcB = nodeArc(B.state);
+    const idB = createTarget(hB, B.state, B.track, arcB[2], arcB[4]);
+    const born = targetsFor(B.state, B.track)[0].g;
+    expect(beginDemand(B.state, B.track, idB)).toBe(true);
+    const Frames = 8;
+    for (let f = 1; f <= Frames; f++) stepDemand(B.state, idB, born * (1 - f / Frames));
+    endDemand(hB, B.state);
+    const live = poses(B.state);
+
+    for (let k = 0; k < batch.length; k++) {
+        expect(live[k].x).toBeCloseTo(batch[k].x, 2);
+        expect(live[k].y).toBeCloseTo(batch[k].y, 2);
+    }
+    expect(hB.undo.length).toBe(2); // create + the whole drag = one demand entry
+    expect(targetsFor(B.state, B.track)[0].g).toBe(0);
+});
+
+test("trackMapping is monotone and its time axis matches the display bake", () => {
+    const { state, track } = ecsHill();
+    state.addSystem(BakeSystem);
+    state.step(0);
+    const m = trackMapping(track);
+    expect(m).not.toBeNull();
+    if (!m) return;
+    for (let i = 1; i < m.n; i++) {
+        expect(m.arc[i]).toBeGreaterThanOrEqual(m.arc[i - 1]);
+        expect(m.t[i]).toBeGreaterThanOrEqual(m.t[i - 1]);
+    }
+    expect(m.t[m.n - 1]).toBeCloseTo(bakeOut.get(track)?.tTotal ?? -1, 6);
+});
+
+test("targetBands projects a target's arclength span onto a forward time extent", () => {
+    const { state, track } = ecsHill();
+    state.addSystem(BakeSystem);
+    state.step(0);
+    const h = createHistory();
+    const arc = nodeArc(state);
+    const id = createTarget(h, state, track, arc[2], arc[4]);
+    const m = trackMapping(track);
+    expect(m).not.toBeNull();
+    if (!m) return;
+    const bands = targetBands(state, track, m);
+    expect(bands.length).toBe(1);
+    const bnd = bands[0];
+    expect(bnd.id).toBe(id);
+    expect(bnd.g).toBe(targetsFor(state, track)[0].g);
+    expect(bnd.t1).toBeGreaterThan(bnd.t0); // span has a forward time extent
+    expect(bnd.t0).toBeGreaterThanOrEqual(0);
+    expect(bnd.t1).toBeLessThanOrEqual((bakeOut.get(track)?.tTotal ?? 0) + 1e-6);
+    expect(bnd.err).toBeGreaterThanOrEqual(0);
 });
 
 /** the drift gap (max interior |F−g|) for a target, on current geometry. */

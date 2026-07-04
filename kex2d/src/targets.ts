@@ -15,7 +15,7 @@
  *  never do — the `Handle.order` convention). */
 
 import { f32, sparse, type State, u32 } from "@dylanebert/shallot";
-import { begin, beginMove, commit, type History, record } from "./history";
+import { begin, beginMove, cancel, commit, type History, record } from "./history";
 import {
     bakeNodes,
     DEFAULT_WEIGHTS,
@@ -28,13 +28,16 @@ import {
     type SpanTarget,
 } from "./solve";
 import { chainCounts, type Node } from "./spline";
+import { arcToTime, type Mapping } from "./timeline";
 import {
+    bakeOut,
     Handle,
     MAX_SAMPLES,
     type NodeState,
     nodeSnapshot,
     restoreNodes,
     sameNodes,
+    samples,
     sortedHandles,
     Track,
     V0,
@@ -222,6 +225,65 @@ export function targetDrift(ecs: State, trackEid: number): Drift[] {
     });
 }
 
+// ── display projection: arclength (stored) ↔ time (shown) ────────────────────
+
+/** the per-sample arclength↔time table over the *display* bake (`samples` +
+ *  `bakeOut`, the realized track the timeline draws). targets store arclength;
+ *  the chart shows time, so a band's x-extent projects through this. built from
+ *  the same node chain the solver bakes, so its arclength axis matches the
+ *  solver's to rounding. null below the two-node floor. a gesture snapshots one
+ *  and holds it frozen for its duration (§4), reflowing at rest. */
+export function trackMapping(trackEid: number): Mapping | null {
+    const s = samples.get(trackEid);
+    const out = bakeOut.get(trackEid);
+    if (!s || !out) return null;
+    const n = Track.count.get(trackEid);
+    if (n < 2) return null;
+    const arc = new Float64Array(n);
+    for (let i = 1; i < n; i++)
+        arc[i] = arc[i - 1] + Math.hypot(s.posX[i] - s.posX[i - 1], s.posY[i] - s.posY[i - 1]);
+    const t = new Float64Array(n);
+    for (let i = 0; i < n; i++) t[i] = out.t[i];
+    return { arc, t, n };
+}
+
+/** a target projected for display: its held value, arclength span, the span's
+ *  time extent through `m`, and the live drift readout (achieved/err/satisfied).
+ *  the chip + band render straight off this. */
+export interface Band {
+    id: number;
+    g: number;
+    s0: number;
+    s1: number;
+    t0: number;
+    t1: number;
+    achieved: number;
+    err: number;
+    satisfied: boolean;
+}
+
+/** every target projected onto the timeline through the display mapping `m` — the
+ *  chip lane + band render surface, sorted by span start. */
+export function targetBands(ecs: State, trackEid: number, m: Mapping): Band[] {
+    const rows = targetsFor(ecs, trackEid);
+    if (rows.length === 0) return []; // skip the drift bake on the empty golden-path idle
+    const drift = targetDrift(ecs, trackEid);
+    return rows.map((row) => {
+        const d = drift.find((x) => x.id === row.id);
+        return {
+            id: row.id,
+            g: row.g,
+            s0: row.s0,
+            s1: row.s1,
+            t0: arcToTime(m, row.s0),
+            t1: arcToTime(m, row.s1),
+            achieved: d?.achieved ?? row.g,
+            err: d?.err ?? 0,
+            satisfied: d?.satisfied ?? true,
+        };
+    });
+}
+
 // ── history commands ─────────────────────────────────────────────────────────
 // targets record onto the shared editor stack (the substrate is domain-agnostic;
 // `history.ts` owns begin/commit/record). a target is addressed by stable `id`,
@@ -273,36 +335,62 @@ export function deleteTarget(h: History, ecs: State, id: number): void {
     });
 }
 
-/** the demand gesture: set a target's value and let the solver deform the track,
- *  committed as **one** undo entry (target value + node moves). the batch form —
- *  set `g`, solve to convergence, commit; the live drag (stage 3) replaces the
- *  batch solve with per-frame RTI between the same begin/commit boundary. */
-export function demandTarget(
-    h: History,
-    ecs: State,
-    trackEid: number,
-    id: number,
-    g: number,
-): void {
-    beginDemand(ecs, trackEid);
-    setTargetG(ecs, id, g);
-    const solved = solveTrack(ecs, trackEid);
-    if (solved) applyChain(ecs, solved.nodes);
-    commit(h);
+// ── the live demand gesture ──────────────────────────────────────────────────
+// dragging a band vertically re-solves the track live, warm-started per frame.
+// the problem freezes at gesture start against the DRAFT (topology, freed union,
+// per-target sample spans) so the draft prior stays anchored to what the author
+// drew; only the dragged target's `g` slides. warm-from-the-previous-frame keeps
+// each RTI step to a few LM iterations. the whole drag+solve commits as one entry.
+
+/** LM iterations per RTI frame. warm-started from the previous frame (a tiny `g`
+ *  delta), the solve converges in 1–3 iters; a small cap keeps a move frame under
+ *  the ~2 ms budget (stage-1 cost). the release settles at full iterations. */
+const RTI_ITERS = 3;
+
+interface DemandCtx {
+    trackEid: number;
+    /** the gesture-start chain — the draft prior anchor + node-spacing reference. */
+    draft: Node[];
+    /** frozen sampling topology. */
+    counts: number[];
+    /** the freed-node union over all active targets. */
+    freed: number[];
+    /** every active target's frozen sample-index span; `g` mutates as the dragged
+     *  target follows the cursor. */
+    spans: SpanTarget[];
+    /** target id → its index in `spans`. */
+    spanIndex: Map<number, number>;
 }
 
-/** the summoned ⟳ re-solve: no target change, re-run the solve to pull the curve
- *  back onto its drifted bands. one undo entry (node moves only). */
-export function resolveTarget(h: History, ecs: State, trackEid: number): void {
-    beginMove(ecs); // snapshots the chain pose only — no target change
-    const solved = solveTrack(ecs, trackEid);
-    if (solved) applyChain(ecs, solved.nodes);
-    commit(h);
+let demand: DemandCtx | null = null;
+
+/** current live chain in node order — the warm iterate each RTI frame reads. */
+function readNodes(ecs: State): Node[] {
+    return sortedHandles(ecs).map((eid) => ({
+        x: Handle.pos.x.get(eid),
+        y: Handle.pos.y.get(eid),
+        theta: Handle.theta.get(eid),
+    }));
 }
 
-/** open a demand gesture, snapshotting the target values + chain pose so the
- *  whole live drag+solve collapses to one entry. */
-export function beginDemand(ecs: State, trackEid: number): void {
+/** open a live demand gesture on target `id`: snapshot the target values + chain
+ *  pose for undo, then freeze the solve problem against the gesture-start draft —
+ *  topology, the freed-node union, and each active target's sample span. returns
+ *  false (opening nothing) when there is nothing to solve for `id`. */
+export function beginDemand(ecs: State, trackEid: number, id: number): boolean {
+    const ctx = context(ecs, trackEid);
+    if (!ctx) return false;
+    const spans: SpanTarget[] = [];
+    const spanIndex = new Map<number, number>();
+    const scope = new Set<number>();
+    for (const row of targetsFor(ecs, trackEid)) {
+        const freed = scopeForArc(ctx.b, ctx.arc, row.s0, row.s1);
+        if (freed.length === 0) continue;
+        spanIndex.set(row.id, spans.length);
+        spans.push(spanOf(ctx, row));
+        for (const k of freed) scope.add(k);
+    }
+    if (!spanIndex.has(id)) return false;
     begin(
         () => ({ targets: targetSnapshot(ecs, trackEid), nodes: nodeSnapshot(ecs) }),
         (s: DemandState) => {
@@ -311,6 +399,103 @@ export function beginDemand(ecs: State, trackEid: number): void {
         },
         sameDemand,
     );
+    demand = {
+        trackEid,
+        draft: ctx.nodes,
+        counts: ctx.counts,
+        freed: [...scope].sort((a, z) => a - z),
+        spans,
+        spanIndex,
+    };
+    return true;
+}
+
+/** the freed node orders of the open demand gesture (empty when none) — the
+ *  viewport highlight set the solve is moving (§5). */
+export function demandScope(): number[] {
+    return demand ? demand.freed : [];
+}
+
+/** one RTI frame: set the dragged target's value, run a bounded warm-started
+ *  solve from the live chain (prior anchored to the frozen draft), write the
+ *  result to the live nodes. no history — inside the open gesture. */
+export function stepDemand(ecs: State, id: number, g: number, maxIters = RTI_ITERS): void {
+    const d = demand;
+    if (!d) return;
+    setTargetG(ecs, id, g);
+    const si = d.spanIndex.get(id);
+    if (si !== undefined) d.spans[si].g = g;
+    const res = solveTargets(
+        d.draft,
+        d.freed,
+        d.counts,
+        V0,
+        d.spans,
+        DEFAULT_WEIGHTS,
+        maxIters,
+        1e-7,
+        readNodes(ecs),
+    );
+    applyChain(ecs, res.nodes);
+}
+
+/** settle the demand to convergence (a final full solve before commit) so release
+ *  lands on the true solution, not the last RTI iterate. */
+export function settleDemand(ecs: State): void {
+    const d = demand;
+    if (!d) return;
+    const res = solveTargets(
+        d.draft,
+        d.freed,
+        d.counts,
+        V0,
+        d.spans,
+        DEFAULT_WEIGHTS,
+        120,
+        1e-7,
+        readNodes(ecs),
+    );
+    applyChain(ecs, res.nodes);
+}
+
+/** settle + commit the demand as one undo entry (target value + node moves). */
+export function endDemand(h: History, ecs: State): void {
+    if (!demand) return;
+    settleDemand(ecs);
+    demand = null;
+    commit(h);
+}
+
+/** abort the demand: close it and restore the pre-gesture targets + chain. */
+export function cancelDemand(): void {
+    demand = null;
+    cancel();
+}
+
+/** the batch demand: begin → solve to convergence → commit, one undo entry. the
+ *  live drag (stage 3) drives the same gesture through `stepDemand` per frame
+ *  instead. */
+export function demandTarget(
+    h: History,
+    ecs: State,
+    trackEid: number,
+    id: number,
+    g: number,
+): void {
+    if (!beginDemand(ecs, trackEid, id)) return;
+    stepDemand(ecs, id, g, 120);
+    endDemand(h, ecs);
+}
+
+/** the summoned ⟳ re-solve: no target change, re-run the solve to pull the curve
+ *  back onto its drifted bands. one undo entry (node moves only). anchors the
+ *  prior to the *current* drifted geometry (minimum deformation of what's there
+ *  now), so it uses the batch `solveTrack`, not the draft-anchored demand. */
+export function resolveTarget(h: History, ecs: State, trackEid: number): void {
+    beginMove(ecs); // snapshots the chain pose only — no target change
+    const solved = solveTrack(ecs, trackEid);
+    if (solved) applyChain(ecs, solved.nodes);
+    commit(h);
 }
 
 interface TargetState {
