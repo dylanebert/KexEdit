@@ -145,34 +145,32 @@ function segMetrics(
     return { length, turning };
 }
 
+/** per-segment edge counts (the discrete sampling topology). `counts[i]` edges
+ *  bake the segment from node `i` to `i+1`; `counts.length` is the baked-segment
+ *  count, `< nodes.length − 1` when a degenerate segment or the buffer stopped
+ *  the walk. */
+export type ChainCounts = {
+    counts: number[];
+    valid: boolean;
+    truncated: boolean;
+};
+
 /**
- * sample a node chain into `posX` / `posY` (+ per-edge chord length into
- * `dsArr`). each segment is a cubic Hermite between the two nodes' stored
- * headings, the tangent length scaled by the *live* chord (so dragging
- * re-proportions the curve instead of over/undershooting). node 0 lands at
- * sample 0; each segment is sampled uniformly in its parameter and lands
- * exactly on its end node.
- *
- * `dsArr[i]` is the **exact** chord `|P_{i+1} − P_i|` between consecutive
- * *samples*, which makes the kinematic inversion the algebraic inverse of the
- * forward step (so the round-trip reproduces these positions to f32 noise). a
- * degenerate (≈coincident) segment or a full buffer stops the walk: a partial
- * chain is committed and trailing nodes are orphaned.
+ * the adaptive edge-count rule, split out of `sampleChain` so a solve can
+ * **freeze** the sampling topology once and sample many node-parameter
+ * variations against it (`sampleAt`) — a stable residual dimension for a
+ * finite-difference Jacobian, and constant force-target sample indices across
+ * the solve. per segment: `max(⌈length/dsNominal⌉, ⌈turning/(2·MAX_U_PER_EDGE)⌉)`,
+ * clamped by remaining buffer. a ≈coincident chord or a full buffer stops the
+ * walk (the prefix is kept, trailing nodes orphaned) — the same rule
+ * `sampleChain` applies inline.
  */
-export function sampleChain(
+export function chainCounts(
     nodes: readonly Node[],
     dsNominal: number,
-    posX: Float32Array,
-    posY: Float32Array,
-    dsArr: Float32Array,
     maxSamples: number,
-): ChainResult {
-    if (nodes.length < 2) return { valid: false, edges: 0, offsets: [], truncated: false };
-
-    posX[0] = nodes[0].x;
-    posY[0] = nodes[0].y;
-
-    const offsets = [0];
+): ChainCounts {
+    const counts: number[] = [];
     let offset = 0;
     let valid = true;
     let truncated = false;
@@ -207,11 +205,48 @@ export function sampleChain(
             m = avail;
             truncated = true;
         }
+        counts.push(m);
+        offset += m;
+        if (truncated) break;
+    }
+
+    return { counts, valid, truncated };
+}
+
+/**
+ * sample a node chain at **given** per-segment edge counts into `posX` / `posY`
+ * (+ per-edge chord length into `dsArr`), landing each segment exactly on its
+ * end node. the tangent length re-derives from the *live* chord every call, so
+ * moving a node re-proportions the curve — only the discrete count is frozen.
+ * `dsArr[i]` is the exact chord `|P_{i+1} − P_i|`. counts must fit the buffer
+ * (`chainCounts` guarantees it); no bounds check here.
+ */
+export function sampleAt(
+    nodes: readonly Node[],
+    counts: readonly number[],
+    posX: Float32Array | Float64Array,
+    posY: Float32Array | Float64Array,
+    dsArr: Float32Array | Float64Array,
+): { offsets: number[]; edges: number } {
+    posX[0] = nodes[0].x;
+    posY[0] = nodes[0].y;
+
+    const offsets = [0];
+    let offset = 0;
+
+    for (let i = 0; i < counts.length; i++) {
+        const pa = nodes[i];
+        const pb = nodes[i + 1];
+        const chordAngle = Math.atan2(pb.y - pa.y, pb.x - pa.x);
+        const chordLen = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+        const va = handle(pa.theta, chordAngle, chordLen);
+        const vb = handle(pb.theta, chordAngle, chordLen);
+        const m = counts[i];
 
         let prevX = pa.x;
         let prevY = pa.y;
         for (let j = 1; j <= m; j++) {
-            // j === m → s = 1 lands exactly on pb (no f32 drift off the node).
+            // j === m → s = 1 lands exactly on pb (no float drift off the node).
             const pt = j === m ? pb : hermite(pa, va, pb, vb, j / m);
             posX[offset + j] = pt.x;
             posY[offset + j] = pt.y;
@@ -221,8 +256,38 @@ export function sampleChain(
         }
         offset += m;
         offsets.push(offset);
-        if (truncated) break;
     }
 
-    return { valid, edges: offset, offsets, truncated };
+    return { offsets, edges: offset };
+}
+
+/**
+ * sample a node chain into `posX` / `posY` (+ per-edge chord length into
+ * `dsArr`). each segment is a cubic Hermite between the two nodes' stored
+ * headings, the tangent length scaled by the *live* chord (so dragging
+ * re-proportions the curve instead of over/undershooting). node 0 lands at
+ * sample 0; each segment is sampled uniformly in its parameter and lands
+ * exactly on its end node.
+ *
+ * `dsArr[i]` is the **exact** chord `|P_{i+1} − P_i|` between consecutive
+ * *samples*, which makes the kinematic inversion the algebraic inverse of the
+ * forward step (so the round-trip reproduces these positions to f32 noise). a
+ * degenerate (≈coincident) segment or a full buffer stops the walk: a partial
+ * chain is committed and trailing nodes are orphaned.
+ *
+ * the adaptive `chainCounts` + `sampleAt` split (above) is the same walk; this
+ * is the fused convenience the identity bake and every test call.
+ */
+export function sampleChain(
+    nodes: readonly Node[],
+    dsNominal: number,
+    posX: Float32Array,
+    posY: Float32Array,
+    dsArr: Float32Array,
+    maxSamples: number,
+): ChainResult {
+    if (nodes.length < 2) return { valid: false, edges: 0, offsets: [], truncated: false };
+    const { counts, valid, truncated } = chainCounts(nodes, dsNominal, maxSamples);
+    const { offsets, edges } = sampleAt(nodes, counts, posX, posY, dsArr);
+    return { valid, edges, offsets, truncated };
 }

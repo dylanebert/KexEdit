@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_U_PER_EDGE, type Node, reflect, sampleChain } from "../src/spline";
+import {
+    chainCounts,
+    MAX_U_PER_EDGE,
+    type Node,
+    reflect,
+    sampleAt,
+    sampleChain,
+} from "../src/spline";
 import { withThetas } from "./helpers/chain";
 import { makeBuf } from "./helpers/buf";
 
@@ -108,6 +115,43 @@ describe("sampleChain — interpolation", () => {
         expect(r.valid).toBe(true);
         const avg = polyTurning(b.posX, b.posY, r.edges) / r.edges;
         expect(avg).toBeLessThanOrEqual(2 * MAX_U_PER_EDGE + 0.05);
+    });
+});
+
+describe("chainCounts + sampleAt — frozen sampling topology", () => {
+    test("the sample dimension is fixed by the counts, stable as nodes move", () => {
+        // the solver's frozen-gesture primitive: freeze per-segment counts once,
+        // then sample many node-parameter variations against them — a constant
+        // residual dimension for the finite-difference Jacobian.
+        const nodes = withThetas([
+            { x: 0, y: 0 },
+            { x: 12, y: 4 },
+            { x: 26, y: 10 },
+            { x: 40, y: 4 },
+            { x: 54, y: 0 },
+        ]);
+        const { counts } = chainCounts(nodes, DS, MAX);
+        const total = counts.reduce((s, m) => s + m, 0);
+
+        const a = makeBuf(MAX);
+        const ra = sampleAt(nodes, counts, a.posX, a.posY, a.ds);
+        expect(ra.edges).toBe(total);
+
+        // move an interior node far enough that the *adaptive* rule re-chooses
+        // this segment's edge count — the frozen counts must not follow.
+        const moved = nodes.map((n) => ({ ...n }));
+        moved[2] = { ...moved[2], x: moved[2].x + 6, y: moved[2].y + 5 };
+        const b = makeBuf(MAX);
+        const rb = sampleAt(moved, counts, b.posX, b.posY, b.ds);
+        expect(rb.edges).toBe(total); // dimension unchanged
+        expect(rb.offsets).toEqual(ra.offsets); // every node offset stable
+        // the adaptive path drifts the dimension — what the freeze exists to avoid.
+        const c = makeBuf(MAX);
+        expect(chainCounts(moved, DS, MAX).counts).not.toEqual(counts);
+        expect(sampleChain(moved, DS, c.posX, c.posY, c.ds, MAX).edges).not.toBe(total);
+        // and the frozen bake still lands exactly on the moved node.
+        expect(b.posX[rb.offsets[2]]).toBeCloseTo(moved[2].x, 4);
+        expect(b.posY[rb.offsets[2]]).toBeCloseTo(moved[2].y, 4);
     });
 });
 
