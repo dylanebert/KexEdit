@@ -1,15 +1,30 @@
 import { State } from "@dylanebert/shallot";
 import { expect, test } from "bun:test";
 import {
+    beginForceMove,
     beginMove,
     commit,
+    convertTrack,
+    createForce,
     createHistory,
+    deleteForce,
     extendTrack,
     redo,
     trimTrack,
     undo,
 } from "../src/history";
-import { addNode, createTrack, Handle, handleAt, reheadOnDrag, sortedHandles } from "../src/track";
+import {
+    addNode,
+    createTrack,
+    forcePoints,
+    Handle,
+    handleAt,
+    reheadOnDrag,
+    setForcePoint,
+    sortedHandles,
+    Track,
+    TrackKind,
+} from "../src/track";
 
 // track-node undo/redo, addressed by stable `order`. a fresh
 // device-free State per test (no GPU — history mutates Handle directly, never
@@ -116,4 +131,101 @@ test("a no-move node click records nothing", () => {
     beginMove(state);
     commit(h); // released without moving
     expect(h.undo.length).toBe(0);
+});
+
+// ── force points (stage C) — addressed by stable `id`, the same undo substrate ──
+
+const points = (s: State) => forcePoints(s).map((p) => ({ id: p.id, s: p.s, g: p.g }));
+
+test("createForce: undo removes the point, redo re-spawns it verbatim", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const id = createForce(h, state, 12, 0.5);
+    expect(points(state)).toEqual([{ id, s: 12, g: 0.5 }]);
+
+    undo(h);
+    expect(points(state)).toEqual([]);
+
+    redo(h);
+    expect(points(state)).toEqual([{ id, s: 12, g: 0.5 }]); // same id + values
+});
+
+test("deleteForce: undo re-spawns the removed point verbatim", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const id = createForce(h, state, 7, 0.2);
+    deleteForce(h, state, id);
+    expect(points(state)).toEqual([]);
+
+    undo(h);
+    expect(points(state)).toEqual([{ id, s: 7, g: 0.2 }]);
+});
+
+test("a force-point drag collapses to one entry; undo restores s/g", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const id = createForce(h, state, 10, 1);
+
+    beginForceMove(state, id);
+    setForcePoint(state, id, 14, 1.5); // live preview frames — not recorded
+    setForcePoint(state, id, 18, 2);
+    commit(h);
+
+    expect(h.undo.length).toBe(2); // create + the whole drag → one entry each
+    expect(points(state)).toEqual([{ id, s: 18, g: 2 }]);
+
+    undo(h); // undo the drag
+    expect(points(state)).toEqual([{ id, s: 10, g: 1 }]);
+});
+
+test("a no-move force-point release records nothing", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const id = createForce(h, state, 5, 1);
+    beginForceMove(state, id);
+    commit(h); // released without moving
+    expect(h.undo.length).toBe(1); // only the create
+});
+
+test("convert geo→force undoes byte-identical to the shaped geo track (§5)", () => {
+    const { state, eid } = nodes();
+    addNode(state, 40, 6); // shape it: a third off-axis node
+    const before = sortedHandles(state).map((e) => ({
+        order: Handle.order.get(e),
+        x: Handle.pos.x.get(e),
+        y: Handle.pos.y.get(e),
+        theta: Handle.theta.get(e),
+    }));
+    const h = createHistory();
+
+    convertTrack(h, state, eid);
+    expect(Track.kind.get(eid)).toBe(TrackKind.Force);
+    expect(sortedHandles(state).length).toBe(0); // nodes cleared (destructive)
+
+    undo(h);
+    expect(Track.kind.get(eid)).toBe(TrackKind.Geo);
+    const after = sortedHandles(state).map((e) => ({
+        order: Handle.order.get(e),
+        x: Handle.pos.x.get(e),
+        y: Handle.pos.y.get(e),
+        theta: Handle.theta.get(e),
+    }));
+    expect(after).toEqual(before); // the geo chain restored exactly
+});
+
+test("convert force→geo undoes byte-identical to the authored force points (§5)", () => {
+    const { state, eid } = nodes();
+    const h = createHistory();
+    convertTrack(h, state, eid); // → force (clears the seed nodes)
+    createForce(h, state, 8, 1.5);
+    createForce(h, state, 16, 0.3);
+    const before = points(state);
+
+    convertTrack(h, state, eid); // → geo (clears the points)
+    expect(Track.kind.get(eid)).toBe(TrackKind.Geo);
+    expect(points(state)).toEqual([]);
+
+    undo(h);
+    expect(Track.kind.get(eid)).toBe(TrackKind.Force);
+    expect(points(state)).toEqual(before); // the points restored exactly
 });

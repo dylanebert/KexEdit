@@ -1,7 +1,19 @@
 <script lang="ts">
+import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, trackMapping } from "./cart";
-import { history, redo, undo } from "./history";
+import { editor, select, selectForce } from "./editor";
+import {
+    beginForceMove,
+    cancel,
+    commit,
+    convertTrack,
+    createForce,
+    deleteForce,
+    history,
+    redo,
+    undo,
+} from "./history";
 import {
     arcToTime,
     clampView,
@@ -20,14 +32,16 @@ import {
     type YFit,
     zoomAt,
 } from "./timeline";
-import { bakeOut } from "./track";
+import { bakeOut, type ForceRow, forcePoints, setForcePoint, Track, TrackKind } from "./track";
 import { resize } from "./view";
 
-const { eid, tick }: { eid: number | null; tick: number } = $props();
+const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
 
 // the timeline shows the baked F_n force curve the realized track produces, plus
-// scrub + zoom/pan navigation. force authoring (place points on the curve) lands
-// in stage C of kex/specs/kex2d-sections.md; this is the read-only curve + player.
+// scrub + zoom/pan navigation. in FORCE mode it's also the authoring surface: force
+// points are placed, dragged, and deleted on the curve (kex/specs/kex2d-sections.md
+// §6), and the chart keeps displaying the geometry-recovered curve (§2). in GEO mode
+// it stays a read-only curve + player (the track is authored in the viewport).
 
 // timeline bands, top → bottom: a scrubbable RULER (ticks + labels + playhead
 // handle, the dedicated scrub zone), a demarcating GAP the playhead passes through,
@@ -48,6 +62,7 @@ const CAP_LO = BAND[0] - Y_HEADROOM;
 const CAP_HI = BAND[1] + Y_HEADROOM;
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
+const FMARKER_R = 5; // px; the force-point diamond's half-diagonal
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -164,6 +179,116 @@ $effect(() => {
 
 const yOf = (val: number): number =>
     TOP + (1 - (val - yView.lo) / (yView.hi - yView.lo)) * (h - BOT_PAD - TOP);
+// the inverse of yOf — a chart-local pixel y back to a g value, for placing/dragging
+// force points against the displayed axis.
+const yToG = (py: number): number => {
+    const inner = Math.max(1, h - BOT_PAD - TOP);
+    return yView.lo + (1 - (py - TOP) / inner) * (yView.hi - yView.lo);
+};
+
+// ── force authoring (force mode only): points on the curve, the keyframe idiom ──
+// filled diamonds at (s, g), authored INPUT (not optimization targets), so no
+// drop-line and no driving/driven (§6). double-click places, drag moves both axes,
+// Del removes, the header fields type s/g. all edits route through `history`.
+const kind = $derived.by((): TrackKind => {
+    void tick;
+    return eid === null ? TrackKind.Geo : (Track.kind.get(eid) as TrackKind);
+});
+const isForce = $derived(kind === TrackKind.Force);
+const points = $derived.by((): ForceRow[] => {
+    void tick;
+    return eid === null || !isForce ? [] : forcePoints(ecs);
+});
+// the selected point's id (read through the per-RAF tick; editor is plain state).
+const selForce = $derived.by((): number | null => {
+    void tick;
+    return editor.force;
+});
+const selPoint = $derived.by((): ForceRow | null => {
+    if (selForce === null) return null;
+    return points.find((p) => p.id === selForce) ?? null;
+});
+const markerX = (s: number): number => LEFT_GUT + sToPx(clamped, s);
+
+// chart-local pointer coords (px from the canvas top-left, past the g-gutter for x).
+function chartS(e: MouseEvent): number {
+    const rect = canvas.getBoundingClientRect();
+    return clamp(pxToS(clamped, e.clientX - rect.left - LEFT_GUT), 0, sTotal);
+}
+function chartG(e: MouseEvent): number {
+    const rect = canvas.getBoundingClientRect();
+    return yToG(e.clientY - rect.top);
+}
+
+// double-click the empty chart drops a force point at that exact (s, g).
+function chartCreate(e: MouseEvent): void {
+    if (eid === null || !isForce) return;
+    selectForce(createForce(history, ecs, chartS(e), chartG(e)));
+}
+
+// drag a diamond in both axes (horizontal = s, vertical = g), one undo entry.
+let dragForce: number | null = null;
+let grabDs = 0; // point s − cursor s, so grabbing off-center doesn't snap
+function forceDown(e: PointerEvent, p: ForceRow): void {
+    e.preventDefault();
+    e.stopPropagation(); // don't also deselect via the chartzone below
+    grabDs = p.s - chartS(e);
+    beginForceMove(ecs, p.id);
+    dragForce = p.id;
+    selectForce(p.id);
+    window.addEventListener("pointermove", forceMove);
+    window.addEventListener("pointerup", forceUp);
+}
+function forceMove(e: PointerEvent): void {
+    if (dragForce === null) return;
+    setForcePoint(ecs, dragForce, clamp(chartS(e) + grabDs, 0, sTotal), chartG(e));
+}
+function forceUp(): void {
+    if (dragForce === null) return;
+    dragForce = null;
+    commit(history); // one drag → one entry; a no-move click drops via the `same` guard
+    window.removeEventListener("pointermove", forceMove);
+    window.removeEventListener("pointerup", forceUp);
+}
+
+// ── the header controls: mode toggle + the selected point's typed s/g fields ──
+// the mode toggle is a destructive, undoable convert (§5): clicking the inactive
+// side resets the track to that kind's default. clearing both selections first
+// keeps a stale id out of the post-convert view.
+function toggleKind(): void {
+    if (eid === null) return;
+    selectForce(null);
+    select(null);
+    convertTrack(history, ecs, eid);
+}
+// each field commits one undo entry through the drag gesture (begin → set → commit).
+function fieldEdit(s: number, g: number): void {
+    const id = selForce;
+    if (id === null || !Number.isFinite(s) || !Number.isFinite(g)) return; // guard a cleared field
+    beginForceMove(ecs, id);
+    setForcePoint(ecs, id, Math.max(0, s), g);
+    commit(history);
+}
+function onFieldS(e: Event): void {
+    if (!selPoint) return;
+    fieldEdit(Number.parseFloat((e.currentTarget as HTMLInputElement).value), selPoint.g);
+}
+function onFieldG(e: Event): void {
+    if (!selPoint) return;
+    fieldEdit(selPoint.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
+}
+function deleteSelectedForce(): void {
+    if (editor.force === null) return;
+    deleteForce(history, ecs, editor.force);
+    selectForce(null);
+}
+function cancelForceDrag(): void {
+    if (dragForce === null) return;
+    dragForce = null;
+    cancel(); // interrupted (unmount mid-drag): revert to the pre-gesture s/g
+    window.removeEventListener("pointermove", forceMove);
+    window.removeEventListener("pointerup", forceUp);
+}
 
 // ── middle-button drag pans the view. intercepted at the host's capture phase so it
 // fires before the pointer-events:all SVG rects; the ruler handler also routes a
@@ -510,6 +635,18 @@ onMount(() => {
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
+            return;
+        }
+        // force-point select/delete — guarded on a live force selection so geo-node
+        // Esc/Del (controls.ts) stay unambiguous (the selections are mode-exclusive).
+        if (editor.force !== null) {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                selectForce(null);
+            } else if (e.key === "Delete" || e.key === "Backspace") {
+                e.preventDefault();
+                deleteSelectedForce();
+            }
         }
     };
     host.addEventListener("wheel", onWheel, { passive: false });
@@ -521,11 +658,65 @@ onMount(() => {
         sliderUp(); // and any in-flight player-slider drag
         panUp(); // and any in-flight middle-drag pan
         navUp(); // and any in-flight navigator drag
+        cancelForceDrag(); // and any in-flight force-point drag
     };
 });
 </script>
 
 <aside class="dock">
+    <!-- the header: the track-mode toggle (a destructive, undoable geo↔force convert,
+         §5) and, in force mode with a point selected, its typed s / g fields. quiet
+         otherwise (gate 2) — just the toggle. -->
+    <div class="header">
+        {#if eid !== null}
+            <div class="kindtoggle" role="group" aria-label="Track mode">
+                <button
+                    type="button"
+                    class:active={!isForce}
+                    onclick={() => isForce && toggleKind()}
+                    title="Geometry mode — drag nodes in the viewport (resets the track)"
+                >
+                    Geo
+                </button>
+                <button
+                    type="button"
+                    class:active={isForce}
+                    onclick={() => !isForce && toggleKind()}
+                    title="Force mode — place force points on the curve (resets the track)"
+                >
+                    Force
+                </button>
+            </div>
+        {/if}
+        <div class="spacer"></div>
+        {#if selPoint}
+            <div class="fields">
+                <div class="fld">
+                    <span class="key">s</span>
+                    <input
+                        type="number"
+                        step="1"
+                        min="0"
+                        value={selPoint.s.toFixed(1)}
+                        onchange={onFieldS}
+                        aria-label="Point distance (m)"
+                    />
+                    <span class="unit">m</span>
+                </div>
+                <div class="fld">
+                    <span class="key">F</span>
+                    <input
+                        type="number"
+                        step="0.1"
+                        value={selPoint.g.toFixed(2)}
+                        onchange={onFieldG}
+                        aria-label="Point force (g)"
+                    />
+                    <span class="unit">g</span>
+                </div>
+            </div>
+        {/if}
+    </div>
     <div
         class="body"
         bind:this={host}
@@ -542,6 +733,18 @@ onMount(() => {
     >
         <canvas bind:this={canvas}></canvas>
         <svg class="overlay" width={w} height={h}>
+            <defs>
+                <!-- clip the force diamonds to the inner chart rect so a panned/off-
+                     scale point doesn't paint over the ruler or the g-gutter. -->
+                <clipPath id="fclip">
+                    <rect
+                        x={LEFT_GUT}
+                        y={TOP}
+                        width={Math.max(0, w - LEFT_GUT)}
+                        height={Math.max(0, h - BOT_PAD - TOP)}
+                    />
+                </clipPath>
+            </defs>
             <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere here
                  moves the playhead (the distance ruler is the scrubber). -->
             {#if eid !== null && sTotal > 0}
@@ -561,6 +764,23 @@ onMount(() => {
                     aria-valuenow={Math.round((cartS ?? 0) * 100) / 100}
                 />
             {/if}
+            <!-- force mode: the chart is the authoring surface. double-click drops a
+                 point at the exact (s, g) under the cursor; a bare click on empty
+                 chart clears the point selection. the diamonds sit above it. -->
+            {#if isForce && eid !== null && sTotal > 0}
+                <rect
+                    class="chartzone"
+                    x={LEFT_GUT}
+                    y={TOP}
+                    width={Math.max(0, w - LEFT_GUT)}
+                    height={Math.max(0, h - BOT_PAD - TOP)}
+                    ondblclick={chartCreate}
+                    onpointerdown={(e) => {
+                        if (e.button === 0) selectForce(null);
+                    }}
+                    role="presentation"
+                />
+            {/if}
             <!-- playhead: a handle in the ruler + a line down through the gap and
                  chart. visual only — the rulerzone above owns the scrub interaction. -->
             {#if playPx !== null}
@@ -569,6 +789,28 @@ onMount(() => {
                     class="grip"
                     points="{playPx - 5},{RULER_H - 10} {playPx + 5},{RULER_H - 10} {playPx},{RULER_H}"
                 />
+            {/if}
+            <!-- force points: a filled diamond at (s, g) — the KEYFRAME idiom (authored
+                 input), not the constraint ring (§6): no drop-line, no driving/driven.
+                 drag both axes; the chartzone owns creation. -->
+            {#if isForce}
+                <g class="fmarkers" clip-path="url(#fclip)">
+                    {#each points as p (p.id)}
+                        {@const mx = markerX(p.s)}
+                        {#if mx >= LEFT_GUT - FMARKER_R && mx <= w + FMARKER_R}
+                            {@const my = yOf(p.g)}
+                            <polygon
+                                class="fmarker"
+                                class:sel={p.id === selForce}
+                                points="{mx},{my - FMARKER_R} {mx + FMARKER_R},{my} {mx},{my + FMARKER_R} {mx - FMARKER_R},{my}"
+                                onpointerdown={(e) => forceDown(e, p)}
+                                role="button"
+                                tabindex="-1"
+                                aria-label="Force point"
+                            />
+                        {/if}
+                    {/each}
+                </g>
             {/if}
         </svg>
     </div>
@@ -652,6 +894,87 @@ onMount(() => {
         user-select: none;
         -webkit-user-select: none;
         overflow: hidden;
+    }
+
+    /* the header: a quiet control row — the mode toggle at left, the selected
+       point's fields at right. a background step demarcates it from the chart (no
+       divider line — surface color, not borders). */
+    .header {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 32px;
+        padding: 0 8px;
+        background: rgba(255, 255, 255, 0.02);
+        font-size: 11px;
+    }
+    .header .spacer {
+        flex: 1;
+    }
+
+    /* the geo↔force mode toggle: a two-segment pill, the active side lit. clicking
+       the inactive side converts (destructive, undoable). */
+    .kindtoggle {
+        display: inline-flex;
+        border-radius: 5px;
+        overflow: hidden;
+        background: rgba(0, 0, 0, 0.28);
+    }
+    .kindtoggle button {
+        all: unset;
+        box-sizing: border-box;
+        padding: 3px 12px;
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 11px;
+        color: var(--muted);
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease;
+    }
+    .kindtoggle button:hover {
+        color: var(--fg);
+    }
+    .kindtoggle button.active {
+        background: var(--accent-soft);
+        color: var(--accent);
+        cursor: default;
+    }
+
+    /* the selected point's typed s / g fields — the keyframe's numeric handles. */
+    .fields {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .fld {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+    }
+    .fld .key {
+        color: var(--muted);
+        font-style: italic;
+    }
+    .fld .unit {
+        color: var(--muted);
+    }
+    .fld input {
+        width: 48px;
+        box-sizing: border-box;
+        padding: 2px 4px;
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        color: var(--fg);
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+    }
+    .fld input:focus {
+        outline: none;
+        border-color: var(--accent);
     }
 
     .body {
@@ -758,6 +1081,36 @@ onMount(() => {
         stroke: var(--neutral-soft);
         stroke-width: 4;
         paint-order: stroke;
+    }
+
+    /* the force-mode chart surface: double-click places a point, a bare click clears
+       the selection. default cursor (the diamonds carry their own move cursor). */
+    .chartzone {
+        fill: transparent;
+        pointer-events: all;
+        cursor: default;
+    }
+
+    /* force points: a filled diamond (the keyframe idiom — authored input, §6), light
+       so it reads over the accent curve. selected turns accent with a fitted ring. */
+    .fmarker {
+        fill: var(--pin);
+        stroke: #0e0d0c;
+        stroke-width: 1;
+        pointer-events: all;
+        cursor: grab;
+        transition: fill 100ms ease;
+    }
+    .fmarker:hover {
+        fill: #fff;
+    }
+    .fmarker.sel {
+        fill: var(--accent);
+        stroke: var(--fg);
+        stroke-width: 1.4;
+    }
+    .fmarker:active {
+        cursor: grabbing;
     }
 
     /* the player: a media transport (play · global scrub · timecode) floated as its

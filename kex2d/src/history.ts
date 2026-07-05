@@ -12,7 +12,12 @@
  *  apply/reverse. */
 
 import {
+    convertKind,
+    createForcePoint,
+    destroyForce,
     extend,
+    type ForcePointState,
+    forcePointState,
     Handle,
     handleAt,
     lastHandle,
@@ -20,7 +25,11 @@ import {
     nodeSnapshot,
     removeTrailingHandle,
     restoreNodes,
+    restoreTrack,
     sameNodes,
+    setForcePoint,
+    snapshotTrack,
+    spawnForce,
     spawnNode,
 } from "./track";
 import type { State } from "@dylanebert/shallot";
@@ -187,4 +196,58 @@ function destroyAt(ecs: State, order: number): void {
 function setTheta(ecs: State, order: number, theta: number): void {
     const eid = handleAt(ecs, order);
     if (eid !== null) Handle.theta.set(eid, theta);
+}
+
+// ── force points ─────────────────────────────────────────────────────────────
+
+/** author a force point at `(s, g)`, recording an undoable add. the id is allocated
+ *  once; undo destroys by it and redo re-spawns verbatim (no re-allocation), so the
+ *  point round-trips byte-identical. returns the new point's stable id. */
+export function createForce(h: History, ecs: State, s: number, g: number): number {
+    const id = createForcePoint(ecs, s, g);
+    record(h, {
+        apply: () => spawnForce(ecs, id, s, g),
+        reverse: () => destroyForce(ecs, id),
+    });
+    return id;
+}
+
+/** delete a force point by id, recording an undoable remove — undo re-spawns it
+ *  verbatim. no-op (records nothing) if the id is already gone. */
+export function deleteForce(h: History, ecs: State, id: number): void {
+    const st = forcePointState(ecs, id);
+    if (!st) return;
+    destroyForce(ecs, id);
+    record(h, {
+        apply: () => destroyForce(ecs, id),
+        reverse: () => spawnForce(ecs, st.id, st.s, st.g),
+    });
+}
+
+/** open a gesture on a force-point drag (or an inline field edit), snapshotting the
+ *  point's `s`/`g`. commit coalesces the live writes into one entry; a no-move
+ *  release records nothing. */
+export function beginForceMove(ecs: State, id: number): void {
+    begin(
+        () => forcePointState(ecs, id),
+        (st: ForcePointState) => setForcePoint(ecs, st.id, st.s, st.g),
+        (a: ForcePointState, b: ForcePointState) => a.s === b.s && a.g === b.g,
+    );
+}
+
+// ── whole-track kind conversion ───────────────────────────────────────────────
+
+/** flip the track's kind to its opposite, destructively resetting to that kind's
+ *  default (§5), as one undoable entry. the command captures the full track state
+ *  before and after (`snapshotTrack`), so undo restores the pre-convert payload
+ *  byte-identical — which is what makes destructive conversion safe without a
+ *  confirm dialog. */
+export function convertTrack(h: History, ecs: State, trackEid: number): void {
+    const before = snapshotTrack(ecs, trackEid);
+    convertKind(ecs, trackEid);
+    const after = snapshotTrack(ecs, trackEid);
+    record(h, {
+        apply: () => restoreTrack(ecs, trackEid, after),
+        reverse: () => restoreTrack(ecs, trackEid, before),
+    });
 }

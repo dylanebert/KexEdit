@@ -4,15 +4,19 @@ import {
     addNode,
     BakeSystem,
     bakeOut,
+    convertKind,
+    createForcePoint,
     createTrack,
     EXTEND_DIST,
     extend,
+    forcePoints,
     Handle,
     reheadOnDrag,
     removeTrailingHandle,
     samples,
     sortedHandles,
     Track,
+    TrackKind,
 } from "../src/track";
 
 // the ECS layer: BakeSystem wires sortedHandles → chain([one geo section]) →
@@ -183,6 +187,101 @@ describe("BakeSystem", () => {
             if (a * b < 0) reversals++;
         }
         expect(reversals).toBeLessThan((count - 1) / 4);
+    });
+
+    test("an empty force profile bakes a flat 1g track over the section length", () => {
+        // convert the flat geo seed to force: no points → constant 1g (§6), which
+        // integrates to a straight level track whose arclength matches the extent.
+        const { state, eid } = track();
+        state.step(0); // geo bake first, so the convert inherits its arclength
+        convertKind(state, eid);
+        expect(Track.kind.get(eid)).toBe(TrackKind.Force);
+        const len = Track.length.get(eid);
+        expect(len).toBeGreaterThan(20); // the seed's ~24 m
+
+        state.step(0); // force bake
+        const count = Track.count.get(eid);
+        const out = bakeOut.get(eid);
+        const s = samples.get(eid);
+        if (!out || !s) throw new Error("track buffers missing");
+
+        expect(count).toBeGreaterThan(2);
+        for (let i = 0; i < count - 1; i++) expect(out.fN[i]).toBeCloseTo(1, 3);
+        for (let i = 0; i < count; i++) expect(s.posY[i]).toBeCloseTo(0, 3);
+        expect(out.firstInfeasible).toBe(-1);
+        let arc = 0;
+        for (let i = 0; i < count - 1; i++) arc += out.ds[i];
+        expect(arc).toBeCloseTo(len, 1); // integrated length ≈ the authored extent
+    });
+
+    test("force points shape the bake — a localized dip recovers below 1g, non-flat", () => {
+        // three points hold 1g at the ends and dip to 0g mid-track: a localized
+        // airtime crest. the recovered display force follows the authored dip (O(ds)
+        // off, §2) and the geometry is no longer flat — the glue gathers points →
+        // profile → chain, the substrate does the physics.
+        const { state, eid } = track();
+        state.step(0);
+        convertKind(state, eid);
+        const len = Track.length.get(eid);
+        createForcePoint(state, len * 0.2, 1);
+        createForcePoint(state, len * 0.5, 0);
+        createForcePoint(state, len * 0.8, 1);
+        state.step(0);
+
+        const count = Track.count.get(eid);
+        const out = bakeOut.get(eid);
+        const s = samples.get(eid);
+        if (!out || !s) throw new Error("track buffers missing");
+
+        const mid = Math.floor((count - 1) / 2);
+        expect(out.fN[mid]).toBeLessThan(0.4); // near the authored 0g crest
+        expect(out.fN[1]).toBeGreaterThan(0.7); // near the authored 1g lead-in
+        let maxAbsY = 0;
+        for (let i = 0; i < count; i++) maxAbsY = Math.max(maxAbsY, Math.abs(s.posY[i]));
+        expect(maxAbsY).toBeGreaterThan(0.5); // the geometry responded (not flat)
+    });
+
+    test("convert geo→force clears the nodes and inherits the geo arclength", () => {
+        const { state, eid } = track();
+        state.step(0);
+        const out = bakeOut.get(eid);
+        const c0 = Track.count.get(eid);
+        if (!out) throw new Error("bakeOut missing");
+        let geoArc = 0;
+        for (let i = 0; i < c0 - 1; i++) geoArc += out.ds[i];
+
+        convertKind(state, eid);
+        expect(Track.kind.get(eid)).toBe(TrackKind.Force);
+        expect(sortedHandles(state).length).toBe(0);
+        expect(Track.length.get(eid)).toBeCloseTo(geoArc, 1);
+    });
+
+    test("convert force→geo clears the points and reseeds the flat two-node shape", () => {
+        const { state, eid } = track();
+        state.step(0);
+        convertKind(state, eid); // → force
+        createForcePoint(state, 5, 2);
+        expect(forcePoints(state).length).toBe(1);
+
+        convertKind(state, eid); // → geo
+        expect(Track.kind.get(eid)).toBe(TrackKind.Geo);
+        expect(forcePoints(state).length).toBe(0);
+        expect(sortedHandles(state).length).toBe(2);
+    });
+
+    test("a kind flip busts the bake hash; an unchanged force track is not re-baked", () => {
+        const { state, eid } = track();
+        state.step(0);
+        convertKind(state, eid);
+        state.step(0);
+        const out = bakeOut.get(eid);
+        if (!out) throw new Error("bakeOut missing");
+        out.fN[0] = 999;
+        state.step(0);
+        expect(out.fN[0]).toBe(999); // unchanged force track → skipped
+        createForcePoint(state, 5, 2);
+        state.step(0);
+        expect(out.fN[0]).not.toBe(999); // a new point → re-baked
     });
 
     test("a coincident interior node orphans the trailing nodes", () => {

@@ -4,16 +4,18 @@ import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { CartPlugin } from "./cart";
 import { select } from "./editor";
-import { history } from "./history";
+import { convertTrack, createForce, history } from "./history";
 import { RenderPlugin } from "./render";
 import {
     addNode,
     bakeOut,
+    forcePoints,
     Handle,
     handleAt,
     lastHandle,
     sortedHandles,
     Track,
+    TrackKind,
     TrackPlugin,
     V0,
 } from "./track";
@@ -68,6 +70,21 @@ if (import.meta.env.DEV) {
                 [112, 0],
             ])
                 addNode(ecs, x * s, y * s);
+        },
+        // ── force-authoring hooks (stage C) ──
+        kind: (): number => Track.kind.get(track),
+        forceCount: (): number => forcePoints(ecs).length,
+        // flip geo↔force (destructive convert, one undo entry).
+        convert: (): void => convertTrack(history, ecs, track),
+        // author a force point at (s, g) — the "place a point on the curve" step.
+        placeForce: (s: number, g: number): number => createForce(history, ecs, s, g),
+        // lay an airtime bump in force mode: dip below 1g mid-track, back to 1g.
+        seedForceBump: (): void => {
+            if (Track.kind.get(track) === TrackKind.Geo) convertTrack(history, ecs, track);
+            const len = Track.length.get(track);
+            createForce(history, ecs, len * 0.2, 1);
+            createForce(history, ecs, len * 0.5, 0); // airtime crest
+            createForce(history, ecs, len * 0.8, 1);
         },
     };
 }

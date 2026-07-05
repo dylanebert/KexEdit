@@ -8,10 +8,18 @@ original KexEdit section contract, in 2D. Mouse-driven and direct, parallel to `
 eventual Shallot port). Whether it replaces / augments / coexists with the 3D editor decides
 once it earns its place.
 
-The **live app right now** is geo authoring: free-drag nodes → stored-heading cubic Hermite →
-physical F_n force curve, shown live in the timeline. The bidirectional shape↔force integration
-is validated exact and oracle-gated (RK4) — the foundation everything builds on. Force authoring
-(points on the curve) and multi-section editing are staged next (`kex2d-sections.md` C/D).
+The **live app right now** has both atomic idioms as whole-track modes, toggled on the timeline:
+
+- **geo mode** — free-drag nodes in the viewport → stored-heading cubic Hermite → physical F_n
+  force curve, shown live in the timeline.
+- **force mode** — place force points on the timeline curve (filled-diamond keyframes) → linear-
+  interp dense F_n(s) → integrate the swept geometry → the *recovered* force curve, shown live.
+
+The bidirectional shape↔force integration is validated exact and oracle-gated (RK4) — the
+foundation everything builds on. The geo↔force toggle is a **destructive convert** (§5): it resets
+to that kind's default (force → empty 1g profile whose extent = the geo arclength; geo → the flat
+two-node seed), made safe by byte-identical undo — no confirm dialog. Multi-section editing (one
+open chain of geo + force sections) is staged next (`kex2d-sections.md` D).
 
 **A unified solver is NOT the model.** Three dogfood rounds proved that a solver responsible for
 arbitrating authoring intent almost never does what's intended — the author fights it
@@ -62,11 +70,14 @@ entry before evaluating. `place(entry, localize(entry, p)) === p`.
 f32 throughout — these atoms ARE the realized-track display path, so they use the display recovery
 (`bake.forces`), not the f64 solver atoms (`force.ts`).
 
-**Wiring status (stage B):** `track.BakeSystem` bakes the live track through `chain([one geo
-section])`. The entry is node 0's world pose (the fixed flat launch anchor, `V0` speed); the handles
-are localized into it, so `evalGeo` reproduces their world positions exactly — behavior-identical to
-the old direct bake, the proof the substrate carries the live product. Stage C adds a force-section
-kind; stage D adds the multi-section data contract.
+**Wiring status (stage C):** `track.BakeSystem` branches on `Track.kind` (`TrackKind.Geo`/`Force`)
+and bakes ONE section per track. **Geo:** `chain([one geo section])` — the entry is node 0's world
+pose (the fixed flat launch anchor, `V0` speed), the handles localized into it so `evalGeo`
+reproduces their world positions exactly. **Force:** the authored `Force` points → a dense F_n(σ)
+profile (`profile.forceProfile`) → `chain([one force section])` from the fixed `FORCE_LAUNCH` anchor.
+Both write the same `samples`/`bakeOut` SoA, so the cart, render, and timeline are kind-agnostic. A
+whole-track kind is the stage-C precursor; **stage D generalizes it to a per-section kind** (the
+`Section {order, kind}` multi-section data contract).
 
 ## Model (geo authoring)
 
@@ -96,6 +107,24 @@ The baked force curve is canonical and terminal — the timeline shows exactly w
 no smoothing or solve on top. The cart rides the baked geometry directly. Lossy bake
 (Houdini/Blender modifier-stack analogue): parametric authoring is one-shot, canonical state lives
 in the dense baked form.
+
+## Model (force authoring)
+
+The mirror idiom: author the force, integrate the geometry. `Force` points (`{id, s, g}` ECS
+entities, stable-id addressed for undo like `Handle.order`) are placed, dragged, and deleted on the
+timeline curve. The authoring layer is deliberately minimal (§6): **linear interpolation** between
+points, an empty profile is a constant 1g, and the first/last value holds flat beyond it
+(`profile.ts sampleForce`). The bake samples this into a dense per-edge F_n(σ) (`forceProfile`, σ =
+i·ds source convention) and integrates it (`section.evalForce`) from the `FORCE_LAUNCH` anchor.
+
+- **Points are keyframes, not constraints** (§6). Filled diamonds, no drop-line, no driving/driven —
+  they're authored *input*, not optimization targets (`editor-ui.md`'s constraints-not-keyframes
+  rule governs the deferred optimization tier, not this). The displayed curve is the
+  geometry-RECOVERED force (§2), so a diamond sits O(ds) off the curve — the authored handle vs the
+  recovered display, expected.
+- **Extent is the section length**, in meters (§3, distance-only domain). A whole-track force
+  section's length is `Track.length`, inherited from the geo arclength on convert; there's no
+  length-editing UI in the MVP (a force airtime hill is authored within the converted extent).
 
 ## Physics — forward integrator + force recovery
 
@@ -151,6 +180,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   per-edge ds). `invertRange`/`invert` (the exact reflection inverse, round-trip validation only —
   see Hard gotchas), `replay` (forward-integrate F_n back to positions). `V_WARN` + re-exports
   `forward`'s `V_FLOOR`.
+- `profile.ts` — the FORCE authoring primitive (the force analogue of `spline.ts`): `sampleForce`
+  (linear interp of points, held endpoints, `DEFAULT_G` empty) + `forceProfile` (dense per-edge
+  F_n(σ), σ = i·ds, `edges = round(length/ds)`). Opinion-free (§6): the substrate consumes dense
+  F_n, this builds it from authored points. Unit-tested in `tests/profile.test.ts`.
 
 **Kernel atoms (future optimization tier's reference — NOT on the live path):**
 
@@ -163,30 +196,35 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 - `collocate.ts` — the dense-spine solver kernel (LM Gauss-Newton, PHR augmented-Lagrangian band).
   Kept as reference for the deferred optimization tier; the live path does not call it.
 
-**ECS + UI layer (the live geo app):**
+**ECS + UI layer (the live app):**
 
-- `track.ts` — `BakeSystem` bakes through the substrate: gather node positions + headings from
-  sorted handles, derive the entry from node 0, localize the handles into it, `section.chain([one
-  geo section])`, copy the flat SoA into `samples`/`bakeOut` and sync each node's `Handle.sample`
-  from the section's `offsets`; skip on a hash match. `Handle` carries `order`, `sample`, `pos` (free
-  authored position; the curve passes through it exactly), `theta` (exit heading). `bakeOut` carries
-  per-edge `fN`+`ds`, per-sample cumulative `t`, `feasible`, `firstInfeasible`, `lastBakedOrder`,
-  `hash`. `createTrack` / `addNode` / `extend` / `reheadOnDrag` + `headLast` / `removeTrailingHandle`
-  / `sortedHandles` / `lastHandle`. Undo/redo primitives (composed by `history.ts`): `handleAt`,
-  `spawnNode`, `nodeSnapshot`/`restoreNodes`/`sameNodes`. `V0` (launch speed), `MAX_SAMPLES`.
+- `track.ts` — `BakeSystem` branches on `Track.kind` (`TrackKind.Geo`/`Force`) and bakes ONE section
+  through the substrate, both writing the same `samples`/`bakeOut` SoA; skip on a `bakeHash` match
+  (kind-tagged, so a convert busts it). **Geo:** gather handles, derive the entry from node 0,
+  localize, `chain([geo])`, sync `Handle.sample` from `offsets`. **Force:** gather `Force` points →
+  `forceProfile` → `chain([force])` from `FORCE_LAUNCH`. `Handle` carries `order`, `sample`, `pos`,
+  `theta`. `Force` carries `id` (stable, undo-addressed), `s`, `g`. `Track` carries `count`, `ds`,
+  `kind`, `length` (force extent). `bakeOut` carries per-edge `fN`+`ds`, per-sample `t`, `feasible`,
+  `firstInfeasible`, `lastBakedOrder` (−1 in force mode), `hash`. Geo helpers: `addNode`/`extend`/
+  `reheadOnDrag`/`headLast`/`removeTrailingHandle`/`sortedHandles`/`lastHandle`; `handleAt`,
+  `spawnNode`, `nodeSnapshot`/`restoreNodes`/`sameNodes`. Force helpers: `forcePoints`/`forceAt`/
+  `createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/`setForcePoint`. Convert:
+  `convertKind` + `snapshotTrack`/`restoreTrack` (full-track undo, §5). `V0`, `MAX_SAMPLES`.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `loopTime`, and **`trackMapping`**
   (the per-sample arclength↔time table over the display bake — the cart's `t`↔chart-`s` projection;
   the cart rides in time, the chart is distance).
-- `editor.ts` — ephemeral UI state: node `selection` + `select`. No tools, modes, or target state.
-  Plain singleton, read by Svelte via the per-RAF tick.
+- `editor.ts` — ephemeral UI state: node `selection` + `select` (geo mode), force-point `force` +
+  `selectForce` (force mode; the two are mode-exclusive). No tools or modes beyond the kind. Plain
+  singleton, read by Svelte via the per-RAF tick.
 - `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
   `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
   `begin`/`commit`/`cancel` snapshot gesture parameterized by closures (one gesture at a time, so a
-  live drag collapses to one entry). The track nodes are the recording surface (addressed by stable
-  `Handle.order`): `extendTrack`/`trimTrack` + `beginMove`. `history` singleton for the app;
-  `createHistory` for tests.
+  live drag collapses to one entry). Geo commands: `extendTrack`/`trimTrack` + `beginMove`. Force
+  commands: `createForce`/`deleteForce`/`beginForceMove` (addressed by stable `Force.id`) +
+  `convertTrack` (the destructive kind flip, one undoable entry via a `snapshotTrack` pair). `history`
+  singleton for the app; `createHistory` for tests.
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
   teardown (called from App's `onMount`). `pickNode`; pointerdown picks + drags a node (or deselects
   on empty), drag sets `Handle.pos` with a grab offset then `reheadOnDrag`; `Enter` extends, `Del`
@@ -201,20 +239,28 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   The chart draws the baked F_n curve over arclength (canvas2D); the top **ruler** is the scrub zone
   (click/drag positions the playhead, parks paused on release); wheel zooms, shift+wheel pans; a
   **distance navigator** minimap below the chart pans/zooms the view. Y auto-fits with a sticky
-  asymmetric ease. Reads only `cart`/`history`/`track`/`timeline` — no ECS, no target state. (Force
-  authoring on the curve returns in stage C.)
+  asymmetric ease. The **header** carries the geo↔force mode toggle (a destructive, undoable
+  convert) and, in force mode with a point selected, its typed s/g fields. In **force mode** the
+  chart is the authoring surface: double-click places a `Force` point, diamonds drag both axes, Del
+  removes, Esc deselects — the **keyframe idiom** (filled diamond, no drop-line, no driving/driven,
+  §6). Takes the `ecs` prop (force authoring queries/commands need it); routes edits through
+  `history`.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), the node handles (selected highlighted,
   orphan/infeasible red), the cart, the **Timeline** dock, and the radial extend/delete buttons
   around the selected chain end.
 - `main.ts` — boots `run({ defaults: false })` + mounts App. The DEV-only `__kex` hook exposes
-  geo-authoring state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`) the
-  capture harness drives; never ships.
+  geo state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`) and force state
+  (`kind`/`forceCount`/`convert`/`placeForce`/`seedForceBump`) the capture harness drives; never
+  ships.
 
 ## Editing model
 
-No tools, no modes — just selection. Click a node to select + drag it freely; click empty space to
-deselect. A drag reshapes exactly the two segments sharing the dragged node, no cascade.
+One whole-track kind at a time (the timeline header toggle), each direct-manipulation with no sub-
+tools. The kind flip is a **destructive convert** (§5): resets to that kind's default, undo-safe.
+
+**Geo mode** — author the shape in the viewport. Click a node to select + drag it freely; click
+empty space to deselect. A drag reshapes exactly the two segments sharing the dragged node.
 
 - **Free drag** (any node): pointerdown picks the nearest node within `PICK_R` and drags it with a
   grab offset, then `reheadOnDrag` refreshes the last node's heading (first + interior stay frozen).
@@ -223,12 +269,28 @@ deselect. A drag reshapes exactly the two segments sharing the dragged node, no 
   the trailing node, never below the two nodes a chain needs, re-heading the promoted tip.
 - **No insert-on-curve, no interior insertion.** Append/drag/delete only.
 
+**Force mode** — author the force on the timeline curve. Double-click the chart to place a point;
+drag a diamond in both axes (horizontal = s, vertical = g); `Del` removes the selected point, `Esc`
+deselects; the header's s/g fields type the selected point. The keyframe idiom (§6): filled diamond,
+no drop-line, no driving/driven — points are authored input, not optimization targets.
+
 ## Hard gotchas
 
 - **Input is wired in `onMount`, not a system.** `attachControls(canvas, ecs)` binds the
   canvas/keyboard listeners and returns a teardown App calls on unmount. Don't move this back to a
   `System` with a module-level `attached` flag — that goes stale across a remount (a fresh canvas
   keeps the old flag and never re-binds, so input silently dies).
+- **Two window-keydown handlers, disambiguated by selection, not mode.** `controls.ts` (Del/Esc/Enter
+  on a node) and `Timeline.svelte` (Del/Esc on a force point) both listen on `window`. They don't
+  check the track kind — each guards on its OWN live selection (`editor.selection` vs `editor.force`),
+  which are mode-exclusive (a force-mode track has no nodes, so the node end is never selected). Keep
+  that guard: a mode check instead would double-fire if both ever coexisted.
+- **A single force point holds its value everywhere** (§6 endpoint hold), so one point can't make a
+  *dip* — it's a constant. A localized airtime bump needs three (1g shoulders + the crest). The empty
+  profile is a flat `DEFAULT_G` (1g), so a fresh geo→force convert is a straight level track.
+- **The force launch is a fixed `FORCE_LAUNCH` at the origin**, not node 0's world pose — a geo→force
+  convert does NOT carry the geo start position (§5 conversion is destructive; world position is
+  cosmetic here). Only the *extent* (`Track.length`) is inherited, from the geo arclength.
 - **The bake uses `forces`, not `invertRange`.** `invertRange` is the *exact* reflection inverse of
   the forward integrator (`θ_{i+1} = 2·m_i − θ_i`). It carries a leapfrog "computational mode": a
   marginally-stable ±(−1)^i tangent oscillation. On positions the integrator itself produced it
@@ -295,7 +357,8 @@ scheduler). The `tests/setup.ts` enum-shim preload (`bunfig.toml`) lets them imp
 with no GPU device; the unit suite is canvas2D + device-free, no real-GPU leg.
 
 `harness/` — Playwright harness (`bun run capture` → `harness/shots/`, gitignored). The `geo authoring
-flow` test drives the real UI (seed → extend → undo → reshape) and asserts `window.__kex` state via
-`expect.poll` (no sleeps); the lab tests screenshot the atom pages. Self-contained sub-package outside
+flow` test drives the real UI (seed → extend → undo → reshape) and the `force authoring flow` test
+(seed → real mode-toggle convert → author a bump by points → convert back → undo) assert
+`window.__kex` state via `expect.poll` (no sleeps); the lab tests screenshot the atom pages. Self-contained sub-package outside
 the project `tsconfig`/`biome`. Drives the host's **real-GPU Chrome via the WSL→Windows bridge**
 (shallot's `run()` acquires a WebGPU device even though kex2d is canvas2D). Display-gated.

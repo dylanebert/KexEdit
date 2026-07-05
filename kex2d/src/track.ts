@@ -1,16 +1,43 @@
 import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@dylanebert/shallot";
 import { V_FLOOR, V_WARN } from "./bake";
+import { type ForcePoint, forceProfile } from "./profile";
 import { chain, type Entry, localize } from "./section";
 import { type Node, reflect } from "./spline";
 
+/** whether a whole-track section is authored as GEOMETRY (drag nodes, recover the
+ *  force — the viewport) or FORCE (place points on the force curve, integrate the
+ *  geometry — the timeline). the two atomic idioms of the section substrate
+ *  (kex/specs/kex2d-sections.md §1); stage D generalizes this whole-track bit to a
+ *  per-section kind. stored on `Track.kind` as its numeric value. */
+export enum TrackKind {
+    Geo = 0,
+    Force = 1,
+}
+
 /** per-track scalars. `count` is the total sample count (bake output, varies
  *  with the nodes). `ds` is the user's nominal target spacing (input to bake;
- *  per-edge actual ds lives in `bakeOut.ds`). the bake recovers each sample's
- *  θ from the sampled geometry; the node headings that *shape* the curve live
- *  on `Handle.theta`. */
+ *  per-edge actual ds lives in `bakeOut.ds`). `kind` is the `TrackKind`. `length`
+ *  is the FORCE section's extent (m) — the distance the force profile spans; unused
+ *  in geo mode (a geo section's extent is its node chain). the bake recovers each
+ *  sample's θ from the sampled geometry; the node headings that *shape* a geo curve
+ *  live on `Handle.theta`. */
 export const Track = {
     count: sparse(u32),
     ds: sparse(f32),
+    kind: sparse(u32),
+    length: sparse(f32),
+};
+
+/** an authored force keyframe on a FORCE-mode track: `id` is the stable identity
+ *  undo/redo addresses (eids recycle across a delete→undo; ids never do — the
+ *  `Handle.order` convention), `s` its arclength (m) along the section, `g` the
+ *  demanded normal force (g). the timeline places, drags, and deletes these; the
+ *  bake gathers them (sorted by s) into a dense profile (`profile.forceProfile`).
+ *  a geo-mode track has none; a force-mode track has no `Handle`s. */
+export const Force = {
+    id: sparse(u32),
+    s: sparse(f32),
+    g: sparse(f32),
 };
 
 type Samples = {
@@ -77,6 +104,17 @@ export const V0 = 10;
  *  edge's direction. it's a starting point you then drag, not a fixed length. */
 export const EXTEND_DIST = 24;
 
+/** the fixed launch anchor a whole-track FORCE section integrates from (a geo
+ *  section derives its entry from node 0's world pose instead). world position is
+ *  cosmetic in this 2D prototype — the view auto-frames — so it's a level launch at
+ *  the origin, `V0`. §5 conversion is destructive, so a geo→force switch doesn't
+ *  carry node 0's position here. */
+const FORCE_LAUNCH: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+
+/** fallback force-section extent (m) when a geo→force convert finds no prior bake
+ *  to measure — a two-node flat seed's worth. */
+const DEFAULT_FORCE_LEN = EXTEND_DIST;
+
 /** allocate an empty track entity + its sample / bake-output buffers, sized
  *  once to MAX_SAMPLES. no nodes — callers (the demo seed, tests) add their
  *  own. returns the track eid. */
@@ -85,6 +123,8 @@ export function createTrack(ecs: State): number {
     ecs.add(trackEid, Track);
     Track.count.set(trackEid, 0);
     Track.ds.set(trackEid, DS_NOMINAL);
+    Track.kind.set(trackEid, TrackKind.Geo);
+    Track.length.set(trackEid, 0);
     samples.set(trackEid, {
         posX: new Float32Array(MAX_SAMPLES),
         posY: new Float32Array(MAX_SAMPLES),
@@ -200,6 +240,161 @@ export function restoreNodes(ecs: State, snap: NodeState[]): void {
     }
 }
 
+// ── force points ─────────────────────────────────────────────────────────────
+
+/** an authored force keyframe read off the ECS: eid + its stable `id`, arclength
+ *  `s`, and demanded force `g`. */
+export interface ForceRow {
+    eid: number;
+    id: number;
+    s: number;
+    g: number;
+}
+
+/** every force point on the track, sorted by arclength — the order `forceProfile`
+ *  and the timeline both consume. one track in whole-track mode, so no track filter. */
+export function forcePoints(ecs: State): ForceRow[] {
+    const rows: ForceRow[] = [];
+    for (const eid of ecs.query([Force])) {
+        rows.push({ eid, id: Force.id.get(eid), s: Force.s.get(eid), g: Force.g.get(eid) });
+    }
+    rows.sort((a, b) => a.s - b.s);
+    return rows;
+}
+
+/** resolve a force point by its stable `id` to its eid, or null — undo/redo never
+ *  holds eids (the `handleAt` convention, so a recycled eid can't alias). */
+export function forceAt(ecs: State, id: number): number | null {
+    for (const eid of ecs.query([Force])) {
+        if (Force.id.get(eid) === id) return eid;
+    }
+    return null;
+}
+
+// monotone id source — never reused, even after a delete: history can re-spawn any
+// deleted id, so a scan-the-live-set allocator would alias a fresh point with a
+// restorable one (the eid-recycling bug one level up). mirrors the old target
+// allocator.
+let nextForceId = 0;
+
+/** author a new force point at `(s, g)` with a fresh stable id — the create path.
+ *  returns the id (undo/redo addresses points by id, not eid). */
+export function createForcePoint(ecs: State, s: number, g: number): number {
+    const eid = ecs.create();
+    ecs.add(eid, Force);
+    const id = nextForceId++;
+    Force.id.set(eid, id);
+    Force.s.set(eid, s);
+    Force.g.set(eid, g);
+    return id;
+}
+
+/** re-create a force point at an *exact* id / s / g — undo of a delete, redo of a
+ *  create, or a snapshot restore. no id allocation, so the point round-trips
+ *  byte-identical. */
+export function spawnForce(ecs: State, id: number, s: number, g: number): void {
+    const eid = ecs.create();
+    ecs.add(eid, Force);
+    Force.id.set(eid, id);
+    Force.s.set(eid, s);
+    Force.g.set(eid, g);
+}
+
+/** destroy a force point by stable id (no-op if already gone). */
+export function destroyForce(ecs: State, id: number): void {
+    const eid = forceAt(ecs, id);
+    if (eid !== null) ecs.destroy(eid);
+}
+
+/** a force point's undoable state, keyed by stable id — the drag/field gesture
+ *  snapshots this. */
+export interface ForcePointState {
+    id: number;
+    s: number;
+    g: number;
+}
+
+/** snapshot one force point by id, or undefined if it's gone (the gesture opens
+ *  nothing). */
+export function forcePointState(ecs: State, id: number): ForcePointState | undefined {
+    const eid = forceAt(ecs, id);
+    if (eid === null) return undefined;
+    return { id, s: Force.s.get(eid), g: Force.g.get(eid) };
+}
+
+/** write a force point's `s`/`g` (live drag preview + gesture restore). */
+export function setForcePoint(ecs: State, id: number, s: number, g: number): void {
+    const eid = forceAt(ecs, id);
+    if (eid === null) return;
+    Force.s.set(eid, s);
+    Force.g.set(eid, g);
+}
+
+// ── whole-track kind + conversion ─────────────────────────────────────────────
+
+/** the whole track's undoable state: its kind, the force extent, its geo nodes,
+ *  and its force points. a destructive convert snapshots this before/after so undo
+ *  is byte-identical (§5). */
+export interface TrackSnapshot {
+    kind: number;
+    length: number;
+    nodes: NodeState[];
+    points: ForcePointState[];
+}
+
+/** capture the whole track (both kinds' payloads — one is empty). */
+export function snapshotTrack(ecs: State, trackEid: number): TrackSnapshot {
+    return {
+        kind: Track.kind.get(trackEid),
+        length: Track.length.get(trackEid),
+        nodes: nodeSnapshot(ecs),
+        points: forcePoints(ecs).map((p) => ({ id: p.id, s: p.s, g: p.g })),
+    };
+}
+
+/** clear both payload sets and rebuild the track verbatim from a snapshot — restores
+ *  a convert (either direction) byte-identical. re-spawns nodes by order and points
+ *  by id, so eids recycle but identities don't. */
+export function restoreTrack(ecs: State, trackEid: number, snap: TrackSnapshot): void {
+    for (const eid of [...ecs.query([Handle])]) ecs.destroy(eid);
+    for (const eid of [...ecs.query([Force])]) ecs.destroy(eid);
+    Track.kind.set(trackEid, snap.kind);
+    Track.length.set(trackEid, snap.length);
+    for (const n of snap.nodes) spawnNode(ecs, n.order, n.x, n.y, n.theta);
+    for (const p of snap.points) spawnForce(ecs, p.id, p.s, p.g);
+}
+
+/** the cumulative arclength of the current bake (m) — the force extent a geo→force
+ *  convert inherits (§5: one scalar, not a fit). */
+function bakedLength(out: BakeOut, count: number): number {
+    let s = 0;
+    for (let i = 0; i < count - 1; i++) s += out.ds[i];
+    return s;
+}
+
+/** destructively flip the track's kind to its opposite, resetting to that kind's
+ *  default (§5): geo → force clears the nodes for an empty profile (constant 1g)
+ *  whose extent is the geo track's baked arclength; force → geo clears the points
+ *  for the flat two-node seed. undo (via a `snapshotTrack` pair) makes it safe, so
+ *  there's no confirmation. does not itself record history — `history.convertTrack`
+ *  wraps it. */
+export function convertKind(ecs: State, trackEid: number): void {
+    const kind = Track.kind.get(trackEid);
+    if (kind === TrackKind.Geo) {
+        const out = bakeOut.get(trackEid);
+        const count = Track.count.get(trackEid);
+        const len = out && count >= 2 ? bakedLength(out, count) : DEFAULT_FORCE_LEN;
+        for (const eid of [...ecs.query([Handle])]) ecs.destroy(eid);
+        Track.kind.set(trackEid, TrackKind.Force);
+        Track.length.set(trackEid, len);
+    } else {
+        for (const eid of [...ecs.query([Force])]) ecs.destroy(eid);
+        Track.kind.set(trackEid, TrackKind.Geo);
+        addNode(ecs, -EXTEND_DIST / 2, 0);
+        addNode(ecs, EXTEND_DIST / 2, 0);
+    }
+}
+
 function seed(ecs: State): void {
     createTrack(ecs);
     // a flat horizontal start, one extension-length long (matches `extend`).
@@ -295,12 +490,18 @@ export function removeTrailingHandle(ecs: State): boolean {
     return true;
 }
 
-/** input-state hash that gates the bake: every node's position in walk order.
- *  BakeSystem re-bakes on a miss (any node moved / added / removed), skips
- *  otherwise. */
-function bakeHash(ecs: State, handles: number[] = sortedHandles(ecs)): string {
-    let hash = "";
-    for (const eid of handles) {
+/** input-state hash that gates the bake: the kind, then the authored payload — a
+ *  geo track's node poses in walk order, a force track's extent + ds + every point.
+ *  BakeSystem re-bakes on a miss (a node/point moved, added, removed, or the kind
+ *  flipped), skips otherwise. the leading kind tag forces a re-bake on convert. */
+function bakeHash(ecs: State, trackEid: number, kind: number): string {
+    if (kind === TrackKind.Force) {
+        let hash = `F|${Track.length.get(trackEid)}|${Track.ds.get(trackEid)}`;
+        for (const p of forcePoints(ecs)) hash += `|${p.id}:${p.s}:${p.g}`;
+        return hash;
+    }
+    let hash = "G";
+    for (const eid of sortedHandles(ecs)) {
         hash += `|${Handle.pos.x.get(eid)}:${Handle.pos.y.get(eid)}:${Handle.theta.get(eid)}`;
     }
     return hash;
@@ -334,17 +535,17 @@ function computeTime(
 
 type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
 
-/** the bake: evaluate the chain of a single geo section (the authored node chain
- *  placed at the launch anchor) into `samples` + `bakeOut`. the entry is node 0's
- *  world pose (`V0` launch speed) — node 0 is the fixed flat anchor, so the entry
- *  is its position and a level heading — and the handles are localized into that
- *  entry frame (`localize`), so `evalGeo` reproduces their world positions exactly
- *  (§4). `evalGeo` samples the Hermite curve through the nodes and recovers the
- *  physical force (θ from the curve's local tangent, v from energy, F_n = κ·v²/g +
- *  cos θ); a degenerate segment or a full buffer commits the prefix and orphans
+/** the geo bake: evaluate the chain of a single geo section (the authored node
+ *  chain placed at the launch anchor) into `samples` + `bakeOut`. the entry is node
+ *  0's world pose (`V0` launch speed) — node 0 is the fixed flat anchor, so the
+ *  entry is its position and a level heading — and the handles are localized into
+ *  that entry frame (`localize`), so `evalGeo` reproduces their world positions
+ *  exactly (§4). `evalGeo` samples the Hermite curve through the nodes and recovers
+ *  the physical force (θ from the curve's local tangent, v from energy, F_n = κ·v²/g
+ *  + cos θ); a degenerate segment or a full buffer commits the prefix and orphans
  *  the trailing nodes. behavior-identical to the old direct bake — the proof the
  *  substrate carries the live product. */
-function bakeChain(
+function bakeGeo(
     trackEid: number,
     s: Samples,
     out: BakeOut,
@@ -396,6 +597,33 @@ function bakeChain(
     computeTime(s, out, count);
 }
 
+/** the force bake: gather the authored force points into a dense F_n(σ) profile
+ *  (`forceProfile`, §6), integrate it from the fixed launch anchor into the swept
+ *  geometry, and recover the display force (`chain` → `evalForce`, §2). there are no
+ *  nodes, so `lastBakedOrder` is a no-op sentinel (nothing renders handles in force
+ *  mode); the feasibility flags still apply (an authored profile can climb past the
+ *  energy budget). */
+function bakeForce(ecs: State, trackEid: number, s: Samples, out: BakeOut, hash: string): void {
+    const ds = Track.ds.get(trackEid);
+    const length = Track.length.get(trackEid);
+    const points: ForcePoint[] = forcePoints(ecs).map((p) => ({ s: p.s, g: p.g }));
+    const fN = forceProfile(points, length, ds);
+
+    const c = chain(FORCE_LAUNCH, [{ kind: "force", fN, ds }], MAX_SAMPLES);
+    const count = c.count;
+    s.posX.set(c.posX.subarray(0, count));
+    s.posY.set(c.posY.subarray(0, count));
+    s.theta.set(c.theta.subarray(0, count));
+    s.v.set(c.v.subarray(0, count));
+    out.fN.set(c.fN.subarray(0, count - 1));
+    out.ds.set(c.ds.subarray(0, count - 1));
+
+    out.lastBakedOrder = -1; // no nodes in force mode
+    out.hash = hash;
+    Track.count.set(trackEid, count);
+    computeTime(s, out, count);
+}
+
 export const BakeSystem: System = {
     update(ecs: State): void {
         for (const trackEid of ecs.query([Track])) {
@@ -403,22 +631,28 @@ export const BakeSystem: System = {
             const out = bakeOut.get(trackEid);
             if (!s || !out) continue;
 
-            const handles = sortedHandles(ecs);
-            if (handles.length < 2) continue;
+            const kind = Track.kind.get(trackEid);
+            const hash = bakeHash(ecs, trackEid, kind);
+            if (hash === out.hash) continue; // nothing changed — reuse the bake
 
-            const hash = bakeHash(ecs, handles);
-            if (hash === out.hash) continue; // nothing moved — reuse the bake
-            bakeChain(trackEid, s, out, handles, hash);
+            if (kind === TrackKind.Force) {
+                bakeForce(ecs, trackEid, s, out, hash);
+            } else {
+                const handles = sortedHandles(ecs);
+                if (handles.length < 2) continue;
+                bakeGeo(trackEid, s, out, handles, hash);
+            }
         }
     },
 };
 
 export const TrackPlugin: Plugin = {
     name: "Track",
-    components: { Track, Handle },
+    components: { Track, Handle, Force },
     traits: {
-        Track: { defaults: () => ({ count: 0, ds: 0 }) },
+        Track: { defaults: () => ({ count: 0, ds: 0, kind: 0, length: 0 }) },
         Handle: { defaults: () => ({ order: 0, sample: 0, pos: [0, 0], theta: 0 }) },
+        Force: { defaults: () => ({ id: 0, s: 0, g: 0 }) },
     },
     initialize(ecs) {
         seed(ecs);

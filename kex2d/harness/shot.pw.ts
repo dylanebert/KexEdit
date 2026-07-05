@@ -7,7 +7,7 @@ import { expect, test } from "@playwright/test";
 // the curve react, kex/specs/kex2d-sections.md stage A/B), asserting the UI wiring against
 // window.__kex at each step and screenshotting the states. The DEV-only __kex hook
 // (src/main.ts) reads node/undo/track state and drives the geo edits; the flow drives the
-// real UI (keyboard extend/trim, undo). The force-authoring flow returns in stage C.
+// real UI (keyboard extend/trim, undo). The force-authoring flow is the next test.
 // Screenshots land in KEX_OUT (a Windows path when staged; copied back).
 
 const PORT = process.env.KEX_PORT ?? "3014";
@@ -71,6 +71,69 @@ test("geo authoring flow", async ({ page }) => {
     // the shape changed, so the baked track — and its time — changed too.
     await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-4).toBe(true);
     await page.screenshot({ path: join(OUT, "geo-2-reshape.png") });
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Drive the FORCE-AUTHORING flow (kex/specs/kex2d-sections.md stage C): a geo track →
+// convert to force via the real mode toggle (resets to an empty 1g profile) → author
+// an airtime bump by force points → convert back to geo (resets to the flat seed) →
+// undo, which restores the force track with its points byte-identical. The mode toggle
+// and undo run through the real UI; point placement uses the __kex hook for precision.
+test("force authoring flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const kind = () => page.evaluate((): number => (window as any).__kex.kind());
+    const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
+    const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+
+    // seed a shaped geo track so the convert inherits a real arclength.
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    expect(await kind()).toBe(0); // TrackKind.Geo
+
+    // ── 1. Convert to force via the real mode toggle → empty 1g profile, no nodes. ──
+    await page.getByRole("button", { name: "Force" }).click();
+    await expect.poll(kind).toBe(1); // TrackKind.Force
+    await expect.poll(nodeCount).toBe(0);
+    expect(await forceCount()).toBe(0);
+    await expect.poll(tTotal).toBeGreaterThan(0); // the flat force track baked
+    await page.waitForTimeout(SETTLE_MS);
+    await page.screenshot({ path: join(OUT, "force-1-empty.png") });
+
+    // ── 2. Author an airtime bump by force points → the recovered curve reacts. ──
+    await page.evaluate(() => (window as any).__kex.seedForceBump());
+    await expect.poll(forceCount).toBe(3);
+    await page.waitForTimeout(SETTLE_MS);
+    await page.screenshot({ path: join(OUT, "force-2-bump.png") });
+    const vp = page.viewportSize();
+    if (vp) {
+        await page.screenshot({
+            path: join(OUT, "force-timeline.png"),
+            clip: { x: 0, y: vp.height - 340, width: vp.width, height: 340 },
+        });
+    }
+
+    // ── 3. Convert back to geo → destructive reset to the flat two-node seed. ──
+    await page.getByRole("button", { name: "Geo" }).click();
+    await expect.poll(kind).toBe(0);
+    await expect.poll(nodeCount).toBe(2); // the flat seed
+    expect(await forceCount()).toBe(0);
+    await page.screenshot({ path: join(OUT, "force-3-geo.png") });
+
+    // ── 4. Undo the convert → the force track + its points restored byte-identical. ──
+    await page.keyboard.press("Control+z");
+    await expect.poll(kind).toBe(1);
+    await expect.poll(forceCount).toBe(3); // the three points came back
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
