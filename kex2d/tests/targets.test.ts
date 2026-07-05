@@ -5,6 +5,7 @@ import { bakeNodes, sampleArc, samplesForArc, spanResidual } from "../src/solve"
 import { chainCounts } from "../src/spline";
 import {
     beginDemand,
+    cancelDemand,
     createTarget,
     deleteTarget,
     demandTarget,
@@ -18,6 +19,7 @@ import {
     targetsFor,
     solveTrack,
     trackMapping,
+    trackScope,
 } from "../src/targets";
 import {
     addNode,
@@ -207,6 +209,60 @@ test("resolveTarget pulls a drifted curve back onto its band as one node-only en
     expect(h.undo.length).toBe(nUndo + 1); // one entry
     expect(targetsFor(state, track)[0].g).toBe(0); // no target change
     expect(driftErr(state, track, id)).toBeLessThan(BUDGET_G); // back on band
+});
+
+test("trackScope names exactly the nodes a ⟳ re-solve can move (the highlight is honest)", () => {
+    // the ⟳ highlight flashes trackScope; that set must cover every node the
+    // solve actually moves, or the flash lies about what changed. so: only freed
+    // nodes move, and trackScope is that freed set.
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    createTarget(h, state, track, arc[2], arc[4]);
+
+    const freed = trackScope(state, track);
+    expect(freed.length).toBeGreaterThan(0);
+    expect([...freed].sort((a, z) => a - z)).toEqual(freed); // sorted, deduped
+    expect(freed).not.toContain(0); // node 0 is the fixed flat anchor, never freed
+
+    // drift the crest, then re-solve; every node outside trackScope is untouched.
+    const crestEid = handleAt(state, 3) as number;
+    Handle.pos.set(crestEid, Handle.pos.x.get(crestEid), Handle.pos.y.get(crestEid) + 1.2);
+    const before = poses(state);
+    resolveTarget(h, state, track);
+    const after = poses(state);
+
+    const freedSet = new Set(freed);
+    const wasByOrder = new Map(before.map((p) => [p.order, p]));
+    let checked = 0;
+    for (const p of after) {
+        if (freedSet.has(p.order)) continue;
+        const was = wasByOrder.get(p.order);
+        expect(was).toBeDefined();
+        expect(p).toEqual(was as (typeof before)[number]); // untouched, byte-identical
+        checked++;
+    }
+    expect(checked).toBeGreaterThan(0); // real non-freed nodes were verified, not vacuous
+});
+
+test("a demand cancelled without a step is a true no-op (backs the click-selects guard)", () => {
+    // a band click (pointerdown → pointerup, no drag) opens then cancels the
+    // gesture instead of committing, so the settle can't record a near-no-op
+    // undo entry. cancel must leave both history and node state exactly as they
+    // were — the guard is only safe if cancel is a clean rollback.
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    const id = createTarget(h, state, track, arc[2], arc[4]);
+    const before = poses(state);
+    const nUndo = h.undo.length;
+
+    expect(beginDemand(state, track, id)).toBe(true);
+    cancelDemand(); // no stepDemand — the click case
+
+    expect(h.undo.length).toBe(nUndo); // no entry recorded
+    expect(poses(state)).toEqual(before); // node state untouched
+    expect(targetsFor(state, track)[0].g).toBe(targetsFor(state, track)[0].g);
 });
 
 test("deleteTarget leaves geometry untouched and is undoable", () => {

@@ -16,6 +16,7 @@ import {
     stepDemand,
     targetBands,
     trackMapping,
+    trackScope,
 } from "./targets";
 import { bakeOut } from "./track";
 import {
@@ -68,6 +69,7 @@ const CAP_LO = BAND[0] - Y_HEADROOM;
 const CAP_HI = BAND[1] + Y_HEADROOM;
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
+const RESOLVE_FLASH_MS = 450; // ⟳ freed-node highlight beat (the solve itself is instant)
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -317,12 +319,14 @@ function selectUp(e: PointerEvent): void {
 
 // ── demand: drag a band vertically, live RTI solve per frame ──
 let demanding: number | null = null; // the target id being dragged
+let demandMoved = false; // did the pointer actually move — else it's a select-only click
 function bandDown(e: PointerEvent, id: number): void {
     if (eid === null || e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation(); // don't also start a chart select underneath
     if (!beginDemand(ecs, eid, id)) return;
     demanding = id;
+    demandMoved = false;
     frozenMap = liveMapping; // freeze the display mapping for the gesture
     selectTarget(id);
     setHighlight(demandScope());
@@ -331,12 +335,16 @@ function bandDown(e: PointerEvent, id: number): void {
 }
 function bandMove(e: PointerEvent): void {
     if (demanding === null) return;
+    demandMoved = true;
     stepDemand(ecs, demanding, yToG(e.clientY - canvas.getBoundingClientRect().top));
 }
 function bandUp(): void {
     if (demanding === null) return;
     demanding = null;
-    endDemand(history, ecs);
+    // a click with no drag only selects (done in bandDown) — cancel the gesture so
+    // the settle's sub-epsilon node nudge doesn't record a near-no-op undo entry.
+    if (demandMoved) endDemand(history, ecs);
+    else cancelDemand();
     frozenMap = null;
     setHighlight([]);
     window.removeEventListener("pointermove", bandMove);
@@ -353,11 +361,17 @@ function cancelBand(): void {
 }
 
 // ── chip actions ──
+let resolveFlash: ReturnType<typeof setTimeout> | null = null;
 function resolveClick(e: MouseEvent, id: number): void {
     e.stopPropagation();
     if (eid === null) return;
     selectTarget(id);
+    // the solve is synchronous (one frame), so flash the freed nodes for a beat —
+    // the instant-solve equivalent of the live demand's held highlight (§5).
+    setHighlight(trackScope(ecs, eid));
     resolveTarget(history, ecs, eid);
+    if (resolveFlash) clearTimeout(resolveFlash);
+    resolveFlash = setTimeout(() => setHighlight([]), RESOLVE_FLASH_MS);
 }
 function deleteSelectedTarget(): void {
     if (editor.target === null || eid === null) return;
@@ -681,6 +695,7 @@ onMount(() => {
         panUp(); // and any in-flight middle-drag pan
         navUp(); // and any in-flight navigator drag
         cancelBand(); // and any in-flight band demand
+        if (resolveFlash) clearTimeout(resolveFlash); // drop a pending ⟳ highlight clear
         selecting = null;
         selRect = null;
         window.removeEventListener("pointermove", selectMove);

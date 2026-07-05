@@ -416,6 +416,19 @@ export function demandScope(): number[] {
     return demand ? demand.freed : [];
 }
 
+/** the freed node orders a summoned ⟳ re-solve will move — the same scope union
+ *  `solveTrack` builds, exposed for the instant-solve highlight flash (the
+ *  gesture-free sibling of `demandScope`). pure read. */
+export function trackScope(ecs: State, trackEid: number): number[] {
+    const ctx = context(ecs, trackEid);
+    if (!ctx) return [];
+    const scope = new Set<number>();
+    for (const row of targetsFor(ecs, trackEid)) {
+        for (const k of scopeForArc(ctx.b, ctx.arc, row.s0, row.s1)) scope.add(k);
+    }
+    return [...scope].sort((a, z) => a - z);
+}
+
 /** one RTI frame: set the dragged target's value, run a bounded warm-started
  *  solve from the live chain (prior anchored to the frozen draft), write the
  *  result to the live nodes. no history — inside the open gesture. */
