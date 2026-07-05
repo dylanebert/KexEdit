@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
-import { cartState, sampleFNOverTime } from "./cart";
+import { cartState, forceCurve } from "./cart";
 import { editor, selectTarget, setHighlight } from "./editor";
 import { cancel, commit, history, redo, undo } from "./history";
 import {
@@ -17,15 +17,16 @@ import {
 } from "./targets";
 import { bakeOut } from "./track";
 import {
+    arcToTime,
     clampView,
     frameAll,
     type Mapping,
-    marginSec,
+    marginArc,
     navDragView,
     navWindow,
     niceStep,
-    pxToSec,
-    secToPx,
+    pxToS,
+    sToPx,
     ticks,
     timeToArc,
     type View,
@@ -56,8 +57,6 @@ const LABEL_EDGE = 22; // px; ruler labels within this of an edge align inward, 
 const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer than this to the plot edge
 // reference comfort limits (g) — drawn as faint lines to read the force curve against.
 const BAND: [number, number] = [-2, 6];
-// force curve display resolution: baked F_n resampled onto this many uniform-time points.
-const DISPLAY_GRID = 256;
 // the initial y-frame before real data arrives: the reference band + 1g headroom.
 const Y_HEADROOM = 1;
 const CAP_LO = BAND[0] - Y_HEADROOM;
@@ -74,37 +73,51 @@ let w = $state(0);
 let h = $state(0);
 // the user's view intent; `clamped` re-fits it to the live width/track length, so a
 // resize or a track edit never writes back into `view` (which would loop the effect).
-let view: View = $state({ pan: 0, pxPerSec: 100 });
+let view: View = $state({ pan: 0, pxPerM: 10 });
 let framed = false;
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 
-// total track seconds — the X-axis domain. force-curve point i ↔ sec (i/(N-1))·tTotal.
+// the baked F_n force curve as per-sample (arclength, force) points — the chart data
+// and the source of the distance domain. no time resample: the x-axis is distance (§4).
+const curve = $derived.by((): { s: Float64Array; f: Float32Array; n: number } | null => {
+    void tick;
+    return eid === null ? null : forceCurve(eid);
+});
+// total track arclength (m) — the chart's X-axis domain.
+const sTotal = $derived(curve ? curve.s[curve.n - 1] : 0);
+// total track seconds — the *player* transport's domain (the media player stays in
+// time; only the chart is distance, §4).
 const tTotal = $derived.by((): number => {
     void tick;
     if (eid === null) return 0;
     return bakeOut.get(eid)?.tTotal ?? 0;
 });
-// the chart insets past the left g-gutter; the time affine lives in [LEFT_GUT, w],
+// the chart insets past the left g-gutter; the distance affine lives in [LEFT_GUT, w],
 // so every timeline.ts call takes `chartW` and screen-X adds/subtracts LEFT_GUT.
 const chartW = $derived(Math.max(0, w - LEFT_GUT));
-const clamped = $derived(clampView(view, chartW, tTotal));
+const clamped = $derived(clampView(view, chartW, sTotal));
 const tickList = $derived(ticks(clamped, chartW));
 
-const fN = $derived.by((): Float32Array | null => {
+// the cart↔chart projection: the cart rides in time, the chart is distance (§4).
+const mapping = $derived.by((): Mapping | null => {
     void tick;
-    if (eid === null) return null;
-    return sampleFNOverTime(eid, DISPLAY_GRID);
+    return eid === null ? null : trackMapping(eid);
 });
-// the cart's time — its own second on the baked track's clock, the same axis units.
+// the cart's time on the baked track's clock (the player transport's readout).
 const cartSec = $derived.by((): number | null => {
     void tick;
     if (eid === null) return null;
     return cartState.get(eid)?.t ?? null;
 });
+// the cart's arclength — its `t` projected onto the chart's distance axis.
+const cartS = $derived.by((): number | null => {
+    if (cartSec === null || mapping === null) return null;
+    return timeToArc(mapping, cartSec);
+});
 const playPx = $derived.by((): number | null => {
-    if (cartSec === null) return null;
-    const x = LEFT_GUT + secToPx(clamped, cartSec);
+    if (cartS === null) return null;
+    const x = LEFT_GUT + sToPx(clamped, cartS);
     return x < LEFT_GUT || x > w ? null : x;
 });
 const paused = $derived.by((): boolean => {
@@ -124,11 +137,11 @@ const yTarget = $derived.by((): YFit => {
     void tick;
     let lo = Y_BASE;
     let hi = Y_BASE;
-    const a = fN;
-    if (a) {
-        for (let i = 0; i < a.length; i++) {
-            if (a[i] < lo) lo = a[i];
-            if (a[i] > hi) hi = a[i];
+    const c = curve;
+    if (c) {
+        for (let i = 0; i < c.n; i++) {
+            if (c.f[i] < lo) lo = c.f[i];
+            if (c.f[i] > hi) hi = c.f[i];
         }
     }
     // keep every target's demand in frame — the marker-to-curve gap IS the drift
@@ -186,17 +199,12 @@ function yToG(cy: number): number {
 
 // ── point force targets: inert demands on the force curve (§3–§5) ────────────
 // authored by double-clicking the chart, dragged in both axes (vertical = g,
-// horizontal = s), satisfied by an explicit Solve. targets store arclength; the
-// display mapping projects them to time. no solve runs while editing, so the
-// mapping is static between solves — no freeze machinery (§4).
-const mapping = $derived.by((): Mapping | null => {
-    void tick;
-    return eid === null ? null : trackMapping(eid);
-});
+// horizontal = s), satisfied by an explicit Solve. targets store arclength and the
+// chart's x-axis IS arclength (§4), so a marker sits at its s directly — no domain
+// projection, and it never moves except by the author's hand.
 const markers = $derived.by((): Marker[] => {
     void tick;
-    const m = mapping;
-    return eid === null || m === null ? [] : targetMarkers(ecs, eid, m);
+    return eid === null ? [] : targetMarkers(ecs, eid);
 });
 // the selected-target id, read through the per-RAF tick (editor is plain state).
 const selTarget = $derived.by((): number | null => {
@@ -207,7 +215,7 @@ const selTarget = $derived.by((): number | null => {
 // the curve beyond tolerance (a drift the solve would close).
 const dirty = $derived(markers.some((m) => !m.satisfied));
 
-const markerX = (t: number): number => LEFT_GUT + secToPx(clamped, t);
+const markerX = (s: number): number => LEFT_GUT + sToPx(clamped, s);
 const chartLocalX = (e: PointerEvent): number =>
     e.clientX - canvas.getBoundingClientRect().left - LEFT_GUT;
 const chartLocalY = (e: PointerEvent): number =>
@@ -217,37 +225,32 @@ const fmtG = (g: number): string => `${+g.toFixed(1)}g`;
 // ── create: double-click the empty chart drops a target at that exact demand ──
 function chartCreate(e: MouseEvent): void {
     if (eid === null) return;
-    const m = mapping;
-    if (!m) return;
     const rect = canvas.getBoundingClientRect();
-    const s = timeToArc(m, Math.max(0, pxToSec(clamped, e.clientX - rect.left - LEFT_GUT)));
+    const s = Math.max(0, pxToS(clamped, e.clientX - rect.left - LEFT_GUT));
     const g = yToG(e.clientY - rect.top);
     selectTarget(createTarget(history, ecs, eid, s, g)); // born selected
 }
 
 // ── move: drag a marker in both axes (no solve, one undo entry on release) ──
+// the x-axis is arclength, so the cursor's s maps straight through — no projection.
 let dragging: number | null = null;
 let grabDs = 0; // marker s − cursor s, so grabbing off-center doesn't snap
 let grabDg = 0;
 function markerDown(e: PointerEvent, mk: Marker): void {
     if (eid === null || e.button !== 0) return;
-    const m = mapping;
-    if (!m) return;
     e.preventDefault();
     e.stopPropagation(); // don't also deselect via the chartzone underneath
     beginTargetMove(ecs, mk.id);
     dragging = mk.id;
     selectTarget(mk.id);
-    grabDs = mk.s - timeToArc(m, Math.max(0, pxToSec(clamped, chartLocalX(e))));
+    grabDs = mk.s - Math.max(0, pxToS(clamped, chartLocalX(e)));
     grabDg = mk.g - yToG(chartLocalY(e));
     window.addEventListener("pointermove", markerMove);
     window.addEventListener("pointerup", markerUp);
 }
 function markerMove(e: PointerEvent): void {
     if (dragging === null) return;
-    const m = mapping;
-    if (!m) return;
-    const s = Math.max(0, timeToArc(m, Math.max(0, pxToSec(clamped, chartLocalX(e)))) + grabDs);
+    const s = Math.max(0, pxToS(clamped, chartLocalX(e)) + grabDs);
     setTarget(ecs, dragging, s, yToG(chartLocalY(e)) + grabDg);
 }
 function markerUp(): void {
@@ -298,8 +301,8 @@ function panDown(e: PointerEvent): void {
     window.addEventListener("pointerup", panUp);
 }
 function panMove(e: PointerEvent): void {
-    if (!panning) return; // drag content right → reveal earlier time → pan decreases
-    view = clampView({ pan: pan0 - (e.clientX - panX0), pxPerSec: clamped.pxPerSec }, chartW, tTotal);
+    if (!panning) return; // drag content right → reveal earlier distance → pan decreases
+    view = clampView({ pan: pan0 - (e.clientX - panX0), pxPerM: clamped.pxPerM }, chartW, sTotal);
 }
 function panUp(): void {
     panning = false;
@@ -307,31 +310,31 @@ function panUp(): void {
     window.removeEventListener("pointerup", panUp);
 }
 
-// ── time navigator: a full-track overview below the chart, drawn as a preview minimap
-// (see renderNav). a window-bracket marks the portion the chart shows; drag the body to
-// pan, drag an edge to zoom (the opposite edge anchored). the bar spans [0, tTotal +
-// lead-out], so framing the whole track fills it.
+// ── distance navigator: a full-track overview below the chart, drawn as a preview
+// minimap (see renderNav). a window-bracket marks the portion the chart shows; drag the
+// body to pan, drag an edge to zoom (the opposite edge anchored). the bar spans
+// [0, sTotal + lead-out], so framing the whole track fills it.
 let navEl: HTMLDivElement | undefined = $state();
 const navWin = $derived(
-    eid === null || tTotal <= 0 || chartW <= 0 ? null : navWindow(clamped, chartW, tTotal),
+    eid === null || sTotal <= 0 || chartW <= 0 ? null : navWindow(clamped, chartW, sTotal),
 );
 let navDrag: { mode: "pan" | "l" | "r"; grab: number } | null = null;
-function navSecAt(clientX: number): number {
+function navSAt(clientX: number): number {
     const rect = navEl!.getBoundingClientRect();
-    const total = tTotal + marginSec(tTotal);
+    const total = sTotal + marginArc(sTotal);
     return clamp(((clientX - rect.left) / Math.max(1, rect.width)) * total, 0, total);
 }
 function navDown(e: PointerEvent, mode: "pan" | "l" | "r"): void {
-    if (eid === null || tTotal <= 0) return;
+    if (eid === null || sTotal <= 0) return;
     e.preventDefault();
     e.stopPropagation(); // an edge press must not also start a window pan
-    navDrag = { mode, grab: navSecAt(e.clientX) - pxToSec(clamped, 0) };
+    navDrag = { mode, grab: navSAt(e.clientX) - pxToS(clamped, 0) };
     window.addEventListener("pointermove", navMove);
     window.addEventListener("pointerup", navUp);
 }
 function navMove(e: PointerEvent): void {
     if (!navDrag) return;
-    view = navDragView(clamped, chartW, tTotal, navDrag.mode, navSecAt(e.clientX), navDrag.grab);
+    view = navDragView(clamped, chartW, sTotal, navDrag.mode, navSAt(e.clientX), navDrag.grab);
 }
 function navUp(): void {
     navDrag = null;
@@ -360,7 +363,7 @@ function render(ctx: CanvasRenderingContext2D): void {
     for (const tk of tickList) {
         const x = LEFT_GUT + tk.px; // tick px is chart-local; the chart insets past the gutter
         if (x < LEFT_GUT - 1 || x > w + 1) continue;
-        // faint gridline through the chart — read the curve against time
+        // faint gridline through the chart — read the curve against distance
         ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -438,15 +441,15 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.rect(LEFT_GUT, TOP, w - LEFT_GUT, h - BOT_PAD - TOP);
     ctx.clip();
 
-    // the baked F_n force curve — accent: the force the realized track produces
-    if (fN) {
+    // the baked F_n force curve — accent: the force the realized track produces,
+    // drawn per-sample over its arclength (the chart's x-axis is distance).
+    if (curve) {
         ctx.strokeStyle = "rgb(212, 149, 96)";
         ctx.lineWidth = 1.6;
         ctx.beginPath();
-        const n = fN.length;
-        for (let i = 0; i < n; i++) {
-            const x = LEFT_GUT + secToPx(v, (i / (n - 1)) * tTotal);
-            const y = yOf(fN[i]);
+        for (let i = 0; i < curve.n; i++) {
+            const x = LEFT_GUT + sToPx(v, curve.s[i]);
+            const y = yOf(curve.f[i]);
             if (i === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
         }
@@ -458,13 +461,13 @@ function render(ctx: CanvasRenderingContext2D): void {
 
 // the navigator preview (VSCode-minimap / DAW-overview style): a faint miniature of
 // the whole F_n force curve across the full track, so the viewport bracket reads
-// against the curve's shape. y-range tracks the chart's `yView`; the curve occupies
-// only [0, tTotal] of the width (the lead-out margin stays empty).
+// against the curve's shape. y-range tracks the chart's `yView`; x is arclength over
+// [0, sTotal + lead-out], so the curve occupies only [0, sTotal] (the margin stays empty).
 function renderNav(nav: CanvasRenderingContext2D, cw: number, ch: number): void {
     nav.clearRect(0, 0, cw, ch);
-    const data = fN;
-    if (!data || data.length < 2 || tTotal <= 0) return;
-    const trackFrac = tTotal / (tTotal + marginSec(tTotal)); // curve span within the bar
+    const data = curve;
+    if (!data || data.n < 2 || sTotal <= 0) return;
+    const total = sTotal + marginArc(sTotal); // the bar spans the track + lead-out
     const { lo, hi } = yView;
     const span = Math.max(1e-6, hi - lo);
     const pad = 2; // vertical inset so the curve doesn't touch the lane edges
@@ -473,10 +476,9 @@ function renderNav(nav: CanvasRenderingContext2D, cw: number, ch: number): void 
     nav.strokeStyle = "rgba(212, 149, 96, 0.55)"; // dim accent
     nav.lineWidth = 1;
     nav.beginPath();
-    const n = data.length;
-    for (let i = 0; i < n; i++) {
-        const x = (i / (n - 1)) * trackFrac * cw;
-        const y = ny(data[i]);
+    for (let i = 0; i < data.n; i++) {
+        const x = (data.s[i] / total) * cw;
+        const y = ny(data.f[i]);
         if (i === 0) nav.moveTo(x, y);
         else nav.lineTo(x, y);
     }
@@ -485,8 +487,8 @@ function renderNav(nav: CanvasRenderingContext2D, cw: number, ch: number): void 
 
 $effect(() => {
     // frame the whole track once, when width + a track first exist.
-    if (!framed && chartW > 0 && tTotal > 0) {
-        view = frameAll(chartW, tTotal);
+    if (!framed && chartW > 0 && sTotal > 0) {
+        view = frameAll(chartW, sTotal);
         framed = true;
     }
 });
@@ -511,10 +513,13 @@ $effect(() => {
 let scrubbing = false;
 function scrubTo(e: PointerEvent): void {
     if (eid === null || !scrubbing) return;
+    const m = mapping;
+    if (!m) return;
     const rect = canvas.getBoundingClientRect();
-    const sec = pxToSec(clamped, e.clientX - rect.left - LEFT_GUT);
+    // the ruler is distance; map the picked s back to the cart's time (§4 inverse).
+    const s = clamp(pxToS(clamped, e.clientX - rect.left - LEFT_GUT), 0, sTotal);
     const st = cartState.get(eid);
-    if (st) st.t = clamp(sec, 0, tTotal);
+    if (st) st.t = clamp(arcToTime(m, s), 0, tTotal);
 }
 function endScrub(): void {
     scrubbing = false; // leave st.held true — parked + paused, no auto-resume
@@ -601,9 +606,9 @@ onMount(() => {
         const panH = e.shiftKey || (!e.ctrlKey && !e.metaKey && Math.abs(e.deltaX) > Math.abs(e.deltaY));
         if (panH) {
             const dx = e.shiftKey ? e.deltaY : e.deltaX;
-            view = clampView({ pan: clamped.pan + dx, pxPerSec: clamped.pxPerSec }, chartW, tTotal);
+            view = clampView({ pan: clamped.pan + dx, pxPerM: clamped.pxPerM }, chartW, sTotal);
         } else {
-            view = zoomAt(clamped, x, 2 ** (-e.deltaY / ZOOM_DIV), chartW, tTotal);
+            view = zoomAt(clamped, x, 2 ** (-e.deltaY / ZOOM_DIV), chartW, sTotal);
         }
     };
     // undo/redo drive the shared history (track-node edits); Space toggles playback.
@@ -685,8 +690,8 @@ onMount(() => {
                 </clipPath>
             </defs>
             <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere here
-                 moves the playhead (the time ruler is the scrubber). -->
-            {#if eid !== null && tTotal > 0}
+                 moves the playhead (the distance ruler is the scrubber). -->
+            {#if eid !== null && sTotal > 0}
                 <rect
                     class="rulerzone"
                     x="0"
@@ -699,8 +704,8 @@ onMount(() => {
                     tabindex="0"
                     aria-label="Scrub playhead"
                     aria-valuemin={0}
-                    aria-valuemax={Math.round(tTotal * 100) / 100}
-                    aria-valuenow={Math.round((cartSec ?? 0) * 100) / 100}
+                    aria-valuemax={Math.round(sTotal * 100) / 100}
+                    aria-valuenow={Math.round((cartS ?? 0) * 100) / 100}
                 />
                 <!-- the chart interaction surface: double-click drops a target at the
                      exact demand under the cursor; a bare click on empty chart clears
@@ -732,7 +737,7 @@ onMount(() => {
                  (demanded → achieved). drag both axes; the chartzone owns creation. -->
             <g class="markers" clip-path="url(#chartclip)">
                 {#each markers as m (m.id)}
-                    {@const mx = markerX(m.t)}
+                    {@const mx = markerX(m.s)}
                     {#if mx >= LEFT_GUT - MARKER_R && mx <= w + MARKER_R}
                         {@const my = yOf(m.g)}
                         <polygon

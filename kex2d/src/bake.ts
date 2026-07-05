@@ -189,37 +189,3 @@ export function replay(
         step(posX, posY, theta, v, i, i + 1, fN[i], dsArr[i]);
     }
 }
-
-/**
- * resample a per-edge F_n (length `count − 1`) onto `N` points uniform in time
- * over `[0, tTotal]`. each edge's F_n is anchored at its mid-time and the grid is
- * linearly interpolated between those anchors (clamped flat past the first/last
- * edge centers). a *continuous* read: a node nudge slides the curve smoothly
- * rather than stair-stepping. piecewise-constant sampling flickers — the moving
- * edge boundaries flip grid points between adjacent edge values. `t` is the
- * per-sample cumulative time (length `count`). the timeline reads the force curve
- * through this resample (equal spacing in t, what the rider experiences).
- */
-export function resampleByTime(
-    fN: Float32Array,
-    t: Float32Array,
-    count: number,
-    N: number,
-    tTotal: number,
-): Float32Array {
-    const grid = new Float32Array(N);
-    const last = count - 2; // last edge index
-    const center = (e: number): number => 0.5 * (t[e] + t[e + 1]);
-    let e = 0;
-    for (let g = 0; g < N; g++) {
-        const tau = (g / Math.max(1, N - 1)) * tTotal;
-        while (e < last && center(e + 1) <= tau) e++;
-        if (tau <= center(0)) grid[g] = fN[0];
-        else if (tau >= center(last)) grid[g] = fN[last];
-        else {
-            const c0 = center(e);
-            grid[g] = fN[e] + ((tau - c0) / (center(e + 1) - c0)) * (fN[e + 1] - fN[e]);
-        }
-    }
-    return grid;
-}

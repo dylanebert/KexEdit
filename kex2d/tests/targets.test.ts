@@ -426,23 +426,21 @@ test("trackMapping is monotone and its time axis matches the display bake", () =
     expect(m.t[m.n - 1]).toBeCloseTo(bakeOut.get(track)?.tTotal ?? -1, 6);
 });
 
-test("targetMarkers projects a target's arclength onto its display time", () => {
+test("targetMarkers exposes each target's demand and drift at its arclength", () => {
     const { state, track } = ecsHill();
     state.addSystem(BakeSystem);
     state.step(0);
     const h = createHistory();
     const arc = nodeArc(state);
     const id = createTarget(h, state, track, arc[3], 0);
-    const m = trackMapping(track);
-    expect(m).not.toBeNull();
-    if (!m) return;
-    const markers = targetMarkers(state, track, m);
+    // the chart's x-axis IS arclength (§4), so the marker carries s directly — no
+    // time projection, no mapping argument.
+    const markers = targetMarkers(state, track);
     expect(markers.length).toBe(1);
     const mk = markers[0];
     expect(mk.id).toBe(id);
     expect(mk.g).toBe(0);
-    expect(mk.t).toBeGreaterThan(0);
-    expect(mk.t).toBeLessThanOrEqual((bakeOut.get(track)?.tTotal ?? 0) + 1e-6);
+    expect(mk.s).toBeCloseTo(arc[3], 6);
     expect(mk.err).toBeGreaterThanOrEqual(0);
     // the drift readout matches a direct point residual on the same bake.
     const b = bake(state);

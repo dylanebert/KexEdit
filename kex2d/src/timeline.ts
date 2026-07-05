@@ -1,53 +1,55 @@
 /** pure transform + tick math for the force-curve timeline. no Svelte, no DOM,
- *  no solve state — just the second↔pixel affine, the 1-2-5 tick generator, and
- *  the pan/zoom clamp. ported from `reference/animation-timeline` (valToPx/pxToVal,
- *  _zoom, _renderTicks, findGoodStep). */
+ *  no solve state — just the arclength↔pixel affine, the 1-2-5 tick generator, and
+ *  the pan/zoom clamp. the chart's x-axis is distance (meters): s is the domain the
+ *  solver holds fixed, so targets are authored, dragged, and displayed directly in
+ *  it (spec §4). ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom,
+ *  _renderTicks, findGoodStep). */
 
-/** view-state: a single affine over the time axis. `pan` is the content pixel at
- *  the left edge (scroll-like); `pxPerSec` is the horizontal scale. */
+/** view-state: a single affine over the distance axis. `pan` is the content pixel at
+ *  the left edge (scroll-like); `pxPerM` is the horizontal scale (px per meter). */
 export interface View {
     pan: number;
-    pxPerSec: number;
+    pxPerM: number;
 }
 
 export interface Tick {
-    sec: number;
+    s: number;
     px: number;
     label: string;
 }
 
-/** floor on the breathing room past the track ends, so a sub-second track still
- *  has visible margin. */
-const MIN_MARGIN_SEC = 0.5;
-/** zoom-in ceiling — a pixel-per-second cap so the axis can't blow up. */
-export const MAX_PX_PER_SEC = 4000;
+/** floor on the breathing room past the track ends, so a short track still has
+ *  visible margin. */
+const MIN_MARGIN_M = 0.5;
+/** zoom-in ceiling — a pixel-per-meter cap so the axis can't blow up. */
+export const MAX_PX_PER_M = 4000;
 /** target spacing between labeled major ticks, in px. */
 const TARGET_TICK_PX = 80;
 
-export const secToPx = (v: View, t: number): number => t * v.pxPerSec - v.pan;
-export const pxToSec = (v: View, px: number): number => (px + v.pan) / v.pxPerSec;
+export const sToPx = (v: View, s: number): number => s * v.pxPerM - v.pan;
+export const pxToS = (v: View, px: number): number => (px + v.pan) / v.pxPerM;
 
-/** lead-out (seconds) past the track end — proportional, with a floor. one-sided:
- *  the launch is t=0, so there's no lead-*in* (no negative time on the ruler). */
-export const marginSec = (tTotal: number): number => Math.max(0.12 * tTotal, MIN_MARGIN_SEC);
+/** lead-out (meters) past the track end — proportional, with a floor. one-sided:
+ *  the launch is s=0, so there's no lead-*in* (no negative distance on the ruler). */
+export const marginArc = (sTotal: number): number => Math.max(0.12 * sTotal, MIN_MARGIN_M);
 
-const minScale = (width: number, tTotal: number): number =>
-    width > 0 ? width / (tTotal + marginSec(tTotal)) : 1;
+const minScale = (width: number, sTotal: number): number =>
+    width > 0 ? width / (sTotal + marginArc(sTotal)) : 1;
 
-/** clamp a view to the track extent: scale no smaller than fits [0, tTotal+margin],
- *  the left edge anchored at t=0. a coaster ride starts at launch, so the ruler never
- *  shows negative time (the After Effects / NLE convention); the margin is a right-side
- *  lead-out only, so the last node isn't jammed against the edge. when the track is
- *  smaller than the view the pan range collapses to 0 → the track sits left-aligned. */
-export function clampView(v: View, width: number, tTotal: number): View {
-    const m = marginSec(tTotal);
-    const pxPerSec = Math.min(MAX_PX_PER_SEC, Math.max(minScale(width, tTotal), v.pxPerSec));
-    const panMax = Math.max(0, (tTotal + m) * pxPerSec - width);
+/** clamp a view to the track extent: scale no smaller than fits [0, sTotal+margin],
+ *  the left edge anchored at s=0. a coaster ride starts at launch, so the ruler never
+ *  shows negative distance (the After Effects / NLE convention); the margin is a
+ *  right-side lead-out only, so the last node isn't jammed against the edge. when the
+ *  track is smaller than the view the pan range collapses to 0 → left-aligned. */
+export function clampView(v: View, width: number, sTotal: number): View {
+    const m = marginArc(sTotal);
+    const pxPerM = Math.min(MAX_PX_PER_M, Math.max(minScale(width, sTotal), v.pxPerM));
+    const panMax = Math.max(0, (sTotal + m) * pxPerM - width);
     const pan = Math.min(panMax, Math.max(0, v.pan));
-    return { pan, pxPerSec };
+    return { pan, pxPerM };
 }
 
-/** geometric zoom by `factor` anchored at `anchorPx`: the second under the cursor
+/** geometric zoom by `factor` anchored at `anchorPx`: the meter under the cursor
  *  stays fixed across the scale change. scale is clamped *before* deriving pan, or
  *  the anchor drifts at the zoom limits (the reference's load-bearing gotcha). */
 export function zoomAt(
@@ -55,54 +57,47 @@ export function zoomAt(
     anchorPx: number,
     factor: number,
     width: number,
-    tTotal: number,
+    sTotal: number,
 ): View {
-    const secAnchor = pxToSec(v, anchorPx);
-    const pxPerSec = Math.min(
-        MAX_PX_PER_SEC,
-        Math.max(minScale(width, tTotal), v.pxPerSec * factor),
-    );
-    return clampView({ pan: secAnchor * pxPerSec - anchorPx, pxPerSec }, width, tTotal);
+    const sAnchor = pxToS(v, anchorPx);
+    const pxPerM = Math.min(MAX_PX_PER_M, Math.max(minScale(width, sTotal), v.pxPerM * factor));
+    return clampView({ pan: sAnchor * pxPerM - anchorPx, pxPerM }, width, sTotal);
 }
 
-/** the view that frames the whole track + lead-out (min scale, left-anchored at t=0). */
-export const frameAll = (width: number, tTotal: number): View =>
-    clampView({ pan: -Number.MAX_VALUE, pxPerSec: 0 }, width, tTotal);
+/** the view that frames the whole track + lead-out (min scale, left-anchored at s=0). */
+export const frameAll = (width: number, sTotal: number): View =>
+    clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, width, sTotal);
 
-/** the time-navigator window: the visible span [0, width] expressed as `{l, r}`
- *  fractions of the full track + lead-out (the viewport bracket over the overview). */
-export function navWindow(v: View, width: number, tTotal: number): { l: number; r: number } {
-    const total = tTotal + marginSec(tTotal);
+/** the navigator window: the visible span [0, width] expressed as `{l, r}` fractions
+ *  of the full track + lead-out (the viewport bracket over the overview). */
+export function navWindow(v: View, width: number, sTotal: number): { l: number; r: number } {
+    const total = sTotal + marginArc(sTotal);
     const frac = (s: number): number => Math.min(1, Math.max(0, s / total));
-    return { l: frac(pxToSec(v, 0)), r: frac(pxToSec(v, width)) };
+    return { l: frac(pxToS(v, 0)), r: frac(pxToS(v, width)) };
 }
 
 /** apply a navigator drag and return the clamped view. `pan` slides the window (`grab`
- *  is the seconds from the window's left edge to the cursor, held constant); `l`/`r`
+ *  is the meters from the window's left edge to the cursor, held constant); `l`/`r`
  *  drag one edge with the opposite edge anchored — a cursor-anchored zoom. */
 export function navDragView(
     v: View,
     width: number,
-    tTotal: number,
+    sTotal: number,
     mode: "pan" | "l" | "r",
-    curSec: number,
-    grabSec: number,
+    curS: number,
+    grabS: number,
 ): View {
-    const lo = pxToSec(v, 0);
-    const hi = pxToSec(v, width);
-    const minSpan = width / MAX_PX_PER_SEC; // the zoom-in ceiling, as a second-span floor
+    const lo = pxToS(v, 0);
+    const hi = pxToS(v, width);
+    const minSpan = width / MAX_PX_PER_M; // the zoom-in ceiling, as a meter-span floor
     if (mode === "pan")
-        return clampView(
-            { pan: (curSec - grabSec) * v.pxPerSec, pxPerSec: v.pxPerSec },
-            width,
-            tTotal,
-        );
+        return clampView({ pan: (curS - grabS) * v.pxPerM, pxPerM: v.pxPerM }, width, sTotal);
     if (mode === "l") {
-        const pps = width / (hi - Math.min(curSec, hi - minSpan)); // anchor the right edge
-        return clampView({ pan: hi * pps - width, pxPerSec: pps }, width, tTotal);
+        const pps = width / (hi - Math.min(curS, hi - minSpan)); // anchor the right edge
+        return clampView({ pan: hi * pps - width, pxPerM: pps }, width, sTotal);
     }
-    const pps = width / (Math.max(curSec, lo + minSpan) - lo); // anchor the left edge
-    return clampView({ pan: lo * pps, pxPerSec: pps }, width, tTotal);
+    const pps = width / (Math.max(curS, lo + minSpan) - lo); // anchor the left edge
+    return clampView({ pan: lo * pps, pxPerM: pps }, width, sTotal);
 }
 
 /** nearest 1-2-5×10ⁿ to `x` — the nice-number tick step. breakpoints are the
@@ -114,9 +109,9 @@ export function niceStep(x: number): number {
     return (b < Math.SQRT2 ? 1 : b < Math.sqrt(10) ? 2 : b < Math.sqrt(50) ? 5 : 10) * pow;
 }
 
-function fmtSec(sec: number, step: number): string {
+function fmtDist(s: number, step: number): string {
     const decimals = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
-    return `${sec.toFixed(decimals)}s`;
+    return `${s.toFixed(decimals)}m`;
 }
 
 /** the auto-fit g-range for the force axis. `lo`/`hi` bound the display, `step` is
@@ -189,12 +184,13 @@ export function mirrorTangent(
     return { x: (-vx / len) * otherLen, y: (-vy / len) * otherLen };
 }
 
-/** the display↔solver anchor: per-sample cumulative arclength (m) and time (s)
- *  over the current baked track, both monotone increasing. force targets are
- *  stored in arclength (the only domain the kernel can hold fixed) and shown in
- *  time; this pair is the conversion. built from the display bake by
- *  `targets.trackMapping`; static between solves (no solve runs while editing),
- *  so no freeze machinery. */
+/** per-sample cumulative arclength (m) and time (s) over the current baked track,
+ *  both monotone increasing — the cart↔chart projection. the chart's x-axis is
+ *  distance, but the cart rides the track in *time* (paced by its velocity), so the
+ *  playhead projects the cart's `t` through this to a chart s, and a ruler scrub maps
+ *  the picked s back to a cart `t`. built from the display bake by
+ *  `targets.trackMapping`; static between solves (no solve runs while editing), so no
+ *  freeze machinery. */
 export interface Mapping {
     arc: Float64Array;
     t: Float64Array;
@@ -227,14 +223,14 @@ export const arcToTime = (m: Mapping, s: number): number => interpMono(m.arc, m.
 
 /** the labeled major ticks visible in [0, width], on the 1-2-5 grid. */
 export function ticks(v: View, width: number): Tick[] {
-    if (!(v.pxPerSec > 0) || width <= 0) return [];
-    const step = niceStep(TARGET_TICK_PX / v.pxPerSec);
-    const from = pxToSec(v, 0);
-    const to = pxToSec(v, width);
+    if (!(v.pxPerM > 0) || width <= 0) return [];
+    const step = niceStep(TARGET_TICK_PX / v.pxPerM);
+    const from = pxToS(v, 0);
+    const to = pxToS(v, width);
     const out: Tick[] = [];
     for (let s = Math.floor(from / step) * step; s <= to + step * 0.5; s += step) {
-        const sec = Math.abs(s) < step * 1e-6 ? 0 : s; // snap fp drift to a clean 0
-        out.push({ sec, px: secToPx(v, sec), label: fmtSec(sec, step) });
+        const sv = Math.abs(s) < step * 1e-6 ? 0 : s; // snap fp drift to a clean 0
+        out.push({ s: sv, px: sToPx(v, sv), label: fmtDist(sv, step) });
     }
     return out;
 }

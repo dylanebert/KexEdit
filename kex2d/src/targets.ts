@@ -30,7 +30,7 @@ import {
     solveToFixpoint,
 } from "./solve";
 import { chainCounts, type Node } from "./spline";
-import { arcToTime, type Mapping } from "./timeline";
+import type { Mapping } from "./timeline";
 import {
     bakeOut,
     Handle,
@@ -250,14 +250,15 @@ export function trackDirty(ecs: State, trackEid: number): boolean {
     return targetDrift(ecs, trackEid).some((d) => d.active && !d.satisfied);
 }
 
-// ── display projection: arclength (stored) ↔ time (shown) ────────────────────
+// ── cart projection: arclength (chart x) ↔ time (cart clock) ─────────────────
 
 /** the per-sample arclength↔time table over the *display* bake (`samples` +
- *  `bakeOut`, the realized track the timeline draws). targets store arclength;
- *  the chart shows time, so a marker's x projects through this. built from the
- *  same node chain the solver bakes, so its arclength axis matches the
- *  solver's to rounding. null below the two-node floor. static between solves
- *  (no solve runs while editing), so no freeze machinery. */
+ *  `bakeOut`, the realized track the timeline draws). the chart's x-axis is
+ *  distance, but the cart rides the track in time, so the playhead projects the
+ *  cart's `t` to a chart s through this, and a ruler scrub maps the picked s back
+ *  to a cart `t`. built from the same node chain the solver bakes, so its
+ *  arclength axis matches the solver's to rounding. null below the two-node floor.
+ *  static between solves (no solve runs while editing), so no freeze machinery. */
 export function trackMapping(trackEid: number): Mapping | null {
     const s = samples.get(trackEid);
     const out = bakeOut.get(trackEid);
@@ -272,13 +273,13 @@ export function trackMapping(trackEid: number): Mapping | null {
     return { arc, t, n };
 }
 
-/** a target projected for display: its demand, arclength, the time through
- *  `m`, and the live drift readout. the marker renders straight off this. */
+/** a target projected for display: its demand `g`, arclength `s` (the chart's own
+ *  x-axis, spec §4), and the live drift readout. the marker renders straight off
+ *  this — no domain projection, `s` is drawn directly. */
 export interface Marker {
     id: number;
     g: number;
     s: number;
-    t: number;
     achieved: number;
     err: number;
     satisfied: boolean;
@@ -287,9 +288,10 @@ export interface Marker {
     active: boolean;
 }
 
-/** every target projected onto the timeline through the display mapping `m` —
- *  the marker render surface, sorted by arclength. */
-export function targetMarkers(ecs: State, trackEid: number, m: Mapping): Marker[] {
+/** every target on the track as a display marker, sorted by arclength. `s` is the
+ *  chart domain directly (distance), so there's no time projection — the marker sits
+ *  at its authored arclength and only moves by the author's hand (spec §4). */
+export function targetMarkers(ecs: State, trackEid: number): Marker[] {
     const rows = targetsFor(ecs, trackEid);
     if (rows.length === 0) return []; // skip the drift bake on the empty idle
     const drift = targetDrift(ecs, trackEid);
@@ -299,7 +301,6 @@ export function targetMarkers(ecs: State, trackEid: number, m: Mapping): Marker[
             id: row.id,
             g: row.g,
             s: row.s,
-            t: arcToTime(m, row.s),
             achieved: d?.achieved ?? row.g,
             err: d?.err ?? 0,
             satisfied: d?.satisfied ?? true,

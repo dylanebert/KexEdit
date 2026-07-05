@@ -1,5 +1,4 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
-import { resampleByTime } from "./bake";
 import { bakeOut, samples, Track } from "./track";
 
 /** per-track cart state: cumulative time `t` (mod tTotal), the last wall-clock
@@ -86,15 +85,23 @@ export function cartPose(
     };
 }
 
-/** sample F_n on a uniform time grid of `N` points (`resampleByTime`, linearly
- *  interpolated). used for the timeline — equal-spacing in t is what the
- *  rider experiences, not equal-spacing in arclength. */
-export function sampleFNOverTime(trackEid: number, N: number): Float32Array | null {
+/** the baked F_n force curve as per-sample points over arclength — the timeline's
+ *  x-axis is distance (spec §4), so the curve is read natively (no time resample):
+ *  `s[i]` is sample i's cumulative arclength (Σ ds), `f[i]` its force. the per-edge
+ *  `fN` (length count−1) carries force at its leading sample, so the last sample
+ *  repeats the last edge's value to reach the track end. null before the bake has a
+ *  chain. */
+export function forceCurve(
+    trackEid: number,
+): { s: Float64Array; f: Float32Array; n: number } | null {
     const out = bakeOut.get(trackEid);
-    if (!out) return null;
     const count = Track.count.get(trackEid);
-    if (count < 2 || out.tTotal <= 0) return null;
-    return resampleByTime(out.fN, out.t, count, N, out.tTotal);
+    if (!out || count < 2) return null;
+    const s = new Float64Array(count);
+    const f = new Float32Array(count);
+    for (let i = 1; i < count; i++) s[i] = s[i - 1] + out.ds[i - 1];
+    for (let i = 0; i < count; i++) f[i] = out.fN[Math.min(i, count - 2)];
+    return { s, f, n: count };
 }
 
 export const CartPlugin: Plugin = {

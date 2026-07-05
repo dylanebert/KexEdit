@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import { cartPose, loopTime, sampleFNOverTime } from "../src/cart";
+import { cartPose, forceCurve, loopTime } from "../src/cart";
 import { addNode, BakeSystem, bakeOut, createTrack } from "../src/track";
 
-// cartPose rides the baked track; sampleFNOverTime resamples the baked force onto
-// the time axis. driven against the seeded flat chain, where constant speed makes t
-// linear in arclength — so the cart's x is a closed-form check, not a fixture.
-// device-free harness, like track.test.ts.
+// cartPose rides the baked track; forceCurve reads the baked force per-sample over
+// arclength (the chart's distance axis, spec §4). driven against the seeded flat chain,
+// where constant speed makes t linear in arclength — so the cart's x is a closed-form
+// check, not a fixture. device-free harness, like track.test.ts.
 
 /** a fresh flat track (anchor (−16,0) → node (16,0)), baked. */
 function baked(): { eid: number; tTotal: number } {
@@ -21,12 +21,12 @@ function baked(): { eid: number; tTotal: number } {
     return { eid, tTotal: out.tTotal };
 }
 
-test("cartPose + sampleFNOverTime are null before the bake has a chain", () => {
+test("cartPose + forceCurve are null before the bake has a chain", () => {
     // a fresh track with no nodes baked: Track.count is 0, so nothing to ride or sample.
     const state = new State();
     const eid = createTrack(state);
     expect(cartPose(eid, 0)).toBeNull();
-    expect(sampleFNOverTime(eid, 16)).toBeNull();
+    expect(forceCurve(eid)).toBeNull();
 });
 
 test("loopTime is the full track time when the whole chain is feasible", () => {
@@ -53,12 +53,16 @@ test("loopTime resets at the first infeasible sample, not the crawl-through end"
     expect(loopTime(out)).toBeLessThan(out.tTotal);
 });
 
-test("sampleFNOverTime returns N points at ~1g on the flat chain", () => {
+test("forceCurve reads per-sample ~1g over the flat chain's arclength [0, 32]", () => {
+    // anchor (−16,0) → node (16,0): a 32m flat span at ≈1g everywhere.
     const { eid } = baked();
-    const grid = sampleFNOverTime(eid, 64);
-    if (!grid) throw new Error("sampleFNOverTime returned null after bake");
-    expect(grid.length).toBe(64);
-    for (let i = 0; i < grid.length; i++) expect(grid[i]).toBeCloseTo(1, 3);
+    const c = forceCurve(eid);
+    if (!c) throw new Error("forceCurve returned null after bake");
+    expect(c.n).toBeGreaterThan(2);
+    expect(c.s[0]).toBe(0);
+    expect(c.s[c.n - 1]).toBeCloseTo(32, 2); // total arclength = the chord span
+    for (let i = 1; i < c.n; i++) expect(c.s[i]).toBeGreaterThan(c.s[i - 1]); // monotone
+    for (let i = 0; i < c.n; i++) expect(c.f[i]).toBeCloseTo(1, 3);
 });
 
 test("cartPose rides the baked track flat, anchor to end", () => {

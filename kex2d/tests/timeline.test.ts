@@ -3,14 +3,14 @@ import {
     arcToTime,
     clampView,
     type Mapping,
-    marginSec,
-    MAX_PX_PER_SEC,
+    marginArc,
+    MAX_PX_PER_M,
     mirrorTangent,
     navDragView,
     navWindow,
     niceStep,
-    pxToSec,
-    secToPx,
+    pxToS,
+    sToPx,
     ticks,
     timeToArc,
     type View,
@@ -47,23 +47,23 @@ describe("timeToArc / arcToTime — display mapping", () => {
     });
 });
 
-describe("secToPx / pxToSec — affine roundtrip", () => {
+describe("sToPx / pxToS — affine roundtrip", () => {
     const views: View[] = [
-        { pan: 0, pxPerSec: 100 },
-        { pan: 250, pxPerSec: 37.5 },
-        { pan: -80, pxPerSec: 1000 },
+        { pan: 0, pxPerM: 100 },
+        { pan: 250, pxPerM: 37.5 },
+        { pan: -80, pxPerM: 1000 },
     ];
-    test("pxToSec ∘ secToPx is identity", () => {
+    test("pxToS ∘ sToPx is identity", () => {
         for (const v of views) {
             for (const t of [0, 0.5, 3.2, 12.75]) {
-                expect(pxToSec(v, secToPx(v, t))).toBeCloseTo(t, 9);
+                expect(pxToS(v, sToPx(v, t))).toBeCloseTo(t, 9);
             }
         }
     });
-    test("secToPx ∘ pxToSec is identity", () => {
+    test("sToPx ∘ pxToS is identity", () => {
         for (const v of views) {
             for (const px of [0, 17, 480, 1000]) {
-                expect(secToPx(v, pxToSec(v, px))).toBeCloseTo(px, 9);
+                expect(sToPx(v, pxToS(v, px))).toBeCloseTo(px, 9);
             }
         }
     });
@@ -99,46 +99,46 @@ describe("clampView — extent + margin", () => {
     const W = 1000;
     const T = 10;
     test("never zooms out past the whole-track fit", () => {
-        const fitted = clampView({ pan: 0, pxPerSec: 0 }, W, T);
-        const min = W / (T + marginSec(T)); // one-sided lead-out
-        expect(fitted.pxPerSec).toBeCloseTo(min, 9);
+        const fitted = clampView({ pan: 0, pxPerM: 0 }, W, T);
+        const min = W / (T + marginArc(T)); // one-sided lead-out
+        expect(fitted.pxPerM).toBeCloseTo(min, 9);
         // a request to zoom further out is held at the fit
-        expect(clampView({ pan: 0, pxPerSec: min / 2 }, W, T).pxPerSec).toBeCloseTo(min, 9);
+        expect(clampView({ pan: 0, pxPerM: min / 2 }, W, T).pxPerM).toBeCloseTo(min, 9);
     });
-    test("the fitted view shows exactly [0, tTotal+margin] — left anchored at the launch", () => {
-        const m = marginSec(T);
-        const v = clampView({ pan: -Number.MAX_VALUE, pxPerSec: 0 }, W, T);
-        expect(pxToSec(v, 0)).toBeCloseTo(0, 6); // no negative time before launch
-        expect(pxToSec(v, W)).toBeCloseTo(T + m, 6);
+    test("the fitted view shows exactly [0, sTotal+margin] — left anchored at the launch", () => {
+        const m = marginArc(T);
+        const v = clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, W, T);
+        expect(pxToS(v, 0)).toBeCloseTo(0, 6); // no negative distance before launch
+        expect(pxToS(v, W)).toBeCloseTo(T + m, 6);
     });
-    test("pan never reveals time before the launch (t=0) or past the lead-out", () => {
-        const m = marginSec(T);
-        const zoomed: View = { pan: 1e6, pxPerSec: 400 }; // pan way past the right edge
+    test("pan never reveals distance before the launch (s=0) or past the lead-out", () => {
+        const m = marginArc(T);
+        const zoomed: View = { pan: 1e6, pxPerM: 400 }; // pan way past the right edge
         const c = clampView(zoomed, W, T);
-        expect(pxToSec(c, 0)).toBeGreaterThanOrEqual(-1e-6); // left can't cross 0
-        expect(pxToSec(c, W)).toBeLessThanOrEqual(T + m + 1e-6);
-        // panning hard left holds at t=0, not negative
-        const left = clampView({ pan: -1e6, pxPerSec: 400 }, W, T);
-        expect(pxToSec(left, 0)).toBeCloseTo(0, 6);
+        expect(pxToS(c, 0)).toBeGreaterThanOrEqual(-1e-6); // left can't cross 0
+        expect(pxToS(c, W)).toBeLessThanOrEqual(T + m + 1e-6);
+        // panning hard left holds at s=0, not negative
+        const left = clampView({ pan: -1e6, pxPerM: 400 }, W, T);
+        expect(pxToS(left, 0)).toBeCloseTo(0, 6);
     });
 });
 
 describe("zoomAt — cursor-anchored", () => {
     const W = 1000;
     const T = 10;
-    test("the second under the cursor is fixed across a zoom-in (interior anchor)", () => {
-        const v = clampView({ pan: -Number.MAX_VALUE, pxPerSec: 0 }, W, T); // fitted
+    test("the meter under the cursor is fixed across a zoom-in (interior anchor)", () => {
+        const v = clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, W, T); // fitted
         const anchor = W / 2;
-        const before = pxToSec(v, anchor);
+        const before = pxToS(v, anchor);
         const z = zoomAt(v, anchor, 2, W, T);
-        expect(z.pxPerSec).toBeGreaterThan(v.pxPerSec);
-        expect(pxToSec(z, anchor)).toBeCloseTo(before, 6);
+        expect(z.pxPerM).toBeGreaterThan(v.pxPerM);
+        expect(pxToS(z, anchor)).toBeCloseTo(before, 6);
     });
     test("zoom-out from a zoomed-in view returns toward the fit", () => {
-        const fitted = clampView({ pan: -Number.MAX_VALUE, pxPerSec: 0 }, W, T);
+        const fitted = clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, W, T);
         const inView = zoomAt(fitted, W / 2, 4, W, T);
         const out = zoomAt(inView, W / 2, 0.001, W, T); // clamps to min scale
-        expect(out.pxPerSec).toBeCloseTo(fitted.pxPerSec, 6);
+        expect(out.pxPerM).toBeCloseTo(fitted.pxPerM, 6);
     });
 });
 
@@ -146,15 +146,15 @@ describe("navWindow — overview bracket fractions", () => {
     const W = 1000;
     const T = 10; // total = T + margin = 11.2
     test("the fitted view fills the whole bar", () => {
-        const fitted = clampView({ pan: -Number.MAX_VALUE, pxPerSec: 0 }, W, T);
+        const fitted = clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, W, T);
         const win = navWindow(fitted, W, T);
         expect(win.l).toBeCloseTo(0, 6);
         expect(win.r).toBeCloseTo(1, 6);
     });
     test("a zoomed-in view is a sub-span", () => {
-        const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerSec: W / 3 }, W, T); // shows [2,5]s
+        const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerM: W / 3 }, W, T); // shows [2,5]m
         const win = navWindow(zoomed, W, T);
-        const total = T + marginSec(T);
+        const total = T + marginArc(T);
         expect(win.l).toBeCloseTo(2 / total, 6);
         expect(win.r).toBeCloseTo(5 / total, 6);
     });
@@ -163,34 +163,34 @@ describe("navWindow — overview bracket fractions", () => {
 describe("navDragView — overview drag", () => {
     const W = 1000;
     const T = 10;
-    const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerSec: W / 3 }, W, T); // shows [2,5]s
+    const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerM: W / 3 }, W, T); // shows [2,5]m
     test("pan slides the window and preserves the span", () => {
-        const lo = pxToSec(zoomed, 0);
+        const lo = pxToS(zoomed, 0);
         const out = navDragView(zoomed, W, T, "pan", lo + 1, 0); // grab=0 → newLo = cur
-        expect(pxToSec(out, 0)).toBeCloseTo(3, 6);
-        expect(pxToSec(out, W)).toBeCloseTo(6, 6);
-        expect(out.pxPerSec).toBeCloseTo(zoomed.pxPerSec, 6); // zoom unchanged
+        expect(pxToS(out, 0)).toBeCloseTo(3, 6);
+        expect(pxToS(out, W)).toBeCloseTo(6, 6);
+        expect(out.pxPerM).toBeCloseTo(zoomed.pxPerM, 6); // zoom unchanged
     });
     test("left-edge drag anchors the right edge (a zoom)", () => {
-        const out = navDragView(zoomed, W, T, "l", 1, 0); // pull left edge to 1s
-        expect(pxToSec(out, 0)).toBeCloseTo(1, 6);
-        expect(pxToSec(out, W)).toBeCloseTo(5, 6); // right edge held
+        const out = navDragView(zoomed, W, T, "l", 1, 0); // pull left edge to 1m
+        expect(pxToS(out, 0)).toBeCloseTo(1, 6);
+        expect(pxToS(out, W)).toBeCloseTo(5, 6); // right edge held
     });
     test("right-edge drag anchors the left edge (a zoom)", () => {
-        const out = navDragView(zoomed, W, T, "r", 8, 0); // push right edge to 8s
-        expect(pxToSec(out, 0)).toBeCloseTo(2, 6); // left edge held
-        expect(pxToSec(out, W)).toBeCloseTo(8, 6);
+        const out = navDragView(zoomed, W, T, "r", 8, 0); // push right edge to 8m
+        expect(pxToS(out, 0)).toBeCloseTo(2, 6); // left edge held
+        expect(pxToS(out, W)).toBeCloseTo(8, 6);
     });
     test("an edge can't cross the opposite one — span floors at the zoom ceiling", () => {
-        const out = navDragView(zoomed, W, T, "r", 2, 0); // collapse right onto left (2s)
-        expect(pxToSec(out, W)).toBeGreaterThan(pxToSec(out, 0)); // never inverts
-        expect(out.pxPerSec).toBeCloseTo(MAX_PX_PER_SEC, 6); // capped at max zoom-in
+        const out = navDragView(zoomed, W, T, "r", 2, 0); // collapse right onto left (2m)
+        expect(pxToS(out, W)).toBeGreaterThan(pxToS(out, 0)); // never inverts
+        expect(out.pxPerM).toBeCloseTo(MAX_PX_PER_M, 6); // capped at max zoom-in
     });
 });
 
 describe("ticks — visible 1-2-5 grid", () => {
     test("ticks are step-spaced and cover the viewport", () => {
-        const v: View = { pan: 0, pxPerSec: 100 }; // 10s of track in 1000px → step ~ 1s
+        const v: View = { pan: 0, pxPerM: 100 }; // 10m of track in 1000px → step ~ 1m
         const t = ticks(v, 1000);
         expect(t.length).toBeGreaterThan(2);
         const dpx = t[1].px - t[0].px;
@@ -202,8 +202,8 @@ describe("ticks — visible 1-2-5 grid", () => {
         expect(t[t.length - 1].px).toBeGreaterThanOrEqual(1000 - dpx);
     });
     test("empty when degenerate", () => {
-        expect(ticks({ pan: 0, pxPerSec: 0 }, 1000)).toHaveLength(0);
-        expect(ticks({ pan: 0, pxPerSec: 100 }, 0)).toHaveLength(0);
+        expect(ticks({ pan: 0, pxPerM: 0 }, 1000)).toHaveLength(0);
+        expect(ticks({ pan: 0, pxPerM: 100 }, 0)).toHaveLength(0);
     });
 });
 
