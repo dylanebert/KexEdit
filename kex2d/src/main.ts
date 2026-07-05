@@ -6,7 +6,7 @@ import { CartPlugin } from "./cart";
 import { history } from "./history";
 import { RenderPlugin } from "./render";
 import { targetDrift, targetsFor } from "./targets";
-import { addNode, Handle, handleAt, Track, TrackPlugin, V0 } from "./track";
+import { addNode, bakeOut, Handle, handleAt, Track, TrackPlugin, V0 } from "./track";
 
 const { state: ecs, dispose } = await run({
     plugins: [ProfilePlugin, TrackPlugin, CartPlugin, RenderPlugin],
@@ -28,6 +28,7 @@ if (import.meta.env.DEV) {
         targets: () => targetsFor(ecs, track),
         drift: () => targetDrift(ecs, track),
         undoDepth: () => history.undo.length,
+        tTotal: () => bakeOut.get(track)?.tTotal ?? 0,
         nudge: (order: number, dy: number): void => {
             const eid = handleAt(ecs, order);
             if (eid !== null)

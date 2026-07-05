@@ -2,11 +2,24 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, sampleFNOverTime } from "./cart";
-import { history, redo, undo } from "./history";
+import { editor, selectTarget, setHighlight } from "./editor";
+import { cancel, commit, history, redo, undo } from "./history";
+import {
+    beginTargetMove,
+    createTarget,
+    deleteTarget,
+    type Marker,
+    setTarget,
+    solveAll,
+    targetMarkers,
+    trackMapping,
+    trackScope,
+} from "./targets";
 import { bakeOut } from "./track";
 import {
     clampView,
     frameAll,
+    type Mapping,
     marginSec,
     navDragView,
     navWindow,
@@ -14,6 +27,7 @@ import {
     pxToSec,
     secToPx,
     ticks,
+    timeToArc,
     type View,
     yFit,
     type YFit,
@@ -21,12 +35,13 @@ import {
 } from "./timeline";
 import { resize } from "./view";
 
-const { eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
+const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
 
 // the timeline shows the baked F_n force curve the realized track produces, plus
-// scrub + zoom/pan navigation. force intent lands here as point targets with an
-// explicit Solve (kex/specs/kex2d-force-targets.md stage 2); the span/live-RTI
-// surface was stripped 2026-07-05 (git holds it at 3e19820).
+// scrub + zoom/pan navigation. force intent is authored here as point targets
+// (double-click to place, drag both axes, Del) satisfied by an explicit Solve
+// (kex/specs/kex2d-force-targets.md §3–§5); the span/live-RTI surface was stripped
+// 2026-07-05 (git holds it at 3e19820).
 
 // timeline bands, top → bottom: a scrubbable RULER (ticks + labels + playhead
 // handle, the dedicated scrub zone), a demarcating GAP the playhead passes through,
@@ -49,6 +64,8 @@ const CAP_LO = BAND[0] - Y_HEADROOM;
 const CAP_HI = BAND[1] + Y_HEADROOM;
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
+const MARKER_R = 6; // px; the target diamond's half-diagonal
+const RESOLVE_FLASH_MS = 450; // freed-node highlight beat (the batch solve is instant)
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -114,6 +131,12 @@ const yTarget = $derived.by((): YFit => {
             if (a[i] > hi) hi = a[i];
         }
     }
+    // keep every target's demand in frame — the marker-to-curve gap IS the drift
+    // readout, so a demand above/below the curve's own range must not clip away.
+    for (const m of markers) {
+        if (m.g < lo) lo = m.g;
+        if (m.g > hi) hi = m.g;
+    }
     return yFit(lo, hi, Y_BASE);
 });
 
@@ -151,6 +174,113 @@ $effect(() => {
 
 const yOf = (val: number): number =>
     TOP + (1 - (val - yView.lo) / (yView.hi - yView.lo)) * (h - BOT_PAD - TOP);
+
+// invert yOf: a chart cursor Y (canvas-relative px) → its g value, clamped to the
+// displayed axis so a placed/dragged marker can't leave the scale.
+function yToG(cy: number): number {
+    const inner = h - BOT_PAD - TOP;
+    if (inner <= 0) return yView.lo;
+    const f = (cy - TOP) / inner;
+    return clamp(yView.lo + (1 - f) * (yView.hi - yView.lo), yView.lo, yView.hi);
+}
+
+// ── point force targets: inert demands on the force curve (§3–§5) ────────────
+// authored by double-clicking the chart, dragged in both axes (vertical = g,
+// horizontal = s), satisfied by an explicit Solve. targets store arclength; the
+// display mapping projects them to time. no solve runs while editing, so the
+// mapping is static between solves — no freeze machinery (§4).
+const mapping = $derived.by((): Mapping | null => {
+    void tick;
+    return eid === null ? null : trackMapping(eid);
+});
+const markers = $derived.by((): Marker[] => {
+    void tick;
+    const m = mapping;
+    return eid === null || m === null ? [] : targetMarkers(ecs, eid, m);
+});
+// the selected-target id, read through the per-RAF tick (editor is plain state).
+const selTarget = $derived.by((): number | null => {
+    void tick;
+    return editor.target;
+});
+// the Solve affordance: shown when targets exist, accented when any point sits off
+// the curve beyond tolerance (a drift the solve would close).
+const dirty = $derived(markers.some((m) => !m.satisfied));
+
+const markerX = (t: number): number => LEFT_GUT + secToPx(clamped, t);
+const chartLocalX = (e: PointerEvent): number =>
+    e.clientX - canvas.getBoundingClientRect().left - LEFT_GUT;
+const chartLocalY = (e: PointerEvent): number =>
+    e.clientY - canvas.getBoundingClientRect().top;
+const fmtG = (g: number): string => `${+g.toFixed(1)}g`;
+
+// ── create: double-click the empty chart drops a target at that exact demand ──
+function chartCreate(e: MouseEvent): void {
+    if (eid === null) return;
+    const m = mapping;
+    if (!m) return;
+    const rect = canvas.getBoundingClientRect();
+    const s = timeToArc(m, Math.max(0, pxToSec(clamped, e.clientX - rect.left - LEFT_GUT)));
+    const g = yToG(e.clientY - rect.top);
+    selectTarget(createTarget(history, ecs, eid, s, g)); // born selected
+}
+
+// ── move: drag a marker in both axes (no solve, one undo entry on release) ──
+let dragging: number | null = null;
+let grabDs = 0; // marker s − cursor s, so grabbing off-center doesn't snap
+let grabDg = 0;
+function markerDown(e: PointerEvent, mk: Marker): void {
+    if (eid === null || e.button !== 0) return;
+    const m = mapping;
+    if (!m) return;
+    e.preventDefault();
+    e.stopPropagation(); // don't also deselect via the chartzone underneath
+    beginTargetMove(ecs, mk.id);
+    dragging = mk.id;
+    selectTarget(mk.id);
+    grabDs = mk.s - timeToArc(m, Math.max(0, pxToSec(clamped, chartLocalX(e))));
+    grabDg = mk.g - yToG(chartLocalY(e));
+    window.addEventListener("pointermove", markerMove);
+    window.addEventListener("pointerup", markerUp);
+}
+function markerMove(e: PointerEvent): void {
+    if (dragging === null) return;
+    const m = mapping;
+    if (!m) return;
+    const s = Math.max(0, timeToArc(m, Math.max(0, pxToSec(clamped, chartLocalX(e)))) + grabDs);
+    setTarget(ecs, dragging, s, yToG(chartLocalY(e)) + grabDg);
+}
+function markerUp(): void {
+    if (dragging === null) return;
+    dragging = null;
+    commit(history); // one drag → one entry; a no-move click drops via the `same` guard
+    window.removeEventListener("pointermove", markerMove);
+    window.removeEventListener("pointerup", markerUp);
+}
+function cancelMarkerDrag(): void {
+    if (dragging === null) return;
+    dragging = null;
+    cancel();
+    window.removeEventListener("pointermove", markerMove);
+    window.removeEventListener("pointerup", markerUp);
+}
+
+// ── solve: the explicit batch invocation over all targets (§3) ──
+let flash: ReturnType<typeof setTimeout> | null = null;
+function solveClick(): void {
+    if (eid === null) return;
+    // flash the freed nodes in the viewport — the batch solve is instant, so the
+    // §5 scope highlight holds for a beat instead of the live gesture's duration.
+    setHighlight(trackScope(ecs, eid));
+    solveAll(history, ecs, eid);
+    if (flash) clearTimeout(flash);
+    flash = setTimeout(() => setHighlight([]), RESOLVE_FLASH_MS);
+}
+function deleteSelectedTarget(): void {
+    if (editor.target === null) return;
+    deleteTarget(history, ecs, editor.target);
+    selectTarget(null);
+}
 
 // ── middle-button drag pans the view. intercepted at the host's capture phase so it
 // fires before the pointer-events:all SVG rects; the ruler handler also routes a
@@ -495,6 +625,18 @@ onMount(() => {
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
+            return;
+        }
+        // target select/delete — guarded on a live target selection so node Esc/Del
+        // (controls.ts) route unambiguously (selection is mutually exclusive).
+        if (editor.target !== null) {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                selectTarget(null);
+            } else if (e.key === "Delete" || e.key === "Backspace") {
+                e.preventDefault();
+                deleteSelectedTarget();
+            }
         }
     };
     host.addEventListener("wheel", onWheel, { passive: false });
@@ -506,6 +648,9 @@ onMount(() => {
         sliderUp(); // and any in-flight player-slider drag
         panUp(); // and any in-flight middle-drag pan
         navUp(); // and any in-flight navigator drag
+        cancelMarkerDrag(); // and any in-flight marker drag
+        if (flash) clearTimeout(flash);
+        setHighlight([]); // clear the solve flash so a remount shows no phantom halo
     };
 });
 </script>
@@ -527,6 +672,18 @@ onMount(() => {
     >
         <canvas bind:this={canvas}></canvas>
         <svg class="overlay" width={w} height={h}>
+            <defs>
+                <!-- clip the target markers to the inner chart rect so an off-scale
+                     marker doesn't paint over the ruler or the g-gutter. -->
+                <clipPath id="chartclip">
+                    <rect
+                        x={LEFT_GUT}
+                        y={TOP}
+                        width={Math.max(0, w - LEFT_GUT)}
+                        height={Math.max(0, h - BOT_PAD - TOP)}
+                    />
+                </clipPath>
+            </defs>
             <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere here
                  moves the playhead (the time ruler is the scrubber). -->
             {#if eid !== null && tTotal > 0}
@@ -545,6 +702,21 @@ onMount(() => {
                     aria-valuemax={Math.round(tTotal * 100) / 100}
                     aria-valuenow={Math.round((cartSec ?? 0) * 100) / 100}
                 />
+                <!-- the chart interaction surface: double-click drops a target at the
+                     exact demand under the cursor; a bare click on empty chart clears
+                     the target selection. markers sit above it. -->
+                <rect
+                    class="chartzone"
+                    x={LEFT_GUT}
+                    y={TOP}
+                    width={Math.max(0, w - LEFT_GUT)}
+                    height={Math.max(0, h - BOT_PAD - TOP)}
+                    ondblclick={chartCreate}
+                    onpointerdown={(e) => {
+                        if (e.button === 0) selectTarget(null);
+                    }}
+                    role="presentation"
+                />
             {/if}
             <!-- playhead: a handle in the ruler + a line down through the gap and
                  chart. visual only — the rulerzone above owns the scrub interaction. -->
@@ -555,7 +727,43 @@ onMount(() => {
                     points="{playPx - 5},{RULER_H - 10} {playPx + 5},{RULER_H - 10} {playPx},{RULER_H}"
                 />
             {/if}
+            <!-- point force targets: a diamond at (t(s), g_target). the vertical gap to
+                 the curve at its s IS the residual; an unsatisfied marker spells it out
+                 (demanded → achieved). drag both axes; the chartzone owns creation. -->
+            <g class="markers" clip-path="url(#chartclip)">
+                {#each markers as m (m.id)}
+                    {@const mx = markerX(m.t)}
+                    {#if mx >= LEFT_GUT - MARKER_R && mx <= w + MARKER_R}
+                        {@const my = yOf(m.g)}
+                        <polygon
+                            class="tmarker"
+                            class:sel={m.id === selTarget}
+                            class:drift={!m.satisfied}
+                            data-id={m.id}
+                            points="{mx},{my - MARKER_R} {mx + MARKER_R},{my} {mx},{my + MARKER_R} {mx - MARKER_R},{my}"
+                            onpointerdown={(e) => markerDown(e, m)}
+                            role="presentation"
+                        />
+                        {#if !m.satisfied}
+                            <text class="tlabel" x={mx + MARKER_R + 4} y={my}>
+                                {fmtG(m.g)} → {fmtG(m.achieved)}
+                            </text>
+                        {/if}
+                    {/if}
+                {/each}
+            </g>
         </svg>
+        {#if markers.length > 0}
+            <button
+                class="solve"
+                class:dirty
+                type="button"
+                onclick={solveClick}
+                title="Fit the track to the force targets"
+            >
+                Solve
+            </button>
+        {/if}
     </div>
     <!-- the time navigator: a full-track overview below the chart (Premiere placement)
          rendered as a preview minimap (VSCode / DAW-overview style) — a miniature of the
@@ -743,6 +951,77 @@ onMount(() => {
         stroke: var(--neutral-soft);
         stroke-width: 4;
         paint-order: stroke;
+    }
+
+    /* chart interaction surface: transparent, catches double-click (place) and
+       empty-click (deselect). default cursor — placement is a double-click, not a
+       primary drag, so no crosshair to promise otherwise. */
+    .chartzone {
+        fill: transparent;
+        pointer-events: all;
+        cursor: default;
+    }
+
+    /* point force targets: a light diamond (authored data, not the accent result
+       curve). the selected one brightens + rings; an off-curve one turns danger. */
+    .tmarker {
+        fill: var(--pin);
+        stroke: var(--bg-solid);
+        stroke-width: 1.5;
+        pointer-events: all;
+        cursor: grab;
+        transition: fill 120ms ease;
+    }
+    .tmarker:active {
+        cursor: grabbing;
+    }
+    .tmarker.drift {
+        fill: var(--danger);
+    }
+    .tmarker.sel {
+        stroke: var(--fg);
+        stroke-width: 2;
+    }
+    .tlabel {
+        fill: var(--danger);
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 10px;
+        dominant-baseline: middle;
+        pointer-events: none;
+        user-select: none;
+    }
+
+    /* Solve: an occasional action, summoned only when targets exist (gate 1/2).
+       neutral while every point sits on the curve, accented when a drift is open. */
+    .solve {
+        all: unset;
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        box-sizing: border-box;
+        padding: 4px 12px;
+        border-radius: 5px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow);
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 12px;
+        color: var(--muted);
+        cursor: pointer;
+        transition: background 120ms ease, border-color 120ms ease, color 120ms ease,
+            transform 80ms ease;
+    }
+    .solve:hover {
+        color: var(--fg);
+        border-color: var(--neutral);
+    }
+    .solve:active {
+        transform: scale(0.96);
+    }
+    .solve.dirty {
+        color: var(--accent);
+        border-color: var(--accent);
+        background: var(--accent-soft);
     }
 
     /* the player: a media transport (play · global scrub · timecode) floated as its
