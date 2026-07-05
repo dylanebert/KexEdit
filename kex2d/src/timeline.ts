@@ -193,8 +193,8 @@ export function mirrorTangent(
  *  over the current baked track, both monotone increasing. force targets are
  *  stored in arclength (the only domain the kernel can hold fixed) and shown in
  *  time; this pair is the conversion. built from the display bake by
- *  `targets.trackMapping`; a gesture snapshots one and holds it (the frozen
- *  display mapping, §4), recomputing at rest so nothing squirms under the cursor. */
+ *  `targets.trackMapping`; static between solves (no solve runs while editing),
+ *  so no freeze machinery. */
 export interface Mapping {
     arc: Float64Array;
     t: Float64Array;
@@ -224,22 +224,6 @@ export const timeToArc = (m: Mapping, time: number): number => interpMono(m.t, m
 
 /** arclength (m) → track time (s) along the current bake. */
 export const arcToTime = (m: Mapping, s: number): number => interpMono(m.arc, m.t, m.n, s);
-
-/** de-overlap chip centers along the marker lane: keep each chip at least
- *  `minGap` px right of the previous one, nudging collisions rightward (greedy,
- *  in x order). returns adjusted centers aligned to the *input* order, so a
- *  caller can zip them straight back onto its target rows. */
-export function chipLayout(centers: number[], minGap: number): number[] {
-    const order = centers.map((_, i) => i).sort((a, b) => centers[a] - centers[b]);
-    const out = centers.slice();
-    let prev = Number.NEGATIVE_INFINITY;
-    for (const i of order) {
-        const x = Math.max(centers[i], prev + minGap);
-        out[i] = x;
-        prev = x;
-    }
-    return out;
-}
 
 /** the labeled major ticks visible in [0, width], on the 1-2-5 grid. */
 export function ticks(v: View, width: number): Tick[] {

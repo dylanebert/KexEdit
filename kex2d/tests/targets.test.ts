@@ -1,23 +1,20 @@
 import { State } from "@dylanebert/shallot";
 import { expect, test } from "bun:test";
-import { createHistory, redo, undo } from "../src/history";
-import { bakeNodes, sampleArc, samplesForArc, spanResidual } from "../src/solve";
+import { cancel, commit, createHistory, redo, undo } from "../src/history";
+import { bakeNodes, pointResidual, sampleArc, sampleAtArc } from "../src/solve";
 import { chainCounts } from "../src/spline";
 import {
-    beginDemand,
-    cancelDemand,
+    beginTargetMove,
     createTarget,
     deleteTarget,
-    demandTarget,
-    endDemand,
-    resolveTarget,
-    stepDemand,
+    setTarget,
+    solveAll,
+    solveTrack,
     Target,
     targetAt,
-    targetBands,
     targetDrift,
+    targetMarkers,
     targetsFor,
-    solveTrack,
     trackMapping,
     trackScope,
 } from "../src/targets";
@@ -57,17 +54,22 @@ function ecsHill(): { state: State; track: number; crest: number } {
     return { state, track, crest: 3 };
 }
 
-/** the node arclength (m) of each node order — spans are authored in arclength. */
+/** the node arclength (m) of each node order — points are authored in arclength. */
 function nodeArc(state: State): number[] {
+    const b = bake(state);
+    const arc = sampleArc(b);
+    return b.offsets.map((o) => arc[o]);
+}
+
+/** the current chain's frozen f64 bake (the drift/assert reference). */
+function bake(state: State) {
     const nodes = sortedHandles(state).map((eid) => ({
         x: Handle.pos.x.get(eid),
         y: Handle.pos.y.get(eid),
         theta: Handle.theta.get(eid),
     }));
     const { counts } = chainCounts(nodes, 0.5, MAX_SAMPLES);
-    const b = bakeNodes(nodes, counts, V0);
-    const arc = sampleArc(b);
-    return b.offsets.map((o) => arc[o]);
+    return bakeNodes(nodes, counts, V0);
 }
 
 function poses(state: State) {
@@ -79,70 +81,56 @@ function poses(state: State) {
     }));
 }
 
+/** the drift gap (|achieved − g|) for a target, on current geometry. */
+function driftErr(state: State, track: number, id: number): number {
+    return targetDrift(state, track).find((d) => d.id === id)?.err ?? Number.POSITIVE_INFINITY;
+}
+
 const BUDGET_G = 0.04;
 
-test("createTarget is born at the span mean and records one undoable entry", () => {
+test("createTarget is born at exactly the clicked demand and records one undoable entry", () => {
     const { state, track } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
 
-    const id = createTarget(h, state, track, arc[2], arc[4]);
+    const id = createTarget(h, state, track, arc[3], 0);
     expect(id).toBeGreaterThanOrEqual(0);
     expect(h.undo.length).toBe(1);
 
     const rows = targetsFor(state, track);
     expect(rows.length).toBe(1);
-    // g is the current mean force over the span (born value).
-    const nodes = sortedHandles(state).map((e) => ({
-        x: Handle.pos.x.get(e),
-        y: Handle.pos.y.get(e),
-        theta: Handle.theta.get(e),
-    }));
-    const { counts } = chainCounts(nodes, 0.5, MAX_SAMPLES);
-    const b = bakeNodes(nodes, counts, V0);
-    const a = sampleArc(b);
-    const { i0, i1 } = samplesForArc(b, a, arc[2], arc[4]);
-    let sum = 0;
-    let cnt = 0;
-    for (let i = i0; i <= i1; i++) {
-        sum += b.fN[i];
-        cnt++;
-    }
-    expect(rows[0].g).toBeCloseTo(sum / cnt, 4);
+    expect(rows[0].g).toBe(0); // the click IS the demand — no born-satisfied fit
+    expect(rows[0].s).toBeCloseTo(arc[3], 4);
 
     undo(h);
     expect(targetsFor(state, track).length).toBe(0);
     redo(h);
     const back = targetsFor(state, track);
     expect(back.length).toBe(1);
-    expect(back[0].id).toBe(id); // same stable id, span, value verbatim
-    expect(back[0].s0).toBe(rows[0].s0);
+    expect(back[0].id).toBe(id); // same stable id, point, value verbatim
+    expect(back[0].s).toBe(rows[0].s);
     expect(back[0].g).toBe(rows[0].g);
 });
 
-test("a target born on a flat span reads satisfied (band-vs-curve gap is quiet)", () => {
+test("a target placed on the curve reads satisfied; a demand off it reads drifted", () => {
     const { state, track } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
-    // a span strictly inside the horizontal lead segment [n0,n1] — F_n ≈ 1
-    // constant there, so a band born at the mean holds within tolerance.
-    const lead = arc[1] - arc[0];
-    const id = createTarget(h, state, track, arc[0] + 0.2 * lead, arc[0] + 0.8 * lead);
-    const drift = targetDrift(state, track).find((d) => d.id === id);
-    expect(drift).toBeDefined();
-    expect(drift?.satisfied).toBe(true);
-    expect(drift?.err).toBeLessThan(BUDGET_G);
+    // on the flat lead segment F_n ≈ 1: a 1g point there sits on the curve.
+    const on = createTarget(h, state, track, (arc[0] + arc[1]) / 2, 1);
+    // a 0g demand at the crest opens a visible gap until solved.
+    const off = createTarget(h, state, track, arc[3], 0);
+    const drift = targetDrift(state, track);
+    expect(drift.find((d) => d.id === on)?.satisfied).toBe(true);
+    expect(drift.find((d) => d.id === off)?.satisfied).toBe(false);
+    expect(drift.find((d) => d.id === off)?.err).toBeGreaterThan(BUDGET_G);
 });
 
 test("solveTrack is a pure read — it never writes authored state", () => {
     const { state, track } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
-    createTarget(h, state, track, arc[2], arc[4]);
-    // demand a reshape target value directly on the entity (no commit), then
-    // solveTrack: the returned chain differs but the live Handles are untouched.
-    const id = targetsFor(state, track)[0].id;
-    Target.g.set(targetAt(state, id) as number, 0);
+    createTarget(h, state, track, arc[3], 0);
     const before = poses(state);
     const solved = solveTrack(state, track);
     expect(solved).not.toBeNull();
@@ -151,85 +139,68 @@ test("solveTrack is a pure read — it never writes authored state", () => {
     expect(solved?.nodes[3].y).not.toBe(before[3].y);
 });
 
-test("demandTarget holds 0g over the crest and undo restores node state byte-identical", () => {
+test("solveAll holds 0g at the crest and undo restores node state byte-identical", () => {
     const { state, track, crest } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
-    const id = createTarget(h, state, track, arc[2], arc[4]);
+    const id = createTarget(h, state, track, arc[3], 0);
     const before = poses(state);
 
-    demandTarget(h, state, track, id, 0);
-    expect(h.undo.length).toBe(2); // create + demand, one entry each
+    const solved = solveAll(h, state, track);
+    expect(solved).not.toBeNull();
+    expect(h.undo.length).toBe(2); // create + solve, one entry each
 
-    // the target value updated and the crest reshaped.
-    expect(targetsFor(state, track)[0].g).toBe(0);
+    // the crest reshaped and the demand is met on the re-baked geometry.
     expect(poses(state)[crest].y).not.toBe(before[crest].y);
-
-    // achieved ~0g over the span interior, feasible + finite.
-    const nodes = sortedHandles(state).map((e) => ({
-        x: Handle.pos.x.get(e),
-        y: Handle.pos.y.get(e),
-        theta: Handle.theta.get(e),
-    }));
-    const { counts } = chainCounts(nodes, 0.5, MAX_SAMPLES);
-    const b = bakeNodes(nodes, counts, V0);
-    const a = sampleArc(b);
-    const { i0, i1 } = samplesForArc(b, a, arc[2], arc[4]);
-    const { achieved } = spanResidual(b, { i0, i1, g: 0, w: 1 });
-    expect(Math.abs(achieved)).toBeLessThan(BUDGET_G);
-    for (let i = 0; i < b.n; i++) expect(b.v2[i]).toBeGreaterThan(0);
+    expect(targetsFor(state, track)[0].g).toBe(0); // targets untouched
+    expect(driftErr(state, track, id)).toBeLessThan(BUDGET_G);
+    const b = bake(state);
+    for (let i = 0; i < b.n; i++) expect(b.v2[i]).toBeGreaterThan(0); // feasible
 
     const after = poses(state);
-    undo(h); // undo the demand
+    undo(h); // undo the solve
     expect(poses(state)).toEqual(before); // node state restored byte-identical
-    expect(targetsFor(state, track)[0].g).toBe(targetsFor(state, track)[0].g); // g back
     redo(h);
     expect(poses(state)).toEqual(after); // replays to the solved pose
-    expect(targetsFor(state, track)[0].g).toBe(0);
 });
 
-test("resolveTarget pulls a drifted curve back onto its band as one node-only entry", () => {
+test("solveAll pulls a drifted curve back onto its point as one node-only entry", () => {
     const { state, track } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
-    const id = createTarget(h, state, track, arc[2], arc[4]);
-    demandTarget(h, state, track, id, 0);
-    const solvedErr = driftErr(state, track, id);
-    expect(solvedErr).toBeLessThan(BUDGET_G);
+    const id = createTarget(h, state, track, arc[3], 0);
+    solveAll(h, state, track);
+    expect(driftErr(state, track, id)).toBeLessThan(BUDGET_G);
 
-    // a later geometry edit shoves the crest off the band (drift).
+    // a later geometry edit shoves the crest off the point (drift).
     const crestEid = handleAt(state, 3) as number;
     Handle.pos.set(crestEid, Handle.pos.x.get(crestEid), Handle.pos.y.get(crestEid) + 1.2);
-    const drifted = driftErr(state, track, id);
-    expect(drifted).toBeGreaterThan(BUDGET_G); // the gap opened
+    expect(driftErr(state, track, id)).toBeGreaterThan(BUDGET_G); // the gap opened
     expect(targetDrift(state, track).find((d) => d.id === id)?.satisfied).toBe(false);
 
     const nUndo = h.undo.length;
-    resolveTarget(h, state, track);
+    solveAll(h, state, track);
     expect(h.undo.length).toBe(nUndo + 1); // one entry
     expect(targetsFor(state, track)[0].g).toBe(0); // no target change
-    expect(driftErr(state, track, id)).toBeLessThan(BUDGET_G); // back on band
+    expect(driftErr(state, track, id)).toBeLessThan(BUDGET_G); // back on the point
 });
 
-test("trackScope names exactly the nodes a ⟳ re-solve can move (the highlight is honest)", () => {
-    // the ⟳ highlight flashes trackScope; that set must cover every node the
+test("trackScope names exactly the nodes a solve can move (the flash is honest)", () => {
+    // the Solve flash highlights trackScope; that set must cover every node the
     // solve actually moves, or the flash lies about what changed. so: only freed
     // nodes move, and trackScope is that freed set.
     const { state, track } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
-    createTarget(h, state, track, arc[2], arc[4]);
+    createTarget(h, state, track, arc[3], 0);
 
     const freed = trackScope(state, track);
     expect(freed.length).toBeGreaterThan(0);
     expect([...freed].sort((a, z) => a - z)).toEqual(freed); // sorted, deduped
     expect(freed).not.toContain(0); // node 0 is the fixed flat anchor, never freed
 
-    // drift the crest, then re-solve; every node outside trackScope is untouched.
-    const crestEid = handleAt(state, 3) as number;
-    Handle.pos.set(crestEid, Handle.pos.x.get(crestEid), Handle.pos.y.get(crestEid) + 1.2);
     const before = poses(state);
-    resolveTarget(h, state, track);
+    solveAll(h, state, track);
     const after = poses(state);
 
     const freedSet = new Set(freed);
@@ -245,32 +216,61 @@ test("trackScope names exactly the nodes a ⟳ re-solve can move (the highlight 
     expect(checked).toBeGreaterThan(0); // real non-freed nodes were verified, not vacuous
 });
 
-test("a demand cancelled without a step is a true no-op (backs the click-selects guard)", () => {
-    // a band click (pointerdown → pointerup, no drag) opens then cancels the
-    // gesture instead of committing, so the settle can't record a near-no-op
-    // undo entry. cancel must leave both history and node state exactly as they
-    // were — the guard is only safe if cancel is a clean rollback.
+test("a marker-move gesture commits one entry; a no-move click records nothing", () => {
     const { state, track } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
-    const id = createTarget(h, state, track, arc[2], arc[4]);
-    const before = poses(state);
+    const id = createTarget(h, state, track, arc[3], 0.5);
     const nUndo = h.undo.length;
 
-    expect(beginDemand(state, track, id)).toBe(true);
-    cancelDemand(); // no stepDemand — the click case
+    // a click with no movement: begin → commit drops the no-op entry.
+    beginTargetMove(state, id);
+    commit(h);
+    expect(h.undo.length).toBe(nUndo);
 
-    expect(h.undo.length).toBe(nUndo); // no entry recorded
-    expect(poses(state)).toEqual(before); // node state untouched
-    expect(targetsFor(state, track)[0].g).toBe(targetsFor(state, track)[0].g);
+    // a real drag: many live writes collapse to one entry; undo restores both axes.
+    beginTargetMove(state, id);
+    setTarget(state, id, arc[3] + 1, 0.3);
+    setTarget(state, id, arc[3] + 2, 0.1);
+    commit(h);
+    expect(h.undo.length).toBe(nUndo + 1);
+    let row = targetsFor(state, track)[0];
+    expect(row.s).toBeCloseTo(arc[3] + 2, 4);
+    expect(row.g).toBeCloseTo(0.1, 6);
+
+    undo(h);
+    row = targetsFor(state, track)[0];
+    expect(row.s).toBeCloseTo(arc[3], 4);
+    expect(row.g).toBe(0.5);
+
+    // cancel rolls a drag back without recording.
+    beginTargetMove(state, id);
+    setTarget(state, id, arc[3] + 3, 2);
+    cancel();
+    expect(h.undo.length).toBe(nUndo); // the move undo was consumed above; no new entry
+    row = targetsFor(state, track)[0];
+    expect(row.s).toBeCloseTo(arc[3], 4);
+    expect(row.g).toBe(0.5);
+});
+
+test("moving a target never moves geometry (targets are inert data)", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    const id = createTarget(h, state, track, arc[3], 0);
+    const geom = poses(state);
+    beginTargetMove(state, id);
+    setTarget(state, id, arc[2], 1.8);
+    commit(h);
+    expect(poses(state)).toEqual(geom); // byte-identical — no solve ran
 });
 
 test("deleteTarget leaves geometry untouched and is undoable", () => {
     const { state, track } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
-    const id = createTarget(h, state, track, arc[2], arc[4]);
-    demandTarget(h, state, track, id, 0.2);
+    const id = createTarget(h, state, track, arc[3], 0.2);
+    solveAll(h, state, track);
     const geom = poses(state);
 
     deleteTarget(h, state, id);
@@ -288,56 +288,41 @@ test("target ids are never reused across a delete→undo (monotone allocator)", 
     const { state, track } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
-    const a = createTarget(h, state, track, arc[1], arc[2]);
+    const a = createTarget(h, state, track, arc[1], 1);
     deleteTarget(h, state, a);
-    const b = createTarget(h, state, track, arc[4], arc[5]);
+    const b = createTarget(h, state, track, arc[4], 1);
     expect(b).toBeGreaterThan(a); // fresh id, not the freed one
 });
 
-test("solveTrack assembles two coupled targets in one system", () => {
+test("solveAll assembles two coupled point demands in one system", () => {
     const { state, track } = ecsHill();
     const h = createHistory();
     const arc = nodeArc(state);
-    const t0 = createTarget(h, state, track, arc[1], arc[2]);
-    const t1 = createTarget(h, state, track, arc[4], arc[5]);
-    demandTarget(h, state, track, t0, 1.3);
-    // demand the second with the first already committed; the solve assembles
-    // both active targets over the scope union.
-    demandTarget(h, state, track, t1, 0.5);
-    const d = targetDrift(state, track);
-    expect(d.find((x) => x.id === t0)?.err).toBeLessThan(0.15);
-    expect(d.find((x) => x.id === t1)?.err).toBeLessThan(0.15);
+    const t0 = createTarget(h, state, track, arc[2], 1.3);
+    const t1 = createTarget(h, state, track, arc[4], 0.5);
+    solveAll(h, state, track);
+    expect(driftErr(state, track, t0)).toBeLessThan(BUDGET_G);
+    expect(driftErr(state, track, t1)).toBeLessThan(BUDGET_G);
 });
 
-test("a multi-frame RTI demand lands where the batch demand does (draft-anchored)", () => {
-    // the live drag drives the same gesture as the batch, but through many small
-    // warm-started steps. the draft prior is pinned to the gesture-start chain in
-    // both, so both must converge to the SAME node solution — the RTI path is not
-    // allowed to smear frame-to-frame.
-    const A = ecsHill();
-    const hA = createHistory();
-    const arcA = nodeArc(A.state);
-    const idA = createTarget(hA, A.state, A.track, arcA[2], arcA[4]);
-    demandTarget(hA, A.state, A.track, idA, 0);
-    const batch = poses(A.state);
-
-    const B = ecsHill();
-    const hB = createHistory();
-    const arcB = nodeArc(B.state);
-    const idB = createTarget(hB, B.state, B.track, arcB[2], arcB[4]);
-    const born = targetsFor(B.state, B.track)[0].g;
-    expect(beginDemand(B.state, B.track, idB)).toBe(true);
-    const Frames = 8;
-    for (let f = 1; f <= Frames; f++) stepDemand(B.state, idB, born * (1 - f / Frames));
-    endDemand(hB, B.state);
-    const live = poses(B.state);
-
-    for (let k = 0; k < batch.length; k++) {
-        expect(live[k].x).toBeCloseTo(batch[k].x, 2);
-        expect(live[k].y).toBeCloseTo(batch[k].y, 2);
-    }
-    expect(hB.undo.length).toBe(2); // create + the whole drag = one demand entry
-    expect(targetsFor(B.state, B.track)[0].g).toBe(0);
+test("an infeasible demand fails legibly: closest compromise, finite, drift shown", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    // two demands at the same spot that no geometry satisfies together (one
+    // sample can hold one force): the solve lands the least-squares compromise
+    // between them and both gaps stay readable.
+    const lo = createTarget(h, state, track, arc[3], 0);
+    const hi = createTarget(h, state, track, arc[3], 2);
+    solveAll(h, state, track);
+    const d = targetDrift(state, track);
+    const dLo = d.find((x) => x.id === lo);
+    const dHi = d.find((x) => x.id === hi);
+    expect(Number.isFinite(dLo?.achieved ?? Number.NaN)).toBe(true);
+    expect(dLo?.satisfied).toBe(false); // labeled achieved-vs-target,
+    expect(dHi?.satisfied).toBe(false); // not silently "done"
+    const b = bake(state);
+    for (let i = 0; i < b.n; i++) expect(Number.isFinite(b.fN[i])).toBe(true);
 });
 
 test("trackMapping is monotone and its time axis matches the display bake", () => {
@@ -354,28 +339,40 @@ test("trackMapping is monotone and its time axis matches the display bake", () =
     expect(m.t[m.n - 1]).toBeCloseTo(bakeOut.get(track)?.tTotal ?? -1, 6);
 });
 
-test("targetBands projects a target's arclength span onto a forward time extent", () => {
+test("targetMarkers projects a target's arclength onto its display time", () => {
     const { state, track } = ecsHill();
     state.addSystem(BakeSystem);
     state.step(0);
     const h = createHistory();
     const arc = nodeArc(state);
-    const id = createTarget(h, state, track, arc[2], arc[4]);
+    const id = createTarget(h, state, track, arc[3], 0);
     const m = trackMapping(track);
     expect(m).not.toBeNull();
     if (!m) return;
-    const bands = targetBands(state, track, m);
-    expect(bands.length).toBe(1);
-    const bnd = bands[0];
-    expect(bnd.id).toBe(id);
-    expect(bnd.g).toBe(targetsFor(state, track)[0].g);
-    expect(bnd.t1).toBeGreaterThan(bnd.t0); // span has a forward time extent
-    expect(bnd.t0).toBeGreaterThanOrEqual(0);
-    expect(bnd.t1).toBeLessThanOrEqual((bakeOut.get(track)?.tTotal ?? 0) + 1e-6);
-    expect(bnd.err).toBeGreaterThanOrEqual(0);
+    const markers = targetMarkers(state, track, m);
+    expect(markers.length).toBe(1);
+    const mk = markers[0];
+    expect(mk.id).toBe(id);
+    expect(mk.g).toBe(0);
+    expect(mk.t).toBeGreaterThan(0);
+    expect(mk.t).toBeLessThanOrEqual((bakeOut.get(track)?.tTotal ?? 0) + 1e-6);
+    expect(mk.err).toBeGreaterThanOrEqual(0);
+    // the drift readout matches a direct point residual on the same bake.
+    const b = bake(state);
+    const a = sampleArc(b);
+    const direct = pointResidual(b, { i: sampleAtArc(a, b.n, mk.s), g: 0, w: 1 });
+    expect(mk.achieved).toBeCloseTo(direct.achieved, 6);
 });
 
-/** the drift gap (max interior |F−g|) for a target, on current geometry. */
-function driftErr(state: State, track: number, id: number): number {
-    return targetDrift(state, track).find((d) => d.id === id)?.err ?? Number.POSITIVE_INFINITY;
-}
+test("Target rows expose exactly {track, id, s, g} (the point component shape)", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const id = createTarget(h, state, track, 5, 1.5);
+    const eid = targetAt(state, id);
+    expect(eid).not.toBeNull();
+    if (eid === null) return;
+    expect(Target.track.get(eid)).toBe(track);
+    expect(Target.id.get(eid)).toBe(id);
+    expect(Target.s.get(eid)).toBeCloseTo(5, 5);
+    expect(Target.g.get(eid)).toBeCloseTo(1.5, 5);
+});

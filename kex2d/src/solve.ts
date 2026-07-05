@@ -11,14 +11,13 @@
  *  the map: node params → **frozen-topology** `sampleAt` → `forces64` → F_n. the
  *  per-segment edge counts freeze at solve start (`chainCounts` run once by the
  *  caller), so the residual dimension is constant and the finite-difference
- *  Jacobian is clean — the solve's sibling of the per-gesture display-mapping
- *  freeze. residuals: force rows over each target's interior + a weak draft
- *  prior (pull freed params toward their drafted values — the degeneracy
- *  regularizer and the "minimum deformation of what the author drew" intent) +
- *  a node-spacing term (adjacent freed chord vs draft — suppresses tangential
- *  bunching). LM with Marquardt diagonal scaling (the mixed-unit x/y/θ DOF want
- *  per-column scaling, unlike the dense kernel's μI). Validated the evidence
- *  gate in `tests/hill.lab.ts`; promoted here. */
+ *  Jacobian is clean. residuals: one force row per point target (at the sample
+ *  nearest its arclength) + a weak draft prior (pull freed params toward their
+ *  drafted values — the degeneracy regularizer and the "minimum deformation of
+ *  what the author drew" intent) + a node-spacing term (adjacent freed chord vs
+ *  draft — suppresses tangential bunching). LM with Marquardt diagonal scaling
+ *  (the mixed-unit x/y/θ DOF want per-column scaling, unlike the dense kernel's
+ *  μI). Validated the evidence gate in `tests/hill.lab.ts`; promoted here. */
 
 import { forces64 } from "./force";
 import { type Node, sampleAt } from "./spline";
@@ -27,7 +26,7 @@ const MAX = 4096;
 
 // solve-local scratch for the frozen bake. the solve is synchronous and
 // single-threaded (residual + FD-Jacobian evals all run inline), so one shared
-// buffer set is safe and avoids per-eval allocation on the RTI hot path.
+// buffer set is safe and avoids per-eval allocation.
 const bx = new Float64Array(MAX);
 const by = new Float64Array(MAX);
 const bds = new Float64Array(MAX);
@@ -81,19 +80,18 @@ export function sampleAtArc(arc: Float64Array, n: number, s: number): number {
     return clampInterior(best, n);
 }
 
-/** a span force target in the SOLVER domain: an inclusive interior sample-index
- *  span holding constant `g`, at fixed weight `w`. `targets.ts` converts the
- *  authored arclength span into this against the frozen bake. */
-export interface SpanTarget {
-    i0: number;
-    i1: number;
+/** a point force target in the SOLVER domain: demand `g` at interior sample
+ *  index `i`, at fixed weight `w`. `targets.ts` converts the authored arclength
+ *  point into this against the frozen bake. */
+export interface PointTarget {
+    i: number;
     g: number;
     w: number;
 }
 
 /** the §5 auto-scope rule: node indices whose segments overlap [from,to] plus
  *  one neighbor each side, excluding the flat anchor (node 0). */
-export function autoScope(nNodes: number, from: number, to: number): number[] {
+function autoScope(nNodes: number, from: number, to: number): number[] {
     const lo = Math.max(1, from - 1);
     const hi = Math.min(nNodes - 1, to + 1);
     const out: number[] = [];
@@ -101,74 +99,29 @@ export function autoScope(nNodes: number, from: number, to: number): number[] {
     return out;
 }
 
-/** the freed-node set for an arclength span [s0,s1]: the nodes whose segments
- *  overlap the span, widened one neighbor each side (`autoScope`). the working
- *  set the stage-1 evidence gate validated — segments-overlapping-plus-one is
- *  what reaches the force-error budget. */
-export function scopeForArc(b: Baked, arc: Float64Array, s0: number, s1: number): number[] {
+/** the freed-node set for an arclength point `s`: the two nodes of the segment
+ *  containing it, widened one neighbor each side (`autoScope`, spec §5). the
+ *  working set the stage-1 evidence gate validated — segment nodes plus one is
+ *  what reaches the force-error budget. a point past either end clamps to the
+ *  first/last segment. */
+export function scopeForPoint(b: Baked, arc: Float64Array, s: number): number[] {
     const nNode = b.offsets.length;
-    let from = nNode - 1;
-    let to = 0;
-    let any = false;
-    for (let k = 0; k < nNode - 1; k++) {
-        const a = arc[b.offsets[k]];
-        const c = arc[b.offsets[k + 1]];
-        if (a < s1 && c > s0) {
-            from = Math.min(from, k);
-            to = Math.max(to, k + 1);
-            any = true;
+    if (nNode < 2) return [];
+    let k = nNode - 2;
+    for (let i = 0; i < nNode - 1; i++) {
+        if (s < arc[b.offsets[i + 1]]) {
+            k = i;
+            break;
         }
     }
-    if (!any) return [];
-    return autoScope(nNode, from, to);
+    return autoScope(nNode, k, k + 1);
 }
 
-/** the interior sample-index span covering arclength [s0,s1]. */
-export function samplesForArc(
-    b: Baked,
-    arc: Float64Array,
-    s0: number,
-    s1: number,
-): { i0: number; i1: number } {
-    const a = sampleAtArc(arc, b.n, s0);
-    const c = sampleAtArc(arc, b.n, s1);
-    return { i0: Math.min(a, c), i1: Math.max(a, c) };
-}
-
-/** mean F_n over an interior sample-index span — the "born satisfied" value a
- *  freshly created target takes (spec §Golden path 1: zero initial loss). */
-export function spanMean(b: Baked, i0: number, i1: number): number {
-    let sum = 0;
-    let cnt = 0;
-    for (let i = Math.max(1, i0); i <= Math.min(b.n - 2, i1); i++) {
-        sum += b.fN[i];
-        cnt++;
-    }
-    return cnt ? sum / cnt : 0;
-}
-
-/** fraction of a target span trimmed off both ends when reading the *interior*
- *  residual — a constant band meeting normal track is a curvature transition
- *  (a C¹ break), so the band edges carry an expected spike that is legible, not
- *  a representability failure. */
-const TRIM = 0.2;
-
-/** what a target actually achieves on baked geometry: the mean held force over
- *  its interior (the achieved-vs-target readout) and the max interior error
- *  (the drift/residual gap). */
-export function spanResidual(b: Baked, t: SpanTarget): { achieved: number; err: number } {
-    const trim = Math.floor((t.i1 - t.i0) * TRIM);
-    let sum = 0;
-    let cnt = 0;
-    let err = 0;
-    for (let i = t.i0; i <= t.i1; i++) {
-        if (i >= t.i0 + trim && i <= t.i1 - trim) {
-            sum += b.fN[i];
-            err = Math.max(err, Math.abs(b.fN[i] - t.g));
-            cnt++;
-        }
-    }
-    return { achieved: cnt ? sum / cnt : t.g, err };
+/** what a point target actually achieves on baked geometry: the held force at
+ *  its sample (the achieved-vs-target readout) and the gap (the drift). */
+export function pointResidual(b: Baked, t: PointTarget): { achieved: number; err: number } {
+    const achieved = b.fN[t.i];
+    return { achieved, err: Math.abs(achieved - t.g) };
 }
 
 // ── the LM solve over node parameters ────────────────────────────────────────
@@ -189,7 +142,7 @@ interface Problem {
     freed: number[];
     counts: readonly number[];
     v0: number;
-    targets: readonly SpanTarget[];
+    targets: readonly PointTarget[];
     w: Weights;
     p0: Float64Array;
     /** draft chord for each adjacent freed pair (k,k+1); NaN if not adjacent. */
@@ -218,8 +171,7 @@ function residual(prob: Problem, p: Float64Array): Float64Array {
     const nodes = unpack(prob.base, prob.freed, p);
     const b = bakeNodes(nodes, prob.counts, prob.v0);
     const rows: number[] = [];
-    for (const t of prob.targets)
-        for (let i = t.i0; i <= t.i1; i++) rows.push(t.w * (b.fN[i] - t.g));
+    for (const t of prob.targets) rows.push(t.w * (b.fN[t.i] - t.g));
     prob.freed.forEach((_, k) => {
         rows.push(prob.w.wPos * (p[k * 3] - prob.p0[k * 3]));
         rows.push(prob.w.wPos * (p[k * 3 + 1] - prob.p0[k * 3 + 1]));
@@ -301,30 +253,26 @@ export interface SolveResult {
 
 /**
  * solve the freed node parameters to satisfy all `targets` over the frozen
- * `counts`. assembles every target's force rows over the freed-node union in one
+ * `counts`. assembles every target's force row over the freed-node union in one
  * system (the coupled/composition case is one assembled problem, not per-target).
  * returns the full chain with the freed nodes updated; `base` is unmodified.
  *
  * `base` is the **draft**: it anchors the draft prior (the "minimum deformation
- * of what the author drew" pull) and the node-spacing reference. `warm` is the
- * starting iterate, defaulting to `base`; a live RTI drag passes the previous
- * frame's already-deformed chain as `warm` while keeping `base` pinned to the
- * gesture-start draft, so the prior stays anchored to the original shape instead
- * of re-basing (and smearing) toward each frame's iterate.
+ * of what's there now" pull, re-anchored to current geometry at each explicit
+ * invocation — spec §3) and the node-spacing reference.
  *
  * `converged` marks LM reaching a local minimum; `converged` is not a health
- * signal — the caller reads `spanResidual` for the achieved force.
+ * signal — the caller reads `pointResidual` for the achieved force.
  */
 export function solveTargets(
     base: readonly Node[],
     freed: readonly number[],
     counts: readonly number[],
     v0: number,
-    targets: readonly SpanTarget[],
+    targets: readonly PointTarget[],
     w: Weights = DEFAULT_WEIGHTS,
     maxIters = 120,
     stepTol = 1e-7,
-    warm?: readonly Node[],
 ): SolveResult {
     const p0 = pack(base, freed);
     const spaceRef = freed.map((idx, k) => {
@@ -344,7 +292,7 @@ export function solveTargets(
         spaceRef,
     };
 
-    let p = Float64Array.from(warm ? pack(warm, freed) : p0);
+    let p = Float64Array.from(p0);
     const K = p.length;
     let mu = -1;
     let nu = 2;

@@ -2,28 +2,11 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, sampleFNOverTime } from "./cart";
-import { editor, selectTarget, setHighlight } from "./editor";
 import { history, redo, undo } from "./history";
-import {
-    type Band,
-    beginDemand,
-    cancelDemand,
-    createTarget,
-    deleteTarget,
-    demandScope,
-    endDemand,
-    resolveTarget,
-    stepDemand,
-    targetBands,
-    trackMapping,
-    trackScope,
-} from "./targets";
 import { bakeOut } from "./track";
 import {
-    chipLayout,
     clampView,
     frameAll,
-    type Mapping,
     marginSec,
     navDragView,
     navWindow,
@@ -31,7 +14,6 @@ import {
     pxToSec,
     secToPx,
     ticks,
-    timeToArc,
     type View,
     yFit,
     type YFit,
@@ -39,14 +21,12 @@ import {
 } from "./timeline";
 import { resize } from "./view";
 
-const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
+const { eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
 
 // the timeline shows the baked F_n force curve the realized track produces, plus
-// scrub + zoom/pan navigation. force intent is authored here as span-scoped
-// targets (kex/specs/kex2d-force-targets.md): drag-select a span to create a
-// band, drag the band vertically to demand a held g (a live RTI solve deforms the
-// track), summon ⟳ to re-solve drift, Del to remove. targets store arclength and
-// display in time through the frozen-per-gesture mapping.
+// scrub + zoom/pan navigation. force intent lands here as point targets with an
+// explicit Solve (kex/specs/kex2d-force-targets.md stage 2); the span/live-RTI
+// surface was stripped 2026-07-05 (git holds it at 3e19820).
 
 // timeline bands, top → bottom: a scrubbable RULER (ticks + labels + playhead
 // handle, the dedicated scrub zone), a demarcating GAP the playhead passes through,
@@ -69,7 +49,6 @@ const CAP_LO = BAND[0] - Y_HEADROOM;
 const CAP_HI = BAND[1] + Y_HEADROOM;
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
-const RESOLVE_FLASH_MS = 450; // ⟳ freed-node highlight beat (the solve itself is instant)
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -173,15 +152,6 @@ $effect(() => {
 const yOf = (val: number): number =>
     TOP + (1 - (val - yView.lo) / (yView.hi - yView.lo)) * (h - BOT_PAD - TOP);
 
-// invert yOf: a chart cursor Y (canvas-relative px) → its g value, clamped to the
-// displayed axis so a dragged band can't leave the scale.
-function yToG(cy: number): number {
-    const inner = h - BOT_PAD - TOP;
-    if (inner <= 0) return yView.lo;
-    const f = (cy - TOP) / inner;
-    return clamp(yView.lo + (1 - f) * (yView.hi - yView.lo), yView.lo, yView.hi);
-}
-
 // ── middle-button drag pans the view. intercepted at the host's capture phase so it
 // fires before the pointer-events:all SVG rects; the ruler handler also routes a
 // middle press here as a backstop.
@@ -237,146 +207,6 @@ function navUp(): void {
     navDrag = null;
     window.removeEventListener("pointermove", navMove);
     window.removeEventListener("pointerup", navUp);
-}
-
-// ── force targets: span-scoped demands on the force curve ────────────────────
-// created by drag-selecting a time span, demanded by dragging the band, re-solved
-// (⟳) or deleted from the chip. targets store arclength; the display mapping
-// projects them to time. during a demand the mapping FREEZES so the band's
-// x-extent can't squirm while the geometry deforms (§4), reflowing at rest.
-
-const liveMapping = $derived.by((): Mapping | null => {
-    void tick;
-    return eid === null ? null : trackMapping(eid);
-});
-// while demanding, hold the frozen snapshot; otherwise the live (reflowing) map.
-let frozenMap: Mapping | null = null;
-const mapping = $derived.by((): Mapping | null => {
-    void tick;
-    return frozenMap ?? liveMapping;
-});
-const bands = $derived.by((): Band[] => {
-    void tick;
-    const m = mapping;
-    return eid === null || m === null ? [] : targetBands(ecs, eid, m);
-});
-// the selected-target id, read through the per-RAF tick (editor is plain state).
-const selTarget = $derived.by((): number | null => {
-    void tick;
-    return editor.target;
-});
-// chip x-centers, de-overlapped along the marker lane.
-const CHIP_MIN_GAP = 68; // px between chip centers before they nudge apart
-const chipX = $derived.by((): number[] => {
-    const raw = bands.map((b) =>
-        clamp(LEFT_GUT + secToPx(clamped, (b.t0 + b.t1) / 2), LEFT_GUT + 4, w - 4),
-    );
-    return chipLayout(raw, CHIP_MIN_GAP);
-});
-
-const bandX = (t: number): number => clamp(LEFT_GUT + secToPx(clamped, t), LEFT_GUT, w);
-const fmtG = (g: number): string => `${+g.toFixed(1)}g`;
-const chartLocalX = (e: PointerEvent): number =>
-    e.clientX - canvas.getBoundingClientRect().left - LEFT_GUT;
-
-// ── create: drag-select a time span on the chart ──
-let selecting: { x0: number } | null = null;
-let selRect: { x0: number; x1: number } | null = $state(null); // chart-local px
-const SEL_MIN_PX = 6; // shorter than this reads as a click, not a span
-
-function selectDown(e: PointerEvent): void {
-    if (eid === null || e.button !== 0) return;
-    e.preventDefault();
-    const x0 = chartLocalX(e);
-    selecting = { x0 };
-    selRect = { x0, x1: x0 };
-    window.addEventListener("pointermove", selectMove);
-    window.addEventListener("pointerup", selectUp);
-}
-function selectMove(e: PointerEvent): void {
-    if (!selecting) return;
-    selRect = { x0: selecting.x0, x1: chartLocalX(e) };
-}
-function selectUp(e: PointerEvent): void {
-    const s = selecting;
-    selecting = null;
-    selRect = null;
-    window.removeEventListener("pointermove", selectMove);
-    window.removeEventListener("pointerup", selectUp);
-    if (!s || eid === null) return;
-    const x1 = chartLocalX(e);
-    if (Math.abs(x1 - s.x0) < SEL_MIN_PX) {
-        selectTarget(null); // a click on empty chart clears the selection
-        return;
-    }
-    const m = liveMapping;
-    if (!m) return;
-    const s0 = timeToArc(m, Math.max(0, pxToSec(clamped, Math.min(s.x0, x1))));
-    const s1 = timeToArc(m, Math.max(0, pxToSec(clamped, Math.max(s.x0, x1))));
-    const id = createTarget(history, ecs, eid, s0, s1);
-    if (id >= 0) selectTarget(id);
-}
-
-// ── demand: drag a band vertically, live RTI solve per frame ──
-let demanding: number | null = null; // the target id being dragged
-let demandMoved = false; // did the pointer actually move — else it's a select-only click
-function bandDown(e: PointerEvent, id: number): void {
-    if (eid === null || e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation(); // don't also start a chart select underneath
-    if (!beginDemand(ecs, eid, id)) return;
-    demanding = id;
-    demandMoved = false;
-    frozenMap = liveMapping; // freeze the display mapping for the gesture
-    selectTarget(id);
-    setHighlight(demandScope());
-    window.addEventListener("pointermove", bandMove);
-    window.addEventListener("pointerup", bandUp);
-}
-function bandMove(e: PointerEvent): void {
-    if (demanding === null) return;
-    demandMoved = true;
-    stepDemand(ecs, demanding, yToG(e.clientY - canvas.getBoundingClientRect().top));
-}
-function bandUp(): void {
-    if (demanding === null) return;
-    demanding = null;
-    // a click with no drag only selects (done in bandDown) — cancel the gesture so
-    // the settle's sub-epsilon node nudge doesn't record a near-no-op undo entry.
-    if (demandMoved) endDemand(history, ecs);
-    else cancelDemand();
-    frozenMap = null;
-    setHighlight([]);
-    window.removeEventListener("pointermove", bandMove);
-    window.removeEventListener("pointerup", bandUp);
-}
-function cancelBand(): void {
-    if (demanding === null) return;
-    demanding = null;
-    cancelDemand();
-    frozenMap = null;
-    setHighlight([]);
-    window.removeEventListener("pointermove", bandMove);
-    window.removeEventListener("pointerup", bandUp);
-}
-
-// ── chip actions ──
-let resolveFlash: ReturnType<typeof setTimeout> | null = null;
-function resolveClick(e: MouseEvent, id: number): void {
-    e.stopPropagation();
-    if (eid === null) return;
-    selectTarget(id);
-    // the solve is synchronous (one frame), so flash the freed nodes for a beat —
-    // the instant-solve equivalent of the live demand's held highlight (§5).
-    setHighlight(trackScope(ecs, eid));
-    resolveTarget(history, ecs, eid);
-    if (resolveFlash) clearTimeout(resolveFlash);
-    resolveFlash = setTimeout(() => setHighlight([]), RESOLVE_FLASH_MS);
-}
-function deleteSelectedTarget(): void {
-    if (editor.target === null || eid === null) return;
-    deleteTarget(history, ecs, editor.target);
-    selectTarget(null);
 }
 
 function render(ctx: CanvasRenderingContext2D): void {
@@ -662,24 +492,6 @@ onMount(() => {
             }
             return;
         }
-        // Esc cancels an in-flight demand, else deselects the target; Del removes
-        // the selected target (node Del/Esc live in controls.ts — selection is
-        // mutually exclusive, so exactly one handler acts).
-        if (e.key === "Escape") {
-            if (demanding !== null) {
-                e.preventDefault();
-                cancelBand();
-            } else if (editor.target !== null) {
-                e.preventDefault();
-                selectTarget(null);
-            }
-            return;
-        }
-        if ((e.key === "Delete" || e.key === "Backspace") && editor.target !== null) {
-            e.preventDefault();
-            deleteSelectedTarget();
-            return;
-        }
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
@@ -694,12 +506,6 @@ onMount(() => {
         sliderUp(); // and any in-flight player-slider drag
         panUp(); // and any in-flight middle-drag pan
         navUp(); // and any in-flight navigator drag
-        cancelBand(); // and any in-flight band demand
-        if (resolveFlash) clearTimeout(resolveFlash); // drop a pending ⟳ highlight clear
-        selecting = null;
-        selRect = null;
-        window.removeEventListener("pointermove", selectMove);
-        window.removeEventListener("pointerup", selectUp);
     };
 });
 </script>
@@ -740,51 +546,6 @@ onMount(() => {
                     aria-valuenow={Math.round((cartSec ?? 0) * 100) / 100}
                 />
             {/if}
-            <!-- chart drag-select zone: a left-drag here authors a new span target.
-                 sits below the bands in paint order, so a band catches its own drag. -->
-            {#if eid !== null && tTotal > 0}
-                <rect
-                    class="chartzone"
-                    x={LEFT_GUT}
-                    y={TOP}
-                    width={Math.max(0, w - LEFT_GUT)}
-                    height={Math.max(0, h - BOT_PAD - TOP)}
-                    onpointerdown={selectDown}
-                    role="presentation"
-                />
-            {/if}
-            <!-- the rubber-band while selecting a span -->
-            {#if selRect}
-                <rect
-                    class="selband"
-                    x={LEFT_GUT + Math.min(selRect.x0, selRect.x1)}
-                    y={TOP}
-                    width={Math.abs(selRect.x1 - selRect.x0)}
-                    height={Math.max(0, h - BOT_PAD - TOP)}
-                />
-            {/if}
-            <!-- target bands: a draggable horizontal segment at the held g over the
-                 span. drag vertically to demand (live RTI solve). -->
-            {#each bands as b (b.id)}
-                <g class="band" class:sel={b.id === selTarget} class:drift={!b.satisfied}>
-                    <line
-                        class="bandhit"
-                        x1={bandX(b.t0)}
-                        x2={bandX(b.t1)}
-                        y1={yOf(b.g)}
-                        y2={yOf(b.g)}
-                        onpointerdown={(e) => bandDown(e, b.id)}
-                        role="presentation"
-                    />
-                    <line
-                        class="bandline"
-                        x1={bandX(b.t0)}
-                        x2={bandX(b.t1)}
-                        y1={yOf(b.g)}
-                        y2={yOf(b.g)}
-                    />
-                </g>
-            {/each}
             <!-- playhead: a handle in the ruler + a line down through the gap and
                  chart. visual only — the rulerzone above owns the scrub interaction. -->
             {#if playPx !== null}
@@ -795,52 +556,6 @@ onMount(() => {
                 />
             {/if}
         </svg>
-        <!-- chip lane: one chip per target in the marker lane. shows the held value,
-             or achieved→target + a ⟳ when the curve has drifted off the band. -->
-        <div class="chips">
-            {#each bands as b, i (b.id)}
-                <div
-                    class="chip"
-                    class:sel={b.id === selTarget}
-                    class:drift={!b.satisfied}
-                    style="left: {chipX[i]}px; top: {RULER_H + GAP_H / 2}px;"
-                    onpointerdown={(e) => {
-                        e.stopPropagation();
-                        selectTarget(b.id);
-                    }}
-                    onkeydown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            selectTarget(b.id);
-                        }
-                    }}
-                    role="button"
-                    tabindex="0"
-                    title={b.satisfied
-                        ? `Force target ${fmtG(b.g)}`
-                        : `${fmtG(b.achieved)} of ${fmtG(b.g)} — drifted`}
-                >
-                    <span class="val">
-                        {#if b.satisfied}
-                            {fmtG(b.g)}
-                        {:else}
-                            <span class="ach">{fmtG(b.achieved)}</span><span class="arrow">→</span
-                            >{fmtG(b.g)}
-                        {/if}
-                    </span>
-                    {#if !b.satisfied}
-                        <button
-                            class="resolve"
-                            type="button"
-                            title="Re-solve (⟳)"
-                            aria-label="Re-solve"
-                            onpointerdown={(e) => e.stopPropagation()}
-                            onclick={(e) => resolveClick(e, b.id)}>⟳</button
-                        >
-                    {/if}
-                </div>
-            {/each}
-        </div>
     </div>
     <!-- the time navigator: a full-track overview below the chart (Premiere placement)
          rendered as a preview minimap (VSCode / DAW-overview style) — a miniature of the
@@ -1028,114 +743,6 @@ onMount(() => {
         stroke: var(--neutral-soft);
         stroke-width: 4;
         paint-order: stroke;
-    }
-
-    /* chart drag-select zone: authors a span target. crosshair to signal "select a
-       region"; transparent so the curve reads through. */
-    .chartzone {
-        fill: transparent;
-        pointer-events: all;
-        cursor: crosshair;
-    }
-    /* the rubber-band drawn while dragging out a new span. */
-    .selband {
-        fill: rgba(212, 149, 96, 0.1);
-        stroke: rgba(212, 149, 96, 0.55);
-        stroke-width: 1;
-        pointer-events: none;
-    }
-
-    /* target band: a horizontal segment at the held g. authored intent draws in the
-       light --pin tone (the accent is reserved for the result force curve, so the
-       demand and what it produces stay visually distinct). */
-    .bandhit {
-        stroke: transparent;
-        stroke-width: 14; /* fat invisible hit area over the 2px line */
-        pointer-events: stroke;
-        cursor: ns-resize;
-    }
-    .bandline {
-        stroke: var(--pin);
-        stroke-width: 2;
-        pointer-events: none;
-    }
-    .band.sel .bandline {
-        stroke-width: 3;
-    }
-    /* drifted off the curve: dashed, so the gap between demand and reality reads. */
-    .band.drift .bandline {
-        stroke: var(--danger);
-        stroke-dasharray: 5 3;
-    }
-
-    /* chip lane: chips float over the marker lane; the container passes pointers
-       through except on the chips themselves. */
-    .chips {
-        position: absolute;
-        inset: 0;
-        z-index: 3;
-        pointer-events: none;
-    }
-    .chip {
-        position: absolute;
-        transform: translate(-50%, -50%);
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        height: 16px;
-        padding: 0 6px;
-        border-radius: 8px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        box-shadow: var(--shadow);
-        color: var(--fg);
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 10px;
-        line-height: 1;
-        white-space: nowrap;
-        cursor: pointer;
-        pointer-events: auto;
-        transition: border-color 120ms ease, background 120ms ease;
-    }
-    .chip:hover {
-        border-color: rgba(255, 255, 255, 0.22);
-    }
-    .chip.sel {
-        border-color: var(--accent);
-        background: var(--accent-soft);
-    }
-    .chip.drift {
-        border-color: var(--danger);
-    }
-    .chip:focus-visible {
-        outline: none;
-        border-color: var(--accent);
-    }
-    .chip .ach {
-        color: var(--danger);
-    }
-    .chip .arrow {
-        color: var(--muted);
-        margin: 0 1px;
-    }
-    .resolve {
-        all: unset;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 13px;
-        height: 13px;
-        border-radius: 50%;
-        color: var(--danger);
-        font-size: 11px;
-        cursor: pointer;
-        transition: background 120ms ease, transform 80ms ease;
-    }
-    .resolve:hover {
-        background: var(--danger-soft);
-    }
-    .resolve:active {
-        transform: scale(0.9);
     }
 
     /* the player: a media transport (play · global scrub · timecode) floated as its

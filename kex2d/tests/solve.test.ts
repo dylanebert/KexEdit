@@ -4,14 +4,12 @@ import {
     type Baked,
     bakeNodes,
     DEFAULT_WEIGHTS,
+    type PointTarget,
+    pointResidual,
     sampleArc,
     sampleAtArc,
-    scopeForArc,
+    scopeForPoint,
     solveTargets,
-    spanMean,
-    spanResidual,
-    samplesForArc,
-    type SpanTarget,
 } from "../src/solve";
 import { chainCounts, type Node } from "../src/spline";
 import { hillDraft } from "./helpers/hill";
@@ -19,18 +17,22 @@ import { hillDraft } from "./helpers/hill";
 const DS = 0.5;
 const MAX = 4096;
 
-/** the stage-1 evidence gate (spec live log) measured the trimmed-interior
- *  error over the auto-scope crest span at fInt ≈ 0.034 g — the ~0.03 g (≈2 px
- *  on the ~260 px timeline chart over a ~4 g fit) display budget it was accepted
- *  as reaching, and a denser control net goes to ~0.016 (well under). this pins
- *  the promoted solver reproduces that result; the bound carries numeric
- *  headroom over the measured value. */
-const INTERIOR_BUDGET = 0.04;
+/** the stage-1 evidence gate (spec live log) measured a point demand reaching
+ *  the ~0.03 g (≈2 px on the ~260 px timeline chart over a ~4 g fit) display
+ *  budget at authoring node density with the auto-scope set; this pins the
+ *  promoted solver reproduces that result. the bound carries numeric headroom
+ *  over the measured value. */
+const BUDGET_G = 0.04;
 
 function bakeHill(): { draft: ReturnType<typeof hillDraft>; b: Baked; counts: number[] } {
     const draft = hillDraft();
     const { counts } = chainCounts(draft.nodes, DS, MAX);
     return { draft, b: bakeNodes(draft.nodes, counts, draft.v0), counts };
+}
+
+/** the point target at node `k`'s sample demanding `g`. */
+function pointAtNode(b: Baked, arc: Float64Array, k: number, g: number): PointTarget {
+    return { i: sampleAtArc(arc, b.n, arc[b.offsets[k]]), g, w: 1 };
 }
 
 test("bakeNodes agrees with a direct forces64 over the frozen samples", () => {
@@ -55,58 +57,35 @@ test("sampleArc is monotone and sampleAtArc round-trips a node's arclength", () 
     expect(Math.abs(got - crestSample)).toBeLessThanOrEqual(1);
 });
 
-test("scopeForArc frees the segments-overlapping nodes plus one neighbor each side", () => {
+test("scopeForPoint frees the containing segment's nodes plus one neighbor each side", () => {
     const { b } = bakeHill();
     const arc = sampleArc(b);
-    // an arclength span straddling the crest (node 3). its segments are [2,3] and
-    // [3,4]; scope widens one neighbor each side → [1..5], excluding the anchor.
-    const s0 = arc[b.offsets[3]] - 8;
-    const s1 = arc[b.offsets[3]] + 8;
-    expect(scopeForArc(b, arc, s0, s1)).toEqual([1, 2, 3, 4, 5]);
-    // the anchor (node 0) is never freed even when the span reaches the start.
-    const scope = scopeForArc(b, arc, 0, arc[b.offsets[2]]);
+    // a point just past the crest node (node 3) sits in segment [3,4]; scope
+    // widens one neighbor each side → [2..5].
+    expect(scopeForPoint(b, arc, arc[b.offsets[3]] + 1)).toEqual([2, 3, 4, 5]);
+    // the anchor (node 0) is never freed even when the point sits at the start.
+    const scope = scopeForPoint(b, arc, 0);
     expect(scope).not.toContain(0);
     expect(scope[0]).toBeGreaterThanOrEqual(1);
+    // a point past the track end clamps to the last segment.
+    const last = b.offsets.length - 1;
+    const tail = scopeForPoint(b, arc, arc[b.offsets[last]] + 100);
+    expect(tail).toContain(last);
+    expect(tail).toContain(last - 1);
 });
 
-test("spanMean is the born-satisfied value: a target at it has zero initial error", () => {
-    const { b } = bakeHill();
-    const arc = sampleArc(b);
-    const { i0, i1 } = samplesForArc(b, arc, arc[b.offsets[2]], arc[b.offsets[4]]);
-    const g = spanMean(b, i0, i1);
-    // "born satisfied" = zero initial *loss*: g is the least-squares constant, so
-    // the signed mean deviation over the span vanishes (max error over a varying
-    // span stays ~1 g — that is not the invariant).
-    let dev = 0;
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (let i = i0; i <= i1; i++) {
-        dev += b.fN[i] - g;
-        lo = Math.min(lo, b.fN[i]);
-        hi = Math.max(hi, b.fN[i]);
-    }
-    expect(Math.abs(dev) / (i1 - i0 + 1)).toBeLessThan(1e-9);
-    // and the value sits within the actual force range over the span.
-    expect(g).toBeGreaterThanOrEqual(lo - 1e-9);
-    expect(g).toBeLessThanOrEqual(hi + 1e-9);
-});
-
-test("solveTargets holds 0g over the crest span within the display budget (auto-scope)", () => {
+test("solveTargets holds a 0g point demand at the crest within the display budget", () => {
     const { draft, b, counts } = bakeHill();
     const arc = sampleArc(b);
-    const s0 = arc[b.offsets[2]];
-    const s1 = arc[b.offsets[4]];
-    const { i0, i1 } = samplesForArc(b, arc, s0, s1);
-    const freed = scopeForArc(b, arc, s0, s1);
-    expect(freed).toEqual([1, 2, 3, 4, 5]);
+    const target = pointAtNode(b, arc, 3, 0);
+    const freed = scopeForPoint(b, arc, arc[b.offsets[3]]);
 
-    const target: SpanTarget = { i0, i1, g: 0, w: 1 };
     const res = solveTargets(draft.nodes, freed, counts, draft.v0, [target]);
     expect(res.iters).toBeLessThanOrEqual(120);
 
     const bs = bakeNodes(res.nodes, counts, draft.v0);
-    const { err } = spanResidual(bs, target);
-    expect(err).toBeLessThan(INTERIOR_BUDGET);
+    const { err } = pointResidual(bs, target);
+    expect(err).toBeLessThan(BUDGET_G);
     // finite, feasible throughout (v² stays well above 0 — the hill's launch
     // speed clears the crest with margin).
     for (let i = 0; i < bs.n; i++) {
@@ -118,13 +97,11 @@ test("solveTargets holds 0g over the crest span within the display budget (auto-
 test("solveTargets leaves the draft untouched and only moves freed nodes", () => {
     const { draft, b, counts } = bakeHill();
     const arc = sampleArc(b);
-    const s0 = arc[b.offsets[2]];
-    const s1 = arc[b.offsets[4]];
-    const { i0, i1 } = samplesForArc(b, arc, s0, s1);
-    const freed = scopeForArc(b, arc, s0, s1);
+    const target = pointAtNode(b, arc, 3, 0);
+    const freed = scopeForPoint(b, arc, arc[b.offsets[3]]);
     const before: Node[] = draft.nodes.map((n) => ({ ...n }));
 
-    const res = solveTargets(draft.nodes, freed, counts, draft.v0, [{ i0, i1, g: 0, w: 1 }]);
+    const res = solveTargets(draft.nodes, freed, counts, draft.v0, [target]);
 
     // draft is unmodified.
     draft.nodes.forEach((n, k) => {
@@ -142,78 +119,34 @@ test("solveTargets leaves the draft untouched and only moves freed nodes", () =>
     expect(res.nodes[3].y).not.toBe(before[3].y); // the crest reshaped
 });
 
-test("solveTargets composes two coupled targets in one assembled system", () => {
+test("solveTargets composes two coupled point demands in one assembled system", () => {
     const { draft, b, counts } = bakeHill();
     const arc = sampleArc(b);
-    // 1.5g on the approach [n1,n2], 0.4g on the descent [n4,n5]; their scopes
+    // 1.5g on the approach (node 2), 0.4g on the descent (node 4); their scopes
     // share the crest nodes (the coupled case).
-    const a = samplesForArc(b, arc, arc[b.offsets[1]], arc[b.offsets[2]]);
-    const d = samplesForArc(b, arc, arc[b.offsets[4]], arc[b.offsets[5]]);
-    const t0: SpanTarget = { i0: a.i0, i1: a.i1, g: 1.5, w: 1 };
-    const t1: SpanTarget = { i0: d.i0, i1: d.i1, g: 0.4, w: 1 };
+    const t0 = pointAtNode(b, arc, 2, 1.5);
+    const t1 = pointAtNode(b, arc, 4, 0.4);
     const freed = Array.from(
         new Set([
-            ...scopeForArc(b, arc, arc[b.offsets[1]], arc[b.offsets[2]]),
-            ...scopeForArc(b, arc, arc[b.offsets[4]], arc[b.offsets[5]]),
+            ...scopeForPoint(b, arc, arc[b.offsets[2]]),
+            ...scopeForPoint(b, arc, arc[b.offsets[4]]),
         ]),
     ).sort((x, z) => x - z);
 
     const res = solveTargets(draft.nodes, freed, counts, draft.v0, [t0, t1]);
     const bs = bakeNodes(res.nodes, counts, draft.v0);
-    expect(spanResidual(bs, t0).err).toBeLessThan(INTERIOR_BUDGET);
-    expect(spanResidual(bs, t1).err).toBeLessThan(INTERIOR_BUDGET);
-});
-
-test("warm start changes only the iterate, not the minimum (base anchors the prior)", () => {
-    // RTI correctness: `warm` seeds the starting point but `base` defines the
-    // prior anchor + spacing reference, so a warm solve from a chain nudged off
-    // the draft must land on the SAME minimum as a cold solve from the draft —
-    // else the live drag would smear path-dependently frame to frame.
-    const { draft, b, counts } = bakeHill();
-    const arc = sampleArc(b);
-    const { i0, i1 } = samplesForArc(b, arc, arc[b.offsets[2]], arc[b.offsets[4]]);
-    const freed = scopeForArc(b, arc, arc[b.offsets[2]], arc[b.offsets[4]]);
-    const target: SpanTarget = { i0, i1, g: 0, w: 1 };
-
-    const cold = solveTargets(draft.nodes, freed, counts, draft.v0, [target]);
-    const nudged = draft.nodes.map((n, k) => (freed.includes(k) ? { ...n, y: n.y + 2 } : { ...n }));
-    const hot = solveTargets(
-        draft.nodes,
-        freed,
-        counts,
-        draft.v0,
-        [target],
-        DEFAULT_WEIGHTS,
-        120,
-        1e-7,
-        nudged,
-    );
-    for (let k = 0; k < cold.nodes.length; k++) {
-        expect(hot.nodes[k].x).toBeCloseTo(cold.nodes[k].x, 3);
-        expect(hot.nodes[k].y).toBeCloseTo(cold.nodes[k].y, 3);
-    }
+    expect(pointResidual(bs, t0).err).toBeLessThan(BUDGET_G);
+    expect(pointResidual(bs, t1).err).toBeLessThan(BUDGET_G);
 });
 
 test("DEFAULT_WEIGHTS keeps the draft prior weak (does not bias a point demand)", () => {
     // the prior at w≈0.1 should not pull the achieved force off a satisfiable
-    // target. hold 0g over a short span with the default weights.
+    // target. hold 0g at the crest with the default weights.
     const { draft, b, counts } = bakeHill();
     const arc = sampleArc(b);
-    const { i0, i1 } = samplesForArc(b, arc, arc[b.offsets[2]], arc[b.offsets[4]]);
-    const freed = scopeForArc(b, arc, arc[b.offsets[2]], arc[b.offsets[4]]);
-    const res = solveTargets(
-        draft.nodes,
-        freed,
-        counts,
-        draft.v0,
-        [{ i0, i1, g: 0, w: 1 }],
-        DEFAULT_WEIGHTS,
-    );
-    const { achieved } = spanResidual(bakeNodes(res.nodes, counts, draft.v0), {
-        i0,
-        i1,
-        g: 0,
-        w: 1,
-    });
-    expect(Math.abs(achieved)).toBeLessThan(INTERIOR_BUDGET);
+    const target = pointAtNode(b, arc, 3, 0);
+    const freed = scopeForPoint(b, arc, arc[b.offsets[3]]);
+    const res = solveTargets(draft.nodes, freed, counts, draft.v0, [target], DEFAULT_WEIGHTS);
+    const { achieved } = pointResidual(bakeNodes(res.nodes, counts, draft.v0), target);
+    expect(Math.abs(achieved)).toBeLessThan(BUDGET_G);
 });

@@ -4,10 +4,10 @@
  *
  *  there are no tools or modes: you select a node and drag it freely, and when
  *  the selected node is the chain end the extend/delete actions appear. force
- *  targets select the same way (a chip on the timeline). node and target
+ *  targets select the same way (a marker on the timeline). node and target
  *  selection are mutually exclusive — one thing is selected at a time, so `Del`
- *  and `Esc` route unambiguously. `highlight` names the freed node orders while a
- *  solve gesture runs, so the viewport shows the scope the optimizer is moving. */
+ *  and `Esc` route unambiguously. `highlight` names the freed node orders the
+ *  Solve flash names, so the viewport shows the scope the optimizer moved. */
 
 interface EditorState {
     /** eid of the currently selected node, or null. */
@@ -37,7 +37,7 @@ export function selectTarget(id: number | null): void {
     if (id !== null) editor.selection = null;
 }
 
-/** set the freed-node highlight shown while a solve gesture runs (empty to clear). */
+/** set the freed-node highlight the Solve flash shows (empty to clear). */
 export function setHighlight(orders: number[]): void {
     editor.highlight = orders;
 }

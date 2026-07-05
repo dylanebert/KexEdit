@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
     arcToTime,
-    chipLayout,
     clampView,
     type Mapping,
     marginSec,
@@ -45,22 +44,6 @@ describe("timeToArc / arcToTime — display mapping", () => {
         expect(timeToArc(m, 99)).toBe(10);
         expect(arcToTime(m, -1)).toBe(0);
         expect(arcToTime(m, 99)).toBe(4);
-    });
-});
-
-describe("chipLayout — marker-lane de-overlap", () => {
-    test("well-spaced chips are left untouched", () => {
-        expect(chipLayout([10, 60, 120], 30)).toEqual([10, 60, 120]);
-    });
-    test("overlapping chips are nudged right to the min gap", () => {
-        // 10 and 20 collide (gap 30): the second pushes to 40; 45 then to 70.
-        expect(chipLayout([10, 20, 45], 30)).toEqual([10, 40, 70]);
-    });
-    test("adjusts in x order but returns aligned to input order", () => {
-        // input order [50, 10]: sorted the 10 anchors, the 50 is already clear.
-        expect(chipLayout([50, 10], 30)).toEqual([50, 10]);
-        // input order [20, 10]: 10 anchors, 20 must clear it → 40.
-        expect(chipLayout([20, 10], 30)).toEqual([40, 10]);
     });
 });
 
