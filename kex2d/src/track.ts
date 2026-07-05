@@ -390,16 +390,18 @@ export function convertKind(ecs: State, trackEid: number): void {
     } else {
         for (const eid of [...ecs.query([Force])]) ecs.destroy(eid);
         Track.kind.set(trackEid, TrackKind.Geo);
-        addNode(ecs, -EXTEND_DIST / 2, 0);
-        addNode(ecs, EXTEND_DIST / 2, 0);
+        addNode(ecs, 0, 0);
+        addNode(ecs, EXTEND_DIST, 0);
     }
 }
 
 function seed(ecs: State): void {
     createTrack(ecs);
-    // a flat horizontal start, one extension-length long (matches `extend`).
-    addNode(ecs, -EXTEND_DIST / 2, 0);
-    addNode(ecs, EXTEND_DIST / 2, 0);
+    // a flat horizontal start, one extension-length long (matches `extend`),
+    // launching at the origin — the same anchor as FORCE_LAUNCH, so the geo and
+    // force starting tracks are equivalent.
+    addNode(ecs, 0, 0);
+    addNode(ecs, EXTEND_DIST, 0);
 }
 
 /** collect every node eid on the chain, sorted by `Handle.order`. ECS query

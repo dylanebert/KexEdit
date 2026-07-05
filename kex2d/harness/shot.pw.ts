@@ -123,6 +123,31 @@ test("force authoring flow", async ({ page }) => {
         });
     }
 
+    // ── 2b. Double-click the chart inserts a point ON the authored profile (the
+    // envelope-insertion identity): left of the first point the profile holds the
+    // shoulder's exact 1g, so the new point's g must be 1 regardless of the cursor's
+    // y (which lands well off 1g here). then undo removes it. real pixels. ──
+    const body = page.locator(".dock .body");
+    const box = await body.boundingBox();
+    if (!box) throw new Error("timeline body not laid out");
+    await page.mouse.dblclick(box.x + 60, box.y + box.height * 0.35);
+    await expect.poll(forceCount).toBe(4);
+    // the create selects the point, so its popover is up — capture it for the feel pass
+    // (let its 120ms fade-in finish, or the shot catches a ghost).
+    await page.waitForTimeout(300);
+    if (vp) {
+        await page.screenshot({
+            path: join(OUT, "force-popover.png"),
+            clip: { x: 0, y: vp.height - 340, width: vp.width, height: 340 },
+        });
+    }
+    const rows = await page.evaluate(
+        (): { s: number; g: number }[] => (window as any).__kex.forces(),
+    );
+    expect(rows[0].g).toBeCloseTo(1, 5); // resolved on the profile, not at the cursor
+    await page.keyboard.press("Control+z");
+    await expect.poll(forceCount).toBe(3);
+
     // ── 3. Convert back to geo → destructive reset to the flat two-node seed. ──
     await page.getByRole("button", { name: "Geo" }).click();
     await expect.poll(kind).toBe(0);

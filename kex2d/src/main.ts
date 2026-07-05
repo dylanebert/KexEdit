@@ -74,6 +74,9 @@ if (import.meta.env.DEV) {
         // ── force-authoring hooks (stage C) ──
         kind: (): number => Track.kind.get(track),
         forceCount: (): number => forcePoints(ecs).length,
+        // the authored points, sorted by s — the flow asserts a dblclick create
+        // resolves its g ON the profile (not at the cursor's y).
+        forces: (): { s: number; g: number }[] => forcePoints(ecs).map((p) => ({ s: p.s, g: p.g })),
         // flip geo↔force (destructive convert, one undo entry).
         convert: (): void => convertTrack(history, ecs, track),
         // author a force point at (s, g) — the "place a point on the curve" step.

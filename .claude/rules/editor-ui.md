@@ -33,8 +33,8 @@ Every UI decision clears these.
 3. **On the object first.** If it can be manipulated in the viewport (drag a node, a handle), it
    belongs there, not in a panel. A panel control justifies itself only when the data has no
    spatial form. kex2d is the model: no tools, no modes — click a node and drag it, radial
-   extend/delete buttons summoned at the selected chain end, force pins authored on the
-   timeline curve, position pins on the track itself.
+   extend/delete buttons summoned at the selected chain end, force keyframes authored on the
+   timeline curve itself, their typed fields in a popover at the point.
 4. **Low floor, high ceiling.** A newcomer drags nodes and sees the track react; an expert reaches
    it faster through the keyboard (Enter extends, Del trims, Space plays). Capability is summoned,
    not displayed.
@@ -81,6 +81,37 @@ view of the same clock — the After Effects comp-vs-timeline relationship. So: 
 old Unity playback/edit *mode* split, and don't add a second video frame — in 2D the viewport
 already *is* the playback. A separate playback render earns its place only for a different **camera**
 (a rider POV), a 3D `app/` concern, not 2D kex2d.
+
+## Keyframe / curve-editor conventions
+
+The proven-reference set for any keyframe-on-a-chart surface (worked example: kex2d
+`Timeline.svelte`). Feel changes here get the hands-on check-in (`kex` `ui.md`).
+
+- **Insert on the curve.** Double-click creates a keyframe at the authored profile's value there
+  (the DAW/AE envelope-insertion identity: insertion never bends the curve), never at the cursor's
+  y-value.
+- **Nothing moves under its own gesture.** While a keyframe drags, axis auto-fit holds; only
+  dragging past the chart edge edge-scrolls to follow (growth ∝ overshoot, per frame), and it
+  resumes on release. Both axes clamp the cursor to the chart. Same law for surfaces: a popover
+  whose label is being scrubbed freezes its anchor until release, then re-anchors.
+- **Arrow cursor over keyframes** (AE/Unity/Blender); grab hands mean pannable surfaces. Hover
+  affordance is the marker's fill change, not the cursor.
+- **Numeric fields are summoned at the object.** A selected keyframe's fields float in a popover
+  at the point (gate 3), the live readout during a drag (pointer-inert then). ONE surface: rows on
+  a shared key·value·unit grid, borderless transparent inputs, focus = row wash — never boxed
+  inputs inside a bordered box. Field behavior is the shallot inspector's: the key label is the
+  scrub handle (`ew-resize`, full-row hit area, fixed per-px rate, rounded to displayed precision,
+  one undo gesture), select-all on focus (replace, not append), Enter commits, Escape reverts, no
+  native spinner chrome.
+- **Dismissal is layered.** Click-away or Escape peels the innermost transient layer only: focused
+  field first, keyframe selection on the next one.
+- **Shift constrains a two-axis drag** to the dominant axis since the grab (the AE/Photoshop
+  rule), re-evaluated live mid-drag. No hysteresis; the escalation if it flickers is explicit
+  Blender-style axis keys, not a tuned threshold.
+- **Scaffolding controls float as satellite surfaces.** A control a staged design will remove
+  (the whole-track geo/force toggle before per-section kinds) floats as its own small opaque
+  surface OUTSIDE the content it governs; overlapping it reads as a bug, and a docked row would
+  have to be given back later.
 
 ## Constraint-solver UX
 

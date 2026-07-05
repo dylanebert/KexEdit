@@ -8,7 +8,7 @@ original KexEdit section contract, in 2D. Mouse-driven and direct, parallel to `
 eventual Shallot port). Whether it replaces / augments / coexists with the 3D editor decides
 once it earns its place.
 
-The **live app right now** has both atomic idioms as whole-track modes, toggled on the timeline:
+The **live app right now** has both atomic idioms as whole-track modes, toggled by the pill above the timeline:
 
 - **geo mode** — free-drag nodes in the viewport → stored-heading cubic Hermite → physical F_n
   force curve, shown live in the timeline.
@@ -235,28 +235,28 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `Mapping` + `timeToArc`/`arcToTime` (the arc↔time table `cart.trackMapping` builds — the cart
   playhead/scrub projection). `yFit`/`YFit` (the auto-fit g-range). Unit-tested in `timeline.test.ts`.
 - `Timeline.svelte` — the always-present bottom dock: the **F_n force-curve readout + scrub +
-  zoom/pan navigation**, plus the floating **media player** (play/pause · global scrub · timecode).
-  The chart draws the baked F_n curve over arclength (canvas2D); the top **ruler** is the scrub zone
-  (click/drag positions the playhead, parks paused on release); wheel zooms, shift+wheel pans; a
-  **distance navigator** minimap below the chart pans/zooms the view. Y auto-fits with a sticky
-  asymmetric ease. The **header** carries the geo↔force mode toggle (a destructive, undoable
-  convert) and, in force mode with a point selected, its typed s/g fields. In **force mode** the
-  chart is the authoring surface: double-click places a `Force` point, diamonds drag both axes, Del
-  removes, Esc deselects — the **keyframe idiom** (filled diamond, no drop-line, no driving/driven,
-  §6). Takes the `ecs` prop (force authoring queries/commands need it); routes edits through
-  `history`.
+  zoom/pan navigation**, plus the floating **media player** (play/pause · global scrub · timecode)
+  and the **geo↔force mode pill** (a destructive, undoable convert; a satellite surface above the
+  dock's top-right corner — stage-C scaffolding, stage D makes kind per-section). The chart draws
+  the baked F_n curve over arclength (canvas2D); the top **ruler** is the scrub zone (click/drag
+  positions the playhead, parks paused on release); wheel zooms, shift+wheel pans; a **distance
+  navigator** minimap below the chart pans/zooms the view. Y auto-fits with a sticky asymmetric
+  ease, frozen while a keyframe drags (`yGrow` edge-grow past the chart edge; resumes on release).
+  In force mode the chart is the authoring surface (verbs: Editing model below), with the selected
+  point's s/g popover floating at the diamond; interaction conventions:
+  `kexedit/.claude/rules/editor-ui.md`. Takes the `ecs` prop; routes edits through `history`.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), the node handles (selected highlighted,
   orphan/infeasible red), the cart, the **Timeline** dock, and the radial extend/delete buttons
   around the selected chain end.
 - `main.ts` — boots `run({ defaults: false })` + mounts App. The DEV-only `__kex` hook exposes
   geo state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`) and force state
-  (`kind`/`forceCount`/`convert`/`placeForce`/`seedForceBump`) the capture harness drives; never
-  ships.
+  (`kind`/`forceCount`/`forces`/`convert`/`placeForce`/`seedForceBump`) the capture harness drives;
+  never ships.
 
 ## Editing model
 
-One whole-track kind at a time (the timeline header toggle), each direct-manipulation with no sub-
+One whole-track kind at a time (the mode pill above the timeline), each direct-manipulation with no sub-
 tools. The kind flip is a **destructive convert** (§5): resets to that kind's default, undo-safe.
 
 **Geo mode** — author the shape in the viewport. Click a node to select + drag it freely; click
@@ -269,10 +269,11 @@ empty space to deselect. A drag reshapes exactly the two segments sharing the dr
   the trailing node, never below the two nodes a chain needs, re-heading the promoted tip.
 - **No insert-on-curve, no interior insertion.** Append/drag/delete only.
 
-**Force mode** — author the force on the timeline curve. Double-click the chart to place a point;
-drag a diamond in both axes (horizontal = s, vertical = g); `Del` removes the selected point, `Esc`
-deselects; the header's s/g fields type the selected point. The keyframe idiom (§6): filled diamond,
-no drop-line, no driving/driven — points are authored input, not optimization targets.
+**Force mode** — author the force on the timeline curve. Double-click places a point at the
+authored profile's value (insertion never bends the curve); drag a diamond in both axes
+(horizontal = s, vertical = g; `Shift` locks the dominant axis); `Del` removes, `Esc` deselects;
+the popover at the selected diamond types or scrubs its s/g. Points are keyframes (§6): authored
+input, not optimization targets. Interaction conventions: `editor-ui.md`.
 
 ## Hard gotchas
 
