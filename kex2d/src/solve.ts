@@ -252,19 +252,20 @@ export interface SolveResult {
 }
 
 /**
- * solve the freed node parameters to satisfy all `targets` over the frozen
- * `counts`. assembles every target's force row over the freed-node union in one
- * system (the coupled/composition case is one assembled problem, not per-target).
- * returns the full chain with the freed nodes updated; `base` is unmodified.
+ * the LM solve as a resumable **stepwise session** (spec §8): it yields the
+ * current node chain after each accepted iteration and returns the `SolveResult`
+ * on completion. `solveTargets` is the synchronous drain — the tests and every
+ * non-animated caller use it; the animated driver advances this per frame and
+ * live-writes each yielded iterate. one source of truth: the two share this body,
+ * so the drained final chain is byte-identical to the last stepped iterate.
  *
- * `base` is the **draft**: it anchors the draft prior (the "minimum deformation
- * of what's there now" pull, re-anchored to current geometry at each explicit
- * invocation — spec §3) and the node-spacing reference.
- *
- * `converged` marks LM reaching a local minimum; `converged` is not a health
- * signal — the caller reads `pointResidual` for the achieved force.
+ * assembles every target's force row over the freed-node union in one system (the
+ * coupled/composition case is one assembled problem, not per-target). `base` is
+ * the **draft**: it anchors the draft prior (the "minimum deformation of what's
+ * there now" pull, re-anchored to current geometry at each explicit invocation —
+ * spec §3) and the node-spacing reference; it is never modified.
  */
-export function solveTargets(
+export function* lmSession(
     base: readonly Node[],
     freed: readonly number[],
     counts: readonly number[],
@@ -273,11 +274,11 @@ export function solveTargets(
     w: Weights = DEFAULT_WEIGHTS,
     maxIters = 120,
     stepTol = 1e-7,
-): SolveResult {
+): Generator<Node[], SolveResult> {
     // `base` is both the starting iterate and the anchor the prior + spacing
     // pull toward (minimum deformation of what's there now). the fixpoint outer
     // loop re-anchors by passing each round's current chain as `base` — see
-    // `solveToFixpoint`.
+    // `fixpointSession`.
     const p0 = pack(base, freed);
     const spaceRef = freed.map((idx, k) => {
         if (k + 1 >= freed.length || freed[k + 1] !== idx + 1) return Number.NaN;
@@ -357,9 +358,33 @@ export function solveTargets(
             iters++;
             break;
         }
+        // yield the accepted iterate — the animated driver writes it this frame.
+        // (unreachable on the terminal iteration, which breaks above.)
+        yield unpack(prob.base, prob.freed, p);
     }
 
     return { nodes: unpack(prob.base, prob.freed, p), iters, converged };
+}
+
+/**
+ * synchronous drain of `lmSession` — one LM pass to a local minimum over the
+ * frozen `counts`. see `lmSession` for the problem it solves; `converged` marks
+ * LM reaching a local minimum, NOT a health signal (read `pointResidual`).
+ */
+export function solveTargets(
+    base: readonly Node[],
+    freed: readonly number[],
+    counts: readonly number[],
+    v0: number,
+    targets: readonly PointTarget[],
+    w: Weights = DEFAULT_WEIGHTS,
+    maxIters = 120,
+    stepTol = 1e-7,
+): SolveResult {
+    const gen = lmSession(base, freed, counts, v0, targets, w, maxIters, stepTol);
+    let r = gen.next();
+    while (!r.done) r = gen.next();
+    return r.value;
 }
 
 // ── the fixpoint outer loop (one Solve invocation, spec §3) ───────────────────
@@ -403,10 +428,16 @@ function poseDelta(a: readonly Node[], b: readonly Node[]): number {
 }
 
 /**
- * one Solve invocation as the §3 outer loop: freeze the sampling grid on the
- * current chain, map each demand's arclength to its nearest sample, run the LM,
- * then re-freeze on the moved nodes and re-measure the drift at the authored
- * arclength — repeat to the fixpoint.
+ * one Solve invocation as the §3 outer loop, as a resumable **stepwise session**
+ * (spec §8): it delegates to `lmSession` each round (so every inner LM iterate is
+ * re-yielded to the animated driver) and returns the `FixpointResult`.
+ * `solveToFixpoint` is the synchronous drain — the tests and every non-animated
+ * caller use it, and its final chain is byte-identical to the last stepped
+ * iterate (the two share this body).
+ *
+ * the loop: freeze the sampling grid on the current chain, map each demand's
+ * arclength to its nearest sample, run the LM, then re-freeze on the moved nodes
+ * and re-measure the drift at the authored arclength — repeat to the fixpoint.
  *
  * why a loop and not one LM pass: a single pass converges essentially exactly
  * *on its frozen grid*, but node motion redistributes arclength under that grid,
@@ -416,16 +447,15 @@ function poseDelta(a: readonly Node[], b: readonly Node[]): number {
  * `driftTol`, or the chain stops moving between rounds (an infeasible fixpoint),
  * keeping the best iterate.
  *
- * the prior re-anchors to each round's current chain (`solveTargets` uses its
- * `base` as the anchor). measured: anchoring once to the invocation-start draft
- * puts the draft-attractor in tension with the grid re-freeze and the iteration
- * limit-cycles (0.60 ↔ 0.19 g, never converges); re-anchoring lets the prior
- * self-satisfy as the chain settles, so the iteration is contractive and
- * reaches the true fixpoint. the endpoint is then the grid-consistent solution
- * the LM descent reaches from the draft. idempotent: a chain already within
- * `driftTol` returns unchanged.
+ * the prior re-anchors to each round's current chain (`lmSession`'s `base`).
+ * measured: anchoring once to the invocation-start draft puts the draft-attractor
+ * in tension with the grid re-freeze and the iteration limit-cycles (0.60 ↔ 0.19
+ * g, never converges); re-anchoring lets the prior self-satisfy as the chain
+ * settles, so the iteration is contractive and reaches the true fixpoint.
+ * idempotent: a chain already within `driftTol` yields nothing and returns
+ * unchanged at 0 rounds.
  */
-export function solveToFixpoint(
+export function* fixpointSession(
     chain: readonly Node[],
     freed: readonly number[],
     ds: number,
@@ -434,7 +464,7 @@ export function solveToFixpoint(
     w: Weights = DEFAULT_WEIGHTS,
     driftTol = 0.05,
     maxRounds = 8,
-): FixpointResult {
+): Generator<Node[], FixpointResult> {
     // max active drift at each demand's arclength on a fresh (re-frozen) bake.
     const measure = (nodes: readonly Node[]): number => {
         const { counts } = chainCounts(nodes, ds, MAX);
@@ -459,7 +489,8 @@ export function solveToFixpoint(
             g: t.g,
             w: t.w,
         }));
-        const solved = solveTargets(current, freed, counts, v0, points, w).nodes;
+        // yield* re-yields every inner LM iterate and evaluates to the SolveResult.
+        const solved = (yield* lmSession(current, freed, counts, v0, points, w)).nodes;
         const d = measure(solved);
         if (d < bestDrift) {
             best = solved;
@@ -470,4 +501,22 @@ export function solveToFixpoint(
         current = solved;
     }
     return { nodes: best, rounds, maxDrift: bestDrift, converged: bestDrift < driftTol };
+}
+
+/** synchronous drain of `fixpointSession` — the §3 Solve invocation run to its
+ *  fixpoint in one call. the tests and non-animated callers use this. */
+export function solveToFixpoint(
+    chain: readonly Node[],
+    freed: readonly number[],
+    ds: number,
+    v0: number,
+    targets: readonly ArcTarget[],
+    w: Weights = DEFAULT_WEIGHTS,
+    driftTol = 0.05,
+    maxRounds = 8,
+): FixpointResult {
+    const gen = fixpointSession(chain, freed, ds, v0, targets, w, driftTol, maxRounds);
+    let r = gen.next();
+    while (!r.done) r = gen.next();
+    return r.value;
 }

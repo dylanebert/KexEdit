@@ -4,13 +4,17 @@ import { cancel, commit, createHistory, redo, undo } from "../src/history";
 import { bakeNodes, pointResidual, sampleArc, sampleAtArc } from "../src/solve";
 import { chainCounts } from "../src/spline";
 import {
+    beginSolve,
     beginTargetMove,
+    cancelSolve,
     createTarget,
     deleteTarget,
     setTarget,
     setTargetActive,
     solveAll,
+    solveRunning,
     solveTrack,
+    stepSolve,
     Target,
     targetAt,
     targetDrift,
@@ -182,6 +186,134 @@ test("a second solveAll is a geometry no-op (idempotent) and records no entry", 
     expect(again).not.toBeNull();
     expect(again?.converged).toBe(true);
     expect(h.undo.length).toBe(nUndo); // no new entry — the no-op commit dropped
+    expect(poses(state)).toEqual(settled); // byte-identical geometry
+});
+
+/** drive the animated solve to completion with a manual frame clock; returns the
+ *  final status. `dt` past WINDOW_MS exercises the drain path. */
+function driveSolve(
+    h: ReturnType<typeof createHistory>,
+    dt = 16,
+): { done: boolean; converged: boolean } {
+    let now = 0;
+    let st = stepSolve(h, now);
+    let guard = 0;
+    while (st && !st.done && guard < 2000) {
+        now += dt;
+        st = stepSolve(h, now);
+        guard++;
+    }
+    return { done: st?.done ?? false, converged: st?.converged ?? false };
+}
+
+test("the animated solve reaches the same fixpoint as solveAll, byte-identical, one entry (§8)", () => {
+    // reference: the synchronous invocation.
+    const ref = ecsHill();
+    const hRef = createHistory();
+    const arcRef = nodeArc(ref.state);
+    createTarget(hRef, ref.state, ref.track, arcRef[3], 0);
+    solveAll(hRef, ref.state, ref.track);
+    const refPoses = poses(ref.state);
+
+    // animated: same draft + demand, stepped frame by frame.
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    const id = createTarget(h, state, track, arc[3], 0);
+    const before = poses(state);
+    const nUndo = h.undo.length;
+
+    expect(beginSolve(state, track, 0)).toBe(true);
+    expect(solveRunning()).toBe(true);
+    const end = driveSolve(h);
+    expect(end.done).toBe(true);
+    expect(solveRunning()).toBe(false); // the run cleared
+
+    // byte-identical to the synchronous fixpoint (one source of truth, §8).
+    poses(state).forEach((p, i) => {
+        expect(p.x).toBe(refPoses[i].x);
+        expect(p.y).toBe(refPoses[i].y);
+        expect(p.theta).toBe(refPoses[i].theta);
+    });
+    expect(h.undo.length).toBe(nUndo + 1); // the whole animate is ONE command
+    expect(driftErr(state, track, id)).toBeLessThan(BUDGET_G);
+
+    undo(h);
+    expect(poses(state)).toEqual(before); // undo restores the pre-solve pose
+});
+
+test("the animated solve shows intermediate iterates (it does not snap in one frame)", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    createTarget(h, state, track, arc[3], 0);
+    const before = poses(state);
+
+    expect(beginSolve(state, track, 0)).toBe(true);
+    // one frame inside the morph window advances exactly one LM iter — geometry
+    // has moved but is not yet at the fixpoint.
+    const st = stepSolve(h, 16);
+    expect(st?.done).toBe(false);
+    expect(poses(state)).not.toEqual(before); // a live iterate was written
+    cancelSolve(); // clean up the open gesture
+});
+
+test("cancel reverts the pose byte-identical and records nothing (§8)", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    createTarget(h, state, track, arc[3], 0);
+    const before = poses(state);
+    const nUndo = h.undo.length;
+
+    expect(beginSolve(state, track, 0)).toBe(true);
+    stepSolve(h, 16);
+    stepSolve(h, 32); // a couple of visible frames
+    expect(poses(state)).not.toEqual(before); // mid-animation the curve moved
+
+    cancelSolve();
+    expect(solveRunning()).toBe(false);
+    expect(poses(state)).toEqual(before); // restored to the pre-solve pose
+    expect(h.undo.length).toBe(nUndo); // a cancelled solve is as if it never ran
+});
+
+test("only one animated solve runs at a time; a second beginSolve is refused", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    createTarget(h, state, track, arc[3], 0);
+
+    expect(beginSolve(state, track, 0)).toBe(true);
+    expect(beginSolve(state, track, 0)).toBe(false); // already running — refused
+    cancelSolve();
+});
+
+test("beginSolve refuses when there is nothing to solve (no active targets)", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    const id = createTarget(h, state, track, arc[3], 0);
+    setTargetActive(h, state, id, false); // the only target is now driven
+    expect(beginSolve(state, track, 0)).toBe(false);
+    expect(solveRunning()).toBe(false); // no gesture opened
+});
+
+test("a converged animated re-solve is idempotent — commits no entry", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    createTarget(h, state, track, arc[3], 0);
+    solveAll(h, state, track); // reach the fixpoint synchronously
+    const settled = poses(state);
+    const nUndo = h.undo.length;
+
+    // the animated re-solve over the settled chain writes byte-identical poses,
+    // so the commit drops — repeat-press records nothing (§3 idempotence).
+    expect(beginSolve(state, track, 0)).toBe(true);
+    const end = driveSolve(h);
+    expect(end.done).toBe(true);
+    expect(end.converged).toBe(true);
+    expect(h.undo.length).toBe(nUndo); // no new entry
     expect(poses(state)).toEqual(settled); // byte-identical geometry
 });
 

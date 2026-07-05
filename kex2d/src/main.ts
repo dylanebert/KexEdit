@@ -5,8 +5,20 @@ import App from "./App.svelte";
 import { CartPlugin } from "./cart";
 import { history } from "./history";
 import { RenderPlugin } from "./render";
+import { bakeNodes, sampleArc } from "./solve";
+import { chainCounts } from "./spline";
 import { targetDrift, targetsFor } from "./targets";
-import { addNode, bakeOut, Handle, handleAt, Track, TrackPlugin, V0 } from "./track";
+import {
+    addNode,
+    bakeOut,
+    Handle,
+    handleAt,
+    MAX_SAMPLES,
+    sortedHandles,
+    Track,
+    TrackPlugin,
+    V0,
+} from "./track";
 
 const { state: ecs, dispose } = await run({
     plugins: [ProfilePlugin, TrackPlugin, CartPlugin, RenderPlugin],
@@ -29,6 +41,26 @@ if (import.meta.env.DEV) {
         drift: () => targetDrift(ecs, track),
         undoDepth: () => history.undo.length,
         tTotal: () => bakeOut.get(track)?.tTotal ?? 0,
+        // whole-chain pose signature — the golden path asserts a cancelled solve
+        // reverts geometry byte-identical.
+        poses: (): number[][] =>
+            sortedHandles(ecs).map((eid) => [
+                Handle.pos.x.get(eid),
+                Handle.pos.y.get(eid),
+                Handle.theta.get(eid),
+            ]),
+        // the arclength (m) of a node order — the typed-precision edit sets a
+        // demand exactly at the crest's s (node 3), a 0g airtime shape it can hold.
+        nodeS: (order: number): number => {
+            const nodes = sortedHandles(ecs).map((eid) => ({
+                x: Handle.pos.x.get(eid),
+                y: Handle.pos.y.get(eid),
+                theta: Handle.theta.get(eid),
+            }));
+            const { counts } = chainCounts(nodes, Track.ds.get(track), MAX_SAMPLES);
+            const b = bakeNodes(nodes, counts, V0);
+            return sampleArc(b)[b.offsets[order]];
+        },
         nudge: (order: number, dy: number): void => {
             const eid = handleAt(ecs, order);
             if (eid !== null)

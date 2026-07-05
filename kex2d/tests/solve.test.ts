@@ -4,6 +4,7 @@ import {
     type Baked,
     bakeNodes,
     DEFAULT_WEIGHTS,
+    fixpointSession,
     type PointTarget,
     pointResidual,
     sampleArc,
@@ -211,6 +212,41 @@ test("solveToFixpoint keeps the best iterate and stays finite on an infeasible d
     expect(Number.isFinite(fp.maxDrift)).toBe(true);
     const bs = bakeNodes(fp.nodes, chainCounts(fp.nodes, DS, MAX).counts, draft.v0);
     for (let i = 0; i < bs.n; i++) expect(Number.isFinite(bs.fN[i])).toBe(true);
+});
+
+test("fixpointSession stepped by hand matches solveToFixpoint byte-identical (§8 one source of truth)", () => {
+    // the animated driver advances the session frame by frame; the tests + every
+    // non-animated caller drain it synchronously. both must reach the same chain
+    // to the bit — the drain IS the stepped session run to completion.
+    const { draft, b } = bakeHill();
+    const arc = sampleArc(b);
+    const sCrest = arc[b.offsets[3]];
+    const freed = scopeForPoint(b, arc, sCrest);
+    const demand = [{ s: sCrest, g: 0, w: 1 }];
+
+    const gen = fixpointSession(draft.nodes, freed, DS, draft.v0, demand);
+    let step = gen.next();
+    let yields = 0;
+    let last: Node[] | null = null;
+    while (!step.done) {
+        // every yielded value is a full valid chain (the animated iterate).
+        expect(step.value.length).toBe(draft.nodes.length);
+        last = step.value;
+        yields++;
+        step = gen.next();
+    }
+    expect(yields).toBeGreaterThan(0); // it actually animated intermediate iterates
+    expect(last).not.toBeNull();
+
+    const drained = solveToFixpoint(draft.nodes, freed, DS, draft.v0, demand);
+    step.value.nodes.forEach((n, k) => {
+        expect(n.x).toBe(drained.nodes[k].x);
+        expect(n.y).toBe(drained.nodes[k].y);
+        expect(n.theta).toBe(drained.nodes[k].theta);
+    });
+    expect(step.value.rounds).toBe(drained.rounds);
+    expect(step.value.maxDrift).toBe(drained.maxDrift);
+    expect(step.value.converged).toBe(drained.converged);
 });
 
 test("DEFAULT_WEIGHTS keeps the draft prior weak (does not bias a point demand)", () => {

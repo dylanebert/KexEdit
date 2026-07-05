@@ -17,11 +17,13 @@
  *  do — the `Handle.order` convention). */
 
 import { f32, sparse, type State, u32 } from "@dylanebert/shallot";
-import { begin, beginMove, commit, type History, record } from "./history";
+import { begin, beginMove, cancel, commit, type History, record } from "./history";
 import {
     type ArcTarget,
     bakeNodes,
     DEFAULT_WEIGHTS,
+    fixpointSession,
+    type FixpointResult,
     type PointTarget,
     pointResidual,
     sampleArc,
@@ -185,25 +187,40 @@ export interface TrackSolve {
     rounds: number;
 }
 
-/**
- * solve every ACTIVE target on the track together: assemble their force rows
- * over the union of their freed scopes and run the §3 fixpoint loop (the coupled
- * case is one system, not per-target; driven targets are ignored). the prior
- * re-anchors to the current geometry each round — minimum deformation of what's
- * there now (§3). returns the solved chain, or null when there is nothing to
- * solve (no active targets or a sub-two-node chain). pure read — the caller
- * commits the poses through history, never this.
- */
-export function solveTrack(ecs: State, trackEid: number): TrackSolve | null {
+interface Setup {
+    chain: Node[];
+    freed: number[];
+    ds: number;
+    demands: ArcTarget[];
+}
+
+/** assemble the §3 solve problem from the active targets: the frozen chain, the
+ *  freed-node union, and one arclength demand per active target. null when there
+ *  is nothing to solve (no active targets or a sub-two-node chain) — the same
+ *  gate `solveTrack`, the animated driver, and the Solve flash share. */
+function solveSetup(ecs: State, trackEid: number): Setup | null {
     const ctx = context(ecs, trackEid);
     if (!ctx) return null;
     const rows = targetsFor(ecs, trackEid).filter((r) => r.active);
     if (rows.length === 0) return null;
     const freed = scopeUnion(ctx, rows);
     if (freed.length === 0) return null;
-
     const demands: ArcTarget[] = rows.map((row) => ({ s: row.s, g: row.g, w: W_TARGET }));
-    const res = solveToFixpoint(ctx.nodes, freed, ctx.ds, V0, demands, DEFAULT_WEIGHTS, DRIFT_TOL);
+    return { chain: ctx.nodes, freed, ds: ctx.ds, demands };
+}
+
+/**
+ * solve every ACTIVE target on the track together: assemble their force rows
+ * over the union of their freed scopes and run the §3 fixpoint loop (the coupled
+ * case is one system, not per-target; driven targets are ignored). the prior
+ * re-anchors to the current geometry each round — minimum deformation of what's
+ * there now (§3). returns the solved chain, or null when there is nothing to
+ * solve. pure read — the caller commits the poses through history, never this.
+ */
+export function solveTrack(ecs: State, trackEid: number): TrackSolve | null {
+    const s = solveSetup(ecs, trackEid);
+    if (!s) return null;
+    const res = solveToFixpoint(s.chain, s.freed, s.ds, V0, s.demands, DEFAULT_WEIGHTS, DRIFT_TOL);
     return { nodes: res.nodes, converged: res.converged, rounds: res.rounds };
 }
 
@@ -400,16 +417,128 @@ export function beginTargetMove(ecs: State, id: number): void {
     );
 }
 
-/** the Solve invocation (§3): run the batch solve over all targets and commit
- *  the node moves as ONE undo entry (targets untouched). the prior re-anchors
- *  to current geometry. returns the solve result (null when nothing to solve;
- *  the no-op gesture then drops without recording). */
+/** the SYNCHRONOUS Solve invocation (§3): run the batch solve to its fixpoint in
+ *  one call and commit the node moves as ONE undo entry (targets untouched). the
+ *  tests and any non-animated caller use this; the UI uses the animated driver
+ *  below, which shares `solveSetup` + `fixpointSession` (one source of truth).
+ *  returns the solve result (null when nothing to solve; the no-op gesture then
+ *  drops without recording). */
 export function solveAll(h: History, ecs: State, trackEid: number): TrackSolve | null {
     beginMove(ecs); // snapshots the chain pose only — no target change
     const solved = solveTrack(ecs, trackEid);
     if (solved) applyChain(ecs, solved.nodes);
     commit(h);
     return solved;
+}
+
+// ── the animated Solve driver (spec §8) ──────────────────────────────────────
+// the invocation reaches the SAME fixpoint as `solveAll`, but delivers it
+// incrementally so the author watches the optimizer work: the freed nodes + force
+// curve morph over a paced window, and the run is one command (commit on finish,
+// nothing on cancel). the driver advances the `fixpointSession` per frame and
+// live-writes each yielded iterate; the display re-bakes through the bake hash.
+
+interface SolveRun {
+    ecs: State;
+    trackEid: number;
+    gen: Generator<Node[], FixpointResult>;
+    startedAt: number;
+}
+
+let solveRun: SolveRun | null = null;
+
+/** legible-morph window (ms): while it elapses the driver takes ONE LM iter per
+ *  frame so every step is visible (never a one-frame snap). measured solves are
+ *  18–64 LM iters at ~1 ms each, so 1/frame fills ~300–1000 ms of morph. */
+const WINDOW_MS = 400;
+/** per-frame compute cap (ms) for the POST-window drain: past the window a solve
+ *  still running finishes fast, but never blocks the frame past this — UI stays
+ *  responsive (a genuinely slow solve runs a few extra frames, doesn't stall). */
+const FRAME_CAP_MS = 8;
+
+export interface SolveStatus {
+    /** the animation finished this frame (committed) — the UI settles. */
+    done: boolean;
+    /** meaningful only when `done`: the fixpoint met every active demand. */
+    converged: boolean;
+}
+
+/** whether an animated solve is in flight — the "one solve at a time" gate the
+ *  input surfaces (node drag, marker drag, keys) check to block edits (§8). */
+export function solveRunning(): boolean {
+    return solveRun !== null;
+}
+
+/** begin an animated Solve (§8): snapshot the pre-solve pose (`beginMove`) and
+ *  open the fixpoint session. returns false — recording nothing — when a solve is
+ *  already running or there is nothing to solve. `stepSolve` advances it. */
+export function beginSolve(ecs: State, trackEid: number, now: number): boolean {
+    if (solveRun !== null) return false; // one solve at a time
+    const setup = solveSetup(ecs, trackEid);
+    if (!setup) return false; // nothing to solve — don't open a gesture
+    beginMove(ecs); // snapshots the chain pose; the whole animate is one command
+    solveRun = {
+        ecs,
+        trackEid,
+        gen: fixpointSession(
+            setup.chain,
+            setup.freed,
+            setup.ds,
+            V0,
+            setup.demands,
+            DEFAULT_WEIGHTS,
+            DRIFT_TOL,
+        ),
+        startedAt: now,
+    };
+    return true;
+}
+
+/** advance the running solve one frame, live-writing the iterate (§8). `now` is
+ *  the frame clock (`performance.now()`). one LM iter per frame until `WINDOW_MS`
+ *  elapses, then a compute-capped drain to the fixpoint. on finish it writes the
+ *  best iterate and commits ONE undo entry. returns null when no solve is running. */
+export function stepSolve(h: History, now: number): SolveStatus | null {
+    const run = solveRun;
+    if (!run) return null;
+
+    const elapsed = now - run.startedAt;
+    let iterate: Node[] | null = null;
+    let result: FixpointResult | null = null;
+
+    // within the window: one visible step. past it: drain under the compute cap.
+    const budgeted = elapsed >= WINDOW_MS;
+    const frameStart = now;
+    for (;;) {
+        const r = run.gen.next();
+        if (r.done) {
+            result = r.value;
+            break;
+        }
+        iterate = r.value;
+        if (!budgeted) break; // one iter this frame during the morph window
+        if (performance.now() - frameStart >= FRAME_CAP_MS) break; // yield the frame
+    }
+
+    if (result) {
+        // finished: write the BEST iterate (may predate the last yield on an
+        // infeasible run) and commit the one gesture. a converged no-op drops.
+        applyChain(run.ecs, result.nodes);
+        commit(h);
+        solveRun = null;
+        return { done: true, converged: result.converged };
+    }
+
+    if (iterate) applyChain(run.ecs, iterate);
+    return { done: false, converged: false };
+}
+
+/** abort the running solve (§8): restore the pre-solve pose and record nothing —
+ *  a cancelled solve is as if it never ran. no-op when nothing is running. */
+export function cancelSolve(): void {
+    if (!solveRun) return;
+    solveRun = null;
+    cancel(); // rolls the open beginMove gesture back to the pre-solve pose
 }
 
 function destroyTarget(ecs: State, id: number): void {
