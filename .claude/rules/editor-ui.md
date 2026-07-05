@@ -82,6 +82,26 @@ old Unity playback/edit *mode* split, and don't add a second video frame — in 
 already *is* the playback. A separate playback render earns its place only for a different **camera**
 (a rider POV), a 3D `app/` concern, not 2D kex2d.
 
+## Constraint-solver UX
+
+Earned by the kex2d force-target dogfoods (2026-07-05); applies to any authored-constraint +
+invoked-solve surface, 2D or 3D.
+
+- **Author in the solver's invariant domain.** The axis a constraint is placed on must be one the
+  solver holds fixed. A *derived* display domain (kex2d: time, `t = Σ ds/v`) stretches under the
+  tool's own operations, so anchors authored there slide around during solves and unrelated edits.
+  Display the derived domain as a secondary read-only view if it's wanted, never as the authoring
+  axis.
+- **Constraints are not keyframes.** An optimization target gets the constraint idiom, not the
+  keyframe diamond: a distinct (hollow/ring) glyph, the residual made visible (a dotted drop-line
+  from demand to achieved), and the CAD-sketcher **driving vs driven** states — activation is a
+  persistent authored flag (driven = dashed + faded, still measures, never moves geometry), never
+  ephemeral selection, which evaporates on the next empty-space click.
+- **An invoked solve is idempotent.** One press reaches the fixpoint; a second press is a no-op.
+  If internal state (a frozen grid, a linearization) goes stale as the solution moves, iterate it
+  *inside* the invocation. A demand still unmet after convergence displays as stable infeasibility
+  (achieved-vs-demanded), never as "press again for more effect".
+
 ## Surface and motion
 
 kexedit owns its own visual identity (FVD, its own palette) — don't import Shallot's gold. The
