@@ -1,0 +1,234 @@
+/** the section substrate — the original KexEdit section contract, in 2D (spec
+ *  kex/specs/kex2d-sections.md §2). every section takes an ENTRY anchor (a full
+ *  state point) and produces sampled points; its last point IS the next
+ *  section's entry (`chain` propagates it). two atomic, legible idioms:
+ *
+ *    - GEO (`evalGeo`): geometry → force. section-local node positions placed
+ *      rigidly at the entry frame (§4), sampled to a Hermite curve, then the
+ *      physical force recovered from the geometry.
+ *    - FORCE (`evalForce`): force → geometry. an authored F_n(s) integrated from
+ *      the entry, then the DISPLAY force RE-recovered from the swept geometry.
+ *
+ *  §2 design law: the force curve is ALWAYS geometry-recovered, even for a force
+ *  section (mirrors the original `nodes/force.rs` — integrate from targets, then
+ *  store the `Curvature::from_frames`-recovered force). So both atoms end with the
+ *  same `forces` recovery: one display path regardless of kind. The recovered
+ *  force sits O(ds) off an authored input — the known source-vs-centered
+ *  convention gap (`fvd.lab.ts` panel 3), not a bug.
+ *
+ *  pure and framework-free (mirrors spline.ts / forward.ts / bake.ts); only the
+ *  ECS layer (track.ts) imports the shallot barrel. f32 throughout — these atoms
+ *  ARE the realized-track display path, so they use the display recovery
+ *  (`bake.forces`), not the f64 solver atoms (`force.ts`). */
+
+import { forces } from "./bake";
+import { integrate } from "./forward";
+import { type Node, sampleChain } from "./spline";
+
+/** default sample-buffer ceiling — mirrors `track.MAX_SAMPLES`. */
+const MAX = 4096;
+
+/** a full track state point: the anchor a section starts from and the exit it
+ *  produces (its last sample). `v` is speed (m/s); the force recovery derives
+ *  energy from it. */
+export interface Entry {
+    x: number;
+    y: number;
+    theta: number;
+    v: number;
+}
+
+/** one section's realized output: the sampled geometry, the geometry-recovered
+ *  display force per edge, and the exit state (the last point — the next
+ *  section's entry). self-contained; `chain` concatenates these into the flat
+ *  per-track SoA. point arrays are length `edges + 1`; per-edge arrays `edges`. */
+export interface SectionResult {
+    posX: Float32Array;
+    posY: Float32Array;
+    theta: Float32Array;
+    v: Float32Array;
+    fN: Float32Array;
+    ds: Float32Array;
+    edges: number;
+    exit: Entry;
+    /** geo only: every segment landed (no degenerate/truncated). force is always valid. */
+    valid: boolean;
+    truncated: boolean;
+}
+
+/** a section's authored payload. geo carries local nodes (node 0 at the local
+ *  origin, heading 0 — §4) + nominal spacing; force carries a per-edge F_n
+ *  profile (g) + its edge step (m). */
+export type Section =
+    | { kind: "geo"; nodes: readonly Node[]; ds: number }
+    | { kind: "force"; fN: ArrayLike<number>; ds: number };
+
+/** place a section-local node in world space at the entry frame: rotate by the
+ *  entry heading, translate to the entry position (§4 rigid placement). node 0
+ *  (local origin, local heading 0) maps to the entry exactly, so the section
+ *  joins at the anchor with the same position and heading (C1). */
+function place(entry: Entry, n: Node): Node {
+    const c = Math.cos(entry.theta);
+    const s = Math.sin(entry.theta);
+    return {
+        x: entry.x + c * n.x - s * n.y,
+        y: entry.y + s * n.x + c * n.y,
+        theta: n.theta + entry.theta,
+    };
+}
+
+function exitOf(
+    posX: Float32Array,
+    posY: Float32Array,
+    theta: Float32Array,
+    v: Float32Array,
+    edges: number,
+): Entry {
+    return { x: posX[edges], y: posY[edges], theta: theta[edges], v: v[edges] };
+}
+
+/**
+ * GEO atom: place the local nodes rigidly at `entry`, sample the Hermite curve,
+ * recover the physical force from the geometry (`v0 = entry.v`). the exit is the
+ * recovered last-sample state. `maxSamples` caps the sampling (`chain` passes the
+ * remaining buffer). a degenerate/truncated chain returns its partial prefix
+ * with `valid`/`truncated` set (mirrors `sampleChain`).
+ */
+export function evalGeo(
+    entry: Entry,
+    nodes: readonly Node[],
+    dsNominal: number,
+    maxSamples = MAX,
+): SectionResult {
+    const world = nodes.map((n) => place(entry, n));
+    const posX = new Float32Array(maxSamples);
+    const posY = new Float32Array(maxSamples);
+    const dsArr = new Float32Array(Math.max(1, maxSamples - 1));
+    const r = sampleChain(world, dsNominal, posX, posY, dsArr, maxSamples);
+    const edges = r.edges;
+    const theta = new Float32Array(edges + 1);
+    const v = new Float32Array(edges + 1);
+    const fN = new Float32Array(edges);
+    forces(posX, posY, theta, v, fN, dsArr, 0, edges, entry.v);
+    return {
+        posX: posX.slice(0, edges + 1),
+        posY: posY.slice(0, edges + 1),
+        theta,
+        v,
+        fN,
+        ds: dsArr.slice(0, edges),
+        edges,
+        exit: exitOf(posX, posY, theta, v, edges),
+        valid: r.valid,
+        truncated: r.truncated,
+    };
+}
+
+/**
+ * FORCE atom: seed sample 0 from `entry`, integrate the authored per-edge force
+ * into the swept geometry, then RE-recover the display force from that geometry
+ * (§2 — one display path). the recovered force overwrites the integrator's
+ * `theta`/`v`, so the exit and the chart match a geo section's recovery exactly.
+ * every forward step advances exactly `ds` along its mid-angle, so the per-edge
+ * chord is `ds` (the recovery's `dsArr`).
+ */
+export function evalForce(entry: Entry, fN: ArrayLike<number>, ds: number): SectionResult {
+    const edges = fN.length;
+    const n = edges + 1;
+    const posX = new Float32Array(n);
+    const posY = new Float32Array(n);
+    const theta = new Float32Array(n);
+    const v = new Float32Array(n);
+    posX[0] = entry.x;
+    posY[0] = entry.y;
+    theta[0] = entry.theta;
+    v[0] = entry.v;
+    integrate(posX, posY, theta, v, n, ds, (sigma) => fN[Math.round(sigma / ds)]);
+
+    const dsArr = new Float32Array(edges).fill(ds);
+    const outF = new Float32Array(edges);
+    forces(posX, posY, theta, v, outF, dsArr, 0, edges, entry.v);
+    return {
+        posX,
+        posY,
+        theta,
+        v,
+        fN: outF,
+        ds: dsArr,
+        edges,
+        exit: exitOf(posX, posY, theta, v, edges),
+        valid: true,
+        truncated: false,
+    };
+}
+
+/** the flat realized track: one SoA over every section's samples, plus the
+ *  per-section index ranges and exits. `ranges[k].end` is the shared boundary
+ *  sample (== `ranges[k+1].start`), so cumulative arclength is continuous across
+ *  it. `exits[k]` is the entry to section `k + 1`. */
+export interface ChainResult {
+    posX: Float32Array;
+    posY: Float32Array;
+    theta: Float32Array;
+    v: Float32Array;
+    fN: Float32Array;
+    ds: Float32Array;
+    /** sample (point) count. */
+    count: number;
+    ranges: { start: number; end: number }[];
+    exits: Entry[];
+}
+
+/**
+ * evaluate a chain of sections from `entry0`: each section is placed at the prior
+ * section's exit and its samples appended to the flat SoA, sharing the boundary
+ * point (a section's last sample IS the next section's first — the original
+ * `Section {start_index, end_index}` overlap). returns the flat buffers, the
+ * per-section ranges, and the exits. an empty chain returns just the seed point.
+ */
+export function chain(entry0: Entry, sections: readonly Section[], maxSamples = MAX): ChainResult {
+    const posX = new Float32Array(maxSamples);
+    const posY = new Float32Array(maxSamples);
+    const theta = new Float32Array(maxSamples);
+    const v = new Float32Array(maxSamples);
+    const fN = new Float32Array(Math.max(1, maxSamples - 1));
+    const ds = new Float32Array(Math.max(1, maxSamples - 1));
+    const ranges: { start: number; end: number }[] = [];
+    const exits: Entry[] = [];
+
+    // seed the very first sample (the initial entry point). every section then
+    // reuses its start point as the prior section's shared boundary.
+    posX[0] = entry0.x;
+    posY[0] = entry0.y;
+    theta[0] = entry0.theta;
+    v[0] = entry0.v;
+
+    let entry = entry0;
+    let off = 0;
+    for (const sec of sections) {
+        const r =
+            sec.kind === "geo"
+                ? evalGeo(entry, sec.nodes, sec.ds, maxSamples - off)
+                : evalForce(entry, sec.fN, sec.ds);
+        const start = off;
+        // copy points 1..edges; point 0 duplicates the shared boundary already
+        // written by the prior section (or the seed), so leave it — it carries the
+        // prior section's exit state, which is exactly this section's placement.
+        for (let k = 1; k <= r.edges; k++) {
+            posX[off + k] = r.posX[k];
+            posY[off + k] = r.posY[k];
+            theta[off + k] = r.theta[k];
+            v[off + k] = r.v[k];
+        }
+        for (let k = 0; k < r.edges; k++) {
+            fN[off + k] = r.fN[k];
+            ds[off + k] = r.ds[k];
+        }
+        off += r.edges;
+        ranges.push({ start, end: off });
+        exits.push(r.exit);
+        entry = r.exit;
+    }
+
+    return { posX, posY, theta, v, fN, ds, count: off + 1, ranges, exits };
+}

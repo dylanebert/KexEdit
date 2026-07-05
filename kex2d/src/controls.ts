@@ -1,7 +1,6 @@
 import type { State } from "@dylanebert/shallot";
 import { editor, select } from "./editor";
 import { beginMove, cancel, commit, extendTrack, history, trimTrack } from "./history";
-import { solveRunning } from "./targets";
 import { Handle, lastHandle, reheadOnDrag } from "./track";
 import { pointerToCanvas, screenToWorld, viewTransform, type ViewTx } from "./view";
 
@@ -47,7 +46,6 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
 
     const onPointerDown = (e: PointerEvent): void => {
         if (e.button !== 0) return;
-        if (solveRunning()) return; // one solve at a time — edits blocked while it animates (§8)
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
         const { x: wx, y: wy } = screenToWorld(tx, cx, cy);
@@ -100,7 +98,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             return;
         }
         // extend / delete act on the chain end (when it's selected).
-        if (solveRunning() || !endSelected(ecs)) return;
+        if (!endSelected(ecs)) return;
         if (e.key === "Enter") {
             e.preventDefault();
             select(extendTrack(history, ecs)); // lay a node, select it

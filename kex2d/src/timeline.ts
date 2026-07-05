@@ -188,9 +188,7 @@ export function mirrorTangent(
  *  both monotone increasing — the cart↔chart projection. the chart's x-axis is
  *  distance, but the cart rides the track in *time* (paced by its velocity), so the
  *  playhead projects the cart's `t` through this to a chart s, and a ruler scrub maps
- *  the picked s back to a cart `t`. built from the display bake by
- *  `targets.trackMapping`; static between solves (no solve runs while editing), so no
- *  freeze machinery. */
+ *  the picked s back to a cart `t`. built from the display bake by `cart.trackMapping`. */
 export interface Mapping {
     arc: Float64Array;
     t: Float64Array;

@@ -1,25 +1,7 @@
 <script lang="ts">
-import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
-import { cartState, forceCurve } from "./cart";
-import { editor, selectTarget, setHighlight } from "./editor";
-import { cancel, commit, history, redo, undo } from "./history";
-import {
-    beginSolve,
-    beginTargetMove,
-    cancelSolve,
-    createTarget,
-    deleteTarget,
-    type Marker,
-    setTarget,
-    setTargetActive,
-    solveRunning,
-    stepSolve,
-    targetMarkers,
-    trackMapping,
-    trackScope,
-} from "./targets";
-import { bakeOut } from "./track";
+import { cartState, forceCurve, trackMapping } from "./cart";
+import { history, redo, undo } from "./history";
 import {
     arcToTime,
     clampView,
@@ -38,15 +20,14 @@ import {
     type YFit,
     zoomAt,
 } from "./timeline";
+import { bakeOut } from "./track";
 import { resize } from "./view";
 
-const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
+const { eid, tick }: { eid: number | null; tick: number } = $props();
 
 // the timeline shows the baked F_n force curve the realized track produces, plus
-// scrub + zoom/pan navigation. force intent is authored here as point targets
-// (double-click to place, drag both axes, Del) satisfied by an explicit Solve
-// (kex/specs/kex2d-force-targets.md §3–§5); the span/live-RTI surface was stripped
-// 2026-07-05 (git holds it at 3e19820).
+// scrub + zoom/pan navigation. force authoring (place points on the curve) lands
+// in stage C of kex/specs/kex2d-sections.md; this is the read-only curve + player.
 
 // timeline bands, top → bottom: a scrubbable RULER (ticks + labels + playhead
 // handle, the dedicated scrub zone), a demarcating GAP the playhead passes through,
@@ -67,7 +48,6 @@ const CAP_LO = BAND[0] - Y_HEADROOM;
 const CAP_HI = BAND[1] + Y_HEADROOM;
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
-const MARKER_R = 6; // px; the target ring's radius
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -147,12 +127,6 @@ const yTarget = $derived.by((): YFit => {
             if (c.f[i] > hi) hi = c.f[i];
         }
     }
-    // keep every target's demand in frame — the marker-to-curve gap IS the drift
-    // readout, so a demand above/below the curve's own range must not clip away.
-    for (const m of markers) {
-        if (m.g < lo) lo = m.g;
-        if (m.g > hi) hi = m.g;
-    }
     return yFit(lo, hi, Y_BASE);
 });
 
@@ -190,172 +164,6 @@ $effect(() => {
 
 const yOf = (val: number): number =>
     TOP + (1 - (val - yView.lo) / (yView.hi - yView.lo)) * (h - BOT_PAD - TOP);
-
-// invert yOf: a chart cursor Y (canvas-relative px) → its g value, clamped to the
-// displayed axis so a placed/dragged marker can't leave the scale.
-function yToG(cy: number): number {
-    const inner = h - BOT_PAD - TOP;
-    if (inner <= 0) return yView.lo;
-    const f = (cy - TOP) / inner;
-    return clamp(yView.lo + (1 - f) * (yView.hi - yView.lo), yView.lo, yView.hi);
-}
-
-// ── point force targets: inert demands on the force curve (§3–§5) ────────────
-// authored by double-clicking the chart, dragged in both axes (vertical = g,
-// horizontal = s), satisfied by an explicit Solve. targets store arclength and the
-// chart's x-axis IS arclength (§4), so a marker sits at its s directly — no domain
-// projection, and it never moves except by the author's hand.
-const markers = $derived.by((): Marker[] => {
-    void tick;
-    return eid === null ? [] : targetMarkers(ecs, eid);
-});
-// the selected-target id, read through the per-RAF tick (editor is plain state).
-const selTarget = $derived.by((): number | null => {
-    void tick;
-    return editor.target;
-});
-// the selected target's live marker — the source for the header's numeric fields
-// and driving/driven toggle.
-const selMarker = $derived.by((): Marker | null => {
-    return selTarget === null ? null : (markers.find((m) => m.id === selTarget) ?? null);
-});
-// the Solve affordance: accented when any ACTIVE point sits off the curve beyond
-// tolerance (a drift the solve would close; driven drift never accents, §6).
-const dirty = $derived(markers.some((m) => m.active && !m.satisfied));
-// whether the animated solve is in flight — the button reads Cancel, edits block.
-const running = $derived.by((): boolean => {
-    void tick;
-    return solveRunning();
-});
-
-const markerX = (s: number): number => LEFT_GUT + sToPx(clamped, s);
-const chartLocalX = (e: PointerEvent): number =>
-    e.clientX - canvas.getBoundingClientRect().left - LEFT_GUT;
-const chartLocalY = (e: PointerEvent): number =>
-    e.clientY - canvas.getBoundingClientRect().top;
-const fmtG = (g: number): string => `${+g.toFixed(1)}g`;
-
-// ── create: double-click the empty chart drops a target at that exact demand ──
-function chartCreate(e: MouseEvent): void {
-    if (eid === null || solveRunning()) return; // edits blocked while a solve animates
-    const rect = canvas.getBoundingClientRect();
-    const s = Math.max(0, pxToS(clamped, e.clientX - rect.left - LEFT_GUT));
-    const g = yToG(e.clientY - rect.top);
-    selectTarget(createTarget(history, ecs, eid, s, g)); // born selected
-}
-
-// ── move: drag a marker in both axes (no solve, one undo entry on release) ──
-// the x-axis is arclength, so the cursor's s maps straight through — no projection.
-let dragging: number | null = null;
-let grabDs = 0; // marker s − cursor s, so grabbing off-center doesn't snap
-let grabDg = 0;
-function markerDown(e: PointerEvent, mk: Marker): void {
-    if (eid === null || e.button !== 0 || solveRunning()) return;
-    e.preventDefault();
-    e.stopPropagation(); // don't also deselect via the chartzone underneath
-    beginTargetMove(ecs, mk.id);
-    dragging = mk.id;
-    selectTarget(mk.id);
-    grabDs = mk.s - Math.max(0, pxToS(clamped, chartLocalX(e)));
-    grabDg = mk.g - yToG(chartLocalY(e));
-    window.addEventListener("pointermove", markerMove);
-    window.addEventListener("pointerup", markerUp);
-}
-function markerMove(e: PointerEvent): void {
-    if (dragging === null) return;
-    const s = Math.max(0, pxToS(clamped, chartLocalX(e)) + grabDs);
-    setTarget(ecs, dragging, s, yToG(chartLocalY(e)) + grabDg);
-}
-function markerUp(): void {
-    if (dragging === null) return;
-    dragging = null;
-    commit(history); // one drag → one entry; a no-move click drops via the `same` guard
-    window.removeEventListener("pointermove", markerMove);
-    window.removeEventListener("pointerup", markerUp);
-}
-function cancelMarkerDrag(): void {
-    if (dragging === null) return;
-    dragging = null;
-    cancel();
-    window.removeEventListener("pointermove", markerMove);
-    window.removeEventListener("pointerup", markerUp);
-}
-
-// ── solve: the explicit batch invocation over all targets, animated (§3, §8) ──
-// pressing Solve opens the fixpoint session and highlights the freed nodes; the
-// per-frame effect below advances it, morphing the geometry toward the solution.
-// while it runs the button is Cancel; clicking it (or Esc) reverts and records
-// nothing. only one solve runs at a time (beginSolve refuses a second).
-// the cart rides in time and projects onto the distance chart (§4), so a playing
-// cart would sweep the playhead across the morphing curve mid-solve. suspend it
-// for the animation (a transient hold, not a mode) and restore the prior play
-// state when the solve settles — so the author watches the curve, not a dart.
-let solveResumePlay = false;
-function suspendCart(): void {
-    if (eid === null) return;
-    const st = cartState.get(eid);
-    if (!st) return;
-    solveResumePlay = !st.held; // resume playback only if it was playing
-    st.held = true;
-}
-function restoreCart(): void {
-    if (eid === null) return;
-    const st = cartState.get(eid);
-    if (st) st.held = !solveResumePlay;
-}
-function solveClick(): void {
-    if (eid === null) return;
-    if (solveRunning()) {
-        cancelSolve(); // Cancel: revert the pre-solve pose, record nothing (§8)
-        setHighlight([]);
-        restoreCart();
-        return;
-    }
-    setHighlight(trackScope(ecs, eid)); // the §5 freed-node scope, lit for the run
-    if (beginSolve(ecs, eid, performance.now())) suspendCart();
-    else setHighlight([]); // nothing to solve
-}
-// advance the running solve once per frame (§8): the driver live-writes each
-// iterate, the display re-bakes through the bake hash. clears the highlight and
-// resumes the cart on completion — the run committed (or, if idempotent, dropped).
-$effect(() => {
-    void tick; // one step per animation frame
-    if (!solveRunning()) return;
-    const st = stepSolve(history, performance.now());
-    if (st?.done) {
-        setHighlight([]);
-        restoreCart();
-    }
-});
-
-function deleteSelectedTarget(): void {
-    if (editor.target === null || solveRunning()) return;
-    deleteTarget(history, ecs, editor.target);
-    selectTarget(null);
-}
-
-// ── header fields: type the selected target's s / g and toggle driving/driven ──
-// each field commits one undo entry through the marker-move gesture (begin →
-// setTarget → commit), the same path the drag uses. blocked while a solve runs.
-function commitField(s: number, g: number): void {
-    const id = selTarget;
-    if (id === null || solveRunning()) return;
-    beginTargetMove(ecs, id);
-    setTarget(ecs, id, Math.max(0, s), g);
-    commit(history);
-}
-function onFieldS(e: Event): void {
-    const v = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    if (Number.isFinite(v) && selMarker) commitField(v, selMarker.g);
-}
-function onFieldG(e: Event): void {
-    const v = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    if (Number.isFinite(v) && selMarker) commitField(selMarker.s, v);
-}
-function toggleDriven(): void {
-    if (selTarget === null || !selMarker || solveRunning()) return;
-    setTargetActive(history, ecs, selTarget, !selMarker.active); // one undo entry
-}
 
 // ── middle-button drag pans the view. intercepted at the host's capture phase so it
 // fires before the pointer-events:all SVG rects; the ruler handler also routes a
@@ -702,26 +510,6 @@ onMount(() => {
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
-            return;
-        }
-        // Esc cancels a running solve first (§8) — reverts the pose, records nothing.
-        if (e.key === "Escape" && solveRunning()) {
-            e.preventDefault();
-            cancelSolve();
-            setHighlight([]);
-            restoreCart();
-            return;
-        }
-        // target select/delete — guarded on a live target selection so node Esc/Del
-        // (controls.ts) route unambiguously (selection is mutually exclusive).
-        if (editor.target !== null) {
-            if (e.key === "Escape") {
-                e.preventDefault();
-                selectTarget(null);
-            } else if (e.key === "Delete" || e.key === "Backspace") {
-                e.preventDefault();
-                deleteSelectedTarget();
-            }
         }
     };
     host.addEventListener("wheel", onWheel, { passive: false });
@@ -733,74 +521,11 @@ onMount(() => {
         sliderUp(); // and any in-flight player-slider drag
         panUp(); // and any in-flight middle-drag pan
         navUp(); // and any in-flight navigator drag
-        cancelMarkerDrag(); // and any in-flight marker drag
-        cancelSolve(); // and revert any in-flight animated solve (records nothing)
-        restoreCart(); // resume the cart if a solve had suspended it (no stuck pause on remount)
-        setHighlight([]); // clear the solve flash so a remount shows no phantom halo
     };
 });
 </script>
 
 <aside class="dock">
-    <!-- the header row: the permanent quiet home for Solve (→ Cancel while running)
-         and, when a target is selected, its typed s / g fields + driving/driven
-         toggle (§4/§6). empty and silent with no targets/selection (gate 2). -->
-    <div class="header">
-        {#if selMarker}
-            <div class="fields">
-                <div class="fld">
-                    <span class="key">s</span>
-                    <input
-                        type="number"
-                        step="1"
-                        min="0"
-                        value={selMarker.s.toFixed(1)}
-                        onchange={onFieldS}
-                        disabled={running}
-                        aria-label="Target distance (m)"
-                    />
-                    <span class="unit">m</span>
-                </div>
-                <div class="fld">
-                    <span class="key">F</span>
-                    <input
-                        type="number"
-                        step="0.1"
-                        value={selMarker.g.toFixed(2)}
-                        onchange={onFieldG}
-                        disabled={running}
-                        aria-label="Target force (g)"
-                    />
-                    <span class="unit">g</span>
-                </div>
-                <button
-                    class="toggle"
-                    class:driven={!selMarker.active}
-                    type="button"
-                    onclick={toggleDriven}
-                    disabled={running}
-                    title={selMarker.active
-                        ? "Driving — drives the solve. Click to make driven (measure only)."
-                        : "Driven — measures only. Click to make driving."}
-                >
-                    {selMarker.active ? "Driving" : "Driven"}
-                </button>
-            </div>
-        {/if}
-        <div class="spacer"></div>
-        {#if markers.length > 0}
-            <button
-                class="solve"
-                class:dirty
-                class:running
-                type="button"
-                onclick={solveClick}
-                title={running ? "Cancel the solve (Esc)" : "Fit the track to the force targets"}
-            >
-                {running ? "Cancel" : "Solve"}
-            </button>
-        {/if}
-    </div>
     <div
         class="body"
         bind:this={host}
@@ -817,18 +542,6 @@ onMount(() => {
     >
         <canvas bind:this={canvas}></canvas>
         <svg class="overlay" width={w} height={h}>
-            <defs>
-                <!-- clip the target markers to the inner chart rect so an off-scale
-                     marker doesn't paint over the ruler or the g-gutter. -->
-                <clipPath id="chartclip">
-                    <rect
-                        x={LEFT_GUT}
-                        y={TOP}
-                        width={Math.max(0, w - LEFT_GUT)}
-                        height={Math.max(0, h - BOT_PAD - TOP)}
-                    />
-                </clipPath>
-            </defs>
             <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere here
                  moves the playhead (the distance ruler is the scrubber). -->
             {#if eid !== null && sTotal > 0}
@@ -847,21 +560,6 @@ onMount(() => {
                     aria-valuemax={Math.round(sTotal * 100) / 100}
                     aria-valuenow={Math.round((cartS ?? 0) * 100) / 100}
                 />
-                <!-- the chart interaction surface: double-click drops a target at the
-                     exact demand under the cursor; a bare click on empty chart clears
-                     the target selection. markers sit above it. -->
-                <rect
-                    class="chartzone"
-                    x={LEFT_GUT}
-                    y={TOP}
-                    width={Math.max(0, w - LEFT_GUT)}
-                    height={Math.max(0, h - BOT_PAD - TOP)}
-                    ondblclick={chartCreate}
-                    onpointerdown={(e) => {
-                        if (e.button === 0) selectTarget(null);
-                    }}
-                    role="presentation"
-                />
             {/if}
             <!-- playhead: a handle in the ruler + a line down through the gap and
                  chart. visual only — the rulerzone above owns the scrub interaction. -->
@@ -872,47 +570,6 @@ onMount(() => {
                     points="{playPx - 5},{RULER_H - 10} {playPx + 5},{RULER_H - 10} {playPx},{RULER_H}"
                 />
             {/if}
-            <!-- point force targets: a hollow ring at (s, g_target) — an optimization
-                 constraint, not a keyframe (§6). the dotted drop-line to the curve at
-                 its s IS the residual Solve will close; an active drift turns danger and
-                 spells out demanded → achieved; a driven target is dashed + faded. drag
-                 both axes; the chartzone owns creation. -->
-            <g class="markers" clip-path="url(#chartclip)">
-                {#each markers as m (m.id)}
-                    {@const mx = markerX(m.s)}
-                    {#if mx >= LEFT_GUT - MARKER_R && mx <= w + MARKER_R}
-                        {@const my = yOf(m.g)}
-                        {#if !m.satisfied}
-                            <line
-                                class="drop"
-                                class:drift={m.active}
-                                class:driven={!m.active}
-                                x1={mx}
-                                x2={mx}
-                                y1={my}
-                                y2={yOf(m.achieved)}
-                            />
-                        {/if}
-                        <circle
-                            class="tmarker"
-                            class:sel={m.id === selTarget}
-                            class:drift={m.active && !m.satisfied}
-                            class:driven={!m.active}
-                            data-id={m.id}
-                            cx={mx}
-                            cy={my}
-                            r={MARKER_R}
-                            onpointerdown={(e) => markerDown(e, m)}
-                            role="presentation"
-                        />
-                        {#if m.active && !m.satisfied}
-                            <text class="tlabel" x={mx + MARKER_R + 5} y={my}>
-                                {fmtG(m.g)} → {fmtG(m.achieved)}
-                            </text>
-                        {/if}
-                    {/if}
-                {/each}
-            </g>
         </svg>
     </div>
     <!-- the time navigator: a full-track overview below the chart (Premiere placement)
@@ -1001,76 +658,6 @@ onMount(() => {
         position: relative;
         flex: 1;
         min-height: 0;
-    }
-
-    /* the header row: Solve (→ Cancel) at the right, the selected target's typed
-       fields + driving/driven toggle at the left. quiet + empty with no targets. */
-    .header {
-        flex: none;
-        height: 34px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 0 10px;
-        border-bottom: 1px solid var(--border);
-    }
-    .spacer {
-        flex: 1;
-    }
-    .fields {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-    .fld {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 11px;
-        color: var(--muted);
-    }
-    .fld input {
-        width: 54px;
-        box-sizing: border-box;
-        padding: 2px 5px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        color: var(--fg);
-        font: inherit;
-        text-align: right;
-    }
-    .fld input:focus {
-        outline: none;
-        border-color: var(--neutral);
-    }
-    .fld input:disabled {
-        opacity: 0.5;
-    }
-    /* driving/driven toggle: accent-filled while driving (it drives the solve),
-       muted outline while driven (measure only) — the CAD-sketcher distinction. */
-    .toggle {
-        all: unset;
-        box-sizing: border-box;
-        padding: 3px 10px;
-        border-radius: 5px;
-        border: 1px solid var(--accent);
-        background: var(--accent-soft);
-        color: var(--accent);
-        font-family: "Outfit", system-ui, sans-serif;
-        font-size: 11px;
-        cursor: pointer;
-        transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
-    }
-    .toggle.driven {
-        border-color: var(--border);
-        background: transparent;
-        color: var(--muted);
-    }
-    .toggle:disabled {
-        opacity: 0.5;
-        cursor: default;
     }
 
     /* time navigator: a preview-minimap overview strip below the chart. dims only
@@ -1171,108 +758,6 @@ onMount(() => {
         stroke: var(--neutral-soft);
         stroke-width: 4;
         paint-order: stroke;
-    }
-
-    /* chart interaction surface: transparent, catches double-click (place) and
-       empty-click (deselect). default cursor — placement is a double-click, not a
-       primary drag, so no crosshair to promise otherwise. */
-    .chartzone {
-        fill: transparent;
-        pointer-events: all;
-        cursor: default;
-    }
-
-    /* point force targets: a hollow ring — an optimization constraint, not a filled
-       keyframe (§6). the ring color reads state (pin / danger drift / muted driven);
-       selection adds a soft glow, so it composes with the state color. */
-    .tmarker {
-        fill: var(--bg-solid);
-        stroke: var(--pin);
-        stroke-width: 2;
-        pointer-events: all;
-        cursor: grab;
-        transition: stroke 120ms ease;
-    }
-    .tmarker:active {
-        cursor: grabbing;
-    }
-    .tmarker.drift {
-        stroke: var(--danger);
-    }
-    .tmarker.driven {
-        stroke: var(--muted);
-        stroke-dasharray: 2.4 2.4;
-        opacity: 0.6;
-    }
-    .tmarker.sel {
-        filter: drop-shadow(0 0 2.5px var(--fg));
-    }
-    /* the residual made visible: a dotted drop-line from the demand ring to the
-       curve at its s. neutral for a driven measurement, danger for an active drift. */
-    .drop {
-        stroke: var(--muted);
-        stroke-width: 1.2;
-        stroke-dasharray: 2 3;
-        pointer-events: none;
-    }
-    .drop.drift {
-        stroke: var(--danger);
-    }
-    .drop.driven {
-        opacity: 0.5;
-    }
-    .tlabel {
-        fill: var(--danger);
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 10px;
-        dominant-baseline: middle;
-        pointer-events: none;
-        user-select: none;
-    }
-
-    /* Solve: summoned only when targets exist (gate 1/2). neutral while every active
-       point sits on the curve, accented when a drift is open; while a solve animates
-       it becomes a pulsing Cancel (§8). */
-    .solve {
-        all: unset;
-        box-sizing: border-box;
-        padding: 4px 14px;
-        border-radius: 5px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        font-family: "Outfit", system-ui, sans-serif;
-        font-size: 12px;
-        color: var(--muted);
-        cursor: pointer;
-        transition: background 120ms ease, border-color 120ms ease, color 120ms ease,
-            transform 80ms ease;
-    }
-    .solve:hover {
-        color: var(--fg);
-        border-color: var(--neutral);
-    }
-    .solve:active {
-        transform: scale(0.96);
-    }
-    .solve.dirty {
-        color: var(--accent);
-        border-color: var(--accent);
-        background: var(--accent-soft);
-    }
-    .solve.running {
-        color: var(--danger);
-        border-color: var(--danger);
-        background: var(--danger-soft);
-        animation: solvepulse 1s ease-in-out infinite;
-    }
-    @keyframes solvepulse {
-        0%,
-        100% {
-            opacity: 1;
-        }
-        50% {
-            opacity: 0.62;
-        }
     }
 
     /* the player: a media transport (play · global scrub · timecode) floated as its

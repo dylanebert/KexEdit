@@ -1,25 +1,101 @@
 # kex2d
 
-2D coaster solver prototype. Shallot + Svelte + canvas2D. The exploration harness for a free-drag track model (free node positions → cubic Hermite interpolation → physical force recovery → F_n curve), mouse-driven and direct, parallel to `app/` (the eventual Shallot port). Whether it replaces / augments / coexists with the 3D editor decides once it earns its place.
+2D coaster prototype. Shallot + Svelte + canvas2D. The exploration harness for the
+**sections-of-atoms** track model (spec `kex/specs/kex2d-sections.md`): a track is a chain
+of **sections**, each one either a **geo** section (author positions → recover force) or a
+**force** section (author F_n → integrate geometry), joined by anchor propagation — the
+original KexEdit section contract, in 2D. Mouse-driven and direct, parallel to `app/` (the
+eventual Shallot port). Whether it replaces / augments / coexists with the 3D editor decides
+once it earns its place.
 
-The prototype's confident core, and what the **live app is right now**: **author the spline, see the resulting F_n force curve.** Free-drag nodes → Hermite interpolation → physical force recovery, shown live in the timeline. The bidirectional integration (shape ↔ force) is validated exact and oracle-gated — the foundation everything else builds on.
+The **live app right now** is geo authoring: free-drag nodes → stored-heading cubic Hermite →
+physical F_n force curve, shown live in the timeline. The bidirectional shape↔force integration
+is validated exact and oracle-gated (RK4) — the foundation everything builds on. Force authoring
+(points on the curve) and multi-section editing are staged next (`kex2d-sections.md` C/D).
 
-The **constraint-optimization layer** is the point-target design (`kex/specs/kex2d-force-targets.md`): inert point demands ("F_n = X g at this spot") over the baked track, satisfied by an **explicitly invoked batch optimization of the node parameters** — `solve.ts` (the pure LM over freed nodes) + `targets.ts` (the `Target` component, drift readout, history commands), both green and device-free-tested. The timeline UI is wired (stage 2, 2026-07-05): double-click the chart to place a point target, drag it in both axes, press **Solve** to fit the track to every target. So the live app authors force intent on the curve now, not just reads it. Two prior authoring surfaces were stripped as illegible, git holds both: the persistent-pin RTI UX (2026-07-02, `0e263d6` — persistent soft constraints arbitrate shape-vs-force standoffs illegibly) and the span-band + live-RTI-drag UX (2026-07-05, `3e19820` — live optimization under the cursor reads as chaotic jumping; solve must be an explicit invocation over inert data). The dense-spine kernel atoms — `force.ts`, `banded.ts`, `collocate.ts` + their tests + the lab pages — stay reference-grounded and oracle-gated; the live path solves node parameters instead. Priority: `kex/roadmap.md`.
+**A unified solver is NOT the model.** Three dogfood rounds proved that a solver responsible for
+arbitrating authoring intent almost never does what's intended — the author fights it
+(`memory/project_kex2d_solver_verdict.md`). The architecture is two deterministic, legible
+atoms — force→geometry and geometry→force — with authoring layers on top; optimization returns
+later only as a **scoped, invoked tool** over the atoms (the deferred "conversion/optimization
+tier"). The kernel atoms that tier will use — `force.ts`, `banded.ts`, `collocate.ts` + their
+tests + the lab pages — stay in-tree, oracle-gated, as its reference; they are NOT on the live
+path.
 
-## Model
+## The section substrate
 
-Free-drag authoring, mouse-driven. The **control scheme** and the **representation** are separate: the controls place free node positions, dragged directly; the canonical representation is the F_n curve. Each node carries a position (dragged) **and a stored heading θ**, never directly authored — derived from position by the circular-arc reflection (below). The **first node is a fixed flat anchor** (θ = 0): the track always launches horizontally.
+`section.ts` — the proven original-KexEdit contract (`packages/core`), in 2D. Every section takes
+an **entry** anchor (a full state point `{x, y, θ, v}`) and produces sampled points; its last
+point IS the next section's entry. Two atomic idioms wrap the oracle-gated physics:
 
-- **Interpolate.** `sampleChain` (`spline.ts`) samples a cubic Hermite curve through every node, the tangent **direction** read from each node's stored heading and the tangent **length** scaled by the live chord (`|T| = chord·sec²(φ/2)`, the cubic best-fit to a circular arc — `k=1` for straight, saturated for near-U-turns). Strict local support: a drag moves **only the two segments that share the dragged node** — nothing before the previous node or after the next moves. The **last** (heading) node carries a standing invariant — its angle is always the reflection of its predecessor's heading — so its segment stays a clean arc and its angle never goes stale and jumps. It re-derives (`headLast`) whenever the tail changes: a drag of the tip or the node before it, or a deletion that promotes a new tip. The **first** node is a fixed flat anchor and **interior** nodes keep their heading frozen: the arc contract can't hold on both of an interior node's segments at once, so a stable heading is chosen over one that thrashes (lengths still re-proportion to the live chord). A frozen interior heading dragged far off its chord bulges — the accepted misshaping.
-- **Recover force.** `forces` (`bake.ts`) reads the sampled positions → per-sample tangent θ (the curve's local tangent, bisector of adjacent chords) → v (energy) → `F_n = κ·v²/g + cos θ`, the physical normal force a cart riding the curve feels. This per-sample θ is recovered from the geometry, distinct from the node headings that shape the curve. Deliberately *not* the algebraic inverse `invertRange` (that sawtooths — see "Hard gotchas"). A Hermite cubic's curvature varies within a span, so the recovered F_n is smoothly varying.
+- **`evalGeo(entry, localNodes, dsNominal)`** — geometry → force. The local nodes (node 0 at the
+  local origin, heading 0) are placed **rigidly** at the entry frame (rotate by entry θ, translate
+  to entry position — §4), sampled to a Hermite curve (`sampleChain`), then the physical force is
+  recovered from the geometry (`forces`, `v0 = entry.v`).
+- **`evalForce(entry, fN, ds)`** — force → geometry. Seed sample 0 from the entry, `integrate` the
+  authored per-edge F_n into the swept geometry, then **re-recover** the display force from that
+  geometry.
+- **`chain(entry0, sections)`** — thread the sections: each is placed at the prior section's exit,
+  its samples appended to one flat SoA, sharing the boundary point (a section's last sample IS the
+  next's first). Returns the flat buffers + per-section index `ranges` + `exits`.
 
-The baked force curve is canonical and terminal — the timeline shows exactly what `forces` recovers, no smoothing or solve on top. The cart rides the baked geometry directly. The authored track *is* the ridden track — permanently: the force-target design (`kex/specs/kex2d-force-targets.md`) has the solver move the *nodes* through explicit undoable commits, so the bake path never changes.
+Two design laws carried from the original core (both pinned in `tests/section.test.ts`):
 
-Lossy bake (Houdini/Blender modifier-stack analogue): parametric authoring is one-shot, canonical state lives in the dense baked form, re-authoring overwrites whatever F_n was there. After the bake, F_n is canonical.
+- **The force curve is ALWAYS geometry-recovered, even for a force section** (§2). A force section
+  integrates the authored F_n, then re-recovers the display force from the swept geometry — so
+  there is ONE display path regardless of section kind (mirrors `nodes/force.rs`: integrate from
+  targets, store the `Curvature::from_frames`-recovered force). The recovered force sits O(ds) off
+  the authored input — the source-vs-centered convention gap (`fvd.lab.ts` panel 3), a derived
+  gap, not a bug. `evalForce`'s exit uses the recovered state too, so it matches a geo section's
+  recovery exactly.
+- **Rigid entry-frame placement** (§4). Geo nodes live in section-local coordinates and the
+  substrate places them rigidly at the entry. When an upstream edit moves the anchor, the
+  downstream shape translates+rotates rigidly — C1 join guaranteed, shaping preserved. The geometry
+  is affine-equivariant (exact to f32); physics (fN) is NOT frame-invariant (gravity picks a world
+  frame), so the rigid-invariance test pins positions only.
+
+f32 throughout — these atoms ARE the realized-track display path, so they use the display recovery
+(`bake.forces`), not the f64 solver atoms (`force.ts`).
+
+**Wiring status (stage A):** the substrate exists and is tested, but `track.BakeSystem` still bakes
+a single geo chain **directly** via `sampleChain` + `forces` (the identity bake). Stage B rebuilds
+`BakeSystem` on `chain([one geo section])` — a behavior-identical app, the proof the substrate
+carries the live product. Stage C adds a force-section kind; stage D adds the multi-section data
+contract.
+
+## Model (geo authoring)
+
+Free-drag authoring, mouse-driven. The **control scheme** and the **representation** are separate:
+the controls place free node positions, dragged directly; the canonical representation is the F_n
+curve. Each node carries a position (dragged) **and a stored heading θ**, never directly authored —
+derived from position by the circular-arc reflection (below). The **first node is a fixed flat
+anchor** (θ = 0): the track always launches horizontally. (Generalized by the substrate: node 0 *is*
+the section entry.)
+
+- **Interpolate.** `sampleChain` (`spline.ts`) samples a cubic Hermite curve through every node, the
+  tangent **direction** read from each node's stored heading and the tangent **length** scaled by the
+  live chord (`|T| = chord·sec²(φ/2)`, the cubic best-fit to a circular arc). Strict local support: a
+  drag moves **only the two segments that share the dragged node**. The **last** (heading) node
+  carries a standing invariant — its angle is always the reflection of its predecessor's heading — so
+  its segment stays a clean arc and its angle never goes stale. It re-derives (`headLast`) whenever
+  the tail changes. The **first** node is a fixed flat anchor and **interior** nodes keep their
+  heading frozen (the arc contract can't hold on both of an interior node's segments at once, so a
+  stable heading beats one that thrashes). A frozen interior heading dragged far off its chord
+  bulges — the accepted misshaping.
+- **Recover force.** `forces` (`bake.ts`) reads the sampled positions → per-sample tangent θ (the
+  curve's local tangent, bisector of adjacent chords) → v (energy) → `F_n = κ·v²/g + cos θ`, the
+  physical normal force a cart riding the curve feels. This per-sample θ is recovered from the
+  geometry, distinct from the node headings that shape the curve.
+
+The baked force curve is canonical and terminal — the timeline shows exactly what `forces` recovers,
+no smoothing or solve on top. The cart rides the baked geometry directly. Lossy bake
+(Houdini/Blender modifier-stack analogue): parametric authoring is one-shot, canonical state lives
+in the dense baked form.
 
 ## Physics — forward integrator + force recovery
 
-Per-sample state `(x, y, θ, v)`. Semi-implicit Euler in arclength, source-σ convention (F_n sampled at `σ_i = i·Δs` drives step i → i+1):
+Per-sample state `(x, y, θ, v)`. Semi-implicit Euler in arclength, source-σ convention (F_n sampled
+at `σ_i = i·Δs` drives step i → i+1):
 
 ```
 dθ       = (F_n(σ_i) − cos θ_i) · g · Δs / v_i²
@@ -30,66 +106,162 @@ y_{i+1}  = y_i + Δs · sin(midθ)
 v_{i+1}² = v_i² − 2g · (y_{i+1} − y_i)
 ```
 
-Velocity uses the energy-delta (squared) form to avoid catastrophic cancellation. Clamps: `vSafe = max(|v|, V_FLOOR)` in the dθ formula, `v_next = sqrt(max(v_next², 0))`.
+Velocity uses the energy-delta (squared) form to avoid catastrophic cancellation. Clamps:
+`vSafe = max(|v|, V_FLOOR)` in the dθ formula, `v_next = sqrt(max(v_next², 0))`.
 
 **Force recovery** (`bake.ts forces`, the bake path): positions → per-sample tangent θ → v → F_n.
 
-- `m_i = atan2(y_{i+1} − y_i, x_{i+1} − x_i)` — edge (chord) angle, accumulated *continuously* (unwrapped) so θ stays continuous across the ±π branch cut (the cart lerps θ for its orientation)
-- `θ_i = ½(m_{i−1} + m_i)` — the curve's local tangent (bisector of adjacent chords); free ends extrapolate the bisector trend (exact for constant curvature, second-order otherwise)
-- `v_i² = v_0² − 2g·(y_i − y_0)` — energy conservation; `v_i = sqrt(max(0, v_i²))` to match the forward clamp
+- `m_i = atan2(y_{i+1} − y_i, x_{i+1} − x_i)` — edge (chord) angle, accumulated *continuously*
+  (unwrapped) so θ stays continuous across the ±π branch cut (the cart lerps θ for its orientation)
+- `θ_i = ½(m_{i−1} + m_i)` — the curve's local tangent; free ends extrapolate the bisector trend
+- `v_i² = v_0² − 2g·(y_i − y_0)` — energy conservation; `v_i = sqrt(max(0, v_i²))`
 - `F_n[i] = (θ_{i+1} − θ_i)·vSafe_i² / (g·Δs) + cos(θ_i)` = κ·v²/g + cos θ
 
-The other recovery, `invertRange` (`θ_{i+1} = 2·m_i − θ_i`), is the integrator's exact reflection inverse — round-trip validation only, not the bake (Hard gotchas). It exactly reproduces the force that drove a forward step, so `invertRange` ↔ `forward` is the exact bidirectional pair the round-trip tests pin.
+`invertRange` (`θ_{i+1} = 2·m_i − θ_i`) is the integrator's exact reflection inverse — round-trip
+validation only, NOT the bake (Hard gotchas).
 
-Constants: `V_FLOOR` = 0.01 (numerical floor, ½v² ≈ 5e-5 J/kg) in `forward.ts` (the integrator owns the `vSafe` clamp; `bake.ts` re-exports it); `V_WARN` = 1.0 (diagnostic threshold for the red-track / red-handle / warning-banner UX, distinct from the floor) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 (angular-cap floor on per-edge turning, keeps tight arcs sample-dense) in `spline.ts`; `MAX_SAMPLES` = 4096 in `track.ts`.
+Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasibility threshold) in
+`bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` = 4096 in `track.ts`; `V0` = 10
+(launch speed) in `track.ts`.
 
 ## Code map
 
-- `forward.ts` — `step` + `integrate`, the forward integrator (F_n → positions). Four SoA Float32Arrays + `count`, `ds`, `fN(σ)`; index 0 pre-set, writes `1..count−1`. Drives round-trip validation via `bake.ts replay`; not on the bake path (the bake goes the other direction, geometry → force).
-- `spline.ts` — Hermite interpolation (pure, no shallot import). `sampleChain` (nodes with stored headings → positions + per-edge chord `dsArr` + node sample `offsets`; tangent length scaled by the live chord, edge count = arc-length spacing OR the angular-cap floor, whichever demands more). It is the fused form of `chainCounts` (the adaptive per-segment edge-count rule) + `sampleAt` (sample at *given* counts) — split so a solve can **freeze the sampling topology** once and sample many node-parameter variations against it (a stable residual dimension for a finite-difference Jacobian, constant force-target sample indices). `sampleAt`'s buffer params accept f32 (the track bake) or f64 (the solver). `reflect` (the circular-arc exit heading `2·chord − prev` — track.ts's authoring primitive), `MAX_U_PER_EDGE`. No neighbor-derived tangents, no `ALPHA` — headings are stored state, not inferred from positions.
-- `bake.ts` — `forces` (the bake path: positions → smooth tangent θ → v → physical `F_n = κ·v²/g + cos θ`, per-edge ds). `invertRange`/`invert` (the integrator's *exact* reflection inverse, for round-trip validation, NOT the bake — see "Hard gotchas"), `replay` (forward-integrate F_n back to positions — round-trip tests). `V_WARN` + re-exports `forward`'s `V_FLOOR`. (The `resampleByTime` uniform-time-grid resampler was removed 2026-07-05 with the distance-domain chart, git holds it — the timeline now reads F_n per-sample over arclength via `cart.forceCurve`; a deferred read-only time view, §7, would re-add a resample.)
-- `force.ts` — the geometry-primal force atoms, f64, solver-side. `forces64` (**parametrization-invariant** geometry→force: Menger κ — the circumcircle of 3 neighbors, exact on circles at any spacing — + neighbor-chord tangent + raw unclamped v² for C^∞ smoothness, interior rows only) + `forceJacobian` (analytic banded ∂F/∂P, six nonzero entries per row). Invariance is load-bearing: a fixed-ds difference scheme was measurably gamed — a hard force demand satisfied by sliding samples (60–97% chord stretch, no real reshaping) — so force must be a property of the *geometry*, not the grid. Distinct from `bake.ts forces` (f32, the display bake): same chord-based family, different consumers, agree to the node-vs-edge centering gap (~0.1g at ds=0.5).
-- `banded.ts` — general symmetric-banded LDLᵀ (`bandFactor`/`bandSolve`/`bandStore`), cross-validated ≤1e-10 against the dense Cholesky reference (`tests/helpers/dense.ts`). The geometry JᵀJ is interleaved half-bandwidth 5 (6 with the order-3 prior).
-- `collocate.ts` — the solver kernel. `normalBand`/`evaluate` assemble weighted residual blocks over the interior DOF: force data/pin rows (per-row `wF`, point terms), the inequality force band (hinge, interval density), the shape prior toward the draft (deformation roughness; `magnitude` is a lab control — the kinds don't differentiate under a hard band, which itself bounds curvature), and the chord term (grid quality, w≈1, never escalated). `collocate` = Levenberg-Marquardt Gauss-Newton (Nielsen μ; **μI the only regularizer** — the data JᵀJ is rank-deficient by the tangential gauge, which the invariant force map makes the *exact* null space). `collocateAL` = PHR augmented Lagrangian outer loop for the band — **the decided architecture**: plain hinge penalty stalls at ~1.5e-2 violation at ANY weight (the kink stall), AL reaches tolerance at finite ρ; cheap inners (15) + frequent λ updates beat long inner solves ~6×. Infeasible requests fail loud: a pin fighting the band lands ON the band boundary with a legible residual; a length-infeasible band returns `converged: false`, finite, no NaN. `collocateRTI` = ONE AL outer per call for a per-frame RTI schedule (dense-spine entry, superseded for the live path by the node-parameter design — see the stripped entry below): caller-owned `RTIState` (λ, ρ) is the carry across drag frames. Its ρ/λ schedule is measured, not theoretical: **λ AND ρ freeze entirely once the band is inside tol** (updating multipliers there pumps a millimeter limit cycle; decaying only interior λ trades it for a slow prior-vs-hinge orbit; decaying ρ under frozen λ grows the shifts and wobbles the hinge — all three tried and measured), escalation is ×2 on weak progress **capped at 64·ρ₀** (an uncapped ρ=51k inflated the LM's μ₀ until a fresh position demand moved 1e-4 m/frame and false-converged on the drift stop). The freeze's accepted cost: leftover λ overshoot can hold the profile up to ~0.25 g inside the band where the prior would ride the ceiling — a soft-preference bias, chosen over non-settling. Terms also carry `pos` (explicit position pins — identity Jacobian point rows, meters) and `fRough` (force-roughness comfort, first difference of F, an interval density; **widens the stencil to half-bandwidth 7**).
-- `solve.ts` — the invoked batch solver, pure and framework-free (mirrors `spline.ts`/`force.ts`; only `targets.ts` imports the shallot barrel). Decision variables are the authored node parameters — freed nodes' `(x, y, θ)`, arc-rule tangent lengths staying derived — NOT the dense spine (spec §2): ~4 freed nodes ⇒ ~12 DOF, dense LM, `banded.ts` not needed at this size. The map: node params → **frozen-topology** `sampleAt` (`bakeNodes`) → `forces64` → F_n; per-segment edge counts freeze at solve start so the FD Jacobian's residual dimension is constant. Residuals: one force row per `PointTarget` (`{i, g, w}`, the sample nearest the authored arclength) + the weak draft prior (w≈0.1 — the degeneracy regularizer; anchors to the chain passed as `base`, re-anchored to *current* geometry at each invocation, §3) + the node-spacing tie-breaker. `scopeForPoint` = the §5 auto-scope (containing segment's nodes + one neighbor each side, anchor never freed); `pointResidual` = the achieved/err readout. **The two solves are resumable generators drained synchronously (§8, one source of truth):** `lmSession` yields the current chain after each accepted LM iteration and returns the `SolveResult`; `solveTargets` is its synchronous drain (one LM pass, Marquardt diagonal scaling for the mixed-unit DOF). `fixpointSession` is the §3 **outer loop** — it `yield*`-delegates to `lmSession` each round (re-yielding every inner iterate) and returns the `FixpointResult`; `solveToFixpoint` is its synchronous drain over arclength `ArcTarget`s (`{s, g, w}`). The animated driver (`targets.ts`) advances `fixpointSession` per frame and live-writes each yielded iterate; the drained final chain is byte-identical to the last stepped iterate (the equivalence test). The loop itself: a single pass converges exactly *on its frozen grid* but the moved nodes redistribute arclength under it, so the re-baked drift at the authored s regresses (measured 0.60 g > the 0.34 g start) — it re-freezes the grid on the moved nodes, re-maps each s→nearest sample, and re-solves until max drift < `driftTol` or the chain stops moving between rounds (`POSE_EPS` 1e-6, an infeasible fixpoint), keeping the best iterate, capped at 8 rounds. The prior **re-anchors to each round's current chain** (via `lmSession`'s `base`): anchoring it once to the draft 2-cycles against the grid re-freeze (0.60 ↔ 0.19 g, never converges); re-anchoring is contractive → fixpoint in ~2 rounds. Idempotent — a chain already within tol yields nothing and returns byte-identical at 0 rounds. Stage-1 evidence gate: `tests/hill.lab.ts`.
-- `targets.ts` — the ECS edge over `solve.ts`: the `Target` point component (`track`/`id`/`s`/`g` — **stored in arclength**, which is now the chart's own x-axis (§4) — s-anchors stay feature-attached — plus `active`, the CAD-sketcher **driving vs driven** bit, born 1), the monotone never-reused `id` allocator, `solveTrack` (assemble the **active** targets' rows over the freed union and run `solveToFixpoint`, one system — a **pure read**), `trackScope` (the active freed set, the Solve flash), `targetDrift` (point-vs-curve gap vs `DRIFT_TOL` for ALL targets — driven ones still measure — displayed never chased), `trackDirty` (any **active** target drifted — the Solve-accent trigger; driven drift never accents), `targetMarkers` (each target as a display marker at its s directly — no projection), `trackMapping` (the per-sample arclength↔time table — the **cart** playhead/scrub projection, not the markers; the cart rides in time, the chart is distance), and the history commands: `createTarget` (born at exactly the clicked demand, driving), `beginTargetMove`+`setTarget` (marker drag, one entry via the generic gesture), `deleteTarget`, `setTargetActive` (driving↔driven toggle, one entry; no-op drops), `solveAll` (the **synchronous** §3 invocation — `solveToFixpoint` over active targets in one call, node moves as ONE undo entry, targets untouched, **idempotent**; the tests + non-animated callers use it). **The animated driver (§8) is `beginSolve`/`stepSolve`/`cancelSolve`/`solveRunning` over `solveSetup`+`fixpointSession` (shared with `solveAll` — one source of truth):** `beginSolve` snapshots the pose (`beginMove`) and opens the session (refused if a solve runs or nothing's active); the UI's per-frame effect calls `stepSolve` (`SolveStatus`), which paces ONE LM iter/frame until `WINDOW_MS` (400) then drains under `FRAME_CAP_MS` (8) — measured 18–64 iters at ~1 ms — live-writing each iterate, and on finish writes the best iterate + `commit`s ONE entry (idempotent no-op drops); `cancelSolve` reverts the pose and records nothing. One solve at a time. Targets are inert between solves: geometry never moves, nothing re-fits.
-- **Stripped 2026-07-02 (the persistent-pin force-authoring wiring — git holds it at `0e263d6`):** `constraints.ts` (the `Pin`/`PosPin`/`bandConfig`/`comfortConfig` authored surface + `pinRows`/`hasConstraints`/`constraintRev`), `solve.ts` (the per-tick `collocateRTI` wiring + `ConstraintReport` + length adaptation), `resample.ts` (`polylineLength`/`arcResample` Catmull-Rom/`fracResample` — the λ-carry re-grid atoms; if dense-state solving returns, re-grid only at gesture rest, by arclength, never by index), `refit.ts` + `relax.ts` (the relax verb). The RTI schedule facts live in the `collocate.ts` entry above; the go-forward design is `kex/specs/kex2d-force-targets.md` (node parameters as the decision variables, so `collocateRTI`'s dense-spine entry is superseded for the live path).
-- `track.ts` — `BakeSystem` is the **identity bake only** (`bakeIdentity`): gather node positions + headings from sorted handles, `sampleChain` then `forces`, sync each node's `Handle.sample`; skip on a hash match. (Identity is the *permanent* shape: the force-target design solves over node parameters and commits to Handles, so no constrained bake branch returns; `samples`/`bakeOut` stay the single realized-track truth.) `Handle` carries `order`, `sample`, `pos` (the free authored position; the curve passes through it exactly, never written back), and `theta` (the exit heading — see Model). `bakeOut` carries per-edge `fN`+`ds`, per-sample cumulative `t`, `feasible: Uint8Array`, `firstInfeasible`, `lastBakedOrder` (orphaned nodes render red), `hash` (input-state gate = every node's pos + theta; a miss triggers a re-bake). `createTrack` (buffers) / `addNode(x, y)` (append) / `extend` (lay a node along the last heading by `EXTEND_DIST`) / `reheadOnDrag(eid)` + `headLast` (post-drag heading refresh) / `removeTrailingHandle` (drop the last node) / `sortedHandles` / `lastHandle`. Undo/redo primitives (composed by `history.ts`): `handleAt(order)` (order→eid), `spawnNode(order,x,y,theta)` (re-create a node verbatim — no `reflect`/rehead), `nodeSnapshot`/`restoreNodes` (whole-chain pose by order, for the move gesture).
-- `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` carries `t` (advances by real `dt`, wrapping at `loopTime(bakeOut)` — the first infeasible time, or `tTotal`) and `held` (set while the timeline playhead is scrubbed or playback is paused; the advance loop still refreshes `lastClock` but yields `t`, so release doesn't replay the gap). `cartPose(trackEid, t)` interps the baked geometry (`bakeOut.t` + `samples.posX/posY/theta`) for the box renderer; `forceCurve(trackEid)` returns the baked F_n as per-sample `(s, f)` points over cumulative arclength (the chart's distance x-axis, §4 — native, no time resample; the last sample repeats the last per-edge force). The cart still rides in time (`bakeOut.t` seconds); the chart projects that `t` to a chart-s through `trackMapping`.
-- `editor.ts` — ephemeral UI state: node `selection`, force-target `target` selection (mutually exclusive — one thing at a time, so `Del`/`Esc` route unambiguously), and the transient solve-flash `highlight` (freed node orders the Solve beat rings in the viewport). No tools or modes. Plain singleton, read by Svelte via the per-RAF tick.
-- `history.ts` — **one undo/redo stack for the whole editor**, mirroring shallot's editor (`document/index.ts`). The substrate is domain-agnostic: a `Command {apply, reverse}` do/undo pair on a dual stack (`MAX_UNDO=256`), plus a **generic snapshot gesture** — `begin(snap, restore, same)` / `commit` / `cancel` parameterized by closures, one gesture open at a time, so a live drag collapses to a single entry. Two surfaces record onto it: the **track nodes** (addressed by stable `Handle.order` — the append/delete-trailing chain never changes an interior node's order, so order survives eid recycling across a delete→undo): `extendTrack`/`trimTrack` + `beginMove`; `trimTrack` captures the promoted tip's heading before+after (the `headLast` rehead) and restores it on either side, `extendTrack` undo is a plain removal (extend never reheads), `beginMove` snapshots the chain pose (`nodeSnapshot`/`restoreNodes`). Do-paths mutate live (instant re-bake via the bake `hash`) + record an already-applied command; only undo/redo replay through apply/reverse. Selection stays ephemeral, out of the commands. `history` singleton for the app; `createHistory` for tests. `record` is the substrate primitive for composed commands; the force targets (`targets.ts`) are the second recording surface — create/move/delete plus `solveAll`'s node commit, all addressed by stable target `id`.
-- `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard and returns a teardown; called from App's `onMount` so listeners live with the canvas (no module-flag staleness). `pickNode` (nearest within `PICK_R`); pointerdown picks + drags a node (or deselects on empty), drag sets `Handle.pos` to the cursor with a grab offset so grabbing off-center doesn't snap then calls `reheadOnDrag` to refresh the last node's heading (first node + interior stay frozen); `Enter` extends, `Del` removes the trailing node when the end is selected. All three edits route through `history` (`beginMove`+`commit` on pointerup / `cancel` on pointercancel; `extendTrack`/`trimTrack` on the keys) onto the shared undo stack. A node drag and extend/trim are blocked while an animated solve runs (`solveRunning()` — one solve at a time, §8).
-- `timeline.ts` — pure transform + tick math for the force-curve timeline (no Svelte/DOM/track state). The chart's x-axis is **distance** (meters) — s is the domain the solver holds fixed, so targets author/drag/display in it directly (§4). `View` = `{pan, pxPerM}`; `sToPx`/`pxToS` (the arclength↔pixel affine), `zoomAt` (cursor-anchored geometric zoom — the meter under the cursor stays fixed; clamp scale *before* deriving pan), `clampView` (left edge anchored at s=0 — no negative distance on the ruler; min-scale fits the whole track + a one-sided right lead-out, left-aligned), `frameAll`, `niceStep` (1-2-5×10ⁿ, geometric-mean breakpoints), `ticks` (labeled `…m`), plus the navigator math: `navWindow` (the visible span as `{l,r}` fractions of the full track + lead-out) and `navDragView` (apply an overview drag — `pan` slides the window, `l`/`r` drag one edge with the opposite anchored, a zoom; span floors at the `MAX_PX_PER_M` zoom ceiling). Separately, `Mapping` + `timeToArc`/`arcToTime` are the per-sample arc↔time table — the **cart** playhead/scrub projection (the cart rides in time), NOT a marker projection. Ported from `reference/animation-timeline`; unit-tested in `tests/timeline.test.ts`.
-- `Timeline.svelte` — the always-present bottom dock: the **F_n force-curve readout + scrub + zoom/pan navigation**, and the **point-target authoring surface** (stage 2, `kex/specs/kex2d-force-targets.md`). Targets are SVG **hollow rings** over the chart — an optimization constraint, not a keyframe (§6) — each with a **dotted drop-line** to the curve at its s (the residual Solve closes): danger + `demanded → achieved` label when an *active* target drifts, dashed + faded when driven, `sel` glow when selected; clipped to the inner chart rect. A transparent `.chartzone` rect owns creation (double-click → `createTarget` at the exact demand under the cursor) and empty-click deselect; each marker owns its two-axis drag (`beginTargetMove`/`setTarget`/`commit` — vertical = g, horizontal = s, one undo entry); `Esc`/`Del` deselect/delete the selected target (guarded on `editor.target` so node keys route to `controls.ts`). A **dock header row** (the §4/§6 permanent quiet home) carries the selected target's typed **s / g numeric fields** (each commits one entry via the marker-move gesture) + a **driving/driven toggle** (`setTargetActive`), and the **Solve** button (right) — summoned when targets exist, accented on any *active* drift. Solve runs the **animated §8 driver**: `beginSolve` + a per-frame `$effect` calling `stepSolve` (morphing the freed nodes + curve toward the fixpoint) + `setHighlight(trackScope)` for the flash; while it runs the button is a pulsing **Cancel** (`cancelSolve` reverts, records nothing) and every edit blocks on `solveRunning()` (here + `controls.ts`). `yTarget` folds target g into the auto-fit so a demand above/below the curve's own range stays in frame (the marker-to-curve gap IS the drift readout). Between solves the app is inert, so `trackMapping` is static — no freeze machinery. (The span/chip/live-drag surface was stripped 2026-07-05, git `3e19820`. The `BAND` lines below are the fixed `[−2,6]g` comfort *reference*, not an authored band.) Top→bottom bands (`RULER_H`/`GAP_H`/`TOP`/`BOT_PAD`): a **ruler** (adaptive 1-2-5 ticks + labels + playhead handle), a darker **marker lane** (`GAP_H`, a full row — sized for event markers later), then the chart (the baked F_n **force curve** over arclength, accent, per-sample via `cart.forceCurve` — no time resample, canvas2D). The ruler is the **scrub zone** — click/drag anywhere positions the playhead and *parks* paused on release (`startScrub`/`endScrub`, never auto-resumes). The transport is a separate **media player** floated below the dock (play/pause + Space · global full-track slider · timecode), its slider the global scrubber to the ruler's zoomed-local playhead. Layout posture + the player-vs-timeline split live in `.claude/rules/editor-ui.md`. The Y axis **auto-fits** (`yFit` in `timeline.ts`: scans the force curve, always keeps 1g, rounds OUTWARD to a nice 1-2-5 step). `yTarget` is a **stable default frame** that only **expands** to fit data beyond it — never hugs tight, so it doesn't jarringly rescale. The **displayed** `yView` approaches the target ASYMMETRICALLY — grows fast (`Y_OUT`), contracts lazily (`Y_IN`) — the "sticky viewport" feel; one `$effect` paced by `tick` drives it, wrapped in `untrack` (it reads + writes `yView`, so a tracked read would self-retrigger). `yView`'s `step` is derived from the *displayed* span so a lazy contraction doesn't crowd labels. g gridlines + labels live in a **left gutter** (`LEFT_GUT`), so the chart insets: the distance affine lives in `[LEFT_GUT, w]` and every `timeline.ts` call takes `chartW = w − LEFT_GUT` with `LEFT_GUT` added/subtracted at the content↔screen boundary. `BAND` reference comfort-limit lines (`[−2, 6]g`) draw only when within the fit range. View-state is one `{pan, pxPerM}` in `$state`; a `clamped` `$derived` re-fits it to the live width/track-length (so a resize never writes back into `view` — no effect loop). Plain wheel zooms (geometric, cursor-anchored), shift+wheel pans (the Unity/AE standard); a trackpad's horizontal axis pans and a pinch (ctrl+wheel) zooms. Both clamped to the track extent — zooming fully out *is* frame-all. A **distance navigator** (`.nav`, below the chart) is a **preview minimap** (VSCode / DAW-overview style): `renderNav` draws a faint miniature of the full-track force curve over arclength into `navCanvas`, and a translucent viewport window over it drags to pan / edge-resizes to zoom (`navWindow`/`navDragView`). The g-axis labels **hide** when a gridline sits within `LABEL_HALF` of the plot's top/bottom edge. Opaque surface, **no resize**. X-axis = **arclength (meters)** from `forceCurve`; the playhead projects the cart's `t` through `trackMapping` to a chart-s, and a ruler scrub maps the picked s back to the cart's `t` (§4). The floating **media player** stays in seconds (`cartSec`/`tTotal`) — a global transport over the ride, distinct from the distance chart. Middle-drag pans (intercepted at the host `onpointerdowncapture`); Ctrl/⌘-Z / -Y / -Shift-Z undo/redo the shared `history` (track-node edits).
-- `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track** polyline (solid; feasible blue / infeasible dashed-red passes), the node handles (selected highlighted, orphan/infeasible red), the cart (on the baked track), the **Timeline** dock (the `Timeline.svelte` component above), and the radial extend/delete buttons (DOM, positioned around the selected chain end via `viewTransform` — extend along the heading, delete rotated off it).
+**Substrate + physics atoms (pure, framework-free, `bun test`-able):**
+
+- `section.ts` — the section substrate (above): `Entry`, `SectionResult`, `Section`, `evalGeo`,
+  `evalForce`, `chain`. f32; consumes `sampleChain`/`forces`/`integrate`. Tested device-free in
+  `tests/section.test.ts` (RK4 carry, O(ds) round-trip convergence, rigid invariance, chain C0/C1
+  continuity + energy).
+- `forward.ts` — `step` + `integrate`, the forward integrator (F_n → positions). Index 0 pre-set,
+  writes `1..count−1`. Drives round-trip validation; not on the geo bake path (that goes the other
+  direction, geometry → force). `evalForce` wraps `integrate`.
+- `spline.ts` — Hermite interpolation (no shallot import). `sampleChain` (nodes with stored headings
+  → positions + per-edge chord `dsArr` + node `offsets`), split into `chainCounts` (adaptive
+  per-segment edge-count rule) + `sampleAt` (sample at *given* counts — freezes the sampling
+  topology). `reflect` (circular-arc exit heading `2·chord − prev`), `MAX_U_PER_EDGE`.
+- `bake.ts` — `forces` (the bake path: positions → smooth tangent θ → v → physical `F_n`,
+  per-edge ds). `invertRange`/`invert` (the exact reflection inverse, round-trip validation only —
+  see Hard gotchas), `replay` (forward-integrate F_n back to positions). `V_WARN` + re-exports
+  `forward`'s `V_FLOOR`.
+
+**Kernel atoms (future optimization tier's reference — NOT on the live path):**
+
+- `force.ts` — the geometry-primal force atoms, f64. `forces64` (parametrization-invariant
+  geometry→force: Menger κ + neighbor-chord tangent + raw unclamped v²) + `forceJacobian` (analytic
+  banded ∂F/∂P). Invariance is load-bearing (a fixed-ds difference scheme was measurably gamed).
+  Distinct from `bake.ts forces` (f32, the display bake): same chord family, different consumers.
+- `banded.ts` — general symmetric-banded LDLᵀ, cross-validated ≤1e-10 against the dense Cholesky
+  reference (`tests/helpers/dense.ts`).
+- `collocate.ts` — the dense-spine solver kernel (LM Gauss-Newton, PHR augmented-Lagrangian band).
+  Kept as reference for the deferred optimization tier; the live path does not call it.
+
+**ECS + UI layer (the live geo app):**
+
+- `track.ts` — `BakeSystem` is the **identity bake**: gather node positions + headings from sorted
+  handles, `sampleChain` then `forces`, sync each node's `Handle.sample`; skip on a hash match.
+  (Stage B rebuilds this on `section.chain([geo])`.) `Handle` carries `order`, `sample`, `pos` (free
+  authored position; the curve passes through it exactly), `theta` (exit heading). `bakeOut` carries
+  per-edge `fN`+`ds`, per-sample cumulative `t`, `feasible`, `firstInfeasible`, `lastBakedOrder`,
+  `hash`. `createTrack` / `addNode` / `extend` / `reheadOnDrag` + `headLast` / `removeTrailingHandle`
+  / `sortedHandles` / `lastHandle`. Undo/redo primitives (composed by `history.ts`): `handleAt`,
+  `spawnNode`, `nodeSnapshot`/`restoreNodes`/`sameNodes`. `V0` (launch speed), `MAX_SAMPLES`.
+- `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
+  `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
+  `(s, f)` over cumulative arclength — the chart's distance x-axis), `loopTime`, and **`trackMapping`**
+  (the per-sample arclength↔time table over the display bake — the cart's `t`↔chart-`s` projection;
+  the cart rides in time, the chart is distance).
+- `editor.ts` — ephemeral UI state: node `selection` + `select`. No tools, modes, or target state.
+  Plain singleton, read by Svelte via the per-RAF tick.
+- `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
+  `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
+  `begin`/`commit`/`cancel` snapshot gesture parameterized by closures (one gesture at a time, so a
+  live drag collapses to one entry). The track nodes are the recording surface (addressed by stable
+  `Handle.order`): `extendTrack`/`trimTrack` + `beginMove`. `history` singleton for the app;
+  `createHistory` for tests.
+- `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
+  teardown (called from App's `onMount`). `pickNode`; pointerdown picks + drags a node (or deselects
+  on empty), drag sets `Handle.pos` with a grab offset then `reheadOnDrag`; `Enter` extends, `Del`
+  trims when the end is selected. All edits route through `history`.
+- `timeline.ts` — pure transform + tick math for the force-curve timeline (no Svelte/DOM/track
+  state). The chart's x-axis is **distance** (meters). `View`, `sToPx`/`pxToS`, `zoomAt`, `clampView`,
+  `frameAll`, `niceStep`, `ticks`, the navigator math (`navWindow`/`navDragView`/`marginArc`), and
+  `Mapping` + `timeToArc`/`arcToTime` (the arc↔time table `cart.trackMapping` builds — the cart
+  playhead/scrub projection). `yFit`/`YFit` (the auto-fit g-range). Unit-tested in `timeline.test.ts`.
+- `Timeline.svelte` — the always-present bottom dock: the **F_n force-curve readout + scrub +
+  zoom/pan navigation**, plus the floating **media player** (play/pause · global scrub · timecode).
+  The chart draws the baked F_n curve over arclength (canvas2D); the top **ruler** is the scrub zone
+  (click/drag positions the playhead, parks paused on release); wheel zooms, shift+wheel pans; a
+  **distance navigator** minimap below the chart pans/zooms the view. Y auto-fits with a sticky
+  asymmetric ease. Reads only `cart`/`history`/`track`/`timeline` — no ECS, no target state. (Force
+  authoring on the curve returns in stage C.)
+- `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
+  polyline (solid feasible blue / dashed infeasible red), the node handles (selected highlighted,
+  orphan/infeasible red), the cart, the **Timeline** dock, and the radial extend/delete buttons
+  around the selected chain end.
+- `main.ts` — boots `run({ defaults: false })` + mounts App. The DEV-only `__kex` hook exposes
+  geo-authoring state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`) the
+  capture harness drives; never ships.
 
 ## Editing model
 
-No tools, no modes — just selection. Click a node to select + drag it freely to where you want it; click empty space to deselect. A drag reshapes exactly the two segments sharing the dragged node, no cascade either direction.
+No tools, no modes — just selection. Click a node to select + drag it freely; click empty space to
+deselect. A drag reshapes exactly the two segments sharing the dragged node, no cascade.
 
-- **Free drag** (any node): pointerdown picks the nearest node within `PICK_R` and drags it; `Handle.pos` follows the cursor with a grab offset so grabbing off-center doesn't snap, then `reheadOnDrag` refreshes the heading per the Model.
-- **Extend / Delete** (radial buttons around the selected chain end): Extend (＋, placed along the heading) lays a node continuing the last edge's direction by `EXTEND_DIST` + selects it (`extend`, also `Enter`); Delete (🗑, rotated off extend) removes the trailing node + selects the new end (`removeTrailingHandle`, also `Del`), re-heading the promoted tip so it doesn't jump when grabbed, never below the two nodes a chain needs.
-- **No insert-on-curve, no interior insertion.** Append/drag/delete only — interior insertion is out of scope for the simple loop.
-
-Force authoring is wired on the timeline: double-click the chart to place a point target, drag it in both axes (or type its s / g in the dock header), toggle it driving/driven, `Del` to remove it, **Solve** to fit the track to every *active* target. Solve is **animated** (§8) — the freed nodes + force curve morph toward the fixpoint over a paced window, the button becomes a pulsing Cancel that reverts, and the cart is suspended for the morph. Between solves targets are inert data — geometry never moves, nothing re-fits; drift (the marker-to-curve gap) is displayed, never chased. The data layer is `targets.ts`/`solve.ts`; the surface is `Timeline.svelte`.
+- **Free drag** (any node): pointerdown picks the nearest node within `PICK_R` and drags it with a
+  grab offset, then `reheadOnDrag` refreshes the last node's heading (first + interior stay frozen).
+- **Extend / Delete** (radial buttons around the selected chain end): Extend (＋, along the heading,
+  also `Enter`) lays a node continuing the last edge by `EXTEND_DIST`; Delete (🗑, also `Del`) removes
+  the trailing node, never below the two nodes a chain needs, re-heading the promoted tip.
+- **No insert-on-curve, no interior insertion.** Append/drag/delete only.
 
 ## Hard gotchas
 
-- **Input is wired in `onMount`, not a system.** `attachControls(canvas, ecs)` binds the canvas/keyboard listeners and returns a teardown App calls on unmount. Don't move this back to a `System` with a module-level `attached` flag — that goes stale across a remount (a fresh canvas keeps the old flag and never re-binds, so input silently dies).
-- **The bake uses `forces`, not `invertRange`.** `invertRange` is the *exact* reflection inverse of the forward integrator (`θ_{i+1} = 2·m_i − θ_i`). It carries a leapfrog "computational mode": a marginally-stable ±(−1)^i tangent oscillation. On positions the integrator itself produced it cancels to zero (round-trip exact, so flat/ballistic/single-step tests pass), but on a varying-curvature curve the mode is excited and **F_n sawtooths sample-to-sample** — a real reported bug. (The current per-segment near-arcs *reduce* the excitation — the reflection is exact at constant curvature — but don't eliminate it, so the guard stays.) `forces` recovers θ as the curve's local tangent (bisector of adjacent chords) instead, which has no such mode. Don't switch `BakeSystem` to `invertRange` (the `track.test.ts` smoothness test guards this).
-- **`forces` accumulates a *continuous* chord angle.** It unwraps the per-edge chord angle before taking the tangent bisector, so θ stays continuous across the ±π atan2 branch cut. The cart lerps θ for its orientation, so a raw-`atan2` θ would spin the cart a full turn between two samples when the heading crosses ±π (e.g. a leftward turn). A `bake.test.ts` test guards this.
-- **Node headings (`Handle.theta`) are stored authored state — keep them out of the bake.** The bake's per-sample θ is a separate quantity, recovered from the sampled geometry (chord bisector). Don't (a) make the bake read `Handle.theta`; (b) reintroduce a `Track.theta0` entry angle — node 0's flat anchor *is* the entry; (c) switch `sampleChain` back to inferring tangents from neighbor positions each bake (Catmull-Rom) — that's the bidirectional cascade the stored-heading model kills, and it breaks two-segment locality. (See Model for how headings are maintained.)
-- **`sampleChain` per-edge ds is the exact chord.** `dsArr[i] = |P_{i+1} − P_i|`. A near-coincident segment or `MAX_SAMPLES` truncation commits the prefix + orphans trailing nodes.
-- **Forward clamps are non-differentiable.** `vSafe` / `sqrt` kink at the boundary. The floor is tiny, so coasting past an infeasible region behaves like "cart paused at peak then continued" — negligible energy perturbation. (A future force-constraint solver's gradient would be zero through them, so its loss should keep the chain out of that regime.)
-- **`converged` is not a health signal** (kernel truth, holds when the solver is re-wired). `collocate`'s step-size stall exits true with grad ~1e7 near a Menger singularity — "stop iterating", not "demands met". Health is the residual/violation surface + finiteness, never the flag.
-- **Solver output reaches `Handle.pos/theta` only through explicit, undoable history commits** (`targets.ts solveAll` — `solveTrack` itself is a pure read) — never an implicit per-tick write. An implicit write re-triggers the bake through `bakeHash` and puts the solver in a feedback loop with itself.
-- **Quaternion DOF (when 3D lands).** Unit-norm constraint. Use the log-map (axis-angle delta) as the local update variable, matching `sim/curvature.rs::angular_delta_from`. Per-piece scope is unchanged in 3D.
+- **Input is wired in `onMount`, not a system.** `attachControls(canvas, ecs)` binds the
+  canvas/keyboard listeners and returns a teardown App calls on unmount. Don't move this back to a
+  `System` with a module-level `attached` flag — that goes stale across a remount (a fresh canvas
+  keeps the old flag and never re-binds, so input silently dies).
+- **The bake uses `forces`, not `invertRange`.** `invertRange` is the *exact* reflection inverse of
+  the forward integrator (`θ_{i+1} = 2·m_i − θ_i`). It carries a leapfrog "computational mode": a
+  marginally-stable ±(−1)^i tangent oscillation. On positions the integrator itself produced it
+  cancels to zero (round-trip exact), but on a varying-curvature curve the mode is excited and **F_n
+  sawtooths sample-to-sample**. `forces` recovers θ as the chord bisector instead, which has no such
+  mode. Don't switch `BakeSystem` (or `section.evalGeo`/`evalForce`'s recovery) to `invertRange`.
+- **`forces` accumulates a *continuous* chord angle.** It unwraps the per-edge chord angle before
+  taking the tangent bisector, so θ stays continuous across the ±π atan2 branch cut. The cart lerps θ
+  for its orientation, so a raw-`atan2` θ would spin the cart a full turn when the heading crosses
+  ±π. A `bake.test.ts` test guards this.
+- **Node headings (`Handle.theta`) are stored authored state — keep them out of the bake.** The
+  bake's per-sample θ is a separate quantity, recovered from the sampled geometry (chord bisector).
+  Don't (a) make the bake read `Handle.theta`; (b) reintroduce a `Track.theta0` entry angle — node 0's
+  flat anchor *is* the entry (and in the substrate, the section entry); (c) switch `sampleChain` back
+  to inferring tangents from neighbor positions each bake (Catmull-Rom) — that breaks two-segment
+  locality.
+- **`sampleChain` per-edge ds is the exact chord.** `dsArr[i] = |P_{i+1} − P_i|`. A near-coincident
+  segment or `MAX_SAMPLES` truncation commits the prefix + orphans trailing nodes.
+- **A force section's exit is the geometry-RECOVERED state, not the integrator's.** `evalForce`
+  integrates, then re-runs `forces` and reads the exit off THAT — so a force section joins the next
+  section at the visible-tangent heading, matching a geo section. Don't thread the raw integrator
+  `theta`/`v` as the exit (it would introduce an O(ds) heading kink at the boundary).
+- **Chain sections share the boundary sample.** `chain` copies each section's points `1..edges`
+  (point 0 is the prior section's exit, already written). The shared index carries the prior exit
+  state, which is exactly this section's placement — C0/C1 by construction. Don't double-write it.
+- **Forward clamps are non-differentiable.** `vSafe` / `sqrt` kink at the boundary. The floor is
+  tiny, so coasting past an infeasible region behaves like "cart paused at peak then continued."
+- **Quaternion DOF (when 3D lands).** Unit-norm constraint. Use the log-map (axis-angle delta) as the
+  local update variable, matching `sim/curvature.rs::angular_delta_from`.
 
 ## References
 
-- **kexedit forward integrator** — `packages/core/src/sim/`. The 3D physics reference. `forward.ts` is the 2D forward direction (F_n → positions); `invertRange` is the reverse of the same equations. Core's node model: `nodes/force.rs` is F_n-driven, `nodes/geometric.rs` rate-driven, `sim/curvature.rs::from_frames` is quaternion-log curvature for the 3D port.
-- **Houdini / Blender modifier stack** — analogue for lossy bake from parametric authoring into canonical dense state.
-- **Witkin & Kass 1988, Spacetime Constraints** — parameter-space trajectory optimization with sparse user constraints; a reference for the future optimization spike (author force constraints, solver warps the shape).
+- **kexedit forward integrator** — `packages/core/src/sim/`. The 3D physics reference. `forward.ts`
+  is the 2D forward direction (F_n → positions); `invertRange` is its reverse. Core's node model:
+  `nodes/force.rs` is F_n-driven, `nodes/geometric.rs` rate-driven, `track/dispatch.rs::finalize` is
+  the section entry-propagation contract `section.ts` mirrors, `copy_path.rs` is the rigid-transform
+  replay `evalGeo`'s §4 placement mirrors, `sim/curvature.rs::from_frames` is quaternion-log curvature
+  for the 3D port.
+- **Houdini / Blender modifier stack** — analogue for lossy bake from parametric authoring into
+  canonical dense state.
+- **Witkin & Kass 1988, Spacetime Constraints** — parameter-space trajectory optimization with sparse
+  user constraints; a reference for the deferred optimization tier.
 
 ## Verify
 
@@ -98,10 +270,23 @@ cd kex2d && bun check && bun test
 cd kex2d && bun run capture   # UI screenshots → harness/shots/ (display-gated)
 ```
 
-f64 mirror for tests: `tests/helpers/forward64.ts`. Independent physics check: `tests/oracles/rk4.ts` (time-parameterized RK4 — a different scheme + parameterization, catches sign/coupling bugs self-consistency tests can't). Physics is gated against the oracle, not self-consistency.
+f64 mirror for tests: `tests/helpers/forward64.ts`. Independent physics check: `tests/oracles/rk4.ts`
+(time-parameterized RK4 — a different scheme + parameterization). Physics is gated against the
+oracle, not self-consistency.
 
-Investigation labs (run explicitly, not part of `bun test`): `tests/geometry.lab.ts` (atom tables + sparsity + the two conditioning slopes), `tests/collocate.lab.ts` (solver convergence), `tests/loop.lab.ts` (the Stage-2 0g-loop evidence: penalty-vs-AL, prior kinds, ds sweep), `tests/conditioning.lab.ts` (the force-space σ~N^1.56 measurement), `tests/hill.lab.ts` (the force-target stage-1 evidence gate: sparse-variable LM over node params — basin, span representability vs node count, bunching, per-iter cost, two-target composition; `kex/specs/kex2d-force-targets.md`). Visual counterparts `geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` (entries `src/geometrylab.ts`/`src/collocatelab.ts`/`src/looplab.ts`, canvas2D, captured by the harness).
+Investigation labs (run explicitly, not part of `bun test`) — the kernel-atom / future-tier
+reference: `tests/geometry.lab.ts`, `tests/collocate.lab.ts`, `tests/loop.lab.ts`,
+`tests/conditioning.lab.ts`, `tests/fvd.lab.ts`, `tests/hill.lab.ts`. Visual counterparts
+`geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` (canvas2D, captured by
+the harness).
 
-The ECS layer (`BakeSystem`, cart resampling) is covered device-free in `tests/track.test.ts` + `tests/cart.test.ts` (`BakeSystem` on a bare `State` via the scheduler). The `tests/setup.ts` enum-shim preload (`bunfig.toml`) lets them import the shallot barrel with no GPU device — see that file for why; the unit suite is canvas2D + device-free, no real-GPU leg.
+The ECS + substrate layers are covered device-free: `tests/section.test.ts` (the substrate),
+`tests/track.test.ts` + `tests/cart.test.ts` (`BakeSystem`, cart on a bare `State` via the
+scheduler). The `tests/setup.ts` enum-shim preload (`bunfig.toml`) lets them import the shallot barrel
+with no GPU device; the unit suite is canvas2D + device-free, no real-GPU leg.
 
-`harness/` — Playwright harness (`bun run capture` → `harness/shots/`, gitignored). The `point-target golden path` test **drives the real UI and asserts** (place → typed-precision edit → animated Solve-to-fixpoint → cancel-reverts → drift → re-solve → driving/driven → delete, `window.__kex` state via `expect.poll`, no sleeps, plus a mid-animation shot) — a real gate; the lab tests still just screenshot for UI review. The DEV-only `__kex` hook (`src/main.ts`) exposes target/drift/undo/tTotal + `poses` (byte-identical revert check) + `nodeS` (the crest arclength a typed demand targets) reads + `seedHill`/`nudge` for the flow. **The animated solve satisfies drift from live per-frame writes; the undo entry only records on completion — assert `.solve.running` cleared (not just drift) before counting undo.** Self-contained sub-package outside the project `tsconfig`/`biome`, so `bun check` doesn't cover it; the orchestrator is Bun-only, just the staged `shot.pw.ts` imports Playwright. Drives the host's **real-GPU Chrome via the WSL→Windows bridge** — shallot's `run()` acquires a WebGPU device even though kex2d is canvas2D, so headless Linux won't do. Display-gated. Mirrors orrstead's harness + shallot's capture.
+`harness/` — Playwright harness (`bun run capture` → `harness/shots/`, gitignored). The `geo authoring
+flow` test drives the real UI (seed → extend → undo → reshape) and asserts `window.__kex` state via
+`expect.poll` (no sleeps); the lab tests screenshot the atom pages. Self-contained sub-package outside
+the project `tsconfig`/`biome`. Drives the host's **real-GPU Chrome via the WSL→Windows bridge**
+(shallot's `run()` acquires a WebGPU device even though kex2d is canvas2D). Display-gated.

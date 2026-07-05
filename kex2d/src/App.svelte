@@ -146,7 +146,7 @@ function onDelete(): void {
     </div>
 {/if}
 
-<Timeline {ecs} eid={trackEid} {tick} />
+<Timeline eid={trackEid} {tick} />
 
 <style>
     :root,

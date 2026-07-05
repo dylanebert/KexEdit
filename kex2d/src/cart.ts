@@ -1,4 +1,5 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
+import type { Mapping } from "./timeline";
 import { bakeOut, samples, Track } from "./track";
 
 /** per-track cart state: cumulative time `t` (mod tTotal), the last wall-clock
@@ -102,6 +103,25 @@ export function forceCurve(
     for (let i = 1; i < count; i++) s[i] = s[i - 1] + out.ds[i - 1];
     for (let i = 0; i < count; i++) f[i] = out.fN[Math.min(i, count - 2)];
     return { s, f, n: count };
+}
+
+/** the per-sample arclength↔time table over the display bake (`samples` +
+ *  `bakeOut`, the realized track the timeline draws). the chart's x-axis is
+ *  distance, but the cart rides the track in time, so the playhead projects the
+ *  cart's `t` to a chart s through this, and a ruler scrub maps the picked s back
+ *  to a cart `t`. null below the two-node floor. */
+export function trackMapping(trackEid: number): Mapping | null {
+    const s = samples.get(trackEid);
+    const out = bakeOut.get(trackEid);
+    if (!s || !out) return null;
+    const n = Track.count.get(trackEid);
+    if (n < 2) return null;
+    const arc = new Float64Array(n);
+    for (let i = 1; i < n; i++)
+        arc[i] = arc[i - 1] + Math.hypot(s.posX[i] - s.posX[i - 1], s.posY[i] - s.posY[i - 1]);
+    const t = new Float64Array(n);
+    for (let i = 0; i < n; i++) t[i] = out.t[i];
+    return { arc, t, n };
 }
 
 export const CartPlugin: Plugin = {
