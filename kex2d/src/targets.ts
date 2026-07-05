@@ -19,6 +19,7 @@
 import { f32, sparse, type State, u32 } from "@dylanebert/shallot";
 import { begin, beginMove, commit, type History, record } from "./history";
 import {
+    type ArcTarget,
     bakeNodes,
     DEFAULT_WEIGHTS,
     type PointTarget,
@@ -26,7 +27,7 @@ import {
     sampleArc,
     sampleAtArc,
     scopeForPoint,
-    solveTargets,
+    solveToFixpoint,
 } from "./solve";
 import { chainCounts, type Node } from "./spline";
 import { arcToTime, type Mapping } from "./timeline";
@@ -51,6 +52,11 @@ export const Target = {
     id: sparse(u32),
     s: sparse(f32),
     g: sparse(f32),
+    /** driving (1, born) vs driven (0): the CAD-sketcher activation bit (spec
+     *  §6). a driving target drives the solve and accents Solve on drift; a
+     *  driven one only measures — moves no geometry, never accents. authored
+     *  state, toggled through `setTargetActive`. */
+    active: sparse(u32),
 };
 
 /** the force row's fixed weight — w=1 against the weak draft prior
@@ -67,6 +73,7 @@ export interface TargetRow {
     id: number;
     s: number;
     g: number;
+    active: boolean;
 }
 
 /** every target on the track, sorted by arclength. */
@@ -79,6 +86,7 @@ export function targetsFor(ecs: State, trackEid: number): TargetRow[] {
             id: Target.id.get(eid),
             s: Target.s.get(eid),
             g: Target.g.get(eid),
+            active: Target.active.get(eid) !== 0,
         });
     }
     rows.sort((a, b) => a.s - b.s);
@@ -99,9 +107,16 @@ export function targetAt(ecs: State, id: number): number | null {
 // with a restorable one (the eid-recycling bug, one level up).
 let nextTargetId = 0;
 
-/** re-create a target verbatim at an exact id/point/value — undo of a delete,
- *  redo of a create. returns the new eid. */
-function spawnTarget(ecs: State, id: number, trackEid: number, s: number, g: number): number {
+/** re-create a target verbatim at an exact id/point/value/activation — undo of
+ *  a delete, redo of a create. returns the new eid. */
+function spawnTarget(
+    ecs: State,
+    id: number,
+    trackEid: number,
+    s: number,
+    g: number,
+    active: number,
+): number {
     nextTargetId = Math.max(nextTargetId, id + 1);
     const eid = ecs.create();
     ecs.add(eid, Target);
@@ -109,6 +124,7 @@ function spawnTarget(ecs: State, id: number, trackEid: number, s: number, g: num
     Target.id.set(eid, id);
     Target.s.set(eid, s);
     Target.g.set(eid, g);
+    Target.active.set(eid, active);
     return eid;
 }
 
@@ -122,6 +138,8 @@ interface Context {
     /** the frozen bake + its per-sample arclength. */
     b: ReturnType<typeof bakeNodes>;
     arc: Float64Array;
+    /** nominal edge spacing (m) — the fixpoint loop re-freezes the grid with it. */
+    ds: number;
 }
 
 /** read the chain, freeze the sampling topology, bake once — the shared setup
@@ -138,7 +156,16 @@ function context(ecs: State, trackEid: number): Context | null {
     const ds = Track.ds.get(trackEid);
     const { counts } = chainCounts(nodes, ds, MAX_SAMPLES);
     const b = bakeNodes(nodes, counts, V0);
-    return { nodes, counts, b, arc: sampleArc(b) };
+    return { nodes, counts, b, arc: sampleArc(b), ds };
+}
+
+/** the freed-node union over a set of target rows — the same scope the solve
+ *  assembles and the Solve flash highlights, computed against the frozen
+ *  invocation-start bake so it stays constant across the fixpoint rounds. */
+function scopeUnion(ctx: Context, rows: readonly TargetRow[]): number[] {
+    const scope = new Set<number>();
+    for (const row of rows) for (const k of scopeForPoint(ctx.b, ctx.arc, row.s)) scope.add(k);
+    return [...scope].sort((a, z) => a - z);
 }
 
 /** map an authored arclength target to the solver domain against a frozen
@@ -152,47 +179,44 @@ function pointOf(ctx: Context, row: TargetRow): PointTarget {
 export interface TrackSolve {
     /** the solved chain, indexed by node order (0 = anchor). */
     nodes: Node[];
+    /** the fixpoint met every active demand within `DRIFT_TOL`. */
     converged: boolean;
-    iters: number;
+    /** outer grid-refreeze rounds the fixpoint took. */
+    rounds: number;
 }
 
 /**
- * solve every target on the track together: assemble all targets' force rows
- * over the union of their freed scopes and run one LM (the coupled case is one
- * system, not per-target). the prior anchors to the *current* geometry —
- * minimum deformation of what's there now (§3). returns the solved chain, or
- * null when there is nothing to solve (no targets or a sub-two-node chain).
- * pure read — the caller commits the poses through history, never this.
+ * solve every ACTIVE target on the track together: assemble their force rows
+ * over the union of their freed scopes and run the §3 fixpoint loop (the coupled
+ * case is one system, not per-target; driven targets are ignored). the prior
+ * re-anchors to the current geometry each round — minimum deformation of what's
+ * there now (§3). returns the solved chain, or null when there is nothing to
+ * solve (no active targets or a sub-two-node chain). pure read — the caller
+ * commits the poses through history, never this.
  */
 export function solveTrack(ecs: State, trackEid: number): TrackSolve | null {
     const ctx = context(ecs, trackEid);
     if (!ctx) return null;
-    const rows = targetsFor(ecs, trackEid);
+    const rows = targetsFor(ecs, trackEid).filter((r) => r.active);
     if (rows.length === 0) return null;
+    const freed = scopeUnion(ctx, rows);
+    if (freed.length === 0) return null;
 
-    const points: PointTarget[] = [];
-    const scope = new Set<number>();
-    for (const row of rows) {
-        points.push(pointOf(ctx, row));
-        for (const k of scopeForPoint(ctx.b, ctx.arc, row.s)) scope.add(k);
-    }
-    if (scope.size === 0) return null;
-    const freed = [...scope].sort((a, z) => a - z);
-
-    const res = solveTargets(ctx.nodes, freed, ctx.counts, V0, points, DEFAULT_WEIGHTS);
-    return { nodes: res.nodes, converged: res.converged, iters: res.iters };
+    const demands: ArcTarget[] = rows.map((row) => ({ s: row.s, g: row.g, w: W_TARGET }));
+    const res = solveToFixpoint(ctx.nodes, freed, ctx.ds, V0, demands, DEFAULT_WEIGHTS, DRIFT_TOL);
+    return { nodes: res.nodes, converged: res.converged, rounds: res.rounds };
 }
 
 /** the freed node orders a summoned solve will move — the same scope union
- *  `solveTrack` builds, exposed for the Solve highlight flash (§5). pure read. */
+ *  `solveTrack` builds (active targets only), exposed for the Solve highlight
+ *  flash (§5). pure read. */
 export function trackScope(ecs: State, trackEid: number): number[] {
     const ctx = context(ecs, trackEid);
     if (!ctx) return [];
-    const scope = new Set<number>();
-    for (const row of targetsFor(ecs, trackEid)) {
-        for (const k of scopeForPoint(ctx.b, ctx.arc, row.s)) scope.add(k);
-    }
-    return [...scope].sort((a, z) => a - z);
+    return scopeUnion(
+        ctx,
+        targetsFor(ecs, trackEid).filter((r) => r.active),
+    );
 }
 
 export interface Drift {
@@ -203,17 +227,27 @@ export interface Drift {
     err: number;
     /** the gap is below the readout threshold — the marker sits on the curve. */
     satisfied: boolean;
+    /** driving (true) vs driven (false) — a driven target measures but never
+     *  drives the solve or accents Solve. */
+    active: boolean;
 }
 
 /** per-target drift on the *current* baked geometry — the point-vs-curve gap
- *  the marker surfaces (and the Solve-accent trigger). */
+ *  the marker surfaces. reads ALL targets (driven ones still measure); the
+ *  Solve accent filters to active via `trackDirty`. */
 export function targetDrift(ecs: State, trackEid: number): Drift[] {
     const ctx = context(ecs, trackEid);
     if (!ctx) return [];
     return targetsFor(ecs, trackEid).map((row) => {
         const { achieved, err } = pointResidual(ctx.b, pointOf(ctx, row));
-        return { id: row.id, achieved, err, satisfied: err < DRIFT_TOL };
+        return { id: row.id, achieved, err, satisfied: err < DRIFT_TOL, active: row.active };
     });
+}
+
+/** whether any *active* target drifts off its curve beyond `DRIFT_TOL` — the
+ *  Solve-accent trigger (driven targets never accent Solve, §6). pure read. */
+export function trackDirty(ecs: State, trackEid: number): boolean {
+    return targetDrift(ecs, trackEid).some((d) => d.active && !d.satisfied);
 }
 
 // ── display projection: arclength (stored) ↔ time (shown) ────────────────────
@@ -248,6 +282,9 @@ export interface Marker {
     achieved: number;
     err: number;
     satisfied: boolean;
+    /** driving (true) vs driven (false) — the marker renders dashed + faded when
+     *  driven, and only active drift accents Solve. */
+    active: boolean;
 }
 
 /** every target projected onto the timeline through the display mapping `m` —
@@ -266,6 +303,7 @@ export function targetMarkers(ecs: State, trackEid: number, m: Mapping): Marker[
             achieved: d?.achieved ?? row.g,
             err: d?.err ?? 0,
             satisfied: d?.satisfied ?? true,
+            active: row.active,
         };
     });
 }
@@ -293,9 +331,9 @@ export function createTarget(
     g: number,
 ): number {
     const id = nextTargetId;
-    spawnTarget(ecs, id, trackEid, s, g);
+    spawnTarget(ecs, id, trackEid, s, g, 1); // born driving
     record(h, {
-        apply: () => spawnTarget(ecs, id, trackEid, s, g),
+        apply: () => spawnTarget(ecs, id, trackEid, s, g, 1),
         reverse: () => destroyTarget(ecs, id),
     });
     return id;
@@ -308,11 +346,28 @@ export function deleteTarget(h: History, ecs: State, id: number): void {
     const trackEid = Target.track.get(eid);
     const s = Target.s.get(eid);
     const g = Target.g.get(eid);
+    const active = Target.active.get(eid);
     ecs.destroy(eid);
     record(h, {
         apply: () => destroyTarget(ecs, id),
-        reverse: () => spawnTarget(ecs, id, trackEid, s, g),
+        reverse: () => spawnTarget(ecs, id, trackEid, s, g, active),
     });
+}
+
+/** toggle a target driving ↔ driven (spec §6): driving (born) drives the solve
+ *  and accents Solve on drift; driven only measures — moves no geometry, never
+ *  accents. one undo entry; a no-op toggle records nothing. */
+export function setTargetActive(h: History, ecs: State, id: number, active: boolean): void {
+    const eid = targetAt(ecs, id);
+    if (eid === null) return;
+    const prev = Target.active.get(eid) !== 0;
+    if (prev === active) return;
+    const set = (v: boolean) => {
+        const e = targetAt(ecs, id);
+        if (e !== null) Target.active.set(e, v ? 1 : 0);
+    };
+    set(active);
+    record(h, { apply: () => set(active), reverse: () => set(prev) });
 }
 
 /** live-write a target's point during a marker drag — no solve, no history;

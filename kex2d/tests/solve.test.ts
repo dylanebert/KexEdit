@@ -10,6 +10,7 @@ import {
     sampleAtArc,
     scopeForPoint,
     solveTargets,
+    solveToFixpoint,
 } from "../src/solve";
 import { chainCounts, type Node } from "../src/spline";
 import { hillDraft } from "./helpers/hill";
@@ -137,6 +138,79 @@ test("solveTargets composes two coupled point demands in one assembled system", 
     const bs = bakeNodes(res.nodes, counts, draft.v0);
     expect(pointResidual(bs, t0).err).toBeLessThan(BUDGET_G);
     expect(pointResidual(bs, t1).err).toBeLessThan(BUDGET_G);
+});
+
+/** drift at an authored ARCLENGTH on a fresh re-bake of `nodes` — the readout
+ *  the author sees after a solve commits (re-frozen grid, s re-mapped), distinct
+ *  from the frozen-grid residual a single LM pass drives to zero. */
+function driftAtArc(nodes: Node[], s: number, g: number, v0: number): number {
+    const c = chainCounts(nodes, DS, MAX).counts;
+    const b = bakeNodes(nodes, c, v0);
+    const arc = sampleArc(b);
+    return Math.abs(b.fN[sampleAtArc(arc, b.n, s)] - g);
+}
+
+test("solveToFixpoint reaches the fixpoint a single frozen-grid pass regresses past", () => {
+    // the §3 mechanism: one LM pass converges essentially exactly on its frozen
+    // grid, but the moved nodes redistribute arclength under that grid, so the
+    // frozen index no longer sits at the authored s — re-baking reads a LARGE
+    // drift there (the measured 0.60 g regression, worse than the 0.34 g start).
+    // the outer loop re-freezes the grid until the drift at s itself is closed.
+    const { draft, b, counts } = bakeHill();
+    const arc = sampleArc(b);
+    const sCrest = arc[b.offsets[3]];
+    const freed = scopeForPoint(b, arc, sCrest);
+
+    const single = solveTargets(draft.nodes, freed, counts, draft.v0, [
+        pointAtNode(b, arc, 3, 0),
+    ]).nodes;
+    // the single pass regresses the re-baked drift at s (pins the 0.60 g defect).
+    expect(driftAtArc(single, sCrest, 0, draft.v0)).toBeGreaterThan(
+        driftAtArc(draft.nodes, sCrest, 0, draft.v0),
+    );
+
+    const fp = solveToFixpoint(draft.nodes, freed, DS, draft.v0, [{ s: sCrest, g: 0, w: 1 }]);
+    expect(fp.converged).toBe(true);
+    expect(fp.rounds).toBeGreaterThan(1); // one pass was not enough; the loop iterated
+    expect(driftAtArc(fp.nodes, sCrest, 0, draft.v0)).toBeLessThan(BUDGET_G);
+    expect(fp.maxDrift).toBeCloseTo(driftAtArc(fp.nodes, sCrest, 0, draft.v0), 6);
+    // feasible throughout.
+    const bs = bakeNodes(fp.nodes, chainCounts(fp.nodes, DS, MAX).counts, draft.v0);
+    for (let i = 0; i < bs.n; i++) expect(bs.v2[i]).toBeGreaterThan(0);
+});
+
+test("solveToFixpoint is idempotent — re-solving a converged chain is a byte-identical no-op", () => {
+    const { draft, b } = bakeHill();
+    const arc = sampleArc(b);
+    const sCrest = arc[b.offsets[3]];
+    const freed = scopeForPoint(b, arc, sCrest);
+    const demand = [{ s: sCrest, g: 0, w: 1 }];
+
+    const fp = solveToFixpoint(draft.nodes, freed, DS, draft.v0, demand);
+    const again = solveToFixpoint(fp.nodes, freed, DS, draft.v0, demand);
+    expect(again.rounds).toBe(0); // already within tol — the loop body never runs
+    again.nodes.forEach((n, k) => {
+        expect(n.x).toBe(fp.nodes[k].x);
+        expect(n.y).toBe(fp.nodes[k].y);
+        expect(n.theta).toBe(fp.nodes[k].theta);
+    });
+});
+
+test("solveToFixpoint keeps the best iterate and stays finite on an infeasible demand", () => {
+    // two demands at one spot no single sample can hold together (0g and 2g):
+    // the loop can't reach tol, so it returns the min-drift iterate, finite.
+    const { draft, b } = bakeHill();
+    const arc = sampleArc(b);
+    const sCrest = arc[b.offsets[3]];
+    const freed = scopeForPoint(b, arc, sCrest);
+    const fp = solveToFixpoint(draft.nodes, freed, DS, draft.v0, [
+        { s: sCrest, g: 0, w: 1 },
+        { s: sCrest, g: 2, w: 1 },
+    ]);
+    expect(fp.converged).toBe(false); // legibly unmet, not silently "done"
+    expect(Number.isFinite(fp.maxDrift)).toBe(true);
+    const bs = bakeNodes(fp.nodes, chainCounts(fp.nodes, DS, MAX).counts, draft.v0);
+    for (let i = 0; i < bs.n; i++) expect(Number.isFinite(bs.fN[i])).toBe(true);
 });
 
 test("DEFAULT_WEIGHTS keeps the draft prior weak (does not bias a point demand)", () => {

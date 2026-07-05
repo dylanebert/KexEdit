@@ -20,7 +20,7 @@
  *  μI). Validated the evidence gate in `tests/hill.lab.ts`; promoted here. */
 
 import { forces64 } from "./force";
-import { type Node, sampleAt } from "./spline";
+import { chainCounts, type Node, sampleAt } from "./spline";
 
 const MAX = 4096;
 
@@ -246,7 +246,7 @@ export interface SolveResult {
     nodes: Node[];
     iters: number;
     /** LM reached a local minimum (a stall or a below-tol step) before
-     *  exhausting `maxIters`. NOT a health signal — read `spanResidual` for
+     *  exhausting `maxIters`. NOT a health signal — read `pointResidual` for
      *  whether the demand was met. */
     converged: boolean;
 }
@@ -274,6 +274,10 @@ export function solveTargets(
     maxIters = 120,
     stepTol = 1e-7,
 ): SolveResult {
+    // `base` is both the starting iterate and the anchor the prior + spacing
+    // pull toward (minimum deformation of what's there now). the fixpoint outer
+    // loop re-anchors by passing each round's current chain as `base` — see
+    // `solveToFixpoint`.
     const p0 = pack(base, freed);
     const spaceRef = freed.map((idx, k) => {
         if (k + 1 >= freed.length || freed[k + 1] !== idx + 1) return Number.NaN;
@@ -356,4 +360,114 @@ export function solveTargets(
     }
 
     return { nodes: unpack(prob.base, prob.freed, p), iters, converged };
+}
+
+// ── the fixpoint outer loop (one Solve invocation, spec §3) ───────────────────
+
+/** a force demand in the AUTHORED domain: `g` at arclength `s` (m), weight `w`.
+ *  the outer loop re-maps `s` to the nearest sample each round (the grid moves
+ *  under the nodes), so it holds arclength, not a frozen sample index. */
+export interface ArcTarget {
+    s: number;
+    g: number;
+    w: number;
+}
+
+export interface FixpointResult {
+    /** the best-iterate chain (min measured drift across the rounds). */
+    nodes: Node[];
+    /** outer rounds run. */
+    rounds: number;
+    /** max active drift (g) at the returned chain — the health surface. */
+    maxDrift: number;
+    /** the returned chain meets every demand within `driftTol`. */
+    converged: boolean;
+}
+
+/** per-round node-move threshold (m for x/y, rad for θ) below which re-freezing
+ *  the grid no longer changes the LM solution — the grid is self-consistent and
+ *  the outer loop has reached its fixpoint. round-off scale on a ~100 m track,
+ *  far below any real reshaping; a convergence test, not a physics tolerance. */
+const POSE_EPS = 1e-6;
+
+function poseDelta(a: readonly Node[], b: readonly Node[]): number {
+    let mx = 0;
+    for (let i = 0; i < a.length; i++)
+        mx = Math.max(
+            mx,
+            Math.abs(a[i].x - b[i].x),
+            Math.abs(a[i].y - b[i].y),
+            Math.abs(a[i].theta - b[i].theta),
+        );
+    return mx;
+}
+
+/**
+ * one Solve invocation as the §3 outer loop: freeze the sampling grid on the
+ * current chain, map each demand's arclength to its nearest sample, run the LM,
+ * then re-freeze on the moved nodes and re-measure the drift at the authored
+ * arclength — repeat to the fixpoint.
+ *
+ * why a loop and not one LM pass: a single pass converges essentially exactly
+ * *on its frozen grid*, but node motion redistributes arclength under that grid,
+ * so the frozen sample index no longer sits at the authored `s` — the re-baked
+ * drift there can be worse than the start (the measured 0.60 g regression). the
+ * loop drives that staleness out: it stops when the max active drift is within
+ * `driftTol`, or the chain stops moving between rounds (an infeasible fixpoint),
+ * keeping the best iterate.
+ *
+ * the prior re-anchors to each round's current chain (`solveTargets` uses its
+ * `base` as the anchor). measured: anchoring once to the invocation-start draft
+ * puts the draft-attractor in tension with the grid re-freeze and the iteration
+ * limit-cycles (0.60 ↔ 0.19 g, never converges); re-anchoring lets the prior
+ * self-satisfy as the chain settles, so the iteration is contractive and
+ * reaches the true fixpoint. the endpoint is then the grid-consistent solution
+ * the LM descent reaches from the draft. idempotent: a chain already within
+ * `driftTol` returns unchanged.
+ */
+export function solveToFixpoint(
+    chain: readonly Node[],
+    freed: readonly number[],
+    ds: number,
+    v0: number,
+    targets: readonly ArcTarget[],
+    w: Weights = DEFAULT_WEIGHTS,
+    driftTol = 0.05,
+    maxRounds = 8,
+): FixpointResult {
+    // max active drift at each demand's arclength on a fresh (re-frozen) bake.
+    const measure = (nodes: readonly Node[]): number => {
+        const { counts } = chainCounts(nodes, ds, MAX);
+        const b = bakeNodes(nodes, counts, v0);
+        const arc = sampleArc(b);
+        let mx = 0;
+        for (const t of targets)
+            mx = Math.max(mx, Math.abs(b.fN[sampleAtArc(arc, b.n, t.s)] - t.g));
+        return mx;
+    };
+
+    let current = chain.map((n) => ({ ...n }));
+    let best = current.map((n) => ({ ...n }));
+    let bestDrift = measure(current);
+    let rounds = 0;
+    while (bestDrift >= driftTol && rounds < maxRounds) {
+        const { counts } = chainCounts(current, ds, MAX);
+        const b = bakeNodes(current, counts, v0);
+        const arc = sampleArc(b);
+        const points: PointTarget[] = targets.map((t) => ({
+            i: sampleAtArc(arc, b.n, t.s),
+            g: t.g,
+            w: t.w,
+        }));
+        const solved = solveTargets(current, freed, counts, v0, points, w).nodes;
+        const d = measure(solved);
+        if (d < bestDrift) {
+            best = solved;
+            bestDrift = d;
+        }
+        rounds++;
+        if (poseDelta(solved, current) < POSE_EPS) break; // grid self-consistent
+        current = solved;
+    }
+    return { nodes: best, rounds, maxDrift: bestDrift, converged: bestDrift < driftTol };
 }

@@ -8,6 +8,7 @@ import {
     createTarget,
     deleteTarget,
     setTarget,
+    setTargetActive,
     solveAll,
     solveTrack,
     Target,
@@ -15,6 +16,7 @@ import {
     targetDrift,
     targetMarkers,
     targetsFor,
+    trackDirty,
     trackMapping,
     trackScope,
 } from "../src/targets";
@@ -164,6 +166,25 @@ test("solveAll holds 0g at the crest and undo restores node state byte-identical
     expect(poses(state)).toEqual(after); // replays to the solved pose
 });
 
+test("a second solveAll is a geometry no-op (idempotent) and records no entry", () => {
+    const { state, track, crest } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    const id = createTarget(h, state, track, arc[crest], 0);
+    solveAll(h, state, track);
+    expect(driftErr(state, track, id)).toBeLessThan(BUDGET_G);
+    const settled = poses(state);
+    const nUndo = h.undo.length;
+
+    // pressing Solve again on the converged chain moves nothing and records
+    // nothing — the failure mode §3 kills is "press again for more effect".
+    const again = solveAll(h, state, track);
+    expect(again).not.toBeNull();
+    expect(again?.converged).toBe(true);
+    expect(h.undo.length).toBe(nUndo); // no new entry — the no-op commit dropped
+    expect(poses(state)).toEqual(settled); // byte-identical geometry
+});
+
 test("solveAll pulls a drifted curve back onto its point as one node-only entry", () => {
     const { state, track } = ecsHill();
     const h = createHistory();
@@ -303,6 +324,72 @@ test("solveAll assembles two coupled point demands in one system", () => {
     solveAll(h, state, track);
     expect(driftErr(state, track, t0)).toBeLessThan(BUDGET_G);
     expect(driftErr(state, track, t1)).toBeLessThan(BUDGET_G);
+});
+
+test("targets are born driving; a driven target moves no geometry but still measures", () => {
+    const { state, track, crest } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    // one demand that WOULD reshape the crest if it drove the solve.
+    const id = createTarget(h, state, track, arc[crest], 0);
+    expect(targetsFor(state, track)[0].active).toBe(true); // born driving
+    expect(driftErr(state, track, id)).toBeGreaterThan(BUDGET_G); // off the curve
+
+    // make it driven: it no longer drives the solve, so Solve is inert.
+    setTargetActive(h, state, id, false);
+    expect(targetsFor(state, track)[0].active).toBe(false);
+    expect(trackScope(state, track)).toEqual([]); // nothing driven → nothing to free
+    expect(trackDirty(state, track)).toBe(false); // driven drift never accents Solve
+
+    const geom = poses(state);
+    const solved = solveAll(h, state, track);
+    expect(solved).toBeNull(); // no active targets — nothing solved
+    expect(poses(state)).toEqual(geom); // geometry untouched
+
+    // yet the driven target still measures its drift on the current curve.
+    const d = targetDrift(state, track).find((x) => x.id === id);
+    expect(d?.active).toBe(false);
+    expect(d?.err).toBeGreaterThan(BUDGET_G); // reads the gap, just doesn't chase it
+});
+
+test("setTargetActive toggles one undoable entry and activation survives delete→undo", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    const id = createTarget(h, state, track, arc[3], 0);
+    const nUndo = h.undo.length;
+
+    setTargetActive(h, state, id, false);
+    expect(h.undo.length).toBe(nUndo + 1); // one entry
+    expect(targetsFor(state, track)[0].active).toBe(false);
+    setTargetActive(h, state, id, false); // no-op toggle records nothing
+    expect(h.undo.length).toBe(nUndo + 1);
+    undo(h);
+    expect(targetsFor(state, track)[0].active).toBe(true); // restored driving
+
+    // a deactivated target restores driven, not driving, across delete→undo.
+    setTargetActive(h, state, id, false);
+    deleteTarget(h, state, id);
+    undo(h); // undo the delete
+    expect(targetsFor(state, track)[0].active).toBe(false); // verbatim activation
+});
+
+test("with a driving and a driven target, only the driving one drives the solve", () => {
+    const { state, track } = ecsHill();
+    const h = createHistory();
+    const arc = nodeArc(state);
+    const driving = createTarget(h, state, track, arc[2], 1.3);
+    const driven = createTarget(h, state, track, arc[4], 0.5);
+    setTargetActive(h, state, driven, false);
+
+    const scope = trackScope(state, track);
+    // the freed set covers the driving target's scope but not the driven one's.
+    expect(scope.length).toBeGreaterThan(0);
+    solveAll(h, state, track);
+    expect(driftErr(state, track, driving)).toBeLessThan(BUDGET_G); // met
+    // the driven target measured but its scope was not solved for — it keeps
+    // whatever drift the driving reshape left it (still a legible readout).
+    expect(Number.isFinite(driftErr(state, track, driven))).toBe(true);
 });
 
 test("an infeasible demand fails legibly: closest compromise, finite, drift shown", () => {
