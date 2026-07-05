@@ -1,20 +1,28 @@
 import { expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import { cartPose, forceCurve, loopTime } from "../src/cart";
-import { addNode, BakeSystem, bakeOut, createTrack } from "../src/track";
+import {
+    addNode,
+    BakeSystem,
+    bakeOut,
+    createSection,
+    createTrack,
+    SectionKind,
+} from "../src/track";
 
 // cartPose rides the baked track; forceCurve reads the baked force per-sample over
 // arclength (the chart's distance axis, spec §4). driven against the seeded flat chain,
 // where constant speed makes t linear in arclength — so the cart's x is a closed-form
 // check, not a fixture. device-free harness, like track.test.ts.
 
-/** a fresh flat track (anchor (−16,0) → node (16,0)), baked. */
+/** a fresh flat track (entry anchor at the origin → node (32,0)), baked. */
 function baked(): { eid: number; tTotal: number } {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    addNode(state, -16, 0);
-    addNode(state, 16, 0);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 32, 0);
     state.step(0);
     const out = bakeOut.get(eid);
     if (!out) throw new Error("bakeOut missing");
@@ -42,8 +50,9 @@ test("loopTime resets at the first infeasible sample, not the crawl-through end"
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    addNode(state, -16, 0);
-    addNode(state, 0, 27.7);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 16, 27.7);
     state.step(0);
     const out = bakeOut.get(eid);
     if (!out) throw new Error("bakeOut missing");
@@ -54,7 +63,7 @@ test("loopTime resets at the first infeasible sample, not the crawl-through end"
 });
 
 test("forceCurve reads per-sample ~1g over the flat chain's arclength [0, 32]", () => {
-    // anchor (−16,0) → node (16,0): a 32m flat span at ≈1g everywhere.
+    // origin → node (32,0): a 32m flat span at ≈1g everywhere.
     const { eid } = baked();
     const c = forceCurve(eid);
     if (!c) throw new Error("forceCurve returned null after bake");
@@ -73,9 +82,9 @@ test("cartPose rides the baked track flat, anchor to end", () => {
     const end = cartPose(eid, tTotal);
     if (!start || !mid || !end) throw new Error("cartPose returned null after bake");
 
-    expect(start.x).toBeCloseTo(-16, 2);
-    expect(end.x).toBeCloseTo(16, 2);
-    expect(mid.x).toBeCloseTo(0, 1); // flat at constant v ⇒ half-time is x = 0
+    expect(start.x).toBeCloseTo(0, 2);
+    expect(end.x).toBeCloseTo(32, 2);
+    expect(mid.x).toBeCloseTo(16, 1); // flat at constant v ⇒ half-time is the midpoint
     expect(mid.y).toBeCloseTo(0, 3);
     expect(mid.theta).toBeCloseTo(0, 3);
 });

@@ -1,15 +1,17 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
 import { editor } from "./editor";
-import { bakeOut, Handle, samples, sortedHandles, Track } from "./track";
+import { bakeOut, Handle, samples, sectionInfo, sections, Track } from "./track";
 import { Canvas2D, resize, viewTransform } from "./view";
 
 const HANDLE_R = 6;
 const HANDLE_R_SEL = 9;
+const ANCHOR_R = 5;
 const CART_W = 14;
 const CART_H = 7;
 const COLOR_TRACK = "#cce5ff";
 const COLOR_INFEASIBLE = "#e26d5c";
+const COLOR_ANCHOR = "#9aa0a6";
 
 const GridSystem: System = {
     group: "draw",
@@ -120,7 +122,59 @@ const TrackDrawSystem: System = {
                 }
             }
             ctx.stroke();
+
+            // selected-section overlay: overdraw its span in the accent so the
+            // whole-section handle (convert / split / join / delete target) reads.
+            if (editor.section !== null) {
+                const info = sectionInfo.get(editor.section);
+                if (info) {
+                    ctx.setLineDash([]);
+                    ctx.strokeStyle = "#d49560";
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.moveTo(xs[info.startSample], ys[info.startSample]);
+                    for (let i = info.startSample + 1; i <= info.endSample; i++) {
+                        ctx.lineTo(xs[i], ys[i]);
+                    }
+                    ctx.stroke();
+                }
+            }
             ctx.restore();
+        }
+    },
+};
+
+/** the section-entry anchors: node 0 of every section (the start + interior
+ *  boundaries), drawn at the baked sample they pin to. distinct from the draggable
+ *  shape handles — an anchor is derived (the entry), not authored. */
+const AnchorDrawSystem: System = {
+    group: "draw",
+    update(ecs: State): void {
+        const { element: canvas, ctx } = Canvas2D;
+        if (!ctx) return;
+        const { sx, sy, ox, oy } = viewTransform(canvas);
+
+        for (const trackEid of ecs.query([Track])) {
+            const s = samples.get(trackEid);
+            if (!s) continue;
+            for (const sec of sections(ecs)) {
+                const info = sectionInfo.get(sec.id);
+                if (!info) continue;
+                const cx = ox + s.posX[info.startSample] * sx;
+                const cy = oy + s.posY[info.startSample] * sy;
+                ctx.fillStyle = "#0e0d0c";
+                ctx.strokeStyle = COLOR_ANCHOR;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                // a diamond: entry anchors read as boundaries, not draggable nodes.
+                ctx.moveTo(cx, cy - ANCHOR_R);
+                ctx.lineTo(cx + ANCHOR_R, cy);
+                ctx.lineTo(cx, cy + ANCHOR_R);
+                ctx.lineTo(cx - ANCHOR_R, cy);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            }
         }
     },
 };
@@ -133,32 +187,35 @@ const HandleDrawSystem: System = {
         const { sx, sy, ox, oy } = viewTransform(canvas);
         const sel = editor.selection;
 
-        // pre-compute the red set: nodes past the chain's first infeasibility
-        // (energy-out reachable) plus orphan nodes (segment failed to bake —
-        // `.sample` is stale, so we key on `.order` against `lastBakedOrder`).
-        // node 0 is always reachable by definition.
+        // pre-compute the red set: nodes at/past the chain's first infeasibility
+        // (energy-out reachable) plus orphan nodes (their section's segment failed to
+        // bake, so per-section order ≥ bakedNodes — `.sample` is stale there).
         const badHandles = new Set<number>();
+        const s0 = ((): NonNullable<ReturnType<typeof samples.get>> | undefined => {
+            for (const trackEid of ecs.query([Track])) return samples.get(trackEid);
+            return undefined;
+        })();
+        let firstInfeasible = -1;
         for (const trackEid of ecs.query([Track])) {
-            const out = bakeOut.get(trackEid);
-            if (!out) continue;
-            const handles = sortedHandles(ecs);
-            for (let i = 1; i < handles.length; i++) {
-                const eid = handles[i];
-                const order = Handle.order.get(eid);
-                if (order > out.lastBakedOrder) {
-                    badHandles.add(eid);
-                } else if (
-                    out.firstInfeasible >= 0 &&
-                    Handle.sample.get(eid) >= out.firstInfeasible
-                ) {
-                    badHandles.add(eid);
-                }
+            firstInfeasible = bakeOut.get(trackEid)?.firstInfeasible ?? -1;
+            break;
+        }
+        for (const eid of ecs.query([Handle])) {
+            if (Handle.order.get(eid) === 0) continue; // anchors aren't shape handles
+            const info = sectionInfo.get(Handle.section.get(eid));
+            if (info && Handle.order.get(eid) >= info.bakedNodes) {
+                badHandles.add(eid);
+            } else if (firstInfeasible >= 0 && Handle.sample.get(eid) >= firstInfeasible) {
+                badHandles.add(eid);
             }
         }
 
         for (const eid of ecs.query([Handle])) {
-            const cx = ox + Handle.pos.x.get(eid) * sx;
-            const cy = oy + Handle.pos.y.get(eid) * sy;
+            if (Handle.order.get(eid) === 0) continue; // the entry anchor draws separately
+            if (!s0) continue;
+            const i = Handle.sample.get(eid);
+            const cx = ox + s0.posX[i] * sx;
+            const cy = oy + s0.posY[i] * sy;
             const highlighted = eid === sel;
             const bad = badHandles.has(eid);
 
@@ -234,5 +291,5 @@ const CartDrawSystem: System = {
 
 export const RenderPlugin: Plugin = {
     name: "Render",
-    systems: [GridSystem, TrackDrawSystem, CartDrawSystem, HandleDrawSystem],
+    systems: [GridSystem, TrackDrawSystem, CartDrawSystem, AnchorDrawSystem, HandleDrawSystem],
 };

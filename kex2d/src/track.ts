@@ -1,40 +1,69 @@
 import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@dylanebert/shallot";
 import { V_FLOOR, V_WARN } from "./bake";
 import { type ForcePoint, forceProfile } from "./profile";
-import { chain, type Entry, localize } from "./section";
+import { chain, type Entry, localize, place, type Section as SectionSpec } from "./section";
 import { type Node, reflect } from "./spline";
 
-/** whether a whole-track section is authored as GEOMETRY (drag nodes, recover the
- *  force — the viewport) or FORCE (place points on the force curve, integrate the
- *  geometry — the timeline). the two atomic idioms of the section substrate
- *  (kex/specs/kex2d-sections.md §1); stage D generalizes this whole-track bit to a
- *  per-section kind. stored on `Track.kind` as its numeric value. */
-export enum TrackKind {
+/** whether a section is authored as GEOMETRY (drag nodes in the viewport, recover
+ *  the force) or FORCE (place points on the force curve, integrate the geometry) —
+ *  the two atomic idioms of the section substrate (kex/specs/kex2d-sections.md §1).
+ *  a track is a chain of sections, each with its own kind. stored on `Section.kind`
+ *  as its numeric value. */
+export enum SectionKind {
     Geo = 0,
     Force = 1,
 }
 
-/** per-track scalars. `count` is the total sample count (bake output, varies
- *  with the nodes). `ds` is the user's nominal target spacing (input to bake;
- *  per-edge actual ds lives in `bakeOut.ds`). `kind` is the `TrackKind`. `length`
- *  is the FORCE section's extent (m) — the distance the force profile spans; unused
- *  in geo mode (a geo section's extent is its node chain). the bake recovers each
- *  sample's θ from the sampled geometry; the node headings that *shape* a geo curve
- *  live on `Handle.theta`. */
+/** per-track scalars. `count` is the total sample count over the whole chain (bake
+ *  output, varies with the authored payload). `ds` is the nominal target spacing —
+ *  one value shared by every section (per-edge actual ds lives in `bakeOut.ds`).
+ *  the per-section kind + extent live on `Section`, not here. */
 export const Track = {
     count: sparse(u32),
     ds: sparse(f32),
+};
+
+/** one section in the track's chain. `id` is the stable identity undo/redo and
+ *  node/point membership address (eids recycle across a delete→undo; ids never do
+ *  — the `Handle.order` convention). `order` is its position along the chain
+ *  (0 = first), reassigned by the structural ops (append/split/join/delete). `kind`
+ *  is the `SectionKind`. `length` is a FORCE section's extent (m) — the distance the
+ *  force profile spans; unused (0) for a geo section, whose extent is its node chain.
+ *  a section's entry anchor is derived (the prior section's exit, or `START` for the
+ *  first); it is never stored. */
+export const Section = {
+    id: sparse(u32),
+    order: sparse(u32),
     kind: sparse(u32),
     length: sparse(f32),
 };
 
-/** an authored force keyframe on a FORCE-mode track: `id` is the stable identity
- *  undo/redo addresses (eids recycle across a delete→undo; ids never do — the
- *  `Handle.order` convention), `s` its arclength (m) along the section, `g` the
- *  demanded normal force (g). the timeline places, drags, and deletes these; the
- *  bake gathers them (sorted by s) into a dense profile (`profile.forceProfile`).
- *  a geo-mode track has none; a force-mode track has no `Handle`s. */
+/** a node on a geo section. `section` is the owning section's stable id. `order`
+ *  is the node's position within that section (0 = the section entry, pinned at
+ *  local origin — §4). `pos` is the node's **section-local** position; the substrate
+ *  places it rigidly at the section's entry frame, so world = `place(entry, pos)`
+ *  (the bake writes the world sample; the drag localizes the world pointer back).
+ *  `theta` is the node's section-local exit heading — set when appended (via
+ *  `reflect`) and refreshed by `reheadOnDrag`: the *last* node tracks its
+ *  predecessor, node 0 is a fixed local flat anchor (θ = 0), interior nodes stay
+ *  frozen. only the last node's heading changes on a drag, so the edit reshapes
+ *  only the two segments sharing the dragged node. `sample` is the global sample
+ *  index this node lands on (synced by BakeSystem). */
+export const Handle = {
+    section: sparse(u32),
+    order: sparse(u32),
+    sample: sparse(u32),
+    pos: sparse(vec2),
+    theta: sparse(f32),
+};
+
+/** an authored force keyframe on a FORCE section. `section` is the owning section's
+ *  stable id; `id` is the point's stable identity (undo/redo address, eid-recycle
+ *  safe); `s` its arclength (m) measured from the section entry; `g` the demanded
+ *  normal force (g). the timeline places, drags, and deletes these; the bake gathers
+ *  each section's points (sorted by s) into a dense profile (`profile.forceProfile`). */
 export const Force = {
+    section: sparse(u32),
     id: sparse(u32),
     s: sparse(f32),
     g: sparse(f32),
@@ -57,12 +86,8 @@ export const samples = new Map<number, Samples>();
  *  the cart and the timeline read from it. `tTotal = t[count − 1]`.
  *  `feasible[i]` is 1 when `|v[i]| ≥ V_WARN`, 0 otherwise — drives the red
  *  track / red handle / warning banner UX. `firstInfeasible` is the first
- *  sample below V_WARN, or -1 if the whole chain is feasible.
- *  `lastBakedOrder` is the `Handle.order` of the last node the walk
- *  reached — nodes with `order > lastBakedOrder` are orphaned (their segment
- *  was degenerate or hit MAX_SAMPLES) and render red even though no
- *  infeasibility flag fires. `hash` is the input state that produced the
- *  current bake; a miss triggers a full re-bake. */
+ *  sample below V_WARN, or -1 if the whole chain is feasible. `hash` is the
+ *  input state that produced the current bake; a miss triggers a full re-bake. */
 export const bakeOut = new Map<
     number,
     {
@@ -72,59 +97,67 @@ export const bakeOut = new Map<
         tTotal: number;
         feasible: Uint8Array;
         firstInfeasible: number;
-        lastBakedOrder: number;
         hash: string;
     }
 >();
 
-/** a node on the track. `order` is the ordinal position along the chain
- *  (0 = first), monotonically increasing. `pos` is the node's free world
- *  position, dragged directly; the curve passes through it exactly, so it's
- *  never derived or written back. `theta` is the node's exit heading — set when
- *  the node is appended (via `reflect`) and refreshed by `reheadOnDrag`: the
- *  *last* node tracks its predecessor (re-derived when it or the node before it
- *  is dragged), the first node is a fixed flat anchor (θ = 0), and interior nodes
- *  keep their heading frozen. only the last node's heading ever changes on a
- *  drag, so the edit reshapes only the two segments sharing the dragged node.
- *  `sample` is the sample index this node lands on (kept in sync by BakeSystem). */
-export const Handle = {
-    order: sparse(u32),
-    sample: sparse(u32),
-    pos: sparse(vec2),
-    theta: sparse(f32),
-};
+/** per-section realized metadata the flat SoA drops — keyed by stable section id,
+ *  written by BakeSystem, read by the drag (localize against `entry`), the render
+ *  (boundary markers at `entry`, orphan nodes past `bakedNodes`), and the timeline
+ *  (section boundaries + cumulative-s offset via the sample range). */
+export interface SectionInfo {
+    /** the section's entry anchor (world) — `START` for the first, the prior
+     *  section's exit otherwise. the frame a geo node localizes against. */
+    entry: Entry;
+    /** global sample index of the section's first point (its entry, shared with the
+     *  prior section's last point). */
+    startSample: number;
+    /** global sample index of the section's last point (its exit). */
+    endSample: number;
+    /** geo: how many nodes landed (a degenerate/truncated segment bakes a prefix, so
+     *  nodes past this are orphans). force: 2 (the boundary anchors). */
+    bakedNodes: number;
+}
+
+export const sectionInfo = new Map<number, SectionInfo>();
 
 export const MAX_SAMPLES = 4096;
 const DS_NOMINAL = 0.5;
-/** launch speed (m/s) — the bake's and the solver's v0 must be the same
- *  number or their force profiles disagree systematically. */
+
+/** the default initial speed (m/s) at the track's start anchor. arbitrary — some
+ *  upstream idiom (a launch, a lift hill, a prior track) sets it later; for now a
+ *  fixed default matching kexedit / FVD. the bake's v0 must be this exact number or
+ *  the recovered force profile shifts systematically. */
 export const V0 = 10;
 
-/** how far `extend` lays the next node past the chain end, along the last
- *  edge's direction. it's a starting point you then drag, not a fixed length. */
+/** how far `extend` lays the next node past the chain end, along the last edge's
+ *  direction. it's a starting point you then drag, not a fixed length. */
 export const EXTEND_DIST = 24;
 
-/** the fixed launch anchor a whole-track FORCE section integrates from (a geo
- *  section derives its entry from node 0's world pose instead). world position is
- *  cosmetic in this 2D prototype — the view auto-frames — so it's a level launch at
- *  the origin, `V0`. §5 conversion is destructive, so a geo→force switch doesn't
- *  carry node 0's position here. */
-const FORCE_LAUNCH: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+/** the track's initial anchor: the entry to the first section. a level start at
+ *  the origin with the default initial speed `V0`. world position is cosmetic in
+ *  this 2D prototype (the view auto-frames), so it's fixed — the authored variable
+ *  is the initial speed, and that's a default until an upstream idiom sets it. */
+const START: Entry = { x: 0, y: 0, theta: 0, v: V0 };
 
-/** fallback force-section extent (m) when a geo→force convert finds no prior bake
- *  to measure — a two-node flat seed's worth. */
+/** the extent (m) a fresh force section gets — an append or a geo→force convert
+ *  resets to this (the extent is the force section's own authored property, not a
+ *  leftover of the pre-convert geo shape). matches the geo seed's length, so a fresh
+ *  geo and a fresh force section start the same size; the end handle then resizes it. */
 const DEFAULT_FORCE_LEN = EXTEND_DIST;
 
-/** allocate an empty track entity + its sample / bake-output buffers, sized
- *  once to MAX_SAMPLES. no nodes — callers (the demo seed, tests) add their
- *  own. returns the track eid. */
+/** the shortest a force section can be dragged — a couple of edges, so the profile
+ *  never collapses below what `forceProfile` can sample. */
+const MIN_FORCE_LEN = 2;
+
+/** allocate an empty track entity + its sample / bake-output buffers, sized once
+ *  to MAX_SAMPLES. no sections — callers (the demo seed, tests) add their own.
+ *  returns the track eid. */
 export function createTrack(ecs: State): number {
     const trackEid = ecs.create();
     ecs.add(trackEid, Track);
     Track.count.set(trackEid, 0);
     Track.ds.set(trackEid, DS_NOMINAL);
-    Track.kind.set(trackEid, TrackKind.Geo);
-    Track.length.set(trackEid, 0);
     samples.set(trackEid, {
         posX: new Float32Array(MAX_SAMPLES),
         posY: new Float32Array(MAX_SAMPLES),
@@ -138,28 +171,134 @@ export function createTrack(ecs: State): number {
         tTotal: 0,
         feasible: new Uint8Array(MAX_SAMPLES),
         firstInfeasible: -1,
-        lastBakedOrder: -1,
         hash: "",
     });
     return trackEid;
 }
 
-/** append a node at the chain's end (order = maxOrder + 1) at world `(x, y)`.
- *  used by the seed, the controls, and `extend`. the new node's heading is the
- *  circular-arc exit from its predecessor's heading (`reflect`): placed straight
- *  ahead it continues straight, placed off-axis it bends one arc. the first node
- *  is a fixed flat anchor (θ = 0) — the track always launches horizontally from
- *  it, and node 1 reflects that flat launch. */
-export function addNode(ecs: State, x: number, y: number): number {
-    const prev = lastHandle(ecs);
+// ── sections ─────────────────────────────────────────────────────────────────
+
+// monotone id source — never reused, even after a delete: history can re-spawn any
+// deleted section, so a scan-the-live-set allocator would alias a fresh section
+// with a restorable one (the eid-recycling bug one level up).
+let nextSectionId = 0;
+
+/** a section read off the ECS: eid + its stable id, chain order, kind, and force
+ *  extent. */
+export interface SectionRow {
+    eid: number;
+    id: number;
+    order: number;
+    kind: SectionKind;
+    length: number;
+}
+
+/** every section, sorted by chain order — the sequence the bake threads and the
+ *  UI walks. */
+export function sections(ecs: State): SectionRow[] {
+    const rows: SectionRow[] = [];
+    for (const eid of ecs.query([Section])) {
+        rows.push({
+            eid,
+            id: Section.id.get(eid),
+            order: Section.order.get(eid),
+            kind: Section.kind.get(eid) as SectionKind,
+            length: Section.length.get(eid),
+        });
+    }
+    rows.sort((a, b) => a.order - b.order);
+    return rows;
+}
+
+/** resolve a section by its stable id to its eid, or null. */
+export function sectionAt(ecs: State, id: number): number | null {
+    for (const eid of ecs.query([Section])) {
+        if (Section.id.get(eid) === id) return eid;
+    }
+    return null;
+}
+
+/** create a section at `order` with a fresh stable id — the append/seed path.
+ *  returns the id (undo/redo, membership, and selection address by id). */
+export function createSection(
+    ecs: State,
+    order: number,
+    kind: SectionKind,
+    length: number,
+): number {
+    const eid = ecs.create();
+    ecs.add(eid, Section);
+    const id = nextSectionId++;
+    Section.id.set(eid, id);
+    Section.order.set(eid, order);
+    Section.kind.set(eid, kind);
+    Section.length.set(eid, length);
+    return id;
+}
+
+/** re-create a section at an *exact* id / order / kind / length — undo of a delete,
+ *  redo of a create, or a snapshot restore. no id allocation, so it round-trips
+ *  byte-identical. its nodes/points are respawned separately. */
+function spawnSection(
+    ecs: State,
+    id: number,
+    order: number,
+    kind: SectionKind,
+    length: number,
+): void {
+    const eid = ecs.create();
+    ecs.add(eid, Section);
+    Section.id.set(eid, id);
+    Section.order.set(eid, order);
+    Section.kind.set(eid, kind);
+    Section.length.set(eid, length);
+}
+
+// ── geo nodes (section-local) ────────────────────────────────────────────────
+
+/** collect every node on a section, sorted by `Handle.order`. ECS query order
+ *  isn't guaranteed; the bake and the heading walk need deterministic order. */
+export function sectionHandles(ecs: State, sectionId: number): number[] {
+    const eids: number[] = [];
+    for (const eid of ecs.query([Handle])) {
+        if (Handle.section.get(eid) === sectionId) eids.push(eid);
+    }
+    eids.sort((a, b) => Handle.order.get(a) - Handle.order.get(b));
+    return eids;
+}
+
+/** highest-order node on a section, or null when empty. */
+export function lastHandle(ecs: State, sectionId: number): number | null {
+    let best: number | null = null;
+    let bestOrder = -1;
+    for (const eid of ecs.query([Handle])) {
+        if (Handle.section.get(eid) !== sectionId) continue;
+        const o = Handle.order.get(eid);
+        if (o > bestOrder) {
+            bestOrder = o;
+            best = eid;
+        }
+    }
+    return best;
+}
+
+/** append a node at the section's end (order = maxOrder + 1) at **section-local**
+ *  `(x, y)`. the new node's heading is the circular-arc exit from its predecessor's
+ *  heading (`reflect`): placed straight ahead it continues straight, off-axis it
+ *  bends one arc. node 0 (local origin, the section entry) is a fixed flat anchor
+ *  (θ = 0) — the section always leaves its entry along the entry heading, and node 1
+ *  reflects that. */
+export function addNode(ecs: State, sectionId: number, x: number, y: number): number {
+    const prev = lastHandle(ecs, sectionId);
     const order = prev === null ? 0 : Handle.order.get(prev) + 1;
     const eid = ecs.create();
     ecs.add(eid, Handle);
+    Handle.section.set(eid, sectionId);
     Handle.order.set(eid, order);
     Handle.sample.set(eid, 0);
     Handle.pos.set(eid, x, y);
     if (prev === null) {
-        Handle.theta.set(eid, 0); // the first node is a fixed flat anchor
+        Handle.theta.set(eid, 0); // node 0 is a fixed local flat anchor (the entry)
     } else {
         const chord = Math.atan2(y - Handle.pos.y.get(prev), x - Handle.pos.x.get(prev));
         Handle.theta.set(eid, reflect(Handle.theta.get(prev), chord));
@@ -167,25 +306,32 @@ export function addNode(ecs: State, x: number, y: number): number {
     return eid;
 }
 
-/** resolve a node by its stable `order` to its ECS eid, or null. undo/redo
- *  address nodes by order — a stable identity for this append/delete-trailing
- *  chain (an interior node's order never changes), the way pins address by a
- *  stable `id` — so a recycled eid across a delete→undo can't alias the wrong
- *  node. */
-export function handleAt(ecs: State, order: number): number | null {
+/** resolve a node by its section + stable `order` to its eid, or null. undo/redo
+ *  address nodes by (section, order) — a stable identity for the append/delete-
+ *  trailing chain (an interior node's order never changes), so a recycled eid across
+ *  a delete→undo can't alias the wrong node. */
+export function handleAt(ecs: State, sectionId: number, order: number): number | null {
     for (const eid of ecs.query([Handle])) {
-        if (Handle.order.get(eid) === order) return eid;
+        if (Handle.section.get(eid) === sectionId && Handle.order.get(eid) === order) return eid;
     }
     return null;
 }
 
-/** re-create a node at an *exact* order / position / heading — no `reflect`, no
- *  rehead. restores a node deleted by a trim (undo) or re-adds one dropped by an
- *  extend (redo); the saved state is replayed verbatim so the bake reproduces the
- *  same curve. */
-export function spawnNode(ecs: State, order: number, x: number, y: number, theta: number): number {
+/** re-create a node at an *exact* section / order / position / heading — no
+ *  `reflect`, no rehead. restores a node deleted by a trim (undo) or re-adds one
+ *  dropped by an extend (redo); the saved state is replayed verbatim so the bake
+ *  reproduces the same curve. */
+export function spawnNode(
+    ecs: State,
+    sectionId: number,
+    order: number,
+    x: number,
+    y: number,
+    theta: number,
+): number {
     const eid = ecs.create();
     ecs.add(eid, Handle);
+    Handle.section.set(eid, sectionId);
     Handle.order.set(eid, order);
     Handle.sample.set(eid, 0);
     Handle.pos.set(eid, x, y);
@@ -193,7 +339,8 @@ export function spawnNode(ecs: State, order: number, x: number, y: number, theta
     return eid;
 }
 
-/** a node's undoable pose — position + stored heading, keyed by stable order. */
+/** a node's undoable pose — section-local position + stored heading, keyed by
+ *  stable order within its section. */
 export interface NodeState {
     order: number;
     x: number;
@@ -201,12 +348,12 @@ export interface NodeState {
     theta: number;
 }
 
-/** snapshot every node's pose (the whole chain — a handful of nodes). the move
- *  gesture captures this before/after a drag; a drag never adds or removes a
- *  node, so the two snapshots share the same order set. */
-export function nodeSnapshot(ecs: State): NodeState[] {
+/** snapshot every node's pose on a section (a handful of nodes). the move gesture
+ *  captures this before/after a drag; a drag never adds or removes a node, so the
+ *  two snapshots share the same order set. */
+export function nodeSnapshot(ecs: State, sectionId: number): NodeState[] {
     const snap: NodeState[] = [];
-    for (const eid of ecs.query([Handle])) {
+    for (const eid of sectionHandles(ecs, sectionId)) {
         snap.push({
             order: Handle.order.get(eid),
             x: Handle.pos.x.get(eid),
@@ -217,9 +364,8 @@ export function nodeSnapshot(ecs: State): NodeState[] {
     return snap;
 }
 
-/** whether two chain snapshots are pose-identical (matched by stable order — a
- *  snapshot's query order isn't guaranteed). the gesture no-op test for any
- *  surface that moves nodes (a drag, a solve commit). */
+/** whether two node snapshots are pose-identical (matched by stable order). the
+ *  gesture no-op test for any surface that moves nodes. */
 export function sameNodes(a: NodeState[], b: NodeState[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -229,224 +375,21 @@ export function sameNodes(a: NodeState[], b: NodeState[]): boolean {
     return true;
 }
 
-/** write a chain snapshot back onto the live nodes by order (move undo/redo and
- *  gesture cancel). only pose is touched — the node set is unchanged. */
-export function restoreNodes(ecs: State, snap: NodeState[]): void {
+/** write a node snapshot back onto a section's live nodes by order (move undo/redo
+ *  and gesture cancel). only pose is touched — the node set is unchanged. */
+export function restoreNodes(ecs: State, sectionId: number, snap: NodeState[]): void {
     for (const s of snap) {
-        const eid = handleAt(ecs, s.order);
+        const eid = handleAt(ecs, sectionId, s.order);
         if (eid === null) continue;
         Handle.pos.set(eid, s.x, s.y);
         Handle.theta.set(eid, s.theta);
     }
 }
 
-// ── force points ─────────────────────────────────────────────────────────────
-
-/** an authored force keyframe read off the ECS: eid + its stable `id`, arclength
- *  `s`, and demanded force `g`. */
-export interface ForceRow {
-    eid: number;
-    id: number;
-    s: number;
-    g: number;
-}
-
-/** every force point on the track, sorted by arclength — the order `forceProfile`
- *  and the timeline both consume. one track in whole-track mode, so no track filter. */
-export function forcePoints(ecs: State): ForceRow[] {
-    const rows: ForceRow[] = [];
-    for (const eid of ecs.query([Force])) {
-        rows.push({ eid, id: Force.id.get(eid), s: Force.s.get(eid), g: Force.g.get(eid) });
-    }
-    rows.sort((a, b) => a.s - b.s);
-    return rows;
-}
-
-/** resolve a force point by its stable `id` to its eid, or null — undo/redo never
- *  holds eids (the `handleAt` convention, so a recycled eid can't alias). */
-export function forceAt(ecs: State, id: number): number | null {
-    for (const eid of ecs.query([Force])) {
-        if (Force.id.get(eid) === id) return eid;
-    }
-    return null;
-}
-
-// monotone id source — never reused, even after a delete: history can re-spawn any
-// deleted id, so a scan-the-live-set allocator would alias a fresh point with a
-// restorable one (the eid-recycling bug one level up). mirrors the old target
-// allocator.
-let nextForceId = 0;
-
-/** author a new force point at `(s, g)` with a fresh stable id — the create path.
- *  returns the id (undo/redo addresses points by id, not eid). */
-export function createForcePoint(ecs: State, s: number, g: number): number {
-    const eid = ecs.create();
-    ecs.add(eid, Force);
-    const id = nextForceId++;
-    Force.id.set(eid, id);
-    Force.s.set(eid, s);
-    Force.g.set(eid, g);
-    return id;
-}
-
-/** re-create a force point at an *exact* id / s / g — undo of a delete, redo of a
- *  create, or a snapshot restore. no id allocation, so the point round-trips
- *  byte-identical. */
-export function spawnForce(ecs: State, id: number, s: number, g: number): void {
-    const eid = ecs.create();
-    ecs.add(eid, Force);
-    Force.id.set(eid, id);
-    Force.s.set(eid, s);
-    Force.g.set(eid, g);
-}
-
-/** destroy a force point by stable id (no-op if already gone). */
-export function destroyForce(ecs: State, id: number): void {
-    const eid = forceAt(ecs, id);
-    if (eid !== null) ecs.destroy(eid);
-}
-
-/** a force point's undoable state, keyed by stable id — the drag/field gesture
- *  snapshots this. */
-export interface ForcePointState {
-    id: number;
-    s: number;
-    g: number;
-}
-
-/** snapshot one force point by id, or undefined if it's gone (the gesture opens
- *  nothing). */
-export function forcePointState(ecs: State, id: number): ForcePointState | undefined {
-    const eid = forceAt(ecs, id);
-    if (eid === null) return undefined;
-    return { id, s: Force.s.get(eid), g: Force.g.get(eid) };
-}
-
-/** write a force point's `s`/`g` (live drag preview + gesture restore). */
-export function setForcePoint(ecs: State, id: number, s: number, g: number): void {
-    const eid = forceAt(ecs, id);
-    if (eid === null) return;
-    Force.s.set(eid, s);
-    Force.g.set(eid, g);
-}
-
-// ── whole-track kind + conversion ─────────────────────────────────────────────
-
-/** the whole track's undoable state: its kind, the force extent, its geo nodes,
- *  and its force points. a destructive convert snapshots this before/after so undo
- *  is byte-identical (§5). */
-export interface TrackSnapshot {
-    kind: number;
-    length: number;
-    nodes: NodeState[];
-    points: ForcePointState[];
-}
-
-/** capture the whole track (both kinds' payloads — one is empty). */
-export function snapshotTrack(ecs: State, trackEid: number): TrackSnapshot {
-    return {
-        kind: Track.kind.get(trackEid),
-        length: Track.length.get(trackEid),
-        nodes: nodeSnapshot(ecs),
-        points: forcePoints(ecs).map((p) => ({ id: p.id, s: p.s, g: p.g })),
-    };
-}
-
-/** clear both payload sets and rebuild the track verbatim from a snapshot — restores
- *  a convert (either direction) byte-identical. re-spawns nodes by order and points
- *  by id, so eids recycle but identities don't. */
-export function restoreTrack(ecs: State, trackEid: number, snap: TrackSnapshot): void {
-    for (const eid of [...ecs.query([Handle])]) ecs.destroy(eid);
-    for (const eid of [...ecs.query([Force])]) ecs.destroy(eid);
-    Track.kind.set(trackEid, snap.kind);
-    Track.length.set(trackEid, snap.length);
-    for (const n of snap.nodes) spawnNode(ecs, n.order, n.x, n.y, n.theta);
-    for (const p of snap.points) spawnForce(ecs, p.id, p.s, p.g);
-}
-
-/** the cumulative arclength of the current bake (m) — the force extent a geo→force
- *  convert inherits (§5: one scalar, not a fit). */
-function bakedLength(out: BakeOut, count: number): number {
-    let s = 0;
-    for (let i = 0; i < count - 1; i++) s += out.ds[i];
-    return s;
-}
-
-/** destructively flip the track's kind to its opposite, resetting to that kind's
- *  default (§5): geo → force clears the nodes for an empty profile (constant 1g)
- *  whose extent is the geo track's baked arclength; force → geo clears the points
- *  for the flat two-node seed. undo (via a `snapshotTrack` pair) makes it safe, so
- *  there's no confirmation. does not itself record history — `history.convertTrack`
- *  wraps it. */
-export function convertKind(ecs: State, trackEid: number): void {
-    const kind = Track.kind.get(trackEid);
-    if (kind === TrackKind.Geo) {
-        const out = bakeOut.get(trackEid);
-        const count = Track.count.get(trackEid);
-        const len = out && count >= 2 ? bakedLength(out, count) : DEFAULT_FORCE_LEN;
-        for (const eid of [...ecs.query([Handle])]) ecs.destroy(eid);
-        Track.kind.set(trackEid, TrackKind.Force);
-        Track.length.set(trackEid, len);
-    } else {
-        for (const eid of [...ecs.query([Force])]) ecs.destroy(eid);
-        Track.kind.set(trackEid, TrackKind.Geo);
-        addNode(ecs, 0, 0);
-        addNode(ecs, EXTEND_DIST, 0);
-    }
-}
-
-function seed(ecs: State): void {
-    createTrack(ecs);
-    // a flat horizontal start, one extension-length long (matches `extend`),
-    // launching at the origin — the same anchor as FORCE_LAUNCH, so the geo and
-    // force starting tracks are equivalent.
-    addNode(ecs, 0, 0);
-    addNode(ecs, EXTEND_DIST, 0);
-}
-
-/** collect every node eid on the chain, sorted by `Handle.order`. ECS query
- *  order isn't guaranteed; the multi-segment bake needs deterministic order to
- *  walk nodes. */
-export function sortedHandles(ecs: State): number[] {
-    const eids: number[] = [];
-    for (const eid of ecs.query([Handle])) eids.push(eid);
-    eids.sort((a, b) => Handle.order.get(a) - Handle.order.get(b));
-    return eids;
-}
-
-/** highest-order node on the chain, or null when empty. */
-export function lastHandle(ecs: State): number | null {
-    let best: number | null = null;
-    let bestOrder = -1;
-    for (const eid of ecs.query([Handle])) {
-        const o = Handle.order.get(eid);
-        if (o > bestOrder) {
-            bestOrder = o;
-            best = eid;
-        }
-    }
-    return best;
-}
-
-/** lay a new node past the chain end, continuing straight along the last node's
- *  exit heading by `EXTEND_DIST` — the "extend the track" gesture (the new node
- *  is then free to drag). placing it along the heading makes `reflect` return
- *  the same heading, so the new segment opens straight. returns the new node. */
-export function extend(ecs: State): number {
-    const last = lastHandle(ecs);
-    if (last === null) return addNode(ecs, 0, 0);
-    const th = Handle.theta.get(last);
-    const lx = Handle.pos.x.get(last);
-    const ly = Handle.pos.y.get(last);
-    return addNode(ecs, lx + Math.cos(th) * EXTEND_DIST, ly + Math.sin(th) * EXTEND_DIST);
-}
-
 /** the standing invariant: the last (heading) node's angle is the circular-arc
- *  reflection of its predecessor's heading about their chord. re-derived
- *  whenever the chain's tail changes — a drag of the tip or the node before it,
- *  or a deletion that promotes a new tip — so the tip's angle is never stale
- *  (and never jumps the next time it's grabbed). takes the sorted handles;
- *  no-op below two nodes. */
+ *  reflection of its predecessor's heading about their chord. re-derived whenever
+ *  the chain's tail changes so the tip's angle is never stale. takes the section's
+ *  sorted handles; no-op below two nodes. */
 function headLast(handles: number[]): void {
     const n = handles.length;
     if (n < 2) return;
@@ -460,65 +403,464 @@ function headLast(handles: number[]): void {
 }
 
 /** refresh headings after a node is dragged. the **last** (heading) node always
- *  tracks its predecessor: it re-derives whenever *it* moves or the node *before*
- *  it moves, so its segment stays a clean arc and its angle never goes stale (so
- *  grabbing it next never makes it jump). the **first** node is a fixed flat
- *  anchor and **interior** nodes keep their heading frozen — the arc contract
- *  can't hold on both of an interior node's segments at once, so a stable
- *  heading beats one that thrashes its outgoing segment on every nudge. a drag
- *  only ever changes the *last* node's heading, so the edit stays local; tangent
- *  lengths re-proportion automatically (length is the live chord). */
+ *  tracks its predecessor (re-derives when it or the node before it moves); node 0
+ *  (the flat anchor) and **interior** nodes keep their heading frozen — the arc
+ *  contract can't hold on both of an interior node's segments at once, so a stable
+ *  heading beats one that thrashes. a drag only changes the last node's heading, so
+ *  the edit stays local; tangent lengths re-proportion automatically. */
 export function reheadOnDrag(ecs: State, eid: number): void {
-    const handles = sortedHandles(ecs);
+    const sectionId = Handle.section.get(eid);
+    const handles = sectionHandles(ecs, sectionId);
     const last = handles.length - 1;
     if (last < 1) return;
     const idx = handles.indexOf(eid);
     if (idx === last || idx === last - 1) headLast(handles);
 }
 
-/** remove the trailing (highest-order) node — undo the last node. this only
- *  ever drops the chain's end, never below the two nodes a chain needs. the
- *  node it promotes to the new tip re-derives its heading (`headLast`) so it's
- *  already arc-consistent and won't jump when grabbed. the next BakeSystem tick
- *  re-derives the curve. returns true when a node was removed. */
-export function removeTrailingHandle(ecs: State): boolean {
-    const last = lastHandle(ecs);
+/** lay a new node past a section's end, continuing straight along the last node's
+ *  exit heading by `EXTEND_DIST` (in the section-local frame) — the "extend"
+ *  gesture. placing it along the heading makes `reflect` return the same heading, so
+ *  the new segment opens straight. returns the new node. */
+export function extend(ecs: State, sectionId: number): number {
+    const last = lastHandle(ecs, sectionId);
+    if (last === null) return addNode(ecs, sectionId, 0, 0);
+    const th = Handle.theta.get(last);
+    const lx = Handle.pos.x.get(last);
+    const ly = Handle.pos.y.get(last);
+    return addNode(
+        ecs,
+        sectionId,
+        lx + Math.cos(th) * EXTEND_DIST,
+        ly + Math.sin(th) * EXTEND_DIST,
+    );
+}
+
+/** remove the trailing (highest-order) node on a section — never below the two
+ *  nodes a geo section needs (node 0 the entry + one shape node). the promoted tip
+ *  re-derives its heading (`headLast`). returns true when a node was removed. */
+export function removeTrailingHandle(ecs: State, sectionId: number): boolean {
+    const last = lastHandle(ecs, sectionId);
     if (last === null) return false;
-    let count = 0;
-    for (const _ of ecs.query([Handle])) count++;
-    if (count <= 2) return false;
+    if (sectionHandles(ecs, sectionId).length <= 2) return false;
     ecs.destroy(last);
-    headLast(sortedHandles(ecs)); // the promoted tip tracks its predecessor
+    headLast(sectionHandles(ecs, sectionId)); // the promoted tip tracks its predecessor
     return true;
 }
 
-/** input-state hash that gates the bake: the kind, then the authored payload — a
- *  geo track's node poses in walk order, a force track's extent + ds + every point.
- *  BakeSystem re-bakes on a miss (a node/point moved, added, removed, or the kind
- *  flipped), skips otherwise. the leading kind tag forces a re-bake on convert. */
-function bakeHash(ecs: State, trackEid: number, kind: number): string {
-    if (kind === TrackKind.Force) {
-        let hash = `F|${Track.length.get(trackEid)}|${Track.ds.get(trackEid)}`;
-        for (const p of forcePoints(ecs)) hash += `|${p.id}:${p.s}:${p.g}`;
-        return hash;
-    }
-    let hash = "G";
-    for (const eid of sortedHandles(ecs)) {
-        hash += `|${Handle.pos.x.get(eid)}:${Handle.pos.y.get(eid)}:${Handle.theta.get(eid)}`;
-    }
-    return hash;
+// ── force points ─────────────────────────────────────────────────────────────
+
+/** an authored force keyframe read off the ECS: eid + section, stable `id`,
+ *  arclength `s` (from the section entry), and demanded force `g`. */
+export interface ForceRow {
+    eid: number;
+    section: number;
+    id: number;
+    s: number;
+    g: number;
 }
 
-/** per-sample cumulative time `t[i] = Σ_{k<i} ds_k / v̄_k` plus the
- *  diagnostic feasibility flag. v̄ floors at V_FLOOR so energy-depleted
- *  regions take long-but-finite time; `feasible[i] = |v[i]| >= V_WARN`
- *  drives the red track / red handle / banner UX (warning threshold is
- *  intentionally higher than the numerical floor). */
-function computeTime(
-    s: Samples,
-    out: NonNullable<ReturnType<typeof bakeOut.get>>,
-    count: number,
-): void {
+/** every force point on a section, sorted by arclength — the order `forceProfile`
+ *  and the timeline both consume. */
+export function sectionForces(ecs: State, sectionId: number): ForceRow[] {
+    const rows: ForceRow[] = [];
+    for (const eid of ecs.query([Force])) {
+        if (Force.section.get(eid) !== sectionId) continue;
+        rows.push({
+            eid,
+            section: sectionId,
+            id: Force.id.get(eid),
+            s: Force.s.get(eid),
+            g: Force.g.get(eid),
+        });
+    }
+    rows.sort((a, b) => a.s - b.s);
+    return rows;
+}
+
+/** resolve a force point by its stable `id` to its eid, or null (ids are globally
+ *  unique — undo/redo never holds eids, so a recycled eid can't alias). */
+export function forceAt(ecs: State, id: number): number | null {
+    for (const eid of ecs.query([Force])) {
+        if (Force.id.get(eid) === id) return eid;
+    }
+    return null;
+}
+
+// monotone id source — never reused, even after a delete (the section-id rationale).
+let nextForceId = 0;
+
+/** author a new force point on a section at `(s, g)` with a fresh stable id — the
+ *  create path. returns the id (undo/redo addresses points by id, not eid). */
+export function createForcePoint(ecs: State, sectionId: number, s: number, g: number): number {
+    const eid = ecs.create();
+    ecs.add(eid, Force);
+    const id = nextForceId++;
+    Force.section.set(eid, sectionId);
+    Force.id.set(eid, id);
+    Force.s.set(eid, s);
+    Force.g.set(eid, g);
+    return id;
+}
+
+/** re-create a force point at an *exact* section / id / s / g — undo of a delete,
+ *  redo of a create, or a snapshot restore. no id allocation, so it round-trips
+ *  byte-identical. */
+export function spawnForce(ecs: State, sectionId: number, id: number, s: number, g: number): void {
+    const eid = ecs.create();
+    ecs.add(eid, Force);
+    Force.section.set(eid, sectionId);
+    Force.id.set(eid, id);
+    Force.s.set(eid, s);
+    Force.g.set(eid, g);
+}
+
+/** destroy a force point by stable id (no-op if already gone). */
+export function destroyForce(ecs: State, id: number): void {
+    const eid = forceAt(ecs, id);
+    if (eid !== null) ecs.destroy(eid);
+}
+
+/** a force point's undoable state, keyed by stable id (+ its section, so a restore
+ *  re-homes it). the drag/field gesture snapshots this. */
+export interface ForcePointState {
+    section: number;
+    id: number;
+    s: number;
+    g: number;
+}
+
+/** snapshot one force point by id, or undefined if it's gone (the gesture opens
+ *  nothing). */
+export function forcePointState(ecs: State, id: number): ForcePointState | undefined {
+    const eid = forceAt(ecs, id);
+    if (eid === null) return undefined;
+    return { section: Force.section.get(eid), id, s: Force.s.get(eid), g: Force.g.get(eid) };
+}
+
+/** write a force point's `s`/`g` (live drag preview + gesture restore). */
+export function setForcePoint(ecs: State, id: number, s: number, g: number): void {
+    const eid = forceAt(ecs, id);
+    if (eid === null) return;
+    Force.s.set(eid, s);
+    Force.g.set(eid, g);
+}
+
+// ── force-section extent ──────────────────────────────────────────────────────
+
+/** a force section's undoable extent, keyed by stable id — the end-handle drag
+ *  gesture snapshots this. */
+export interface SectionLengthState {
+    id: number;
+    length: number;
+}
+
+/** snapshot a section's extent by id, or undefined if it's gone. */
+export function sectionLengthState(ecs: State, id: number): SectionLengthState | undefined {
+    const eid = sectionAt(ecs, id);
+    return eid === null ? undefined : { id, length: Section.length.get(eid) };
+}
+
+/** set a force section's extent (m), floored at the minimum — the end-handle drag +
+ *  gesture restore. re-bakes on the next tick (the extent is in the bake hash). */
+export function setSectionLength(ecs: State, id: number, length: number): void {
+    const eid = sectionAt(ecs, id);
+    if (eid === null) return;
+    Section.length.set(eid, Math.max(MIN_FORCE_LEN, length));
+}
+
+// ── per-section kind + conversion ─────────────────────────────────────────────
+
+/** one section's full undoable state: its identity/order, kind, force extent, its
+ *  geo nodes, and its force points. a destructive convert (or a structural op)
+ *  snapshots this before/after so undo is byte-identical (§5). */
+export interface SectionSnapshot {
+    id: number;
+    order: number;
+    kind: SectionKind;
+    length: number;
+    nodes: NodeState[];
+    points: { id: number; s: number; g: number }[];
+}
+
+/** capture a section (both kinds' payloads — one is empty). */
+export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot {
+    const eid = sectionAt(ecs, sectionId);
+    if (eid === null) throw new Error(`snapshotSection: no section ${sectionId}`);
+    return {
+        id: sectionId,
+        order: Section.order.get(eid),
+        kind: Section.kind.get(eid) as SectionKind,
+        length: Section.length.get(eid),
+        nodes: nodeSnapshot(ecs, sectionId),
+        points: sectionForces(ecs, sectionId).map((p) => ({ id: p.id, s: p.s, g: p.g })),
+    };
+}
+
+/** clear a section's payload and rebuild it verbatim from a snapshot — restores a
+ *  convert (either direction) or a structural op byte-identical. the Section entity
+ *  is assumed to exist (its order/kind/length are rewritten); nodes respawn by
+ *  order, points by id, so eids recycle but identities don't. */
+export function restoreSection(ecs: State, snap: SectionSnapshot): void {
+    const eid = sectionAt(ecs, snap.id);
+    if (eid === null) throw new Error(`restoreSection: no section ${snap.id}`);
+    for (const h of sectionHandles(ecs, snap.id)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, snap.id)) ecs.destroy(p.eid);
+    Section.order.set(eid, snap.order);
+    Section.kind.set(eid, snap.kind);
+    Section.length.set(eid, snap.length);
+    for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta);
+    for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g);
+}
+
+/** destructively flip a section's kind to its opposite, resetting to that kind's
+ *  default (§5): geo → force clears the nodes for an empty profile (constant 1g)
+ *  whose extent is the section's baked arclength; force → geo clears the points for
+ *  the flat two-node seed. undo (a `snapshotSection` pair) makes it safe, so there's
+ *  no confirmation. does not itself record history — `history.convertSection` wraps
+ *  it. */
+export function convertSection(ecs: State, sectionId: number): void {
+    const eid = sectionAt(ecs, sectionId);
+    if (eid === null) return;
+    const kind = Section.kind.get(eid);
+    if (kind === SectionKind.Geo) {
+        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+        Section.kind.set(eid, SectionKind.Force);
+        Section.length.set(eid, DEFAULT_FORCE_LEN); // reset to the default extent, not inherited
+    } else {
+        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+        Section.kind.set(eid, SectionKind.Geo);
+        Section.length.set(eid, 0);
+        addNode(ecs, sectionId, 0, 0);
+        addNode(ecs, sectionId, EXTEND_DIST, 0);
+    }
+}
+
+// ── structural ops (append / split / join / delete) ──────────────────────────
+// each mutates the section chain directly; `history` wraps it in a whole-track
+// snapshot pair so undo is byte-identical. geo split/join re-express nodes rigidly
+// in the boundary frame (`place`/`localize` — §4, exact to f32 round-off); force
+// split/join partition + rebase points by arclength (lossless).
+
+/** shift every section at or past `threshold` order by `delta` — makes room to
+ *  insert (delta +1) or closes a gap after a remove (delta −1). */
+function bumpOrders(ecs: State, threshold: number, delta: number): void {
+    for (const eid of ecs.query([Section])) {
+        const o = Section.order.get(eid);
+        if (o >= threshold) Section.order.set(eid, o + delta);
+    }
+}
+
+/** the section immediately after `sectionId` in the chain, or null at the end. */
+function nextSection(ecs: State, sectionId: number): SectionRow | null {
+    const secs = sections(ecs);
+    const i = secs.findIndex((s) => s.id === sectionId);
+    return i >= 0 && i + 1 < secs.length ? secs[i + 1] : null;
+}
+
+/** capture the whole track — every section (order/kind/length) with its nodes and
+ *  points. the structural-op undo unit: a snapshot pair round-trips byte-identical
+ *  (respawns the stored f32 verbatim), which is what makes the ops safely reversible. */
+export function snapshotAll(ecs: State): SectionSnapshot[] {
+    return sections(ecs).map((s) => snapshotSection(ecs, s.id));
+}
+
+/** clear the whole track and rebuild it from a snapshot (structural-op undo/redo). */
+export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
+    for (const e of [...ecs.query([Section])]) ecs.destroy(e);
+    for (const e of [...ecs.query([Handle])]) ecs.destroy(e);
+    for (const e of [...ecs.query([Force])]) ecs.destroy(e);
+    for (const snap of snaps) {
+        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length);
+        for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta);
+        for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g);
+    }
+}
+
+/** append a new section of `kind` at the end of the chain. geo gets the flat
+ *  two-node seed (its entry is the prior exit, so it opens straight along the
+ *  running heading); force gets an empty default-length profile. returns the id. */
+export function appendSection(ecs: State, kind: SectionKind): number {
+    const order = sections(ecs).length;
+    const id = createSection(ecs, order, kind, kind === SectionKind.Force ? DEFAULT_FORCE_LEN : 0);
+    if (kind === SectionKind.Geo) {
+        addNode(ecs, id, 0, 0);
+        addNode(ecs, id, EXTEND_DIST, 0);
+    }
+    return id;
+}
+
+/** split a geo section at an interior node (order `k`, 1 ≤ k ≤ n−1): the head keeps
+ *  nodes [0..k], a new section takes [k..n] re-expressed in node k's frame (rigid —
+ *  its node 0 becomes {0,0,0}, §4). node k stays the head's new tip. no-op at the
+ *  entry or last node. returns the new (tail) section id, or null. */
+export function splitGeo(ecs: State, sectionId: number, k: number): number | null {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return null;
+    const handles = sectionHandles(ecs, sectionId);
+    const n = handles.length - 1;
+    if (k < 1 || k >= n) return null;
+
+    // the boundary frame (v unused by place/localize — a pure rigid transform).
+    const frame: Entry = {
+        x: Handle.pos.x.get(handles[k]),
+        y: Handle.pos.y.get(handles[k]),
+        theta: Handle.theta.get(handles[k]),
+        v: 0,
+    };
+    const order = Section.order.get(secEid);
+    bumpOrders(ecs, order + 1, +1);
+    const bId = createSection(ecs, order + 1, SectionKind.Geo, 0);
+    for (let i = k; i <= n; i++) {
+        const bl = localize(frame, {
+            x: Handle.pos.x.get(handles[i]),
+            y: Handle.pos.y.get(handles[i]),
+            theta: Handle.theta.get(handles[i]),
+        });
+        spawnNode(ecs, bId, i - k, bl.x, bl.y, bl.theta);
+    }
+    for (let i = k + 1; i <= n; i++) ecs.destroy(handles[i]); // trim the head to [0..k]
+    return bId;
+}
+
+/** split a force section at arclength `s` (0 < s < length): the head keeps extent
+ *  [0, s] and its points there; a new section takes extent [s, length] with the
+ *  remaining points rebased to its entry (a lossless partition, §4). no-op outside
+ *  the interior. returns the new (tail) section id, or null. */
+export function splitForce(ecs: State, sectionId: number, s: number): number | null {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Force) return null;
+    const len = Section.length.get(secEid);
+    if (s <= 0 || s >= len) return null;
+
+    const order = Section.order.get(secEid);
+    bumpOrders(ecs, order + 1, +1);
+    const bId = createSection(ecs, order + 1, SectionKind.Force, len - s);
+    for (const p of sectionForces(ecs, sectionId)) {
+        if (p.s >= s) {
+            Force.section.set(p.eid, bId);
+            Force.s.set(p.eid, p.s - s);
+        }
+    }
+    Section.length.set(secEid, s);
+    return bId;
+}
+
+/** join a section with the next one in the chain (same-kind only). geo appends the
+ *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
+ *  geo split); force concatenates the extents and rebases the neighbor's points. the
+ *  neighbor is removed and downstream orders close up. returns true when joined. */
+export function joinNext(ecs: State, sectionId: number): boolean {
+    const aEid = sectionAt(ecs, sectionId);
+    const b = nextSection(ecs, sectionId);
+    if (aEid === null || b === null) return false;
+    const aKind = Section.kind.get(aEid) as SectionKind;
+    if (aKind !== b.kind) return false;
+
+    if (aKind === SectionKind.Geo) {
+        const aHandles = sectionHandles(ecs, sectionId);
+        const aN = aHandles.length - 1;
+        const frame: Entry = {
+            x: Handle.pos.x.get(aHandles[aN]),
+            y: Handle.pos.y.get(aHandles[aN]),
+            theta: Handle.theta.get(aHandles[aN]),
+            v: 0,
+        };
+        const bHandles = sectionHandles(ecs, b.id);
+        // skip B node 0 (== the shared boundary, already A's tip); append B[1..m].
+        for (let j = 1; j < bHandles.length; j++) {
+            const w = place(frame, {
+                x: Handle.pos.x.get(bHandles[j]),
+                y: Handle.pos.y.get(bHandles[j]),
+                theta: Handle.theta.get(bHandles[j]),
+            });
+            spawnNode(ecs, sectionId, aN + j, w.x, w.y, w.theta);
+        }
+        for (const h of bHandles) ecs.destroy(h);
+    } else {
+        const aLen = Section.length.get(aEid);
+        for (const p of sectionForces(ecs, b.id)) {
+            Force.section.set(p.eid, sectionId);
+            Force.s.set(p.eid, p.s + aLen);
+        }
+        Section.length.set(aEid, aLen + b.length);
+    }
+    ecs.destroy(b.eid);
+    bumpOrders(ecs, b.order + 1, -1);
+    return true;
+}
+
+/** delete a section and its payload; downstream sections close the gap and rebase
+ *  rigidly (their nodes are section-local, so the bake re-places them at the new
+ *  upstream exit — §4). refuses to remove the last remaining section. returns true
+ *  when deleted. */
+export function deleteSection(ecs: State, sectionId: number): boolean {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null) return false;
+    if (sections(ecs).length <= 1) return false; // keep at least one section
+    const order = Section.order.get(secEid);
+    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    ecs.destroy(secEid);
+    bumpOrders(ecs, order + 1, -1);
+    return true;
+}
+
+function seed(ecs: State): void {
+    createTrack(ecs);
+    // one geo section: node 0 at the local origin (the fixed start anchor) + a flat
+    // extension-length shape node. the whole track launches level from `START`.
+    const id = createSection(ecs, 0, SectionKind.Geo, 0);
+    addNode(ecs, id, 0, 0);
+    addNode(ecs, id, EXTEND_DIST, 0);
+}
+
+// ── bake ─────────────────────────────────────────────────────────────────────
+
+/** a geo section's payload: its section-local nodes (node 0 at {0,0,0}) + the shared
+ *  nominal spacing. the substrate places them rigidly at the running chain entry. */
+function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
+    const nodes: Node[] = sectionHandles(ecs, sectionId).map((eid) => ({
+        x: Handle.pos.x.get(eid),
+        y: Handle.pos.y.get(eid),
+        theta: Handle.theta.get(eid),
+    }));
+    return { kind: "geo", nodes, ds };
+}
+
+/** a force section's payload: its authored points gathered into a dense per-edge
+ *  F_n(σ) profile over the section extent (§6) + the shared spacing. */
+function forcePayload(ecs: State, sectionId: number, length: number, ds: number): SectionSpec {
+    const points: ForcePoint[] = sectionForces(ecs, sectionId).map((p) => ({ s: p.s, g: p.g }));
+    return { kind: "force", fN: forceProfile(points, length, ds), ds };
+}
+
+/** input-state hash that gates the bake: the shared ds, then every section in order
+ *  — its id/order/kind, and its authored payload (a geo section's node poses, a
+ *  force section's extent + points). BakeSystem re-bakes on a miss (anything moved,
+ *  added, removed, converted, or reordered), skips otherwise. */
+function bakeHash(ecs: State, secs: SectionRow[], ds: number): string {
+    let h = `ds${ds}`;
+    for (const sec of secs) {
+        h += `|S${sec.id}:${sec.order}:${sec.kind}`;
+        if (sec.kind === SectionKind.Force) {
+            h += `:L${sec.length}`;
+            for (const p of sectionForces(ecs, sec.id)) h += `,${p.id}=${p.s}:${p.g}`;
+        } else {
+            for (const eid of sectionHandles(ecs, sec.id)) {
+                h += `,${Handle.pos.x.get(eid)}:${Handle.pos.y.get(eid)}:${Handle.theta.get(eid)}`;
+            }
+        }
+    }
+    return h;
+}
+
+type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
+
+/** per-sample cumulative time `t[i] = Σ_{k<i} ds_k / v̄_k` plus the diagnostic
+ *  feasibility flag. v̄ floors at V_FLOOR so energy-depleted regions take
+ *  long-but-finite time; `feasible[i] = |v[i]| ≥ V_WARN` drives the red-track UX
+ *  (warning threshold above the numerical floor). */
+function computeTime(s: Samples, out: BakeOut, count: number): void {
     out.t[0] = 0;
     out.feasible[0] = Math.abs(s.v[0]) >= V_WARN ? 1 : 0;
     let firstBad = out.feasible[0] === 0 ? 0 : -1;
@@ -535,93 +877,64 @@ function computeTime(
     out.firstInfeasible = firstBad;
 }
 
-type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
+/** the bake: thread the section chain from `START` into one flat SoA + per-section
+ *  metadata. each geo section contributes its local nodes (placed rigidly at the
+ *  running entry — an upstream edit rigidly carries downstream, §4); each force
+ *  section its integrated-then-recovered profile (§2). writes `samples` + `bakeOut`,
+ *  syncs each geo node's global sample index, and records `sectionInfo` (entry,
+ *  range, arclength, orphan cutoff) the drag/render read. skips (keeps the prior
+ *  bake) when a geo section is below its two-node floor or the chain degenerates. */
+function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: SectionRow[]): void {
+    const ds = Track.ds.get(trackEid);
 
-/** the geo bake: evaluate the chain of a single geo section (the authored node
- *  chain placed at the launch anchor) into `samples` + `bakeOut`. the entry is node
- *  0's world pose (`V0` launch speed) — node 0 is the fixed flat anchor, so the
- *  entry is its position and a level heading — and the handles are localized into
- *  that entry frame (`localize`), so `evalGeo` reproduces their world positions
- *  exactly (§4). `evalGeo` samples the Hermite curve through the nodes and recovers
- *  the physical force (θ from the curve's local tangent, v from energy, F_n = κ·v²/g
- *  + cos θ); a degenerate segment or a full buffer commits the prefix and orphans
- *  the trailing nodes. behavior-identical to the old direct bake — the proof the
- *  substrate carries the live product. */
-function bakeGeo(
-    trackEid: number,
-    s: Samples,
-    out: BakeOut,
-    handles: number[],
-    hash: string,
-): void {
-    const dsNominal = Track.ds.get(trackEid);
-    const node0 = handles[0];
-    const entry: Entry = {
-        x: Handle.pos.x.get(node0),
-        y: Handle.pos.y.get(node0),
-        theta: Handle.theta.get(node0),
-        v: V0,
-    };
-    const nodes: Node[] = handles.map((eid) =>
-        localize(entry, {
-            x: Handle.pos.x.get(eid),
-            y: Handle.pos.y.get(eid),
-            theta: Handle.theta.get(eid),
-        }),
+    // a geo section needs ≥2 nodes to bake; if any is short, keep the prior bake
+    // rather than half-render the chain.
+    for (const sec of secs) {
+        if (sec.kind === SectionKind.Geo && sectionHandles(ecs, sec.id).length < 2) return;
+    }
+
+    const payloads = secs.map((sec) =>
+        sec.kind === SectionKind.Geo
+            ? geoPayload(ecs, sec.id, ds)
+            : forcePayload(ecs, sec.id, sec.length, ds),
     );
+    const c = chain(START, payloads, MAX_SAMPLES);
+    const count = c.count;
+    if (count < 2) return; // fully degenerate first section — keep the prior bake
 
-    const c = chain(entry, [{ kind: "geo", nodes, ds: dsNominal }], MAX_SAMPLES);
-    const geo = c.results[0];
-    if (geo.truncated) {
+    let truncatedAny = false;
+    for (let k = 0; k < secs.length; k++) {
+        const r = c.results[k];
+        const range = c.ranges[k];
+        const entry = k === 0 ? START : c.exits[k - 1];
+
+        if (secs[k].kind === SectionKind.Geo) {
+            const hs = sectionHandles(ecs, secs[k].id);
+            for (let n = 0; n < r.offsets.length; n++) {
+                Handle.sample.set(hs[n], range.start + r.offsets[n]);
+            }
+        }
+        sectionInfo.set(secs[k].id, {
+            entry,
+            startSample: range.start,
+            endSample: range.end,
+            bakedNodes: r.offsets.length,
+        });
+        if (r.truncated) truncatedAny = true;
+    }
+    if (truncatedAny) {
         console.warn(
             `kex2d: track ${trackEid} hit MAX_SAMPLES=${MAX_SAMPLES}; trailing nodes dropped`,
         );
     }
-    if (geo.edges < 1) return; // degenerate first segment — keep prior bake
 
-    const count = c.count;
     s.posX.set(c.posX.subarray(0, count));
     s.posY.set(c.posY.subarray(0, count));
     s.theta.set(c.theta.subarray(0, count));
     s.v.set(c.v.subarray(0, count));
     out.fN.set(c.fN.subarray(0, count - 1));
     out.ds.set(c.ds.subarray(0, count - 1));
-
-    // sync each baked node's sample index; the last baked node sets
-    // lastBakedOrder. nodes past it are orphans (their `.sample` is
-    // stale) and HandleDrawSystem renders them red.
-    for (let k = 0; k < geo.offsets.length; k++) {
-        Handle.sample.set(handles[k], geo.offsets[k]);
-    }
-    out.lastBakedOrder = Handle.order.get(handles[geo.offsets.length - 1]);
-    out.hash = hash;
-    Track.count.set(trackEid, count);
-    computeTime(s, out, count);
-}
-
-/** the force bake: gather the authored force points into a dense F_n(σ) profile
- *  (`forceProfile`, §6), integrate it from the fixed launch anchor into the swept
- *  geometry, and recover the display force (`chain` → `evalForce`, §2). there are no
- *  nodes, so `lastBakedOrder` is a no-op sentinel (nothing renders handles in force
- *  mode); the feasibility flags still apply (an authored profile can climb past the
- *  energy budget). */
-function bakeForce(ecs: State, trackEid: number, s: Samples, out: BakeOut, hash: string): void {
-    const ds = Track.ds.get(trackEid);
-    const length = Track.length.get(trackEid);
-    const points: ForcePoint[] = forcePoints(ecs).map((p) => ({ s: p.s, g: p.g }));
-    const fN = forceProfile(points, length, ds);
-
-    const c = chain(FORCE_LAUNCH, [{ kind: "force", fN, ds }], MAX_SAMPLES);
-    const count = c.count;
-    s.posX.set(c.posX.subarray(0, count));
-    s.posY.set(c.posY.subarray(0, count));
-    s.theta.set(c.theta.subarray(0, count));
-    s.v.set(c.v.subarray(0, count));
-    out.fN.set(c.fN.subarray(0, count - 1));
-    out.ds.set(c.ds.subarray(0, count - 1));
-
-    out.lastBakedOrder = -1; // no nodes in force mode
-    out.hash = hash;
+    out.hash = bakeHash(ecs, secs, ds);
     Track.count.set(trackEid, count);
     computeTime(s, out, count);
 }
@@ -632,29 +945,23 @@ export const BakeSystem: System = {
             const s = samples.get(trackEid);
             const out = bakeOut.get(trackEid);
             if (!s || !out) continue;
-
-            const kind = Track.kind.get(trackEid);
-            const hash = bakeHash(ecs, trackEid, kind);
+            const secs = sections(ecs);
+            if (secs.length === 0) continue;
+            const hash = bakeHash(ecs, secs, Track.ds.get(trackEid));
             if (hash === out.hash) continue; // nothing changed — reuse the bake
-
-            if (kind === TrackKind.Force) {
-                bakeForce(ecs, trackEid, s, out, hash);
-            } else {
-                const handles = sortedHandles(ecs);
-                if (handles.length < 2) continue;
-                bakeGeo(trackEid, s, out, handles, hash);
-            }
+            bake(ecs, trackEid, s, out, secs);
         }
     },
 };
 
 export const TrackPlugin: Plugin = {
     name: "Track",
-    components: { Track, Handle, Force },
+    components: { Track, Section, Handle, Force },
     traits: {
-        Track: { defaults: () => ({ count: 0, ds: 0, kind: 0, length: 0 }) },
-        Handle: { defaults: () => ({ order: 0, sample: 0, pos: [0, 0], theta: 0 }) },
-        Force: { defaults: () => ({ id: 0, s: 0, g: 0 }) },
+        Track: { defaults: () => ({ count: 0, ds: 0 }) },
+        Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0 }) },
+        Handle: { defaults: () => ({ section: 0, order: 0, sample: 0, pos: [0, 0], theta: 0 }) },
+        Force: { defaults: () => ({ section: 0, id: 0, s: 0, g: 0 }) },
     },
     initialize(ecs) {
         seed(ecs);

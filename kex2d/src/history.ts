@@ -3,36 +3,48 @@
  *  commands on a dual stack, plus a `begin`/`commit`/`cancel` gesture lifecycle so
  *  one drag collapses to a single entry.
  *
- *  the substrate is domain-agnostic — a `Command` is just a do/undo pair. today the
- *  track nodes (`track.ts`, ECS `Handle` entities, addressed by stable `order` — the
- *  append/delete-trailing chain never changes an interior node's order, so order
- *  survives eid recycling across a delete→undo) are the only surface recording onto
- *  it. do-paths mutate the live data (the re-bake is instant via the bake `hash`
- *  gate) and record an already-applied command; only undo/redo replay through
+ *  the substrate is domain-agnostic — a `Command` is just a do/undo pair. the track
+ *  surfaces (geo nodes, force points, sections — `track.ts`, addressed by stable
+ *  id/order so a recycled eid across a delete→undo can't alias) record onto it.
+ *  do-paths mutate the live data (the re-bake is instant via the bake `hash` gate)
+ *  and record an already-applied command; only undo/redo replay through
  *  apply/reverse. */
 
+import type { State } from "@dylanebert/shallot";
 import {
-    convertKind,
+    appendSection as appendSectionTrack,
+    convertSection as flipSectionKind,
     createForcePoint,
+    deleteSection as deleteSectionTrack,
     destroyForce,
     extend,
     type ForcePointState,
     forcePointState,
     Handle,
     handleAt,
+    joinNext,
     lastHandle,
     type NodeState,
     nodeSnapshot,
     removeTrailingHandle,
+    restoreAll,
     restoreNodes,
-    restoreTrack,
+    restoreSection,
     sameNodes,
+    Section,
+    SectionKind,
+    sectionAt,
+    type SectionLengthState,
+    sectionLengthState,
     setForcePoint,
-    snapshotTrack,
+    setSectionLength,
+    snapshotAll,
+    snapshotSection,
     spawnForce,
     spawnNode,
+    splitForce,
+    splitGeo,
 } from "./track";
-import type { State } from "@dylanebert/shallot";
 
 /** a do/undo pair. `apply` is the do / redo direction, `reverse` is undo. both
  *  mutate the canonical data directly (there's no runtime mirror to sync). */
@@ -55,9 +67,7 @@ export function createHistory(): History {
 /** the app's single history. tests build their own via `createHistory`. */
 export const history = createHistory();
 
-/** push an already-applied command (the do-path mutated live data first).
- *  the substrate primitive for composed commands; gestures and the domain
- *  helpers below are the usual entry. */
+/** push an already-applied command (the do-path mutated live data first). */
 export function record(h: History, cmd: Command): void {
     h.undo.push(cmd);
     if (h.undo.length > MAX_UNDO) h.undo.shift();
@@ -80,9 +90,9 @@ export function redo(h: History): void {
 
 // ── gesture lifecycle: a drag (or a live inline edit) writes the canonical data
 // every frame for instant preview, then commits one coalesced command. one gesture
-// is open at a time (a node drag and a pin drag are mutually exclusive input
-// surfaces). parameterized by snapshot/restore/equality closures so any domain —
-// a pin's state, the node chain's pose — plugs into the same lifecycle.
+// is open at a time (a node drag and a point drag are mutually exclusive input
+// surfaces). parameterized by snapshot/restore/equality closures so any domain plugs
+// into the same lifecycle.
 let gesture: {
     snap: () => unknown;
     restore: (s: unknown) => void;
@@ -127,106 +137,103 @@ export function cancel(): void {
     if (g) g.restore(g.prev);
 }
 
-// ── track nodes ────────────────────────────────────────────────────────────────
+// ── geo nodes ──────────────────────────────────────────────────────────────────
 
-/** extend the chain (lay a node past the tip), recording an undoable add. extend
- *  never reheads the predecessor, so undo is a plain removal of the new node and
- *  redo re-spawns it verbatim. returns the new node's eid. */
-export function extendTrack(h: History, ecs: State): number {
-    const eid = extend(ecs);
+/** extend a section's chain (lay a node past the tip), recording an undoable add.
+ *  extend never reheads the predecessor, so undo is a plain removal and redo
+ *  re-spawns verbatim. returns the new node's eid. */
+export function extendTrack(h: History, ecs: State, section: number): number {
+    const eid = extend(ecs, section);
     const order = Handle.order.get(eid);
     const x = Handle.pos.x.get(eid);
     const y = Handle.pos.y.get(eid);
     const theta = Handle.theta.get(eid);
     record(h, {
-        apply: () => spawnNode(ecs, order, x, y, theta),
-        reverse: () => destroyAt(ecs, order),
+        apply: () => spawnNode(ecs, section, order, x, y, theta),
+        reverse: () => destroyAt(ecs, section, order),
     });
     return eid;
 }
 
-/** trim the trailing node, recording an undoable remove. `removeTrailingHandle`
- *  reheads the promoted tip (`headLast`), so the command captures that neighbour's
- *  theta before and after and restores it on either side. no-op below the two-node
- *  floor (records nothing, returns false — callers keep their guard). */
-export function trimTrack(h: History, ecs: State): boolean {
-    const last = lastHandle(ecs);
+/** trim a section's trailing node, recording an undoable remove. `removeTrailingHandle`
+ *  reheads the promoted tip, so the command captures that neighbour's theta before and
+ *  after. no-op below the two-node floor (records nothing, returns false). */
+export function trimTrack(h: History, ecs: State, section: number): boolean {
+    const last = lastHandle(ecs, section);
     if (last === null) return false;
     const order = Handle.order.get(last);
     const x = Handle.pos.x.get(last);
     const y = Handle.pos.y.get(last);
     const theta = Handle.theta.get(last);
     // the tip the trim promotes; its heading re-derives on removal.
-    const tip = handleAt(ecs, order - 1);
+    const tip = handleAt(ecs, section, order - 1);
     const tipThetaBefore = tip === null ? 0 : Handle.theta.get(tip);
 
-    if (!removeTrailingHandle(ecs)) return false;
+    if (!removeTrailingHandle(ecs, section)) return false;
 
-    const tipAfter = handleAt(ecs, order - 1);
+    const tipAfter = handleAt(ecs, section, order - 1);
     const tipThetaAfter = tipAfter === null ? tipThetaBefore : Handle.theta.get(tipAfter);
     record(h, {
         apply: () => {
-            destroyAt(ecs, order);
-            setTheta(ecs, order - 1, tipThetaAfter);
+            destroyAt(ecs, section, order);
+            setTheta(ecs, section, order - 1, tipThetaAfter);
         },
         reverse: () => {
-            spawnNode(ecs, order, x, y, theta);
-            setTheta(ecs, order - 1, tipThetaBefore);
+            spawnNode(ecs, section, order, x, y, theta);
+            setTheta(ecs, section, order - 1, tipThetaBefore);
         },
     });
     return true;
 }
 
-/** open a gesture on a node drag, snapshotting the chain's pose. commit coalesces
- *  the drag (which mutates pos + reheads the tip) into one entry; a no-move click
- *  records nothing. */
-export function beginMove(ecs: State): void {
+/** open a gesture on a node drag, snapshotting the section's pose. commit coalesces
+ *  the drag into one entry; a no-move click records nothing. */
+export function beginMove(ecs: State, section: number): void {
     begin(
-        () => nodeSnapshot(ecs),
-        (s: NodeState[]) => restoreNodes(ecs, s),
+        () => nodeSnapshot(ecs, section),
+        (s: NodeState[]) => restoreNodes(ecs, section, s),
         sameNodes,
     );
 }
 
-function destroyAt(ecs: State, order: number): void {
-    const eid = handleAt(ecs, order);
+function destroyAt(ecs: State, section: number, order: number): void {
+    const eid = handleAt(ecs, section, order);
     if (eid !== null) ecs.destroy(eid);
 }
 
-function setTheta(ecs: State, order: number, theta: number): void {
-    const eid = handleAt(ecs, order);
+function setTheta(ecs: State, section: number, order: number, theta: number): void {
+    const eid = handleAt(ecs, section, order);
     if (eid !== null) Handle.theta.set(eid, theta);
 }
 
 // ── force points ─────────────────────────────────────────────────────────────
 
-/** author a force point at `(s, g)`, recording an undoable add. the id is allocated
- *  once; undo destroys by it and redo re-spawns verbatim (no re-allocation), so the
- *  point round-trips byte-identical. returns the new point's stable id. */
-export function createForce(h: History, ecs: State, s: number, g: number): number {
-    const id = createForcePoint(ecs, s, g);
+/** author a force point on a section at `(s, g)`, recording an undoable add. the id
+ *  is allocated once; undo destroys by it and redo re-spawns verbatim. returns the
+ *  new point's stable id. */
+export function createForce(h: History, ecs: State, section: number, s: number, g: number): number {
+    const id = createForcePoint(ecs, section, s, g);
     record(h, {
-        apply: () => spawnForce(ecs, id, s, g),
+        apply: () => spawnForce(ecs, section, id, s, g),
         reverse: () => destroyForce(ecs, id),
     });
     return id;
 }
 
 /** delete a force point by id, recording an undoable remove — undo re-spawns it
- *  verbatim. no-op (records nothing) if the id is already gone. */
+ *  verbatim (into its original section). no-op if the id is already gone. */
 export function deleteForce(h: History, ecs: State, id: number): void {
     const st = forcePointState(ecs, id);
     if (!st) return;
     destroyForce(ecs, id);
     record(h, {
         apply: () => destroyForce(ecs, id),
-        reverse: () => spawnForce(ecs, st.id, st.s, st.g),
+        reverse: () => spawnForce(ecs, st.section, st.id, st.s, st.g),
     });
 }
 
 /** open a gesture on a force-point drag (or an inline field edit), snapshotting the
- *  point's `s`/`g`. commit coalesces the live writes into one entry; a no-move
- *  release records nothing. */
+ *  point's `s`/`g`. commit coalesces the live writes into one entry. */
 export function beginForceMove(ecs: State, id: number): void {
     begin(
         () => forcePointState(ecs, id),
@@ -235,19 +242,94 @@ export function beginForceMove(ecs: State, id: number): void {
     );
 }
 
-// ── whole-track kind conversion ───────────────────────────────────────────────
+/** open a gesture on a force-section end-handle drag, snapshotting its extent. commit
+ *  coalesces the live resize into one entry; a no-move release records nothing. */
+export function beginLength(ecs: State, id: number): void {
+    begin(
+        () => sectionLengthState(ecs, id),
+        (st: SectionLengthState) => setSectionLength(ecs, st.id, st.length),
+        (a: SectionLengthState, b: SectionLengthState) => a.length === b.length,
+    );
+}
 
-/** flip the track's kind to its opposite, destructively resetting to that kind's
- *  default (§5), as one undoable entry. the command captures the full track state
- *  before and after (`snapshotTrack`), so undo restores the pre-convert payload
- *  byte-identical — which is what makes destructive conversion safe without a
- *  confirm dialog. */
-export function convertTrack(h: History, ecs: State, trackEid: number): void {
-    const before = snapshotTrack(ecs, trackEid);
-    convertKind(ecs, trackEid);
-    const after = snapshotTrack(ecs, trackEid);
+// ── per-section kind conversion ───────────────────────────────────────────────
+
+/** flip a section's kind to its opposite, destructively resetting to that kind's
+ *  default (§5), as one undoable entry. the command captures the full section state
+ *  before and after (`snapshotSection`), so undo restores the pre-convert payload
+ *  byte-identical — what makes destructive conversion safe without a confirm dialog. */
+export function convertSection(h: History, ecs: State, section: number): void {
+    const before = snapshotSection(ecs, section);
+    flipSectionKind(ecs, section);
+    const after = snapshotSection(ecs, section);
     record(h, {
-        apply: () => restoreTrack(ecs, trackEid, after),
-        reverse: () => restoreTrack(ecs, trackEid, before),
+        apply: () => restoreSection(ecs, after),
+        reverse: () => restoreSection(ecs, before),
     });
+}
+
+// ── structural ops (append / split / join / delete) ──────────────────────────
+// each wraps a whole-track snapshot pair — the op reorders sections and moves
+// nodes/points across them, so a per-section restore can't capture it; the pair
+// respawns every section's stored f32 verbatim, so undo/redo is byte-identical.
+
+/** append a new section of `kind` at the chain end, recording one undoable entry.
+ *  returns the new section id. */
+export function appendSection(h: History, ecs: State, kind: SectionKind): number {
+    const before = snapshotAll(ecs);
+    const id = appendSectionTrack(ecs, kind);
+    const after = snapshotAll(ecs);
+    record(h, {
+        apply: () => restoreAll(ecs, after),
+        reverse: () => restoreAll(ecs, before),
+    });
+    return id;
+}
+
+/** split a section, recording one undoable entry. `at` is a geo section's interior
+ *  node order or a force section's arclength s (the caller supplies the right one for
+ *  the kind). no-op (records nothing) at a non-interior split point; returns the new
+ *  tail section id, or null. */
+export function splitSection(h: History, ecs: State, section: number, at: number): number | null {
+    const eid = sectionAt(ecs, section);
+    if (eid === null) return null;
+    const before = snapshotAll(ecs);
+    const id =
+        Section.kind.get(eid) === SectionKind.Geo
+            ? splitGeo(ecs, section, at)
+            : splitForce(ecs, section, at);
+    if (id === null) return null; // nothing split — don't record
+    const after = snapshotAll(ecs);
+    record(h, {
+        apply: () => restoreAll(ecs, after),
+        reverse: () => restoreAll(ecs, before),
+    });
+    return id;
+}
+
+/** join a section with its same-kind successor, recording one undoable entry. no-op
+ *  (records nothing) when there's no successor or the kinds differ. returns true when
+ *  joined. */
+export function joinSection(h: History, ecs: State, section: number): boolean {
+    const before = snapshotAll(ecs);
+    if (!joinNext(ecs, section)) return false;
+    const after = snapshotAll(ecs);
+    record(h, {
+        apply: () => restoreAll(ecs, after),
+        reverse: () => restoreAll(ecs, before),
+    });
+    return true;
+}
+
+/** delete a section, recording one undoable entry. no-op (records nothing) at the
+ *  last remaining section. returns true when deleted. */
+export function removeSection(h: History, ecs: State, section: number): boolean {
+    const before = snapshotAll(ecs);
+    if (!deleteSectionTrack(ecs, section)) return false;
+    const after = snapshotAll(ecs);
+    record(h, {
+        apply: () => restoreAll(ecs, after),
+        reverse: () => restoreAll(ecs, before),
+    });
+    return true;
 }

@@ -5,7 +5,7 @@ import { attachControls } from "./controls";
 import { editor, select } from "./editor";
 import { extendTrack, history, trimTrack } from "./history";
 import Timeline from "./Timeline.svelte";
-import { bakeOut, Handle, lastHandle, Track } from "./track";
+import { bakeOut, Handle, lastHandle, samples, sectionHandles, sectionInfo, Track } from "./track";
 import { attachCanvas2D, viewTransform } from "./view";
 
 const { ecs }: { ecs: State } = $props();
@@ -41,9 +41,9 @@ const infeasible = $derived.by((): boolean => {
 });
 const handleCount = $derived.by((): number => {
     void tick;
-    let n = 0;
-    for (const _ of ecs.query([Handle])) n++;
-    return n;
+    const eid = editor.selection;
+    if (eid === null) return 0;
+    return sectionHandles(ecs, Handle.section.get(eid)).length;
 });
 // the chain end carries a radial action cluster when selected: an extend button
 // along the heading (where the next piece lays) and a delete button rotated off
@@ -54,12 +54,20 @@ type EndUI = { x: number; y: number; ext: { x: number; y: number }; del: { x: nu
 const endUI = $derived.by((): EndUI | null => {
     void tick;
     const eid = editor.selection;
-    if (!canvas || eid === null || eid !== lastHandle(ecs)) return null;
+    if (!canvas || eid === null || trackEid === null) return null;
+    const section = Handle.section.get(eid);
+    if (eid !== lastHandle(ecs, section)) return null;
+    const s = samples.get(trackEid);
+    const info = sectionInfo.get(section);
+    if (!s || !info) return null;
     const tx = viewTransform(canvas);
-    const x = tx.ox + Handle.pos.x.get(eid) * tx.sx;
-    const y = tx.oy + Handle.pos.y.get(eid) * tx.sy;
-    // world heading → screen direction; the view flips Y (tx.sy < 0), so this is −θ.
-    const th = Handle.theta.get(eid);
+    // nodes are section-local; the baked sample is where the node lands in world.
+    const i = Handle.sample.get(eid);
+    const x = tx.ox + s.posX[i] * tx.sx;
+    const y = tx.oy + s.posY[i] * tx.sy;
+    // world heading (local + the section entry heading) → screen direction; the view
+    // flips Y (tx.sy < 0).
+    const th = Handle.theta.get(eid) + info.entry.theta;
     const ang = Math.atan2(Math.sin(th) * tx.sy, Math.cos(th) * tx.sx);
     return {
         x,
@@ -70,10 +78,15 @@ const endUI = $derived.by((): EndUI | null => {
 });
 
 function onExtend(): void {
-    select(extendTrack(history, ecs));
+    const eid = editor.selection;
+    if (eid === null) return;
+    select(extendTrack(history, ecs, Handle.section.get(eid)));
 }
 function onDelete(): void {
-    if (trimTrack(history, ecs)) select(lastHandle(ecs));
+    const eid = editor.selection;
+    if (eid === null) return;
+    const section = Handle.section.get(eid);
+    if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
 }
 </script>
 

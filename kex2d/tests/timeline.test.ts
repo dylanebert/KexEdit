@@ -14,6 +14,7 @@ import {
     ticks,
     timeToArc,
     type View,
+    xGrow,
     yFit,
     type YFit,
     yGrow,
@@ -280,6 +281,41 @@ describe("yGrow — edge-triggered grow-to-follow", () => {
         // a huge single step still clamps to the cap, never beyond
         const g = yGrow({ lo: -2.9, hi: 1, step: 1 }, Bot + 20, Top, Bot, 100, Cap);
         expect(g.lo).toBe(Cap[0]);
+    });
+});
+
+describe("xGrow — horizontal edge-scroll pan-to-follow", () => {
+    const Left = 44;
+    const Right = 800;
+    const Rate = 0.4;
+    const view: View = { pan: 120, pxPerM: 10 };
+
+    test("a cursor anywhere inside the chart leaves the view unchanged (grab is stable)", () => {
+        expect(xGrow(view, (Left + Right) / 2, Left, Right, Rate)).toBe(view);
+        expect(xGrow(view, Left, Left, Right, Rate)).toBe(view); // resting AT the left edge
+        expect(xGrow(view, Right, Left, Right, Rate)).toBe(view); // resting AT the right edge
+    });
+
+    test("dragging past the right edge pans right (reveals more distance), zoom fixed", () => {
+        const g = xGrow(view, Right + 30, Left, Right, Rate);
+        expect(g.pan).toBeCloseTo(view.pan + 30 * Rate, 6);
+        expect(g.pxPerM).toBe(view.pxPerM); // no zoom under the drag
+    });
+
+    test("further past the edge pans faster (speed ∝ overshoot)", () => {
+        const shallow = xGrow(view, Right + 5, Left, Right, Rate);
+        const deep = xGrow(view, Right + 50, Left, Right, Rate);
+        expect(deep.pan - view.pan).toBeGreaterThan(shallow.pan - view.pan);
+    });
+
+    test("dragging past the left edge pans left but floors at pan 0 (no negative distance)", () => {
+        const g = xGrow({ pan: 8, pxPerM: 10 }, Left - 40, Left, Right, Rate);
+        expect(g.pan).toBe(0); // 8 − 40·0.4 < 0 → clamped to 0
+        // already at 0 → unchanged by identity
+        expect(xGrow({ pan: 0, pxPerM: 10 }, Left - 40, Left, Right, Rate)).toEqual({
+            pan: 0,
+            pxPerM: 10,
+        });
     });
 });
 

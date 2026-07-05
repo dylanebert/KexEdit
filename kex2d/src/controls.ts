@@ -1,26 +1,70 @@
 import type { State } from "@dylanebert/shallot";
-import { editor, select } from "./editor";
-import { beginMove, cancel, commit, extendTrack, history, trimTrack } from "./history";
-import { Handle, lastHandle, reheadOnDrag } from "./track";
+import { editor, select, selectSection } from "./editor";
+import {
+    appendSection,
+    beginMove,
+    cancel,
+    commit,
+    extendTrack,
+    history,
+    joinSection,
+    removeSection,
+    splitSection,
+    trimTrack,
+} from "./history";
+import { localize } from "./section";
+import {
+    Handle,
+    lastHandle,
+    reheadOnDrag,
+    samples,
+    SectionKind,
+    sectionInfo,
+    sections,
+    Track,
+} from "./track";
 import { pointerToCanvas, screenToWorld, viewTransform, type ViewTx } from "./view";
 
 const PICK_R = 16;
+const SECTION_PICK_R = 12;
 
 let dragNode: number | null = null;
-// grab offset: the node−under−cursor delta captured at pointerdown, so the node
-// tracks the cursor relatively (grabbing slightly off-center doesn't snap it).
+// grab offset (world): the node−under−cursor delta captured at pointerdown, so the
+// node tracks the cursor relatively (grabbing slightly off-center doesn't snap it).
 let grabX = 0;
 let grabY = 0;
 
-/** nearest node to the screen point, within the pick radius, or null. */
+/** the single track's sample buffers (one track in this prototype). */
+function trackSamples(ecs: State): ReturnType<typeof samples.get> {
+    for (const trackEid of ecs.query([Track])) return samples.get(trackEid);
+    return undefined;
+}
+
+/** a node's world position — the baked sample it lands on (nodes are stored
+ *  section-local; the bake places them, so world lives in `samples`). */
+function nodeWorld(
+    s: NonNullable<ReturnType<typeof samples.get>>,
+    eid: number,
+): {
+    x: number;
+    y: number;
+} {
+    const i = Handle.sample.get(eid);
+    return { x: s.posX[i], y: s.posY[i] };
+}
+
+/** nearest **draggable** node to the screen point, within the pick radius, or null.
+ *  node 0 of every section is the entry anchor (pinned — §4), so it isn't pickable. */
 function pickNode(ecs: State, tx: ViewTx, sx: number, sy: number): number | null {
+    const s = trackSamples(ecs);
+    if (!s) return null;
     let bestEid: number | null = null;
     let bestD2 = PICK_R * PICK_R;
     for (const eid of ecs.query([Handle])) {
-        const hx = tx.ox + Handle.pos.x.get(eid) * tx.sx;
-        const hy = tx.oy + Handle.pos.y.get(eid) * tx.sy;
-        const dx = sx - hx;
-        const dy = sy - hy;
+        if (Handle.order.get(eid) === 0) continue; // the entry anchor is not draggable
+        const w = nodeWorld(s, eid);
+        const dx = sx - (tx.ox + w.x * tx.sx);
+        const dy = sy - (tx.oy + w.y * tx.sy);
         const d2 = dx * dx + dy * dy;
         if (d2 < bestD2) {
             bestD2 = d2;
@@ -30,15 +74,51 @@ function pickNode(ecs: State, tx: ViewTx, sx: number, sy: number): number | null
     return bestEid;
 }
 
-/** true when the selection is the chain end — the node that `extend` / `delete`
- *  act on. */
-function endSelected(ecs: State): boolean {
-    return editor.selection !== null && editor.selection === lastHandle(ecs);
+/** the section whose baked polyline passes nearest the screen point (within the pick
+ *  radius), or null — clicking the track between nodes selects its section (the
+ *  whole-section handle for convert / split / join / delete). */
+function pickSection(ecs: State, tx: ViewTx, sx: number, sy: number): number | null {
+    const s = trackSamples(ecs);
+    if (!s) return null;
+    let best: number | null = null;
+    let bestD2 = SECTION_PICK_R * SECTION_PICK_R;
+    for (const sec of sections(ecs)) {
+        const info = sectionInfo.get(sec.id);
+        if (!info) continue;
+        for (let i = info.startSample; i <= info.endSample; i++) {
+            const dx = sx - (tx.ox + s.posX[i] * tx.sx);
+            const dy = sy - (tx.oy + s.posY[i] * tx.sy);
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                best = sec.id;
+            }
+        }
+    }
+    return best;
 }
 
-/** wire canvas pointer + window keyboard handling, returning a teardown. tied
- *  to the canvas lifecycle (called from App's onMount) so listeners attach with
- *  the element and detach with it — no module-flag staleness across reloads. */
+/** true when the selection is its section's chain end — the node `extend` / `delete`
+ *  act on. */
+function endSelected(ecs: State): boolean {
+    const sel = editor.selection;
+    if (sel === null) return false;
+    return sel === lastHandle(ecs, Handle.section.get(sel));
+}
+
+/** write a dragged node's section-local position from a world target — `localize`
+ *  against the node's section entry (identity for the first section). */
+function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
+    const entry = sectionInfo.get(Handle.section.get(eid))?.entry;
+    if (!entry) return;
+    const local = localize(entry, { x: worldX, y: worldY, theta: 0 });
+    Handle.pos.set(eid, local.x, local.y);
+    reheadOnDrag(ecs, eid);
+}
+
+/** wire canvas pointer + window keyboard handling, returning a teardown. tied to
+ *  the canvas lifecycle (called from App's onMount) so listeners attach with the
+ *  element and detach with it — no module-flag staleness across reloads. */
 export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => void {
     const onContextMenu = (e: MouseEvent): void => {
         e.preventDefault(); // no context menu over the canvas
@@ -50,18 +130,27 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         const tx = viewTransform(canvas);
         const { x: wx, y: wy } = screenToWorld(tx, cx, cy);
 
-        // pick a node to drag, else deselect (Figma-style).
+        // a node to drag takes priority; else select the section under the click; else
+        // deselect (Figma-style).
         const eid = pickNode(ecs, tx, cx, cy);
         if (eid !== null) {
             select(eid);
             dragNode = eid;
-            grabX = Handle.pos.x.get(eid) - wx;
-            grabY = Handle.pos.y.get(eid) - wy;
-            beginMove(ecs); // open the drag gesture; commit/cancel on release
+            const s = trackSamples(ecs);
+            const w = s ? nodeWorld(s, eid) : { x: wx, y: wy };
+            grabX = w.x - wx;
+            grabY = w.y - wy;
+            beginMove(ecs, Handle.section.get(eid)); // open the drag gesture; commit/cancel on release
             canvas.setPointerCapture(e.pointerId);
             return;
         }
+        const sec = pickSection(ecs, tx, cx, cy);
+        if (sec !== null) {
+            selectSection(sec);
+            return;
+        }
         select(null);
+        selectSection(null);
     };
 
     const onPointerMove = (e: PointerEvent): void => {
@@ -69,8 +158,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
         const { x: wx, y: wy } = screenToWorld(tx, cx, cy);
-        Handle.pos.set(dragNode, wx + grabX, wy + grabY);
-        reheadOnDrag(ecs, dragNode);
+        dragTo(ecs, dragNode, wx + grabX, wy + grabY);
     };
 
     const endDrag = (e: PointerEvent): void => {
@@ -90,21 +178,56 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     const onKeyDown = (e: KeyboardEvent): void => {
         const t = e.target as HTMLElement | null;
         if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+
+        // append a section at the chain end — always available (a = geo, A = force).
+        if (e.key === "a") {
+            e.preventDefault();
+            selectSection(appendSection(history, ecs, SectionKind.Geo));
+            return;
+        }
+        if (e.key === "A") {
+            e.preventDefault();
+            selectSection(appendSection(history, ecs, SectionKind.Force));
+            return;
+        }
         if (e.key === "Escape") {
-            if (editor.selection !== null) {
+            if (editor.selection !== null || editor.section !== null) {
                 e.preventDefault();
                 select(null);
+                selectSection(null);
             }
             return;
         }
-        // extend / delete act on the chain end (when it's selected).
+
+        // a whole section selected: join with the next, or delete it.
+        if (editor.section !== null) {
+            if (e.key === "j" || e.key === "J") {
+                e.preventDefault();
+                joinSection(history, ecs, editor.section);
+            } else if (e.key === "Delete" || e.key === "Backspace") {
+                e.preventDefault();
+                if (removeSection(history, ecs, editor.section)) selectSection(null);
+            }
+            return;
+        }
+
+        // a node selected: split at it, extend, or trim the chain end.
+        if (editor.selection === null) return;
+        const section = Handle.section.get(editor.selection);
+        const order = Handle.order.get(editor.selection);
+        if (e.key === "s" || e.key === "S") {
+            e.preventDefault();
+            const b = splitSection(history, ecs, section, order); // interior node → new tail section
+            if (b !== null) selectSection(b);
+            return;
+        }
         if (!endSelected(ecs)) return;
         if (e.key === "Enter") {
             e.preventDefault();
-            select(extendTrack(history, ecs)); // lay a node, select it
+            select(extendTrack(history, ecs, section)); // lay a node, select it
         } else if (e.key === "Delete" || e.key === "Backspace") {
             e.preventDefault();
-            if (trimTrack(history, ecs)) select(lastHandle(ecs));
+            if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
         }
     };
 

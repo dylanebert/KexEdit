@@ -4,37 +4,41 @@ import {
     addNode,
     BakeSystem,
     bakeOut,
-    convertKind,
+    convertSection,
     createForcePoint,
+    createSection,
     createTrack,
     EXTEND_DIST,
     extend,
-    forcePoints,
     Handle,
     reheadOnDrag,
     removeTrailingHandle,
     samples,
-    sortedHandles,
+    SectionKind,
+    sectionForces,
+    sectionHandles,
+    sectionInfo,
+    sections,
+    setSectionLength,
     Track,
-    TrackKind,
 } from "../src/track";
 
-// the ECS layer: BakeSystem wires sortedHandles → chain([one geo section]) →
-// computeTime, syncs each node's sample index, and records the orphan /
-// feasibility state the renderer reads. the pure pieces are covered in
-// section/spline/bake/forward; this pins the integration the glue owns. the bake
-// is pure CPU, so the test runs BakeSystem on a device-free State via the
-// scheduler — no GPU. `state.step()` runs BakeSystem (default group simulation).
+// the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
+// computeTime, syncs each geo node's sample index, and records the per-section
+// orphan / feasibility state the renderer reads. the pure pieces are covered in
+// section/spline/bake/forward; this pins the integration the glue owns. the bake is
+// pure CPU, so the test runs BakeSystem on a device-free State via the scheduler.
 
-/** a fresh flat track: two free nodes at (−16,0) and (16,0), the same flat seed
- *  the plugin starts with. */
-function track(): { state: State; eid: number } {
+/** a fresh flat track: one geo section, node 0 at the local origin (the pinned entry
+ *  anchor) + a flat shape node — the same seed shape the plugin starts with. */
+function track(): { state: State; eid: number; sec: number } {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    addNode(state, -16, 0);
-    addNode(state, 16, 0);
-    return { state, eid };
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, EXTEND_DIST, 0);
+    return { state, eid, sec };
 }
 
 describe("BakeSystem", () => {
@@ -55,80 +59,82 @@ describe("BakeSystem", () => {
     });
 
     test("the baked curve passes through every node; free positions stay put", () => {
-        const { state, eid } = track();
-        addNode(state, 40, 2); // a third node off-axis
+        const { state, eid, sec } = track();
+        addNode(state, sec, 40, 2); // a third node off-axis
         state.step(0);
         const s = samples.get(eid);
         if (!s) throw new Error("samples missing");
 
-        const handles = sortedHandles(state);
+        const handles = sectionHandles(state, sec);
         for (const h of handles) {
             const i = Handle.sample.get(h);
+            // section 0's entry is START (identity), so local ≡ world.
             expect(s.posX[i]).toBeCloseTo(Handle.pos.x.get(h), 4);
             expect(s.posY[i]).toBeCloseTo(Handle.pos.y.get(h), 4);
         }
         // every position is authored, not derived — unmoved by the bake.
-        expect(Handle.pos.x.get(handles[0])).toBeCloseTo(-16, 6);
+        expect(Handle.pos.x.get(handles[0])).toBeCloseTo(0, 6);
         expect(Handle.pos.y.get(handles[0])).toBeCloseTo(0, 6);
         expect(Handle.pos.x.get(handles[2])).toBeCloseTo(40, 6);
         expect(Handle.pos.y.get(handles[2])).toBeCloseTo(2, 6);
     });
 
-    test("the off-origin flat anchor lands at sample 0 (entry = node 0's world pose)", () => {
-        // the seed puts node 0 at (−16, 0), not the origin. the bake derives the
-        // section entry from node 0 and localizes the handles into it, so sample 0
-        // reproduces node 0's world position — guards the substrate wiring against
-        // seeding sample 0 from a fixed {0,0} entry (which would strand the anchor).
-        const { state, eid } = track();
+    test("node 0 is the entry anchor: it lands at sample 0, the world origin", () => {
+        // every section's node 0 is pinned at the local origin (§4); section 0's entry
+        // is START, so it renders at the world origin (sample 0). guards the substrate
+        // wiring — the chain seeds sample 0 from START and the section shares it.
+        const { state, eid, sec } = track();
         state.step(0);
         const s = samples.get(eid);
         if (!s) throw new Error("samples missing");
-        expect(s.posX[0]).toBeCloseTo(-16, 4);
+        const node0 = sectionHandles(state, sec)[0];
+        expect(Handle.sample.get(node0)).toBe(0);
+        expect(s.posX[0]).toBeCloseTo(0, 4);
         expect(s.posY[0]).toBeCloseTo(0, 4);
     });
 
     test("extend lays a node continuing the last edge's direction", () => {
-        const { state } = track(); // last edge is +x from (16,0)
-        const before = sortedHandles(state).length;
-        const e = extend(state);
+        const { state, sec } = track(); // last edge is +x from (EXTEND_DIST,0)
+        const before = sectionHandles(state, sec).length;
+        const e = extend(state, sec);
         state.step(0);
-        const handles = sortedHandles(state);
+        const handles = sectionHandles(state, sec);
         expect(handles.length).toBe(before + 1);
         expect(handles[handles.length - 1]).toBe(e);
-        // the new node lands EXTEND_DIST further along +x at (16 + EXTEND_DIST, 0).
-        expect(Handle.pos.x.get(e)).toBeCloseTo(16 + EXTEND_DIST, 6);
+        // the new node lands EXTEND_DIST further along +x.
+        expect(Handle.pos.x.get(e)).toBeCloseTo(2 * EXTEND_DIST, 6);
         expect(Handle.pos.y.get(e)).toBeCloseTo(0, 6);
     });
 
     test("removing the trailing node drops it, never below two nodes", () => {
-        const { state } = track();
-        extend(state); // a third node
+        const { state, sec } = track();
+        extend(state, sec); // a third node
         state.step(0);
-        expect(sortedHandles(state).length).toBe(3);
+        expect(sectionHandles(state, sec).length).toBe(3);
 
-        expect(removeTrailingHandle(state)).toBe(true);
-        expect(sortedHandles(state).length).toBe(2);
+        expect(removeTrailingHandle(state, sec)).toBe(true);
+        expect(sectionHandles(state, sec).length).toBe(2);
         // a two-node chain is the floor — further removal is refused.
-        expect(removeTrailingHandle(state)).toBe(false);
-        expect(sortedHandles(state).length).toBe(2);
+        expect(removeTrailingHandle(state, sec)).toBe(false);
+        expect(sectionHandles(state, sec).length).toBe(2);
     });
 
     test("deleting the tip re-derives the promoted node's heading (no stale jump)", () => {
-        const { state } = track();
-        addNode(state, 40, 0); // nodes 0,1,2
-        const h = sortedHandles(state);
+        const { state, sec } = track();
+        addNode(state, sec, 40, 0); // nodes 0,1,2
+        const h = sectionHandles(state, sec);
         // node 1 is interior with an off-axis position and a deliberately stale
         // heading — what a frozen interior heading looks like before promotion.
         Handle.pos.set(h[1], 16, 8);
         Handle.theta.set(h[1], 0.5);
-        expect(removeTrailingHandle(state)).toBe(true); // drop node 2 → node 1 is the tip
-        // the promoted tip re-derives from node 0 (flat): reflect(0, chord₀→₁).
-        expect(Handle.theta.get(h[1])).toBeCloseTo(2 * Math.atan2(8, 16 - -16), 10);
+        expect(removeTrailingHandle(state, sec)).toBe(true); // drop node 2 → node 1 is the tip
+        // the promoted tip re-derives from node 0 (origin, flat): reflect(0, chord₀→₁).
+        expect(Handle.theta.get(h[1])).toBeCloseTo(2 * Math.atan2(8, 16), 10);
         expect(Handle.theta.get(h[1])).not.toBe(0.5); // not the stale value
     });
 
     test("an unchanged chain is not re-baked; moving a node re-bakes (hash gate)", () => {
-        const { state, eid } = track();
+        const { state, eid, sec } = track();
         state.step(0);
         const out = bakeOut.get(eid);
         if (!out) throw new Error("bakeOut missing");
@@ -136,19 +142,20 @@ describe("BakeSystem", () => {
         state.step(0);
         expect(out.fN[0]).toBe(999); // unchanged → bake skipped
 
-        Handle.pos.set(sortedHandles(state)[0], -16, 1); // move a node
+        Handle.pos.set(sectionHandles(state, sec)[1], EXTEND_DIST, 1); // move a node
         state.step(0);
         expect(out.fN[0]).not.toBe(999); // hash miss → re-baked
     });
 
     test("a steep straight climb beyond the energy budget flags downstream infeasible", () => {
         // ½·V0² = 50 J/kg reaches only ~5.1 m of climb. a straight ramp up at
-        // ~60° (rise ≈ 27.7 m over 32 m) depletes energy partway up.
+        // ~60° (rise ≈ 27.7 m over 16 m) depletes energy partway up.
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        addNode(state, -16, 0);
-        addNode(state, 0, 27.7);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 16, 27.7);
         state.step(0);
         const out = bakeOut.get(eid);
         const count = Track.count.get(eid);
@@ -161,20 +168,19 @@ describe("BakeSystem", () => {
     });
 
     test("a smooth curve bakes to a non-oscillating F_n", () => {
-        // a gentle S-wave: a shallow rise, an arc-over, an arc-under, a level-
-        // out. its true normal force varies slowly, so the baked F_n's slope
-        // should reverse only where the curvature genuinely turns over — not
-        // sample-to-sample. guards against regressing BakeSystem back to the
-        // leapfrog-mode reflection inverse. small deviations keep the frozen-
-        // heading reflection chain shallow (no runaway swing).
+        // a gentle S-wave (shifted so node 0 sits at the origin): its true normal force
+        // varies slowly, so the baked F_n's slope should reverse only where the
+        // curvature genuinely turns over — not sample-to-sample. guards against
+        // regressing BakeSystem back to the leapfrog-mode reflection inverse.
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        addNode(state, -40, 0);
-        addNode(state, -20, 2);
-        addNode(state, 0, 0);
-        addNode(state, 20, -2);
-        addNode(state, 40, 0);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 20, 2);
+        addNode(state, sec, 40, 0);
+        addNode(state, sec, 60, -2);
+        addNode(state, sec, 80, 0);
         state.step(0);
         const out = bakeOut.get(eid);
         const count = Track.count.get(eid);
@@ -192,11 +198,11 @@ describe("BakeSystem", () => {
     test("an empty force profile bakes a flat 1g track over the section length", () => {
         // convert the flat geo seed to force: no points → constant 1g (§6), which
         // integrates to a straight level track whose arclength matches the extent.
-        const { state, eid } = track();
+        const { state, eid, sec } = track();
         state.step(0); // geo bake first, so the convert inherits its arclength
-        convertKind(state, eid);
-        expect(Track.kind.get(eid)).toBe(TrackKind.Force);
-        const len = Track.length.get(eid);
+        convertSection(state, sec);
+        expect(sections(state)[0].kind).toBe(SectionKind.Force);
+        const len = sections(state)[0].length;
         expect(len).toBeGreaterThan(20); // the seed's ~24 m
 
         state.step(0); // force bake
@@ -217,15 +223,14 @@ describe("BakeSystem", () => {
     test("force points shape the bake — a localized dip recovers below 1g, non-flat", () => {
         // three points hold 1g at the ends and dip to 0g mid-track: a localized
         // airtime crest. the recovered display force follows the authored dip (O(ds)
-        // off, §2) and the geometry is no longer flat — the glue gathers points →
-        // profile → chain, the substrate does the physics.
-        const { state, eid } = track();
+        // off, §2) and the geometry is no longer flat.
+        const { state, eid, sec } = track();
         state.step(0);
-        convertKind(state, eid);
-        const len = Track.length.get(eid);
-        createForcePoint(state, len * 0.2, 1);
-        createForcePoint(state, len * 0.5, 0);
-        createForcePoint(state, len * 0.8, 1);
+        convertSection(state, sec);
+        const len = sections(state)[0].length;
+        createForcePoint(state, sec, len * 0.2, 1);
+        createForcePoint(state, sec, len * 0.5, 0);
+        createForcePoint(state, sec, len * 0.8, 1);
         state.step(0);
 
         const count = Track.count.get(eid);
@@ -241,84 +246,97 @@ describe("BakeSystem", () => {
         expect(maxAbsY).toBeGreaterThan(0.5); // the geometry responded (not flat)
     });
 
-    test("convert geo→force clears the nodes and inherits the geo arclength", () => {
-        const { state, eid } = track();
+    test("convert geo→force clears the nodes and resets to the default extent", () => {
+        const { state, sec } = track();
+        addNode(state, sec, 60, 0); // extend the geo well past the default extent
+        state.step(0);
+        // the baked geo arclength is now ~60, but a convert RESETS the force extent
+        // (the extent is the force section's own property, §3), it does not inherit it.
+        convertSection(state, sec);
+        expect(sections(state)[0].kind).toBe(SectionKind.Force);
+        expect(sectionHandles(state, sec).length).toBe(0);
+        expect(sections(state)[0].length).toBeCloseTo(EXTEND_DIST, 5); // the default
+    });
+
+    test("a force section's extent is settable and floors at the minimum", () => {
+        const { state, eid, sec } = track();
+        state.step(0);
+        convertSection(state, sec);
+        setSectionLength(state, sec, 50);
         state.step(0);
         const out = bakeOut.get(eid);
-        const c0 = Track.count.get(eid);
+        const count = Track.count.get(eid);
         if (!out) throw new Error("bakeOut missing");
-        let geoArc = 0;
-        for (let i = 0; i < c0 - 1; i++) geoArc += out.ds[i];
+        let arc = 0;
+        for (let i = 0; i < count - 1; i++) arc += out.ds[i];
+        expect(arc).toBeCloseTo(50, 1); // the integrated track matches the set extent
 
-        convertKind(state, eid);
-        expect(Track.kind.get(eid)).toBe(TrackKind.Force);
-        expect(sortedHandles(state).length).toBe(0);
-        expect(Track.length.get(eid)).toBeCloseTo(geoArc, 1);
+        setSectionLength(state, sec, 0.0001); // below the floor
+        expect(sections(state)[0].length).toBeGreaterThanOrEqual(2); // clamped, not degenerate
     });
 
     test("convert force→geo clears the points and reseeds the flat two-node shape", () => {
-        const { state, eid } = track();
+        const { state, sec } = track();
         state.step(0);
-        convertKind(state, eid); // → force
-        createForcePoint(state, 5, 2);
-        expect(forcePoints(state).length).toBe(1);
+        convertSection(state, sec); // → force
+        createForcePoint(state, sec, 5, 2);
+        expect(sectionForces(state, sec).length).toBe(1);
 
-        convertKind(state, eid); // → geo
-        expect(Track.kind.get(eid)).toBe(TrackKind.Geo);
-        expect(forcePoints(state).length).toBe(0);
-        expect(sortedHandles(state).length).toBe(2);
+        convertSection(state, sec); // → geo
+        expect(sections(state)[0].kind).toBe(SectionKind.Geo);
+        expect(sectionForces(state, sec).length).toBe(0);
+        expect(sectionHandles(state, sec).length).toBe(2);
     });
 
     test("a kind flip busts the bake hash; an unchanged force track is not re-baked", () => {
-        const { state, eid } = track();
+        const { state, eid, sec } = track();
         state.step(0);
-        convertKind(state, eid);
+        convertSection(state, sec);
         state.step(0);
         const out = bakeOut.get(eid);
         if (!out) throw new Error("bakeOut missing");
         out.fN[0] = 999;
         state.step(0);
         expect(out.fN[0]).toBe(999); // unchanged force track → skipped
-        createForcePoint(state, 5, 2);
+        createForcePoint(state, sec, 5, 2);
         state.step(0);
         expect(out.fN[0]).not.toBe(999); // a new point → re-baked
     });
 
     test("a coincident interior node orphans the trailing nodes", () => {
-        const { state, eid } = track(); // nodes order 0,1
-        addNode(state, 16, 0); // order 2 — coincident with node 1
-        addNode(state, 40, 0); // order 3
+        const { state, sec } = track(); // nodes order 0,1
+        addNode(state, sec, EXTEND_DIST, 0); // order 2 — coincident with node 1
+        addNode(state, sec, 40, 0); // order 3
         state.step(0);
-        const out = bakeOut.get(eid);
-        if (!out) throw new Error("bakeOut missing");
+        const info = sectionInfo.get(sec);
+        if (!info) throw new Error("sectionInfo missing");
 
-        expect(out.lastBakedOrder).toBe(1);
-        const orphaned = sortedHandles(state)
+        expect(info.bakedNodes).toBe(2); // only nodes 0,1 landed
+        const orphaned = sectionHandles(state, sec)
             .map((h) => Handle.order.get(h))
-            .filter((o) => o > out.lastBakedOrder);
+            .filter((o) => o >= info.bakedNodes);
         expect(orphaned).toEqual([2, 3]);
     });
 });
 
 describe("reheadOnDrag", () => {
-    // the drag-time heading refresh: the last node always tracks its
-    // predecessor; the first node (flat anchor) + interior nodes stay frozen.
-    // controls.ts calls this after every pointermove; the pure logic is
-    // exercised here without the DOM.
+    // the drag-time heading refresh: the last node always tracks its predecessor;
+    // node 0 (the entry anchor) + interior nodes stay frozen. controls.ts calls this
+    // after every pointermove; the pure logic is exercised here without the DOM.
 
     test("dragging the last node re-derives its heading (the bend you drag in)", () => {
-        const { state } = track(); // flat seed (−16,0),(16,0), both θ = 0
-        const end = sortedHandles(state)[1];
-        Handle.pos.set(end, 16, 10); // drag the end up
+        const { state, sec } = track(); // flat seed (0,0),(EXTEND_DIST,0), both θ = 0
+        const end = sectionHandles(state, sec)[1];
+        Handle.pos.set(end, EXTEND_DIST, 10); // drag the end up
         reheadOnDrag(state, end);
         // predecessor heading is 0, so the exit reflects to 2·chord — a real arc.
-        expect(Handle.theta.get(end)).toBeCloseTo(2 * Math.atan2(10, 16 - -16), 10);
+        expect(Handle.theta.get(end)).toBeCloseTo(2 * Math.atan2(10, EXTEND_DIST), 10);
     });
 
     test("dragging the node before the last re-aims the last node — no stale jump", () => {
-        const { state } = track();
-        addNode(state, 40, 0); // nodes 0,1,2 — node 2 is last, node 1 is before it
-        const h = sortedHandles(state);
+        const { state, sec } = track();
+        addNode(state, sec, 40, 0); // nodes 0,1,2 — node 2 is last, node 1 is before it
+        const h = sectionHandles(state, sec);
         expect(Handle.theta.get(h[2])).toBe(0); // last starts flat
         Handle.pos.set(h[1], 16, 8); // drag the node *before* the last
         reheadOnDrag(state, h[1]);
@@ -327,17 +345,13 @@ describe("reheadOnDrag", () => {
         expect(Handle.theta.get(h[2])).toBeCloseTo(2 * Math.atan2(0 - 8, 40 - 16), 10);
     });
 
-    test("the flat anchor and a pure interior node never re-derive", () => {
-        const { state } = track();
-        addNode(state, 40, 0);
-        addNode(state, 64, 0); // nodes 0,1,2,3
-        const h = sortedHandles(state);
+    test("the entry anchor and a pure interior node never re-derive", () => {
+        const { state, sec } = track();
+        addNode(state, sec, 40, 0);
+        addNode(state, sec, 64, 0); // nodes 0,1,2,3
+        const h = sectionHandles(state, sec);
         Handle.theta.set(h[1], 0.5); // node 1 is pure interior (not last, not before-last)
         const lastBefore = Handle.theta.get(h[3]);
-
-        Handle.pos.set(h[0], -16, -6); // drag the flat anchor off-axis
-        reheadOnDrag(state, h[0]);
-        expect(Handle.theta.get(h[0])).toBe(0); // stays flat
 
         Handle.pos.set(h[1], 16, 8); // drag the pure interior node far off its chord
         reheadOnDrag(state, h[1]);
@@ -346,18 +360,16 @@ describe("reheadOnDrag", () => {
     });
 
     test("a dragged end bends its segment into an arc — end to end", () => {
-        const { state, eid } = track();
-        const end = sortedHandles(state)[1];
-        Handle.pos.set(end, 16, 10);
+        const { state, eid, sec } = track();
+        const end = sectionHandles(state, sec)[1];
+        Handle.pos.set(end, EXTEND_DIST, 10);
         reheadOnDrag(state, end);
         state.step(0);
         const s = samples.get(eid);
         if (!s) throw new Error("samples missing");
         const count = Track.count.get(eid);
         // the re-derived heading makes a clean arc that *exits* climbing at
-        // reflect(0, chord) ≈ 0.6 rad. without reheadOnDrag the end heading stays
-        // 0 and the curve exits flat (≈ 0), so the exit angle pins the re-head;
-        // the climb alone wouldn't (the node moved up regardless).
+        // reflect(0, chord) > 0.3 rad; the exit angle pins the re-head.
         expect(s.theta[count - 1]).toBeGreaterThan(0.3);
         expect(s.posY[Math.floor(count / 2)]).toBeGreaterThan(0); // a real climb
     });

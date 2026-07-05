@@ -7,7 +7,7 @@ Roller coaster editor using Force Vector Design (FVD).
 - `packages/core/` — Rust crate. Physics simulation, node graph, binary format (.kex). Only runtime dep: `approx`
 - `plugins/blender/` — Blender 4.2+ addon. `kexedit/` is the addon package (name required by Blender). Flat: ffi.py, types.py, coords.py (no bpy), operators.py, panels.py, properties.py, curve.py, fcurve.py (bpy). Loads core via handle-based FFI (`kex_load` → `kex_build` → `kex_output_read_*`). Python-side `.kex` serializer in `ffi.py` mirrors the format in `packages/core/src/persistence/`
 - `app/` — placeholder for the Shallot-based web editor (not yet implemented)
-- `kex2d/` — 2D coaster solver prototype (Shallot + Svelte + canvas2D). Free-drag nodes → stored-heading cubic Hermite → physical F_n force curve, shown live in the timeline; the bidirectional shape↔force integration is the validated foundation. An optimization-based solver (author force constraints, solver warps the shape) is a future scope-first spike. Parallel to `app/`. Model + code map: `kex2d/CLAUDE.md` (auto-loads in-tree). Priority: `kex/roadmap.md`
+- `kex2d/` — 2D coaster prototype (Shallot + Svelte + canvas2D). Sections-of-atoms track model: a chain of geo (author shape → recover force) and force (author F_n → integrate geometry) sections joined by anchor propagation, with structural ops (append/split/join/delete/convert). An optimization tier (invoked cross-kind conversion/fitting over the kernel atoms) is a future scope-first spike. Parallel to `app/`. Model + code map: `kex2d/CLAUDE.md` (auto-loads in-tree). Priority: `kex/roadmap.md`
 
 ## Architecture
 

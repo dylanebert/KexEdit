@@ -163,6 +163,55 @@ test("force authoring flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
+// Drive the MULTI-SECTION flow (kex/specs/kex2d-sections.md stage D): a geo track →
+// append a section → convert it to force (a mixed geo→force chain) → split the lead-in
+// geo section at an interior node → join it back → delete the force tail → undo. The
+// ops run through the __kex hooks; sectionCount / sectionKinds assert the chain shape.
+test("multi-section flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
+    const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    expect(await sectionCount()).toBe(1);
+
+    // ── 1. Append a geo section, then convert it to force → a mixed geo→force chain. ──
+    await page.evaluate(() => (window as any).__kex.append(0)); // SectionKind.Geo
+    await expect.poll(sectionCount).toBe(2);
+    await page.evaluate(() => (window as any).__kex.convertAt(1));
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
+    await page.waitForTimeout(SETTLE_MS);
+    await page.screenshot({ path: join(OUT, "sections-mixed.png") });
+
+    // ── 2. Split the lead-in geo section at an interior node → 3 sections. ──
+    await page.evaluate(() => (window as any).__kex.splitAt(0, 3));
+    await expect.poll(sectionCount).toBe(3);
+    await page.screenshot({ path: join(OUT, "sections-split.png") });
+
+    // ── 3. Join the two geo lead-in sections back → 2 (split → join round-trip). ──
+    await page.evaluate(() => (window as any).__kex.joinAt(0));
+    await expect.poll(sectionCount).toBe(2);
+
+    // ── 4. Delete the force tail → 1 (downstream rebases); undo restores it. ──
+    await page.evaluate(() => (window as any).__kex.deleteAt(1));
+    await expect.poll(sectionCount).toBe(1);
+    await page.keyboard.press("Control+z");
+    await expect.poll(sectionCount).toBe(2);
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
 // The geometry→force atom observability page:
 // the ∂F/∂P sparsity heatmap, the round-trip overlay, and the conditioning plot.
 // Pure canvas2D (no GPU) rendered on module load; capture the page + each panel.

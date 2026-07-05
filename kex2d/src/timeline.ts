@@ -169,6 +169,22 @@ export function yGrow(
     return { lo, hi, step: niceStep((hi - lo) / 5) };
 }
 
+/** edge-scroll pan-to-follow for a horizontal drag (the x-analogue of `yGrow`): pan
+ *  the view to follow a cursor dragged PAST the chart — left of `left` or right of
+ *  `right` — by an amount proportional to the overshoot (× `rate`). `pxPerM` is
+ *  untouched (no zoom under the drag). a cursor inside the chart returns the view
+ *  UNCHANGED by identity (so the caller skips). the left pan floors at 0 — the ruler
+ *  never shows negative distance (the launch is s=0). per-frame application keeps it
+ *  scrolling while the cursor is held beyond the edge. */
+export function xGrow(v: View, cx: number, left: number, right: number, rate: number): View {
+    if (cx > right) return { pan: v.pan + (cx - right) * rate, pxPerM: v.pxPerM };
+    if (cx < left) {
+        const pan = Math.max(0, v.pan - (left - cx) * rate);
+        return pan === v.pan ? v : { pan, pxPerM: v.pxPerM };
+    }
+    return v; // cursor within the chart — unchanged (same reference → caller skips)
+}
+
 /** the opposite-direction tangent vector of a given length — the auto/continuous
  *  handle mirror (After Effects default): given the dragged handle's screen vector
  *  `(vx, vy)` from the keyframe and the other handle's length `otherLen`, return the
