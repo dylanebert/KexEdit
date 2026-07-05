@@ -51,6 +51,12 @@ export interface SectionResult {
     ds: Float32Array;
     edges: number;
     exit: Entry;
+    /** section-local sample index of each authored control point — the node→sample
+     *  map the ECS layer syncs onto `Handle.sample` (geo: node landings from
+     *  `sampleChain`, so a degenerate/truncated chain returns only the baked prefix;
+     *  force: the two boundary anchors `[0, edges]`, no interior point lands on a
+     *  sample — force points are authored on the s-axis, not in space). */
+    offsets: number[];
     /** geo only: every segment landed (no degenerate/truncated). force is always valid. */
     valid: boolean;
     truncated: boolean;
@@ -67,13 +73,30 @@ export type Section =
  *  entry heading, translate to the entry position (§4 rigid placement). node 0
  *  (local origin, local heading 0) maps to the entry exactly, so the section
  *  joins at the anchor with the same position and heading (C1). */
-function place(entry: Entry, n: Node): Node {
+export function place(entry: Entry, n: Node): Node {
     const c = Math.cos(entry.theta);
     const s = Math.sin(entry.theta);
     return {
         x: entry.x + c * n.x - s * n.y,
         y: entry.y + s * n.x + c * n.y,
         theta: n.theta + entry.theta,
+    };
+}
+
+/** express a world-frame point in a section's entry-local frame — the exact
+ *  inverse of `place` (§4). the ECS layer authors handles in world space, but a
+ *  geo section's nodes are section-local (node 0 at the local origin, heading 0),
+ *  so the bake localizes the world handles against the section entry before
+ *  evaluating: `place(entry, localize(entry, p)) === p`. */
+export function localize(entry: Entry, p: { x: number; y: number; theta: number }): Node {
+    const c = Math.cos(entry.theta);
+    const s = Math.sin(entry.theta);
+    const dx = p.x - entry.x;
+    const dy = p.y - entry.y;
+    return {
+        x: c * dx + s * dy,
+        y: -s * dx + c * dy,
+        theta: p.theta - entry.theta,
     };
 }
 
@@ -119,6 +142,7 @@ export function evalGeo(
         ds: dsArr.slice(0, edges),
         edges,
         exit: exitOf(posX, posY, theta, v, edges),
+        offsets: r.offsets,
         valid: r.valid,
         truncated: r.truncated,
     };
@@ -157,6 +181,7 @@ export function evalForce(entry: Entry, fN: ArrayLike<number>, ds: number): Sect
         ds: dsArr,
         edges,
         exit: exitOf(posX, posY, theta, v, edges),
+        offsets: [0, edges],
         valid: true,
         truncated: false,
     };
@@ -177,6 +202,10 @@ export interface ChainResult {
     count: number;
     ranges: { start: number; end: number }[];
     exits: Entry[];
+    /** each section's own result — carries the per-section metadata the flat SoA
+     *  drops (`valid`/`truncated`/`offsets`). `results[k].offsets` is section-local;
+     *  add `ranges[k].start` for the global sample index. */
+    results: SectionResult[];
 }
 
 /**
@@ -195,6 +224,7 @@ export function chain(entry0: Entry, sections: readonly Section[], maxSamples = 
     const ds = new Float32Array(Math.max(1, maxSamples - 1));
     const ranges: { start: number; end: number }[] = [];
     const exits: Entry[] = [];
+    const results: SectionResult[] = [];
 
     // seed the very first sample (the initial entry point). every section then
     // reuses its start point as the prior section's shared boundary.
@@ -227,8 +257,9 @@ export function chain(entry0: Entry, sections: readonly Section[], maxSamples = 
         off += r.edges;
         ranges.push({ start, end: off });
         exits.push(r.exit);
+        results.push(r);
         entry = r.exit;
     }
 
-    return { posX, posY, theta, v, fN, ds, count: off + 1, ranges, exits };
+    return { posX, posY, theta, v, fN, ds, count: off + 1, ranges, exits, results };
 }

@@ -1,6 +1,7 @@
 import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@dylanebert/shallot";
-import { forces, V_FLOOR, V_WARN } from "./bake";
-import { type Node, reflect, sampleChain } from "./spline";
+import { V_FLOOR, V_WARN } from "./bake";
+import { chain, type Entry, localize } from "./section";
+import { type Node, reflect } from "./spline";
 
 /** per-track scalars. `count` is the total sample count (bake output, varies
  *  with the nodes). `ds` is the user's nominal target spacing (input to bake;
@@ -333,12 +334,17 @@ function computeTime(
 
 type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
 
-/** the pre-solver bake: sample the Hermite curve through every node (stored
- *  headings, live-chord tangent lengths) straight into `samples`, then
- *  recover the physical force profile: θ from the curve's local tangent, v
- *  from energy, F_n = κ·v²/g + cos θ. a degenerate segment or a full buffer
- *  commits the prefix and orphans the trailing nodes. */
-function bakeIdentity(
+/** the bake: evaluate the chain of a single geo section (the authored node chain
+ *  placed at the launch anchor) into `samples` + `bakeOut`. the entry is node 0's
+ *  world pose (`V0` launch speed) — node 0 is the fixed flat anchor, so the entry
+ *  is its position and a level heading — and the handles are localized into that
+ *  entry frame (`localize`), so `evalGeo` reproduces their world positions exactly
+ *  (§4). `evalGeo` samples the Hermite curve through the nodes and recovers the
+ *  physical force (θ from the curve's local tangent, v from energy, F_n = κ·v²/g +
+ *  cos θ); a degenerate segment or a full buffer commits the prefix and orphans
+ *  the trailing nodes. behavior-identical to the old direct bake — the proof the
+ *  substrate carries the live product. */
+function bakeChain(
     trackEid: number,
     s: Samples,
     out: BakeOut,
@@ -346,32 +352,48 @@ function bakeIdentity(
     hash: string,
 ): void {
     const dsNominal = Track.ds.get(trackEid);
-    const nodes: Node[] = handles.map((eid) => ({
-        x: Handle.pos.x.get(eid),
-        y: Handle.pos.y.get(eid),
-        theta: Handle.theta.get(eid),
-    }));
+    const node0 = handles[0];
+    const entry: Entry = {
+        x: Handle.pos.x.get(node0),
+        y: Handle.pos.y.get(node0),
+        theta: Handle.theta.get(node0),
+        v: V0,
+    };
+    const nodes: Node[] = handles.map((eid) =>
+        localize(entry, {
+            x: Handle.pos.x.get(eid),
+            y: Handle.pos.y.get(eid),
+            theta: Handle.theta.get(eid),
+        }),
+    );
 
-    const r = sampleChain(nodes, dsNominal, s.posX, s.posY, out.ds, MAX_SAMPLES);
-    if (r.truncated) {
+    const c = chain(entry, [{ kind: "geo", nodes, ds: dsNominal }], MAX_SAMPLES);
+    const geo = c.results[0];
+    if (geo.truncated) {
         console.warn(
             `kex2d: track ${trackEid} hit MAX_SAMPLES=${MAX_SAMPLES}; trailing nodes dropped`,
         );
     }
-    if (r.edges < 1) return; // degenerate first segment — keep prior bake
+    if (geo.edges < 1) return; // degenerate first segment — keep prior bake
 
-    forces(s.posX, s.posY, s.theta, s.v, out.fN, out.ds, 0, r.edges, V0);
+    const count = c.count;
+    s.posX.set(c.posX.subarray(0, count));
+    s.posY.set(c.posY.subarray(0, count));
+    s.theta.set(c.theta.subarray(0, count));
+    s.v.set(c.v.subarray(0, count));
+    out.fN.set(c.fN.subarray(0, count - 1));
+    out.ds.set(c.ds.subarray(0, count - 1));
 
     // sync each baked node's sample index; the last baked node sets
     // lastBakedOrder. nodes past it are orphans (their `.sample` is
     // stale) and HandleDrawSystem renders them red.
-    for (let k = 0; k < r.offsets.length; k++) {
-        Handle.sample.set(handles[k], r.offsets[k]);
+    for (let k = 0; k < geo.offsets.length; k++) {
+        Handle.sample.set(handles[k], geo.offsets[k]);
     }
-    out.lastBakedOrder = Handle.order.get(handles[r.offsets.length - 1]);
+    out.lastBakedOrder = Handle.order.get(handles[geo.offsets.length - 1]);
     out.hash = hash;
-    Track.count.set(trackEid, r.edges + 1);
-    computeTime(s, out, r.edges + 1);
+    Track.count.set(trackEid, count);
+    computeTime(s, out, count);
 }
 
 export const BakeSystem: System = {
@@ -386,7 +408,7 @@ export const BakeSystem: System = {
 
             const hash = bakeHash(ecs, handles);
             if (hash === out.hash) continue; // nothing moved — reuse the bake
-            bakeIdentity(trackEid, s, out, handles, hash);
+            bakeChain(trackEid, s, out, handles, hash);
         }
     },
 };

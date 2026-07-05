@@ -54,14 +54,19 @@ Two design laws carried from the original core (both pinned in `tests/section.te
   is affine-equivariant (exact to f32); physics (fN) is NOT frame-invariant (gravity picks a world
   frame), so the rigid-invariance test pins positions only.
 
+The section entry is a full world state; a geo section's nodes are **section-local** (node 0 at the
+local origin, heading 0). `localize` (the exact inverse of `place`) expresses a world point in the
+entry frame — the ECS layer authors handles in world space, so the bake localizes them against the
+entry before evaluating. `place(entry, localize(entry, p)) === p`.
+
 f32 throughout — these atoms ARE the realized-track display path, so they use the display recovery
 (`bake.forces`), not the f64 solver atoms (`force.ts`).
 
-**Wiring status (stage A):** the substrate exists and is tested, but `track.BakeSystem` still bakes
-a single geo chain **directly** via `sampleChain` + `forces` (the identity bake). Stage B rebuilds
-`BakeSystem` on `chain([one geo section])` — a behavior-identical app, the proof the substrate
-carries the live product. Stage C adds a force-section kind; stage D adds the multi-section data
-contract.
+**Wiring status (stage B):** `track.BakeSystem` bakes the live track through `chain([one geo
+section])`. The entry is node 0's world pose (the fixed flat launch anchor, `V0` speed); the handles
+are localized into it, so `evalGeo` reproduces their world positions exactly — behavior-identical to
+the old direct bake, the proof the substrate carries the live product. Stage C adds a force-section
+kind; stage D adds the multi-section data contract.
 
 ## Model (geo authoring)
 
@@ -128,10 +133,13 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 
 **Substrate + physics atoms (pure, framework-free, `bun test`-able):**
 
-- `section.ts` — the section substrate (above): `Entry`, `SectionResult`, `Section`, `evalGeo`,
-  `evalForce`, `chain`. f32; consumes `sampleChain`/`forces`/`integrate`. Tested device-free in
-  `tests/section.test.ts` (RK4 carry, O(ds) round-trip convergence, rigid invariance, chain C0/C1
-  continuity + energy).
+- `section.ts` — the section substrate (above): `Entry`, `SectionResult`, `Section`, `place` /
+  `localize` (the §4 rigid-transform pair), `evalGeo`, `evalForce`, `chain`. f32; consumes
+  `sampleChain`/`forces`/`integrate`. `SectionResult.offsets` is the section-local node→sample map
+  (geo: node landings; force: the two boundary anchors); `chain` returns per-section `results` too,
+  so a caller reads each section's `offsets`/`valid`/`truncated` off the flat SoA. Tested device-free
+  in `tests/section.test.ts` (localize↔place inverse, RK4 carry, O(ds) round-trip convergence, rigid
+  invariance, chain C0/C1 continuity + energy).
 - `forward.ts` — `step` + `integrate`, the forward integrator (F_n → positions). Index 0 pre-set,
   writes `1..count−1`. Drives round-trip validation; not on the geo bake path (that goes the other
   direction, geometry → force). `evalForce` wraps `integrate`.
@@ -157,9 +165,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 
 **ECS + UI layer (the live geo app):**
 
-- `track.ts` — `BakeSystem` is the **identity bake**: gather node positions + headings from sorted
-  handles, `sampleChain` then `forces`, sync each node's `Handle.sample`; skip on a hash match.
-  (Stage B rebuilds this on `section.chain([geo])`.) `Handle` carries `order`, `sample`, `pos` (free
+- `track.ts` — `BakeSystem` bakes through the substrate: gather node positions + headings from
+  sorted handles, derive the entry from node 0, localize the handles into it, `section.chain([one
+  geo section])`, copy the flat SoA into `samples`/`bakeOut` and sync each node's `Handle.sample`
+  from the section's `offsets`; skip on a hash match. `Handle` carries `order`, `sample`, `pos` (free
   authored position; the curve passes through it exactly), `theta` (exit heading). `bakeOut` carries
   per-edge `fN`+`ds`, per-sample cumulative `t`, `feasible`, `firstInfeasible`, `lastBakedOrder`,
   `hash`. `createTrack` / `addNode` / `extend` / `reheadOnDrag` + `headLast` / `removeTrailingHandle`

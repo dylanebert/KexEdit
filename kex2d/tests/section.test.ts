@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { replay } from "../src/bake";
-import { chain, type Entry, evalForce, evalGeo, type Section } from "../src/section";
+import {
+    chain,
+    type Entry,
+    evalForce,
+    evalGeo,
+    localize,
+    place,
+    type Section,
+} from "../src/section";
 import type { Node } from "../src/spline";
 import { withThetas } from "./helpers/chain";
 
@@ -13,6 +21,31 @@ import { withThetas } from "./helpers/chain";
 
 const G = 9.80665;
 const V0 = 10;
+
+describe("localize", () => {
+    test("is the exact inverse of place: place(entry, localize(entry, p)) === p (§4)", () => {
+        // the ECS layer authors handles in world space; the bake localizes them into
+        // the section entry frame before evalGeo places them back. a non-identity
+        // entry (rotated + translated) exercises the full rigid transform.
+        const entry: Entry = { x: 17, y: -9, theta: 0.7, v: 12 };
+        for (const p of [
+            { x: 17, y: -9, theta: 0.7 }, // the entry itself → local origin
+            { x: 40, y: 3, theta: -0.2 },
+            { x: -8, y: 21, theta: 1.4 },
+        ]) {
+            const local = localize(entry, p);
+            const back = place(entry, local);
+            expect(back.x).toBeCloseTo(p.x, 4);
+            expect(back.y).toBeCloseTo(p.y, 4);
+            expect(back.theta).toBeCloseTo(p.theta, 6);
+        }
+        // the entry maps to the local origin, heading 0 — node 0 IS the entry.
+        const origin = localize(entry, { x: entry.x, y: entry.y, theta: entry.theta });
+        expect(origin.x).toBeCloseTo(0, 6);
+        expect(origin.y).toBeCloseTo(0, 6);
+        expect(origin.theta).toBeCloseTo(0, 6);
+    });
+});
 
 describe("evalGeo", () => {
     test("a flat geo section holds ~1g and conserves launch speed", () => {
@@ -51,6 +84,22 @@ describe("evalGeo", () => {
             const ly = -s * dx + c * dy;
             expect(lx).toBeCloseTo(ra.posX[i], 2);
             expect(ly).toBeCloseTo(ra.posY[i], 2);
+        }
+    });
+
+    test("offsets are the sample index of each authored node (the Handle.sample map)", () => {
+        const local = withThetas([
+            { x: 0, y: 0 },
+            { x: 20, y: 4 },
+            { x: 44, y: 0 },
+        ]);
+        const r = evalGeo({ x: 0, y: 0, theta: 0, v: V0 }, local, 0.5);
+        expect(r.offsets.length).toBe(local.length);
+        expect(r.offsets[0]).toBe(0);
+        expect(r.offsets[r.offsets.length - 1]).toBe(r.edges); // last node = last sample
+        for (let k = 0; k < local.length; k++) {
+            expect(r.posX[r.offsets[k]]).toBeCloseTo(local[k].x, 4);
+            expect(r.posY[r.offsets[k]]).toBeCloseTo(local[k].y, 4);
         }
     });
 });
@@ -143,6 +192,19 @@ describe("chain", () => {
             acc += c.ds[i];
         }
         expect(acc).toBeGreaterThan(0);
+
+        // per-section results carry the metadata the flat SoA drops; each section's
+        // local offsets translate to global via ranges[k].start.
+        expect(c.results.length).toBe(sections.length);
+        for (let k = 0; k < c.results.length; k++) {
+            const res = c.results[k];
+            expect(res.offsets[0]).toBe(0);
+            expect(res.offsets[res.offsets.length - 1]).toBe(res.edges);
+            const globalStart = c.ranges[k].start + res.offsets[0];
+            const globalEnd = c.ranges[k].start + res.offsets[res.offsets.length - 1];
+            expect(globalStart).toBe(c.ranges[k].start);
+            expect(globalEnd).toBe(c.ranges[k].end);
+        }
     });
 
     test("energy is conserved across section boundaries (v² = v0² − 2gΔy)", () => {

@@ -15,11 +15,11 @@ import {
     Track,
 } from "../src/track";
 
-// the ECS layer: BakeSystem wires sortedHandles → sampleChain → invertRange →
+// the ECS layer: BakeSystem wires sortedHandles → chain([one geo section]) →
 // computeTime, syncs each node's sample index, and records the orphan /
 // feasibility state the renderer reads. the pure pieces are covered in
-// spline/bake/forward; this pins the integration the glue owns. the bake is
-// pure CPU, so the test runs BakeSystem on a device-free State via the
+// section/spline/bake/forward; this pins the integration the glue owns. the bake
+// is pure CPU, so the test runs BakeSystem on a device-free State via the
 // scheduler — no GPU. `state.step()` runs BakeSystem (default group simulation).
 
 /** a fresh flat track: two free nodes at (−16,0) and (16,0), the same flat seed
@@ -68,6 +68,19 @@ describe("BakeSystem", () => {
         expect(Handle.pos.y.get(handles[0])).toBeCloseTo(0, 6);
         expect(Handle.pos.x.get(handles[2])).toBeCloseTo(40, 6);
         expect(Handle.pos.y.get(handles[2])).toBeCloseTo(2, 6);
+    });
+
+    test("the off-origin flat anchor lands at sample 0 (entry = node 0's world pose)", () => {
+        // the seed puts node 0 at (−16, 0), not the origin. the bake derives the
+        // section entry from node 0 and localizes the handles into it, so sample 0
+        // reproduces node 0's world position — guards the substrate wiring against
+        // seeding sample 0 from a fixed {0,0} entry (which would strand the anchor).
+        const { state, eid } = track();
+        state.step(0);
+        const s = samples.get(eid);
+        if (!s) throw new Error("samples missing");
+        expect(s.posX[0]).toBeCloseTo(-16, 4);
+        expect(s.posY[0]).toBeCloseTo(0, 4);
     });
 
     test("extend lays a node continuing the last edge's direction", () => {
