@@ -1,5 +1,5 @@
 /** the force-authoring primitive: authored force points → a dense per-edge F_n(σ)
- *  profile the substrate integrates (kex/specs/kex2d-sections.md §6). the force
+ *  profile the substrate integrates. the force
  *  analogue of `spline.ts`'s `sampleChain` — a pure, framework-free authoring layer
  *  the ECS bake feeds into `section.evalForce`. the atoms stay opinion-free: they
  *  consume dense per-edge force and know nothing about points or interpolation.

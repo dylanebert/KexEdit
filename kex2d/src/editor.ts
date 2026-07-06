@@ -12,15 +12,21 @@ interface EditorState {
     selection: number | null;
     /** stable id of the currently selected force point (force section), or null. */
     force: number | null;
-    /** stable id of the currently selected section, or null. the whole-section
-     *  handle for the structural ops (convert / split / join / delete). */
+    /** stable id of the currently selected section, or null. section selection is a
+     *  highlight + the context-menu target; it does NOT gate authoring (force points
+     *  are added by cursor position, nodes are dragged in the viewport). */
     section: number | null;
+    /** the section right-click menu (Convert / Delete): screen position + target
+     *  section id, or null when closed. shared so both the clip strip and the viewport
+     *  span open the same menu, rendered once at the app root. */
+    context: { x: number; y: number; section: number } | null;
 }
 
 export const editor: EditorState = {
     selection: null,
     force: null,
     section: null,
+    context: null,
 };
 
 // the three selections are mutually exclusive — selecting one clears the others, so
@@ -52,4 +58,16 @@ export function selectSection(id: number | null): void {
         editor.selection = null;
         editor.force = null;
     }
+}
+
+/** open the section context menu at a screen point, targeting a section (also selects
+ *  it, so the target reads highlighted). */
+export function openContext(x: number, y: number, section: number): void {
+    selectSection(section);
+    editor.context = { x, y, section };
+}
+
+/** close the section context menu. */
+export function closeContext(): void {
+    editor.context = null;
 }

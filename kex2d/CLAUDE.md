@@ -29,8 +29,8 @@ initial-velocity anchor, `V0` a default initial speed (arbitrary, FVD-matching, 
 idiom later). It's not draggable — it draws as a diamond, distinct from the gold shape handles.
 
 **A unified solver is NOT the model.** Three dogfood rounds proved that a solver responsible for
-arbitrating authoring intent almost never does what's intended — the author fights it
-(`memory/project_kex2d_solver_verdict.md`). The architecture is two deterministic, legible
+arbitrating authoring intent almost never does what's intended — the author fights it. The
+architecture is two deterministic, legible
 atoms — force→geometry and geometry→force — with authoring layers on top; optimization returns
 later only as a **scoped, invoked tool** over the atoms (the deferred "conversion/optimization
 tier"). The kernel atoms that tier will use — `force.ts`, `banded.ts`, `collocate.ts` + their
@@ -134,9 +134,9 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
   recovered display, expected.
 - **Extent is the section's own authored length** (`Section.length`, m — distance is the only authoring domain),
   NOT inherited from the geo shape a convert came from: a convert (or an append) **resets** it to
-  `DEFAULT_FORCE_LEN`. It's then editable — a **drag handle** (a subtle accent vertical bar at the
-  section end in the timeline, `ew-resize`) resizes the profile (`setSectionLength`, floored at
-  `MIN_FORCE_LEN`, one undo entry via `history.beginLength`). Shortening below a point's s just stops
+  `DEFAULT_FORCE_LEN`. It's then editable — the **force clip's right edge** in the timeline marker
+  lane (`ew-resize`) resizes the profile (`setSectionLength`, floored at `MIN_FORCE_LEN`, one undo
+  entry via `history.beginLength`). Shortening below a point's s just stops
   sampling there (non-destructive — the point persists, re-lengthening restores it).
 
 ## Physics — forward integrator + force recovery
@@ -242,9 +242,9 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `createHistory` for tests.
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
   teardown. `pickNode` (skips order-0 anchors) then `pickSection` (nearest span); a node drag
-  `localize`s the pointer into the section frame then `reheadOnDrag`. Keys: `Enter` extend / `Del`
-  trim (node end); `a`/`A` append geo/force; `s` split at the selected node; `j` join / `Del` delete
-  (selected section). All edits route through `history`.
+  `localize`s the pointer into the section frame then `reheadOnDrag`. Right-click a section span opens
+  the context menu (`openContext`). Keys: `Enter` extend / `Del` trim (node end); `a`/`A` append
+  geo/force; `Del` delete (selected section). All edits route through `history`.
 - `timeline.ts` — pure transform + tick math for the force-curve timeline (no Svelte/DOM/track
   state). The chart's x-axis is **distance** (meters). `View`, `sToPx`/`pxToS`, `zoomAt`, `clampView`,
   `frameAll`, `niceStep`, `ticks`, the navigator math (`navWindow`/`navDragView`/`marginArc`), and
@@ -252,14 +252,17 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   (auto-fit g-range) + the edge-scroll grow-to-follow: `yGrow` (value drag) and `xGrow` (pan). Unit-
   tested in `timeline.test.ts`.
 - `Timeline.svelte` — the always-present bottom dock: the **F_n force-curve readout + scrub +
-  zoom/pan navigation**, the floating **media player**, and the **geo↔force pill** (converts the
-  *active* section — selected, else first force, else first; a satellite over the dock's top-right).
-  The chart draws the baked F_n curve over arclength + **section boundary guides** (dashed verticals);
-  the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator** minimap pans/zooms.
-  In force mode the chart authors the active force section (points at the cumulative offset `startS`;
-  the **end handle** — a subtle accent bar — resizes the extent). Both a keyframe drag and the extent
-  drag freeze the view (`yGrow`/`xGrow` edge-scroll past the chart edge, resume on release). Conventions:
-  `kexedit/.claude/rules/editor-ui.md`. Takes `ecs`; routes edits through `history`.
+  zoom/pan navigation**, the floating **media player**, and the **section clip strip** in the marker
+  lane (one clip per section, kind-colored/labeled; click selects `editor.section`; a `+` tail flyout
+  appends geo/force; a force clip's right edge is its **extent trim**; right-click a clip opens the
+  context menu). The chart draws the baked F_n curve over arclength + **section boundary guides**
+  (dashed verticals); the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator**
+  minimap pans/zooms. The chart is a **whole-track force-authoring surface**: it draws every force
+  section's points (`forcePts`), and a double-click over a force section's arc adds a point there —
+  authoring is **by cursor position**, no "active section" (an empty-chart click deselects). Both a
+  keyframe drag and the extent trim freeze the view (`yGrow`/`xGrow` edge-scroll past the chart edge,
+  resume on release). Conventions: `kexedit/.claude/rules/editor-ui.md`. Takes `ecs`; routes edits
+  through `history`.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), section-entry **anchor diamonds**, the
   selected-section accent overlay, the node handles (selected/orphan/infeasible), the cart, the
@@ -275,7 +278,8 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 A track is a chain of sections; each is geo or force, authored by its idiom (below). Direct
 manipulation, no sub-tools. Three mutually-exclusive selections (`editor.ts`): a node, a force
 point, or a whole section — selecting one clears the others, so a key press never fights over its
-target.
+target. Section selection is a **highlight + the context-menu target only**; it never gates
+authoring (force points are added by cursor position, nodes dragged in the viewport).
 
 **Geo authoring** (within a geo section) — author the shape in the viewport. Click a node to select
 + drag it freely (`localize`d into the section frame); click empty space to deselect. A drag
@@ -288,20 +292,22 @@ pickable.
   also `Enter`) lays a node continuing the last edge by `EXTEND_DIST`; Delete (🗑, also `Del`) removes
   the trailing node, never below the two nodes a section needs, re-heading the promoted tip.
 
-**Force authoring** (within a force section) — author the force on the timeline curve. Double-click
-places a point at the authored profile's value (insertion never bends the curve); drag a diamond in
-both axes (horizontal = s, vertical = g; `Shift` locks the dominant axis); `Del` removes, `Esc`
-deselects; the popover at the selected diamond types or scrubs its s/g. Points are authored
-section-local (s from the section entry) but drawn at the whole-track cumulative offset (`startS`).
-Keyframes, not constraints. Interaction conventions: `editor-ui.md`.
+**Force authoring** (on the timeline chart, whole-track) — the chart draws every force section's
+points at once. Double-click over a force section's arc places a point at the authored profile's
+value (insertion never bends the curve; the section is resolved from the cursor arclength, no
+selection needed); drag a diamond in both axes (horizontal = s, vertical = g; `Shift` locks the
+dominant axis); `Del` removes, `Esc` deselects; the popover at the selected diamond types or scrubs
+its s/g. Points are authored section-local (s from the section entry) but drawn at their section's
+whole-track cumulative offset. Keyframes, not constraints. Interaction conventions: `editor-ui.md`.
 
-**Section ops** (the multi-section chain) — click a section's polyline span to select it (highlights
-in accent). Keyboard: `a`/`A` append a geo/force section at the end, `s` split the selected node's
-section at it, `j` join the selected section with its same-kind successor, `Del` delete the selected
-section. The mode pill converts the *active* section (selected, else the first force section, else
-the first). Boundary anchors draw as viewport diamonds + chart vertical guides. One open chain — no
-branching, circuit closure, or mid-chain insertion. Rich manipulation (move/reconnect/insert) is a
-deferred scope. All ops undo via a whole-track snapshot pair (byte-identical).
+**Section ops** (the multi-section chain) — select a section by clicking its **clip** in the timeline
+marker lane (or its viewport polyline span); a force clip's right edge is its extent trim, and a `+`
+tail after the last clip appends (geo/force flyout, also `a`/`A`). **Right-click a clip or span** for
+the context menu: Convert (destructive geo↔force, undoable) + Delete (`Del`). Split and join left the
+editor — deferred to the conversion/optimization tier (the substrate `splitGeo`/`splitForce`/
+`joinNext` + tests stay in-tree as its reference). Boundary anchors draw as viewport diamonds + chart
+vertical guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo
+via a whole-track snapshot pair (byte-identical).
 
 ## Hard gotchas
 

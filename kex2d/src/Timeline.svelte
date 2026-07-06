@@ -2,13 +2,13 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, trackMapping } from "./cart";
-import { editor, select, selectForce } from "./editor";
+import { editor, openContext, selectForce, selectSection } from "./editor";
 import {
+    appendSection,
     beginForceMove,
     beginLength,
     cancel,
     commit,
-    convertSection,
     createForce,
     deleteForce,
     history,
@@ -38,8 +38,6 @@ import {
 import { sampleForce } from "./profile";
 import {
     bakeOut,
-    type ForceRow,
-    forcePointState,
     SectionKind,
     sectionForces,
     sectionInfo,
@@ -52,17 +50,18 @@ import { resize } from "./view";
 const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
 
 // the timeline shows the baked F_n force curve the realized track produces, plus
-// scrub + zoom/pan navigation. in FORCE mode it's also the authoring surface: force
-// points are placed, dragged, and deleted on the curve (kex/specs/kex2d-sections.md
-// §6), and the chart keeps displaying the geometry-recovered curve (§2). in GEO mode
-// it stays a read-only curve + player (the track is authored in the viewport).
+// scrub + zoom/pan navigation. it's also the force-authoring surface: over any force
+// section's arc, points are placed, dragged, and deleted on the curve, while the chart
+// keeps displaying the geometry-recovered curve. geo sections stay read-only here (the
+// shape is authored in the viewport). the clip strip in the marker lane selects sections.
 
 // timeline bands, top → bottom: a scrubbable RULER (ticks + labels + playhead
 // handle, the dedicated scrub zone), a demarcating GAP the playhead passes through,
 // then the curve chart. The After Effects / animation-timeline / kexedit-main layout
 // (time ruler on top, click-anywhere-to-scrub), not a plot with a bottom axis.
 const RULER_H = 26; // top scrub band: ticks, labels, playhead handle
-const GAP_H = 20; // marker lane between ruler and chart — a full row (event markers later)
+const GAP_H = 20; // marker lane between ruler and chart — the section clip strip
+const CLIP_PAD = 2; // px; vertical inset of a section clip inside the marker lane
 const TOP = RULER_H + GAP_H; // chart top
 const BOT_PAD = 8; // chart inset, bottom
 const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
@@ -75,7 +74,8 @@ const CAP_LO = BAND[0] - Y_HEADROOM;
 const CAP_HI = BAND[1] + Y_HEADROOM;
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
-const FMARKER_R = 5; // px; the force-point diamond's half-diagonal
+const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
+const FHIT_R = 12; // px; the invisible grab/hover radius around a force point (fat pick zone)
 const TIP_HALF = 52; // px; half the point popover's width — clamps it inside the chart
 const TIP_FLIP = 64; // px; a point nearer than this to the chart top flips the popover below
 
@@ -96,7 +96,7 @@ let sFrozen: number | null = $state(null);
 const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 
 // the baked F_n force curve as per-sample (arclength, force) points — the chart data
-// and the source of the distance domain. no time resample: the x-axis is distance (§4).
+// and the source of the distance domain. no time resample: the x-axis is distance.
 const curve = $derived.by((): { s: Float64Array; f: Float32Array; n: number } | null => {
     void tick;
     return eid === null ? null : forceCurve(eid);
@@ -104,7 +104,7 @@ const curve = $derived.by((): { s: Float64Array; f: Float32Array; n: number } | 
 // total track arclength (m) — the chart's X-axis domain.
 const sTotal = $derived(curve ? curve.s[curve.n - 1] : 0);
 // total track seconds — the *player* transport's domain (the media player stays in
-// time; only the chart is distance, §4).
+// time; only the chart is distance).
 const tTotal = $derived.by((): number => {
     void tick;
     if (eid === null) return 0;
@@ -116,7 +116,7 @@ const chartW = $derived(Math.max(0, w - LEFT_GUT));
 const clamped = $derived(clampView(view, chartW, sFrozen ?? sTotal));
 const tickList = $derived(ticks(clamped, chartW));
 
-// the cart↔chart projection: the cart rides in time, the chart is distance (§4).
+// the cart↔chart projection: the cart rides in time, the chart is distance.
 const mapping = $derived.by((): Mapping | null => {
     void tick;
     return eid === null ? null : trackMapping(eid);
@@ -220,47 +220,15 @@ const yToG = (py: number): number => {
     return yView.lo + (1 - (py - TOP) / inner) * (yView.hi - yView.lo);
 };
 
-// ── force authoring (force mode only): points on the curve, the keyframe idiom ──
-// filled diamonds at (s, g), authored INPUT (not optimization targets), so no
-// drop-line and no driving/driven (§6). double-click places, drag moves both axes,
-// Del removes, the point popover fields type s/g. all edits route through `history`.
-// the "active" section the timeline authors + the pill converts: the selected
-// section, else the selected point's section, else the first force section (the
-// natural authoring target), else the first section.
-const activeId = $derived.by((): number | null => {
-    void tick;
-    const secs = sections(ecs);
-    if (secs.length === 0) return null;
-    if (editor.section !== null && secs.some((x) => x.id === editor.section)) return editor.section;
-    if (editor.force !== null) {
-        const fp = forcePointState(ecs, editor.force);
-        if (fp) return fp.section;
-    }
-    return (secs.find((x) => x.kind === SectionKind.Force) ?? secs[0]).id;
-});
-const activeSec = $derived.by(() => {
-    void tick;
-    return sections(ecs).find((x) => x.id === activeId) ?? null;
-});
-const isForce = $derived(activeSec?.kind === SectionKind.Force);
-const activeLen = $derived(activeSec?.length ?? 0);
-const points = $derived.by((): ForceRow[] => {
-    void tick;
-    return activeId === null || !isForce ? [] : sectionForces(ecs, activeId);
-});
-// force points are authored section-local (s from the section entry), but the chart
-// x-axis is whole-track cumulative arclength — so a point at local s draws at
-// startS + s. startS is the active section's cumulative arclength offset.
-const startS = $derived.by((): number => {
-    void tick;
-    if (eid === null || activeId === null) return 0;
-    const info = sectionInfo.get(activeId);
-    const out = bakeOut.get(eid);
-    if (!info || !out) return 0;
-    let s = 0;
-    for (let i = 0; i < info.startSample; i++) s += out.ds[i];
-    return s;
-});
+// ── force authoring: points on the curve, the keyframe idiom ──
+// filled diamonds at (s, g), authored INPUT (not optimization targets), so no drop-line
+// and no driving/driven. the chart is a WHOLE-TRACK view: it draws every force section's
+// points at once, and authoring is by cursor position — a double-click over a force
+// section's arc adds a point there (no section pre-selection). all edits route through
+// `history`. force points are authored section-local (s from the section entry); the
+// chart x-axis is whole-track cumulative arclength, so a point draws at its section's
+// cumulative offset (`startS`) + its local s.
+//
 // the interior section boundaries in cumulative arclength — drawn as chart guides.
 const bounds = $derived.by((): number[] => {
     void tick;
@@ -278,19 +246,76 @@ const bounds = $derived.by((): number[] => {
     }
     return bs;
 });
+// ── section clip strip (the marker lane): one clip per section over its cumulative
+// arclength span, kind-colored + labeled, selecting `editor.section` — the SAME
+// selection as the viewport span (one object, two surfaces). clip edges align with the
+// chart's boundary guides (both are arclength). a force clip's right edge is its extent
+// trim (below), which replaces the old chart length handle.
+interface Clip {
+    id: number;
+    kind: SectionKind;
+    s0: number; // cumulative arclength at the section entry
+    s1: number; // cumulative arclength at the section exit
+    len: number; // authored extent (force `Section.length`) — the clamp domain for its points
+}
+const clips = $derived.by((): Clip[] => {
+    void tick;
+    if (eid === null) return [];
+    const out = bakeOut.get(eid);
+    if (!out) return [];
+    const res: Clip[] = [];
+    for (const sec of sections(ecs)) {
+        const info = sectionInfo.get(sec.id);
+        if (!info) continue;
+        let s0 = 0;
+        for (let i = 0; i < info.startSample; i++) s0 += out.ds[i];
+        let s1 = s0;
+        for (let i = info.startSample; i < info.endSample; i++) s1 += out.ds[i];
+        res.push({ id: sec.id, kind: sec.kind, s0, s1, len: sec.length });
+    }
+    return res;
+});
+// every force section's points, flattened across the whole track — each carries its
+// section's cumulative start (`startS`) and authored extent (`len`) so the chart draws,
+// picks, and clamps it without a per-section "active" selection.
+interface ForcePt {
+    id: number;
+    section: number;
+    s: number; // section-local arclength
+    g: number;
+    startS: number; // the section's cumulative start (draw at startS + s)
+    len: number; // the section's authored extent (drag/field clamp domain)
+}
+const forcePts = $derived.by((): ForcePt[] => {
+    void tick;
+    if (eid === null) return [];
+    const res: ForcePt[] = [];
+    for (const c of clips) {
+        if (c.kind !== SectionKind.Force) continue;
+        for (const p of sectionForces(ecs, c.id))
+            res.push({ id: p.id, section: c.id, s: p.s, g: p.g, startS: c.s0, len: c.len });
+    }
+    return res;
+});
+// the selected section id (read through the per-RAF tick; editor is plain state).
+const selSection = $derived.by((): number | null => {
+    void tick;
+    return editor.section;
+});
+
 // the selected point's id (read through the per-RAF tick; editor is plain state).
 const selForce = $derived.by((): number | null => {
     void tick;
     return editor.force;
 });
-const selPoint = $derived.by((): ForceRow | null => {
+const selPoint = $derived.by((): ForcePt | null => {
     if (selForce === null) return null;
-    return points.find((p) => p.id === selForce) ?? null;
+    return forcePts.find((p) => p.id === selForce) ?? null;
 });
 const markerX = (s: number): number => LEFT_GUT + sToPx(clamped, s);
-// a force point's chart x — its section-local s placed at the section's cumulative
-// offset (startS). points are authored local; the chart draws whole-track cumulative.
-const pointX = (localS: number): number => markerX(startS + localS);
+// a force point's chart x — its section-local s placed at its section's cumulative
+// offset. points are authored local; the chart draws whole-track cumulative.
+const ptX = (p: ForcePt): number => markerX(p.startS + p.s);
 
 // chart-local pointer coords (px from the canvas top-left, past the g-gutter for x).
 function chartS(e: MouseEvent): number {
@@ -298,13 +323,17 @@ function chartS(e: MouseEvent): number {
     return clamp(pxToS(clamped, e.clientX - rect.left - LEFT_GUT), 0, sTotal);
 }
 
-// double-click the empty chart drops a force point at that s, ON the authored
-// profile (g = the profile's value there — the DAW/AE envelope-insertion identity:
-// a new point never bends the curve, and drags from a known start).
+// double-click the chart drops a force point at that s, in whatever force section the
+// cursor is over (resolved by arclength — no section pre-selection), ON the authored
+// profile (g = the profile's value there — the DAW/AE envelope-insertion identity: a
+// new point never bends the curve, and drags from a known start). over a geo section
+// (or empty), it's a no-op.
 function chartCreate(e: MouseEvent): void {
-    if (activeId === null || !isForce) return;
-    const s = clamp(chartS(e) - startS, 0, activeLen); // cursor cumulative → section-local
-    selectForce(createForce(history, ecs, activeId, s, sampleForce(points, s)));
+    const cumS = chartS(e);
+    const c = clips.find((x) => x.kind === SectionKind.Force && cumS >= x.s0 && cumS <= x.s1);
+    if (!c) return; // not over a force section
+    const s = clamp(cumS - c.s0, 0, c.len); // cursor cumulative → section-local
+    selectForce(createForce(history, ecs, c.id, s, sampleForce(sectionForces(ecs, c.id), s)));
 }
 
 // drag a diamond in both axes (horizontal = s, vertical = g), one undo entry. the
@@ -313,6 +342,8 @@ function chartCreate(e: MouseEvent): void {
 // to the dominant axis (the AE/Photoshop rule), measured from the grab.
 let dragForce: number | null = $state(null);
 let grabDs = 0; // point s − cursor s, so grabbing off-center doesn't snap
+let dragStartS = 0; // the dragged point's section cumulative start (fixed during the drag)
+let dragLen = 0; // the dragged point's section extent (the s clamp domain)
 let dragCx = 0; // last cursor, canvas-local px
 let dragCy = 0;
 let dragShift = false;
@@ -326,7 +357,7 @@ function applyDrag(): void {
     // so past an edge the point rides it (y follows only as the edge-grow expands).
     const cx = clamp(dragCx, LEFT_GUT, Math.max(LEFT_GUT, w));
     // cursor cumulative s + grab → the point's cumulative s, then − startS → local.
-    let s = clamp(pxToS(clamped, cx - LEFT_GUT) + grabDs - startS, 0, activeLen);
+    let s = clamp(pxToS(clamped, cx - LEFT_GUT) + grabDs - dragStartS, 0, dragLen);
     let g = yToG(clamp(dragCy, TOP, h - BOT_PAD));
     if (dragShift) {
         // lock to whichever axis has moved further since the grab; the other holds
@@ -335,7 +366,7 @@ function applyDrag(): void {
     }
     setForcePoint(ecs, dragForce, s, g);
 }
-function forceDown(e: PointerEvent, p: ForceRow): void {
+function forceDown(e: PointerEvent, p: ForcePt): void {
     e.preventDefault();
     e.stopPropagation(); // don't also deselect via the chartzone below
     const rect = canvas.getBoundingClientRect();
@@ -346,7 +377,9 @@ function forceDown(e: PointerEvent, p: ForceRow): void {
     dragY0 = dragCy;
     dragS0 = p.s;
     dragG0 = p.g;
-    grabDs = startS + p.s - chartS(e); // cumulative grab offset (point − cursor)
+    dragStartS = p.startS; // the point's section is fixed while its s is dragged inside it
+    dragLen = p.len;
+    grabDs = p.startS + p.s - chartS(e); // cumulative grab offset (point − cursor)
     beginForceMove(ecs, p.id);
     dragForce = p.id;
     selectForce(p.id);
@@ -369,50 +402,108 @@ function forceUp(): void {
     window.removeEventListener("pointerup", forceUp);
 }
 
-// ── force-section extent: drag the end handle (a subtle vertical bar at the section
-// end) to resize the profile. the extent is the force section's own authored length
-// (§3), independent of the geo shape a convert came from — a convert resets it to a
-// default, this sets it. one undo entry per drag.
-let draggingLen = $state(false);
+// select a section by clicking its clip (the same `editor.section` the viewport span
+// selects — one object, two surfaces). pointerdown so it feels immediate.
+function selectClip(e: PointerEvent, c: Clip): void {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation(); // don't also scrub via the ruler zone beneath
+    selectSection(c.id);
+}
+// right-click a clip → the section context menu (Convert / Delete) at the cursor.
+function clipMenu(e: MouseEvent, c: Clip): void {
+    e.preventDefault();
+    e.stopPropagation();
+    openContext(e.clientX, e.clientY, c.id);
+}
+
+// ── the append tail: a `+` after the last clip opens a two-choice geo/force flyout —
+// the discoverable append. the a/A keys (controls.ts) stay the expert path.
+let appendOpen = $state(false);
+function toggleAppend(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    appendOpen = !appendOpen;
+}
+function append(kind: SectionKind): void {
+    appendOpen = false;
+    fitPending = sTotal; // reveal the appended section once the re-bake extends the track
+    selectSection(appendSection(history, ecs, kind));
+}
+// appending adds to the chain end, off the right of the framed view. once the re-bake
+// lands (sTotal grows past the value captured at append), re-fit so the new clip shows.
+let fitPending: number | null = $state(null);
+$effect(() => {
+    if (fitPending === null) return;
+    if (chartW > 0 && sTotal > 0 && sTotal !== fitPending) {
+        view = frameAll(chartW, sTotal);
+        fitPending = null;
+    }
+});
+// click-away closes the flyout (clicks inside the control keep it open — the choice
+// buttons close it themselves via append()).
+$effect(() => {
+    if (!appendOpen) return;
+    const close = (ev: PointerEvent): void => {
+        const t = ev.target as HTMLElement | null;
+        if (t?.closest(".clip-append")) return;
+        appendOpen = false;
+    };
+    window.addEventListener("pointerdown", close, { capture: true });
+    return () => window.removeEventListener("pointerdown", close, { capture: true });
+});
+
+// ── force-section extent: drag a force clip's RIGHT EDGE (in the strip) to resize the
+// profile. the extent is the force section's own authored length, independent of
+// the geo shape a convert came from — a convert resets it to a default, this sets it.
+// reuses the keyframe-drag freeze machinery: sFrozen holds the chart's arclength so the
+// view never rescales under the drag, and xGrow edge-pans when the cursor is held past
+// the chart edge. one undo entry per drag.
+let lenId: number | null = $state(null); // the force section being resized, or null
+const draggingLen = $derived(lenId !== null);
+let lenStartS = 0; // the dragged section's cumulative start arclength (fixed during the drag)
 let lenCx = 0; // last length-drag cursor, canvas-local px (drives the per-frame edge-pan)
 const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-eye feel constant
 // resolve the held cursor to a section extent through the *current* view (recomputed
-// inline so an edge-pan this frame is already reflected — the point never lags the pan).
+// inline so an edge-pan this frame is already reflected — the edge never lags the pan).
 function applyLen(): void {
-    if (activeId === null) return;
+    if (lenId === null) return;
     const cv = clampView(view, chartW, sFrozen ?? sTotal);
     const cumS = pxToS(cv, lenCx - LEFT_GUT);
-    setSectionLength(ecs, activeId, cumS - startS); // cumulative − section start → local extent
+    setSectionLength(ecs, lenId, cumS - lenStartS); // cumulative − section start → local extent
 }
-function lenDown(e: PointerEvent): void {
-    if (e.button !== 0 || activeId === null || !isForce) return;
+function lenDown(e: PointerEvent, c: Clip): void {
+    if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
-    beginLength(ecs, activeId);
-    draggingLen = true;
+    lenStartS = c.s0; // upstream is unchanged by this resize, so the start is fixed
+    selectSection(c.id); // grabbing the edge selects the section (one object, two surfaces)
+    beginLength(ecs, c.id);
+    lenId = c.id;
     sFrozen = sTotal; // freeze the zoom so the chart doesn't rescale under the drag
     window.addEventListener("pointermove", lenMove);
     window.addEventListener("pointerup", lenUp);
 }
 function lenMove(e: PointerEvent): void {
-    if (!draggingLen) return;
+    if (lenId === null) return;
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
     applyLen();
 }
 function lenUp(): void {
-    if (!draggingLen) return;
-    draggingLen = false;
+    if (lenId === null) return;
+    lenId = null;
     sFrozen = null; // auto-fit resumes and settles to the new extent
     commit(history);
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
 }
 function cancelLenDrag(): void {
-    if (!draggingLen) return;
-    draggingLen = false;
+    if (lenId === null) return;
+    lenId = null;
     sFrozen = null;
     cancel();
     window.removeEventListener("pointermove", lenMove);
@@ -435,22 +526,13 @@ $effect(() => {
     });
 });
 
-// ── the mode toggle + the selected point's typed s/g fields ──
-// the mode toggle is a destructive, undoable convert (§5): clicking the inactive
-// side resets the track to that kind's default. clearing both selections first
-// keeps a stale id out of the post-convert view.
-function toggleKind(): void {
-    if (activeId === null) return;
-    selectForce(null);
-    select(null);
-    convertSection(history, ecs, activeId);
-}
+// ── the selected point's typed s/g fields ──
 // each field commits one undo entry through the drag gesture (begin → set → commit).
 function fieldEdit(s: number, g: number): void {
-    const id = selForce;
-    if (id === null || !Number.isFinite(s) || !Number.isFinite(g)) return; // guard a cleared field
-    beginForceMove(ecs, id);
-    setForcePoint(ecs, id, clamp(s, 0, activeLen), g);
+    const p = selPoint;
+    if (p === null || !Number.isFinite(s) || !Number.isFinite(g)) return; // guard a cleared field
+    beginForceMove(ecs, p.id);
+    setForcePoint(ecs, p.id, clamp(s, 0, p.len), g);
     commit(history);
 }
 function onFieldS(e: Event): void {
@@ -478,14 +560,14 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
     const label = e.currentTarget as HTMLElement;
     label.setPointerCapture(e.pointerId);
     scrubFreeze = {
-        x: clamp(pointX(p.s), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
+        x: clamp(ptX(p), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
         y: clamp(yOf(p.g), TOP, h - BOT_PAD),
     };
     beginForceMove(ecs, p.id);
     let acc = axis === "s" ? p.s : p.g;
     const move = (ev: PointerEvent): void => {
         if (axis === "s") {
-            acc = clamp(acc + ev.movementX * SCRUB_S, 0, activeLen);
+            acc = clamp(acc + ev.movementX * SCRUB_S, 0, p.len);
             setForcePoint(ecs, p.id, Math.round(acc * 10) / 10, p.g);
         } else {
             acc += ev.movementX * SCRUB_G;
@@ -766,7 +848,7 @@ function scrubTo(e: PointerEvent): void {
     const m = mapping;
     if (!m) return;
     const rect = canvas.getBoundingClientRect();
-    // the ruler is distance; map the picked s back to the cart's time (§4 inverse).
+    // the ruler is distance; map the picked s back to the cart's time (the inverse).
     const s = clamp(pxToS(clamped, e.clientX - rect.left - LEFT_GUT), 0, sTotal);
     const st = cartState.get(eid);
     if (st) st.t = clamp(arcToTime(m, s), 0, tTotal);
@@ -882,6 +964,11 @@ onMount(() => {
             togglePlay();
             return;
         }
+        if (appendOpen && e.key === "Escape") {
+            e.preventDefault();
+            appendOpen = false;
+            return;
+        }
         // force-point select/delete — guarded on a live force selection so geo-node
         // Esc/Del (controls.ts) stay unambiguous (the selections are mode-exclusive).
         if (editor.force !== null) {
@@ -937,6 +1024,11 @@ onMount(() => {
                         height={Math.max(0, h - BOT_PAD - TOP)}
                     />
                 </clipPath>
+                <!-- clip the section strip to the marker lane so a panned clip doesn't
+                     paint over the g-gutter or past the chart edges. -->
+                <clipPath id="laneclip">
+                    <rect x={LEFT_GUT} y={RULER_H} width={Math.max(0, w - LEFT_GUT)} height={GAP_H} />
+                </clipPath>
             </defs>
             <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere here
                  moves the playhead (the distance ruler is the scrubber). -->
@@ -957,10 +1049,11 @@ onMount(() => {
                     aria-valuenow={Math.round((cartS ?? 0) * 100) / 100}
                 />
             {/if}
-            <!-- force mode: the chart is the authoring surface. double-click drops a
-                 point at the exact (s, g) under the cursor; a bare click on empty
-                 chart clears the point selection. the diamonds sit above it. -->
-            {#if isForce && eid !== null && sTotal > 0}
+            <!-- the chart is the force-authoring surface (whole-track): double-click over
+                 a force section's arc drops a point at that (s, g); a bare click on empty
+                 chart deselects. authoring is by cursor position — no section selection
+                 needed. the diamonds sit above it. -->
+            {#if eid !== null && sTotal > 0}
                 <rect
                     class="chartzone"
                     x={LEFT_GUT}
@@ -973,13 +1066,61 @@ onMount(() => {
                         // layered dismissal: while a popover field is focused, a chart
                         // click only commits/blurs the field (the innermost transient
                         // layer, via the browser's own focus change); the NEXT click
-                        // clears the keyframe selection.
+                        // deselects the point and the section.
                         const ae = document.activeElement;
                         if (ae instanceof HTMLElement && ae.closest(".ptip")) return;
                         selectForce(null);
+                        selectSection(null);
                     }}
                     role="presentation"
                 />
+            {/if}
+            <!-- the section clip strip: one clip per section in the marker lane, kind-
+                 colored + labeled, selecting editor.section (the same selection as the
+                 viewport span). a force clip's right edge is its extent trim (below). -->
+            {#if eid !== null && sTotal > 0}
+                <g class="clips" clip-path="url(#laneclip)">
+                    {#each clips as c (c.id)}
+                        {@const x0 = markerX(c.s0)}
+                        {@const x1 = markerX(c.s1)}
+                        {@const cw = x1 - x0}
+                        {#if x1 >= LEFT_GUT && x0 <= w}
+                            {@const isF = c.kind === SectionKind.Force}
+                            <rect
+                                class="clip {isF ? 'force' : 'geo'}"
+                                class:sel={c.id === selSection}
+                                x={x0 + 0.5}
+                                y={RULER_H + CLIP_PAD}
+                                width={Math.max(1, cw - 1)}
+                                height={GAP_H - 2 * CLIP_PAD}
+                                rx="2"
+                                onpointerdown={(e) => selectClip(e, c)}
+                                oncontextmenu={(e) => clipMenu(e, c)}
+                                role="button"
+                                tabindex="-1"
+                                aria-label="{isF ? 'Force' : 'Geo'} section"
+                            />
+                            {#if cw >= 40}
+                                <text class="clip-label" x={(x0 + x1) / 2} y={RULER_H + GAP_H / 2}>
+                                    {isF ? "Force" : "Geo"}
+                                </text>
+                            {/if}
+                            {#if isF}
+                                <rect
+                                    class="clip-trim"
+                                    class:active={lenId === c.id}
+                                    x={x1 - 5}
+                                    y={RULER_H + CLIP_PAD}
+                                    width="10"
+                                    height={GAP_H - 2 * CLIP_PAD}
+                                    onpointerdown={(e) => lenDown(e, c)}
+                                    role="presentation"
+                                    aria-label="Resize force section"
+                                />
+                            {/if}
+                        {/if}
+                    {/each}
+                </g>
             {/if}
             <!-- playhead: a handle in the ruler + a line down through the gap and
                  chart. visual only — the rulerzone above owns the scrub interaction. -->
@@ -990,56 +1131,43 @@ onMount(() => {
                     points="{playPx - 5},{RULER_H - 10} {playPx + 5},{RULER_H - 10} {playPx},{RULER_H}"
                 />
             {/if}
-            <!-- force points: a filled diamond at (s, g) — the KEYFRAME idiom (authored
-                 input), not the constraint ring (§6): no drop-line, no driving/driven.
-                 drag both axes; the chartzone owns creation. -->
-            {#if isForce}
-                <g class="fmarkers" clip-path="url(#fclip)">
-                    {#each points as p (p.id)}
-                        {@const mx = pointX(p.s)}
-                        {#if mx >= LEFT_GUT - FMARKER_R && mx <= w + FMARKER_R}
-                            {@const my = yOf(p.g)}
-                            <polygon
-                                class="fmarker"
-                                class:sel={p.id === selForce}
-                                points="{mx},{my - FMARKER_R} {mx + FMARKER_R},{my} {mx},{my + FMARKER_R} {mx - FMARKER_R},{my}"
+            <!-- force points across every force section: a filled diamond at (s, g) —
+                 the KEYFRAME idiom (authored input), no drop-line, no driving/driven.
+                 an invisible fat hit circle (FHIT_R) carries the grab + hover so the 5px
+                 diamond isn't a pixel-hunt (the AE/Unity fat-pick-zone). the visible
+                 diamond is inert; the chartzone owns creation. -->
+            <g class="fmarkers" clip-path="url(#fclip)">
+                {#each forcePts as p (p.id)}
+                    {@const mx = ptX(p)}
+                    {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
+                        {@const my = yOf(p.g)}
+                        <g class="fpt" class:sel={p.id === selForce}>
+                            <circle
+                                class="fhit"
+                                cx={mx}
+                                cy={my}
+                                r={FHIT_R}
                                 onpointerdown={(e) => forceDown(e, p)}
                                 role="button"
                                 tabindex="-1"
                                 aria-label="Force point"
                             />
-                        {/if}
-                    {/each}
-                </g>
-            {/if}
-            <!-- force-section extent handle: a subtle vertical bar at the section end.
-                 drag it to resize the profile (§3) — the force section's own authored
-                 length, not a geo leftover. -->
-            {#if isForce && eid !== null && sTotal > 0}
-                {@const lenX = markerX(startS + activeLen)}
-                {#if lenX >= LEFT_GUT - 2 && lenX <= w + 8}
-                    <line class="lenbar" x1={lenX} x2={lenX} y1={TOP} y2={h - BOT_PAD} />
-                    <rect
-                        class="lenhandle"
-                        class:active={draggingLen}
-                        x={lenX - 5}
-                        y={TOP}
-                        width="10"
-                        height={Math.max(0, h - BOT_PAD - TOP)}
-                        onpointerdown={lenDown}
-                        role="presentation"
-                        aria-label="Resize section"
-                    />
-                {/if}
-            {/if}
+                            <polygon
+                                class="fmarker"
+                                points="{mx},{my - FMARKER_R} {mx + FMARKER_R},{my} {mx},{my + FMARKER_R} {mx - FMARKER_R},{my}"
+                            />
+                        </g>
+                    {/if}
+                {/each}
+            </g>
         </svg>
         <!-- the selected point's typed s/g fields: a popover summoned AT the diamond
              (on the object, not a docked row). it follows a live drag as the value
              readout, pointer-inert so it never fights the drag; flips below the point
              near the chart top; clamps inside the chart horizontally. -->
         {#if selPoint}
-            {@const mx = pointX(selPoint.s)}
-            {#if scrubFreeze !== null || (mx >= LEFT_GUT - FMARKER_R && mx <= w + FMARKER_R)}
+            {@const mx = ptX(selPoint)}
+            {#if scrubFreeze !== null || (mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R)}
                 {@const ax =
                     scrubFreeze?.x ??
                     clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
@@ -1090,6 +1218,44 @@ onMount(() => {
                 </div>
             {/if}
         {/if}
+        <!-- the append tail: a `+` just past the last clip. clicking opens a two-choice
+             geo/force flyout; the a/A keys stay the expert path. hidden when the track
+             end scrolls off-screen (the keyboard append still works). -->
+        {#if eid !== null && sTotal > 0}
+            {@const ax = markerX(sTotal)}
+            {#if ax >= LEFT_GUT && ax <= w - 22}
+                <div class="clip-append" style="left: {ax + 6}px; top: {RULER_H + GAP_H / 2}px">
+                    <button
+                        class="clip-add"
+                        class:open={appendOpen}
+                        type="button"
+                        onpointerdown={toggleAppend}
+                        title="Append section"
+                        aria-label="Append section"
+                    >
+                        +
+                    </button>
+                    {#if appendOpen}
+                        <div class="clip-flyout">
+                            <button
+                                type="button"
+                                onpointerdown={() => append(SectionKind.Geo)}
+                                aria-label="Append geometry section"
+                            >
+                                Geo
+                            </button>
+                            <button
+                                type="button"
+                                onpointerdown={() => append(SectionKind.Force)}
+                                aria-label="Append force section"
+                            >
+                                Force
+                            </button>
+                        </div>
+                    {/if}
+                </div>
+            {/if}
+        {/if}
     </div>
     <!-- the time navigator: a full-track overview below the chart (Premiere placement)
          rendered as a preview minimap (VSCode / DAW-overview style) — a miniature of the
@@ -1112,34 +1278,6 @@ onMount(() => {
         </div>
     </div>
 </aside>
-
-<!-- the track-mode toggle (a destructive, undoable geo↔force convert, §5): a
-     segmented pill floated as its own small surface resting on the dock's top-right
-     corner — the same satellite pattern as the player, never covering chart content.
-     whole-track stage-C scaffolding (stage D makes kind per-section), so it stays a
-     summoned-looking overlay, not docked chrome (gate 1). -->
-{#if eid !== null}
-    <div class="modebar">
-        <div class="kindtoggle" role="group" aria-label="Track mode">
-            <button
-                type="button"
-                class:active={!isForce}
-                onclick={() => isForce && toggleKind()}
-                title="Geometry mode"
-            >
-                Geo
-            </button>
-            <button
-                type="button"
-                class:active={isForce}
-                onclick={() => !isForce && toggleKind()}
-                title="Force mode"
-            >
-                Force
-            </button>
-        </div>
-    </div>
-{/if}
 
 <!-- the player: a standard media transport (play/pause · global scrub · timecode)
      floated as its own surface below the timeline. the slider is the *full-track*
@@ -1199,51 +1337,6 @@ onMount(() => {
         user-select: none;
         -webkit-user-select: none;
         overflow: hidden;
-    }
-
-    /* the geo↔force mode toggle: a segmented pill (padded track, rounded active
-       segment) floated as its own satellite surface on the dock's top-right corner —
-       the player's elevation treatment (opaque, border + shadow), aligned to the
-       dock's edge at every viewport width via the same centering box. */
-    .modebar {
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        bottom: 264px; /* dock top (16 + 240) + 8 gap */
-        width: calc(100% - 32px);
-        max-width: 1280px;
-        display: flex;
-        justify-content: flex-end;
-        pointer-events: none; /* the full-width alignment box must not eat clicks */
-    }
-    .kindtoggle {
-        pointer-events: auto;
-        display: inline-flex;
-        gap: 2px;
-        padding: 2px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        box-shadow: var(--shadow);
-    }
-    .kindtoggle button {
-        all: unset;
-        box-sizing: border-box;
-        padding: 3px 10px;
-        border-radius: 4px;
-        font-family: "Outfit", system-ui, sans-serif;
-        font-size: 11px;
-        color: var(--muted);
-        cursor: pointer;
-        transition: background 120ms ease, color 120ms ease;
-    }
-    .kindtoggle button:hover {
-        color: var(--fg);
-    }
-    .kindtoggle button.active {
-        background: var(--accent-soft);
-        color: var(--accent);
-        cursor: default;
     }
 
     /* the selected point's popover: one opaque floating surface anchored to the
@@ -1455,44 +1548,146 @@ onMount(() => {
         cursor: default;
     }
 
-    /* force points: a filled diamond (the keyframe idiom — authored input, §6), light
-       so it reads over the accent curve. selected turns accent with a fitted ring.
-       plain arrow cursor — the desktop curve-editor convention (AE/Unity/Blender keep
-       the default over keyframes; grab hands are for pannable surfaces, the navigator). */
+    /* force points: a filled diamond (the keyframe idiom — authored input), light so it
+       reads over the accent curve, selected turns accent with a fitted ring. the diamond
+       is visual-only; an invisible fat circle around it (FHIT_R) carries the grab + hover
+       so the small marker isn't a pixel-hunt. plain arrow cursor — the desktop curve-
+       editor convention (AE/Unity/Blender keep the default over keyframes; grab hands are
+       for pannable surfaces, the navigator). */
+    .fhit {
+        fill: transparent;
+        pointer-events: all;
+        cursor: default;
+        outline: none; /* pointer-only (tabindex -1); no browser focus ring on click */
+    }
     .fmarker {
         fill: var(--pin);
         stroke: #0e0d0c;
         stroke-width: 1;
-        pointer-events: all;
-        cursor: default;
+        pointer-events: none; /* the fat hit circle owns the interaction */
         transition: fill 100ms ease;
     }
-    .fmarker:hover {
+    .fpt:hover .fmarker {
         fill: #fff;
     }
-    .fmarker.sel {
+    .fpt.sel .fmarker {
         fill: var(--accent);
         stroke: var(--fg);
         stroke-width: 1.4;
     }
 
-    /* force-section extent handle: a subtle vertical bar at the section end, dragged
-       to resize the profile. the visible line is quiet; the wider hit rect carries the
-       ew-resize affordance and a faint wash on hover/drag. */
-    .lenbar {
-        stroke: rgba(212, 149, 96, 0.5);
-        stroke-width: 1.5;
-        pointer-events: none;
+    /* the section clip strip: one clip per section in the marker lane, kind-colored
+       (geo = cool blue, force = accent gold — matching the viewport track color and the
+       force curve). hover brightens; the selected clip fills stronger with a light
+       border, an emphasis orthogonal to the kind hue. */
+    .clip {
+        pointer-events: all;
+        cursor: pointer;
+        stroke: transparent;
+        stroke-width: 1;
+        outline: none; /* pointer-only (tabindex -1); no browser focus ring on click */
+        transition: fill 120ms ease, stroke 120ms ease;
     }
-    .lenhandle {
+    .clip.geo {
+        fill: rgba(120, 165, 214, 0.28);
+    }
+    .clip.force {
+        fill: rgba(212, 149, 96, 0.28);
+    }
+    .clip.geo:hover {
+        fill: rgba(120, 165, 214, 0.42);
+    }
+    .clip.force:hover {
+        fill: rgba(212, 149, 96, 0.42);
+    }
+    .clip.geo.sel {
+        fill: rgba(120, 165, 214, 0.55);
+        stroke: #9cc0ea;
+    }
+    .clip.force.sel {
+        fill: rgba(212, 149, 96, 0.6);
+        stroke: var(--accent);
+    }
+    .clip-label {
+        fill: var(--fg);
+        opacity: 0.72;
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 10px;
+        text-anchor: middle;
+        dominant-baseline: central;
+        pointer-events: none;
+        user-select: none;
+    }
+    /* a force clip's right edge is its extent trim: a wide invisible hit strip over the
+       boundary carrying the ew-resize affordance and a faint accent wash on hover/drag. */
+    .clip-trim {
         fill: transparent;
         pointer-events: all;
         cursor: ew-resize;
         transition: fill 100ms ease;
     }
-    .lenhandle:hover,
-    .lenhandle.active {
-        fill: rgba(212, 149, 96, 0.12);
+    .clip-trim:hover,
+    .clip-trim.active {
+        fill: rgba(212, 149, 96, 0.4);
+    }
+
+    /* the append tail: a small `+` past the last clip that opens a two-choice geo/force
+       flyout (the same opaque floating-surface treatment as the popover). */
+    .clip-append {
+        position: absolute;
+        z-index: 3;
+        transform: translateY(-50%);
+    }
+    .clip-add {
+        all: unset;
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1;
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease;
+    }
+    .clip-add:hover,
+    .clip-add.open {
+        background: rgba(255, 255, 255, 0.12);
+        color: var(--fg);
+    }
+    .clip-flyout {
+        position: absolute;
+        top: 20px;
+        left: -3px;
+        display: flex;
+        flex-direction: column;
+        min-width: 62px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        z-index: 4;
+        animation: tip-in 120ms ease;
+    }
+    .clip-flyout button {
+        all: unset;
+        box-sizing: border-box;
+        padding: 5px 10px;
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 11px;
+        color: var(--muted);
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease;
+    }
+    .clip-flyout button:hover {
+        background: var(--accent-soft);
+        color: var(--fg);
     }
 
     /* the player: a media transport (play · global scrub · timecode) floated as its

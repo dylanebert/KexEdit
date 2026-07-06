@@ -1,5 +1,5 @@
-/** the section substrate — the original KexEdit section contract, in 2D (spec
- *  kex/specs/kex2d-sections.md §2). every section takes an ENTRY anchor (a full
+/** the section substrate — the original KexEdit section contract, in 2D. every
+ *  section takes an ENTRY anchor (a full
  *  state point) and produces sampled points; its last point IS the next
  *  section's entry (`chain` propagates it). two atomic, legible idioms:
  *

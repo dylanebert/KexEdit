@@ -2,10 +2,20 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
 import { attachControls } from "./controls";
-import { editor, select } from "./editor";
-import { extendTrack, history, trimTrack } from "./history";
+import { closeContext, editor, select, selectSection } from "./editor";
+import { convertSection, extendTrack, history, removeSection, trimTrack } from "./history";
 import Timeline from "./Timeline.svelte";
-import { bakeOut, Handle, lastHandle, samples, sectionHandles, sectionInfo, Track } from "./track";
+import {
+    bakeOut,
+    Handle,
+    lastHandle,
+    samples,
+    SectionKind,
+    sectionHandles,
+    sectionInfo,
+    sections,
+    Track,
+} from "./track";
 import { attachCanvas2D, viewTransform } from "./view";
 
 const { ecs }: { ecs: State } = $props();
@@ -88,6 +98,48 @@ function onDelete(): void {
     const section = Handle.section.get(eid);
     if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
 }
+
+// the section context menu (Convert / Delete), summoned by right-click on a clip or a
+// viewport span (both call editor.openContext). rendered once here at the app root so it
+// can float over both the viewport and the dock; positioned at the cursor (screen px).
+const ctx = $derived.by((): { x: number; y: number; section: number } | null => {
+    void tick;
+    return editor.context;
+});
+const ctxKind = $derived.by((): SectionKind | null => {
+    void tick;
+    if (ctx === null) return null;
+    return sections(ecs).find((s) => s.id === ctx.section)?.kind ?? null;
+});
+function ctxConvert(): void {
+    if (ctx === null) return;
+    convertSection(history, ecs, ctx.section); // destructive, undoable
+    closeContext();
+}
+function ctxDelete(): void {
+    if (ctx === null) return;
+    const id = ctx.section;
+    closeContext();
+    if (removeSection(history, ecs, id)) selectSection(null);
+}
+// dismiss the menu on any outside press or Escape (clicks on the menu itself pass through
+// so its items can act before it closes).
+$effect(() => {
+    if (ctx === null) return;
+    const onDown = (e: PointerEvent): void => {
+        if ((e.target as HTMLElement | null)?.closest(".ctxmenu")) return;
+        closeContext();
+    };
+    const onEsc = (e: KeyboardEvent): void => {
+        if (e.key === "Escape") closeContext();
+    };
+    window.addEventListener("pointerdown", onDown, { capture: true });
+    window.addEventListener("keydown", onEsc);
+    return () => {
+        window.removeEventListener("pointerdown", onDown, { capture: true });
+        window.removeEventListener("keydown", onEsc);
+    };
+});
 </script>
 
 <canvas bind:this={canvas}></canvas>
@@ -156,6 +208,40 @@ function onDelete(): void {
                 </svg>
             </button>
         {/if}
+    </div>
+{/if}
+
+<!-- the section context menu (Convert / Delete): summoned by right-click on a clip or a
+     viewport section span; occasional destructive ops, so hidden until summoned. -->
+{#if ctx}
+    <div class="ctxmenu" style="left: {ctx.x}px; top: {ctx.y}px" role="menu">
+        <div class="ctx-item ctx-sub" role="menuitem" aria-haspopup="true">
+            <span>Convert</span>
+            <span class="chev">▸</span>
+            <div class="ctx-submenu" role="menu">
+                <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={ctxKind === SectionKind.Geo}
+                    disabled={ctxKind === SectionKind.Geo}
+                    onclick={ctxConvert}
+                >
+                    Geo
+                </button>
+                <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={ctxKind === SectionKind.Force}
+                    disabled={ctxKind === SectionKind.Force}
+                    onclick={ctxConvert}
+                >
+                    Force
+                </button>
+            </div>
+        </div>
+        <button type="button" class="ctx-item danger" role="menuitem" onclick={ctxDelete}>
+            <span>Delete</span><span class="sk">Del</span>
+        </button>
     </div>
 {/if}
 
@@ -256,6 +342,97 @@ function onDelete(): void {
     .rbtn.delete:hover {
         background: var(--danger-soft);
         border-color: var(--danger);
+    }
+
+    /* the section context menu: an opaque floating surface at the cursor (border +
+       shadow elevation), rows on one column. Convert is a submenu (▸) opening the kind
+       list; Delete carries its Del shortcut, right-aligned, and reddens on hover. */
+    .ctxmenu {
+        position: fixed;
+        z-index: 10;
+        min-width: 132px;
+        display: flex;
+        flex-direction: column;
+        padding: 3px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: var(--shadow);
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 12px;
+        user-select: none;
+        animation: ctx-in 120ms ease;
+    }
+    @keyframes ctx-in {
+        from {
+            opacity: 0;
+            transform: translateY(-2px);
+        }
+    }
+    /* one row, shared by the button rows and the submenu-parent div */
+    .ctx-item {
+        all: unset;
+        box-sizing: border-box;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 6px 10px;
+        border-radius: 4px;
+        color: var(--fg);
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease;
+    }
+    .ctx-item:hover {
+        background: var(--neutral-soft);
+    }
+    .ctx-item.danger:hover {
+        background: var(--danger-soft);
+        color: #f0bdb1;
+    }
+    .chev {
+        color: var(--muted);
+        font-size: 10px;
+    }
+    .sk {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 10px;
+        color: var(--muted);
+    }
+    /* the Convert submenu: opens to the right of its parent row, on hover of the parent
+       (a descendant, so hovering the submenu keeps the parent hovered — no JS state). */
+    .ctx-submenu {
+        position: absolute;
+        left: 100%;
+        top: -4px;
+        display: none;
+        flex-direction: column;
+        min-width: 96px;
+        padding: 3px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: var(--shadow);
+    }
+    .ctx-sub:hover .ctx-submenu {
+        display: flex;
+    }
+    .ctx-submenu button {
+        all: unset;
+        box-sizing: border-box;
+        padding: 6px 10px;
+        border-radius: 4px;
+        color: var(--fg);
+        cursor: pointer;
+        transition: background 120ms ease;
+    }
+    .ctx-submenu button:hover:not(:disabled) {
+        background: var(--neutral-soft);
+    }
+    .ctx-submenu button:disabled {
+        color: var(--muted);
+        cursor: default;
     }
 
 </style>

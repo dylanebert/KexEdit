@@ -3,16 +3,8 @@ import { ProfilePlugin } from "@dylanebert/shallot/extras";
 import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { CartPlugin } from "./cart";
-import { select } from "./editor";
-import {
-    appendSection,
-    convertSection,
-    createForce,
-    history,
-    joinSection,
-    removeSection,
-    splitSection,
-} from "./history";
+import { editor, select } from "./editor";
+import { appendSection, convertSection, createForce, history, removeSection } from "./history";
 import { RenderPlugin } from "./render";
 import {
     addNode,
@@ -106,18 +98,17 @@ if (import.meta.env.DEV) {
             createForce(history, ecs, id, len * 0.5, 0); // airtime crest
             createForce(history, ecs, id, len * 0.8, 1);
         },
-        // ── multi-section hooks (stage D) — the ops addressed by chain position ──
+        // ── multi-section hooks — the ops addressed by chain position ──
         sectionCount: (): number => sections(ecs).length,
         sectionKinds: (): number[] => sections(ecs).map((x) => x.kind),
+        // ── section-editor reads — the capture flow drives the real clip/flyout/trim/
+        // context-menu affordances and asserts the resulting state here. ──
+        sectionIds: (): number[] => sections(ecs).map((x) => x.id),
+        sectionLengths: (): number[] => sections(ecs).map((x) => x.length),
+        sectionForceCounts: (): number[] =>
+            sections(ecs).map((x) => sectionForces(ecs, x.id).length),
+        selectedSection: (): number | null => editor.section,
         append: (kind: number): number => appendSection(history, ecs, kind as SectionKind),
-        splitAt: (i: number, at: number): number | null => {
-            const s = sections(ecs)[i];
-            return s ? splitSection(history, ecs, s.id, at) : null;
-        },
-        joinAt: (i: number): boolean => {
-            const s = sections(ecs)[i];
-            return s ? joinSection(history, ecs, s.id) : false;
-        },
         deleteAt: (i: number): boolean => {
             const s = sections(ecs)[i];
             return s ? removeSection(history, ecs, s.id) : false;

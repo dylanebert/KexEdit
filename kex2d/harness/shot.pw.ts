@@ -101,8 +101,11 @@ test("force authoring flow", async ({ page }) => {
     await expect.poll(tTotal).toBeGreaterThan(0);
     expect(await kind()).toBe(0); // TrackKind.Geo
 
-    // ── 1. Convert to force via the real mode toggle → empty 1g profile, no nodes. ──
-    await page.getByRole("button", { name: "Force" }).click();
+    // ── 1. Convert to force via the real section context menu (right-click the clip →
+    // Convert submenu → Force) → empty 1g profile, no nodes. ──
+    await page.locator(".clip").first().click({ button: "right" });
+    await page.locator(".ctx-sub").hover();
+    await page.getByRole("menuitemradio", { name: "Force", exact: true }).click();
     await expect.poll(kind).toBe(1); // TrackKind.Force
     await expect.poll(nodeCount).toBe(0);
     expect(await forceCount()).toBe(0);
@@ -148,8 +151,11 @@ test("force authoring flow", async ({ page }) => {
     await page.keyboard.press("Control+z");
     await expect.poll(forceCount).toBe(3);
 
-    // ── 3. Convert back to geo → destructive reset to the flat two-node seed. ──
-    await page.getByRole("button", { name: "Geo" }).click();
+    // ── 3. Convert back to geo (context menu again) → destructive reset to the flat
+    // two-node seed. ──
+    await page.locator(".clip").first().click({ button: "right" });
+    await page.locator(".ctx-sub").hover();
+    await page.getByRole("menuitemradio", { name: "Geo", exact: true }).click();
     await expect.poll(kind).toBe(0);
     await expect.poll(nodeCount).toBe(2); // the flat seed
     expect(await forceCount()).toBe(0);
@@ -163,10 +169,11 @@ test("force authoring flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
-// Drive the MULTI-SECTION flow (kex/specs/kex2d-sections.md stage D): a geo track →
-// append a section → convert it to force (a mixed geo→force chain) → split the lead-in
-// geo section at an interior node → join it back → delete the force tail → undo. The
-// ops run through the __kex hooks; sectionCount / sectionKinds assert the chain shape.
+// Drive the MULTI-SECTION chain shape: a geo track → append a section → convert it to
+// force (a mixed geo→force chain) → delete the force tail → undo. The ops run through the
+// __kex hooks; sectionCount / sectionKinds assert the chain shape. (Split/join left the
+// editor — deferred to the conversion tier — so they're no longer exercised here; the
+// substrate ops stay covered by the unit suite.)
 test("multi-section flow", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -194,20 +201,165 @@ test("multi-section flow", async ({ page }) => {
     await page.waitForTimeout(SETTLE_MS);
     await page.screenshot({ path: join(OUT, "sections-mixed.png") });
 
-    // ── 2. Split the lead-in geo section at an interior node → 3 sections. ──
-    await page.evaluate(() => (window as any).__kex.splitAt(0, 3));
-    await expect.poll(sectionCount).toBe(3);
-    await page.screenshot({ path: join(OUT, "sections-split.png") });
-
-    // ── 3. Join the two geo lead-in sections back → 2 (split → join round-trip). ──
-    await page.evaluate(() => (window as any).__kex.joinAt(0));
-    await expect.poll(sectionCount).toBe(2);
-
-    // ── 4. Delete the force tail → 1 (downstream rebases); undo restores it. ──
+    // ── 2. Delete the force tail → 1 (downstream rebases); undo restores it. ──
     await page.evaluate(() => (window as any).__kex.deleteAt(1));
     await expect.poll(sectionCount).toBe(1);
     await page.keyboard.press("Control+z");
     await expect.poll(sectionCount).toBe(2);
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Drive the CLIP STRIP flow (section-editor spec stage 1): the section lane in the
+// dock's marker band. seed one geo section → append a force section via the real `+`
+// flyout → select the geo clip → drag the force clip's right-edge extent trim → undo.
+// Every affordance is driven through the real DOM (clip rect, flyout, trim handle); the
+// __kex hook is read only for assertions, never to perform the op.
+test("section clip strip flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
+    const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
+    const sectionIds = () => page.evaluate((): number[] => (window as any).__kex.sectionIds());
+    const sectionLengths = () =>
+        page.evaluate((): number[] => (window as any).__kex.sectionLengths());
+    const selectedSection = () =>
+        page.evaluate((): number | null => (window as any).__kex.selectedSection());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+
+    const vp = page.viewportSize();
+    const strip = () =>
+        vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
+
+    // seed one geo section → one geo clip in the lane.
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await expect(page.locator(".clip")).toHaveCount(1);
+    await page.waitForTimeout(SETTLE_MS);
+    if (vp) await page.screenshot({ path: join(OUT, "clip-1-strip.png"), clip: strip() });
+
+    // ── 1. Append a force section via the real + flyout → a mixed geo→force chain. ──
+    await page.locator(".clip-add").click();
+    await page.getByRole("button", { name: "Append force section" }).click();
+    await expect.poll(sectionCount).toBe(2);
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
+    await expect(page.locator(".clip")).toHaveCount(2);
+    // the append selects the new (force) section — its clip reads selected.
+    await expect.poll(selectedSection).toBe((await sectionIds())[1]);
+    await page.waitForTimeout(300);
+    if (vp) await page.screenshot({ path: join(OUT, "clip-2-append.png"), clip: strip() });
+
+    // ── 2. Click the geo clip → editor.section becomes the first section (one object,
+    // two surfaces: the same selection the viewport span drives). ──
+    const ids = await sectionIds();
+    await page.locator(".clip").nth(0).click();
+    await expect.poll(selectedSection).toBe(ids[0]);
+
+    // ── 3. Drag the force clip's right-edge trim handle → the section lengthens (one
+    // history entry). the force clip is the only one with a trim handle. ──
+    const before = await sectionLengths();
+    const trim = page.locator(".clip-trim");
+    await expect(trim).toHaveCount(1);
+    const tb = await trim.boundingBox();
+    if (!tb) throw new Error("trim handle not laid out");
+    const cy = tb.y + tb.height / 2;
+    await trim.hover(); // move to the handle center with actionability, then drag right
+    await page.mouse.down();
+    await page.mouse.move(tb.x + tb.width / 2 + 50, cy, { steps: 10 });
+    await page.mouse.up();
+    await expect.poll(async () => (await sectionLengths())[1]).toBeGreaterThan(before[1]);
+    if (vp) await page.screenshot({ path: join(OUT, "clip-3-trim.png"), clip: strip() });
+
+    // undo restores the pre-drag extent, one entry.
+    await page.keyboard.press("Control+z");
+    await expect
+        .poll(async () => (await sectionLengths())[1])
+        .toBeCloseTo(before[1], 3);
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Drive the SECTION MENU + DIRECT-BY-POSITION flow (section-editor stage 2): a mixed
+// geo→force chain → prove empty-chart click deselects → add a force keyframe by cursor
+// position WITHOUT selecting the section → right-click Convert and Delete via the real
+// context menu. The whole point is that authoring and section ops no longer depend on a
+// "current section" selection. Everything is driven through the real DOM.
+test("section menu + keyframe flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
+    const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
+    const sectionIds = () => page.evaluate((): number[] => (window as any).__kex.sectionIds());
+    const forceCounts = () =>
+        page.evaluate((): number[] => (window as any).__kex.sectionForceCounts());
+    const selectedSection = () =>
+        page.evaluate((): number | null => (window as any).__kex.selectedSection());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+    const vp = page.viewportSize();
+    const strip = () =>
+        vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
+
+    // seed a geo section, append a force one via the real + flyout → a mixed chain.
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await page.locator(".clip-add").click();
+    await page.getByRole("button", { name: "Append force section" }).click();
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
+    await page.waitForTimeout(SETTLE_MS);
+
+    const body = page.locator(".dock .body");
+    const bb = await body.boundingBox();
+    if (!bb) throw new Error("timeline body not laid out");
+
+    // ── 1. Empty-chart click deselects the section (the stage-1 feel finding). ──
+    const ids = await sectionIds();
+    await page.locator(".clip").nth(0).click(); // select the geo clip
+    await expect.poll(selectedSection).toBe(ids[0]);
+    await page.mouse.click(bb.x + bb.width * 0.5, bb.y + bb.height * 0.62); // empty chart body
+    await expect.poll(selectedSection).toBe(null);
+
+    // ── 2. Add a force keyframe BY POSITION over the force section, with nothing
+    // selected — double-click the chart directly below the force clip's center. ──
+    const before = await forceCounts(); // [n_geo(0), 0]
+    const fcb = await page.locator(".clip").nth(1).boundingBox(); // the force clip
+    if (!fcb) throw new Error("force clip not laid out");
+    await page.mouse.dblclick(fcb.x + fcb.width / 2, bb.y + bb.height * 0.5);
+    await expect.poll(async () => (await forceCounts())[1]).toBeGreaterThan(before[1]);
+    await page.waitForTimeout(300);
+    if (vp) await page.screenshot({ path: join(OUT, "section-2-keyframe.png"), clip: strip() });
+
+    // ── 3. Right-click the force clip → Convert submenu → Geo (real context menu). ──
+    await page.locator(".clip").nth(1).click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    if (vp) await page.screenshot({ path: join(OUT, "section-3-menu.png"), clip: strip() });
+    // hover the Convert row (CSS reveals the submenu), then click Geo — no action between
+    // them, or the hover (and the submenu) drops.
+    await page.locator(".ctx-sub").hover();
+    await page.getByRole("menuitemradio", { name: "Geo", exact: true }).click();
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,0");
+    await page.keyboard.press("Control+z"); // convert is one undo entry
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
+
+    // ── 4. Right-click a clip → Delete (real context menu). ──
+    await page.locator(".clip").nth(1).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Delete" }).click();
+    await expect.poll(sectionCount).toBe(1);
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });

@@ -1,5 +1,5 @@
 import type { State } from "@dylanebert/shallot";
-import { editor, select, selectSection } from "./editor";
+import { editor, openContext, select, selectSection } from "./editor";
 import {
     appendSection,
     beginMove,
@@ -7,9 +7,7 @@ import {
     commit,
     extendTrack,
     history,
-    joinSection,
     removeSection,
-    splitSection,
     trimTrack,
 } from "./history";
 import { localize } from "./section";
@@ -121,7 +119,11 @@ function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
  *  element and detach with it — no module-flag staleness across reloads. */
 export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => void {
     const onContextMenu = (e: MouseEvent): void => {
-        e.preventDefault(); // no context menu over the canvas
+        e.preventDefault(); // suppress the browser menu; ours takes over
+        const { x: cx, y: cy } = pointerToCanvas(canvas, e);
+        const tx = viewTransform(canvas);
+        const sec = pickSection(ecs, tx, cx, cy);
+        if (sec !== null) openContext(e.clientX, e.clientY, sec); // right-click a section span → menu
     };
 
     const onPointerDown = (e: PointerEvent): void => {
@@ -199,28 +201,18 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             return;
         }
 
-        // a whole section selected: join with the next, or delete it.
+        // a whole section selected: delete it (Del; also the context-menu action).
         if (editor.section !== null) {
-            if (e.key === "j" || e.key === "J") {
-                e.preventDefault();
-                joinSection(history, ecs, editor.section);
-            } else if (e.key === "Delete" || e.key === "Backspace") {
+            if (e.key === "Delete" || e.key === "Backspace") {
                 e.preventDefault();
                 if (removeSection(history, ecs, editor.section)) selectSection(null);
             }
             return;
         }
 
-        // a node selected: split at it, extend, or trim the chain end.
+        // a node selected: extend, or trim the chain end.
         if (editor.selection === null) return;
         const section = Handle.section.get(editor.selection);
-        const order = Handle.order.get(editor.selection);
-        if (e.key === "s" || e.key === "S") {
-            e.preventDefault();
-            const b = splitSection(history, ecs, section, order); // interior node → new tail section
-            if (b !== null) selectSection(b);
-            return;
-        }
         if (!endSelected(ecs)) return;
         if (e.key === "Enter") {
             e.preventDefault();
