@@ -111,6 +111,8 @@ const ctxKind = $derived.by((): SectionKind | null => {
     if (ctx === null) return null;
     return sections(ecs).find((s) => s.id === ctx.section)?.kind ?? null;
 });
+// the kind the convert flips TO — the label names the destination, not the toggle.
+const ctxTarget = $derived(ctxKind === SectionKind.Force ? "Geo" : "Force");
 function ctxConvert(): void {
     if (ctx === null) return;
     convertSection(history, ecs, ctx.section); // destructive, undoable
@@ -212,33 +214,14 @@ $effect(() => {
 {/if}
 
 <!-- the section context menu (Convert / Delete): summoned by right-click on a clip or a
-     viewport section span; occasional destructive ops, so hidden until summoned. -->
+     viewport section span; occasional destructive ops, so hidden until summoned. Convert
+     is a single contextual item naming the target kind (a section is one of two kinds, so
+     the flip is unambiguous) — one click, no submenu. -->
 {#if ctx}
     <div class="ctxmenu" style="left: {ctx.x}px; top: {ctx.y}px" role="menu">
-        <div class="ctx-item ctx-sub" role="menuitem" aria-haspopup="true">
-            <span>Convert</span>
-            <span class="chev">▸</span>
-            <div class="ctx-submenu" role="menu">
-                <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={ctxKind === SectionKind.Geo}
-                    disabled={ctxKind === SectionKind.Geo}
-                    onclick={ctxConvert}
-                >
-                    Geo
-                </button>
-                <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={ctxKind === SectionKind.Force}
-                    disabled={ctxKind === SectionKind.Force}
-                    onclick={ctxConvert}
-                >
-                    Force
-                </button>
-            </div>
-        </div>
+        <button type="button" class="ctx-item" role="menuitem" onclick={ctxConvert}>
+            <span>Convert to {ctxTarget}</span>
+        </button>
         <button type="button" class="ctx-item danger" role="menuitem" onclick={ctxDelete}>
             <span>Delete</span><span class="sk">Del</span>
         </button>
@@ -345,8 +328,8 @@ $effect(() => {
     }
 
     /* the section context menu: an opaque floating surface at the cursor (border +
-       shadow elevation), rows on one column. Convert is a submenu (▸) opening the kind
-       list; Delete carries its Del shortcut, right-aligned, and reddens on hover. */
+       shadow elevation), rows on one column. Convert names the target kind directly;
+       Delete carries its Del shortcut, right-aligned, and reddens on hover. */
     .ctxmenu {
         position: fixed;
         z-index: 10;
@@ -369,7 +352,7 @@ $effect(() => {
             transform: translateY(-2px);
         }
     }
-    /* one row, shared by the button rows and the submenu-parent div */
+    /* one menu row */
     .ctx-item {
         all: unset;
         box-sizing: border-box;
@@ -391,48 +374,10 @@ $effect(() => {
         background: var(--danger-soft);
         color: #f0bdb1;
     }
-    .chev {
-        color: var(--muted);
-        font-size: 10px;
-    }
     .sk {
         font-family: "JetBrains Mono", ui-monospace, monospace;
         font-size: 10px;
         color: var(--muted);
-    }
-    /* the Convert submenu: opens to the right of its parent row, on hover of the parent
-       (a descendant, so hovering the submenu keeps the parent hovered — no JS state). */
-    .ctx-submenu {
-        position: absolute;
-        left: 100%;
-        top: -4px;
-        display: none;
-        flex-direction: column;
-        min-width: 96px;
-        padding: 3px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        box-shadow: var(--shadow);
-    }
-    .ctx-sub:hover .ctx-submenu {
-        display: flex;
-    }
-    .ctx-submenu button {
-        all: unset;
-        box-sizing: border-box;
-        padding: 6px 10px;
-        border-radius: 4px;
-        color: var(--fg);
-        cursor: pointer;
-        transition: background 120ms ease;
-    }
-    .ctx-submenu button:hover:not(:disabled) {
-        background: var(--neutral-soft);
-    }
-    .ctx-submenu button:disabled {
-        color: var(--muted);
-        cursor: default;
     }
 
 </style>

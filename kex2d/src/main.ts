@@ -2,7 +2,7 @@ import { run } from "@dylanebert/shallot";
 import { ProfilePlugin } from "@dylanebert/shallot/extras";
 import { mount, unmount } from "svelte";
 import App from "./App.svelte";
-import { CartPlugin } from "./cart";
+import { cartArc, cartState, CartPlugin } from "./cart";
 import { editor, select } from "./editor";
 import { appendSection, convertSection, createForce, history, removeSection } from "./history";
 import { RenderPlugin } from "./render";
@@ -108,6 +108,10 @@ if (import.meta.env.DEV) {
         sectionForceCounts: (): number[] =>
             sections(ecs).map((x) => sectionForces(ecs, x.id).length),
         selectedSection: (): number | null => editor.section,
+        // the parked/parking playhead's arclength on the bake — the flow parks via a
+        // real ruler scrub, drags a keyframe, and asserts this held under the re-time.
+        cartArc: (): number | null => cartArc(track),
+        parked: (): boolean => cartState.get(track)?.held ?? false,
         append: (kind: number): number => appendSection(history, ecs, kind as SectionKind),
         deleteAt: (i: number): boolean => {
             const s = sections(ecs)[i];

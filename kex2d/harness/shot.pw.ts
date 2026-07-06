@@ -102,10 +102,9 @@ test("force authoring flow", async ({ page }) => {
     expect(await kind()).toBe(0); // TrackKind.Geo
 
     // ── 1. Convert to force via the real section context menu (right-click the clip →
-    // Convert submenu → Force) → empty 1g profile, no nodes. ──
+    // "Convert to Force") → empty 1g profile, no nodes. ──
     await page.locator(".clip").first().click({ button: "right" });
-    await page.locator(".ctx-sub").hover();
-    await page.getByRole("menuitemradio", { name: "Force", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Convert to Force" }).click();
     await expect.poll(kind).toBe(1); // TrackKind.Force
     await expect.poll(nodeCount).toBe(0);
     expect(await forceCount()).toBe(0);
@@ -154,8 +153,7 @@ test("force authoring flow", async ({ page }) => {
     // ── 3. Convert back to geo (context menu again) → destructive reset to the flat
     // two-node seed. ──
     await page.locator(".clip").first().click({ button: "right" });
-    await page.locator(".ctx-sub").hover();
-    await page.getByRole("menuitemradio", { name: "Geo", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Convert to Geo" }).click();
     await expect.poll(kind).toBe(0);
     await expect.poll(nodeCount).toBe(2); // the flat seed
     expect(await forceCount()).toBe(0);
@@ -344,14 +342,11 @@ test("section menu + keyframe flow", async ({ page }) => {
     await page.waitForTimeout(300);
     if (vp) await page.screenshot({ path: join(OUT, "section-2-keyframe.png"), clip: strip() });
 
-    // ── 3. Right-click the force clip → Convert submenu → Geo (real context menu). ──
+    // ── 3. Right-click the force clip → "Convert to Geo" (real context menu). ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
     if (vp) await page.screenshot({ path: join(OUT, "section-3-menu.png"), clip: strip() });
-    // hover the Convert row (CSS reveals the submenu), then click Geo — no action between
-    // them, or the hover (and the submenu) drops.
-    await page.locator(".ctx-sub").hover();
-    await page.getByRole("menuitemradio", { name: "Geo", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Convert to Geo" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,0");
     await page.keyboard.press("Control+z"); // convert is one undo entry
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
@@ -360,6 +355,85 @@ test("section menu + keyframe flow", async ({ page }) => {
     await page.locator(".clip").nth(1).click({ button: "right" });
     await page.getByRole("menuitem", { name: "Delete" }).click();
     await expect.poll(sectionCount).toBe(1);
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Drive the CONTENT-ANCHORED PLAYHEAD PARKING flow (section-editor stage 3, fork 4): a
+// mixed geo→force chain with a force keyframe → park the playhead over the force section
+// via a REAL ruler scrub → drag the keyframe's g so the bake re-times → assert the parked
+// playhead's arclength held (glued to the track feature) while the ride re-timed. Without
+// content-anchoring the playhead is pinned to ride-time and would slide under the re-time.
+test("playhead parking flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
+    const forceCounts = () =>
+        page.evaluate((): number[] => (window as any).__kex.sectionForceCounts());
+    const cartArc = () => page.evaluate((): number | null => (window as any).__kex.cartArc());
+    const parked = () => page.evaluate((): boolean => (window as any).__kex.parked());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+    const vp = page.viewportSize();
+    const strip = () =>
+        vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
+
+    // seed a geo section, append a force one via the real + flyout → a mixed chain.
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await page.locator(".clip-add").click();
+    await page.getByRole("button", { name: "Append force section" }).click();
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
+    await page.waitForTimeout(SETTLE_MS);
+
+    const body = page.locator(".dock .body");
+    const bb = await body.boundingBox();
+    if (!bb) throw new Error("timeline body not laid out");
+
+    // ── 1. Author a keyframe by double-clicking the chart over the force section — the
+    // handle the later re-time will drag. ──
+    const fcb = await page.locator(".clip").nth(1).boundingBox(); // the force clip
+    if (!fcb) throw new Error("force clip not laid out");
+    await page.mouse.dblclick(fcb.x + fcb.width / 2, bb.y + bb.height * 0.5);
+    await expect.poll(async () => (await forceCounts())[1]).toBe(1);
+
+    // ── 2. Park the playhead over the force section via a real RULER scrub — a click in
+    // the ruler band (above the clip lane) at the force section's x. it parks (held) at
+    // that content anchor and stops the cart. ──
+    await page.mouse.click(fcb.x + fcb.width / 2, bb.y + 13); // ruler band y (< RULER_H)
+    await expect.poll(parked).toBe(true);
+    const arc1 = await cartArc();
+    const tt1 = await tTotal();
+    if (arc1 === null) throw new Error("cartArc null after park");
+    if (vp) await page.screenshot({ path: join(OUT, "park-1-anchored.png"), clip: strip() });
+
+    // ── 3. Drag the keyframe's g (vertical drag on its fat hit circle) → the force
+    // profile changes, the bake re-times (tTotal shifts). ──
+    const fhit = page.locator(".fhit");
+    await expect(fhit).toHaveCount(1);
+    const hb = await fhit.boundingBox();
+    if (!hb) throw new Error("force point hit target not laid out");
+    await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2 + 60, { steps: 10 });
+    await page.mouse.up();
+
+    // the ride re-timed (the bake's total time changed)…
+    await expect.poll(async () => Math.abs((await tTotal()) - tt1) > 1e-3).toBe(true);
+    // …but the parked playhead stayed glued to the same track arclength (the fix — a
+    // ride-time-pinned playhead would have slid when the timing changed).
+    const arc2 = await cartArc();
+    if (arc2 === null) throw new Error("cartArc null after re-time");
+    expect(arc2).toBeCloseTo(arc1, 1);
+    expect(await parked()).toBe(true);
+    if (vp) await page.screenshot({ path: join(OUT, "park-2-held.png"), clip: strip() });
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });

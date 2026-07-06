@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
-import { cartState, forceCurve, trackMapping } from "./cart";
+import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
 import { editor, openContext, selectForce, selectSection } from "./editor";
 import {
     appendSection,
@@ -16,7 +16,6 @@ import {
     undo,
 } from "./history";
 import {
-    arcToTime,
     clampView,
     frameAll,
     type Mapping,
@@ -845,13 +844,11 @@ $effect(() => {
 let scrubbing = false;
 function scrubTo(e: PointerEvent): void {
     if (eid === null || !scrubbing) return;
-    const m = mapping;
-    if (!m) return;
     const rect = canvas.getBoundingClientRect();
-    // the ruler is distance; map the picked s back to the cart's time (the inverse).
+    // the ruler is distance — park at the picked cumulative arclength directly (the
+    // scrub's native domain), which also derives the display time.
     const s = clamp(pxToS(clamped, e.clientX - rect.left - LEFT_GUT), 0, sTotal);
-    const st = cartState.get(eid);
-    if (st) st.t = clamp(arcToTime(m, s), 0, tTotal);
+    parkAtArc(ecs, eid, s);
 }
 function endScrub(): void {
     scrubbing = false; // leave st.held true — parked + paused, no auto-resume
@@ -878,7 +875,9 @@ function startScrub(e: PointerEvent): void {
 function togglePlay(): void {
     if (eid === null) return;
     const st = cartState.get(eid);
-    if (st) st.held = !st.held;
+    if (!st) return;
+    st.held = !st.held;
+    if (st.held) parkFromTime(ecs, eid); // pausing parks at the cart's current place
 }
 
 // ── player slider: the full-track scrubber. drag maps screen-X → track fraction →
@@ -893,7 +892,9 @@ function sliderTo(e: PointerEvent): void {
     const rect = scrubEl.getBoundingClientRect();
     const f = rect.width > 0 ? clamp((e.clientX - rect.left) / rect.width, 0, 1) : 0;
     const st = cartState.get(eid);
-    if (st) st.t = f * tTotal;
+    if (!st) return;
+    st.t = f * tTotal;
+    parkFromTime(ecs, eid); // project the dragged time onto the content anchor
 }
 function sliderUp(): void {
     if (!sliding) return; // not dragging → nothing to restore (cleanup no-op)
@@ -928,6 +929,7 @@ function stepKey(e: KeyboardEvent): void {
     e.preventDefault();
     st.held = true; // stepping pauses, like a frame-step
     st.t = clamp((cartSec ?? 0) + d, 0, tTotal);
+    parkFromTime(ecs, eid); // anchor the stepped time to the content under it
 }
 onMount(() => {
     const onWheel = (e: WheelEvent): void => {
