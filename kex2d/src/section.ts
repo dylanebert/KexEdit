@@ -4,12 +4,12 @@
  *  section's entry (`chain` propagates it). two atomic, legible idioms:
  *
  *    - GEO (`evalGeo`): geometry → force. section-local node positions placed
- *      rigidly at the entry frame (§4), sampled to a Hermite curve, then the
+ *      rigidly at the entry frame, sampled to a Hermite curve, then the
  *      physical force recovered from the geometry.
  *    - FORCE (`evalForce`): force → geometry. an authored F_n(s) integrated from
  *      the entry, then the DISPLAY force RE-recovered from the swept geometry.
  *
- *  §2 design law: the force curve is ALWAYS geometry-recovered, even for a force
+ *  design law: the force curve is ALWAYS geometry-recovered, even for a force
  *  section (mirrors the original `nodes/force.rs` — integrate from targets, then
  *  store the `Curvature::from_frames`-recovered force). So both atoms end with the
  *  same `forces` recovery: one display path regardless of kind. The recovered
@@ -63,14 +63,14 @@ export interface SectionResult {
 }
 
 /** a section's authored payload. geo carries local nodes (node 0 at the local
- *  origin, heading 0 — §4) + nominal spacing; force carries a per-edge F_n
+ *  origin, heading 0) + nominal spacing; force carries a per-edge F_n
  *  profile (g) + its edge step (m). */
 export type Section =
     | { kind: "geo"; nodes: readonly Node[]; ds: number }
     | { kind: "force"; fN: ArrayLike<number>; ds: number };
 
 /** place a section-local node in world space at the entry frame: rotate by the
- *  entry heading, translate to the entry position (§4 rigid placement). node 0
+ *  entry heading, translate to the entry position (rigid placement). node 0
  *  (local origin, local heading 0) maps to the entry exactly, so the section
  *  joins at the anchor with the same position and heading (C1). */
 export function place(entry: Entry, n: Node): Node {
@@ -84,7 +84,7 @@ export function place(entry: Entry, n: Node): Node {
 }
 
 /** express a world-frame point in a section's entry-local frame — the exact
- *  inverse of `place` (§4). the ECS layer authors handles in world space, but a
+ *  inverse of `place`. the ECS layer authors handles in world space, but a
  *  geo section's nodes are section-local (node 0 at the local origin, heading 0),
  *  so the bake localizes the world handles against the section entry before
  *  evaluating: `place(entry, localize(entry, p)) === p`. */
@@ -151,7 +151,7 @@ export function evalGeo(
 /**
  * FORCE atom: seed sample 0 from `entry`, integrate the authored per-edge force
  * into the swept geometry, then RE-recover the display force from that geometry
- * (§2 — one display path). the recovered force overwrites the integrator's
+ * (one display path). the recovered force overwrites the integrator's
  * `theta`/`v`, so the exit and the chart match a geo section's recovery exactly.
  * every forward step advances exactly `ds` along its mid-angle, so the per-edge
  * chord is `ds` (the recovery's `dsArr`).

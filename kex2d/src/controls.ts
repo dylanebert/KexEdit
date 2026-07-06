@@ -1,5 +1,5 @@
 import type { State } from "@dylanebert/shallot";
-import { editor, openContext, select, selectSection } from "./editor";
+import { editor, openContext, select, selectSection, selectStart } from "./editor";
 import {
     appendSection,
     beginMove,
@@ -25,6 +25,7 @@ import { pointerToCanvas, screenToWorld, viewTransform, type ViewTx } from "./vi
 
 const PICK_R = 16;
 const SECTION_PICK_R = 12;
+const START_PICK_R = 12;
 
 let dragNode: number | null = null;
 // grab offset (world): the node−under−cursor delta captured at pointerdown, so the
@@ -52,7 +53,7 @@ function nodeWorld(
 }
 
 /** nearest **draggable** node to the screen point, within the pick radius, or null.
- *  node 0 of every section is the entry anchor (pinned — §4), so it isn't pickable. */
+ *  node 0 of every section is the entry anchor (pinned), so it isn't pickable. */
 function pickNode(ecs: State, tx: ViewTx, sx: number, sy: number): number | null {
     const s = trackSamples(ecs);
     if (!s) return null;
@@ -94,6 +95,17 @@ function pickSection(ecs: State, tx: ViewTx, sx: number, sy: number): number | n
         }
     }
     return best;
+}
+
+/** true when the screen point hits the track START anchor. START is the first
+ *  section's entry — sample 0, the world origin the diamond draws at (`AnchorDrawSystem`)
+ *  — so this tests the pick radius against that sample regardless of the section's kind. */
+function pickStart(ecs: State, tx: ViewTx, sx: number, sy: number): boolean {
+    const s = trackSamples(ecs);
+    if (!s) return false;
+    const dx = sx - (tx.ox + s.posX[0] * tx.sx);
+    const dy = sy - (tx.oy + s.posY[0] * tx.sy);
+    return dx * dx + dy * dy < START_PICK_R * START_PICK_R;
 }
 
 /** true when the selection is its section's chain end — the node `extend` / `delete`
@@ -146,6 +158,12 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             canvas.setPointerCapture(e.pointerId);
             return;
         }
+        // the START anchor (initial-speed handle) before the section span it sits on —
+        // both pass through the origin, so the on-object handle wins.
+        if (pickStart(ecs, tx, cx, cy)) {
+            selectStart(true);
+            return;
+        }
         const sec = pickSection(ecs, tx, cx, cy);
         if (sec !== null) {
             selectSection(sec);
@@ -153,6 +171,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
         select(null);
         selectSection(null);
+        selectStart(false);
     };
 
     const onPointerMove = (e: PointerEvent): void => {
@@ -193,10 +212,11 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             return;
         }
         if (e.key === "Escape") {
-            if (editor.selection !== null || editor.section !== null) {
+            if (editor.selection !== null || editor.section !== null || editor.start) {
                 e.preventDefault();
                 select(null);
                 selectSection(null);
+                selectStart(false);
             }
             return;
         }

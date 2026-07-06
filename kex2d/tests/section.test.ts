@@ -12,18 +12,18 @@ import {
 import type { Node } from "../src/spline";
 import { withThetas } from "./helpers/chain";
 
-// the section substrate (kex/specs/kex2d-sections.md §2): entry → sampled points
+// the section substrate (kex2d/CLAUDE.md, the section substrate): entry → sampled points
 // → exit, chained by anchor propagation. the two atoms wrap the oracle-gated
 // integrator (`forward.integrate`) and the display recovery (`bake.forces`), so
 // physics carries from those gates; these tests pin the CONTRACT the substrate
-// adds — rigid placement (§4), the geometry-recovered display force (§2), and
+// adds — rigid placement, the geometry-recovered display force, and
 // chain continuity. device-free (canvas2D + pure math, no GPU).
 
 const G = 9.80665;
 const V0 = 10;
 
 describe("localize", () => {
-    test("is the exact inverse of place: place(entry, localize(entry, p)) === p (§4)", () => {
+    test("is the exact inverse of place: place(entry, localize(entry, p)) === p", () => {
         // the ECS layer authors handles in world space; the bake localizes them into
         // the section entry frame before evalGeo places them back. a non-identity
         // entry (rotated + translated) exercises the full rigid transform.
@@ -59,7 +59,7 @@ describe("evalGeo", () => {
         expect(r.exit.y).toBeCloseTo(0, 4);
     });
 
-    test("places the local shape rigidly at the entry frame (§4)", () => {
+    test("places the local shape rigidly at the entry frame", () => {
         // node 0 at the local origin, heading 0 (withThetas gives node 0 θ = 0).
         const local: Node[] = withThetas([
             { x: 0, y: 0 },
@@ -129,7 +129,7 @@ describe("evalForce", () => {
     });
 
     test("the recovered display force converges to the authored force as O(ds)", () => {
-        // §2: a force section re-recovers its display force from the swept geometry.
+        // a force section re-recovers its display force from the swept geometry.
         // the recovery (chord-bisector centering) sits O(ds) off the authored input
         // — the source-vs-centered convention gap. derived, not tuned: halving ds
         // must roughly halve the max interior gap (O(ds), not O(1)).

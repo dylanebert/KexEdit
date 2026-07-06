@@ -17,10 +17,13 @@ export enum SectionKind {
 /** per-track scalars. `count` is the total sample count over the whole chain (bake
  *  output, varies with the authored payload). `ds` is the nominal target spacing —
  *  one value shared by every section (per-edge actual ds lives in `bakeOut.ds`).
- *  the per-section kind + extent live on `Section`, not here. */
+ *  `v0` is the authored initial speed (m/s) at the track start (the START handle's
+ *  field; default `V0`, in the bake hash). the per-section kind + extent live on
+ *  `Section`, not here. */
 export const Track = {
     count: sparse(u32),
     ds: sparse(f32),
+    v0: sparse(f32),
 };
 
 /** one section in the track's chain. `id` is the stable identity undo/redo and
@@ -40,7 +43,7 @@ export const Section = {
 
 /** a node on a geo section. `section` is the owning section's stable id. `order`
  *  is the node's position within that section (0 = the section entry, pinned at
- *  local origin — §4). `pos` is the node's **section-local** position; the substrate
+ *  local origin). `pos` is the node's **section-local** position; the substrate
  *  places it rigidly at the section's entry frame, so world = `place(entry, pos)`
  *  (the bake writes the world sample; the drag localizes the world pointer back).
  *  `theta` is the node's section-local exit heading — set when appended (via
@@ -124,21 +127,27 @@ export const sectionInfo = new Map<number, SectionInfo>();
 export const MAX_SAMPLES = 4096;
 const DS_NOMINAL = 0.5;
 
-/** the default initial speed (m/s) at the track's start anchor. arbitrary — some
- *  upstream idiom (a launch, a lift hill, a prior track) sets it later; for now a
- *  fixed default matching kexedit / FVD. the bake's v0 must be this exact number or
- *  the recovered force profile shifts systematically. */
+/** the DEFAULT initial speed (m/s) a fresh track's start anchor gets. it's now
+ *  authored per-track (`Track.v0`, set via the START handle's field); this is only
+ *  the seed until the user (or some upstream idiom — a launch, a lift hill) sets it.
+ *  matches kexedit / FVD. */
 export const V0 = 10;
+
+/** the slowest the authored initial speed can be set — a positive floor so the start
+ *  is never zero/negative (which would make a level track take infinite time). */
+const MIN_V0 = 0.1;
 
 /** how far `extend` lays the next node past the chain end, along the last edge's
  *  direction. it's a starting point you then drag, not a fixed length. */
 export const EXTEND_DIST = 24;
 
-/** the track's initial anchor: the entry to the first section. a level start at
- *  the origin with the default initial speed `V0`. world position is cosmetic in
- *  this 2D prototype (the view auto-frames), so it's fixed — the authored variable
- *  is the initial speed, and that's a default until an upstream idiom sets it. */
-const START: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+/** the track's initial anchor for a given initial speed: the entry to the first
+ *  section, a level start at the origin. world position is cosmetic in this 2D
+ *  prototype (the view auto-frames), so it's fixed — the authored variable is the
+ *  initial speed `v` (`Track.v0`), which this threads into the entry frame. */
+function startEntry(v0: number): Entry {
+    return { x: 0, y: 0, theta: 0, v: v0 };
+}
 
 /** the extent (m) a fresh force section gets — an append or a geo→force convert
  *  resets to this (the extent is the force section's own authored property, not a
@@ -158,6 +167,7 @@ export function createTrack(ecs: State): number {
     ecs.add(trackEid, Track);
     Track.count.set(trackEid, 0);
     Track.ds.set(trackEid, DS_NOMINAL);
+    Track.v0.set(trackEid, V0);
     samples.set(trackEid, {
         posX: new Float32Array(MAX_SAMPLES),
         posY: new Float32Array(MAX_SAMPLES),
@@ -568,11 +578,30 @@ export function setSectionLength(ecs: State, id: number, length: number): void {
     Section.length.set(eid, Math.max(MIN_FORCE_LEN, length));
 }
 
+// ── track initial speed (v0) ───────────────────────────────────────────────────
+
+/** the track's undoable initial speed (m/s) — the START handle's scrub/type gesture
+ *  snapshots this. */
+export interface TrackV0State {
+    v0: number;
+}
+
+/** snapshot a track's authored initial speed. */
+export function trackV0State(trackEid: number): TrackV0State {
+    return { v0: Track.v0.get(trackEid) };
+}
+
+/** set the track's initial speed (m/s), floored at MIN_V0 — the field/scrub write +
+ *  gesture restore. re-bakes on the next tick (v0 is in the bake hash). */
+export function setTrackV0(trackEid: number, v0: number): void {
+    Track.v0.set(trackEid, Math.max(MIN_V0, v0));
+}
+
 // ── per-section kind + conversion ─────────────────────────────────────────────
 
 /** one section's full undoable state: its identity/order, kind, force extent, its
  *  geo nodes, and its force points. a destructive convert (or a structural op)
- *  snapshots this before/after so undo is byte-identical (§5). */
+ *  snapshots this before/after so undo is byte-identical. */
 export interface SectionSnapshot {
     id: number;
     order: number;
@@ -613,7 +642,7 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
 }
 
 /** destructively flip a section's kind to its opposite, resetting to that kind's
- *  default (§5): geo → force clears the nodes for an empty profile (constant 1g)
+ *  default: geo → force clears the nodes for an empty profile (constant 1g)
  *  whose extent is the section's baked arclength; force → geo clears the points for
  *  the flat two-node seed. undo (a `snapshotSection` pair) makes it safe, so there's
  *  no confirmation. does not itself record history — `history.convertSection` wraps
@@ -638,7 +667,7 @@ export function convertSection(ecs: State, sectionId: number): void {
 // ── structural ops (append / split / join / delete) ──────────────────────────
 // each mutates the section chain directly; `history` wraps it in a whole-track
 // snapshot pair so undo is byte-identical. geo split/join re-express nodes rigidly
-// in the boundary frame (`place`/`localize` — §4, exact to f32 round-off); force
+// in the boundary frame (`place`/`localize`, exact to f32 round-off); force
 // split/join partition + rebase points by arclength (lossless).
 
 /** shift every section at or past `threshold` order by `delta` — makes room to
@@ -691,7 +720,7 @@ export function appendSection(ecs: State, kind: SectionKind): number {
 
 /** split a geo section at an interior node (order `k`, 1 ≤ k ≤ n−1): the head keeps
  *  nodes [0..k], a new section takes [k..n] re-expressed in node k's frame (rigid —
- *  its node 0 becomes {0,0,0}, §4). node k stays the head's new tip. no-op at the
+ *  its node 0 becomes {0,0,0}). node k stays the head's new tip. no-op at the
  *  entry or last node. returns the new (tail) section id, or null. */
 export function splitGeo(ecs: State, sectionId: number, k: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
@@ -724,7 +753,7 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
 
 /** split a force section at arclength `s` (0 < s < length): the head keeps extent
  *  [0, s] and its points there; a new section takes extent [s, length] with the
- *  remaining points rebased to its entry (a lossless partition, §4). no-op outside
+ *  remaining points rebased to its entry (a lossless partition). no-op outside
  *  the interior. returns the new (tail) section id, or null. */
 export function splitForce(ecs: State, sectionId: number, s: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
@@ -791,7 +820,7 @@ export function joinNext(ecs: State, sectionId: number): boolean {
 
 /** delete a section and its payload; downstream sections close the gap and rebase
  *  rigidly (their nodes are section-local, so the bake re-places them at the new
- *  upstream exit — §4). refuses to remove the last remaining section. returns true
+ *  upstream exit). refuses to remove the last remaining section. returns true
  *  when deleted. */
 export function deleteSection(ecs: State, sectionId: number): boolean {
     const secEid = sectionAt(ecs, sectionId);
@@ -828,18 +857,19 @@ function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
 }
 
 /** a force section's payload: its authored points gathered into a dense per-edge
- *  F_n(σ) profile over the section extent (§6) + the shared spacing. */
+ *  F_n(σ) profile over the section extent + the shared spacing. */
 function forcePayload(ecs: State, sectionId: number, length: number, ds: number): SectionSpec {
     const points: ForcePoint[] = sectionForces(ecs, sectionId).map((p) => ({ s: p.s, g: p.g }));
     return { kind: "force", fN: forceProfile(points, length, ds), ds };
 }
 
-/** input-state hash that gates the bake: the shared ds, then every section in order
- *  — its id/order/kind, and its authored payload (a geo section's node poses, a
- *  force section's extent + points). BakeSystem re-bakes on a miss (anything moved,
- *  added, removed, converted, or reordered), skips otherwise. */
-function bakeHash(ecs: State, secs: SectionRow[], ds: number): string {
-    let h = `ds${ds}`;
+/** input-state hash that gates the bake: the shared ds + initial speed, then every
+ *  section in order — its id/order/kind, and its authored payload (a geo section's
+ *  node poses, a force section's extent + points). BakeSystem re-bakes on a miss
+ *  (anything moved, added, removed, converted, reordered, or the v0 retimed), skips
+ *  otherwise. */
+function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number): string {
+    let h = `ds${ds}v0${v0}`;
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sec.kind}`;
         if (sec.kind === SectionKind.Force) {
@@ -879,13 +909,15 @@ function computeTime(s: Samples, out: BakeOut, count: number): void {
 
 /** the bake: thread the section chain from `START` into one flat SoA + per-section
  *  metadata. each geo section contributes its local nodes (placed rigidly at the
- *  running entry — an upstream edit rigidly carries downstream, §4); each force
- *  section its integrated-then-recovered profile (§2). writes `samples` + `bakeOut`,
+ *  running entry — an upstream edit rigidly carries downstream); each force
+ *  section its integrated-then-recovered profile. writes `samples` + `bakeOut`,
  *  syncs each geo node's global sample index, and records `sectionInfo` (entry,
  *  range, arclength, orphan cutoff) the drag/render read. skips (keeps the prior
  *  bake) when a geo section is below its two-node floor or the chain degenerates. */
 function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: SectionRow[]): void {
     const ds = Track.ds.get(trackEid);
+    const v0 = Track.v0.get(trackEid);
+    const start = startEntry(v0);
 
     // a geo section needs ≥2 nodes to bake; if any is short, keep the prior bake
     // rather than half-render the chain.
@@ -898,7 +930,7 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
             ? geoPayload(ecs, sec.id, ds)
             : forcePayload(ecs, sec.id, sec.length, ds),
     );
-    const c = chain(START, payloads, MAX_SAMPLES);
+    const c = chain(start, payloads, MAX_SAMPLES);
     const count = c.count;
     if (count < 2) return; // fully degenerate first section — keep the prior bake
 
@@ -906,7 +938,7 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     for (let k = 0; k < secs.length; k++) {
         const r = c.results[k];
         const range = c.ranges[k];
-        const entry = k === 0 ? START : c.exits[k - 1];
+        const entry = k === 0 ? start : c.exits[k - 1];
 
         if (secs[k].kind === SectionKind.Geo) {
             const hs = sectionHandles(ecs, secs[k].id);
@@ -934,7 +966,7 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     s.v.set(c.v.subarray(0, count));
     out.fN.set(c.fN.subarray(0, count - 1));
     out.ds.set(c.ds.subarray(0, count - 1));
-    out.hash = bakeHash(ecs, secs, ds);
+    out.hash = bakeHash(ecs, secs, ds, v0);
     Track.count.set(trackEid, count);
     computeTime(s, out, count);
 }
@@ -947,7 +979,7 @@ export const BakeSystem: System = {
             if (!s || !out) continue;
             const secs = sections(ecs);
             if (secs.length === 0) continue;
-            const hash = bakeHash(ecs, secs, Track.ds.get(trackEid));
+            const hash = bakeHash(ecs, secs, Track.ds.get(trackEid), Track.v0.get(trackEid));
             if (hash === out.hash) continue; // nothing changed — reuse the bake
             bake(ecs, trackEid, s, out, secs);
         }
@@ -958,7 +990,7 @@ export const TrackPlugin: Plugin = {
     name: "Track",
     components: { Track, Section, Handle, Force },
     traits: {
-        Track: { defaults: () => ({ count: 0, ds: 0 }) },
+        Track: { defaults: () => ({ count: 0, ds: 0, v0: V0 }) },
         Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0 }) },
         Handle: { defaults: () => ({ section: 0, order: 0, sample: 0, pos: [0, 0], theta: 0 }) },
         Force: { defaults: () => ({ section: 0, id: 0, s: 0, g: 0 }) },

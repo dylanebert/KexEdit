@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 
 // Boot the kex2d page and drive the GEO-AUTHORING flow end to end (seed a shaped track →
 // see the recovered F_n force curve → extend the chain → undo → reshape a node and watch
-// the curve react, kex/specs/kex2d-sections.md stage A/B), asserting the UI wiring against
+// the curve react), asserting the UI wiring against
 // window.__kex at each step and screenshotting the states. The DEV-only __kex hook
 // (src/main.ts) reads node/undo/track state and drives the geo edits; the flow drives the
 // real UI (keyboard extend/trim, undo). The force-authoring flow is the next test.
@@ -75,7 +75,7 @@ test("geo authoring flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
-// Drive the FORCE-AUTHORING flow (kex/specs/kex2d-sections.md stage C): a geo track →
+// Drive the FORCE-AUTHORING flow: a geo track →
 // convert to force via the real mode toggle (resets to an empty 1g profile) → author
 // an airtime bump by force points → convert back to geo (resets to the flat seed) →
 // undo, which restores the force track with its points byte-identical. The mode toggle
@@ -434,6 +434,70 @@ test("playhead parking flow", async ({ page }) => {
     expect(arc2).toBeCloseTo(arc1, 1);
     expect(await parked()).toBe(true);
     if (vp) await page.screenshot({ path: join(OUT, "park-2-held.png"), clip: strip() });
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Drive the V0 AUTHORING flow (section-editor stage 4, fork 5): select the fixed START
+// anchor in the viewport → its initial-speed popover → scrub the label AND type a value,
+// each one undo entry → assert __kex.v0. The default flat seed keeps the START diamond
+// clear of shape nodes (its one node sits a full EXTEND_DIST out) so it picks cleanly.
+// Real affordances throughout; __kex is read only for assertions.
+test("v0 authoring flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const v0 = () => page.evaluate((): number => (window as any).__kex.v0());
+    const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+
+    // the default flat seed bakes on load — no seedHill, so the START diamond at the world
+    // origin (canvas center) has no shape node on top of it.
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    const v0Default = await v0();
+
+    // ── 1. Click the START anchor (viewport center) → its v0 popover appears. ──
+    const canvas = page.locator("#app > canvas");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    await page.mouse.click(cb.x + cb.width / 2, cb.y + cb.height / 2);
+    await expect(page.locator(".vtip")).toBeVisible();
+    await page.waitForTimeout(300); // let the popover's 120ms fade-in finish before the shot
+    await page.screenshot({ path: join(OUT, "v0-1-selected.png") });
+
+    // ── 2. Scrub the v₀ label to the right → the speed rises, one undo entry. ──
+    const key = page.locator(".vtip .key");
+    const kb = await key.boundingBox();
+    if (!kb) throw new Error("v0 scrub handle not laid out");
+    await page.mouse.move(kb.x + kb.width / 2, kb.y + kb.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(kb.x + kb.width / 2 + 120, kb.y + kb.height / 2, { steps: 12 });
+    await page.mouse.up();
+    await expect.poll(v0).toBeGreaterThan(v0Default);
+    expect(await undoDepth()).toBe(1); // the whole scrub → one entry
+
+    // undo restores the default speed.
+    await page.keyboard.press("Control+z");
+    await expect.poll(v0).toBeCloseTo(v0Default, 3);
+    await expect.poll(undoDepth).toBe(0);
+
+    // ── 3. Type an exact speed in the field → it commits verbatim, one undo entry. ──
+    await page.locator(".vtip input").fill("25");
+    await page.keyboard.press("Enter");
+    await expect.poll(v0).toBeCloseTo(25, 3);
+    expect(await undoDepth()).toBe(1);
+    await page.screenshot({ path: join(OUT, "v0-2-typed.png") });
+
+    // undo restores the default speed.
+    await page.keyboard.press("Control+z");
+    await expect.poll(v0).toBeCloseTo(v0Default, 3);
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });

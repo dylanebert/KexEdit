@@ -4,10 +4,10 @@
  *  the ECS bake feeds into `section.evalForce`. the atoms stay opinion-free: they
  *  consume dense per-edge force and know nothing about points or interpolation.
  *
- *  §6 semantics: linear interpolation between points, an empty profile is a constant
+ *  authoring semantics: linear interpolation between points, an empty profile is a constant
  *  DEFAULT_G, and the first/last point's value is held flat beyond it (the original
  *  core's empty-track-→-default + endpoint-hold). points are input handles authored
- *  on the s-axis; the displayed curve is re-recovered from the swept geometry (§2),
+ *  on the s-axis; the displayed curve is re-recovered from the swept geometry,
  *  so it sits O(ds) off these values — expected, not a bug. */
 
 /** a force keyframe: a demanded normal force `g` at arclength `s` (m). */
@@ -21,7 +21,7 @@ export const DEFAULT_G = 1;
 
 /** the authored force at arclength `s`: linear interpolation between the two
  *  bracketing points, held flat before the first / after the last, DEFAULT_G when
- *  there are none (§6). `points` MUST be sorted by `s` (the ECS layer sorts on
+ *  there are none. `points` MUST be sorted by `s` (the ECS layer sorts on
  *  gather); coincident-s points collapse to the earlier value (zero-width span). */
 export function sampleForce(points: readonly ForcePoint[], s: number): number {
     const n = points.length;

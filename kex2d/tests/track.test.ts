@@ -20,6 +20,7 @@ import {
     sectionInfo,
     sections,
     setSectionLength,
+    setTrackV0,
     Track,
 } from "../src/track";
 
@@ -80,7 +81,7 @@ describe("BakeSystem", () => {
     });
 
     test("node 0 is the entry anchor: it lands at sample 0, the world origin", () => {
-        // every section's node 0 is pinned at the local origin (§4); section 0's entry
+        // every section's node 0 is pinned at the local origin; section 0's entry
         // is START, so it renders at the world origin (sample 0). guards the substrate
         // wiring — the chain seeds sample 0 from START and the section shares it.
         const { state, eid, sec } = track();
@@ -167,6 +168,24 @@ describe("BakeSystem", () => {
         expect(out.feasible[count - 1]).toBe(0); // energy-depleted up the climb
     });
 
+    test("the authored v0 threads into the bake: a higher launch clears a climb the default can't", () => {
+        // the same steep climb the energy-budget test flags infeasible at the default
+        // V0=10; a higher authored v0 carries enough energy to clear it — proving v0
+        // reaches the physics (and that a v0 change is a bake-hash miss → re-bake).
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 16, 27.7);
+        state.step(0);
+        expect(bakeOut.get(eid)?.firstInfeasible).toBeGreaterThan(0); // default V0 depletes
+
+        setTrackV0(eid, 30); // ½·30² = 450 J/kg clears g·27.7 ≈ 272
+        state.step(0);
+        expect(bakeOut.get(eid)?.firstInfeasible).toBe(-1); // now fully feasible
+    });
+
     test("a smooth curve bakes to a non-oscillating F_n", () => {
         // a gentle S-wave (shifted so node 0 sits at the origin): its true normal force
         // varies slowly, so the baked F_n's slope should reverse only where the
@@ -196,7 +215,7 @@ describe("BakeSystem", () => {
     });
 
     test("an empty force profile bakes a flat 1g track over the section length", () => {
-        // convert the flat geo seed to force: no points → constant 1g (§6), which
+        // convert the flat geo seed to force: no points → constant 1g, which
         // integrates to a straight level track whose arclength matches the extent.
         const { state, eid, sec } = track();
         state.step(0); // geo bake first, so the convert inherits its arclength
@@ -223,7 +242,7 @@ describe("BakeSystem", () => {
     test("force points shape the bake — a localized dip recovers below 1g, non-flat", () => {
         // three points hold 1g at the ends and dip to 0g mid-track: a localized
         // airtime crest. the recovered display force follows the authored dip (O(ds)
-        // off, §2) and the geometry is no longer flat.
+        // off) and the geometry is no longer flat.
         const { state, eid, sec } = track();
         state.step(0);
         convertSection(state, sec);
@@ -251,7 +270,7 @@ describe("BakeSystem", () => {
         addNode(state, sec, 60, 0); // extend the geo well past the default extent
         state.step(0);
         // the baked geo arclength is now ~60, but a convert RESETS the force extent
-        // (the extent is the force section's own property, §3), it does not inherit it.
+        // (the extent is the force section's own property), it does not inherit it.
         convertSection(state, sec);
         expect(sections(state)[0].kind).toBe(SectionKind.Force);
         expect(sectionHandles(state, sec).length).toBe(0);

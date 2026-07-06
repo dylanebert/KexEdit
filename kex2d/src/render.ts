@@ -162,8 +162,19 @@ const AnchorDrawSystem: System = {
                 if (!info) continue;
                 const cx = ox + s.posX[info.startSample] * sx;
                 const cy = oy + s.posY[info.startSample] * sy;
+                // the first section's entry IS the track START — the selectable
+                // initial-speed handle; a soft ring marks it when selected.
+                if (sec.order === 0 && editor.start) {
+                    ctx.save();
+                    ctx.strokeStyle = "rgba(255, 209, 102, 0.45)";
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, ANCHOR_R + 4, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.restore();
+                }
                 ctx.fillStyle = "#0e0d0c";
-                ctx.strokeStyle = COLOR_ANCHOR;
+                ctx.strokeStyle = sec.order === 0 && editor.start ? "#f0ece8" : COLOR_ANCHOR;
                 ctx.lineWidth = 1.5;
                 ctx.beginPath();
                 // a diamond: entry anchors read as boundaries, not draggable nodes.

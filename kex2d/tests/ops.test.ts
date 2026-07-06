@@ -33,10 +33,10 @@ import {
 } from "../src/track";
 
 // the multi-section structural ops: append / split / join / delete over the section
-// chain (kex/specs/kex2d-sections.md stage D). the substrate (chain, sectionInfo,
+// chain (kex2d/CLAUDE.md, structural ops). the substrate (chain, sectionInfo,
 // local storage) is covered in section.test.ts; this pins the ECS-authoring layer —
 // chain continuity across a boundary, split/join losslessness (f32 rigid round-off),
-// and the §4 payoff: an upstream edit rigidly carries downstream. device-free.
+// and the rigid-placement payoff: an upstream edit rigidly carries downstream. device-free.
 
 /** a two-geo-section chain: a bent lead-in section (exit heading ≠ 0, so the boundary
  *  frame is a real rotation) + an appended flat section. baked. */
@@ -220,7 +220,7 @@ describe("split → join round-trips", () => {
     });
 });
 
-describe("upstream edits carry downstream rigidly (§4)", () => {
+describe("upstream edits carry downstream rigidly", () => {
     test("moving a lead-in node leaves the downstream section's local shape untouched", () => {
         const { state, eid, a, b } = twoGeo();
         // capture B's local nodes and its baked world samples before the upstream edit.

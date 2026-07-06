@@ -2,8 +2,16 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
 import { attachControls } from "./controls";
-import { closeContext, editor, select, selectSection } from "./editor";
-import { convertSection, extendTrack, history, removeSection, trimTrack } from "./history";
+import { closeContext, editor, select, selectSection, selectStart } from "./editor";
+import {
+    beginV0,
+    commit,
+    convertSection,
+    extendTrack,
+    history,
+    removeSection,
+    trimTrack,
+} from "./history";
 import Timeline from "./Timeline.svelte";
 import {
     bakeOut,
@@ -14,6 +22,7 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
+    setTrackV0,
     Track,
 } from "./track";
 import { attachCanvas2D, viewTransform } from "./view";
@@ -142,6 +151,82 @@ $effect(() => {
         window.removeEventListener("keydown", onEsc);
     };
 });
+
+// the track START anchor (initial-speed handle): selectable in the viewport, it summons
+// a v0 field popover at its screen point — the world origin, which the fixed view centers
+// (so the popover anchor never moves, and the scrub needs no anchor-freeze).
+const startSel = $derived.by((): boolean => {
+    void tick;
+    return editor.start;
+});
+const v0 = $derived.by((): number => {
+    void tick;
+    return trackEid === null ? 0 : Track.v0.get(trackEid);
+});
+const startPos = $derived.by((): { x: number; y: number } | null => {
+    void tick;
+    if (!canvas || trackEid === null) return null;
+    const tx = viewTransform(canvas);
+    return { x: tx.ox, y: tx.oy }; // world origin → canvas center (the START diamond)
+});
+
+const V0_SCRUB = 0.1; // m/s per px — the START field's label-scrub rate
+// the v₀ field: a scrub handle (drag the label) + a typed input, each committing one
+// undo entry (begin → set → commit). the label scrub rounds to the field's precision so
+// the number never shows jitter.
+function v0ScrubStart(e: PointerEvent): void {
+    if (trackEid === null) return;
+    const te = trackEid;
+    e.preventDefault();
+    const label = e.currentTarget as HTMLElement;
+    label.setPointerCapture(e.pointerId);
+    beginV0(te);
+    let acc = Track.v0.get(te);
+    const move = (ev: PointerEvent): void => {
+        acc = Math.max(0, acc + ev.movementX * V0_SCRUB);
+        setTrackV0(te, Math.round(acc * 10) / 10);
+    };
+    const up = (): void => {
+        label.removeEventListener("pointermove", move);
+        label.removeEventListener("pointerup", up);
+        label.removeEventListener("pointercancel", up);
+        commit(history);
+    };
+    label.addEventListener("pointermove", move);
+    label.addEventListener("pointerup", up);
+    // a cancelled pointer must still close the gesture (one gesture at a time).
+    label.addEventListener("pointercancel", up);
+}
+function onV0Field(e: Event): void {
+    if (trackEid === null) return;
+    const val = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
+    if (!Number.isFinite(val)) return; // guard a cleared field
+    beginV0(trackEid);
+    setTrackV0(trackEid, val);
+    commit(history);
+}
+// field keys: Enter commits (blur fires change); Escape reverts and blurs. after blur the
+// window handler (controls.ts, skips inputs) takes the NEXT Escape to deselect the START.
+function v0Keydown(e: KeyboardEvent, reset: string): void {
+    const input = e.currentTarget as HTMLInputElement;
+    if (e.key === "Enter") input.blur();
+    else if (e.key === "Escape") {
+        input.value = reset;
+        input.blur();
+    }
+}
+// dismiss the v0 popover on an outside press. canvas clicks route through controls (which
+// re-picks the START or deselects); popover clicks keep it open.
+$effect(() => {
+    if (!startSel) return;
+    const onDown = (e: PointerEvent): void => {
+        const t = e.target as HTMLElement | null;
+        if (t?.closest(".vtip") || t === canvas) return;
+        selectStart(false);
+    };
+    window.addEventListener("pointerdown", onDown, { capture: true });
+    return () => window.removeEventListener("pointerdown", onDown, { capture: true });
+});
 </script>
 
 <canvas bind:this={canvas}></canvas>
@@ -225,6 +310,29 @@ $effect(() => {
         <button type="button" class="ctx-item danger" role="menuitem" onclick={ctxDelete}>
             <span>Delete</span><span class="sk">Del</span>
         </button>
+    </div>
+{/if}
+
+<!-- the track START anchor's initial-speed field: a popover summoned AT the diamond (on
+     the object). one row — the v₀ label doubles as a scrub handle, the input types it;
+     each edit is one undo entry. -->
+{#if startSel && startPos}
+    {@const vText = v0.toFixed(1)}
+    <div class="vtip" style="left: {startPos.x}px; top: {startPos.y}px">
+        <div class="fld">
+            <span class="key" onpointerdown={v0ScrubStart} role="presentation">v₀</span>
+            <input
+                type="number"
+                step="0.5"
+                min="0"
+                value={vText}
+                onchange={onV0Field}
+                onfocus={(e) => e.currentTarget.select()}
+                onkeydown={(e) => v0Keydown(e, vText)}
+                aria-label="Initial speed (m/s)"
+            />
+            <span class="unit">m/s</span>
+        </div>
     </div>
 {/if}
 
@@ -378,6 +486,90 @@ $effect(() => {
         font-family: "JetBrains Mono", ui-monospace, monospace;
         font-size: 10px;
         color: var(--muted);
+    }
+
+    /* the START anchor's initial-speed popover: the same floating-field surface as the
+       timeline point popover (opaque, one row — scrub-handle key · value · unit, no boxed
+       input), anchored above the START diamond. */
+    .vtip {
+        position: absolute;
+        z-index: 3;
+        display: flex;
+        flex-direction: column;
+        padding: 3px 0;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        box-shadow: var(--shadow);
+        overflow: hidden; /* the focus wash clips to the rounded corners */
+        transform: translate(-50%, calc(-100% - 12px));
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        animation: vtip-in 120ms ease;
+    }
+    @keyframes vtip-in {
+        from {
+            opacity: 0;
+        }
+    }
+    .vtip .fld {
+        display: grid;
+        grid-template-columns: 18px 44px auto;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 9px;
+        font-size: 11px;
+        transition: background 120ms ease;
+    }
+    .vtip .fld:focus-within {
+        background: rgba(255, 255, 255, 0.04);
+    }
+    /* the key doubles as the scrub handle (the shallot cell-handle treatment): a
+       full-row-height cell whose hit area extends to the row edges, ew-resize + wash on
+       hover. */
+    .vtip .key {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        align-self: stretch;
+        margin: -4px 0 -4px -9px;
+        padding: 4px 0 4px 9px;
+        color: var(--muted);
+        cursor: ew-resize;
+        user-select: none;
+        -webkit-user-select: none;
+        touch-action: none;
+        transition: color 120ms ease, background 120ms ease;
+    }
+    .vtip .key:hover {
+        color: var(--fg);
+        background: rgba(255, 255, 255, 0.05);
+    }
+    .vtip .fld:focus-within .key {
+        color: var(--fg);
+    }
+    .vtip .unit {
+        color: var(--muted);
+    }
+    .vtip input {
+        width: 44px;
+        box-sizing: border-box;
+        padding: 0;
+        background: none;
+        border: none;
+        outline: none;
+        color: var(--fg);
+        font: inherit;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        appearance: textfield; /* no native spinner chrome; arrow keys still step */
+    }
+    .vtip input::-webkit-outer-spin-button,
+    .vtip input::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+    }
+    .vtip input::selection {
+        background: var(--accent-soft);
     }
 
 </style>

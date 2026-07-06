@@ -43,6 +43,8 @@ if (import.meta.env.DEV) {
         nodeCount: (): number => sectionHandles(ecs, sec()).length,
         undoDepth: (): number => history.undo.length,
         tTotal: (): number => bakeOut.get(track)?.tTotal ?? 0,
+        // the authored initial speed — the flow drives the real v0 popover and asserts it.
+        v0: (): number => Track.v0.get(track),
         // section-local pose signature — the flow asserts an undo reverts geometry.
         poses: (): number[][] =>
             sectionHandles(ecs, sec()).map((eid) => [
@@ -53,7 +55,7 @@ if (import.meta.env.DEV) {
         // select the chain end so the keyboard extend/trim (controls.ts) fire.
         selectEnd: (): void => select(lastHandle(ecs, sec())),
         // move a node in y — the "drag a node, the curve reacts" step, without pixels.
-        // node 0 is the pinned entry anchor (§4), so it's never nudged.
+        // node 0 is the pinned entry anchor, so it's never nudged.
         nudge: (order: number, dy: number): void => {
             if (order === 0) return;
             const eid = handleAt(ecs, sec(), order);

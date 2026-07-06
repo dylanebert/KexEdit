@@ -16,6 +16,9 @@ interface EditorState {
      *  highlight + the context-menu target; it does NOT gate authoring (force points
      *  are added by cursor position, nodes are dragged in the viewport). */
     section: number | null;
+    /** whether the track START anchor is selected. there's one START per track, so a
+     *  boolean; selecting it summons the initial-speed (v0) field popover. */
+    start: boolean;
     /** the section right-click menu (Convert / Delete): screen position + target
      *  section id, or null when closed. shared so both the clip strip and the viewport
      *  span open the same menu, rendered once at the app root. */
@@ -26,12 +29,13 @@ export const editor: EditorState = {
     selection: null,
     force: null,
     section: null,
+    start: false,
     context: null,
 };
 
-// the three selections are mutually exclusive — selecting one clears the others, so
-// the contextual actions (node extend/trim, force field popover, section ops) never
-// fight over which target a key press means.
+// the four selections are mutually exclusive — selecting one clears the others, so
+// the contextual actions (node extend/trim, force field popover, section ops, v0
+// popover) never fight over which target a key press means.
 
 /** select a node (null to clear). */
 export function select(eid: number | null): void {
@@ -39,6 +43,7 @@ export function select(eid: number | null): void {
     if (eid !== null) {
         editor.force = null;
         editor.section = null;
+        editor.start = false;
     }
 }
 
@@ -48,6 +53,7 @@ export function selectForce(id: number | null): void {
     if (id !== null) {
         editor.selection = null;
         editor.section = null;
+        editor.start = false;
     }
 }
 
@@ -57,6 +63,17 @@ export function selectSection(id: number | null): void {
     if (id !== null) {
         editor.selection = null;
         editor.force = null;
+        editor.start = false;
+    }
+}
+
+/** select (or clear) the track START anchor — the initial-speed handle. */
+export function selectStart(on: boolean): void {
+    editor.start = on;
+    if (on) {
+        editor.selection = null;
+        editor.force = null;
+        editor.section = null;
     }
 }
 

@@ -24,9 +24,11 @@ build the chain: append (geo/force at the end), split (a geo section at an inter
 section at an arclength s), join (adjacent same-kind), delete (downstream closes the gap + rebases
 rigidly). One open chain — no branching, circuit closure, or mid-chain insertion.
 
-**The track start is a fixed anchor**, not a node (`START = {0,0,0,V0}`): what's really there is an
-initial-velocity anchor, `V0` a default initial speed (arbitrary, FVD-matching, set by some upstream
-idiom later). It's not draggable — it draws as a diamond, distinct from the gold shape handles.
+**The track start is a fixed-position anchor**, not a node (`START = {0,0,0,v0}`): what's really
+there is an initial-velocity anchor. Its position is fixed (the origin), but the **initial speed
+`v0` is authored** — the START diamond is selectable and carries a v0 field popover (m/s), stored
+per-track as `Track.v0` (default `V0`, in the bake hash). Not draggable — it draws as a diamond,
+distinct from the gold shape handles.
 
 **A unified solver is NOT the model.** Three dogfood rounds proved that a solver responsible for
 arbitrating authoring intent almost never does what's intended — the author fights it. The
@@ -169,7 +171,7 @@ validation only, NOT the bake (Hard gotchas).
 
 Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasibility threshold) in
 `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` = 4096 in `track.ts`; `V0` = 10
-(default initial speed) in `track.ts`.
+(the DEFAULT initial speed — now authored per-track as `Track.v0`) in `track.ts`.
 
 ## Code map
 
@@ -212,8 +214,8 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 **ECS + UI layer (the live app):**
 
 - `track.ts` — `BakeSystem` walks `sections()` (by `Section.order`) → per-section payload → one
-  `chain(START, payloads)` → the `samples`/`bakeOut` SoA + the `sectionInfo` map; skips on a
-  `bakeHash` match (over every section). Components: `Track` (`count`, `ds`), `Section` (`id` stable,
+  `chain(startEntry(v0), payloads)` → the `samples`/`bakeOut` SoA + the `sectionInfo` map; skips on a
+  `bakeHash` match (over every section, ds + v0). Components: `Track` (`count`, `ds`, `v0`), `Section` (`id` stable,
   `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent), `Handle` (`section`, per-section
   `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`).
   `bakeOut`: per-edge `fN`+`ds`, per-sample `t`/`feasible`, `firstInfeasible`, `hash`. `sectionInfo`
@@ -223,20 +225,22 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
   `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`,
   `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection`, `snapshotSection`/`restoreSection`
-  + whole-track `snapshotAll`/`restoreAll`. `START`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`.
+  + whole-track `snapshotAll`/`restoreAll`. Initial speed: `trackV0State`/`setTrackV0` (`Track.v0`).
+  `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `loopTime`, and **`trackMapping`**
   (the per-sample arclength↔time table over the display bake — the cart's `t`↔chart-`s` projection;
   the cart rides in time, the chart is distance).
-- `editor.ts` — ephemeral UI state: `selection` (node), `force` (point id), `section` (id) + their
-  setters. The three are **mutually exclusive** (selecting one clears the others). Plain singleton,
-  read by Svelte via the per-RAF tick.
+- `editor.ts` — ephemeral UI state: `selection` (node), `force` (point id), `section` (id), `start`
+  (the track START anchor / v0 handle) + their setters. The four are **mutually exclusive** (selecting
+  one clears the others). Plain singleton, read by Svelte via the per-RAF tick.
 - `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
   `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).
   Node: `extendTrack`/`trimTrack`/`beginMove`. Force: `createForce`/`deleteForce`/`beginForceMove` +
-  `beginLength` (the extent drag). Kind: `convertSection` (per-section, a `snapshotSection` pair).
+  `beginLength` (the extent drag). Initial speed: `beginV0` (the v0 field gesture). Kind:
+  `convertSection` (per-section, a `snapshotSection` pair).
   Structural: `appendSection`/`splitSection`/`joinSection`/`removeSection` — each a whole-track
   `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). `history` singleton;
   `createHistory` for tests.
@@ -276,9 +280,9 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 ## Editing model
 
 A track is a chain of sections; each is geo or force, authored by its idiom (below). Direct
-manipulation, no sub-tools. Three mutually-exclusive selections (`editor.ts`): a node, a force
-point, or a whole section — selecting one clears the others, so a key press never fights over its
-target. Section selection is a **highlight + the context-menu target only**; it never gates
+manipulation, no sub-tools. Four mutually-exclusive selections (`editor.ts`): a node, a force
+point, a whole section, or the START anchor (the initial-speed handle) — selecting one clears the
+others, so a key press never fights over its target. Section selection is a **highlight + the context-menu target only**; it never gates
 authoring (force points are added by cursor position, nodes dragged in the viewport).
 
 **Geo authoring** (within a geo section) — author the shape in the viewport. Click a node to select
@@ -323,7 +327,8 @@ via a whole-track snapshot pair (byte-identical).
 - **A single force point holds its value everywhere** (endpoint hold), so one point can't make a
   *dip* — it's a constant. A localized airtime bump needs three (1g shoulders + the crest). The empty
   profile is a flat `DEFAULT_G` (1g), so a fresh geo→force convert is a straight level track.
-- **The track start is a fixed `START` anchor at the origin** (initial speed `V0`), not a node — a
+- **The track start is a fixed-position `startEntry` anchor at the origin** (initial speed
+  `Track.v0`, default `V0`; authored via the selectable START diamond's popover), not a node — a
   geo→force convert carries no geo start position (the convert is destructive; position is cosmetic). The force
   **extent resets** to `DEFAULT_FORCE_LEN` on convert/append (not inherited from the geo arclength),
   then editable via the end handle.

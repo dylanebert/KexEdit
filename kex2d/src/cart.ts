@@ -219,7 +219,7 @@ export function cartPose(
 }
 
 /** the baked F_n force curve as per-sample points over arclength — the timeline's
- *  x-axis is distance (spec §4), so the curve is read natively (no time resample):
+ *  x-axis is distance, so the curve is read natively (no time resample):
  *  `s[i]` is sample i's cumulative arclength (Σ ds), `f[i]` its force. the per-edge
  *  `fN` (length count−1) carries force at its leading sample, so the last sample
  *  repeats the last edge's value to reach the track end. null before the bake has a

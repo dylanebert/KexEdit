@@ -2,7 +2,7 @@
  *  no solve state — just the arclength↔pixel affine, the 1-2-5 tick generator, and
  *  the pan/zoom clamp. the chart's x-axis is distance (meters): s is the domain the
  *  solver holds fixed, so targets are authored, dragged, and displayed directly in
- *  it (spec §4). ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom,
+ *  it. ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom,
  *  _renderTicks, findGoodStep). */
 
 /** view-state: a single affine over the distance axis. `pan` is the content pixel at

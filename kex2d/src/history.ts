@@ -44,6 +44,9 @@ import {
     spawnNode,
     splitForce,
     splitGeo,
+    type TrackV0State,
+    trackV0State,
+    setTrackV0,
 } from "./track";
 
 /** a do/undo pair. `apply` is the do / redo direction, `reverse` is undo. both
@@ -252,10 +255,23 @@ export function beginLength(ecs: State, id: number): void {
     );
 }
 
+// ── track initial speed (v0) ───────────────────────────────────────────────────
+
+/** open a gesture on the track's initial-speed field (scrub or typed edit),
+ *  snapshotting v0. commit coalesces the live writes into one entry; a no-change
+ *  release records nothing. */
+export function beginV0(trackEid: number): void {
+    begin(
+        () => trackV0State(trackEid),
+        (st: TrackV0State) => setTrackV0(trackEid, st.v0),
+        (a: TrackV0State, b: TrackV0State) => a.v0 === b.v0,
+    );
+}
+
 // ── per-section kind conversion ───────────────────────────────────────────────
 
 /** flip a section's kind to its opposite, destructively resetting to that kind's
- *  default (§5), as one undoable entry. the command captures the full section state
+ *  default, as one undoable entry. the command captures the full section state
  *  before and after (`snapshotSection`), so undo restores the pre-convert payload
  *  byte-identical — what makes destructive conversion safe without a confirm dialog. */
 export function convertSection(h: History, ecs: State, section: number): void {

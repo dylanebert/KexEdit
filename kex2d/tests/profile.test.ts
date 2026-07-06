@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_G, type ForcePoint, forceProfile, sampleForce } from "../src/profile";
 
-// the force-authoring layer (kex/specs/kex2d-sections.md §6): authored force points
+// the force-authoring layer (kex2d/CLAUDE.md, force authoring): authored force points
 // → dense per-edge F_n. pure linear interp with held endpoints + an empty default,
 // so the invariants are exact (no derived tolerance). the O(ds) recovered-vs-authored
 // gap lives one layer up (section.test.ts evalForce) and isn't re-tested here.

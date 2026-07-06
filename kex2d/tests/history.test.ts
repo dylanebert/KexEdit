@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import {
     beginForceMove,
     beginMove,
+    beginV0,
     commit,
     convertSection,
     createForce,
@@ -26,6 +27,9 @@ import {
     sectionHandles,
     sections,
     setForcePoint,
+    setTrackV0,
+    Track,
+    V0,
 } from "../src/track";
 
 // track undo/redo, addressed by stable id/order. a fresh device-free State per test
@@ -190,7 +194,7 @@ test("a no-move force-point release records nothing", () => {
     expect(h.undo.length).toBe(1); // only the create
 });
 
-test("convert geo→force undoes byte-identical to the shaped geo track (§5)", () => {
+test("convert geo→force undoes byte-identical to the shaped geo track", () => {
     const { state, sec } = nodes();
     addNode(state, sec, 40, 6); // shape it: a third off-axis node
     const before = sectionHandles(state, sec).map((e) => ({
@@ -216,7 +220,45 @@ test("convert geo→force undoes byte-identical to the shaped geo track (§5)", 
     expect(after).toEqual(before); // the geo chain restored exactly
 });
 
-test("convert force→geo undoes byte-identical to the authored force points (§5)", () => {
+// ── track initial speed (v0) — a per-track scalar on the same gesture substrate ──
+
+test("v0 scrub collapses to one entry; undo restores the speed, redo replays", () => {
+    const { eid } = nodes();
+    const h = createHistory();
+    expect(Track.v0.get(eid)).toBe(V0); // the default seed
+
+    beginV0(eid);
+    setTrackV0(eid, 14); // live preview frames — not recorded individually
+    setTrackV0(eid, 18);
+    commit(h);
+
+    expect(h.undo.length).toBe(1); // the whole scrub → one entry
+    expect(Track.v0.get(eid)).toBe(18);
+
+    undo(h);
+    expect(Track.v0.get(eid)).toBe(V0);
+
+    redo(h);
+    expect(Track.v0.get(eid)).toBe(18);
+});
+
+test("a no-change v0 release records nothing", () => {
+    const { eid } = nodes();
+    const h = createHistory();
+    beginV0(eid);
+    commit(h); // released without changing the speed
+    expect(h.undo.length).toBe(0);
+});
+
+test("setTrackV0 floors a zero/negative speed off zero", () => {
+    const { eid } = nodes();
+    setTrackV0(eid, 0);
+    expect(Track.v0.get(eid)).toBeGreaterThan(0); // never a zero/infinite-time start
+    setTrackV0(eid, -5);
+    expect(Track.v0.get(eid)).toBeGreaterThan(0);
+});
+
+test("convert force→geo undoes byte-identical to the authored force points", () => {
     const { state, sec } = nodes();
     const h = createHistory();
     convertSection(h, state, sec); // → force (clears the seed nodes)

@@ -25,7 +25,7 @@ import {
 } from "../src/track";
 
 // cartPose rides the baked track; forceCurve reads the baked force per-sample over
-// arclength (the chart's distance axis, spec §4). driven against the seeded flat chain,
+// arclength (the chart's distance axis). driven against the seeded flat chain,
 // where constant speed makes t linear in arclength — so the cart's x is a closed-form
 // check, not a fixture. device-free harness, like track.test.ts.
 
