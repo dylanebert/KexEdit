@@ -972,7 +972,7 @@ onMount(() => {
             return;
         }
         // force-point select/delete — guarded on a live force selection so geo-node
-        // Esc/Del (controls.ts) stay unambiguous (the selections are mode-exclusive).
+        // Esc/Del (controls.ts) stay unambiguous (the selections are mutually exclusive).
         if (editor.force !== null) {
             if (e.key === "Escape") {
                 e.preventDefault();
@@ -1542,8 +1542,8 @@ onMount(() => {
         paint-order: stroke;
     }
 
-    /* the force-mode chart surface: double-click places a point, a bare click clears
-       the selection. default cursor (the diamonds carry their own move cursor). */
+    /* the whole-track force-authoring chart surface: double-click places a point, a bare
+       click clears the selection. default cursor (the diamonds carry their own move cursor). */
     .chartzone {
         fill: transparent;
         pointer-events: all;

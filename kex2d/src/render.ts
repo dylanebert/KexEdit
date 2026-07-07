@@ -124,7 +124,7 @@ const TrackDrawSystem: System = {
             ctx.stroke();
 
             // selected-section overlay: overdraw its span in the accent so the
-            // whole-section handle (convert / split / join / delete target) reads.
+            // whole-section handle (convert / delete target) reads.
             if (editor.section !== null) {
                 const info = sectionInfo.get(editor.section);
                 if (info) {

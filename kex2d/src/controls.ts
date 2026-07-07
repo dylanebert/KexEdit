@@ -75,7 +75,7 @@ function pickNode(ecs: State, tx: ViewTx, sx: number, sy: number): number | null
 
 /** the section whose baked polyline passes nearest the screen point (within the pick
  *  radius), or null — clicking the track between nodes selects its section (the
- *  whole-section handle for convert / split / join / delete). */
+ *  whole-section handle for convert / delete). */
 function pickSection(ecs: State, tx: ViewTx, sx: number, sy: number): number | null {
     const s = trackSamples(ecs);
     if (!s) return null;

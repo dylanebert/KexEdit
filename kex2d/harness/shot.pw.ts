@@ -502,6 +502,93 @@ test("v0 authoring flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
+// Drive the MIXED-LAYOUT DOGFOOD (section-editor stage 5): compose the whole chain the
+// spec set out to author — a geo lead-in, a force airtime hill appended after it, then a
+// geo turnaround appended after that — end to end through the REAL affordances (the `+`
+// flyout, double-clicks over the force arc, the fat-hit crest drag). This is the
+// reproducible artifact behind the stage-5 verdict; the hands-on feel pass — where the
+// author sculpts the geometry and judges where the surface fights — stays the user's.
+// Precise geometry isn't asserted: the claim is the composed chain builds through real
+// clicks and bakes, and the authored hill re-times the ride.
+test("mixed layout dogfood flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
+    const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
+    const forceCounts = () =>
+        page.evaluate((): number[] => (window as any).__kex.sectionForceCounts());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+    const vp = page.viewportSize();
+    const strip = () =>
+        vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
+
+    // seed a shaped geo lead-in (section 0) — the shaped track the chain grows from.
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await expect.poll(sectionCount).toBe(1);
+
+    // ── 1. Append a force section after the lead-in via the real + flyout. ──
+    await page.locator(".clip-add").click();
+    await page.getByRole("button", { name: "Append force section" }).click();
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
+    await page.waitForTimeout(SETTLE_MS);
+
+    const body = page.locator(".dock .body");
+    const bb = await body.boundingBox();
+    if (!bb) throw new Error("timeline body not laid out");
+
+    // ── 2. Author an airtime hill on the force section by real double-clicks over its arc
+    // — three points (1g shoulders + a crest), the gotcha's minimum for a dip (one point
+    // is a constant, so it takes three to make a localized bump). ──
+    const fcb = await page.locator(".clip").nth(1).boundingBox();
+    if (!fcb) throw new Error("force clip not laid out");
+    const cy = bb.y + bb.height * 0.5;
+    for (const f of [0.25, 0.5, 0.75]) await page.mouse.dblclick(fcb.x + fcb.width * f, cy);
+    await expect.poll(async () => (await forceCounts())[1]).toBe(3);
+
+    // pull the crest (the middle point by x) below 1g via its fat hit target → an airtime
+    // dip that re-times the ride (the bake's total time shifts).
+    const tBefore = await tTotal();
+    const hits = page.locator(".fhit");
+    await expect(hits).toHaveCount(3);
+    const centers = await hits.evaluateAll((els) =>
+        els
+            .map((el) => el.getBoundingClientRect())
+            .map((r) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 }))
+            .sort((a, b) => a.x - b.x),
+    );
+    const crest = centers[1];
+    await page.mouse.move(crest.x, crest.y);
+    await page.mouse.down();
+    await page.mouse.move(crest.x, crest.y + 22, { steps: 10 });
+    await page.mouse.up();
+    await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-3).toBe(true);
+    await page.waitForTimeout(300);
+    if (vp) await page.screenshot({ path: join(OUT, "dogfood-1-hill.png"), clip: strip() });
+
+    // ── 3. Append a geo turnaround after the hill via the real + flyout → the composed
+    // chain: geo lead-in, force hill, geo turnaround. (The turnaround's geometry is the
+    // hands-on sculpt; here the claim is the three-section mixed chain composed and bakes.)
+    await page.locator(".clip-add").click();
+    await page.getByRole("button", { name: "Append geometry section" }).click();
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1,0");
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await expect(page.locator(".clip")).toHaveCount(3);
+    await page.waitForTimeout(SETTLE_MS);
+    await page.screenshot({ path: join(OUT, "dogfood-2-chain.png") });
+    if (vp) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip() });
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
 // The geometry→force atom observability page:
 // the ∂F/∂P sparsity heatmap, the round-trip overlay, and the conditioning plot.
 // Pure canvas2D (no GPU) rendered on module load; capture the page + each panel.

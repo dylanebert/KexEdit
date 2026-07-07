@@ -2,10 +2,10 @@
  *  doesn't persist (no save/load, no replay). plain mutable singleton; Svelte reads
  *  it via the per-RAF tick pattern in App.
  *
- *  there are no tools or modes: in geo mode you select a node and drag it freely,
- *  and when the selected node is the chain end the extend/delete actions appear; in
- *  force mode you select a force point on the timeline. the two selections are
- *  mutually exclusive by mode (a force-mode track has no nodes, and vice versa). */
+ *  there are no tools or modes: you select a node and drag it in the viewport, a
+ *  force point on the timeline curve, a whole section, or the track START anchor —
+ *  four mutually-exclusive selections (below), so a contextual action never fights
+ *  over its target. */
 
 interface EditorState {
     /** eid of the currently selected node (geo section), or null. */
