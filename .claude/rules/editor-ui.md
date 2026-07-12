@@ -43,8 +43,7 @@ ceiling; don't inherit its shape out of deference.
 A coaster's canonical representation is its **F_n force curve**, not the node positions you drag to
 shape it. So the force-curve timeline is *always-present critical information* — you author against
 it continuously, the way a DAW keeps its waveform docked. That's the one spot kexedit bends gate 1
-toward a persistent dock, exactly as Shallot's editor keeps an inspector that a pure canvas tool
-wouldn't need.
+toward a persistent dock — the earned bend root `ui.md` sanctions.
 
 The bend is bounded, not a license for a cockpit: the timeline is the **only** earned permanent
 dock. It still clears gates 2–5 — the track shows a clean curve, not empty controls; every edit
