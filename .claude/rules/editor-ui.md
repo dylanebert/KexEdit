@@ -11,35 +11,12 @@ paths:
 Applies to all editor UI in kexedit, wherever it lives — today the kex2d prototype, migrating into
 `app/` and beyond. The `.svelte`/`.css` globs catch components anywhere; as the editor frontend
 grows into a new TS root, add it to the `paths` above so its controllers and stores pick this up
-too. The editors are Shallot apps and inherit Shallot's editor posture: the full engine-editor
-treatment is `shallot/.claude/rules/editor-ui.md` + `visual-identity.md`, and this file is the
-kexedit-framed version. Where they overlap, they agree — keep them that way.
-
-## Posture: the track, not the cockpit
-
-The viewport is the product. The track fills the screen; chrome is contextual and minimal — a
-*canvas* (Figma, Linear), not a *cockpit* (classic Blender) where every panel is docked and loud
-at once. The cockpit's failure isn't having panels, it's that they all claim attention equally and
-continuously, so nothing is foreground. Attention is the scarce resource, not screen space.
-
-## The gates
-
-Every UI decision clears these.
-
-1. **Earn its place.** Monitored continuously → persistent. Acted on occasionally → summoned
-   (contextual button, popover), never docked.
-2. **Quiet when silent.** Nothing relevant to show → empty, dimmed, or collapsed, not loud. A
-   persistent *location* is fine; loud-while-irrelevant *contents* are not.
-3. **On the object first.** If it can be manipulated in the viewport (drag a node, a handle), it
-   belongs there, not in a panel. A panel control justifies itself only when the data has no
-   spatial form. kex2d is the model: no tools, no modes — click a node and drag it, radial
-   extend/delete buttons summoned at the selected chain end, force keyframes authored on the
-   timeline curve itself, their typed fields in a popover at the point.
-4. **Low floor, high ceiling.** A newcomer drags nodes and sees the track react; an expert reaches
-   it faster through the keyboard (Enter extends, Del trims, Space plays). Capability is summoned,
-   not displayed.
-5. **Instant and reversible.** Edits re-bake and show immediately, no apply step, and
-   undo cleanly (`history.ts`).
+too. The posture, gates, surface, field, and motion laws are the kex root ruleset
+(`kex/.claude/rules/ui.md`); this file is its kexedit child — it adds the project's earned bends
+and worked examples, never restates root. kex2d is the worked model of root gate 3 (on the object
+first): no tools, no modes — click a node and drag it, radial extend/delete buttons summoned at
+the selected chain end, force keyframes authored on the timeline curve itself, their typed fields
+in a popover at the point.
 
 ## Layered expressiveness
 
@@ -52,7 +29,7 @@ Two commitments, held together:
    expressive than the substrate — the constraint is the feature, not a compromise: inferred
    arc-rule tangents instead of exposed bezier handles (the Planet Coaster lesson), a constant
    target band before a keyframed profile. Upper layers optimize author strain, iteration speed,
-   and attention (the gates above); each step down toward the substrate is summoned, never default.
+   and attention (root's gates); each step down toward the substrate is summoned, never default.
 
 Corollary for feature requests: users steeped in a traditional tool ask for its *mechanism* (a
 force/geometry mode switch, manual split/edit/reconnect surgery), which is usually the workaround
@@ -90,21 +67,15 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
 - **Insert on the curve.** Double-click creates a keyframe at the authored profile's value there
   (the DAW/AE envelope-insertion identity: insertion never bends the curve), never at the cursor's
   y-value.
-- **Nothing moves under its own gesture.** While a keyframe drags, axis auto-fit holds; only
-  dragging past the chart edge edge-scrolls to follow (growth ∝ overshoot, per frame), and it
-  resumes on release. Both axes clamp the cursor to the chart. Same law for surfaces: a popover
-  whose label is being scrubbed freezes its anchor until release, then re-anchors.
+- **Nothing moves under its own gesture** (root `ui.md` "Surfaces hold still"). Chart addition:
+  both axes clamp the cursor to the chart during a keyframe drag.
 - **Arrow cursor over keyframes** (AE/Unity/Blender); grab hands mean pannable surfaces. Hover
   affordance is the marker's fill change, not the cursor.
 - **Numeric fields are summoned at the object.** A selected keyframe's fields float in a popover
-  at the point (gate 3), the live readout during a drag (pointer-inert then). ONE surface: rows on
-  a shared key·value·unit grid, borderless transparent inputs, focus = row wash — never boxed
-  inputs inside a bordered box. Field behavior is the shallot inspector's: the key label is the
-  scrub handle (`ew-resize`, full-row hit area, fixed per-px rate, rounded to displayed precision,
-  one undo gesture), select-all on focus (replace, not append), Enter commits, Escape reverts, no
-  native spinner chrome.
-- **Dismissal is layered.** Click-away or Escape peels the innermost transient layer only: focused
-  field first, keyframe selection on the next one.
+  at the point (root gate 3), the live readout during a drag (pointer-inert then). The field
+  surface + behavior is root `ui.md` "Fields".
+- **Dismissal is layered** (root `ui.md` "Surfaces hold still"): keyframe selection is the
+  transient layer between the focused field and the surface.
 - **Shift constrains a two-axis drag** to the dominant axis since the grab (the AE/Photoshop
   rule), re-evaluated live mid-drag. No hysteresis; the escalation if it flickers is explicit
   Blender-style axis keys, not a tuned threshold.
@@ -136,13 +107,5 @@ invoked-solve surface, 2D or 3D.
 ## Surface and motion
 
 kexedit owns its own visual identity (FVD, its own palette) — don't import Shallot's gold. The
-*principles* carry over:
-
-- **Reduce to earn.** Every border, divider, shadow earns its place. Reach for spacing and surface
-  color shifts before lines; distinguish regions by background step, not borders.
-- **Opaque docked + floating surfaces.** A docked surface (the timeline) and any floating one
-  (menu, popover, picker) is opaque and, when docked, fixed — never a translucent fill over the
-  live viewport, where it hurts legibility. Elevation comes from border + shadow. The kex2d
-  `Timeline` dock is the worked example: opaque, no resize, persistent transport.
-- **Instant feedback motion.** Transitions use one shared easing token (`--ease-out`), ~150ms
-  default, ~100ms for interactive active states; buttons get a subtle scale + wash on `:active`.
+principles (reduce to earn, opaque surfaces, one easing token) are root `ui.md`. The kex2d
+`Timeline` dock is the worked example: opaque, no resize, persistent transport.
