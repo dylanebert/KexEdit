@@ -270,8 +270,8 @@ export function toGlobal(spans: SectionSpan[], section: number, s: number): numb
 /** track-global distance `d` → the section-local address `(section, s)`. boundary policy:
  *  a `d` on a shared section boundary resolves to the UPSTREAM (earlier) section — the
  *  first span whose exit reaches `d` wins (left/upstream-inclusive spans), matching the
- *  clip strip's boundary guides and the cart's park resolution. clamps `d` into
- *  `[0, trackEnd]`. null when there's no bake. */
+ *  clip strip's boundary guides and the cart's park resolution. out-of-range `d` resolves
+ *  to the nearest end of the track. null when there's no bake. */
 export function toLocal(spans: SectionSpan[], d: number): { section: number; s: number } | null {
     if (spans.length === 0) return null;
     for (const sp of spans) {

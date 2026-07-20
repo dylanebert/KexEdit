@@ -1405,7 +1405,7 @@ onMount(() => {
                         <input
                             type="number"
                             step="1"
-                            min="0"
+                            min={selPoint.startS}
                             value={dText}
                             onchange={onFieldD}
                             onfocus={(e) => e.currentTarget.select()}

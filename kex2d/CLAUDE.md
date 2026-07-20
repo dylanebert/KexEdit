@@ -297,8 +297,8 @@ editor-ui invariant-domain rule).
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
   teardown. `pickNode` (skips order-0 anchors) then `pickSection` (nearest span); a node drag
   `localize`s the pointer into the section frame then `reheadOnDrag`. Right-click a section span opens
-  the context menu (`openContext`). Keys: `Enter` extend / `Del` trim (node end); `a`/`A` append
-  geo/force; `Del` delete (selected section). All edits route through `history`.
+  the context menu (`openContext`). Keys: `Enter` extend / `Del` trim (node end); `Del` delete
+  (selected section). All edits route through `history`.
 - `timeline.ts` — pure transform + tick math for the force-curve timeline (no Svelte/DOM/track
   state). The chart's x-axis is **distance** (meters). `View`, `sToPx`/`pxToS`, `zoomAt`, `clampView`,
   `frameAll`, `niceStep`, `ticks`, the navigator math (`navWindow`/`navDragView`/`marginArc`), and
@@ -358,7 +358,7 @@ whole-track cumulative offset. Keyframes, not constraints. Interaction conventio
 
 **Section ops** (the multi-section chain) — select a section by clicking its **clip** in the timeline
 marker lane (or its viewport polyline span); a force clip's right edge is its extent trim, and a `+`
-tail after the last clip appends (geo/force flyout, also `a`/`A`). **Right-click a clip or span** for
+tail after the last clip appends (geo/force flyout). **Right-click a clip or span** for
 the context menu: Convert (destructive geo↔force, undoable) + Delete (`Del`). Split and join left the
 editor — deferred to the conversion/optimization tier (the substrate `splitGeo`/`splitForce`/
 `joinNext` + tests stay in-tree as its reference). Boundary anchors draw as viewport diamonds + chart
