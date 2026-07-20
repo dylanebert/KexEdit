@@ -21,16 +21,19 @@ import {
     EXTEND_DIST,
     Handle,
     handleAt,
+    handleTangent,
     reheadOnDrag,
     SectionKind,
     sectionForces,
     sectionHandles,
     sections,
     setForcePoint,
+    setTangent,
     setTrackV0,
     Track,
     V0,
 } from "../src/track";
+import { TangentMode } from "../src/spline";
 
 // track undo/redo, addressed by stable id/order. a fresh device-free State per test
 // (no GPU — history mutates the ECS directly, never bakes), one geo section with the
@@ -273,4 +276,31 @@ test("convert force→geo undoes byte-identical to the authored force points", (
     undo(h);
     expect(sections(state)[0].kind).toBe(SectionKind.Force);
     expect(points(state, sec)).toEqual(before); // the points restored exactly
+});
+
+test("tangent edit: the move gesture captures it, undo/redo restore mode + vectors", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    addNode(state, sec, 40, 0); // node 1 interior, node 2 the tip
+    expect(handleTangent(state, sec, 1)).toBeUndefined(); // Auto to start
+
+    // a no-op gesture (no edit) records nothing — the sameTangent path.
+    beginMove(state, sec);
+    commit(h);
+    expect(h.undo.length).toBe(0);
+
+    // edit the tangent inside a move gesture — nodeSnapshot captures it, so commit
+    // records one entry (the existing history mechanism, unchanged).
+    const tan = { mode: TangentMode.Free, inX: 5, inY: -2, outX: 3, outY: 6 };
+    beginMove(state, sec);
+    setTangent(state, sec, 1, tan);
+    commit(h);
+    expect(h.undo.length).toBe(1);
+    expect(handleTangent(state, sec, 1)).toEqual(tan);
+
+    undo(h);
+    expect(handleTangent(state, sec, 1)).toBeUndefined(); // reverted to Auto
+
+    redo(h);
+    expect(handleTangent(state, sec, 1)).toEqual(tan); // restored verbatim
 });

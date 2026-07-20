@@ -16,6 +16,15 @@
  *  can pull its segments off the arc — the accepted misshaping, since the
  *  contract can't hold on both sides at once.
  *
+ *  a node may instead carry an *explicit* tangent (`Node.tangent`, the summoned
+ *  inner layer): its in/out tangent vectors are stored absolute in the node's
+ *  local frame (the Figma/Blender bezier convention — a handle holds its length
+ *  under an anchor drag, unlike the live-chord-proportional `Auto` arc). `Aligned`
+ *  keeps the two collinear (one direction, per-side length); `Free` lets them
+ *  diverge, so a corner (C0 kink) becomes expressible. `handle()` is the only seam
+ *  where a heading becomes a tangent, so `Auto` (no `tangent`) stays byte-identical
+ *  to the arc rule while explicit nodes substitute their stored vector there.
+ *
  *  the sampled positions feed the kinematic recovery (`bake.ts`) → canonical
  *  F_n; the curve is only F_n's input, so this module stays geometry-only (no
  *  physics). a Hermite cubic's curvature varies within a span, so the recovered
@@ -44,7 +53,32 @@ const FINE = 32;
  *  bounded there; the segment is the accepted misshaping, not a blow-up. */
 const K_MAX = 4;
 
-export type Node = { x: number; y: number; theta: number };
+/** a node's tangent authoring mode. `Auto` (the default, represented by an absent
+ *  `Node.tangent`) derives both tangents from the stored heading via the arc rule;
+ *  `Aligned` and `Free` supply explicit stored vectors, honored verbatim in
+ *  `handle()`. `Aligned` keeps the in/out vectors collinear (the UI's invariant, one
+ *  authored direction with per-side length); `Free` allows a C0 corner. the substrate
+ *  reads the vectors the same way for both — the mode is authoring metadata (which
+ *  handle drag rotates the other) that rides through storage and undo. */
+export enum TangentMode {
+    Aligned = 1,
+    Free = 2,
+}
+
+/** an explicit tangent on a node: the in/out tangent vectors (segment-space,
+ *  forward-pointing along the curve — the same space `handle()` returns) stored
+ *  absolute in the node's local frame. present only when the node is not `Auto`. */
+export interface Tangent {
+    mode: TangentMode;
+    /** incoming tangent (the arriving segment's `s=1` velocity). */
+    inX: number;
+    inY: number;
+    /** outgoing tangent (the departing segment's `s=0` velocity). */
+    outX: number;
+    outY: number;
+}
+
+export type Node = { x: number; y: number; theta: number; tangent?: Tangent };
 
 type Pt = { x: number; y: number };
 
@@ -95,6 +129,19 @@ function handle(theta: number, chordAngle: number, chordLen: number): [number, n
     const c = Math.cos(wrapPi(theta - chordAngle) / 2);
     const k = Math.min(1 / (c * c), K_MAX);
     return [k * chordLen * Math.cos(theta), k * chordLen * Math.sin(theta)];
+}
+
+/** the segment-start (outgoing) tangent at node `n`: its stored explicit vector
+ *  when the node isn't `Auto`, else the arc-rule `handle`. an explicit vector is
+ *  absolute (chord-independent), so an anchor drag leaves it fixed. */
+function outVec(n: Node, chordAngle: number, chordLen: number): [number, number] {
+    return n.tangent ? [n.tangent.outX, n.tangent.outY] : handle(n.theta, chordAngle, chordLen);
+}
+
+/** the segment-end (incoming) tangent at node `n` — the explicit in-vector, else
+ *  the arc-rule `handle`. */
+function inVec(n: Node, chordAngle: number, chordLen: number): [number, number] {
+    return n.tangent ? [n.tangent.inX, n.tangent.inY] : handle(n.theta, chordAngle, chordLen);
 }
 
 /** cubic Hermite point on the segment between `pa` (s=0) and `pb` (s=1). `va` /
@@ -188,8 +235,8 @@ export function chainCounts(
             break;
         }
         const chordAngle = Math.atan2(dy, dx);
-        const va = handle(pa.theta, chordAngle, chordLen);
-        const vb = handle(pb.theta, chordAngle, chordLen);
+        const va = outVec(pa, chordAngle, chordLen);
+        const vb = inVec(pb, chordAngle, chordLen);
         const { length, turning } = segMetrics(pa, va, pb, vb);
         const byArc = Math.max(1, Math.round(length / dsNominal));
         const byTurn = Math.ceil(turning / (2 * MAX_U_PER_EDGE));
@@ -239,8 +286,8 @@ export function sampleAt(
         const pb = nodes[i + 1];
         const chordAngle = Math.atan2(pb.y - pa.y, pb.x - pa.x);
         const chordLen = Math.hypot(pb.x - pa.x, pb.y - pa.y);
-        const va = handle(pa.theta, chordAngle, chordLen);
-        const vb = handle(pb.theta, chordAngle, chordLen);
+        const va = outVec(pa, chordAngle, chordLen);
+        const vb = inVec(pb, chordAngle, chordLen);
         const m = counts[i];
 
         let prevX = pa.x;

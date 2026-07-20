@@ -12,8 +12,11 @@ import {
     EXTEND_DIST,
     extend,
     Handle,
+    handleAt,
+    handleTangent,
     reheadOnDrag,
     removeTrailingHandle,
+    restoreAll,
     samples,
     SectionKind,
     sectionForces,
@@ -22,11 +25,14 @@ import {
     sections,
     sectionSpans,
     setSectionLength,
+    setTangent,
     setTrackV0,
+    snapshotAll,
     toGlobal,
     toLocal,
     Track,
 } from "../src/track";
+import { TangentMode } from "../src/spline";
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
 // computeTime, syncs each geo node's sample index, and records the per-section
@@ -480,5 +486,55 @@ describe("coordinate lens (s ↔ d)", () => {
         expect(offAfter - offBefore).toBeCloseTo(10, 1);
         if (dBefore === null || dAfter === null) throw new Error("toGlobal null");
         expect(dAfter - dBefore).toBeCloseTo(offAfter - offBefore, 10);
+    });
+});
+
+describe("explicit tangents (substrate)", () => {
+    test("an explicit tangent survives a whole-track snapshot round-trip and shapes the bake", () => {
+        const { state, eid, sec } = track();
+        addNode(state, sec, 40, 0); // node 1 at (24,0) becomes interior; node 2 the tip
+
+        // a Free corner on the interior node: arrives down-right (in-vector), leaves
+        // up-right (out-vector) — the two diverge, so it's a genuine kink.
+        const tan = { mode: TangentMode.Free, inX: 12, inY: -4, outX: 8, outY: 8 };
+        setTangent(state, sec, 1, tan);
+
+        // serialize/deserialize: the structural-op undo unit (snapshotAll/restoreAll)
+        // must round-trip the mode + both vectors verbatim.
+        const snap = snapshotAll(state);
+        restoreAll(state, snap);
+        expect(handleTangent(state, sec, 1)).toEqual(tan);
+
+        // and the bake honors it: the outgoing segment departs the node up-right (the
+        // out-vector), the incoming arrives down-right (the in-vector) — a corner the
+        // flat Auto seed never produces.
+        state.step(0);
+        const s = samples.get(eid);
+        if (!s) throw new Error("samples missing");
+        const node1 = handleAt(state, sec, 1);
+        if (node1 === null) throw new Error("node 1 missing");
+        const off = Handle.sample.get(node1);
+        expect(off).toBeGreaterThan(0);
+
+        const dep = Math.atan2(s.posY[off + 1] - s.posY[off], s.posX[off + 1] - s.posX[off]);
+        const arr = Math.atan2(s.posY[off] - s.posY[off - 1], s.posX[off] - s.posX[off - 1]);
+        expect(dep).toBeGreaterThan(0.15); // departs upward toward the +45° out-vector
+        let turn = dep - arr;
+        turn = ((((turn + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
+        expect(Math.abs(turn)).toBeGreaterThan(0.3); // in ≠ out → a corner, not C1
+    });
+
+    test("setTangent(…, null) reverts a node to Auto (byte-identical to the arc bake)", () => {
+        const { state, eid, sec } = track();
+        addNode(state, sec, 40, 6);
+        state.step(0);
+        const baseline = Array.from(samples.get(eid)?.posY.subarray(0, Track.count.get(eid)) ?? []);
+
+        setTangent(state, sec, 1, { mode: TangentMode.Free, inX: 5, inY: 9, outX: 2, outY: 9 });
+        state.step(0);
+        setTangent(state, sec, 1, null); // revert
+        state.step(0);
+        const reverted = Array.from(samples.get(eid)?.posY.subarray(0, Track.count.get(eid)) ?? []);
+        expect(reverted).toEqual(baseline); // Auto path unchanged by the round trip
     });
 });

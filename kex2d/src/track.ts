@@ -2,7 +2,7 @@ import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@d
 import { V_FLOOR, V_WARN } from "./bake";
 import { type ForcePoint, forceProfile } from "./profile";
 import { chain, type Entry, localize, place, type Section as SectionSpec } from "./section";
-import { type Node, reflect } from "./spline";
+import { type Node, reflect, type Tangent, type TangentMode } from "./spline";
 
 /** whether a section is authored as GEOMETRY (drag nodes in the viewport, recover
  *  the force) or FORCE (place points on the force curve, integrate the geometry) —
@@ -51,14 +51,53 @@ export const Section = {
  *  predecessor, node 0 is a fixed local flat anchor (θ = 0), interior nodes stay
  *  frozen. only the last node's heading changes on a drag, so the edit reshapes
  *  only the two segments sharing the dragged node. `sample` is the global sample
- *  index this node lands on (synced by BakeSystem). */
+ *  index this node lands on (synced by BakeSystem).
+ *  `tmode` is the node's `TangentMode` (0 = Auto, the default: derive tangents
+ *  from `theta` via the arc rule). when it isn't Auto, `tin`/`tout` hold the
+ *  explicit in/out tangent vectors (section-local, absolute) the bake honors in
+ *  place of the arc rule — the summoned inner layer (`Aligned` / `Free`). */
 export const Handle = {
     section: sparse(u32),
     order: sparse(u32),
     sample: sparse(u32),
     pos: sparse(vec2),
     theta: sparse(f32),
+    tmode: sparse(u32),
+    tin: sparse(vec2),
+    tout: sparse(vec2),
 };
+
+/** the numeric value stored on `Handle.tmode` for an `Auto` node (no explicit
+ *  tangent). the `TangentMode` enum starts at 1, so 0 is the third, default state. */
+const TANGENT_AUTO = 0;
+
+/** read a node's explicit tangent, or undefined when it's `Auto` — the projection
+ *  onto the pure `spline.Node.tangent`. */
+function readTangent(eid: number): Tangent | undefined {
+    const mode = Handle.tmode.get(eid);
+    if (mode === TANGENT_AUTO) return undefined;
+    return {
+        mode: mode as TangentMode,
+        inX: Handle.tin.x.get(eid),
+        inY: Handle.tin.y.get(eid),
+        outX: Handle.tout.x.get(eid),
+        outY: Handle.tout.y.get(eid),
+    };
+}
+
+/** write a node's tangent onto its columns; undefined resets it to `Auto` (zeroed
+ *  vectors). the one place `Handle.tmode`/`tin`/`tout` are written together. */
+function writeTangent(eid: number, tan: Tangent | undefined): void {
+    if (tan) {
+        Handle.tmode.set(eid, tan.mode);
+        Handle.tin.set(eid, tan.inX, tan.inY);
+        Handle.tout.set(eid, tan.outX, tan.outY);
+    } else {
+        Handle.tmode.set(eid, TANGENT_AUTO);
+        Handle.tin.set(eid, 0, 0);
+        Handle.tout.set(eid, 0, 0);
+    }
+}
 
 /** an authored force keyframe on a FORCE section. `section` is the owning section's
  *  stable id; `id` is the point's stable identity (undo/redo address, eid-recycle
@@ -360,6 +399,7 @@ export function addNode(ecs: State, sectionId: number, x: number, y: number): nu
     Handle.order.set(eid, order);
     Handle.sample.set(eid, 0);
     Handle.pos.set(eid, x, y);
+    writeTangent(eid, undefined); // a fresh node is Auto — the arc rule
     if (prev === null) {
         Handle.theta.set(eid, 0); // node 0 is a fixed local flat anchor (the entry)
     } else {
@@ -380,10 +420,10 @@ export function handleAt(ecs: State, sectionId: number, order: number): number |
     return null;
 }
 
-/** re-create a node at an *exact* section / order / position / heading — no
- *  `reflect`, no rehead. restores a node deleted by a trim (undo) or re-adds one
- *  dropped by an extend (redo); the saved state is replayed verbatim so the bake
- *  reproduces the same curve. */
+/** re-create a node at an *exact* section / order / position / heading (+ optional
+ *  explicit tangent) — no `reflect`, no rehead. restores a node deleted by a trim
+ *  (undo) or re-adds one dropped by an extend (redo); the saved state is replayed
+ *  verbatim so the bake reproduces the same curve. an absent `tan` is `Auto`. */
 export function spawnNode(
     ecs: State,
     sectionId: number,
@@ -391,6 +431,7 @@ export function spawnNode(
     x: number,
     y: number,
     theta: number,
+    tan?: Tangent,
 ): number {
     const eid = ecs.create();
     ecs.add(eid, Handle);
@@ -399,16 +440,18 @@ export function spawnNode(
     Handle.sample.set(eid, 0);
     Handle.pos.set(eid, x, y);
     Handle.theta.set(eid, theta);
+    writeTangent(eid, tan);
     return eid;
 }
 
-/** a node's undoable pose — section-local position + stored heading, keyed by
- *  stable order within its section. */
+/** a node's undoable pose — section-local position + stored heading + its explicit
+ *  tangent (absent = Auto), keyed by stable order within its section. */
 export interface NodeState {
     order: number;
     x: number;
     y: number;
     theta: number;
+    tangent?: Tangent;
 }
 
 /** snapshot every node's pose on a section (a handful of nodes). the move gesture
@@ -422,31 +465,70 @@ export function nodeSnapshot(ecs: State, sectionId: number): NodeState[] {
             x: Handle.pos.x.get(eid),
             y: Handle.pos.y.get(eid),
             theta: Handle.theta.get(eid),
+            tangent: readTangent(eid),
         });
     }
     return snap;
 }
 
-/** whether two node snapshots are pose-identical (matched by stable order). the
- *  gesture no-op test for any surface that moves nodes. */
+/** whether two explicit tangents are equal (both absent = equal). */
+function sameTangent(a?: Tangent, b?: Tangent): boolean {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    return (
+        a.mode === b.mode &&
+        a.inX === b.inX &&
+        a.inY === b.inY &&
+        a.outX === b.outX &&
+        a.outY === b.outY
+    );
+}
+
+/** whether two node snapshots are pose-identical (matched by stable order),
+ *  including the explicit tangent. the gesture no-op test for any surface that
+ *  moves nodes or edits their tangents. */
 export function sameNodes(a: NodeState[], b: NodeState[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
         const bi = b.find((n) => n.order === a[i].order);
         if (!bi || bi.x !== a[i].x || bi.y !== a[i].y || bi.theta !== a[i].theta) return false;
+        if (!sameTangent(bi.tangent, a[i].tangent)) return false;
     }
     return true;
 }
 
 /** write a node snapshot back onto a section's live nodes by order (move undo/redo
- *  and gesture cancel). only pose is touched — the node set is unchanged. */
+ *  and gesture cancel). pose + explicit tangent are restored; the node set is
+ *  unchanged. */
 export function restoreNodes(ecs: State, sectionId: number, snap: NodeState[]): void {
     for (const s of snap) {
         const eid = handleAt(ecs, sectionId, s.order);
         if (eid === null) continue;
         Handle.pos.set(eid, s.x, s.y);
         Handle.theta.set(eid, s.theta);
+        writeTangent(eid, s.tangent);
     }
+}
+
+/** a node's explicit tangent, or undefined when it's `Auto` — the read for the
+ *  tangent-handle UI and tests. */
+export function handleTangent(ecs: State, sectionId: number, order: number): Tangent | undefined {
+    const eid = handleAt(ecs, sectionId, order);
+    return eid === null ? undefined : readTangent(eid);
+}
+
+/** set (or clear, with null) a node's explicit tangent — the programmatic tangent
+ *  setter the summon/handle-drag gestures (and tests) write through. `null` reverts
+ *  the node to `Auto`. does not itself record history — a gesture (`beginMove` /
+ *  a discrete command) wraps it, and `nodeSnapshot` captures the tangent for undo. */
+export function setTangent(
+    ecs: State,
+    sectionId: number,
+    order: number,
+    tan: Tangent | null,
+): void {
+    const eid = handleAt(ecs, sectionId, order);
+    if (eid !== null) writeTangent(eid, tan ?? undefined);
 }
 
 /** the standing invariant: the last (heading) node's angle is the circular-arc
@@ -690,7 +772,7 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.order.set(eid, snap.order);
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
-    for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta);
+    for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g);
 }
 
@@ -753,7 +835,7 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
     for (const e of [...ecs.query([Force])]) ecs.destroy(e);
     for (const snap of snaps) {
         spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length);
-        for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta);
+        for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g);
     }
 }
@@ -797,8 +879,9 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
             x: Handle.pos.x.get(handles[i]),
             y: Handle.pos.y.get(handles[i]),
             theta: Handle.theta.get(handles[i]),
+            tangent: readTangent(handles[i]),
         });
-        spawnNode(ecs, bId, i - k, bl.x, bl.y, bl.theta);
+        spawnNode(ecs, bId, i - k, bl.x, bl.y, bl.theta, bl.tangent);
     }
     for (let i = k + 1; i <= n; i++) ecs.destroy(handles[i]); // trim the head to [0..k]
     return bId;
@@ -854,8 +937,9 @@ export function joinNext(ecs: State, sectionId: number): boolean {
                 x: Handle.pos.x.get(bHandles[j]),
                 y: Handle.pos.y.get(bHandles[j]),
                 theta: Handle.theta.get(bHandles[j]),
+                tangent: readTangent(bHandles[j]),
             });
-            spawnNode(ecs, sectionId, aN + j, w.x, w.y, w.theta);
+            spawnNode(ecs, sectionId, aN + j, w.x, w.y, w.theta, w.tangent);
         }
         for (const h of bHandles) ecs.destroy(h);
     } else {
@@ -905,6 +989,7 @@ function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
         x: Handle.pos.x.get(eid),
         y: Handle.pos.y.get(eid),
         theta: Handle.theta.get(eid),
+        tangent: readTangent(eid),
     }));
     return { kind: "geo", nodes, ds };
 }
@@ -931,6 +1016,10 @@ function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number): strin
         } else {
             for (const eid of sectionHandles(ecs, sec.id)) {
                 h += `,${Handle.pos.x.get(eid)}:${Handle.pos.y.get(eid)}:${Handle.theta.get(eid)}`;
+                const mode = Handle.tmode.get(eid);
+                if (mode !== TANGENT_AUTO) {
+                    h += `~${mode}:${Handle.tin.x.get(eid)}:${Handle.tin.y.get(eid)}:${Handle.tout.x.get(eid)}:${Handle.tout.y.get(eid)}`;
+                }
             }
         }
     }
@@ -1045,7 +1134,18 @@ export const TrackPlugin: Plugin = {
     traits: {
         Track: { defaults: () => ({ count: 0, ds: 0, v0: V0 }) },
         Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0 }) },
-        Handle: { defaults: () => ({ section: 0, order: 0, sample: 0, pos: [0, 0], theta: 0 }) },
+        Handle: {
+            defaults: () => ({
+                section: 0,
+                order: 0,
+                sample: 0,
+                pos: [0, 0],
+                theta: 0,
+                tmode: TANGENT_AUTO,
+                tin: [0, 0],
+                tout: [0, 0],
+            }),
+        },
         Force: { defaults: () => ({ section: 0, id: 0, s: 0, g: 0 }) },
     },
     initialize(ecs) {

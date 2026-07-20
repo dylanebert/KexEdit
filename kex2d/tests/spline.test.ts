@@ -6,9 +6,17 @@ import {
     reflect,
     sampleAt,
     sampleChain,
+    type Tangent,
+    TangentMode,
 } from "../src/spline";
 import { withThetas } from "./helpers/chain";
 import { makeBuf } from "./helpers/buf";
+import autoGolden from "./fixtures/spline-auto-golden.json";
+
+/** wrap an angle delta into (−π, π]. */
+function wrap(a: number): number {
+    return ((((a + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
+}
 
 const MAX = 4096;
 const DS = 0.5;
@@ -246,6 +254,122 @@ describe("sampleChain — degenerate", () => {
         const r = sampleChain(withThetas([{ x: 0, y: 0 }]), DS, b.posX, b.posY, b.ds, MAX);
         expect(r.valid).toBe(false);
         expect(r.edges).toBe(0);
+    });
+});
+
+describe("sampleChain — Auto arc parity (regression pin)", () => {
+    // the explicit-tangent seam (`handle()` → `outVec`/`inVec`) must leave the
+    // default `Auto` path byte-identical. the golden was baked from the pristine
+    // arc rule (`tests/fixtures/spline-auto-golden.json`); Auto nodes carry no
+    // `tangent`, so `outVec`/`inVec` fall straight through to `handle` — an exact
+    // (not approximate) match is the contract, and this pins it against drift.
+    const golden = autoGolden as Record<
+        string,
+        {
+            nodes: Node[];
+            edges: number;
+            offsets: number[];
+            valid: boolean;
+            truncated: boolean;
+            posX: number[];
+            posY: number[];
+            ds: number[];
+        }
+    >;
+    for (const [name, g] of Object.entries(golden)) {
+        test(`the ${name} chain is byte-identical to the pinned baseline`, () => {
+            const b = makeBuf(4096);
+            const r = sampleChain(g.nodes, DS, b.posX, b.posY, b.ds, 4096);
+            expect(r.edges).toBe(g.edges);
+            expect(r.valid).toBe(g.valid);
+            expect(r.truncated).toBe(g.truncated);
+            expect(r.offsets).toEqual(g.offsets);
+            for (let i = 0; i <= r.edges; i++) {
+                expect(b.posX[i]).toBe(g.posX[i]); // strict === on the f32 value
+                expect(b.posY[i]).toBe(g.posY[i]);
+            }
+            for (let i = 0; i < r.edges; i++) expect(b.ds[i]).toBe(g.ds[i]);
+        });
+    }
+});
+
+describe("sampleChain — explicit tangents", () => {
+    test("an explicit out-vector sets the node's departure tangent, chord-independent", () => {
+        // node 0 at the origin (so its position terms vanish) carries an explicit
+        // out-vector at 45°; a fine probe recovers the s=0 tangent as that vector.
+        const ang = Math.PI / 4;
+        const mag = 10;
+        const out: Tangent = {
+            mode: TangentMode.Free,
+            inX: 0,
+            inY: 0,
+            outX: mag * Math.cos(ang),
+            outY: mag * Math.sin(ang),
+        };
+        const nodes: Node[] = [
+            { x: 0, y: 0, theta: 0, tangent: out },
+            { x: 20, y: 0, theta: 0 },
+        ];
+        const b = makeBuf(4096);
+        sampleAt(nodes, [800], b.posX, b.posY, b.ds); // dense → the secant ≈ the tangent
+        const dir = Math.atan2(b.posY[1] - b.posY[0], b.posX[1] - b.posX[0]);
+        expect(dir).toBeCloseTo(ang, 2);
+
+        // absolute, not chord-proportional: moving the far anchor leaves the departure
+        // tangent fixed (the Figma/Blender "handle holds its length under an anchor
+        // drag") — an Auto node would swing to follow the new chord instead.
+        const moved: Node[] = [nodes[0], { x: 40, y: 15, theta: 0 }];
+        sampleAt(moved, [800], b.posX, b.posY, b.ds);
+        const dir2 = Math.atan2(b.posY[1] - b.posY[0], b.posX[1] - b.posX[0]);
+        expect(dir2).toBeCloseTo(ang, 2);
+    });
+
+    test("a Free corner (C0 kink) samples sanely and honors the turning rule", () => {
+        // node 1 arrives flat (in-vector +x) and leaves upward (out-vector +y) — a
+        // 90° corner the arc rule cannot express. large vectors dominate the
+        // secant so the measured kink is unambiguous.
+        const mag = 30;
+        const corner: Tangent = { mode: TangentMode.Free, inX: mag, inY: 0, outX: 0, outY: mag };
+        const nodes: Node[] = [
+            { x: 0, y: 0, theta: 0 },
+            { x: 20, y: 0, theta: 0, tangent: corner },
+            { x: 20, y: 20, theta: 0 },
+        ];
+        const b = makeBuf(4096);
+        const r = sampleChain(nodes, DS, b.posX, b.posY, b.ds, 4096);
+
+        expect(r.valid).toBe(true);
+        expect(r.offsets.length).toBe(3);
+        const off = r.offsets[1];
+        // the corner lands exactly on its node, and both flanks got real edges.
+        expect(b.posX[off]).toBeCloseTo(20, 4);
+        expect(b.posY[off]).toBeCloseTo(0, 4);
+        expect(off - r.offsets[0]).toBeGreaterThan(0);
+        expect(r.offsets[2] - off).toBeGreaterThan(0);
+        for (let i = 0; i <= r.edges; i++) {
+            expect(Number.isFinite(b.posX[i])).toBe(true);
+            expect(Number.isFinite(b.posY[i])).toBe(true);
+        }
+        for (let i = 0; i < r.edges; i++) expect(b.ds[i]).toBeGreaterThan(0);
+
+        // the tangent is DISCONTINUOUS at the node: arrival ≈ +x, departure ≈ +y,
+        // a ~90° turn a C1 node would never produce.
+        const arr = Math.atan2(b.posY[off] - b.posY[off - 1], b.posX[off] - b.posX[off - 1]);
+        const dep = Math.atan2(b.posY[off + 1] - b.posY[off], b.posX[off + 1] - b.posX[off]);
+        expect(Math.abs(wrap(dep - arr))).toBeGreaterThan(1.2);
+
+        // the turning rule still tames the within-segment bend: the outgoing segment
+        // (out-vector +y sweeping to node 2's arc tangent) averages ≤ 2·MAX_U per
+        // edge, so `chainCounts` gave it enough edges (this fails if byTurn is skipped
+        // for explicit tangents).
+        let turn = 0;
+        let prev = Math.atan2(b.posY[off + 1] - b.posY[off], b.posX[off + 1] - b.posX[off]);
+        for (let i = off + 1; i < r.edges; i++) {
+            const a = Math.atan2(b.posY[i + 1] - b.posY[i], b.posX[i + 1] - b.posX[i]);
+            turn += Math.abs(wrap(a - prev));
+            prev = a;
+        }
+        expect(turn / (r.edges - off)).toBeLessThanOrEqual(2 * MAX_U_PER_EDGE + 0.05);
     });
 });
 

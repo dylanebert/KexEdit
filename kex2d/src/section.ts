@@ -23,7 +23,7 @@
 
 import { forces } from "./bake";
 import { integrate } from "./forward";
-import { type Node, sampleChain } from "./spline";
+import { type Node, sampleChain, type Tangent } from "./spline";
 
 /** default sample-buffer ceiling — mirrors `track.MAX_SAMPLES`. */
 const MAX = 4096;
@@ -69,18 +69,35 @@ export type Section =
     | { kind: "geo"; nodes: readonly Node[]; ds: number }
     | { kind: "force"; fN: ArrayLike<number>; ds: number };
 
+/** rotate a tangent's in/out vectors by the rotation `(c, s) = (cos φ, sin φ)`.
+ *  an explicit tangent is stored in the node's local frame, so a rigid re-express
+ *  (split/join) must rotate it with the frame; translation leaves a vector fixed.
+ *  a null tangent (Auto) rides through untouched. */
+function rotateTangent(t: Tangent, c: number, s: number): Tangent {
+    return {
+        mode: t.mode,
+        inX: c * t.inX - s * t.inY,
+        inY: s * t.inX + c * t.inY,
+        outX: c * t.outX - s * t.outY,
+        outY: s * t.outX + c * t.outY,
+    };
+}
+
 /** place a section-local node in world space at the entry frame: rotate by the
  *  entry heading, translate to the entry position (rigid placement). node 0
  *  (local origin, local heading 0) maps to the entry exactly, so the section
- *  joins at the anchor with the same position and heading (C1). */
+ *  joins at the anchor with the same position and heading (C1). an explicit
+ *  tangent rotates with the frame (a rigid re-express preserves the shape). */
 export function place(entry: Entry, n: Node): Node {
     const c = Math.cos(entry.theta);
     const s = Math.sin(entry.theta);
-    return {
+    const out: Node = {
         x: entry.x + c * n.x - s * n.y,
         y: entry.y + s * n.x + c * n.y,
         theta: n.theta + entry.theta,
     };
+    if (n.tangent) out.tangent = rotateTangent(n.tangent, c, s);
+    return out;
 }
 
 /** express a world-frame point in a section's entry-local frame — the exact
@@ -88,16 +105,21 @@ export function place(entry: Entry, n: Node): Node {
  *  geo section's nodes are section-local (node 0 at the local origin, heading 0),
  *  so the bake localizes the world handles against the section entry before
  *  evaluating: `place(entry, localize(entry, p)) === p`. */
-export function localize(entry: Entry, p: { x: number; y: number; theta: number }): Node {
+export function localize(
+    entry: Entry,
+    p: { x: number; y: number; theta: number; tangent?: Tangent },
+): Node {
     const c = Math.cos(entry.theta);
     const s = Math.sin(entry.theta);
     const dx = p.x - entry.x;
     const dy = p.y - entry.y;
-    return {
+    const out: Node = {
         x: c * dx + s * dy,
         y: -s * dx + c * dy,
         theta: p.theta - entry.theta,
     };
+    if (p.tangent) out.tangent = rotateTangent(p.tangent, c, -s); // inverse rotation (−φ)
+    return out;
 }
 
 function exitOf(
