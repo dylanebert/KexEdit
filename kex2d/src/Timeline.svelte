@@ -27,6 +27,7 @@ import {
 } from "./history";
 import {
     clampView,
+    creationTargets,
     frameAll,
     type Mapping,
     marginArc,
@@ -382,10 +383,22 @@ function chartS(e: MouseEvent): number {
 // new point never bends the curve, and drags from a known start). over a geo section
 // (or empty), it's a no-op.
 function chartCreate(e: MouseEvent): void {
-    const cumS = chartS(e);
+    let cumS = chartS(e);
+    // snap the placement through the same landmark resolver the drags use (toggle, Ctrl/Cmd
+    // bypass, and SNAP_PX all apply) — the AE insert-at-CTI idiom — before resolving the value.
+    // creation targets exclude force points (an occupied s is degenerate) but keep boundaries,
+    // origin, track end, and the parked playhead. no guide flash: a double-click has no gesture
+    // to clear one, and the resolver's guide is a drag-lifetime affordance.
+    if (snapActive(e.ctrlKey || e.metaKey)) {
+        const targets = creationTargets(clamped, bounds, sTotal, paused && cartS !== null ? cartS : null);
+        const hit = snap(sToPx(clamped, cumS), targets);
+        if (hit !== null) cumS = clamp(pxToS(clamped, hit), 0, sTotal);
+    }
     const c = clips.find((x) => x.kind === SectionKind.Force && cumS >= x.s0 && cumS <= x.s1);
     if (!c) return; // not over a force section
-    const s = clamp(cumS - c.s0, 0, c.len); // cursor cumulative → section-local
+    // value = the authored profile at the SNAPPED section-local s (insert-on-curve: the new
+    // point never bends the curve), so both position and value derive from the snapped place.
+    const s = clamp(cumS - c.s0, 0, c.len); // (snapped) cumulative → section-local
     selectForce(createForce(history, ecs, c.id, s, sampleForce(sectionForces(ecs, c.id), s)));
 }
 

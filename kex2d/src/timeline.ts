@@ -244,6 +244,24 @@ export function trimTargets(v: View, ownS: Iterable<number>, playheadS: number |
     return out;
 }
 
+/** the keyframe-CREATION magnet set in chart-local px: the force-point-drag s-targets MINUS
+ *  every force point — an occupied s is a degenerate creation target (the AE insert-at-CTI
+ *  landmark set). so: the origin (0), the interior section boundaries, the track end, and the
+ *  parked playhead (`playheadS`, null while playing/unset). projected through the view `v` so
+ *  the pull is a fixed screen distance, exactly like the drags. */
+export function creationTargets(
+    v: View,
+    bounds: Iterable<number>,
+    sTotal: number,
+    playheadS: number | null,
+): number[] {
+    const out = [sToPx(v, 0)];
+    for (const b of bounds) out.push(sToPx(v, b));
+    out.push(sToPx(v, sTotal));
+    if (playheadS !== null) out.push(sToPx(v, playheadS));
+    return out;
+}
+
 /** per-sample cumulative arclength (m) and time (s) over the current baked track,
  *  both monotone increasing — the cart↔chart projection. the chart's x-axis is
  *  distance, but the cart rides the track in *time* (paced by its velocity), so the

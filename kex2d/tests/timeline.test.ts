@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
     arcToTime,
     clampView,
+    creationTargets,
     frameAll,
     type Mapping,
     marginArc,
@@ -432,5 +433,33 @@ describe("trimTargets — extent-trim landmark set", () => {
     });
     test("no own points and no playhead yields an empty set (nothing to snap to)", () => {
         expect(trimTargets(v, [], null)).toEqual([]);
+    });
+});
+
+describe("creationTargets — keyframe-creation landmark set", () => {
+    // the verdict: double-click creation snaps through the drag resolver, but its target set
+    // is the drag s-set MINUS force points (occupied s is degenerate) — origin, interior
+    // boundaries, track end, and the parked playhead. no force point can enter (not a param).
+    const v: View = { pan: 0, pxPerM: 10 };
+
+    test("origin, interior boundaries, track end, and the parked playhead", () => {
+        expect(creationTargets(v, [10, 20], 30, 15)).toEqual([
+            sToPx(v, 0),
+            sToPx(v, 10),
+            sToPx(v, 20),
+            sToPx(v, 30),
+            sToPx(v, 15),
+        ]);
+    });
+    test("drops the playhead while playing / unset", () => {
+        expect(creationTargets(v, [10, 20], 30, null)).toEqual([
+            sToPx(v, 0),
+            sToPx(v, 10),
+            sToPx(v, 20),
+            sToPx(v, 30),
+        ]);
+    });
+    test("origin + track end even with no interior boundaries (a single section)", () => {
+        expect(creationTargets(v, [], 24, null)).toEqual([sToPx(v, 0), sToPx(v, 24)]);
     });
 });
