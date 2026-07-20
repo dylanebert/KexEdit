@@ -464,9 +464,11 @@ $effect(() => {
         border-color: var(--danger);
     }
 
-    /* the section context menu: an opaque floating surface at the cursor (border +
-       shadow elevation), rows on one column. Convert names the target kind directly;
-       Delete carries its Del shortcut, right-aligned, and reddens on hover. */
+    /* the section context menu: the standard quiet menu (OS/Figma/VS Code) — an opaque
+       neutral surface at the cursor (border + shadow elevation), plain rows on one column,
+       a subtle neutral hover wash, no colored item backgrounds. Convert names the target
+       kind directly; Delete is a red text tint (the macOS/Figma destructive idiom), its
+       Del shortcut right-aligned. */
     .ctxmenu {
         position: fixed;
         z-index: 10;
@@ -507,9 +509,10 @@ $effect(() => {
     .ctx-item:hover {
         background: var(--neutral-soft);
     }
-    .ctx-item.danger:hover {
-        background: var(--danger-soft);
-        color: #f0bdb1;
+    /* the destructive item: a red text tint only (the danger token, no new literal), sharing
+       the same neutral hover wash as every other row — no colored item background. */
+    .ctx-item.danger {
+        color: var(--danger);
     }
     .sk {
         font-family: "JetBrains Mono", ui-monospace, monospace;
