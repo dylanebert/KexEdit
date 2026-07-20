@@ -21,8 +21,8 @@
         "@sveltejs/vite-plugin-svelte": "^7.0.0",
         "@types/bun": "latest",
         "@webgpu/types": "^0.1.0",
-        "svelte-check": "^4.4.8",
-        "typescript": "^7.0.2",
+        "svelte-check": "^4.7.3",
+        "typescript": "6.0.3",
         "vite": "^8.0.0"
     }
 }
