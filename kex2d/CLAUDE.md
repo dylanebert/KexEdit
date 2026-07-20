@@ -263,7 +263,8 @@ not authoring.
   the cart rides in time, the chart is distance).
 - `editor.ts` — ephemeral UI state: `selection` (node), `force` (point id), `section` (id), `start`
   (the track START anchor / v0 handle) + their setters. The four are **mutually exclusive** (selecting
-  one clears the others). Plain singleton, read by Svelte via the per-RAF tick.
+  one clears the others). Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default
+  on, `S` toggles, Ctrl/Cmd bypasses per-gesture). Plain singleton, read by Svelte via the per-RAF tick.
 - `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
   `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).

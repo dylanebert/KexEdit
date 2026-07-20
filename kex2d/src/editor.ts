@@ -23,6 +23,10 @@ interface EditorState {
      *  section id, or null when closed. shared so both the clip strip and the viewport
      *  span open the same menu, rendered once at the app root. */
     context: { x: number; y: number; section: number } | null;
+    /** the snapping magnet toggle (AE model): a persistent editor preference, default
+     *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
+     *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
+    snap: boolean;
 }
 
 export const editor: EditorState = {
@@ -31,7 +35,18 @@ export const editor: EditorState = {
     section: null,
     start: false,
     context: null,
+    snap: true,
 };
+
+/** flip the snapping magnet (the `S` key). */
+export function toggleSnap(): void {
+    editor.snap = !editor.snap;
+}
+
+/** whether snapping is active for a gesture, given whether the Ctrl/Cmd bypass modifier
+ *  is held: the persistent toggle XOR the momentary modifier (the AE magnet — hold to
+ *  invert, so a bypass turns it off while on and summons it while off). */
+export const snapActive = (mod: boolean): boolean => editor.snap !== mod;
 
 // the four selections are mutually exclusive — selecting one clears the others, so
 // the contextual actions (node extend/trim, force field popover, section ops, v0

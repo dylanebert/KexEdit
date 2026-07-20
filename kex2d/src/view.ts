@@ -68,6 +68,13 @@ export function cameraTx(cam: Camera): ViewTx {
 export const camera: Camera = { zoom: 0, ox: 0, oy: 0 };
 let framed = false;
 
+/** transient world-space alignment guides shown while a viewport node drag snaps to a
+ *  neighbor's axis (the Figma alignment-guide flash). `x` is the world x of an active
+ *  vertical guide, `y` the world y of a horizontal one; null when that axis isn't
+ *  snapping. mutated in place by the drag controls, read by the render pass, cleared on
+ *  release — the viewport twin of the timeline's snap guide. */
+export const snapGuides: { x: number | null; y: number | null } = { x: null, y: null };
+
 /** frame the camera to the default view for a canvas size (also the reset target). */
 export function frameCamera(width: number, height: number): void {
     Object.assign(camera, defaultCamera(width, height));

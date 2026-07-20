@@ -192,6 +192,30 @@ export function xGrow(v: View, cx: number, left: number, right: number, rate: nu
     return v; // cursor within the chart — unchanged (same reference → caller skips)
 }
 
+/** the snap magnet threshold, in screen px — an After Effects magnet design constant (a
+ *  fixed on-screen pull distance, zoom-independent), not a tuned tolerance. */
+export const SNAP_PX = 8;
+
+/** nearest-target magnet snap on one axis, resolved in screen px (the AE magnet model).
+ *  returns the target within `threshold` px closest to `px`, or null when none is in
+ *  range — the caller then keeps the raw value and skips the guide flash. targets are
+ *  enumerated and projected to px by the caller (section boundaries, ruler ticks, other
+ *  force points, integer g gridlines…), so the pull is a fixed screen distance at any
+ *  zoom. pure — this is the whole snap resolver; the axis target sets live at the call
+ *  sites. */
+export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX): number | null {
+    let best: number | null = null;
+    let bestD = threshold;
+    for (const t of targets) {
+        const d = Math.abs(t - px);
+        if (d <= bestD) {
+            bestD = d;
+            best = t;
+        }
+    }
+    return best;
+}
+
 /** the opposite-direction tangent vector of a given length — the auto/continuous
  *  handle mirror (After Effects default): given the dragged handle's screen vector
  *  `(vx, vy)` from the keyframe and the other handle's length `otherLen`, return the

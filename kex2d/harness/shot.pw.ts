@@ -285,9 +285,14 @@ test("section clip strip flow", async ({ page }) => {
     if (!tb) throw new Error("trim handle not laid out");
     const cy = tb.y + tb.height / 2;
     await trim.hover(); // move to the handle center with actionability, then drag right
+    // hold Ctrl to bypass the snapping magnet (default-on, kex2d-ux-foundations stage E) —
+    // this flow tests the extent trim itself, not snapping, so the drag lands where the
+    // cursor does, deterministically. the snap resolver is unit-covered in timeline.test.ts.
+    await page.keyboard.down("Control");
     await page.mouse.down();
     await page.mouse.move(tb.x + tb.width / 2 + 50, cy, { steps: 10 });
     await page.mouse.up();
+    await page.keyboard.up("Control");
     await expect.poll(async () => (await sectionLengths())[1]).toBeGreaterThan(before[1]);
     if (vp) await page.screenshot({ path: join(OUT, "clip-3-trim.png"), clip: strip() });
 

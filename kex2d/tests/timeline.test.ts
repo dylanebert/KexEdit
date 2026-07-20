@@ -11,6 +11,8 @@ import {
     navWindow,
     niceStep,
     pxToS,
+    snap,
+    SNAP_PX,
     sToPx,
     ticks,
     timeToArc,
@@ -331,6 +333,45 @@ describe("xGrow — horizontal edge-scroll pan-to-follow", () => {
             pan: 0,
             pxPerM: 10,
         });
+    });
+});
+
+describe("snap — nearest-target magnet", () => {
+    // the resolver is the whole snapping decision: given a value in px and target px, it
+    // latches to the nearest target within the threshold, else returns null (no snap). the
+    // threshold is a screen-px design constant (SNAP_PX), not a tuned tolerance.
+    test("latches to a target within the threshold", () => {
+        expect(snap(100, [104])).toBe(104); // 4px away → snaps
+        expect(snap(100, [93])).toBe(93); // 7px away → snaps
+    });
+    test("returns null when every target is beyond the threshold", () => {
+        expect(snap(100, [120, 80, 200])).toBeNull(); // nearest is 20px away
+        expect(snap(0, [])).toBeNull(); // no targets
+    });
+    test("picks the nearest of several in-range targets", () => {
+        // 105 (5px) and 103 (3px) both within 8px; the nearer, 103, wins.
+        expect(snap(100, [105, 103, 96])).toBe(103); // 96 is 4px, 103 is 3px → 103
+    });
+    test("the threshold is inclusive at exactly SNAP_PX and defaults to SNAP_PX", () => {
+        expect(snap(100, [100 + SNAP_PX])).toBe(100 + SNAP_PX); // a target at the edge snaps
+        expect(snap(100, [100 + SNAP_PX + 0.001])).toBeNull(); // just past does not
+    });
+    test("a tighter explicit threshold rejects a target the default would catch", () => {
+        expect(snap(100, [106], 8)).toBe(106); // within default
+        expect(snap(100, [106], 4)).toBeNull(); // outside the tighter one
+    });
+    test("snaps toward negative targets symmetrically", () => {
+        expect(snap(-50, [-46])).toBe(-46); // 4px away on the negative side
+    });
+    test("equidistant targets resolve to the last in iteration order (documented tie policy)", () => {
+        // load-bearing since callers order their target sets deliberately (boundaries →
+        // ticks → points): on an exact tie the later-listed target wins.
+        expect(snap(100, [96, 104])).toBe(104); // both 4px away → the later one
+        expect(snap(100, [104, 96])).toBe(96); // order flipped → the later one again
+    });
+    test("a NaN value never snaps (comparisons are false)", () => {
+        expect(snap(Number.NaN, [0, 5, 10])).toBeNull();
+        expect(snap(3, [Number.NaN])).toBeNull(); // a NaN target is skipped, not latched
     });
 });
 

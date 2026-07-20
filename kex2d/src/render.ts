@@ -4,7 +4,7 @@ import { kindSegments } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { bakeOut, Handle, samples, sectionInfo, sections, Track } from "./track";
-import { Canvas2D, resize, viewTransform } from "./view";
+import { Canvas2D, resize, snapGuides, viewTransform } from "./view";
 
 const HANDLE_R = 6;
 const HANDLE_R_SEL = 9;
@@ -13,6 +13,7 @@ const CART_W = 14;
 const CART_H = 7;
 const COLOR_INFEASIBLE = "#e26d5c";
 const COLOR_ANCHOR = "#9aa0a6";
+const COLOR_SNAP = "#e879b0"; // the alignment-guide flash color (mirrors --snap), distinct from kind/infeasible/selection
 
 // target on-screen spacing between minor gridlines (px); the world step snaps to a
 // 1-2-5 nice number that lands nearest this under the current zoom, so the grid stays
@@ -345,7 +346,45 @@ const CartDrawSystem: System = {
     },
 };
 
+/** the viewport snap-guide flash: a thin full-extent line at the world axis a node drag
+ *  snapped to (the Figma alignment guide). drawn last so it reads over the track, cleared
+ *  by the controls on release. */
+const SnapGuideSystem: System = {
+    group: "draw",
+    update(): void {
+        const { element: canvas, ctx } = Canvas2D;
+        if (!ctx) return;
+        if (snapGuides.x === null && snapGuides.y === null) return;
+        const { sx, sy, ox, oy } = viewTransform(canvas);
+        const w = canvas.clientWidth;
+        const h = canvas.clientHeight;
+        ctx.save();
+        ctx.strokeStyle = COLOR_SNAP;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (snapGuides.x !== null) {
+            const x = ox + snapGuides.x * sx;
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+        }
+        if (snapGuides.y !== null) {
+            const y = oy + snapGuides.y * sy;
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+        }
+        ctx.stroke();
+        ctx.restore();
+    },
+};
+
 export const RenderPlugin: Plugin = {
     name: "Render",
-    systems: [GridSystem, TrackDrawSystem, CartDrawSystem, AnchorDrawSystem, HandleDrawSystem],
+    systems: [
+        GridSystem,
+        TrackDrawSystem,
+        CartDrawSystem,
+        AnchorDrawSystem,
+        HandleDrawSystem,
+        SnapGuideSystem,
+    ],
 };

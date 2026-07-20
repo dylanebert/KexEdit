@@ -1,5 +1,13 @@
 import type { State } from "@dylanebert/shallot";
-import { editor, openContext, select, selectSection, selectStart } from "./editor";
+import {
+    editor,
+    openContext,
+    select,
+    selectSection,
+    selectStart,
+    snapActive,
+    toggleSnap,
+} from "./editor";
 import {
     appendSection,
     beginMove,
@@ -11,6 +19,7 @@ import {
     trimTrack,
 } from "./history";
 import { localize } from "./section";
+import { snap } from "./timeline";
 import {
     Handle,
     lastHandle,
@@ -26,6 +35,7 @@ import {
     panCamera,
     pointerToCanvas,
     screenToWorld,
+    snapGuides,
     viewTransform,
     type ViewTx,
     zoomAt,
@@ -45,6 +55,13 @@ let dragNode: number | null = null;
 // node tracks the cursor relatively (grabbing slightly off-center doesn't snap it).
 let grabX = 0;
 let grabY = 0;
+// the grab anchor for the drag: the cursor screen point + the node's world pose at
+// pointerdown. the screen point measures the dominant axis for a Shift constrain; the
+// world pose is the value the held (constrained) axis snaps back to.
+let grabCX = 0;
+let grabCY = 0;
+let grabWX = 0;
+let grabWY = 0;
 
 // middle-drag pan state: the last canvas point, so each move pans by its screen delta.
 let panning = false;
@@ -134,6 +151,23 @@ function endSelected(ecs: State): boolean {
     return sel === lastHandle(ecs, Handle.section.get(sel));
 }
 
+/** the screen-space x and y of every OTHER node (all sections' handles + entry anchors),
+ *  the neighbor-axis alignment targets for a node drag — snap the dragged node's screen x
+ *  to a neighbor's x, its y to a neighbor's y (the Figma alignment magnet). */
+function neighborTargets(ecs: State, tx: ViewTx, dragEid: number): { xs: number[]; ys: number[] } {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const s = trackSamples(ecs);
+    if (!s) return { xs, ys };
+    for (const eid of ecs.query([Handle])) {
+        if (eid === dragEid) continue;
+        const i = Handle.sample.get(eid);
+        xs.push(tx.ox + s.posX[i] * tx.sx);
+        ys.push(tx.oy + s.posY[i] * tx.sy);
+    }
+    return { xs, ys };
+}
+
 /** write a dragged node's section-local position from a world target — `localize`
  *  against the node's section entry (identity for the first section). */
 function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
@@ -186,6 +220,10 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             const w = s ? nodeWorld(s, eid) : { x: wx, y: wy };
             grabX = w.x - wx;
             grabY = w.y - wy;
+            grabCX = cx;
+            grabCY = cy;
+            grabWX = w.x;
+            grabWY = w.y;
             beginMove(ecs, Handle.section.get(eid)); // open the drag gesture; commit/cancel on release
             canvas.setPointerCapture(e.pointerId);
             return;
@@ -218,7 +256,44 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
         const { x: wx, y: wy } = screenToWorld(tx, cx, cy);
-        dragTo(ecs, dragNode, wx + grabX, wy + grabY);
+        let tgtX = wx + grabX;
+        let tgtY = wy + grabY;
+        // Shift constrains to the dominant axis since the grab (the AE/Photoshop rule,
+        // already live for timeline force points); the held axis snaps back to the grab
+        // pose. re-evaluated live — no hysteresis.
+        let lockX = false;
+        let lockY = false;
+        if (e.shiftKey) {
+            if (Math.abs(cx - grabCX) >= Math.abs(cy - grabCY)) {
+                tgtY = grabWY;
+                lockY = true;
+            } else {
+                tgtX = grabWX;
+                lockX = true;
+            }
+        }
+        // neighbor-axis alignment magnet (Figma): snap each free axis to a neighboring
+        // node's screen x / y within SNAP_PX, flashing a world-axis guide at the hit.
+        snapGuides.x = null;
+        snapGuides.y = null;
+        if (snapActive(e.ctrlKey || e.metaKey)) {
+            const { xs, ys } = neighborTargets(ecs, tx, dragNode);
+            if (!lockX) {
+                const hit = snap(tx.ox + tgtX * tx.sx, xs);
+                if (hit !== null) {
+                    tgtX = (hit - tx.ox) / tx.sx;
+                    snapGuides.x = tgtX;
+                }
+            }
+            if (!lockY) {
+                const hit = snap(tx.oy + tgtY * tx.sy, ys);
+                if (hit !== null) {
+                    tgtY = (hit - tx.oy) / tx.sy;
+                    snapGuides.y = tgtY;
+                }
+            }
+        }
+        dragTo(ecs, dragNode, tgtX, tgtY);
     };
 
     // wheel = zoom-at-cursor; trackpad pinch arrives as ctrl+wheel (browser convention)
@@ -245,6 +320,8 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
         if (dragNode === null) return;
         dragNode = null;
+        snapGuides.x = null;
+        snapGuides.y = null;
         commit(history); // one drag → one undo entry (a no-move click records nothing)
         if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     };
@@ -257,6 +334,8 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
         if (dragNode === null) return;
         dragNode = null;
+        snapGuides.x = null;
+        snapGuides.y = null;
         cancel(); // interrupted drag: restore the pre-gesture pose
         if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     };
@@ -264,6 +343,15 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     const onKeyDown = (e: KeyboardEvent): void => {
         const t = e.target as HTMLElement | null;
         if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+
+        // toggle the snapping magnet — a global editor preference (the AE `S` key). guard
+        // the modifier case: Ctrl/Cmd is the snap BYPASS modifier everywhere else, and
+        // Ctrl/Cmd+S is the browser save reflex — neither should flip the toggle.
+        if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            toggleSnap();
+            return;
+        }
 
         // append a section at the chain end — always available (a = geo, A = force).
         if (e.key === "a") {
@@ -326,5 +414,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         canvas.removeEventListener("pointercancel", cancelDrag);
         canvas.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKeyDown);
+        snapGuides.x = null; // detaching mid-drag must not leave a stuck guide for the remount
+        snapGuides.y = null;
     };
 }

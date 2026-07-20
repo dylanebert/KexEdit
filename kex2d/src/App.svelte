@@ -354,6 +354,7 @@ $effect(() => {
         --neutral-soft: rgba(255, 255, 255, 0.1);
         --danger: #e26d5c;
         --danger-soft: rgba(226, 109, 92, 0.16);
+        --snap: #e879b0; /* snap alignment-guide flash (timeline + viewport); mirrors render.ts COLOR_SNAP */
         --border: rgba(255, 255, 255, 0.08);
         --shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
     }

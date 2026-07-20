@@ -157,7 +157,7 @@ const DEFAULT_FORCE_LEN = EXTEND_DIST;
 
 /** the shortest a force section can be dragged — a couple of edges, so the profile
  *  never collapses below what `forceProfile` can sample. */
-const MIN_FORCE_LEN = 2;
+export const MIN_FORCE_LEN = 2;
 
 /** allocate an empty track entity + its sample / bake-output buffers, sized once
  *  to MAX_SAMPLES. no sections — callers (the demo seed, tests) add their own.

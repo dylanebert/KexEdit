@@ -3,7 +3,7 @@ import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
 import { kindSegments } from "./colors";
-import { editor, openContext, selectForce, selectSection } from "./editor";
+import { editor, openContext, selectForce, selectSection, snapActive, toggleSnap } from "./editor";
 import {
     appendSection,
     beginForceMove,
@@ -25,6 +25,7 @@ import {
     navWindow,
     niceStep,
     pxToS,
+    snap,
     sToPx,
     ticks,
     timeToArc,
@@ -38,6 +39,7 @@ import {
 import { sampleForce } from "./profile";
 import {
     bakeOut,
+    MIN_FORCE_LEN,
     SectionKind,
     sectionForces,
     sectionInfo,
@@ -304,6 +306,12 @@ const selSection = $derived.by((): number | null => {
     void tick;
     return editor.section;
 });
+// the snapping magnet's persistent state (read through the per-RAF tick) — the dock
+// toggle's lit/quiet state.
+const snapOn = $derived.by((): boolean => {
+    void tick;
+    return editor.snap;
+});
 
 // the selected point's id (read through the per-RAF tick; editor is plain state).
 const selForce = $derived.by((): number | null => {
@@ -318,6 +326,36 @@ const markerX = (s: number): number => LEFT_GUT + sToPx(clamped, s);
 // a force point's chart x — its section-local s placed at its section's cumulative
 // offset. points are authored local; the chart draws whole-track cumulative.
 const ptX = (p: ForcePt): number => markerX(p.startS + p.s);
+
+// ── snapping (the AE magnet): a snap resolves in chart-local px (the `snap` resolver,
+// timeline.ts), so `snapX`/`snapY` are the guide flashes to draw when an axis latches.
+// chart-local px (past the g-gutter subtracted); LEFT_GUT is re-added when rendered.
+let snapX: number | null = $state(null); // an active s-axis snap: vertical guide px
+let snapY: number | null = $state(null); // an active g-axis snap: horizontal guide py
+
+// the s-axis snap targets in chart-local px (the horizontal magnet): section boundaries
+// (0, interior boundaries, optionally the track end), ruler ticks, other force points,
+// and — only while parked, so a live-playing playhead isn't a moving magnet — the
+// playhead. the caller excludes the dragged point and picks whether its own moving edge
+// (the track end) is a target.
+function sTargets(opts: { exclude?: number; playhead: boolean; trackEnd: boolean }): number[] {
+    const v = clamped;
+    const out: number[] = [sToPx(v, 0)];
+    for (const b of bounds) out.push(sToPx(v, b));
+    if (opts.trackEnd) out.push(sToPx(v, sTotal));
+    for (const tk of tickList) out.push(tk.px);
+    for (const p of forcePts) if (p.id !== opts.exclude) out.push(sToPx(v, p.startS + p.s));
+    if (opts.playhead && paused && cartS !== null) out.push(sToPx(v, cartS));
+    return out;
+}
+// the g-axis snap targets in chart py (the vertical magnet): the integer g gridlines in
+// view (the 1g baseline is the integer 1, so it's included) + every other point's g.
+function gTargets(exclude?: number): number[] {
+    const out: number[] = [];
+    for (let g = Math.ceil(yView.lo); g <= yView.hi; g++) out.push(yOf(g));
+    for (const p of forcePts) if (p.id !== exclude) out.push(yOf(p.g));
+    return out;
+}
 
 // chart-local pointer coords (px from the canvas top-left, past the g-gutter for x).
 function chartS(e: MouseEvent): number {
@@ -349,6 +387,7 @@ let dragLen = 0; // the dragged point's section extent (the s clamp domain)
 let dragCx = 0; // last cursor, canvas-local px
 let dragCy = 0;
 let dragShift = false;
+let dragMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
 let dragX0 = 0; // grab cursor + grab values — the shift-constrain anchor
 let dragY0 = 0;
 let dragS0 = 0;
@@ -361,10 +400,43 @@ function applyDrag(): void {
     // cursor cumulative s + grab → the point's cumulative s, then − startS → local.
     let s = clamp(pxToS(clamped, cx - LEFT_GUT) + grabDs - dragStartS, 0, dragLen);
     let g = yToG(clamp(dragCy, TOP, h - BOT_PAD));
+    let lockS = false;
+    let lockG = false;
     if (dragShift) {
         // lock to whichever axis has moved further since the grab; the other holds
-        if (Math.abs(dragCx - dragX0) >= Math.abs(dragCy - dragY0)) g = dragG0;
-        else s = dragS0;
+        if (Math.abs(dragCx - dragX0) >= Math.abs(dragCy - dragY0)) {
+            g = dragG0;
+            lockG = true;
+        } else {
+            s = dragS0;
+            lockS = true;
+        }
+    }
+    // magnet snap each free axis to the nearest target within SNAP_PX, flashing a guide
+    // at the hit (the AE magnet). a Ctrl/Cmd bypass inverts the toggle for the gesture.
+    snapX = null;
+    snapY = null;
+    if (snapActive(dragMod)) {
+        if (!lockS) {
+            const hit = snap(
+                sToPx(clamped, dragStartS + s),
+                sTargets({ exclude: dragForce, playhead: true, trackEnd: true }),
+            );
+            if (hit !== null) {
+                const local = pxToS(clamped, hit) - dragStartS;
+                if (local >= 0 && local <= dragLen) {
+                    s = local; // only latch a target the point can actually reach in its section
+                    snapX = hit;
+                }
+            }
+        }
+        if (!lockG) {
+            const hit = snap(yOf(g), gTargets(dragForce));
+            if (hit !== null) {
+                g = yToG(hit);
+                snapY = hit;
+            }
+        }
     }
     setForcePoint(ecs, dragForce, s, g);
 }
@@ -375,6 +447,7 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     dragCx = e.clientX - rect.left;
     dragCy = e.clientY - rect.top;
     dragShift = e.shiftKey;
+    dragMod = e.ctrlKey || e.metaKey;
     dragX0 = dragCx;
     dragY0 = dragCy;
     dragS0 = p.s;
@@ -394,11 +467,14 @@ function forceMove(e: PointerEvent): void {
     dragCx = e.clientX - rect.left;
     dragCy = e.clientY - rect.top;
     dragShift = e.shiftKey; // live: shift can be pressed/released mid-drag
+    dragMod = e.ctrlKey || e.metaKey; // live: bypass can be toggled mid-drag
     applyDrag();
 }
 function forceUp(): void {
     if (dragForce === null) return;
     dragForce = null;
+    snapX = null;
+    snapY = null;
     commit(history); // one drag → one entry; a no-move click drops via the `same` guard
     window.removeEventListener("pointermove", forceMove);
     window.removeEventListener("pointerup", forceUp);
@@ -469,13 +545,35 @@ let lenId: number | null = $state(null); // the force section being resized, or 
 const draggingLen = $derived(lenId !== null);
 let lenStartS = 0; // the dragged section's cumulative start arclength (fixed during the drag)
 let lenCx = 0; // last length-drag cursor, canvas-local px (drives the per-frame edge-pan)
+let lenMod = false; // Ctrl/Cmd held (live) during the extent drag — snap bypass
 const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-eye feel constant
 // resolve the held cursor to a section extent through the *current* view (recomputed
 // inline so an edge-pan this frame is already reflected — the edge never lags the pan).
+// snaps the trimmed edge (the AE magnet) only to targets that are BOTH stable under the
+// resize AND reachable: ruler ticks, and the section's own force points (section-local,
+// so fixed while its extent changes). section boundaries are excluded — the dragged
+// section's own exit and every downstream boundary MOVE with the resize (self-snap), and
+// upstream boundaries are unreachable (they'd floor the length). the reach guard (length
+// ≥ MIN_FORCE_LEN) skips a snap the floor won't honor, so no guide flashes on an edge
+// that can't get there — matching applyDrag's reach guard.
 function applyLen(): void {
     if (lenId === null) return;
     const cv = clampView(view, chartW, sFrozen ?? sTotal);
-    const cumS = pxToS(cv, lenCx - LEFT_GUT);
+    let cumS = pxToS(cv, lenCx - LEFT_GUT);
+    snapX = null;
+    if (snapActive(lenMod)) {
+        const targets: number[] = [];
+        for (const tk of ticks(cv, chartW)) targets.push(tk.px);
+        for (const p of forcePts) if (p.section === lenId) targets.push(sToPx(cv, p.startS + p.s));
+        const hit = snap(lenCx - LEFT_GUT, targets);
+        if (hit !== null) {
+            const cand = pxToS(cv, hit);
+            if (cand - lenStartS >= MIN_FORCE_LEN) {
+                cumS = cand; // only latch a target the MIN_FORCE_LEN floor will actually honor
+                snapX = hit;
+            }
+        }
+    }
     setSectionLength(ecs, lenId, cumS - lenStartS); // cumulative − section start → local extent
 }
 function lenDown(e: PointerEvent, c: Clip): void {
@@ -484,6 +582,7 @@ function lenDown(e: PointerEvent, c: Clip): void {
     e.stopPropagation();
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
+    lenMod = e.ctrlKey || e.metaKey;
     lenStartS = c.s0; // upstream is unchanged by this resize, so the start is fixed
     selectSection(c.id); // grabbing the edge selects the section (one object, two surfaces)
     beginLength(ecs, c.id);
@@ -496,12 +595,14 @@ function lenMove(e: PointerEvent): void {
     if (lenId === null) return;
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
+    lenMod = e.ctrlKey || e.metaKey; // live: bypass can be toggled mid-drag
     applyLen();
 }
 function lenUp(): void {
     if (lenId === null) return;
     lenId = null;
     sFrozen = null; // release the in-drag freeze; the zoom never re-fits (no release refit) —
+    snapX = null;
     commit(history); // clampView now only re-clamps pan to the live extent, never rescales
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
@@ -510,6 +611,7 @@ function cancelLenDrag(): void {
     if (lenId === null) return;
     lenId = null;
     sFrozen = null;
+    snapX = null;
     cancel();
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
@@ -611,6 +713,8 @@ function deleteSelectedForce(): void {
 function cancelForceDrag(): void {
     if (dragForce === null) return;
     dragForce = null;
+    snapX = null;
+    snapY = null;
     cancel(); // interrupted (unmount mid-drag): revert to the pre-gesture s/g
     window.removeEventListener("pointermove", forceMove);
     window.removeEventListener("pointerup", forceUp);
@@ -865,8 +969,15 @@ function scrubTo(e: PointerEvent): void {
     if (eid === null || !scrubbing) return;
     const rect = canvas.getBoundingClientRect();
     // the ruler is distance — park at the picked cumulative arclength directly (the
-    // scrub's native domain), which also derives the display time.
-    const s = clamp(pxToS(clamped, e.clientX - rect.left - LEFT_GUT), 0, sTotal);
+    // scrub's native domain), which also derives the display time. snapping parks
+    // exactly on a track feature (boundary / keyframe / tick) — the AE convention that
+    // the current-time indicator latches to keyframes and markers; the playhead line is
+    // its own indicator so no extra guide flashes. Ctrl/Cmd bypasses for a fine scrub.
+    let s = clamp(pxToS(clamped, e.clientX - rect.left - LEFT_GUT), 0, sTotal);
+    if (snapActive(e.ctrlKey || e.metaKey)) {
+        const hit = snap(sToPx(clamped, s), sTargets({ playhead: false, trackEnd: true }));
+        if (hit !== null) s = clamp(pxToS(clamped, hit), 0, sTotal);
+    }
     parkAtArc(ecs, eid, s);
 }
 function endScrub(): void {
@@ -1152,6 +1263,17 @@ onMount(() => {
                     points="{playPx - 5},{RULER_H - 10} {playPx + 5},{RULER_H - 10} {playPx},{RULER_H}"
                 />
             {/if}
+            <!-- snap guide flash (Figma alignment guide): a thin line at the axis a drag
+                 latched to — vertical for an s-axis snap, horizontal for a g-axis snap.
+                 clipped to the chart, shown only while an axis is actively snapped. -->
+            <g clip-path="url(#fclip)">
+                {#if snapX !== null}
+                    <line class="snapguide" x1={LEFT_GUT + snapX} x2={LEFT_GUT + snapX} y1={TOP} y2={h - BOT_PAD} />
+                {/if}
+                {#if snapY !== null}
+                    <line class="snapguide" x1={LEFT_GUT} x2={w} y1={snapY} y2={snapY} />
+                {/if}
+            </g>
             <!-- force points across every force section: a filled diamond at (s, g) —
                  the KEYFRAME idiom (authored input), no drop-line, no driving/driven.
                  an invisible fat hit circle (FHIT_R) carries the grab + hover so the 5px
@@ -1182,6 +1304,28 @@ onMount(() => {
                 {/each}
             </g>
         </svg>
+        <!-- the snapping magnet toggle: a quiet icon in the dock corner (the one earned
+             dock — no new toolbar). lit when on (default), dimmed when off; `S` also
+             toggles it, Ctrl/Cmd bypasses per-drag. -->
+        <button
+            class="snap-toggle"
+            class:on={snapOn}
+            type="button"
+            onclick={toggleSnap}
+            title="Snapping (S)"
+            aria-label="Snapping"
+            aria-pressed={snapOn}
+        >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                    d="M4 2 L4 8 a4 4 0 0 0 8 0 L12 2 L9.5 2 L9.5 8 a1.5 1.5 0 0 1 -3 0 L6.5 2 Z"
+                    fill="currentColor"
+                    fill-rule="evenodd"
+                />
+                <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
+                <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
+            </svg>
+        </button>
         <!-- the selected point's typed s/g fields: a popover summoned AT the diamond
              (on the object, not a docked row). it follows a live drag as the value
              readout, pointer-inert so it never fights the drag; flips below the point
@@ -1540,6 +1684,48 @@ onMount(() => {
     .grip {
         fill: var(--neutral); /* matches the player knob; accent is reserved for the result curve */
         pointer-events: none; /* visual handle; the rulerzone owns the scrub */
+    }
+
+    /* the snap guide flash: a thin alignment line at a latched axis (the Figma idiom), in
+       the dedicated snap color so it reads apart from kind / infeasible / selection. */
+    .snapguide {
+        stroke: var(--snap);
+        stroke-width: 1;
+        opacity: 0.9;
+        pointer-events: none;
+    }
+
+    /* the snapping magnet toggle: a quiet corner icon (top-right of the dock body). muted
+       when off, accent-lit when on — a persistent editor preference, not a loud control. */
+    .snap-toggle {
+        all: unset;
+        position: absolute;
+        top: 4px;
+        right: 6px;
+        z-index: 3;
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 4px;
+        color: var(--muted);
+        cursor: pointer;
+        opacity: 0.55;
+        transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+    }
+    .snap-toggle:hover {
+        opacity: 0.9;
+        background: rgba(255, 255, 255, 0.06);
+    }
+    .snap-toggle.on {
+        color: var(--accent);
+        opacity: 1;
+    }
+    .snap-toggle svg {
+        width: 15px;
+        height: 15px;
     }
 
     /* the scrub zone: the whole top ruler + gap band. click/drag anywhere here moves
