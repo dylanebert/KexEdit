@@ -1,6 +1,7 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
 import { editor } from "./editor";
+import { niceStep } from "./timeline";
 import { bakeOut, Handle, samples, sectionInfo, sections, Track } from "./track";
 import { Canvas2D, resize, viewTransform } from "./view";
 
@@ -13,6 +14,11 @@ const COLOR_TRACK = "#cce5ff";
 const COLOR_INFEASIBLE = "#e26d5c";
 const COLOR_ANCHOR = "#9aa0a6";
 
+// target on-screen spacing between minor gridlines (px); the world step snaps to a
+// 1-2-5 nice number that lands nearest this under the current zoom, so the grid stays
+// legible at any zoom instead of a fixed pixel pitch that ignores the camera.
+const GRID_PX = 40;
+
 const GridSystem: System = {
     group: "draw",
     update(): void {
@@ -22,31 +28,51 @@ const GridSystem: System = {
 
         const w = canvas.clientWidth;
         const h = canvas.clientHeight;
+        const { sx, sy, ox, oy } = viewTransform(canvas);
 
         ctx.fillStyle = "#0e0d0c";
         ctx.fillRect(0, 0, w, h);
 
-        const spacing = 40;
+        // gridlines at world multiples of `step`, transformed by the camera. the origin
+        // lines (k=0) draw brighter as the world axes.
+        const step = niceStep(GRID_PX / sx);
+        const kx0 = Math.floor((0 - ox) / sx / step);
+        const kx1 = Math.ceil((w - ox) / sx / step);
+        // world y at the top/bottom edges (sy < 0, so the top edge is the larger world y).
+        const wyTop = (0 - oy) / sy;
+        const wyBot = (h - oy) / sy;
+        const ky0 = Math.floor(Math.min(wyTop, wyBot) / step);
+        const ky1 = Math.ceil(Math.max(wyTop, wyBot) / step);
+
         ctx.strokeStyle = "#1f1e1d";
         ctx.lineWidth = 1;
         ctx.beginPath();
-        for (let x = (w / 2) % spacing; x < w; x += spacing) {
+        for (let k = kx0; k <= kx1; k++) {
+            if (k === 0) continue;
+            const x = ox + k * step * sx;
             ctx.moveTo(x, 0);
             ctx.lineTo(x, h);
         }
-        for (let y = (h / 2) % spacing; y < h; y += spacing) {
+        for (let k = ky0; k <= ky1; k++) {
+            if (k === 0) continue;
+            const y = oy + k * step * sy;
             ctx.moveTo(0, y);
             ctx.lineTo(w, y);
         }
         ctx.stroke();
 
+        // the world axes (x=0, y=0) — brighter, drawn only when on-screen.
         ctx.strokeStyle = "#363534";
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(0, h / 2);
-        ctx.lineTo(w, h / 2);
-        ctx.moveTo(w / 2, 0);
-        ctx.lineTo(w / 2, h);
+        if (oy >= 0 && oy <= h) {
+            ctx.moveTo(0, oy);
+            ctx.lineTo(w, oy);
+        }
+        if (ox >= 0 && ox <= w) {
+            ctx.moveTo(ox, 0);
+            ctx.lineTo(ox, h);
+        }
         ctx.stroke();
     },
 };

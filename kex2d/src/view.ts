@@ -5,7 +5,26 @@ interface Canvas2DRef {
 
 export const Canvas2D: Canvas2DRef = {} as Canvas2DRef;
 
+/** default framing: half the world-meters shown across the canvas width (the initial
+ *  zoom fits ±this many meters horizontally). */
 const VIEW_HALF_X = 280;
+/** screen px kept clear at the bottom for the timeline dock (height 240 + 16px inset).
+ *  the default view centers the world origin ABOVE this band, not at the canvas center —
+ *  the dock would otherwise cover the track's launch. */
+const DOCK_RESERVE = 256;
+/** zoom limits (px per world meter). the affine viewport is an infinite canvas — pan is
+ *  unclamped — but the scale is bounded so the track can't blow up or vanish. */
+export const MIN_ZOOM = 0.05;
+export const MAX_ZOOM = 200;
+
+/** the viewport camera: a uniform 2D affine over world space. `zoom` is px per world
+ *  meter (uniform, no rotation); `ox`/`oy` are the screen px the world origin lands at.
+ *  world → screen is `screen = origin + world·(zoom, −zoom)` (Y-up world, Y-down screen). */
+export interface Camera {
+    zoom: number;
+    ox: number;
+    oy: number;
+}
 
 export interface ViewTx {
     sx: number;
@@ -14,17 +33,65 @@ export interface ViewTx {
     oy: number;
 }
 
+const clampZoom = (z: number): number => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+
+/** the HUD-aware default framing for a canvas of the given size: initial zoom fits
+ *  ±`VIEW_HALF_X` meters across the width, origin centered horizontally and vertically
+ *  centered in the region above the dock. */
+export function defaultCamera(width: number, height: number): Camera {
+    const zoom = width > 0 ? width / (2 * VIEW_HALF_X) : 1;
+    return { zoom: clampZoom(zoom), ox: width / 2, oy: (height - DOCK_RESERVE) / 2 };
+}
+
+/** pan by a screen-space delta (drag): the world slides under the cursor. */
+export function panCamera(cam: Camera, dx: number, dy: number): Camera {
+    return { zoom: cam.zoom, ox: cam.ox + dx, oy: cam.oy + dy };
+}
+
+/** geometric zoom by `factor` anchored at screen (`px`, `py`): the world point under the
+ *  cursor stays fixed across the scale change. zoom is clamped *before* deriving the new
+ *  origin, so the anchor holds exactly even at the zoom limits. */
+export function zoomAt(cam: Camera, px: number, py: number, factor: number): Camera {
+    const z = clampZoom(cam.zoom * factor);
+    const wx = (px - cam.ox) / cam.zoom;
+    const wy = (py - cam.oy) / -cam.zoom;
+    return { zoom: z, ox: px - wx * z, oy: py + wy * z };
+}
+
+/** the render-consumer transform for a camera — world → screen affine. */
+export function cameraTx(cam: Camera): ViewTx {
+    return { sx: cam.zoom, sy: -cam.zoom, ox: cam.ox, oy: cam.oy };
+}
+
+/** the live viewport camera — a module singleton (mirrors `Canvas2D`/`editor`), mutated in
+ *  place by the pan/zoom controls and read every frame by the render systems + App anchors. */
+export const camera: Camera = { zoom: 0, ox: 0, oy: 0 };
+let framed = false;
+
+/** frame the camera to the default view for a canvas size (also the reset target). */
+export function frameCamera(width: number, height: number): void {
+    Object.assign(camera, defaultCamera(width, height));
+    framed = true;
+}
+
 export function attachCanvas2D(element: HTMLCanvasElement): void {
     const ctx = element.getContext("2d");
     if (!ctx) throw new Error("2d context unavailable");
     Object.assign(Canvas2D, { element, ctx });
 }
 
+/** the view transform for the current frame. lazily frames the camera to the canvas the
+ *  first time it's laid out (a persistent camera: a later resize doesn't reframe — the
+ *  standard NLE/Figma convention). pre-layout (width 0) returns a transient transform
+ *  without locking, so the first real frame does the framing. */
 export function viewTransform(canvas: HTMLCanvasElement): ViewTx {
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
-    const sx = w / (2 * VIEW_HALF_X);
-    return { sx, sy: -sx, ox: w / 2, oy: h / 2 };
+    if (!framed) {
+        if (w <= 0) return cameraTx(defaultCamera(w, h));
+        frameCamera(w, h);
+    }
+    return cameraTx(camera);
 }
 
 export function screenToWorld(tx: ViewTx, sx: number, sy: number): { x: number; y: number } {

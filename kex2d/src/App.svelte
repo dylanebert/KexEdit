@@ -153,8 +153,10 @@ $effect(() => {
 });
 
 // the track START anchor (initial-speed handle): selectable in the viewport, it summons
-// a v0 field popover at its screen point — the world origin, which the fixed view centers
-// (so the popover anchor never moves, and the scrub needs no anchor-freeze).
+// a v0 field popover at its screen point — the world origin under the camera. the anchor
+// recomputes per tick (`startPos`), so it tracks a viewport pan/zoom; it holds still
+// during the v0 scrub only because that gesture never moves the camera (root ui.md
+// "nothing moves under its own gesture"), so no anchor-freeze is needed here.
 const startSel = $derived.by((): boolean => {
     void tick;
     return editor.start;
@@ -167,7 +169,7 @@ const startPos = $derived.by((): { x: number; y: number } | null => {
     void tick;
     if (!canvas || trackEid === null) return null;
     const tx = viewTransform(canvas);
-    return { x: tx.ox, y: tx.oy }; // world origin → canvas center (the START diamond)
+    return { x: tx.ox, y: tx.oy }; // the world origin's screen point (the START diamond)
 });
 
 const V0_SCRUB = 0.1; // m/s per px — the START field's label-scrub rate

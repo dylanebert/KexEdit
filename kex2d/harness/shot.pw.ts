@@ -459,15 +459,18 @@ test("v0 authoring flow", async ({ page }) => {
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
     // the default flat seed bakes on load — no seedHill, so the START diamond at the world
-    // origin (canvas center) has no shape node on top of it.
+    // origin has no shape node on top of it.
     await expect.poll(tTotal).toBeGreaterThan(0);
     const v0Default = await v0();
 
-    // ── 1. Click the START anchor (viewport center) → its v0 popover appears. ──
+    // ── 1. Click the START anchor → its v0 popover appears. the default camera centers the
+    // world origin horizontally and vertically in the region above the dock (240 + 16px
+    // inset kept clear), NOT the canvas center — so the click follows that framing. ──
+    const DOCK_RESERVE = 256;
     const canvas = page.locator("#app > canvas");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
-    await page.mouse.click(cb.x + cb.width / 2, cb.y + cb.height / 2);
+    await page.mouse.click(cb.x + cb.width / 2, cb.y + (cb.height - DOCK_RESERVE) / 2);
     await expect(page.locator(".vtip")).toBeVisible();
     await page.waitForTimeout(300); // let the popover's 120ms fade-in finish before the shot
     await page.screenshot({ path: join(OUT, "v0-1-selected.png") });

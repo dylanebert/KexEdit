@@ -21,17 +21,35 @@ import {
     sections,
     Track,
 } from "./track";
-import { pointerToCanvas, screenToWorld, viewTransform, type ViewTx } from "./view";
+import {
+    camera,
+    panCamera,
+    pointerToCanvas,
+    screenToWorld,
+    viewTransform,
+    type ViewTx,
+    zoomAt,
+} from "./view";
 
 const PICK_R = 16;
 const SECTION_PICK_R = 12;
 const START_PICK_R = 12;
+
+// wheel zoom rate: screen-px-independent, exp(−deltaY·rate) so scaling is symmetric
+// (in then out returns to the same zoom) and reads the same for wheel + trackpad pinch
+// (which arrives as ctrl+wheel, the browser convention).
+const WHEEL_ZOOM_RATE = 0.0015;
 
 let dragNode: number | null = null;
 // grab offset (world): the node−under−cursor delta captured at pointerdown, so the
 // node tracks the cursor relatively (grabbing slightly off-center doesn't snap it).
 let grabX = 0;
 let grabY = 0;
+
+// middle-drag pan state: the last canvas point, so each move pans by its screen delta.
+let panning = false;
+let panX = 0;
+let panY = 0;
 
 /** the single track's sample buffers (one track in this prototype). */
 function trackSamples(ecs: State): ReturnType<typeof samples.get> {
@@ -139,7 +157,21 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     };
 
     const onPointerDown = (e: PointerEvent): void => {
-        if (e.button !== 0) return;
+        // middle-drag pans the viewport — the same gesture the timeline uses (one
+        // vocabulary). left picks/drags; right owns the section context menu. pan and
+        // node-drag are mutually exclusive: refuse to start one while the other is live,
+        // so a second button press can't leak pointer capture or an open history gesture.
+        if (e.button === 1) {
+            if (dragNode !== null) return;
+            e.preventDefault();
+            const { x, y } = pointerToCanvas(canvas, e);
+            panning = true;
+            panX = x;
+            panY = y;
+            canvas.setPointerCapture(e.pointerId);
+            return;
+        }
+        if (e.button !== 0 || panning) return;
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
         const { x: wx, y: wy } = screenToWorld(tx, cx, cy);
@@ -175,6 +207,13 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     };
 
     const onPointerMove = (e: PointerEvent): void => {
+        if (panning) {
+            const { x, y } = pointerToCanvas(canvas, e);
+            Object.assign(camera, panCamera(camera, x - panX, y - panY));
+            panX = x;
+            panY = y;
+            return;
+        }
         if (dragNode === null) return;
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
@@ -182,7 +221,28 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         dragTo(ecs, dragNode, wx + grabX, wy + grabY);
     };
 
+    // wheel = zoom-at-cursor; trackpad pinch arrives as ctrl+wheel (browser convention)
+    // and zooms the same way. preventDefault stops the page from scrolling/zooming under
+    // it (needs a non-passive listener). deltaY is normalized to px — Firefox reports
+    // line/page deltas (deltaMode 1/2), which would otherwise zoom imperceptibly.
+    const onWheel = (e: WheelEvent): void => {
+        e.preventDefault();
+        const { x, y } = pointerToCanvas(canvas, e);
+        const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientHeight : 1;
+        Object.assign(camera, zoomAt(camera, x, y, Math.exp(-e.deltaY * unit * WHEEL_ZOOM_RATE)));
+    };
+
+    // suppress the middle-click autoscroll ring (fired on mousedown, not the pointer event).
+    const onMouseDown = (e: MouseEvent): void => {
+        if (e.button === 1) e.preventDefault();
+    };
+
     const endDrag = (e: PointerEvent): void => {
+        if (panning) {
+            panning = false;
+            if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+            return;
+        }
         if (dragNode === null) return;
         dragNode = null;
         commit(history); // one drag → one undo entry (a no-move click records nothing)
@@ -190,6 +250,11 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     };
 
     const cancelDrag = (e: PointerEvent): void => {
+        if (panning) {
+            panning = false;
+            if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+            return;
+        }
         if (dragNode === null) return;
         dragNode = null;
         cancel(); // interrupted drag: restore the pre-gesture pose
@@ -244,18 +309,22 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     };
 
     canvas.addEventListener("contextmenu", onContextMenu);
+    canvas.addEventListener("mousedown", onMouseDown);
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", endDrag);
     canvas.addEventListener("pointercancel", cancelDrag);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKeyDown);
 
     return () => {
         canvas.removeEventListener("contextmenu", onContextMenu);
+        canvas.removeEventListener("mousedown", onMouseDown);
         canvas.removeEventListener("pointerdown", onPointerDown);
         canvas.removeEventListener("pointermove", onPointerMove);
         canvas.removeEventListener("pointerup", endDrag);
         canvas.removeEventListener("pointercancel", cancelDrag);
+        canvas.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKeyDown);
     };
 }
