@@ -467,6 +467,10 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", forceMove);
     window.addEventListener("pointerup", forceUp);
+    // a real pointercancel (system gesture takeover) must finalize the gesture the same
+    // way a pointerup does — else the open history gesture never commits and corrupts undo
+    // grouping. beginDrag recovers the `dragging` flag on its own; this is the history close.
+    window.addEventListener("pointercancel", forceUp);
 }
 function forceMove(e: PointerEvent): void {
     if (dragForce === null) return;
@@ -485,6 +489,7 @@ function forceUp(): void {
     commit(history); // one drag → one entry; a no-move click drops via the `same` guard
     window.removeEventListener("pointermove", forceMove);
     window.removeEventListener("pointerup", forceUp);
+    window.removeEventListener("pointercancel", forceUp);
 }
 
 // select a section by clicking its clip (the same `editor.section` the viewport span
@@ -603,6 +608,7 @@ function lenDown(e: PointerEvent, c: Clip): void {
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", lenMove);
     window.addEventListener("pointerup", lenUp);
+    window.addEventListener("pointercancel", lenUp); // finalize the history gesture on cancel too
 }
 function lenMove(e: PointerEvent): void {
     if (lenId === null) return;
@@ -619,6 +625,7 @@ function lenUp(): void {
     commit(history); // clampView now only re-clamps pan to the live extent, never rescales
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
+    window.removeEventListener("pointercancel", lenUp);
 }
 function cancelLenDrag(): void {
     if (lenId === null) return;
@@ -628,6 +635,7 @@ function cancelLenDrag(): void {
     cancel();
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
+    window.removeEventListener("pointercancel", lenUp);
 }
 // per-frame edge-scroll for the length drag: hold the frozen fit-total at its
 // high-water mark (shortening never zooms in; an extending handle grows panMax so the
@@ -734,6 +742,7 @@ function cancelForceDrag(): void {
     cancel(); // interrupted (unmount mid-drag): revert to the pre-gesture s/g
     window.removeEventListener("pointermove", forceMove);
     window.removeEventListener("pointerup", forceUp);
+    window.removeEventListener("pointercancel", forceUp);
 }
 
 // ── middle-button drag pans the view. intercepted at the host's capture phase so it
@@ -751,6 +760,7 @@ function panDown(e: PointerEvent): void {
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", panMove);
     window.addEventListener("pointerup", panUp);
+    window.addEventListener("pointercancel", panUp); // mirror release on cancel (no leaked listeners)
 }
 function panMove(e: PointerEvent): void {
     if (!panning) return; // drag content right → reveal earlier distance → pan decreases
@@ -760,6 +770,7 @@ function panUp(): void {
     panning = false;
     window.removeEventListener("pointermove", panMove);
     window.removeEventListener("pointerup", panUp);
+    window.removeEventListener("pointercancel", panUp);
 }
 
 // ── distance navigator: a full-track overview below the chart, drawn as a preview
@@ -784,6 +795,7 @@ function navDown(e: PointerEvent, mode: "pan" | "l" | "r"): void {
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", navMove);
     window.addEventListener("pointerup", navUp);
+    window.addEventListener("pointercancel", navUp); // mirror release on cancel (no leaked listeners)
 }
 function navMove(e: PointerEvent): void {
     if (!navDrag) return;
@@ -793,6 +805,7 @@ function navUp(): void {
     navDrag = null;
     window.removeEventListener("pointermove", navMove);
     window.removeEventListener("pointerup", navUp);
+    window.removeEventListener("pointercancel", navUp);
 }
 
 function render(ctx: CanvasRenderingContext2D): void {
@@ -1002,6 +1015,7 @@ function endScrub(): void {
     scrubbing = false; // leave st.held true — parked + paused, no auto-resume
     window.removeEventListener("pointermove", scrubTo);
     window.removeEventListener("pointerup", endScrub);
+    window.removeEventListener("pointercancel", endScrub);
 }
 function startScrub(e: PointerEvent): void {
     if (eid === null) return;
@@ -1019,6 +1033,7 @@ function startScrub(e: PointerEvent): void {
     scrubTo(e);
     window.addEventListener("pointermove", scrubTo);
     window.addEventListener("pointerup", endScrub);
+    window.addEventListener("pointercancel", endScrub); // mirror release on cancel (no leaked listeners)
 }
 
 function togglePlay(): void {
@@ -1054,6 +1069,7 @@ function sliderUp(): void {
     }
     window.removeEventListener("pointermove", sliderTo);
     window.removeEventListener("pointerup", sliderUp);
+    window.removeEventListener("pointercancel", sliderUp);
 }
 function sliderDown(e: PointerEvent): void {
     if (eid === null || tTotal <= 0) return;
@@ -1067,6 +1083,7 @@ function sliderDown(e: PointerEvent): void {
     sliderTo(e);
     window.addEventListener("pointermove", sliderTo);
     window.addEventListener("pointerup", sliderUp);
+    window.addEventListener("pointercancel", sliderUp); // mirror release on cancel (no leaked listeners)
 }
 // arrow-step the playhead — shared by both scrub controls (the ruler and the slider).
 function stepKey(e: KeyboardEvent): void {
