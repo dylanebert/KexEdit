@@ -371,10 +371,11 @@ $effect(() => {
         --accent: #d49560;
         --accent-soft: rgba(212, 149, 96, 0.18);
         --geo: #78a5d6; /* geo-section kind color (viewport polyline + clip strip); force's is --accent */
-        /* selection = a brightened analog of the element's own kind color (the Ableton/
-           Premiere clip idiom); the color-mix twin of colors.ts `selected()` (SELECT_MIX). */
-        --geo-sel: color-mix(in srgb, var(--geo), white 35%);
-        --accent-sel: color-mix(in srgb, var(--accent), white 35%);
+        /* selection = a brighter, still-saturated OKLCH variant of the element's own kind
+           color (the Ableton/Premiere clip idiom); the relative-color twin of colors.ts
+           `selected()` — lift L, boost C, hold hue (an sRGB white-mix would drain chroma). */
+        --geo-sel: oklch(from var(--geo) calc(l + 0.14) calc(c * 1.15) h);
+        --accent-sel: oklch(from var(--accent) calc(l + 0.14) calc(c * 1.15) h);
         --pin: #ece8e3; /* authored force-pin marker (light, not accent) */
         --neutral: #b8b1a8; /* chrome: player icon, slider fill/thumb */
         --neutral-soft: rgba(255, 255, 255, 0.1);

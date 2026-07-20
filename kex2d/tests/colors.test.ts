@@ -1,31 +1,43 @@
 import { describe, expect, test } from "bun:test";
-import { SELECT_MIX, selected } from "../src/colors";
+import { hexToOklch, selected } from "../src/colors";
 
-// the test's own #rrggbb reader, independent of the implementation under test.
+// an independent sRGB #rrggbb reader (not the module under test).
 function rgb(hex: string): [number, number, number] {
     const n = Number.parseInt(hex.slice(1), 16);
     return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
 }
+// the OLD sRGB derivation `selected` replaced: a 35% mix toward white. the regression
+// baseline — the OKLCH variant must stay more saturated than this washed-out result.
+function whiteMix(hex: string): string {
+    const up = (c: number): number => Math.round(c + (255 - c) * 0.35);
+    const [r, g, b] = rgb(hex);
+    return `#${((up(r) << 16) | (up(g) << 8) | up(b)).toString(16).padStart(6, "0")}`;
+}
 
-describe("selected", () => {
-    test("brightens every sub-255 channel toward white", () => {
-        for (const base of ["#78a5d6", "#d49560", "#112233"]) {
-            const [br, bg, bb] = rgb(base);
-            const [sr, sg, sb] = rgb(selected(base));
-            expect(sr).toBeGreaterThan(br);
-            expect(sg).toBeGreaterThan(bg);
-            expect(sb).toBeGreaterThan(bb);
+describe("selected — OKLCH tone variant", () => {
+    // the two kind colors the selection derives from (geo blue, force gold).
+    const kinds = ["#78a5d6", "#d49560"];
+
+    test("brightens (OKLCH lightness rises)", () => {
+        for (const base of kinds) {
+            expect(hexToOklch(selected(base)).l).toBeGreaterThan(hexToOklch(base).l);
         }
     });
 
-    test("white is a fixed point (the mix target)", () => {
-        expect(selected("#ffffff")).toBe("#ffffff");
+    test("preserves hue", () => {
+        for (const base of kinds) {
+            expect(hexToOklch(selected(base)).h).toBeCloseTo(hexToOklch(base).h, 1);
+        }
     });
 
-    test("mixes toward white by SELECT_MIX — matches the CSS color-mix twin", () => {
-        // color-mix(in srgb, #000000, white SELECT_MIX) lifts each 0-channel to round(255·t).
-        const expected = Math.round(255 * SELECT_MIX);
-        expect(rgb(selected("#000000"))).toEqual([expected, expected, expected]);
+    test("stays vivid — more chroma than the sRGB white-mix it replaces", () => {
+        for (const base of kinds) {
+            expect(hexToOklch(selected(base)).c).toBeGreaterThan(hexToOklch(whiteMix(base)).c);
+        }
+    });
+
+    test("white is a fixed point (no chroma to lift)", () => {
+        expect(selected("#ffffff")).toBe("#ffffff");
     });
 
     test("returns a well-formed lowercase 6-digit hex", () => {
