@@ -29,6 +29,7 @@ import {
     sToPx,
     ticks,
     timeToArc,
+    trimTargets,
     type View,
     xGrow,
     yFit,
@@ -340,26 +341,26 @@ const ptX = (p: ForcePt): number => markerX(p.startS + p.s);
 let snapX: number | null = $state(null); // an active s-axis snap: vertical guide px
 let snapY: number | null = $state(null); // an active g-axis snap: horizontal guide py
 
-// the s-axis snap targets in chart-local px (the horizontal magnet): section boundaries
-// (0, interior boundaries, optionally the track end), ruler ticks, other force points,
-// and — only while parked, so a live-playing playhead isn't a moving magnet — the
-// playhead. the caller excludes the dragged point and picks whether its own moving edge
-// (the track end) is a target.
+// the s-axis snap targets in chart-local px (the horizontal magnet): content landmarks
+// only (editor-ui.md) — section boundaries (0, interior boundaries, optionally the track
+// end), other force points, and — only while parked, so a live-playing playhead isn't a
+// moving magnet — the playhead. no ruler ticks: they're the zoom-dependent 1-2-5 raster,
+// display not content. the caller excludes the dragged point and picks whether its own
+// moving edge (the track end) is a target.
 function sTargets(opts: { exclude?: number; playhead: boolean; trackEnd: boolean }): number[] {
     const v = clamped;
     const out: number[] = [sToPx(v, 0)];
     for (const b of bounds) out.push(sToPx(v, b));
     if (opts.trackEnd) out.push(sToPx(v, sTotal));
-    for (const tk of tickList) out.push(tk.px);
     for (const p of forcePts) if (p.id !== opts.exclude) out.push(sToPx(v, p.startS + p.s));
     if (opts.playhead && paused && cartS !== null) out.push(sToPx(v, cartS));
     return out;
 }
-// the g-axis snap targets in chart py (the vertical magnet): the integer g gridlines in
-// view (the 1g baseline is the integer 1, so it's included) + every other point's g.
+// the g-axis snap targets in chart py (the vertical magnet): content landmarks only
+// (editor-ui.md) — the 1g baseline (the physical gravity landmark) + every other point's
+// g. no integer-g gridline raster: 1g survives as a physical baseline, not as a gridline.
 function gTargets(exclude?: number): number[] {
-    const out: number[] = [];
-    for (let g = Math.ceil(yView.lo); g <= yView.hi; g++) out.push(yOf(g));
+    const out: number[] = [yOf(Y_BASE)];
     for (const p of forcePts) if (p.id !== exclude) out.push(yOf(p.g));
     return out;
 }
@@ -558,11 +559,13 @@ let lenMod = false; // Ctrl/Cmd held (live) during the extent drag — snap bypa
 const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-eye feel constant
 // resolve the held cursor to a section extent through the *current* view (recomputed
 // inline so an edge-pan this frame is already reflected — the edge never lags the pan).
-// snaps the trimmed edge (the AE magnet) only to targets that are BOTH stable under the
-// resize AND reachable: ruler ticks, and the section's own force points (section-local,
-// so fixed while its extent changes). section boundaries are excluded — the dragged
-// section's own exit and every downstream boundary MOVE with the resize (self-snap), and
-// upstream boundaries are unreachable (they'd floor the length). the reach guard (length
+// snaps the trimmed edge (the AE magnet) to content landmarks that are BOTH stable under
+// the resize AND reachable (editor-ui.md): the section's own force points (section-local,
+// so fixed while its extent changes) and the playhead (the Premiere trim-to-playhead
+// idiom, only while parked). ruler ticks are excluded — the zoom-dependent 1-2-5 raster
+// is display, not content. section boundaries are excluded too — the dragged section's
+// own exit and every downstream boundary MOVE with the resize (self-snap), and upstream
+// boundaries are unreachable (they'd floor the length). the reach guard (length
 // ≥ MIN_FORCE_LEN) skips a snap the floor won't honor, so no guide flashes on an edge
 // that can't get there — matching applyDrag's reach guard.
 function applyLen(): void {
@@ -571,9 +574,9 @@ function applyLen(): void {
     let cumS = pxToS(cv, lenCx - LEFT_GUT);
     snapX = null;
     if (snapActive(lenMod)) {
-        const targets: number[] = [];
-        for (const tk of ticks(cv, chartW)) targets.push(tk.px);
-        for (const p of forcePts) if (p.section === lenId) targets.push(sToPx(cv, p.startS + p.s));
+        const ownS: number[] = [];
+        for (const p of forcePts) if (p.section === lenId) ownS.push(p.startS + p.s);
+        const targets = trimTargets(cv, ownS, paused && cartS !== null ? cartS : null);
         const hit = snap(lenCx - LEFT_GUT, targets);
         if (hit !== null) {
             const cand = pxToS(cv, hit);

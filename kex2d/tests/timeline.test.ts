@@ -15,6 +15,7 @@ import {
     sToPx,
     ticks,
     timeToArc,
+    trimTargets,
     type View,
     xGrow,
     yFit,
@@ -375,12 +376,37 @@ describe("snap — nearest-target magnet", () => {
     });
     test("equidistant targets resolve to the last in iteration order (documented tie policy)", () => {
         // load-bearing since callers order their target sets deliberately (boundaries →
-        // ticks → points): on an exact tie the later-listed target wins.
+        // points → playhead): on an exact tie the later-listed target wins.
         expect(snap(100, [96, 104])).toBe(104); // both 4px away → the later one
         expect(snap(100, [104, 96])).toBe(96); // order flipped → the later one again
     });
     test("a NaN value never snaps (comparisons are false)", () => {
         expect(snap(Number.NaN, [0, 5, 10])).toBeNull();
         expect(snap(3, [Number.NaN])).toBeNull(); // a NaN target is skipped, not latched
+    });
+});
+
+describe("trimTargets — extent-trim landmark set", () => {
+    // the feel-check-in verdict: the extent trim snaps to content landmarks only — the
+    // section's own force points and the parked playhead — never to ruler ticks. the set
+    // membership IS the behavior; the projection is `sToPx` (tested above).
+    const v: View = { pan: 0, pxPerM: 10 }; // 10px per meter, no pan
+
+    test("own force points and the playhead, each projected to px", () => {
+        const out = trimTargets(v, [4, 12], 8);
+        expect(out).toEqual([sToPx(v, 4), sToPx(v, 12), sToPx(v, 8)]);
+    });
+    test("only own points when the playhead is absent (playing / unset)", () => {
+        // no ruler tick sneaks in even at a wide zoom-out where ticks would be dense:
+        // the set is exactly the section's own points, nothing else.
+        const out = trimTargets({ pan: 0, pxPerM: 0.5 }, [4, 12], null);
+        expect(out).toHaveLength(2);
+        expect(out).toEqual([
+            sToPx({ pan: 0, pxPerM: 0.5 }, 4),
+            sToPx({ pan: 0, pxPerM: 0.5 }, 12),
+        ]);
+    });
+    test("no own points and no playhead yields an empty set (nothing to snap to)", () => {
+        expect(trimTargets(v, [], null)).toEqual([]);
     });
 });

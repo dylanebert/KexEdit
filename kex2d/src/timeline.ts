@@ -203,10 +203,10 @@ export const SNAP_PX = 8;
 /** nearest-target magnet snap on one axis, resolved in screen px (the AE magnet model).
  *  returns the target within `threshold` px closest to `px`, or null when none is in
  *  range — the caller then keeps the raw value and skips the guide flash. targets are
- *  enumerated and projected to px by the caller (section boundaries, ruler ticks, other
- *  force points, integer g gridlines…), so the pull is a fixed screen distance at any
- *  zoom. pure — this is the whole snap resolver; the axis target sets live at the call
- *  sites. */
+ *  enumerated and projected to px by the caller from content landmarks (section
+ *  boundaries, other force points, the playhead, the 1g baseline — never display artifacts
+ *  like ruler ticks; editor-ui.md), so the pull is a fixed screen distance at any zoom.
+ *  pure — this is the whole snap resolver; the axis target sets live at the call sites. */
 export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX): number | null {
     let best: number | null = null;
     let bestD = threshold;
@@ -218,6 +218,20 @@ export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX)
         }
     }
     return best;
+}
+
+/** the extent-trim magnet targets in chart-local px: content landmarks that are stable
+ *  under the resize (editor-ui.md) — the section's own force points (cumulative arclengths
+ *  `ownS`, section-local so fixed while the extent changes) and the parked playhead
+ *  (`playheadS`, null while playing or unset — the Premiere trim-to-playhead idiom). Ruler
+ *  ticks and section boundaries are deliberately absent: ticks are the zoom-dependent
+ *  display raster, and the section's own exit + downstream boundaries move with the resize
+ *  (self-snap). Projected through the view `v` so the pull is a fixed screen distance. */
+export function trimTargets(v: View, ownS: Iterable<number>, playheadS: number | null): number[] {
+    const out: number[] = [];
+    for (const s of ownS) out.push(sToPx(v, s));
+    if (playheadS !== null) out.push(sToPx(v, playheadS));
+    return out;
 }
 
 /** per-sample cumulative arclength (m) and time (s) over the current baked track,
