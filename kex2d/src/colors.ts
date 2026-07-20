@@ -19,6 +19,25 @@ export function kindColor(kind: SectionKind): string {
     return kind === SectionKind.Force ? COLOR_FORCE : COLOR_GEO;
 }
 
+/** the selection tint fraction — how far toward white a selected element's own color
+ *  mixes (the Ableton/Premiere brightened-clip idiom). feel-provisional. the CSS twin is
+ *  `color-mix(in srgb, var(--token), white 35%)` over the same kind token (App.svelte
+ *  `--geo-sel`/`--accent-sel`), numerically identical to this. */
+export const SELECT_MIX = 0.35;
+
+/** an element's selection color: its own base color brightened toward white by
+ *  `SELECT_MIX`. selection is a brighter analog of the element's own color, never a flat
+ *  accent recolor (which reads as no-selection on a force span's own gold). derived over the
+ *  hex so the canvas render systems get a concrete value. */
+export function selected(base: string): string {
+    const n = Number.parseInt(base.slice(1), 16);
+    const up = (c: number): number => Math.round(c + (255 - c) * SELECT_MIX);
+    const r = up((n >> 16) & 0xff);
+    const g = up((n >> 8) & 0xff);
+    const b = up(n & 0xff);
+    return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+}
+
 /** one span per baked section, in chain order: its stable id, kind, resolved kind
  *  color, and its sample range on the flat baked SoA (`sectionInfo`). Skips a section
  *  with no bake info yet (mid-bake / just-created). The shared substrate behind every

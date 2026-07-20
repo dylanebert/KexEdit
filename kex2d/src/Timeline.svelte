@@ -1866,8 +1866,9 @@ onMount(() => {
     /* the section clip strip: one clip per section in the marker lane, kind-colored
        (geo = cool blue `--geo`, force = accent gold `--accent` — the same kind-color
        language the viewport track polyline draws, `colors.ts` on the canvas side).
-       hover brightens; the selected clip fills stronger with a light border, an
-       emphasis orthogonal to the kind hue. */
+       hover brightens the fill; the selected clip fills + strokes a brightened analog of
+       its own kind color (`--geo-sel`/`--accent-sel`, the color-mix twin of colors.ts
+       `selected()`) — the Ableton/Premiere selected-clip idiom, not a flat accent recolor. */
     .clip {
         pointer-events: all;
         cursor: pointer;
@@ -1889,12 +1890,12 @@ onMount(() => {
         fill: color-mix(in srgb, var(--accent) 42%, transparent);
     }
     .clip.geo.sel {
-        fill: color-mix(in srgb, var(--geo) 55%, transparent);
-        stroke: #9cc0ea;
+        fill: color-mix(in srgb, var(--geo-sel) 60%, transparent);
+        stroke: var(--geo-sel);
     }
     .clip.force.sel {
-        fill: color-mix(in srgb, var(--accent) 60%, transparent);
-        stroke: var(--accent);
+        fill: color-mix(in srgb, var(--accent-sel) 60%, transparent);
+        stroke: var(--accent-sel);
     }
     .clip-label {
         fill: var(--fg);

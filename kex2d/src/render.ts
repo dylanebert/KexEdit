@@ -1,6 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
-import { COLOR_ACCENT, COLOR_SNAP, kindSegments } from "./colors";
+import { COLOR_ACCENT, COLOR_SNAP, kindSegments, selected } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { bakeOut, Handle, samples, sectionInfo, sections, Track } from "./track";
@@ -111,14 +111,15 @@ const TrackDrawSystem: System = {
                 ys[i] = oy + s.posY[i] * sy;
             }
 
+            const segs = kindSegments(ecs);
             ctx.save();
             // the realized track (the baked geometry the cart rides) — solid, one pass
             // per section in its kind color (geo cool blue / force accent gold, the same
             // language the clip strip uses). infeasible-red and the selected-section
-            // accent overdraw this in the passes below (priority: infeasible > selection
+            // overlay overdraw this in the passes below (priority: infeasible > selection
             // > kind).
             ctx.lineWidth = 2;
-            for (const seg of kindSegments(ecs)) {
+            for (const seg of segs) {
                 ctx.strokeStyle = seg.color;
                 ctx.beginPath();
                 let inPath = false;
@@ -156,16 +157,18 @@ const TrackDrawSystem: System = {
             }
             ctx.stroke();
 
-            // selected-section overlay: overdraw its FEASIBLE span in the accent so
-            // the whole-section handle (convert / delete target) reads. an infeasible
-            // sub-segment is skipped here (same feasibility check as the two passes
-            // above) so it stays under the dashed-red pass instead of being painted
-            // over — priority stays infeasible-red > selection accent > kind color.
+            // selected-section overlay: overdraw its FEASIBLE span in a brightened analog
+            // of its OWN kind color (the Ableton/Premiere selected-clip idiom, `selected`
+            // in colors.ts) so the whole-section handle (convert / delete target) reads.
+            // an infeasible sub-segment is skipped here (same feasibility check as the two
+            // passes above) so it stays under the dashed-red pass instead of being painted
+            // over — priority stays infeasible-red > selection (brightened kind) > kind color.
             if (editor.section !== null) {
                 const info = sectionInfo.get(editor.section);
-                if (info) {
+                const seg = segs.find((s) => s.id === editor.section);
+                if (info && seg) {
                     ctx.setLineDash([]);
-                    ctx.strokeStyle = COLOR_ACCENT;
+                    ctx.strokeStyle = selected(seg.color);
                     ctx.lineWidth = 3;
                     ctx.beginPath();
                     let inSel = false;
