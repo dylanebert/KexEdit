@@ -173,6 +173,35 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` = 4096 in `track.ts`; `V0` = 10
 (the DEFAULT initial speed — now authored per-track as `Track.v0`) in `track.ts`.
 
+## Authoring API — the substrate is the agent surface
+
+Authored state — everything that *defines* the track — lives in ECS components in `track.ts`, and
+only there. The UI reads it through the per-RAF tick and writes it only through the `track.ts`
+setters, each wrapped in a `history` gesture. That is the purity contract, and it is the surface a
+future authoring agent drives — the same one the capture harness pokes through `__kex`.
+
+**The authored components (the one source of truth):** `Track` (`count`, `ds`, `v0`), `Section`
+(`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local
+`pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`). Everything else is
+derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never
+authored); `editor.ts` holds selection + context-menu state; the Svelte `$state` (view pan/zoom,
+drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
+
+**Write only through the setters, only inside a history gesture.** `history` is one undo/redo stack
+(`begin`/`commit`/`cancel`; one gesture at a time, so a live drag collapses to one entry). Two
+disciplines:
+
+- *Structural / one-shot* ops snapshot internally — call them bare: `appendSection`, `removeSection`,
+  `convertSection`, `extendTrack`, `trimTrack`, `createForce`, `deleteForce`.
+- *Continuous* edits (drags, label scrubs, typed fields) bracket by hand — `begin*` → `set*`
+  (repeated) → `commit(history)`, `cancel()` on interrupt: `beginMove`+`Handle.pos.set`,
+  `beginForceMove`+`setForcePoint`, `beginLength`+`setSectionLength`, `beginV0`+`setTrackV0`.
+
+Never mutate an authored component from a Svelte component or a read/render path — that divorces the
+edit from undo and from the single source of truth. The one deliberate exception is the DEV-only
+`__kex` hook (`main.ts`, never ships), whose `nudge`/`seedHill` poke components raw as test *setup*,
+not authoring.
+
 ## Code map
 
 **Substrate + physics atoms (pure, framework-free, `bun test`-able):**
