@@ -1,6 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { arcToTime, type Mapping, timeToArc } from "./timeline";
-import { bakeOut, samples, sectionInfo, sections, Track } from "./track";
+import { bakeOut, samples, sectionSpans, toLocal, Track } from "./track";
 
 /** a content-anchored park position: the section (stable id) the parked playhead is
  *  glued to, and its `offset` within that section — section-local, in the section's
@@ -86,47 +86,23 @@ export const CartSystem: System = {
 
 type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
 
-/** the cumulative-arclength span of each section on the current bake, in chain order —
- *  the park anchor resolves an offset inside one of these. mirrors the timeline clip
- *  strip's walk (`bakeOut.ds` over each section's sample range); sections are contiguous
- *  (each shares its entry sample with the prior exit), so one accumulating pass suffices. */
-export function sectionSpans(ecs: State, eid: number): { id: number; s0: number; s1: number }[] {
-    const out = bakeOut.get(eid);
-    if (!out) return [];
-    const res: { id: number; s0: number; s1: number }[] = [];
-    let cum = 0;
-    for (const sec of sections(ecs)) {
-        const info = sectionInfo.get(sec.id);
-        if (!info) continue;
-        const s0 = cum;
-        for (let i = info.startSample; i < info.endSample; i++) cum += out.ds[i];
-        res.push({ id: sec.id, s0, s1: cum });
-    }
-    return res;
-}
-
-/** cumulative arclength → a content anchor `{section, offset}`: the section whose span
- *  contains `cumS`, offset = `cumS` − its start. clamps to the track ends (before the
- *  first section → its entry; past the last → its exit). null with no baked sections. */
+/** cumulative arclength (the global distance `d`) → a content anchor `{section, offset}`:
+ *  the coordinate lens's `toLocal`, re-shaped into the cart's Park (offset = the local s).
+ *  clamps to the track ends. null with no baked sections. */
 export function resolvePark(ecs: State, eid: number, cumS: number): Park | null {
-    const spans = sectionSpans(ecs, eid);
-    if (spans.length === 0) return null;
-    for (const sp of spans) {
-        if (cumS <= sp.s1) return { section: sp.id, offset: Math.max(0, cumS - sp.s0) };
-    }
-    const last = spans[spans.length - 1];
-    return { section: last.id, offset: last.s1 - last.s0 };
+    const loc = toLocal(sectionSpans(ecs, eid), cumS);
+    return loc ? { section: loc.section, offset: loc.s } : null;
 }
 
 /** the parked anchor's cumulative arclength on the current bake: its section's live
  *  span, with the offset clamped into it (a trim/convert may have shortened the section
- *  under a fixed offset). null when the anchor section is gone (a delete / undo-of-
- *  append) — the caller re-resolves from the last cumulative s (`parkS`). */
+ *  under a fixed offset — so this is the lens's `toGlobal` plus the park's own reach
+ *  clamp). null when the anchor section is gone (a delete / undo-of-append) — the caller
+ *  re-resolves from the last cumulative s (`parkS`). */
 export function parkArc(ecs: State, eid: number, park: Park): number | null {
-    const spans = sectionSpans(ecs, eid);
-    const sp = spans.find((x) => x.id === park.section);
+    const sp = sectionSpans(ecs, eid).find((x) => x.id === park.section);
     if (!sp) return null;
-    return sp.s0 + Math.min(park.offset, sp.s1 - sp.s0);
+    return sp.offset + Math.min(park.offset, sp.len);
 }
 
 /** derive the parked cart time from its anchor through the current bake and record the

@@ -43,8 +43,8 @@ import {
     MIN_FORCE_LEN,
     SectionKind,
     sectionForces,
-    sectionInfo,
     sections,
+    sectionSpans,
     setForcePoint,
     setSectionLength,
 } from "./track";
@@ -241,23 +241,18 @@ const yToG = (py: number): number => {
 // chart x-axis is whole-track cumulative arclength, so a point draws at its section's
 // cumulative offset (`startS`) + its local s.
 //
-// the interior section boundaries in cumulative arclength — drawn as chart guides.
-const bounds = $derived.by((): number[] => {
+// the coordinate lens's span table (track.ts): each section's global-d offset + baked
+// arclength. the ONE source for every cumulative-d readout on the chart — boundaries,
+// clips, and force-point placement all derive from it, none re-walks the baked ds.
+const spans = $derived.by(() => {
     void tick;
-    if (eid === null) return [];
-    const out = bakeOut.get(eid);
-    if (!out) return [];
-    const secs = sections(ecs);
-    const bs: number[] = [];
-    for (let k = 0; k < secs.length - 1; k++) {
-        const info = sectionInfo.get(secs[k].id);
-        if (!info) continue;
-        let s = 0;
-        for (let i = 0; i < info.endSample; i++) s += out.ds[i];
-        bs.push(s);
-    }
-    return bs;
+    return eid === null ? [] : sectionSpans(ecs, eid);
 });
+// the interior section boundaries in global distance d — drawn as chart guides. each
+// non-last span's exit (offset + len).
+const bounds = $derived.by((): number[] =>
+    spans.slice(0, -1).map((sp) => sp.offset + sp.len),
+);
 // ── section clip strip (the marker lane): one clip per section over its cumulative
 // arclength span, kind-colored + labeled, selecting `editor.section` — the SAME
 // selection as the viewport span (one object, two surfaces). clip edges align with the
@@ -272,18 +267,12 @@ interface Clip {
 }
 const clips = $derived.by((): Clip[] => {
     void tick;
-    if (eid === null) return [];
-    const out = bakeOut.get(eid);
-    if (!out) return [];
+    const byId = new Map(spans.map((sp) => [sp.id, sp]));
     const res: Clip[] = [];
     for (const sec of sections(ecs)) {
-        const info = sectionInfo.get(sec.id);
-        if (!info) continue;
-        let s0 = 0;
-        for (let i = 0; i < info.startSample; i++) s0 += out.ds[i];
-        let s1 = s0;
-        for (let i = info.startSample; i < info.endSample; i++) s1 += out.ds[i];
-        res.push({ id: sec.id, kind: sec.kind, s0, s1, len: sec.length });
+        const sp = byId.get(sec.id);
+        if (!sp) continue;
+        res.push({ id: sec.id, kind: sec.kind, s0: sp.offset, s1: sp.offset + sp.len, len: sec.length });
     }
     return res;
 });
@@ -654,9 +643,12 @@ function fieldEdit(s: number, g: number): void {
     setForcePoint(ecs, p.id, clamp(s, 0, p.len), g);
     commit(history);
 }
-function onFieldS(e: Event): void {
+// the field speaks track-global d; convert back to the stored section-local s through
+// the lens (s = d − the section's offset) before writing. fieldEdit clamps into [0, len].
+function onFieldD(e: Event): void {
     if (!selPoint) return;
-    fieldEdit(Number.parseFloat((e.currentTarget as HTMLInputElement).value), selPoint.g);
+    const d = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
+    fieldEdit(d - selPoint.startS, selPoint.g);
 }
 function onFieldG(e: Event): void {
     if (!selPoint) return;
@@ -1379,7 +1371,7 @@ onMount(() => {
                     scrubFreeze?.x ??
                     clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
                 {@const ay = scrubFreeze?.y ?? clamp(yOf(selPoint.g), TOP, h - BOT_PAD)}
-                {@const sText = selPoint.s.toFixed(1)}
+                {@const dText = (selPoint.startS + selPoint.s).toFixed(1)}
                 {@const gText = selPoint.g.toFixed(2)}
                 <div
                     class="ptip"
@@ -1391,16 +1383,16 @@ onMount(() => {
                         <span
                             class="key"
                             onpointerdown={(e) => scrubStart(e, "s")}
-                            role="presentation">s</span
+                            role="presentation">d</span
                         >
                         <input
                             type="number"
                             step="1"
                             min="0"
-                            value={sText}
-                            onchange={onFieldS}
+                            value={dText}
+                            onchange={onFieldD}
                             onfocus={(e) => e.currentTarget.select()}
-                            onkeydown={(e) => fieldKeydown(e, sText)}
+                            onkeydown={(e) => fieldKeydown(e, dText)}
                             aria-label="Point distance (m)"
                         />
                         <span class="unit">m</span>

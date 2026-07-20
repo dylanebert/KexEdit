@@ -228,6 +228,59 @@ export function sectionAt(ecs: State, id: number): number | null {
     return null;
 }
 
+/** a section's place on the global distance axis: its stable id, its `offset` (the
+ *  track-global distance `d` at its entry = the cumulative baked arclength of every
+ *  upstream section), and its `len` (its own baked arclength). the section occupies the
+ *  d-interval `[offset, offset + len]`. */
+export interface SectionSpan {
+    id: number;
+    offset: number;
+    len: number;
+}
+
+/** the coordinate lens — the ONE seam between the author-facing track-global distance
+ *  `d` (meters, the timeline ruler) and the section-local arclength `s` the substrate
+ *  stores. `sectionSpans` is its table (one accumulating pass over the baked ds), and
+ *  `toGlobal`/`toLocal` are the affine `d = offset + s` and its inverse. every d readout
+ *  — timeline clips/boundaries, force-point placement, cart park — derives here; nothing
+ *  walks the cumulative ds itself. sections are contiguous (each shares its entry sample
+ *  with the prior exit), so one pass suffices. */
+export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
+    const out = bakeOut.get(eid);
+    if (!out) return [];
+    const res: SectionSpan[] = [];
+    let cum = 0;
+    for (const sec of sections(ecs)) {
+        const info = sectionInfo.get(sec.id);
+        if (!info) continue;
+        const offset = cum;
+        for (let i = info.startSample; i < info.endSample; i++) cum += out.ds[i];
+        res.push({ id: sec.id, offset, len: cum - offset });
+    }
+    return res;
+}
+
+/** section-local `(section, s)` → track-global distance `d = offset + s`. null when the
+ *  section isn't on the current bake. */
+export function toGlobal(spans: SectionSpan[], section: number, s: number): number | null {
+    const sp = spans.find((x) => x.id === section);
+    return sp ? sp.offset + s : null;
+}
+
+/** track-global distance `d` → the section-local address `(section, s)`. boundary policy:
+ *  a `d` on a shared section boundary resolves to the UPSTREAM (earlier) section — the
+ *  first span whose exit reaches `d` wins (left/upstream-inclusive spans), matching the
+ *  clip strip's boundary guides and the cart's park resolution. clamps `d` into
+ *  `[0, trackEnd]`. null when there's no bake. */
+export function toLocal(spans: SectionSpan[], d: number): { section: number; s: number } | null {
+    if (spans.length === 0) return null;
+    for (const sp of spans) {
+        if (d <= sp.offset + sp.len) return { section: sp.id, s: Math.max(0, d - sp.offset) };
+    }
+    const last = spans[spans.length - 1];
+    return { section: last.id, s: last.len };
+}
+
 /** create a section at `order` with a fresh stable id — the append/seed path.
  *  returns the id (undo/redo, membership, and selection address by id). */
 export function createSection(

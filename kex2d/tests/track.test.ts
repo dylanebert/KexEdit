@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
     addNode,
+    appendSection,
     BakeSystem,
     bakeOut,
     convertSection,
@@ -19,8 +20,11 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
+    sectionSpans,
     setSectionLength,
     setTrackV0,
+    toGlobal,
+    toLocal,
     Track,
 } from "../src/track";
 
@@ -391,5 +395,90 @@ describe("reheadOnDrag", () => {
         // reflect(0, chord) > 0.3 rad; the exit angle pins the re-head.
         expect(s.theta[count - 1]).toBeGreaterThan(0.3);
         expect(s.posY[Math.floor(count / 2)]).toBeGreaterThan(0); // a real climb
+    });
+});
+
+// the coordinate lens (track.ts): section-local arclength `s` (storage) ↔ track-global
+// distance `d` (the author surface / timeline ruler). `d = section offset + local s`;
+// `sectionSpans` is the one offset table, `toGlobal`/`toLocal` the affine + inverse.
+describe("coordinate lens (s ↔ d)", () => {
+    /** geo → force → force, each force point authored section-local, baked. */
+    function chainTrack(): { state: State; eid: number; secs: number[] } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const g = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, g, 0, 0);
+        addNode(state, g, EXTEND_DIST, 0);
+        const f1 = appendSection(state, SectionKind.Force);
+        const f2 = appendSection(state, SectionKind.Force);
+        createForcePoint(state, f2, 5, 1); // a point 5 m into the last section
+        state.step(0);
+        return { state, eid, secs: [g, f1, f2] };
+    }
+
+    test("toGlobal ∘ toLocal is identity for interior addresses across sections", () => {
+        const { state, eid, secs } = chainTrack();
+        const spans = sectionSpans(state, eid);
+        expect(spans.map((sp) => sp.id)).toEqual(secs); // one span per section, in order
+        // a strictly-interior local s round-trips through d back to the same (section, s):
+        // interior points can't land on a shared boundary, so the address is unambiguous.
+        for (const sp of spans) {
+            const s = sp.len * 0.3;
+            const d = toGlobal(spans, sp.id, s);
+            if (d === null) throw new Error("toGlobal null for a live section");
+            const back = toLocal(spans, d);
+            expect(back?.section).toBe(sp.id);
+            expect(back?.s).toBeCloseTo(s, 10); // f64 offset±offset noise only
+        }
+    });
+
+    test("boundary addresses resolve by the upstream-inclusive policy", () => {
+        const { state, eid, secs } = chainTrack();
+        const spans = sectionSpans(state, eid);
+        // d = 0 → the first section's entry.
+        expect(toLocal(spans, 0)).toEqual({ section: secs[0], s: 0 });
+        // a shared interior boundary belongs to the UPSTREAM section (its exit), not the
+        // downstream entry — the clip strip's / cart's convention.
+        const boundary = spans[0].offset + spans[0].len; // == spans[1].offset
+        expect(boundary).toBeCloseTo(spans[1].offset, 10);
+        expect(toLocal(spans, boundary)).toEqual({ section: secs[0], s: spans[0].len });
+        // track end → the last section's exit.
+        const end = spans[2].offset + spans[2].len;
+        expect(toLocal(spans, end)).toEqual({ section: secs[2], s: spans[2].len });
+        // past the end clamps to the last exit; below zero clamps to the first entry.
+        expect(toLocal(spans, end + 100)).toEqual({ section: secs[2], s: spans[2].len });
+        expect(toLocal(spans, -50)).toEqual({ section: secs[0], s: 0 });
+    });
+
+    test("a mid-track length change shifts downstream d but not downstream local s", () => {
+        // the invariant that motivated the design: storage is section-local, so growing an
+        // upstream section moves every downstream section's global offset (and its points'
+        // d) while their stored s stays put — keyframes ride with their section.
+        const { state, eid, secs } = chainTrack();
+        const [, f1, f2] = secs;
+
+        const before = sectionSpans(state, eid);
+        const pt = sectionForces(state, f2)[0];
+        const sBefore = pt.s;
+        const dBefore = toGlobal(before, f2, sBefore);
+        const offBefore = before.find((sp) => sp.id === f2)?.offset ?? Number.NaN;
+
+        const len1 = sections(state).find((r) => r.id === f1)?.length ?? 0;
+        setSectionLength(state, f1, len1 + 10); // grow the middle section by 10 m
+        state.step(0);
+
+        const after = sectionSpans(state, eid);
+        const ptAfter = sectionForces(state, f2)[0];
+        const offAfter = after.find((sp) => sp.id === f2)?.offset ?? Number.NaN;
+        const dAfter = toGlobal(after, f2, ptAfter.s);
+
+        // stored local s is untouched — the upstream edit never rewrote it.
+        expect(ptAfter.s).toBe(sBefore);
+        // the downstream offset (and thus the point's d) shifted by the length delta
+        // (baked arclength tracks the authored extent to within a sample step).
+        expect(offAfter - offBefore).toBeCloseTo(10, 1);
+        if (dBefore === null || dAfter === null) throw new Error("toGlobal null");
+        expect(dAfter - dBefore).toBeCloseTo(offAfter - offBefore, 10);
     });
 });

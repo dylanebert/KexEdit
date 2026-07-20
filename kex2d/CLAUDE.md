@@ -202,6 +202,25 @@ edit from undo and from the single source of truth. The one deliberate exception
 `__kex` hook (`main.ts`, never ships), whose `nudge`/`seedHill` poke components raw as test *setup*,
 not authoring.
 
+**Two coordinate frames, one lens.** Position-along-track has two names for two jobs:
+
+- **`s` — section-local arclength** (meters from the section entry). The *storage and kernel*
+  frame: `Force.s`, geo `Handle` locals, and every `ds`-integral read `s`. Keyframes are addressed
+  relative to their owning section, so they **ride with it** — an upstream edit (a length change, a
+  convert) re-times the ride and shifts everything downstream, but never rewrites a downstream
+  section's stored `s`. This is the sections-of-atoms self-containment invariant.
+- **`d` — track-global distance** (meters from the track start, the timeline ruler's axis). The
+  *author-facing* frame: the force-point field, every position readout, and the agent contract
+  address in `d`. A single section spans the d-interval `[offset, offset + len]`.
+
+The one seam between them is the affine lens in `track.ts` (`sectionSpans` + `toGlobal`/`toLocal`):
+a section's global `offset` is the cumulative baked arclength of every upstream section, `d = offset
++ s`, and `toLocal` inverts a global `d` back to `(section, local s)` (a shared boundary resolves to
+the **upstream** section — left/exit-inclusive, matching the clip strip and cart park). Every d
+readout derives here — nothing re-walks the baked `ds`. Store `s`; show and accept `d`; convert only
+at the lens. `t`/time is NOT this axis (it's derived, `t = ∫ ds/v`, and stretches under solves — the
+editor-ui invariant-domain rule).
+
 ## Code map
 
 **Substrate + physics atoms (pure, framework-free, `bun test`-able):**
@@ -249,7 +268,8 @@ not authoring.
   `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`).
   `bakeOut`: per-edge `fN`+`ds`, per-sample `t`/`feasible`, `firstInfeasible`, `hash`. `sectionInfo`
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
-  `sections`/`sectionAt`/`createSection`. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
+  `sections`/`sectionAt`/`createSection`. Coordinate lens (section-local `s` ↔ track-global `d`):
+  `sectionSpans` (the one offset table) + `toGlobal`/`toLocal` — the single seam every d readout derives from. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
   `sectionHandles`/`lastHandle`/`handleAt`/`spawnNode`/`nodeSnapshot`/`restoreNodes`/`sameNodes`. Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
   `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`,
