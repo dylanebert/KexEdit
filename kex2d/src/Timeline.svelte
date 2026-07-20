@@ -261,7 +261,7 @@ const bounds = $derived.by((): number[] => {
 // arclength span, kind-colored + labeled, selecting `editor.section` — the SAME
 // selection as the viewport span (one object, two surfaces). clip edges align with the
 // chart's boundary guides (both are arclength). a force clip's right edge is its extent
-// trim (below), which replaces the old chart length handle.
+// trim (below).
 interface Clip {
     id: number;
     kind: SectionKind;
@@ -518,8 +518,8 @@ function append(kind: SectionKind): void {
 }
 // appending adds to the chain end, off the right of the framed view. once the re-bake
 // lands (sTotal grows past the value captured at append), PAN — not zoom — so the new
-// clip shows: the x-axis is a document axis, so a content edit never rescales it (unlike
-// the old frameAll refit). clampView caps pan at the right-aligned track end.
+// clip shows: the x-axis is a document axis, so a content edit never rescales it.
+// clampView caps pan at the right-aligned track end.
 let fitPending: number | null = $state(null);
 $effect(() => {
     if (fitPending === null) return;
