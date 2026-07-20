@@ -96,8 +96,11 @@ copies this shape:
 
 Geo = cool blue, force = accent gold, on every surface that shows a section — clip strip, viewport
 span, chart curve, navigator. One resolver produces the colored spans (kex2d `kindSegments` in
-`colors.ts`); surfaces project it, never re-derive. When languages stack, priority is
-infeasible-red > selection accent > kind color, and dash stays reserved for infeasibility.
+`colors.ts`); surfaces project it, never re-derive. Selection is a **brightened analog of the
+element's own color** (the Ableton/Premiere clip idiom), derived by one mix-toward-white helper
+over the kind token, never a flat accent recolor — flat accent over force gold reads as no
+selection at all. When languages stack, priority is infeasible-red > selection (brightened kind)
+> kind color, and dash stays reserved for infeasibility.
 
 ## Keyframe / curve-editor conventions
 
