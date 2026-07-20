@@ -7,6 +7,10 @@
  *  four mutually-exclusive selections (below), so a contextual action never fights
  *  over its target. */
 
+/** the editor surface the pointer is over — the router for surface-scoped keys
+ *  (the Blender/Unity hovered-surface model). */
+export type Surface = "viewport" | "timeline";
+
 interface EditorState {
     /** eid of the currently selected node (geo section), or null. */
     selection: number | null;
@@ -31,6 +35,11 @@ interface EditorState {
      *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
      *  on the chrome under the cursor. ephemeral, read via the per-RAF tick. */
     dragging: boolean;
+    /** which surface the pointer is over — routes the surface-scoped keys (`F` frames it,
+     *  arrows act on it), ending the viewport-nudge vs timeline-playhead double-fire.
+     *  defaults to the viewport, so keys route there before the pointer visits the dock;
+     *  the dock's enter/leave is the only thing that flips it (the rest is the viewport). */
+    hover: Surface;
 }
 
 export const editor: EditorState = {
@@ -41,6 +50,7 @@ export const editor: EditorState = {
     context: null,
     snap: true,
     dragging: false,
+    hover: "viewport",
 };
 
 // ── drag gesture substrate ──

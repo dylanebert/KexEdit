@@ -390,8 +390,15 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
 
         // frame content (Unity/Blender `F`): fit the selection, or the whole track when
-        // nothing is selected. guard Ctrl/Cmd+F (the browser find reflex) and mid-drag.
-        if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey) {
+        // nothing is selected — but only while the pointer is over the viewport (the
+        // hovered-surface router), so `F` frames the viewport OR the timeline, never both.
+        // guard Ctrl/Cmd+F (the browser find reflex) and mid-drag.
+        if (
+            (e.key === "f" || e.key === "F") &&
+            !e.ctrlKey &&
+            !e.metaKey &&
+            editor.hover === "viewport"
+        ) {
             e.preventDefault();
             if (dragNode === null && !panning) frameViewport(ecs, canvas);
             return;
@@ -399,8 +406,12 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
 
         // arrow-nudge the selected node (AE): a fixed on-screen step in world space, Shift
         // for the coarse step. one press = one undo entry (holding auto-repeats to many).
+        // gated on the viewport hover (the hovered-surface router) so it can't also fire
+        // while the pointer is over the timeline — that cross-surface collision with the
+        // playhead/force-point step is the double-fire this routing ends.
         if (
             editor.selection !== null &&
+            editor.hover === "viewport" &&
             (e.key === "ArrowLeft" ||
                 e.key === "ArrowRight" ||
                 e.key === "ArrowUp" ||

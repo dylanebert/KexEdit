@@ -2,7 +2,15 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
 import { attachControls } from "./controls";
-import { beginDrag, closeContext, editor, select, selectSection, selectStart } from "./editor";
+import {
+    beginDrag,
+    closeContext,
+    editor,
+    select,
+    selectSection,
+    selectStart,
+    toggleSnap,
+} from "./editor";
 import {
     beginV0,
     commit,
@@ -51,6 +59,13 @@ onMount(() => {
         detach();
         cancelAnimationFrame(raf);
     };
+});
+
+// the snapping magnet's persistent state (read through the per-RAF tick) — the viewport
+// toggle's lit/quiet state.
+const snapOn = $derived.by((): boolean => {
+    void tick;
+    return editor.snap;
 });
 
 const infeasible = $derived.by((): boolean => {
@@ -255,6 +270,33 @@ $effect(() => {
 
 <canvas bind:this={canvas}></canvas>
 
+<!-- the viewport toggle cluster: a small persistent overlay top-left of the shaping
+     viewport — the Blender viewport-header precedent collapsed to an overlay (a viewport
+     affordance, not a second dock). the home for viewport toggles; today just the snap
+     magnet. lit when on (default), dimmed when off; `S` also toggles, Ctrl/Cmd bypasses
+     per-gesture. -->
+<div class="viewport-tools" aria-label="Viewport tools">
+    <button
+        class="vtool"
+        class:on={snapOn}
+        type="button"
+        onclick={toggleSnap}
+        title="Snapping (S)"
+        aria-label="Snapping"
+        aria-pressed={snapOn}
+    >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+                d="M4 2 L4 8 a4 4 0 0 0 8 0 L12 2 L9.5 2 L9.5 8 a1.5 1.5 0 0 1 -3 0 L6.5 2 Z"
+                fill="currentColor"
+                fill-rule="evenodd"
+            />
+            <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
+            <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
+        </svg>
+    </button>
+</div>
+
 {#if infeasible}
     <div class="warning" role="alert">
         <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -399,9 +441,59 @@ $effect(() => {
        the dragged surface holds pointer capture, so it's unaffected. */
     :global([data-dragging]) .rbtn,
     :global([data-dragging]) .ctxmenu,
+    :global([data-dragging]) .vtool,
     :global([data-dragging]) .vtip {
         pointer-events: none;
         user-select: none;
+    }
+
+    /* the viewport toggle cluster: a persistent overlay top-left of the shaping viewport —
+       the Blender viewport-header precedent collapsed to an overlay (a viewport affordance,
+       not a second dock). a column so future toggles stack under the magnet; opaque surface,
+       elevation from border + shadow (root ui.md). */
+    .viewport-tools {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 3px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: var(--shadow);
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    /* a viewport toggle: quiet muted icon by default, accent-lit when on — a persistent
+       editor preference, not a loud control (the removed dock-corner snap toggle's look). */
+    .vtool {
+        all: unset;
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 4px;
+        color: var(--muted);
+        cursor: pointer;
+        opacity: 0.6;
+        transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+    }
+    .vtool:hover {
+        opacity: 0.9;
+        background: rgba(255, 255, 255, 0.06);
+    }
+    .vtool.on {
+        color: var(--accent);
+        opacity: 1;
+    }
+    .vtool svg {
+        width: 15px;
+        height: 15px;
     }
 
     .warning {

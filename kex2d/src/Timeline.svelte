@@ -11,7 +11,6 @@ import {
     selectForce,
     selectSection,
     snapActive,
-    toggleSnap,
 } from "./editor";
 import {
     appendSection,
@@ -58,7 +57,7 @@ import {
     setForcePoint,
     setSectionLength,
 } from "./track";
-import { resize } from "./view";
+import { DOCK_HEIGHT, DOCK_INSET, resize } from "./view";
 
 const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
 
@@ -78,6 +77,7 @@ const CLIP_PAD = 2; // px; vertical inset of a section clip inside the marker la
 const TOP = RULER_H + GAP_H; // chart top
 const BOT_PAD = 8; // chart inset, bottom
 const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
+const PLAYER_GAP = 32; // px the media player floats above the dock's top edge
 const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer than this to the plot edge
 // reference comfort limits (g) — drawn as faint lines to read the force curve against.
 const BAND: [number, number] = [-2, 6];
@@ -313,13 +313,6 @@ const selSection = $derived.by((): number | null => {
     void tick;
     return editor.section;
 });
-// the snapping magnet's persistent state (read through the per-RAF tick) — the dock
-// toggle's lit/quiet state.
-const snapOn = $derived.by((): boolean => {
-    void tick;
-    return editor.snap;
-});
-
 // the selected point's id (read through the per-RAF tick; editor is plain state).
 const selForce = $derived.by((): number | null => {
     void tick;
@@ -1107,7 +1100,12 @@ function sliderDown(e: PointerEvent): void {
     window.addEventListener("pointercancel", sliderUp); // mirror release on cancel (no leaked listeners)
 }
 // arrow-step the playhead — shared by both scrub controls (the ruler and the slider).
+// bound to the focused scrub element, so it also honors the hovered-surface router: the
+// playhead steps only while the pointer is over the timeline (else a focused ruler would
+// step the playhead as the viewport arrow-nudges a node — the double-fire), and defers to
+// a selected force point so one timeline arrow press is one action (nudge, not both).
 function stepKey(e: KeyboardEvent): void {
+    if (editor.hover !== "timeline" || editor.force !== null) return;
     if (eid === null || tTotal <= 0) return;
     const st = cartState.get(eid);
     if (!st) return;
@@ -1154,9 +1152,16 @@ onMount(() => {
             togglePlay();
             return;
         }
-        // frame content (Unity/Blender `F`): the timeline always frames the whole track
-        // (frameAll), the x-mirror of the viewport's F. guard Ctrl/Cmd+F (browser find).
-        if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey) {
+        // frame content (Unity/Blender `F`): frames the whole track (frameAll), the
+        // x-mirror of the viewport's F — but only when the pointer is over the timeline
+        // (the hovered-surface router), so `F` frames one surface, not both at once. guard
+        // Ctrl/Cmd+F (browser find).
+        if (
+            (e.key === "f" || e.key === "F") &&
+            !e.ctrlKey &&
+            !e.metaKey &&
+            editor.hover === "timeline"
+        ) {
             if (chartW > 0 && sTotal > 0) {
                 e.preventDefault();
                 view = frameAll(chartW, sTotal);
@@ -1178,12 +1183,15 @@ onMount(() => {
                 e.preventDefault();
                 deleteSelectedForce();
             } else if (
-                e.key === "ArrowLeft" ||
-                e.key === "ArrowRight" ||
-                e.key === "ArrowUp" ||
-                e.key === "ArrowDown"
+                editor.hover === "timeline" &&
+                (e.key === "ArrowLeft" ||
+                    e.key === "ArrowRight" ||
+                    e.key === "ArrowUp" ||
+                    e.key === "ArrowDown")
             ) {
                 // arrow-nudge the point in its authoring domain (s = distance, g = force),
+                // but only while the pointer is over the timeline (the hovered-surface
+                // router — a node nudge in the viewport must not also move a force point).
                 // Shift coarse; one press = one undo entry, routed through the setter.
                 const p = selPoint;
                 if (p === null) return;
@@ -1216,7 +1224,12 @@ onMount(() => {
 });
 </script>
 
-<aside class="dock">
+<aside
+    class="dock"
+    style="height: {DOCK_HEIGHT}px; bottom: {DOCK_INSET}px;"
+    onpointerenter={() => (editor.hover = "timeline")}
+    onpointerleave={() => (editor.hover = "viewport")}
+>
     <div
         class="body"
         class:panning
@@ -1393,28 +1406,6 @@ onMount(() => {
                 {/each}
             </g>
         </svg>
-        <!-- the snapping magnet toggle: a quiet icon in the dock corner (the one earned
-             dock — no new toolbar). lit when on (default), dimmed when off; `S` also
-             toggles it, Ctrl/Cmd bypasses per-drag. -->
-        <button
-            class="snap-toggle"
-            class:on={snapOn}
-            type="button"
-            onclick={toggleSnap}
-            title="Snapping (S)"
-            aria-label="Snapping"
-            aria-pressed={snapOn}
-        >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-                <path
-                    d="M4 2 L4 8 a4 4 0 0 0 8 0 L12 2 L9.5 2 L9.5 8 a1.5 1.5 0 0 1 -3 0 L6.5 2 Z"
-                    fill="currentColor"
-                    fill-rule="evenodd"
-                />
-                <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
-                <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
-            </svg>
-        </button>
         <!-- the selected point's typed s/g fields: a popover summoned AT the diamond
              (on the object, not a docked row). it follows a live drag as the value
              readout, pointer-inert so it never fights the drag; flips below the point
@@ -1539,7 +1530,18 @@ onMount(() => {
      floated as its own surface below the timeline. the slider is the *full-track*
      scrubber — global scope, distinct from the timeline's zoomed-local playhead
      (the After Effects comp-vs-timeline split). controls the cart. -->
-<div class="player" class:idle={eid === null || tTotal <= 0}>
+<!-- the player floats detached above the dock, but its scrub slider is a timeline-domain
+     control (it binds `stepKey`), so it counts as the timeline surface for key routing —
+     else its own arrow stepping would break while hovered. -->
+<div
+    class="player"
+    class:idle={eid === null || tTotal <= 0}
+    style="bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP}px;"
+    onpointerenter={() => (editor.hover = "timeline")}
+    onpointerleave={() => (editor.hover = "viewport")}
+    role="group"
+    aria-label="Playback"
+>
     <button
         class="play"
         type="button"
@@ -1575,14 +1577,14 @@ onMount(() => {
 </div>
 
 <style>
+    /* `height` and `bottom` are inline-styled from the DOCK_HEIGHT / DOCK_INSET constants
+       (view.ts, the single source the viewport camera also reserves from) — not set here. */
     .dock {
         position: absolute;
         left: 50%;
         transform: translateX(-50%);
         width: calc(100% - 32px);
         max-width: 1280px;
-        bottom: 16px;
-        height: 240px;
         display: flex;
         flex-direction: column;
         background: var(--bg-solid);
@@ -1713,7 +1715,6 @@ onMount(() => {
     :global([data-dragging]) .clip-trim,
     :global([data-dragging]) .clip-add,
     :global([data-dragging]) .clip-flyout,
-    :global([data-dragging]) .snap-toggle,
     :global([data-dragging]) .fhit,
     :global([data-dragging]) .nav-window,
     :global([data-dragging]) .ptip,
@@ -1811,39 +1812,6 @@ onMount(() => {
         stroke-width: 1;
         opacity: 0.9;
         pointer-events: none;
-    }
-
-    /* the snapping magnet toggle: a quiet corner icon (top-right of the dock body). muted
-       when off, accent-lit when on — a persistent editor preference, not a loud control. */
-    .snap-toggle {
-        all: unset;
-        position: absolute;
-        top: 4px;
-        right: 6px;
-        z-index: 3;
-        box-sizing: border-box;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 22px;
-        height: 22px;
-        border-radius: 4px;
-        color: var(--muted);
-        cursor: pointer;
-        opacity: 0.55;
-        transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
-    }
-    .snap-toggle:hover {
-        opacity: 0.9;
-        background: rgba(255, 255, 255, 0.06);
-    }
-    .snap-toggle.on {
-        color: var(--accent);
-        opacity: 1;
-    }
-    .snap-toggle svg {
-        width: 15px;
-        height: 15px;
     }
 
     /* the scrub zone: the whole top ruler + gap band. click/drag anywhere here moves
@@ -2001,11 +1969,12 @@ onMount(() => {
     /* the player: a media transport (play · global scrub · timecode) floated as its
        own opaque surface above the timeline — narrower than the dock and clearly
        detached, a player over its scrubber-timeline. elevation from border + shadow. */
+    /* `bottom` is inline-styled from DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP (it floats a
+       fixed gap above the dock's top edge) — the same dock constants, one source. */
     .player {
         position: absolute;
         left: 50%;
         transform: translateX(-50%);
-        bottom: 288px; /* above the dock (bottom 16 + height 240) + 32 gap */
         width: min(calc(100% - 32px), 560px);
         box-sizing: border-box;
         height: 36px;

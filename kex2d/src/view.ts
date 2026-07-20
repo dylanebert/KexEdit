@@ -10,10 +10,16 @@ export const Canvas2D: Canvas2DRef = {} as Canvas2DRef;
 /** default framing: half the world-meters shown across the canvas width (the initial
  *  zoom fits ±this many meters horizontally). */
 const VIEW_HALF_X = 280;
-/** screen px kept clear at the bottom for the timeline dock (height 240 + 16px inset).
- *  the default view centers the world origin ABOVE this band, not at the canvas center —
- *  the dock would otherwise cover the track's launch. */
-const DOCK_RESERVE = 256;
+/** the timeline dock's layout — the single source of truth `Timeline.svelte` styles the
+ *  dock element from (its rendered `height` and the `bottom` inset it floats above the
+ *  canvas edge). the viewport reserves their sum below (`DOCK_RESERVE`); nothing else
+ *  hardcodes the dock size. */
+export const DOCK_HEIGHT = 240;
+export const DOCK_INSET = 16;
+/** screen px kept clear at the bottom for the timeline dock. the default view centers the
+ *  world origin ABOVE this band, not at the canvas center — the dock would otherwise cover
+ *  the track's launch. */
+const DOCK_RESERVE = DOCK_HEIGHT + DOCK_INSET;
 /** zoom limits (px per world meter). the affine viewport is an infinite canvas — pan is
  *  unclamped — but the scale is bounded so the track can't blow up or vanish. */
 export const MIN_ZOOM = 0.05;
