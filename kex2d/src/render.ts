@@ -158,8 +158,11 @@ const TrackDrawSystem: System = {
             }
             ctx.stroke();
 
-            // selected-section overlay: overdraw its span in the accent so the
-            // whole-section handle (convert / delete target) reads.
+            // selected-section overlay: overdraw its FEASIBLE span in the accent so
+            // the whole-section handle (convert / delete target) reads. an infeasible
+            // sub-segment is skipped here (same feasibility check as the two passes
+            // above) so it stays under the dashed-red pass instead of being painted
+            // over — priority stays infeasible-red > selection accent > kind color.
             if (editor.section !== null) {
                 const info = sectionInfo.get(editor.section);
                 if (info) {
@@ -167,9 +170,18 @@ const TrackDrawSystem: System = {
                     ctx.strokeStyle = "#d49560";
                     ctx.lineWidth = 3;
                     ctx.beginPath();
-                    ctx.moveTo(xs[info.startSample], ys[info.startSample]);
-                    for (let i = info.startSample + 1; i <= info.endSample; i++) {
-                        ctx.lineTo(xs[i], ys[i]);
+                    let inSel = false;
+                    for (let i = info.startSample; i < info.endSample; i++) {
+                        const ok = out.feasible[i] === 1 && out.feasible[i + 1] === 1;
+                        if (ok) {
+                            if (!inSel) {
+                                ctx.moveTo(xs[i], ys[i]);
+                                inSel = true;
+                            }
+                            ctx.lineTo(xs[i + 1], ys[i + 1]);
+                        } else {
+                            inSel = false;
+                        }
                     }
                     ctx.stroke();
                 }

@@ -2,6 +2,7 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
+import { kindColor } from "./colors";
 import { editor, openContext, selectForce, selectSection } from "./editor";
 import {
     appendSection,
@@ -777,19 +778,28 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.rect(LEFT_GUT, TOP, w - LEFT_GUT, h - BOT_PAD - TOP);
     ctx.clip();
 
-    // the baked F_n force curve — accent: the force the realized track produces,
-    // drawn per-sample over its arclength (the chart's x-axis is distance).
+    // the baked F_n force curve — kind-colored per section (the timeline's mirror of
+    // the viewport polyline's kind color, `colors.ts`): a geo section's span of the
+    // whole-track curve reads cool blue, a force section's reads accent gold, the
+    // same language the clip strip and boundary guides above use. drawn per-sample
+    // over arclength (the chart's x-axis is distance). the curve carries no
+    // infeasibility/selection overlay of its own, so no priority layering is needed
+    // here (unlike the viewport polyline).
     if (curve) {
-        ctx.strokeStyle = "rgb(212, 149, 96)";
         ctx.lineWidth = 1.6;
-        ctx.beginPath();
-        for (let i = 0; i < curve.n; i++) {
-            const x = LEFT_GUT + sToPx(v, curve.s[i]);
-            const y = yOf(curve.f[i]);
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
+        for (const sec of sections(ecs)) {
+            const info = sectionInfo.get(sec.id);
+            if (!info) continue;
+            ctx.strokeStyle = kindColor(sec.kind);
+            ctx.beginPath();
+            for (let i = info.startSample; i <= info.endSample; i++) {
+                const x = LEFT_GUT + sToPx(v, curve.s[i]);
+                const y = yOf(curve.f[i]);
+                if (i === info.startSample) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
         }
-        ctx.stroke();
     }
 
     ctx.restore();

@@ -712,6 +712,10 @@ test("collocation solver lab", async ({ page }) => {
 // (real wheel zoom-at-cursor, not a fixed-scale clip) so the track polyline's per-
 // section kind color reads at pixel scale, not just the clip strip. The other flows'
 // full-page shots leave the polyline too small (and handle-occluded) to judge by eye.
+// The chain's force section runs into "insufficient velocity" (the flat 1g profile
+// drains the hill's energy) — a happy accident that also exercises the two priority
+// fixes: the tail draws dashed red over the kind color, and (2nd shot) still draws
+// dashed red under the selected-section accent overlay, not painted over by it.
 test("viewport kind color shot", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -726,12 +730,22 @@ test("viewport kind color shot", async ({ page }) => {
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
-    // a shaped geo lead-in, then an appended force section (default flat 1g profile —
-    // feasible, so the shot isolates kind color from the infeasible-red overlay).
+    // a shaped geo lead-in, then an appended force section (default flat 1g profile).
     await page.evaluate(() => (window as any).__kex.seedHill());
     await expect.poll(tTotal).toBeGreaterThan(0);
     await page.evaluate(() => (window as any).__kex.append(1)); // SectionKind.Force
     await expect.poll(sectionCount).toBe(2);
+
+    // the kind-colored curve, in the dock's chart — geo span cool blue, force span
+    // accent gold, the same language as the clip strip right above it.
+    await page.waitForTimeout(300);
+    const vp = page.viewportSize();
+    if (vp) {
+        await page.screenshot({
+            path: join(OUT, "kind-color-curve.png"),
+            clip: { x: 0, y: vp.height - 340, width: vp.width, height: 340 },
+        });
+    }
 
     // zoom the viewport in on the chain start (a real wheel zoom-at-cursor, over the
     // canvas — the default framing already centers the track's origin there).
@@ -745,10 +759,18 @@ test("viewport kind color shot", async ({ page }) => {
     await page.mouse.wheel(0, -1800); // deltaY < 0 → zoom in
     await page.waitForTimeout(SETTLE_MS);
 
-    await page.screenshot({
-        path: join(OUT, "kind-color.png"),
-        clip: { x: cb.x, y: cb.y, width: cb.width, height: cb.height - DOCK_RESERVE },
-    });
+    const zoomedClip = { x: cb.x, y: cb.y, width: cb.width, height: cb.height - DOCK_RESERVE };
+    await page.screenshot({ path: join(OUT, "kind-color.png"), clip: zoomedClip });
+
+    // select the force section (it holds the infeasible tail) — the accent overlay
+    // must not paint solid over the dashed-red infeasible sub-segment (the priority
+    // fix: infeasible-red > selection accent).
+    await page.locator(".clip").nth(1).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__kex.selectedSection())).not.toBe(
+        null,
+    );
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(OUT, "kind-color-selected.png"), clip: zoomedClip });
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
