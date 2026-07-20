@@ -70,9 +70,11 @@ export type Section =
     | { kind: "force"; fN: ArrayLike<number>; ds: number };
 
 /** rotate a tangent's in/out vectors by the rotation `(c, s) = (cos φ, sin φ)`.
- *  an explicit tangent is stored in the node's local frame, so a rigid re-express
- *  (split/join) must rotate it with the frame; translation leaves a vector fixed.
- *  a null tangent (Auto) rides through untouched. */
+ *  an explicit tangent is stored in the node's local frame, so re-expressing the node
+ *  into another frame rotates its vectors with that frame; translation leaves a vector
+ *  fixed. this keeps position, heading, and tangent consistent under the transform —
+ *  but whether the *curve* is preserved depends on the caller feeding the right frame
+ *  (the bake's recovered boundary heading; see `track.headExit`). */
 function rotateTangent(t: Tangent, c: number, s: number): Tangent {
     return {
         mode: t.mode,
@@ -87,7 +89,7 @@ function rotateTangent(t: Tangent, c: number, s: number): Tangent {
  *  entry heading, translate to the entry position (rigid placement). node 0
  *  (local origin, local heading 0) maps to the entry exactly, so the section
  *  joins at the anchor with the same position and heading (C1). an explicit
- *  tangent rotates with the frame (a rigid re-express preserves the shape). */
+ *  tangent rotates with the frame (it's stored in the node's local frame). */
 export function place(entry: Entry, n: Node): Node {
     const c = Math.cos(entry.theta);
     const s = Math.sin(entry.theta);

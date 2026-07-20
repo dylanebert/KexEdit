@@ -27,10 +27,12 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
+    setTangent,
     splitForce,
     splitGeo,
     Track,
 } from "../src/track";
+import { TangentMode } from "../src/spline";
 
 // the multi-section structural ops: append / split / join / delete over the section
 // chain (kex2d/CLAUDE.md, structural ops). the substrate (chain, sectionInfo,
@@ -130,6 +132,52 @@ describe("split", () => {
         }
         // two sections now, contiguous.
         expect(sections(state).map((s) => s.order)).toEqual([0, 1]);
+    });
+
+    test("splitting at a node with an explicit tangent keeps the baked world curve", () => {
+        // the boundary re-frame must use the heading the bake will actually place the
+        // tail at — the recovered curve heading (evalGeo/exitOf), NOT stored Handle.theta.
+        // an explicit tangent decouples the two: here node 2 carries a Free corner whose
+        // in/out vectors point far from its arc-rule theta, so a stored-theta frame
+        // rotates the whole downstream section by metres.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+            [60, 0],
+        ])
+            addNode(state, a, x, y);
+        const mag = 15;
+        setTangent(state, a, 2, {
+            mode: TangentMode.Free,
+            inX: mag * Math.cos(-1.2),
+            inY: mag * Math.sin(-1.2),
+            outX: mag * Math.cos(1.2),
+            outY: mag * Math.sin(1.2),
+        });
+        state.step(0);
+        const before = worldSamples(eid);
+
+        const b = splitGeo(state, a, 2); // split ON the explicit-tangent node
+        expect(b).not.toBeNull();
+        state.step(0);
+        const after = worldSamples(eid);
+
+        expect(after.length).toBe(before.length);
+        let maxDev = 0;
+        for (let i = 0; i < before.length; i++)
+            maxDev = Math.max(
+                maxDev,
+                Math.hypot(after[i].x - before[i].x, after[i].y - before[i].y),
+            );
+        // floor is the Auto split's f32 rigid round-off (~0.014 m over these ~60 m
+        // coordinates, measured); 0.05 m is a few × that and far below the metres of
+        // drift a stored-theta frame produces on this decoupled boundary.
+        expect(maxDev).toBeLessThan(0.05);
     });
 
     test("splitting a force section partitions the points by arclength", () => {

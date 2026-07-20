@@ -1,7 +1,14 @@
 import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@dylanebert/shallot";
 import { V_FLOOR, V_WARN } from "./bake";
 import { type ForcePoint, forceProfile } from "./profile";
-import { chain, type Entry, localize, place, type Section as SectionSpec } from "./section";
+import {
+    chain,
+    type Entry,
+    evalGeo,
+    localize,
+    place,
+    type Section as SectionSpec,
+} from "./section";
 import { type Node, reflect, type Tangent, type TangentMode } from "./spline";
 
 /** whether a section is authored as GEOMETRY (drag nodes in the viewport, recover
@@ -853,10 +860,40 @@ export function appendSection(ecs: State, kind: SectionKind): number {
     return id;
 }
 
+/** the track's nominal spacing (the bake's `ds`) — read from the Track component so
+ *  a re-frame samples at the same density the bake does. */
+function trackDs(ecs: State): number {
+    for (const t of ecs.query([Track])) return Track.ds.get(t);
+    return DS_NOMINAL;
+}
+
+/** the recovered exit state of a geo section's head chain `[0..k]`, in the section's
+ *  local frame — the exact frame the bake places the downstream tail at (`evalGeo` →
+ *  `exitOf`). split/join must re-express against THIS heading, not the boundary node's
+ *  stored `Handle.theta`: an explicit tangent decouples `Handle.theta` from the curve's
+ *  recovered tangent, so a stored-theta frame rotates the whole downstream section. the
+ *  recovered exit IS the bake's downstream entry, so `place∘localize` telescopes and the
+ *  shape is preserved. (`v` is geometry-irrelevant — `place`/`localize` are pure rigid
+ *  transforms; the recovered heading/position are v-independent.) */
+function headExit(ecs: State, handles: readonly number[], k: number): Entry {
+    const nodes: Node[] = [];
+    for (let i = 0; i <= k; i++) {
+        nodes.push({
+            x: Handle.pos.x.get(handles[i]),
+            y: Handle.pos.y.get(handles[i]),
+            theta: Handle.theta.get(handles[i]),
+            tangent: readTangent(handles[i]),
+        });
+    }
+    return evalGeo({ x: 0, y: 0, theta: 0, v: V0 }, nodes, trackDs(ecs)).exit;
+}
+
 /** split a geo section at an interior node (order `k`, 1 ≤ k ≤ n−1): the head keeps
- *  nodes [0..k], a new section takes [k..n] re-expressed in node k's frame (rigid —
- *  its node 0 becomes {0,0,0}). node k stays the head's new tip. no-op at the
- *  entry or last node. returns the new (tail) section id, or null. */
+ *  nodes [0..k], a new section takes [k..n] re-expressed in the head's recovered
+ *  boundary frame (rigid — its node 0 becomes {0,0,0} at heading 0 only when the
+ *  boundary is Auto; an explicit-tangent boundary carries a nonzero node-0 heading
+ *  that compensates the recovered-vs-stored gap). node k stays the head's new tip.
+ *  no-op at the entry or last node. returns the new (tail) section id, or null. */
 export function splitGeo(ecs: State, sectionId: number, k: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return null;
@@ -864,13 +901,9 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
     const n = handles.length - 1;
     if (k < 1 || k >= n) return null;
 
-    // the boundary frame (v unused by place/localize — a pure rigid transform).
-    const frame: Entry = {
-        x: Handle.pos.x.get(handles[k]),
-        y: Handle.pos.y.get(handles[k]),
-        theta: Handle.theta.get(handles[k]),
-        v: 0,
-    };
+    // re-frame against the head's RECOVERED exit (the bake's downstream entry), not the
+    // boundary node's stored heading — see `headExit`.
+    const frame = headExit(ecs, handles, k);
     const order = Section.order.get(secEid);
     bumpOrders(ecs, order + 1, +1);
     const bId = createSection(ecs, order + 1, SectionKind.Geo, 0);
@@ -924,12 +957,9 @@ export function joinNext(ecs: State, sectionId: number): boolean {
     if (aKind === SectionKind.Geo) {
         const aHandles = sectionHandles(ecs, sectionId);
         const aN = aHandles.length - 1;
-        const frame: Entry = {
-            x: Handle.pos.x.get(aHandles[aN]),
-            y: Handle.pos.y.get(aHandles[aN]),
-            theta: Handle.theta.get(aHandles[aN]),
-            v: 0,
-        };
+        // place B against A's RECOVERED exit (the bake's downstream entry, the exact
+        // inverse of a geo split), not A's stored tip heading — see `headExit`.
+        const frame = headExit(ecs, aHandles, aN);
         const bHandles = sectionHandles(ecs, b.id);
         // skip B node 0 (== the shared boundary, already A's tip); append B[1..m].
         for (let j = 1; j < bHandles.length; j++) {
