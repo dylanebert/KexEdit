@@ -17,6 +17,7 @@ import {
     timeToArc,
     trimTargets,
     type View,
+    VIEW_FLOOR_M,
     xGrow,
     yFit,
     type YFit,
@@ -123,11 +124,26 @@ describe("clampView — pan clamp, no forced zoom", () => {
         expect(pxToS(short, 0)).toBeCloseTo(pxToS(long, 0), 9); // window held
         expect(pxToS(short, W)).toBeCloseTo(pxToS(long, W), 9);
     });
-    test("frameAll shows exactly [0, sTotal+margin] — left anchored at the launch", () => {
-        const m = marginArc(T);
-        const v = frameAll(W, T);
+    test("frameAll fits content past the floor exactly — [0, sTotal+margin], left anchored", () => {
+        const Tlong = 200; // well past VIEW_FLOOR_M, so the floor is inert → exact fit
+        const m = marginArc(Tlong);
+        const v = frameAll(W, Tlong);
         expect(pxToS(v, 0)).toBeCloseTo(0, 6); // no negative distance before launch
-        expect(pxToS(v, W)).toBeCloseTo(T + m, 6);
+        expect(pxToS(v, W)).toBeCloseTo(Tlong + m, 6);
+    });
+    test("frameAll floors a short track at the VIEW_FLOOR_M window (favored slice, not a hug)", () => {
+        // the default-zoom verdict: a tiny starter section must NOT fill the whole ruler.
+        // below the floor, frameAll frames exactly [0, VIEW_FLOOR_M] — pxPerM = width/floor —
+        // so the content occupies its slice and empty ruler trails to the right.
+        const v = frameAll(W, 4); // 4m ≪ VIEW_FLOOR_M
+        expect(v.pxPerM).toBeCloseTo(W / VIEW_FLOOR_M, 9);
+        expect(v.pan).toBe(0); // left-anchored at the launch
+        expect(pxToS(v, 0)).toBeCloseTo(0, 6);
+        expect(pxToS(v, W)).toBeCloseTo(VIEW_FLOOR_M, 6); // the window spans the floor
+        // the ~24m default section occupies a favored ¼–⅓, not the whole width
+        const occ = 24 / VIEW_FLOOR_M;
+        expect(occ).toBeGreaterThan(0.25);
+        expect(occ).toBeLessThan(0.34);
     });
     test("pan never reveals distance before the launch (s=0) or past the lead-out", () => {
         const m = marginArc(T);
@@ -145,17 +161,25 @@ describe("zoomAt — cursor-anchored", () => {
     const W = 1000;
     const T = 10;
     test("the meter under the cursor is fixed across a zoom-in (interior anchor)", () => {
-        const v = frameAll(W, T); // fitted
+        // a track past the floor, so the fitted view fills the width and the pan clamp
+        // doesn't left-anchor it (which would drift the cursor); the anchor-hold is the
+        // property under test, independent of the frameAll floor.
+        const Tlong = 200;
+        const v = frameAll(W, Tlong); // fitted, content fills the width
         const anchor = W / 2;
         const before = pxToS(v, anchor);
-        const z = zoomAt(v, anchor, 2, W, T);
+        const z = zoomAt(v, anchor, 2, W, Tlong);
         expect(z.pxPerM).toBeGreaterThan(v.pxPerM);
         expect(pxToS(z, anchor)).toBeCloseTo(before, 6);
     });
     test("zoom-out from a zoomed-in view returns toward the fit", () => {
-        const fitted = frameAll(W, T);
-        const inView = zoomAt(fitted, W / 2, 4, W, T);
-        const out = zoomAt(inView, W / 2, 0.001, W, T); // clamps to min scale
+        // a track past the floor, so frameAll == the exact content fit (minScale) and a
+        // zoom-out floors right back to it. (a below-floor track frames wider than minScale;
+        // its zoom-out floor is the separate below-fit case tested next.)
+        const Tlong = 200;
+        const fitted = frameAll(W, Tlong);
+        const inView = zoomAt(fitted, W / 2, 4, W, Tlong);
+        const out = zoomAt(inView, W / 2, 0.001, W, Tlong); // clamps to min scale
         expect(out.pxPerM).toBeCloseTo(fitted.pxPerM, 6);
     });
     test("zoom-out from a below-fit view stays put (never snaps UP to the fit)", () => {

@@ -71,13 +71,23 @@ export function zoomAt(
     return clampView({ pan: sAnchor * pxPerM - anchorPx, pxPerM }, width, sTotal);
 }
 
-/** the view that frames the whole track + lead-out (fit scale, left-anchored at s=0).
- *  the one explicit-navigation path that sets the zoom to fit — used for the initial
- *  frame and the F frame-content key, never a content edit (those pan only). */
-export const frameAll = (width: number, sTotal: number): View => ({
-    pan: 0,
-    pxPerM: Math.min(MAX_PX_PER_M, minScale(width, sTotal)),
-});
+/** the minimum timeline window, in meters — `frameAll`'s domain floor. sized so the ~24 m
+ *  default starter section (`EXTEND_DIST` / `DEFAULT_FORCE_LEN`, track.ts) fills about a
+ *  third of the ruler instead of the whole width: a favored document window (Premiere's
+ *  sequence duration, Ableton's default bars), not an exact content hug. */
+export const VIEW_FLOOR_M = 80;
+
+/** the view that frames the whole track + lead-out (fit scale, left-anchored at s=0), with a
+ *  domain floor: it frames `max(content + lead-out, VIEW_FLOOR_M)`, so a track shorter than
+ *  the floor occupies its slice with empty ruler to the right (legitimate — x is a document
+ *  axis, not an auto-fit value axis) rather than blowing up to fill the width, while a track
+ *  past the floor fits exactly as before. the one explicit-navigation path that sets zoom to
+ *  fit — used for the initial frame and the F frame-content key, never a content edit (those
+ *  pan only). */
+export const frameAll = (width: number, sTotal: number): View => {
+    const win = Math.max(sTotal + marginArc(sTotal), VIEW_FLOOR_M);
+    return { pan: 0, pxPerM: Math.min(MAX_PX_PER_M, width > 0 ? width / win : 1) };
+};
 
 /** the navigator window: the visible span [0, width] expressed as `{l, r}` fractions
  *  of the full track + lead-out (the viewport bracket over the overview). */
