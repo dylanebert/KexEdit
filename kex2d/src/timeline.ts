@@ -220,21 +220,6 @@ export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX)
     return best;
 }
 
-/** the opposite-direction tangent vector of a given length — the auto/continuous
- *  handle mirror (After Effects default): given the dragged handle's screen vector
- *  `(vx, vy)` from the keyframe and the other handle's length `otherLen`, return the
- *  other handle's vector, collinear through the keyframe so the curve stays smooth.
- *  null when the dragged vector has no direction (nothing to mirror onto). */
-export function mirrorTangent(
-    vx: number,
-    vy: number,
-    otherLen: number,
-): { x: number; y: number } | null {
-    const len = Math.hypot(vx, vy);
-    if (len < 1e-6) return null;
-    return { x: (-vx / len) * otherLen, y: (-vy / len) * otherLen };
-}
-
 /** per-sample cumulative arclength (m) and time (s) over the current baked track,
  *  both monotone increasing — the cart↔chart projection. the chart's x-axis is
  *  distance, but the cart rides the track in *time* (paced by its velocity), so the

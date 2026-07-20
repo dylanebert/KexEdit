@@ -6,7 +6,6 @@ import {
     type Mapping,
     marginArc,
     MAX_PX_PER_M,
-    mirrorTangent,
     navDragView,
     navWindow,
     niceStep,
@@ -383,19 +382,5 @@ describe("snap — nearest-target magnet", () => {
     test("a NaN value never snaps (comparisons are false)", () => {
         expect(snap(Number.NaN, [0, 5, 10])).toBeNull();
         expect(snap(3, [Number.NaN])).toBeNull(); // a NaN target is skipped, not latched
-    });
-});
-
-describe("mirrorTangent — auto/continuous handle", () => {
-    test("opposite direction, same length (collinear through the keyframe)", () => {
-        const m = mirrorTangent(3, 4, 10); // dragged vec (3,4) len 5; other length 10
-        expect(m).not.toBeNull();
-        if (!m) return;
-        expect(Math.hypot(m.x, m.y)).toBeCloseTo(10, 9); // preserves the other length
-        expect(3 * m.y - 4 * m.x).toBeCloseTo(0, 9); // cross product 0 → collinear
-        expect(3 * m.x + 4 * m.y).toBeLessThan(0); // dot < 0 → opposite side of the pin
-    });
-    test("null when the dragged vector has no direction", () => {
-        expect(mirrorTangent(0, 0, 5)).toBeNull();
     });
 });
