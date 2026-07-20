@@ -1477,19 +1477,19 @@ onMount(() => {
                         +
                     </button>
                     {#if appendOpen}
-                        <div class="clip-flyout">
+                        <div class="clip-flyout menu">
                             <button
                                 type="button"
+                                class="menu-item"
                                 onpointerdown={() => append(SectionKind.Geo)}
-                                title="Append geometry section"
                                 aria-label="Append geometry section"
                             >
                                 Geo
                             </button>
                             <button
                                 type="button"
+                                class="menu-item"
                                 onpointerdown={() => append(SectionKind.Force)}
-                                title="Append force section"
                                 aria-label="Append force section"
                             >
                                 Force
@@ -1974,34 +1974,15 @@ onMount(() => {
         background: rgba(255, 255, 255, 0.12);
         color: var(--fg);
     }
+    /* the append flyout: an instance of the shared `.menu` language (App.svelte) — only its
+       anchored position, width, and entrance are its own. */
     .clip-flyout {
         position: absolute;
         top: 20px;
         left: -3px;
-        display: flex;
-        flex-direction: column;
         min-width: 62px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        border-radius: 5px;
-        box-shadow: var(--shadow);
-        overflow: hidden;
         z-index: 4;
         animation: tip-in 120ms ease;
-    }
-    .clip-flyout button {
-        all: unset;
-        box-sizing: border-box;
-        padding: 5px 10px;
-        font-family: "Outfit", system-ui, sans-serif;
-        font-size: 11px;
-        color: var(--muted);
-        cursor: pointer;
-        transition: background 120ms ease, color 120ms ease;
-    }
-    .clip-flyout button:hover {
-        background: var(--accent-soft);
-        color: var(--fg);
     }
 
     /* the player: a media transport (play · global scrub · timecode) floated as its

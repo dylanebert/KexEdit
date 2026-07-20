@@ -327,11 +327,11 @@ $effect(() => {
      is a single contextual item naming the target kind (a section is one of two kinds, so
      the flip is unambiguous) — one click, no submenu. -->
 {#if ctx}
-    <div class="ctxmenu" style="left: {ctx.x}px; top: {ctx.y}px" role="menu">
-        <button type="button" class="ctx-item" role="menuitem" onclick={ctxConvert}>
+    <div class="ctxmenu menu" style="left: {ctx.x}px; top: {ctx.y}px" role="menu">
+        <button type="button" class="menu-item" role="menuitem" onclick={ctxConvert}>
             <span>Convert to {ctxTarget}</span>
         </button>
-        <button type="button" class="ctx-item danger" role="menuitem" onclick={ctxDelete}>
+        <button type="button" class="menu-item danger" role="menuitem" onclick={ctxDelete}>
             <span>Delete</span><span class="sk">Del</span>
         </button>
     </div>
@@ -398,7 +398,7 @@ $effect(() => {
        drag sweeping over the radial buttons / a summoned menu doesn't flash their `:hover`.
        the dragged surface holds pointer capture, so it's unaffected. */
     :global([data-dragging]) .rbtn,
-    :global([data-dragging]) .ctx-item,
+    :global([data-dragging]) .ctxmenu,
     :global([data-dragging]) .vtip {
         pointer-events: none;
         user-select: none;
@@ -477,25 +477,58 @@ $effect(() => {
         border-color: var(--danger);
     }
 
-    /* the section context menu: the standard quiet menu (OS/Figma/VS Code) — an opaque
-       neutral surface at the cursor (border + shadow elevation), plain rows on one column,
-       a subtle neutral hover wash, no colored item backgrounds. Convert names the target
-       kind directly; Delete is a red text tint (the macOS/Figma destructive idiom), its
-       Del shortcut right-aligned. */
+    /* the shared menu language (root ui.md one-language): the append flyout's standard menu
+       look, lifted to a global class so the section context menu and the flyout are two
+       instances of ONE style — opaque surface, quiet muted rows, an accent-soft hover wash.
+       each instance adds only its own position, width, and entrance animation. */
+    :global(.menu) {
+        display: flex;
+        flex-direction: column;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 11px;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    :global(.menu-item) {
+        all: unset;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 5px 10px;
+        color: var(--muted);
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease;
+    }
+    :global(.menu-item:hover) {
+        background: var(--accent-soft);
+        color: var(--fg);
+    }
+    /* the destructive row: a red text tint (the danger token, the only semantic color), held
+       on hover while the row wash matches every other item. */
+    :global(.menu-item.danger),
+    :global(.menu-item.danger:hover) {
+        color: var(--danger);
+    }
+    /* an inline shortcut hint, right-aligned by the row's space-between. */
+    :global(.menu-item .sk) {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 10px;
+        color: var(--muted);
+    }
+
+    /* the section context menu: an instance of `.menu` at the cursor — only its fixed
+       position, width, and entrance are its own. */
     .ctxmenu {
         position: fixed;
         z-index: 10;
         min-width: 132px;
-        display: flex;
-        flex-direction: column;
-        padding: 3px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        box-shadow: var(--shadow);
-        font-family: "Outfit", system-ui, sans-serif;
-        font-size: 12px;
-        user-select: none;
         animation: ctx-in 120ms ease;
     }
     @keyframes ctx-in {
@@ -503,34 +536,6 @@ $effect(() => {
             opacity: 0;
             transform: translateY(-2px);
         }
-    }
-    /* one menu row */
-    .ctx-item {
-        all: unset;
-        box-sizing: border-box;
-        position: relative;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 6px 10px;
-        border-radius: 4px;
-        color: var(--fg);
-        cursor: pointer;
-        transition: background 120ms ease, color 120ms ease;
-    }
-    .ctx-item:hover {
-        background: var(--neutral-soft);
-    }
-    /* the destructive item: a red text tint only (the danger token, no new literal), sharing
-       the same neutral hover wash as every other row — no colored item background. */
-    .ctx-item.danger {
-        color: var(--danger);
-    }
-    .sk {
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 10px;
-        color: var(--muted);
     }
 
     /* the START anchor's initial-speed popover: the same floating-field surface as the
