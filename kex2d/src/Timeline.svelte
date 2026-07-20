@@ -3,7 +3,16 @@ import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
 import { kindSegments } from "./colors";
-import { editor, openContext, selectForce, selectSection, snapActive, toggleSnap } from "./editor";
+import {
+    beginDrag,
+    editor,
+    endDrag as endDragGesture,
+    openContext,
+    selectForce,
+    selectSection,
+    snapActive,
+    toggleSnap,
+} from "./editor";
 import {
     appendSection,
     beginForceMove,
@@ -455,6 +464,7 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     beginForceMove(ecs, p.id);
     dragForce = p.id;
     selectForce(p.id);
+    beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", forceMove);
     window.addEventListener("pointerup", forceUp);
 }
@@ -589,6 +599,7 @@ function lenDown(e: PointerEvent, c: Clip): void {
     beginLength(ecs, c.id);
     lenId = c.id;
     sFrozen = sTotal; // freeze the pan-clamp total so the view holds still under the drag
+    beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", lenMove);
     window.addEventListener("pointerup", lenUp);
 }
@@ -669,7 +680,7 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
     if (p === null) return;
     e.preventDefault();
     const label = e.currentTarget as HTMLElement;
-    label.setPointerCapture(e.pointerId);
+    beginDrag(label, e.pointerId);
     scrubFreeze = {
         x: clamp(ptX(p), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
         y: clamp(yOf(p.g), TOP, h - BOT_PAD),
@@ -736,6 +747,7 @@ function panDown(e: PointerEvent): void {
     panning = true;
     panX0 = e.clientX;
     pan0 = clamped.pan;
+    beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", panMove);
     window.addEventListener("pointerup", panUp);
 }
@@ -768,6 +780,7 @@ function navDown(e: PointerEvent, mode: "pan" | "l" | "r"): void {
     e.preventDefault();
     e.stopPropagation(); // an edge press must not also start a window pan
     navDrag = { mode, grab: navSAt(e.clientX) - pxToS(clamped, 0) };
+    beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", navMove);
     window.addEventListener("pointerup", navUp);
 }
@@ -1001,6 +1014,7 @@ function startScrub(e: PointerEvent): void {
     e.preventDefault();
     scrubbing = true;
     st.held = true; // freeze playback while scrubbing
+    beginDrag(canvas, e.pointerId);
     scrubTo(e);
     window.addEventListener("pointermove", scrubTo);
     window.addEventListener("pointerup", endScrub);
@@ -1048,6 +1062,7 @@ function sliderDown(e: PointerEvent): void {
     sliderResume = st.held; // resume playing only if it was playing before the grab
     sliding = true;
     st.held = true;
+    beginDrag(scrubEl, e.pointerId);
     sliderTo(e);
     window.addEventListener("pointermove", sliderTo);
     window.addEventListener("pointerup", sliderUp);
@@ -1157,6 +1172,7 @@ onMount(() => {
         navUp(); // and any in-flight navigator drag
         cancelForceDrag(); // and any in-flight force-point drag
         cancelLenDrag(); // and any in-flight extent drag
+        endDragGesture(); // clear the drag flag if we tore down mid-drag (no release event)
     };
 });
 </script>
@@ -1645,6 +1661,27 @@ onMount(() => {
     .body.panning,
     .body.panning * {
         cursor: grabbing;
+    }
+
+    /* hover suppression while any drag is in flight: `data-dragging` is set on the app root
+       (App.svelte) whenever a gesture routes through `beginDrag`. one rule kills
+       `pointer-events` on the dock's hoverable chrome, so `:hover` can't fire on a clip /
+       button / diamond the cursor sweeps over mid-drag (CSS `:hover` ignores pointer
+       capture, so this is the only thing that stops it). the surface actually being dragged
+       is unaffected: its gesture listens on `window` and holds pointer capture, which
+       bypasses hit-testing. */
+    :global([data-dragging]) .clip,
+    :global([data-dragging]) .clip-trim,
+    :global([data-dragging]) .clip-add,
+    :global([data-dragging]) .clip-flyout,
+    :global([data-dragging]) .snap-toggle,
+    :global([data-dragging]) .fhit,
+    :global([data-dragging]) .nav-window,
+    :global([data-dragging]) .ptip,
+    :global([data-dragging]) .play,
+    :global([data-dragging]) .scrub {
+        pointer-events: none;
+        user-select: none;
     }
 
     /* time navigator: a preview-minimap overview strip below the chart. dims only

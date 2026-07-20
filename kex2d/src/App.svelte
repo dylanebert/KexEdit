@@ -2,7 +2,7 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
 import { attachControls } from "./controls";
-import { closeContext, editor, select, selectSection, selectStart } from "./editor";
+import { beginDrag, closeContext, editor, select, selectSection, selectStart } from "./editor";
 import {
     beginV0,
     commit,
@@ -57,6 +57,16 @@ const infeasible = $derived.by((): boolean => {
     if (trackEid === null) return false;
     const out = bakeOut.get(trackEid);
     return !!out && out.firstInfeasible >= 0;
+});
+// reflect the drag flag as `data-dragging` on the app root — the CSS hook a drag uses to
+// suppress `:hover` on the chrome under the cursor (both this component's and the dock's).
+// read through the per-RAF tick like the rest of the projected editor state.
+const dragging = $derived.by((): boolean => {
+    void tick;
+    return editor.dragging;
+});
+$effect(() => {
+    document.getElementById("app")?.toggleAttribute("data-dragging", dragging);
 });
 const handleCount = $derived.by((): number => {
     void tick;
@@ -181,7 +191,7 @@ function v0ScrubStart(e: PointerEvent): void {
     const te = trackEid;
     e.preventDefault();
     const label = e.currentTarget as HTMLElement;
-    label.setPointerCapture(e.pointerId);
+    beginDrag(label, e.pointerId);
     beginV0(te);
     let acc = Track.v0.get(te);
     const move = (ev: PointerEvent): void => {
@@ -364,6 +374,17 @@ $effect(() => {
         width: 100%;
         height: 100%;
         cursor: default;
+    }
+
+    /* hover suppression while a drag is in flight (see Timeline.svelte): `data-dragging` on
+       the app root kills pointer-events on this component's hoverable chrome too, so a node
+       drag sweeping over the radial buttons / a summoned menu doesn't flash their `:hover`.
+       the dragged surface holds pointer capture, so it's unaffected. */
+    :global([data-dragging]) .rbtn,
+    :global([data-dragging]) .ctx-item,
+    :global([data-dragging]) .vtip {
+        pointer-events: none;
+        user-select: none;
     }
 
     .warning {

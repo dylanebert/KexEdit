@@ -1,6 +1,8 @@
 import type { State } from "@dylanebert/shallot";
 import {
+    beginDrag,
     editor,
+    endDrag as endDragGesture,
     openContext,
     select,
     selectSection,
@@ -246,7 +248,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             panX = x;
             panY = y;
             canvas.style.cursor = "grabbing"; // grab affordance while panning (Blender/AE)
-            canvas.setPointerCapture(e.pointerId);
+            beginDrag(canvas, e.pointerId);
             return;
         }
         if (e.button !== 0 || panning) return;
@@ -269,7 +271,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             grabWX = w.x;
             grabWY = w.y;
             beginMove(ecs, Handle.section.get(eid)); // open the drag gesture; commit/cancel on release
-            canvas.setPointerCapture(e.pointerId);
+            beginDrag(canvas, e.pointerId);
             return;
         }
         // the START anchor (initial-speed handle) before the section span it sits on —
@@ -356,11 +358,12 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         if (e.button === 1) e.preventDefault();
     };
 
-    const endDrag = (e: PointerEvent): void => {
+    // the drag flag + capture clear via beginDrag's own window pointerup/cancel listener; these
+    // handlers own only the gesture's own state (pan flag / node + history).
+    const endDrag = (): void => {
         if (panning) {
             panning = false;
             canvas.style.cursor = "";
-            if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
             return;
         }
         if (dragNode === null) return;
@@ -368,14 +371,12 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         snapGuides.x = null;
         snapGuides.y = null;
         commit(history); // one drag → one undo entry (a no-move click records nothing)
-        if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     };
 
-    const cancelDrag = (e: PointerEvent): void => {
+    const cancelDrag = (): void => {
         if (panning) {
             panning = false;
             canvas.style.cursor = "";
-            if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
             return;
         }
         if (dragNode === null) return;
@@ -383,7 +384,6 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         snapGuides.x = null;
         snapGuides.y = null;
         cancel(); // interrupted drag: restore the pre-gesture pose
-        if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     };
 
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -495,5 +495,6 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         canvas.style.cursor = ""; // detaching mid-pan must not leave a stuck grabbing cursor
         snapGuides.x = null; // detaching mid-drag must not leave a stuck guide for the remount
         snapGuides.y = null;
+        endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on
     };
 }

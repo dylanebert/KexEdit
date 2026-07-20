@@ -27,6 +27,10 @@ interface EditorState {
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
     snap: boolean;
+    /** whether a pointer drag is in flight (any gesture routed through `beginDrag`). App
+     *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
+     *  on the chrome under the cursor. ephemeral, read via the per-RAF tick. */
+    dragging: boolean;
 }
 
 export const editor: EditorState = {
@@ -36,7 +40,70 @@ export const editor: EditorState = {
     start: false,
     context: null,
     snap: true,
+    dragging: false,
 };
+
+// ── drag gesture substrate ──
+// every pointer drag routes through `beginDrag`. it (1) takes pointer capture — for event
+// routing and, more importantly, so hit-testing bypasses the dragged surface, which the
+// hover-suppression CSS below marks `pointer-events: none`; and (2) sets `editor.dragging`,
+// which App reflects as `data-dragging` on the app root. that attribute drives one CSS rule
+// (`pointer-events: none` on the hoverable chrome), the ONLY thing that stops `:hover`
+// firing on chrome under the cursor mid-drag — CSS `:hover` ignores pointer capture in both
+// Chromium and Firefox, so capture alone can't fix it.
+//
+// `beginDrag`'s own listeners are the SOLE release authority: they clear the flag + capture
+// on `pointerup`/`pointercancel`, keyed on the captured pointerId so a superseded drag's
+// late release can't clear a newer one (a new `beginDrag` supersedes a stale one). they
+// listen on `window`, not the captured element, so a missed or failed capture still catches
+// the release (window sees every pointer event). the per-gesture handlers do NOT clear the
+// flag; only the unmount teardowns call `endDrag()` directly, for a drag torn down without a
+// release event.
+let dragEl: Element | null = null;
+let dragId = -1;
+
+/** open a drag gesture on `el` for `pointerId`: take pointer capture and raise the drag
+ *  flag; both clear on the pointer's `pointerup`/`pointercancel`. re-entrant safe. */
+export function beginDrag(el: Element, pointerId: number): void {
+    if (dragEl) endDrag(); // a prior drag whose release was missed — clear before claiming
+    dragEl = el;
+    dragId = pointerId;
+    editor.dragging = true;
+    try {
+        el.setPointerCapture(pointerId);
+    } catch {
+        // capture is best-effort (a detached element throws); the window listeners below
+        // still catch the release and the flag still drives suppression
+    }
+    window.addEventListener("pointerup", onDragRelease);
+    window.addEventListener("pointercancel", onDragRelease);
+    el.addEventListener("lostpointercapture", onDragRelease);
+}
+
+function onDragRelease(e: Event): void {
+    // ignore a stale listener firing for a pointer that isn't the active drag's
+    if (e instanceof PointerEvent && e.pointerId !== dragId) return;
+    endDrag();
+}
+
+/** clear the drag flag + release capture (idempotent). driven by `beginDrag`'s own release
+ *  listeners; also called directly by the unmount teardowns for a drag with no release. */
+export function endDrag(): void {
+    if (!dragEl) return;
+    const el = dragEl;
+    const id = dragId;
+    dragEl = null;
+    dragId = -1;
+    editor.dragging = false;
+    window.removeEventListener("pointerup", onDragRelease);
+    window.removeEventListener("pointercancel", onDragRelease);
+    el.removeEventListener("lostpointercapture", onDragRelease);
+    try {
+        if (el.hasPointerCapture(id)) el.releasePointerCapture(id);
+    } catch {
+        // already released / detached
+    }
+}
 
 /** flip the snapping magnet (the `S` key). */
 export function toggleSnap(): void {
