@@ -58,6 +58,40 @@ old Unity playback/edit *mode* split, and don't add a second video frame — in 
 already *is* the playback. A separate playback render earns its place only for a different **camera**
 (a rider POV), a 3D `app/` concern, not 2D kex2d.
 
+## Document axis vs value axis
+
+Every chart axis is one or the other, and the distinction decides what may rescale it (earned by
+the kex2d timeline feel bug; the NLE reference: AE/Premiere never rezoom the timeline when a layer
+shortens):
+
+- **A value axis displays.** Auto-fit freely — the y g-range fits like the AE/Unity curve editors.
+- **A document axis addresses.** It's the spatial home of every clip, keyframe, and guide, so
+  content edits never rescale it — pan/zoom change only by explicit navigation (wheel, navigator,
+  `F`, initial framing). Enforce as two paths: the content-edit clamp is pan-only; the fit floor
+  lives only in the explicit-navigation ops (kex2d: `clampView` vs `zoomAt`/`frameAll`). A shrunk
+  track leaves empty ruler on the right; it doesn't rezoom.
+
+## Snapping
+
+The AE magnet model. kex2d stage E (2026-07-19) is the worked example; any later editor surface
+copies this shape:
+
+- Persistent toggle, default **on**; `S` toggles; holding Ctrl/Cmd inverts while held (the
+  AE/Figma temporary bypass — XOR with the toggle, not a plain disable).
+- A pure per-axis resolver in screen px; nearest target within threshold wins. The threshold is a
+  design constant (kex2d `SNAP_PX` = 8), zoom-independent, never a tuned tolerance.
+- **Targets must be stable under the gesture and reachable.** A gesture never snaps to geometry it
+  is itself moving (the extent-trim self-snap lesson) or to a target the drag can't reach.
+- Snap never fires on a Shift-locked axis — the constraint owns it.
+- A snapped axis flashes a guide line (the Figma feedback); the guide clears with the gesture.
+
+## Kind color
+
+Geo = cool blue, force = accent gold, on every surface that shows a section — clip strip, viewport
+span, chart curve, navigator. One resolver produces the colored spans (kex2d `kindSegments` in
+`colors.ts`); surfaces project it, never re-derive. When languages stack, priority is
+infeasible-red > selection accent > kind color, and dash stays reserved for infeasibility.
+
 ## Keyframe / curve-editor conventions
 
 The proven-reference set for any keyframe-on-a-chart surface (worked example: kex2d
