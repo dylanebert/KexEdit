@@ -19,6 +19,7 @@ import {
     lastHandle,
     samples,
     SectionKind,
+    sectionAt,
     sectionHandles,
     sectionInfo,
     sections,
@@ -121,9 +122,20 @@ function onDelete(): void {
 // the section context menu (Convert / Delete), summoned by right-click on a clip or a
 // viewport span (both call editor.openContext). rendered once here at the app root so it
 // can float over both the viewport and the dock; positioned at the cursor (screen px).
+// a summoned surface lives only as long as its subject (root ui.md): the menu's visibility
+// DERIVES from its target section still existing, so any death path — Del, undo, a programmatic
+// edit — dismisses it by derivation, no per-path close call. the effect below clears the stale
+// target id once the subject is gone, so an undo that restores the same id can't resurrect it.
 const ctx = $derived.by((): { x: number; y: number; section: number } | null => {
     void tick;
-    return editor.context;
+    const c = editor.context;
+    if (c === null || sectionAt(ecs, c.section) === null) return null;
+    return c;
+});
+$effect(() => {
+    // kept out of the derivation (deriving stays side-effect-free): once the subject is gone,
+    // clear the dangling target so a later reappearance of the id doesn't re-open the menu.
+    if (editor.context !== null && ctx === null) closeContext();
 });
 const ctxKind = $derived.by((): SectionKind | null => {
     void tick;
@@ -139,9 +151,9 @@ function ctxConvert(): void {
 }
 function ctxDelete(): void {
     if (ctx === null) return;
-    const id = ctx.section;
-    closeContext();
-    if (removeSection(history, ecs, id)) selectSection(null);
+    // no explicit close: removing the section makes `ctx` derive null, so the menu dismisses
+    // by subject existence (one mechanism) and the $effect clears the stale target id.
+    if (removeSection(history, ecs, ctx.section)) selectSection(null);
 }
 // dismiss the menu on any outside press or Escape (clicks on the menu itself pass through
 // so its items can act before it closes).

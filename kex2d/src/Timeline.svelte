@@ -328,6 +328,13 @@ const selPoint = $derived.by((): ForcePt | null => {
     if (selForce === null) return null;
     return forcePts.find((p) => p.id === selForce) ?? null;
 });
+// the point popover lives only as long as its subject (root ui.md): `selPoint` already
+// derives null when the point is gone, but clear the dangling selection id too, so an
+// undo/redo (or any path) that restores the same id can't resurrect the popover. one
+// mechanism for every death path — no per-mutation deselect.
+$effect(() => {
+    if (editor.force !== null && selPoint === null) selectForce(null);
+});
 const markerX = (s: number): number => LEFT_GUT + sToPx(clamped, s);
 // a force point's chart x — its section-local s placed at its section's cumulative
 // offset. points are authored local; the chart draws whole-track cumulative.
@@ -731,8 +738,9 @@ function fieldKeydown(e: KeyboardEvent, reset: string): void {
 }
 function deleteSelectedForce(): void {
     if (editor.force === null) return;
+    // no explicit deselect: deleting the point makes `selPoint` derive null (the popover
+    // dismisses by subject existence) and the $effect above clears the stale id. one mechanism.
     deleteForce(history, ecs, editor.force);
-    selectForce(null);
 }
 function cancelForceDrag(): void {
     if (dragForce === null) return;
