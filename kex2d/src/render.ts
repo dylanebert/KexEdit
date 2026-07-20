@@ -1,6 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
-import { kindSegments } from "./colors";
+import { COLOR_ACCENT, COLOR_SNAP, kindSegments } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { bakeOut, Handle, samples, sectionInfo, sections, Track } from "./track";
@@ -13,7 +13,6 @@ const CART_W = 14;
 const CART_H = 7;
 const COLOR_INFEASIBLE = "#e26d5c";
 const COLOR_ANCHOR = "#9aa0a6";
-const COLOR_SNAP = "#e879b0"; // the alignment-guide flash color (mirrors --snap), distinct from kind/infeasible/selection
 
 // target on-screen spacing between minor gridlines (px); the world step snaps to a
 // 1-2-5 nice number that lands nearest this under the current zoom, so the grid stays
@@ -166,7 +165,7 @@ const TrackDrawSystem: System = {
                 const info = sectionInfo.get(editor.section);
                 if (info) {
                     ctx.setLineDash([]);
-                    ctx.strokeStyle = "#d49560";
+                    ctx.strokeStyle = COLOR_ACCENT;
                     ctx.lineWidth = 3;
                     ctx.beginPath();
                     let inSel = false;
@@ -339,7 +338,7 @@ const CartDrawSystem: System = {
             ctx.lineTo(CART_W / 2 - 4, -CART_H / 2 + 1);
             ctx.lineTo(CART_W / 2 - 4, CART_H / 2 - 1);
             ctx.closePath();
-            ctx.fillStyle = "#d49560";
+            ctx.fillStyle = COLOR_ACCENT;
             ctx.fill();
             ctx.restore();
         }

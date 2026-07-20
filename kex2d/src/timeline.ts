@@ -63,7 +63,11 @@ export function zoomAt(
     sTotal: number,
 ): View {
     const sAnchor = pxToS(v, anchorPx);
-    const pxPerM = Math.min(MAX_PX_PER_M, Math.max(minScale(width, sTotal), v.pxPerM * factor));
+    // floor at min(current, fit): a below-fit view (after a content shrink) can zoom-out
+    // no further but is NEVER pushed UP to the fit — a zoom-out tick must not read as a
+    // zoom-in. above fit, the floor is the fit scale, as before.
+    const floor = Math.min(v.pxPerM, minScale(width, sTotal));
+    const pxPerM = Math.min(MAX_PX_PER_M, Math.max(floor, v.pxPerM * factor));
     return clampView({ pan: sAnchor * pxPerM - anchorPx, pxPerM }, width, sTotal);
 }
 

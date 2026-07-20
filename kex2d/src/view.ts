@@ -1,3 +1,5 @@
+import { snap } from "./timeline";
+
 interface Canvas2DRef {
     element: HTMLCanvasElement;
     ctx: CanvasRenderingContext2D;
@@ -92,6 +94,21 @@ export function cameraTx(cam: Camera): ViewTx {
     return { sx: cam.zoom, sy: -cam.zoom, ox: cam.ox, oy: cam.oy };
 }
 
+/** snap one axis of a world coordinate to the nearest neighbor target in SCREEN space:
+ *  project `world` through the axis affine (`origin + world·scale`), snap in px against
+ *  `targets`, and invert a hit back to world. returns the snapped world coord, or null when
+ *  no target latched. the sign-safe screen↔world round trip a flipped axis (`scale < 0`,
+ *  the y-axis) is easy to get wrong — it lives here, pure and tested. */
+export function snapAxis(
+    world: number,
+    origin: number,
+    scale: number,
+    targets: Iterable<number>,
+): number | null {
+    const hit = snap(origin + world * scale, targets);
+    return hit === null ? null : (hit - origin) / scale;
+}
+
 /** the live viewport camera — a module singleton (mirrors `Canvas2D`/`editor`), mutated in
  *  place by the pan/zoom controls and read every frame by the render systems + App anchors. */
 export const camera: Camera = { zoom: 0, ox: 0, oy: 0 };
@@ -107,6 +124,13 @@ export const snapGuides: { x: number | null; y: number | null } = { x: null, y: 
 /** frame the camera to the default view for a canvas size (also the reset target). */
 export function frameCamera(width: number, height: number): void {
     Object.assign(camera, defaultCamera(width, height));
+    framed = true;
+}
+
+/** apply an explicitly-computed camera (e.g. `frameContent`) and latch `framed`, so the
+ *  next `viewTransform` doesn't re-default over it — the same latch `frameCamera` sets. */
+export function setCamera(cam: Camera): void {
+    Object.assign(camera, cam);
     framed = true;
 }
 

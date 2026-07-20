@@ -19,7 +19,6 @@ import {
     trimTrack,
 } from "./history";
 import { localize } from "./section";
-import { snap } from "./timeline";
 import {
     Handle,
     lastHandle,
@@ -36,6 +35,8 @@ import {
     panCamera,
     pointerToCanvas,
     screenToWorld,
+    setCamera,
+    snapAxis,
     snapGuides,
     viewTransform,
     type ViewTx,
@@ -207,10 +208,7 @@ function frameViewport(ecs: State, canvas: HTMLCanvasElement): void {
         if (s.posY[i] > maxY) maxY = s.posY[i];
     }
     if (!Number.isFinite(minX)) return;
-    Object.assign(
-        camera,
-        frameContent(canvas.clientWidth, canvas.clientHeight, { minX, minY, maxX, maxY }),
-    );
+    setCamera(frameContent(canvas.clientWidth, canvas.clientHeight, { minX, minY, maxX, maxY }));
 }
 
 /** write a dragged node's section-local position from a world target — `localize`
@@ -325,17 +323,17 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         if (snapActive(e.ctrlKey || e.metaKey)) {
             const { xs, ys } = neighborTargets(ecs, tx, dragNode);
             if (!lockX) {
-                const hit = snap(tx.ox + tgtX * tx.sx, xs);
+                const hit = snapAxis(tgtX, tx.ox, tx.sx, xs);
                 if (hit !== null) {
-                    tgtX = (hit - tx.ox) / tx.sx;
-                    snapGuides.x = tgtX;
+                    tgtX = hit;
+                    snapGuides.x = hit;
                 }
             }
             if (!lockY) {
-                const hit = snap(tx.oy + tgtY * tx.sy, ys);
+                const hit = snapAxis(tgtY, tx.oy, tx.sy, ys);
                 if (hit !== null) {
-                    tgtY = (hit - tx.oy) / tx.sy;
-                    snapGuides.y = tgtY;
+                    tgtY = hit;
+                    snapGuides.y = hit;
                 }
             }
         }

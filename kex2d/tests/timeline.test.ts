@@ -158,6 +158,17 @@ describe("zoomAt — cursor-anchored", () => {
         const out = zoomAt(inView, W / 2, 0.001, W, T); // clamps to min scale
         expect(out.pxPerM).toBeCloseTo(fitted.pxPerM, 6);
     });
+    test("zoom-out from a below-fit view stays put (never snaps UP to the fit)", () => {
+        // after a content shrink the view can sit BELOW the new whole-track fit. a wheel
+        // zoom-out from there must NOT floor the scale up to the fit — that was the
+        // inversion bug: a zoom-OUT tick pushing the scale IN. the floor is min(current,
+        // fit), so a zoom-out below fit is a no-op instead.
+        const fit = W / (T + marginArc(T));
+        const belowFit: View = { pan: 0, pxPerM: fit / 2 };
+        const out = zoomAt(belowFit, W / 2, 0.5, W, T); // zoom OUT further
+        expect(out.pxPerM).toBeCloseTo(belowFit.pxPerM, 9); // held, not snapped up
+        expect(out.pxPerM).toBeLessThan(fit); // stays below fit
+    });
 });
 
 describe("navWindow — overview bracket fractions", () => {

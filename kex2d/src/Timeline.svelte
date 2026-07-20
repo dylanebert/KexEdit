@@ -513,17 +513,19 @@ function toggleAppend(e: PointerEvent): void {
 }
 function append(kind: SectionKind): void {
     appendOpen = false;
-    fitPending = sTotal; // reveal the appended section once the re-bake extends the track
+    fitPending = clips.length; // reveal the appended section once its re-bake lands
     selectSection(appendSection(history, ecs, kind));
 }
-// appending adds to the chain end, off the right of the framed view. once the re-bake
-// lands (sTotal grows past the value captured at append), PAN — not zoom — so the new
-// clip shows: the x-axis is a document axis, so a content edit never rescales it.
-// clampView caps pan at the right-aligned track end.
+// appending adds to the chain end, off the right of the framed view. once the new
+// section's re-bake lands (the section COUNT grows past the value captured at append), PAN
+// — not zoom — so the new clip shows: the x-axis is a document axis, so a content edit
+// never rescales it. clampView caps pan at the right-aligned track end. keying on the count
+// (not an arclength delta) means a zero-length append still clears the flag, so it can't
+// linger and fire a stale pan on a later unrelated edit.
 let fitPending: number | null = $state(null);
 $effect(() => {
     if (fitPending === null) return;
-    if (chartW > 0 && sTotal > 0 && sTotal !== fitPending) {
+    if (chartW > 0 && sTotal > 0 && clips.length !== fitPending) {
         view = clampView({ pan: Number.MAX_VALUE, pxPerM: clamped.pxPerM }, chartW, sTotal);
         fitPending = null;
     }

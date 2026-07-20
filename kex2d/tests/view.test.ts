@@ -8,6 +8,7 @@ import {
     MIN_ZOOM,
     panCamera,
     screenToWorld,
+    snapAxis,
     zoomAt,
 } from "../src/view";
 
@@ -157,5 +158,34 @@ describe("panCamera — a screen delta slides the world", () => {
 
     test("leaves the zoom untouched", () => {
         expect(panCamera(cam, 100, 100).zoom).toBe(cam.zoom);
+    });
+});
+
+describe("snapAxis — screen-space neighbor magnet, sign-safe", () => {
+    // the y-axis affine is FLIPPED (scale < 0): world grows up, screen grows down. the
+    // projection and its inverse must stay consistent through that sign, which is exactly
+    // where an inline `(hit − ox)/sx` is easy to get wrong. an offset origin exercises the
+    // additive term too.
+
+    test("snaps a flipped (negative-scale) axis and inverts the hit back to world", () => {
+        // origin 300, scale −10: world 5 → screen 300 + 5·(−10) = 250. a target at screen
+        // 248 (2px away, within SNAP_PX) latches → world (248 − 300)/−10 = 5.2.
+        expect(snapAxis(5, 300, -10, [248])).toBeCloseTo(5.2, TOL);
+    });
+
+    test("snaps an offset positive axis", () => {
+        // origin 100, scale 10: world 2 → screen 120. a target at 124 (4px) → (124−100)/10.
+        expect(snapAxis(2, 100, 10, [124])).toBeCloseTo(2.4, TOL);
+    });
+
+    test("returns null when every target is beyond the threshold", () => {
+        // world 5 → screen 250 (origin 300, scale −10); the target at 200 is 50px away.
+        expect(snapAxis(5, 300, -10, [200])).toBeNull();
+        expect(snapAxis(5, 300, -10, [])).toBeNull();
+    });
+
+    test("picks the nearest of several in-range targets under a flipped axis", () => {
+        // screen 250; 248 is 2px, 253 is 3px → the nearer 248 wins, inverted to 5.2.
+        expect(snapAxis(5, 300, -10, [248, 253])).toBeCloseTo(5.2, TOL);
     });
 });

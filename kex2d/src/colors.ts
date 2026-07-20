@@ -2,11 +2,18 @@ import type { State } from "@dylanebert/shallot";
 import { SectionKind, sectionInfo, sections } from "./track";
 
 /** the kind color language (`ui.md`): geo = cool blue, force = accent gold. Same values
- *  as App.svelte's `--geo`/`--accent` CSS custom properties (the clip strip's colors,
- *  Timeline.svelte) — this is the canvas-side mirror for the viewport track polyline
- *  (render.ts, `strokeStyle`). One hue, two surfaces. */
+ *  as App.svelte's `--geo`/`--accent`/`--snap` CSS custom properties (the clip strip's
+ *  colors, Timeline.svelte) — this is the canvas-side home for every color the render
+ *  systems draw. One hue, two surfaces. */
 export const COLOR_GEO = "#78a5d6"; // rgb(120, 165, 214)
-export const COLOR_FORCE = "#d49560"; // rgb(212, 149, 96)
+/** the primary editor accent — the selection highlight + the cart direction marker. */
+export const COLOR_ACCENT = "#d49560"; // rgb(212, 149, 96)
+/** the force-section kind color. it borrows the primary accent (force = accent gold), but
+ *  is a distinct concept: a re-hue of one must not silently drag the other. */
+export const COLOR_FORCE = COLOR_ACCENT;
+/** the snap alignment-guide flash (timeline + viewport magnet feedback), distinct from
+ *  kind / infeasible / selection. */
+export const COLOR_SNAP = "#e879b0";
 
 export function kindColor(kind: SectionKind): string {
     return kind === SectionKind.Force ? COLOR_FORCE : COLOR_GEO;

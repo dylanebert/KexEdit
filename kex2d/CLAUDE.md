@@ -283,8 +283,10 @@ not authoring.
   state). The chart's x-axis is **distance** (meters). `View`, `sToPx`/`pxToS`, `zoomAt`, `clampView`,
   `frameAll`, `niceStep`, `ticks`, the navigator math (`navWindow`/`navDragView`/`marginArc`), and
   `Mapping` + `timeToArc`/`arcToTime` (the arc↔time table `cart.trackMapping` builds). `yFit`/`YFit`
-  (auto-fit g-range) + the edge-scroll grow-to-follow: `yGrow` (value drag) and `xGrow` (pan). Unit-
-  tested in `timeline.test.ts`.
+  (auto-fit g-range) + the edge-scroll grow-to-follow: `yGrow` (value drag) and `xGrow` (pan). Also the
+  home of the **shared 1D view math the viewport consumes** — `snap` (the AE magnet resolver) and
+  `niceStep` (the 1-2-5 grid step) are imported by `controls.ts` and `render.ts` too, so the timeline and
+  the 2D viewport share one axis vocabulary. Unit-tested in `timeline.test.ts`.
 - `Timeline.svelte` — the always-present bottom dock: the **F_n force-curve readout + scrub +
   zoom/pan navigation**, the floating **media player**, and the **section clip strip** in the marker
   lane (one clip per section, kind-colored/labeled; click selects `editor.section`; a `+` tail flyout
@@ -411,6 +413,10 @@ via a whole-track snapshot pair (byte-identical).
 cd kex2d && bun check && bun test
 cd kex2d && bun run capture   # UI screenshots → harness/shots/ (display-gated)
 ```
+
+**Toolchain pin:** `typescript` is held at 6.0.3 and `svelte-check` at 4.7.3 because svelte-check
+crashes on TypeScript 7 — the native (Go) port doesn't yet expose the `ts.sys` JS API svelte-check
+relies on. Revisit the pin when svelte-check ships TS7 support.
 
 f64 mirror for tests: `tests/helpers/forward64.ts`. Independent physics check: `tests/oracles/rk4.ts`
 (time-parameterized RK4 — a different scheme + parameterization). Physics is gated against the
