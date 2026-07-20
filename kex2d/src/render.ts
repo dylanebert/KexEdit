@@ -1,6 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
-import { kindColor } from "./colors";
+import { kindSegments } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { bakeOut, Handle, samples, sectionInfo, sections, Track } from "./track";
@@ -118,13 +118,11 @@ const TrackDrawSystem: System = {
             // accent overdraw this in the passes below (priority: infeasible > selection
             // > kind).
             ctx.lineWidth = 2;
-            for (const sec of sections(ecs)) {
-                const info = sectionInfo.get(sec.id);
-                if (!info) continue;
-                ctx.strokeStyle = kindColor(sec.kind);
+            for (const seg of kindSegments(ecs)) {
+                ctx.strokeStyle = seg.color;
                 ctx.beginPath();
                 let inPath = false;
-                for (let i = info.startSample; i < info.endSample; i++) {
+                for (let i = seg.startSample; i < seg.endSample; i++) {
                     const ok = out.feasible[i] === 1 && out.feasible[i + 1] === 1;
                     if (ok) {
                         if (!inPath) {

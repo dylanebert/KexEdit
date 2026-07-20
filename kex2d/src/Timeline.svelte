@@ -2,7 +2,7 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
-import { kindColor } from "./colors";
+import { kindSegments } from "./colors";
 import { editor, openContext, selectForce, selectSection } from "./editor";
 import {
     appendSection,
@@ -787,15 +787,13 @@ function render(ctx: CanvasRenderingContext2D): void {
     // here (unlike the viewport polyline).
     if (curve) {
         ctx.lineWidth = 1.6;
-        for (const sec of sections(ecs)) {
-            const info = sectionInfo.get(sec.id);
-            if (!info) continue;
-            ctx.strokeStyle = kindColor(sec.kind);
+        for (const seg of kindSegments(ecs)) {
+            ctx.strokeStyle = seg.color;
             ctx.beginPath();
-            for (let i = info.startSample; i <= info.endSample; i++) {
+            for (let i = seg.startSample; i <= seg.endSample; i++) {
                 const x = LEFT_GUT + sToPx(v, curve.s[i]);
                 const y = yOf(curve.f[i]);
-                if (i === info.startSample) ctx.moveTo(x, y);
+                if (i === seg.startSample) ctx.moveTo(x, y);
                 else ctx.lineTo(x, y);
             }
             ctx.stroke();
@@ -819,16 +817,22 @@ function renderNav(nav: CanvasRenderingContext2D, cw: number, ch: number): void 
     const pad = 2; // vertical inset so the curve doesn't touch the lane edges
     const ny = (val: number): number =>
         pad + (1 - (clamp(val, lo, hi) - lo) / span) * (ch - 2 * pad);
-    nav.strokeStyle = "rgba(212, 149, 96, 0.55)"; // dim accent
+    // kind-colored per section, same as the chart above — dimmed to the nav's existing
+    // low-attention treatment (the same 0.55 alpha the flat accent line used to carry).
     nav.lineWidth = 1;
-    nav.beginPath();
-    for (let i = 0; i < data.n; i++) {
-        const x = (data.s[i] / total) * cw;
-        const y = ny(data.f[i]);
-        if (i === 0) nav.moveTo(x, y);
-        else nav.lineTo(x, y);
+    nav.globalAlpha = 0.55;
+    for (const seg of kindSegments(ecs)) {
+        nav.strokeStyle = seg.color;
+        nav.beginPath();
+        for (let i = seg.startSample; i <= seg.endSample; i++) {
+            const x = (data.s[i] / total) * cw;
+            const y = ny(data.f[i]);
+            if (i === seg.startSample) nav.moveTo(x, y);
+            else nav.lineTo(x, y);
+        }
+        nav.stroke();
     }
-    nav.stroke();
+    nav.globalAlpha = 1;
 }
 
 $effect(() => {
