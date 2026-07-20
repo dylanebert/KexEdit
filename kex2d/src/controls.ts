@@ -19,16 +19,26 @@ import {
     removeSection,
     trimTrack,
 } from "./history";
+import { type Guide, resolveSnap, type SnapInput } from "./magnet";
 import { localize } from "./section";
-import { Handle, lastHandle, reheadOnDrag, samples, sectionInfo, sections, Track } from "./track";
+import {
+    Handle,
+    handleAt,
+    lastHandle,
+    reheadOnDrag,
+    samples,
+    sectionInfo,
+    sections,
+    Track,
+} from "./track";
 import {
     camera,
+    clearGuides,
     frameContent,
     panCamera,
     pointerToCanvas,
     screenToWorld,
     setCamera,
-    snapAxis,
     snapGuides,
     viewTransform,
     type ViewTx,
@@ -167,6 +177,84 @@ function neighborTargets(ecs: State, tx: ViewTx, dragEid: number): { xs: number[
     return { xs, ys };
 }
 
+/** the screen point a baked sample lands at. */
+function sampleScreen(
+    s: NonNullable<ReturnType<typeof samples.get>>,
+    tx: ViewTx,
+    i: number,
+): { x: number; y: number } {
+    return { x: tx.ox + s.posX[i] * tx.sx, y: tx.oy + s.posY[i] * tx.sy };
+}
+
+/** assemble the magnet resolver's input for a node drag: the raw screen point (shift-lock
+ *  already folded in), the neighbor-alignment targets, and the polar frame relative to the
+ *  previous node — the curve tangent flanking it (the continuation landmark) and the chord
+ *  arriving from the node before it (the reflection landmark). */
+function magnetInput(
+    ecs: State,
+    tx: ViewTx,
+    dragEid: number,
+    rawSX: number,
+    rawSY: number,
+    lock: "x" | "y" | null,
+): SnapInput {
+    const { xs, ys } = neighborTargets(ecs, tx, dragEid);
+    const inp: SnapInput = {
+        px: rawSX,
+        py: rawSY,
+        prev: null,
+        tangent: null,
+        incoming: null,
+        alignX: xs,
+        alignY: ys,
+        pxPerMeter: Math.abs(tx.sx),
+        lock,
+    };
+    const s = trackSamples(ecs);
+    if (!s) return inp;
+    const section = Handle.section.get(dragEid);
+    const order = Handle.order.get(dragEid);
+    const prevEid = handleAt(ecs, section, order - 1);
+    if (prevEid === null) return inp;
+    const pi = Handle.sample.get(prevEid);
+    inp.prev = sampleScreen(s, tx, pi);
+    // the curve tangent at the previous node from its flanking samples (centered where it
+    // can be, one-sided at a chain end).
+    let count = 0;
+    for (const t of ecs.query([Track])) count = Track.count.get(t);
+    const lo = Math.max(0, pi - 1);
+    const hi = Math.min(count - 1, pi + 1);
+    if (hi > lo) {
+        const a = sampleScreen(s, tx, lo);
+        const b = sampleScreen(s, tx, hi);
+        inp.tangent = Math.atan2(b.y - a.y, b.x - a.x);
+    }
+    // the chord arriving at the previous node from the node before it.
+    const ppEid = handleAt(ecs, section, order - 2);
+    if (ppEid !== null) {
+        const pp = sampleScreen(s, tx, Handle.sample.get(ppEid));
+        inp.incoming = Math.atan2(inp.prev.y - pp.y, inp.prev.x - pp.x);
+    }
+    return inp;
+}
+
+/** flash the fired magnet guides in world space (the render pass reads `snapGuides`). the
+ *  polar guides hang off the previous node — the screen angle inverts to world (the y-flip),
+ *  the screen radius to world meters. */
+function applyGuides(guides: Guide[], tx: ViewTx, prev: { x: number; y: number } | null): void {
+    for (const g of guides) {
+        if (g.kind === "alignX") snapGuides.x = (g.value - tx.ox) / tx.sx;
+        else if (g.kind === "alignY") snapGuides.y = (g.value - tx.oy) / tx.sy;
+        else if (g.kind === "angle" && prev) {
+            const w = screenToWorld(tx, prev.x, prev.y);
+            snapGuides.ray = { x: w.x, y: w.y, angle: -g.value };
+        } else if (g.kind === "length" && prev) {
+            const w = screenToWorld(tx, prev.x, prev.y);
+            snapGuides.ring = { x: w.x, y: w.y, r: g.value / Math.abs(tx.sx) };
+        }
+    }
+}
+
 /** the baked-sample range `F` frames: the selected section (or the selected node's
  *  section) if there is a selection, else the whole track — the Blender frame-content
  *  rule (frame the selection, or everything when nothing is selected). */
@@ -297,37 +385,34 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         // Shift constrains to the dominant axis since the grab (the AE/Photoshop rule,
         // already live for timeline force points); the held axis snaps back to the grab
         // pose. re-evaluated live — no hysteresis.
-        let lockX = false;
-        let lockY = false;
+        let lock: "x" | "y" | null = null;
         if (e.shiftKey) {
             if (Math.abs(cx - grabCX) >= Math.abs(cy - grabCY)) {
                 tgtY = grabWY;
-                lockY = true;
+                lock = "y";
             } else {
                 tgtX = grabWX;
-                lockX = true;
+                lock = "x";
             }
         }
-        // neighbor-axis alignment magnet (Figma): snap each free axis to a neighboring
-        // node's screen x / y within SNAP_PX, flashing a world-axis guide at the hit.
-        snapGuides.x = null;
-        snapGuides.y = null;
+        // the magnet: resolve the raw drag point (shift-lock folded in) against every target
+        // family in screen px — neighbor alignment plus the polar rasters + landmarks relative
+        // to the previous node — and flash whatever fires. Ctrl/Cmd bypasses (snapActive).
+        clearGuides();
         if (snapActive(e.ctrlKey || e.metaKey)) {
-            const { xs, ys } = neighborTargets(ecs, tx, dragNode);
-            if (!lockX) {
-                const hit = snapAxis(tgtX, tx.ox, tx.sx, xs);
-                if (hit !== null) {
-                    tgtX = hit;
-                    snapGuides.x = hit;
-                }
-            }
-            if (!lockY) {
-                const hit = snapAxis(tgtY, tx.oy, tx.sy, ys);
-                if (hit !== null) {
-                    tgtY = hit;
-                    snapGuides.y = hit;
-                }
-            }
+            const inp = magnetInput(
+                ecs,
+                tx,
+                dragNode,
+                tx.ox + tgtX * tx.sx,
+                tx.oy + tgtY * tx.sy,
+                lock,
+            );
+            const res = resolveSnap(inp);
+            const w = screenToWorld(tx, res.px, res.py);
+            tgtX = w.x;
+            tgtY = w.y;
+            applyGuides(res.guides, tx, inp.prev);
         }
         dragTo(ecs, dragNode, tgtX, tgtY);
     };
@@ -358,8 +443,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
         if (dragNode === null) return;
         dragNode = null;
-        snapGuides.x = null;
-        snapGuides.y = null;
+        clearGuides();
         commit(history); // one drag → one undo entry (a no-move click records nothing)
     };
 
@@ -371,8 +455,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
         if (dragNode === null) return;
         dragNode = null;
-        snapGuides.x = null;
-        snapGuides.y = null;
+        clearGuides();
         cancel(); // interrupted drag: restore the pre-gesture pose
     };
 
@@ -483,8 +566,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         canvas.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKeyDown);
         canvas.style.cursor = ""; // detaching mid-pan must not leave a stuck grabbing cursor
-        snapGuides.x = null; // detaching mid-drag must not leave a stuck guide for the remount
-        snapGuides.y = null;
+        clearGuides(); // detaching mid-drag must not leave a stuck guide for the remount
         endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on
     };
 }

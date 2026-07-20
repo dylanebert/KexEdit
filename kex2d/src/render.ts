@@ -348,15 +348,22 @@ const CartDrawSystem: System = {
     },
 };
 
-/** the viewport snap-guide flash: a thin full-extent line at the world axis a node drag
- *  snapped to (the Figma alignment guide). drawn last so it reads over the track, cleared
- *  by the controls on release. */
+/** the viewport snap-guide flash: a thin guide per fired magnet family, drawn over the
+ *  track and cleared by the controls on release. the cartesian pair are world-axis lines
+ *  (the Figma alignment guide); the polar pair hang off the previous node — a ray at the
+ *  snapped chord angle, a ring at the snapped chord length. */
 const SnapGuideSystem: System = {
     group: "draw",
     update(): void {
         const { element: canvas, ctx } = Canvas2D;
         if (!ctx) return;
-        if (snapGuides.x === null && snapGuides.y === null) return;
+        if (
+            snapGuides.x === null &&
+            snapGuides.y === null &&
+            snapGuides.ray === null &&
+            snapGuides.ring === null
+        )
+            return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
         const w = canvas.clientWidth;
         const h = canvas.clientHeight;
@@ -374,7 +381,28 @@ const SnapGuideSystem: System = {
             ctx.moveTo(0, y);
             ctx.lineTo(w, y);
         }
+        if (snapGuides.ray !== null) {
+            // a full-extent line through the previous node at the snapped world angle. `L` is
+            // large enough to span any framed view; the canvas clips the overshoot.
+            const { x: rx, y: ry, angle } = snapGuides.ray;
+            const cx = ox + rx * sx;
+            const cy = oy + ry * sy;
+            const L = 1e5;
+            const dx = Math.cos(angle);
+            const dy = Math.sin(angle);
+            ctx.moveTo(cx + dx * L * sx, cy + dy * L * sy);
+            ctx.lineTo(cx - dx * L * sx, cy - dy * L * sy);
+        }
         ctx.stroke();
+        if (snapGuides.ring !== null) {
+            // a circle around the previous node at the snapped world radius (the length locus).
+            const { x: rx, y: ry, r } = snapGuides.ring;
+            const cx = ox + rx * sx;
+            const cy = oy + ry * sy;
+            ctx.beginPath();
+            ctx.arc(cx, cy, r * Math.abs(sx), 0, Math.PI * 2);
+            ctx.stroke();
+        }
         ctx.restore();
     },
 };

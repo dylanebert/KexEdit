@@ -1,5 +1,3 @@
-import { snap } from "./timeline";
-
 interface Canvas2DRef {
     element: HTMLCanvasElement;
     ctx: CanvasRenderingContext2D;
@@ -100,32 +98,35 @@ export function cameraTx(cam: Camera): ViewTx {
     return { sx: cam.zoom, sy: -cam.zoom, ox: cam.ox, oy: cam.oy };
 }
 
-/** snap one axis of a world coordinate to the nearest neighbor target in SCREEN space:
- *  project `world` through the axis affine (`origin + world·scale`), snap in px against
- *  `targets`, and invert a hit back to world. returns the snapped world coord, or null when
- *  no target latched. the sign-safe screen↔world round trip a flipped axis (`scale < 0`,
- *  the y-axis) is easy to get wrong — it lives here, pure and tested. */
-export function snapAxis(
-    world: number,
-    origin: number,
-    scale: number,
-    targets: Iterable<number>,
-): number | null {
-    const hit = snap(origin + world * scale, targets);
-    return hit === null ? null : (hit - origin) / scale;
-}
-
 /** the live viewport camera — a module singleton (mirrors `Canvas2D`/`editor`), mutated in
  *  place by the pan/zoom controls and read every frame by the render systems + App anchors. */
 export const camera: Camera = { zoom: 0, ox: 0, oy: 0 };
 let framed = false;
 
-/** transient world-space alignment guides shown while a viewport node drag snaps to a
- *  neighbor's axis (the Figma alignment-guide flash). `x` is the world x of an active
- *  vertical guide, `y` the world y of a horizontal one; null when that axis isn't
- *  snapping. mutated in place by the drag controls, read by the render pass, cleared on
- *  release — the viewport twin of the timeline's snap guide. */
-export const snapGuides: { x: number | null; y: number | null } = { x: null, y: null };
+/** transient world-space snap guides flashed while a viewport node drag latches a magnet
+ *  target (the Figma alignment-guide flash, one per fired family). the cartesian pair are
+ *  world axes: `x` the world x of an active vertical guide, `y` the world y of a horizontal
+ *  one. the polar pair hang off the previous node: `ray` a line through it at a world angle
+ *  (the snapped chord angle), `ring` a circle around it at a world radius (the snapped chord
+ *  length). each is null when its family isn't firing. mutated in place by the drag controls,
+ *  read by the render pass, cleared on release — the viewport twin of the timeline's snap
+ *  guide. */
+export interface SnapGuides {
+    x: number | null;
+    y: number | null;
+    ray: { x: number; y: number; angle: number } | null;
+    ring: { x: number; y: number; r: number } | null;
+}
+
+export const snapGuides: SnapGuides = { x: null, y: null, ray: null, ring: null };
+
+/** clear every snap guide (drag release / teardown). */
+export function clearGuides(): void {
+    snapGuides.x = null;
+    snapGuides.y = null;
+    snapGuides.ray = null;
+    snapGuides.ring = null;
+}
 
 /** frame the camera to the default view for a canvas size (also the reset target). */
 export function frameCamera(width: number, height: number): void {
