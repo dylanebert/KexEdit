@@ -87,9 +87,11 @@ let h = $state(0);
 // resize or a track edit never writes back into `view` (which would loop the effect).
 let view: View = $state({ pan: 0, pxPerM: 10 });
 let framed = false;
-// while the section-end handle drags, the chart's total arclength FREEZES so the view
-// never re-fits under the cursor (the same "nothing moves under its own gesture" law
-// as the keyframe y-fit freeze). captured at drag start, cleared on release.
+// while the section-end handle drags, the chart's total arclength FREEZES at its
+// high-water mark so the pan clamp never shifts the view under the cursor during a
+// shorten (the same "nothing moves under its own gesture" law as the keyframe y-fit
+// freeze). captured at drag start, cleared on release. the x-scale never re-fits — that
+// is clampView's job now, not the freeze's.
 let sFrozen: number | null = $state(null);
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
@@ -431,12 +433,14 @@ function append(kind: SectionKind): void {
     selectSection(appendSection(history, ecs, kind));
 }
 // appending adds to the chain end, off the right of the framed view. once the re-bake
-// lands (sTotal grows past the value captured at append), re-fit so the new clip shows.
+// lands (sTotal grows past the value captured at append), PAN — not zoom — so the new
+// clip shows: the x-axis is a document axis, so a content edit never rescales it (unlike
+// the old frameAll refit). clampView caps pan at the right-aligned track end.
 let fitPending: number | null = $state(null);
 $effect(() => {
     if (fitPending === null) return;
     if (chartW > 0 && sTotal > 0 && sTotal !== fitPending) {
-        view = frameAll(chartW, sTotal);
+        view = clampView({ pan: Number.MAX_VALUE, pxPerM: clamped.pxPerM }, chartW, sTotal);
         fitPending = null;
     }
 });
@@ -457,8 +461,9 @@ $effect(() => {
 // profile. the extent is the force section's own authored length, independent of
 // the geo shape a convert came from — a convert resets it to a default, this sets it.
 // reuses the keyframe-drag freeze machinery: sFrozen holds the chart's arclength so the
-// view never rescales under the drag, and xGrow edge-pans when the cursor is held past
-// the chart edge. one undo entry per drag.
+// pan clamp holds the view still under the drag (the x-scale never rescales — that's
+// clampView's law), and xGrow edge-pans when the cursor is held past the chart edge. one
+// undo entry per drag.
 let lenId: number | null = $state(null); // the force section being resized, or null
 const draggingLen = $derived(lenId !== null);
 let lenStartS = 0; // the dragged section's cumulative start arclength (fixed during the drag)
@@ -482,7 +487,7 @@ function lenDown(e: PointerEvent, c: Clip): void {
     selectSection(c.id); // grabbing the edge selects the section (one object, two surfaces)
     beginLength(ecs, c.id);
     lenId = c.id;
-    sFrozen = sTotal; // freeze the zoom so the chart doesn't rescale under the drag
+    sFrozen = sTotal; // freeze the pan-clamp total so the view holds still under the drag
     window.addEventListener("pointermove", lenMove);
     window.addEventListener("pointerup", lenUp);
 }
@@ -495,8 +500,8 @@ function lenMove(e: PointerEvent): void {
 function lenUp(): void {
     if (lenId === null) return;
     lenId = null;
-    sFrozen = null; // auto-fit resumes and settles to the new extent
-    commit(history);
+    sFrozen = null; // release the in-drag freeze; the zoom never re-fits (no release refit) —
+    commit(history); // clampView now only re-clamps pan to the live extent, never rescales
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
 }

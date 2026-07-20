@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 // Boot the kex2d page and drive the GEO-AUTHORING flow end to end (seed a shaped track →
 // see the recovered F_n force curve → extend the chain → undo → reshape a node and watch
@@ -16,6 +16,20 @@ const SETTLE_MS = Number(process.env.KEX_SETTLE_MS ?? "2500");
 
 // window.__kex is the DEV harness hook (src/main.ts); the harness is outside the project
 // tsconfig, so these page-context reads use `any` freely.
+
+// Appending a section PANS the timeline to reveal the new clip — the x-axis is a document
+// axis, so a content edit never rescales/refits it (kex2d-ux-foundations stage C). The
+// overflowing track then scrolls earlier clips off-screen, so this frames the whole chain
+// back into view via a real zoom-out wheel (explicit navigation — `zoomAt` clamps the
+// zoom-out to the whole-track fit), the way an author would after an append. Positional
+// `.clip.nth()` locators below rely on every section being on-screen.
+async function frameTimeline(page: Page): Promise<void> {
+    const bb = await page.locator(".dock .body").boundingBox();
+    if (!bb) throw new Error("timeline body not laid out");
+    await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height * 0.7); // over the chart body
+    await page.mouse.wheel(0, 3000); // deltaY ≫ 0 → zoom out, floored at the whole-track fit
+    await page.waitForTimeout(SETTLE_MS);
+}
 
 test("geo authoring flow", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
@@ -249,9 +263,10 @@ test("section clip strip flow", async ({ page }) => {
     await page.getByRole("button", { name: "Append force section" }).click();
     await expect.poll(sectionCount).toBe(2);
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
-    await expect(page.locator(".clip")).toHaveCount(2);
     // the append selects the new (force) section — its clip reads selected.
     await expect.poll(selectedSection).toBe((await sectionIds())[1]);
+    await frameTimeline(page); // append pans to the new end; frame both clips back into view
+    await expect(page.locator(".clip")).toHaveCount(2);
     await page.waitForTimeout(300);
     if (vp) await page.screenshot({ path: join(OUT, "clip-2-append.png"), clip: strip() });
 
@@ -319,7 +334,7 @@ test("section menu + keyframe flow", async ({ page }) => {
     await page.locator(".clip-add").click();
     await page.getByRole("button", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
-    await page.waitForTimeout(SETTLE_MS);
+    await frameTimeline(page); // append pans to the new end; frame the chain back into view
 
     const body = page.locator(".dock .body");
     const bb = await body.boundingBox();
@@ -391,7 +406,7 @@ test("playhead parking flow", async ({ page }) => {
     await page.locator(".clip-add").click();
     await page.getByRole("button", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
-    await page.waitForTimeout(SETTLE_MS);
+    await frameTimeline(page); // append pans to the new end; frame the chain back into view
 
     const body = page.locator(".dock .body");
     const bb = await body.boundingBox();
@@ -542,7 +557,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
     await page.locator(".clip-add").click();
     await page.getByRole("button", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
-    await page.waitForTimeout(SETTLE_MS);
+    await frameTimeline(page); // append pans to the new end; frame the chain back into view
 
     const body = page.locator(".dock .body");
     const bb = await body.boundingBox();
@@ -584,8 +599,8 @@ test("mixed layout dogfood flow", async ({ page }) => {
     await page.getByRole("button", { name: "Append geometry section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1,0");
     await expect.poll(tTotal).toBeGreaterThan(0);
+    await frameTimeline(page); // append pans to the new end; frame all three clips into view
     await expect(page.locator(".clip")).toHaveCount(3);
-    await page.waitForTimeout(SETTLE_MS);
     await page.screenshot({ path: join(OUT, "dogfood-2-chain.png") });
     if (vp) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip() });
 

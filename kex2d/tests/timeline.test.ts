@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
     arcToTime,
     clampView,
+    frameAll,
     type Mapping,
     marginArc,
     MAX_PX_PER_M,
@@ -96,19 +97,33 @@ function isClean(step: number, m: number): boolean {
     return Math.abs(log - Math.round(log)) < 1e-9;
 }
 
-describe("clampView — extent + margin", () => {
+describe("clampView — pan clamp, no forced zoom", () => {
     const W = 1000;
     const T = 10;
-    test("never zooms out past the whole-track fit", () => {
-        const fitted = clampView({ pan: 0, pxPerM: 0 }, W, T);
-        const min = W / (T + marginArc(T)); // one-sided lead-out
-        expect(fitted.pxPerM).toBeCloseTo(min, 9);
-        // a request to zoom further out is held at the fit
-        expect(clampView({ pan: 0, pxPerM: min / 2 }, W, T).pxPerM).toBeCloseTo(min, 9);
+    // the x-axis is a DOCUMENT axis: clampView clamps pan but NEVER forces a zoom. it used
+    // to floor pxPerM at the whole-track fit; that made a content edit rescale the ruler.
+    test("a zoomed-OUT view is left as-is (no min-scale floor)", () => {
+        const min = W / (T + marginArc(T)); // the old fit floor
+        expect(clampView({ pan: 0, pxPerM: min / 2 }, W, T).pxPerM).toBeCloseTo(min / 2, 9);
+        expect(clampView({ pan: 0, pxPerM: 1 }, W, T).pxPerM).toBe(1);
     });
-    test("the fitted view shows exactly [0, sTotal+margin] — left anchored at the launch", () => {
+    test("zoom-in is still capped at MAX_PX_PER_M", () => {
+        expect(clampView({ pan: 0, pxPerM: MAX_PX_PER_M * 3 }, W, T).pxPerM).toBe(MAX_PX_PER_M);
+    });
+    test("shrinking the track leaves pxPerM and the visible window unchanged", () => {
+        // the no-rescale-on-shrink law: a content edit that shortens the track (here 20m →
+        // 8m, while still overflowing the zoomed-in view) never rescales the ruler and never
+        // repans the window — the author keeps looking at exactly the same [2, 7]m.
+        const v: View = { pan: 400, pxPerM: 200 }; // shows [2, 7]m
+        const long = clampView(v, W, 20);
+        const short = clampView(v, W, 8);
+        expect(short.pxPerM).toBe(long.pxPerM); // no rescale
+        expect(pxToS(short, 0)).toBeCloseTo(pxToS(long, 0), 9); // window held
+        expect(pxToS(short, W)).toBeCloseTo(pxToS(long, W), 9);
+    });
+    test("frameAll shows exactly [0, sTotal+margin] — left anchored at the launch", () => {
         const m = marginArc(T);
-        const v = clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, W, T);
+        const v = frameAll(W, T);
         expect(pxToS(v, 0)).toBeCloseTo(0, 6); // no negative distance before launch
         expect(pxToS(v, W)).toBeCloseTo(T + m, 6);
     });
@@ -128,7 +143,7 @@ describe("zoomAt — cursor-anchored", () => {
     const W = 1000;
     const T = 10;
     test("the meter under the cursor is fixed across a zoom-in (interior anchor)", () => {
-        const v = clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, W, T); // fitted
+        const v = frameAll(W, T); // fitted
         const anchor = W / 2;
         const before = pxToS(v, anchor);
         const z = zoomAt(v, anchor, 2, W, T);
@@ -136,7 +151,7 @@ describe("zoomAt — cursor-anchored", () => {
         expect(pxToS(z, anchor)).toBeCloseTo(before, 6);
     });
     test("zoom-out from a zoomed-in view returns toward the fit", () => {
-        const fitted = clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, W, T);
+        const fitted = frameAll(W, T);
         const inView = zoomAt(fitted, W / 2, 4, W, T);
         const out = zoomAt(inView, W / 2, 0.001, W, T); // clamps to min scale
         expect(out.pxPerM).toBeCloseTo(fitted.pxPerM, 6);
@@ -147,7 +162,7 @@ describe("navWindow — overview bracket fractions", () => {
     const W = 1000;
     const T = 10; // total = T + margin = 11.2
     test("the fitted view fills the whole bar", () => {
-        const fitted = clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, W, T);
+        const fitted = frameAll(W, T);
         const win = navWindow(fitted, W, T);
         expect(win.l).toBeCloseTo(0, 6);
         expect(win.r).toBeCloseTo(1, 6);

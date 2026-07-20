@@ -36,14 +36,17 @@ export const marginArc = (sTotal: number): number => Math.max(0.12 * sTotal, MIN
 const minScale = (width: number, sTotal: number): number =>
     width > 0 ? width / (sTotal + marginArc(sTotal)) : 1;
 
-/** clamp a view to the track extent: scale no smaller than fits [0, sTotal+margin],
- *  the left edge anchored at s=0. a coaster ride starts at launch, so the ruler never
- *  shows negative distance (the After Effects / NLE convention); the margin is a
- *  right-side lead-out only, so the last node isn't jammed against the edge. when the
- *  track is smaller than the view the pan range collapses to 0 → left-aligned. */
+/** clamp a view to the track extent — a PAN clamp, not a zoom clamp. the x-axis is a
+ *  document axis (the spatial address of every clip and keyframe), not an auto-fit value
+ *  axis, so a content edit that shrinks the track NEVER rescales the ruler: `pxPerM` is
+ *  only capped at `MAX_PX_PER_M` (no min-scale floor — zoom changes only by explicit
+ *  navigation). the left edge anchors at s=0 (a ride starts at launch, so the ruler shows
+ *  no negative distance — the After Effects / NLE convention) and the margin is a
+ *  right-side lead-out. a shrunk track just leaves empty ruler on the right; when the
+ *  track fits the view the pan range collapses to 0 → left-aligned. */
 export function clampView(v: View, width: number, sTotal: number): View {
     const m = marginArc(sTotal);
-    const pxPerM = Math.min(MAX_PX_PER_M, Math.max(minScale(width, sTotal), v.pxPerM));
+    const pxPerM = Math.min(MAX_PX_PER_M, v.pxPerM);
     const panMax = Math.max(0, (sTotal + m) * pxPerM - width);
     const pan = Math.min(panMax, Math.max(0, v.pan));
     return { pan, pxPerM };
@@ -64,9 +67,13 @@ export function zoomAt(
     return clampView({ pan: sAnchor * pxPerM - anchorPx, pxPerM }, width, sTotal);
 }
 
-/** the view that frames the whole track + lead-out (min scale, left-anchored at s=0). */
-export const frameAll = (width: number, sTotal: number): View =>
-    clampView({ pan: -Number.MAX_VALUE, pxPerM: 0 }, width, sTotal);
+/** the view that frames the whole track + lead-out (fit scale, left-anchored at s=0).
+ *  the one explicit-navigation path that sets the zoom to fit — used for the initial
+ *  frame and the F frame-content key, never a content edit (those pan only). */
+export const frameAll = (width: number, sTotal: number): View => ({
+    pan: 0,
+    pxPerM: Math.min(MAX_PX_PER_M, minScale(width, sTotal)),
+});
 
 /** the navigator window: the visible span [0, width] expressed as `{l, r}` fractions
  *  of the full track + lead-out (the viewport bracket over the overview). */
