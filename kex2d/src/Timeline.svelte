@@ -1584,9 +1584,10 @@ onMount(() => {
     }
 
     /* the section clip strip: one clip per section in the marker lane, kind-colored
-       (geo = cool blue, force = accent gold — matching the viewport track color and the
-       force curve). hover brightens; the selected clip fills stronger with a light
-       border, an emphasis orthogonal to the kind hue. */
+       (geo = cool blue `--geo`, force = accent gold `--accent` — the same kind-color
+       language the viewport track polyline draws, `colors.ts` on the canvas side).
+       hover brightens; the selected clip fills stronger with a light border, an
+       emphasis orthogonal to the kind hue. */
     .clip {
         pointer-events: all;
         cursor: pointer;
@@ -1596,23 +1597,23 @@ onMount(() => {
         transition: fill 120ms ease, stroke 120ms ease;
     }
     .clip.geo {
-        fill: rgba(120, 165, 214, 0.28);
+        fill: color-mix(in srgb, var(--geo) 28%, transparent);
     }
     .clip.force {
-        fill: rgba(212, 149, 96, 0.28);
+        fill: color-mix(in srgb, var(--accent) 28%, transparent);
     }
     .clip.geo:hover {
-        fill: rgba(120, 165, 214, 0.42);
+        fill: color-mix(in srgb, var(--geo) 42%, transparent);
     }
     .clip.force:hover {
-        fill: rgba(212, 149, 96, 0.42);
+        fill: color-mix(in srgb, var(--accent) 42%, transparent);
     }
     .clip.geo.sel {
-        fill: rgba(120, 165, 214, 0.55);
+        fill: color-mix(in srgb, var(--geo) 55%, transparent);
         stroke: #9cc0ea;
     }
     .clip.force.sel {
-        fill: rgba(212, 149, 96, 0.6);
+        fill: color-mix(in srgb, var(--accent) 60%, transparent);
         stroke: var(--accent);
     }
     .clip-label {
@@ -1635,7 +1636,7 @@ onMount(() => {
     }
     .clip-trim:hover,
     .clip-trim.active {
-        fill: rgba(212, 149, 96, 0.4);
+        fill: color-mix(in srgb, var(--accent) 40%, transparent);
     }
 
     /* the append tail: a small `+` past the last clip that opens a two-choice geo/force

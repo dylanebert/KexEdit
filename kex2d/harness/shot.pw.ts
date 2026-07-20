@@ -707,3 +707,49 @@ test("collocation solver lab", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
+// Drive the VIEWPORT KIND-COLOR shot (kex2d-ux-foundations stage D): a geo section
+// appended by a force section, both feasible — zooms the viewport in on the boundary
+// (real wheel zoom-at-cursor, not a fixed-scale clip) so the track polyline's per-
+// section kind color reads at pixel scale, not just the clip strip. The other flows'
+// full-page shots leave the polyline too small (and handle-occluded) to judge by eye.
+test("viewport kind color shot", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+
+    // a shaped geo lead-in, then an appended force section (default flat 1g profile —
+    // feasible, so the shot isolates kind color from the infeasible-red overlay).
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await page.evaluate(() => (window as any).__kex.append(1)); // SectionKind.Force
+    await expect.poll(sectionCount).toBe(2);
+
+    // zoom the viewport in on the chain start (a real wheel zoom-at-cursor, over the
+    // canvas — the default framing already centers the track's origin there).
+    const canvas = page.locator("#app > canvas");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    const DOCK_RESERVE = 256;
+    const cx = cb.x + cb.width / 2;
+    const cy = cb.y + (cb.height - DOCK_RESERVE) / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.wheel(0, -1800); // deltaY < 0 → zoom in
+    await page.waitForTimeout(SETTLE_MS);
+
+    await page.screenshot({
+        path: join(OUT, "kind-color.png"),
+        clip: { x: cb.x, y: cb.y, width: cb.width, height: cb.height - DOCK_RESERVE },
+    });
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+

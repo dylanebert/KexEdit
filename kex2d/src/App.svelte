@@ -348,6 +348,7 @@ $effect(() => {
         --muted: #a09890;
         --accent: #d49560;
         --accent-soft: rgba(212, 149, 96, 0.18);
+        --geo: #78a5d6; /* geo-section kind color (viewport polyline + clip strip); force's is --accent */
         --pin: #ece8e3; /* authored force-pin marker (light, not accent) */
         --neutral: #b8b1a8; /* chrome: player icon, slider fill/thumb */
         --neutral-soft: rgba(255, 255, 255, 0.1);

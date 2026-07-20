@@ -1,5 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
+import { kindColor } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { bakeOut, Handle, samples, sectionInfo, sections, Track } from "./track";
@@ -10,7 +11,6 @@ const HANDLE_R_SEL = 9;
 const ANCHOR_R = 5;
 const CART_W = 14;
 const CART_H = 7;
-const COLOR_TRACK = "#cce5ff";
 const COLOR_INFEASIBLE = "#e26d5c";
 const COLOR_ANCHOR = "#9aa0a6";
 
@@ -96,9 +96,10 @@ const TrackDrawSystem: System = {
             const out = bakeOut.get(trackEid);
             if (!s || !out || count < 2) continue;
 
-            // draw two passes: feasible polyline (solid blue) + infeasible
-            // polyline (dashed red). every edge belongs to exactly one pass
-            // — feasible-by-default unless either endpoint is below V_WARN.
+            // draw the feasible polyline (solid, per-section kind color) then the
+            // infeasible polyline (dashed red) over it. every edge belongs to exactly
+            // one of the two — feasible-by-default unless either endpoint is below
+            // V_WARN.
             if (screenXs.length < count) {
                 screenXs = new Float32Array(count);
                 screenYs = new Float32Array(count);
@@ -111,30 +112,38 @@ const TrackDrawSystem: System = {
             }
 
             ctx.save();
-            // the realized track (the baked geometry the cart rides) — solid.
+            // the realized track (the baked geometry the cart rides) — solid, one pass
+            // per section in its kind color (geo cool blue / force accent gold, the same
+            // language the clip strip uses). infeasible-red and the selected-section
+            // accent overdraw this in the passes below (priority: infeasible > selection
+            // > kind).
             ctx.lineWidth = 2;
-            ctx.strokeStyle = COLOR_TRACK;
-            ctx.beginPath();
-            let inPath = false;
-            for (let i = 0; i < count - 1; i++) {
-                const ok = out.feasible[i] === 1 && out.feasible[i + 1] === 1;
-                if (ok) {
-                    if (!inPath) {
-                        ctx.moveTo(xs[i], ys[i]);
-                        inPath = true;
+            for (const sec of sections(ecs)) {
+                const info = sectionInfo.get(sec.id);
+                if (!info) continue;
+                ctx.strokeStyle = kindColor(sec.kind);
+                ctx.beginPath();
+                let inPath = false;
+                for (let i = info.startSample; i < info.endSample; i++) {
+                    const ok = out.feasible[i] === 1 && out.feasible[i + 1] === 1;
+                    if (ok) {
+                        if (!inPath) {
+                            ctx.moveTo(xs[i], ys[i]);
+                            inPath = true;
+                        }
+                        ctx.lineTo(xs[i + 1], ys[i + 1]);
+                    } else {
+                        inPath = false;
                     }
-                    ctx.lineTo(xs[i + 1], ys[i + 1]);
-                } else {
-                    inPath = false;
                 }
+                ctx.stroke();
             }
-            ctx.stroke();
 
             // infeasible pass — dashed red
             ctx.strokeStyle = COLOR_INFEASIBLE;
             ctx.setLineDash([5, 4]);
             ctx.beginPath();
-            inPath = false;
+            let inPath = false;
             for (let i = 0; i < count - 1; i++) {
                 const bad = out.feasible[i] === 0 || out.feasible[i + 1] === 0;
                 if (bad) {
