@@ -503,7 +503,8 @@ function clipMenu(e: MouseEvent, c: Clip): void {
 }
 
 // ── the append tail: a `+` after the last clip opens a two-choice geo/force flyout —
-// the discoverable append. the a/A keys (controls.ts) stay the expert path.
+// the one append affordance (a keyboard append would return as part of the toolbar item's
+// deliberate keyboard-vocabulary pass, not a bare letter key).
 let appendOpen = $state(false);
 function toggleAppend(e: PointerEvent): void {
     if (e.button !== 0) return;
@@ -1434,8 +1435,8 @@ onMount(() => {
             {/if}
         {/if}
         <!-- the append tail: a `+` just past the last clip. clicking opens a two-choice
-             geo/force flyout; the a/A keys stay the expert path. hidden when the track
-             end scrolls off-screen (the keyboard append still works). -->
+             geo/force flyout — the one append affordance. hidden when the track end scrolls
+             off-screen. -->
         {#if eid !== null && sTotal > 0}
             {@const ax = markerX(sTotal)}
             {#if ax >= LEFT_GUT && ax <= w - 22}
@@ -1455,7 +1456,7 @@ onMount(() => {
                             <button
                                 type="button"
                                 onpointerdown={() => append(SectionKind.Geo)}
-                                title="Geo (a)"
+                                title="Append geometry section"
                                 aria-label="Append geometry section"
                             >
                                 Geo
@@ -1463,7 +1464,7 @@ onMount(() => {
                             <button
                                 type="button"
                                 onpointerdown={() => append(SectionKind.Force)}
-                                title="Force (A)"
+                                title="Append force section"
                                 aria-label="Append force section"
                             >
                                 Force

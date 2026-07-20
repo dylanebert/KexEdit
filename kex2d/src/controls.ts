@@ -11,7 +11,6 @@ import {
     toggleSnap,
 } from "./editor";
 import {
-    appendSection,
     beginMove,
     cancel,
     commit,
@@ -21,16 +20,7 @@ import {
     trimTrack,
 } from "./history";
 import { localize } from "./section";
-import {
-    Handle,
-    lastHandle,
-    reheadOnDrag,
-    samples,
-    SectionKind,
-    sectionInfo,
-    sections,
-    Track,
-} from "./track";
+import { Handle, lastHandle, reheadOnDrag, samples, sectionInfo, sections, Track } from "./track";
 import {
     camera,
     frameContent,
@@ -431,17 +421,6 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             return;
         }
 
-        // append a section at the chain end — always available (a = geo, A = force).
-        if (e.key === "a") {
-            e.preventDefault();
-            selectSection(appendSection(history, ecs, SectionKind.Geo));
-            return;
-        }
-        if (e.key === "A") {
-            e.preventDefault();
-            selectSection(appendSection(history, ecs, SectionKind.Force));
-            return;
-        }
         if (e.key === "Escape") {
             if (editor.selection !== null || editor.section !== null || editor.start) {
                 e.preventDefault();
