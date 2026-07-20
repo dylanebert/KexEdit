@@ -32,6 +32,7 @@ import {
 } from "./track";
 import {
     camera,
+    frameContent,
     panCamera,
     pointerToCanvas,
     screenToWorld,
@@ -49,6 +50,11 @@ const START_PICK_R = 12;
 // (in then out returns to the same zoom) and reads the same for wheel + trackpad pinch
 // (which arrives as ctrl+wheel, the browser convention).
 const WHEEL_ZOOM_RATE = 0.0015;
+
+// arrow-nudge steps, in screen px (converted to world through the live zoom, so the nudge
+// is a fixed on-screen distance at any zoom — the AE convention). Shift is the coarse step.
+const NUDGE_PX = 2;
+const NUDGE_PX_COARSE = 20;
 
 let dragNode: number | null = null;
 // grab offset (world): the node−under−cursor delta captured at pointerdown, so the
@@ -168,6 +174,45 @@ function neighborTargets(ecs: State, tx: ViewTx, dragEid: number): { xs: number[
     return { xs, ys };
 }
 
+/** the baked-sample range `F` frames: the selected section (or the selected node's
+ *  section) if there is a selection, else the whole track — the Blender frame-content
+ *  rule (frame the selection, or everything when nothing is selected). */
+function frameRange(ecs: State): [number, number] | null {
+    const secId =
+        editor.section ?? (editor.selection !== null ? Handle.section.get(editor.selection) : null);
+    if (secId !== null) {
+        const info = sectionInfo.get(secId);
+        if (info) return [info.startSample, info.endSample];
+    }
+    for (const trackEid of ecs.query([Track])) {
+        const count = Track.count.get(trackEid);
+        if (count >= 1) return [0, count - 1];
+    }
+    return null;
+}
+
+/** frame the viewport camera to the selection (or the whole track) — the `F` key. */
+function frameViewport(ecs: State, canvas: HTMLCanvasElement): void {
+    const s = trackSamples(ecs);
+    const range = frameRange(ecs);
+    if (!s || !range) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = range[0]; i <= range[1]; i++) {
+        if (s.posX[i] < minX) minX = s.posX[i];
+        if (s.posX[i] > maxX) maxX = s.posX[i];
+        if (s.posY[i] < minY) minY = s.posY[i];
+        if (s.posY[i] > maxY) maxY = s.posY[i];
+    }
+    if (!Number.isFinite(minX)) return;
+    Object.assign(
+        camera,
+        frameContent(canvas.clientWidth, canvas.clientHeight, { minX, minY, maxX, maxY }),
+    );
+}
+
 /** write a dragged node's section-local position from a world target — `localize`
  *  against the node's section entry (identity for the first section). */
 function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
@@ -202,6 +247,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             panning = true;
             panX = x;
             panY = y;
+            canvas.style.cursor = "grabbing"; // grab affordance while panning (Blender/AE)
             canvas.setPointerCapture(e.pointerId);
             return;
         }
@@ -315,6 +361,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     const endDrag = (e: PointerEvent): void => {
         if (panning) {
             panning = false;
+            canvas.style.cursor = "";
             if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
             return;
         }
@@ -329,6 +376,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     const cancelDrag = (e: PointerEvent): void => {
         if (panning) {
             panning = false;
+            canvas.style.cursor = "";
             if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
             return;
         }
@@ -350,6 +398,38 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey) {
             e.preventDefault();
             toggleSnap();
+            return;
+        }
+
+        // frame content (Unity/Blender `F`): fit the selection, or the whole track when
+        // nothing is selected. guard Ctrl/Cmd+F (the browser find reflex) and mid-drag.
+        if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            if (dragNode === null && !panning) frameViewport(ecs, canvas);
+            return;
+        }
+
+        // arrow-nudge the selected node (AE): a fixed on-screen step in world space, Shift
+        // for the coarse step. one press = one undo entry (holding auto-repeats to many).
+        if (
+            editor.selection !== null &&
+            (e.key === "ArrowLeft" ||
+                e.key === "ArrowRight" ||
+                e.key === "ArrowUp" ||
+                e.key === "ArrowDown")
+        ) {
+            const eid = editor.selection;
+            const s = trackSamples(ecs);
+            if (dragNode !== null || panning || Handle.order.get(eid) === 0 || !s) return;
+            if (!(camera.zoom > 0)) return; // pre-framing: no scale to convert px through
+            e.preventDefault();
+            const d = (e.shiftKey ? NUDGE_PX_COARSE : NUDGE_PX) / camera.zoom;
+            const w = nodeWorld(s, eid);
+            const x = w.x + (e.key === "ArrowLeft" ? -d : e.key === "ArrowRight" ? d : 0);
+            const y = w.y + (e.key === "ArrowUp" ? d : e.key === "ArrowDown" ? -d : 0); // world Y-up
+            beginMove(ecs, Handle.section.get(eid));
+            dragTo(ecs, eid, x, y);
+            commit(history);
             return;
         }
 
@@ -414,6 +494,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         canvas.removeEventListener("pointercancel", cancelDrag);
         canvas.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKeyDown);
+        canvas.style.cursor = ""; // detaching mid-pan must not leave a stuck grabbing cursor
         snapGuides.x = null; // detaching mid-drag must not leave a stuck guide for the remount
         snapGuides.y = null;
     };

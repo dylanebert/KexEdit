@@ -3,6 +3,7 @@ import {
     type Camera,
     cameraTx,
     defaultCamera,
+    frameContent,
     MAX_ZOOM,
     MIN_ZOOM,
     panCamera,
@@ -103,6 +104,39 @@ describe("zoomAt — zoom limits", () => {
         const now = worldAt(after, px, py);
         expect(now.x).toBeCloseTo(before.x, TOL);
         expect(now.y).toBeCloseTo(before.y, TOL);
+    });
+});
+
+describe("frameContent — fit a box in the region above the dock", () => {
+    const W = 1000;
+    const H = 800;
+    const availH = H - 256; // the dock reserve, the region frameContent centers within
+
+    test("centers the box in the region above the dock", () => {
+        const cam = frameContent(W, H, { minX: 5, minY: 2, maxX: 15, maxY: 8 });
+        // the box center (10, 5) lands at the region center (width/2, availH/2).
+        const c = worldAt(cam, W / 2, availH / 2);
+        expect(c.x).toBeCloseTo(10, TOL);
+        expect(c.y).toBeCloseTo(5, TOL);
+    });
+
+    test("fits the box inside the region with symmetric padding", () => {
+        const cam = frameContent(W, H, { minX: 0, minY: 0, maxX: 100, maxY: 0 });
+        const tx = cameraTx(cam);
+        const left = tx.ox + 0 * tx.sx;
+        const right = tx.ox + 100 * tx.sx;
+        // both ends land inside the width, with a margin (the pad) on each side.
+        expect(left).toBeGreaterThan(0);
+        expect(right).toBeLessThan(W);
+        expect(left).toBeCloseTo(W - right, TOL); // symmetric about the center
+    });
+
+    test("a degenerate point clamps to MAX_ZOOM and stays centered", () => {
+        const cam = frameContent(2000, 2000, { minX: 10, minY: 5, maxX: 10, maxY: 5 });
+        expect(cam.zoom).toBe(MAX_ZOOM);
+        const c = worldAt(cam, 2000 / 2, (2000 - 256) / 2);
+        expect(c.x).toBeCloseTo(10, TOL);
+        expect(c.y).toBeCloseTo(5, TOL);
     });
 });
 

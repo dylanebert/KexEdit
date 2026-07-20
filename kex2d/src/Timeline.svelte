@@ -80,6 +80,13 @@ const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
 const FHIT_R = 12; // px; the invisible grab/hover radius around a force point (fat pick zone)
 const TIP_HALF = 52; // px; half the point popover's width — clamps it inside the chart
 const TIP_FLIP = 64; // px; a point nearer than this to the chart top flips the popover below
+// arrow-nudge steps for the selected force point (AE): s in meters, g in g, Shift coarse.
+// fixed-domain steps (the timeline authors in the invariant distance domain), rounded to
+// the field's displayed precision so a nudge lands clean.
+const NUDGE_S = 0.1;
+const NUDGE_S_COARSE = 1;
+const NUDGE_G = 0.05;
+const NUDGE_G_COARSE = 0.5;
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -723,7 +730,7 @@ function cancelForceDrag(): void {
 // ── middle-button drag pans the view. intercepted at the host's capture phase so it
 // fires before the pointer-events:all SVG rects; the ruler handler also routes a
 // middle press here as a backstop.
-let panning = false;
+let panning = $state(false); // reactive so the body shows a grabbing cursor while panning
 let panX0 = 0;
 let pan0 = 0;
 function panDown(e: PointerEvent): void {
@@ -1096,13 +1103,22 @@ onMount(() => {
             togglePlay();
             return;
         }
+        // frame content (Unity/Blender `F`): the timeline always frames the whole track
+        // (frameAll), the x-mirror of the viewport's F. guard Ctrl/Cmd+F (browser find).
+        if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey) {
+            if (chartW > 0 && sTotal > 0) {
+                e.preventDefault();
+                view = frameAll(chartW, sTotal);
+            }
+            return;
+        }
         if (appendOpen && e.key === "Escape") {
             e.preventDefault();
             appendOpen = false;
             return;
         }
-        // force-point select/delete — guarded on a live force selection so geo-node
-        // Esc/Del (controls.ts) stay unambiguous (the selections are mutually exclusive).
+        // force-point select/delete/nudge — guarded on a live force selection so geo-node
+        // Esc/Del/arrows (controls.ts) stay unambiguous (the selections are mutually exclusive).
         if (editor.force !== null) {
             if (e.key === "Escape") {
                 e.preventDefault();
@@ -1110,6 +1126,26 @@ onMount(() => {
             } else if (e.key === "Delete" || e.key === "Backspace") {
                 e.preventDefault();
                 deleteSelectedForce();
+            } else if (
+                e.key === "ArrowLeft" ||
+                e.key === "ArrowRight" ||
+                e.key === "ArrowUp" ||
+                e.key === "ArrowDown"
+            ) {
+                // arrow-nudge the point in its authoring domain (s = distance, g = force),
+                // Shift coarse; one press = one undo entry, routed through the setter.
+                const p = selPoint;
+                if (p === null) return;
+                e.preventDefault();
+                const ds = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
+                const dg = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
+                let s = p.s + (e.key === "ArrowLeft" ? -ds : e.key === "ArrowRight" ? ds : 0);
+                let g = p.g + (e.key === "ArrowUp" ? dg : e.key === "ArrowDown" ? -dg : 0);
+                s = Math.round(clamp(s, 0, p.len) * 10) / 10;
+                g = Math.round(g * 100) / 100;
+                beginForceMove(ecs, p.id);
+                setForcePoint(ecs, p.id, s, g);
+                commit(history);
             }
         }
     };
@@ -1131,6 +1167,7 @@ onMount(() => {
 <aside class="dock">
     <div
         class="body"
+        class:panning
         bind:this={host}
         bind:clientWidth={w}
         bind:clientHeight={h}
@@ -1405,6 +1442,7 @@ onMount(() => {
                             <button
                                 type="button"
                                 onpointerdown={() => append(SectionKind.Geo)}
+                                title="Geo (a)"
                                 aria-label="Append geometry section"
                             >
                                 Geo
@@ -1412,6 +1450,7 @@ onMount(() => {
                             <button
                                 type="button"
                                 onpointerdown={() => append(SectionKind.Force)}
+                                title="Force (A)"
                                 aria-label="Append force section"
                             >
                                 Force
@@ -1603,6 +1642,12 @@ onMount(() => {
         position: relative;
         flex: 1;
         min-height: 0;
+    }
+    /* grab affordance while middle-drag panning (Blender/AE) — overrides the ruler/chart
+       default cursor on the whole body for the duration of the pan. */
+    .body.panning,
+    .body.panning * {
+        cursor: grabbing;
     }
 
     /* time navigator: a preview-minimap overview strip below the chart. dims only

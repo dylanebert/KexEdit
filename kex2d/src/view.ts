@@ -16,6 +16,10 @@ const DOCK_RESERVE = 256;
  *  unclamped — but the scale is bounded so the track can't blow up or vanish. */
 export const MIN_ZOOM = 0.05;
 export const MAX_ZOOM = 200;
+/** world-meter breathing room `frameContent` leaves around framed geometry, floored so a
+ *  short section (or a single point) still frames with margin instead of filling edge to
+ *  edge. */
+const MIN_FRAME_PAD = 2;
 
 /** the viewport camera: a uniform 2D affine over world space. `zoom` is px per world
  *  meter (uniform, no rotation); `ox`/`oy` are the screen px the world origin lands at.
@@ -41,6 +45,31 @@ const clampZoom = (z: number): number => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z
 export function defaultCamera(width: number, height: number): Camera {
     const zoom = width > 0 ? width / (2 * VIEW_HALF_X) : 1;
     return { zoom: clampZoom(zoom), ox: width / 2, oy: (height - DOCK_RESERVE) / 2 };
+}
+
+/** a world-space axis-aligned box (the extent of framed content). */
+export interface Box {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+}
+
+/** frame the camera so a world box fits the region above the dock, centered — the
+ *  `F` frame-content target (Unity/Blender). the box grows by a proportional pad (floored
+ *  at `MIN_FRAME_PAD`) so content never touches the edges and a degenerate point still
+ *  frames sanely; the fit zoom is clamped to the zoom limits. */
+export function frameContent(width: number, height: number, box: Box): Camera {
+    const availW = Math.max(1, width);
+    const availH = Math.max(1, height - DOCK_RESERVE);
+    const ex = box.maxX - box.minX;
+    const ey = box.maxY - box.minY;
+    const bw = ex + 2 * Math.max(ex * 0.1, MIN_FRAME_PAD);
+    const bh = ey + 2 * Math.max(ey * 0.1, MIN_FRAME_PAD);
+    const zoom = clampZoom(Math.min(availW / bw, availH / bh));
+    const cx = (box.minX + box.maxX) / 2;
+    const cy = (box.minY + box.maxY) / 2;
+    return { zoom, ox: availW / 2 - cx * zoom, oy: availH / 2 + cy * zoom };
 }
 
 /** pan by a screen-space delta (drag): the world slides under the cursor. */
