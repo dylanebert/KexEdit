@@ -80,6 +80,13 @@ copies this shape:
   AE/Figma temporary bypass — XOR with the toggle, not a plain disable).
 - A pure per-axis resolver in screen px; nearest target within threshold wins. The threshold is a
   design constant (kex2d `SNAP_PX` = 8), zoom-independent, never a tuned tolerance.
+- **Targets are content landmarks or the domain's semantic quantum — never display artifacts.**
+  Landmarks: other keyframes, section boundaries, the playhead, physical baselines (1g). A raster
+  earns targethood only when the domain has a real quantum (video frames, musical beats — the
+  Blender/DAW case); kex2d's arclength axis has none, so it's the AE/Premiere case: landmarks only.
+  A zoom-dependent ruler tick or a nice-number gridline is display, not content. If nice-value
+  targeting is ever wanted, it's a separate explicitly-enabled grid (the Figma split), never folded
+  into the default magnet.
 - **Targets must be stable under the gesture and reachable.** A gesture never snaps to geometry it
   is itself moving (the extent-trim self-snap lesson) or to a target the drag can't reach.
 - Snap never fires on a Shift-locked axis — the constraint owns it.
