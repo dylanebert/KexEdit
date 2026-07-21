@@ -94,26 +94,42 @@ kind- and count-agnostic (they read the flat SoA).
 
 Free-drag authoring, mouse-driven. The **control scheme** and the **representation** are separate:
 the controls place free node positions, dragged directly; the canonical representation is the F_n
-curve. Each node carries a **section-local** position (dragged) **and a stored local heading θ**, never
-directly authored — derived from position by the circular-arc reflection (below). **Node 0 is the
-section entry** — pinned at the local origin `{0,0,0}`, not draggable (the chain seeds it from the
-prior section's exit, or `START` for the first). Its world pose = `place(entry, {0,0,0})` = the
-entry; the shape hangs off it in the entry frame.
+curve. Each node carries a **section-local** position (dragged) and a tangent — **live-inferred**
+(`Auto`, the default: no stored vectors, direction from `Handle.theta` via the arc rule) or
+**explicit** (stored `in`/`out` vectors, the summoned inner layer, below). **Node 0 is the section
+entry** — pinned at the local origin `{0,0,0}`, not draggable (the chain seeds it from the prior
+section's exit, or `START` for the first). Its world pose = `place(entry, {0,0,0})` = the entry; the
+shape hangs off it in the entry frame.
 
-- **Interpolate.** `sampleChain` (`spline.ts`) samples a cubic Hermite curve through every node, the
-  tangent **direction** read from each node's stored heading and the tangent **length** scaled by the
-  live chord (`|T| = chord·sec²(φ/2)`, the cubic best-fit to a circular arc). Strict local support: a
-  drag moves **only the two segments that share the dragged node**. The **last** (heading) node
-  carries a standing invariant — its angle is always the reflection of its predecessor's heading — so
-  its segment stays a clean arc and its angle never goes stale. It re-derives (`headLast`) whenever
-  the tail changes. The **first** node is a fixed flat anchor and **interior** nodes keep their
-  heading frozen (the arc contract can't hold on both of an interior node's segments at once, so a
-  stable heading beats one that thrashes). A frozen interior heading dragged far off its chord
-  bulges — the accepted misshaping.
+- **Interpolate.** `sampleChain` (`spline.ts`) samples a cubic Hermite curve through every node —
+  `handle()` reads a node's tangent: `Auto` via the arc rule (direction `Handle.theta`, length
+  scaled by the live chord, `|T| = chord·sec²(φ/2)`, the cubic best-fit to a circular arc); explicit
+  via its stored vector, held absolute under a node drag (the Figma/Blender bezier convention — no
+  chord rescaling). Strict local support either way: a drag or a tangent edit moves **only the two
+  segments that share the node**.
+- **Only the growth tip stays live.** The **last** node is the one place arc inference is real — its
+  heading tracks its predecessor's exit (`headLast`, the reflection `2·chord − prev`), re-deriving
+  whenever the tail changes, so a fresh append or drag never goes stale. Node 0 and **interior**
+  `Auto` nodes keep a frozen heading (the arc contract can't hold on both of an interior node's
+  segments at once, so a stable heading beats one that thrashes — dragged far off its chord it
+  bulges, the accepted misshaping). Appending past the tip **stamps** its current inferred vectors as
+  authored `Aligned` (`stampTip`, byte-continuous — it writes exactly what the arc rule was
+  producing) — from then on it's concrete bezier, no hidden liveness.
+- **Explicit tangent modes** (`TangentMode`, Figma's mirroring taxonomy): `Mirror` (angle + length
+  mirrored, one authored handle) | `Aligned` (angle mirrored, per-side length) | `Free` (independent
+  — a corner, C0 kink, becomes expressible). `setTangent`/`handleTangent` (`track.ts`) are the
+  read/write surface. **Reset** (`resetTangent`) re-infers from the current chords — an interior node
+  re-stamps `Aligned`, the growth tip clears back to absent (live `Auto` resumes). Node 0 (the entry
+  anchor) is never frozen — `stampTip` and `resetTangent` both skip it.
+- **Summoned, not default.** Handles render only in **tangent-edit mode**, entered by
+  double-clicking a node (`editor.tangentEdit`, layered on node selection — Esc or click-away exits);
+  mere selection shows nothing (`editor-ui.md`'s layered-expressiveness contract — the inner layer is
+  reachable, never ambient). A handle drag snaps to the angle raster only (`tangents.ts` + the polar
+  magnet, length snap dropped); mode + Reset live behind the radial menu's dots submenu (`menu.ts`).
 - **Recover force.** `forces` (`bake.ts`) reads the sampled positions → per-sample tangent θ (the
   curve's local tangent, bisector of adjacent chords) → v (energy) → `F_n = κ·v²/g + cos θ`, the
   physical normal force a cart riding the curve feels. This per-sample θ is recovered from the
-  geometry, distinct from the node headings that shape the curve.
+  geometry, distinct from the node tangents that shape the curve.
 
 The baked force curve is canonical and terminal — the timeline shows exactly what `forces` recovers,
 no smoothing or solve on top. The cart rides the baked geometry directly. Lossy bake
@@ -238,7 +254,13 @@ editor-ui invariant-domain rule).
 - `spline.ts` — Hermite interpolation (no shallot import). `sampleChain` (nodes with stored headings
   → positions + per-edge chord `dsArr` + node `offsets`), split into `chainCounts` (adaptive
   per-segment edge-count rule) + `sampleAt` (sample at *given* counts — freezes the sampling
-  topology). `reflect` (circular-arc exit heading `2·chord − prev`), `MAX_U_PER_EDGE`.
+  topology). `reflect` (circular-arc exit heading `2·chord − prev`), `MAX_U_PER_EDGE`. `handle()` is
+  the one seam where a node's tangent enters the curve — `Auto` (the arc rule) or `Node.tangent`
+  (`TangentMode.Mirror`/`Aligned`/`Free`, an explicit `Tangent`'s stored `in`/`out` vectors) — so
+  `Auto` stays byte-identical while an explicit node substitutes its own vector there.
+  `autoTangent` exposes the arc-rule vector for the explicit-summon seed; `handleTip`/`editTangent`
+  are the handle-drag geometry's forward/inverse (`tangents.ts`'s seam); `alignTangent`/
+  `mirrorTangent` re-collinearize a tangent on a mode switch.
 - `bake.ts` — `forces` (the bake path: positions → smooth tangent θ → v → physical `F_n`,
   per-edge ds). `invertRange`/`invert` (the exact reflection inverse, round-trip validation only —
   see Hard gotchas), `replay` (forward-integrate F_n back to positions). `V_WARN` + re-exports
@@ -270,7 +292,10 @@ editor-ui invariant-domain rule).
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
   `sections`/`sectionAt`/`createSection`. Coordinate lens (section-local `s` ↔ track-global `d`):
   `sectionSpans` (the one offset table) + `toGlobal`/`toLocal` — the single seam every d readout derives from. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
-  `sectionHandles`/`lastHandle`/`handleAt`/`spawnNode`/`nodeSnapshot`/`restoreNodes`/`sameNodes`. Force:
+  `sectionHandles`/`lastHandle`/`handleAt`/`spawnNode`/`nodeSnapshot`/`restoreNodes`/`sameNodes`.
+  Tangent: `handleTangent`/`setTangent` (read/write the explicit `Tangent`, `undefined` = `Auto`),
+  `seedTangent` (the arc-rule vector at a node, for the explicit-summon seed and `Reset`),
+  `stampTip`/`resetTangent` (stage 5's freeze/re-infer, both skip node 0). Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
   `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`,
   `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection`, `snapshotSection`/`restoreSection`
@@ -283,8 +308,14 @@ editor-ui invariant-domain rule).
   the cart rides in time, the chart is distance).
 - `editor.ts` — ephemeral UI state: `selection` (node), `force` (point id), `section` (id), `start`
   (the track START anchor / v0 handle) + their setters. The four are **mutually exclusive** (selecting
-  one clears the others). Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default
-  on, `S` toggles, Ctrl/Cmd bypasses per-gesture). Plain singleton, read by Svelte via the per-RAF tick.
+  one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
+  fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
+  handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Also the
+  `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
+  bypasses per-gesture) and `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
+  surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
+  viewport-nudge vs timeline-playhead double-fire. Plain singleton, read by Svelte via the per-RAF
+  tick.
 - `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
   `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).
@@ -299,14 +330,29 @@ editor-ui invariant-domain rule).
   `localize`s the pointer into the section frame then `reheadOnDrag`. Right-click a section span opens
   the context menu (`openContext`). Keys: `Enter` extend / `Del` trim (node end); `Del` delete
   (selected section). All edits route through `history`.
+- `magnet.ts` — the **polar magnet**: a pure, device-free resolver for a viewport node/tangent drag.
+  Target families compete in one screen-px pool (`SNAP_PX` precedent): the cartesian
+  neighbor-alignment lines, plus — the shaping viewport's earned raster exception (`editor-ui.md`)
+  — the chord-angle raster (`ANGLE_STEP` = 15°) and chord-length raster (`LENGTH_STEP` = 1 m)
+  relative to the previous node, and continuation/reflection angle landmarks. Nearest-in-px wins; a
+  sufficiently-orthogonal second target co-fires (`COMBINE_DOT`); shift-lock skips parallel
+  families. `controls.ts` consumes it for the node drag; a tangent-handle drag reuses it with length
+  snapping dropped (`pxPerMeter: 0`). No shallot, no DOM — unit-tested in `magnet.test.ts`.
+- `tangents.ts` — the tangent-handle geometry render and controls share: where a node's in/out
+  handles land in screen px (`tangentHandles` — an explicit node's stored vectors, or a selected
+  `Auto` node's live arc-rule ghost) and the inverse a handle drag feeds `spline.editTangent`
+  (`localTipAt`, the exact inverse of the entry-frame rotation `tangentHandles` applies). A handle
+  shows only for a side that drives a segment (no out-handle at a chain end, no handle on node 0) —
+  one home for the section-frame convention so render and controls can't drift apart.
 - `timeline.ts` — pure transform + tick math for the force-curve timeline (no Svelte/DOM/track
   state). The chart's x-axis is **distance** (meters). `View`, `sToPx`/`pxToS`, `zoomAt`, `clampView`,
   `frameAll`, `niceStep`, `ticks`, the navigator math (`navWindow`/`navDragView`/`marginArc`), and
   `Mapping` + `timeToArc`/`arcToTime` (the arc↔time table `cart.trackMapping` builds). `yFit`/`YFit`
-  (auto-fit g-range) + the edge-scroll grow-to-follow: `yGrow` (value drag) and `xGrow` (pan). Also the
-  home of the **shared 1D view math the viewport consumes** — `snap` (the AE magnet resolver) and
-  `niceStep` (the 1-2-5 grid step) are imported by `controls.ts` and `render.ts` too, so the timeline and
-  the 2D viewport share one axis vocabulary. Unit-tested in `timeline.test.ts`.
+  (auto-fit g-range) + the edge-scroll grow-to-follow: `yGrow` (value drag) and `xGrow` (pan). `snap`
+  is the timeline's own axis-aligned resolver for a force-keyframe drag (`Timeline.svelte`); the 2D
+  viewport's node/tangent drag has its own polar resolver (`magnet.ts`) — `niceStep` (the 1-2-5 grid
+  step) is the piece still shared between them, imported by `render.ts` for the viewport grid.
+  Unit-tested in `timeline.test.ts`.
 - `Timeline.svelte` — the always-present bottom dock: the **F_n force-curve readout + scrub +
   zoom/pan navigation**, the floating **media player**, and the **section clip strip** in the marker
   lane (one clip per section, kind-colored/labeled; click selects `editor.section`; a `+` tail flyout
@@ -319,10 +365,18 @@ editor-ui invariant-domain rule).
   keyframe drag and the extent trim freeze the view (`yGrow`/`xGrow` edge-scroll past the chart edge,
   resume on release). Conventions: `kexedit/.claude/rules/editor-ui.md`. Takes `ecs`; routes edits
   through `history`.
+- `menu.ts` — `MenuItem`: the shared row-language a menu renders as pure data — label, `checked` (a
+  selectable row's accent-lit state, e.g. the current tangent mode), `enabled` (derived from editor
+  state, a disabled row dimmed + inert), `action`. One model for the section context menu
+  (`App.svelte`), the timeline's append flyout (`Timeline.svelte`), and the tangent-mode dots
+  submenu (`App.svelte`) — enablement is a per-item property, not a per-menu special case.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), section-entry **anchor diamonds**, the
   selected-section accent overlay, the node handles (selected/orphan/infeasible), the cart, the
-  **Timeline** dock, and the radial extend/delete buttons around the selected chain end.
+  **Timeline** dock, and the radial extend/delete buttons around the selected chain end. In
+  tangent-edit mode (`editor.tangentEdit`): `TangentDrawSystem` (`render.ts`) draws the edited
+  node's handles (solid = explicit, hollow = `Auto` ghost), and a dots (…) button on the radial
+  cluster opens the tangent-mode submenu (Mirror | Aligned | Free + Reset, a `menu.ts` `MenuItem[]`).
 - `main.ts` — boots `run({ defaults: false })` + mounts App. The DEV-only `__kex` hook exposes
   geo state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`), force state
   (`kind`/`forceCount`/`forces`/`convert`/`placeForce`/`seedForceBump`), and the multi-section ops
@@ -347,6 +401,10 @@ pickable.
 - **Extend / Delete** (radial buttons around the selected chain end): Extend (＋, along the heading,
   also `Enter`) lays a node continuing the last edge by `EXTEND_DIST`; Delete (🗑, also `Del`) removes
   the trailing node, never below the two nodes a section needs, re-heading the promoted tip.
+- **Tangent edit** (double-click a node): summons its in/out handles (hidden on mere selection),
+  dragged directly and snapped to the angle raster; mode (Mirror/Aligned/Free) + Reset live behind
+  the radial cluster's dots submenu. Esc or clicking away exits back to plain selection. Model +
+  substrate: `Model (geo authoring)` above.
 
 **Force authoring** (on the timeline chart, whole-track) — the chart draws every force section's
 points at once. Double-click over a force section's arc places a point at the authored profile's
@@ -400,6 +458,13 @@ via a whole-track snapshot pair (byte-identical).
   flat anchor *is* the entry (and in the substrate, the section entry); (c) switch `sampleChain` back
   to inferring tangents from neighbor positions each bake (Catmull-Rom) — that breaks two-segment
   locality.
+- **Stored `Handle.theta` ≠ the recovered curve heading once a node carries an explicit tangent.**
+  `Handle.theta` only drives the `Auto` arc rule; an explicit tangent's own vector governs the curve
+  instead, and nothing re-derives `theta` to track it. An op that needs the curve's actual
+  *direction* — the append/reflect seed, a split/join section boundary — must read the real exit
+  (`exitHeading` for append/extend, `headExit` for split/join: the section's recovered geometric
+  exit, `evalGeo(...).exit`), never `Handle.theta`, or it re-frames the downstream shape by however
+  far the two have drifted apart (`tests/ops.test.ts`'s split/join world-curve pins guard this).
 - **`sampleChain` per-edge ds is the exact chord.** `dsArr[i] = |P_{i+1} − P_i|`. A near-coincident
   segment or `MAX_SAMPLES` truncation commits the prefix + orphans trailing nodes.
 - **A force section's exit is the geometry-RECOVERED state, not the integrator's.** `evalForce`
