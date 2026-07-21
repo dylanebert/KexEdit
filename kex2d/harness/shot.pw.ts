@@ -31,6 +31,38 @@ async function frameTimeline(page: Page): Promise<void> {
     await page.waitForTimeout(SETTLE_MS);
 }
 
+// Pointer-true click on a context-submenu flyout item: really HOVER the parent row to open the
+// flyout, then click the target item at its MEASURED CENTER — but first assert
+// document.elementFromPoint there actually resolves to that item. A Playwright selector
+// .click() fires the handler on an element even when an ancestor's overflow clips it out of
+// paint AND hit-testing — which is exactly how the submenu-clip bug shipped invisible (the
+// flyout was laid out at left:100% but unreachable by a real pointer). A coordinate click gated
+// on elementFromPoint is what a human pointer can actually reach, so this flow is the permanent
+// regression net for the whole context-submenu clip class.
+async function clickFlyout(page: Page, menu: string, parent: string, item: string): Promise<void> {
+    const m = page.locator(menu);
+    // exact match: the parent "Tangents" would otherwise substring-collide with "Reset tangents".
+    await m.getByRole("menuitem", { name: parent, exact: true }).hover(); // real hover opens the flyout
+    const target = m.getByRole("menuitem", { name: item });
+    await expect(target).toBeVisible();
+    const b = await target.boundingBox();
+    if (!b) throw new Error(`flyout item "${item}" not laid out`);
+    const x = b.x + b.width / 2;
+    const y = b.y + b.height / 2;
+    const reachable = await page.evaluate(
+        (p: { x: number; y: number; label: string }) => {
+            const el = document.elementFromPoint(p.x, p.y);
+            return el?.closest(".menu-item")?.textContent?.trim() === p.label;
+        },
+        { x, y, label: item },
+    );
+    expect(
+        reachable,
+        `flyout item "${item}" must be hit-testable at its own center (not clipped out of paint)`,
+    ).toBe(true);
+    await page.mouse.click(x, y); // coordinate click a real pointer can land
+}
+
 test("geo authoring flow", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -97,7 +129,9 @@ test("geo authoring flow", async ({ page }) => {
 // The summon is a real canvas double-click, the node menu a real canvas right-click (both located
 // via __kex.nodeAt); the handle drag is a real canvas pointer drag located through
 // __kex.tangentHandles (canvas-drawn handles carry no DOM box). Handle drags no longer snap, so
-// the drag lands where the pointer goes.
+// the drag lands where the pointer goes. The submenu items (Free, Reset) are clicked pointer-true
+// via clickFlyout — a coordinate click gated on elementFromPoint reachability, the regression net
+// for the context-submenu clip class (a selector .click() would fire on a clipped, unreachable row).
 test("tangent edit flow", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -156,10 +190,11 @@ test("tangent edit flow", async ({ page }) => {
     // Tangents submenu → set FREE (a corner becomes expressible). ──
     await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
     await expect(page.locator(".nodemenu")).toBeVisible();
-    await page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents" }).click();
+    await page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents", exact: true }).hover();
+    await expect(page.locator(".nodemenu").getByRole("menuitem", { name: "Free" })).toBeVisible();
     await page.waitForTimeout(300); // the menu + submenu fade-in, for the shot
     await page.screenshot({ path: join(OUT, "tangent-1b-menu.png") });
-    await page.locator(".nodemenu").getByRole("menuitem", { name: "Free" }).click();
+    await clickFlyout(page, ".nodemenu", "Tangents", "Free");
     await expect(page.locator(".nodemenu")).toHaveCount(0); // picking an item closes the menu
     const summoned = await tangent();
     expect(summoned).not.toBeNull();
@@ -198,8 +233,7 @@ test("tangent edit flow", async ({ page }) => {
     // resumes), so it carries no stored tangent again. available here (a tangent exists to clear). ──
     await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
     await expect(page.locator(".nodemenu")).toBeVisible();
-    await page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents" }).click();
-    await page.locator(".nodemenu").getByRole("menuitem", { name: "Reset tangents" }).click();
+    await clickFlyout(page, ".nodemenu", "Tangents", "Reset tangents");
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);

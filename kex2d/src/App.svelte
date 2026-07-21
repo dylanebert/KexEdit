@@ -867,7 +867,10 @@ $effect(() => {
     /* the shared menu language (root ui.md one-language): the append flyout's standard menu
        look, lifted to a global class so the section context menu and the flyout are two
        instances of ONE style — opaque surface, quiet muted rows, an accent-soft hover wash.
-       each instance adds only its own position, width, and entrance animation. */
+       each instance adds only its own position, width, and entrance animation.
+       `overflow: visible` so a submenu flyout (a child positioned at left:100%) can escape the
+       box; the rounded-corner row-wash clip is restored on the inner `.menu-rows` wrapper
+       (Menu.svelte), which the flyout is hoisted out of. */
     :global(.menu) {
         display: flex;
         flex-direction: column;
@@ -875,7 +878,7 @@ $effect(() => {
         border: 1px solid var(--border);
         border-radius: 5px;
         box-shadow: var(--shadow);
-        overflow: hidden;
+        overflow: visible;
         font-family: "Outfit", system-ui, sans-serif;
         font-size: 11px;
         user-select: none;
