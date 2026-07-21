@@ -316,6 +316,7 @@ interface NodeTick {
     eid: number;
     px: number; // chart-local px (pre-LEFT_GUT), like markerX's internal
     sel: boolean;
+    sec: number; // owning section id — the clips whose label fades when it carries ticks
 }
 const nodeTicks = $derived.by((): NodeTick[] => {
     void tick;
@@ -333,11 +334,15 @@ const nodeTicks = $derived.by((): NodeTick[] => {
             const heid = handles[order];
             if (heid === undefined) continue;
             const px = nodeTickPx(clamped, c.s0, out.ds, info.startSample, Handle.sample.get(heid));
-            res.push({ eid: heid, px, sel: heid === sel });
+            res.push({ eid: heid, px, sel: heid === sel, sec: c.id });
         }
     }
     return res;
 });
+// the geo sections currently showing interior ticks — their "Geo" word label fades so the
+// ticks (content, drawn over it) read cleanly instead of colliding with the centered text
+// (stage-2 label/tick note): once a section is shaped, its ticks carry its identity.
+const tickedSections = $derived(new Set(nodeTicks.map((t) => t.sec)));
 // every force section's points, flattened across the whole track — each carries its
 // section's cumulative start (`startS`) and authored extent (`len`) so the chart draws,
 // picks, and clamps it without a per-section "active" selection.
@@ -364,6 +369,15 @@ const forcePts = $derived.by((): ForcePt[] => {
 const selSection = $derived.by((): number | null => {
     void tick;
     return editor.section;
+});
+// the geo section that OWNS the selected node — its clip gets a quiet context wash (which
+// clip the selection lives in). node and section selection are mutually exclusive
+// (editor.ts), so a washed clip is never also the selected clip; the wash stays the quieter
+// register — the node is the accent, the clip is context.
+const washSection = $derived.by((): number | null => {
+    void tick;
+    const sel = editor.selection;
+    return sel === null ? null : Handle.section.get(sel);
 });
 // the selected point's id (read through the per-RAF tick; editor is plain state).
 const selForce = $derived.by((): number | null => {
@@ -1399,6 +1413,7 @@ onMount(() => {
                             <rect
                                 class="clip {isF ? 'force' : 'geo'}"
                                 class:sel={c.id === selSection}
+                                class:wash={c.id === washSection}
                                 x={x0 + 0.5}
                                 y={RULER_H + CLIP_PAD}
                                 width={Math.max(1, cw - 1)}
@@ -1411,7 +1426,12 @@ onMount(() => {
                                 aria-label="{isF ? 'Force' : 'Geo'} section"
                             />
                             {#if cw >= 40}
-                                <text class="clip-label" x={(x0 + x1) / 2} y={RULER_H + GAP_H / 2}>
+                                <text
+                                    class="clip-label"
+                                    class:dim={!isF && tickedSections.has(c.id)}
+                                    x={(x0 + x1) / 2}
+                                    y={RULER_H + GAP_H / 2}
+                                >
                                     {isF ? "Force" : "Geo"}
                                 </text>
                             {/if}
@@ -1573,7 +1593,27 @@ onMount(() => {
                         title="Append section"
                         aria-label="Append section"
                     >
-                        +
+                        <!-- add section: a clip-shaped rounded rect (the marker-lane clip's
+                             own rx) with an add plus — appends a whole section, distinct from
+                             the viewport's add-node. -->
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <rect
+                                x="2"
+                                y="3.5"
+                                width="12"
+                                height="9"
+                                rx="2"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.3"
+                            />
+                            <path
+                                d="M8 6 L8 10 M6 8 L10 8"
+                                stroke="currentColor"
+                                stroke-width="1.3"
+                                stroke-linecap="round"
+                            />
+                        </svg>
                     </button>
                     {#if appendOpen}
                         <div class="clip-flyout menu" role="menu">
@@ -2036,6 +2076,14 @@ onMount(() => {
         fill: color-mix(in srgb, var(--accent-sel) 60%, transparent);
         stroke: var(--accent-sel);
     }
+    /* the owning-section context wash: when a node is selected, its section's clip lifts to
+       a quiet standing highlight — the section-context read (which clip the selection lives
+       in), a step below the selected-clip state (a lighter fill, no stroke): the node is the
+       accent, the clip is context. `:not(:hover)` yields to hover feedback. geo-only in
+       practice — nodes live in geo sections. */
+    .clip.geo.wash:not(:hover) {
+        fill: color-mix(in srgb, var(--geo) 44%, transparent);
+    }
     /* geo node ticks: a small circle per interior node, distinct from the force
        diamond's shape (circle vs. polygon) AND its kind color (geo blue vs. accent
        gold — the same kind-color language `.clip.geo`/`.clip.force` above use).
@@ -2063,6 +2111,12 @@ onMount(() => {
         dominant-baseline: central;
         pointer-events: none;
         user-select: none;
+    }
+    /* a shaped geo clip's ticks carry its identity, so its word label fades to a faint
+       kind-hint instead of colliding with the ticks drawn over the same centered spot
+       (stage-2 note). */
+    .clip-label.dim {
+        opacity: 0.3;
     }
     /* a force clip's right edge is its extent trim: a wide invisible hit strip over the
        boundary carrying the ew-resize affordance and a faint accent wash on hover/drag. */
@@ -2096,10 +2150,12 @@ onMount(() => {
         background: rgba(255, 255, 255, 0.06);
         border: 1px solid var(--border);
         color: var(--muted);
-        font-size: 15px;
-        line-height: 1;
         cursor: pointer;
         transition: background 120ms ease, color 120ms ease;
+    }
+    .clip-add svg {
+        width: 12px;
+        height: 12px;
     }
     .clip-add:hover,
     .clip-add.open {
