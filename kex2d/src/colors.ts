@@ -12,8 +12,15 @@ export const COLOR_ACCENT = "#d49560"; // rgb(212, 149, 96)
  *  is a distinct concept: a re-hue of one must not silently drag the other. */
 export const COLOR_FORCE = COLOR_ACCENT;
 /** the snap alignment-guide flash (timeline + viewport magnet feedback), distinct from
- *  kind / infeasible / selection. */
+ *  kind / infeasible / selection. The stateful register: the cartesian x/y alignment guides
+ *  wear it (a target latched). */
 export const COLOR_SNAP = "#e879b0";
+/** the measurement-readout neutrals — the informational register, distinct from the stateful
+ *  `COLOR_SNAP` alignment guides. The incline tangent ray and its °/m labels report a number
+ *  the drag reached; they render neutral so they don't read as a second snap-accent state: a
+ *  quiet gray ray (the app's anchor gray) under near-white label text (reads on the dark chip). */
+export const COLOR_GUIDE_RAY = "#9aa0a6";
+export const COLOR_GUIDE_LABEL = "#f0ece8";
 
 export function kindColor(kind: SectionKind): string {
     return kind === SectionKind.Force ? COLOR_FORCE : COLOR_GEO;

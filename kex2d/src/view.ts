@@ -108,10 +108,10 @@ let framed = false;
  *  `x` the world x of an active vertical guide, `y` the world y of a horizontal one. `ray`
  *  hangs off the previous node — a line through it at the snapped chord angle. a snapped angle
  *  or length also flashes a numeric label (Figma's measurement pattern): `angleLabel` (e.g.
- *  "30°") anchored at the snapped point, `lengthLabel` (e.g. "3 m") near the cursor — each a
- *  world anchor + text the render pass projects to screen. each field is null when its family
- *  isn't firing. mutated in place by the drag controls, read by the render pass, cleared on
- *  release — the viewport twin of the timeline's snap guide. */
+ *  "30°") and `lengthLabel` (e.g. "3 m"), each a world anchor at the drag point + text the render
+ *  pass projects to screen and offsets below-right onto a chip (so the cursor never covers it).
+ *  each field is null when its family isn't firing. mutated in place by the drag controls, read by
+ *  the render pass, cleared on release — the viewport twin of the timeline's snap guide. */
 export interface SnapGuides {
     x: number | null;
     y: number | null;

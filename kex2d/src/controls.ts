@@ -287,8 +287,9 @@ function normDeg(d: number): number {
 /** flash the fired magnet guides in world space (the render pass reads `snapGuides`). the angle
  *  guide draws a tangent ray AT the dragged node along the snapped exit incline (the screen angle
  *  inverts to world, the y-flip) plus a numeric degree label reading the incline; a snapped length
- *  flashes a metre label near the cursor (the Figma measurement pattern). `snapped` is the
- *  resolved drag point in world coords — the ray origin + label anchor. */
+ *  flashes a metre label (the Figma measurement pattern — the render pass offsets both onto chips
+ *  below-right of the point). `snapped` is the resolved drag point in world coords — the ray origin
+ *  + label anchor. */
 function applyGuides(guides: Guide[], tx: ViewTx, snapped: { x: number; y: number }): void {
     for (const g of guides) {
         if (g.kind === "alignX") snapGuides.x = (g.value - tx.ox) / tx.sx;
