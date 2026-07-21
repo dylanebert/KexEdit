@@ -39,6 +39,14 @@ tier"). The kernel atoms that tier will use — `force.ts`, `banded.ts`, `colloc
 tests + the lab pages — stay in-tree, oracle-gated, as its reference; they are NOT on the live
 path.
 
+**Positions and force keyframes are the two authoring substrates** — both sparse, density
+unbounded; the dense baked chain is always derived, never canonical (dense-vs-sparse is a false
+dichotomy: a dense array is a keyframe list at maximum density). Rate/pitch-speed keyframes as a
+geometry substrate are rejected: rates integrate, so the encoding has global support and
+single-shooting conditioning (measured σ(∂P/∂F) ~ N^1.54 vs N^0.00 for positions), and every
+non-graph tool would pay a fit-through-the-integrator per gesture. Graph editing of geometry is
+served as a derived view or an invoked fit at the optimization tier, never as the store.
+
 ## The section substrate
 
 `section.ts` — the proven original-KexEdit contract (`packages/core`), in 2D. Every section takes

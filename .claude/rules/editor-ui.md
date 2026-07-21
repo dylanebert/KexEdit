@@ -70,6 +70,13 @@ shortens):
   `F`, initial framing). Enforce as two paths: the content-edit clamp is pan-only; the fit floor
   lives only in the explicit-navigation ops (kex2d: `clampView` vs `zoomAt`/`frameAll`). A shrunk
   track leaves empty ruler on the right; it doesn't rezoom.
+- **The lead-out is part of the addressable span, always framed.** `span = content + margin`, the
+  margin floored at a substantial absolute length (kex2d: 50 m) so a short document still frames
+  zoomed out with room to build into. One fit scale serves the initial frame, `F`, and the
+  zoom-out floor. Content edits never move the view — append included: the framed lead-out is
+  where new content appears, so there is no reveal-pan.
+- **Keys route by the hovered surface** (the Blender/Unity model): `F` frames only the surface
+  under the pointer; arrows act on it. One key never fires on two surfaces.
 
 ## Snapping
 
@@ -78,19 +85,79 @@ copies this shape:
 
 - Persistent toggle, default **on**; `S` toggles; holding Ctrl/Cmd inverts while held (the
   AE/Figma temporary bypass — XOR with the toggle, not a plain disable).
+- **The toggle's home is a tool rail on the timeline dock's left edge** — thin, icon-only, the
+  Premiere vertical tool-strip. The rail is anatomy of the one earned dock, not a second region,
+  and it holds only persistent *global* authoring toggles (a keyboard twin + a quiet state). A
+  rail that needs grouping or scrolling has become a cockpit — something leaves. The viewport
+  itself carries zero standing chrome.
 - A pure per-axis resolver in screen px; nearest target within threshold wins. The threshold is a
   design constant (kex2d `SNAP_PX` = 8), zoom-independent, never a tuned tolerance.
 - **Targets are content landmarks or the domain's semantic quantum — never display artifacts.**
   Landmarks: other keyframes, section boundaries, the playhead, physical baselines (1g). A raster
   earns targethood only when the domain has a real quantum (video frames, musical beats — the
-  Blender/DAW case); kex2d's arclength axis has none, so it's the AE/Premiere case: landmarks only.
+  Blender/DAW case). The timeline arclength axis has none — the AE/Premiere case, landmarks only.
+  The shaping viewport *does*: the building vocabulary is the quantum, and **snap quantizes what
+  the piece does** — the tip's exit-tangent incline to the angle raster (kex2d 15°), the chord
+  length to whole meters — never the chord angle, and tip-only (an interior node has no incline).
   A zoom-dependent ruler tick or a nice-number gridline is display, not content. If nice-value
   targeting is ever wanted, it's a separate explicitly-enabled grid (the Figma split), never folded
   into the default magnet.
+- **Families are relative to the content's own frame** (the previous node, the piece being built),
+  never world-absolute. Absolute align-x/y families fight the incline quantum and don't generalize
+  to 3D; new capability arrives by adding families to the one resolver, never by restructuring
+  input.
 - **Targets must be stable under the gesture and reachable.** A gesture never snaps to geometry it
   is itself moving (the extent-trim self-snap lesson) or to a target the drag can't reach.
 - Snap never fires on a Shift-locked axis — the constraint owns it.
 - A snapped axis flashes a guide line (the Figma feedback); the guide clears with the gesture.
+  **All guides wear one neutral gray** — a guide informs, it never alarms; the stateful color split
+  is retired.
+- **The selected node carries a live metrics readout** (the Figma selected-object dimensions
+  idiom): floated below the node, offset past any summoned radial controls *by derivation from
+  their geometry* (never a tuned gap), flipping above near the dock. It shows live values at rest
+  and mid-drag; an engaged snap feeds the same readout its snapped values. Never floating chips at
+  the drag point (they collide with summoned controls), never a fixed far corner (too far from the
+  action).
+- **A pointerdown becomes a drag only past a dead-zone** (kex2d `DRAG_PX` = 4, the Figma/Blender
+  click-vs-drag threshold); below it, release is a plain click. Window blur cancels an in-flight
+  gesture completely — revert the bracketed edit, clear guides and capture. No guide may exist
+  without a live, threshold-crossed drag.
+
+## Tangent editing
+
+The worked example of the layered-expressiveness contract's summoned inner layer (kex2d
+`tangents.ts` + tangent-edit mode); any surface exposing spline handles copies this shape:
+
+- **Inference is the default and never a lesser mode.** The default authoring flow stores no
+  tangents and is byte-identical with the handle feature absent. Handles are additive — authoring
+  one never changes the default feel elsewhere. (Stamping inferred tangents concrete at append
+  time was tried and reverted: it froze the live feel.)
+- **The mode taxonomy is Figma's mirroring set**: `Mirror` | `Aligned` | `Free`. An inferred node
+  displays as `Aligned` checked — inference is aligned-shaped, there is never a no-mode state, and
+  re-picking the checked mode is a no-op.
+- **The surface is summoned**: double-click enters tangent edit (handles visible only there;
+  Esc/click-away exits); the node context menu carries the Handles toggle and the mode submenu.
+  Mere selection shows nothing.
+- **Reset always re-infers** — the way back up the layers is one click, from anywhere.
+- **Handle drags are free gestures** — no snap, no guides. Node drags snap; handle drags express.
+
+## Menus
+
+One menu substrate (kex2d `menu.ts` + `Menu.svelte` is the worked example): a menu is pure
+`MenuItem` data — label, `checked`, `enabled`, `shortcut`, `danger`, `separator`, `children` (a
+submenu flyout) — rendered by one recursive renderer. Every menu is an instance of it, never a
+bespoke component.
+
+- Right-click context menus are the app's menu language; a summoned menu never covers its invoker;
+  functional menus animate minimally.
+- Flyouts fit the viewport on all four edges: flip the preferred side, clamp the rest.
+- **The positioned menu box is never `overflow: hidden`** — that clips an out-of-box flyout from
+  paint *and* hit-testing. The rounded-corner row-wash clip lives on an inner rows wrapper;
+  flyouts mount as its sibling.
+- **Menu flows are verified pointer-true**: real hover, coordinate clicks, and an
+  `elementFromPoint` reachability assert. A selector-targeted `.click()` fires handlers on
+  clipped, humanly-unreachable elements — a green selector test proves nothing about
+  reachability.
 
 ## Kind color
 
