@@ -421,7 +421,7 @@ test("section clip strip flow", async ({ page }) => {
 
     // ── 1. Append a force section via the real + flyout → a mixed geo→force chain. ──
     await page.locator(".clip-add").click();
-    await page.getByRole("button", { name: "Append force section" }).click();
+    await page.getByRole("menuitem", { name: "Append force section" }).click();
     await expect.poll(sectionCount).toBe(2);
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
     // the append selects the new (force) section — its clip reads selected.
@@ -498,7 +498,7 @@ test("section menu + keyframe flow", async ({ page }) => {
     await page.evaluate(() => (window as any).__kex.seedHill());
     await expect.poll(tTotal).toBeGreaterThan(0);
     await page.locator(".clip-add").click();
-    await page.getByRole("button", { name: "Append force section" }).click();
+    await page.getByRole("menuitem", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
     await frameTimeline(page); // append pans to the new end; frame the chain back into view
 
@@ -570,7 +570,7 @@ test("playhead parking flow", async ({ page }) => {
     await page.evaluate(() => (window as any).__kex.seedHill());
     await expect.poll(tTotal).toBeGreaterThan(0);
     await page.locator(".clip-add").click();
-    await page.getByRole("button", { name: "Append force section" }).click();
+    await page.getByRole("menuitem", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
     await frameTimeline(page); // append pans to the new end; frame the chain back into view
 
@@ -721,7 +721,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
 
     // ── 1. Append a force section after the lead-in via the real + flyout. ──
     await page.locator(".clip-add").click();
-    await page.getByRole("button", { name: "Append force section" }).click();
+    await page.getByRole("menuitem", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
     await frameTimeline(page); // append pans to the new end; frame the chain back into view
 
@@ -762,7 +762,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
     // chain: geo lead-in, force hill, geo turnaround. (The turnaround's geometry is the
     // hands-on sculpt; here the claim is the three-section mixed chain composed and bakes.)
     await page.locator(".clip-add").click();
-    await page.getByRole("button", { name: "Append geometry section" }).click();
+    await page.getByRole("menuitem", { name: "Append geometry section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1,0");
     await expect.poll(tTotal).toBeGreaterThan(0);
     await frameTimeline(page); // append pans to the new end; frame all three clips into view
