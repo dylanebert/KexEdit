@@ -653,4 +653,11 @@ describe("tangent model rework (stage 5 substrate)", () => {
         const exit2 = tan2 ? Math.atan2(tan2.outY, tan2.outX) : Handle.theta.get(prev);
         expect(Handle.theta.get(tip)).toBeCloseTo(2 * chord - exit2, 6);
     });
+
+    test("resetTangent no-ops on node 0 (the entry anchor is never frozen)", () => {
+        const { state, sec } = track();
+        addNode(state, sec, 40, 15); // [0, 1, 2]; order 0 is the entry anchor
+        resetTangent(state, sec, 0);
+        expect(handleTangent(state, sec, 0)).toBeUndefined();
+    });
 });

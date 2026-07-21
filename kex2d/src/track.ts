@@ -629,8 +629,9 @@ function headLast(handles: number[]): void {
  *  the re-inferred arc-rule vectors as authored `Aligned` (concrete bezier); the growth tip clears
  *  back to absent = live (Auto inference resumes, its heading re-derived). does not itself record
  *  history — a gesture (`beginMove`/`commit`) wraps it, `nodeSnapshot` captures the tangent + theta
- *  for undo. */
+ *  for undo. node 0 (the entry anchor) is never frozen — matches `stampTip`'s skip. */
 export function resetTangent(ecs: State, sectionId: number, order: number): void {
+    if (order === 0) return;
     const handles = sectionHandles(ecs, sectionId);
     if (handles.length === 0) return;
     const eid = handleAt(ecs, sectionId, order);
