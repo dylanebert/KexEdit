@@ -369,11 +369,16 @@ editor-ui invariant-domain rule).
   viewport's node/tangent drag has its own polar resolver (`magnet.ts`) — `niceStep` (the 1-2-5 grid
   step) is the piece still shared between them, imported by `render.ts` for the viewport grid.
   Unit-tested in `timeline.test.ts`.
-- `Timeline.svelte` — the always-present bottom dock: the **F_n force-curve readout + scrub +
+- `Timeline.svelte` — the always-present bottom dock (a flex row: a thin **tool rail** on the left
+  edge, then the timeline content column): the **F_n force-curve readout + scrub +
   zoom/pan navigation**, the floating **media player**, and the **section clip strip** in the marker
   lane (one clip per section, kind-colored/labeled; click selects `editor.section`; a `+` tail flyout
   appends geo/force; a force clip's right edge is its **extent trim**; right-click a clip opens the
-  context menu). The chart draws the baked F_n curve over arclength + **section boundary guides**
+  context menu). The **tool rail** (`.tool-rail`) is the snap magnet toggle's home — an icon-only vertical
+  strip on the dock's left edge (the Premiere tool-strip precedent), anatomy of the one earned dock,
+  bounded to persistent global authoring toggles with a keyboard twin (`toggleSnap`, `S`; today just
+  the magnet). It's inside the dock's DOM, so it's the timeline surface for `editor.hover`. The chart
+  draws the baked F_n curve over arclength + **section boundary guides**
   (dashed verticals); the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator**
   minimap pans/zooms. The chart is a **whole-track force-authoring surface**: it draws every force
   section's points (`forcePts`), and a double-click over a force section's arc adds a point there —
@@ -412,7 +417,7 @@ editor-ui invariant-domain rule).
   RADIAL_BTN_R`, so the readout starts a gap past that wherever the heading swings the ring. Pure
   `readoutFit` (`view.ts`) places it: centered-then-clamped horizontally, flipped above the node
   near the bottom so it never lands under the timeline dock. (Earlier tries: a chip AT the drag
-  point overlapped the buttons; a fixed line under the toggle cluster read too far from the action.)
+  point overlapped the buttons; a fixed top-left line read too far from the action.)
 - `main.ts` — boots `run({ defaults: false })` + mounts App. The DEV-only `__kex` hook exposes
   geo state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`), force state
   (`kind`/`forceCount`/`forces`/`convert`/`placeForce`/`seedForceBump`), and the multi-section ops

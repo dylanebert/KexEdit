@@ -239,12 +239,12 @@ test("tangent edit flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
-// Screenshot the VIEWPORT TOGGLE CLUSTER (kex2d-authoring-surface stage 1): the persistent
-// top-left overlay that is the snap magnet's real home (a viewport affordance, not a second
-// dock). Assert the toggle's lit/dimmed state rides `aria-pressed` (positive, not
-// absence-of-error), and capture the default-on and toggled-off looks. `S` toggles it
-// globally (the AE magnet key, not hover-gated).
-test("viewport toggle cluster shot", async ({ page }) => {
+// Screenshot the TIMELINE TOOL RAIL (kex2d-authoring-surface): the thin icon-only strip on the
+// dock's left edge that is the snap magnet's home (the Premiere vertical tool-strip precedent, a
+// dock affordance — not a viewport overlay, not a second dock). Assert the toggle's lit/dimmed
+// state rides `aria-pressed` (positive, not absence-of-error), and capture the default-on and
+// toggled-off looks. `S` toggles it globally (the AE magnet key, not hover-gated).
+test("tool rail shot", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
@@ -255,19 +255,19 @@ test("viewport toggle cluster shot", async ({ page }) => {
     await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
     await expect(page.locator(".dock")).toBeVisible();
 
-    const cluster = page.locator(".viewport-tools");
-    const snap = cluster.locator(".vtool");
-    await expect(cluster).toBeVisible();
+    const rail = page.locator(".tool-rail");
+    const snap = rail.locator(".rail-tool");
+    await expect(rail).toBeVisible();
     // default-on: the magnet toggle reads pressed and lit.
     await expect(snap).toHaveAttribute("aria-pressed", "true");
     await page.waitForTimeout(300);
-    await cluster.screenshot({ path: join(OUT, "toggle-cluster-on.png") });
+    await rail.screenshot({ path: join(OUT, "tool-rail-on.png") });
 
     // ── S toggles it off (global, the AE magnet key) → aria-pressed flips, the icon dims. ──
     await page.keyboard.press("s");
     await expect(snap).toHaveAttribute("aria-pressed", "false");
     await page.waitForTimeout(150);
-    await cluster.screenshot({ path: join(OUT, "toggle-cluster-off.png") });
+    await rail.screenshot({ path: join(OUT, "tool-rail-off.png") });
 
     // S again restores the default — keep the toggle honest across the flow.
     await page.keyboard.press("s");

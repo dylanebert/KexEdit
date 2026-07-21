@@ -12,7 +12,6 @@ import {
     select,
     selectSection,
     selectStart,
-    toggleSnap,
 } from "./editor";
 import {
     beginMove,
@@ -70,13 +69,6 @@ onMount(() => {
         detach();
         cancelAnimationFrame(raf);
     };
-});
-
-// the snapping magnet's persistent state (read through the per-RAF tick) — the viewport
-// toggle's lit/quiet state.
-const snapOn = $derived.by((): boolean => {
-    void tick;
-    return editor.snap;
 });
 
 // the snap readout text (the Blender modal-transform / SketchUp measurements-box precedent): the
@@ -506,32 +498,6 @@ $effect(() => {
 
 <canvas bind:this={canvas}></canvas>
 
-<!-- the viewport toggle cluster: a small persistent overlay top-left — the Blender
-     viewport-header precedent collapsed to an overlay (a viewport affordance, not a second dock).
-     the home for viewport toggles; today just the snap magnet. lit when on (default), dimmed when
-     off; `S` also toggles, Ctrl/Cmd bypasses per-gesture. -->
-<div class="viewport-tools" aria-label="Viewport tools">
-    <button
-        class="vtool"
-        class:on={snapOn}
-        type="button"
-        onclick={toggleSnap}
-        title="Snapping (S)"
-        aria-label="Snapping"
-        aria-pressed={snapOn}
-    >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path
-                d="M4 2 L4 8 a4 4 0 0 0 8 0 L12 2 L9.5 2 L9.5 8 a1.5 1.5 0 0 1 -3 0 L6.5 2 Z"
-                fill="currentColor"
-                fill-rule="evenodd"
-            />
-            <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
-            <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
-        </svg>
-    </button>
-</div>
-
 <!-- the snap readout: the selected node's live metrics (° / m / both) — a growth tip's exit incline
      + chord length, an interior node's chord length alone; the latched snap values while a magnet
      target is engaged (the Blender modal-transform readout). shown whenever a node is selected,
@@ -699,31 +665,11 @@ $effect(() => {
     :global([data-dragging]) .rbtn,
     :global([data-dragging]) .ctxmenu,
     :global([data-dragging]) .nodemenu,
-    :global([data-dragging]) .vtool,
     :global([data-dragging]) .vtip {
         pointer-events: none;
         user-select: none;
     }
 
-    /* the viewport toggle cluster: the Blender viewport-header precedent collapsed to an overlay
-       (a viewport affordance, not a second dock), pinned top-left. a column so future toggles
-       stack under the magnet; opaque surface, elevation from border + shadow (root ui.md). */
-    .viewport-tools {
-        position: absolute;
-        top: 16px;
-        left: 16px;
-        z-index: 2;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        padding: 3px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        box-shadow: var(--shadow);
-        user-select: none;
-        -webkit-user-select: none;
-    }
     /* the snap readout: the selected node's live metrics, positioned per-frame below the node by
        `readoutFit` (left/top set inline). shown whenever a node is selected; JetBrains Mono over the
        same opaque chrome as the cluster, the neutral text at `--fg`. pointer-inert — a readout,
@@ -743,35 +689,6 @@ $effect(() => {
         white-space: nowrap;
         pointer-events: none;
     }
-    /* a viewport toggle: quiet muted icon by default, accent-lit when on — a persistent
-       editor preference, not a loud control (the removed dock-corner snap toggle's look). */
-    .vtool {
-        all: unset;
-        box-sizing: border-box;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 26px;
-        height: 26px;
-        border-radius: 4px;
-        color: var(--muted);
-        cursor: pointer;
-        opacity: 0.6;
-        transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
-    }
-    .vtool:hover {
-        opacity: 0.9;
-        background: rgba(255, 255, 255, 0.06);
-    }
-    .vtool.on {
-        color: var(--accent);
-        opacity: 1;
-    }
-    .vtool svg {
-        width: 15px;
-        height: 15px;
-    }
-
     .warning {
         position: absolute;
         top: 16px;

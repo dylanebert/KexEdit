@@ -13,6 +13,7 @@ import {
     selectForce,
     selectSection,
     snapActive,
+    toggleSnap,
 } from "./editor";
 import {
     appendSection,
@@ -62,6 +63,14 @@ import {
 import { DOCK_HEIGHT, DOCK_INSET, resize } from "./view";
 
 const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
+
+// the snap magnet's persistent state (read through the per-RAF tick) — the tool rail
+// toggle's lit/quiet state. the magnet is global (viewport node drag + timeline keyframe
+// snap); its home is the rail on the dock's left edge (below).
+const snapOn = $derived.by((): boolean => {
+    void tick;
+    return editor.snap;
+});
 
 // the timeline shows the baked F_n force curve the realized track produces, plus
 // scrub + zoom/pan navigation. it's also the force-authoring surface: over any force
@@ -1228,6 +1237,34 @@ onMount(() => {
     onpointerenter={() => (editor.hover = "timeline")}
     onpointerleave={() => (editor.hover = "viewport")}
 >
+    <!-- the tool rail: a thin icon-only strip on the dock's LEFT edge (the Premiere vertical
+         tool-strip precedent) — anatomy of the one earned dock, not a second docked region. it
+         holds only persistent global authoring toggles with a keyboard twin; today just the snap
+         magnet (lit when on / default, dimmed when off; `S` also toggles, Ctrl/Cmd bypasses
+         per-gesture). it sits inside the dock's DOM, so it counts as the timeline surface for
+         `editor.hover` (the aside's enter/leave already fired). -->
+    <div class="tool-rail" aria-label="Timeline tools">
+        <button
+            class="rail-tool"
+            class:on={snapOn}
+            type="button"
+            onclick={toggleSnap}
+            title="Snapping (S)"
+            aria-label="Snapping"
+            aria-pressed={snapOn}
+        >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                    d="M4 2 L4 8 a4 4 0 0 0 8 0 L12 2 L9.5 2 L9.5 8 a1.5 1.5 0 0 1 -3 0 L6.5 2 Z"
+                    fill="currentColor"
+                    fill-rule="evenodd"
+                />
+                <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
+                <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
+            </svg>
+        </button>
+    </div>
+    <div class="dock-main">
     <div
         class="body"
         class:panning
@@ -1507,6 +1544,7 @@ onMount(() => {
             {/if}
         </div>
     </div>
+    </div>
 </aside>
 
 <!-- the player: a standard media transport (play/pause · global scrub · timecode)
@@ -1569,7 +1607,7 @@ onMount(() => {
         width: calc(100% - 32px);
         max-width: 1280px;
         display: flex;
-        flex-direction: column;
+        flex-direction: row;
         background: var(--bg-solid);
         border: 1px solid var(--border);
         border-radius: 6px;
@@ -1578,6 +1616,56 @@ onMount(() => {
         user-select: none;
         -webkit-user-select: none;
         overflow: hidden;
+    }
+    /* the timeline content column (ruler/chart + navigator) sits right of the rail; it takes
+       the remaining width, and `min-width: 0` lets the canvas body shrink so the rail never
+       forces an overflow. the chart/ruler/navigator all size to this column's width. */
+    .dock-main {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+    }
+    /* the tool rail: a thin icon-only strip on the dock's left edge (the Premiere vertical
+       tool-strip precedent). same opaque surface as the dock (its background carries through);
+       a right border in the dock's own token demarcates it from the content (one language).
+       a column so a future global toggle stacks under the magnet. */
+    .tool-rail {
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        padding: 6px 4px;
+        border-right: 1px solid var(--border);
+    }
+    /* a rail tool: quiet muted icon by default, accent-lit when on — a persistent editor
+       preference, not a loud control (the former viewport-cluster toggle's look). */
+    .rail-tool {
+        all: unset;
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 4px;
+        color: var(--muted);
+        cursor: pointer;
+        opacity: 0.6;
+        transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+    }
+    .rail-tool:hover {
+        opacity: 0.9;
+        background: rgba(255, 255, 255, 0.06);
+    }
+    .rail-tool.on {
+        color: var(--accent);
+        opacity: 1;
+    }
+    .rail-tool svg {
+        width: 15px;
+        height: 15px;
     }
 
     /* the selected point's popover: one opaque floating surface anchored to the
@@ -1702,6 +1790,7 @@ onMount(() => {
     :global([data-dragging]) .nav-window,
     :global([data-dragging]) .ptip,
     :global([data-dragging]) .play,
+    :global([data-dragging]) .rail-tool,
     :global([data-dragging]) .scrub {
         pointer-events: none;
         user-select: none;
