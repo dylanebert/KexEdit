@@ -70,7 +70,29 @@ const WHEEL_ZOOM_RATE = 0.0015;
 const NUDGE_PX = 2;
 const NUDGE_PX_COARSE = 20;
 
+// click-vs-drag dead-zone (screen px): a node grab becomes a drag only once the pointer travels
+// this far from the grab point — the Figma/Blender threshold that keeps a plain click (select)
+// from moving or snapping the node. below it there is no drag, so no magnet and no guide; this is
+// also what stops a stray sync-move (a refocus click after a window blur) from flashing a guide.
+export const DRAG_PX = 4;
+
+/** whether a pointer displacement (screen px, from the grab point) clears the click-vs-drag
+ *  dead-zone — the point a grab becomes a real drag. */
+export function beyondDeadZone(dx: number, dy: number): boolean {
+    return dx * dx + dy * dy >= DRAG_PX * DRAG_PX;
+}
+
+/** the dead-zone latch: a drag arms when it first clears `beyondDeadZone` and stays armed for the
+ *  rest of the gesture (crossing back inside doesn't disarm it — the Figma/Blender feel). */
+export function armDrag(armed: boolean, dx: number, dy: number): boolean {
+    return armed || beyondDeadZone(dx, dy);
+}
+
 let dragNode: number | null = null;
+// whether the node drag has crossed the click-vs-drag dead-zone (DRAG_PX from the grab point).
+// false until it does — below the threshold a release is a plain select, so no node move, magnet,
+// or guide runs. sticks true for the rest of the gesture (armDrag).
+let dragArmed = false;
 // the tangent handle under drag (the selected node's in/out handle), or null. mutually
 // exclusive with `dragNode` + `panning` — one gesture at a time.
 let dragTangent: { eid: number; side: TangentSide } | null = null;
@@ -486,6 +508,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         if (eid !== null) {
             select(eid);
             dragNode = eid;
+            dragArmed = false; // a fresh grab starts inside the dead-zone — a select until it moves
             const s = trackSamples(ecs);
             const w = s ? nodeWorld(s, eid) : { x: wx, y: wy };
             grabX = w.x - wx;
@@ -541,6 +564,11 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
         if (dragNode === null) return;
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
+        // the click-vs-drag dead-zone: until the pointer travels DRAG_PX from the grab point this
+        // stays a select — no move, no magnet, no guide. this is what keeps a stray sync-move (a
+        // refocus click after a window blur) from flashing a guide on a plain click.
+        dragArmed = armDrag(dragArmed, cx - grabCX, cy - grabCY);
+        if (!dragArmed) return;
         const tx = viewTransform(canvas);
         const { x: wx, y: wy } = screenToWorld(tx, cx, cy);
         let tgtX = wx + grabX;
@@ -612,6 +640,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
         if (dragNode === null) return;
         dragNode = null;
+        dragArmed = false;
         clearGuides();
         commit(history); // one drag → one undo entry (a no-move click records nothing)
     };
@@ -630,8 +659,19 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
         if (dragNode === null) return;
         dragNode = null;
+        dragArmed = false;
         clearGuides();
         cancel(); // interrupted drag: restore the pre-gesture pose
+    };
+
+    // a window blur mid-gesture never delivers the pointerup/pointercancel that would end the drag,
+    // so without this the gesture resumes stale on refocus — a guide left on screen, the drag
+    // reattaching to the old node on the next move. tear it down like a pointercancel: revert the
+    // bracketed edit, drop the drag/pan state (cancelDrag), and clear the capture flag (endDrag).
+    const onBlur = (): void => {
+        if (dragNode === null && dragTangent === null && !panning) return;
+        cancelDrag();
+        endDragGesture();
     };
 
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -737,6 +777,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     canvas.addEventListener("pointercancel", cancelDrag);
     canvas.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", onBlur);
 
     return () => {
         canvas.removeEventListener("contextmenu", onContextMenu);
@@ -748,6 +789,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         canvas.removeEventListener("pointercancel", cancelDrag);
         canvas.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKeyDown);
+        window.removeEventListener("blur", onBlur);
         canvas.style.cursor = ""; // detaching mid-pan must not leave a stuck grabbing cursor
         clearGuides(); // detaching mid-drag must not leave a stuck guide for the remount
         endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on

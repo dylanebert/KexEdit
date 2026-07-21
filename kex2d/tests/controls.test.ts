@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { formatDeg, nodeMetrics, normDeg } from "../src/controls";
+import { armDrag, beyondDeadZone, DRAG_PX, formatDeg, nodeMetrics, normDeg } from "../src/controls";
 import { ANGLE_STEP } from "../src/magnet";
 
 // the snap readout: a 15°-raster incline cancels to a clean integer through the radian→degree
@@ -61,4 +61,30 @@ test("the tip incline routes through formatDeg (a fractional flank keeps one dec
     const deg = (Math.atan2(1, 2) * 180) / Math.PI;
     expect(nodeMetrics({ x: 0, y: 0 }, { x: 2, y: 1 }, exit).angleLabel).toBe(formatDeg(deg));
     expect(nodeMetrics({ x: 0, y: 0 }, { x: 2, y: 1 }, exit).angleLabel).toBe("26.6°");
+});
+
+// the click-vs-drag dead-zone: a node grab stays a select until the pointer travels DRAG_PX from
+// the grab point. below the threshold no drag runs — no node move, no magnet, no guide (the fix for
+// a refocus click flashing a snap guide on a plain click after a window blur).
+
+test("a sub-threshold displacement stays inside the dead-zone (a click, not a drag)", () => {
+    expect(beyondDeadZone(0, 0)).toBe(false);
+    expect(beyondDeadZone(DRAG_PX - 1, 0)).toBe(false);
+    expect(beyondDeadZone(0, DRAG_PX - 1)).toBe(false);
+});
+
+test("reaching DRAG_PX clears the dead-zone — the grab becomes a drag", () => {
+    expect(beyondDeadZone(DRAG_PX, 0)).toBe(true);
+    expect(beyondDeadZone(0, DRAG_PX)).toBe(true);
+    // Euclidean boundary: a diagonal reaches the radius before either axis alone (3²+3²=18 ≥ 4²)
+    expect(beyondDeadZone(3, 3)).toBe(true);
+});
+
+test("the dead-zone latches — once armed it stays armed even back inside", () => {
+    // a fresh sub-threshold move doesn't arm
+    expect(armDrag(false, 1, 0)).toBe(false);
+    // crossing the threshold arms it
+    expect(armDrag(false, DRAG_PX, 0)).toBe(true);
+    // sticky: an armed drag stays armed at zero displacement (no disarm on a cross-back)
+    expect(armDrag(true, 0, 0)).toBe(true);
 });
