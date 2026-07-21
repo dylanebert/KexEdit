@@ -22,13 +22,14 @@ import {
     trimTrack,
 } from "./history";
 import type { MenuItem } from "./menu";
-import { alignTangent, TangentMode } from "./spline";
+import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import Timeline from "./Timeline.svelte";
 import {
     bakeOut,
     Handle,
     handleTangent,
     lastHandle,
+    resetTangent,
     samples,
     SectionKind,
     sectionAt,
@@ -96,18 +97,34 @@ const handleCount = $derived.by((): number => {
     if (eid === null) return 0;
     return sectionHandles(ecs, Handle.section.get(eid)).length;
 });
-// the chain end carries a radial action cluster when selected: an extend button
-// along the heading (where the next piece lays) and a delete button rotated off
-// it. positions are in canvas/CSS pixels at the node's screen point.
+// a selected node carries a radial action cluster in two cases: the chain end always shows
+// extend (along the heading, where the next piece lays) + delete (rotated off it); a node in
+// tangent-edit mode shows a dots (…) button opening the mode submenu. positions are in
+// canvas/CSS px at the node's screen point; the dots sits opposite the heading (≥120° from
+// extend/delete) so the submenu never covers them.
 const RADIAL_R = 46; // px from node center to a button center
 const TRASH_OFFSET = Math.PI / 3; // delete sits 60° (screen-CW) off extend
-type EndUI = { x: number; y: number; ext: { x: number; y: number }; del: { x: number; y: number } };
-const endUI = $derived.by((): EndUI | null => {
+const DOTS_PUSH = 54; // extra px the submenu opens beyond the dots button (clear of the orbit)
+type Radial = {
+    x: number;
+    y: number;
+    ext: { x: number; y: number };
+    del: { x: number; y: number };
+    dots: { x: number; y: number };
+    ux: number;
+    uy: number;
+    isEnd: boolean;
+    editing: boolean;
+};
+const radial = $derived.by((): Radial | null => {
     void tick;
     const eid = editor.selection;
     if (!canvas || eid === null || trackEid === null) return null;
+    if (Handle.order.get(eid) === 0) return null; // the entry anchor has no actions
     const section = Handle.section.get(eid);
-    if (eid !== lastHandle(ecs, section)) return null;
+    const isEnd = eid === lastHandle(ecs, section);
+    const editing = editor.tangentEdit === eid;
+    if (!isEnd && !editing) return null;
     const s = samples.get(trackEid);
     const info = sectionInfo.get(section);
     if (!s || !info) return null;
@@ -120,11 +137,17 @@ const endUI = $derived.by((): EndUI | null => {
     // flips Y (tx.sy < 0).
     const th = Handle.theta.get(eid) + info.entry.theta;
     const ang = Math.atan2(Math.sin(th) * tx.sy, Math.cos(th) * tx.sx);
+    const dotsAng = ang + Math.PI; // opposite the extend — clears both extend and delete
     return {
         x,
         y,
         ext: { x: RADIAL_R * Math.cos(ang), y: RADIAL_R * Math.sin(ang) },
         del: { x: RADIAL_R * Math.cos(ang + TRASH_OFFSET), y: RADIAL_R * Math.sin(ang + TRASH_OFFSET) },
+        dots: { x: RADIAL_R * Math.cos(dotsAng), y: RADIAL_R * Math.sin(dotsAng) },
+        ux: Math.cos(dotsAng),
+        uy: Math.sin(dotsAng),
+        isEnd,
+        editing,
     };
 });
 
@@ -140,53 +163,105 @@ function onDelete(): void {
     if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
 }
 
-// the selected node's tangent-mode popover: a segmented Auto | Aligned | Free control at the
-// node — the summon for the explicit inner layer (the handles are the on-object manipulation;
-// this names the mode, an enum with no visible form, and keeps revert-to-Auto one click away).
-// derives its position + current mode from the selection, so it dismisses when the node does.
-type NodeUI = { x: number; y: number; mode: TangentMode | null };
-const nodeUI = $derived.by((): NodeUI | null => {
+// the tangent-mode submenu (Mirror | Aligned | Free + Reset), opened by the dots button on the
+// edited node's radial cluster. `dotsOpen` is the open flag; it closes when tangent edit exits
+// (the derivation below) or on click-away/item pick.
+let dotsOpen = $state(false);
+function closeDots(): void {
+    dotsOpen = false;
+}
+// the edited node's current mode (null = a live tip, no stored tangent yet).
+const editMode = $derived.by((): TangentMode | null => {
     void tick;
-    const eid = editor.selection;
-    if (!canvas || eid === null || trackEid === null) return null;
-    const s = samples.get(trackEid);
-    if (!s) return null;
-    const tx = viewTransform(canvas);
-    const i = Handle.sample.get(eid);
+    const eid = editor.tangentEdit;
+    if (eid === null) return null;
     const tan = handleTangent(ecs, Handle.section.get(eid), Handle.order.get(eid));
-    return {
-        x: tx.ox + s.posX[i] * tx.sx,
-        y: tx.oy + s.posY[i] * tx.sy,
-        mode: tan ? tan.mode : null, // null = Auto (the default)
-    };
+    return tan ? tan.mode : null;
+});
+// Reset re-infers from the chords; it's a no-op on a live-inferred node (no stored tangent),
+// so its enablement derives from a tangent existing — the same structural move as the context
+// menu's derived Delete enablement.
+const canReset = $derived.by((): boolean => {
+    void tick;
+    const eid = editor.tangentEdit;
+    if (eid === null) return false;
+    return handleTangent(ecs, Handle.section.get(eid), Handle.order.get(eid)) !== undefined;
+});
+// the submenu as data (the shared MenuItem language). the three modes carry their `checked`
+// indicator; Reset carries its derived enablement.
+const modeItems = $derived.by((): MenuItem[] => {
+    if (editor.tangentEdit === null) return [];
+    return [
+        {
+            label: "Mirror",
+            checked: editMode === TangentMode.Mirror,
+            action: () => pickMode(TangentMode.Mirror),
+        },
+        {
+            label: "Aligned",
+            checked: editMode === TangentMode.Aligned,
+            action: () => pickMode(TangentMode.Aligned),
+        },
+        {
+            label: "Free",
+            checked: editMode === TangentMode.Free,
+            action: () => pickMode(TangentMode.Free),
+        },
+        { label: "Reset tangents", enabled: canReset, action: doReset },
+    ];
 });
 
-// set the selected node's tangent mode as one undo entry (the move gesture's node snapshot
-// carries the tangent). null reverts to Auto; a switch between Aligned/Free keeps the stored
-// vectors (mode is which-handle-rotates-the-other metadata); Auto→explicit seeds from the arc
-// rule so the conversion is visually continuous.
-function pickMode(target: TangentMode | null): void {
-    const eid = editor.selection;
+// set the edited node's tangent mode as one undo entry (the move gesture's node snapshot
+// carries the tangent). a live tip is seeded from the arc rule first (continuous, no jump);
+// Mirror/Aligned re-collinearize the vectors to honor the mode, Free just relabels.
+function pickMode(target: TangentMode): void {
+    const eid = editor.tangentEdit;
     if (eid === null) return;
     const section = Handle.section.get(eid);
     const order = Handle.order.get(eid);
     beginMove(ecs, section);
-    if (target === null) {
-        setTangent(ecs, section, order, null);
-    } else {
-        // start from the current explicit vectors, or seed them from the arc rule (Auto→explicit
-        // is continuous). switching to Aligned re-collinearizes; Free just relabels.
-        const cur = handleTangent(ecs, section, order) ?? seedTangent(ecs, section, order, target);
-        if (cur) {
-            const next =
-                target === TangentMode.Aligned
-                    ? alignTangent(cur)
-                    : { ...cur, mode: target };
-            setTangent(ecs, section, order, next);
-        }
+    const cur = handleTangent(ecs, section, order) ?? seedTangent(ecs, section, order, target);
+    if (cur) {
+        const next =
+            target === TangentMode.Mirror
+                ? mirrorTangent(cur)
+                : target === TangentMode.Aligned
+                  ? alignTangent(cur)
+                  : { ...cur, mode: TangentMode.Free };
+        setTangent(ecs, section, order, next);
     }
     commit(history);
+    closeDots();
 }
+
+// Reset: re-infer the node's tangents from its current chords (interior → stamped Aligned;
+// a tip → cleared back to live). one undo entry.
+function doReset(): void {
+    const eid = editor.tangentEdit;
+    if (eid === null) return;
+    beginMove(ecs, Handle.section.get(eid));
+    resetTangent(ecs, Handle.section.get(eid), Handle.order.get(eid));
+    commit(history);
+    closeDots();
+}
+
+// the submenu closes when tangent edit exits (Esc, click-away, selecting elsewhere) — derived,
+// not hand-wired onto each exit path.
+$effect(() => {
+    if (!radial?.editing) dotsOpen = false;
+});
+// click-away closes the submenu (peeling just it, staying in tangent edit); a click on the
+// dots button or a submenu item passes through so it can toggle / act first.
+$effect(() => {
+    if (!dotsOpen) return;
+    const onDown = (e: PointerEvent): void => {
+        const t = e.target as HTMLElement | null;
+        if (t?.closest(".tmenu") || t?.closest(".dots")) return;
+        dotsOpen = false;
+    };
+    window.addEventListener("pointerdown", onDown, { capture: true });
+    return () => window.removeEventListener("pointerdown", onDown, { capture: true });
+});
 
 // the section context menu (Convert / Delete), summoned by right-click on a clip or a
 // viewport span (both call editor.openContext). rendered once here at the app root so it
@@ -390,78 +465,99 @@ $effect(() => {
     </div>
 {/if}
 
-<!-- contextual actions radially around the selected chain end: extend along the
-     heading, delete rotated off it -->
-{#if endUI}
-    <div class="radial" style="left: {endUI.x}px; top: {endUI.y}px;" aria-label="End piece actions">
-        <button
-            type="button"
-            class="rbtn extend"
-            title="Extend (Enter)"
-            aria-label="Extend"
-            style="transform: translate(calc(-50% + {endUI.ext.x}px), calc(-50% + {endUI.ext.y}px));"
-            onclick={onExtend}
-        >
-            <svg viewBox="0 0 14 14" aria-hidden="true">
-                <path
-                    d="M7 3 L7 11 M3 7 L11 7"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.6"
-                    stroke-linecap="round"
-                />
-            </svg>
-        </button>
-        {#if handleCount > 2}
+<!-- contextual actions radially around a selected node: at the chain end, extend along the
+     heading + delete rotated off it; in tangent-edit mode, a dots (…) button opening the mode
+     submenu, placed opposite the heading so the submenu never covers extend/delete. -->
+{#if radial}
+    <div class="radial" style="left: {radial.x}px; top: {radial.y}px;" aria-label="Node actions">
+        {#if radial.isEnd}
             <button
                 type="button"
-                class="rbtn delete"
-                title="Delete (Del)"
-                aria-label="Delete"
-                style="transform: translate(calc(-50% + {endUI.del.x}px), calc(-50% + {endUI.del.y}px));"
-                onclick={onDelete}
+                class="rbtn extend"
+                title="Extend (Enter)"
+                aria-label="Extend"
+                style="transform: translate(calc(-50% + {radial.ext.x}px), calc(-50% + {radial.ext.y}px));"
+                onclick={onExtend}
             >
                 <svg viewBox="0 0 14 14" aria-hidden="true">
                     <path
-                        d="M3 4 L11 4 M5.5 4 L5.5 2.5 L8.5 2.5 L8.5 4 M4.5 4 L5 11.5 L9 11.5 L9.5 4"
+                        d="M7 3 L7 11 M3 7 L11 7"
                         fill="none"
                         stroke="currentColor"
-                        stroke-width="1.3"
+                        stroke-width="1.6"
                         stroke-linecap="round"
-                        stroke-linejoin="round"
                     />
+                </svg>
+            </button>
+            {#if handleCount > 2}
+                <button
+                    type="button"
+                    class="rbtn delete"
+                    title="Delete (Del)"
+                    aria-label="Delete"
+                    style="transform: translate(calc(-50% + {radial.del.x}px), calc(-50% + {radial.del.y}px));"
+                    onclick={onDelete}
+                >
+                    <svg viewBox="0 0 14 14" aria-hidden="true">
+                        <path
+                            d="M3 4 L11 4 M5.5 4 L5.5 2.5 L8.5 2.5 L8.5 4 M4.5 4 L5 11.5 L9 11.5 L9.5 4"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.3"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                        />
+                    </svg>
+                </button>
+            {/if}
+        {/if}
+        {#if radial.editing}
+            <button
+                type="button"
+                class="rbtn dots"
+                class:on={dotsOpen}
+                title="Tangent mode"
+                aria-label="Tangent mode"
+                aria-haspopup="menu"
+                aria-expanded={dotsOpen}
+                style="transform: translate(calc(-50% + {radial.dots.x}px), calc(-50% + {radial.dots.y}px));"
+                onclick={() => (dotsOpen = !dotsOpen)}
+            >
+                <svg viewBox="0 0 14 14" aria-hidden="true">
+                    <circle cx="3.5" cy="7" r="1.1" fill="currentColor" />
+                    <circle cx="7" cy="7" r="1.1" fill="currentColor" />
+                    <circle cx="10.5" cy="7" r="1.1" fill="currentColor" />
                 </svg>
             </button>
         {/if}
     </div>
 {/if}
 
-<!-- the selected node's tangent-mode control: a small segmented pill below the node (Auto |
-     Aligned | Free). Auto is the default; Aligned/Free summon the explicit handles, and Auto is
-     always one click back (the step down is accessible, never forced). -->
-{#if nodeUI}
-    <div class="tmode" style="left: {nodeUI.x}px; top: {nodeUI.y}px;" aria-label="Tangent mode">
-        <button
-            type="button"
-            class="tseg"
-            class:on={nodeUI.mode === null}
-            title="Auto tangent"
-            onclick={() => pickMode(null)}>Auto</button
-        >
-        <button
-            type="button"
-            class="tseg"
-            class:on={nodeUI.mode === TangentMode.Aligned}
-            title="Aligned tangents"
-            onclick={() => pickMode(TangentMode.Aligned)}>Aligned</button
-        >
-        <button
-            type="button"
-            class="tseg"
-            class:on={nodeUI.mode === TangentMode.Free}
-            title="Free tangents"
-            onclick={() => pickMode(TangentMode.Free)}>Free</button
-        >
+<!-- the tangent-mode submenu (Mirror | Aligned | Free + Reset): summoned by the dots button,
+     an instance of the shared menu language, opened radially outward past the dots so it stays
+     clear of the extend/delete buttons. -->
+{#if radial && radial.editing && dotsOpen}
+    <div
+        class="tmenu menu"
+        role="menu"
+        aria-label="Tangent mode"
+        style="left: {radial.x}px; top: {radial.y}px; transform: translate(calc(-50% + {radial.dots
+            .x + radial.ux * DOTS_PUSH}px), calc(-50% + {radial.dots.y + radial.uy * DOTS_PUSH}px));"
+    >
+        {#each modeItems as item (item.label)}
+            <button
+                type="button"
+                class="menu-item"
+                class:checked={item.checked}
+                role="menuitem"
+                disabled={item.enabled === false}
+                aria-disabled={item.enabled === false || undefined}
+                onclick={item.action}
+            >
+                <span>{item.label}</span>
+                {#if item.checked}<span class="tick">✓</span>{/if}
+            </button>
+        {/each}
     </div>
 {/if}
 
@@ -550,8 +646,8 @@ $effect(() => {
        the dragged surface holds pointer capture, so it's unaffected. */
     :global([data-dragging]) .rbtn,
     :global([data-dragging]) .ctxmenu,
+    :global([data-dragging]) .tmenu,
     :global([data-dragging]) .vtool,
-    :global([data-dragging]) .tmode,
     :global([data-dragging]) .vtip {
         pointer-events: none;
         user-select: none;
@@ -678,48 +774,38 @@ $effect(() => {
         background: var(--danger-soft);
         border-color: var(--danger);
     }
-
-    /* the tangent-mode pill: a compact segmented control centered below the selected node.
-       opaque surface, quiet muted segments, the active mode accent-lit — the same visual
-       language as the viewport tools + menus (root ui.md one-language). */
-    .tmode {
-        position: absolute;
-        z-index: 3;
-        transform: translate(-50%, 16px);
-        display: inline-flex;
-        padding: 2px;
-        gap: 2px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        box-shadow: var(--shadow);
-        user-select: none;
-        -webkit-user-select: none;
-        font-family: "Outfit", system-ui, sans-serif;
-        animation: tmode-in 120ms ease;
-    }
-    @keyframes tmode-in {
-        from {
-            opacity: 0;
-        }
-    }
-    .tseg {
-        all: unset;
-        box-sizing: border-box;
-        padding: 3px 9px;
-        border-radius: 4px;
-        font-size: 11px;
+    /* the tangent-mode dots button: a quiet neutral affordance, accent-lit while its submenu
+       is open (the same lit-active language as the viewport toggle). */
+    .rbtn.dots {
         color: var(--muted);
-        cursor: pointer;
-        transition: color 120ms ease, background 120ms ease;
     }
-    .tseg:hover {
+    .rbtn.dots:hover {
         color: var(--fg);
         background: rgba(255, 255, 255, 0.06);
     }
-    .tseg.on {
+    .rbtn.dots.on {
         color: var(--accent);
-        background: var(--accent-soft);
+        border-color: var(--accent);
+    }
+
+    /* the tangent-mode submenu: an instance of the shared `.menu` language, floated over the
+       viewport and positioned by its inline transform (opened radially past the dots button).
+       min-width so the mode rows + check don't jostle; its own entrance fade. */
+    .tmenu {
+        position: absolute;
+        z-index: 4;
+        min-width: 118px;
+        animation: ctx-in 120ms ease;
+    }
+    /* the current-mode row: accent-lit like every other active state; the trailing check is the
+       colorblind-safe second channel (shape, not color alone — root ui.md). */
+    :global(.menu-item.checked),
+    :global(.menu-item.checked:hover) {
+        color: var(--accent);
+    }
+    :global(.menu-item .tick) {
+        color: var(--accent);
+        font-size: 10px;
     }
 
     /* the shared menu language (root ui.md one-language): the append flyout's standard menu

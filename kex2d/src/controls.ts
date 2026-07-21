@@ -3,6 +3,8 @@ import {
     beginDrag,
     editor,
     endDrag as endDragGesture,
+    enterTangentEdit,
+    exitTangentEdit,
     openContext,
     select,
     selectSection,
@@ -166,17 +168,17 @@ function pickStart(ecs: State, tx: ViewTx, sx: number, sy: number): boolean {
     return dx * dx + dy * dy < START_PICK_R * START_PICK_R;
 }
 
-/** the selected node's tangent handle nearest the screen point (within the grab radius), or
- *  null — the summoned inner layer: only the selected node exposes handles (explicit ones
- *  solid, a selected `Auto` node's arc-rule ghosts), and they're picked before the node so a
- *  handle over its node still grabs. */
+/** the tangent-edited node's handle nearest the screen point (within the grab radius), or
+ *  null — the summoned inner layer: only the node in tangent-edit mode exposes handles
+ *  (explicit ones solid, a live tip's arc-rule ghosts), and they're picked before the node so
+ *  a handle over its node still grabs. */
 function pickTangentHandle(
     ecs: State,
     tx: ViewTx,
     sx: number,
     sy: number,
 ): { eid: number; side: TangentSide; x: number; y: number } | null {
-    const sel = editor.selection;
+    const sel = editor.tangentEdit;
     if (sel === null) return null;
     const s = trackSamples(ecs);
     if (!s) return null;
@@ -280,19 +282,39 @@ function magnetInput(
     return inp;
 }
 
+/** wrap a degree value into (−180, 180]. */
+function normDeg(d: number): number {
+    return ((((d + 180) % 360) + 360) % 360) - 180;
+}
+
 /** flash the fired magnet guides in world space (the render pass reads `snapGuides`). the
- *  polar guides hang off the previous node — the screen angle inverts to world (the y-flip),
- *  the screen radius to world meters. */
-function applyGuides(guides: Guide[], tx: ViewTx, prev: { x: number; y: number } | null): void {
+ *  angle guide hangs off the previous node as a ray (the screen angle inverts to world, the
+ *  y-flip) plus a numeric degree label at the snapped point; a snapped length flashes a metre
+ *  label near the cursor (the Figma measurement pattern). `snapped` is the resolved drag point
+ *  in world coords — the label anchor. */
+function applyGuides(
+    guides: Guide[],
+    tx: ViewTx,
+    prev: { x: number; y: number } | null,
+    snapped: { x: number; y: number },
+): void {
     for (const g of guides) {
         if (g.kind === "alignX") snapGuides.x = (g.value - tx.ox) / tx.sx;
         else if (g.kind === "alignY") snapGuides.y = (g.value - tx.oy) / tx.sy;
         else if (g.kind === "angle" && prev) {
             const w = screenToWorld(tx, prev.x, prev.y);
             snapGuides.ray = { x: w.x, y: w.y, angle: -g.value };
-        } else if (g.kind === "length" && prev) {
-            const w = screenToWorld(tx, prev.x, prev.y);
-            snapGuides.ring = { x: w.x, y: w.y, r: g.value / Math.abs(tx.sx) };
+            snapGuides.angleLabel = {
+                x: snapped.x,
+                y: snapped.y,
+                text: `${normDeg((-g.value * 180) / Math.PI)}°`,
+            };
+        } else if (g.kind === "length") {
+            snapGuides.lengthLabel = {
+                x: snapped.x,
+                y: snapped.y,
+                text: `${Math.round(g.value / Math.abs(tx.sx))} m`,
+            };
         }
     }
 }
@@ -365,6 +387,9 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
     let worldX: number;
     let worldY: number;
     if (snapActive(e.ctrlKey || e.metaKey)) {
+        // a handle drag snaps the ANGLE raster only — `pxPerMeter: 0` drops the length family
+        // (the resolver gates it on `pxPerMeter > 0`), so the resolver stays untouched and the
+        // handle length is never quantised (length snap on handles deferred, spec stage 6).
         const inp: SnapInput = {
             px: hx,
             py: hy,
@@ -373,14 +398,14 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
             incoming: null,
             alignX: [],
             alignY: [],
-            pxPerMeter: Math.abs(tx.sx),
+            pxPerMeter: 0,
             lock: null,
         };
         const res = resolveSnap(inp);
         const w = screenToWorld(tx, res.px, res.py);
         worldX = w.x;
         worldY = w.y;
-        applyGuides(res.guides, tx, pivot);
+        applyGuides(res.guides, tx, pivot, { x: worldX, y: worldY });
     } else {
         const w = screenToWorld(tx, hx, hy);
         worldX = w.x;
@@ -479,6 +504,19 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         selectStart(false);
     };
 
+    // double-click a node → enter tangent edit (Figma's vector-edit summon): its handles
+    // appear and the dots submenu offers the mode. node 0 (the entry anchor) isn't pickable,
+    // so it can't be edited. an empty double-click does nothing (single-click already
+    // deselects). the two constituent clicks each select the node; this fires after, so the
+    // final state is the node selected + in edit.
+    const onDblClick = (e: MouseEvent): void => {
+        if (e.button !== 0) return;
+        const { x: cx, y: cy } = pointerToCanvas(canvas, e);
+        const tx = viewTransform(canvas);
+        const eid = pickNode(ecs, tx, cx, cy);
+        if (eid !== null) enterTangentEdit(eid);
+    };
+
     const onPointerMove = (e: PointerEvent): void => {
         if (panning) {
             const { x, y } = pointerToCanvas(canvas, e);
@@ -527,7 +565,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             const w = screenToWorld(tx, res.px, res.py);
             tgtX = w.x;
             tgtY = w.y;
-            applyGuides(res.guides, tx, inp.prev);
+            applyGuides(res.guides, tx, inp.prev, { x: tgtX, y: tgtY });
         }
         dragTo(ecs, dragNode, tgtX, tgtY);
     };
@@ -643,7 +681,13 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
 
         if (e.key === "Escape") {
-            if (editor.selection !== null || editor.section !== null || editor.start) {
+            // dismissal peels one layer: exit tangent edit first (keep the node selected), else
+            // clear the selection. the dots submenu is inside App and closes by derivation when
+            // the edit exits.
+            if (editor.tangentEdit !== null) {
+                e.preventDefault();
+                exitTangentEdit();
+            } else if (editor.selection !== null || editor.section !== null || editor.start) {
                 e.preventDefault();
                 select(null);
                 selectSection(null);
@@ -676,6 +720,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
 
     canvas.addEventListener("contextmenu", onContextMenu);
     canvas.addEventListener("mousedown", onMouseDown);
+    canvas.addEventListener("dblclick", onDblClick);
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", endDrag);
@@ -686,6 +731,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     return () => {
         canvas.removeEventListener("contextmenu", onContextMenu);
         canvas.removeEventListener("mousedown", onMouseDown);
+        canvas.removeEventListener("dblclick", onDblClick);
         canvas.removeEventListener("pointerdown", onPointerDown);
         canvas.removeEventListener("pointermove", onPointerMove);
         canvas.removeEventListener("pointerup", endDrag);

@@ -12,6 +12,9 @@ export type MenuItem = {
     shortcut?: string;
     /** the destructive red tint. */
     danger?: boolean;
+    /** a selected/active row (the accent-lit state) — e.g. the current tangent mode in a
+     *  mode-picker submenu. Omitted = not a selectable row. */
+    checked?: boolean;
     /**
      * whether the action is possible right now. `false` renders the row disabled — dimmed,
      * non-interactive, `aria-disabled` — and the action can't fire. Omitted = always enabled.

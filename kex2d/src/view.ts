@@ -103,29 +103,38 @@ export function cameraTx(cam: Camera): ViewTx {
 export const camera: Camera = { zoom: 0, ox: 0, oy: 0 };
 let framed = false;
 
-/** transient world-space snap guides flashed while a viewport node drag latches a magnet
- *  target (the Figma alignment-guide flash, one per fired family). the cartesian pair are
- *  world axes: `x` the world x of an active vertical guide, `y` the world y of a horizontal
- *  one. the polar pair hang off the previous node: `ray` a line through it at a world angle
- *  (the snapped chord angle), `ring` a circle around it at a world radius (the snapped chord
- *  length). each is null when its family isn't firing. mutated in place by the drag controls,
- *  read by the render pass, cleared on release — the viewport twin of the timeline's snap
- *  guide. */
+/** transient world-space snap guides flashed while a viewport drag latches a magnet target
+ *  (the Figma alignment-guide flash, one per fired family). the cartesian pair are world axes:
+ *  `x` the world x of an active vertical guide, `y` the world y of a horizontal one. `ray`
+ *  hangs off the previous node — a line through it at the snapped chord angle. a snapped angle
+ *  or length also flashes a numeric label (Figma's measurement pattern): `angleLabel` (e.g.
+ *  "30°") anchored at the snapped point, `lengthLabel` (e.g. "3 m") near the cursor — each a
+ *  world anchor + text the render pass projects to screen. each field is null when its family
+ *  isn't firing. mutated in place by the drag controls, read by the render pass, cleared on
+ *  release — the viewport twin of the timeline's snap guide. */
 export interface SnapGuides {
     x: number | null;
     y: number | null;
     ray: { x: number; y: number; angle: number } | null;
-    ring: { x: number; y: number; r: number } | null;
+    angleLabel: { x: number; y: number; text: string } | null;
+    lengthLabel: { x: number; y: number; text: string } | null;
 }
 
-export const snapGuides: SnapGuides = { x: null, y: null, ray: null, ring: null };
+export const snapGuides: SnapGuides = {
+    x: null,
+    y: null,
+    ray: null,
+    angleLabel: null,
+    lengthLabel: null,
+};
 
 /** clear every snap guide (drag release / teardown). */
 export function clearGuides(): void {
     snapGuides.x = null;
     snapGuides.y = null;
     snapGuides.ray = null;
-    snapGuides.ring = null;
+    snapGuides.angleLabel = null;
+    snapGuides.lengthLabel = null;
 }
 
 /** frame the camera to the default view for a canvas size (also the reset target). */

@@ -95,6 +95,22 @@ if (import.meta.env.DEV) {
             const tx = viewTransform(canvas);
             return tangentHandles(ecs, s, tx, eid).map((h) => ({ side: h.side, x: h.x, y: h.y }));
         },
+        // whether a node is in tangent-edit mode (double-click summon) — the flow asserts the
+        // double-click entered it before driving the dots submenu + handle drag. read-only.
+        editing: (): boolean => editor.tangentEdit !== null,
+        // a node's screen point (canvas-local px) — where the flow double-clicks to enter
+        // tangent edit. mirrors tangentHandles: canvas-drawn nodes carry no DOM box, so this is
+        // their locator. node 0 (the entry anchor) isn't editable, so it's excluded.
+        nodeAt: (order: number): { x: number; y: number } | null => {
+            if (order === 0) return null;
+            const eid = handleAt(ecs, sec(), order);
+            const s = samples.get(track);
+            const canvas = Canvas2D.element;
+            if (eid === null || !s || !canvas) return null;
+            const tx = viewTransform(canvas);
+            const i = Handle.sample.get(eid);
+            return { x: tx.ox + s.posX[i] * tx.sx, y: tx.oy + s.posY[i] * tx.sy };
+        },
         // move a node in y — the "drag a node, the curve reacts" step, without pixels.
         // node 0 is the pinned entry anchor, so it's never nudged.
         nudge: (order: number, dy: number): void => {

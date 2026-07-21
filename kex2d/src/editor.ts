@@ -14,6 +14,12 @@ export type Surface = "viewport" | "timeline";
 interface EditorState {
     /** eid of the currently selected node (geo section), or null. */
     selection: number | null;
+    /** eid of the node in tangent-edit mode (its handles are summoned), or null — a
+     *  sub-mode layered on node selection: `tangentEdit !== null` implies
+     *  `selection === tangentEdit`. entered by double-clicking a node (Figma vector edit);
+     *  any selection change to a different subject, Esc, or click-away exits it. NOT a fifth
+     *  mutually-exclusive selection — a refinement of the node-selection state. */
+    tangentEdit: number | null;
     /** stable id of the currently selected force point (force section), or null. */
     force: number | null;
     /** stable id of the currently selected section, or null. section selection is a
@@ -44,6 +50,7 @@ interface EditorState {
 
 export const editor: EditorState = {
     selection: null,
+    tangentEdit: null,
     force: null,
     section: null,
     start: false,
@@ -129,8 +136,11 @@ export const snapActive = (mod: boolean): boolean => editor.snap !== mod;
 // the contextual actions (node extend/trim, force field popover, section ops, v0
 // popover) never fight over which target a key press means.
 
-/** select a node (null to clear). */
+/** select a node (null to clear). selecting a *different* subject (another node, null,
+ *  empty space) exits tangent edit; re-selecting the edited node keeps it (so grabbing its
+ *  own handle or nudging it doesn't drop the mode). */
 export function select(eid: number | null): void {
+    if (eid !== editor.tangentEdit) editor.tangentEdit = null;
     editor.selection = eid;
     if (eid !== null) {
         editor.force = null;
@@ -139,11 +149,28 @@ export function select(eid: number | null): void {
     }
 }
 
+/** enter tangent-edit mode on a node — the summon (double-click). selects the node (clearing
+ *  the other selections) and layers the edit sub-mode on it, so its handles render and grab.
+ *  node 0 (the entry anchor) has no editable tangent — a no-op there. */
+export function enterTangentEdit(eid: number): void {
+    editor.selection = eid;
+    editor.force = null;
+    editor.section = null;
+    editor.start = false;
+    editor.tangentEdit = eid;
+}
+
+/** exit tangent-edit mode, keeping the node selected (Esc's first peel). */
+export function exitTangentEdit(): void {
+    editor.tangentEdit = null;
+}
+
 /** select a force point by its stable id (null to clear). */
 export function selectForce(id: number | null): void {
     editor.force = id;
     if (id !== null) {
         editor.selection = null;
+        editor.tangentEdit = null;
         editor.section = null;
         editor.start = false;
     }
@@ -154,6 +181,7 @@ export function selectSection(id: number | null): void {
     editor.section = id;
     if (id !== null) {
         editor.selection = null;
+        editor.tangentEdit = null;
         editor.force = null;
         editor.start = false;
     }
@@ -164,6 +192,7 @@ export function selectStart(on: boolean): void {
     editor.start = on;
     if (on) {
         editor.selection = null;
+        editor.tangentEdit = null;
         editor.force = null;
         editor.section = null;
     }

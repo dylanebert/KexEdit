@@ -97,6 +97,18 @@ describe("chord-length raster (1 m)", () => {
         expect(res.guides[0].value).toBeCloseTo(150, 9); // 3 m × 50 px/m
         expect(radiusOf(res)).toBeCloseTo(150, 6);
     });
+
+    test("pxPerMeter 0 drops the length family (the handle-drag angle-only case)", () => {
+        // a tangent-handle drag passes pxPerMeter 0 so the length raster never quantises the
+        // handle length (length snap on handles deferred). the resolver stays untouched — it
+        // gates the length family on pxPerMeter > 0 — so the same 3 m point that snapped above
+        // now fires nothing but whatever angle target is in range.
+        const raw = polar(3.1 * 50, ANGLE_STEP / 2); // still off the 15° raster
+        const res = resolveSnap(input({ ...raw, prev: PREV, pxPerMeter: 0 }));
+        expect(res.guides.some((g) => g.kind === "length")).toBe(false);
+        expect(res.px).toBeCloseTo(raw.px, 6); // the point is untouched (no length pull)
+        expect(res.py).toBeCloseTo(raw.py, 6);
+    });
 });
 
 describe("angle landmarks", () => {

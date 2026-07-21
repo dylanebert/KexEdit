@@ -311,16 +311,16 @@ const HandleDrawSystem: System = {
 
 const TANGENT_KNOB = 3.5; // half-size of a handle knob square (px)
 
-/** the selected node's tangent handles: an arm from the node to each in/out knob. an
- *  *explicit* node draws solid filled knobs (the authored inner layer); a selected *Auto*
- *  node draws hollow ghost knobs — the summon affordance a drag pulls into an explicit
- *  tangent. only the selected node shows any, so the default surface stays uncluttered. */
+/** the tangent-edited node's handles: an arm from the node to each in/out knob. an *explicit*
+ *  node draws solid filled knobs (the authored inner layer); a live tip draws hollow ghost
+ *  knobs — the affordance a first drag stamps into an explicit tangent. only the node in
+ *  tangent-edit mode (double-clicked) shows any, so mere selection stays uncluttered. */
 const TangentDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
         const { element: canvas, ctx } = Canvas2D;
         if (!ctx) return;
-        const sel = editor.selection;
+        const sel = editor.tangentEdit;
         if (sel === null) return;
         const tx = viewTransform(canvas);
         for (const trackEid of ecs.query([Track])) {
@@ -413,10 +413,11 @@ const CartDrawSystem: System = {
     },
 };
 
-/** the viewport snap-guide flash: a thin guide per fired magnet family, drawn over the
- *  track and cleared by the controls on release. the cartesian pair are world-axis lines
- *  (the Figma alignment guide); the polar pair hang off the previous node — a ray at the
- *  snapped chord angle, a ring at the snapped chord length. */
+/** the viewport snap-guide flash: a thin guide per fired magnet family, drawn over the track
+ *  and cleared by the controls on release. the cartesian pair are world-axis lines (the Figma
+ *  alignment guide); the angle guide is a ray through the previous node at the snapped chord
+ *  angle. a snapped angle/length also flashes a numeric label (° / m) at the drag point — the
+ *  Figma measurement readout, replacing the deleted length ring. */
 const SnapGuideSystem: System = {
     group: "draw",
     update(): void {
@@ -426,7 +427,8 @@ const SnapGuideSystem: System = {
             snapGuides.x === null &&
             snapGuides.y === null &&
             snapGuides.ray === null &&
-            snapGuides.ring === null
+            snapGuides.angleLabel === null &&
+            snapGuides.lengthLabel === null
         )
             return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
@@ -459,14 +461,18 @@ const SnapGuideSystem: System = {
             ctx.lineTo(cx - dx * L * sx, cy - dy * L * sy);
         }
         ctx.stroke();
-        if (snapGuides.ring !== null) {
-            // a circle around the previous node at the snapped world radius (the length locus).
-            const { x: rx, y: ry, r } = snapGuides.ring;
-            const cx = ox + rx * sx;
-            const cy = oy + ry * sy;
-            ctx.beginPath();
-            ctx.arc(cx, cy, r * Math.abs(sx), 0, Math.PI * 2);
-            ctx.stroke();
+        // numeric labels near the drag point (the app's data font). angle sits above-right of
+        // the point, length below-right, so a co-fire (angle + length) never overprints.
+        ctx.font = "11px 'JetBrains Mono', ui-monospace, monospace";
+        ctx.fillStyle = COLOR_SNAP;
+        ctx.textBaseline = "middle";
+        if (snapGuides.angleLabel !== null) {
+            const { x, y, text } = snapGuides.angleLabel;
+            ctx.fillText(text, ox + x * sx + 10, oy + y * sy - 12);
+        }
+        if (snapGuides.lengthLabel !== null) {
+            const { x, y, text } = snapGuides.lengthLabel;
+            ctx.fillText(text, ox + x * sx + 10, oy + y * sy + 14);
         }
         ctx.restore();
     },
