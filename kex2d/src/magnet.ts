@@ -36,8 +36,8 @@ export type GuideKind = "alignX" | "alignY" | "angle" | "length";
 
 /** a fired guide, screen-space. `value` reads by kind: alignX = the screen x of the
  *  vertical line; alignY = the screen y of the horizontal line; angle = the screen-radians
- *  of the ray through the previous node; length = the screen-px radius of the ring around
- *  it. */
+ *  of the ray through the previous node; length = the screen-px radius from the previous
+ *  node (the caller renders it as a metre label). */
 export interface Guide {
     kind: GuideKind;
     value: number;

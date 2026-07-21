@@ -366,8 +366,9 @@ function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
 }
 
 /** advance a tangent-handle drag: fold in the grab offset, snap the handle point against the
- *  polar magnet around the node (the 15° angle raster + 1 m length ring — same resolver as the
- *  node drag, pivoting on the node), then write the edited tangent. the first move of an `Auto`
+ *  polar magnet around the node (the 15° angle raster only — same resolver as the node drag,
+ *  pivoting on the node; length snap dropped for handles), then write the edited tangent. the
+ *  first move of an `Auto`
  *  node's ghost handle seeds the explicit tangent from the arc rule (the direct-manipulation
  *  summon — continuous, no jump) before editing. */
 function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): void {
