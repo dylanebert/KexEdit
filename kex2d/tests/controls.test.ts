@@ -10,6 +10,7 @@ import {
     LATCH_PX,
     nodeMetrics,
     normDeg,
+    polarNudge,
     selectedMetrics,
 } from "../src/controls";
 import { ANGLE_STEP } from "../src/magnet";
@@ -36,8 +37,8 @@ import {
 // incline. one formatter serves both: integer within float noise, else one decimal.
 
 test("a raster-multiple incline reads as a clean integer despite the radian→degree round-trip", () => {
-    // the magnet's angle guide carries the incline in radians (k·ANGLE_STEP); the caller converts
-    // it the way applyGuides does (screen→world y-flip, rad→deg).
+    // the manipulator's angle control carries the incline in world radians (k·ANGLE_STEP); the
+    // readout feed converts it rad→deg (`dragManipTo`), so a raster multiple must cancel clean.
     for (let k = -6; k <= 6; k++) {
         const incline = k * ANGLE_STEP;
         const label = formatDeg((-incline * 180) / Math.PI);
@@ -275,4 +276,42 @@ test("the section entry frame rotates the local heading into world", () => {
     // world exit heading = 0° local + entry.theta → the entry heading, NOT 0°.
     expect(exitWorld(tip1)).toBeCloseTo(info1.entry.theta, 6);
     expect(selectedMetrics(state, tip1)?.angleLabel).toBe(formatDeg(entryDeg));
+});
+
+// the polar arrow-nudge (`polarNudge`, the manipulators' keyboard twin): up/down step the chord
+// LENGTH along its own direction, left/right rotate the chord ANGLE around the previous node by a
+// fixed on-screen arc (step metres at the current radius → step/radius radians). the length floor
+// keeps the chord from collapsing onto the previous node (a degenerate frame). `dir` is ±1.
+
+const PREV0 = { x: 0, y: 0 };
+
+test("length nudge steps the chord along its own direction, preserving the bearing", () => {
+    // node 4 m out along +x; +1 m step → 5 m, still on +x (angle unchanged).
+    expect(polarNudge(PREV0, { x: 4, y: 0 }, "length", 1, 1, 0.05)).toEqual({ x: 5, y: 0 });
+    // −1 m step → 3 m.
+    expect(polarNudge(PREV0, { x: 4, y: 0 }, "length", -1, 1, 0.05)).toEqual({ x: 3, y: 0 });
+});
+
+test("length nudge preserves a diagonal bearing (moves along the chord, not an axis)", () => {
+    // node at 45°, chord = √2; +√2 step doubles the length along the same 45° ray → (2, 2).
+    const n = polarNudge(PREV0, { x: 1, y: 1 }, "length", 1, Math.SQRT2, 0.05);
+    expect(n.x).toBeCloseTo(2, 9);
+    expect(n.y).toBeCloseTo(2, 9);
+});
+
+test("length nudge floors at minChord (can't collapse onto the previous node)", () => {
+    // a huge shrink from 0.02 m clamps to the 0.05 m floor, not through zero (which flips the frame).
+    const n = polarNudge(PREV0, { x: 0.02, y: 0 }, "length", -1, 1, 0.05);
+    expect(n.x).toBeCloseTo(0.05, 9);
+    expect(n.y).toBeCloseTo(0, 9);
+});
+
+test("angle nudge rotates around the previous node by step/radius, holding the length", () => {
+    // node 4 m out along +x; a 1 m arc step at r=4 rotates by 0.25 rad, radius unchanged.
+    const n = polarNudge(PREV0, { x: 4, y: 0 }, "angle", 1, 1, 0.05);
+    expect(Math.hypot(n.x, n.y)).toBeCloseTo(4, 9); // length held
+    expect(Math.atan2(n.y, n.x)).toBeCloseTo(0.25, 9); // +dir rotates CCW (world)
+    // −dir rotates the other way by the same amount.
+    const m = polarNudge(PREV0, { x: 4, y: 0 }, "angle", -1, 1, 0.05);
+    expect(Math.atan2(m.y, m.x)).toBeCloseTo(-0.25, 9);
 });

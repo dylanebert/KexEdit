@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
     angleControl,
+    angleKnob,
     angleToPoint,
     chordRay,
     lengthControl,
+    lengthKnob,
     lengthToPoint,
+    nodePoint,
     polarFrame,
     screenToAngle,
     screenToLength,
@@ -60,6 +63,35 @@ describe("control loci", () => {
         expect(arc.cy).toBe(PREV.y);
         // the selected node lies on the arc (its distance from the center is the radius).
         expect(Math.hypot(SEL.x - arc.cx, SEL.y - arc.cy)).toBeCloseTo(arc.r, 9);
+    });
+});
+
+describe("control knobs", () => {
+    const f = polarFrame(PREV, SEL, PX_PER_METER, 0);
+    const Gap = 30;
+
+    test("the node point sits on the chord ray at the reference radius (= the selected node)", () => {
+        const n = nodePoint(f);
+        expect(n.x).toBeCloseTo(SEL.x, 9);
+        expect(n.y).toBeCloseTo(SEL.y, 9);
+    });
+
+    test("the length knob is `gap` px beyond the node along the chord ray", () => {
+        const n = nodePoint(f);
+        const lk = lengthKnob(f, Gap);
+        // on the ray (zero perpendicular deviation from the chord direction)…
+        expect((lk.x - f.px) * f.uy - (lk.y - f.py) * f.ux).toBeCloseTo(0, 9);
+        // …exactly `gap` px past the node, away from the previous node.
+        expect(Math.hypot(lk.x - n.x, lk.y - n.y)).toBeCloseTo(Gap, 9);
+        expect((lk.x - n.x) * f.ux + (lk.y - n.y) * f.uy).toBeCloseTo(Gap, 9); // forward, not back
+    });
+
+    test("the angle knob is `gap` px off the node, perpendicular to the chord (on the arc tangent)", () => {
+        const n = nodePoint(f);
+        const ak = angleKnob(f, Gap);
+        expect(Math.hypot(ak.x - n.x, ak.y - n.y)).toBeCloseTo(Gap, 9);
+        // perpendicular to the chord direction (the arc tangent) — zero projection onto the ray.
+        expect((ak.x - n.x) * f.ux + (ak.y - n.y) * f.uy).toBeCloseTo(0, 9);
     });
 });
 

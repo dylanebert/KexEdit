@@ -1,7 +1,9 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
 import { COLOR_ACCENT, COLOR_GUIDE_RAY, kindSegments, selected } from "./colors";
+import { manipKnobs, nodeFrame } from "./controls";
 import { editor } from "./editor";
+import { nodePoint, tangentArc } from "./manipulator";
 import { niceStep } from "./timeline";
 import { editHandleSets } from "./tangents";
 import { bakeOut, Handle, handleTangent, samples, sectionInfo, sections, Track } from "./track";
@@ -377,6 +379,60 @@ const TangentDrawSystem: System = {
     },
 };
 
+const MANIP_KNOB_R = 4.5;
+
+/** the two polar manipulators on the selected node: the chord-ray length knob and the tangential-arc
+ *  angle knob (the Planet Coaster piece controls). the node body is select-only — these are how it
+ *  moves. hidden while the node is in tangent edit (its handles own that surface). one geometry
+ *  source with the pick + harness hook (`controls.ts` `nodeFrame`/`manipKnobs`), so they can't drift. */
+const ManipulatorDrawSystem: System = {
+    group: "draw",
+    update(ecs: State): void {
+        const { element: canvas, ctx } = Canvas2D;
+        if (!ctx) return;
+        const sel = editor.selection;
+        if (sel === null || editor.tangentEdit === sel) return; // tangent edit owns the surface
+        const tx = viewTransform(canvas);
+        for (const trackEid of ecs.query([Track])) {
+            const s = samples.get(trackEid);
+            if (!s) continue;
+            const f = nodeFrame(ecs, s, tx, sel);
+            const knobs = manipKnobs(ecs, s, tx, sel);
+            if (!f || !knobs) continue;
+            const node = nodePoint(f);
+            const [lk, ak] = knobs;
+            const arc = tangentArc(f);
+            ctx.save();
+            ctx.strokeStyle = COLOR_GUIDE_RAY;
+            ctx.lineWidth = 1;
+            // length axis: a stub from the node out to the length knob along the chord ray.
+            ctx.beginPath();
+            ctx.moveTo(node.x, node.y);
+            ctx.lineTo(lk.x, lk.y);
+            ctx.stroke();
+            // angle axis: a short arc through the node (centered on the previous node) out to the
+            // angle knob's bearing.
+            const a0 = Math.atan2(node.y - arc.cy, node.x - arc.cx);
+            const a1 = Math.atan2(ak.y - arc.cy, ak.x - arc.cx);
+            ctx.beginPath();
+            ctx.arc(arc.cx, arc.cy, arc.r, Math.min(a0, a1), Math.max(a0, a1));
+            ctx.stroke();
+            // the knobs — small filled circles in the neutral guide gray with a dark rim, distinct
+            // from the square bezier handles + the round radial buttons.
+            for (const k of knobs) {
+                ctx.beginPath();
+                ctx.arc(k.x, k.y, MANIP_KNOB_R, 0, Math.PI * 2);
+                ctx.fillStyle = COLOR_GUIDE_RAY;
+                ctx.fill();
+                ctx.strokeStyle = "#0e0d0c";
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+    },
+};
+
 const CartDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
@@ -457,6 +513,7 @@ export const RenderPlugin: Plugin = {
         AnchorDrawSystem,
         HandleDrawSystem,
         TangentDrawSystem,
+        ManipulatorDrawSystem,
         SnapGuideSystem,
     ],
 };

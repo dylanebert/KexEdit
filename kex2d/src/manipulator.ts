@@ -116,6 +116,26 @@ export function tangentArc(f: Frame): Arc {
     return { cx: f.px, cy: f.py, r: f.radius };
 }
 
+/** the selected node's screen point — the polar origin plus the chord (`prev + chord·radius`). the
+ *  shared render/pick anchor the two knobs offset from. */
+export function nodePoint(f: Frame): { x: number; y: number } {
+    return { x: f.px + f.ux * f.radius, y: f.py + f.uy * f.radius };
+}
+
+/** the length knob's screen point: along the chord ray `gap` px beyond the node (away from the
+ *  previous node), the drag-out-to-lengthen affordance. */
+export function lengthKnob(f: Frame, gap: number): { x: number; y: number } {
+    return { x: f.px + f.ux * (f.radius + gap), y: f.py + f.uy * (f.radius + gap) };
+}
+
+/** the angle knob's screen point: the node offset `gap` px along the arc tangent (perpendicular to
+ *  the chord), the swing-to-rotate affordance. one consistent side (`(−uy, ux)`) — the drag maps the
+ *  pointer to an angle regardless, so the side is cosmetic. */
+export function angleKnob(f: Frame, gap: number): { x: number; y: number } {
+    const n = nodePoint(f);
+    return { x: n.x - f.uy * gap, y: n.y + f.ux * gap };
+}
+
 /** screen point → chord length (world metres): the signed projection onto the chord ray ÷ the
  *  scale. a point behind the origin yields a negative length; the caller floors it at the minimum
  *  chord. the exact inverse of `lengthToPoint`. */

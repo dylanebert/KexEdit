@@ -109,12 +109,64 @@ test("geo authoring flow", async ({ page }) => {
     await expect.poll(nodeCount).toBe(7);
     await expect.poll(undoDepth).toBe(0);
 
-    // ── 3. Reshape: nudge a node and the recovered force curve reacts (re-bake). ──
+    // ── 3. Reshape via the POLAR LENGTH MANIPULATOR (the free-drag replacement, stage 5). Frame the
+    // hill so the nodes + knobs separate at pixel scale, then: (a) the node BODY is select-only — a
+    // drag across it selects but never moves the node; (b) the length knob drags the chord, re-baking
+    // the recovered force. The knobs are canvas-drawn (no DOM box), located via __kex.manipKnobs. ──
+    await page.keyboard.press("f"); // hover defaults to the viewport, so `f` routes there
+    await page.waitForTimeout(SETTLE_MS);
+
+    const canvas = page.locator("#app > canvas");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    const selectedOrder = () =>
+        page.evaluate((): number | null => (window as any).__kex.selectedOrder());
+    const nodeAt = (order: number) =>
+        page.evaluate(
+            (o: number): { x: number; y: number } | null => (window as any).__kex.nodeAt(o),
+            order,
+        );
+    const manipKnobs = () =>
+        page.evaluate(
+            (): { axis: string; x: number; y: number }[] => (window as any).__kex.manipKnobs(),
+        );
+
+    // select node 3 (the crest) by a real body click; the polar knobs summon on it.
+    const n3 = await nodeAt(3);
+    if (!n3) throw new Error("node 3 not located");
+    await page.mouse.click(cb.x + n3.x, cb.y + n3.y);
+    await expect.poll(selectedOrder).toBe(3);
+
+    // (a) SELECT-ONLY body drag: dragging across the node body moves nothing (movement is only
+    // through the manipulators). the section-local pose holds byte-identical.
     const before = await poses();
+    await page.mouse.move(cb.x + n3.x, cb.y + n3.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + n3.x + 40, cb.y + n3.y + 40, { steps: 8 });
+    await page.mouse.up();
+    expect((await poses())[3]).toEqual(before[3]); // the body drag didn't move the node
+
+    // (b) drag the LENGTH knob outward along the chord (away from node 2) → the chord lengthens, the
+    // crest moves, and the recovered force + ride time shift.
     const tBefore = await tTotal();
-    await page.evaluate(() => (window as any).__kex.nudge(3, 6)); // raise the crest
-    await expect.poll(async () => (await poses())[3][1]).not.toBe(before[3][1]);
-    // the shape changed, so the baked track — and its time — changed too.
+    const n2 = await nodeAt(2);
+    const lk = (await manipKnobs()).find((k) => k.axis === "length");
+    if (!n2 || !lk) throw new Error("length knob / node 2 not located");
+    const rl = Math.hypot(n3.x - n2.x, n3.y - n2.y);
+    const ux = (n3.x - n2.x) / rl;
+    const uy = (n3.y - n2.y) / rl; // the chord ray screen direction; dragging along it lengthens it
+    await page.mouse.move(cb.x + lk.x, cb.y + lk.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + lk.x + ux * 50, cb.y + lk.y + uy * 50, { steps: 12 });
+    await page.mouse.up();
+    // the crest moved a real distance (the chord grew)…
+    await expect
+        .poll(async () => {
+            const p = (await poses())[3];
+            return Math.hypot(p[0] - before[3][0], p[1] - before[3][1]);
+        })
+        .toBeGreaterThan(0.1);
+    // …and the reshaped geometry re-baked — the recovered force, so the ride time, shifted.
     await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-4).toBe(true);
     await page.screenshot({ path: join(OUT, "geo-2-reshape.png") });
 

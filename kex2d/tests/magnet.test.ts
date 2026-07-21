@@ -5,10 +5,8 @@ import {
     inclineOf,
     LENGTH_STEP,
     rasterIncline,
-    resolveSnap,
     snapIncline,
     snapLength,
-    type SnapInput,
 } from "../src/magnet";
 import { SNAP_PX } from "../src/timeline";
 
@@ -122,66 +120,5 @@ describe("incline resolver (exit incline at the tip)", () => {
     test("a non-positive radius disables the family", () => {
         const res = snapIncline(ANGLE_STEP / 2, 0, 0);
         expect(res.snapped).toBe(false);
-    });
-});
-
-// the legacy 2D-pool free-drag resolver (`resolveSnap`) still backs `controls.ts`' free node drag
-// until stage 5 replaces it with the two 1D manipulators. these pins guard that path byte-identical
-// while it lives; they go with `resolveSnap` when stage 5 deletes it.
-describe("resolveSnap (legacy free-drag pool)", () => {
-    const Prev = { x: 100, y: 100 };
-    const polar = (r: number, a: number): { px: number; py: number } => ({
-        px: Prev.x + r * Math.cos(a),
-        py: Prev.y + r * Math.sin(a),
-    });
-    const angleOf = (r: { px: number; py: number }): number =>
-        Math.atan2(r.py - Prev.y, r.px - Prev.x);
-    const radiusOf = (r: { px: number; py: number }): number =>
-        Math.hypot(r.px - Prev.x, r.py - Prev.y);
-    const input = (over: Partial<SnapInput>): SnapInput => ({
-        px: 0,
-        py: 0,
-        prev: null,
-        tangent: null,
-        pxPerMeter: 50,
-        lock: null,
-        ...over,
-    });
-
-    test("snaps the tip exit incline to 15° (chord targets (raster + tangent)/2)", () => {
-        const raw = polar(250, ANGLE_STEP / 2 + 0.01);
-        const res = resolveSnap(input({ ...raw, prev: Prev, tangent: 0, pxPerMeter: 200 }));
-        expect(res.guides).toHaveLength(1);
-        expect(res.guides[0].kind).toBe("angle");
-        expect(res.guides[0].value).toBeCloseTo(ANGLE_STEP, 9);
-        expect(2 * angleOf(res)).toBeCloseTo(ANGLE_STEP, 5);
-    });
-
-    test("no incline family for an interior drag (tangent null)", () => {
-        const raw = polar(250, ANGLE_STEP / 2 + 0.01);
-        const res = resolveSnap(input({ ...raw, prev: Prev, tangent: null, pxPerMeter: 200 }));
-        expect(res.guides.some((g) => g.kind === "angle")).toBe(false);
-    });
-
-    test("snaps the chord length to the nearest integer metre", () => {
-        const raw = polar(3.1 * 50, ANGLE_STEP / 2);
-        const res = resolveSnap(input({ ...raw, prev: Prev, pxPerMeter: 50 }));
-        expect(res.guides).toEqual([{ kind: "length", value: 150 }]);
-        expect(radiusOf(res)).toBeCloseTo(150, 6);
-    });
-
-    test("incline and length co-fire at their intersection", () => {
-        const raw = polar(200, ANGLE_STEP / 2 + 0.0075);
-        const res = resolveSnap(input({ ...raw, prev: Prev, tangent: 0, pxPerMeter: 200 }));
-        expect(res.guides.map((g) => g.kind).sort()).toEqual(["angle", "length"]);
-        expect(2 * angleOf(res)).toBeCloseTo(ANGLE_STEP, 4);
-        expect(radiusOf(res)).toBeCloseTo(200, 1);
-    });
-
-    test("shift y-lock: a reachable length target fires, the locked axis holds", () => {
-        const res = resolveSnap(input({ px: 255, py: 100, prev: Prev, pxPerMeter: 50, lock: "y" }));
-        expect(res.py).toBe(100);
-        expect(res.px).toBeCloseTo(250, 6);
-        expect(res.guides).toEqual([{ kind: "length", value: 150 }]);
     });
 });
