@@ -89,6 +89,143 @@ test("geo authoring flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
+// Drive the EXPLICIT-TANGENT flow (kex2d-authoring-surface stages 3+4): seed a shaped geo
+// track → frame it → select an interior node → summon an explicit FREE tangent via the real
+// mode pill → drag its out-handle → assert the authored tangent flipped explicit, the dragged
+// out-vector moved while the in-vector held (Free independence), and the reshaped curve
+// re-baked. The mode pill is a real DOM affordance; the handle drag is a real canvas pointer
+// drag located through __kex.tangentHandles (the handles are canvas-drawn, so they carry no
+// DOM box — this hook is their locator, the viewport analogue of the timeline's .fhit box).
+// Ctrl bypasses the snapping magnet so the drag lands deterministically (the resolver itself is
+// unit-covered in magnet tests, mirroring the clip-trim flow's bypass).
+test("explicit tangent flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+    const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
+    const tangent = () =>
+        page.evaluate(
+            (): { mode: number; inX: number; inY: number; outX: number; outY: number } | null =>
+                (window as any).__kex.tangent(),
+        );
+    const handles = () =>
+        page.evaluate(
+            (): { side: string; x: number; y: number }[] => (window as any).__kex.tangentHandles(),
+        );
+
+    // seed the shaped hill, then frame it so the interior node's handles separate at pixel
+    // scale (the default ±280 m framing leaves the ~23 m hill a squiggle — `F` fits it; hover
+    // defaults to the viewport, so no pre-move is needed to route the key there).
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await expect.poll(nodeCount).toBe(7);
+    await page.keyboard.press("f");
+    await page.waitForTimeout(SETTLE_MS);
+
+    // ── 1. Select the crest (interior node, order 3) → its Auto tangent-mode pill appears,
+    // and its arc-rule ghost handles draw (the direct-manipulation summon affordance). ──
+    await page.evaluate(() => (window as any).__kex.selectNode(3));
+    await expect(page.locator(".tmode")).toBeVisible();
+    expect(await tangent()).toBeNull(); // Auto: no stored tangent yet (the default)
+    await page.waitForTimeout(300); // let the pill's 120ms fade-in finish before the shot
+    await page.screenshot({ path: join(OUT, "tangent-1-summon.png") });
+
+    // ── 2. Summon an explicit FREE tangent via the real mode pill → the node flips explicit
+    // with independent in/out handles (a corner becomes expressible). the Free segment lights. ──
+    await page.locator(".tmode").getByText("Free", { exact: true }).click();
+    await expect(page.locator(".tmode .tseg.on")).toHaveText("Free");
+    const summoned = await tangent();
+    expect(summoned).not.toBeNull();
+    if (!summoned) throw new Error("tangent null after summon");
+    expect(summoned.mode).toBe(2); // TangentMode.Free
+
+    // ── 3. Drag the OUT-handle (a real canvas pointer drag, located via __kex + the canvas
+    // box) → the authored out-vector moves, the in-vector holds (Free independence). ──
+    const canvas = page.locator("#app > canvas");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    const out = (await handles()).find((h) => h.side === "out");
+    if (!out) throw new Error("out-handle not exposed on the selected interior node");
+
+    const tBefore = await tTotal();
+    await page.keyboard.down("Control"); // bypass the magnet — deterministic landing
+    await page.mouse.move(cb.x + out.x, cb.y + out.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + out.x + 40, cb.y + out.y - 40, { steps: 12 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+
+    const dragged = await tangent();
+    expect(dragged).not.toBeNull();
+    if (!dragged) throw new Error("tangent null after drag");
+    expect(dragged.mode).toBe(2); // still Free
+    // the dragged out-vector moved by a real distance…
+    expect(
+        Math.hypot(dragged.outX - summoned.outX, dragged.outY - summoned.outY),
+    ).toBeGreaterThan(0.1);
+    // …while the in-vector held its seeded value (Free's per-side independence).
+    expect(dragged.inX).toBeCloseTo(summoned.inX, 5);
+    expect(dragged.inY).toBeCloseTo(summoned.inY, 5);
+    // the reshaped curve re-baked — the recovered force, and so the ride time, shifted.
+    await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-4).toBe(true);
+    expect(await undoDepth()).toBeGreaterThan(0); // the pill summon + handle drag are undoable
+    await page.screenshot({ path: join(OUT, "tangent-2-drag.png") });
+
+    // ── 4. Revert to Auto via the pill (one click, always available) → the stored tangent
+    // clears back to the arc rule. ──
+    await page.locator(".tmode").getByText("Auto", { exact: true }).click();
+    await expect(page.locator(".tmode .tseg.on")).toHaveText("Auto");
+    expect(await tangent()).toBeNull();
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Screenshot the VIEWPORT TOGGLE CLUSTER (kex2d-authoring-surface stage 1): the persistent
+// top-left overlay that is the snap magnet's real home (a viewport affordance, not a second
+// dock). Assert the toggle's lit/dimmed state rides `aria-pressed` (positive, not
+// absence-of-error), and capture the default-on and toggled-off looks. `S` toggles it
+// globally (the AE magnet key, not hover-gated).
+test("viewport toggle cluster shot", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const cluster = page.locator(".viewport-tools");
+    const snap = cluster.locator(".vtool");
+    await expect(cluster).toBeVisible();
+    // default-on: the magnet toggle reads pressed and lit.
+    await expect(snap).toHaveAttribute("aria-pressed", "true");
+    await page.waitForTimeout(300);
+    await cluster.screenshot({ path: join(OUT, "toggle-cluster-on.png") });
+
+    // ── S toggles it off (global, the AE magnet key) → aria-pressed flips, the icon dims. ──
+    await page.keyboard.press("s");
+    await expect(snap).toHaveAttribute("aria-pressed", "false");
+    await page.waitForTimeout(150);
+    await cluster.screenshot({ path: join(OUT, "toggle-cluster-off.png") });
+
+    // S again restores the default — keep the toggle honest across the flow.
+    await page.keyboard.press("s");
+    await expect(snap).toHaveAttribute("aria-pressed", "true");
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
 // Drive the FORCE-AUTHORING flow: a geo track →
 // convert to force via the real mode toggle (resets to an empty 1g profile) → author
 // an airtime bump by force points → convert back to geo (resets to the flat seed) →

@@ -6,12 +6,15 @@ import { cartArc, cartState, CartPlugin } from "./cart";
 import { editor, select } from "./editor";
 import { appendSection, convertSection, createForce, history, removeSection } from "./history";
 import { RenderPlugin } from "./render";
+import { tangentHandles } from "./tangents";
 import {
     addNode,
     bakeOut,
     Handle,
     handleAt,
+    handleTangent,
     lastHandle,
+    samples,
     SectionKind,
     sectionForces,
     sectionHandles,
@@ -20,6 +23,7 @@ import {
     TrackPlugin,
     V0,
 } from "./track";
+import { Canvas2D, viewTransform } from "./view";
 
 const { state: ecs, dispose } = await run({
     plugins: [ProfilePlugin, TrackPlugin, CartPlugin, RenderPlugin],
@@ -54,6 +58,43 @@ if (import.meta.env.DEV) {
             ]),
         // select the chain end so the keyboard extend/trim (controls.ts) fire.
         selectEnd: (): void => select(lastHandle(ecs, sec())),
+        // select an interior/end node by order — the tangent flow authors an explicit
+        // tangent on an interior node (both in/out handles), which selectEnd (chain end,
+        // one handle) can't reach. node 0 is the pinned entry anchor, so it's excluded.
+        selectNode: (order: number): void => {
+            if (order === 0) return;
+            const eid = handleAt(ecs, sec(), order);
+            if (eid !== null) select(eid);
+        },
+        // the selected node's stored explicit tangent (mode + absolute local vectors), or
+        // null when the node is Auto (the arc rule) — the flow asserts a summon flips it
+        // explicit and a handle drag moves the authored vector. read-only, like poses().
+        tangent: (): {
+            mode: number;
+            inX: number;
+            inY: number;
+            outX: number;
+            outY: number;
+        } | null => {
+            const eid = editor.selection;
+            if (eid === null) return null;
+            const tan = handleTangent(ecs, Handle.section.get(eid), Handle.order.get(eid));
+            return tan
+                ? { mode: tan.mode, inX: tan.inX, inY: tan.inY, outX: tan.outX, outY: tan.outY }
+                : null;
+        },
+        // the selected node's visible tangent handles in screen px (canvas-local). the
+        // handles are canvas-drawn (render.ts), so they carry no DOM box — this is their
+        // locator, the tangent analogue of the timeline's .fhit/.clip boxes. the flow adds
+        // the canvas offset to reach page coords, then drives a real pointer drag.
+        tangentHandles: (): { side: string; x: number; y: number }[] => {
+            const eid = editor.selection;
+            const s = samples.get(track);
+            const canvas = Canvas2D.element;
+            if (eid === null || !s || !canvas) return [];
+            const tx = viewTransform(canvas);
+            return tangentHandles(ecs, s, tx, eid).map((h) => ({ side: h.side, x: h.x, y: h.y }));
+        },
         // move a node in y — the "drag a node, the curve reacts" step, without pixels.
         // node 0 is the pinned entry anchor, so it's never nudged.
         nudge: (order: number, dy: number): void => {
