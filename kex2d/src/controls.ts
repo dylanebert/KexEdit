@@ -21,14 +21,19 @@ import {
 } from "./history";
 import { type Guide, resolveSnap, type SnapInput } from "./magnet";
 import { localize } from "./section";
+import { editTangent, TangentMode } from "./spline";
+import { localTipAt, type TangentSide, tangentHandles } from "./tangents";
 import {
     Handle,
     handleAt,
+    handleTangent,
     lastHandle,
     reheadOnDrag,
     samples,
     sectionInfo,
     sections,
+    seedTangent,
+    setTangent,
     Track,
 } from "./track";
 import {
@@ -48,6 +53,9 @@ import {
 const PICK_R = 16;
 const SECTION_PICK_R = 12;
 const START_PICK_R = 12;
+// tangent-handle grab radius (px). smaller than the node radius, and the selected node's
+// handles are checked before the node itself, so grabbing a handle beats a node under it.
+const TANGENT_PICK_R = 11;
 
 // wheel zoom rate: screen-px-independent, exp(−deltaY·rate) so scaling is symmetric
 // (in then out returns to the same zoom) and reads the same for wheel + trackpad pinch
@@ -60,6 +68,12 @@ const NUDGE_PX = 2;
 const NUDGE_PX_COARSE = 20;
 
 let dragNode: number | null = null;
+// the tangent handle under drag (the selected node's in/out handle), or null. mutually
+// exclusive with `dragNode` + `panning` — one gesture at a time.
+let dragTangent: { eid: number; side: TangentSide } | null = null;
+// screen offset knob−cursor captured at grab, so the handle tracks the cursor relatively.
+let grabHX = 0;
+let grabHY = 0;
 // grab offset (world): the node−under−cursor delta captured at pointerdown, so the
 // node tracks the cursor relatively (grabbing slightly off-center doesn't snap it).
 let grabX = 0;
@@ -150,6 +164,34 @@ function pickStart(ecs: State, tx: ViewTx, sx: number, sy: number): boolean {
     const dx = sx - (tx.ox + s.posX[0] * tx.sx);
     const dy = sy - (tx.oy + s.posY[0] * tx.sy);
     return dx * dx + dy * dy < START_PICK_R * START_PICK_R;
+}
+
+/** the selected node's tangent handle nearest the screen point (within the grab radius), or
+ *  null — the summoned inner layer: only the selected node exposes handles (explicit ones
+ *  solid, a selected `Auto` node's arc-rule ghosts), and they're picked before the node so a
+ *  handle over its node still grabs. */
+function pickTangentHandle(
+    ecs: State,
+    tx: ViewTx,
+    sx: number,
+    sy: number,
+): { eid: number; side: TangentSide; x: number; y: number } | null {
+    const sel = editor.selection;
+    if (sel === null) return null;
+    const s = trackSamples(ecs);
+    if (!s) return null;
+    let best: { eid: number; side: TangentSide; x: number; y: number } | null = null;
+    let bestD2 = TANGENT_PICK_R * TANGENT_PICK_R;
+    for (const h of tangentHandles(ecs, s, tx, sel)) {
+        const dx = sx - h.x;
+        const dy = sy - h.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+            bestD2 = d2;
+            best = { eid: sel, side: h.side, x: h.x, y: h.y };
+        }
+    }
+    return best;
 }
 
 /** true when the selection is its section's chain end — the node `extend` / `delete`
@@ -301,6 +343,63 @@ function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
     reheadOnDrag(ecs, eid);
 }
 
+/** advance a tangent-handle drag: fold in the grab offset, snap the handle point against the
+ *  polar magnet around the node (the 15° angle raster + 1 m length ring — same resolver as the
+ *  node drag, pivoting on the node), then write the edited tangent. the first move of an `Auto`
+ *  node's ghost handle seeds the explicit tangent from the arc rule (the direct-manipulation
+ *  summon — continuous, no jump) before editing. */
+function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): void {
+    if (!dragTangent) return;
+    const s = trackSamples(ecs);
+    if (!s) return;
+    const { eid, side } = dragTangent;
+    const section = Handle.section.get(eid);
+    const order = Handle.order.get(eid);
+    const tx = viewTransform(canvas);
+    const { x: cx, y: cy } = pointerToCanvas(canvas, e);
+    const hx = cx + grabHX;
+    const hy = cy + grabHY;
+    const pivot = sampleScreen(s, tx, Handle.sample.get(eid));
+
+    clearGuides();
+    let worldX: number;
+    let worldY: number;
+    if (snapActive(e.ctrlKey || e.metaKey)) {
+        const inp: SnapInput = {
+            px: hx,
+            py: hy,
+            prev: pivot, // the handle rotates around its own node — the polar origin
+            tangent: null,
+            incoming: null,
+            alignX: [],
+            alignY: [],
+            pxPerMeter: Math.abs(tx.sx),
+            lock: null,
+        };
+        const res = resolveSnap(inp);
+        const w = screenToWorld(tx, res.px, res.py);
+        worldX = w.x;
+        worldY = w.y;
+        applyGuides(res.guides, tx, pivot);
+    } else {
+        const w = screenToWorld(tx, hx, hy);
+        worldX = w.x;
+        worldY = w.y;
+    }
+
+    // summon explicit on the first move of an Auto ghost (seed both sides from the arc rule so
+    // the coupled side keeps its natural length), then edit the dragged side.
+    let tan = handleTangent(ecs, section, order);
+    if (tan === undefined) {
+        const seed = seedTangent(ecs, section, order, TangentMode.Aligned);
+        if (!seed) return;
+        setTangent(ecs, section, order, seed);
+        tan = seed;
+    }
+    const [ox, oy] = localTipAt(s, eid, worldX, worldY);
+    setTangent(ecs, section, order, editTangent(tan, side, ox, oy));
+}
+
 /** wire canvas pointer + window keyboard handling, returning a teardown. tied to
  *  the canvas lifecycle (called from App's onMount) so listeners attach with the
  *  element and detach with it — no module-flag staleness across reloads. */
@@ -319,7 +418,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         // node-drag are mutually exclusive: refuse to start one while the other is live,
         // so a second button press can't leak pointer capture or an open history gesture.
         if (e.button === 1) {
-            if (dragNode !== null) return;
+            if (dragNode !== null || dragTangent !== null) return;
             e.preventDefault();
             const { x, y } = pointerToCanvas(canvas, e);
             panning = true;
@@ -333,6 +432,18 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
         const { x: wx, y: wy } = screenToWorld(tx, cx, cy);
+
+        // the selected node's tangent handle wins first — a summoned handle sitting over its
+        // node must still grab (the vector-editor priority).
+        const th = pickTangentHandle(ecs, tx, cx, cy);
+        if (th !== null) {
+            dragTangent = { eid: th.eid, side: th.side };
+            grabHX = th.x - cx;
+            grabHY = th.y - cy;
+            beginMove(ecs, Handle.section.get(th.eid)); // one gesture; the node snapshot carries the tangent
+            beginDrag(canvas, e.pointerId);
+            return;
+        }
 
         // a node to drag takes priority; else select the section under the click; else
         // deselect (Figma-style).
@@ -374,6 +485,10 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             Object.assign(camera, panCamera(camera, x - panX, y - panY));
             panX = x;
             panY = y;
+            return;
+        }
+        if (dragTangent !== null) {
+            dragTangentTo(ecs, canvas, e);
             return;
         }
         if (dragNode === null) return;
@@ -441,6 +556,12 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             canvas.style.cursor = "";
             return;
         }
+        if (dragTangent !== null) {
+            dragTangent = null;
+            clearGuides();
+            commit(history); // one handle drag → one undo entry (a no-move grab records nothing)
+            return;
+        }
         if (dragNode === null) return;
         dragNode = null;
         clearGuides();
@@ -451,6 +572,12 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         if (panning) {
             panning = false;
             canvas.style.cursor = "";
+            return;
+        }
+        if (dragTangent !== null) {
+            dragTangent = null;
+            clearGuides();
+            cancel();
             return;
         }
         if (dragNode === null) return;

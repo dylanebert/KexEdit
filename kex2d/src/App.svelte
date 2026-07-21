@@ -12,6 +12,7 @@ import {
     toggleSnap,
 } from "./editor";
 import {
+    beginMove,
     beginV0,
     commit,
     convertSection,
@@ -20,10 +21,12 @@ import {
     removeSection,
     trimTrack,
 } from "./history";
+import { alignTangent, TangentMode } from "./spline";
 import Timeline from "./Timeline.svelte";
 import {
     bakeOut,
     Handle,
+    handleTangent,
     lastHandle,
     samples,
     SectionKind,
@@ -31,6 +34,8 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
+    seedTangent,
+    setTangent,
     setTrackV0,
     Track,
 } from "./track";
@@ -132,6 +137,54 @@ function onDelete(): void {
     if (eid === null) return;
     const section = Handle.section.get(eid);
     if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
+}
+
+// the selected node's tangent-mode popover: a segmented Auto | Aligned | Free control at the
+// node — the summon for the explicit inner layer (the handles are the on-object manipulation;
+// this names the mode, an enum with no visible form, and keeps revert-to-Auto one click away).
+// derives its position + current mode from the selection, so it dismisses when the node does.
+type NodeUI = { x: number; y: number; mode: TangentMode | null };
+const nodeUI = $derived.by((): NodeUI | null => {
+    void tick;
+    const eid = editor.selection;
+    if (!canvas || eid === null || trackEid === null) return null;
+    const s = samples.get(trackEid);
+    if (!s) return null;
+    const tx = viewTransform(canvas);
+    const i = Handle.sample.get(eid);
+    const tan = handleTangent(ecs, Handle.section.get(eid), Handle.order.get(eid));
+    return {
+        x: tx.ox + s.posX[i] * tx.sx,
+        y: tx.oy + s.posY[i] * tx.sy,
+        mode: tan ? tan.mode : null, // null = Auto (the default)
+    };
+});
+
+// set the selected node's tangent mode as one undo entry (the move gesture's node snapshot
+// carries the tangent). null reverts to Auto; a switch between Aligned/Free keeps the stored
+// vectors (mode is which-handle-rotates-the-other metadata); Auto→explicit seeds from the arc
+// rule so the conversion is visually continuous.
+function pickMode(target: TangentMode | null): void {
+    const eid = editor.selection;
+    if (eid === null) return;
+    const section = Handle.section.get(eid);
+    const order = Handle.order.get(eid);
+    beginMove(ecs, section);
+    if (target === null) {
+        setTangent(ecs, section, order, null);
+    } else {
+        // start from the current explicit vectors, or seed them from the arc rule (Auto→explicit
+        // is continuous). switching to Aligned re-collinearizes; Free just relabels.
+        const cur = handleTangent(ecs, section, order) ?? seedTangent(ecs, section, order, target);
+        if (cur) {
+            const next =
+                target === TangentMode.Aligned
+                    ? alignTangent(cur)
+                    : { ...cur, mode: target };
+            setTangent(ecs, section, order, next);
+        }
+    }
+    commit(history);
 }
 
 // the section context menu (Convert / Delete), summoned by right-click on a clip or a
@@ -364,6 +417,35 @@ $effect(() => {
     </div>
 {/if}
 
+<!-- the selected node's tangent-mode control: a small segmented pill below the node (Auto |
+     Aligned | Free). Auto is the default; Aligned/Free summon the explicit handles, and Auto is
+     always one click back (the step down is accessible, never forced). -->
+{#if nodeUI}
+    <div class="tmode" style="left: {nodeUI.x}px; top: {nodeUI.y}px;" aria-label="Tangent mode">
+        <button
+            type="button"
+            class="tseg"
+            class:on={nodeUI.mode === null}
+            title="Auto tangent"
+            onclick={() => pickMode(null)}>Auto</button
+        >
+        <button
+            type="button"
+            class="tseg"
+            class:on={nodeUI.mode === TangentMode.Aligned}
+            title="Aligned tangents"
+            onclick={() => pickMode(TangentMode.Aligned)}>Aligned</button
+        >
+        <button
+            type="button"
+            class="tseg"
+            class:on={nodeUI.mode === TangentMode.Free}
+            title="Free tangents"
+            onclick={() => pickMode(TangentMode.Free)}>Free</button
+        >
+    </div>
+{/if}
+
 <!-- the section context menu (Convert / Delete): summoned by right-click on a clip or a
      viewport section span; occasional destructive ops, so hidden until summoned. Convert
      is a single contextual item naming the target kind (a section is one of two kinds, so
@@ -442,6 +524,7 @@ $effect(() => {
     :global([data-dragging]) .rbtn,
     :global([data-dragging]) .ctxmenu,
     :global([data-dragging]) .vtool,
+    :global([data-dragging]) .tmode,
     :global([data-dragging]) .vtip {
         pointer-events: none;
         user-select: none;
@@ -567,6 +650,49 @@ $effect(() => {
     .rbtn.delete:hover {
         background: var(--danger-soft);
         border-color: var(--danger);
+    }
+
+    /* the tangent-mode pill: a compact segmented control centered below the selected node.
+       opaque surface, quiet muted segments, the active mode accent-lit — the same visual
+       language as the viewport tools + menus (root ui.md one-language). */
+    .tmode {
+        position: absolute;
+        z-index: 3;
+        transform: translate(-50%, 16px);
+        display: inline-flex;
+        padding: 2px;
+        gap: 2px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: var(--shadow);
+        user-select: none;
+        -webkit-user-select: none;
+        font-family: "Outfit", system-ui, sans-serif;
+        animation: tmode-in 120ms ease;
+    }
+    @keyframes tmode-in {
+        from {
+            opacity: 0;
+        }
+    }
+    .tseg {
+        all: unset;
+        box-sizing: border-box;
+        padding: 3px 9px;
+        border-radius: 4px;
+        font-size: 11px;
+        color: var(--muted);
+        cursor: pointer;
+        transition: color 120ms ease, background 120ms ease;
+    }
+    .tseg:hover {
+        color: var(--fg);
+        background: rgba(255, 255, 255, 0.06);
+    }
+    .tseg.on {
+        color: var(--accent);
+        background: var(--accent-soft);
     }
 
     /* the shared menu language (root ui.md one-language): the append flyout's standard menu

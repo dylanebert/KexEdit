@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+    alignTangent,
+    autoTangent,
     chainCounts,
+    editTangent,
+    handleTip,
     MAX_U_PER_EDGE,
     type Node,
     reflect,
@@ -370,6 +374,95 @@ describe("sampleChain — explicit tangents", () => {
             prev = a;
         }
         expect(turn / (r.edges - off)).toBeLessThanOrEqual(2 * MAX_U_PER_EDGE + 0.05);
+    });
+});
+
+describe("editTangent / handleTip — the handle-drag math", () => {
+    const base = (): Tangent => ({ mode: TangentMode.Free, inX: 4, inY: 0, outX: 6, outY: 0 });
+
+    test("handleTip: out is the stored vector, in is its negation (the through-node draw)", () => {
+        const t: Tangent = { mode: TangentMode.Free, inX: 4, inY: 1, outX: 6, outY: -2 };
+        expect(handleTip(t, "out")).toEqual([6, -2]);
+        expect(handleTip(t, "in")).toEqual([-4, -1]);
+    });
+
+    test("handleTip ∘ editTangent round-trips the dragged side (Free)", () => {
+        for (const side of ["in", "out"] as const) {
+            const edited = editTangent(base(), side, 3, 7);
+            expect(handleTip(edited, side)[0]).toBeCloseTo(3, 12);
+            expect(handleTip(edited, side)[1]).toBeCloseTo(7, 12);
+        }
+    });
+
+    test("Free: dragging one handle moves only that side", () => {
+        const outDrag = editTangent(base(), "out", 2, 9);
+        expect([outDrag.outX, outDrag.outY]).toEqual([2, 9]);
+        expect([outDrag.inX, outDrag.inY]).toEqual([4, 0]); // in untouched
+
+        const inDrag = editTangent(base(), "in", 2, 9);
+        expect([inDrag.inX, inDrag.inY]).toEqual([-2, -9]); // in stores the negated visual offset
+        expect([inDrag.outX, inDrag.outY]).toEqual([6, 0]); // out untouched
+    });
+
+    test("Aligned: dragging out rotates both to the shared direction, each side keeps its length", () => {
+        // start collinear along +x (in length 4, out length 6). drag the out-handle to (0, 5):
+        // the shared forward direction becomes +y; out takes the new length 5, in keeps 4.
+        const t: Tangent = { mode: TangentMode.Aligned, inX: 4, inY: 0, outX: 6, outY: 0 };
+        const e = editTangent(t, "out", 0, 5);
+        // out is the drag (length 5, +y); in keeps length 4 on the same forward direction (+y),
+        // so its stored vector — the forward arrival velocity — is (0, 4).
+        expect(e.outX).toBeCloseTo(0, 12);
+        expect(e.outY).toBeCloseTo(5, 12);
+        expect(e.inX).toBeCloseTo(0, 12);
+        expect(e.inY).toBeCloseTo(4, 12);
+        // the two handles stay collinear through the node (out forward, in drawn opposite).
+        expect(handleTip(e, "out")).toEqual([e.outX, e.outY]);
+        expect(handleTip(e, "in")[0]).toBeCloseTo(0, 12);
+        expect(handleTip(e, "in")[1]).toBeCloseTo(-4, 12); // the in-handle points backward
+    });
+
+    test("Aligned: dragging in rotates both; in takes the new length, out keeps its own", () => {
+        // in-handle dragged to visual offset (−5, 0) (pointing backward along −x): the forward
+        // direction is +x, in length becomes 5, out keeps length 6.
+        const t: Tangent = { mode: TangentMode.Aligned, inX: 0, inY: 3, outX: 0, outY: 6 };
+        const e = editTangent(t, "in", -5, 0);
+        expect(e.inX).toBeCloseTo(5, 12); // forward arrival velocity = +x · 5
+        expect(e.inY).toBeCloseTo(0, 12);
+        expect(e.outX).toBeCloseTo(6, 12); // out keeps length 6, rotated onto +x
+        expect(e.outY).toBeCloseTo(0, 12);
+    });
+
+    test("Aligned: a degenerate drop onto the node leaves the tangent unchanged", () => {
+        const t: Tangent = { mode: TangentMode.Aligned, inX: 4, inY: 0, outX: 6, outY: 0 };
+        expect(editTangent(t, "out", 0, 0)).toEqual(t);
+    });
+
+    test("alignTangent: a Free divergent tangent collinearizes onto the out direction, lengths kept", () => {
+        // in points +y (length 3), out points +x (length 6) — a corner. aligning shares the out
+        // direction (+x): out stays (6,0), in rotates to +x keeping length 3 → (3,0).
+        const free: Tangent = { mode: TangentMode.Free, inX: 0, inY: 3, outX: 6, outY: 0 };
+        const a = alignTangent(free);
+        expect(a.mode).toBe(TangentMode.Aligned);
+        expect(a.outX).toBeCloseTo(6, 12);
+        expect(a.outY).toBeCloseTo(0, 12);
+        expect(a.inX).toBeCloseTo(3, 12);
+        expect(a.inY).toBeCloseTo(0, 12);
+    });
+
+    test("alignTangent: a zero out-handle falls back to the in direction", () => {
+        const t: Tangent = { mode: TangentMode.Free, inX: 0, inY: 5, outX: 0, outY: 0 };
+        const a = alignTangent(t);
+        expect(a.inX).toBeCloseTo(0, 12);
+        expect(a.inY).toBeCloseTo(5, 12);
+        expect(a.outX).toBeCloseTo(0, 12);
+        expect(a.outY).toBeCloseTo(0, 12); // out length 0 → stays at the node
+    });
+
+    test("autoTangent points along theta, scaled by the chord (the arc-rule seed)", () => {
+        // heading along the chord (φ = 0) → k = 1, magnitude = chordLen, direction = theta.
+        const [x, y] = autoTangent(Math.PI / 6, Math.PI / 6, 10);
+        expect(x).toBeCloseTo(10 * Math.cos(Math.PI / 6), 6);
+        expect(y).toBeCloseTo(10 * Math.sin(Math.PI / 6), 6);
     });
 });
 

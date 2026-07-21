@@ -144,6 +144,83 @@ function inVec(n: Node, chordAngle: number, chordLen: number): [number, number] 
     return n.tangent ? [n.tangent.inX, n.tangent.inY] : handle(n.theta, chordAngle, chordLen);
 }
 
+/** the arc-rule tangent vector — `handle` exposed for the summon seed. an `Auto` node's
+ *  in/out vector at a given chord; summoning an explicit tangent seeds each side from this,
+ *  so the Auto→explicit conversion starts from exactly what the arc rule draws (visually
+ *  continuous). direction is `theta`, magnitude the chord-scaled cubic handle length. */
+export function autoTangent(theta: number, chordAngle: number, chordLen: number): [number, number] {
+    return handle(theta, chordAngle, chordLen);
+}
+
+/** the visual offset of a tangent handle from its node, segment-local — the space the UI
+ *  draws the handle knob at and a handle drag inverts through. the out-handle sits at the
+ *  stored out-vector (the forward departure velocity); the in-handle sits at the *negated*
+ *  in-vector — the in-vector is the forward arrival velocity, so its handle draws on the
+ *  opposite side, the Figma/Blender through-the-node convention. `editTangent` is the exact
+ *  inverse. */
+export function handleTip(tan: Tangent, side: "in" | "out"): [number, number] {
+    return side === "out" ? [tan.outX, tan.outY] : [-tan.inX, -tan.inY];
+}
+
+/** edit a tangent by dragging one handle to the segment-local visual offset `(offX, offY)`
+ *  from the node (the `handleTip` space — its inverse). `Free` moves only the dragged side.
+ *  `Aligned` keeps the two collinear: the dragged side sets the shared forward direction and
+ *  its own length, the other side keeps its length rotated onto that direction — dragging one
+ *  handle's direction rotates both, lengths stay per-side. a degenerate drag onto the node
+ *  (zero offset) is ignored, since it has no direction to align to. */
+export function editTangent(tan: Tangent, side: "in" | "out", offX: number, offY: number): Tangent {
+    // the out-handle stores the offset directly; the in-handle stores its negation (the
+    // inverse of `handleTip`, so a round-trip is exact).
+    const sx = side === "out" ? offX : -offX;
+    const sy = side === "out" ? offY : -offY;
+    if (tan.mode === TangentMode.Free) {
+        return side === "out" ? { ...tan, outX: sx, outY: sy } : { ...tan, inX: sx, inY: sy };
+    }
+    const len = Math.hypot(sx, sy);
+    if (len < EPS) return tan;
+    const dx = sx / len;
+    const dy = sy / len;
+    // the dragged side takes the new length; the other keeps its own, rotated onto the
+    // shared direction.
+    const inLen = side === "in" ? len : Math.hypot(tan.inX, tan.inY);
+    const outLen = side === "out" ? len : Math.hypot(tan.outX, tan.outY);
+    return {
+        mode: tan.mode,
+        inX: dx * inLen,
+        inY: dy * inLen,
+        outX: dx * outLen,
+        outY: dy * outLen,
+    };
+}
+
+/** collinearize a tangent onto one shared forward direction, keeping each side's length —
+ *  what switching a `Free` node to `Aligned` does (the Blender handle-type change re-aligns
+ *  immediately, rather than leaving a corner the mode label contradicts). the direction comes
+ *  from whichever handle has length (the out-handle preferred); a fully degenerate tangent
+ *  keeps its zeroed vectors. */
+export function alignTangent(tan: Tangent): Tangent {
+    const outLen = Math.hypot(tan.outX, tan.outY);
+    const inLen = Math.hypot(tan.inX, tan.inY);
+    let dx: number;
+    let dy: number;
+    if (outLen >= EPS) {
+        dx = tan.outX / outLen;
+        dy = tan.outY / outLen;
+    } else if (inLen >= EPS) {
+        dx = tan.inX / inLen;
+        dy = tan.inY / inLen;
+    } else {
+        return { ...tan, mode: TangentMode.Aligned };
+    }
+    return {
+        mode: TangentMode.Aligned,
+        inX: dx * inLen,
+        inY: dy * inLen,
+        outX: dx * outLen,
+        outY: dy * outLen,
+    };
+}
+
 /** cubic Hermite point on the segment between `pa` (s=0) and `pb` (s=1). `va` /
  *  `vb` are the segment-space tangent vectors (already scaled by chord and k);
  *  sharing each node's heading across its two segments makes the joins

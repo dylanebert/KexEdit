@@ -9,7 +9,7 @@ import {
     place,
     type Section as SectionSpec,
 } from "./section";
-import { type Node, reflect, type Tangent, type TangentMode } from "./spline";
+import { autoTangent, type Node, reflect, type Tangent, type TangentMode } from "./spline";
 
 /** whether a section is authored as GEOMETRY (drag nodes in the viewport, recover
  *  the force) or FORCE (place points on the force curve, integrate the geometry) —
@@ -522,6 +522,52 @@ export function restoreNodes(ecs: State, sectionId: number, snap: NodeState[]): 
 export function handleTangent(ecs: State, sectionId: number, order: number): Tangent | undefined {
     const eid = handleAt(ecs, sectionId, order);
     return eid === null ? undefined : readTangent(eid);
+}
+
+/** seed an explicit tangent from a node's current `Auto` arc-rule tangents, so summoning
+ *  explicit (the popover mode control or a handle pull) starts from exactly what the arc
+ *  rule draws — the Auto→explicit conversion is visually continuous (`spline.autoTangent`
+ *  reproduces the bake's own tangent). the in-vector reads the live section-local chord
+ *  from the previous node, the out-vector the chord to the next; a chain end with no
+ *  outgoing segment mirrors the incoming length forward along the heading. returns a
+ *  `Tangent` in `mode` (the two vectors share direction `theta`, so it's a valid `Aligned`
+ *  seed and bit-continuous with the Auto bake). */
+export function seedTangent(
+    ecs: State,
+    sectionId: number,
+    order: number,
+    mode: TangentMode,
+): Tangent | null {
+    const eid = handleAt(ecs, sectionId, order);
+    if (eid === null) return null;
+    const nx = Handle.pos.x.get(eid);
+    const ny = Handle.pos.y.get(eid);
+    const th = Handle.theta.get(eid);
+
+    const prev = handleAt(ecs, sectionId, order - 1);
+    let inVec: [number, number];
+    if (prev !== null) {
+        const dx = nx - Handle.pos.x.get(prev);
+        const dy = ny - Handle.pos.y.get(prev);
+        inVec = autoTangent(th, Math.atan2(dy, dx), Math.hypot(dx, dy));
+    } else {
+        inVec = [Math.cos(th), Math.sin(th)]; // no incoming segment (order 0 — not summonable)
+    }
+
+    const next = handleAt(ecs, sectionId, order + 1);
+    let outVec: [number, number];
+    if (next !== null) {
+        const dx = Handle.pos.x.get(next) - nx;
+        const dy = Handle.pos.y.get(next) - ny;
+        outVec = autoTangent(th, Math.atan2(dy, dx), Math.hypot(dx, dy));
+    } else {
+        // a chain end drives no outgoing segment; mirror the incoming length forward so the
+        // out-handle has a sensible (invisible) value for the Aligned coupling.
+        const inLen = Math.hypot(inVec[0], inVec[1]);
+        outVec = [inLen * Math.cos(th), inLen * Math.sin(th)];
+    }
+
+    return { mode, inX: inVec[0], inY: inVec[1], outX: outVec[0], outY: outVec[1] };
 }
 
 /** set (or clear, with null) a node's explicit tangent — the programmatic tangent

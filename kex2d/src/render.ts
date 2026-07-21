@@ -3,7 +3,8 @@ import { cartPose, cartState } from "./cart";
 import { COLOR_ACCENT, COLOR_SNAP, kindSegments, selected } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
-import { bakeOut, Handle, samples, sectionInfo, sections, Track } from "./track";
+import { tangentHandles } from "./tangents";
+import { bakeOut, Handle, handleTangent, samples, sectionInfo, sections, Track } from "./track";
 import { Canvas2D, resize, snapGuides, viewTransform } from "./view";
 
 const HANDLE_R = 6;
@@ -308,6 +309,70 @@ const HandleDrawSystem: System = {
     },
 };
 
+const TANGENT_KNOB = 3.5; // half-size of a handle knob square (px)
+
+/** the selected node's tangent handles: an arm from the node to each in/out knob. an
+ *  *explicit* node draws solid filled knobs (the authored inner layer); a selected *Auto*
+ *  node draws hollow ghost knobs — the summon affordance a drag pulls into an explicit
+ *  tangent. only the selected node shows any, so the default surface stays uncluttered. */
+const TangentDrawSystem: System = {
+    group: "draw",
+    update(ecs: State): void {
+        const { element: canvas, ctx } = Canvas2D;
+        if (!ctx) return;
+        const sel = editor.selection;
+        if (sel === null) return;
+        const tx = viewTransform(canvas);
+        for (const trackEid of ecs.query([Track])) {
+            const s = samples.get(trackEid);
+            if (!s) continue;
+            const handles = tangentHandles(ecs, s, tx, sel);
+            if (handles.length === 0) continue;
+            const i = Handle.sample.get(sel);
+            const nx = tx.ox + s.posX[i] * tx.sx;
+            const ny = tx.oy + s.posY[i] * tx.sy;
+            const explicit =
+                handleTangent(ecs, Handle.section.get(sel), Handle.order.get(sel)) !== undefined;
+
+            ctx.save();
+            // the arms — thin, subtle, drawn under the knobs.
+            ctx.strokeStyle = "rgba(240, 236, 232, 0.55)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (const h of handles) {
+                ctx.moveTo(nx, ny);
+                ctx.lineTo(h.x, h.y);
+            }
+            ctx.stroke();
+            // the knobs — a small square (the bezier-handle convention, distinct from the round
+            // node). explicit = filled accent; ghost = hollow light outline.
+            for (const h of handles) {
+                ctx.beginPath();
+                ctx.rect(
+                    h.x - TANGENT_KNOB,
+                    h.y - TANGENT_KNOB,
+                    TANGENT_KNOB * 2,
+                    TANGENT_KNOB * 2,
+                );
+                if (explicit) {
+                    ctx.fillStyle = COLOR_ACCENT;
+                    ctx.strokeStyle = "#0e0d0c";
+                    ctx.lineWidth = 1;
+                    ctx.fill();
+                    ctx.stroke();
+                } else {
+                    ctx.fillStyle = "#0e0d0c";
+                    ctx.strokeStyle = "rgba(240, 236, 232, 0.7)";
+                    ctx.lineWidth = 1;
+                    ctx.fill();
+                    ctx.stroke();
+                }
+            }
+            ctx.restore();
+        }
+    },
+};
+
 const CartDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
@@ -415,6 +480,7 @@ export const RenderPlugin: Plugin = {
         CartDrawSystem,
         AnchorDrawSystem,
         HandleDrawSystem,
+        TangentDrawSystem,
         SnapGuideSystem,
     ],
 };

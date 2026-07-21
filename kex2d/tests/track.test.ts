@@ -24,6 +24,7 @@ import {
     sectionInfo,
     sections,
     sectionSpans,
+    seedTangent,
     setSectionLength,
     setTangent,
     setTrackV0,
@@ -522,6 +523,33 @@ describe("explicit tangents (substrate)", () => {
         let turn = dep - arr;
         turn = ((((turn + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
         expect(Math.abs(turn)).toBeGreaterThan(0.3); // in ≠ out → a corner, not C1
+    });
+
+    test("seedTangent reproduces the Auto tangents, so summoning explicit is continuous", () => {
+        // a bent chain: node 1 + node 2 interior with real curvature, so the seeded vectors
+        // are non-trivial. bake the Auto curve, then summon an Aligned tangent on node 2 from
+        // seedTangent and re-bake — the curve must not jump (the Auto→explicit continuity the
+        // summon relies on; the only difference is f32 storage of the seeded vectors vs the
+        // Auto path's unstored handle(), ≪ 5e-3 over a ~70 m span).
+        const { state, eid, sec } = track();
+        addNode(state, sec, 40, 15);
+        addNode(state, sec, 70, 10);
+        state.step(0);
+        const n = Track.count.get(eid);
+        const baseX = Array.from(samples.get(eid)?.posX.subarray(0, n) ?? []);
+        const baseY = Array.from(samples.get(eid)?.posY.subarray(0, n) ?? []);
+
+        const seed = seedTangent(state, sec, 2, TangentMode.Aligned);
+        if (!seed) throw new Error("seed failed");
+        setTangent(state, sec, 2, seed);
+        state.step(0);
+        expect(Track.count.get(eid)).toBe(n); // same sampling topology → same node count
+        const s = samples.get(eid);
+        if (!s) throw new Error("samples missing");
+        for (let i = 0; i < n; i++) {
+            expect(s.posX[i]).toBeCloseTo(baseX[i], 2);
+            expect(s.posY[i]).toBeCloseTo(baseY[i], 2);
+        }
     });
 
     test("setTangent(…, null) reverts a node to Auto (byte-identical to the arc bake)", () => {
