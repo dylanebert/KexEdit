@@ -27,6 +27,7 @@ import { localize } from "./section";
 import { editTangent, TangentMode } from "./spline";
 import { editHandleSets, localTipAt, type TangentSide } from "./tangents";
 import {
+    exitWorld,
     Handle,
     handleAt,
     handleTangent,
@@ -43,6 +44,7 @@ import {
 import {
     camera,
     clearGuides,
+    dragReadout,
     frameContent,
     panCamera,
     pointerToCanvas,
@@ -356,37 +358,49 @@ export function formatDeg(d: number): string {
 }
 
 /** a selected node's live readout metrics. `lengthLabel` is always present (the chord length to the
- *  previous node); `angleLabel` is the exit-tangent incline, present only for a growth tip. */
+ *  previous node); `angleLabel` is the node's world exit heading, present for every node that has a
+ *  previous node (interior + tip), null only for a node with none. */
 export interface NodeMetrics {
     angleLabel: string | null;
     lengthLabel: string;
 }
 
-/** derive a node's readout metrics from baked geometry (device-free — the caller passes the world
- *  points). the same quantities the magnet reads: the chord `|node − prev|` to the previous node,
- *  and — for a growth tip only — the exit-tangent incline, the flanking-sample tangent (`exit` = the
- *  node's two flanking sample points; null for an interior node, whose frozen heading has no incline
- *  to snap). formatted like the snap readout (`formatDeg`, integer metres). */
+/** a node's readout metrics from its world position + authored exit heading (device-free — the
+ *  caller passes the world points and the world heading). the chord `|node − prev|` to the previous
+ *  node is the length; `heading` (world radians, the authored exit direction, or null when there is
+ *  none) becomes the angle. formatted like the snap readout (`formatDeg`, integer metres). */
 export function nodeMetrics(
     prev: { x: number; y: number },
     node: { x: number; y: number },
-    exit: [{ x: number; y: number }, { x: number; y: number }] | null,
+    heading: number | null,
 ): NodeMetrics {
     const chord = Math.hypot(node.x - prev.x, node.y - prev.y);
-    const angleLabel =
-        exit === null
-            ? null
-            : formatDeg((Math.atan2(exit[1].y - exit[0].y, exit[1].x - exit[0].x) * 180) / Math.PI);
+    const angleLabel = heading === null ? null : formatDeg((heading * 180) / Math.PI);
     return { angleLabel, lengthLabel: `${Math.round(chord)} m` };
 }
 
+/** the dragged tangent handle's readout: its own world angle (°) + length (m), from the handle
+ *  knob's screen offset from the node (`tipX/tipY`) and the view scale. the y-flip lives here
+ *  (screen `sy < 0` → world Y-up), so while the angle snap holds the tip on the grab ray the
+ *  reported angle is constant by construction. these are the authored values under the drag, never a
+ *  bake re-derivation. */
+export function dragMetrics(tipX: number, tipY: number, sx: number, sy: number): NodeMetrics {
+    const wx = tipX / sx;
+    const wy = tipY / sy;
+    return {
+        angleLabel: formatDeg((Math.atan2(wy, wx) * 180) / Math.PI),
+        lengthLabel: `${Math.round(Math.hypot(wx, wy))} m`,
+    };
+}
+
 /** the selected node's live metrics for the resting snap readout (the Figma selected-object
- *  dimensions idiom): reads the baked world samples and defers to `nodeMetrics`. the exit incline
- *  shows for a section's growth tip — the same `lastHandle` split the magnet's incline family uses,
- *  flanking the node's sample (one-sided at a chain end); an interior node gets the chord length
- *  only. null when the selection has no previous node — node 0 (the entry anchor, now selectable
- *  for its entry handle) has no chord back into its own section, so this keeps the chord/incline
- *  readout off it (a load-bearing guard, not defensive). world-space, so no view transform. */
+ *  dimensions idiom): the chord to the previous node + the node's **authored world exit heading**
+ *  (`exitWorld` — an explicit out-vector else the stored `Auto` heading, rotated into world by the
+ *  section entry frame). every node with a previous node has a real heading — interior nodes read it
+ *  too (a frozen heading is still a heading; display is not the snap quantum). null when the
+ *  selection has no previous node — node 0 (the entry anchor) has no chord back into its own section,
+ *  so the readout stays off it (a load-bearing guard, not defensive). world-space, no view
+ *  transform. reports the authored quantity, so it never drifts with a bake re-derivation. */
 export function selectedMetrics(ecs: State, eid: number): NodeMetrics | null {
     const s = trackSamples(ecs);
     if (!s) return null;
@@ -396,20 +410,7 @@ export function selectedMetrics(ecs: State, eid: number): NodeMetrics | null {
     if (prevEid === null) return null;
     const prev = nodeWorld(s, prevEid);
     const node = nodeWorld(s, eid);
-    let exit: [{ x: number; y: number }, { x: number; y: number }] | null = null;
-    if (eid === lastHandle(ecs, section)) {
-        let count = 0;
-        for (const t of ecs.query([Track])) count = Track.count.get(t);
-        const i = Handle.sample.get(eid);
-        const lo = Math.max(0, i - 1);
-        const hi = Math.min(count - 1, i + 1);
-        if (hi > lo)
-            exit = [
-                { x: s.posX[lo], y: s.posY[lo] },
-                { x: s.posX[hi], y: s.posY[hi] },
-            ];
-    }
-    return nodeMetrics(prev, node, exit);
+    return nodeMetrics(prev, node, exitWorld(eid));
 }
 
 /** flash the fired magnet guides (the render pass reads `snapGuides.ray`; the App readout reads the
@@ -495,6 +496,14 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
     const nsy = tx.oy + s.posY[Handle.sample.get(eid)] * tx.sy;
     const latch = latchAngle(cx + grabHX - nsx, cy + grabHY - nsy, latchRayX, latchRayY);
     const { x: worldX, y: worldY } = screenToWorld(tx, nsx + latch.x, nsy + latch.y);
+
+    // feed the readout the dragged handle's OWN world angle + length — the authored values under
+    // manipulation (the third readout source, above the magnet labels + resting metrics). computed
+    // from the latched screen tip, so while the angle snap holds the tip on the grab ray the angle
+    // is constant by construction. no guide ray: a handle drag expresses, it doesn't snap.
+    const dm = dragMetrics(latch.x, latch.y, tx.sx, tx.sy);
+    dragReadout.angleLabel = dm.angleLabel;
+    dragReadout.lengthLabel = dm.lengthLabel;
 
     // summon explicit on the first move of an Auto ghost (seed both sides from the arc rule so
     // the coupled side keeps its natural length), then edit the dragged side. node 0 (the entry

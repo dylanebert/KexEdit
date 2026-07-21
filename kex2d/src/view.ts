@@ -153,11 +153,23 @@ export const snapGuides: SnapGuides = {
     lengthLabel: null,
 };
 
-/** clear every snap guide (drag release / teardown). */
+/** the tangent-handle drag readout feed: the dragged handle's own world angle (°) + length (m),
+ *  the authored values under manipulation. distinct from `snapGuides` — a handle drag shows no
+ *  guide ray (`editor-ui.md`: node drags snap, handle drags express), only these readout strings.
+ *  the App readout prefers this over the magnet labels over the resting metrics (the three-source
+ *  precedence). set each move of a live handle drag, cleared with the gesture (`clearGuides`). */
+export const dragReadout: { angleLabel: string | null; lengthLabel: string | null } = {
+    angleLabel: null,
+    lengthLabel: null,
+};
+
+/** clear every snap guide + the drag readout feed (drag release / teardown). */
 export function clearGuides(): void {
     snapGuides.ray = null;
     snapGuides.angleLabel = null;
     snapGuides.lengthLabel = null;
+    dragReadout.angleLabel = null;
+    dragReadout.lengthLabel = null;
 }
 
 /** frame the camera to the default view for a canvas size (also the reset target). */

@@ -1,15 +1,35 @@
 import { expect, test } from "bun:test";
+import { State } from "@dylanebert/shallot";
 import {
     armDrag,
     beyondDeadZone,
     DRAG_PX,
+    dragMetrics,
     formatDeg,
     latchAngle,
     LATCH_PX,
     nodeMetrics,
     normDeg,
+    selectedMetrics,
 } from "../src/controls";
 import { ANGLE_STEP } from "../src/magnet";
+import { TangentMode } from "../src/spline";
+import {
+    addNode,
+    appendSection,
+    BakeSystem,
+    createSection,
+    createTrack,
+    EXTEND_DIST,
+    exitWorld,
+    Handle,
+    handleAt,
+    lastHandle,
+    SectionKind,
+    sectionInfo,
+    seedTangent,
+    setTangent,
+} from "../src/track";
 
 // the snap readout: a 15°-raster incline cancels to a clean integer through the radian→degree
 // round-trip, while a continuation landmark is a raw atan2 over baked samples — a fractional
@@ -40,36 +60,54 @@ test("normDeg wraps into (−180, 180] — 180 stays 180, matching the doc", () 
     expect(normDeg(270)).toBe(-90);
 });
 
-// the resting readout metrics: a growth tip reports its exit-tangent incline + the chord to the
-// previous node; an interior node has no incline to snap, so only the chord. one formatter feeds
-// both readout sources (`formatDeg` for degrees, integer metres for length).
+// the resting readout metrics: every node with a previous node reports its world exit heading + the
+// chord to the previous node. one formatter feeds both readout sources (`formatDeg` for degrees,
+// integer metres for length). the angle is the AUTHORED heading (passed in), never a bake
+// re-derivation, so it holds while a handle drags along an engaged snap ray.
 
-test("a growth tip reports its exit incline and the chord to the previous node", () => {
-    // node 3 m right + 3 m up from the previous → chord = hypot(3,3) ≈ 4.24 → "4 m". the flanking
-    // samples rise at 45° in world → +45° (a clean integer through formatDeg).
-    const m = nodeMetrics({ x: 0, y: 0 }, { x: 3, y: 3 }, [
-        { x: 2, y: 2 },
-        { x: 4, y: 4 },
-    ]);
+test("a node reports its world exit heading and the chord to the previous node", () => {
+    // node 3 m right + 3 m up → chord = hypot(3,3) ≈ 4.24 → "4 m". heading π/4 → +45°.
+    const m = nodeMetrics({ x: 0, y: 0 }, { x: 3, y: 3 }, Math.PI / 4);
     expect(m.angleLabel).toBe("45°");
     expect(m.lengthLabel).toBe("4 m");
 });
 
-test("an interior node has no exit incline — chord length only", () => {
+test("a node with no heading (null) reports the chord length only", () => {
     const m = nodeMetrics({ x: 0, y: 0 }, { x: 5, y: 0 }, null);
     expect(m.angleLabel).toBeNull();
     expect(m.lengthLabel).toBe("5 m");
 });
 
-test("the tip incline routes through formatDeg (a fractional flank keeps one decimal)", () => {
-    // flank rising at atan2(1, 2) ≈ 26.565° → formatDeg's one-decimal path, "26.6°".
-    const exit: [{ x: number; y: number }, { x: number; y: number }] = [
-        { x: 0, y: 0 },
-        { x: 2, y: 1 },
-    ];
+test("the heading routes through formatDeg (a fractional heading keeps one decimal)", () => {
+    // heading atan2(1, 2) ≈ 26.565° → formatDeg's one-decimal path, "26.6°".
     const deg = (Math.atan2(1, 2) * 180) / Math.PI;
-    expect(nodeMetrics({ x: 0, y: 0 }, { x: 2, y: 1 }, exit).angleLabel).toBe(formatDeg(deg));
-    expect(nodeMetrics({ x: 0, y: 0 }, { x: 2, y: 1 }, exit).angleLabel).toBe("26.6°");
+    expect(nodeMetrics({ x: 0, y: 0 }, { x: 2, y: 1 }, Math.atan2(1, 2)).angleLabel).toBe(
+        formatDeg(deg),
+    );
+    expect(nodeMetrics({ x: 0, y: 0 }, { x: 2, y: 1 }, Math.atan2(1, 2)).angleLabel).toBe("26.6°");
+});
+
+// the tangent-handle drag feed (`dragMetrics`): the dragged handle's OWN world angle + length from
+// its screen-space tip offset. the y-flip lives inside it (screen sy < 0 → world Y-up), so an
+// on-ray tip reports a constant angle regardless of how far out it's pulled — the constant-while-
+// on-ray pin the flanking-sample re-derivation failed (that drifted as the reshaped curve moved the
+// samples). here scale sx = 40 px/m, sy = −40 px/m (the view Y-flip).
+
+test("dragMetrics reports a constant angle along a ray — only length grows", () => {
+    // a screen tip along (+1, −1) (world +45°, the Y-flip): two lengths on the same ray.
+    const near = dragMetrics(40, -40, 40, -40); // world (1, 1) → hypot ≈ 1.41 → "1 m"
+    const far = dragMetrics(160, -160, 40, -40); // world (4, 4), same direction → hypot ≈ 5.66 → "6 m"
+    expect(near.angleLabel).toBe("45°");
+    expect(far.angleLabel).toBe("45°"); // angle held — the on-ray invariant
+    expect(near.lengthLabel).toBe("1 m");
+    expect(far.lengthLabel).toBe("6 m"); // only length moved
+});
+
+test("dragMetrics applies the world Y-flip (screen down = world up)", () => {
+    // a screen tip straight DOWN (+y in screen) is world −y with sy < 0 → world DOWN → −90°.
+    expect(dragMetrics(0, 40, 40, -40).angleLabel).toBe("-90°");
+    // straight UP in screen (−y) → world UP → +90°.
+    expect(dragMetrics(0, -40, 40, -40).angleLabel).toBe("90°");
 });
 
 // the click-vs-drag dead-zone: a node grab stays a select until the pointer travels DRAG_PX from
@@ -146,4 +184,95 @@ test("the landmark persists — a tip that deviated re-snaps on returning to the
 
 test("a degenerate (zero) ray never snaps — no landmark to favor", () => {
     expect(latchAngle(20, 0, 0, 0)).toEqual({ x: 20, y: 0, snapped: false });
+});
+
+// the resting readout over a baked track (`selectedMetrics` + `exitWorld`): every selected node
+// with a previous node reports its authored WORLD exit heading — an explicit out-vector else the
+// stored `Auto` heading, rotated by the section entry frame. node 0 (no previous node) stays null.
+// this is the authored source, not the flanking-sample bake re-derivation the readout drifted on.
+
+/** a fresh single geo section: node 0 at the local origin (the pinned entry) + a shape node. */
+function geoTrack(): { state: State; sec: number } {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    return { state, sec };
+}
+
+test("node 0 (the entry anchor) has no readout — the null guard holds", () => {
+    const { state, sec } = geoTrack();
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, EXTEND_DIST, 0);
+    state.step(0);
+    const node0 = handleAt(state, sec, 0);
+    if (node0 === null) throw new Error("node 0 missing");
+    expect(selectedMetrics(state, node0)).toBeNull();
+});
+
+test("an INTERIOR node reports its authored heading (not null — display is not the snap quantum)", () => {
+    // node1 placed up-right → its frozen tip heading is π/2 (reflect(0, π/4)); adding node2 makes it
+    // interior, heading frozen. the old readout gated the angle on `lastHandle`, so an interior node
+    // showed NO angle — this pins the fix: an interior node reports its real heading.
+    const { state, sec } = geoTrack();
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 10, 10); // tip heading = reflect(0, atan2(10,10)) = π/2
+    addNode(state, sec, 20, 10); // node1 is now interior, heading frozen at π/2
+    state.step(0);
+    const interior = handleAt(state, sec, 1);
+    if (interior === null) throw new Error("interior node missing");
+    expect(Handle.theta.get(interior)).toBeCloseTo(Math.PI / 2, 6);
+    const m = selectedMetrics(state, interior);
+    expect(m).not.toBeNull();
+    expect(m?.angleLabel).toBe("90°"); // the world exit heading (entry frame identity here)
+});
+
+test("an explicit out-vector governs the readout heading, not the recovered geometry", () => {
+    // a Free tip with an out-vector pointing 30° local. exitWorld reads that authored vector, not a
+    // flanking-sample bisector — the fix for the on-ray drift (the old readout re-derived from the
+    // reshaping curve). entry frame is identity here, so world = local = 30°.
+    const { state, sec } = geoTrack();
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 10, 0);
+    const tip = lastHandle(state, sec);
+    if (tip === null) throw new Error("tip missing");
+    const a = (30 * Math.PI) / 180;
+    setTangent(state, sec, Handle.order.get(tip), {
+        mode: TangentMode.Free,
+        inX: -5,
+        inY: 0,
+        outX: 5 * Math.cos(a),
+        outY: 5 * Math.sin(a),
+    });
+    state.step(0);
+    expect(exitWorld(tip)).toBeCloseTo(a, 4); // the authored out-vector, not a flanking bisector
+    // the readout routes exitWorld through formatDeg (f32 tangent storage → the one-decimal path).
+    expect(selectedMetrics(state, tip)?.angleLabel).toBe(
+        formatDeg((exitWorld(tip) * 180) / Math.PI),
+    );
+});
+
+test("the section entry frame rotates the local heading into world", () => {
+    // a curved first section leaves at a nonzero heading, so the appended section's entry frame is
+    // rotated. a node whose LOCAL out-vector points along +x (0° local) must read the entry heading
+    // in world — the rotation `tangents.ts` applies, mirrored here. a naive local read would show 0°.
+    const { state, sec } = geoTrack();
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 10, 10); // section 0 exits at ~π/2 → section 1's entry frame is rotated
+    const sec1 = appendSection(state, SectionKind.Geo);
+    state.step(0);
+    const info1 = sectionInfo.get(sec1);
+    if (!info1) throw new Error("section 1 info missing");
+    const entryDeg = (info1.entry.theta * 180) / Math.PI;
+    expect(Math.abs(normDeg(entryDeg))).toBeGreaterThan(10); // a genuinely rotated frame
+    const tip1 = lastHandle(state, sec1);
+    if (tip1 === null) throw new Error("section 1 tip missing");
+    // seed from the arc rule, then force the local out-vector to point along +x (0° local).
+    const seed = seedTangent(state, sec1, Handle.order.get(tip1), TangentMode.Free);
+    if (!seed) throw new Error("seed failed");
+    setTangent(state, sec1, Handle.order.get(tip1), { ...seed, outX: 5, outY: 0 });
+    state.step(0);
+    // world exit heading = 0° local + entry.theta → the entry heading, NOT 0°.
+    expect(exitWorld(tip1)).toBeCloseTo(info1.entry.theta, 6);
+    expect(selectedMetrics(state, tip1)?.angleLabel).toBe(formatDeg(entryDeg));
 });

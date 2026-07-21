@@ -229,6 +229,34 @@ test("tangent edit flow", async ({ page }) => {
     expect(await undoDepth()).toBeGreaterThan(0); // the mode set + handle drag are undoable
     await page.screenshot({ path: join(OUT, "tangent-2-drag.png") });
 
+    // ── 3b. On-ray readout pin (kex2d-geo-ux feel round 3): grab the out-handle and drag OUT along
+    // the grab ray to two different lengths. The DOM snap readout reports the dragged handle's own
+    // authored angle, so the angle text holds CONSTANT while only the length grows — the fix for the
+    // readout drifting when it re-derived the angle from the reshaping curve's flanking samples. ──
+    const out2 = (await handles()).find((h) => h.side === "out");
+    if (!out2) throw new Error("out-handle not re-located for the on-ray readout pin");
+    const rayX = out2.x - npos.x;
+    const rayY = out2.y - npos.y;
+    const rl = Math.hypot(rayX, rayY);
+    const ux = rayX / rl;
+    const uy = rayY / rl; // the unit node→knob screen ray; dragging along it stays on the ray
+    const readoutAngle = async (): Promise<string | null> => {
+        const txt = await page.locator(".snap-readout").first().textContent();
+        const m = txt?.match(/-?\d+(?:\.\d+)?°/); // the degree token, e.g. "45°" or "-22.1°"
+        return m ? m[0] : null;
+    };
+    await page.mouse.move(cb.x + out2.x, cb.y + out2.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + out2.x + ux * 15, cb.y + out2.y + uy * 15, { steps: 6 });
+    await page.waitForTimeout(120); // let the per-RAF tick project the readout
+    const angleNear = await readoutAngle();
+    await page.mouse.move(cb.x + out2.x + ux * 55, cb.y + out2.y + uy * 55, { steps: 6 });
+    await page.waitForTimeout(120);
+    const angleFar = await readoutAngle();
+    await page.mouse.up();
+    expect(angleNear).not.toBeNull(); // the readout is present through the handle drag
+    expect(angleFar).toBe(angleNear); // constant angle along the ray — the on-ray invariant
+
     // ── 4. RIGHT-CLICK → Tangents ▸ → Reset → the node clears back to live (Auto inference
     // resumes), so it carries no stored tangent again. available here (a tangent exists to clear). ──
     await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });

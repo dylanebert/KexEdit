@@ -430,6 +430,17 @@ function exitHeading(eid: number): number {
     return tan ? Math.atan2(tan.outY, tan.outX) : Handle.theta.get(eid);
 }
 
+/** a node's exit heading in **world** space — its section-local `exitHeading` rotated into world
+ *  by the section entry frame (the same rotation `tangents.ts` applies to place a handle). the
+ *  authored exit direction the selected-node readout reports: an explicit out-vector else the
+ *  stored `Auto` heading, both section-local, carried to world here. never a bake re-derivation, so
+ *  it holds constant while a handle drags along an engaged angle-snap ray. one source with
+ *  `exitHeading` (the append/reflect reader) — the readout doesn't invent a third. */
+export function exitWorld(eid: number): number {
+    const info = sectionInfo.get(Handle.section.get(eid));
+    return exitHeading(eid) + (info ? info.entry.theta : 0);
+}
+
 /** resolve a node by its section + stable `order` to its eid, or null. undo/redo
  *  address nodes by (section, order) — a stable identity for the append/delete-
  *  trailing chain (an interior node's order never changes), so a recycled eid across
