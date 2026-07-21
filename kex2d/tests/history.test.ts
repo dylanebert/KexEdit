@@ -1,6 +1,8 @@
 import { State } from "@dylanebert/shallot";
 import { expect, test } from "bun:test";
+import { editor, enterTangentEdit, select } from "../src/editor";
 import {
+    appendSection,
     beginForceMove,
     beginMove,
     beginV0,
@@ -336,4 +338,87 @@ test("resetTangent: the move gesture makes it undoable (interior re-infer + tip 
 
     undo(h);
     expect(handleTangent(state, sec, 3)?.mode).toBe(TangentMode.Free); // the authored tip restored
+});
+
+// ── editor node selection survives a snapshot restore by (section, order) ──
+// restoreSection/restoreAll destroy and respawn a section's nodes; the eid allocator
+// recycles LIFO, so a raw eid held in `editor.selection` remaps to a DIFFERENT node
+// after an undo. the reconcile re-resolves the selection by its stable (section, order)
+// identity across the restore, clearing it when the node no longer exists. force/section
+// selections address by stable id, so they survive a restore untouched (not reconciled
+// here — the mechanism is eid-only).
+
+/** clear the shared editor singleton between reconcile tests. */
+function clearSelection(): void {
+    select(null);
+}
+
+test("node selection survives a trim-undo by (section, order), not raw eid", () => {
+    clearSelection();
+    const { state, sec } = nodes(); // orders 0, 1
+    addNode(state, sec, 40, 0); // order 2
+    addNode(state, sec, 60, 0); // order 3 (the tip a trim removes)
+    const h = createHistory();
+
+    select(handleAt(state, sec, 2) as number); // an interior node
+    expect(Handle.order.get(editor.selection as number)).toBe(2);
+
+    trimTrack(h, state, sec); // removes order 3
+    undo(h); // restoreSection respawns 0..3 — eids recycle
+
+    const r = editor.selection;
+    expect(r).not.toBeNull();
+    expect(Handle.section.get(r as number)).toBe(sec);
+    expect(Handle.order.get(r as number)).toBe(2); // same identity, new eid
+});
+
+test("tangent-edit sub-mode follows the selection across a trim-undo", () => {
+    clearSelection();
+    const { state, sec } = nodes();
+    addNode(state, sec, 40, 0); // order 2
+    addNode(state, sec, 60, 0); // order 3 (tip)
+    const h = createHistory();
+
+    enterTangentEdit(handleAt(state, sec, 2) as number); // a node whose eid recycles across the restore
+    expect(editor.tangentEdit).toBe(editor.selection);
+
+    trimTrack(h, state, sec);
+    undo(h);
+
+    const r = editor.selection;
+    expect(r).not.toBeNull();
+    expect(Handle.order.get(r as number)).toBe(2);
+    expect(editor.tangentEdit).toBe(r); // sub-mode re-resolved onto the same node
+});
+
+test("node selection survives a structural (whole-track) undo — restoreAll path", () => {
+    clearSelection();
+    const { state, sec } = nodes();
+    addNode(state, sec, 40, 0); // order 2
+    const h = createHistory();
+
+    select(handleAt(state, sec, 1) as number);
+    appendSection(h, state, SectionKind.Geo); // undo → restoreAll(before), respawns every node
+    undo(h);
+
+    const r = editor.selection;
+    expect(r).not.toBeNull();
+    expect(Handle.section.get(r as number)).toBe(sec);
+    expect(Handle.order.get(r as number)).toBe(1);
+});
+
+test("selection clears when the node doesn't survive the restore", () => {
+    clearSelection();
+    const { state, sec } = nodes();
+    addNode(state, sec, 40, 0); // order 2
+    const h = createHistory();
+
+    const eid = extendTrack(h, state, sec); // adds order 3
+    enterTangentEdit(eid); // select + tangent-edit the new tip
+    expect(Handle.order.get(editor.selection as number)).toBe(3);
+
+    undo(h); // restoreSection(before): orders 0..2 — order 3 is gone
+
+    expect(editor.selection).toBeNull();
+    expect(editor.tangentEdit).toBeNull();
 });

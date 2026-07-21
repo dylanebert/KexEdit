@@ -11,6 +11,7 @@
  *  apply/reverse. */
 
 import type { State } from "@dylanebert/shallot";
+import { editor } from "./editor";
 import {
     appendSection as appendSectionTrack,
     convertSection as flipSectionKind,
@@ -20,6 +21,8 @@ import {
     extend,
     type ForcePointState,
     forcePointState,
+    Handle,
+    handleAt,
     joinNext,
     type NodeState,
     nodeSnapshot,
@@ -136,6 +139,47 @@ export function cancel(): void {
     if (g) g.restore(g.prev);
 }
 
+// ── selection reconcile across a snapshot restore ────────────────────────────────
+// `restoreSection`/`restoreAll` destroy and respawn a section's nodes, and the eid
+// allocator recycles LIFO — so a raw eid held in `editor.selection` remaps to a
+// DIFFERENT node after the restore (a trim-undo would land the selection on the entry
+// anchor). keep the node selection valid by its stable (section, order) identity:
+// capture it while the eid is still live, re-resolve it after the restore, and clear it
+// (with the tangent-edit sub-mode layered on it) when the node no longer exists.
+// force/section selections address by stable id, so a restore leaves them valid untouched.
+
+/** run a snapshot restore, re-resolving the editor's node selection by (section, order)
+ *  across the eid recycle. the one seam every `restoreSection`/`restoreAll` command flows
+ *  through (`restoreCommand`), so the reconcile lives in exactly one place. */
+function withReconcile(ecs: State, restore: () => void): void {
+    const sel = editor.selection;
+    const id =
+        sel !== null && ecs.has(sel, Handle)
+            ? { section: Handle.section.get(sel), order: Handle.order.get(sel) }
+            : null;
+    const editing = id !== null && editor.tangentEdit === sel;
+    restore();
+    if (id === null) return; // no node selected — force/section/start survive by stable id
+    const eid = handleAt(ecs, id.section, id.order);
+    editor.selection = eid;
+    editor.tangentEdit = eid !== null && editing ? eid : null;
+}
+
+/** build the undoable command for a snapshot restore pair (section-scoped or whole-track),
+ *  wrapping both directions in the selection reconcile so undo AND redo keep the node
+ *  selection anchored to its identity, not its eid. */
+function restoreCommand<S>(
+    ecs: State,
+    before: S,
+    after: S,
+    restore: (ecs: State, snap: S) => void,
+): Command {
+    return {
+        apply: () => withReconcile(ecs, () => restore(ecs, after)),
+        reverse: () => withReconcile(ecs, () => restore(ecs, before)),
+    };
+}
+
 // ── geo nodes ──────────────────────────────────────────────────────────────────
 
 /** extend a section's chain (lay a node past the tip), recording an undoable add. `extend`
@@ -146,10 +190,7 @@ export function extendTrack(h: History, ecs: State, section: number): number {
     const before = snapshotSection(ecs, section);
     const eid = extend(ecs, section);
     const after = snapshotSection(ecs, section);
-    record(h, {
-        apply: () => restoreSection(ecs, after),
-        reverse: () => restoreSection(ecs, before),
-    });
+    record(h, restoreCommand(ecs, before, after, restoreSection));
     return eid;
 }
 
@@ -160,10 +201,7 @@ export function trimTrack(h: History, ecs: State, section: number): boolean {
     const before = snapshotSection(ecs, section);
     if (!removeTrailingHandle(ecs, section)) return false;
     const after = snapshotSection(ecs, section);
-    record(h, {
-        apply: () => restoreSection(ecs, after),
-        reverse: () => restoreSection(ecs, before),
-    });
+    record(h, restoreCommand(ecs, before, after, restoreSection));
     return true;
 }
 
@@ -246,10 +284,7 @@ export function convertSection(h: History, ecs: State, section: number): void {
     const before = snapshotSection(ecs, section);
     flipSectionKind(ecs, section);
     const after = snapshotSection(ecs, section);
-    record(h, {
-        apply: () => restoreSection(ecs, after),
-        reverse: () => restoreSection(ecs, before),
-    });
+    record(h, restoreCommand(ecs, before, after, restoreSection));
 }
 
 // ── structural ops (append / split / join / delete) ──────────────────────────
@@ -263,10 +298,7 @@ export function appendSection(h: History, ecs: State, kind: SectionKind): number
     const before = snapshotAll(ecs);
     const id = appendSectionTrack(ecs, kind);
     const after = snapshotAll(ecs);
-    record(h, {
-        apply: () => restoreAll(ecs, after),
-        reverse: () => restoreAll(ecs, before),
-    });
+    record(h, restoreCommand(ecs, before, after, restoreAll));
     return id;
 }
 
@@ -284,10 +316,7 @@ export function splitSection(h: History, ecs: State, section: number, at: number
             : splitForce(ecs, section, at);
     if (id === null) return null; // nothing split — don't record
     const after = snapshotAll(ecs);
-    record(h, {
-        apply: () => restoreAll(ecs, after),
-        reverse: () => restoreAll(ecs, before),
-    });
+    record(h, restoreCommand(ecs, before, after, restoreAll));
     return id;
 }
 
@@ -298,10 +327,7 @@ export function joinSection(h: History, ecs: State, section: number): boolean {
     const before = snapshotAll(ecs);
     if (!joinNext(ecs, section)) return false;
     const after = snapshotAll(ecs);
-    record(h, {
-        apply: () => restoreAll(ecs, after),
-        reverse: () => restoreAll(ecs, before),
-    });
+    record(h, restoreCommand(ecs, before, after, restoreAll));
     return true;
 }
 
@@ -311,9 +337,6 @@ export function removeSection(h: History, ecs: State, section: number): boolean 
     const before = snapshotAll(ecs);
     if (!deleteSectionTrack(ecs, section)) return false;
     const after = snapshotAll(ecs);
-    record(h, {
-        apply: () => restoreAll(ecs, after),
-        reverse: () => restoreAll(ecs, before),
-    });
+    record(h, restoreCommand(ecs, before, after, restoreAll));
     return true;
 }
