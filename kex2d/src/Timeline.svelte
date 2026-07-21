@@ -534,7 +534,6 @@ function toggleAppend(e: PointerEvent): void {
 }
 function append(kind: SectionKind): void {
     appendOpen = false;
-    fitPending = clips.length; // reveal the appended section once its re-bake lands
     selectSection(appendSection(history, ecs, kind));
 }
 // the append flyout as data, one instance of the shared menu language. both choices are
@@ -544,20 +543,10 @@ const appendItems: MenuItem[] = [
     { label: "Geo", aria: "Append geometry section", action: () => append(SectionKind.Geo) },
     { label: "Force", aria: "Append force section", action: () => append(SectionKind.Force) },
 ];
-// appending adds to the chain end, off the right of the framed view. once the new
-// section's re-bake lands (the section COUNT grows past the value captured at append), PAN
-// — not zoom — so the new clip shows: the x-axis is a document axis, so a content edit
-// never rescales it. clampView caps pan at the right-aligned track end. keying on the count
-// (not an arclength delta) means a zero-length append still clears the flag, so it can't
-// linger and fire a stale pan on a later unrelated edit.
-let fitPending: number | null = $state(null);
-$effect(() => {
-    if (fitPending === null) return;
-    if (chartW > 0 && sTotal > 0 && clips.length !== fitPending) {
-        view = clampView({ pan: Number.MAX_VALUE, pxPerM: clamped.pxPerM }, chartW, sTotal);
-        fitPending = null;
-    }
-});
+// appending never moves the view: the x-axis is a document axis, and the always-framed
+// lead-out (`marginArc`, floored at 50 m) is where a new section lands — visible without
+// any auto-pan. an append while zoomed in elsewhere stays put; `F` or the navigator reaches
+// the new clip.
 // click-away closes the flyout (clicks inside the control keep it open — the choice
 // buttons close it themselves via append()).
 $effect(() => {

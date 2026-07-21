@@ -418,7 +418,7 @@ test("section clip strip flow", async ({ page }) => {
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
     // the append selects the new (force) section — its clip reads selected.
     await expect.poll(selectedSection).toBe((await sectionIds())[1]);
-    await frameTimeline(page); // append pans to the new end; frame both clips back into view
+    await frameTimeline(page); // append never pans; frame the grown chain into view
     await expect(page.locator(".clip")).toHaveCount(2);
     await page.waitForTimeout(300);
     if (vp) await page.screenshot({ path: join(OUT, "clip-2-append.png"), clip: strip() });
@@ -492,7 +492,7 @@ test("section menu + keyframe flow", async ({ page }) => {
     await page.locator(".clip-add").click();
     await page.getByRole("menuitem", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
-    await frameTimeline(page); // append pans to the new end; frame the chain back into view
+    await frameTimeline(page); // append never pans; frame the grown chain into view
 
     const body = page.locator(".dock .body");
     const bb = await body.boundingBox();
@@ -564,7 +564,7 @@ test("playhead parking flow", async ({ page }) => {
     await page.locator(".clip-add").click();
     await page.getByRole("menuitem", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
-    await frameTimeline(page); // append pans to the new end; frame the chain back into view
+    await frameTimeline(page); // append never pans; frame the grown chain into view
 
     const body = page.locator(".dock .body");
     const bb = await body.boundingBox();
@@ -715,7 +715,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
     await page.locator(".clip-add").click();
     await page.getByRole("menuitem", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
-    await frameTimeline(page); // append pans to the new end; frame the chain back into view
+    await frameTimeline(page); // append never pans; frame the grown chain into view
 
     const body = page.locator(".dock .body");
     const bb = await body.boundingBox();
@@ -757,7 +757,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
     await page.getByRole("menuitem", { name: "Append geometry section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1,0");
     await expect.poll(tTotal).toBeGreaterThan(0);
-    await frameTimeline(page); // append pans to the new end; frame all three clips into view
+    await frameTimeline(page); // append never pans; frame the grown chain into view
     await expect(page.locator(".clip")).toHaveCount(3);
     await page.screenshot({ path: join(OUT, "dogfood-2-chain.png") });
     if (vp) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip() });
