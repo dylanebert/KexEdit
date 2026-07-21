@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { MenuItem } from "./menu";
+import { flyoutFit, type MenuItem } from "./menu";
 import Menu from "./Menu.svelte"; // self-reference: a submenu is another Menu (Svelte 5 recursion)
 
 // the shared menu renderer (root ui.md's one-language): a MenuItem[] drawn as rows in the
@@ -12,20 +12,27 @@ const { items, onclose }: { items: MenuItem[]; onclose?: () => void } = $props()
 // its flyout; hovering a sibling leaf closes it (the standard menu hover model).
 let open = $state<number | null>(null);
 let subEl = $state<HTMLDivElement | undefined>(undefined);
-let flipX = $state(false); // flip the flyout to the parent's LEFT when it would clip the right edge
-let shiftY = $state(0); // nudge the flyout up when it would clip the bottom edge
+let flipX = $state(false); // flip the flyout to the parent's LEFT when the right side clips
+let shiftY = $state(0); // vertical nudge to keep the flyout off the top / bottom edges
 
 // keep the flyout in the viewport (root ui.md "summoned panels fit the viewport"): measured
-// once on open, so it never covers the parent row (it sits beside it) and never runs off-screen.
+// once on open from the parent row's rect + the flyout's own box (both flip-independent, so
+// one pass settles), guarding all four edges via `flyoutFit`. It never covers the parent row
+// (it sits beside it) and never runs off-screen.
 $effect(() => {
-    if (open === null || !subEl) {
+    if (open === null || !subEl?.parentElement) {
         flipX = false;
         shiftY = 0;
         return;
     }
-    const r = subEl.getBoundingClientRect();
-    flipX = r.right > window.innerWidth - 4;
-    shiftY = r.bottom > window.innerHeight - 4 ? window.innerHeight - 4 - r.bottom : 0;
+    const p = subEl.parentElement.getBoundingClientRect();
+    const fit = flyoutFit(
+        { left: p.left, right: p.right, top: p.top },
+        { w: subEl.offsetWidth, h: subEl.offsetHeight },
+        { w: window.innerWidth, h: window.innerHeight },
+    );
+    flipX = fit.flipX;
+    shiftY = fit.shiftY;
 });
 
 function enter(i: number, item: MenuItem): void {

@@ -18,7 +18,6 @@ import {
     timeToArc,
     trimTargets,
     type View,
-    VIEW_FLOOR_M,
     xGrow,
     yFit,
     type YFit,
@@ -107,8 +106,8 @@ describe("clampView — pan clamp, no forced zoom", () => {
     // the x-axis is a DOCUMENT axis: clampView clamps pan but NEVER forces a zoom. it used
     // to floor pxPerM at the whole-track fit; that made a content edit rescale the ruler.
     test("a zoomed-OUT view is left as-is (no min-scale floor)", () => {
-        const min = W / (T + marginArc(T)); // the old fit floor
-        expect(clampView({ pan: 0, pxPerM: min / 2 }, W, T).pxPerM).toBeCloseTo(min / 2, 9);
+        const fit = W / (T + marginArc(T)); // the padded fit scale, for reference
+        expect(clampView({ pan: 0, pxPerM: fit / 2 }, W, T).pxPerM).toBeCloseTo(fit / 2, 9);
         expect(clampView({ pan: 0, pxPerM: 1 }, W, T).pxPerM).toBe(1);
     });
     test("zoom-in is still capped at MAX_PX_PER_M", () => {
@@ -125,26 +124,24 @@ describe("clampView — pan clamp, no forced zoom", () => {
         expect(pxToS(short, 0)).toBeCloseTo(pxToS(long, 0), 9); // window held
         expect(pxToS(short, W)).toBeCloseTo(pxToS(long, W), 9);
     });
-    test("frameAll fits content past the floor exactly — [0, sTotal+margin], left anchored", () => {
-        const Tlong = 200; // well past VIEW_FLOOR_M, so the floor is inert → exact fit
+    test("frameAll frames [0, sTotal+padding] exactly, left anchored (any length)", () => {
+        const Tlong = 200;
         const m = marginArc(Tlong);
         const v = frameAll(W, Tlong);
         expect(pxToS(v, 0)).toBeCloseTo(0, 6); // no negative distance before launch
         expect(pxToS(v, W)).toBeCloseTo(Tlong + m, 6);
     });
-    test("frameAll floors a short track at the VIEW_FLOOR_M window (favored slice, not a hug)", () => {
-        // the default-zoom verdict: a tiny starter section must NOT fill the whole ruler.
-        // below the floor, frameAll frames exactly [0, VIEW_FLOOR_M] — pxPerM = width/floor —
-        // so the content occupies its slice and empty ruler trails to the right.
-        const v = frameAll(W, 4); // 4m ≪ VIEW_FLOOR_M
-        expect(v.pxPerM).toBeCloseTo(W / VIEW_FLOOR_M, 9);
+    test("frameAll frames a short track at sTotal+padding, not a floor span", () => {
+        // the always-padded axis: the addressable span is ALWAYS sTotal + padding (the same
+        // proportional lead-out at every length), so a short track frames [0, sTotal+padding]
+        // — a tiny window, not the old arbitrary min-span floor snap.
+        const Tshort = 4;
+        const m = marginArc(Tshort); // the same padding definition, floored at MIN_MARGIN_M
+        const v = frameAll(W, Tshort);
+        expect(v.pxPerM).toBeCloseTo(W / (Tshort + m), 9);
         expect(v.pan).toBe(0); // left-anchored at the launch
         expect(pxToS(v, 0)).toBeCloseTo(0, 6);
-        expect(pxToS(v, W)).toBeCloseTo(VIEW_FLOOR_M, 6); // the window spans the floor
-        // the ~24m default section occupies a favored ¼–⅓, not the whole width
-        const occ = 24 / VIEW_FLOOR_M;
-        expect(occ).toBeGreaterThan(0.25);
-        expect(occ).toBeLessThan(0.34);
+        expect(pxToS(v, W)).toBeCloseTo(Tshort + m, 6); // the window spans exactly the padded track
     });
     test("pan never reveals distance before the launch (s=0) or past the lead-out", () => {
         const m = marginArc(T);
@@ -164,7 +161,7 @@ describe("zoomAt — cursor-anchored", () => {
     test("the meter under the cursor is fixed across a zoom-in (interior anchor)", () => {
         // a track past the floor, so the fitted view fills the width and the pan clamp
         // doesn't left-anchor it (which would drift the cursor); the anchor-hold is the
-        // property under test, independent of the frameAll floor.
+        // property under test, independent of the framing.
         const Tlong = 200;
         const v = frameAll(W, Tlong); // fitted, content fills the width
         const anchor = W / 2;
@@ -174,13 +171,12 @@ describe("zoomAt — cursor-anchored", () => {
         expect(pxToS(z, anchor)).toBeCloseTo(before, 6);
     });
     test("zoom-out from a zoomed-in view returns toward the fit", () => {
-        // a track past the floor, so frameAll == the exact content fit (minScale) and a
-        // zoom-out floors right back to it. (a below-floor track frames wider than minScale;
-        // its zoom-out floor is the separate below-fit case tested next.)
+        // frameAll frames the padded span [0, sTotal+padding] and a zoom-out floors right back
+        // to that scale — for any track length now that the axis is always padded.
         const Tlong = 200;
         const fitted = frameAll(W, Tlong);
         const inView = zoomAt(fitted, W / 2, 4, W, Tlong);
-        const out = zoomAt(inView, W / 2, 0.001, W, Tlong); // clamps to min scale
+        const out = zoomAt(inView, W / 2, 0.001, W, Tlong); // clamps to the fit scale
         expect(out.pxPerM).toBeCloseTo(fitted.pxPerM, 6);
     });
     test("zoom-out from a below-fit view stays put (never snaps UP to the fit)", () => {
@@ -189,26 +185,25 @@ describe("zoomAt — cursor-anchored", () => {
         // inversion bug: a zoom-OUT tick pushing the scale IN. the floor is min(current,
         // fit), so a zoom-out below fit is a no-op instead. `fit` is the padded framing
         // scale (frameAll's), the same floor a zoom-out returns to.
-        const fit = frameAll(W, T).pxPerM; // the padded floor (T < VIEW_FLOOR_M)
+        const fit = frameAll(W, T).pxPerM; // the padded fit scale
         const belowFit: View = { pan: 0, pxPerM: fit / 2 };
         const out = zoomAt(belowFit, W / 2, 0.5, W, T); // zoom OUT further
         expect(out.pxPerM).toBeCloseTo(belowFit.pxPerM, 9); // held, not snapped up
         expect(out.pxPerM).toBeLessThan(fit); // stays below fit
     });
     test("zoom-out returns to the padded initial framing on a short track", () => {
-        // the padding bug: frameAll on a below-floor track frames the VIEW_FLOOR_M window,
-        // a SMALLER scale than the unpadded content fit. zoom in, then zoom back out to the
-        // floor — the floor must incorporate the same padding, so the padded framing is
-        // reachable again (its visible span returns to VIEW_FLOOR_M), not clamped at the
-        // tighter content extent.
-        const Tshort = 8; // ≪ VIEW_FLOOR_M
+        // the zoom floor incorporates the padding: zoom in on a short track, then zoom back
+        // out — the floor is the padded framing scale, so the visible span returns to exactly
+        // sTotal + padding (the initial frame), not the tighter bare-content extent.
+        const Tshort = 8;
+        const padded = Tshort + marginArc(Tshort);
         const framed = frameAll(W, Tshort);
         const zoomedIn = zoomAt(framed, W / 2, 4, W, Tshort);
         expect(zoomedIn.pxPerM).toBeGreaterThan(framed.pxPerM);
         const out = zoomAt(zoomedIn, W / 2, 0.001, W, Tshort); // floor
         expect(out.pxPerM).toBeCloseTo(framed.pxPerM, 6);
-        // the padded window is reachable again — the visible span is the VIEW_FLOOR_M frame.
-        expect(pxToS(out, W) - pxToS(out, 0)).toBeCloseTo(VIEW_FLOOR_M, 4);
+        // the padded window is reachable again — the visible span is the padded frame.
+        expect(pxToS(out, W) - pxToS(out, 0)).toBeCloseTo(padded, 4);
     });
 });
 
