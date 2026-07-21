@@ -45,7 +45,7 @@ import {
     setTrackV0,
     Track,
 } from "./track";
-import { attachCanvas2D, viewTransform } from "./view";
+import { attachCanvas2D, snapGuides, viewTransform } from "./view";
 
 const { ecs }: { ecs: State } = $props();
 let canvas: HTMLCanvasElement;
@@ -77,6 +77,19 @@ onMount(() => {
 const snapOn = $derived.by((): boolean => {
     void tick;
     return editor.snap;
+});
+
+// the fixed snap readout under the toggle cluster (the Blender modal-transform / SketchUp
+// measurements-box precedent): the engaged snap values (° and/or m), joined on a co-fire and read
+// through the per-RAF tick. null when no snap is engaged, so the readout is hidden entirely — a
+// floating chip at the drag point collided with the radial extend/delete buttons; a fixed spot
+// under the cluster can't, and it keeps the viewport's one overlay corner.
+const snapText = $derived.by((): string | null => {
+    void tick;
+    const parts: string[] = [];
+    if (snapGuides.angleLabel) parts.push(snapGuides.angleLabel);
+    if (snapGuides.lengthLabel) parts.push(snapGuides.lengthLabel);
+    return parts.length > 0 ? parts.join(" · ") : null;
 });
 
 const infeasible = $derived.by((): boolean => {
@@ -440,31 +453,41 @@ $effect(() => {
 
 <canvas bind:this={canvas}></canvas>
 
-<!-- the viewport toggle cluster: a small persistent overlay top-left of the shaping
-     viewport — the Blender viewport-header precedent collapsed to an overlay (a viewport
-     affordance, not a second dock). the home for viewport toggles; today just the snap
-     magnet. lit when on (default), dimmed when off; `S` also toggles, Ctrl/Cmd bypasses
-     per-gesture. -->
-<div class="viewport-tools" aria-label="Viewport tools">
-    <button
-        class="vtool"
-        class:on={snapOn}
-        type="button"
-        onclick={toggleSnap}
-        title="Snapping (S)"
-        aria-label="Snapping"
-        aria-pressed={snapOn}
-    >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path
-                d="M4 2 L4 8 a4 4 0 0 0 8 0 L12 2 L9.5 2 L9.5 8 a1.5 1.5 0 0 1 -3 0 L6.5 2 Z"
-                fill="currentColor"
-                fill-rule="evenodd"
-            />
-            <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
-            <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
-        </svg>
-    </button>
+<!-- the top-left viewport overlay: the persistent toggle cluster + the fixed snap readout
+     stacked under it (the viewport keeps ONE overlay corner). a flex column anchored at the
+     top, so the readout appearing below never shifts the cluster (no-layout-shift). -->
+<div class="viewport-overlay">
+    <!-- the viewport toggle cluster: a small persistent overlay — the Blender viewport-header
+         precedent collapsed to an overlay (a viewport affordance, not a second dock). the home
+         for viewport toggles; today just the snap magnet. lit when on (default), dimmed when
+         off; `S` also toggles, Ctrl/Cmd bypasses per-gesture. -->
+    <div class="viewport-tools" aria-label="Viewport tools">
+        <button
+            class="vtool"
+            class:on={snapOn}
+            type="button"
+            onclick={toggleSnap}
+            title="Snapping (S)"
+            aria-label="Snapping"
+            aria-pressed={snapOn}
+        >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                    d="M4 2 L4 8 a4 4 0 0 0 8 0 L12 2 L9.5 2 L9.5 8 a1.5 1.5 0 0 1 -3 0 L6.5 2 Z"
+                    fill="currentColor"
+                    fill-rule="evenodd"
+                />
+                <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
+                <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
+            </svg>
+        </button>
+    </div>
+    <!-- the fixed snap readout: the engaged snap values (° / m / both), summoned only while a
+         magnet target is latched (the Blender modal-transform readout). replaces the floating
+         °/m chips that collided with the radial extend/delete buttons at the drag point. -->
+    {#if snapText}
+        <div class="snap-readout">{snapText}</div>
+    {/if}
 </div>
 
 {#if infeasible}
@@ -623,15 +646,26 @@ $effect(() => {
         user-select: none;
     }
 
-    /* the viewport toggle cluster: a persistent overlay top-left of the shaping viewport —
-       the Blender viewport-header precedent collapsed to an overlay (a viewport affordance,
-       not a second dock). a column so future toggles stack under the magnet; opaque surface,
-       elevation from border + shadow (root ui.md). */
-    .viewport-tools {
+    /* the top-left overlay column: the toggle cluster plus the fixed snap readout under it. it
+       owns the corner positioning; `align-items: flex-start` so the readout (a wider line) never
+       stretches the narrow cluster, and top-anchoring so the readout appearing below leaves the
+       cluster put (no-layout-shift). the viewport's one overlay corner. */
+    .viewport-overlay {
         position: absolute;
         top: 16px;
         left: 16px;
         z-index: 2;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    /* the viewport toggle cluster: the Blender viewport-header precedent collapsed to an overlay
+       (a viewport affordance, not a second dock). a column so future toggles stack under the
+       magnet; opaque surface, elevation from border + shadow (root ui.md). */
+    .viewport-tools {
         display: flex;
         flex-direction: column;
         gap: 2px;
@@ -640,8 +674,23 @@ $effect(() => {
         border: 1px solid var(--border);
         border-radius: 6px;
         box-shadow: var(--shadow);
-        user-select: none;
-        -webkit-user-select: none;
+    }
+    /* the fixed snap readout: the engaged snap values under the cluster (the Blender
+       modal-transform readout). shown only while a magnet is latched; JetBrains Mono over the
+       same opaque chrome as the cluster, the neutral guide text at `--fg`. pointer-inert — it's
+       a readout that flashes during a drag, never a target. */
+    .snap-readout {
+        padding: 3px 8px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        box-shadow: var(--shadow);
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        color: var(--fg);
+        white-space: nowrap;
+        pointer-events: none;
     }
     /* a viewport toggle: quiet muted icon by default, accent-lit when on — a persistent
        editor preference, not a loud control (the removed dock-corner snap toggle's look). */

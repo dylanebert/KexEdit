@@ -395,8 +395,11 @@ editor-ui invariant-domain rule).
   node's handles (solid = explicit, hollow = `Auto` ghost); right-click any node opens the node
   context menu (`Handles` toggle + a `Tangents ▸` submenu of Mirror | Aligned | Free / Reset, a
   `Menu` over `editor.nodeMenu`, the same shared `.menu` look + cursor placement as the section
-  context menu). Snap-guide feedback (the incline ray + °/m labels) draws in the shared neutral gray
-  (`COLOR_GUIDE_RAY`), the one register every snap guide wears (the timeline's `.snapguide` too).
+  context menu). Snap-guide feedback: the viewport draws the incline **ray** in the shared neutral
+  gray (`COLOR_GUIDE_RAY`), the one register every snap guide wears (the timeline's `.snapguide`
+  too); the numeric **°/m readout** is DOM — a fixed line under the viewport toggle cluster
+  (App's `.snap-readout`, the Blender modal-transform readout), shown only while a snap is engaged
+  (a floating chip at the drag point collided with the radial extend/delete buttons).
 - `main.ts` — boots `run({ defaults: false })` + mounts App. The DEV-only `__kex` hook exposes
   geo state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`), force state
   (`kind`/`forceCount`/`forces`/`convert`/`placeForce`/`seedForceBump`), and the multi-section ops

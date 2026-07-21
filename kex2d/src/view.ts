@@ -103,18 +103,18 @@ export function cameraTx(cam: Camera): ViewTx {
 export const camera: Camera = { zoom: 0, ox: 0, oy: 0 };
 let framed = false;
 
-/** transient world-space snap guides flashed while a viewport drag latches a magnet target
- *  (the Figma alignment-guide flash, one per fired family). `ray` hangs off the previous node —
- *  a line through the dragged node at the snapped exit incline. a snapped angle or length also
- *  flashes a numeric label (Figma's measurement pattern): `angleLabel` (e.g. "30°") and
- *  `lengthLabel` (e.g. "3 m"), each a world anchor at the drag point + text the render pass
- *  projects to screen and offsets below-right onto a chip (so the cursor never covers it). each
- *  field is null when its family isn't firing. mutated in place by the drag controls, read by
- *  the render pass, cleared on release — the viewport twin of the timeline's snap guide. */
+/** transient snap guides flashed while a viewport drag latches a magnet target (the Figma
+ *  alignment-guide flash, one per fired family). `ray` is world-space — a line through the
+ *  dragged node at the snapped exit incline the render pass draws in the viewport. `angleLabel`
+ *  (e.g. "30°") and `lengthLabel` (e.g. "3 m") are the numeric readout strings: not world-anchored,
+ *  they render in the fixed snap readout under the viewport toggle cluster (the Blender
+ *  modal-transform readout — a floating chip at the drag point collided with the radial buttons).
+ *  each field is null when its family isn't firing. mutated in place by the drag controls, read by
+ *  the render pass (`ray`) and the App readout (the labels), cleared on release. */
 export interface SnapGuides {
     ray: { x: number; y: number; angle: number } | null;
-    angleLabel: { x: number; y: number; text: string } | null;
-    lengthLabel: { x: number; y: number; text: string } | null;
+    angleLabel: string | null;
+    lengthLabel: string | null;
 }
 
 export const snapGuides: SnapGuides = {

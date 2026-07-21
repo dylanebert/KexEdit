@@ -264,27 +264,19 @@ function normDeg(d: number): number {
     return ((((d + 180) % 360) + 360) % 360) - 180;
 }
 
-/** flash the fired magnet guides in world space (the render pass reads `snapGuides`). the angle
- *  guide draws a tangent ray AT the dragged node along the snapped exit incline (the screen angle
- *  inverts to world, the y-flip) plus a numeric degree label reading the incline; a snapped length
- *  flashes a metre label (the Figma measurement pattern — the render pass offsets both onto chips
- *  below-right of the point). `snapped` is the resolved drag point in world coords — the ray origin
- *  + label anchor. */
+/** flash the fired magnet guides (the render pass reads `snapGuides.ray`; the App readout reads the
+ *  labels). the angle guide draws a tangent ray AT the dragged node along the snapped exit incline
+ *  (the screen angle inverts to world, the y-flip) and sets the degree readout string; a snapped
+ *  length sets a metre readout string. the numbers show in the fixed snap readout under the toggle
+ *  cluster, so they carry no world anchor. `snapped` is the resolved drag point in world coords —
+ *  the ray origin. */
 function applyGuides(guides: Guide[], tx: ViewTx, snapped: { x: number; y: number }): void {
     for (const g of guides) {
         if (g.kind === "angle") {
             snapGuides.ray = { x: snapped.x, y: snapped.y, angle: -g.value };
-            snapGuides.angleLabel = {
-                x: snapped.x,
-                y: snapped.y,
-                text: `${normDeg((-g.value * 180) / Math.PI)}°`,
-            };
+            snapGuides.angleLabel = `${normDeg((-g.value * 180) / Math.PI)}°`;
         } else if (g.kind === "length") {
-            snapGuides.lengthLabel = {
-                x: snapped.x,
-                y: snapped.y,
-                text: `${Math.round(g.value / Math.abs(tx.sx))} m`,
-            };
+            snapGuides.lengthLabel = `${Math.round(g.value / Math.abs(tx.sx))} m`;
         }
     }
 }

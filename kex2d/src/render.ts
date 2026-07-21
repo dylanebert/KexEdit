@@ -1,6 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
-import { COLOR_ACCENT, COLOR_GUIDE_LABEL, COLOR_GUIDE_RAY, kindSegments, selected } from "./colors";
+import { COLOR_ACCENT, COLOR_GUIDE_RAY, kindSegments, selected } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { tangentHandles } from "./tangents";
@@ -413,97 +413,33 @@ const CartDrawSystem: System = {
     },
 };
 
-// measurement-label chip layout (px). the °/m readouts sit a fixed screen distance below-right
-// of the drag point (the Figma measurement-label pattern) so the cursor never covers them, and
-// stack by `LABEL_ROW` so a co-fire (° + m) can't overlap. each reads over any track/grid content
-// off a subtle rounded dark chip.
-const LABEL_FONT = "11px 'JetBrains Mono', ui-monospace, monospace";
-const LABEL_OFFSET = 16; // below-right screen offset of the chip from the drag point
-const LABEL_ROW = 20; // vertical stack pitch between stacked chips
-const LABEL_PAD_X = 6;
-const LABEL_PAD_Y = 3;
-const LABEL_RADIUS = 3;
-const LABEL_LINE = 11; // the label font's line height
-const COLOR_CHIP = "rgba(24, 22, 20, 0.9)"; // near-opaque fill just above the app bg, occludes content
-const COLOR_CHIP_EDGE = "rgba(240, 236, 232, 0.14)"; // hairline border so the chip reads over the bg too
-
-/** draw one measurement readout: a rounded dark chip + near-white text, offset below-right of the
- *  drag point (`px`,`py` screen coords) and pushed down by `row` so a second chip clears the first.
- *  `ctx.font` must already be `LABEL_FONT` (measured before the call). */
-function drawLabelChip(
-    ctx: CanvasRenderingContext2D,
-    px: number,
-    py: number,
-    text: string,
-    row: number,
-): void {
-    const x = px + LABEL_OFFSET;
-    const y = py + LABEL_OFFSET + row * LABEL_ROW;
-    const tw = ctx.measureText(text).width;
-    const halfH = LABEL_LINE / 2 + LABEL_PAD_Y;
-    ctx.fillStyle = COLOR_CHIP;
-    ctx.strokeStyle = COLOR_CHIP_EDGE;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(x - LABEL_PAD_X, y - halfH, tw + 2 * LABEL_PAD_X, halfH * 2, LABEL_RADIUS);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = COLOR_GUIDE_LABEL;
-    ctx.fillText(text, x, y);
-}
-
-/** the viewport snap-guide flash: a thin guide per fired magnet family, drawn over the track
- *  and cleared by the controls on release. the angle guide is a tangent ray at the dragged node
- *  along the snapped exit incline, drawn in a quiet neutral gray — the shared guide neutral (the
- *  timeline's snap guides wear the same gray now, feel round 3). a snapped angle/length also
- *  flashes a numeric label (° / m) on a chip offset below-right of the drag point so the cursor
- *  never covers it, the Figma measurement readout that replaced the deleted length ring. */
+/** the viewport snap-guide flash: the incline tangent ray for the fired magnet family, drawn over
+ *  the track and cleared by the controls on release — a full-extent line through the dragged node
+ *  along the snapped exit incline, in the shared neutral guide gray (the timeline's snap guides
+ *  wear the same gray now, feel round 3). `L` spans any framed view; the canvas clips the overshoot.
+ *  The numeric °/m readout no longer floats here — it renders in the fixed snap readout under the
+ *  viewport toggle cluster (the Blender modal-transform readout; a floating chip at the drag point
+ *  collided with the radial extend/delete buttons, and a fixed spot can't). */
 const SnapGuideSystem: System = {
     group: "draw",
     update(): void {
         const { element: canvas, ctx } = Canvas2D;
         if (!ctx) return;
-        if (
-            snapGuides.ray === null &&
-            snapGuides.angleLabel === null &&
-            snapGuides.lengthLabel === null
-        )
-            return;
+        if (snapGuides.ray === null) return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
+        const { x: rx, y: ry, angle } = snapGuides.ray;
+        const cx = ox + rx * sx;
+        const cy = oy + ry * sy;
+        const L = 1e5;
+        const dx = Math.cos(angle);
+        const dy = Math.sin(angle);
         ctx.save();
-
-        // the incline tangent ray — informational, a quiet neutral gray so it doesn't shout as a
-        // second snap state. a full-extent line through the dragged node at the snapped exit
-        // incline; `L` spans any framed view, the canvas clips the overshoot.
-        if (snapGuides.ray !== null) {
-            const { x: rx, y: ry, angle } = snapGuides.ray;
-            const cx = ox + rx * sx;
-            const cy = oy + ry * sy;
-            const L = 1e5;
-            const dx = Math.cos(angle);
-            const dy = Math.sin(angle);
-            ctx.strokeStyle = COLOR_GUIDE_RAY;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(cx + dx * L * sx, cy + dy * L * sy);
-            ctx.lineTo(cx - dx * L * sx, cy - dy * L * sy);
-            ctx.stroke();
-        }
-
-        // numeric readouts on chips, offset below-right of the drag point and stacked so a co-fire
-        // never overlaps (both anchor at the same drag point). `row++` fills slots top-down.
-        ctx.font = LABEL_FONT;
-        ctx.textBaseline = "middle";
-        ctx.textAlign = "left";
-        let row = 0;
-        if (snapGuides.angleLabel !== null) {
-            const { x, y, text } = snapGuides.angleLabel;
-            drawLabelChip(ctx, ox + x * sx, oy + y * sy, text, row++);
-        }
-        if (snapGuides.lengthLabel !== null) {
-            const { x, y, text } = snapGuides.lengthLabel;
-            drawLabelChip(ctx, ox + x * sx, oy + y * sy, text, row++);
-        }
+        ctx.strokeStyle = COLOR_GUIDE_RAY;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx + dx * L * sx, cy + dy * L * sy);
+        ctx.lineTo(cx - dx * L * sx, cy - dy * L * sy);
+        ctx.stroke();
         ctx.restore();
     },
 };

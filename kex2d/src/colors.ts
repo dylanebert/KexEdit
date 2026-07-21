@@ -13,11 +13,11 @@ export const COLOR_ACCENT = "#d49560"; // rgb(212, 149, 96)
 export const COLOR_FORCE = COLOR_ACCENT;
 /** the snap-guide neutral — every snap guide's color, viewport and timeline alike (feel round
  *  3 retired the magenta stateful/neutral split: one guide is one register). The viewport
- *  incline ray, the timeline's s/g snap lines, all wear this quiet gray (the app's anchor
- *  gray); the °/m measurement labels read near-white over the dark chip. Mirrors App.svelte's
- *  `--guide` CSS custom property (Timeline.svelte's `.snapguide`). */
+ *  incline ray and the timeline's s/g snap lines all wear this quiet gray (the app's anchor
+ *  gray). Mirrors App.svelte's `--guide` CSS custom property (Timeline.svelte's `.snapguide`).
+ *  The numeric °/m readout is DOM now (the fixed snap readout under the viewport toggle cluster,
+ *  styled off the `--fg` token), so no canvas label color lives here. */
 export const COLOR_GUIDE_RAY = "#9aa0a6";
-export const COLOR_GUIDE_LABEL = "#f0ece8";
 
 export function kindColor(kind: SectionKind): string {
     return kind === SectionKind.Force ? COLOR_FORCE : COLOR_GEO;
