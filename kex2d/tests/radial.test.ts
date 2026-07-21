@@ -31,25 +31,24 @@ describe("ring slots (the even 60° fan)", () => {
         expect(Math.atan2(ext.y, ext.x)).toBeCloseTo(base, 9); // extend is along the heading
     });
 
-    test("length and angle knobs are diametrically opposite", () => {
+    test("length and angle knobs flank extend symmetrically at ±60°", () => {
+        // the round-6 layout: measure (−60°) · extend (0°) · pitch (+60°). the two knobs mirror
+        // across the extend ray — equal-and-opposite offsets from it.
         const base = 0.3;
         const len = ringSlot(base, RadialSlot.Length);
         const ang = ringSlot(base, RadialSlot.Angle);
-        // opposite sides of the ring: the two offsets are negatives of each other (180° apart).
-        expect(len.x + ang.x).toBeCloseTo(0, 9);
-        expect(len.y + ang.y).toBeCloseTo(0, 9);
+        const ext = ringSlot(base, RadialSlot.Extend);
+        const dl = Math.atan2(len.y, len.x) - Math.atan2(ext.y, ext.x);
+        const da = Math.atan2(ang.y, ang.x) - Math.atan2(ext.y, ext.x);
+        expect(dl).toBeCloseTo(-da, 9); // mirror across extend
+        expect(da).toBeCloseTo(Math.PI / 3, 9); // +60°
     });
 
-    test("length and delete flank extend symmetrically (the even fan)", () => {
-        // length at −60°, extend at 0°, delete at +60°: length and delete mirror across extend.
+    test("delete sits one slot past the angle knob (+120°)", () => {
         const base = 0.3;
-        const len = ringSlot(base, RadialSlot.Length);
         const del = ringSlot(base, RadialSlot.Delete);
         const ext = ringSlot(base, RadialSlot.Extend);
-        // the extend bisects them: length and delete are equal-and-opposite about the extend ray.
-        const dl = Math.atan2(len.y, len.x) - Math.atan2(ext.y, ext.x);
         const dd = Math.atan2(del.y, del.x) - Math.atan2(ext.y, ext.x);
-        expect(dl).toBeCloseTo(-dd, 9);
-        expect(dd).toBeCloseTo(Math.PI / 3, 9); // 60°
+        expect(dd).toBeCloseTo((2 * Math.PI) / 3, 9); // +120°
     });
 });

@@ -1,7 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
 import { COLOR_ACCENT, COLOR_GUIDE_RAY, kindSegments, selected } from "./colors";
-import { manipKnobs } from "./controls";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { editHandleSets } from "./tangents";
@@ -380,97 +379,6 @@ const TangentDrawSystem: System = {
 
 // the knob radius matches the radial `.rbtn` (30px diameter) so the two polar controls read as
 // equal-character peers of the "add node" (+) button. `MANIP_PICK_R` (controls.ts) tracks it.
-const MANIP_KNOB_R = 15;
-
-/** the radial "+" button's canvas twin — the dark rounded button shell (`--bg-solid` fill,
- *  `--border` rim, `--shadow` lift), so the manipulator knobs read as peers of the add-node button
- *  (App.svelte `.rbtn`). draws only the shell; the caller stamps the differentiating glyph. */
-function knobShell(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-    ctx.save();
-    ctx.shadowColor = "rgba(0, 0, 0, 0.4)";
-    ctx.shadowBlur = 10;
-    ctx.shadowOffsetY = 3;
-    ctx.beginPath();
-    ctx.arc(x, y, MANIP_KNOB_R, 0, Math.PI * 2);
-    ctx.fillStyle = "#161413"; // --bg-solid
-    ctx.fill();
-    ctx.restore();
-    ctx.beginPath();
-    ctx.arc(x, y, MANIP_KNOB_R, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.08)"; // --border
-    ctx.lineWidth = 1;
-    ctx.stroke();
-}
-
-/** the length knob's ruler glyph — a bar with edge ticks, the "chord length" affordance. drawn in
- *  the accent stroke idiom of the radial `+` glyph (round caps/joins, ~1.4 px), a 14-unit glyph
- *  centred on the knob. */
-function rulerGlyph(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.strokeStyle = COLOR_ACCENT;
-    ctx.lineWidth = 1.4;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.beginPath();
-    ctx.rect(-5.5, -2.6, 11, 5.2); // the ruler body
-    for (const tx of [-2.75, 0, 2.75]) {
-        ctx.moveTo(tx, -2.6); // ticks down from the top edge
-        ctx.lineTo(tx, -0.3);
-    }
-    ctx.stroke();
-    ctx.restore();
-}
-
-/** the angle knob's up/down glyph — a double-headed vertical arrow (↕), the "pitch" affordance (in
- *  3D this control becomes pitch, joined by turn/roll). same accent stroke idiom as the ruler. */
-function updownGlyph(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.strokeStyle = COLOR_ACCENT;
-    ctx.lineWidth = 1.4;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.beginPath();
-    ctx.moveTo(0, -6); // the stem
-    ctx.lineTo(0, 6);
-    ctx.moveTo(-2.8, -3.3); // up head
-    ctx.lineTo(0, -6);
-    ctx.lineTo(2.8, -3.3);
-    ctx.moveTo(-2.8, 3.3); // down head
-    ctx.lineTo(0, 6);
-    ctx.lineTo(2.8, 3.3);
-    ctx.stroke();
-    ctx.restore();
-}
-
-/** the two polar manipulators on the selected node: the chord-ray length knob (ruler) and the
- *  tangential-arc angle/pitch knob (↕), each a dark rounded button peer of the radial "+" (the
- *  Planet Coaster piece controls). the node body is select-only — these are how it moves. hidden
- *  while the node is in tangent edit (its handles own that surface). one geometry source with the
- *  pick + harness hook (`controls.ts` `manipKnobs`), so they can't drift. */
-const ManipulatorDrawSystem: System = {
-    group: "draw",
-    update(ecs: State): void {
-        const { element: canvas, ctx } = Canvas2D;
-        if (!ctx) return;
-        const sel = editor.selection;
-        if (sel === null || editor.tangentEdit === sel) return; // tangent edit owns the surface
-        const tx = viewTransform(canvas);
-        for (const trackEid of ecs.query([Track])) {
-            const s = samples.get(trackEid);
-            if (!s) continue;
-            const knobs = manipKnobs(ecs, s, tx, sel);
-            if (!knobs) continue;
-            for (const k of knobs) {
-                knobShell(ctx, k.x, k.y);
-                if (k.axis === "length") rulerGlyph(ctx, k.x, k.y);
-                else updownGlyph(ctx, k.x, k.y);
-            }
-        }
-    },
-};
-
 const CartDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
@@ -551,7 +459,6 @@ export const RenderPlugin: Plugin = {
         AnchorDrawSystem,
         HandleDrawSystem,
         TangentDrawSystem,
-        ManipulatorDrawSystem,
         SnapGuideSystem,
     ],
 };

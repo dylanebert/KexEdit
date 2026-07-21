@@ -109,10 +109,11 @@ test("geo authoring flow", async ({ page }) => {
     await expect.poll(nodeCount).toBe(7);
     await expect.poll(undoDepth).toBe(0);
 
-    // ── 3. Reshape via the POLAR LENGTH MANIPULATOR (the free-drag replacement, stage 5). Frame the
-    // hill so the nodes + knobs separate at pixel scale, then: (a) the node BODY is select-only — a
-    // drag across it selects but never moves the node; (b) the length knob drags the chord, re-baking
-    // the recovered force. The knobs are canvas-drawn (no DOM box), located via __kex.manipKnobs. ──
+    // ── 3. Reshape via the POLAR LENGTH MANIPULATOR button (the free-drag replacement). Frame the
+    // hill so the nodes + knob buttons separate at pixel scale, then: (a) the node BODY is
+    // select-only — a drag across it selects but never moves the node; (b) the LENGTH knob is a real
+    // `.rbtn` button (feel round 6) — pressing it and dragging along the chord lengthens it, re-baking
+    // the recovered force. Located by its real DOM box (pointer-true), not by canvas coords. ──
     await page.keyboard.press("f"); // hover defaults to the viewport, so `f` routes there
     await page.waitForTimeout(SETTLE_MS);
 
@@ -126,19 +127,16 @@ test("geo authoring flow", async ({ page }) => {
             (o: number): { x: number; y: number } | null => (window as any).__kex.nodeAt(o),
             order,
         );
-    const manipKnobs = () =>
-        page.evaluate(
-            (): { axis: string; x: number; y: number }[] => (window as any).__kex.manipKnobs(),
-        );
 
-    // select node 3 (the crest) by a real body click; the polar knobs summon on it.
+    // select node 3 (the crest) by a real body click; the polar knob buttons summon on it.
     const n3 = await nodeAt(3);
     if (!n3) throw new Error("node 3 not located");
     await page.mouse.click(cb.x + n3.x, cb.y + n3.y);
     await expect.poll(selectedOrder).toBe(3);
+    await expect(page.locator(".manip-length")).toBeVisible(); // the DOM knob buttons appeared
 
     // (a) SELECT-ONLY body drag: dragging across the node body moves nothing (movement is only
-    // through the manipulators). the section-local pose holds byte-identical.
+    // through the manipulator buttons). the section-local pose holds byte-identical.
     const before = await poses();
     await page.mouse.move(cb.x + n3.x, cb.y + n3.y);
     await page.mouse.down();
@@ -146,18 +144,20 @@ test("geo authoring flow", async ({ page }) => {
     await page.mouse.up();
     expect((await poses())[3]).toEqual(before[3]); // the body drag didn't move the node
 
-    // (b) drag the LENGTH knob outward along the chord (away from node 2) → the chord lengthens, the
-    // crest moves, and the recovered force + ride time shift.
+    // (b) press the real LENGTH knob button and drag outward along the chord (away from node 2) → the
+    // chord lengthens, the crest moves, and the recovered force + ride time shift. pointer-true: a
+    // real pointerdown on the button's own box, then a real drag; the button captures on the canvas.
     const tBefore = await tTotal();
     const n2 = await nodeAt(2);
-    const lk = (await manipKnobs()).find((k) => k.axis === "length");
-    if (!n2 || !lk) throw new Error("length knob / node 2 not located");
+    const lb = await page.locator(".manip-length").boundingBox();
+    if (!n2 || !lb) throw new Error("length knob button / node 2 not located");
+    const lk = { x: lb.x + lb.width / 2, y: lb.y + lb.height / 2 }; // the button center (page coords)
     const rl = Math.hypot(n3.x - n2.x, n3.y - n2.y);
     const ux = (n3.x - n2.x) / rl;
     const uy = (n3.y - n2.y) / rl; // the chord ray screen direction; dragging along it lengthens it
-    await page.mouse.move(cb.x + lk.x, cb.y + lk.y);
+    await page.mouse.move(lk.x, lk.y);
     await page.mouse.down();
-    await page.mouse.move(cb.x + lk.x + ux * 50, cb.y + lk.y + uy * 50, { steps: 12 });
+    await page.mouse.move(lk.x + ux * 50, lk.y + uy * 50, { steps: 12 });
     await page.mouse.up();
     // the crest moved a real distance (the chord grew)…
     await expect

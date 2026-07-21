@@ -2,17 +2,17 @@
  *  Coaster piece controls, extending to turn/roll in 3D). a selected node moves not by a free 2D
  *  drag but along two separate axes in the polar frame around its **previous node**:
  *
- *  - **length** — the chord `previous → selected`, snapped to whole metres;
- *  - **angle** — the circle through the selected node centered on the previous node; at a growth
- *    tip the displayed and snapped value is the exit incline (the `magnet.ts` incline family),
- *    while an interior node rotates free (a frozen heading has no incline quantum, `editor-ui.md`).
+ *  - **length** — the chord `previous → selected`, snapped to whole metres (min 1 m);
+ *  - **angle** — the circle through the selected node centered on the previous node; snapped to the
+ *    5° grid uniformly — at a growth tip the displayed and snapped value is the exit incline, at an
+ *    interior node the chord angle itself (feel round 6: a plain grid, no incline quantum, so no
+ *    "interior rotates free" asymmetry).
  *
- *  each axis has a **locus** (the chord ray, the tangential arc) stage 5 renders and hit-tests, and
- *  a screen→value **inverse** (`screenToLength`/`screenToAngle`) with an exact forward (`lengthTo
- *  Point`/`angleToPoint`), so a value round-trips through its locus. every family the resolver
- *  snapping runs through `magnet.ts` (one source of the raster math). the module takes **screen px**
- *  in (the caller projects world→screen at the boundary, exactly as the magnet does) and works
- *  device-free — directly `bun test`-able; no shallot, no DOM.
+ *  each axis has a **locus** (the chord ray, the tangential arc) the drag rides, and a screen→value
+ *  **inverse** (`screenToLength`/`screenToAngle`) with an exact forward (`lengthToPoint`/
+ *  `angleToPoint`), so a value round-trips through its locus. the snap grids run through `magnet.ts`
+ *  (one home for the increment constants). the module takes **screen px** in (the caller projects
+ *  world→screen at the boundary) and works device-free — directly `bun test`-able; no shallot, no DOM.
  *
  *  **the semantic values are world-space.** `screenToLength` already returns world metres; the
  *  angle inverse and `angleControl` emit **world** radians (the screen y-flip seam lives inside the
@@ -22,8 +22,7 @@
  *  loci carry (the chord ray's screen direction, the arc's screen centre/radius) stays screen px,
  *  because stage 5 draws it there. */
 
-import { inclineOf, type LengthSnap, snapIncline, snapLength } from "./magnet";
-import { SNAP_PX } from "./timeline";
+import { chordForIncline, inclineOf, type LengthSnap, snapAngle, snapLength } from "./magnet";
 
 const EPS = 1e-9;
 
@@ -31,17 +30,15 @@ const EPS = 1e-9;
  *  screen px — the length axis runs along the unit chord `(ux, uy)` from the previous node, the
  *  angle axis along the circle of `radius` centred on it. `tangent` is the previous exit incline in
  *  **world** radians (the same convention `angleControl` emits) for a growth tip, null for an
- *  interior node (whose angle control rotates free). `degenerate` marks a coincident previous/
- *  selected node — no chord direction, zero radius — where the direction falls back to `+x` and the
- *  loci collapse to the origin; the inverses stay finite but the round-trip only holds for a
+ *  interior node (which snaps its chord angle, not an incline). `degenerate` marks a coincident
+ *  previous/selected node — no chord direction, zero radius — where the direction falls back to `+x`
+ *  and the loci collapse to the origin; the inverses stay finite but the round-trip only holds for a
  *  non-degenerate frame.
  *
  *  **the frame is a per-pointermove snapshot, not a gesture-start freeze.** its `radius` is the
- *  live chord radius, and the incline snap window derives from it (`snapIncline` at `f.radius`), so
- *  the caller must rebuild the frame each move against the live selected-node position (or hold the
- *  pointer arc-constrained at `f.radius`). freezing the frame at grab would pin the snap window to
- *  the start radius and diverge from the legacy magnet feel, whose window tracked the live drag
- *  radius. */
+ *  live chord radius that `angleToPoint` holds constant through an angle drag, so the caller rebuilds
+ *  the frame each move against the live selected-node position — the node stays on its own arc as the
+ *  angle changes. */
 export interface Frame {
     /** the previous node — the polar origin, screen px. */
     px: number;
@@ -59,7 +56,7 @@ export interface Frame {
 }
 
 /** build the polar frame from the previous and selected node's screen points. rebuilt per
- *  pointermove (see `Frame`): the snap window rides the live chord radius. */
+ *  pointermove (see `Frame`): the angle drag holds the live chord radius. */
 export function polarFrame(
     prev: { x: number; y: number },
     sel: { x: number; y: number },
@@ -148,44 +145,35 @@ export function angleToPoint(f: Frame, angle: number): { x: number; y: number } 
     return { x: f.px + Math.cos(angle) * f.radius, y: f.py - Math.sin(angle) * f.radius };
 }
 
-/** the length control: resolve a raw screen point to a chord length in world metres, whole-metre-
- *  snapped through `magnet.snapLength` when `snap` is on (the length family is universal — tip +
- *  interior). */
-export function lengthControl(
-    f: Frame,
-    px: number,
-    py: number,
-    snap: boolean,
-    snapPx = SNAP_PX,
-): LengthSnap {
-    const meters = screenToLength(f, px, py);
-    if (!snap) return { meters, snapped: false };
-    return snapLength(meters, f.pxPerMeter, snapPx);
+/** the length control: resolve a raw screen point to a chord length in world metres. snap-by-default
+ *  quantizes to whole metres (min 1); the Ctrl modifier (`snap === false`) bypasses to continuous
+ *  (still ≥ 1). the length family is universal — tip + interior. */
+export function lengthControl(f: Frame, px: number, py: number, snap: boolean): LengthSnap {
+    return snapLength(screenToLength(f, px, py), snap);
 }
 
 /** the angle control: resolve a raw screen point to a chord angle (+ the tip's exit incline), both
- *  in **world** radians. at a growth tip (`tangent` set) the exit incline snaps to the 15° raster /
- *  continuation landmark through `magnet.snapIncline` when `snap` is on; an interior node (`tangent`
- *  null) rotates free — the chord angle passes through, `incline` is null and it never snaps (a
- *  frozen heading has no incline quantum). the snap window derives from `f.radius`, so the caller
- *  rebuilds the frame each pointermove against the live selected-node position (`Frame`). */
+ *  in **world** radians. snap-by-default quantizes to the 5° grid (`snapAngle`), applied uniformly —
+ *  at a growth tip (`tangent` set) it snaps the **exit incline** to the grid and maps back to the
+ *  chord that yields it (`incline` is that value); at an interior node (`tangent` null) it snaps the
+ *  **chord angle** to the grid (`incline` null — a frozen heading has no incline to display). the
+ *  Ctrl modifier (`snap === false`) bypasses to continuous. a plain grid needs no radius-derived
+ *  window, so the old "interior rotates free" asymmetry is gone (feel round 6). */
 export interface AngleControl {
-    /** the resolved chord angle in WORLD radians — the snapped chord at a tip, else the raw. */
+    /** the resolved chord angle in WORLD radians — the chord that yields the snapped incline (tip)
+     *  or the snapped chord itself (interior). */
     angle: number;
-    /** the tip's exit incline in WORLD radians, or null for an interior node. */
+    /** the tip's exit incline in WORLD radians (snapped to the grid), or null for an interior node. */
     incline: number | null;
     snapped: boolean;
 }
-export function angleControl(
-    f: Frame,
-    px: number,
-    py: number,
-    snap: boolean,
-    snapPx = SNAP_PX,
-): AngleControl {
-    const angle = screenToAngle(f, px, py);
-    if (f.tangent === null) return { angle, incline: null, snapped: false };
-    if (!snap) return { angle, incline: inclineOf(angle, f.tangent), snapped: false };
-    const res = snapIncline(angle, f.tangent, f.radius, snapPx);
-    return { angle: res.angle, incline: res.incline, snapped: res.snapped };
+export function angleControl(f: Frame, px: number, py: number, snap: boolean): AngleControl {
+    const chord = screenToAngle(f, px, py);
+    if (f.tangent === null) {
+        // interior: no incline — snap the chord angle itself to the grid.
+        return { angle: snap ? snapAngle(chord) : chord, incline: null, snapped: snap };
+    }
+    // tip: snap the EXIT INCLINE to the grid, then map back to the chord that produces it.
+    const incline = snap ? snapAngle(inclineOf(chord, f.tangent)) : inclineOf(chord, f.tangent);
+    return { angle: chordForIncline(incline, f.tangent), incline, snapped: snap };
 }

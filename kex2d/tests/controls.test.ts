@@ -6,6 +6,7 @@ import {
     DRAG_PX,
     dragMetrics,
     formatDeg,
+    formatLen,
     latchAngle,
     LATCH_PX,
     nodeMetrics,
@@ -32,24 +33,42 @@ import {
     setTangent,
 } from "../src/track";
 
-// the snap readout: a 15°-raster incline cancels to a clean integer through the radian→degree
-// round-trip, while a continuation landmark is a raw atan2 over baked samples — a fractional
-// incline. one formatter serves both: integer within float noise, else one decimal.
+// the readout formatting seam (feel round 6): one degree formatter (`formatDeg`) + one length
+// formatter (`formatLen`) every source funnels through, so a value formats identically regardless of
+// which precedence source produced it. `formatDeg` reads a 5°-grid multiple as a clean integer, a
+// continuous (Ctrl-bypass) value as one decimal, and normalizes a small negative that rounds to zero
+// (never `-0.0°`).
 
-test("a raster-multiple incline reads as a clean integer despite the radian→degree round-trip", () => {
-    // the manipulator's angle control carries the incline in world radians (k·ANGLE_STEP); the
-    // readout feed converts it rad→deg (`dragManipTo`), so a raster multiple must cancel clean.
+test("a 5°-grid multiple reads as a clean integer despite the radian→degree round-trip", () => {
+    // the angle control carries the incline in world radians (k·ANGLE_STEP, 5°); the readout feed
+    // converts it rad→deg (`dragManipTo`), so a grid multiple must cancel to a clean integer.
     for (let k = -6; k <= 6; k++) {
         const incline = k * ANGLE_STEP;
         const label = formatDeg((-incline * 180) / Math.PI);
-        expect(label).toBe(`${-k * 15}°`);
+        expect(label).toBe(`${-k * 5}°`);
     }
 });
 
-test("a continuation landmark's raw incline keeps one decimal", () => {
+test("a continuous (Ctrl-bypass) value keeps one decimal", () => {
     // a real atan2-over-samples value that must not spill its full f64 expansion into the readout.
     expect(formatDeg(-22.126334809373247)).toBe("-22.1°");
     expect(formatDeg(37.049999999999997)).toBe("37.0°");
+});
+
+test("-0 normalizes to a sign-free zero (the momentary `-0.0°` flicker)", () => {
+    // a small negative that rounds to zero at one decimal must not show its sign — the readout
+    // flickered `-0.0°` at ~0°. both the integer path (exact 0) and the decimal path (a tiny
+    // negative) resolve to a positive zero.
+    expect(formatDeg(0)).toBe("0°");
+    expect(formatDeg(-0)).toBe("0°");
+    expect(formatDeg(-0.04)).toBe("0.0°"); // rounds to 0.0 at one decimal — no leading minus
+    expect(formatDeg(-1e-7)).toBe("0°"); // within the integer-noise band → clean integer zero
+});
+
+test("formatLen is the one length seam — integer metres, no sign on zero", () => {
+    expect(formatLen(4.2)).toBe("4 m");
+    expect(formatLen(4.6)).toBe("5 m");
+    expect(formatLen(-0)).toBe("0 m"); // `${-0}` is "0" — never "-0 m"
 });
 
 test("normDeg wraps into (−180, 180] — 180 stays 180, matching the doc", () => {

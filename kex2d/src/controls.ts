@@ -30,6 +30,7 @@ import {
     lengthToPoint,
     polarFrame,
 } from "./manipulator";
+import { LENGTH_MIN } from "./magnet";
 import { RadialSlot, ringBase, ringSlot } from "./radial";
 import { localize } from "./section";
 import { editTangent, TangentMode } from "./spline";
@@ -298,15 +299,6 @@ function sampleScreen(
     return { x: tx.ox + s.posX[i] * tx.sx, y: tx.oy + s.posY[i] * tx.sy };
 }
 
-// the manipulator knob pick radius (screen px) — tracks the 30px-diameter knob (render.ts) so the
-// whole button grabs. the knob POSITIONS come from the shared radial ring (`radial.ts`), the same
-// ring the add/delete buttons slot into.
-const MANIP_PICK_R = 16;
-// the length floor: a drag (or nudge) can't collapse the chord onto the previous node, which would
-// leave a degenerate frame with no chord direction on the next move. small enough to be invisible
-// at track scale, positive enough to keep the direction defined.
-const MIN_CHORD_M = 0.05;
-
 /** the polar manipulation frame for a selected node in screen px, or null when it has no previous
  *  node (node 0, the entry anchor) or the chord is degenerate (coincident with its previous node).
  *  rebuilt each pointermove against the live baked positions (the per-move-snapshot contract,
@@ -402,9 +394,9 @@ export function polarNudge(
     return { x: prev.x + Math.cos(na) * r, y: prev.y + Math.sin(na) * r };
 }
 
-// float-noise band for the integer-degree readout. absorbs the f64 conversion of an exact
-// π/12-raster multiple (a few ULP of ~180, ≪ 1e-9°) while staying far below any genuine
-// fractional incline a continuation landmark produces.
+// float-noise band for the integer-degree readout. absorbs the f64 conversion of an exact 5°-grid
+// multiple (a few ULP of ~180, ≪ 1e-9°) so a snapped value reads as a clean integer, while a
+// Ctrl-bypass continuous value keeps one decimal.
 const DEG_EPS = 1e-6;
 
 /** wrap a degree value into (−180, 180]. */
@@ -413,13 +405,22 @@ export function normDeg(d: number): number {
     return w === -180 ? 180 : w; // the wrap lands 180° on −180; the readout wants 180
 }
 
-/** format a snapped incline (degrees) for the snap readout: an integer when within float
- *  noise of a whole degree (a raster multiple cancels clean), else one decimal (a continuation
- *  landmark is a raw atan2 over baked samples). */
+/** format a degree value for the readout — the one degree seam every source funnels through (so a
+ *  value formats identically regardless of source, `App.svelte`'s precedence). a clean integer when
+ *  within float noise of a whole degree (a 5° grid multiple cancels clean), else one decimal. a
+ *  small negative that rounds to zero normalizes to a positive zero (never `-0.0°`). */
 export function formatDeg(d: number): string {
     const n = normDeg(d);
     const r = Math.round(n);
-    return `${Math.abs(n - r) < DEG_EPS ? r : n.toFixed(1)}°`;
+    if (Math.abs(n - r) < DEG_EPS) return `${r}°`; // `${-0}` is "0" — a clean, sign-free integer
+    const dec = n.toFixed(1);
+    return `${dec === "-0.0" ? "0.0" : dec}°`;
+}
+
+/** format a chord length (metres) for the readout — the one length seam every source funnels
+ *  through, mirroring `formatDeg`. integer metres. */
+export function formatLen(m: number): string {
+    return `${Math.round(m)} m`;
 }
 
 /** a selected node's live readout metrics. `lengthLabel` is always present (the chord length to the
@@ -441,7 +442,7 @@ export function nodeMetrics(
 ): NodeMetrics {
     const chord = Math.hypot(node.x - prev.x, node.y - prev.y);
     const angleLabel = heading === null ? null : formatDeg((heading * 180) / Math.PI);
-    return { angleLabel, lengthLabel: `${Math.round(chord)} m` };
+    return { angleLabel, lengthLabel: formatLen(chord) };
 }
 
 /** the dragged tangent handle's readout: its own world angle (°) + length (m), from the handle
@@ -454,7 +455,7 @@ export function dragMetrics(tipX: number, tipY: number, sx: number, sy: number):
     const wy = tipY / sy;
     return {
         angleLabel: formatDeg((Math.atan2(wy, wx) * 180) / Math.PI),
-        lengthLabel: `${Math.round(Math.hypot(wx, wy))} m`,
+        lengthLabel: formatLen(Math.hypot(wx, wy)),
     };
 }
 
@@ -478,42 +479,14 @@ export function selectedMetrics(ecs: State, eid: number): NodeMetrics | null {
     return nodeMetrics(prev, node, exitWorld(eid));
 }
 
-/** the selected node's manipulator knob nearest the screen point (within the pick radius), or null —
- *  the summoned polar controls. picked before the node body (which is select-only) so a knob over the
- *  body still grabs; hidden while the node is in tangent edit (its handles take that surface). */
-function pickManipulator(
-    ecs: State,
-    tx: ViewTx,
-    sx: number,
-    sy: number,
-): "length" | "angle" | null {
-    const sel = editor.selection;
-    if (sel === null || editor.tangentEdit === sel) return null;
-    const s = trackSamples(ecs);
-    if (!s) return null;
-    const knobs = manipKnobs(ecs, s, tx, sel);
-    if (!knobs) return null;
-    let best: "length" | "angle" | null = null;
-    let bestD2 = MANIP_PICK_R * MANIP_PICK_R;
-    for (const k of knobs) {
-        const dx = sx - k.x;
-        const dy = sy - k.y;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestD2) {
-            bestD2 = d2;
-            best = k.axis;
-        }
-    }
-    return best;
-}
-
 /** advance a manipulator drag: rebuild the polar frame from the live positions, resolve the grabbed
  *  1D control (length along the chord ray, angle along the tangential arc) through the stage-4
  *  inverse, and write the node's new world position. the dead-zone latch keeps a sub-DRAG_PX grab a
- *  plain click; no Shift constrain — each gesture is already 1-DOF. Ctrl/Cmd bypasses snapping. the
- *  readout is fed per-control (the magnet-labels source in `App.svelte`'s three-source precedence);
- *  an engaged incline snap also flashes the guide ray (world radians — `SnapGuideSystem` maps it to
- *  screen, no consumer negation: the manipulator emits world). */
+ *  plain click; no Shift constrain — each gesture is already 1-DOF. snap-by-default (integer metres /
+ *  5° grid), Ctrl/Cmd bypasses. the readout is fed per-control through the one formatting seam
+ *  (`formatDeg`/`formatLen`) into the magnet-labels source — the source `startManip` seeded, so it
+ *  owns the gesture start-to-end (no mid-gesture switch); a tip angle snap also flashes the guide ray
+ *  (world radians — `SnapGuideSystem` maps it to screen, no consumer negation). */
 function dragManipTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): void {
     const sel = editor.selection;
     if (sel === null || dragManip === null) return;
@@ -531,25 +504,24 @@ function dragManipTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): vo
     const snap = snapActive(e.ctrlKey || e.metaKey);
     clearGuides();
     if (dragManip === "length") {
-        const res = lengthControl(f, ntx, nty, snap);
-        const meters = Math.max(res.meters, MIN_CHORD_M);
-        const p = lengthToPoint(f, meters);
+        const res = lengthControl(f, ntx, nty, snap); // floored at 1 m inside the resolver
+        const p = lengthToPoint(f, res.meters);
         const w = screenToWorld(tx, p.x, p.y);
         dragTo(ecs, sel, w.x, w.y);
         // the chord readout is the authored quantity; the angle readout keeps showing the node's
         // exit heading (continuity with the resting readout — a length drag doesn't touch the angle).
-        snapGuides.lengthLabel = `${Math.round(meters)} m`;
+        snapGuides.lengthLabel = formatLen(res.meters);
         snapGuides.angleLabel = formatDeg((exitWorld(sel) * 180) / Math.PI);
     } else {
         const res = angleControl(f, ntx, nty, snap);
         const p = angleToPoint(f, res.angle);
         const w = screenToWorld(tx, p.x, p.y);
         dragTo(ecs, sel, w.x, w.y);
-        // the exit incline at a tip, else the chord angle being set (interior — no incline quantum);
-        // the chord length is constant, shown for continuity.
+        // the exit incline at a tip, else the chord angle being set (interior); the chord length is
+        // constant, shown for continuity.
         const shown = res.incline ?? res.angle;
         snapGuides.angleLabel = formatDeg((shown * 180) / Math.PI);
-        snapGuides.lengthLabel = `${Math.round(f.radius / f.pxPerMeter)} m`;
+        snapGuides.lengthLabel = formatLen(f.radius / f.pxPerMeter);
         if (res.snapped && res.incline !== null) {
             snapGuides.ray = { x: w.x, y: w.y, angle: res.incline };
         }
@@ -647,10 +619,15 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
     setTangent(ecs, section, order, editTangent(tan, side, ox, oy));
 }
 
-/** wire canvas pointer + window keyboard handling, returning a teardown. tied to
- *  the canvas lifecycle (called from App's onMount) so listeners attach with the
- *  element and detach with it — no module-flag staleness across reloads. */
-export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => void {
+/** wire canvas pointer + window keyboard handling, returning `{ detach, startManip }`. tied to the
+ *  canvas lifecycle (called from App's onMount) so listeners attach with the element and detach with
+ *  it — no module-flag staleness across reloads. `startManip` is the seam the DOM manipulator knob
+ *  buttons (App.svelte) call on pointerdown to enter the drag gesture (captures on the canvas, so the
+ *  canvas's own move/up handlers run it). */
+export function attachControls(
+    canvas: HTMLCanvasElement,
+    ecs: State,
+): { detach: () => void; startManip: (e: PointerEvent, axis: "length" | "angle") => void } {
     const onContextMenu = (e: MouseEvent): void => {
         e.preventDefault(); // suppress the browser menu; ours takes over
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
@@ -719,27 +696,12 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             return;
         }
 
-        // a manipulator knob on the selected node grabs before the node body: movement runs only
-        // through the two polar controls (length along the chord, angle along the arc). the body
-        // itself is select-only, below.
-        const manip = pickManipulator(ecs, tx, cx, cy);
-        if (manip !== null) {
-            const sel = editor.selection as number; // pickManipulator only fires with a selection
-            dragManip = manip;
-            manipArmed = false; // a fresh grab starts inside the dead-zone — a click until it moves
-            manipCX = cx;
-            manipCY = cy;
-            const s = trackSamples(ecs);
-            const ns = s ? sampleScreen(s, tx, Handle.sample.get(sel)) : { x: cx, y: cy };
-            manipDX = ns.x - cx;
-            manipDY = ns.y - cy;
-            beginMove(ecs, Handle.section.get(sel)); // open the drag gesture; commit/cancel on release
-            beginDrag(canvas, e.pointerId);
-            return;
-        }
+        // the manipulator knobs are real DOM `.rbtn` buttons now (App.svelte), so a knob press is a
+        // pointerdown on the button → `startManip` (below), not a canvas pick. the canvas sees only
+        // the node body, which is select-only:
 
-        // a node body click selects it (movement is via the summoned polar manipulators — no body
-        // drag); else select the section under the click; else deselect (Figma-style).
+        // a node body click selects it (movement is via the summoned polar manipulator buttons — no
+        // body drag); else select the section under the click; else deselect (Figma-style).
         const eid = pickNode(ecs, tx, cx, cy);
         if (eid !== null) {
             select(eid);
@@ -925,7 +887,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
                 axis,
                 dir,
                 step,
-                MIN_CHORD_M,
+                LENGTH_MIN,
             );
             beginMove(ecs, Handle.section.get(eid));
             dragTo(ecs, eid, t.x, t.y);
@@ -971,6 +933,36 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         }
     };
 
+    // begin a manipulator drag from a pointerdown on a DOM knob button (App.svelte). the buttons are
+    // real `.rbtn` elements now (feel round 6, for hover/active/cursor for free), so the gesture
+    // enters HERE rather than through a canvas pick: capture the pointer ON THE CANVAS (`beginDrag`),
+    // so every subsequent move/up routes through the canvas's own `onPointerMove`/`endDrag` — the
+    // exact same pipeline the drag used before (dead-zone latch, inverses, readout, snap guide, blur
+    // teardown all unchanged). the dead-zone keeps a press-release-without-drag a plain click (no
+    // move). seed the readout so ONE source owns the gesture start-to-end (no flicker, feel round 6).
+    const startManip = (e: PointerEvent, axis: "length" | "angle"): void => {
+        const sel = editor.selection;
+        if (sel === null || panning || dragTangent !== null) return;
+        const s = trackSamples(ecs);
+        if (!s) return;
+        const { x: cx, y: cy } = pointerToCanvas(canvas, e);
+        const tx = viewTransform(canvas);
+        dragManip = axis;
+        manipArmed = false;
+        manipCX = cx;
+        manipCY = cy;
+        const ns = sampleScreen(s, tx, Handle.sample.get(sel));
+        manipDX = ns.x - cx;
+        manipDY = ns.y - cy;
+        const m = selectedMetrics(ecs, sel); // seed the magnet-labels source (owns the gesture)
+        if (m) {
+            snapGuides.angleLabel = m.angleLabel;
+            snapGuides.lengthLabel = m.lengthLabel;
+        }
+        beginMove(ecs, Handle.section.get(sel)); // open the drag gesture; commit/cancel on release
+        beginDrag(canvas, e.pointerId); // capture on the canvas → its move/up handlers run the drag
+    };
+
     canvas.addEventListener("contextmenu", onContextMenu);
     canvas.addEventListener("mousedown", onMouseDown);
     canvas.addEventListener("dblclick", onDblClick);
@@ -982,7 +974,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("blur", onBlur);
 
-    return () => {
+    const detach = (): void => {
         canvas.removeEventListener("contextmenu", onContextMenu);
         canvas.removeEventListener("mousedown", onMouseDown);
         canvas.removeEventListener("dblclick", onDblClick);
@@ -997,4 +989,6 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         clearGuides(); // detaching mid-drag must not leave a stuck guide for the remount
         endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on
     };
+
+    return { detach, startManip };
 }

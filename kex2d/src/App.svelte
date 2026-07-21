@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
-import { attachControls, selectedMetrics } from "./controls";
+import { attachControls, manipKnobs, selectedMetrics } from "./controls";
 import {
     beginDrag,
     closeContext,
@@ -61,9 +61,13 @@ let canvas: HTMLCanvasElement;
 let trackEid = $state<number | null>(null);
 let tick = $state(0);
 
+// the pointer/keyboard controller (`attachControls`): `detach` on unmount, `startManip` the seam the
+// DOM manipulator knob buttons call on pointerdown to enter the drag gesture.
+let controls: ReturnType<typeof attachControls> | undefined;
+
 onMount(() => {
     attachCanvas2D(canvas);
-    const detach = attachControls(canvas, ecs);
+    controls = attachControls(canvas, ecs);
     for (const eid of ecs.query([Track])) {
         trackEid = eid;
         break;
@@ -75,7 +79,7 @@ onMount(() => {
     };
     raf = requestAnimationFrame(loop);
     return () => {
-        detach();
+        controls?.detach();
         cancelAnimationFrame(raf);
     };
 });
@@ -191,6 +195,36 @@ function onDelete(): void {
     if (eid === null) return;
     const section = Handle.section.get(eid);
     if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
+}
+
+// the two polar manipulator knobs — real DOM `.rbtn` buttons on the node-action ring (feel round 6),
+// peers of the extend/delete buttons: the length knob (measure/ruler) at −60° off the heading, the
+// angle knob (pitch/↕) at +60°. shown on EVERY selected node (not just the chain end), hidden in
+// tangent edit (its handles own the surface). positions come from the shared `manipKnobs` geometry
+// source (the same one the pick + `__kex` hook read), so the buttons sit where a drag targets.
+const manip = $derived.by(
+    (): { length: { x: number; y: number }; angle: { x: number; y: number } } | null => {
+        void tick;
+        const eid = editor.selection;
+        if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
+        const s = samples.get(trackEid);
+        if (!s) return null;
+        const knobs = manipKnobs(ecs, s, viewTransform(canvas), eid);
+        if (!knobs) return null;
+        const length = knobs.find((k) => k.axis === "length");
+        const angle = knobs.find((k) => k.axis === "angle");
+        if (!length || !angle) return null;
+        return { length: { x: length.x, y: length.y }, angle: { x: angle.x, y: angle.y } };
+    },
+);
+
+// a knob button press enters the manipulator drag gesture (a drag, not a click — `startManip`
+// captures the pointer on the canvas so the canvas's move/up handlers run it). preventDefault so the
+// button doesn't steal focus or fire a click; a press-release without a drag moves nothing (the
+// dead-zone). the drag itself — inverses, snap, readout — is unchanged.
+function onManip(e: PointerEvent, axis: "length" | "angle"): void {
+    e.preventDefault();
+    controls?.startManip(e, axis);
 }
 
 // the readout follows the selected node (the dragged node during a drag — a drag selects what it
@@ -619,6 +653,60 @@ $effect(() => {
     </div>
 {/if}
 
+<!-- the two polar manipulator knobs — real `.rbtn` buttons on the node-action ring (peers of the
+     extend/delete buttons), so hover/active/cursor come for free. a press enters the drag gesture
+     (onManip → startManip), not a click. positioned absolutely at the shared-ring screen points. -->
+{#if manip}
+    <button
+        type="button"
+        class="rbtn manip manip-length"
+        title="Length"
+        aria-label="Length"
+        style="left: {manip.length.x}px; top: {manip.length.y}px;"
+        onpointerdown={(e) => onManip(e, "length")}
+    >
+        <!-- length: a ruler (bar + edge ticks) — drag to set the chord length to the previous node. -->
+        <svg viewBox="0 0 14 14" aria-hidden="true">
+            <rect
+                x="1.5"
+                y="4.4"
+                width="11"
+                height="5.2"
+                rx="0.6"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+            />
+            <path
+                d="M4.3 4.4 L4.3 6.6 M7 4.4 L7 6.6 M9.7 4.4 L9.7 6.6"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+            />
+        </svg>
+    </button>
+    <button
+        type="button"
+        class="rbtn manip manip-angle"
+        title="Pitch"
+        aria-label="Pitch"
+        style="left: {manip.angle.x}px; top: {manip.angle.y}px;"
+        onpointerdown={(e) => onManip(e, "angle")}
+    >
+        <!-- angle/pitch: a double-headed vertical arrow (↕) — drag to rotate the node about the previous. -->
+        <svg viewBox="0 0 14 14" aria-hidden="true">
+            <path
+                d="M7 1.6 L7 12.4 M4.3 4.3 L7 1.6 L9.7 4.3 M4.3 9.7 L7 12.4 L9.7 9.7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+            />
+        </svg>
+    </button>
+{/if}
+
 <!-- the node context menu (Handles toggle + a Tangents ▸ submenu): summoned by right-click on
      any pickable node, an instance of the shared menu language (Menu.svelte) positioned at the
      cursor (its top-left corner, so it never covers the invoker point) — the same look +
@@ -797,6 +885,23 @@ $effect(() => {
     .rbtn.delete:hover {
         background: var(--danger-soft);
         border-color: var(--danger);
+    }
+    /* the two polar manipulator knobs: `.rbtn` peers of extend/delete, positioned absolutely at
+       their ring screen point (left/top inline) and centered on it. accent-lit like extend, with the
+       same hover wash — the hover/active states the canvas-drawn knobs lacked (feel round 6). the
+       grab affordance is a move cursor: these initiate a drag. */
+    .rbtn.manip {
+        color: var(--accent);
+        transform: translate(-50%, -50%);
+        cursor: grab;
+        touch-action: none; /* the pointerdown drives a pointer drag, not a scroll/zoom gesture */
+    }
+    .rbtn.manip:hover {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+    }
+    .rbtn.manip:active {
+        cursor: grabbing;
     }
     /* the node context menu: an instance of the shared `.menu` language at the cursor (the same
        fixed-position context-menu placement as .ctxmenu). min-width so the rows + check + the
