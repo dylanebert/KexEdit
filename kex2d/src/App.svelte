@@ -26,7 +26,7 @@ import {
 } from "./history";
 import Menu from "./Menu.svelte";
 import type { MenuItem } from "./menu";
-import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "./radial";
+import { RADIAL_R } from "./radial";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { stitchNode } from "./tangents";
 import Timeline from "./Timeline.svelte";
@@ -133,66 +133,21 @@ const dragging = $derived.by((): boolean => {
 $effect(() => {
     document.getElementById("app")?.toggleAttribute("data-dragging", dragging);
 });
-const handleCount = $derived.by((): number => {
-    void tick;
-    const eid = editor.selection;
-    if (eid === null) return 0;
-    return sectionHandles(ecs, Handle.section.get(eid)).length;
-});
-// a selected chain-end node carries a radial action cluster: extend (along the heading, where
-// the next piece lays) + delete (rotated off it). positions are in canvas/CSS px at the node's
-// screen point. the tangent mode surface is a right-click menu now (not a radial button).
-// the radial-ring geometry (RADIAL_R + the slots) is the shared substrate in `radial.ts` — the same
-// ring the two polar manipulator knobs slot into, so the add/delete buttons and the knobs can't
-// drift into each other (feel round 5).
-// the snap readout hangs below the dragged node, centered, clear of the radial ring BY
-// CONSTRUCTION: a button center orbits at RADIAL_R and its far edge reaches RADIAL_R +
-// RADIAL_BTN_R, so the readout starts a gap past that — it can't overlap a button wherever the
-// heading swings the ring. Derived from the radial geometry, not a tuned number.
+// the snap readout hangs below the selected node, centered, clear of the manipulator knob ring BY
+// CONSTRUCTION: a knob center orbits at RADIAL_R and its far edge reaches RADIAL_R + RADIAL_BTN_R,
+// so the readout starts a gap past that — it can't overlap a knob wherever the heading swings the
+// ring. Derived from the ring geometry, not a tuned number.
 const RADIAL_BTN_R = 15; // `.rbtn` is 30px square → 15px radius (CSS)
 const READOUT_GAP = 8; // clearance between the ring's far edge and the readout
 const READOUT_OFFSET = RADIAL_R + RADIAL_BTN_R + READOUT_GAP; // node center → readout top (or bottom, flipped)
-type Radial = {
-    x: number;
-    y: number;
-    ext: { x: number; y: number };
-    del: { x: number; y: number };
-};
-const radial = $derived.by((): Radial | null => {
-    void tick;
-    const eid = editor.selection;
-    if (!canvas || eid === null || trackEid === null) return null;
-    if (Handle.order.get(eid) === 0) return null; // the entry anchor has no actions
-    const section = Handle.section.get(eid);
-    if (eid !== lastHandle(ecs, section)) return null; // only the chain end has the cluster
-    const s = samples.get(trackEid);
-    const info = sectionInfo.get(section);
-    if (!s || !info) return null;
-    const tx = viewTransform(canvas);
-    // nodes are section-local; the baked sample is where the node lands in world.
-    const i = Handle.sample.get(eid);
-    const x = tx.ox + s.posX[i] * tx.sx;
-    const y = tx.oy + s.posY[i] * tx.sy;
-    // world heading (local + the section entry heading) → the ring base angle (the shared substrate
-    // applies the view y-flip). extend sits along the heading, delete 60° off it.
-    const th = Handle.theta.get(eid) + info.entry.theta;
-    const base = ringBase(th, tx.sx, tx.sy);
-    return {
-        x,
-        y,
-        ext: ringSlot(base, RadialSlot.Extend),
-        del: ringSlot(base, RadialSlot.Delete),
-    };
-});
 
-function onExtend(): void {
-    const eid = editor.selection;
-    if (eid === null) return;
+// append (extend the chain by a node) + trim (remove the trailing node) — the node menu's actions
+// (feel round 7 took the radial +/trash buttons off the ring; the Enter/Del keys still fire these
+// too). both are chain-end-only, so the menu gates their enablement on the node being the chain end.
+function doAdd(eid: number): void {
     select(extendTrack(history, ecs, Handle.section.get(eid)));
 }
-function onDelete(): void {
-    const eid = editor.selection;
-    if (eid === null) return;
+function doTrim(eid: number): void {
     const section = Handle.section.get(eid);
     if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
 }
@@ -309,11 +264,25 @@ const nodeEditing = $derived.by((): boolean => {
     const m = editor.nodeMenu;
     return m !== null && editor.tangentEdit === m.eid;
 });
-// the node menu as data (the shared MenuItem language): a Handles toggle over a Tangents submenu
-// (the three modes carry their `checked`; Reset carries its derived enablement, after a separator).
-// node 0 (the entry anchor) is the exception — its handle is a single free entry handle (direction
-// + length, no coupled in-side), so it carries NO mode submenu: just Handles + Reset (back to the
-// Auto C1 exit).
+// whether the target node is its section's chain end (append + trim act only there — the Enter/Del
+// keys' guard). the menu's Add/Delete items derive their enablement from this.
+const nodeIsEnd = $derived.by((): boolean => {
+    void tick;
+    const m = editor.nodeMenu;
+    return m !== null && m.eid === lastHandle(ecs, Handle.section.get(m.eid));
+});
+// whether the target chain-end node can be trimmed — a section keeps at least the two nodes it needs.
+const nodeCanTrim = $derived.by((): boolean => {
+    void tick;
+    const m = editor.nodeMenu;
+    return nodeIsEnd && m !== null && sectionHandles(ecs, Handle.section.get(m.eid)).length > 2;
+});
+// the node menu as data (the shared MenuItem language): Add node / Delete node (the ring's retired
+// +/trash buttons, feel round 7 — chain-end-only, so enablement-gated), then a Handles toggle over a
+// Tangents submenu (the three modes carry their `checked`; Reset carries its derived enablement,
+// after a separator). node 0 (the entry anchor) is the exception — never appendable/trimmable, and
+// its handle is a single free entry handle (no coupled in-side), so it carries NO Add/Delete and NO
+// mode submenu: just Handles + Reset (back to the Auto C1 exit).
 const nodeItems = $derived.by((): MenuItem[] => {
     const m = editor.nodeMenu;
     if (m === null) return [];
@@ -326,6 +295,15 @@ const nodeItems = $derived.by((): MenuItem[] => {
         ];
     }
     return [
+        { label: "Add node", shortcut: "Enter", enabled: nodeIsEnd, action: () => doAdd(eid) },
+        {
+            label: "Delete node",
+            shortcut: "Del",
+            danger: true,
+            enabled: nodeCanTrim,
+            action: () => doTrim(eid),
+        },
+        { separator: true },
         { label: "Handles", checked: nodeEditing, action: () => toggleHandles(eid) },
         {
             label: "Tangents",
@@ -604,58 +582,10 @@ $effect(() => {
     </div>
 {/if}
 
-<!-- contextual actions radially around the selected chain-end node: extend along the heading +
-     delete rotated off it. the tangent mode surface is a right-click menu (below), not a button. -->
-{#if radial}
-    <div class="radial" style="left: {radial.x}px; top: {radial.y}px;" aria-label="Node actions">
-        <button
-            type="button"
-            class="rbtn extend"
-            title="Add node (Enter)"
-            aria-label="Add node"
-            style="transform: translate(calc(-50% + {radial.ext.x}px), calc(-50% + {radial.ext.y}px));"
-            onclick={onExtend}
-        >
-            <!-- add node: a segment stub laying a new node (the filled dot) at the growing
-                 end — the op is "extend the chain by a node", not the timeline's add-section. -->
-            <svg viewBox="0 0 14 14" aria-hidden="true">
-                <path
-                    d="M2.5 11.5 L8.4 5.6"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.6"
-                    stroke-linecap="round"
-                />
-                <circle cx="10.3" cy="3.7" r="2.7" fill="currentColor" />
-            </svg>
-        </button>
-        {#if handleCount > 2}
-            <button
-                type="button"
-                class="rbtn delete"
-                title="Delete (Del)"
-                aria-label="Delete"
-                style="transform: translate(calc(-50% + {radial.del.x}px), calc(-50% + {radial.del.y}px));"
-                onclick={onDelete}
-            >
-                <svg viewBox="0 0 14 14" aria-hidden="true">
-                    <path
-                        d="M3 4 L11 4 M5.5 4 L5.5 2.5 L8.5 2.5 L8.5 4 M4.5 4 L5 11.5 L9 11.5 L9.5 4"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.3"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                    />
-                </svg>
-            </button>
-        {/if}
-    </div>
-{/if}
-
-<!-- the two polar manipulator knobs — real `.rbtn` buttons on the node-action ring (peers of the
-     extend/delete buttons), so hover/active/cursor come for free. a press enters the drag gesture
-     (onManip → startManip), not a click. positioned absolutely at the shared-ring screen points. -->
+<!-- the two polar manipulator knobs — real `.rbtn` buttons on the node-action ring (feel round 7:
+     the only affordances left on the ring; append/delete moved to the keyboard + node menu). a
+     press enters the drag gesture (onManip → startManip), not a click. positioned absolutely at the
+     shared-ring screen points, so hover/active/cursor come for free. -->
 {#if manip}
     <button
         type="button"
@@ -840,15 +770,9 @@ $effect(() => {
         color: #e26d5c;
     }
 
-    /* zero-size anchor pinned at the node's screen point; buttons orbit it. */
-    .radial {
-        position: absolute;
-        width: 0;
-        height: 0;
-        z-index: 2;
-        pointer-events: none;
-        user-select: none;
-    }
+    /* the round `.rbtn` button — the dark shell the two manipulator knobs wear (the extend/delete
+       buttons that also used it left the ring in feel round 7). positioned absolutely at its ring
+       screen point (left/top inline). */
     .rbtn {
         all: unset;
         position: absolute;
@@ -872,24 +796,10 @@ $effect(() => {
         width: 14px;
         height: 14px;
     }
-    .rbtn.extend {
-        color: var(--accent);
-    }
-    .rbtn.extend:hover {
-        background: var(--accent-soft);
-        border-color: var(--accent);
-    }
-    .rbtn.delete {
-        color: var(--danger);
-    }
-    .rbtn.delete:hover {
-        background: var(--danger-soft);
-        border-color: var(--danger);
-    }
-    /* the two polar manipulator knobs: `.rbtn` peers of extend/delete, positioned absolutely at
-       their ring screen point (left/top inline) and centered on it. accent-lit like extend, with the
-       same hover wash — the hover/active states the canvas-drawn knobs lacked (feel round 6). the
-       grab affordance is a move cursor: these initiate a drag. */
+    /* the two polar manipulator knobs: `.rbtn` shells positioned absolutely at their ring screen
+       point (left/top inline) and centered on it. accent-lit, with a hover wash — the hover/active
+       states the canvas-drawn knobs lacked (feel round 6). the grab affordance is a move cursor:
+       these initiate a drag. */
     .rbtn.manip {
         color: var(--accent);
         transform: translate(-50%, -50%);

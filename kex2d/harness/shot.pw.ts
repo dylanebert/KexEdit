@@ -170,16 +170,40 @@ test("geo authoring flow", async ({ page }) => {
     await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-4).toBe(true);
     await page.screenshot({ path: join(OUT, "geo-2-reshape.png") });
 
+    // ── 4. Append gestures (feel round 7 — the retired radial `+` button's replacements): a DOUBLE
+    // click on the chain-end point appends a node (Enter's twin), while a PLAIN click never does; and
+    // the node menu carries an "Add node" (+ "Delete node") item. the chain end is order 6 (7 nodes).
+    const chainEnd = await nodeAt(6);
+    if (!chainEnd) throw new Error("chain-end node not located");
+    // a plain click selects the chain end but does NOT append (append is dblclick/Enter, never a click).
+    await page.mouse.click(cb.x + chainEnd.x, cb.y + chainEnd.y);
+    await expect.poll(selectedOrder).toBe(6);
+    expect(await nodeCount()).toBe(7); // no append on a plain click
+    // a double-click on the chain end appends one node; undo drops it.
+    await page.mouse.dblclick(cb.x + chainEnd.x, cb.y + chainEnd.y);
+    await expect.poll(nodeCount).toBe(8);
+    await page.keyboard.press("Control+z");
+    await expect.poll(nodeCount).toBe(7);
+    // the node menu (right-click the chain end) carries Add node + Delete node (the ring's retired ops).
+    await page.mouse.click(cb.x + chainEnd.x, cb.y + chainEnd.y, { button: "right" });
+    await expect(page.locator(".nodemenu")).toBeVisible();
+    await expect(page.locator(".nodemenu").getByRole("menuitem", { name: "Add node" })).toBeVisible();
+    await expect(
+        page.locator(".nodemenu").getByRole("menuitem", { name: "Delete node" }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape"); // dismiss the menu
+
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the TANGENT-EDIT flow (kex2d-authoring-surface stage 9): seed a shaped geo track →
-// frame it → DOUBLE-CLICK an interior node to enter tangent edit (Figma's vector-edit summon;
-// the node is inferred, no stored tangent) → RIGHT-CLICK the node to open the NODE context menu
-// (Handles + a Tangents ▸ submenu) → open the submenu → set FREE → drag its out-handle → assert
-// Free independence and a re-bake → Reset via the submenu clears the node back to live (Auto).
-// The summon is a real canvas double-click, the node menu a real canvas right-click (both located
-// via __kex.nodeAt); the handle drag is a real canvas pointer drag located through
+// frame it → ALT-CLICK an interior node to enter tangent edit (feel round 7: the handle-edit
+// gesture, Illustrator's edit-anchor modifier; the node is inferred, no stored tangent) → RIGHT-CLICK
+// the node to open the NODE context menu (Handles + a Tangents ▸ submenu) → open the submenu → set
+// FREE → drag its out-handle → assert Free independence and a re-bake → Reset via the submenu clears
+// the node back to live (Auto). The summon is a real canvas Alt-click, the node menu a real canvas
+// right-click (both located via __kex.nodeAt); the handle drag is a real canvas pointer drag located
+// through
 // __kex.tangentHandles (canvas-drawn handles carry no DOM box). Handle drags no longer snap, so
 // the drag lands where the pointer goes. The submenu items (Free, Reset) are clicked pointer-true
 // via clickFlyout — a coordinate click gated on elementFromPoint reachability, the regression net
@@ -227,12 +251,15 @@ test("tangent edit flow", async ({ page }) => {
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
 
-    // ── 1. DOUBLE-CLICK the crest (interior node, order 3) → tangent edit; its arc-rule ghost
-    // handles draw. no stamp-on-append anymore — the interior node is inferred (Auto), so it
-    // carries no stored tangent (the mode menu would show it as Aligned). ──
+    // ── 1. ALT-CLICK the crest (interior node, order 3) → tangent edit (feel round 7: the handle-edit
+    // gesture moved off double-click, which now appends at the chain end; Alt-click is Illustrator's
+    // edit-anchor modifier). its arc-rule ghost handles draw; the inferred node carries no stored
+    // tangent (Auto). ──
     const npos = await nodeAt(3);
     if (!npos) throw new Error("node 3 not located");
-    await page.mouse.dblclick(cb.x + npos.x, cb.y + npos.y);
+    await page.keyboard.down("Alt");
+    await page.mouse.click(cb.x + npos.x, cb.y + npos.y);
+    await page.keyboard.up("Alt");
     await expect.poll(editing).toBe(true);
     expect(await tangent()).toBeNull(); // inferred — the default add flow stamps nothing
     await page.waitForTimeout(300); // let the handles settle before the shot
@@ -321,9 +348,9 @@ test("tangent edit flow", async ({ page }) => {
 
 // Drive the START-HANDLE EDIT flow (kex2d-geo-ux stage 1): the section entry (node 0) is now
 // selectable + its tangent editable. The START diamond and the first section's node 0 are
-// coincident at the origin, so a plain click selects the START (v0 popover) while a DOUBLE-CLICK
-// reaches node 0's entry handle. Frame the default flat seed → double-click the START → assert node
-// 0 (order 0) entered tangent edit with no stored tangent (Auto) → drag its OUT-handle (the single
+// coincident at the origin, so a plain click selects the START (v0 popover) while an ALT-CLICK
+// reaches node 0's entry handle (feel round 7). Frame the default flat seed → Alt-click the START →
+// assert node 0 (order 0) entered tangent edit with no stored tangent (Auto) → drag its OUT-handle (the single
 // free entry handle) → assert an authored tangent + a re-bake → RIGHT-CLICK the START for node 0's
 // menu (Handles + Reset ONLY — no mode submenu) → Reset clears it back to live. Every affordance is
 // a real canvas pointer event located via __kex (canvas-drawn handles carry no DOM box); the node
@@ -367,11 +394,14 @@ test("start handle edit flow", async ({ page }) => {
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
 
-    // ── 1. DOUBLE-CLICK the START diamond → node 0 (order 0) enters tangent edit; its single
-    // out-handle (the entry handle) draws. no stamp — node 0 is inferred (Auto). ──
+    // ── 1. ALT-CLICK the START diamond → node 0 (order 0) enters tangent edit (feel round 7: the
+    // handle-edit gesture is Alt-click now, uniform with interior nodes). its single out-handle (the
+    // entry handle) draws; node 0 is inferred (Auto). ──
     const sp = await startAt();
     if (!sp) throw new Error("START point not located");
-    await page.mouse.dblclick(cb.x + sp.x, cb.y + sp.y);
+    await page.keyboard.down("Alt");
+    await page.mouse.click(cb.x + sp.x, cb.y + sp.y);
+    await page.keyboard.up("Alt");
     await expect.poll(editing).toBe(true);
     expect(await selectedOrder()).toBe(0); // the entry anchor, reached at the START
     expect(await tangent()).toBeNull(); // Auto — the default flow stamps nothing
