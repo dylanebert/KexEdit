@@ -458,6 +458,11 @@ via a whole-track snapshot pair (byte-identical).
   guards on its OWN live selection (`editor.selection` / `editor.section` / `editor.force`), which are
   mutually exclusive (`editor.ts` clears the others on select). Keep that guard: a kind check instead
   could double-fire.
+- **Never hold a raw eid across a snapshot restore.** `restoreSection`/`restoreAll` destroy and
+  respawn a section's nodes and the eid allocator recycles LIFO, so a held eid remaps to a
+  DIFFERENT node — hold the stable `(section, order)` instead. `withReconcile` in `history.ts` is
+  the one seam every restore flows through: it re-resolves `editor.selection`/`tangentEdit` by
+  identity and closes the node menu (whose rows go stale on any restore).
 - **A single force point holds its value everywhere** (endpoint hold), so one point can't make a
   *dip* — it's a constant. A localized airtime bump needs three (1g shoulders + the crest). The empty
   profile is a flat `DEFAULT_G` (1g), so a fresh geo→force convert is a straight level track.

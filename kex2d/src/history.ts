@@ -147,10 +147,14 @@ export function cancel(): void {
 // capture it while the eid is still live, re-resolve it after the restore, and clear it
 // (with the tangent-edit sub-mode layered on it) when the node no longer exists.
 // force/section selections address by stable id, so a restore leaves them valid untouched.
+// the node menu is closed outright: its rows (checked mode, enablement) are computed at open
+// and are stale after a restore regardless of eid identity — the standard app behavior when
+// the document changes under an open menu.
 
 /** run a snapshot restore, re-resolving the editor's node selection by (section, order)
- *  across the eid recycle. the one seam every `restoreSection`/`restoreAll` command flows
- *  through (`restoreCommand`), so the reconcile lives in exactly one place. */
+ *  across the eid recycle and closing the node menu. the one seam every
+ *  `restoreSection`/`restoreAll` command flows through (`restoreCommand`), so the reconcile
+ *  lives in exactly one place. */
 function withReconcile(ecs: State, restore: () => void): void {
     const sel = editor.selection;
     const id =
@@ -158,6 +162,7 @@ function withReconcile(ecs: State, restore: () => void): void {
             ? { section: Handle.section.get(sel), order: Handle.order.get(sel) }
             : null;
     const editing = id !== null && editor.tangentEdit === sel;
+    editor.nodeMenu = null; // stale contents after the restore; close, don't retarget
     restore();
     if (id === null) return; // no node selected — force/section/start survive by stable id
     const eid = handleAt(ecs, id.section, id.order);

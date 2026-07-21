@@ -259,9 +259,24 @@ function magnetInput(
     return inp;
 }
 
+// float-noise band for the integer-degree readout. absorbs the f64 conversion of an exact
+// π/12-raster multiple (a few ULP of ~180, ≪ 1e-9°) while staying far below any genuine
+// fractional incline a continuation landmark produces.
+const DEG_EPS = 1e-6;
+
 /** wrap a degree value into (−180, 180]. */
-function normDeg(d: number): number {
-    return ((((d + 180) % 360) + 360) % 360) - 180;
+export function normDeg(d: number): number {
+    const w = ((((d + 180) % 360) + 360) % 360) - 180;
+    return w === -180 ? 180 : w; // the wrap lands 180° on −180; the readout wants 180
+}
+
+/** format a snapped incline (degrees) for the fixed snap readout: an integer when within float
+ *  noise of a whole degree (a raster multiple cancels clean), else one decimal (a continuation
+ *  landmark is a raw atan2 over baked samples). */
+export function formatDeg(d: number): string {
+    const n = normDeg(d);
+    const r = Math.round(n);
+    return `${Math.abs(n - r) < DEG_EPS ? r : n.toFixed(1)}°`;
 }
 
 /** flash the fired magnet guides (the render pass reads `snapGuides.ray`; the App readout reads the
@@ -274,7 +289,7 @@ function applyGuides(guides: Guide[], tx: ViewTx, snapped: { x: number; y: numbe
     for (const g of guides) {
         if (g.kind === "angle") {
             snapGuides.ray = { x: snapped.x, y: snapped.y, angle: -g.value };
-            snapGuides.angleLabel = `${normDeg((-g.value * 180) / Math.PI)}°`;
+            snapGuides.angleLabel = formatDeg((-g.value * 180) / Math.PI);
         } else if (g.kind === "length") {
             snapGuides.lengthLabel = `${Math.round(g.value / Math.abs(tx.sx))} m`;
         }

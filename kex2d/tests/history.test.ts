@@ -1,6 +1,6 @@
 import { State } from "@dylanebert/shallot";
 import { expect, test } from "bun:test";
-import { editor, enterTangentEdit, select } from "../src/editor";
+import { editor, enterTangentEdit, openNodeMenu, select } from "../src/editor";
 import {
     appendSection,
     beginForceMove,
@@ -405,6 +405,20 @@ test("node selection survives a structural (whole-track) undo — restoreAll pat
     expect(r).not.toBeNull();
     expect(Handle.section.get(r as number)).toBe(sec);
     expect(Handle.order.get(r as number)).toBe(1);
+});
+
+test("an open node menu closes across a snapshot restore (its contents go stale)", () => {
+    clearSelection();
+    const { state, sec } = nodes();
+    addNode(state, sec, 40, 0); // order 2
+    const h = createHistory();
+    const eid = extendTrack(h, state, sec); // order 3 — the eid recycles across the restore
+
+    openNodeMenu(10, 20, eid); // menu targeting the tip (checked mode + enablement computed now)
+    expect(editor.nodeMenu).not.toBeNull();
+
+    undo(h); // restoreSection respawns nodes LIFO — the menu's target eid is now a DIFFERENT node
+    expect(editor.nodeMenu).toBeNull(); // closed rather than left retargeting a recycled eid
 });
 
 test("selection clears when the node doesn't survive the restore", () => {
