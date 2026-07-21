@@ -18,10 +18,10 @@ export interface Tick {
     label: string;
 }
 
-/** floor on the padding past the track end, so a near-empty track's span never collapses
- *  to zero (a degenerate divide / infinite zoom guard), and a short track still has visible
- *  margin. */
-const MIN_MARGIN_M = 0.5;
+/** floor on the padding past the track end — a significant absolute lead-out (meters), so a
+ *  short track always frames zoomed out a bit with real empty ruler to build into (the feel
+ *  call, 2026-07-21). also the degenerate guard: an empty track's span never collapses. */
+const MARGIN_M = 50;
 /** zoom-in ceiling — a pixel-per-meter cap so the axis can't blow up. */
 export const MAX_PX_PER_M = 4000;
 /** target spacing between labeled major ticks, in px. */
@@ -31,12 +31,13 @@ export const sToPx = (v: View, s: number): number => s * v.pxPerM - v.pan;
 export const pxToS = (v: View, px: number): number => (px + v.pan) / v.pxPerM;
 
 /** the axis padding (meters) past the track end — the ONE definition, shared by `clampView`'s
- *  right edge, `frameAll`, `zoomAt`'s zoom floor, and `navWindow`. proportional (a fixed fraction
- *  of the track), so when framed the lead-out is the same visible slice at any track length. it's
- *  a permanent part of the addressable span (`sTotal + marginArc`), always pannable and always
- *  framed — not a min-window fallback. one-sided: the launch is s=0, so there's no lead-*in* (no
- *  negative distance on the ruler). the floor (`MIN_MARGIN_M`) only guards a near-empty track. */
-export const marginArc = (sTotal: number): number => Math.max(0.12 * sTotal, MIN_MARGIN_M);
+ *  right edge, `frameAll`, `zoomAt`'s zoom floor, and `navWindow`. the floor (`MARGIN_M`)
+ *  dominates up to ~417 m, so short tracks frame with a substantial lead-out; past that the
+ *  proportional fraction takes over so the framed lead-out stays the same visible slice on long
+ *  tracks. it's a permanent part of the addressable span (`sTotal + marginArc`), always pannable
+ *  and always framed — not a min-window fallback. one-sided: the launch is s=0, so there's no
+ *  lead-*in* (no negative distance on the ruler). */
+export const marginArc = (sTotal: number): number => Math.max(0.12 * sTotal, MARGIN_M);
 
 /** clamp a view to the track extent — a PAN clamp, not a zoom clamp. the x-axis is a
  *  document axis (the spatial address of every clip and keyframe), not an auto-fit value

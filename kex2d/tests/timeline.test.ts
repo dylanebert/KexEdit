@@ -100,6 +100,18 @@ function isClean(step: number, m: number): boolean {
     return Math.abs(log - Math.round(log)) < 1e-9;
 }
 
+describe("marginArc — lead-out", () => {
+    // the floor is a SIGNIFICANT absolute lead-out (feel check 2026-07-21): a short track
+    // always frames zoomed out a bit, with real empty ruler to build into on the right.
+    test("short tracks get the full absolute floor", () => {
+        expect(marginArc(10)).toBe(50);
+        expect(marginArc(0)).toBe(50);
+    });
+    test("long tracks keep the proportional lead-out past the floor", () => {
+        expect(marginArc(1000)).toBeCloseTo(120, 9);
+    });
+});
+
 describe("clampView — pan clamp, no forced zoom", () => {
     const W = 1000;
     const T = 10;
@@ -136,7 +148,7 @@ describe("clampView — pan clamp, no forced zoom", () => {
         // proportional lead-out at every length), so a short track frames [0, sTotal+padding]
         // — a tiny window, not the old arbitrary min-span floor snap.
         const Tshort = 4;
-        const m = marginArc(Tshort); // the same padding definition, floored at MIN_MARGIN_M
+        const m = marginArc(Tshort); // the same padding definition, floored at MARGIN_M
         const v = frameAll(W, Tshort);
         expect(v.pxPerM).toBeCloseTo(W / (Tshort + m), 9);
         expect(v.pan).toBe(0); // left-anchored at the launch
@@ -209,7 +221,7 @@ describe("zoomAt — cursor-anchored", () => {
 
 describe("navWindow — overview bracket fractions", () => {
     const W = 1000;
-    const T = 10; // total = T + margin = 11.2
+    const T = 10; // total = T + margin = 60
     test("the fitted view fills the whole bar", () => {
         const fitted = frameAll(W, T);
         const win = navWindow(fitted, W, T);
