@@ -7,6 +7,7 @@ import {
     MAX_ZOOM,
     MIN_ZOOM,
     panCamera,
+    readoutFit,
     screenToWorld,
     zoomAt,
 } from "../src/view";
@@ -137,6 +138,45 @@ describe("frameContent — fit a box in the region above the dock", () => {
         const c = worldAt(cam, 2000 / 2, (2000 - 256) / 2);
         expect(c.x).toBeCloseTo(10, TOL);
         expect(c.y).toBeCloseTo(5, TOL);
+    });
+});
+
+describe("readoutFit — the snap readout stays whole in the viewport", () => {
+    const Off = 69; // RADIAL_R(46) + RADIAL_BTN_R(15) + gap(8) — the App derivation
+    const Size = { w: 90, h: 18 };
+    const Vp = { w: 1280, h: 800 };
+    const Dock = 256;
+    const Margin = 8;
+
+    test("centers below the node with room to spare", () => {
+        const p = readoutFit({ x: 640, y: 300 }, Off, Size, Vp, Dock, Margin);
+        expect(p.x).toBeCloseTo(640 - Size.w / 2, 9); // centered horizontally on the node
+        expect(p.y).toBe(300 + Off); // hung below by the full offset (clears the ring)
+    });
+
+    test("clears the radial ring below the node", () => {
+        // the readout's top starts strictly past the ring's far edge (RADIAL_R + RADIAL_BTN_R).
+        const p = readoutFit({ x: 640, y: 300 }, Off, Size, Vp, Dock, Margin);
+        expect(p.y - 300).toBeGreaterThan(46 + 15);
+    });
+
+    test("slides in at the left edge instead of clipping", () => {
+        const p = readoutFit({ x: 4, y: 300 }, Off, Size, Vp, Dock, Margin);
+        expect(p.x).toBe(Margin); // clamped to the left margin, no longer centered
+    });
+
+    test("slides in at the right edge instead of clipping", () => {
+        const p = readoutFit({ x: Vp.w - 4, y: 300 }, Off, Size, Vp, Dock, Margin);
+        expect(p.x).toBe(Vp.w - Margin - Size.w); // right edge sits a margin off the viewport
+    });
+
+    test("flips above the node when below would cross into the dock band", () => {
+        // a node low enough that below (y + off + h) would land under the dock floor: flip up.
+        const ny = Vp.h - Dock - 10;
+        const p = readoutFit({ x: 640, y: ny }, Off, Size, Vp, Dock, Margin);
+        expect(p.y).toBe(ny - Off - Size.h); // above the node, its bottom a full offset up
+        expect(p.y + Size.h).toBeLessThanOrEqual(Vp.h - Dock - Margin); // clear of the dock
+        expect(ny - p.y).toBeGreaterThan(46 + 15); // still clears the ring on the flipped side
     });
 });
 

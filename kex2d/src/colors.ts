@@ -15,8 +15,8 @@ export const COLOR_FORCE = COLOR_ACCENT;
  *  3 retired the magenta stateful/neutral split: one guide is one register). The viewport
  *  incline ray and the timeline's s/g snap lines all wear this quiet gray (the app's anchor
  *  gray). Mirrors App.svelte's `--guide` CSS custom property (Timeline.svelte's `.snapguide`).
- *  The numeric °/m readout is DOM now (the fixed snap readout under the viewport toggle cluster,
- *  styled off the `--fg` token), so no canvas label color lives here. */
+ *  The numeric °/m readout is DOM now (the snap readout centered below the dragged node, styled
+ *  off the `--fg` token), so no canvas label color lives here. */
 export const COLOR_GUIDE_RAY = "#9aa0a6";
 
 export function kindColor(kind: SectionKind): string {

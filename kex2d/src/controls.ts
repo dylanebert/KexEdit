@@ -270,7 +270,7 @@ export function normDeg(d: number): number {
     return w === -180 ? 180 : w; // the wrap lands 180° on −180; the readout wants 180
 }
 
-/** format a snapped incline (degrees) for the fixed snap readout: an integer when within float
+/** format a snapped incline (degrees) for the snap readout: an integer when within float
  *  noise of a whole degree (a raster multiple cancels clean), else one decimal (a continuation
  *  landmark is a raw atan2 over baked samples). */
 export function formatDeg(d: number): string {
@@ -282,9 +282,9 @@ export function formatDeg(d: number): string {
 /** flash the fired magnet guides (the render pass reads `snapGuides.ray`; the App readout reads the
  *  labels). the angle guide draws a tangent ray AT the dragged node along the snapped exit incline
  *  (the screen angle inverts to world, the y-flip) and sets the degree readout string; a snapped
- *  length sets a metre readout string. the numbers show in the fixed snap readout under the toggle
- *  cluster, so they carry no world anchor. `snapped` is the resolved drag point in world coords —
- *  the ray origin. */
+ *  length sets a metre readout string. the numbers show in the DOM snap readout centered below the
+ *  dragged node, so they carry no world anchor of their own. `snapped` is the resolved drag point
+ *  in world coords — the ray origin. */
 function applyGuides(guides: Guide[], tx: ViewTx, snapped: { x: number; y: number }): void {
     for (const g of guides) {
         if (g.kind === "angle") {

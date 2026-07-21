@@ -16,8 +16,8 @@ export const DOCK_HEIGHT = 240;
 export const DOCK_INSET = 16;
 /** screen px kept clear at the bottom for the timeline dock. the default view centers the
  *  world origin ABOVE this band, not at the canvas center — the dock would otherwise cover
- *  the track's launch. */
-const DOCK_RESERVE = DOCK_HEIGHT + DOCK_INSET;
+ *  the track's launch. also the floor the drag snap readout keeps clear of (`readoutFit`). */
+export const DOCK_RESERVE = DOCK_HEIGHT + DOCK_INSET;
 /** zoom limits (px per world meter). the affine viewport is an infinite canvas — pan is
  *  unclamped — but the scale is bounded so the track can't blow up or vanish. */
 export const MIN_ZOOM = 0.05;
@@ -78,6 +78,35 @@ export function frameContent(width: number, height: number, box: Box): Camera {
     return { zoom, ox: availW / 2 - cx * zoom, oy: availH / 2 + cy * zoom };
 }
 
+/** where the drag snap readout lands so it stays whole in the viewport — centered under the
+ *  dragged node and clear of the radial ring by the caller's `offset` (root ui.md "summoned
+ *  panels fit the viewport"). Pure so it's testable device-free; App feeds it the node's screen
+ *  point + the readout's measured size. Returns the readout's top-left in screen px.
+ *
+ * - horizontally centered on the node, then clamped so neither end runs off the viewport — a
+ *   node near the left/right edge slides the readout in (it stops being centered there).
+ * - below the node by `offset` (node center → readout top). Flips ABOVE when below would land
+ *   under the dock band or off the bottom edge. `offset` clears the radial ring on either side
+ *   by construction, so the flip never overlaps the extend/delete buttons. `dock` is the px
+ *   reserved at the bottom for the timeline dock (`DOCK_RESERVE`).
+ *
+ * @example readoutFit({ x: 640, y: 300 }, 69, { w: 90, h: 18 }, { w: 1280, h: 800 }, 256)
+ */
+export function readoutFit(
+    node: { x: number; y: number },
+    offset: number,
+    size: { w: number; h: number },
+    viewport: { w: number; h: number },
+    dock: number,
+    margin = 8,
+): { x: number; y: number } {
+    const x = Math.max(margin, Math.min(node.x - size.w / 2, viewport.w - margin - size.w));
+    const belowTop = node.y + offset;
+    const floor = viewport.h - dock - margin; // the readout's bottom can't cross into the dock
+    const y = belowTop + size.h <= floor ? belowTop : node.y - offset - size.h;
+    return { x, y };
+}
+
 /** pan by a screen-space delta (drag): the world slides under the cursor. */
 export function panCamera(cam: Camera, dx: number, dy: number): Camera {
     return { zoom: cam.zoom, ox: cam.ox + dx, oy: cam.oy + dy };
@@ -106,11 +135,12 @@ let framed = false;
 /** transient snap guides flashed while a viewport drag latches a magnet target (the Figma
  *  alignment-guide flash, one per fired family). `ray` is world-space — a line through the
  *  dragged node at the snapped exit incline the render pass draws in the viewport. `angleLabel`
- *  (e.g. "30°") and `lengthLabel` (e.g. "3 m") are the numeric readout strings: not world-anchored,
- *  they render in the fixed snap readout under the viewport toggle cluster (the Blender
- *  modal-transform readout — a floating chip at the drag point collided with the radial buttons).
- *  each field is null when its family isn't firing. mutated in place by the drag controls, read by
- *  the render pass (`ray`) and the App readout (the labels), cleared on release. */
+ *  (e.g. "30°") and `lengthLabel` (e.g. "3 m") are the numeric readout strings: rendered in the DOM
+ *  snap readout centered below the dragged node (the Blender modal-transform readout), offset far
+ *  enough below to clear the radial extend/delete buttons by construction — an earlier chip AT the
+ *  drag point overlapped them, and a fixed top-left line read too far from the action. `readoutFit`
+ *  places it. each field is null when its family isn't firing. mutated in place by the drag controls,
+ *  read by the render pass (`ray`) and the App readout (the labels), cleared on release. */
 export interface SnapGuides {
     ray: { x: number; y: number; angle: number } | null;
     angleLabel: string | null;

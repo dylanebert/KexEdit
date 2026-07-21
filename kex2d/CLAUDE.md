@@ -397,9 +397,14 @@ editor-ui invariant-domain rule).
   `Menu` over `editor.nodeMenu`, the same shared `.menu` look + cursor placement as the section
   context menu). Snap-guide feedback: the viewport draws the incline **ray** in the shared neutral
   gray (`COLOR_GUIDE_RAY`), the one register every snap guide wears (the timeline's `.snapguide`
-  too); the numeric **°/m readout** is DOM — a fixed line under the viewport toggle cluster
-  (App's `.snap-readout`, the Blender modal-transform readout), shown only while a snap is engaged
-  (a floating chip at the drag point collided with the radial extend/delete buttons).
+  too); the numeric **°/m readout** is DOM — App's `.snap-readout`, the Blender modal-transform
+  readout, shown only while a snap is engaged. It's **centered below the dragged node**, offset by
+  `READOUT_OFFSET` (`RADIAL_R + RADIAL_BTN_R + gap`) so it clears the radial extend/delete buttons
+  **by construction** — a button center orbits at `RADIAL_R`, its far edge at `RADIAL_R +
+  RADIAL_BTN_R`, so the readout starts a gap past that wherever the heading swings the ring. Pure
+  `readoutFit` (`view.ts`) places it: centered-then-clamped horizontally, flipped above the node
+  near the bottom so it never lands under the timeline dock. (Earlier tries: a chip AT the drag
+  point overlapped the buttons; a fixed line under the toggle cluster read too far from the action.)
 - `main.ts` — boots `run({ defaults: false })` + mounts App. The DEV-only `__kex` hook exposes
   geo state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`), force state
   (`kind`/`forceCount`/`forces`/`convert`/`placeForce`/`seedForceBump`), and the multi-section ops

@@ -417,9 +417,9 @@ const CartDrawSystem: System = {
  *  the track and cleared by the controls on release — a full-extent line through the dragged node
  *  along the snapped exit incline, in the shared neutral guide gray (the timeline's snap guides
  *  wear the same gray now, feel round 3). `L` spans any framed view; the canvas clips the overshoot.
- *  The numeric °/m readout no longer floats here — it renders in the fixed snap readout under the
- *  viewport toggle cluster (the Blender modal-transform readout; a floating chip at the drag point
- *  collided with the radial extend/delete buttons, and a fixed spot can't). */
+ *  The numeric °/m readout is DOM, not canvas — it renders in the snap readout centered below the
+ *  dragged node (App's `.snap-readout`, the Blender modal-transform readout), offset clear of the
+ *  radial extend/delete buttons. */
 const SnapGuideSystem: System = {
     group: "draw",
     update(): void {

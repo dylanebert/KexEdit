@@ -45,7 +45,7 @@ import {
     setTrackV0,
     Track,
 } from "./track";
-import { attachCanvas2D, snapGuides, viewTransform } from "./view";
+import { attachCanvas2D, DOCK_RESERVE, readoutFit, snapGuides, viewTransform } from "./view";
 
 const { ecs }: { ecs: State } = $props();
 let canvas: HTMLCanvasElement;
@@ -79,11 +79,11 @@ const snapOn = $derived.by((): boolean => {
     return editor.snap;
 });
 
-// the fixed snap readout under the toggle cluster (the Blender modal-transform / SketchUp
-// measurements-box precedent): the engaged snap values (° and/or m), joined on a co-fire and read
-// through the per-RAF tick. null when no snap is engaged, so the readout is hidden entirely — a
-// floating chip at the drag point collided with the radial extend/delete buttons; a fixed spot
-// under the cluster can't, and it keeps the viewport's one overlay corner.
+// the snap readout text (the Blender modal-transform / SketchUp measurements-box precedent): the
+// engaged snap values (° and/or m), joined on a co-fire and read through the per-RAF tick. null
+// when no snap is engaged, so the readout is hidden entirely. It renders centered below the
+// dragged node (below), offset clear of the radial buttons — a chip AT the drag point overlapped
+// them, and a fixed top-left line read too far from the action.
 const snapText = $derived.by((): string | null => {
     void tick;
     const parts: string[] = [];
@@ -119,6 +119,13 @@ const handleCount = $derived.by((): number => {
 // screen point. the tangent mode surface is a right-click menu now (not a radial button).
 const RADIAL_R = 46; // px from node center to a button center
 const TRASH_OFFSET = Math.PI / 3; // delete sits 60° (screen-CW) off extend
+// the snap readout hangs below the dragged node, centered, clear of the radial ring BY
+// CONSTRUCTION: a button center orbits at RADIAL_R and its far edge reaches RADIAL_R +
+// RADIAL_BTN_R, so the readout starts a gap past that — it can't overlap a button wherever the
+// heading swings the ring. Derived from the radial geometry, not a tuned number.
+const RADIAL_BTN_R = 15; // `.rbtn` is 30px square → 15px radius (CSS)
+const READOUT_GAP = 8; // clearance between the ring's far edge and the readout
+const READOUT_OFFSET = RADIAL_R + RADIAL_BTN_R + READOUT_GAP; // node center → readout top (or bottom, flipped)
 type Radial = {
     x: number;
     y: number;
@@ -163,6 +170,42 @@ function onDelete(): void {
     const section = Handle.section.get(eid);
     if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
 }
+
+// the snap readout follows the dragged node. a snap only engages during a node drag, and a node
+// drag selects the node it drags, so `editor.selection` IS the dragged node here — its baked
+// screen point (the same node→sample→screen path the radial cluster reads) is the anchor. null
+// whenever there's no snap text, so the readout is absent then.
+let readoutEl = $state<HTMLDivElement | undefined>(undefined);
+let readoutXY = $state<{ x: number; y: number } | null>(null);
+const readoutAnchor = $derived.by((): { x: number; y: number } | null => {
+    void tick;
+    if (snapText === null || !canvas || trackEid === null) return null;
+    const eid = editor.selection;
+    if (eid === null) return null;
+    const s = samples.get(trackEid);
+    if (!s) return null;
+    const tx = viewTransform(canvas);
+    const i = Handle.sample.get(eid);
+    return { x: tx.ox + s.posX[i] * tx.sx, y: tx.oy + s.posY[i] * tx.sy };
+});
+// clamp/flip the rendered readout into the viewport (measured size → readoutFit), mirroring
+// Menu.svelte's flyout fit: centered below the node, flipped above near the bottom, slid in at the
+// left/right edges. an $effect (not a $derived) because it reads the element's box — a DOM size
+// outside the reactive graph. the position it writes never changes that intrinsic size (nowrap),
+// so there's no feedback loop.
+$effect(() => {
+    if (readoutAnchor === null || !readoutEl || !canvas) {
+        readoutXY = null;
+        return;
+    }
+    readoutXY = readoutFit(
+        readoutAnchor,
+        READOUT_OFFSET,
+        { w: readoutEl.offsetWidth, h: readoutEl.offsetHeight },
+        { w: canvas.clientWidth, h: canvas.clientHeight },
+        DOCK_RESERVE,
+    );
+});
 
 // the NODE context menu (Handles toggle + a Tangents ▸ submenu), opened by right-click on any
 // pickable node (controls.ts → editor.openNodeMenu). its visibility DERIVES from the node still
@@ -453,42 +496,48 @@ $effect(() => {
 
 <canvas bind:this={canvas}></canvas>
 
-<!-- the top-left viewport overlay: the persistent toggle cluster + the fixed snap readout
-     stacked under it (the viewport keeps ONE overlay corner). a flex column anchored at the
-     top, so the readout appearing below never shifts the cluster (no-layout-shift). -->
-<div class="viewport-overlay">
-    <!-- the viewport toggle cluster: a small persistent overlay — the Blender viewport-header
-         precedent collapsed to an overlay (a viewport affordance, not a second dock). the home
-         for viewport toggles; today just the snap magnet. lit when on (default), dimmed when
-         off; `S` also toggles, Ctrl/Cmd bypasses per-gesture. -->
-    <div class="viewport-tools" aria-label="Viewport tools">
-        <button
-            class="vtool"
-            class:on={snapOn}
-            type="button"
-            onclick={toggleSnap}
-            title="Snapping (S)"
-            aria-label="Snapping"
-            aria-pressed={snapOn}
-        >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-                <path
-                    d="M4 2 L4 8 a4 4 0 0 0 8 0 L12 2 L9.5 2 L9.5 8 a1.5 1.5 0 0 1 -3 0 L6.5 2 Z"
-                    fill="currentColor"
-                    fill-rule="evenodd"
-                />
-                <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
-                <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
-            </svg>
-        </button>
-    </div>
-    <!-- the fixed snap readout: the engaged snap values (° / m / both), summoned only while a
-         magnet target is latched (the Blender modal-transform readout). replaces the floating
-         °/m chips that collided with the radial extend/delete buttons at the drag point. -->
-    {#if snapText}
-        <div class="snap-readout">{snapText}</div>
-    {/if}
+<!-- the viewport toggle cluster: a small persistent overlay top-left — the Blender
+     viewport-header precedent collapsed to an overlay (a viewport affordance, not a second dock).
+     the home for viewport toggles; today just the snap magnet. lit when on (default), dimmed when
+     off; `S` also toggles, Ctrl/Cmd bypasses per-gesture. -->
+<div class="viewport-tools" aria-label="Viewport tools">
+    <button
+        class="vtool"
+        class:on={snapOn}
+        type="button"
+        onclick={toggleSnap}
+        title="Snapping (S)"
+        aria-label="Snapping"
+        aria-pressed={snapOn}
+    >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+                d="M4 2 L4 8 a4 4 0 0 0 8 0 L12 2 L9.5 2 L9.5 8 a1.5 1.5 0 0 1 -3 0 L6.5 2 Z"
+                fill="currentColor"
+                fill-rule="evenodd"
+            />
+            <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
+            <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
+        </svg>
+    </button>
 </div>
+
+<!-- the snap readout: the engaged snap values (° / m / both), summoned only while a magnet target
+     is latched (the Blender modal-transform readout). centered below the dragged node, offset far
+     enough to clear the radial extend/delete buttons by construction (a chip AT the drag point
+     overlapped them; a fixed top-left line read too far from the action). rendered off-screen for
+     one measure pass until `readoutFit` places it from the measured box. -->
+{#if readoutAnchor}
+    <div
+        class="snap-readout"
+        bind:this={readoutEl}
+        style={readoutXY
+            ? `left: ${readoutXY.x}px; top: ${readoutXY.y}px;`
+            : "left: -9999px; top: -9999px;"}
+    >
+        {snapText}
+    </div>
+{/if}
 
 {#if infeasible}
     <div class="warning" role="alert">
@@ -646,26 +695,14 @@ $effect(() => {
         user-select: none;
     }
 
-    /* the top-left overlay column: the toggle cluster plus the fixed snap readout under it. it
-       owns the corner positioning; `align-items: flex-start` so the readout (a wider line) never
-       stretches the narrow cluster, and top-anchoring so the readout appearing below leaves the
-       cluster put (no-layout-shift). the viewport's one overlay corner. */
-    .viewport-overlay {
+    /* the viewport toggle cluster: the Blender viewport-header precedent collapsed to an overlay
+       (a viewport affordance, not a second dock), pinned top-left. a column so future toggles
+       stack under the magnet; opaque surface, elevation from border + shadow (root ui.md). */
+    .viewport-tools {
         position: absolute;
         top: 16px;
         left: 16px;
         z-index: 2;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 6px;
-        user-select: none;
-        -webkit-user-select: none;
-    }
-    /* the viewport toggle cluster: the Blender viewport-header precedent collapsed to an overlay
-       (a viewport affordance, not a second dock). a column so future toggles stack under the
-       magnet; opaque surface, elevation from border + shadow (root ui.md). */
-    .viewport-tools {
         display: flex;
         flex-direction: column;
         gap: 2px;
@@ -674,12 +711,16 @@ $effect(() => {
         border: 1px solid var(--border);
         border-radius: 6px;
         box-shadow: var(--shadow);
+        user-select: none;
+        -webkit-user-select: none;
     }
-    /* the fixed snap readout: the engaged snap values under the cluster (the Blender
-       modal-transform readout). shown only while a magnet is latched; JetBrains Mono over the
-       same opaque chrome as the cluster, the neutral guide text at `--fg`. pointer-inert — it's
-       a readout that flashes during a drag, never a target. */
+    /* the snap readout: the engaged snap values, positioned per-frame below the dragged node by
+       `readoutFit` (left/top set inline). shown only while a magnet is latched; JetBrains Mono
+       over the same opaque chrome as the cluster, the neutral guide text at `--fg`. pointer-inert
+       — it's a readout that flashes during a drag, never a target. */
     .snap-readout {
+        position: absolute;
+        z-index: 2;
         padding: 3px 8px;
         background: var(--bg-solid);
         border: 1px solid var(--border);
