@@ -24,14 +24,13 @@ import {
 } from "./history";
 import {
     angleControl,
-    angleKnob,
     angleToPoint,
     type Frame,
     lengthControl,
-    lengthKnob,
     lengthToPoint,
     polarFrame,
 } from "./manipulator";
+import { RadialSlot, ringBase, ringSlot } from "./radial";
 import { localize } from "./section";
 import { editTangent, TangentMode } from "./spline";
 import { editHandleSets, localTipAt, type TangentSide } from "./tangents";
@@ -299,12 +298,9 @@ function sampleScreen(
     return { x: tx.ox + s.posX[i] * tx.sx, y: tx.oy + s.posY[i] * tx.sy };
 }
 
-// the polar manipulator geometry (screen px). the knobs sit a fixed on-screen gap off the node —
-// the length knob along the chord ray, the angle knob along the arc tangent — so grabbing one is
-// distinct from the select-only node body. the gap clears the node's 30px-diameter knobs (peers of
-// the radial `+` button, render.ts); the pick radius tracks that knob radius so the whole button
-// grabs.
-const MANIP_KNOB_GAP = 38;
+// the manipulator knob pick radius (screen px) — tracks the 30px-diameter knob (render.ts) so the
+// whole button grabs. the knob POSITIONS come from the shared radial ring (`radial.ts`), the same
+// ring the add/delete buttons slot into.
 const MANIP_PICK_R = 16;
 // the length floor: a drag (or nudge) can't collapse the chord onto the previous node, which would
 // leave a degenerate frame with no chord direction on the next move. small enough to be invisible
@@ -360,13 +356,22 @@ export function manipKnobs(
     tx: ViewTx,
     eid: number,
 ): ManipKnob[] | null {
-    const f = nodeFrame(ecs, s, tx, eid);
-    if (!f) return null;
-    const len = lengthKnob(f, MANIP_KNOB_GAP);
-    const ang = angleKnob(f, MANIP_KNOB_GAP);
+    // gate on a manipulable node — the same condition the drag uses (`nodeFrame`: has a previous
+    // node, non-degenerate chord). node 0 and a coincident node get no knobs.
+    if (!nodeFrame(ecs, s, tx, eid)) return null;
+    // the idle buttons slot into the node-action ring (the shared radial substrate, peers of the
+    // add/delete buttons — length and angle on opposite sides). the base angle is the node's heading
+    // (its screen direction), the same origin the add button uses. the drag LOCI stay chord-relative
+    // in `dragManipTo` — only where the idle button sits is placed here.
+    const info = sectionInfo.get(Handle.section.get(eid));
+    const heading = Handle.theta.get(eid) + (info ? info.entry.theta : 0);
+    const base = ringBase(heading, tx.sx, tx.sy);
+    const node = sampleScreen(s, tx, Handle.sample.get(eid));
+    const len = ringSlot(base, RadialSlot.Length);
+    const ang = ringSlot(base, RadialSlot.Angle);
     return [
-        { axis: "length", x: len.x, y: len.y },
-        { axis: "angle", x: ang.x, y: ang.y },
+        { axis: "length", x: node.x + len.x, y: node.y + len.y },
+        { axis: "angle", x: node.x + ang.x, y: node.y + ang.y },
     ];
 }
 

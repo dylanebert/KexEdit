@@ -26,6 +26,7 @@ import {
 } from "./history";
 import Menu from "./Menu.svelte";
 import type { MenuItem } from "./menu";
+import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "./radial";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { stitchNode } from "./tangents";
 import Timeline from "./Timeline.svelte";
@@ -137,8 +138,9 @@ const handleCount = $derived.by((): number => {
 // a selected chain-end node carries a radial action cluster: extend (along the heading, where
 // the next piece lays) + delete (rotated off it). positions are in canvas/CSS px at the node's
 // screen point. the tangent mode surface is a right-click menu now (not a radial button).
-const RADIAL_R = 46; // px from node center to a button center
-const TRASH_OFFSET = Math.PI / 3; // delete sits 60° (screen-CW) off extend
+// the radial-ring geometry (RADIAL_R + the slots) is the shared substrate in `radial.ts` — the same
+// ring the two polar manipulator knobs slot into, so the add/delete buttons and the knobs can't
+// drift into each other (feel round 5).
 // the snap readout hangs below the dragged node, centered, clear of the radial ring BY
 // CONSTRUCTION: a button center orbits at RADIAL_R and its far edge reaches RADIAL_R +
 // RADIAL_BTN_R, so the readout starts a gap past that — it can't overlap a button wherever the
@@ -167,15 +169,15 @@ const radial = $derived.by((): Radial | null => {
     const i = Handle.sample.get(eid);
     const x = tx.ox + s.posX[i] * tx.sx;
     const y = tx.oy + s.posY[i] * tx.sy;
-    // world heading (local + the section entry heading) → screen direction; the view
-    // flips Y (tx.sy < 0).
+    // world heading (local + the section entry heading) → the ring base angle (the shared substrate
+    // applies the view y-flip). extend sits along the heading, delete 60° off it.
     const th = Handle.theta.get(eid) + info.entry.theta;
-    const ang = Math.atan2(Math.sin(th) * tx.sy, Math.cos(th) * tx.sx);
+    const base = ringBase(th, tx.sx, tx.sy);
     return {
         x,
         y,
-        ext: { x: RADIAL_R * Math.cos(ang), y: RADIAL_R * Math.sin(ang) },
-        del: { x: RADIAL_R * Math.cos(ang + TRASH_OFFSET), y: RADIAL_R * Math.sin(ang + TRASH_OFFSET) },
+        ext: ringSlot(base, RadialSlot.Extend),
+        del: ringSlot(base, RadialSlot.Delete),
     };
 });
 
