@@ -301,9 +301,11 @@ function sampleScreen(
 
 // the polar manipulator geometry (screen px). the knobs sit a fixed on-screen gap off the node —
 // the length knob along the chord ray, the angle knob along the arc tangent — so grabbing one is
-// distinct from the select-only node body. the pick radius is the `SNAP_PX`-family design constant.
-const MANIP_KNOB_GAP = 30;
-const MANIP_PICK_R = 12;
+// distinct from the select-only node body. the gap clears the node's 30px-diameter knobs (peers of
+// the radial `+` button, render.ts); the pick radius tracks that knob radius so the whole button
+// grabs.
+const MANIP_KNOB_GAP = 38;
+const MANIP_PICK_R = 16;
 // the length floor: a drag (or nudge) can't collapse the chord onto the previous node, which would
 // leave a degenerate frame with no chord direction on the next move. small enough to be invisible
 // at track scale, positive enough to keep the direction defined.
