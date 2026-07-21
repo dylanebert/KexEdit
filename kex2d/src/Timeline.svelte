@@ -3,6 +3,7 @@ import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
 import { kindSegments } from "./colors";
+import type { MenuItem } from "./menu";
 import {
     beginDrag,
     editor,
@@ -535,6 +536,13 @@ function append(kind: SectionKind): void {
     fitPending = clips.length; // reveal the appended section once its re-bake lands
     selectSection(appendSection(history, ecs, kind));
 }
+// the append flyout as data, one instance of the shared menu language. both choices are
+// always possible (a chain end always accepts a geo or force section), so neither declares
+// enablement — the substrate carries it, this menu just has nothing to disable.
+const appendItems: MenuItem[] = [
+    { label: "Geo", aria: "Append geometry section", action: () => append(SectionKind.Geo) },
+    { label: "Force", aria: "Append force section", action: () => append(SectionKind.Force) },
+];
 // appending adds to the chain end, off the right of the framed view. once the new
 // section's re-bake lands (the section COUNT grows past the value captured at append), PAN
 // — not zoom — so the new clip shows: the x-axis is a document axis, so a content edit
@@ -1481,23 +1489,22 @@ onMount(() => {
                         +
                     </button>
                     {#if appendOpen}
-                        <div class="clip-flyout menu">
-                            <button
-                                type="button"
-                                class="menu-item"
-                                onpointerdown={() => append(SectionKind.Geo)}
-                                aria-label="Append geometry section"
-                            >
-                                Geo
-                            </button>
-                            <button
-                                type="button"
-                                class="menu-item"
-                                onpointerdown={() => append(SectionKind.Force)}
-                                aria-label="Append force section"
-                            >
-                                Force
-                            </button>
+                        <div class="clip-flyout menu" role="menu">
+                            {#each appendItems as item (item.label)}
+                                <button
+                                    type="button"
+                                    class="menu-item"
+                                    class:danger={item.danger}
+                                    role="menuitem"
+                                    aria-label={item.aria}
+                                    disabled={item.enabled === false}
+                                    aria-disabled={item.enabled === false || undefined}
+                                    onpointerdown={item.action}
+                                >
+                                    <span>{item.label}</span>
+                                    {#if item.shortcut}<span class="sk">{item.shortcut}</span>{/if}
+                                </button>
+                            {/each}
                         </div>
                     {/if}
                 </div>

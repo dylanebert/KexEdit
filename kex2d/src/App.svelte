@@ -21,6 +21,7 @@ import {
     removeSection,
     trimTrack,
 } from "./history";
+import type { MenuItem } from "./menu";
 import { alignTangent, TangentMode } from "./spline";
 import Timeline from "./Timeline.svelte";
 import {
@@ -212,6 +213,24 @@ const ctxKind = $derived.by((): SectionKind | null => {
 });
 // the kind the convert flips TO — the label names the destination, not the toggle.
 const ctxTarget = $derived(ctxKind === SectionKind.Force ? "Geo" : "Force");
+// Delete is impossible on the last section (the chain keeps at least one — `deleteSection`
+// returns false at length 1). enablement DERIVES from that state, the same structural move
+// as the menu's visibility deriving from its subject existing: the disabled render is the
+// UI truth, the handler guard is just defense in depth.
+const canDelete = $derived.by((): boolean => {
+    void tick;
+    return sections(ecs).length > 1;
+});
+// the context menu as data: one array of MenuItems, rendered by the shared menu language.
+// Convert is always possible (any section flips geo↔force); Delete carries its derived
+// enablement.
+const ctxItems = $derived.by((): MenuItem[] => {
+    if (ctx === null) return [];
+    return [
+        { label: `Convert to ${ctxTarget}`, action: ctxConvert },
+        { label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: ctxDelete },
+    ];
+});
 function ctxConvert(): void {
     if (ctx === null) return;
     convertSection(history, ecs, ctx.section); // destructive, undoable
@@ -452,12 +471,20 @@ $effect(() => {
      the flip is unambiguous) — one click, no submenu. -->
 {#if ctx}
     <div class="ctxmenu menu" style="left: {ctx.x}px; top: {ctx.y}px" role="menu">
-        <button type="button" class="menu-item" role="menuitem" onclick={ctxConvert}>
-            <span>Convert to {ctxTarget}</span>
-        </button>
-        <button type="button" class="menu-item danger" role="menuitem" onclick={ctxDelete}>
-            <span>Delete</span><span class="sk">Del</span>
-        </button>
+        {#each ctxItems as item (item.label)}
+            <button
+                type="button"
+                class="menu-item"
+                class:danger={item.danger}
+                role="menuitem"
+                disabled={item.enabled === false}
+                aria-disabled={item.enabled === false || undefined}
+                onclick={item.action}
+            >
+                <span>{item.label}</span>
+                {#if item.shortcut}<span class="sk">{item.shortcut}</span>{/if}
+            </button>
+        {/each}
     </div>
 {/if}
 
@@ -724,9 +751,16 @@ $effect(() => {
         cursor: pointer;
         transition: background 120ms ease, color 120ms ease;
     }
-    :global(.menu-item:hover) {
+    :global(.menu-item:not(:disabled):hover) {
         background: var(--accent-soft);
         color: var(--fg);
+    }
+    /* a disabled row: its action isn't possible right now (enablement derived from editor
+       state). standard menu UX — still visible, dimmed, default cursor, no hover wash. the
+       opacity dims label, shortcut, and any danger tint uniformly. */
+    :global(.menu-item:disabled) {
+        opacity: 0.4;
+        cursor: default;
     }
     /* the destructive row: a red text tint (the danger token, the only semantic color), held
        on hover while the row wash matches every other item. */
