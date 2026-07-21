@@ -127,8 +127,11 @@ shape hangs off it in the entry frame.
   double-clicking a node (`editor.tangentEdit`, layered on node selection — Esc or click-away exits);
   mere selection shows nothing (`editor-ui.md`'s layered-expressiveness contract — the inner layer is
   reachable, never ambient). A handle drag is a **free** direct-manipulation gesture (no snap, no
-  guides). The mode menu (Mirror | Aligned | Free + Reset) is a **right-click on the node** while in
-  tangent edit — the app's context-menu language (`menu.ts` `MenuItem` + `editor.tangentMenu`).
+  guides). The **node context menu** is a **right-click on any pickable node** (any mode, not only
+  in tangent edit — the app's context-menu language, `menu.ts` `MenuItem` + `editor.nodeMenu`): a
+  `Handles` toggle (≡ the double-click tangent-edit summon) over a `Tangents ▸` submenu (Mirror |
+  Aligned | Free, a separator, then Reset). Node 0 (the entry anchor) isn't pickable, so it has no
+  node menu — a right-click there falls through to the section menu.
 - **Recover force.** `forces` (`bake.ts`) reads the sampled positions → per-sample tangent θ (the
   curve's local tangent, bisector of adjacent chords) → v (energy) → `F_n = κ·v²/g + cos θ`, the
   physical normal force a cart riding the curve feels. This per-sample θ is recovered from the
@@ -316,9 +319,9 @@ editor-ui invariant-domain rule).
   one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
   fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
-  right-click menus: `context` (section Convert/Delete) and `tangentMenu` (the tangent-mode picker,
-  opened on the edited node in tangent edit) — both `{x, y, …}` or null, rendered once at the app
-  root. Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
+  right-click menus: `context` (section Convert/Delete) and `nodeMenu` (the node context menu —
+  Handles toggle + Tangents submenu — opened on any pickable node, any mode) — both `{x, y, …}` or
+  null, rendered once at the app root. Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
   bypasses per-gesture) and `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
   viewport-nudge vs timeline-playhead double-fire. Plain singleton, read by Svelte via the per-RAF
@@ -337,13 +340,14 @@ editor-ui invariant-domain rule).
   `localize`s the pointer into the section frame then `reheadOnDrag`. Right-click a section span opens
   the context menu (`openContext`). Keys: `Enter` extend / `Del` trim (node end); `Del` delete
   (selected section). All edits route through `history`.
-- `magnet.ts` — the **polar magnet**: a pure, device-free resolver for a viewport node drag.
-  Target families compete in one screen-px pool (`SNAP_PX` precedent): the cartesian
-  neighbor-alignment lines, plus — the shaping viewport's earned raster exception (`editor-ui.md`)
-  — the tip's **exit-tangent incline** raster (`ANGLE_STEP` = 15°; PC2 quantizes what the piece
-  *does*, so the chord targets `(raster + tangent)/2`) with a continuation incline landmark, and the
-  chord-length raster (`LENGTH_STEP` = 1 m) relative to the previous node. The incline family fires
-  only for the growth tip (`tangent` non-null); an interior drag gets alignment + length only.
+- `magnet.ts` — the **polar magnet**: a pure, device-free resolver for a viewport node drag. Every
+  family is polar, relative to the **previous node** (the world-absolute cartesian neighbor-alignment
+  families are gone — feel round 3: they fought the incline snapping and don't generalize to 3D).
+  Target families compete in one screen-px pool (`SNAP_PX` precedent), all the shaping viewport's
+  earned raster exception (`editor-ui.md`): the tip's **exit-tangent incline** raster (`ANGLE_STEP`
+  = 15°; PC2 quantizes what the piece *does*, so the chord targets `(raster + tangent)/2`) with a
+  continuation incline landmark, and the chord-length raster (`LENGTH_STEP` = 1 m). The incline family
+  fires only for the growth tip (`tangent` non-null); an interior drag gets the length family only.
   Nearest-in-px wins; a sufficiently-orthogonal second target co-fires (`COMBINE_DOT`); shift-lock
   skips parallel families. `controls.ts` consumes it for the node drag (handle drags don't snap). No
   shallot, no DOM — unit-tested in `magnet.test.ts`.
@@ -374,19 +378,25 @@ editor-ui invariant-domain rule).
   keyframe drag and the extent trim freeze the view (`yGrow`/`xGrow` edge-scroll past the chart edge,
   resume on release). Conventions: `kexedit/.claude/rules/editor-ui.md`. Takes `ecs`; routes edits
   through `history`.
-- `menu.ts` — `MenuItem`: the shared row-language a menu renders as pure data — label, `checked` (a
-  selectable row's accent-lit state, e.g. the current tangent mode), `enabled` (derived from editor
-  state, a disabled row dimmed + inert), `action`. One model for the section context menu
-  (`App.svelte`), the timeline's append flyout (`Timeline.svelte`), and the tangent-mode right-click
-  menu (`App.svelte`) — enablement is a per-item property, not a per-menu special case.
+- `menu.ts` + `Menu.svelte` — `MenuItem` is the shared row-language a menu renders as pure data:
+  label, `checked` (a selectable row's accent-lit state, e.g. the current tangent mode), `enabled`
+  (derived from editor state, a disabled row dimmed + inert), `shortcut`/`danger`, plus the standard
+  shapes `separator` (a divider row) and `children` (a `Tangents ▸` submenu — a hover/click flyout,
+  positioned to never cover its parent row and to flip in-viewport). `Menu.svelte` is the ONE
+  renderer (recursive for submenus); every menu is an instance of it inside a positioned `.menu`
+  wrapper — the section context menu + the node context menu (`App.svelte`) and the timeline's
+  append flyout (`Timeline.svelte`). Enablement, separators, and submenus are per-item properties,
+  not per-menu special cases.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), section-entry **anchor diamonds**, the
   selected-section accent overlay, the node handles (selected/orphan/infeasible), the cart, the
   **Timeline** dock, and the radial extend/delete buttons around the selected chain end. In
   tangent-edit mode (`editor.tangentEdit`): `TangentDrawSystem` (`render.ts`) draws the edited
-  node's handles (solid = explicit, hollow = `Auto` ghost); right-click the node opens the
-  tangent-mode menu (Mirror | Aligned | Free + Reset, a `menu.ts` `MenuItem[]` over
-  `editor.tangentMenu`, the same shared `.menu` look + cursor placement as the section context menu).
+  node's handles (solid = explicit, hollow = `Auto` ghost); right-click any node opens the node
+  context menu (`Handles` toggle + a `Tangents ▸` submenu of Mirror | Aligned | Free / Reset, a
+  `Menu` over `editor.nodeMenu`, the same shared `.menu` look + cursor placement as the section
+  context menu). Snap-guide feedback (the incline ray + °/m labels) draws in the shared neutral gray
+  (`COLOR_GUIDE_RAY`), the one register every snap guide wears (the timeline's `.snapguide` too).
 - `main.ts` — boots `run({ defaults: false })` + mounts App. The DEV-only `__kex` hook exposes
   geo state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`), force state
   (`kind`/`forceCount`/`forces`/`convert`/`placeForce`/`seedForceBump`), and the multi-section ops
@@ -412,9 +422,10 @@ pickable.
   also `Enter`) lays a node continuing the last edge by `EXTEND_DIST`; Delete (🗑, also `Del`) removes
   the trailing node, never below the two nodes a section needs, re-heading the promoted tip.
 - **Tangent edit** (double-click a node): summons its in/out handles (hidden on mere selection),
-  dragged directly and freely (no snap); mode (Mirror/Aligned/Free) + Reset live behind a
-  **right-click** on the node. Esc or clicking away exits back to plain selection. Model +
-  substrate: `Model (geo authoring)` above.
+  dragged directly and freely (no snap). The **node context menu** (right-click any node, any mode)
+  carries the `Handles` summon toggle + a `Tangents ▸` submenu (mode Mirror/Aligned/Free + Reset).
+  Esc or clicking away exits tangent edit back to plain selection. Model + substrate: `Model (geo
+  authoring)` above.
 
 **Force authoring** (on the timeline chart, whole-track) — the chart draws every force section's
 points at once. Double-click over a force section's arc places a point at the authored profile's

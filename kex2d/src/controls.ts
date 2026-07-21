@@ -6,7 +6,7 @@ import {
     enterTangentEdit,
     exitTangentEdit,
     openContext,
-    openTangentMenu,
+    openNodeMenu,
     select,
     selectSection,
     selectStart,
@@ -205,23 +205,6 @@ function endSelected(ecs: State): boolean {
     return sel === lastHandle(ecs, Handle.section.get(sel));
 }
 
-/** the screen-space x and y of every OTHER node (all sections' handles + entry anchors),
- *  the neighbor-axis alignment targets for a node drag — snap the dragged node's screen x
- *  to a neighbor's x, its y to a neighbor's y (the Figma alignment magnet). */
-function neighborTargets(ecs: State, tx: ViewTx, dragEid: number): { xs: number[]; ys: number[] } {
-    const xs: number[] = [];
-    const ys: number[] = [];
-    const s = trackSamples(ecs);
-    if (!s) return { xs, ys };
-    for (const eid of ecs.query([Handle])) {
-        if (eid === dragEid) continue;
-        const i = Handle.sample.get(eid);
-        xs.push(tx.ox + s.posX[i] * tx.sx);
-        ys.push(tx.oy + s.posY[i] * tx.sy);
-    }
-    return { xs, ys };
-}
-
 /** the screen point a baked sample lands at. */
 function sampleScreen(
     s: NonNullable<ReturnType<typeof samples.get>>,
@@ -232,9 +215,9 @@ function sampleScreen(
 }
 
 /** assemble the magnet resolver's input for a node drag: the raw screen point (shift-lock
- *  already folded in), the neighbor-alignment targets, and the polar frame relative to the
- *  previous node — for the growth TIP, the previous node's exit incline (the tip incline family
- *  snaps against it); an interior drag leaves it null (a frozen heading has no incline to snap). */
+ *  already folded in) and the polar frame relative to the previous node — for the growth TIP,
+ *  the previous node's exit incline (the tip incline family snaps against it); an interior drag
+ *  leaves it null (a frozen heading has no incline to snap). */
 function magnetInput(
     ecs: State,
     tx: ViewTx,
@@ -243,14 +226,11 @@ function magnetInput(
     rawSY: number,
     lock: "x" | "y" | null,
 ): SnapInput {
-    const { xs, ys } = neighborTargets(ecs, tx, dragEid);
     const inp: SnapInput = {
         px: rawSX,
         py: rawSY,
         prev: null,
         tangent: null,
-        alignX: xs,
-        alignY: ys,
         pxPerMeter: Math.abs(tx.sx),
         lock,
     };
@@ -292,9 +272,7 @@ function normDeg(d: number): number {
  *  + label anchor. */
 function applyGuides(guides: Guide[], tx: ViewTx, snapped: { x: number; y: number }): void {
     for (const g of guides) {
-        if (g.kind === "alignX") snapGuides.x = (g.value - tx.ox) / tx.sx;
-        else if (g.kind === "alignY") snapGuides.y = (g.value - tx.oy) / tx.sy;
-        else if (g.kind === "angle") {
+        if (g.kind === "angle") {
             snapGuides.ray = { x: snapped.x, y: snapped.y, angle: -g.value };
             snapGuides.angleLabel = {
                 x: snapped.x,
@@ -393,10 +371,13 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         e.preventDefault(); // suppress the browser menu; ours takes over
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
-        // in tangent edit, right-click ON the edited node opens the tangent-mode menu (the app's
-        // context-menu language) — the summoned mode surface, replacing the deleted dots button.
-        if (editor.tangentEdit !== null && pickNode(ecs, tx, cx, cy) === editor.tangentEdit) {
-            openTangentMenu(e.clientX, e.clientY, editor.tangentEdit);
+        // right-click ON a pickable node (any mode) opens the NODE context menu: Handles +
+        // Tangents. `pickNode` skips the order-0 entry anchors, so node 0 falls through to the
+        // section menu (it has no node menu). selecting the node reads it highlighted.
+        const node = pickNode(ecs, tx, cx, cy);
+        if (node !== null) {
+            select(node);
+            openNodeMenu(e.clientX, e.clientY, node);
             return;
         }
         const sec = pickSection(ecs, tx, cx, cy);
@@ -471,8 +452,8 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     };
 
     // double-click a node → enter tangent edit (Figma's vector-edit summon): its handles
-    // appear and the dots submenu offers the mode. node 0 (the entry anchor) isn't pickable,
-    // so it can't be edited. an empty double-click does nothing (single-click already
+    // appear (the same toggle as the node menu's Handles item). node 0 (the entry anchor) isn't
+    // pickable, so it can't be edited. an empty double-click does nothing (single-click already
     // deselects). the two constituent clicks each select the node; this fires after, so the
     // final state is the node selected + in edit.
     const onDblClick = (e: MouseEvent): void => {
@@ -648,8 +629,8 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
 
         if (e.key === "Escape") {
             // dismissal peels one layer: exit tangent edit first (keep the node selected), else
-            // clear the selection. the dots submenu is inside App and closes by derivation when
-            // the edit exits.
+            // clear the selection. the node menu is inside App and takes Escape first (capture),
+            // so it closes before this handler sees the key.
             if (editor.tangentEdit !== null) {
                 e.preventDefault();
                 exitTangentEdit();

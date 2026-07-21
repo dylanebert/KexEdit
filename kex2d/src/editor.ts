@@ -33,10 +33,10 @@ interface EditorState {
      *  section id, or null when closed. shared so both the clip strip and the viewport
      *  span open the same menu, rendered once at the app root. */
     context: { x: number; y: number; section: number } | null;
-    /** the tangent-mode menu (Mirror | Aligned | Free + Reset): screen position + the edited
-     *  node eid, or null when closed. opened by right-click on the node while in tangent edit —
-     *  the same shared menu language as `context`, rendered once at the app root. */
-    tangentMenu: { x: number; y: number; eid: number } | null;
+    /** the node context menu (`Handles` toggle + a `Tangents ▸` submenu): screen position +
+     *  the target node eid, or null when closed. opened by right-click on any pickable node
+     *  (any mode) — the same shared menu language as `context`, rendered once at the app root. */
+    nodeMenu: { x: number; y: number; eid: number } | null;
     /** the snapping magnet toggle (AE model): a persistent editor preference, default
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
@@ -59,7 +59,7 @@ export const editor: EditorState = {
     section: null,
     start: false,
     context: null,
-    tangentMenu: null,
+    nodeMenu: null,
     snap: true,
     dragging: false,
     hover: "viewport",
@@ -215,12 +215,12 @@ export function closeContext(): void {
     editor.context = null;
 }
 
-/** open the tangent-mode menu at a screen point, targeting the node in tangent edit. */
-export function openTangentMenu(x: number, y: number, eid: number): void {
-    editor.tangentMenu = { x, y, eid };
+/** open the node context menu at a screen point, targeting a pickable node. */
+export function openNodeMenu(x: number, y: number, eid: number): void {
+    editor.nodeMenu = { x, y, eid };
 }
 
-/** close the tangent-mode menu. */
-export function closeTangentMenu(): void {
-    editor.tangentMenu = null;
+/** close the node context menu. */
+export function closeNodeMenu(): void {
+    editor.nodeMenu = null;
 }

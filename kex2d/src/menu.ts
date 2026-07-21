@@ -1,11 +1,12 @@
 /**
- * A row in the shared menu language (`.menu` / `.menu-item`, App.svelte). The section
- * context menu and the append flyout both render an array of these, so a menu is pure data
- * and enablement is a first-class per-item property, not a per-menu special case.
+ * A row in the shared menu language (`Menu.svelte`, rendered inside the `.menu` look). The
+ * section context menu, the node context menu, and the append flyout all render an array of
+ * these, so a menu is pure data and enablement, separators, and submenus are first-class
+ * per-item properties, not per-menu special cases.
  */
 export type MenuItem = {
-    /** the row label. */
-    label: string;
+    /** the row label. omitted for a separator. */
+    label?: string;
     /** a11y name when the visible label is terse; defaults to `label`. */
     aria?: string;
     /** an inline shortcut hint, right-aligned by the row (e.g. "Del"). */
@@ -22,6 +23,14 @@ export type MenuItem = {
      * its visibility from its subject existing.
      */
     enabled?: boolean;
-    /** the row's action; a disabled row never invokes it. */
-    action: () => void;
+    /** a non-interactive divider between groups — set alone (no label / action / children),
+     *  the standard menu grouping rule. */
+    separator?: boolean;
+    /** a submenu: the row shows a `▸` marker and reveals these children as a flyout on hover
+     *  or click. A row with children carries no direct action (its children hold the actions);
+     *  the flyout is positioned so it never covers its parent row and flips in-viewport. */
+    children?: MenuItem[];
+    /** the row's action; a disabled row never invokes it. Omitted for a separator or a
+     *  submenu parent. */
+    action?: () => void;
 };

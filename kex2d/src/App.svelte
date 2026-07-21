@@ -5,8 +5,10 @@ import { attachControls } from "./controls";
 import {
     beginDrag,
     closeContext,
-    closeTangentMenu,
+    closeNodeMenu,
     editor,
+    enterTangentEdit,
+    exitTangentEdit,
     select,
     selectSection,
     selectStart,
@@ -22,6 +24,7 @@ import {
     removeSection,
     trimTrack,
 } from "./history";
+import Menu from "./Menu.svelte";
 import type { MenuItem } from "./menu";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import Timeline from "./Timeline.svelte";
@@ -148,76 +151,97 @@ function onDelete(): void {
     if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
 }
 
-// the tangent-mode menu (Mirror | Aligned | Free + Reset), opened by right-click on the edited
-// node (controls.ts → editor.openTangentMenu). its visibility DERIVES from tangent edit still
-// being on this node — like the section context menu derives from its subject existing — so any
-// exit path (Esc, click-away, selecting elsewhere) dismisses it, no per-path close call.
-const tmenu = $derived.by((): { x: number; y: number; eid: number } | null => {
+// the NODE context menu (Handles toggle + a Tangents ▸ submenu), opened by right-click on any
+// pickable node (controls.ts → editor.openNodeMenu). its visibility DERIVES from the node still
+// existing — like the section context menu derives from its subject — so any death path (undo,
+// a delete, a programmatic edit) dismisses it, no per-path close call.
+const nmenu = $derived.by((): { x: number; y: number; eid: number } | null => {
     void tick;
-    const m = editor.tangentMenu;
-    if (m === null || editor.tangentEdit !== m.eid) return null;
+    const m = editor.nodeMenu;
+    if (m === null || !nodeAlive(m.eid)) return null;
     return m;
 });
 $effect(() => {
     // clear the dangling target once the subject is gone (deriving stays side-effect-free).
-    if (editor.tangentMenu !== null && tmenu === null) closeTangentMenu();
+    if (editor.nodeMenu !== null && nmenu === null) closeNodeMenu();
 });
-// the edited node's displayed mode: a stored tangent's own mode, or `Aligned` for an inferred
+// whether the menu's target node is still a live handle (its subject exists).
+function nodeAlive(eid: number): boolean {
+    for (const e of ecs.query([Handle])) if (e === eid) return true;
+    return false;
+}
+// the target node's displayed mode: a stored tangent's own mode, or `Aligned` for an inferred
 // node (inference is aligned-shaped — collinear in/out — and there is never a no-mode state).
-const editMode = $derived.by((): TangentMode => {
+const nodeMode = $derived.by((): TangentMode => {
     void tick;
-    const eid = editor.tangentEdit;
-    if (eid === null) return TangentMode.Aligned;
-    const tan = handleTangent(ecs, Handle.section.get(eid), Handle.order.get(eid));
+    const m = editor.nodeMenu;
+    if (m === null) return TangentMode.Aligned;
+    const tan = handleTangent(ecs, Handle.section.get(m.eid), Handle.order.get(m.eid));
     return tan ? tan.mode : TangentMode.Aligned;
 });
-// Reset clears back to live; it's a no-op on a live-inferred node (nothing stored), so its
-// enablement derives from a tangent existing — the same structural move as the context menu's
-// derived Delete enablement.
-const canReset = $derived.by((): boolean => {
+// whether the target node carries a stored tangent — Reset's enablement (it's a no-op on a
+// live-inferred node), the same structural move as the context menu's derived Delete.
+const nodeHasTangent = $derived.by((): boolean => {
     void tick;
-    const eid = editor.tangentEdit;
-    if (eid === null) return false;
-    return handleTangent(ecs, Handle.section.get(eid), Handle.order.get(eid)) !== undefined;
+    const m = editor.nodeMenu;
+    if (m === null) return false;
+    return handleTangent(ecs, Handle.section.get(m.eid), Handle.order.get(m.eid)) !== undefined;
 });
-// the menu as data (the shared MenuItem language). the three modes carry their `checked`
-// indicator; Reset carries its derived enablement.
-const modeItems = $derived.by((): MenuItem[] => {
-    if (editor.tangentEdit === null) return [];
+// whether the target node's handles are summoned (in tangent edit) — the Handles toggle's check.
+const nodeEditing = $derived.by((): boolean => {
+    void tick;
+    const m = editor.nodeMenu;
+    return m !== null && editor.tangentEdit === m.eid;
+});
+// the node menu as data (the shared MenuItem language): a Handles toggle over a Tangents submenu
+// (the three modes carry their `checked`; Reset carries its derived enablement, after a separator).
+const nodeItems = $derived.by((): MenuItem[] => {
+    const m = editor.nodeMenu;
+    if (m === null) return [];
+    const eid = m.eid;
     return [
+        { label: "Handles", checked: nodeEditing, action: () => toggleHandles(eid) },
         {
-            label: "Mirror",
-            checked: editMode === TangentMode.Mirror,
-            action: () => pickMode(TangentMode.Mirror),
+            label: "Tangents",
+            children: [
+                {
+                    label: "Mirror",
+                    checked: nodeMode === TangentMode.Mirror,
+                    action: () => pickMode(TangentMode.Mirror, eid),
+                },
+                {
+                    label: "Aligned",
+                    checked: nodeMode === TangentMode.Aligned,
+                    action: () => pickMode(TangentMode.Aligned, eid),
+                },
+                {
+                    label: "Free",
+                    checked: nodeMode === TangentMode.Free,
+                    action: () => pickMode(TangentMode.Free, eid),
+                },
+                { separator: true },
+                { label: "Reset tangents", enabled: nodeHasTangent, action: () => doReset(eid) },
+            ],
         },
-        {
-            label: "Aligned",
-            checked: editMode === TangentMode.Aligned,
-            action: () => pickMode(TangentMode.Aligned),
-        },
-        {
-            label: "Free",
-            checked: editMode === TangentMode.Free,
-            action: () => pickMode(TangentMode.Free),
-        },
-        { label: "Reset tangents", enabled: canReset, action: doReset },
     ];
 });
 
-// set the edited node's tangent mode as one undo entry (the move gesture's node snapshot carries
+// Handles: the double-click tangent-edit toggle, reached from the menu — summon the node's
+// handles, or peel them if already summoned.
+function toggleHandles(eid: number): void {
+    if (editor.tangentEdit === eid) exitTangentEdit();
+    else enterTangentEdit(eid);
+}
+
+// set the target node's tangent mode as one undo entry (the move gesture's node snapshot carries
 // the tangent). picking the checked mode on an inferred node is a no-op (it already displays as
 // Aligned — no stamp). otherwise a live node is seeded from the arc rule first (continuous, no
 // jump); Mirror/Aligned re-collinearize the vectors to honor the mode, Free just relabels.
-function pickMode(target: TangentMode): void {
-    const eid = editor.tangentEdit;
-    if (eid === null) return;
+function pickMode(target: TangentMode, eid: number): void {
     const section = Handle.section.get(eid);
     const order = Handle.order.get(eid);
     const cur = handleTangent(ecs, section, order);
-    if (cur === undefined && target === TangentMode.Aligned) {
-        closeTangentMenu(); // inferred already shows Aligned — re-picking it stamps nothing
-        return;
-    }
+    if (cur === undefined && target === TangentMode.Aligned) return; // inferred already shows Aligned
     beginMove(ecs, section);
     const base = cur ?? seedTangent(ecs, section, order, target);
     if (base) {
@@ -230,32 +254,28 @@ function pickMode(target: TangentMode): void {
         setTangent(ecs, section, order, next);
     }
     commit(history);
-    closeTangentMenu();
 }
 
 // Reset: clear the node's tangent back to live (Auto inference resumes). one undo entry.
-function doReset(): void {
-    const eid = editor.tangentEdit;
-    if (eid === null) return;
+function doReset(eid: number): void {
     beginMove(ecs, Handle.section.get(eid));
     resetTangent(ecs, Handle.section.get(eid), Handle.order.get(eid));
     commit(history);
-    closeTangentMenu();
 }
 
-// dismiss the tangent menu on any outside press or Escape (clicks on the menu pass through so
+// dismiss the node menu on any outside press or Escape (clicks on the menu pass through so
 // its items act first). Escape peels just this menu layer (capture + stop, so controls.ts
 // doesn't also exit tangent edit) — root ui.md's one-layer dismissal.
 $effect(() => {
-    if (tmenu === null) return;
+    if (nmenu === null) return;
     const onDown = (e: PointerEvent): void => {
-        if ((e.target as HTMLElement | null)?.closest(".tmenu")) return;
-        closeTangentMenu();
+        if ((e.target as HTMLElement | null)?.closest(".nodemenu")) return;
+        closeNodeMenu();
     };
     const onEsc = (e: KeyboardEvent): void => {
         if (e.key === "Escape") {
             e.stopImmediatePropagation();
-            closeTangentMenu();
+            closeNodeMenu();
         }
     };
     window.addEventListener("pointerdown", onDown, { capture: true });
@@ -514,26 +534,13 @@ $effect(() => {
     </div>
 {/if}
 
-<!-- the tangent-mode menu (Mirror | Aligned | Free + Reset): summoned by right-click on the
-     edited node, an instance of the shared menu language positioned at the cursor (its top-left
-     corner, so it never covers the invoker point) — the same look + placement as the section
-     context menu below. -->
-{#if tmenu}
-    <div class="tmenu menu" style="left: {tmenu.x}px; top: {tmenu.y}px" role="menu" aria-label="Tangent mode">
-        {#each modeItems as item (item.label)}
-            <button
-                type="button"
-                class="menu-item"
-                class:checked={item.checked}
-                role="menuitem"
-                disabled={item.enabled === false}
-                aria-disabled={item.enabled === false || undefined}
-                onclick={item.action}
-            >
-                <span>{item.label}</span>
-                {#if item.checked}<span class="tick">✓</span>{/if}
-            </button>
-        {/each}
+<!-- the node context menu (Handles toggle + a Tangents ▸ submenu): summoned by right-click on
+     any pickable node, an instance of the shared menu language (Menu.svelte) positioned at the
+     cursor (its top-left corner, so it never covers the invoker point) — the same look +
+     placement as the section context menu below. -->
+{#if nmenu}
+    <div class="nodemenu menu" style="left: {nmenu.x}px; top: {nmenu.y}px" role="menu" aria-label="Node">
+        <Menu items={nodeItems} onclose={closeNodeMenu} />
     </div>
 {/if}
 
@@ -543,20 +550,7 @@ $effect(() => {
      the flip is unambiguous) — one click, no submenu. -->
 {#if ctx}
     <div class="ctxmenu menu" style="left: {ctx.x}px; top: {ctx.y}px" role="menu">
-        {#each ctxItems as item (item.label)}
-            <button
-                type="button"
-                class="menu-item"
-                class:danger={item.danger}
-                role="menuitem"
-                disabled={item.enabled === false}
-                aria-disabled={item.enabled === false || undefined}
-                onclick={item.action}
-            >
-                <span>{item.label}</span>
-                {#if item.shortcut}<span class="sk">{item.shortcut}</span>{/if}
-            </button>
-        {/each}
+        <Menu items={ctxItems} onclose={closeContext} />
     </div>
 {/if}
 
@@ -604,7 +598,7 @@ $effect(() => {
         --neutral-soft: rgba(255, 255, 255, 0.1);
         --danger: #e26d5c;
         --danger-soft: rgba(226, 109, 92, 0.16);
-        --snap: #e879b0; /* snap alignment-guide flash (timeline + viewport); mirrors render.ts COLOR_SNAP */
+        --guide: #9aa0a6; /* snap-guide neutral gray (timeline + viewport); mirrors colors.ts COLOR_GUIDE_RAY */
         --border: rgba(255, 255, 255, 0.08);
         --shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
     }
@@ -622,7 +616,7 @@ $effect(() => {
        the dragged surface holds pointer capture, so it's unaffected. */
     :global([data-dragging]) .rbtn,
     :global([data-dragging]) .ctxmenu,
-    :global([data-dragging]) .tmenu,
+    :global([data-dragging]) .nodemenu,
     :global([data-dragging]) .vtool,
     :global([data-dragging]) .vtip {
         pointer-events: none;
@@ -750,13 +744,13 @@ $effect(() => {
         background: var(--danger-soft);
         border-color: var(--danger);
     }
-    /* the tangent-mode menu: an instance of the shared `.menu` language at the cursor (the same
-       fixed-position context-menu placement as .ctxmenu). min-width so the mode rows + check
-       don't jostle; its own entrance fade, matched to the section context menu. */
-    .tmenu {
+    /* the node context menu: an instance of the shared `.menu` language at the cursor (the same
+       fixed-position context-menu placement as .ctxmenu). min-width so the rows + check + the
+       submenu marker don't jostle; its own entrance fade, matched to the section context menu. */
+    .nodemenu {
         position: fixed;
         z-index: 10;
-        min-width: 118px;
+        min-width: 132px;
         animation: ctx-in 120ms ease;
     }
     /* the current-mode row: accent-lit like every other active state; the trailing check is the

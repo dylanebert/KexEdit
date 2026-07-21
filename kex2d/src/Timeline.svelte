@@ -3,6 +3,7 @@ import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
 import { kindSegments } from "./colors";
+import Menu from "./Menu.svelte";
 import type { MenuItem } from "./menu";
 import {
     beginDrag,
@@ -1490,21 +1491,7 @@ onMount(() => {
                     </button>
                     {#if appendOpen}
                         <div class="clip-flyout menu" role="menu">
-                            {#each appendItems as item (item.label)}
-                                <button
-                                    type="button"
-                                    class="menu-item"
-                                    class:danger={item.danger}
-                                    role="menuitem"
-                                    aria-label={item.aria}
-                                    disabled={item.enabled === false}
-                                    aria-disabled={item.enabled === false || undefined}
-                                    onpointerdown={item.action}
-                                >
-                                    <span>{item.label}</span>
-                                    {#if item.shortcut}<span class="sk">{item.shortcut}</span>{/if}
-                                </button>
-                            {/each}
+                            <Menu items={appendItems} onclose={() => (appendOpen = false)} />
                         </div>
                     {/if}
                 </div>
@@ -1812,10 +1799,11 @@ onMount(() => {
         pointer-events: none; /* visual handle; the rulerzone owns the scrub */
     }
 
-    /* the snap guide flash: a thin alignment line at a latched axis (the Figma idiom), in
-       the dedicated snap color so it reads apart from kind / infeasible / selection. */
+    /* the snap guide flash: a thin alignment line at a latched axis (the Figma idiom), in the
+       shared snap-guide neutral gray (--guide) — the same register the viewport magnet's
+       incline ray wears (feel round 3 retired the magenta stateful/neutral split). */
     .snapguide {
-        stroke: var(--snap);
+        stroke: var(--guide);
         stroke-width: 1;
         opacity: 0.9;
         pointer-events: none;

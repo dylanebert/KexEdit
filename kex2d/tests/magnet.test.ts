@@ -14,8 +14,6 @@ function input(over: Partial<SnapInput>): SnapInput {
         py: 0,
         prev: null,
         tangent: null,
-        alignX: [],
-        alignY: [],
         pxPerMeter: 50,
         lock: null,
         ...over,
@@ -31,38 +29,6 @@ const polar = (r: number, a: number): { px: number; py: number } => ({
 const angleOf = (r: { px: number; py: number }): number => Math.atan2(r.py - PREV.y, r.px - PREV.x);
 const radiusOf = (r: { px: number; py: number }): number =>
     Math.hypot(r.px - PREV.x, r.py - PREV.y);
-
-describe("cartesian neighbor alignment", () => {
-    test("nearest-in-px wins among same-axis targets, one guide", () => {
-        // two vertical-alignment targets; only the nearer (3px) latches — the other (10px)
-        // shares its DOF, so it never co-fires.
-        const res = resolveSnap(input({ px: 200, py: 100, alignX: [197, 190] }));
-        expect(res.px).toBeCloseTo(197, 6);
-        expect(res.py).toBe(100); // the free y axis is untouched
-        expect(res.guides).toEqual([{ kind: "alignX", value: 197 }]);
-    });
-
-    test("orthogonal x + y align co-fire (their intersection)", () => {
-        const res = resolveSnap(input({ px: 200, py: 100, alignX: [197], alignY: [104] }));
-        expect(res.px).toBeCloseTo(197, 6);
-        expect(res.py).toBeCloseTo(104, 6);
-        expect(res.guides.map((g) => g.kind).sort()).toEqual(["alignX", "alignY"]);
-    });
-
-    test("nothing beyond SNAP_PX latches — the point is unchanged", () => {
-        const res = resolveSnap(input({ px: 200, py: 100, alignX: [220], alignY: [130] }));
-        expect(res.px).toBe(200);
-        expect(res.py).toBe(100);
-        expect(res.guides).toEqual([]);
-        // the threshold boundary: 8px away is in range, 9px is not.
-        expect(
-            resolveSnap(input({ px: 200, py: 100, alignX: [200 + SNAP_PX] })).guides,
-        ).toHaveLength(1);
-        expect(
-            resolveSnap(input({ px: 200, py: 100, alignX: [200 + SNAP_PX + 1] })).guides,
-        ).toHaveLength(0);
-    });
-});
 
 describe("exit-incline raster (15°)", () => {
     test("15° is the quantum", () => {
@@ -84,7 +50,7 @@ describe("exit-incline raster (15°)", () => {
 
     test("no incline family for an interior drag (tangent null)", () => {
         // an interior node's heading is frozen — no incline to snap. the same off-raster point
-        // that snapped above fires nothing (only alignment + length families run there).
+        // that snapped above fires no angle guide (only the length family runs there).
         const raw = polar(250, ANGLE_STEP / 2 + 0.01);
         const res = resolveSnap(input({ ...raw, prev: PREV, tangent: null, pxPerMeter: 200 }));
         expect(res.guides.some((g) => g.kind === "angle")).toBe(false);
@@ -115,6 +81,20 @@ describe("chord-length raster (1 m)", () => {
         expect(res.guides.some((g) => g.kind === "length")).toBe(false);
         expect(res.px).toBeCloseTo(raw.px, 6); // the point is untouched (no length pull)
         expect(res.py).toBeCloseTo(raw.py, 6);
+    });
+
+    test("the pull is exactly SNAP_PX wide", () => {
+        // the threshold boundary in the polar frame: a drag SNAP_PX radially past the 3 m
+        // target (150 px) still latches, one more px does not. no tangent → the length family
+        // is the only one, so the guide count reads the boundary directly.
+        const inRange = resolveSnap(
+            input({ ...polar(150 + SNAP_PX, 0), prev: PREV, pxPerMeter: 50 }),
+        );
+        expect(inRange.guides).toEqual([{ kind: "length", value: 150 }]);
+        const outRange = resolveSnap(
+            input({ ...polar(150 + SNAP_PX + 1, 0), prev: PREV, pxPerMeter: 50 }),
+        );
+        expect(outRange.guides).toHaveLength(0);
     });
 });
 
@@ -148,31 +128,21 @@ describe("polar grid — incline and length co-fire", () => {
 });
 
 describe("shift axis-lock owns its axis", () => {
-    test("y-locked: only x-compatible families fire; the locked axis is preserved", () => {
-        // y locked → the drag moves horizontally. a vertical alignment line (align-x) is
-        // reachable and fires; a horizontal one (align-y) is parallel to the movement — an
-        // incompatible family — and never fires, even 3px away.
-        const res = resolveSnap(
-            input({ px: 200, py: 100, alignX: [203], alignY: [103], lock: "y" }),
-        );
+    // a drag straight out from the previous node (angle 0) makes the 3 m radius (150 px) a
+    // vertical locus — reachable under a y-lock (horizontal movement), parallel to (and so
+    // skipped under) an x-lock. the drag sits 5 px radially past the 3 m target.
+    test("y-locked: a reachable length target fires; the locked axis is preserved", () => {
+        const res = resolveSnap(input({ px: 255, py: 100, prev: PREV, pxPerMeter: 50, lock: "y" }));
         expect(res.py).toBe(100); // the locked axis holds
-        expect(res.px).toBeCloseTo(203, 6);
-        expect(res.guides).toEqual([{ kind: "alignX", value: 203 }]);
+        expect(res.px).toBeCloseTo(250, 6); // snapped to the 3 m radius (vertical locus)
+        expect(res.guides).toEqual([{ kind: "length", value: 150 }]);
     });
 
-    test("x-locked: mirror — only y-compatible families fire", () => {
-        const res = resolveSnap(
-            input({ px: 200, py: 100, alignX: [203], alignY: [104], lock: "x" }),
-        );
-        expect(res.px).toBe(200); // the locked axis holds
-        expect(res.py).toBeCloseTo(104, 6);
-        expect(res.guides).toEqual([{ kind: "alignY", value: 104 }]);
-    });
-
-    test("a lock with nothing reachable leaves the point unchanged", () => {
-        // only a parallel (incompatible) target is present under the lock.
-        const res = resolveSnap(input({ px: 200, py: 100, alignY: [103], lock: "y" }));
-        expect(res.px).toBe(200);
+    test("x-locked: the same locus is parallel to the movement — nothing fires", () => {
+        // x pinned → the drag moves vertically; the vertical 3 m locus is parallel to it, an
+        // incompatible family, so nothing latches and the point is left untouched.
+        const res = resolveSnap(input({ px: 255, py: 100, prev: PREV, pxPerMeter: 50, lock: "x" }));
+        expect(res.px).toBe(255); // the locked axis holds
         expect(res.py).toBe(100);
         expect(res.guides).toEqual([]);
     });

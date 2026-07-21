@@ -184,15 +184,31 @@ describe("zoomAt — cursor-anchored", () => {
         expect(out.pxPerM).toBeCloseTo(fitted.pxPerM, 6);
     });
     test("zoom-out from a below-fit view stays put (never snaps UP to the fit)", () => {
-        // after a content shrink the view can sit BELOW the new whole-track fit. a wheel
+        // after a content shrink the view can sit BELOW the padded framing fit. a wheel
         // zoom-out from there must NOT floor the scale up to the fit — that was the
         // inversion bug: a zoom-OUT tick pushing the scale IN. the floor is min(current,
-        // fit), so a zoom-out below fit is a no-op instead.
-        const fit = W / (T + marginArc(T));
+        // fit), so a zoom-out below fit is a no-op instead. `fit` is the padded framing
+        // scale (frameAll's), the same floor a zoom-out returns to.
+        const fit = frameAll(W, T).pxPerM; // the padded floor (T < VIEW_FLOOR_M)
         const belowFit: View = { pan: 0, pxPerM: fit / 2 };
         const out = zoomAt(belowFit, W / 2, 0.5, W, T); // zoom OUT further
         expect(out.pxPerM).toBeCloseTo(belowFit.pxPerM, 9); // held, not snapped up
         expect(out.pxPerM).toBeLessThan(fit); // stays below fit
+    });
+    test("zoom-out returns to the padded initial framing on a short track", () => {
+        // the padding bug: frameAll on a below-floor track frames the VIEW_FLOOR_M window,
+        // a SMALLER scale than the unpadded content fit. zoom in, then zoom back out to the
+        // floor — the floor must incorporate the same padding, so the padded framing is
+        // reachable again (its visible span returns to VIEW_FLOOR_M), not clamped at the
+        // tighter content extent.
+        const Tshort = 8; // ≪ VIEW_FLOOR_M
+        const framed = frameAll(W, Tshort);
+        const zoomedIn = zoomAt(framed, W / 2, 4, W, Tshort);
+        expect(zoomedIn.pxPerM).toBeGreaterThan(framed.pxPerM);
+        const out = zoomAt(zoomedIn, W / 2, 0.001, W, Tshort); // floor
+        expect(out.pxPerM).toBeCloseTo(framed.pxPerM, 6);
+        // the padded window is reachable again — the visible span is the VIEW_FLOOR_M frame.
+        expect(pxToS(out, W) - pxToS(out, 0)).toBeCloseTo(VIEW_FLOOR_M, 4);
     });
 });
 

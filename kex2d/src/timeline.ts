@@ -33,9 +33,6 @@ export const pxToS = (v: View, px: number): number => (px + v.pan) / v.pxPerM;
  *  the launch is s=0, so there's no lead-*in* (no negative distance on the ruler). */
 export const marginArc = (sTotal: number): number => Math.max(0.12 * sTotal, MIN_MARGIN_M);
 
-const minScale = (width: number, sTotal: number): number =>
-    width > 0 ? width / (sTotal + marginArc(sTotal)) : 1;
-
 /** clamp a view to the track extent — a PAN clamp, not a zoom clamp. the x-axis is a
  *  document axis (the spatial address of every clip and keyframe), not an auto-fit value
  *  axis, so a content edit that shrinks the track NEVER rescales the ruler: `pxPerM` is
@@ -65,8 +62,11 @@ export function zoomAt(
     const sAnchor = pxToS(v, anchorPx);
     // floor at min(current, fit): a below-fit view (after a content shrink) can zoom-out
     // no further but is NEVER pushed UP to the fit — a zoom-out tick must not read as a
-    // zoom-in. above fit, the floor is the fit scale, as before.
-    const floor = Math.min(v.pxPerM, minScale(width, sTotal));
+    // zoom-in. above fit, the floor is the fit scale. `fit` is `fitScale` — the PADDED
+    // framing scale (`frameAll`'s), not the bare content extent — so a zoom-out returns to
+    // exactly the initial/`F` framing, padding included (a short track frames the
+    // VIEW_FLOOR_M window, wider than its content, and stays reachable on the way back out).
+    const floor = Math.min(v.pxPerM, fitScale(width, sTotal));
     const pxPerM = Math.min(MAX_PX_PER_M, Math.max(floor, v.pxPerM * factor));
     return clampView({ pan: sAnchor * pxPerM - anchorPx, pxPerM }, width, sTotal);
 }
@@ -77,6 +77,14 @@ export function zoomAt(
  *  sequence duration, Ableton's default bars), not an exact content hug. */
 export const VIEW_FLOOR_M = 80;
 
+/** the fit scale (px per meter) the padded framing uses: fit `max(content + lead-out,
+ *  VIEW_FLOOR_M)` across the width. the ONE source for both the initial/`F` frame
+ *  (`frameAll`) and the explicit-navigation zoom-out floor (`zoomAt`), so a zoom-out returns
+ *  to exactly the framing it started at — the padding (a short track's VIEW_FLOOR_M window)
+ *  is part of the floor, not just the initial view. */
+const fitScale = (width: number, sTotal: number): number =>
+    width > 0 ? width / Math.max(sTotal + marginArc(sTotal), VIEW_FLOOR_M) : 1;
+
 /** the view that frames the whole track + lead-out (fit scale, left-anchored at s=0), with a
  *  domain floor: it frames `max(content + lead-out, VIEW_FLOOR_M)`, so a track shorter than
  *  the floor occupies its slice with empty ruler to the right (legitimate — x is a document
@@ -84,10 +92,10 @@ export const VIEW_FLOOR_M = 80;
  *  past the floor fits exactly as before. the one explicit-navigation path that sets zoom to
  *  fit — used for the initial frame and the F frame-content key, never a content edit (those
  *  pan only). */
-export const frameAll = (width: number, sTotal: number): View => {
-    const win = Math.max(sTotal + marginArc(sTotal), VIEW_FLOOR_M);
-    return { pan: 0, pxPerM: Math.min(MAX_PX_PER_M, width > 0 ? width / win : 1) };
-};
+export const frameAll = (width: number, sTotal: number): View => ({
+    pan: 0,
+    pxPerM: Math.min(MAX_PX_PER_M, fitScale(width, sTotal)),
+});
 
 /** the navigator window: the visible span [0, width] expressed as `{l, r}` fractions
  *  of the full track + lead-out (the viewport bracket over the overview). */

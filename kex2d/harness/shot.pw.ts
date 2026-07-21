@@ -89,14 +89,15 @@ test("geo authoring flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
-// Drive the TANGENT-EDIT flow (kex2d-authoring-surface stage 8): seed a shaped geo track →
+// Drive the TANGENT-EDIT flow (kex2d-authoring-surface stage 9): seed a shaped geo track →
 // frame it → DOUBLE-CLICK an interior node to enter tangent edit (Figma's vector-edit summon;
-// the node is inferred, no stored tangent) → RIGHT-CLICK the node to open the mode menu → set
-// FREE → drag its out-handle → assert Free independence and a re-bake → Reset via the menu clears
-// the node back to live (Auto). The summon is a real canvas double-click, the mode menu a real
-// canvas right-click (both located via __kex.nodeAt); the handle drag is a real canvas pointer
-// drag located through __kex.tangentHandles (canvas-drawn handles carry no DOM box). Handle drags
-// no longer snap, so the drag lands where the pointer goes.
+// the node is inferred, no stored tangent) → RIGHT-CLICK the node to open the NODE context menu
+// (Handles + a Tangents ▸ submenu) → open the submenu → set FREE → drag its out-handle → assert
+// Free independence and a re-bake → Reset via the submenu clears the node back to live (Auto).
+// The summon is a real canvas double-click, the node menu a real canvas right-click (both located
+// via __kex.nodeAt); the handle drag is a real canvas pointer drag located through
+// __kex.tangentHandles (canvas-drawn handles carry no DOM box). Handle drags no longer snap, so
+// the drag lands where the pointer goes.
 test("tangent edit flow", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -151,14 +152,15 @@ test("tangent edit flow", async ({ page }) => {
     await page.waitForTimeout(300); // let the handles settle before the shot
     await page.screenshot({ path: join(OUT, "tangent-1-summon.png") });
 
-    // ── 2. RIGHT-CLICK the node → the tangent-mode menu (the app's context-menu language) →
-    // set FREE (a corner becomes expressible). ──
+    // ── 2. RIGHT-CLICK the node → the NODE context menu (Handles + Tangents ▸) → open the
+    // Tangents submenu → set FREE (a corner becomes expressible). ──
     await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
-    await expect(page.locator(".tmenu")).toBeVisible();
-    await page.waitForTimeout(300); // the menu's 120ms fade-in, for the shot
+    await expect(page.locator(".nodemenu")).toBeVisible();
+    await page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents" }).click();
+    await page.waitForTimeout(300); // the menu + submenu fade-in, for the shot
     await page.screenshot({ path: join(OUT, "tangent-1b-menu.png") });
-    await page.locator(".tmenu").getByRole("menuitem", { name: "Free" }).click();
-    await expect(page.locator(".tmenu")).toHaveCount(0); // picking an item closes the menu
+    await page.locator(".nodemenu").getByRole("menuitem", { name: "Free" }).click();
+    await expect(page.locator(".nodemenu")).toHaveCount(0); // picking an item closes the menu
     const summoned = await tangent();
     expect(summoned).not.toBeNull();
     if (!summoned) throw new Error("tangent null after mode set");
@@ -192,10 +194,12 @@ test("tangent edit flow", async ({ page }) => {
     expect(await undoDepth()).toBeGreaterThan(0); // the mode set + handle drag are undoable
     await page.screenshot({ path: join(OUT, "tangent-2-drag.png") });
 
-    // ── 4. RIGHT-CLICK → Reset → the node clears back to live (Auto inference resumes), so it
-    // carries no stored tangent again. one click, available here (a tangent exists to clear). ──
+    // ── 4. RIGHT-CLICK → Tangents ▸ → Reset → the node clears back to live (Auto inference
+    // resumes), so it carries no stored tangent again. available here (a tangent exists to clear). ──
     await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
-    await page.locator(".tmenu").getByRole("menuitem", { name: "Reset tangents" }).click();
+    await expect(page.locator(".nodemenu")).toBeVisible();
+    await page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents" }).click();
+    await page.locator(".nodemenu").getByRole("menuitem", { name: "Reset tangents" }).click();
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);

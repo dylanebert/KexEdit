@@ -1,13 +1,14 @@
 /** the polar magnet: a pure, device-free resolver for a viewport node drag. it snaps the
- *  raw drag point (screen px) against target *families* — the cartesian neighbor-alignment
- *  the drag has always had (a dragged node's screen x/y latching another node's), plus the
- *  polar families relative to the **previous node**: the exit-tangent **incline** raster (15°,
- *  tip drags only), the chord-length raster (1 m), and the continuation incline landmark. every
- *  target is one line in screen space (its locus); the nearest within `SNAP_PX` wins, and a
- *  second, sufficiently-orthogonal target can co-fire (their intersection). one resolver,
- *  every family competing in the same screen-px pool — the AE magnet model (`editor-ui.md`)
- *  extended with the shaping viewport's rasters (the earned exception to the no-rasters
- *  clause: the PC2 building vocabulary IS this surface's semantic quantum).
+ *  raw drag point (screen px) against target *families*, all relative to the **previous
+ *  node**: the exit-tangent **incline** raster (15°, tip drags only), the chord-length raster
+ *  (1 m), and the continuation incline landmark. every target is one line in screen space
+ *  (its locus); the nearest within `SNAP_PX` wins, and a second, sufficiently-orthogonal
+ *  target can co-fire (their intersection). one resolver, every family competing in the same
+ *  screen-px pool — the AE magnet model (`editor-ui.md`) extended with the shaping viewport's
+ *  rasters (the earned exception to the no-rasters clause: the PC2 building vocabulary IS this
+ *  surface's semantic quantum). the world-absolute cartesian neighbor-alignment families are
+ *  gone (feel round 3): they fought the incline snapping and don't generalize to 3D; the
+ *  polar frame relative to the previous node is the whole surface.
  *
  *  works entirely in screen px so the pull is a fixed on-screen distance at any zoom (the
  *  `SNAP_PX` precedent); the caller projects world→screen at the boundary and inverts the
@@ -25,20 +26,19 @@ export const ANGLE_STEP = Math.PI / 12;
 export const LENGTH_STEP = 1;
 
 /** two fired targets co-fire only when their loci are at least this far from parallel —
- *  `|cos θ| ≤ SQRT1_2`, i.e. ≥45° apart. orthogonal families (cartesian x⟂y, polar
- *  angle⟂length) always combine; two near-parallel targets constrain the same freedom, so
+ *  `|cos θ| ≤ SQRT1_2`, i.e. ≥45° apart. orthogonal families (the incline ray ⟂ the radial
+ *  length locus) combine; two near-parallel targets constrain the same freedom, so
  *  the nearer alone fires (never a distant, ill-conditioned intersection). */
 const COMBINE_DOT = Math.SQRT1_2;
 
 const EPS = 1e-9;
 
 /** the kind of a fired guide — the caller renders each in the shared guide language. */
-export type GuideKind = "alignX" | "alignY" | "angle" | "length";
+export type GuideKind = "angle" | "length";
 
-/** a fired guide, screen-space. `value` reads by kind: alignX = the screen x of the
- *  vertical line; alignY = the screen y of the horizontal line; angle = the screen-radians
- *  of the snapped **exit-tangent incline** (the caller draws a tangent ray at the dragged node
- *  + a ° label); length = the screen-px radius from the previous node (a metre label). */
+/** a fired guide, screen-space. `value` reads by kind: angle = the screen-radians of the
+ *  snapped **exit-tangent incline** (the caller draws a tangent ray at the dragged node + a °
+ *  label); length = the screen-px radius from the previous node (a metre label). */
 export interface Guide {
     kind: GuideKind;
     value: number;
@@ -56,12 +56,8 @@ export interface SnapInput {
     prev: { x: number; y: number } | null;
     /** the previous node's exit-tangent incline (screen radians) — enables the tip incline
      *  family (raster + continuation). null for an interior drag: a frozen interior heading has
-     *  no incline to snap, so only alignment + length fire there. */
+     *  no incline to snap, so only the length family fires there. */
     tangent: number | null;
-    /** other nodes' screen xs — the vertical-alignment targets. */
-    alignX: number[];
-    /** other nodes' screen ys — the horizontal-alignment targets. */
-    alignY: number[];
     /** screen px per world meter (the length raster's scale). */
     pxPerMeter: number;
     lock: Lock;
@@ -90,13 +86,6 @@ interface Candidate {
 /** enumerate every family's candidate lines for this drag. */
 function candidates(inp: SnapInput): Candidate[] {
     const out: Candidate[] = [];
-
-    // cartesian neighbor alignment: a vertical line at each neighbor's x, a horizontal line
-    // at each neighbor's y (the Figma alignment magnet).
-    for (const x of inp.alignX)
-        out.push({ ox: x, oy: inp.py, dx: 0, dy: 1, guide: { kind: "alignX", value: x } });
-    for (const y of inp.alignY)
-        out.push({ ox: inp.px, oy: y, dx: 1, dy: 0, guide: { kind: "alignY", value: y } });
 
     const prev = inp.prev;
     if (!prev) return out;

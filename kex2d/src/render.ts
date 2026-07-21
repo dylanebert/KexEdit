@@ -1,13 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
-import {
-    COLOR_ACCENT,
-    COLOR_GUIDE_LABEL,
-    COLOR_GUIDE_RAY,
-    COLOR_SNAP,
-    kindSegments,
-    selected,
-} from "./colors";
+import { COLOR_ACCENT, COLOR_GUIDE_LABEL, COLOR_GUIDE_RAY, kindSegments, selected } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { tangentHandles } from "./tangents";
@@ -460,47 +453,24 @@ function drawLabelChip(
 }
 
 /** the viewport snap-guide flash: a thin guide per fired magnet family, drawn over the track
- *  and cleared by the controls on release. the cartesian pair are world-axis lines in the snap
- *  accent (the stateful Figma alignment guide); the angle guide is a tangent ray at the dragged
- *  node along the snapped exit incline, drawn in a quiet neutral gray — the informational register,
- *  not a second snap state. a snapped angle/length also flashes a numeric label (° / m) on a chip
- *  offset below-right of the drag point so the cursor never covers it, the Figma measurement
- *  readout that replaced the deleted length ring. */
+ *  and cleared by the controls on release. the angle guide is a tangent ray at the dragged node
+ *  along the snapped exit incline, drawn in a quiet neutral gray — the shared guide neutral (the
+ *  timeline's snap guides wear the same gray now, feel round 3). a snapped angle/length also
+ *  flashes a numeric label (° / m) on a chip offset below-right of the drag point so the cursor
+ *  never covers it, the Figma measurement readout that replaced the deleted length ring. */
 const SnapGuideSystem: System = {
     group: "draw",
     update(): void {
         const { element: canvas, ctx } = Canvas2D;
         if (!ctx) return;
         if (
-            snapGuides.x === null &&
-            snapGuides.y === null &&
             snapGuides.ray === null &&
             snapGuides.angleLabel === null &&
             snapGuides.lengthLabel === null
         )
             return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
-        const w = canvas.clientWidth;
-        const h = canvas.clientHeight;
         ctx.save();
-
-        // cartesian alignment guides — the stateful snap accent (a target latched).
-        if (snapGuides.x !== null || snapGuides.y !== null) {
-            ctx.strokeStyle = COLOR_SNAP;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            if (snapGuides.x !== null) {
-                const x = ox + snapGuides.x * sx;
-                ctx.moveTo(x, 0);
-                ctx.lineTo(x, h);
-            }
-            if (snapGuides.y !== null) {
-                const y = oy + snapGuides.y * sy;
-                ctx.moveTo(0, y);
-                ctx.lineTo(w, y);
-            }
-            ctx.stroke();
-        }
 
         // the incline tangent ray — informational, a quiet neutral gray so it doesn't shout as a
         // second snap state. a full-extent line through the dragged node at the snapped exit
