@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
-import { attachControls } from "./controls";
+import { attachControls, selectedMetrics } from "./controls";
 import {
     beginDrag,
     closeContext,
@@ -80,15 +80,26 @@ const snapOn = $derived.by((): boolean => {
 });
 
 // the snap readout text (the Blender modal-transform / SketchUp measurements-box precedent): the
-// engaged snap values (° and/or m), joined on a co-fire and read through the per-RAF tick. null
-// when no snap is engaged, so the readout is hidden entirely. It renders centered below the
-// dragged node (below), offset clear of the radial buttons — a chip AT the drag point overlapped
-// them, and a fixed top-left line read too far from the action.
+// selected node's live metrics (° and/or m), read through the per-RAF tick. ONE readout, two
+// sources — while a magnet target is latched the guide labels ARE the live values (they land on the
+// rasters), the snap source; otherwise the selected node's resting geometry (the Figma
+// selected-object dimensions idiom). null when nothing's selected, so the readout is absent then. It
+// renders centered below the node (below), offset clear of the radial buttons.
 const snapText = $derived.by((): string | null => {
     void tick;
+    let angle = snapGuides.angleLabel;
+    let length = snapGuides.lengthLabel;
+    if (angle === null && length === null) {
+        // no snap engaged: fall to the selected node's resting metrics.
+        const eid = editor.selection;
+        const m = eid === null ? null : selectedMetrics(ecs, eid);
+        if (m === null) return null;
+        angle = m.angleLabel;
+        length = m.lengthLabel;
+    }
     const parts: string[] = [];
-    if (snapGuides.angleLabel) parts.push(snapGuides.angleLabel);
-    if (snapGuides.lengthLabel) parts.push(snapGuides.lengthLabel);
+    if (angle) parts.push(angle);
+    if (length) parts.push(length);
     return parts.length > 0 ? parts.join(" · ") : null;
 });
 
@@ -171,10 +182,9 @@ function onDelete(): void {
     if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
 }
 
-// the snap readout follows the dragged node. a snap only engages during a node drag, and a node
-// drag selects the node it drags, so `editor.selection` IS the dragged node here — its baked
-// screen point (the same node→sample→screen path the radial cluster reads) is the anchor. null
-// whenever there's no snap text, so the readout is absent then.
+// the readout follows the selected node (the dragged node during a drag — a drag selects what it
+// drags). its baked screen point (the same node→sample→screen path the radial cluster reads) is the
+// anchor. null whenever there's no readout text, so the readout is absent then.
 let readoutEl = $state<HTMLDivElement | undefined>(undefined);
 let readoutXY = $state<{ x: number; y: number } | null>(null);
 const readoutAnchor = $derived.by((): { x: number; y: number } | null => {
@@ -522,11 +532,11 @@ $effect(() => {
     </button>
 </div>
 
-<!-- the snap readout: the engaged snap values (° / m / both), summoned only while a magnet target
-     is latched (the Blender modal-transform readout). centered below the dragged node, offset far
-     enough to clear the radial extend/delete buttons by construction (a chip AT the drag point
-     overlapped them; a fixed top-left line read too far from the action). rendered off-screen for
-     one measure pass until `readoutFit` places it from the measured box. -->
+<!-- the snap readout: the selected node's live metrics (° / m / both) — a growth tip's exit incline
+     + chord length, an interior node's chord length alone; the latched snap values while a magnet
+     target is engaged (the Blender modal-transform readout). shown whenever a node is selected,
+     centered below it, offset far enough to clear the radial extend/delete buttons by construction.
+     rendered off-screen for one measure pass until `readoutFit` places it from the measured box. -->
 {#if readoutAnchor}
     <div
         class="snap-readout"
@@ -714,10 +724,10 @@ $effect(() => {
         user-select: none;
         -webkit-user-select: none;
     }
-    /* the snap readout: the engaged snap values, positioned per-frame below the dragged node by
-       `readoutFit` (left/top set inline). shown only while a magnet is latched; JetBrains Mono
-       over the same opaque chrome as the cluster, the neutral guide text at `--fg`. pointer-inert
-       — it's a readout that flashes during a drag, never a target. */
+    /* the snap readout: the selected node's live metrics, positioned per-frame below the node by
+       `readoutFit` (left/top set inline). shown whenever a node is selected; JetBrains Mono over the
+       same opaque chrome as the cluster, the neutral text at `--fg`. pointer-inert — a readout,
+       never a target. */
     .snap-readout {
         position: absolute;
         z-index: 2;

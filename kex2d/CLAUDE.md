@@ -339,7 +339,10 @@ editor-ui invariant-domain rule).
   teardown. `pickNode` (skips order-0 anchors) then `pickSection` (nearest span); a node drag
   `localize`s the pointer into the section frame then `reheadOnDrag`. Right-click a section span opens
   the context menu (`openContext`). Keys: `Enter` extend / `Del` trim (node end); `Del` delete
-  (selected section). All edits route through `history`.
+  (selected section). All edits route through `history`. Also the snap-readout metric seam:
+  `nodeMetrics` (pure: node → `{angleLabel?, lengthLabel}`) + `selectedMetrics` (the impure glue over
+  the baked samples, mirroring `magnetInput`'s flanking-sample incline + chord reads) — the resting
+  source App's `.snap-readout` falls to when no magnet target is engaged.
 - `magnet.ts` — the **polar magnet**: a pure, device-free resolver for a viewport node drag. Every
   family is polar, relative to the **previous node** (the world-absolute cartesian neighbor-alignment
   families are gone — feel round 3: they fought the incline snapping and don't generalize to 3D).
@@ -398,7 +401,12 @@ editor-ui invariant-domain rule).
   context menu). Snap-guide feedback: the viewport draws the incline **ray** in the shared neutral
   gray (`COLOR_GUIDE_RAY`), the one register every snap guide wears (the timeline's `.snapguide`
   too); the numeric **°/m readout** is DOM — App's `.snap-readout`, the Blender modal-transform
-  readout, shown only while a snap is engaged. It's **centered below the dragged node**, offset by
+  readout, shown **whenever a node is selected** (the Figma selected-object dimensions idiom): the
+  selected node's live metrics — a growth tip's exit-tangent incline (°) + the chord length (m) to
+  the previous node, an interior node's chord length alone (a frozen heading has no incline to snap).
+  While a magnet target is engaged the latched snap values fill it instead (they land on the
+  rasters). One readout, two sources (`selectedMetrics`/`nodeMetrics` in `controls.ts` at rest, the
+  `SnapGuides` labels while snapped). It's **centered below the node**, offset by
   `READOUT_OFFSET` (`RADIAL_R + RADIAL_BTN_R + gap`) so it clears the radial extend/delete buttons
   **by construction** — a button center orbits at `RADIAL_R`, its far edge at `RADIAL_R +
   RADIAL_BTN_R`, so the readout starts a gap past that wherever the heading swings the ring. Pure

@@ -279,6 +279,62 @@ export function formatDeg(d: number): string {
     return `${Math.abs(n - r) < DEG_EPS ? r : n.toFixed(1)}°`;
 }
 
+/** a selected node's live readout metrics. `lengthLabel` is always present (the chord length to the
+ *  previous node); `angleLabel` is the exit-tangent incline, present only for a growth tip. */
+export interface NodeMetrics {
+    angleLabel: string | null;
+    lengthLabel: string;
+}
+
+/** derive a node's readout metrics from baked geometry (device-free — the caller passes the world
+ *  points). the same quantities the magnet reads: the chord `|node − prev|` to the previous node,
+ *  and — for a growth tip only — the exit-tangent incline, the flanking-sample tangent (`exit` = the
+ *  node's two flanking sample points; null for an interior node, whose frozen heading has no incline
+ *  to snap). formatted like the snap readout (`formatDeg`, integer metres). */
+export function nodeMetrics(
+    prev: { x: number; y: number },
+    node: { x: number; y: number },
+    exit: [{ x: number; y: number }, { x: number; y: number }] | null,
+): NodeMetrics {
+    const chord = Math.hypot(node.x - prev.x, node.y - prev.y);
+    const angleLabel =
+        exit === null
+            ? null
+            : formatDeg((Math.atan2(exit[1].y - exit[0].y, exit[1].x - exit[0].x) * 180) / Math.PI);
+    return { angleLabel, lengthLabel: `${Math.round(chord)} m` };
+}
+
+/** the selected node's live metrics for the resting snap readout (the Figma selected-object
+ *  dimensions idiom): reads the baked world samples and defers to `nodeMetrics`. the exit incline
+ *  shows for a section's growth tip — the same `lastHandle` split the magnet's incline family uses,
+ *  flanking the node's sample (one-sided at a chain end); an interior node gets the chord length
+ *  only. null when the selection has no previous node (node 0 isn't selectable, so a real selection
+ *  always does — the guard is defensive). world-space, so no view transform. */
+export function selectedMetrics(ecs: State, eid: number): NodeMetrics | null {
+    const s = trackSamples(ecs);
+    if (!s) return null;
+    const section = Handle.section.get(eid);
+    const order = Handle.order.get(eid);
+    const prevEid = handleAt(ecs, section, order - 1);
+    if (prevEid === null) return null;
+    const prev = nodeWorld(s, prevEid);
+    const node = nodeWorld(s, eid);
+    let exit: [{ x: number; y: number }, { x: number; y: number }] | null = null;
+    if (eid === lastHandle(ecs, section)) {
+        let count = 0;
+        for (const t of ecs.query([Track])) count = Track.count.get(t);
+        const i = Handle.sample.get(eid);
+        const lo = Math.max(0, i - 1);
+        const hi = Math.min(count - 1, i + 1);
+        if (hi > lo)
+            exit = [
+                { x: s.posX[lo], y: s.posY[lo] },
+                { x: s.posX[hi], y: s.posY[hi] },
+            ];
+    }
+    return nodeMetrics(prev, node, exit);
+}
+
 /** flash the fired magnet guides (the render pass reads `snapGuides.ray`; the App readout reads the
  *  labels). the angle guide draws a tangent ray AT the dragged node along the snapped exit incline
  *  (the screen angle inverts to world, the y-flip) and sets the degree readout string; a snapped
