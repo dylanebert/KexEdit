@@ -415,9 +415,9 @@ const CartDrawSystem: System = {
 
 /** the viewport snap-guide flash: a thin guide per fired magnet family, drawn over the track
  *  and cleared by the controls on release. the cartesian pair are world-axis lines (the Figma
- *  alignment guide); the angle guide is a ray through the previous node at the snapped chord
- *  angle. a snapped angle/length also flashes a numeric label (° / m) at the drag point — the
- *  Figma measurement readout, replacing the deleted length ring. */
+ *  alignment guide); the angle guide is a tangent ray at the dragged node along the snapped
+ *  exit incline. a snapped angle/length also flashes a numeric label (° / m) at the drag point —
+ *  the Figma measurement readout, replacing the deleted length ring. */
 const SnapGuideSystem: System = {
     group: "draw",
     update(): void {
@@ -449,8 +449,8 @@ const SnapGuideSystem: System = {
             ctx.lineTo(w, y);
         }
         if (snapGuides.ray !== null) {
-            // a full-extent line through the previous node at the snapped world angle. `L` is
-            // large enough to span any framed view; the canvas clips the overshoot.
+            // a full-extent line through the dragged node at the snapped exit incline (the tangent
+            // ray). `L` is large enough to span any framed view; the canvas clips the overshoot.
             const { x: rx, y: ry, angle } = snapGuides.ray;
             const cx = ox + rx * sx;
             const cy = oy + ry * sy;

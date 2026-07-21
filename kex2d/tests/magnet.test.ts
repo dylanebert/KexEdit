@@ -14,7 +14,6 @@ function input(over: Partial<SnapInput>): SnapInput {
         py: 0,
         prev: null,
         tangent: null,
-        incoming: null,
         alignX: [],
         alignY: [],
         pxPerMeter: 50,
@@ -65,20 +64,30 @@ describe("cartesian neighbor alignment", () => {
     });
 });
 
-describe("chord-angle raster (15°)", () => {
+describe("exit-incline raster (15°)", () => {
     test("15° is the quantum", () => {
         expect(ANGLE_STEP).toBeCloseTo((15 * Math.PI) / 180, 12);
     });
 
-    test("snaps the chord angle to the nearest 15° multiple", () => {
-        // 2px-worth off the 15° ray at r=250 (perp = 250·sin(0.02) ≈ 5px, in range); the
-        // radius (1.25 m at 200 px/m) sits far from any integer meter, so only the angle fires.
-        const raw = polar(250, ANGLE_STEP + 0.02);
-        const res = resolveSnap(input({ ...raw, prev: PREV, pxPerMeter: 200 }));
+    test("snaps the tip's exit incline to the nearest 15° multiple", () => {
+        // the previous node exits horizontally (tangent 0), so the tip incline is 2·chord. a
+        // chord near 7.5° gives incline near 15° — snap the incline to exactly 15°, i.e. the
+        // chord to 7.5°. drag ~2.5px off the target ray at r=250 (in range); the radius (1.25 m
+        // at 200 px/m) sits far from any integer meter, so only the incline fires.
+        const raw = polar(250, ANGLE_STEP / 2 + 0.01);
+        const res = resolveSnap(input({ ...raw, prev: PREV, tangent: 0, pxPerMeter: 200 }));
         expect(res.guides).toHaveLength(1);
         expect(res.guides[0].kind).toBe("angle");
-        expect(res.guides[0].value).toBeCloseTo(ANGLE_STEP, 9);
-        expect(angleOf(res)).toBeCloseTo(ANGLE_STEP, 6);
+        expect(res.guides[0].value).toBeCloseTo(ANGLE_STEP, 9); // the INCLINE, not the chord
+        expect(2 * angleOf(res)).toBeCloseTo(ANGLE_STEP, 5); // incline = 2·chord (tangent 0)
+    });
+
+    test("no incline family for an interior drag (tangent null)", () => {
+        // an interior node's heading is frozen — no incline to snap. the same off-raster point
+        // that snapped above fires nothing (only alignment + length families run there).
+        const raw = polar(250, ANGLE_STEP / 2 + 0.01);
+        const res = resolveSnap(input({ ...raw, prev: PREV, tangent: null, pxPerMeter: 200 }));
+        expect(res.guides.some((g) => g.kind === "angle")).toBe(false);
     });
 });
 
@@ -88,8 +97,8 @@ describe("chord-length raster (1 m)", () => {
     });
 
     test("snaps the chord length to the nearest integer meter", () => {
-        // 3.1 m at 50 px/m = 155 px (floor 3 m = 150 px is 5px away, in range); the angle sits
-        // exactly between two 15° multiples (7.5° off, perp ≈ 20px), so only the length fires.
+        // 3.1 m at 50 px/m = 155 px (floor 3 m = 150 px is 5px away, in range). no tangent → no
+        // incline family, so only the length fires. length is universal (tip + interior drags).
         const raw = polar(3.1 * 50, ANGLE_STEP / 2);
         const res = resolveSnap(input({ ...raw, prev: PREV, pxPerMeter: 50 }));
         expect(res.guides).toHaveLength(1);
@@ -98,12 +107,10 @@ describe("chord-length raster (1 m)", () => {
         expect(radiusOf(res)).toBeCloseTo(150, 6);
     });
 
-    test("pxPerMeter 0 drops the length family (the handle-drag angle-only case)", () => {
-        // a tangent-handle drag passes pxPerMeter 0 so the length raster never quantises the
-        // handle length (length snap on handles deferred). the resolver stays untouched — it
-        // gates the length family on pxPerMeter > 0 — so the same 3 m point that snapped above
-        // now fires nothing but whatever angle target is in range.
-        const raw = polar(3.1 * 50, ANGLE_STEP / 2); // still off the 15° raster
+    test("pxPerMeter 0 disables the length family (degenerate scale)", () => {
+        // the resolver gates the length family on pxPerMeter > 0, so a zero scale never divides
+        // by it: the same 3 m point that snapped above fires no length target and stays put.
+        const raw = polar(3.1 * 50, ANGLE_STEP / 2);
         const res = resolveSnap(input({ ...raw, prev: PREV, pxPerMeter: 0 }));
         expect(res.guides.some((g) => g.kind === "length")).toBe(false);
         expect(res.px).toBeCloseTo(raw.px, 6); // the point is untouched (no length pull)
@@ -111,40 +118,31 @@ describe("chord-length raster (1 m)", () => {
     });
 });
 
-describe("angle landmarks", () => {
-    test("continuation: snaps to the tangent heading, beating the raster", () => {
-        // tangent 0.2 rad — not a 15° multiple; drag sits on it. the nearest raster (15°) is
-        // also in range but farther, so continuation wins and the guide reads 0.2, not 15°.
-        const raw = polar(100, 0.2);
-        const res = resolveSnap(input({ ...raw, prev: PREV, tangent: 0.2, pxPerMeter: 70 }));
+describe("incline landmarks", () => {
+    test("continuation: the tip keeps the previous exit incline, beating the raster", () => {
+        // tangent 0.3 rad — not a 15° multiple. continuation means the tip's exit incline equals
+        // the previous incline (0.3): incline = tangent → chord = (0.3 + 0.3)/2 = 0.3. drag near
+        // that chord. the nearest raster (15° = 0.262) is in range but farther, so continuation
+        // wins and the guide reads the incline 0.3, not 15°.
+        const raw = polar(150, 0.3 + 0.01);
+        const res = resolveSnap(input({ ...raw, prev: PREV, tangent: 0.3, pxPerMeter: 70 }));
         expect(res.guides).toHaveLength(1);
         expect(res.guides[0].kind).toBe("angle");
-        expect(res.guides[0].value).toBeCloseTo(0.2, 9);
-        expect(angleOf(res)).toBeCloseTo(0.2, 6);
-    });
-
-    test("reflection: snaps to 2·tangent − incoming", () => {
-        // tangent 0.2, incoming 0.5 → reflection −0.1. no 15° multiple is in range there, so
-        // the reflection landmark is the sole target.
-        const raw = polar(100, -0.1);
-        const res = resolveSnap(
-            input({ ...raw, prev: PREV, tangent: 0.2, incoming: 0.5, pxPerMeter: 70 }),
-        );
-        expect(res.guides).toHaveLength(1);
-        expect(res.guides[0].kind).toBe("angle");
-        expect(res.guides[0].value).toBeCloseTo(-0.1, 9);
-        expect(angleOf(res)).toBeCloseTo(-0.1, 6);
+        expect(res.guides[0].value).toBeCloseTo(0.3, 9); // the INCLINE landmark
+        // chord snapped to 0.3 → incline 2·chord − tangent = 0.3
+        expect(2 * angleOf(res) - 0.3).toBeCloseTo(0.3, 5);
     });
 });
 
-describe("polar grid — angle and length co-fire", () => {
-    test("snaps both the angle and the radius (their intersection)", () => {
-        // r = 200 px = exactly 1 m at 200 px/m (length latches, 0px); the angle is ~3px off the
-        // 15° ray. orthogonal families, so both fire.
-        const raw = polar(200, ANGLE_STEP + 0.015);
-        const res = resolveSnap(input({ ...raw, prev: PREV, pxPerMeter: 200 }));
+describe("polar grid — incline and length co-fire", () => {
+    test("snaps both the exit incline and the radius (their intersection)", () => {
+        // tangent 0 → incline = 2·chord; a chord near 7.5° gives incline near the 15° raster.
+        // r = 200 px = exactly 1 m at 200 px/m (length latches, 0px). orthogonal families (the
+        // incline ray vs the radial length locus), so both fire.
+        const raw = polar(200, ANGLE_STEP / 2 + 0.0075);
+        const res = resolveSnap(input({ ...raw, prev: PREV, tangent: 0, pxPerMeter: 200 }));
         expect(res.guides.map((g) => g.kind).sort()).toEqual(["angle", "length"]);
-        expect(angleOf(res)).toBeCloseTo(ANGLE_STEP, 5);
+        expect(2 * angleOf(res)).toBeCloseTo(ANGLE_STEP, 4); // incline snapped to 15°
         expect(radiusOf(res)).toBeCloseTo(200, 1);
     });
 });

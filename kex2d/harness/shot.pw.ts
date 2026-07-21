@@ -89,14 +89,14 @@ test("geo authoring flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
-// Drive the TANGENT-EDIT flow (kex2d-authoring-surface stage 6): seed a shaped geo track →
-// frame it → DOUBLE-CLICK an interior node to enter tangent edit (Figma's vector-edit summon)
-// → set FREE via the radial dots submenu → drag its out-handle → assert Free independence and
-// a re-bake → Reset via the submenu re-infers the arc-rule tangents (interior → Aligned). The
-// summon is a real canvas double-click (located via __kex.nodeAt); the dots button + submenu
-// are real DOM; the handle drag is a real canvas pointer drag located through
-// __kex.tangentHandles (canvas-drawn handles carry no DOM box). Ctrl bypasses the snapping
-// magnet so the drag lands deterministically (the resolver is unit-covered in magnet tests).
+// Drive the TANGENT-EDIT flow (kex2d-authoring-surface stage 8): seed a shaped geo track →
+// frame it → DOUBLE-CLICK an interior node to enter tangent edit (Figma's vector-edit summon;
+// the node is inferred, no stored tangent) → RIGHT-CLICK the node to open the mode menu → set
+// FREE → drag its out-handle → assert Free independence and a re-bake → Reset via the menu clears
+// the node back to live (Auto). The summon is a real canvas double-click, the mode menu a real
+// canvas right-click (both located via __kex.nodeAt); the handle drag is a real canvas pointer
+// drag located through __kex.tangentHandles (canvas-drawn handles carry no DOM box). Handle drags
+// no longer snap, so the drag lands where the pointer goes.
 test("tangent edit flow", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -140,46 +140,41 @@ test("tangent edit flow", async ({ page }) => {
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
 
-    // ── 1. DOUBLE-CLICK the crest (interior node, order 3) → tangent edit; its handles draw
-    // and the radial dots button appears. no mode pill on mere selection anymore. ──
+    // ── 1. DOUBLE-CLICK the crest (interior node, order 3) → tangent edit; its arc-rule ghost
+    // handles draw. no stamp-on-append anymore — the interior node is inferred (Auto), so it
+    // carries no stored tangent (the mode menu would show it as Aligned). ──
     const npos = await nodeAt(3);
     if (!npos) throw new Error("node 3 not located");
     await page.mouse.dblclick(cb.x + npos.x, cb.y + npos.y);
     await expect.poll(editing).toBe(true);
-    await expect(page.locator(".rbtn.dots")).toBeVisible();
-    // node 3 is interior, so it was stamped Aligned on append (the reworked model — interiors
-    // are concrete bezier, not live).
-    const seeded = await tangent();
-    expect(seeded).not.toBeNull();
-    if (!seeded) throw new Error("interior node has no stored tangent");
-    expect(seeded.mode).toBe(1); // TangentMode.Aligned
-    await page.waitForTimeout(300); // let the handles/dots settle before the shot
+    expect(await tangent()).toBeNull(); // inferred — the default add flow stamps nothing
+    await page.waitForTimeout(300); // let the handles settle before the shot
     await page.screenshot({ path: join(OUT, "tangent-1-summon.png") });
 
-    // ── 2. Open the radial dots submenu → set FREE (a corner becomes expressible). ──
-    await page.locator(".rbtn.dots").click();
+    // ── 2. RIGHT-CLICK the node → the tangent-mode menu (the app's context-menu language) →
+    // set FREE (a corner becomes expressible). ──
+    await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
     await expect(page.locator(".tmenu")).toBeVisible();
-    await page.waitForTimeout(300); // the submenu's 120ms fade-in, for the shot
-    await page.screenshot({ path: join(OUT, "tangent-1b-submenu.png") });
+    await page.waitForTimeout(300); // the menu's 120ms fade-in, for the shot
+    await page.screenshot({ path: join(OUT, "tangent-1b-menu.png") });
     await page.locator(".tmenu").getByRole("menuitem", { name: "Free" }).click();
-    await expect(page.locator(".tmenu")).toHaveCount(0); // picking an item closes the submenu
+    await expect(page.locator(".tmenu")).toHaveCount(0); // picking an item closes the menu
     const summoned = await tangent();
     expect(summoned).not.toBeNull();
     if (!summoned) throw new Error("tangent null after mode set");
-    expect(summoned.mode).toBe(2); // TangentMode.Free
+    expect(summoned.mode).toBe(2); // TangentMode.Free (seeded from the arc rule, then relabeled)
 
     // ── 3. Drag the OUT-handle (a real canvas pointer drag, located via __kex + the canvas
-    // box) → the authored out-vector moves, the in-vector holds (Free independence). ──
+    // box) → the authored out-vector moves, the in-vector holds (Free independence). handle
+    // drags no longer snap, so the pointer lands where it goes. ──
     const out = (await handles()).find((h) => h.side === "out");
     if (!out) throw new Error("out-handle not exposed on the edited interior node");
 
     const tBefore = await tTotal();
-    await page.keyboard.down("Control"); // bypass the magnet — deterministic landing
     await page.mouse.move(cb.x + out.x, cb.y + out.y);
     await page.mouse.down();
     await page.mouse.move(cb.x + out.x + 40, cb.y + out.y - 40, { steps: 12 });
     await page.mouse.up();
-    await page.keyboard.up("Control");
 
     const dragged = await tangent();
     expect(dragged).not.toBeNull();
@@ -197,18 +192,11 @@ test("tangent edit flow", async ({ page }) => {
     expect(await undoDepth()).toBeGreaterThan(0); // the mode set + handle drag are undoable
     await page.screenshot({ path: join(OUT, "tangent-2-drag.png") });
 
-    // ── 4. Reset via the submenu → an interior node re-infers its arc-rule tangents, stamped
-    // Aligned (concrete bezier, back on the arc rule). one click, always available here. ──
-    await page.locator(".rbtn.dots").click();
+    // ── 4. RIGHT-CLICK → Reset → the node clears back to live (Auto inference resumes), so it
+    // carries no stored tangent again. one click, available here (a tangent exists to clear). ──
+    await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
     await page.locator(".tmenu").getByRole("menuitem", { name: "Reset tangents" }).click();
-    const reset = await tangent();
-    expect(reset).not.toBeNull();
-    if (!reset) throw new Error("tangent null after reset");
-    expect(reset.mode).toBe(1); // re-inferred Aligned
-    // the reset discarded the dragged Free out-vector — it's back on the arc rule.
-    expect(
-        Math.hypot(reset.outX - dragged.outX, reset.outY - dragged.outY),
-    ).toBeGreaterThan(0.1);
+    await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });

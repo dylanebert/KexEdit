@@ -14,6 +14,7 @@ import {
     Handle,
     handleAt,
     handleTangent,
+    MAX_SAMPLES,
     reheadOnDrag,
     removeTrailingHandle,
     resetTangent,
@@ -34,7 +35,7 @@ import {
     toLocal,
     Track,
 } from "../src/track";
-import { TangentMode } from "../src/spline";
+import { type Node, sampleChain, TangentMode } from "../src/spline";
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
 // computeTime, syncs each geo node's sample index, and records the per-section
@@ -555,13 +556,13 @@ describe("explicit tangents (substrate)", () => {
 
     test("setTangent(…, null) reverts a node to Auto (byte-identical to the arc bake)", () => {
         const { state, eid, sec } = track();
-        addNode(state, sec, 40, 6); // node 1 becomes interior (stamped Aligned); node 2 is the Auto tip
+        addNode(state, sec, 40, 6); // node 1 becomes interior (Auto — no stamp); node 2 the Auto tip
         state.step(0);
         const baseline = Array.from(samples.get(eid)?.posY.subarray(0, Track.count.get(eid)) ?? []);
 
         // author + revert an explicit tangent on the *tip* (node 2, Auto in the baseline): the
         // revert lands back on Auto, so the whole curve is byte-identical to the baseline (node 1
-        // is stamped-Aligned in both, node 2 Auto in both).
+        // is Auto in both, node 2 Auto in both).
         setTangent(state, sec, 2, { mode: TangentMode.Free, inX: 5, inY: 9, outX: 2, outY: 9 });
         state.step(0);
         setTangent(state, sec, 2, null); // revert
@@ -571,7 +572,54 @@ describe("explicit tangents (substrate)", () => {
     });
 });
 
-describe("tangent model rework (stage 5 substrate)", () => {
+describe("tangent model (feel round 2)", () => {
+    test("the default add/extend/drag flow stores NO tangents and bakes the pure arc rule", () => {
+        // the round-2 reversal of stamp-on-append: the default shaping is byte-identical to the
+        // pre-handles editor. run the default flow (seed → extend ×2 → drag an interior + the tip)
+        // and pin both halves: (a) no node carries a stored tangent, (b) the ECS bake matches a
+        // direct `sampleChain` over the same nodes with no tangents (the arc-rule reference).
+        const { state, eid, sec } = track();
+        extend(state, sec); // node 2
+        extend(state, sec); // node 3 (the tip)
+        // drag an interior node and the tip through the ECS path (localize is identity for the
+        // first section; `reheadOnDrag` re-derives only the tip's heading).
+        const n2 = handleAt(state, sec, 2);
+        const n3 = handleAt(state, sec, 3);
+        if (n2 === null || n3 === null) throw new Error("nodes missing");
+        Handle.pos.set(n2, 40, 10);
+        reheadOnDrag(state, n2);
+        Handle.pos.set(n3, 66, 4);
+        reheadOnDrag(state, n3);
+        state.step(0);
+
+        // (a) every node is still Auto (no stamp anywhere on the default path).
+        const handles = sectionHandles(state, sec);
+        for (const h of handles)
+            expect(handleTangent(state, sec, Handle.order.get(h))).toBeUndefined();
+
+        // (b) the arc-rule reference: extract the section-local nodes (no tangent) and sample them
+        // directly. the first section entry is START {0,0,0}, so `place` is identity → the bake's
+        // world samples equal this local reference.
+        const nodes: Node[] = handles.map((h) => ({
+            x: Handle.pos.x.get(h),
+            y: Handle.pos.y.get(h),
+            theta: Handle.theta.get(h),
+        }));
+        const count = Track.count.get(eid);
+        const ref = {
+            posX: new Float32Array(MAX_SAMPLES),
+            posY: new Float32Array(MAX_SAMPLES),
+            ds: new Float32Array(MAX_SAMPLES),
+        };
+        sampleChain(nodes, Track.ds.get(eid), ref.posX, ref.posY, ref.ds, MAX_SAMPLES);
+        const s = samples.get(eid);
+        if (!s) throw new Error("samples missing");
+        for (let i = 0; i < count; i++) {
+            expect(s.posX[i]).toBeCloseTo(ref.posX[i], 5);
+            expect(s.posY[i]).toBeCloseTo(ref.posY[i], 5);
+        }
+    });
+
     test("extend at an explicit-tangent tip appends along the visible curve exit, not the stale heading", () => {
         const { state, sec } = track(); // [node 0, node 1] flat; node 1 is the tip at (EXTEND_DIST, 0)
         // author an explicit tangent whose out-vector points +y (the visible curve exit), while the
@@ -589,54 +637,18 @@ describe("tangent model rework (stage 5 substrate)", () => {
         expect(Handle.pos.y.get(e)).toBeCloseTo(ly + EXTEND_DIST, 6);
     });
 
-    test("extend stamps the outgoing tip as Aligned, continuous with the pre-append curve", () => {
-        const { state, eid, sec } = track();
-        addNode(state, sec, 40, 12); // a bent chain; node 1 stamped when node 2 was appended
-        state.step(0);
-        expect(handleTangent(state, sec, 1)?.mode).toBe(TangentMode.Aligned); // old tip frozen
-
-        const node2 = handleAt(state, sec, 2);
-        if (node2 === null) throw new Error("node 2 missing");
-        const upto = Handle.sample.get(node2); // the baked prefix through the current tip
-        const beforeX = Array.from(samples.get(eid)?.posX.subarray(0, upto + 1) ?? []);
-        const beforeY = Array.from(samples.get(eid)?.posY.subarray(0, upto + 1) ?? []);
-
-        extend(state, sec); // append past node 2 → node 2 gets stamped
-        state.step(0);
-        expect(handleTangent(state, sec, 2)?.mode).toBe(TangentMode.Aligned); // now frozen too
-
-        // the curve through node 2 is unchanged by the append (local support + byte-continuous
-        // stamp — the stamp writes exactly what the arc rule was producing, so appending a node
-        // past the tip never disturbs the earlier shape).
-        const afterX = Array.from(samples.get(eid)?.posX.subarray(0, upto + 1) ?? []);
-        const afterY = Array.from(samples.get(eid)?.posY.subarray(0, upto + 1) ?? []);
-        for (let i = 0; i <= upto; i++) {
-            expect(afterX[i]).toBeCloseTo(beforeX[i], 4);
-            expect(afterY[i]).toBeCloseTo(beforeY[i], 4);
-        }
-    });
-
-    test("resetTangent: an interior node re-infers as Aligned; the tip clears back to live", () => {
+    test("resetTangent clears back to live for both an interior node and the tip", () => {
         const { state, sec } = track();
         addNode(state, sec, 40, 15);
         addNode(state, sec, 70, 10); // [0, 1, 2, 3]; node 3 is the tip
 
-        // interior node 1: override with a Free corner, then Reset → re-inferred Aligned from the
-        // current chords (exactly the seedTangent arc-rule value).
+        // interior node 1: author a Free corner, then Reset → cleared back to absent (live Auto),
+        // now meaningful for interiors since they're live by default.
         setTangent(state, sec, 1, { mode: TangentMode.Free, inX: 3, inY: 9, outX: 9, outY: -3 });
         resetTangent(state, sec, 1);
-        const reset1 = handleTangent(state, sec, 1);
-        const seed1 = seedTangent(state, sec, 1, TangentMode.Aligned);
-        expect(reset1?.mode).toBe(TangentMode.Aligned);
-        if (!reset1 || !seed1) throw new Error("reset/seed missing");
-        // precision 4: reset1 is f32-stored (writeTangent), seed1 the fresh f64 arc-rule value.
-        expect(reset1.inX).toBeCloseTo(seed1.inX, 4);
-        expect(reset1.inY).toBeCloseTo(seed1.inY, 4);
-        expect(reset1.outX).toBeCloseTo(seed1.outX, 4);
-        expect(reset1.outY).toBeCloseTo(seed1.outY, 4);
+        expect(handleTangent(state, sec, 1)).toBeUndefined();
 
-        // the tip (node 3): author it explicit, then Reset → cleared back to absent (live Auto),
-        // its heading re-derived from its predecessor.
+        // the tip (node 3): author it explicit, then Reset → cleared to absent, heading re-derived.
         setTangent(state, sec, 3, { mode: TangentMode.Free, inX: 5, inY: 5, outX: 5, outY: 5 });
         expect(handleTangent(state, sec, 3)).toBeDefined();
         resetTangent(state, sec, 3);
@@ -654,7 +666,7 @@ describe("tangent model rework (stage 5 substrate)", () => {
         expect(Handle.theta.get(tip)).toBeCloseTo(2 * chord - exit2, 6);
     });
 
-    test("resetTangent no-ops on node 0 (the entry anchor is never frozen)", () => {
+    test("resetTangent no-ops on node 0 (the entry anchor is never authored)", () => {
         const { state, sec } = track();
         addNode(state, sec, 40, 15); // [0, 1, 2]; order 0 is the entry anchor
         resetTangent(state, sec, 0);

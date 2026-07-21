@@ -107,25 +107,28 @@ shape hangs off it in the entry frame.
   via its stored vector, held absolute under a node drag (the Figma/Blender bezier convention — no
   chord rescaling). Strict local support either way: a drag or a tangent edit moves **only the two
   segments that share the node**.
-- **Only the growth tip stays live.** The **last** node is the one place arc inference is real — its
-  heading tracks its predecessor's exit (`headLast`, the reflection `2·chord − prev`), re-deriving
-  whenever the tail changes, so a fresh append or drag never goes stale. Node 0 and **interior**
-  `Auto` nodes keep a frozen heading (the arc contract can't hold on both of an interior node's
-  segments at once, so a stable heading beats one that thrashes — dragged far off its chord it
-  bulges, the accepted misshaping). Appending past the tip **stamps** its current inferred vectors as
-  authored `Aligned` (`stampTip`, byte-continuous — it writes exactly what the arc rule was
-  producing) — from then on it's concrete bezier, no hidden liveness.
+- **The default shaping is live everywhere — byte-identical to the pre-handles editor.** Nothing is
+  stamped at append (the round-2 reversal): the default add/extend/drag flow stores **no** tangents.
+  The **last** node's heading tracks its predecessor's exit (`headLast`, the reflection `2·chord −
+  prev`), re-deriving whenever the tail changes, so a fresh append or drag never goes stale; node 0
+  and **interior** `Auto` nodes keep a frozen heading (the arc contract can't hold on both of an
+  interior node's segments at once, so a stable heading beats one that thrashes — dragged far off its
+  chord it bulges, the accepted misshaping). A node turns concrete bezier **only** when explicitly
+  authored — a handle drag or a mode set (seeded from the live arc-rule vectors via `seedTangent`, no
+  jump). Handles are additive; they never change the default feel.
 - **Explicit tangent modes** (`TangentMode`, Figma's mirroring taxonomy): `Mirror` (angle + length
   mirrored, one authored handle) | `Aligned` (angle mirrored, per-side length) | `Free` (independent
-  — a corner, C0 kink, becomes expressible). `setTangent`/`handleTangent` (`track.ts`) are the
-  read/write surface. **Reset** (`resetTangent`) re-infers from the current chords — an interior node
-  re-stamps `Aligned`, the growth tip clears back to absent (live `Auto` resumes). Node 0 (the entry
-  anchor) is never frozen — `stampTip` and `resetTangent` both skip it.
+  — a corner, C0 kink, becomes expressible). An **inferred** node displays as `Aligned` (inference is
+  aligned-shaped — collinear in/out — and there is never a no-mode state); re-picking `Aligned` on it
+  is a no-op. `setTangent`/`handleTangent` (`track.ts`) are the read/write surface. **Reset**
+  (`resetTangent`) clears back to live (`Auto` inference resumes) — meaningful for interiors too, now
+  that they're live by default. Node 0 (the entry anchor) is never authored — `resetTangent` skips it.
 - **Summoned, not default.** Handles render only in **tangent-edit mode**, entered by
   double-clicking a node (`editor.tangentEdit`, layered on node selection — Esc or click-away exits);
   mere selection shows nothing (`editor-ui.md`'s layered-expressiveness contract — the inner layer is
-  reachable, never ambient). A handle drag snaps to the angle raster only (`tangents.ts` + the polar
-  magnet, length snap dropped); mode + Reset live behind the radial menu's dots submenu (`menu.ts`).
+  reachable, never ambient). A handle drag is a **free** direct-manipulation gesture (no snap, no
+  guides). The mode menu (Mirror | Aligned | Free + Reset) is a **right-click on the node** while in
+  tangent edit — the app's context-menu language (`menu.ts` `MenuItem` + `editor.tangentMenu`).
 - **Recover force.** `forces` (`bake.ts`) reads the sampled positions → per-sample tangent θ (the
   curve's local tangent, bisector of adjacent chords) → v (energy) → `F_n = κ·v²/g + cos θ`, the
   physical normal force a cart riding the curve feels. This per-sample θ is recovered from the
@@ -294,8 +297,10 @@ editor-ui invariant-domain rule).
   `sectionSpans` (the one offset table) + `toGlobal`/`toLocal` — the single seam every d readout derives from. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
   `sectionHandles`/`lastHandle`/`handleAt`/`spawnNode`/`nodeSnapshot`/`restoreNodes`/`sameNodes`.
   Tangent: `handleTangent`/`setTangent` (read/write the explicit `Tangent`, `undefined` = `Auto`),
-  `seedTangent` (the arc-rule vector at a node, for the explicit-summon seed and `Reset`),
-  `stampTip`/`resetTangent` (stage 5's freeze/re-infer, both skip node 0). Force:
+  `seedTangent` (the arc-rule vector at a node, for the explicit-summon seed), `resetTangent`
+  (clear a node's tangent back to live; the tip re-heads; skips node 0). No append-time stamping —
+  the default flow stores no tangents (`exitHeading` still resolves the append/reflect seed against
+  an explicit tip's out-vector). Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
   `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`,
   `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection`, `snapshotSection`/`restoreSection`
@@ -310,8 +315,10 @@ editor-ui invariant-domain rule).
   (the track START anchor / v0 handle) + their setters. The four are **mutually exclusive** (selecting
   one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
   fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
-  handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Also the
-  `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
+  handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
+  right-click menus: `context` (section Convert/Delete) and `tangentMenu` (the tangent-mode picker,
+  opened on the edited node in tangent edit) — both `{x, y, …}` or null, rendered once at the app
+  root. Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
   bypasses per-gesture) and `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
   viewport-nudge vs timeline-playhead double-fire. Plain singleton, read by Svelte via the per-RAF
@@ -330,14 +337,16 @@ editor-ui invariant-domain rule).
   `localize`s the pointer into the section frame then `reheadOnDrag`. Right-click a section span opens
   the context menu (`openContext`). Keys: `Enter` extend / `Del` trim (node end); `Del` delete
   (selected section). All edits route through `history`.
-- `magnet.ts` — the **polar magnet**: a pure, device-free resolver for a viewport node/tangent drag.
+- `magnet.ts` — the **polar magnet**: a pure, device-free resolver for a viewport node drag.
   Target families compete in one screen-px pool (`SNAP_PX` precedent): the cartesian
   neighbor-alignment lines, plus — the shaping viewport's earned raster exception (`editor-ui.md`)
-  — the chord-angle raster (`ANGLE_STEP` = 15°) and chord-length raster (`LENGTH_STEP` = 1 m)
-  relative to the previous node, and continuation/reflection angle landmarks. Nearest-in-px wins; a
-  sufficiently-orthogonal second target co-fires (`COMBINE_DOT`); shift-lock skips parallel
-  families. `controls.ts` consumes it for the node drag; a tangent-handle drag reuses it with length
-  snapping dropped (`pxPerMeter: 0`). No shallot, no DOM — unit-tested in `magnet.test.ts`.
+  — the tip's **exit-tangent incline** raster (`ANGLE_STEP` = 15°; PC2 quantizes what the piece
+  *does*, so the chord targets `(raster + tangent)/2`) with a continuation incline landmark, and the
+  chord-length raster (`LENGTH_STEP` = 1 m) relative to the previous node. The incline family fires
+  only for the growth tip (`tangent` non-null); an interior drag gets alignment + length only.
+  Nearest-in-px wins; a sufficiently-orthogonal second target co-fires (`COMBINE_DOT`); shift-lock
+  skips parallel families. `controls.ts` consumes it for the node drag (handle drags don't snap). No
+  shallot, no DOM — unit-tested in `magnet.test.ts`.
 - `tangents.ts` — the tangent-handle geometry render and controls share: where a node's in/out
   handles land in screen px (`tangentHandles` — an explicit node's stored vectors, or a selected
   `Auto` node's live arc-rule ghost) and the inverse a handle drag feeds `spline.editTangent`
@@ -368,15 +377,16 @@ editor-ui invariant-domain rule).
 - `menu.ts` — `MenuItem`: the shared row-language a menu renders as pure data — label, `checked` (a
   selectable row's accent-lit state, e.g. the current tangent mode), `enabled` (derived from editor
   state, a disabled row dimmed + inert), `action`. One model for the section context menu
-  (`App.svelte`), the timeline's append flyout (`Timeline.svelte`), and the tangent-mode dots
-  submenu (`App.svelte`) — enablement is a per-item property, not a per-menu special case.
+  (`App.svelte`), the timeline's append flyout (`Timeline.svelte`), and the tangent-mode right-click
+  menu (`App.svelte`) — enablement is a per-item property, not a per-menu special case.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), section-entry **anchor diamonds**, the
   selected-section accent overlay, the node handles (selected/orphan/infeasible), the cart, the
   **Timeline** dock, and the radial extend/delete buttons around the selected chain end. In
   tangent-edit mode (`editor.tangentEdit`): `TangentDrawSystem` (`render.ts`) draws the edited
-  node's handles (solid = explicit, hollow = `Auto` ghost), and a dots (…) button on the radial
-  cluster opens the tangent-mode submenu (Mirror | Aligned | Free + Reset, a `menu.ts` `MenuItem[]`).
+  node's handles (solid = explicit, hollow = `Auto` ghost); right-click the node opens the
+  tangent-mode menu (Mirror | Aligned | Free + Reset, a `menu.ts` `MenuItem[]` over
+  `editor.tangentMenu`, the same shared `.menu` look + cursor placement as the section context menu).
 - `main.ts` — boots `run({ defaults: false })` + mounts App. The DEV-only `__kex` hook exposes
   geo state (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`seedHill`/`nudge`), force state
   (`kind`/`forceCount`/`forces`/`convert`/`placeForce`/`seedForceBump`), and the multi-section ops
@@ -402,8 +412,8 @@ pickable.
   also `Enter`) lays a node continuing the last edge by `EXTEND_DIST`; Delete (🗑, also `Del`) removes
   the trailing node, never below the two nodes a section needs, re-heading the promoted tip.
 - **Tangent edit** (double-click a node): summons its in/out handles (hidden on mere selection),
-  dragged directly and snapped to the angle raster; mode (Mirror/Aligned/Free) + Reset live behind
-  the radial cluster's dots submenu. Esc or clicking away exits back to plain selection. Model +
+  dragged directly and freely (no snap); mode (Mirror/Aligned/Free) + Reset live behind a
+  **right-click** on the node. Esc or clicking away exits back to plain selection. Model +
   substrate: `Model (geo authoring)` above.
 
 **Force authoring** (on the timeline chart, whole-track) — the chart draws every force section's

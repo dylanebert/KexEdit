@@ -1,8 +1,8 @@
 /** the polar magnet: a pure, device-free resolver for a viewport node drag. it snaps the
  *  raw drag point (screen px) against target *families* — the cartesian neighbor-alignment
  *  the drag has always had (a dragged node's screen x/y latching another node's), plus the
- *  polar families relative to the **previous node**: the chord-angle raster (15°), the
- *  chord-length raster (1 m), and the continuation / reflection angle landmarks. every
+ *  polar families relative to the **previous node**: the exit-tangent **incline** raster (15°,
+ *  tip drags only), the chord-length raster (1 m), and the continuation incline landmark. every
  *  target is one line in screen space (its locus); the nearest within `SNAP_PX` wins, and a
  *  second, sufficiently-orthogonal target can co-fire (their intersection). one resolver,
  *  every family competing in the same screen-px pool — the AE magnet model (`editor-ui.md`)
@@ -15,9 +15,10 @@
 
 import { SNAP_PX } from "./timeline";
 
-/** the shaping viewport's angular quantum: chord angles snap to 15° multiples relative to
- *  the previous node. a design constant (the `SNAP_PX` precedent), tuned only at the feel
- *  check — never a per-user setting. */
+/** the shaping viewport's angular quantum: the tip's exit-tangent incline snaps to 15°
+ *  multiples (PC2 quantizes what the piece *does* — its exit incline — not the raw chord). a
+ *  design constant (the `SNAP_PX` precedent), tuned only at the feel check — never a per-user
+ *  setting. */
 export const ANGLE_STEP = Math.PI / 12;
 
 /** the chord-length quantum: integer meters (1 m). the PC2 integer-meter building idiom. */
@@ -36,8 +37,8 @@ export type GuideKind = "alignX" | "alignY" | "angle" | "length";
 
 /** a fired guide, screen-space. `value` reads by kind: alignX = the screen x of the
  *  vertical line; alignY = the screen y of the horizontal line; angle = the screen-radians
- *  of the ray through the previous node; length = the screen-px radius from the previous
- *  node (the caller renders it as a metre label). */
+ *  of the snapped **exit-tangent incline** (the caller draws a tangent ray at the dragged node
+ *  + a ° label); length = the screen-px radius from the previous node (a metre label). */
 export interface Guide {
     kind: GuideKind;
     value: number;
@@ -53,12 +54,10 @@ export interface SnapInput {
     py: number;
     /** the previous node — the polar origin — screen px, or null when there is none. */
     prev: { x: number; y: number } | null;
-    /** the screen-heading of the curve tangent at the previous node (the continuation
-     *  landmark), or null. */
+    /** the previous node's exit-tangent incline (screen radians) — enables the tip incline
+     *  family (raster + continuation). null for an interior drag: a frozen interior heading has
+     *  no incline to snap, so only alignment + length fire there. */
     tangent: number | null;
-    /** the screen-heading of the chord arriving at the previous node (with `tangent`, the
-     *  reflection landmark `2·tangent − incoming`), or null. */
-    incoming: number | null;
     /** other nodes' screen xs — the vertical-alignment targets. */
     alignX: number[];
     /** other nodes' screen ys — the horizontal-alignment targets. */
@@ -109,19 +108,26 @@ function candidates(inp: SnapInput): Candidate[] {
     const uy = ry / r;
     const rawAngle = Math.atan2(ry, rx);
 
-    // angle family: the raster multiple nearest the raw chord angle (+ its two neighbors, so
-    // rounding never straddles a boundary) and the continuation / reflection landmarks. each
-    // is a ray from the previous node; only a FORWARD ray (the drag's half-plane) is a
-    // target, so the magnet never flips the node across the previous node.
-    const base = Math.round(rawAngle / ANGLE_STEP) * ANGLE_STEP;
-    const angles = [base, base + ANGLE_STEP, base - ANGLE_STEP];
-    if (inp.tangent !== null) angles.push(inp.tangent); // continuation: along the tangent
-    if (inp.tangent !== null && inp.incoming !== null) angles.push(2 * inp.tangent - inp.incoming); // reflection
-    for (const a of angles) {
-        const dx = Math.cos(a);
-        const dy = Math.sin(a);
-        if (dx * ux + dy * uy <= 0) continue; // backward ray — unreachable this drag
-        out.push({ ox: prev.x, oy: prev.y, dx, dy, guide: { kind: "angle", value: a } });
+    // incline family (tip drags only — `tangent` is the previous node's exit incline, null for
+    // an interior drag). PC2 quantizes the tip's EXIT-TANGENT incline, not the raw chord: the
+    // tip's reflected exit incline is `2·chord − tangent`, so snapping the incline to the 15°
+    // raster means the chord targets `(raster + tangent)/2`. each target is still a ray through
+    // the previous node (the Candidate shape holds); the guide it flashes carries the INCLINE
+    // (the caller draws a tangent ray at the dragged node + a ° label). the continuation landmark
+    // keeps the previous segment's exit incline (incline = tangent → chord = tangent), a real
+    // incline landmark, not a raster duplicate. only a FORWARD ray is a target, so the magnet
+    // never flips the node across the previous node.
+    if (inp.tangent !== null) {
+        const inclineRaw = 2 * rawAngle - inp.tangent;
+        const base = Math.round(inclineRaw / ANGLE_STEP) * ANGLE_STEP;
+        const inclines = [base, base + ANGLE_STEP, base - ANGLE_STEP, inp.tangent];
+        for (const incline of inclines) {
+            const c = (incline + inp.tangent) / 2; // the chord that yields this exit incline
+            const dx = Math.cos(c);
+            const dy = Math.sin(c);
+            if (dx * ux + dy * uy <= 0) continue; // backward ray — unreachable this drag
+            out.push({ ox: prev.x, oy: prev.y, dx, dy, guide: { kind: "angle", value: incline } });
+        }
     }
 
     // length family: the integer-meter radii flanking the raw radius (≥1 m — a 0 m target is

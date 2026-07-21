@@ -6,6 +6,7 @@ import {
     enterTangentEdit,
     exitTangentEdit,
     openContext,
+    openTangentMenu,
     select,
     selectSection,
     selectStart,
@@ -232,8 +233,8 @@ function sampleScreen(
 
 /** assemble the magnet resolver's input for a node drag: the raw screen point (shift-lock
  *  already folded in), the neighbor-alignment targets, and the polar frame relative to the
- *  previous node — the curve tangent flanking it (the continuation landmark) and the chord
- *  arriving from the node before it (the reflection landmark). */
+ *  previous node — for the growth TIP, the previous node's exit incline (the tip incline family
+ *  snaps against it); an interior drag leaves it null (a frozen heading has no incline to snap). */
 function magnetInput(
     ecs: State,
     tx: ViewTx,
@@ -248,7 +249,6 @@ function magnetInput(
         py: rawSY,
         prev: null,
         tangent: null,
-        incoming: null,
         alignX: xs,
         alignY: ys,
         pxPerMeter: Math.abs(tx.sx),
@@ -262,22 +262,19 @@ function magnetInput(
     if (prevEid === null) return inp;
     const pi = Handle.sample.get(prevEid);
     inp.prev = sampleScreen(s, tx, pi);
-    // the curve tangent at the previous node from its flanking samples (centered where it
-    // can be, one-sided at a chain end).
-    let count = 0;
-    for (const t of ecs.query([Track])) count = Track.count.get(t);
-    const lo = Math.max(0, pi - 1);
-    const hi = Math.min(count - 1, pi + 1);
-    if (hi > lo) {
-        const a = sampleScreen(s, tx, lo);
-        const b = sampleScreen(s, tx, hi);
-        inp.tangent = Math.atan2(b.y - a.y, b.x - a.x);
-    }
-    // the chord arriving at the previous node from the node before it.
-    const ppEid = handleAt(ecs, section, order - 2);
-    if (ppEid !== null) {
-        const pp = sampleScreen(s, tx, Handle.sample.get(ppEid));
-        inp.incoming = Math.atan2(inp.prev.y - pp.y, inp.prev.x - pp.x);
+    // the exit incline family fires only for the tip: its incline snaps against the previous
+    // node's exit incline, read from that node's flanking samples (centered where it can be,
+    // one-sided at a chain end). an interior node's heading is frozen — no incline to snap.
+    if (dragEid === lastHandle(ecs, section)) {
+        let count = 0;
+        for (const t of ecs.query([Track])) count = Track.count.get(t);
+        const lo = Math.max(0, pi - 1);
+        const hi = Math.min(count - 1, pi + 1);
+        if (hi > lo) {
+            const a = sampleScreen(s, tx, lo);
+            const b = sampleScreen(s, tx, hi);
+            inp.tangent = Math.atan2(b.y - a.y, b.x - a.x);
+        }
     }
     return inp;
 }
@@ -287,23 +284,17 @@ function normDeg(d: number): number {
     return ((((d + 180) % 360) + 360) % 360) - 180;
 }
 
-/** flash the fired magnet guides in world space (the render pass reads `snapGuides`). the
- *  angle guide hangs off the previous node as a ray (the screen angle inverts to world, the
- *  y-flip) plus a numeric degree label at the snapped point; a snapped length flashes a metre
- *  label near the cursor (the Figma measurement pattern). `snapped` is the resolved drag point
- *  in world coords — the label anchor. */
-function applyGuides(
-    guides: Guide[],
-    tx: ViewTx,
-    prev: { x: number; y: number } | null,
-    snapped: { x: number; y: number },
-): void {
+/** flash the fired magnet guides in world space (the render pass reads `snapGuides`). the angle
+ *  guide draws a tangent ray AT the dragged node along the snapped exit incline (the screen angle
+ *  inverts to world, the y-flip) plus a numeric degree label reading the incline; a snapped length
+ *  flashes a metre label near the cursor (the Figma measurement pattern). `snapped` is the
+ *  resolved drag point in world coords — the ray origin + label anchor. */
+function applyGuides(guides: Guide[], tx: ViewTx, snapped: { x: number; y: number }): void {
     for (const g of guides) {
         if (g.kind === "alignX") snapGuides.x = (g.value - tx.ox) / tx.sx;
         else if (g.kind === "alignY") snapGuides.y = (g.value - tx.oy) / tx.sy;
-        else if (g.kind === "angle" && prev) {
-            const w = screenToWorld(tx, prev.x, prev.y);
-            snapGuides.ray = { x: w.x, y: w.y, angle: -g.value };
+        else if (g.kind === "angle") {
+            snapGuides.ray = { x: snapped.x, y: snapped.y, angle: -g.value };
             snapGuides.angleLabel = {
                 x: snapped.x,
                 y: snapped.y,
@@ -365,12 +356,10 @@ function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
     reheadOnDrag(ecs, eid);
 }
 
-/** advance a tangent-handle drag: fold in the grab offset, snap the handle point against the
- *  polar magnet around the node (the 15° angle raster only — same resolver as the node drag,
- *  pivoting on the node; length snap dropped for handles), then write the edited tangent. the
- *  first move of an `Auto`
- *  node's ghost handle seeds the explicit tangent from the arc rule (the direct-manipulation
- *  summon — continuous, no jump) before editing. */
+/** advance a tangent-handle drag: fold in the grab offset, map to world, and write the edited
+ *  tangent. handle drags do NOT snap — a bezier handle is a free direct-manipulation gesture, no
+ *  raster, no guides. the first move of an `Auto` node's ghost handle seeds the explicit tangent
+ *  from the arc rule (the direct-manipulation summon — continuous, no jump) before editing. */
 function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): void {
     if (!dragTangent) return;
     const s = trackSamples(ecs);
@@ -380,38 +369,7 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
     const order = Handle.order.get(eid);
     const tx = viewTransform(canvas);
     const { x: cx, y: cy } = pointerToCanvas(canvas, e);
-    const hx = cx + grabHX;
-    const hy = cy + grabHY;
-    const pivot = sampleScreen(s, tx, Handle.sample.get(eid));
-
-    clearGuides();
-    let worldX: number;
-    let worldY: number;
-    if (snapActive(e.ctrlKey || e.metaKey)) {
-        // a handle drag snaps the ANGLE raster only — `pxPerMeter: 0` drops the length family
-        // (the resolver gates it on `pxPerMeter > 0`), so the resolver stays untouched and the
-        // handle length is never quantised (length snap on handles deferred, spec stage 6).
-        const inp: SnapInput = {
-            px: hx,
-            py: hy,
-            prev: pivot, // the handle rotates around its own node — the polar origin
-            tangent: null,
-            incoming: null,
-            alignX: [],
-            alignY: [],
-            pxPerMeter: 0,
-            lock: null,
-        };
-        const res = resolveSnap(inp);
-        const w = screenToWorld(tx, res.px, res.py);
-        worldX = w.x;
-        worldY = w.y;
-        applyGuides(res.guides, tx, pivot, { x: worldX, y: worldY });
-    } else {
-        const w = screenToWorld(tx, hx, hy);
-        worldX = w.x;
-        worldY = w.y;
-    }
+    const { x: worldX, y: worldY } = screenToWorld(tx, cx + grabHX, cy + grabHY);
 
     // summon explicit on the first move of an Auto ghost (seed both sides from the arc rule so
     // the coupled side keeps its natural length), then edit the dragged side.
@@ -434,6 +392,12 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         e.preventDefault(); // suppress the browser menu; ours takes over
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
+        // in tangent edit, right-click ON the edited node opens the tangent-mode menu (the app's
+        // context-menu language) — the summoned mode surface, replacing the deleted dots button.
+        if (editor.tangentEdit !== null && pickNode(ecs, tx, cx, cy) === editor.tangentEdit) {
+            openTangentMenu(e.clientX, e.clientY, editor.tangentEdit);
+            return;
+        }
         const sec = pickSection(ecs, tx, cx, cy);
         if (sec !== null) openContext(e.clientX, e.clientY, sec); // right-click a section span → menu
     };
@@ -566,7 +530,7 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             const w = screenToWorld(tx, res.px, res.py);
             tgtX = w.x;
             tgtY = w.y;
-            applyGuides(res.guides, tx, inp.prev, { x: tgtX, y: tgtY });
+            applyGuides(res.guides, tx, { x: tgtX, y: tgtY });
         }
         dragTo(ecs, dragNode, tgtX, tgtY);
     };
