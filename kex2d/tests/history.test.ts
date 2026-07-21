@@ -23,6 +23,7 @@ import {
     handleAt,
     handleTangent,
     reheadOnDrag,
+    resetTangent,
     SectionKind,
     sectionForces,
     sectionHandles,
@@ -281,26 +282,58 @@ test("convert force→geo undoes byte-identical to the authored force points", (
 test("tangent edit: the move gesture captures it, undo/redo restore mode + vectors", () => {
     const { state, sec } = nodes();
     const h = createHistory();
-    addNode(state, sec, 40, 0); // node 1 interior, node 2 the tip
-    expect(handleTangent(state, sec, 1)).toBeUndefined(); // Auto to start
+    addNode(state, sec, 40, 0); // node 1 interior (stamped Aligned on append), node 2 the Auto tip
+    expect(handleTangent(state, sec, 2)).toBeUndefined(); // the tip is Auto to start
 
     // a no-op gesture (no edit) records nothing — the sameTangent path.
     beginMove(state, sec);
     commit(h);
     expect(h.undo.length).toBe(0);
 
-    // edit the tangent inside a move gesture — nodeSnapshot captures it, so commit
+    // edit the tip's tangent inside a move gesture — nodeSnapshot captures it, so commit
     // records one entry (the existing history mechanism, unchanged).
     const tan = { mode: TangentMode.Free, inX: 5, inY: -2, outX: 3, outY: 6 };
     beginMove(state, sec);
-    setTangent(state, sec, 1, tan);
+    setTangent(state, sec, 2, tan);
     commit(h);
     expect(h.undo.length).toBe(1);
-    expect(handleTangent(state, sec, 1)).toEqual(tan);
+    expect(handleTangent(state, sec, 2)).toEqual(tan);
 
     undo(h);
-    expect(handleTangent(state, sec, 1)).toBeUndefined(); // reverted to Auto
+    expect(handleTangent(state, sec, 2)).toBeUndefined(); // reverted to Auto
 
     redo(h);
-    expect(handleTangent(state, sec, 1)).toEqual(tan); // restored verbatim
+    expect(handleTangent(state, sec, 2)).toEqual(tan); // restored verbatim
+});
+
+test("resetTangent: the move gesture makes it undoable (interior re-infer + tip clear)", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    addNode(state, sec, 40, 12); // node 1 interior (stamped Aligned), node 2 the tip
+    addNode(state, sec, 70, 4); // node 2 now interior (stamped), node 3 the tip
+
+    // author a Free corner on interior node 1, then Reset inside a move gesture → re-inferred
+    // Aligned, undoable as one entry.
+    setTangent(state, sec, 1, { mode: TangentMode.Free, inX: 2, inY: 9, outX: 9, outY: -2 });
+    const before1 = handleTangent(state, sec, 1);
+    beginMove(state, sec);
+    resetTangent(state, sec, 1);
+    commit(h);
+    expect(h.undo.length).toBe(1);
+    expect(handleTangent(state, sec, 1)?.mode).toBe(TangentMode.Aligned); // re-inferred
+
+    undo(h);
+    expect(handleTangent(state, sec, 1)).toEqual(before1); // the Free corner restored verbatim
+    redo(h);
+    expect(handleTangent(state, sec, 1)?.mode).toBe(TangentMode.Aligned);
+
+    // Reset the tip (node 3): it clears back to live (Auto), undoable.
+    setTangent(state, sec, 3, { mode: TangentMode.Free, inX: 5, inY: 5, outX: 5, outY: 5 });
+    beginMove(state, sec);
+    resetTangent(state, sec, 3);
+    commit(h);
+    expect(handleTangent(state, sec, 3)).toBeUndefined(); // live again
+
+    undo(h);
+    expect(handleTangent(state, sec, 3)?.mode).toBe(TangentMode.Free); // the authored tip restored
 });

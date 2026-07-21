@@ -9,7 +9,7 @@ import {
     place,
     type Section as SectionSpec,
 } from "./section";
-import { autoTangent, type Node, reflect, type Tangent, type TangentMode } from "./spline";
+import { autoTangent, type Node, reflect, type Tangent, TangentMode } from "./spline";
 
 /** whether a section is authored as GEOMETRY (drag nodes in the viewport, recover
  *  the force) or FORCE (place points on the force curve, integrate the geometry) —
@@ -406,14 +406,39 @@ export function addNode(ecs: State, sectionId: number, x: number, y: number): nu
     Handle.order.set(eid, order);
     Handle.sample.set(eid, 0);
     Handle.pos.set(eid, x, y);
-    writeTangent(eid, undefined); // a fresh node is Auto — the arc rule
+    writeTangent(eid, undefined); // a fresh node is Auto — the arc rule (the live growth tip)
     if (prev === null) {
         Handle.theta.set(eid, 0); // node 0 is a fixed local flat anchor (the entry)
     } else {
         const chord = Math.atan2(y - Handle.pos.y.get(prev), x - Handle.pos.x.get(prev));
-        Handle.theta.set(eid, reflect(Handle.theta.get(prev), chord));
+        Handle.theta.set(eid, reflect(exitHeading(prev), chord));
+        // the old tip is now interior — freeze its inferred arc-rule tangents as authored
+        // `Aligned` so it holds absolute bezier from here on (byte-continuous stamp).
+        stampTip(ecs, sectionId, prev);
     }
     return eid;
+}
+
+/** a node's exit heading — the direction its curve leaves along. an explicit node exits along
+ *  its stored out-vector (the departure tangent); an `Auto` node exits along its stored heading
+ *  `theta` (the arc rule points the handle exactly there). the append direction and the `reflect`
+ *  seed derive from this, so an explicit tip appends along the visible curve, not a stale
+ *  `Handle.theta` (which explicit tangents decouple from the recovered heading). */
+function exitHeading(eid: number): number {
+    const tan = readTangent(eid);
+    return tan ? Math.atan2(tan.outY, tan.outX) : Handle.theta.get(eid);
+}
+
+/** freeze a node that was the live growth tip and is now becoming interior: stamp its inferred
+ *  arc-rule tangents as authored `Aligned`. byte-continuous — `seedTangent` writes exactly what
+ *  the `Auto` bake was producing (`spline.autoTangent` reproduces the bake's own tangent), so
+ *  appending past the tip never disturbs the earlier curve. skips node 0 (the entry anchor, never
+ *  a shape tip) and a node already explicit (a deliberately-authored tip, not re-frozen). */
+function stampTip(ecs: State, sectionId: number, eid: number): void {
+    if (Handle.order.get(eid) === 0) return;
+    if (readTangent(eid) !== undefined) return;
+    const seed = seedTangent(ecs, sectionId, Handle.order.get(eid), TangentMode.Aligned);
+    if (seed) writeTangent(eid, seed);
 }
 
 /** resolve a node by its section + stable `order` to its eid, or null. undo/redo
@@ -597,7 +622,26 @@ function headLast(handles: number[]): void {
         Handle.pos.y.get(last) - Handle.pos.y.get(prev),
         Handle.pos.x.get(last) - Handle.pos.x.get(prev),
     );
-    Handle.theta.set(last, reflect(Handle.theta.get(prev), chord));
+    Handle.theta.set(last, reflect(exitHeading(prev), chord));
+}
+
+/** the Reset action: re-infer a node's tangents from its current chords. an interior node stamps
+ *  the re-inferred arc-rule vectors as authored `Aligned` (concrete bezier); the growth tip clears
+ *  back to absent = live (Auto inference resumes, its heading re-derived). does not itself record
+ *  history — a gesture (`beginMove`/`commit`) wraps it, `nodeSnapshot` captures the tangent + theta
+ *  for undo. */
+export function resetTangent(ecs: State, sectionId: number, order: number): void {
+    const handles = sectionHandles(ecs, sectionId);
+    if (handles.length === 0) return;
+    const eid = handleAt(ecs, sectionId, order);
+    if (eid === null) return;
+    if (eid === handles[handles.length - 1]) {
+        writeTangent(eid, undefined); // the tip clears to live
+        headLast(handles); // refresh its heading (it tracks its predecessor again)
+        return;
+    }
+    const seed = seedTangent(ecs, sectionId, order, TangentMode.Aligned);
+    if (seed) writeTangent(eid, seed);
 }
 
 /** refresh headings after a node is dragged. the **last** (heading) node always
@@ -622,7 +666,10 @@ export function reheadOnDrag(ecs: State, eid: number): void {
 export function extend(ecs: State, sectionId: number): number {
     const last = lastHandle(ecs, sectionId);
     if (last === null) return addNode(ecs, sectionId, 0, 0);
-    const th = Handle.theta.get(last);
+    // continue along the tip's actual exit — its explicit out-vector when authored, else its
+    // stored heading (the arc rule exits exactly along `theta`). placing straight along the exit
+    // makes `reflect` return it, so the new segment opens straight.
+    const th = exitHeading(last);
     const lx = Handle.pos.x.get(last);
     const ly = Handle.pos.y.get(last);
     return addNode(

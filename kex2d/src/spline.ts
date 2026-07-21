@@ -19,9 +19,10 @@
  *  a node may instead carry an *explicit* tangent (`Node.tangent`, the summoned
  *  inner layer): its in/out tangent vectors are stored absolute in the node's
  *  local frame (the Figma/Blender bezier convention — a handle holds its length
- *  under an anchor drag, unlike the live-chord-proportional `Auto` arc). `Aligned`
- *  keeps the two collinear (one direction, per-side length); `Free` lets them
- *  diverge, so a corner (C0 kink) becomes expressible. `handle()` is the only seam
+ *  under an anchor drag, unlike the live-chord-proportional `Auto` arc). `Mirror`
+ *  keeps the two collinear and equal length (one handle mirrored); `Aligned` keeps
+ *  them collinear with per-side length; `Free` lets them diverge, so a corner (C0
+ *  kink) becomes expressible. `handle()` is the only seam
  *  where a heading becomes a tangent, so `Auto` (no `tangent`) stays byte-identical
  *  to the arc rule while explicit nodes substitute their stored vector there.
  *
@@ -53,16 +54,18 @@ const FINE = 32;
  *  bounded there; the segment is the accepted misshaping, not a blow-up. */
 const K_MAX = 4;
 
-/** a node's tangent authoring mode. `Auto` (the default, represented by an absent
- *  `Node.tangent`) derives both tangents from the stored heading via the arc rule;
- *  `Aligned` and `Free` supply explicit stored vectors, honored verbatim in
- *  `handle()`. `Aligned` keeps the in/out vectors collinear (the UI's invariant, one
- *  authored direction with per-side length); `Free` allows a C0 corner. the substrate
- *  reads the vectors the same way for both — the mode is authoring metadata (which
- *  handle drag rotates the other) that rides through storage and undo. */
+/** a node's tangent authoring mode (Figma's mirroring taxonomy). `Auto` (the default,
+ *  represented by an absent `Node.tangent`) derives both tangents from the stored heading
+ *  via the arc rule; `Mirror`, `Aligned`, and `Free` supply explicit stored vectors,
+ *  honored verbatim in `handle()`. `Mirror` keeps the in/out vectors collinear AND equal
+ *  length (one authored handle, mirrored through the node); `Aligned` keeps them collinear
+ *  with per-side length (one direction, two lengths); `Free` allows a C0 corner. the
+ *  substrate reads the vectors the same way for all three — the mode is authoring metadata
+ *  (which handle drag rotates/mirrors the other) that rides through storage and undo. */
 export enum TangentMode {
     Aligned = 1,
     Free = 2,
+    Mirror = 3,
 }
 
 /** an explicit tangent on a node: the in/out tangent vectors (segment-space,
@@ -164,10 +167,11 @@ export function handleTip(tan: Tangent, side: "in" | "out"): [number, number] {
 
 /** edit a tangent by dragging one handle to the segment-local visual offset `(offX, offY)`
  *  from the node (the `handleTip` space — its inverse). `Free` moves only the dragged side.
- *  `Aligned` keeps the two collinear: the dragged side sets the shared forward direction and
- *  its own length, the other side keeps its length rotated onto that direction — dragging one
- *  handle's direction rotates both, lengths stay per-side. a degenerate drag onto the node
- *  (zero offset) is ignored, since it has no direction to align to. */
+ *  `Mirror` mirrors angle AND length: both sides become the dragged forward vector. `Aligned`
+ *  keeps the two collinear: the dragged side sets the shared forward direction and its own
+ *  length, the other side keeps its length rotated onto that direction — dragging one handle's
+ *  direction rotates both, lengths stay per-side. a degenerate drag onto the node (zero offset)
+ *  is ignored for `Mirror`/`Aligned`, since it has no direction to align to. */
 export function editTangent(tan: Tangent, side: "in" | "out", offX: number, offY: number): Tangent {
     // the out-handle stores the offset directly; the in-handle stores its negation (the
     // inverse of `handleTip`, so a round-trip is exact).
@@ -178,10 +182,14 @@ export function editTangent(tan: Tangent, side: "in" | "out", offX: number, offY
     }
     const len = Math.hypot(sx, sy);
     if (len < EPS) return tan;
+    if (tan.mode === TangentMode.Mirror) {
+        // both sides equal the dragged forward vector — angle and length mirrored.
+        return { mode: tan.mode, inX: sx, inY: sy, outX: sx, outY: sy };
+    }
     const dx = sx / len;
     const dy = sy / len;
-    // the dragged side takes the new length; the other keeps its own, rotated onto the
-    // shared direction.
+    // Aligned: the dragged side takes the new length; the other keeps its own, rotated onto
+    // the shared direction.
     const inLen = side === "in" ? len : Math.hypot(tan.inX, tan.inY);
     const outLen = side === "out" ? len : Math.hypot(tan.outX, tan.outY);
     return {
@@ -219,6 +227,28 @@ export function alignTangent(tan: Tangent): Tangent {
         outX: dx * outLen,
         outY: dy * outLen,
     };
+}
+
+/** collinearize AND equalize a tangent onto one shared forward vector — what switching to
+ *  `Mirror` does (angle and length both mirrored). the survivor is the out (departure) handle
+ *  when it has length, else the in handle; a fully degenerate tangent keeps its zeroed vectors.
+ *  both sides become the survivor's vector, so an Aligned tangent's shorter side grows/shrinks
+ *  to match the survivor rather than the switch silently keeping two lengths the mode forbids. */
+export function mirrorTangent(tan: Tangent): Tangent {
+    const outLen = Math.hypot(tan.outX, tan.outY);
+    const inLen = Math.hypot(tan.inX, tan.inY);
+    let vx: number;
+    let vy: number;
+    if (outLen >= EPS) {
+        vx = tan.outX;
+        vy = tan.outY;
+    } else if (inLen >= EPS) {
+        vx = tan.inX;
+        vy = tan.inY;
+    } else {
+        return { ...tan, mode: TangentMode.Mirror };
+    }
+    return { mode: TangentMode.Mirror, inX: vx, inY: vy, outX: vx, outY: vy };
 }
 
 /** cubic Hermite point on the segment between `pa` (s=0) and `pb` (s=1). `va` /

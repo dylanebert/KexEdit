@@ -20,10 +20,7 @@ import {
     extend,
     type ForcePointState,
     forcePointState,
-    Handle,
-    handleAt,
     joinNext,
-    lastHandle,
     type NodeState,
     nodeSnapshot,
     removeTrailingHandle,
@@ -41,7 +38,6 @@ import {
     snapshotAll,
     snapshotSection,
     spawnForce,
-    spawnNode,
     splitForce,
     splitGeo,
     type TrackV0State,
@@ -142,49 +138,31 @@ export function cancel(): void {
 
 // ── geo nodes ──────────────────────────────────────────────────────────────────
 
-/** extend a section's chain (lay a node past the tip), recording an undoable add.
- *  extend never reheads the predecessor, so undo is a plain removal and redo
- *  re-spawns verbatim. returns the new node's eid. */
+/** extend a section's chain (lay a node past the tip), recording an undoable add. `extend`
+ *  stamps the old tip (Auto → frozen `Aligned`) as it becomes interior, so the command captures
+ *  the whole section before/after — undo reverts both the added node and the stamp. returns the
+ *  new node's eid. */
 export function extendTrack(h: History, ecs: State, section: number): number {
+    const before = snapshotSection(ecs, section);
     const eid = extend(ecs, section);
-    const order = Handle.order.get(eid);
-    const x = Handle.pos.x.get(eid);
-    const y = Handle.pos.y.get(eid);
-    const theta = Handle.theta.get(eid);
+    const after = snapshotSection(ecs, section);
     record(h, {
-        apply: () => spawnNode(ecs, section, order, x, y, theta),
-        reverse: () => destroyAt(ecs, section, order),
+        apply: () => restoreSection(ecs, after),
+        reverse: () => restoreSection(ecs, before),
     });
     return eid;
 }
 
-/** trim a section's trailing node, recording an undoable remove. `removeTrailingHandle`
- *  reheads the promoted tip, so the command captures that neighbour's theta before and
- *  after. no-op below the two-node floor (records nothing, returns false). */
+/** trim a section's trailing node, recording an undoable remove. `removeTrailingHandle` reheads
+ *  the promoted tip, so the command captures the whole section before/after (pose + heading +
+ *  the trimmed node's tangent). no-op below the two-node floor (records nothing, returns false). */
 export function trimTrack(h: History, ecs: State, section: number): boolean {
-    const last = lastHandle(ecs, section);
-    if (last === null) return false;
-    const order = Handle.order.get(last);
-    const x = Handle.pos.x.get(last);
-    const y = Handle.pos.y.get(last);
-    const theta = Handle.theta.get(last);
-    // the tip the trim promotes; its heading re-derives on removal.
-    const tip = handleAt(ecs, section, order - 1);
-    const tipThetaBefore = tip === null ? 0 : Handle.theta.get(tip);
-
+    const before = snapshotSection(ecs, section);
     if (!removeTrailingHandle(ecs, section)) return false;
-
-    const tipAfter = handleAt(ecs, section, order - 1);
-    const tipThetaAfter = tipAfter === null ? tipThetaBefore : Handle.theta.get(tipAfter);
+    const after = snapshotSection(ecs, section);
     record(h, {
-        apply: () => {
-            destroyAt(ecs, section, order);
-            setTheta(ecs, section, order - 1, tipThetaAfter);
-        },
-        reverse: () => {
-            spawnNode(ecs, section, order, x, y, theta);
-            setTheta(ecs, section, order - 1, tipThetaBefore);
-        },
+        apply: () => restoreSection(ecs, after),
+        reverse: () => restoreSection(ecs, before),
     });
     return true;
 }
@@ -197,16 +175,6 @@ export function beginMove(ecs: State, section: number): void {
         (s: NodeState[]) => restoreNodes(ecs, section, s),
         sameNodes,
     );
-}
-
-function destroyAt(ecs: State, section: number, order: number): void {
-    const eid = handleAt(ecs, section, order);
-    if (eid !== null) ecs.destroy(eid);
-}
-
-function setTheta(ecs: State, section: number, order: number, theta: number): void {
-    const eid = handleAt(ecs, section, order);
-    if (eid !== null) Handle.theta.set(eid, theta);
 }
 
 // ── force points ─────────────────────────────────────────────────────────────

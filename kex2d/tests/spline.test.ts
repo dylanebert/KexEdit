@@ -6,6 +6,7 @@ import {
     editTangent,
     handleTip,
     MAX_U_PER_EDGE,
+    mirrorTangent,
     type Node,
     reflect,
     sampleAt,
@@ -463,6 +464,104 @@ describe("editTangent / handleTip — the handle-drag math", () => {
         const [x, y] = autoTangent(Math.PI / 6, Math.PI / 6, 10);
         expect(x).toBeCloseTo(10 * Math.cos(Math.PI / 6), 6);
         expect(y).toBeCloseTo(10 * Math.sin(Math.PI / 6), 6);
+    });
+});
+
+describe("editTangent / mirrorTangent — Mirror mode", () => {
+    test("Mirror: dragging out sets both sides to the dragged forward vector (angle + length)", () => {
+        const t: Tangent = { mode: TangentMode.Mirror, inX: 4, inY: 0, outX: 6, outY: 0 };
+        const e = editTangent(t, "out", 0, 5); // drag out to (0, 5)
+        expect([e.outX, e.outY]).toEqual([0, 5]);
+        expect([e.inX, e.inY]).toEqual([0, 5]); // in mirrors it exactly — same direction and length
+        // both handles draw collinear through the node (out forward, in opposite).
+        expect(handleTip(e, "out")).toEqual([0, 5]);
+        expect(handleTip(e, "in")).toEqual([-0, -5]);
+    });
+
+    test("Mirror: dragging in mirrors onto out too, through the negated-visual convention", () => {
+        // the in-handle's visual offset (3, 6) stores as the forward arrival vector (−3, −6); Mirror
+        // sets the out-vector equal, so both stored vectors are (−3, −6).
+        const t: Tangent = { mode: TangentMode.Mirror, inX: 5, inY: 0, outX: 5, outY: 0 };
+        const e = editTangent(t, "in", 3, 6);
+        expect([e.inX, e.inY]).toEqual([-3, -6]);
+        expect([e.outX, e.outY]).toEqual([-3, -6]);
+        expect(handleTip(e, "in")).toEqual([3, 6]); // the dragged in-handle round-trips
+    });
+
+    test("Mirror: a degenerate drop onto the node leaves the tangent unchanged", () => {
+        const t: Tangent = { mode: TangentMode.Mirror, inX: 4, inY: 0, outX: 4, outY: 0 };
+        expect(editTangent(t, "out", 0, 0)).toEqual(t);
+    });
+
+    test("mirrorTangent: an Aligned tangent equalizes onto the out (survivor) length", () => {
+        // in length 4, out length 6, both +x → switching to Mirror keeps the out (departure) side
+        // and grows in to match: both become (6, 0).
+        const t: Tangent = { mode: TangentMode.Aligned, inX: 4, inY: 0, outX: 6, outY: 0 };
+        const m = mirrorTangent(t);
+        expect(m.mode).toBe(TangentMode.Mirror);
+        expect([m.outX, m.outY]).toEqual([6, 0]);
+        expect([m.inX, m.inY]).toEqual([6, 0]);
+    });
+
+    test("mirrorTangent: a Free corner collinearizes AND equalizes onto the out direction", () => {
+        // in points +y (length 3), out points +x (length 6) — a corner. Mirror takes the out
+        // vector for both: (6, 0) and (6, 0).
+        const free: Tangent = { mode: TangentMode.Free, inX: 0, inY: 3, outX: 6, outY: 0 };
+        const m = mirrorTangent(free);
+        expect(m.mode).toBe(TangentMode.Mirror);
+        expect(m.outX).toBeCloseTo(6, 12);
+        expect(m.outY).toBeCloseTo(0, 12);
+        expect(m.inX).toBeCloseTo(6, 12);
+        expect(m.inY).toBeCloseTo(0, 12);
+    });
+
+    test("mirrorTangent: a zero out-handle falls back to the in vector for both sides", () => {
+        const t: Tangent = { mode: TangentMode.Free, inX: 0, inY: 5, outX: 0, outY: 0 };
+        const m = mirrorTangent(t);
+        expect([m.inX, m.inY]).toEqual([0, 5]);
+        expect([m.outX, m.outY]).toEqual([0, 5]); // out grows to match the survivor
+    });
+});
+
+describe("sampleChain — stamp-on-append byte continuity", () => {
+    test("stamping a node's inferred tangents reproduces the Auto curve byte-identically", () => {
+        // the stamp-on-append contract: freezing a live tip's arc-rule tangents as an explicit
+        // Aligned tangent must write *exactly* what inference was producing, so the baked curve is
+        // byte-identical across the stamp. this is the pure-spline core (f64 vectors, strict ===);
+        // the ECS realization stores f32, so track.ts tests it with a tolerance.
+        const nodes = withThetas([
+            { x: 0, y: 0 },
+            { x: 12, y: 5 },
+            { x: 28, y: 9 },
+            { x: 44, y: 4 },
+        ]);
+        const a = makeBuf(MAX);
+        const ra = sampleChain(nodes, DS, a.posX, a.posY, a.ds, MAX);
+
+        // stamp interior node 1: an Aligned tangent whose in/out are the arc-rule vector along the
+        // live chord to the previous / next node — exactly `outVec`/`inVec`'s Auto branch.
+        const i = 1;
+        const inAng = Math.atan2(nodes[i].y - nodes[i - 1].y, nodes[i].x - nodes[i - 1].x);
+        const inLen = Math.hypot(nodes[i].x - nodes[i - 1].x, nodes[i].y - nodes[i - 1].y);
+        const outAng = Math.atan2(nodes[i + 1].y - nodes[i].y, nodes[i + 1].x - nodes[i].x);
+        const outLen = Math.hypot(nodes[i + 1].x - nodes[i].x, nodes[i + 1].y - nodes[i].y);
+        const [ix, iy] = autoTangent(nodes[i].theta, inAng, inLen);
+        const [ox, oy] = autoTangent(nodes[i].theta, outAng, outLen);
+        const stamped = nodes.map((n) => ({ ...n }));
+        stamped[i] = {
+            ...stamped[i],
+            tangent: { mode: TangentMode.Aligned, inX: ix, inY: iy, outX: ox, outY: oy },
+        };
+
+        const b = makeBuf(MAX);
+        const rb = sampleChain(stamped, DS, b.posX, b.posY, b.ds, MAX);
+        expect(rb.edges).toBe(ra.edges);
+        expect(rb.offsets).toEqual(ra.offsets);
+        for (let k = 0; k <= ra.edges; k++) {
+            expect(b.posX[k]).toBe(a.posX[k]); // strict === — byte-identical
+            expect(b.posY[k]).toBe(a.posY[k]);
+        }
+        for (let k = 0; k < ra.edges; k++) expect(b.ds[k]).toBe(a.ds[k]);
     });
 });
 
