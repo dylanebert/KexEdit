@@ -3,7 +3,7 @@ import { cartPose, cartState } from "./cart";
 import { COLOR_ACCENT, COLOR_GUIDE_RAY, kindSegments, selected } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
-import { tangentHandles } from "./tangents";
+import { editHandleSets } from "./tangents";
 import { bakeOut, Handle, handleTangent, samples, sectionInfo, sections, Track } from "./track";
 import { Canvas2D, resize, snapGuides, viewTransform } from "./view";
 
@@ -314,7 +314,9 @@ const TANGENT_KNOB = 3.5; // half-size of a handle knob square (px)
 /** the tangent-edited node's handles: an arm from the node to each in/out knob. an *explicit*
  *  node draws solid filled knobs (the authored inner layer); a live tip draws hollow ghost
  *  knobs — the affordance a first drag stamps into an explicit tangent. only the node in
- *  tangent-edit mode (double-clicked) shows any, so mere selection stays uncluttered. */
+ *  tangent-edit mode (double-clicked) shows any, so mere selection stays uncluttered. at a
+ *  geo→geo boundary an extra set draws the downstream node-0's out-handle (the stitch, one node
+ *  in two halves), each set colored by its OWN explicit/ghost state. */
 const TangentDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
@@ -326,49 +328,51 @@ const TangentDrawSystem: System = {
         for (const trackEid of ecs.query([Track])) {
             const s = samples.get(trackEid);
             if (!s) continue;
-            const handles = tangentHandles(ecs, s, tx, sel);
-            if (handles.length === 0) continue;
-            const i = Handle.sample.get(sel);
-            const nx = tx.ox + s.posX[i] * tx.sx;
-            const ny = tx.oy + s.posY[i] * tx.sy;
-            const explicit =
-                handleTangent(ecs, Handle.section.get(sel), Handle.order.get(sel)) !== undefined;
+            for (const set of editHandleSets(ecs, s, tx, sel)) {
+                if (set.handles.length === 0) continue;
+                const i = Handle.sample.get(set.eid);
+                const nx = tx.ox + s.posX[i] * tx.sx;
+                const ny = tx.oy + s.posY[i] * tx.sy;
+                const explicit =
+                    handleTangent(ecs, Handle.section.get(set.eid), Handle.order.get(set.eid)) !==
+                    undefined;
 
-            ctx.save();
-            // the arms — thin, subtle, drawn under the knobs.
-            ctx.strokeStyle = "rgba(240, 236, 232, 0.55)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            for (const h of handles) {
-                ctx.moveTo(nx, ny);
-                ctx.lineTo(h.x, h.y);
-            }
-            ctx.stroke();
-            // the knobs — a small square (the bezier-handle convention, distinct from the round
-            // node). explicit = filled accent; ghost = hollow light outline.
-            for (const h of handles) {
+                ctx.save();
+                // the arms — thin, subtle, drawn under the knobs.
+                ctx.strokeStyle = "rgba(240, 236, 232, 0.55)";
+                ctx.lineWidth = 1;
                 ctx.beginPath();
-                ctx.rect(
-                    h.x - TANGENT_KNOB,
-                    h.y - TANGENT_KNOB,
-                    TANGENT_KNOB * 2,
-                    TANGENT_KNOB * 2,
-                );
-                if (explicit) {
-                    ctx.fillStyle = COLOR_ACCENT;
-                    ctx.strokeStyle = "#0e0d0c";
-                    ctx.lineWidth = 1;
-                    ctx.fill();
-                    ctx.stroke();
-                } else {
-                    ctx.fillStyle = "#0e0d0c";
-                    ctx.strokeStyle = "rgba(240, 236, 232, 0.7)";
-                    ctx.lineWidth = 1;
-                    ctx.fill();
-                    ctx.stroke();
+                for (const h of set.handles) {
+                    ctx.moveTo(nx, ny);
+                    ctx.lineTo(h.x, h.y);
                 }
+                ctx.stroke();
+                // the knobs — a small square (the bezier-handle convention, distinct from the round
+                // node). explicit = filled accent; ghost = hollow light outline.
+                for (const h of set.handles) {
+                    ctx.beginPath();
+                    ctx.rect(
+                        h.x - TANGENT_KNOB,
+                        h.y - TANGENT_KNOB,
+                        TANGENT_KNOB * 2,
+                        TANGENT_KNOB * 2,
+                    );
+                    if (explicit) {
+                        ctx.fillStyle = COLOR_ACCENT;
+                        ctx.strokeStyle = "#0e0d0c";
+                        ctx.lineWidth = 1;
+                        ctx.fill();
+                        ctx.stroke();
+                    } else {
+                        ctx.fillStyle = "#0e0d0c";
+                        ctx.strokeStyle = "rgba(240, 236, 232, 0.7)";
+                        ctx.lineWidth = 1;
+                        ctx.fill();
+                        ctx.stroke();
+                    }
+                }
+                ctx.restore();
             }
-            ctx.restore();
         }
     },
 };

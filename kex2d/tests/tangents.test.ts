@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import { handleTip, TangentMode } from "../src/spline";
-import { localTipAt, tangentHandles } from "../src/tangents";
+import { editHandleSets, localTipAt, stitchNode, tangentHandles } from "../src/tangents";
 import {
     addNode,
     appendSection,
@@ -10,6 +10,7 @@ import {
     createTrack,
     Handle,
     handleAt,
+    lastHandle,
     reheadOnDrag,
     samples,
     SectionKind,
@@ -78,5 +79,95 @@ describe("tangentHandles ∘ localTipAt inverse", () => {
             const err = Math.hypot(local[0] - expected[0], local[1] - expected[1]);
             expect(err).toBeLessThan(tol(expected[0], expected[1]));
         }
+    });
+});
+
+// node 0 (the section entry anchor) is editable now: it exposes a single OUT-handle — the entry
+// handle, the direction + length of the first segment leaving the section. its in-handle drives no
+// segment, so it never shows. and at a geo→geo boundary the upstream tip's tangent edit stitches in
+// the downstream section's node-0 out-handle (the one node the boundary really is), whose drag
+// writes the downstream section's own tangent.
+describe("node-0 entry handle + boundary stitch", () => {
+    const tx = cameraTx({ zoom: 1, ox: 0, oy: 0 });
+
+    test("node 0 shows only its out-handle (the entry handle), never an in-handle", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 24, 0);
+        state.step(0);
+        const s = samples.get(eid);
+        const node0 = handleAt(state, a, 0);
+        if (!s || node0 === null) throw new Error("setup missing");
+        const sides = tangentHandles(state, s, tx, node0).map((h) => h.side);
+        expect(sides).toEqual(["out"]);
+    });
+
+    test("stitchNode resolves a geo→geo boundary tip to the downstream node 0, and not otherwise", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 24, 0);
+        const b = appendSection(state, SectionKind.Geo); // B seeded with node 0 + node 1
+        state.step(0);
+
+        const tipA = lastHandle(state, a);
+        const node0B = handleAt(state, b, 0);
+        if (tipA === null || node0B === null) throw new Error("setup missing");
+        expect(stitchNode(state, tipA)).toBe(node0B); // the boundary is one node, stitched
+
+        // the downstream node 0 isn't itself a chain tip, so it stitches nothing (no runaway chain).
+        expect(stitchNode(state, node0B)).toBeNull();
+    });
+
+    test("a force downstream section is not stitched (only geo→geo)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 24, 0);
+        appendSection(state, SectionKind.Force);
+        state.step(0);
+        const tipA = lastHandle(state, a);
+        if (tipA === null) throw new Error("tip missing");
+        expect(stitchNode(state, tipA)).toBeNull();
+    });
+
+    test("editHandleSets on a boundary tip carries the downstream node-0 out-handle for write-through", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 24, 0);
+        const b = appendSection(state, SectionKind.Geo);
+        state.step(0);
+        const s = samples.get(eid);
+        const tipA = lastHandle(state, a);
+        const node0B = handleAt(state, b, 0);
+        if (!s || tipA === null || node0B === null) throw new Error("setup missing");
+
+        const sets = editHandleSets(state, s, tx, tipA);
+        // the tip's own set (its in-handle — a chain end has no out) + the stitched downstream set.
+        const stitchSet = sets.find((set) => set.eid === node0B);
+        expect(stitchSet).toBeDefined();
+        expect(stitchSet?.handles.map((h) => h.side)).toEqual(["out"]);
+
+        // the write-through: authoring the stitched node-0 tangent (as the drag does, via that set's
+        // own eid → its section) reshapes section B's first segment. `samples` is one reused buffer,
+        // so read the flat default into a number BEFORE the re-bake overwrites it in place.
+        const start = Handle.sample.get(node0B);
+        const yBefore = s.posY[start + 2];
+        setTangent(state, b, 0, { mode: TangentMode.Free, inX: 1, inY: 0, outX: 20, outY: 20 });
+        state.step(0);
+        const s2 = samples.get(eid);
+        if (!s2) throw new Error("bake missing");
+        // a sample a couple past the boundary now rides higher than the flat default did.
+        expect(s2.posY[start + 2]).toBeGreaterThan(yBefore);
     });
 });

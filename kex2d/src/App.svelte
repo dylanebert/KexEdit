@@ -21,18 +21,19 @@ import {
     extendTrack,
     history,
     removeSection,
+    resetTangents,
     trimTrack,
 } from "./history";
 import Menu from "./Menu.svelte";
 import type { MenuItem } from "./menu";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
+import { stitchNode } from "./tangents";
 import Timeline from "./Timeline.svelte";
 import {
     bakeOut,
     Handle,
     handleTangent,
     lastHandle,
-    resetTangent,
     samples,
     SectionKind,
     sectionAt,
@@ -238,12 +239,17 @@ const nodeMode = $derived.by((): TangentMode => {
     return tan ? tan.mode : TangentMode.Aligned;
 });
 // whether the target node carries a stored tangent — Reset's enablement (it's a no-op on a
-// live-inferred node), the same structural move as the context menu's derived Delete.
+// live-inferred node), the same structural move as the context menu's derived Delete. at a geo→geo
+// boundary the tip and the coincident downstream node 0 are one node, so Reset is live when EITHER
+// half carries a tangent (it clears both).
 const nodeHasTangent = $derived.by((): boolean => {
     void tick;
     const m = editor.nodeMenu;
     if (m === null) return false;
-    return handleTangent(ecs, Handle.section.get(m.eid), Handle.order.get(m.eid)) !== undefined;
+    if (handleTangent(ecs, Handle.section.get(m.eid), Handle.order.get(m.eid)) !== undefined)
+        return true;
+    const stitch = stitchNode(ecs, m.eid);
+    return stitch !== null && handleTangent(ecs, Handle.section.get(stitch), 0) !== undefined;
 });
 // whether the target node's handles are summoned (in tangent edit) — the Handles toggle's check.
 const nodeEditing = $derived.by((): boolean => {
@@ -253,10 +259,20 @@ const nodeEditing = $derived.by((): boolean => {
 });
 // the node menu as data (the shared MenuItem language): a Handles toggle over a Tangents submenu
 // (the three modes carry their `checked`; Reset carries its derived enablement, after a separator).
+// node 0 (the entry anchor) is the exception — its handle is a single free entry handle (direction
+// + length, no coupled in-side), so it carries NO mode submenu: just Handles + Reset (back to the
+// Auto C1 exit).
 const nodeItems = $derived.by((): MenuItem[] => {
     const m = editor.nodeMenu;
     if (m === null) return [];
     const eid = m.eid;
+    if (Handle.order.get(eid) === 0) {
+        return [
+            { label: "Handles", checked: nodeEditing, action: () => toggleHandles(eid) },
+            { separator: true },
+            { label: "Reset tangent", enabled: nodeHasTangent, action: () => doReset(eid) },
+        ];
+    }
     return [
         { label: "Handles", checked: nodeEditing, action: () => toggleHandles(eid) },
         {
@@ -314,11 +330,11 @@ function pickMode(target: TangentMode, eid: number): void {
     commit(history);
 }
 
-// Reset: clear the node's tangent back to live (Auto inference resumes). one undo entry.
+// Reset: clear the node's tangent back to live (Auto inference resumes). one undo entry. at a
+// geo→geo boundary tip the coincident downstream node-0 tangent is cleared in the same entry (the
+// stitched "one node" view); everywhere else the stitch is null and it's a plain single-node reset.
 function doReset(eid: number): void {
-    beginMove(ecs, Handle.section.get(eid));
-    resetTangent(ecs, Handle.section.get(eid), Handle.order.get(eid));
-    commit(history);
+    resetTangents(history, ecs, eid, stitchNode(ecs, eid));
 }
 
 // dismiss the node menu on any outside press or Escape (clicks on the menu pass through so

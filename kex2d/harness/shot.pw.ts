@@ -239,6 +239,100 @@ test("tangent edit flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
+// Drive the START-HANDLE EDIT flow (kex2d-geo-ux stage 1): the section entry (node 0) is now
+// selectable + its tangent editable. The START diamond and the first section's node 0 are
+// coincident at the origin, so a plain click selects the START (v0 popover) while a DOUBLE-CLICK
+// reaches node 0's entry handle. Frame the default flat seed → double-click the START → assert node
+// 0 (order 0) entered tangent edit with no stored tangent (Auto) → drag its OUT-handle (the single
+// free entry handle) → assert an authored tangent + a re-bake → RIGHT-CLICK the START for node 0's
+// menu (Handles + Reset ONLY — no mode submenu) → Reset clears it back to live. Every affordance is
+// a real canvas pointer event located via __kex (canvas-drawn handles carry no DOM box); the node
+// menu is asserted for the ABSENCE of a "Tangents" submenu, the node-0 menu's distinguishing shape.
+test("start handle edit flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+    const editing = () => page.evaluate((): boolean => (window as any).__kex.editing());
+    const selectedOrder = () =>
+        page.evaluate((): number | null => (window as any).__kex.selectedOrder());
+    const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
+    const startAt = () =>
+        page.evaluate((): { x: number; y: number } | null => (window as any).__kex.startAt());
+    const tangent = () =>
+        page.evaluate(
+            (): { mode: number; inX: number; inY: number; outX: number; outY: number } | null =>
+                (window as any).__kex.tangent(),
+        );
+    const handles = () =>
+        page.evaluate(
+            (): { side: string; x: number; y: number }[] => (window as any).__kex.tangentHandles(),
+        );
+
+    // the default flat seed bakes on load — no seedHill, so the START diamond at the origin sits
+    // clear of shape nodes (node 1 is a full EXTEND_DIST out). frame it so the entry handle
+    // separates at pixel scale (hover defaults to the viewport, so `f` routes there).
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await page.keyboard.press("f");
+    await page.waitForTimeout(SETTLE_MS);
+
+    const canvas = page.locator("#app > canvas");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+
+    // ── 1. DOUBLE-CLICK the START diamond → node 0 (order 0) enters tangent edit; its single
+    // out-handle (the entry handle) draws. no stamp — node 0 is inferred (Auto). ──
+    const sp = await startAt();
+    if (!sp) throw new Error("START point not located");
+    await page.mouse.dblclick(cb.x + sp.x, cb.y + sp.y);
+    await expect.poll(editing).toBe(true);
+    expect(await selectedOrder()).toBe(0); // the entry anchor, reached at the START
+    expect(await tangent()).toBeNull(); // Auto — the default flow stamps nothing
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(OUT, "start-1-summon.png") });
+
+    // ── 2. Drag the OUT-handle up → the entry handle is authored (a single free handle) and the
+    // first segment re-bakes (the recovered force, so the ride time, shifts). ──
+    const out = (await handles()).find((h) => h.side === "out");
+    if (!out) throw new Error("node-0 out-handle not exposed at the START");
+    const tBefore = await tTotal();
+    await page.mouse.move(cb.x + out.x, cb.y + out.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + out.x, cb.y + out.y - 60, { steps: 12 }); // up = +world y
+    await page.mouse.up();
+
+    const dragged = await tangent();
+    expect(dragged).not.toBeNull();
+    if (!dragged) throw new Error("tangent null after the entry-handle drag");
+    expect(dragged.mode).toBe(2); // TangentMode.Free — node 0's single free handle
+    expect(Math.hypot(dragged.outX, dragged.outY)).toBeGreaterThan(0.1); // a real authored vector
+    await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-4).toBe(true);
+    expect(await undoDepth()).toBeGreaterThan(0);
+    await page.screenshot({ path: join(OUT, "start-2-drag.png") });
+
+    // ── 3. RIGHT-CLICK the START → node 0's menu: Handles + Reset ONLY, no mode submenu (the
+    // single-free-handle shape). assert the "Tangents" submenu is ABSENT, then Reset back to live. ──
+    await page.mouse.click(cb.x + sp.x, cb.y + sp.y, { button: "right" });
+    await expect(page.locator(".nodemenu")).toBeVisible();
+    await expect(
+        page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents", exact: true }),
+    ).toHaveCount(0); // no mode submenu on node 0
+    await expect(page.locator(".nodemenu").getByRole("menuitem", { name: "Handles" })).toBeVisible();
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(OUT, "start-3-menu.png") });
+    await page.locator(".nodemenu").getByRole("menuitem", { name: "Reset tangent" }).click();
+    await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
 // Screenshot the TIMELINE TOOL RAIL (kex2d-authoring-surface): the thin icon-only strip on the
 // dock's left edge that is the snap magnet's home (the Premiere vertical tool-strip precedent, a
 // dock affordance — not a viewport overlay, not a second dock). Assert the toggle's lit/dimmed

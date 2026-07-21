@@ -25,7 +25,7 @@ import {
 import { type Guide, resolveSnap, type SnapInput } from "./magnet";
 import { localize } from "./section";
 import { editTangent, TangentMode } from "./spline";
-import { localTipAt, type TangentSide, tangentHandles } from "./tangents";
+import { editHandleSets, localTipAt, type TangentSide } from "./tangents";
 import {
     Handle,
     handleAt,
@@ -33,6 +33,7 @@ import {
     lastHandle,
     reheadOnDrag,
     samples,
+    SectionKind,
     sectionInfo,
     sections,
     seedTangent,
@@ -135,8 +136,13 @@ function nodeWorld(
     return { x: s.posX[i], y: s.posY[i] };
 }
 
-/** nearest **draggable** node to the screen point, within the pick radius, or null.
- *  node 0 of every section is the entry anchor (pinned), so it isn't pickable. */
+/** nearest **draggable** node to the screen point, within the pick radius, or null. node 0 of
+ *  every section is the entry anchor (pinned) — never draggable, so it's skipped here. it stays
+ *  *pickable* (selectable + tangent-editable) through the two paths that reach it without the
+ *  coincidence ambiguity a plain `pickNode` would hit at a boundary (node 0 sits under either the
+ *  START diamond or the upstream tip): the START fall-through (the first section's node 0,
+ *  `startNode0`) and the boundary stitch (an interior node 0 summoned by tangent-editing its
+ *  coincident tip, `editHandleSets`). */
 function pickNode(ecs: State, tx: ViewTx, sx: number, sy: number): number | null {
     const s = trackSamples(ecs);
     if (!s) return null;
@@ -194,7 +200,9 @@ function pickStart(ecs: State, tx: ViewTx, sx: number, sy: number): boolean {
 /** the tangent-edited node's handle nearest the screen point (within the grab radius), or
  *  null — the summoned inner layer: only the node in tangent-edit mode exposes handles
  *  (explicit ones solid, a live tip's arc-rule ghosts), and they're picked before the node so
- *  a handle over its node still grabs. */
+ *  a handle over its node still grabs. at a geo→geo boundary the set also carries the downstream
+ *  node-0's out-handle (the stitch); a grab there returns that node's eid, so the drag writes the
+ *  downstream section's tangent. */
 function pickTangentHandle(
     ecs: State,
     tx: ViewTx,
@@ -207,16 +215,29 @@ function pickTangentHandle(
     if (!s) return null;
     let best: { eid: number; side: TangentSide; x: number; y: number } | null = null;
     let bestD2 = TANGENT_PICK_R * TANGENT_PICK_R;
-    for (const h of tangentHandles(ecs, s, tx, sel)) {
-        const dx = sx - h.x;
-        const dy = sy - h.y;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestD2) {
-            bestD2 = d2;
-            best = { eid: sel, side: h.side, x: h.x, y: h.y };
+    for (const set of editHandleSets(ecs, s, tx, sel)) {
+        for (const h of set.handles) {
+            const dx = sx - h.x;
+            const dy = sy - h.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                best = { eid: set.eid, side: h.side, x: h.x, y: h.y };
+            }
         }
     }
     return best;
+}
+
+/** node 0 of the first section (the one at order 0) when it is geo, else null — the START
+ *  diamond and this node 0 are coincident at the world origin, so a plain click selects the
+ *  START (its v0 popover) while a double-click / right-click reaches node 0 for its entry
+ *  handle. null when the first section is force (no geo node 0 to edit). */
+function startNode0(ecs: State): number | null {
+    const rows = sections(ecs);
+    const first = rows[0]; // order 0
+    if (!first || first.kind !== SectionKind.Geo) return null;
+    return handleAt(ecs, first.id, 0);
 }
 
 /** true when the selection is its section's chain end — the node `extend` / `delete`
@@ -330,8 +351,9 @@ export function nodeMetrics(
  *  dimensions idiom): reads the baked world samples and defers to `nodeMetrics`. the exit incline
  *  shows for a section's growth tip — the same `lastHandle` split the magnet's incline family uses,
  *  flanking the node's sample (one-sided at a chain end); an interior node gets the chord length
- *  only. null when the selection has no previous node (node 0 isn't selectable, so a real selection
- *  always does — the guard is defensive). world-space, so no view transform. */
+ *  only. null when the selection has no previous node — node 0 (the entry anchor, now selectable
+ *  for its entry handle) has no chord back into its own section, so this keeps the chord/incline
+ *  readout off it (a load-bearing guard, not defensive). world-space, so no view transform. */
 export function selectedMetrics(ecs: State, eid: number): NodeMetrics | null {
     const s = trackSamples(ecs);
     if (!s) return null;
@@ -436,10 +458,13 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
     const { x: worldX, y: worldY } = screenToWorld(tx, cx + grabHX, cy + grabHY);
 
     // summon explicit on the first move of an Auto ghost (seed both sides from the arc rule so
-    // the coupled side keeps its natural length), then edit the dragged side.
+    // the coupled side keeps its natural length), then edit the dragged side. node 0 (the entry
+    // anchor) is a single **free** handle — it drives only its out-segment, so there is no in-side
+    // to couple; an interior node seeds Aligned (the collinear default).
     let tan = handleTangent(ecs, section, order);
     if (tan === undefined) {
-        const seed = seedTangent(ecs, section, order, TangentMode.Aligned);
+        const mode = order === 0 ? TangentMode.Free : TangentMode.Aligned;
+        const seed = seedTangent(ecs, section, order, mode);
         if (!seed) return;
         setTangent(ecs, section, order, seed);
         tan = seed;
@@ -457,13 +482,23 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
         // right-click ON a pickable node (any mode) opens the NODE context menu: Handles +
-        // Tangents. `pickNode` skips the order-0 entry anchors, so node 0 falls through to the
-        // section menu (it has no node menu). selecting the node reads it highlighted.
+        // Tangents. `pickNode` skips the order-0 entry anchors — but the first section's node 0
+        // (coincident with the START diamond) IS reachable here: with no draggable node under the
+        // cursor, a right-click at the START opens node 0's own menu (Handles + Reset). selecting
+        // the node reads it highlighted.
         const node = pickNode(ecs, tx, cx, cy);
         if (node !== null) {
             select(node);
             openNodeMenu(e.clientX, e.clientY, node);
             return;
+        }
+        if (pickStart(ecs, tx, cx, cy)) {
+            const n0 = startNode0(ecs);
+            if (n0 !== null) {
+                select(n0);
+                openNodeMenu(e.clientX, e.clientY, n0);
+                return;
+            }
         }
         const sec = pickSection(ecs, tx, cx, cy);
         if (sec !== null) openContext(e.clientX, e.clientY, sec); // right-click a section span → menu
@@ -538,16 +573,25 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
     };
 
     // double-click a node → enter tangent edit (Figma's vector-edit summon): its handles
-    // appear (the same toggle as the node menu's Handles item). node 0 (the entry anchor) isn't
-    // pickable, so it can't be edited. an empty double-click does nothing (single-click already
-    // deselects). the two constituent clicks each select the node; this fires after, so the
-    // final state is the node selected + in edit.
+    // appear (the same toggle as the node menu's Handles item). `pickNode` skips the order-0
+    // anchors, but a double-click at the START (no draggable node there) reaches the first
+    // section's node 0 for its entry handle; at an interior geo→geo boundary the double-click
+    // lands on the coincident tip, whose tangent edit stitches in node 0's out-handle. an empty
+    // double-click does nothing (single-click already deselects). the two constituent clicks each
+    // select the node; this fires after, so the final state is the node selected + in edit.
     const onDblClick = (e: MouseEvent): void => {
         if (e.button !== 0) return;
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
         const eid = pickNode(ecs, tx, cx, cy);
-        if (eid !== null) enterTangentEdit(eid);
+        if (eid !== null) {
+            enterTangentEdit(eid);
+            return;
+        }
+        if (pickStart(ecs, tx, cx, cy)) {
+            const n0 = startNode0(ecs);
+            if (n0 !== null) enterTangentEdit(n0);
+        }
     };
 
     const onPointerMove = (e: PointerEvent): void => {

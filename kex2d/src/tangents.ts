@@ -5,13 +5,23 @@
  *
  *  a handle shows only for a side that drives a segment — the in-handle needs an arriving
  *  segment (a previous node), the out-handle a departing one (a next node) — so a chain end
- *  shows no out-handle and node 0 (the entry anchor) never shows any. an *explicit* node draws
- *  its stored vectors; a *selected `Auto`* node draws its live arc-rule tangents as a ghost
- *  affordance, the direct-manipulation summon (a drag pulls it into an explicit tangent). */
+ *  shows no out-handle and node 0 (the entry anchor) shows only its **out-handle**: the entry
+ *  handle (direction + length of the first segment leaving the section), its in-handle driving
+ *  no segment. an *explicit* node draws its stored vectors; a *selected `Auto`* node draws its
+ *  live arc-rule tangents as a ghost affordance, the direct-manipulation summon (a drag pulls
+ *  it into an explicit tangent). */
 
 import type { State } from "@dylanebert/shallot";
 import { autoTangent, handleTip } from "./spline";
-import { Handle, handleAt, handleTangent, sectionInfo } from "./track";
+import {
+    Handle,
+    handleAt,
+    handleTangent,
+    lastHandle,
+    SectionKind,
+    sectionInfo,
+    sections,
+} from "./track";
 import type { ViewTx } from "./view";
 
 export type TangentSide = "in" | "out";
@@ -84,6 +94,39 @@ export function tangentHandles(ecs: State, s: Samples, tx: ViewTx, eid: number):
         out.push({ side, x: tx.ox + (nwx + wx) * tx.sx, y: tx.oy + (nwy + wy) * tx.sy });
     }
     return out;
+}
+
+/** the downstream node-0 stitched to a boundary tip, or null — the geo→geo boundary is two
+ *  coincident entities (the upstream section's tip + the downstream section's node 0, the
+ *  rigid-placement invariant). tangent-editing the tip additionally summons the downstream
+ *  node-0's out-handle; this resolves that node. fires only when `eid` is its section's chain
+ *  tip AND the next section (by order) is geo — the one node the boundary really is. */
+export function stitchNode(ecs: State, eid: number): number | null {
+    const section = Handle.section.get(eid);
+    if (eid !== lastHandle(ecs, section)) return null; // not a boundary tip
+    const rows = sections(ecs); // sorted by order
+    const idx = rows.findIndex((r) => r.id === section);
+    const next = idx >= 0 ? rows[idx + 1] : undefined;
+    if (!next || next.kind !== SectionKind.Geo) return null;
+    return handleAt(ecs, next.id, 0);
+}
+
+/** a node whose handles the tangent-edit surface renders + grabs: the eid to write against
+ *  and its visible handles in screen px. */
+export interface EditHandleSet {
+    eid: number;
+    handles: TangentHandle[];
+}
+
+/** the handle sets the tangent-edit mode exposes for the summoned node `sel`: its own handles,
+ *  plus — when `sel` is a geo→geo boundary tip — the downstream node-0's out-handle (the
+ *  boundary stitch). render draws every set; a handle grab writes against its set's own eid
+ *  (so the downstream node-0's handle authors the downstream section's tangent). */
+export function editHandleSets(ecs: State, s: Samples, tx: ViewTx, sel: number): EditHandleSet[] {
+    const sets: EditHandleSet[] = [{ eid: sel, handles: tangentHandles(ecs, s, tx, sel) }];
+    const stitch = stitchNode(ecs, sel);
+    if (stitch !== null) sets.push({ eid: stitch, handles: tangentHandles(ecs, s, tx, stitch) });
+    return sets;
 }
 
 /** invert a world point to the segment-local visual offset from a node — the `editTangent`

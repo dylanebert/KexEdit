@@ -614,13 +614,13 @@ function headLast(handles: number[]): void {
     Handle.theta.set(last, reflect(exitHeading(prev), chord));
 }
 
-/** the Reset action: clear a node's explicit tangent back to live (`Auto` inference resumes). now
- *  meaningful for any node, since interiors are live by default: an interior re-uses its frozen
- *  arc-rule heading, the growth tip re-tracks its predecessor (its heading re-derived). does not
- *  itself record history — a gesture (`beginMove`/`commit`) wraps it, `nodeSnapshot` captures the
- *  tangent + theta for undo. node 0 (the entry anchor) is never authored, so it's a no-op there. */
+/** the Reset action: clear a node's explicit tangent back to live (`Auto` inference resumes).
+ *  meaningful for any node: an interior re-uses its frozen arc-rule heading, the growth tip
+ *  re-tracks its predecessor (its heading re-derived), and node 0 (the entry anchor, editable via
+ *  its out-handle) returns to the `Auto` C1 exit along the entry heading. does not itself record
+ *  history — a gesture (`beginMove`/`commit`) wraps it, `nodeSnapshot` captures the tangent + theta
+ *  for undo. node 0 is never the chain tip, so it never triggers the tip re-head. */
 export function resetTangent(ecs: State, sectionId: number, order: number): void {
-    if (order === 0) return;
     const handles = sectionHandles(ecs, sectionId);
     if (handles.length === 0) return;
     const eid = handleAt(ecs, sectionId, order);

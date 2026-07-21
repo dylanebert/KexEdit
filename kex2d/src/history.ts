@@ -27,6 +27,7 @@ import {
     type NodeState,
     nodeSnapshot,
     removeTrailingHandle,
+    resetTangent,
     restoreAll,
     restoreNodes,
     restoreSection,
@@ -208,6 +209,31 @@ export function trimTrack(h: History, ecs: State, section: number): boolean {
     const after = snapshotSection(ecs, section);
     record(h, restoreCommand(ecs, before, after, restoreSection));
     return true;
+}
+
+/** Reset a node's tangent(s) back to live (`Auto`), as one undoable entry. `stitch` is the
+ *  downstream node-0 eid coincident with `tip` when `tip` is a geo→geo boundary (the "one node,
+ *  stitched at the UI" view — kex2d-geo-ux): then the Reset clears BOTH halves, the tip's own
+ *  tangent and the downstream section's node-0 tangent, each through its own section's reset path.
+ *  `null` is the plain single-node reset (the START node 0, an interior node, or a final tip). The
+ *  affected sections (one or two) go in one command, so a single undo restores every cleared half;
+ *  records nothing if nothing changed (an enablement-gated Reset always clears something, but the
+ *  guard keeps a stray invocation off the undo stack). Uses `restoreNodes` (writes by stable order,
+ *  no eid recycle), matching the tangent-edit gesture — so the node selection stays valid without a
+ *  reconcile. */
+export function resetTangents(h: History, ecs: State, tip: number, stitch: number | null): void {
+    const secs = [Handle.section.get(tip)];
+    if (stitch !== null && !secs.includes(Handle.section.get(stitch)))
+        secs.push(Handle.section.get(stitch));
+    const before = secs.map((s) => nodeSnapshot(ecs, s));
+    resetTangent(ecs, Handle.section.get(tip), Handle.order.get(tip));
+    if (stitch !== null) resetTangent(ecs, Handle.section.get(stitch), Handle.order.get(stitch));
+    const after = secs.map((s) => nodeSnapshot(ecs, s));
+    if (secs.every((_, i) => sameNodes(before[i], after[i]))) return; // nothing cleared
+    const restore = (snap: NodeState[][]): void => {
+        for (let i = 0; i < secs.length; i++) restoreNodes(ecs, secs[i], snap[i]);
+    };
+    record(h, { apply: () => restore(after), reverse: () => restore(before) });
 }
 
 /** open a gesture on a node drag, snapshotting the section's pose. commit coalesces

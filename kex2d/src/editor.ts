@@ -156,7 +156,9 @@ export function select(eid: number | null): void {
 
 /** enter tangent-edit mode on a node — the summon (double-click). selects the node (clearing
  *  the other selections) and layers the edit sub-mode on it, so its handles render and grab.
- *  node 0 (the entry anchor) has no editable tangent — a no-op there. */
+ *  node 0 (the entry anchor) is editable too — it exposes its single out-handle (the entry
+ *  handle), reached at the START diamond or, at a geo→geo boundary, stitched onto its coincident
+ *  upstream tip. */
 export function enterTangentEdit(eid: number): void {
     editor.selection = eid;
     editor.force = null;

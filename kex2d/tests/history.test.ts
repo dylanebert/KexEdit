@@ -13,9 +13,11 @@ import {
     deleteForce,
     extendTrack,
     redo,
+    resetTangents,
     trimTrack,
     undo,
 } from "../src/history";
+import { stitchNode } from "../src/tangents";
 import {
     addNode,
     createSection,
@@ -435,4 +437,58 @@ test("selection clears when the node doesn't survive the restore", () => {
 
     expect(editor.selection).toBeNull();
     expect(editor.tangentEdit).toBeNull();
+});
+
+// the boundary Reset (kex2d-geo-ux stage 1): a geo→geo boundary is one node at the UI — the
+// upstream tip + the coincident downstream section's node 0. Reset on the tip's node menu clears
+// BOTH halves back to Auto in ONE undoable entry (each through its own section's reset path), so a
+// single undo restores both. `resetTangents(tip, stitch)` is that grouping; `stitch === null`
+// elsewhere is the plain single-node reset.
+test("boundary Reset clears both the tip and the stitched downstream node-0 tangent, one undo", () => {
+    const state = new State();
+    createTrack(state);
+    const a = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, a, 0, 0);
+    addNode(state, a, 24, 0);
+    const b = createSection(state, 1, SectionKind.Geo, 0);
+    addNode(state, b, 0, 0);
+    addNode(state, b, 24, 0);
+
+    const tipA = handleAt(state, a, 1);
+    const node0B = handleAt(state, b, 0);
+    if (tipA === null || node0B === null) throw new Error("setup missing");
+    expect(stitchNode(state, tipA)).toBe(node0B); // the boundary is one node, stitched
+
+    // author both halves: the tip's own tangent AND the downstream node-0 entry handle.
+    setTangent(state, a, 1, { mode: TangentMode.Free, inX: 3, inY: 9, outX: 9, outY: -3 });
+    setTangent(state, b, 0, { mode: TangentMode.Free, inX: 1, inY: 0, outX: 8, outY: 4 });
+
+    const h = createHistory();
+    resetTangents(h, state, tipA, stitchNode(state, tipA));
+    // both halves cleared back to live (Auto), one undo entry for the pair.
+    expect(handleTangent(state, a, 1)).toBeUndefined();
+    expect(handleTangent(state, b, 0)).toBeUndefined();
+    expect(h.undo.length).toBe(1);
+
+    // one Ctrl+Z restores BOTH halves (the single-transaction requirement).
+    undo(h);
+    expect(handleTangent(state, a, 1)).toBeDefined();
+    expect(handleTangent(state, b, 0)).toBeDefined();
+});
+
+// the non-boundary path: with no stitch (the START node 0, an interior node, a final tip), Reset
+// clears exactly the one node, one entry.
+test("single-node Reset (no stitch) clears just that node", () => {
+    const { state, sec } = nodes();
+    addNode(state, sec, 40, 15); // [0,1,2]
+    setTangent(state, sec, 1, { mode: TangentMode.Free, inX: 3, inY: 9, outX: 9, outY: -3 });
+    const tip = handleAt(state, sec, 1);
+    if (tip === null) throw new Error("node missing");
+
+    const h = createHistory();
+    resetTangents(h, state, tip, null);
+    expect(handleTangent(state, sec, 1)).toBeUndefined();
+    expect(h.undo.length).toBe(1);
+    undo(h);
+    expect(handleTangent(state, sec, 1)).toBeDefined();
 });

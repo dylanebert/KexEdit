@@ -60,7 +60,8 @@ if (import.meta.env.DEV) {
         selectEnd: (): void => select(lastHandle(ecs, sec())),
         // select an interior/end node by order — the tangent flow authors an explicit
         // tangent on an interior node (both in/out handles), which selectEnd (chain end,
-        // one handle) can't reach. node 0 is the pinned entry anchor, so it's excluded.
+        // one handle) can't reach. node 0 is reached through the START (`startAt` + a
+        // double-click), not this order selector, so it's skipped here.
         selectNode: (order: number): void => {
             if (order === 0) return;
             const eid = handleAt(ecs, sec(), order);
@@ -98,9 +99,24 @@ if (import.meta.env.DEV) {
         // whether a node is in tangent-edit mode (double-click summon) — the flow asserts the
         // double-click entered it before driving the dots submenu + handle drag. read-only.
         editing: (): boolean => editor.tangentEdit !== null,
+        // the selected node's per-section order, or null — the START-handle flow asserts the
+        // double-click at the START reached node 0 (order 0), the entry anchor.
+        selectedOrder: (): number | null =>
+            editor.selection === null ? null : Handle.order.get(editor.selection),
+        // the START diamond's screen point (canvas-local px) — sample 0, the world origin the
+        // first section's node 0 sits at. the START-handle flow double-/right-clicks here to reach
+        // node 0's entry handle (nodeAt(0) is null by contract, so this is its locator).
+        startAt: (): { x: number; y: number } | null => {
+            const s = samples.get(track);
+            const canvas = Canvas2D.element;
+            if (!s || !canvas) return null;
+            const tx = viewTransform(canvas);
+            return { x: tx.ox + s.posX[0] * tx.sx, y: tx.oy + s.posY[0] * tx.sy };
+        },
         // a node's screen point (canvas-local px) — where the flow double-clicks to enter
         // tangent edit. mirrors tangentHandles: canvas-drawn nodes carry no DOM box, so this is
-        // their locator. node 0 (the entry anchor) isn't editable, so it's excluded.
+        // their locator. node 0's locator is `startAt` (the coincident START diamond), so this
+        // order selector skips it — the two locators stay separate.
         nodeAt: (order: number): { x: number; y: number } | null => {
             if (order === 0) return null;
             const eid = handleAt(ecs, sec(), order);
@@ -112,7 +128,8 @@ if (import.meta.env.DEV) {
             return { x: tx.ox + s.posX[i] * tx.sx, y: tx.oy + s.posY[i] * tx.sy };
         },
         // move a node in y — the "drag a node, the curve reacts" step, without pixels.
-        // node 0 is the pinned entry anchor, so it's never nudged.
+        // node 0's position is pinned at the local origin (the entry anchor never moves,
+        // even though its tangent is now editable), so nudging it is a no-op.
         nudge: (order: number, dy: number): void => {
             if (order === 0) return;
             const eid = handleAt(ecs, sec(), order);

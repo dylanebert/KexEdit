@@ -666,10 +666,60 @@ describe("tangent model (feel round 2)", () => {
         expect(Handle.theta.get(tip)).toBeCloseTo(2 * chord - exit2, 6);
     });
 
-    test("resetTangent no-ops on node 0 (the entry anchor is never authored)", () => {
+    test("resetTangent clears node 0's authored entry handle back to live", () => {
         const { state, sec } = track();
-        addNode(state, sec, 40, 15); // [0, 1, 2]; order 0 is the entry anchor
+        addNode(state, sec, 40, 15); // [0, 1, 2]; node 0 is the entry anchor
+        // node 0 is editable now — its out-vector is the entry handle. author it, then Reset →
+        // cleared back to absent (Auto C1 exit resumes).
+        setTangent(state, sec, 0, { mode: TangentMode.Free, inX: 1, inY: 0, outX: 8, outY: 4 });
+        expect(handleTangent(state, sec, 0)).toBeDefined();
         resetTangent(state, sec, 0);
         expect(handleTangent(state, sec, 0)).toBeUndefined();
+    });
+
+    test("an authored node-0 entry handle shapes the first segment and busts the bake hash", () => {
+        const { state, sec, eid } = track();
+        addNode(state, sec, 40, 0); // [0, 1, 2] flat
+        state.step(0);
+        const hashDefault = bakeOut.get(eid)?.hash;
+        const s = samples.get(eid);
+        if (!s || !hashDefault) throw new Error("bake missing");
+        // sample near the start of the first segment (a few samples past node 0).
+        const yDefault = s.posY[2];
+
+        // author node 0's out-handle to swing the exit up (+y); the first segment must bulge and
+        // the hash must miss (a node-0 tangent is in the hash), forcing a re-bake.
+        setTangent(state, sec, 0, { mode: TangentMode.Free, inX: 1, inY: 0, outX: 20, outY: 20 });
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).not.toBe(hashDefault);
+        const s2 = samples.get(eid);
+        if (!s2) throw new Error("bake missing");
+        expect(s2.posY[2]).toBeGreaterThan(yDefault); // the curve now leaves node 0 rising
+    });
+
+    test("seedTangent at node 0 seeds an out-vector along the chord to node 1", () => {
+        const { state, sec } = track(); // node 0 at origin, node 1 at (EXTEND_DIST, 0) — flat
+        const seed = seedTangent(state, sec, 0, TangentMode.Free);
+        if (!seed) throw new Error("node-0 seed missing");
+        // node 1 sits straight ahead on +x, so the arc-rule out-vector points +x (flat exit).
+        expect(seed.outX).toBeGreaterThan(0);
+        expect(seed.outY).toBeCloseTo(0, 6);
+        // node 0 drives no in-segment, so its in-vector is the bare heading unit (unused by the bake).
+        expect(seed.inX).toBeCloseTo(1, 6);
+        expect(seed.inY).toBeCloseTo(0, 6);
+    });
+
+    // the default-path pin (kex2d-geo-ux stage 1): with NO node-0 tangents authored the bake hash
+    // is byte-identical to the pre-change value — stage 1 is all UI enablement and must not touch
+    // the bake. a node-0 tangent is Auto by default (TANGENT_AUTO), so it contributes NO `~mode:...`
+    // suffix to the hash; this literal was pinned from the pre-change substrate. the section id is a
+    // per-run allocator artifact (`nextSectionId`), not part of the default geometry, so it's
+    // normalized out before the compare. the pin goes red if the default geo bake path ever changes
+    // (a node pose, ds, v0, the hash format, or a node-0 tangent leaking in) — the guard.
+    test("the default flat track bakes to the pinned hash (no node-0 tangents = byte-identical)", () => {
+        const { state, eid } = track(); // node 0 (0,0), node 1 (EXTEND_DIST=24, 0); default ds/v0
+        state.step(0);
+        const hash = (bakeOut.get(eid)?.hash ?? "").replace(/\|S\d+:/g, "|S:"); // drop the allocator id
+        expect(hash).toBe("ds0.5v010|S:0:0,0:0:0,24:0:0");
     });
 });
