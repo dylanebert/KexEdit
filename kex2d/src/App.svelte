@@ -564,17 +564,17 @@ $effect(() => {
             style="transform: translate(calc(-50% + {radial.ext.x}px), calc(-50% + {radial.ext.y}px));"
             onclick={onExtend}
         >
-            <!-- add node: a segment stub laying a new node (the filled dot) at the growing
-                 end — the op is "extend the chain by a node", not the timeline's add-section. -->
+            <!-- add node: a plain "+" (the extend-the-chain op). the timeline's add-section tail
+                 is the clip-shaped glyph, so the two "+" ops are delineated by that side's shape,
+                 not by a busy node-and-segment mark here (unreadable at this size). -->
             <svg viewBox="0 0 14 14" aria-hidden="true">
                 <path
-                    d="M2.5 11.5 L8.4 5.6"
+                    d="M7 2.5 L7 11.5 M2.5 7 L11.5 7"
                     fill="none"
                     stroke="currentColor"
                     stroke-width="1.6"
                     stroke-linecap="round"
                 />
-                <circle cx="10.3" cy="3.7" r="2.7" fill="currentColor" />
             </svg>
         </button>
         {#if handleCount > 2}

@@ -89,6 +89,36 @@ export function armDrag(armed: boolean, dx: number, dy: number): boolean {
     return armed || beyondDeadZone(dx, dy);
 }
 
+// the tangent-handle angle-latch corridor (screen px). a handle drag starts locked to the
+// direction it grabbed at, so pulling the handle out lengthens the tangent without bumping its
+// angle (the AutoCAD/SketchUp polar-tracking feel). the tip stays on the start ray while within
+// this perpendicular half-width of it — so the angular window is DERIVED (px ÷ tip radius, wider
+// near the node, tighter far out), never a hardcoded degree count, the `SNAP_PX` design-constant
+// precedent (`editor-ui.md` Snapping).
+export const LATCH_PX = 8;
+
+/** the tangent-handle angle latch (a polar-tracking corridor). `tipX/tipY` is the candidate handle
+ *  tip relative to its node in screen px; `rayX/rayY` the **unit** start-ray direction captured at
+ *  grab; `latched` whether the latch is still live. While the tip stays within `LATCH_PX` of the ray
+ *  (perpendicular screen distance) the angle locks to the start direction and only length varies —
+ *  the returned tip is the projection onto the ray. Once it clearly leaves, the latch releases and
+ *  the raw tip passes through. Monotonic: once released it stays released for the gesture (the
+ *  `armDrag` dead-zone idiom, opposite polarity — a one-way transition that sticks), so a drift back
+ *  onto the ray does not re-lock the angle. */
+export function latchAngle(
+    tipX: number,
+    tipY: number,
+    rayX: number,
+    rayY: number,
+    latched: boolean,
+): { x: number; y: number; latched: boolean } {
+    if (!latched) return { x: tipX, y: tipY, latched: false };
+    const perp = tipX * rayY - tipY * rayX; // signed perpendicular screen distance from the ray
+    if (Math.abs(perp) > LATCH_PX) return { x: tipX, y: tipY, latched: false };
+    const along = tipX * rayX + tipY * rayY; // projection onto the ray = the latched length
+    return { x: along * rayX, y: along * rayY, latched: true };
+}
+
 let dragNode: number | null = null;
 // whether the node drag has crossed the click-vs-drag dead-zone (DRAG_PX from the grab point).
 // false until it does — below the threshold a release is a plain select, so no node move, magnet,
@@ -100,6 +130,12 @@ let dragTangent: { eid: number; side: TangentSide } | null = null;
 // screen offset knob−cursor captured at grab, so the handle tracks the cursor relatively.
 let grabHX = 0;
 let grabHY = 0;
+// the angle latch for the live tangent drag: `latchLive` is true while the tip is locked to the
+// start ray (`latchRayX/Y`, the unit node→knob direction captured at grab). goes false the first
+// time the pointer clearly leaves the corridor and stays false (the monotonic `latchAngle` idiom).
+let latchLive = false;
+let latchRayX = 0;
+let latchRayY = 0;
 // grab offset (world): the node−under−cursor delta captured at pointerdown, so the
 // node tracks the cursor relatively (grabbing slightly off-center doesn't snap it).
 let grabX = 0;
@@ -455,7 +491,14 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
     const order = Handle.order.get(eid);
     const tx = viewTransform(canvas);
     const { x: cx, y: cy } = pointerToCanvas(canvas, e);
-    const { x: worldX, y: worldY } = screenToWorld(tx, cx + grabHX, cy + grabHY);
+    // the angle latch (a polar-tracking corridor): while the tip stays near the start ray, lock
+    // the angle and let only length vary, so lengthening the handle doesn't bump its direction.
+    // apply it in screen space (the corridor is screen px) against the node's baked screen point.
+    const nsx = tx.ox + s.posX[Handle.sample.get(eid)] * tx.sx;
+    const nsy = tx.oy + s.posY[Handle.sample.get(eid)] * tx.sy;
+    const latch = latchAngle(cx + grabHX - nsx, cy + grabHY - nsy, latchRayX, latchRayY, latchLive);
+    latchLive = latch.latched;
+    const { x: worldX, y: worldY } = screenToWorld(tx, nsx + latch.x, nsy + latch.y);
 
     // summon explicit on the first move of an Auto ghost (seed both sides from the arc rule so
     // the coupled side keeps its natural length), then edit the dragged side. node 0 (the entry
@@ -532,6 +575,20 @@ export function attachControls(canvas: HTMLCanvasElement, ecs: State): () => voi
             dragTangent = { eid: th.eid, side: th.side };
             grabHX = th.x - cx;
             grabHY = th.y - cy;
+            // arm the angle latch: the start ray is the node→knob direction in screen px at grab.
+            // a degenerate (node-coincident) handle has no ray, so it never latches — free drag.
+            const s = trackSamples(ecs);
+            const w = s ? nodeWorld(s, th.eid) : null;
+            const rx = w ? th.x - (tx.ox + w.x * tx.sx) : 0;
+            const ry = w ? th.y - (tx.oy + w.y * tx.sy) : 0;
+            const rl = Math.hypot(rx, ry);
+            if (rl > 1e-6) {
+                latchRayX = rx / rl;
+                latchRayY = ry / rl;
+                latchLive = true;
+            } else {
+                latchLive = false;
+            }
             beginMove(ecs, Handle.section.get(th.eid)); // one gesture; the node snapshot carries the tangent
             beginDrag(canvas, e.pointerId);
             return;

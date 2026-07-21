@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
-import { armDrag, beyondDeadZone, DRAG_PX, formatDeg, nodeMetrics, normDeg } from "../src/controls";
+import {
+    armDrag,
+    beyondDeadZone,
+    DRAG_PX,
+    formatDeg,
+    latchAngle,
+    LATCH_PX,
+    nodeMetrics,
+    normDeg,
+} from "../src/controls";
 import { ANGLE_STEP } from "../src/magnet";
 
 // the snap readout: a 15°-raster incline cancels to a clean integer through the radian→degree
@@ -87,4 +96,50 @@ test("the dead-zone latches — once armed it stays armed even back inside", () 
     expect(armDrag(false, DRAG_PX, 0)).toBe(true);
     // sticky: an armed drag stays armed at zero displacement (no disarm on a cross-back)
     expect(armDrag(true, 0, 0)).toBe(true);
+});
+
+// the tangent-handle angle latch (a polar-tracking corridor): a handle drag starts locked to the
+// direction it grabbed at, so pulling the tip out lengthens the tangent without bumping its angle.
+// the tip stays on the start ray while within LATCH_PX (perpendicular screen px) of it; once it
+// clearly leaves, the latch releases for free rotation and never re-locks (monotonic, the armDrag
+// idiom, opposite polarity). the ray argument is a unit direction; tip is screen px from the node.
+
+test("while latched an on-ray tip passes its length through — angle unchanged", () => {
+    // ray along +x; a tip straight out the ray reports its length, no perpendicular deflection.
+    expect(latchAngle(20, 0, 1, 0, true)).toEqual({ x: 20, y: 0, latched: true });
+    // pulling further out only grows the length — still exactly on the ray.
+    expect(latchAngle(35, 0, 1, 0, true)).toEqual({ x: 35, y: 0, latched: true });
+});
+
+test("a within-corridor deviation stays latched — the angle locks, only length survives", () => {
+    // tip 5 px off the ray (perp = 5 < LATCH_PX): the angle snaps back to the ray, the projected
+    // length (the along component) is what's kept.
+    expect(latchAngle(20, 5, 1, 0, true)).toEqual({ x: 20, y: 0, latched: true });
+});
+
+test("the corridor half-width is LATCH_PX — at the edge it holds, just past it releases", () => {
+    // exactly LATCH_PX perpendicular still latches (≤, the boundary is inclusive)…
+    expect(latchAngle(20, LATCH_PX, 1, 0, true)).toEqual({ x: 20, y: 0, latched: true });
+    // …a hair past it releases and the raw tip passes through (free rotation).
+    const r = latchAngle(20, LATCH_PX + 0.001, 1, 0, true);
+    expect(r.latched).toBe(false);
+    expect(r.x).toBeCloseTo(20, 10);
+    expect(r.y).toBeCloseTo(LATCH_PX + 0.001, 10);
+});
+
+test("the corridor is measured perpendicular in screen px, independent of ray angle", () => {
+    // ray at (0.6, 0.8): a tip 10 along the ray plus 5 px perpendicular projects back to 10·ray.
+    const tipX = 6 - 0.8 * 5; // (6,8) is 10·ray; (−0.8, 0.6) is the unit perpendicular
+    const tipY = 8 + 0.6 * 5;
+    const r = latchAngle(tipX, tipY, 0.6, 0.8, true);
+    expect(r.latched).toBe(true);
+    expect(r.x).toBeCloseTo(6, 10);
+    expect(r.y).toBeCloseTo(8, 10);
+});
+
+test("release is monotonic — once free, a drift back onto the ray never re-locks the angle", () => {
+    // already released: an off-ray tip that WOULD project stays raw (no re-latch) and stays free.
+    expect(latchAngle(20, 5, 1, 0, false)).toEqual({ x: 20, y: 5, latched: false });
+    // even a dead-on-ray tip doesn't re-arm the latch.
+    expect(latchAngle(20, 0, 1, 0, false)).toEqual({ x: 20, y: 0, latched: false });
 });
