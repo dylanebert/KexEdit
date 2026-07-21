@@ -1593,24 +1593,15 @@ onMount(() => {
                         title="Append section"
                         aria-label="Append section"
                     >
-                        <!-- add section: a clip-shaped rounded rect (the marker-lane clip's
-                             own rx) with an add plus — appends a whole section, distinct from
-                             the viewport's add-node. -->
+                        <!-- add section: a plain "+" — the clip-in-a-box mark was unreadable at
+                             16px; delineation from add-node comes from the viewport side's
+                             segment-and-dot glyph. -->
                         <svg viewBox="0 0 16 16" aria-hidden="true">
-                            <rect
-                                x="2"
-                                y="3.5"
-                                width="12"
-                                height="9"
-                                rx="2"
+                            <path
+                                d="M8 3.5 L8 12.5 M3.5 8 L12.5 8"
                                 fill="none"
                                 stroke="currentColor"
-                                stroke-width="1.3"
-                            />
-                            <path
-                                d="M8 6 L8 10 M6 8 L10 8"
-                                stroke="currentColor"
-                                stroke-width="1.3"
+                                stroke-width="1.4"
                                 stroke-linecap="round"
                             />
                         </svg>
