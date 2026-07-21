@@ -10,6 +10,7 @@ import {
     navDragView,
     navWindow,
     niceStep,
+    nodeTickPx,
     pxToS,
     snap,
     SNAP_PX,
@@ -71,6 +72,42 @@ describe("sToPx / pxToS — affine roundtrip", () => {
                 expect(sToPx(v, pxToS(v, px))).toBeCloseTo(px, 9);
             }
         }
+    });
+});
+
+describe("nodeTickPx — read-only geo node tick position", () => {
+    // a 4-edge section, entry at sample 10, a uniform 2m/edge chord — the
+    // partial-sum-of-ds shape a real bake produces for an evenly-spaced segment.
+    const v: View = { pan: 0, pxPerM: 10 };
+    const ds = Float32Array.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2]); // edges 10..13
+    const startSample = 10;
+
+    test("sums ds from the section entry to the node's landing sample, offset by the span", () => {
+        // node at sample 12 (2 edges in: 2+2=4m local arc) inside a section whose own
+        // span starts at global d=50 → 54m, projected through the view.
+        expect(nodeTickPx(v, 50, ds, startSample, 12)).toBeCloseTo(sToPx(v, 54), 9);
+    });
+
+    test("a node landing on the entry sample (order 0) sums to zero — sits at the span offset", () => {
+        expect(nodeTickPx(v, 50, ds, startSample, startSample)).toBeCloseTo(sToPx(v, 50), 9);
+    });
+
+    test("single-segment section: no interior node exists, but the degenerate 2-sample span still resolves at its two ends", () => {
+        // a 2-node section (one edge, samples [startSample, startSample+1]) has no
+        // interior order to tick — the caller skips it — but the math itself must not
+        // blow up on the narrowest possible range.
+        const oneEdge = Float32Array.from([3]);
+        expect(nodeTickPx(v, 0, oneEdge, 0, 0)).toBeCloseTo(sToPx(v, 0), 9);
+        expect(nodeTickPx(v, 0, oneEdge, 0, 1)).toBeCloseTo(sToPx(v, 3), 9);
+    });
+
+    test("degenerate ds (zero-length / near-coincident edges) contribute nothing to the sum", () => {
+        const degenerate = Float32Array.from([0, 0, 0]);
+        expect(nodeTickPx(v, 20, degenerate, 0, 3)).toBeCloseTo(sToPx(v, 20), 9);
+    });
+
+    test("an empty range (sample <= startSample) never reads past the array — sums to zero", () => {
+        expect(nodeTickPx(v, 5, ds, startSample, startSample - 1)).toBeCloseTo(sToPx(v, 5), 9);
     });
 });
 

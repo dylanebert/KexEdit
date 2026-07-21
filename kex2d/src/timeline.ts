@@ -30,6 +30,28 @@ const TARGET_TICK_PX = 80;
 export const sToPx = (v: View, s: number): number => s * v.pxPerM - v.pan;
 export const pxToS = (v: View, px: number): number => (px + v.pan) / v.pxPerM;
 
+/** a geo node's clip-local x (chart-local px, pre-`LEFT_GUT`) for the timeline's read-
+ *  only node ticks: the section's own span offset (`SectionSpan.offset`,
+ *  `sectionSpans`) plus the arclength between the section's entry sample
+ *  (`sectionInfo.startSample`) and the node's own landing sample (`Handle.sample`) —
+ *  the partial sum of `bakeOut.ds` (the whole-track per-edge array) over that
+ *  stretch. A node's timeline position is DERIVED from geometry, never authored
+ *  there (dragging it on this axis is the rejected inverse problem — fit-through-
+ *  the-bake per gesture), so this is a pure forward projection, no inverse. A
+ *  degenerate range (`sample <= startSample`, a zero-length edge in `ds`) sums to 0
+ *  — the loop just doesn't advance, never throws. */
+export function nodeTickPx(
+    v: View,
+    spanOffset: number,
+    ds: Float32Array,
+    startSample: number,
+    sample: number,
+): number {
+    let arc = 0;
+    for (let i = startSample; i < sample; i++) arc += ds[i];
+    return sToPx(v, spanOffset + arc);
+}
+
 /** the axis padding (meters) past the track end — the ONE definition, shared by `clampView`'s
  *  right edge, `frameAll`, `zoomAt`'s zoom floor, and `navWindow`. the floor (`MARGIN_M`)
  *  dominates up to ~417 m, so short tracks frame with a substantial lead-out; past that the

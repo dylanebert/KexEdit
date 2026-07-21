@@ -36,6 +36,7 @@ import {
     navDragView,
     navWindow,
     niceStep,
+    nodeTickPx,
     pxToS,
     snap,
     sToPx,
@@ -52,9 +53,12 @@ import {
 import { sampleForce } from "./profile";
 import {
     bakeOut,
+    Handle,
     MIN_FORCE_LEN,
     SectionKind,
     sectionForces,
+    sectionHandles,
+    sectionInfo,
     sections,
     sectionSpans,
     setForcePoint,
@@ -99,6 +103,7 @@ const CAP_HI = BAND[1] + Y_HEADROOM;
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
+const NODE_TICK_R = 3; // px; a geo section's read-only node-tick circle radius (visual)
 const FHIT_R = 12; // px; the invisible grab/hover radius around a force point (fat pick zone)
 const TIP_HALF = 52; // px; half the point popover's width — clamps it inside the chart
 const TIP_FLIP = 64; // px; a point nearer than this to the chart top flips the popover below
@@ -294,6 +299,42 @@ const clips = $derived.by((): Clip[] => {
         const sp = byId.get(sec.id);
         if (!sp) continue;
         res.push({ id: sec.id, kind: sec.kind, s0: sp.offset, s1: sp.offset + sp.len, len: sec.length });
+    }
+    return res;
+});
+// ── geo node ticks (read-only, kex2d-geo-ux stage 2): a small circle in the marker
+// lane per INTERIOR node of a geo section, positioned via the section's own span
+// offset (`Clip.s0`) plus the partial-sum arclength from `bakeOut.ds` up to the
+// node's landing sample (`nodeTickPx`, timeline.ts). Display + selection-highlight
+// only — no hit-testing, no drag: a node's timeline position is DERIVED from
+// geometry, and dragging it on this axis is the rejected inverse problem (spec
+// `kex2d-geo-ux.md`'s locked decision). Node 0 (the entry) and the section's last
+// baked node (the exit) sit exactly at the clip's own edges — already drawn by the
+// clip strip and the boundary guides — so only orders `[1, bakedNodes-2]` tick; an
+// orphan node past `bakedNodes` (a truncated bake, stale `.sample`) is excluded too.
+interface NodeTick {
+    eid: number;
+    px: number; // chart-local px (pre-LEFT_GUT), like markerX's internal
+    sel: boolean;
+}
+const nodeTicks = $derived.by((): NodeTick[] => {
+    void tick;
+    if (eid === null) return [];
+    const out = bakeOut.get(eid);
+    if (!out) return [];
+    const sel = editor.selection;
+    const res: NodeTick[] = [];
+    for (const c of clips) {
+        if (c.kind !== SectionKind.Geo) continue;
+        const info = sectionInfo.get(c.id);
+        if (!info) continue;
+        const handles = sectionHandles(ecs, c.id);
+        for (let order = 1; order < info.bakedNodes - 1; order++) {
+            const heid = handles[order];
+            if (heid === undefined) continue;
+            const px = nodeTickPx(clamped, c.s0, out.ds, info.startSample, Handle.sample.get(heid));
+            res.push({ eid: heid, px, sel: heid === sel });
+        }
     }
     return res;
 });
@@ -1391,6 +1432,25 @@ onMount(() => {
                     {/each}
                 </g>
             {/if}
+            <!-- geo node ticks: a small read-only circle per interior node, over the
+                 clip strip. no hit-testing (pointer-events off in CSS) — display +
+                 selection-highlight only, per the locked decision above. -->
+            {#if eid !== null && sTotal > 0 && nodeTicks.length > 0}
+                <g class="node-ticks" clip-path="url(#laneclip)">
+                    {#each nodeTicks as nt (nt.eid)}
+                        {@const x = LEFT_GUT + nt.px}
+                        {#if x >= LEFT_GUT - NODE_TICK_R && x <= w + NODE_TICK_R}
+                            <circle
+                                class="node-tick"
+                                class:sel={nt.sel}
+                                cx={x}
+                                cy={RULER_H + GAP_H / 2}
+                                r={NODE_TICK_R}
+                            />
+                        {/if}
+                    {/each}
+                </g>
+            {/if}
             <!-- playhead: a handle in the ruler + a line down through the gap and
                  chart. visual only — the rulerzone above owns the scrub interaction. -->
             {#if playPx !== null}
@@ -1975,6 +2035,24 @@ onMount(() => {
     .clip.force.sel {
         fill: color-mix(in srgb, var(--accent-sel) 60%, transparent);
         stroke: var(--accent-sel);
+    }
+    /* geo node ticks: a small circle per interior node, distinct from the force
+       diamond's shape (circle vs. polygon) AND its kind color (geo blue vs. accent
+       gold — the same kind-color language `.clip.geo`/`.clip.force` above use).
+       read-only: no pointer-events, so it can never be hit-tested or dragged (the
+       locked decision — a node's arclength is derived from geometry). the selected
+       node's tick lifts to `--geo-sel`, the same brightened-own-color idiom the
+       selected clip uses (`colors.ts` `selected()`), never a flat accent recolor. */
+    .node-tick {
+        fill: var(--geo);
+        stroke: #0e0d0c;
+        stroke-width: 1;
+        pointer-events: none;
+    }
+    .node-tick.sel {
+        fill: var(--geo-sel);
+        stroke: var(--fg);
+        stroke-width: 1.4;
     }
     .clip-label {
         fill: var(--fg);
