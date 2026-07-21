@@ -200,6 +200,74 @@ describe("split", () => {
     });
 });
 
+describe("join", () => {
+    test("joining across a boundary with an explicit tangent keeps the baked world curve", () => {
+        // one-sided: A and B are built directly, NOT via splitGeo (a split→join round-trip
+        // would cancel the frame bug — the two re-frames compose back to identity — so it
+        // can't pin `joinNext`'s own use of `headExit`). mirrors the split pin above.
+        //
+        // A's tip (node 2) carries an explicit Mirror tangent whose direction is far from its
+        // stored `Handle.theta` (a stale leftover from `reflect`, unused once a tangent is
+        // explicit) — the exact decoupling `headExit` must resolve against the RECOVERED exit,
+        // not the stale stored heading. B's entry node is given the world-equal tangent
+        // (rotated into B's own local frame) so the two-section bake's departure from the
+        // boundary matches what the join will produce once A's tip's own vector goes live —
+        // isolating the assertion to whether `headExit` places B's downstream node at the
+        // right world position, not a re-authoring of the departure itself.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+        ])
+            addNode(state, a, x, y);
+        const mag = 15;
+        const ang = 1.2;
+        const wx = mag * Math.cos(ang);
+        const wy = mag * Math.sin(ang);
+        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
+
+        const b = appendSection(state, SectionKind.Geo);
+        state.step(0); // learn B's actual recovered entry frame (A's real exit, not a guess)
+        const infoB = sectionInfo.get(b);
+        if (!infoB) throw new Error("section B info missing");
+        const phi = infoB.entry.theta;
+        const c = Math.cos(phi);
+        const s = Math.sin(phi);
+        // rotate A's tip's world-space tangent into B's local frame (R(−phi)) so B's own
+        // departure matches, in world space, the vector that will govern the join.
+        setTangent(state, b, 0, {
+            mode: TangentMode.Mirror,
+            inX: c * wx + s * wy,
+            inY: -s * wx + c * wy,
+            outX: c * wx + s * wy,
+            outY: -s * wx + c * wy,
+        });
+        state.step(0);
+        const before = worldSamples(eid);
+
+        expect(joinNext(state, a)).toBe(true);
+        state.step(0);
+        const after = worldSamples(eid);
+
+        expect(after.length).toBe(before.length);
+        let maxDev = 0;
+        for (let i = 0; i < before.length; i++)
+            maxDev = Math.max(
+                maxDev,
+                Math.hypot(after[i].x - before[i].x, after[i].y - before[i].y),
+            );
+        // same derived floor as the split pin (`splitting at a node with an explicit tangent
+        // keeps the baked world curve`, above): the Auto join's f32 rigid round-off, with
+        // headroom well below the metres a stale-theta frame would drift on this decoupled
+        // boundary.
+        expect(maxDev).toBeLessThan(0.05);
+    });
+});
+
 describe("split → join round-trips", () => {
     test("geo split then join restores the node payload (exact to f32 round-off)", () => {
         const state = new State();
