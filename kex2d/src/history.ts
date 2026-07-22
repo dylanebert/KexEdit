@@ -192,10 +192,9 @@ function restoreCommand<S>(
 
 // ── geo nodes ──────────────────────────────────────────────────────────────────
 
-/** extend a section's chain (lay a node past the tip), recording an undoable add. `extend`
- *  stamps the old tip (Auto → frozen `Aligned`) as it becomes interior, so the command captures
- *  the whole section before/after — undo reverts both the added node and the stamp. returns the
- *  new node's eid. */
+/** extend a section's chain (lay a node past the tip), recording an undoable add. the new node
+ *  takes its heading from the old tip's exit, so the command captures the whole section
+ *  before/after rather than just the added node. returns the new node's eid. */
 export function extendTrack(h: History, ecs: State, section: number): number {
     const pre = selHook?.snapshot(ecs);
     const before = snapshotSection(ecs, section);

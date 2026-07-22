@@ -3,7 +3,6 @@ import { ProfilePlugin } from "@dylanebert/shallot/extras";
 import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { cartArc, cartState, CartPlugin } from "./cart";
-import { manipKnobs } from "./controls";
 import { editor, select, selectionHook } from "./editor";
 import {
     appendSection,
@@ -107,18 +106,6 @@ if (import.meta.env.DEV) {
             if (eid === null || !s || !canvas) return [];
             const tx = viewTransform(canvas);
             return tangentHandles(ecs, s, tx, eid).map((h) => ({ side: h.side, x: h.x, y: h.y }));
-        },
-        // the selected node's polar manipulator knobs in screen px (canvas-local) — the length knob
-        // (chord ray) + angle knob (tangential arc). canvas-drawn, so no DOM box; this is their
-        // locator, the manipulator analogue of `tangentHandles`. the geo flow drives a real pointer
-        // drag on a knob (the free-drag replacement, stage 5).
-        manipKnobs: (): { axis: string; x: number; y: number }[] => {
-            const eid = editor.selection;
-            const s = samples.get(track);
-            const canvas = Canvas2D.element;
-            if (eid === null || !s || !canvas) return [];
-            const tx = viewTransform(canvas);
-            return manipKnobs(ecs, s, tx, eid) ?? [];
         },
         // whether a node is in tangent-edit mode (double-click summon) — the flow asserts the
         // double-click entered it before driving the dots submenu + handle drag. read-only.

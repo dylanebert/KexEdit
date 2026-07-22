@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "../src/radial";
 
-// the shared node-action ring: the two manipulator knobs slot into it (feel round 7 stripped it to
-// just these two). the load-bearing invariants: the base angle is the node's heading mapped
-// world→screen (the y-flip that the chord-relative placement got wrong), the length knob sits at the
-// front (along the heading), and the angle knob one slot (+60°) off it.
+// the shared node-action ring: the extend button and the two manipulator knobs slot into it. the
+// load-bearing invariants: the base angle is the node's heading mapped world→screen (the y-flip that
+// the chord-relative placement got wrong), extend sits at the front (along the heading), and the two
+// knobs mirror across it one slot (±60°) off.
 
 // a screen view scale: sx > 0, sy < 0 (world Y-up → screen Y-down).
 const SX = 40;

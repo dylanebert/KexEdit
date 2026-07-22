@@ -32,6 +32,7 @@ import { stitchNode } from "./tangents";
 import Timeline from "./Timeline.svelte";
 import {
     bakeOut,
+    exitWorld,
     Handle,
     handleTangent,
     lastHandle,
@@ -89,10 +90,10 @@ onMount(() => {
 // (`selectedMetrics` — the node's authored exit heading + chord to prev, the Figma selected-object
 // dimensions idiom), keyed by three cases in precedence: a live tangent-handle drag reads the
 // DRAGGED node's metrics (feel round 14 — a handle drag reports the node's quantities, never the
-// handle's own angle/length; the out-vector rewrite updates exitWorld live); else a node drag with a
-// magnet target latched shows the snapped values (`snapGuides`, they land on the rasters); else at
-// rest the SELECTED node's metrics. null when there's no target node, so the readout is absent then.
-// Rendered centered below the node (below), offset clear of the radial buttons.
+// handle's own angle/length; the out-vector rewrite updates exitWorld live); else a live manipulator
+// drag shows the values that gesture publishes (`snapGuides`, seeded at the knob grab so one source
+// owns it); else at rest the SELECTED node's metrics. null when there's no target node, so the
+// readout is absent then. Rendered centered below the node (below), offset clear of the ring buttons.
 const snapText = $derived.by((): string | null => {
     void tick;
     let angle: string | null;
@@ -106,7 +107,7 @@ const snapText = $derived.by((): string | null => {
         angle = m.angleLabel;
         length = m.lengthLabel;
     } else if (snapGuides.angleLabel !== null || snapGuides.lengthLabel !== null) {
-        // a node drag with a magnet target engaged: the latched snap values (on the rasters).
+        // a live manipulator drag: the values that gesture publishes per move.
         angle = snapGuides.angleLabel;
         length = snapGuides.lengthLabel;
     } else {
@@ -147,9 +148,9 @@ const RADIAL_BTN_R = 15; // `.rbtn` is 30px square → 15px radius (CSS)
 const READOUT_GAP = 8; // clearance between the ring's far edge and the readout
 const READOUT_OFFSET = RADIAL_R + RADIAL_BTN_R + READOUT_GAP; // node center → readout top (or bottom, flipped)
 
-// append (extend the chain by a node) + trim (remove the trailing node) — the node menu's actions
-// (feel round 7 took the radial +/trash buttons off the ring; the Enter/Del keys still fire these
-// too). both are chain-end-only, so the menu gates their enablement on the node being the chain end.
+// append (extend the chain by a node) + trim (remove the trailing node). append is also the ring's
+// extend button and Enter; trim is also Del. both are chain-end-only, so the node menu gates their
+// enablement on the node being the chain end.
 function doAdd(eid: number): void {
     select(extendTrack(history, ecs, Handle.section.get(eid)));
 }
@@ -159,10 +160,10 @@ function doTrim(eid: number): void {
 }
 
 // the two polar manipulator knobs — real DOM `.rbtn` buttons on the node-action ring (feel round 6),
-// peers of the extend/delete buttons: the length knob (measure/ruler) at −60° off the heading, the
+// peers of the extend button they flank: the length knob (measure/ruler) at −60° off the heading, the
 // angle knob (pitch/↕) at +60°. shown on EVERY selected node (not just the chain end), hidden in
-// tangent edit (its handles own the surface). positions come from the shared `manipKnobs` geometry
-// source (the same one the pick + `__kex` hook read), so the buttons sit where a drag targets.
+// tangent edit (its handles own the surface). positions come from `manipKnobs` (controls.ts), the one
+// home for the knob geometry, so a button sits exactly where its drag axis is anchored.
 const manip = $derived.by(
     (): { length: { x: number; y: number }; angle: { x: number; y: number } } | null => {
         void tick;
@@ -201,11 +202,10 @@ const extendBtn = $derived.by((): { x: number; y: number } | null => {
     const section = Handle.section.get(eid);
     if (eid !== lastHandle(ecs, section)) return null; // the chain end alone extends
     const s = samples.get(trackEid);
-    const info = sectionInfo.get(section);
-    if (!s || !info) return null;
+    if (!s || !sectionInfo.get(section)) return null; // unbaked section: no sample to anchor on
     const tx = viewTransform(canvas);
     const i = Handle.sample.get(eid);
-    const base = ringBase(Handle.theta.get(eid) + info.entry.theta, tx.sx, tx.sy);
+    const base = ringBase(exitWorld(eid), tx.sx, tx.sy);
     const off = ringSlot(base, RadialSlot.Extend);
     return { x: tx.ox + s.posX[i] * tx.sx + off.x, y: tx.oy + s.posY[i] * tx.sy + off.y };
 });
@@ -311,12 +311,12 @@ const nodeCanTrim = $derived.by((): boolean => {
     const m = editor.nodeMenu;
     return nodeIsEnd && m !== null && sectionHandles(ecs, Handle.section.get(m.eid)).length > 2;
 });
-// the node menu as data (the shared MenuItem language): Add node / Delete node (the ring's retired
-// +/trash buttons, feel round 7 — chain-end-only, so enablement-gated), then a Handles toggle over a
-// Tangents submenu (the three modes carry their `checked`; Reset carries its derived enablement,
-// after a separator). node 0 (the entry anchor) is the exception — never appendable/trimmable, and
-// its handle is a single free entry handle (no coupled in-side), so it carries NO Add/Delete and NO
-// mode submenu: just Handles + Reset (back to the Auto C1 exit).
+// the node menu as data (the shared MenuItem language): Add node / Delete node (chain-end-only, so
+// enablement-gated — the menu is Delete's only pointer path, the ring carries no trash button), then
+// a Handles toggle over a Tangents submenu (the three modes carry their `checked`; Reset carries its
+// derived enablement, after a separator). node 0 (the entry anchor) is the exception — never
+// appendable/trimmable, and its handle is a single free entry handle (no coupled in-side), so it
+// carries NO Add/Delete and NO mode submenu: just Handles + Reset (back to the Auto C1 exit).
 const nodeItems = $derived.by((): MenuItem[] => {
     const m = editor.nodeMenu;
     if (m === null) return [];
@@ -578,10 +578,10 @@ $effect(() => {
 
 <canvas bind:this={canvas}></canvas>
 
-<!-- the snap readout: the selected node's live metrics (° / m / both) — a growth tip's exit incline
-     + chord length, an interior node's chord length alone; the latched snap values while a magnet
-     target is engaged (the Blender modal-transform readout). shown whenever a node is selected,
-     centered below it, offset far enough to clear the radial extend/delete buttons by construction.
+<!-- the snap readout: the selected node's live metrics — its authored world exit heading (°) + the
+     chord to the previous node (m), uniformly for a tip and an interior alike; a live drag feeds the
+     same two through the gesture's own source (the Blender modal-transform readout). shown whenever a
+     node is selected, centered below it, offset clear of the node-action ring's buttons by construction.
      rendered off-screen for one measure pass until `readoutFit` places it from the measured box. -->
 {#if readoutAnchor}
     <div
@@ -830,9 +830,9 @@ $effect(() => {
         color: #e26d5c;
     }
 
-    /* the round `.rbtn` button — the dark shell the two manipulator knobs wear (the extend/delete
-       buttons that also used it left the ring in feel round 7). positioned absolutely at its ring
-       screen point (left/top inline). */
+    /* the round `.rbtn` button — the dark shell every ring affordance wears (the two manipulator
+       knobs + the extend button). positioned absolutely at its ring screen point (left/top
+       inline). */
     .rbtn {
         all: unset;
         position: absolute;

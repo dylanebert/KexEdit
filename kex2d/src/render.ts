@@ -377,8 +377,6 @@ const TangentDrawSystem: System = {
     },
 };
 
-// the knob radius matches the radial `.rbtn` (30px diameter) so the two polar controls read as
-// equal-character peers of the "add node" (+) button. `MANIP_PICK_R` (controls.ts) tracks it.
 const CartDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
@@ -425,7 +423,7 @@ const CartDrawSystem: System = {
  *  wear the same gray now, feel round 3). `L` spans any framed view; the canvas clips the overshoot.
  *  The numeric °/m readout is DOM, not canvas — it renders in the snap readout centered below the
  *  dragged node (App's `.snap-readout`, the Blender modal-transform readout), offset clear of the
- *  radial extend/delete buttons. */
+ *  node-action ring's buttons. */
 const SnapGuideSystem: System = {
     group: "draw",
     update(): void {

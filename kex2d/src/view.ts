@@ -87,7 +87,7 @@ export function frameContent(width: number, height: number, box: Box): Camera {
  *   node near the left/right edge slides the readout in (it stops being centered there).
  * - below the node by `offset` (node center → readout top). Flips ABOVE when below would land
  *   under the dock band or off the bottom edge. `offset` clears the radial ring on either side
- *   by construction, so the flip never overlaps the extend/delete buttons. `dock` is the px
+ *   by construction, so the flip never overlaps a ring button. `dock` is the px
  *   reserved at the bottom for the timeline dock (`DOCK_RESERVE`).
  *
  * @example readoutFit({ x: 640, y: 300 }, 69, { w: 90, h: 18 }, { w: 1280, h: 800 }, 256)
@@ -132,15 +132,17 @@ export function cameraTx(cam: Camera): ViewTx {
 export const camera: Camera = { zoom: 0, ox: 0, oy: 0 };
 let framed = false;
 
-/** transient snap guides flashed while a viewport drag latches a magnet target (the Figma
- *  alignment-guide flash, one per fired family). `ray` is world-space — a line through the
- *  dragged node at the snapped exit incline the render pass draws in the viewport. `angleLabel`
+/** the transient feedback a live viewport manipulator drag publishes. `ray` is world-space — a
+ *  line through the dragged node at the snapped exit incline the render pass draws in the viewport
+ *  (the Figma alignment-guide flash), set only while the angle control is actually snapped. `angleLabel`
  *  (e.g. "30°") and `lengthLabel` (e.g. "3 m") are the numeric readout strings: rendered in the DOM
  *  snap readout centered below the dragged node (the Blender modal-transform readout), offset far
- *  enough below to clear the radial extend/delete buttons by construction — an earlier chip AT the
+ *  enough below to clear the node-action ring's buttons by construction — an earlier chip AT the
  *  drag point overlapped them, and a fixed top-left line read too far from the action. `readoutFit`
- *  places it. each field is null when its family isn't firing. mutated in place by the drag controls,
- *  read by the render pass (`ray`) and the App readout (the labels), cleared on release. */
+ *  places it. both labels are seeded at the knob grab and rewritten every move, so ONE source owns
+ *  a gesture start to end (no mid-gesture switch); all three fields are null at rest. mutated in
+ *  place by the drag controls, read by the render pass (`ray`) and the App readout (the labels),
+ *  cleared on release. */
 export interface SnapGuides {
     ray: { x: number; y: number; angle: number } | null;
     angleLabel: string | null;

@@ -8,6 +8,7 @@ import {
     formatLen,
     latchAngle,
     LATCH_PX,
+    manipKnobs,
     nodeFrame,
     nodeMetrics,
     normDeg,
@@ -292,6 +293,44 @@ test("an explicit out-vector governs the readout heading, not the recovered geom
     expect(selectedMetrics(state, tip)?.angleLabel).toBe(
         formatDeg((exitWorld(tip) * 180) / Math.PI),
     );
+});
+
+// the ring (extend button + both knobs) orbits the node's AUTHORED exit heading, the same quantity
+// `extend()` lays the next node along — not `Handle.theta`, which is dead state once a node carries
+// an explicit out-vector (the CLAUDE.md gotcha, and the round-8/13 family of bugs). Rotating the
+// authored vector must therefore rotate the ring; reading the dead field leaves it stuck.
+test("the ring base tracks the authored exit heading, not the stale Handle.theta", () => {
+    const { state, sec } = geoTrack();
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 10, 0);
+    const tip = lastHandle(state, sec);
+    if (tip === null) throw new Error("tip missing");
+    const order = Handle.order.get(tip);
+    const knobAngle = (): number => {
+        const s = samples.get(trackOf(state));
+        if (!s) throw new Error("no samples");
+        const knobs = manipKnobs(state, s, TX, tip);
+        if (!knobs) throw new Error("no knobs");
+        const i = Handle.sample.get(tip);
+        const k = knobs[0];
+        return Math.atan2(k.y - (TX.oy + s.posY[i] * TX.sy), k.x - (TX.ox + s.posX[i] * TX.sx));
+    };
+
+    setTangent(state, sec, order, { mode: TangentMode.Free, inX: -5, inY: 0, outX: 5, outY: 0 });
+    state.step(0);
+    const before = knobAngle();
+    const theta = Handle.theta.get(tip);
+
+    // rotate the authored out-vector by +90°. Handle.theta is untouched by a tangent write, so a
+    // ring reading it cannot move.
+    const turn = Math.PI / 2;
+    setTangent(state, sec, order, { mode: TangentMode.Free, inX: -5, inY: 0, outX: 0, outY: 5 });
+    state.step(0);
+    expect(Handle.theta.get(tip)).toBeCloseTo(theta, 9); // the dead field really is unchanged
+    expect(exitWorld(tip)).toBeCloseTo(turn, 4);
+
+    // TX is a uniform y-flip (sx = -sy), so `ringBase` negates the world heading exactly.
+    expect(normDeg(((knobAngle() - before) * 180) / Math.PI)).toBeCloseTo(-90, 3);
 });
 
 test("the readout reports the node's quantities, invariant to the out-handle's length (round 14)", () => {

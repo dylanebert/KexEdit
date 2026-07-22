@@ -19,8 +19,8 @@
  *  module — `angleToPoint`/`screenToAngle` fold it once), so the exit incline matches the sign
  *  `nodeMetrics` reads off world samples. one convention across the resting readout, the drag
  *  readout, and the 3D pitch/turn/roll port — no per-consumer negation. only the *geometry* the
- *  loci carry (the chord ray's screen direction, the arc's screen centre/radius) stays screen px,
- *  because stage 5 draws it there. */
+ *  loci carry (the chord ray's screen direction, the arc's screen centre/radius) stays screen px:
+ *  it's the drag's own space, and a caller that draws a locus wants it there. */
 
 import { chordForIncline, inclineOf, type LengthSnap, snapAngle, snapLength } from "./magnet";
 

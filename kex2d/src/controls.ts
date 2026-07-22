@@ -303,9 +303,9 @@ function sampleScreen(
  *  node (node 0, the entry anchor) or the chord is degenerate (coincident with its previous node).
  *  rebuilt each pointermove against the live baked positions (the per-move-snapshot contract,
  *  `manipulator.ts`): the radius rides the live chord, so the incline snap window tracks the drag.
- *  the tip carries the previous node's exit incline in **world** radians (from its flanking world
- *  samples — no screen y-flip, the manipulator convention) for the incline family; an interior node
- *  leaves it null (a frozen heading has no incline quantum). */
+ *  the tip carries the previous node's AUTHORED exit heading in **world** radians (`exitWorld` — no
+ *  screen y-flip, the manipulator convention) as its incline reference; an interior node leaves it
+ *  null (a frozen heading has no incline quantum). */
 export function nodeFrame(
     ecs: State,
     s: NonNullable<ReturnType<typeof samples.get>>,
@@ -340,10 +340,11 @@ export interface ManipKnob {
     y: number;
 }
 
-/** the two polar-control knobs for a node in screen px (the length knob along the chord ray, the
- *  angle knob along the tangential arc), or null when the node carries no manipulator (node 0 or a
- *  degenerate chord). one home for the knob geometry so render, pick, and the harness hook agree —
- *  the manipulator analogue of `tangents.ts`'s `tangentHandles`. */
+/** where a node's two polar-control knobs sit in screen px — on the node-action ring, flanking the
+ *  extend button — or null when the node carries no manipulator (node 0 or a degenerate chord). the
+ *  one home for the knob geometry (App positions its `.rbtn` buttons from it), the manipulator
+ *  analogue of `tangents.ts`'s `tangentHandles`. the drag *loci* are chord-relative and live in
+ *  `dragManipTo`; this places only the idle affordance. */
 export function manipKnobs(
     ecs: State,
     s: NonNullable<ReturnType<typeof samples.get>>,
@@ -353,13 +354,12 @@ export function manipKnobs(
     // gate on a manipulable node — the same condition the drag uses (`nodeFrame`: has a previous
     // node, non-degenerate chord). node 0 and a coincident node get no knobs.
     if (!nodeFrame(ecs, s, tx, eid)) return null;
-    // the idle buttons slot into the node-action ring (the shared radial substrate, peers of the
-    // add/delete buttons — length and angle on opposite sides). the base angle is the node's heading
-    // (its screen direction), the same origin the add button uses. the drag LOCI stay chord-relative
-    // in `dragManipTo` — only where the idle button sits is placed here.
-    const info = sectionInfo.get(Handle.section.get(eid));
-    const heading = Handle.theta.get(eid) + (info ? info.entry.theta : 0);
-    const base = ringBase(heading, tx.sx, tx.sy);
+    // the idle buttons slot into the node-action ring (the shared radial substrate, flanking the
+    // extend button at ∓60°). the base angle is the node's AUTHORED exit heading — the same quantity
+    // `extend()` lays the next node along, so the extend button points where the append lands even
+    // on a node carrying an explicit out-vector (`Handle.theta` is dead there). the drag LOCI stay
+    // chord-relative in `dragManipTo` — only where the idle button sits is placed here.
+    const base = ringBase(exitWorld(eid), tx.sx, tx.sy);
     const node = sampleScreen(s, tx, Handle.sample.get(eid));
     const len = ringSlot(base, RadialSlot.Length);
     const ang = ringSlot(base, RadialSlot.Angle);
