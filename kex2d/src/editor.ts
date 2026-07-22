@@ -7,6 +7,9 @@
  *  four mutually-exclusive selections (below), so a contextual action never fights
  *  over its target. */
 
+import type { State } from "@dylanebert/shallot";
+import { Handle, handleAt } from "./track";
+
 /** the editor surface the pointer is over — the router for surface-scoped keys
  *  (the Blender/Unity hovered-surface model). */
 export type Surface = "viewport" | "timeline";
@@ -226,3 +229,66 @@ export function openNodeMenu(x: number, y: number, eid: number): void {
 export function closeNodeMenu(): void {
     editor.nodeMenu = null;
 }
+
+// ── history selection hook ────────────────────────────────────────────────────────
+// the editor's snapshot/restore for undo/redo, injected into `history` at boot (`setSelectionHook`)
+// so the coupling points inward — history calls this, never imports editor. a NODE is snapshotted by
+// its stable (section, order), not its eid: `restoreSection`/`restoreAll` recycle the allocator LIFO,
+// so a raw eid would remap to a DIFFERENT node after an undo. force/section address by stable id, the
+// START by a flag. undo restores each command's pre-selection, redo its post; a selection change
+// alone is never a command.
+
+type SelSnapshot =
+    | { kind: "node"; section: number; order: number; editing: boolean }
+    | { kind: "force"; id: number }
+    | { kind: "section"; id: number }
+    | { kind: "start" }
+    | null;
+
+/** the `SelectionHook` (`history.ts`) the app injects at boot: capture the current selection in a
+ *  restorable form + restore it. history holds the snapshot opaquely. */
+export const selectionHook = {
+    snapshot(ecs: State): SelSnapshot {
+        const sel = editor.selection;
+        if (sel !== null && ecs.has(sel, Handle)) {
+            return {
+                kind: "node",
+                section: Handle.section.get(sel),
+                order: Handle.order.get(sel),
+                editing: editor.tangentEdit === sel,
+            };
+        }
+        if (editor.force !== null) return { kind: "force", id: editor.force };
+        if (editor.section !== null) return { kind: "section", id: editor.section };
+        if (editor.start) return { kind: "start" };
+        return null;
+    },
+    restore(ecs: State, snap: unknown): void {
+        editor.nodeMenu = null; // its rows (checked mode, enablement) went stale when the document changed
+        const s = snap as SelSnapshot;
+        if (s === null) {
+            select(null); // clears the selection + the tangent-edit sub-mode
+            editor.force = null;
+            editor.section = null;
+            editor.start = false;
+            return;
+        }
+        switch (s.kind) {
+            case "node": {
+                const eid = handleAt(ecs, s.section, s.order); // re-resolve across the eid recycle
+                select(eid); // null when the node didn't survive — clears cleanly
+                editor.tangentEdit = eid !== null && s.editing ? eid : null;
+                break;
+            }
+            case "force":
+                selectForce(s.id);
+                break;
+            case "section":
+                selectSection(s.id);
+                break;
+            case "start":
+                selectStart(true);
+                break;
+        }
+    },
+};

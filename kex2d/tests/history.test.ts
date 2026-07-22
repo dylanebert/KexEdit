@@ -1,6 +1,14 @@
 import { State } from "@dylanebert/shallot";
-import { expect, test } from "bun:test";
-import { editor, enterTangentEdit, openNodeMenu, select } from "../src/editor";
+import { beforeEach, expect, test } from "bun:test";
+import {
+    editor,
+    enterTangentEdit,
+    openNodeMenu,
+    select,
+    selectionHook,
+    selectSection,
+    selectStart,
+} from "../src/editor";
 import {
     appendSection,
     beginForceMove,
@@ -14,9 +22,22 @@ import {
     extendTrack,
     redo,
     resetTangents,
+    setSelectionHook,
     trimTrack,
     undo,
 } from "../src/history";
+
+// the app injects the editor's selection snapshot into the history stack at boot; the tests do the
+// same so undo/redo re-resolve the (shared, module-singleton) editor selection. clear it before each
+// test so a prior test's leftover selection can't leak into a `pre` snapshot.
+setSelectionHook(selectionHook);
+beforeEach(() => {
+    select(null);
+    selectSection(null);
+    selectStart(false);
+    editor.force = null;
+    editor.nodeMenu = null;
+});
 import { stitchNode } from "../src/tangents";
 import {
     addNode,
@@ -70,11 +91,11 @@ test("extend: undo removes the new node, redo restores it verbatim", () => {
     const pose = poseOf(state, sec, order);
     expect(orders(state, sec)).toEqual([0, 1, 2]);
 
-    undo(h);
+    undo(h, state);
     expect(orders(state, sec)).toEqual([0, 1]);
     expect(handleAt(state, sec, 2)).toBeNull();
 
-    redo(h);
+    redo(h, state);
     expect(orders(state, sec)).toEqual([0, 1, 2]);
     expect(poseOf(state, sec, order)).toEqual(pose); // same pos + heading
 });
@@ -95,12 +116,12 @@ test("trim: undo restores the removed node and the promoted tip's pre-trim headi
     const tipAfter = Handle.theta.get(handleAt(state, sec, 1) as number);
     expect(tipAfter).not.toBe(tipBefore); // headLast reheaded the promoted tip
 
-    undo(h);
+    undo(h, state);
     expect(orders(state, sec)).toEqual([0, 1, 2]);
     expect(poseOf(state, sec, 2)).toEqual(removed); // node back verbatim
     expect(Handle.theta.get(handleAt(state, sec, 1) as number)).toBe(tipBefore); // heading restored
 
-    redo(h);
+    redo(h, state);
     expect(orders(state, sec)).toEqual([0, 1]);
     expect(Handle.theta.get(handleAt(state, sec, 1) as number)).toBe(tipAfter);
 });
@@ -134,11 +155,11 @@ test("a node drag collapses to one entry; undo restores the pose and the reheade
     expect(poseOf(state, sec, 2).theta).not.toBe(beforeTip.theta); // the tip reheaded
     const dragged = poseOf(state, sec, 2);
 
-    undo(h);
+    undo(h, state);
     expect(poseOf(state, sec, 2)).toEqual(beforeTip); // pos + heading restored
     expect(poseOf(state, sec, 1)).toEqual(beforeMid);
 
-    redo(h);
+    redo(h, state);
     expect(poseOf(state, sec, 2)).toEqual(dragged); // replays to the dragged pose
 });
 
@@ -158,10 +179,10 @@ test("createForce: undo removes the point, redo re-spawns it verbatim", () => {
     const id = createForce(h, state, sec, 12, 0.5);
     expect(points(state, sec)).toEqual([{ id, s: 12, g: 0.5 }]);
 
-    undo(h);
+    undo(h, state);
     expect(points(state, sec)).toEqual([]);
 
-    redo(h);
+    redo(h, state);
     expect(points(state, sec)).toEqual([{ id, s: 12, g: 0.5 }]); // same id + values
 });
 
@@ -172,7 +193,7 @@ test("deleteForce: undo re-spawns the removed point verbatim", () => {
     deleteForce(h, state, id);
     expect(points(state, sec)).toEqual([]);
 
-    undo(h);
+    undo(h, state);
     expect(points(state, sec)).toEqual([{ id, s: 7, g: 0.2 }]);
 });
 
@@ -189,7 +210,7 @@ test("a force-point drag collapses to one entry; undo restores s/g", () => {
     expect(h.undo.length).toBe(2); // create + the whole drag → one entry each
     expect(points(state, sec)).toEqual([{ id, s: 18, g: 2 }]);
 
-    undo(h); // undo the drag
+    undo(h, state); // undo the drag
     expect(points(state, sec)).toEqual([{ id, s: 10, g: 1 }]);
 });
 
@@ -217,7 +238,7 @@ test("convert geo→force undoes byte-identical to the shaped geo track", () => 
     expect(sections(state)[0].kind).toBe(SectionKind.Force);
     expect(sectionHandles(state, sec).length).toBe(0); // nodes cleared (destructive)
 
-    undo(h);
+    undo(h, state);
     expect(sections(state)[0].kind).toBe(SectionKind.Geo);
     const after = sectionHandles(state, sec).map((e) => ({
         order: Handle.order.get(e),
@@ -231,7 +252,7 @@ test("convert geo→force undoes byte-identical to the shaped geo track", () => 
 // ── track initial speed (v0) — a per-track scalar on the same gesture substrate ──
 
 test("v0 scrub collapses to one entry; undo restores the speed, redo replays", () => {
-    const { eid } = nodes();
+    const { state, eid } = nodes();
     const h = createHistory();
     expect(Track.v0.get(eid)).toBe(V0); // the default seed
 
@@ -243,10 +264,10 @@ test("v0 scrub collapses to one entry; undo restores the speed, redo replays", (
     expect(h.undo.length).toBe(1); // the whole scrub → one entry
     expect(Track.v0.get(eid)).toBe(18);
 
-    undo(h);
+    undo(h, state);
     expect(Track.v0.get(eid)).toBe(V0);
 
-    redo(h);
+    redo(h, state);
     expect(Track.v0.get(eid)).toBe(18);
 });
 
@@ -278,7 +299,7 @@ test("convert force→geo undoes byte-identical to the authored force points", (
     expect(sections(state)[0].kind).toBe(SectionKind.Geo);
     expect(points(state, sec)).toEqual([]);
 
-    undo(h);
+    undo(h, state);
     expect(sections(state)[0].kind).toBe(SectionKind.Force);
     expect(points(state, sec)).toEqual(before); // the points restored exactly
 });
@@ -303,10 +324,10 @@ test("tangent edit: the move gesture captures it, undo/redo restore mode + vecto
     expect(h.undo.length).toBe(1);
     expect(handleTangent(state, sec, 2)).toEqual(tan);
 
-    undo(h);
+    undo(h, state);
     expect(handleTangent(state, sec, 2)).toBeUndefined(); // reverted to Auto
 
-    redo(h);
+    redo(h, state);
     expect(handleTangent(state, sec, 2)).toEqual(tan); // restored verbatim
 });
 
@@ -326,9 +347,9 @@ test("resetTangent: the move gesture makes it undoable (clears an interior + the
     expect(h.undo.length).toBe(1);
     expect(handleTangent(state, sec, 1)).toBeUndefined(); // cleared to live
 
-    undo(h);
+    undo(h, state);
     expect(handleTangent(state, sec, 1)).toEqual(before1); // the Free corner restored verbatim
-    redo(h);
+    redo(h, state);
     expect(handleTangent(state, sec, 1)).toBeUndefined();
 
     // Reset the tip (node 3): it clears back to live (Auto), undoable.
@@ -338,24 +359,25 @@ test("resetTangent: the move gesture makes it undoable (clears an interior + the
     commit(h);
     expect(handleTangent(state, sec, 3)).toBeUndefined(); // live again
 
-    undo(h);
+    undo(h, state);
     expect(handleTangent(state, sec, 3)?.mode).toBe(TangentMode.Free); // the authored tip restored
 });
 
-// ── editor node selection survives a snapshot restore by (section, order) ──
-// restoreSection/restoreAll destroy and respawn a section's nodes; the eid allocator
-// recycles LIFO, so a raw eid held in `editor.selection` remaps to a DIFFERENT node
-// after an undo. the reconcile re-resolves the selection by its stable (section, order)
-// identity across the restore, clearing it when the node no longer exists. force/section
-// selections address by stable id, so they survive a restore untouched (not reconciled
-// here — the mechanism is eid-only).
+// ── selection across undo/redo (the injected selectionHook, feel round 9) ──
+// a command snapshots the selection bracketing it: undo restores the PRE-command selection, redo the
+// POST. a node is snapshotted by its stable (section, order) — restoreSection/restoreAll recycle the
+// eid allocator LIFO, so a raw eid would remap to a DIFFERENT node after an undo — and re-resolved on
+// restore. force/section snapshot by stable id, the START by a flag. a selection change alone is never
+// a command. the hook is set at the top of this file, as the app injects it at boot.
 
-/** clear the shared editor singleton between reconcile tests. */
+/** clear the shared editor singleton (also cleared in beforeEach; kept explicit for readability). */
 function clearSelection(): void {
     select(null);
 }
 
-test("node selection survives a trim-undo by (section, order), not raw eid", () => {
+test("undo re-resolves the pre-command node selection by (section, order), not raw eid", () => {
+    // select an interior node, trim the tip (a DIFFERENT node), undo. the pre-trim selection (the
+    // interior node) is restored, re-resolved to its new eid across the LIFO recycle.
     clearSelection();
     const { state, sec } = nodes(); // orders 0, 1
     addNode(state, sec, 40, 0); // order 2
@@ -363,10 +385,8 @@ test("node selection survives a trim-undo by (section, order), not raw eid", () 
     const h = createHistory();
 
     select(handleAt(state, sec, 2) as number); // an interior node
-    expect(Handle.order.get(editor.selection as number)).toBe(2);
-
     trimTrack(h, state, sec); // removes order 3
-    undo(h); // restoreSection respawns 0..3 — eids recycle
+    undo(h, state); // restoreSection respawns 0..3 — eids recycle
 
     const r = editor.selection;
     expect(r).not.toBeNull();
@@ -374,7 +394,7 @@ test("node selection survives a trim-undo by (section, order), not raw eid", () 
     expect(Handle.order.get(r as number)).toBe(2); // same identity, new eid
 });
 
-test("tangent-edit sub-mode follows the selection across a trim-undo", () => {
+test("tangent-edit sub-mode rides the restored selection across a trim-undo", () => {
     clearSelection();
     const { state, sec } = nodes();
     addNode(state, sec, 40, 0); // order 2
@@ -382,10 +402,8 @@ test("tangent-edit sub-mode follows the selection across a trim-undo", () => {
     const h = createHistory();
 
     enterTangentEdit(handleAt(state, sec, 2) as number); // a node whose eid recycles across the restore
-    expect(editor.tangentEdit).toBe(editor.selection);
-
     trimTrack(h, state, sec);
-    undo(h);
+    undo(h, state);
 
     const r = editor.selection;
     expect(r).not.toBeNull();
@@ -393,7 +411,7 @@ test("tangent-edit sub-mode follows the selection across a trim-undo", () => {
     expect(editor.tangentEdit).toBe(r); // sub-mode re-resolved onto the same node
 });
 
-test("node selection survives a structural (whole-track) undo — restoreAll path", () => {
+test("the pre-selection re-resolves across a whole-track (restoreAll) undo", () => {
     clearSelection();
     const { state, sec } = nodes();
     addNode(state, sec, 40, 0); // order 2
@@ -401,7 +419,7 @@ test("node selection survives a structural (whole-track) undo — restoreAll pat
 
     select(handleAt(state, sec, 1) as number);
     appendSection(h, state, SectionKind.Geo); // undo → restoreAll(before), respawns every node
-    undo(h);
+    undo(h, state);
 
     const r = editor.selection;
     expect(r).not.toBeNull();
@@ -409,7 +427,7 @@ test("node selection survives a structural (whole-track) undo — restoreAll pat
     expect(Handle.order.get(r as number)).toBe(1);
 });
 
-test("an open node menu closes across a snapshot restore (its contents go stale)", () => {
+test("an open node menu closes across an undo (its contents go stale)", () => {
     clearSelection();
     const { state, sec } = nodes();
     addNode(state, sec, 40, 0); // order 2
@@ -419,24 +437,44 @@ test("an open node menu closes across a snapshot restore (its contents go stale)
     openNodeMenu(10, 20, eid); // menu targeting the tip (checked mode + enablement computed now)
     expect(editor.nodeMenu).not.toBeNull();
 
-    undo(h); // restoreSection respawns nodes LIFO — the menu's target eid is now a DIFFERENT node
-    expect(editor.nodeMenu).toBeNull(); // closed rather than left retargeting a recycled eid
+    undo(h, state);
+    expect(editor.nodeMenu).toBeNull(); // closed on restore rather than left retargeting a recycled eid
 });
 
-test("selection clears when the node doesn't survive the restore", () => {
+// the delete-then-undo repro: delete the tip (the previous auto-selects, done by the controls OUTSIDE
+// history), undo → the RESTORED tip is selected, not the previous. RED before the fix — the old
+// reconcile kept the CURRENT (previous) selection across the restore instead of the pre-delete tip.
+test("delete tip → undo selects the restored tip, not the auto-selected previous; redo re-selects previous", () => {
     clearSelection();
     const { state, sec } = nodes();
     addNode(state, sec, 40, 0); // order 2
+    addNode(state, sec, 60, 0); // order 3 (the tip)
     const h = createHistory();
 
-    const eid = extendTrack(h, state, sec); // adds order 3
-    enterTangentEdit(eid); // select + tangent-edit the new tip
-    expect(Handle.order.get(editor.selection as number)).toBe(3);
+    select(handleAt(state, sec, 3) as number); // the user picks the tip to delete
+    trimTrack(h, state, sec); // removes order 3
+    select(handleAt(state, sec, 2) as number); // the controls auto-select the promoted tip (previous)
+    expect(Handle.order.get(editor.selection as number)).toBe(2); // the repro: previous now selected
 
-    undo(h); // restoreSection(before): orders 0..2 — order 3 is gone
+    undo(h, state); // ← the fix: restores the PRE-delete selection (the tip, re-created as order 3)
+    expect(editor.selection).not.toBeNull();
+    expect(Handle.order.get(editor.selection as number)).toBe(3); // the restored tip, not the previous
 
+    redo(h, state); // re-delete → the POST-delete selection (the previous, order 2)
+    expect(Handle.order.get(editor.selection as number)).toBe(2);
+});
+
+test("a command executed with nothing selected round-trips selection cleanly (stays empty)", () => {
+    clearSelection();
+    const { state, sec } = nodes();
+    const h = createHistory();
     expect(editor.selection).toBeNull();
-    expect(editor.tangentEdit).toBeNull();
+
+    extendTrack(h, state, sec); // pre = nothing selected (the controls don't select here)
+    undo(h, state);
+    expect(editor.selection).toBeNull(); // pre (null) restored
+    redo(h, state);
+    expect(editor.selection).toBeNull(); // post (also null) restored
 });
 
 // the boundary Reset (kex2d-geo-ux stage 1): a geo→geo boundary is one node at the UI — the
@@ -471,7 +509,7 @@ test("boundary Reset clears both the tip and the stitched downstream node-0 tang
     expect(h.undo.length).toBe(1);
 
     // one Ctrl+Z restores BOTH halves (the single-transaction requirement).
-    undo(h);
+    undo(h, state);
     expect(handleTangent(state, a, 1)).toBeDefined();
     expect(handleTangent(state, b, 0)).toBeDefined();
 });
@@ -489,6 +527,6 @@ test("single-node Reset (no stitch) clears just that node", () => {
     resetTangents(h, state, tip, null);
     expect(handleTangent(state, sec, 1)).toBeUndefined();
     expect(h.undo.length).toBe(1);
-    undo(h);
+    undo(h, state);
     expect(handleTangent(state, sec, 1)).toBeDefined();
 });

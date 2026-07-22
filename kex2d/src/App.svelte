@@ -178,6 +178,7 @@ const manip = $derived.by(
 // button doesn't steal focus or fire a click; a press-release without a drag moves nothing (the
 // dead-zone). the drag itself — inverses, snap, readout — is unchanged.
 function onManip(e: PointerEvent, axis: "length" | "angle"): void {
+    if (e.button !== 0) return; // left button only — a right-click over a knob is a context menu, not a drag
     e.preventDefault();
     controls?.startManip(e, axis);
 }

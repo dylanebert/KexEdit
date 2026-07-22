@@ -4,8 +4,15 @@ import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { cartArc, cartState, CartPlugin } from "./cart";
 import { manipKnobs } from "./controls";
-import { editor, select } from "./editor";
-import { appendSection, convertSection, createForce, history, removeSection } from "./history";
+import { editor, select, selectionHook } from "./editor";
+import {
+    appendSection,
+    convertSection,
+    createForce,
+    history,
+    removeSection,
+    setSelectionHook,
+} from "./history";
 import { RenderPlugin } from "./render";
 import { tangentHandles } from "./tangents";
 import {
@@ -30,6 +37,10 @@ const { state: ecs, dispose } = await run({
     plugins: [ProfilePlugin, TrackPlugin, CartPlugin, RenderPlugin],
     defaults: false,
 });
+
+// wire the editor's selection snapshot into the history stack (the injected hook — history stores the
+// snapshot opaquely and never imports editor). undo restores each command's pre-selection, redo its post.
+setSelectionHook(selectionHook);
 
 // DEV-only harness inspection hook: the capture flow's geo-authoring assertions read
 // node/undo/track state through this and drive the real UI (extend, drag, undo).

@@ -1201,11 +1201,11 @@ onMount(() => {
             const k = e.key.toLowerCase();
             if (k === "z") {
                 e.preventDefault();
-                if (e.shiftKey) redo(history);
-                else undo(history);
+                if (e.shiftKey) redo(history, ecs);
+                else undo(history, ecs);
             } else if (k === "y") {
                 e.preventDefault();
-                redo(history);
+                redo(history, ecs);
             }
             return;
         }

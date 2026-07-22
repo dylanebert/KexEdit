@@ -418,7 +418,7 @@ describe("undo (byte-identical)", () => {
         expect(sections(state).length).toBe(3);
         void f;
 
-        undo(h);
+        undo(h, state);
         expect(sections(state).map((s) => s.id)).toEqual(before);
         expect(sections(state)[0].id).toBe(a);
     });
@@ -446,7 +446,7 @@ describe("undo (byte-identical)", () => {
         splitCmd(h, state, a, 2);
         expect(sections(state).length).toBe(2);
 
-        undo(h);
+        undo(h, state);
         expect(sections(state).length).toBe(1);
         const after = sectionHandles(state, a).map((e) => ({
             order: Handle.order.get(e),
@@ -463,7 +463,7 @@ describe("undo (byte-identical)", () => {
         const h = createHistory();
         expect(joinCmd(h, state, a)).toBe(true); // both geo → joins
         expect(h.undo.length).toBe(1);
-        undo(h);
+        undo(h, state);
         expect(sections(state).length).toBe(2);
 
         expect(removeCmd(h, state, a)).toBe(true);

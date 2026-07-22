@@ -416,3 +416,38 @@ test("length drag: the snapped metres shown equal the resting chord (5 m rests a
     const restChord = Math.hypot(tipW.x - prevW.x, tipW.y - prevW.y);
     expect(restChord).toBeCloseTo(res.meters, 4); // dragged 5 m rests at 5 m, not 5.02
 });
+
+// feel round 9 — the INTERIOR angle readout: the angle control snaps the CHORD (an interior node has
+// no exit incline), but the readout reports the node's AUTHORED exit heading (`exitWorld`) — drag AND
+// rest, the same quantity, no jump. an interior drag doesn't re-head the node, so that heading is
+// frozen through the rotation (the accepted tradeoff: the knob snaps the chord, the readout reports
+// the heading).
+test("angle drag on an INTERIOR node reports the frozen exit heading, not the chord it snaps", () => {
+    const { state, sec } = geoTrack();
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 10, 6); // node 1 — the interior we drag (frozen heading ≠ its chord)
+    addNode(state, sec, 22, 8); // node 2
+    addNode(state, sec, 30, 6); // node 3 (tip) — makes node 1 a clean interior (not last / last-1)
+    state.step(0);
+    const interior = handleAt(state, sec, 1);
+    if (interior === null) throw new Error("no interior node");
+    const s = samples.get(trackOf(state));
+    if (!s) throw new Error("no samples");
+    const f = nodeFrame(state, s, TX, interior);
+    if (!f) throw new Error("no frame");
+    expect(f.tangent).toBeNull(); // interior: no incline reference
+
+    const headingBefore = exitWorld(interior);
+    const raw = angleToPoint(f, 0.7);
+    const res = angleControl(f, raw.x, raw.y, true);
+    expect(res.incline).toBeNull();
+    // the chord the knob snaps is a genuinely different quantity from the node's exit heading.
+    expect(Math.abs(res.angle - headingBefore)).toBeGreaterThan(0.05);
+    writeNode(state, interior, angleToPoint(f, res.angle));
+    // the interior drag doesn't re-head this node — its exit heading is frozen (drag == rest).
+    expect(exitWorld(interior)).toBeCloseTo(headingBefore, 9);
+    // and the resting readout reports exitWorld (the heading) — the SAME quantity the drag feed shows.
+    expect(selectedMetrics(state, interior)?.angleLabel).toBe(
+        formatDeg((exitWorld(interior) * 180) / Math.PI),
+    );
+});

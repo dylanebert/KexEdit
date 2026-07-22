@@ -221,6 +221,27 @@ test("geo authoring flow", async ({ page }) => {
     ).toBeVisible();
     await page.keyboard.press("Escape"); // dismiss the menu
 
+    // ── 5. Interior angle drag==rest (feel round 9): the SAME invariant on an INTERIOR node. its angle
+    // knob snaps the chord, but the readout reports the node's (frozen) exit heading — drag AND rest,
+    // the same number. before the fix the drag showed the chord (moving), the rest the heading. ──
+    const interiorPos = await nodeAt(3); // an interior node of the seeded hill
+    if (!interiorPos) throw new Error("interior node not located");
+    await page.mouse.click(cb.x + interiorPos.x, cb.y + interiorPos.y);
+    await expect.poll(selectedOrder).toBe(3);
+    const iab = await page.locator(".manip-angle").boundingBox();
+    if (!iab) throw new Error("interior angle knob not laid out");
+    const iak = { x: iab.x + iab.width / 2, y: iab.y + iab.height / 2 };
+    await page.mouse.move(iak.x, iak.y);
+    await page.mouse.down();
+    await page.mouse.move(iak.x + 26, iak.y + 26, { steps: 10 }); // rotate the interior node
+    await page.waitForTimeout(120);
+    const iDrag = await readoutAngle();
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    const iRest = await readoutAngle();
+    expect(iDrag).not.toBeNull();
+    expect(iRest).toBe(iDrag); // interior drag == rest — one consistent quantity (the exit heading)
+
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 

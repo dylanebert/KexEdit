@@ -519,10 +519,13 @@ function dragManipTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): vo
         const p = angleToPoint(f, res.angle);
         const w = screenToWorld(tx, p.x, p.y);
         dragTo(ecs, sel, w.x, w.y);
-        // the exit incline at a tip, else the chord angle being set (interior); the chord length is
-        // constant, shown for continuity.
-        const shown = res.incline ?? res.angle;
-        snapGuides.angleLabel = formatDeg((shown * 180) / Math.PI);
+        // the readout reports the AUTHORED exit heading (`exitWorld`, post-write) — the exact quantity
+        // the resting readout shows, so drag == rest for a tip AND an interior node (feel round 9, one
+        // consistent quantity). at the tip the write re-heads to the snapped incline, so this IS the
+        // snapped value; at an interior node the heading is frozen, so the displayed angle stays put
+        // while the chord rotates (the accepted tradeoff — the knob snaps the chord, the readout
+        // reports the heading). the chord length is constant during an angle drag, shown for continuity.
+        snapGuides.angleLabel = formatDeg((exitWorld(sel) * 180) / Math.PI);
         snapGuides.lengthLabel = formatLen(f.radius / f.pxPerMeter);
         if (res.snapped && res.incline !== null) {
             snapGuides.ray = { x: w.x, y: w.y, angle: res.incline };

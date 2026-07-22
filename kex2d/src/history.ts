@@ -11,7 +11,6 @@
  *  apply/reverse. */
 
 import type { State } from "@dylanebert/shallot";
-import { editor } from "./editor";
 import {
     appendSection as appendSectionTrack,
     convertSection as flipSectionKind,
@@ -22,7 +21,6 @@ import {
     type ForcePointState,
     forcePointState,
     Handle,
-    handleAt,
     joinNext,
     type NodeState,
     nodeSnapshot,
@@ -56,9 +54,35 @@ export interface Command {
     reverse(): void;
 }
 
+/** the injected selection-snapshot hook. history stores an OPAQUE per-entry selection snapshot and
+ *  calls back to capture / restore it, so the command-stack layer owns *when* (pre on record, post on
+ *  the first undo) without importing editor internals — the dependency points inward (the editor
+ *  injects it at boot via {@link setSelectionHook}; a test that asserts selection sets it too).
+ *  `snapshot` reads the current selection into a restorable form; `restore` writes it back. */
+export interface SelectionHook {
+    snapshot(ecs: State): unknown;
+    restore(ecs: State, snap: unknown): void;
+}
+let selHook: SelectionHook | null = null;
+export function setSelectionHook(hook: SelectionHook | null): void {
+    selHook = hook;
+}
+
+/** one undo entry: the reversible command bracketed by its selection snapshots. `pre` is the
+ *  selection from BEFORE the command — captured by the op, since a destructive op destroys the
+ *  selected entity before `record` runs (the shallot `execute(history, nodes, cmd, selection)` shape);
+ *  `post` is the settled after-command selection, captured lazily on the first undo (a selection
+ *  change alone is never a command). `pre === undefined` marks an entry that leaves selection alone (a
+ *  gesture — the dragged node stays selected either direction). */
+interface Entry {
+    cmd: Command;
+    pre: unknown;
+    post?: unknown;
+}
+
 export interface History {
-    undo: Command[];
-    redo: Command[];
+    undo: Entry[];
+    redo: Entry[];
 }
 
 const MAX_UNDO = 256;
@@ -70,25 +94,29 @@ export function createHistory(): History {
 /** the app's single history. tests build their own via `createHistory`. */
 export const history = createHistory();
 
-/** push an already-applied command (the do-path mutated live data first). */
-export function record(h: History, cmd: Command): void {
-    h.undo.push(cmd);
+/** push an already-applied command (the do-path mutated live data first), with the pre-command
+ *  selection snapshot (`undefined` for a gesture, which leaves the selection alone). */
+export function record(h: History, cmd: Command, pre?: unknown): void {
+    h.undo.push({ cmd, pre });
     if (h.undo.length > MAX_UNDO) h.undo.shift();
     h.redo.length = 0; // a new edit invalidates the redo branch
 }
 
-export function undo(h: History): void {
-    const cmd = h.undo.pop();
-    if (!cmd) return;
-    cmd.reverse();
-    h.redo.push(cmd);
+export function undo(h: History, ecs: State): void {
+    const entry = h.undo.pop();
+    if (!entry) return;
+    entry.post = selHook?.snapshot(ecs); // the settled after-command selection (for redo)
+    entry.cmd.reverse();
+    if (entry.pre !== undefined) selHook?.restore(ecs, entry.pre);
+    h.redo.push(entry);
 }
 
-export function redo(h: History): void {
-    const cmd = h.redo.pop();
-    if (!cmd) return;
-    cmd.apply();
-    h.undo.push(cmd);
+export function redo(h: History, ecs: State): void {
+    const entry = h.redo.pop();
+    if (!entry) return;
+    entry.cmd.apply();
+    if (entry.post !== undefined) selHook?.restore(ecs, entry.post);
+    h.undo.push(entry);
 }
 
 // ── gesture lifecycle: a drag (or a live inline edit) writes the canonical data
@@ -140,40 +168,16 @@ export function cancel(): void {
     if (g) g.restore(g.prev);
 }
 
-// ── selection reconcile across a snapshot restore ────────────────────────────────
-// `restoreSection`/`restoreAll` destroy and respawn a section's nodes, and the eid
-// allocator recycles LIFO — so a raw eid held in `editor.selection` remaps to a
-// DIFFERENT node after the restore (a trim-undo would land the selection on the entry
-// anchor). keep the node selection valid by its stable (section, order) identity:
-// capture it while the eid is still live, re-resolve it after the restore, and clear it
-// (with the tangent-edit sub-mode layered on it) when the node no longer exists.
-// force/section selections address by stable id, so a restore leaves them valid untouched.
-// the node menu is closed outright: its rows (checked mode, enablement) are computed at open
-// and are stale after a restore regardless of eid identity — the standard app behavior when
-// the document changes under an open menu.
+// ── selection across undo/redo ────────────────────────────────────────────────────
+// selection restoration is the command-stack layer's job (undo restores each entry's `pre`, redo its
+// `post`), driven by the injected `SelectionHook` — a selection change alone is never a command
+// (clicking around consumes no history). the hook snapshots a node by its stable (section, order),
+// not its eid: `restoreSection`/`restoreAll` destroy and respawn a section's nodes and the allocator
+// recycles LIFO, so a raw eid would remap to a DIFFERENT node after an undo. it closes the node menu
+// on restore (its rows go stale when the document changes). history never touches editor directly.
 
-/** run a snapshot restore, re-resolving the editor's node selection by (section, order)
- *  across the eid recycle and closing the node menu. the one seam every
- *  `restoreSection`/`restoreAll` command flows through (`restoreCommand`), so the reconcile
- *  lives in exactly one place. */
-function withReconcile(ecs: State, restore: () => void): void {
-    const sel = editor.selection;
-    const id =
-        sel !== null && ecs.has(sel, Handle)
-            ? { section: Handle.section.get(sel), order: Handle.order.get(sel) }
-            : null;
-    const editing = id !== null && editor.tangentEdit === sel;
-    editor.nodeMenu = null; // stale contents after the restore; close, don't retarget
-    restore();
-    if (id === null) return; // no node selected — force/section/start survive by stable id
-    const eid = handleAt(ecs, id.section, id.order);
-    editor.selection = eid;
-    editor.tangentEdit = eid !== null && editing ? eid : null;
-}
-
-/** build the undoable command for a snapshot restore pair (section-scoped or whole-track),
- *  wrapping both directions in the selection reconcile so undo AND redo keep the node
- *  selection anchored to its identity, not its eid. */
+/** build the undoable command for a snapshot restore pair (section-scoped or whole-track). the
+ *  selection is handled at the stack layer (`undo`/`redo`), not here. */
 function restoreCommand<S>(
     ecs: State,
     before: S,
@@ -181,8 +185,8 @@ function restoreCommand<S>(
     restore: (ecs: State, snap: S) => void,
 ): Command {
     return {
-        apply: () => withReconcile(ecs, () => restore(ecs, after)),
-        reverse: () => withReconcile(ecs, () => restore(ecs, before)),
+        apply: () => restore(ecs, after),
+        reverse: () => restore(ecs, before),
     };
 }
 
@@ -193,10 +197,11 @@ function restoreCommand<S>(
  *  the whole section before/after — undo reverts both the added node and the stamp. returns the
  *  new node's eid. */
 export function extendTrack(h: History, ecs: State, section: number): number {
+    const pre = selHook?.snapshot(ecs);
     const before = snapshotSection(ecs, section);
     const eid = extend(ecs, section);
     const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection));
+    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
     return eid;
 }
 
@@ -204,10 +209,11 @@ export function extendTrack(h: History, ecs: State, section: number): number {
  *  the promoted tip, so the command captures the whole section before/after (pose + heading +
  *  the trimmed node's tangent). no-op below the two-node floor (records nothing, returns false). */
 export function trimTrack(h: History, ecs: State, section: number): boolean {
+    const pre = selHook?.snapshot(ecs); // the tip being trimmed — captured before it's destroyed
     const before = snapshotSection(ecs, section);
     if (!removeTrailingHandle(ecs, section)) return false;
     const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection));
+    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
     return true;
 }
 
@@ -219,9 +225,9 @@ export function trimTrack(h: History, ecs: State, section: number): boolean {
  *  affected sections (one or two) go in one command, so a single undo restores every cleared half;
  *  records nothing if nothing changed (an enablement-gated Reset always clears something, but the
  *  guard keeps a stray invocation off the undo stack). Uses `restoreNodes` (writes by stable order,
- *  no eid recycle), matching the tangent-edit gesture — so the node selection stays valid without a
- *  reconcile. */
+ *  no eid recycle), matching the tangent-edit gesture. */
 export function resetTangents(h: History, ecs: State, tip: number, stitch: number | null): void {
+    const pre = selHook?.snapshot(ecs);
     const secs = [Handle.section.get(tip)];
     if (stitch !== null && !secs.includes(Handle.section.get(stitch)))
         secs.push(Handle.section.get(stitch));
@@ -233,7 +239,7 @@ export function resetTangents(h: History, ecs: State, tip: number, stitch: numbe
     const restore = (snap: NodeState[][]): void => {
         for (let i = 0; i < secs.length; i++) restoreNodes(ecs, secs[i], snap[i]);
     };
-    record(h, { apply: () => restore(after), reverse: () => restore(before) });
+    record(h, { apply: () => restore(after), reverse: () => restore(before) }, pre);
 }
 
 /** open a gesture on a node drag, snapshotting the section's pose. commit coalesces
@@ -252,24 +258,34 @@ export function beginMove(ecs: State, section: number): void {
  *  is allocated once; undo destroys by it and redo re-spawns verbatim. returns the
  *  new point's stable id. */
 export function createForce(h: History, ecs: State, section: number, s: number, g: number): number {
+    const pre = selHook?.snapshot(ecs);
     const id = createForcePoint(ecs, section, s, g);
-    record(h, {
-        apply: () => spawnForce(ecs, section, id, s, g),
-        reverse: () => destroyForce(ecs, id),
-    });
+    record(
+        h,
+        {
+            apply: () => spawnForce(ecs, section, id, s, g),
+            reverse: () => destroyForce(ecs, id),
+        },
+        pre,
+    );
     return id;
 }
 
 /** delete a force point by id, recording an undoable remove — undo re-spawns it
  *  verbatim (into its original section). no-op if the id is already gone. */
 export function deleteForce(h: History, ecs: State, id: number): void {
+    const pre = selHook?.snapshot(ecs); // the point being deleted — captured before it's destroyed
     const st = forcePointState(ecs, id);
     if (!st) return;
     destroyForce(ecs, id);
-    record(h, {
-        apply: () => destroyForce(ecs, id),
-        reverse: () => spawnForce(ecs, st.section, st.id, st.s, st.g),
-    });
+    record(
+        h,
+        {
+            apply: () => destroyForce(ecs, id),
+            reverse: () => spawnForce(ecs, st.section, st.id, st.s, st.g),
+        },
+        pre,
+    );
 }
 
 /** open a gesture on a force-point drag (or an inline field edit), snapshotting the
@@ -312,10 +328,11 @@ export function beginV0(trackEid: number): void {
  *  before and after (`snapshotSection`), so undo restores the pre-convert payload
  *  byte-identical — what makes destructive conversion safe without a confirm dialog. */
 export function convertSection(h: History, ecs: State, section: number): void {
+    const pre = selHook?.snapshot(ecs);
     const before = snapshotSection(ecs, section);
     flipSectionKind(ecs, section);
     const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection));
+    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
 }
 
 // ── structural ops (append / split / join / delete) ──────────────────────────
@@ -326,10 +343,11 @@ export function convertSection(h: History, ecs: State, section: number): void {
 /** append a new section of `kind` at the chain end, recording one undoable entry.
  *  returns the new section id. */
 export function appendSection(h: History, ecs: State, kind: SectionKind): number {
+    const pre = selHook?.snapshot(ecs);
     const before = snapshotAll(ecs);
     const id = appendSectionTrack(ecs, kind);
     const after = snapshotAll(ecs);
-    record(h, restoreCommand(ecs, before, after, restoreAll));
+    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return id;
 }
 
@@ -340,6 +358,7 @@ export function appendSection(h: History, ecs: State, kind: SectionKind): number
 export function splitSection(h: History, ecs: State, section: number, at: number): number | null {
     const eid = sectionAt(ecs, section);
     if (eid === null) return null;
+    const pre = selHook?.snapshot(ecs);
     const before = snapshotAll(ecs);
     const id =
         Section.kind.get(eid) === SectionKind.Geo
@@ -347,7 +366,7 @@ export function splitSection(h: History, ecs: State, section: number, at: number
             : splitForce(ecs, section, at);
     if (id === null) return null; // nothing split — don't record
     const after = snapshotAll(ecs);
-    record(h, restoreCommand(ecs, before, after, restoreAll));
+    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return id;
 }
 
@@ -355,19 +374,21 @@ export function splitSection(h: History, ecs: State, section: number, at: number
  *  (records nothing) when there's no successor or the kinds differ. returns true when
  *  joined. */
 export function joinSection(h: History, ecs: State, section: number): boolean {
+    const pre = selHook?.snapshot(ecs);
     const before = snapshotAll(ecs);
     if (!joinNext(ecs, section)) return false;
     const after = snapshotAll(ecs);
-    record(h, restoreCommand(ecs, before, after, restoreAll));
+    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return true;
 }
 
 /** delete a section, recording one undoable entry. no-op (records nothing) at the
  *  last remaining section. returns true when deleted. */
 export function removeSection(h: History, ecs: State, section: number): boolean {
+    const pre = selHook?.snapshot(ecs); // the section being deleted — its stable id survives regardless
     const before = snapshotAll(ecs);
     if (!deleteSectionTrack(ecs, section)) return false;
     const after = snapshotAll(ecs);
-    record(h, restoreCommand(ecs, before, after, restoreAll));
+    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return true;
 }
