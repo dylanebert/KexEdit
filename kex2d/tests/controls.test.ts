@@ -57,36 +57,58 @@ function writeNode(state: State, eid: number, screen: { x: number; y: number }):
     reheadOnDrag(state, eid);
 }
 
-// the readout formatting seam (feel round 6): one degree formatter (`formatDeg`) + one length
-// formatter (`formatLen`) every source funnels through, so a value formats identically regardless of
-// which precedence source produced it. `formatDeg` reads a 5°-grid multiple as a clean integer, a
-// continuous (Ctrl-bypass) value as one decimal, and normalizes a small negative that rounds to zero
-// (never `-0.0°`).
+// the readout formatting seam (feel round 6, universalized round 10): one degree formatter
+// (`formatDeg`) + one length formatter (`formatLen`) every source funnels through, so a value formats
+// identically regardless of which precedence source produced it. `formatDeg` is ALWAYS one decimal
+// (`5.0°`, never `5°`) — no integer↔decimal flip as a drag crosses a snap point — and normalizes a
+// small negative that rounds to zero (never `-0.0°`).
 
-test("a 5°-grid multiple reads as a clean integer despite the radian→degree round-trip", () => {
+test("a 5°-grid multiple formats as one decimal, like every other value (no integer flip)", () => {
     // the angle control carries the incline in world radians (k·ANGLE_STEP, 5°); the readout feed
-    // converts it rad→deg (`dragManipTo`), so a grid multiple must cancel to a clean integer.
+    // converts it rad→deg (`dragManipTo`). a snapped grid multiple must read `5.0°`, NOT `5°` — the
+    // round-10 fix (the seam's old dual format flickered 5 vs 5.0 across the snap boundary).
     for (let k = -6; k <= 6; k++) {
         const incline = k * ANGLE_STEP;
         const label = formatDeg((-incline * 180) / Math.PI);
-        expect(label).toBe(`${-k * 5}°`);
+        expect(label).toBe(`${(-k * 5).toFixed(1)}°`); // e.g. "30.0°", never "30°"
     }
 });
 
-test("a continuous (Ctrl-bypass) value keeps one decimal", () => {
+test("a continuous (Ctrl-bypass) value keeps one decimal — the same format", () => {
     // a real atan2-over-samples value that must not spill its full f64 expansion into the readout.
     expect(formatDeg(-22.126334809373247)).toBe("-22.1°");
     expect(formatDeg(37.049999999999997)).toBe("37.0°");
 });
 
-test("-0 normalizes to a sign-free zero (the momentary `-0.0°` flicker)", () => {
-    // a small negative that rounds to zero at one decimal must not show its sign — the readout
-    // flickered `-0.0°` at ~0°. both the integer path (exact 0) and the decimal path (a tiny
-    // negative) resolve to a positive zero.
-    expect(formatDeg(0)).toBe("0°");
-    expect(formatDeg(-0)).toBe("0°");
+test("zero (and a small negative that rounds to zero) reads `0.0°`, sign-free", () => {
+    // one decimal always, and no leading minus on a value that rounds to zero (the `-0.0°` flicker).
+    expect(formatDeg(0)).toBe("0.0°");
+    expect(formatDeg(-0)).toBe("0.0°");
     expect(formatDeg(-0.04)).toBe("0.0°"); // rounds to 0.0 at one decimal — no leading minus
-    expect(formatDeg(-1e-7)).toBe("0°"); // within the integer-noise band → clean integer zero
+    expect(formatDeg(-1e-7)).toBe("0.0°");
+});
+
+test("every angle display path formats a value IDENTICALLY (one seam, no path-dependent 5 vs 5.0)", () => {
+    // representative degrees: a snapped grid multiple (5), a hair off it (5.02), a negative (−22.1),
+    // a small negative that rounds to zero (−0.04), zero, −0, and ±90. every display path — the seam
+    // itself, the resting/length readout (`nodeMetrics`), and the tangent-handle feed (`dragMetrics`)
+    // — routes through `formatDeg`, so all three read the SAME one-decimal string for the same value.
+    for (const deg of [5, 5.02, -22.1, -0.04, 0, -0, 90, -90]) {
+        const rad = (deg * Math.PI) / 180;
+        const seam = formatDeg(deg);
+        expect(seam).toMatch(/^-?\d+\.\d°$/); // one decimal always — never a bare integer like "5°"
+        // the resting readout (nodeMetrics) routes the heading through the seam.
+        expect(nodeMetrics({ x: 0, y: 0 }, { x: 1, y: 0 }, rad).angleLabel).toBe(seam);
+        // the tangent-handle feed (dragMetrics) routes its own angle through the seam (world Y-flip
+        // inside: sy < 0). a screen tip at (cos, −sin)·40 with sx=40, sy=−40 reads world `deg`.
+        expect(dragMetrics(Math.cos(rad) * 40, -Math.sin(rad) * 40, 40, -40).angleLabel).toBe(seam);
+    }
+    // the specific "5 vs 5.0" bypass: a snapped 5° and a hair off it both read one decimal, no flip.
+    expect(formatDeg(5)).toBe("5.0°");
+    expect(formatDeg(5.02)).toBe("5.0°");
+    // lengths funnel through the one `formatLen` too — integer metres, no sign on zero.
+    expect(formatLen(5.02)).toBe(nodeMetrics({ x: 0, y: 0 }, { x: 5.02, y: 0 }, 0).lengthLabel);
+    expect(formatLen(-0)).toBe("0 m");
 });
 
 test("formatLen is the one length seam — integer metres, no sign on zero", () => {
@@ -112,7 +134,7 @@ test("normDeg wraps into (−180, 180] — 180 stays 180, matching the doc", () 
 test("a node reports its world exit heading and the chord to the previous node", () => {
     // node 3 m right + 3 m up → chord = hypot(3,3) ≈ 4.24 → "4 m". heading π/4 → +45°.
     const m = nodeMetrics({ x: 0, y: 0 }, { x: 3, y: 3 }, Math.PI / 4);
-    expect(m.angleLabel).toBe("45°");
+    expect(m.angleLabel).toBe("45.0°");
     expect(m.lengthLabel).toBe("4 m");
 });
 
@@ -141,17 +163,17 @@ test("dragMetrics reports a constant angle along a ray — only length grows", (
     // a screen tip along (+1, −1) (world +45°, the Y-flip): two lengths on the same ray.
     const near = dragMetrics(40, -40, 40, -40); // world (1, 1) → hypot ≈ 1.41 → "1 m"
     const far = dragMetrics(160, -160, 40, -40); // world (4, 4), same direction → hypot ≈ 5.66 → "6 m"
-    expect(near.angleLabel).toBe("45°");
-    expect(far.angleLabel).toBe("45°"); // angle held — the on-ray invariant
+    expect(near.angleLabel).toBe("45.0°");
+    expect(far.angleLabel).toBe("45.0°"); // angle held — the on-ray invariant
     expect(near.lengthLabel).toBe("1 m");
     expect(far.lengthLabel).toBe("6 m"); // only length moved
 });
 
 test("dragMetrics applies the world Y-flip (screen down = world up)", () => {
     // a screen tip straight DOWN (+y in screen) is world −y with sy < 0 → world DOWN → −90°.
-    expect(dragMetrics(0, 40, 40, -40).angleLabel).toBe("-90°");
+    expect(dragMetrics(0, 40, 40, -40).angleLabel).toBe("-90.0°");
     // straight UP in screen (−y) → world UP → +90°.
-    expect(dragMetrics(0, -40, 40, -40).angleLabel).toBe("90°");
+    expect(dragMetrics(0, -40, 40, -40).angleLabel).toBe("90.0°");
 });
 
 // the click-vs-drag dead-zone: a node grab stays a select until the pointer travels DRAG_PX from
@@ -268,7 +290,7 @@ test("an INTERIOR node reports its authored heading (not null — display is not
     expect(Handle.theta.get(interior)).toBeCloseTo(Math.PI / 2, 6);
     const m = selectedMetrics(state, interior);
     expect(m).not.toBeNull();
-    expect(m?.angleLabel).toBe("90°"); // the world exit heading (entry frame identity here)
+    expect(m?.angleLabel).toBe("90.0°"); // the world exit heading (entry frame identity here)
 });
 
 test("an explicit out-vector governs the readout heading, not the recovered geometry", () => {

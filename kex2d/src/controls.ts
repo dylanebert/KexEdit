@@ -396,26 +396,19 @@ export function polarNudge(
     return { x: prev.x + Math.cos(na) * r, y: prev.y + Math.sin(na) * r };
 }
 
-// float-noise band for the integer-degree readout. absorbs the f64 conversion of an exact 5°-grid
-// multiple (a few ULP of ~180, ≪ 1e-9°) so a snapped value reads as a clean integer, while a
-// Ctrl-bypass continuous value keeps one decimal.
-const DEG_EPS = 1e-6;
-
 /** wrap a degree value into (−180, 180]. */
 export function normDeg(d: number): number {
     const w = ((((d + 180) % 360) + 360) % 360) - 180;
     return w === -180 ? 180 : w; // the wrap lands 180° on −180; the readout wants 180
 }
 
-/** format a degree value for the readout — the one degree seam every source funnels through (so a
- *  value formats identically regardless of source, `App.svelte`'s precedence). a clean integer when
- *  within float noise of a whole degree (a 5° grid multiple cancels clean), else one decimal. a
- *  small negative that rounds to zero normalizes to a positive zero (never `-0.0°`). */
+/** format a degree value for the readout — the one degree seam every source funnels through, so a
+ *  value formats identically regardless of source (`App.svelte`'s precedence). ALWAYS one decimal
+ *  (`5.0°`, never `5°`) — the standard readout convention: a value must not flip integer↔decimal as
+ *  a drag crosses a snap point (feel round 10 — the seam's own dual format was the `5` vs `5.0`
+ *  bypass). a small negative that rounds to zero normalizes to a positive zero (never `-0.0°`). */
 export function formatDeg(d: number): string {
-    const n = normDeg(d);
-    const r = Math.round(n);
-    if (Math.abs(n - r) < DEG_EPS) return `${r}°`; // `${-0}` is "0" — a clean, sign-free integer
-    const dec = n.toFixed(1);
+    const dec = normDeg(d).toFixed(1);
     return `${dec === "-0.0" ? "0.0" : dec}°`;
 }
 
