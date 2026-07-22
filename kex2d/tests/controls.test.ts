@@ -4,7 +4,6 @@ import {
     armDrag,
     beyondDeadZone,
     DRAG_PX,
-    dragMetrics,
     formatDeg,
     formatLen,
     latchAngle,
@@ -90,18 +89,15 @@ test("zero (and a small negative that rounds to zero) reads `0°`, sign-free", (
 
 test("every angle display path formats a value IDENTICALLY (one seam, one rule)", () => {
     // representative degrees: a snapped grid multiple (5), a hair off it (5.02→"5"), a real decimal
-    // (5.5), a negative (−22.1), a value that rounds to zero (−0.04→"0"), zero, −0, ±90. every path —
-    // the seam, the resting/length readout (`nodeMetrics`), and the tangent-handle feed
-    // (`dragMetrics`) — routes through `formatDeg`, so all three read the SAME string.
+    // (5.5), a negative (−22.1), a value that rounds to zero (−0.04→"0"), zero, −0, ±90. the readout
+    // (`nodeMetrics`, the one source both the resting and handle-drag paths read) routes the heading
+    // through `formatDeg`, so every display reads the SAME string.
     for (const deg of [5, 5.02, 5.5, -22.1, -0.04, 0, -0, 90, -90]) {
         const rad = (deg * Math.PI) / 180;
         const seam = formatDeg(deg);
         expect(seam).toMatch(/^-?\d+(\.\d)?°$/); // one decimal OR a bare integer (the .0 dropped)
-        // the resting readout (nodeMetrics) routes the heading through the seam.
+        // the readout (nodeMetrics) routes the heading through the seam.
         expect(nodeMetrics({ x: 0, y: 0 }, { x: 1, y: 0 }, rad).angleLabel).toBe(seam);
-        // the tangent-handle feed (dragMetrics) routes its own angle through the seam (world Y-flip
-        // inside: sy < 0). a screen tip at (cos, −sin)·40 with sx=40, sy=−40 reads world `deg`.
-        expect(dragMetrics(Math.cos(rad) * 40, -Math.sin(rad) * 40, 40, -40).angleLabel).toBe(seam);
     }
     // the specific cases: a snapped 5° and a hair off both drop to "5°"; a real decimal keeps it.
     expect(formatDeg(5)).toBe("5°");
@@ -154,29 +150,6 @@ test("the heading routes through formatDeg (a fractional heading keeps one decim
         formatDeg(deg),
     );
     expect(nodeMetrics({ x: 0, y: 0 }, { x: 2, y: 1 }, Math.atan2(1, 2)).angleLabel).toBe("26.6°");
-});
-
-// the tangent-handle drag feed (`dragMetrics`): the dragged handle's OWN world angle + length from
-// its screen-space tip offset. the y-flip lives inside it (screen sy < 0 → world Y-up), so an
-// on-ray tip reports a constant angle regardless of how far out it's pulled — the constant-while-
-// on-ray pin the flanking-sample re-derivation failed (that drifted as the reshaped curve moved the
-// samples). here scale sx = 40 px/m, sy = −40 px/m (the view Y-flip).
-
-test("dragMetrics reports a constant angle along a ray — only length grows", () => {
-    // a screen tip along (+1, −1) (world +45°, the Y-flip): two lengths on the same ray.
-    const near = dragMetrics(40, -40, 40, -40); // world (1, 1) → hypot ≈ 1.41 → "1.4 m"
-    const far = dragMetrics(160, -160, 40, -40); // world (4, 4), same direction → hypot ≈ 5.66 → "5.7 m"
-    expect(near.angleLabel).toBe("45°");
-    expect(far.angleLabel).toBe("45°"); // angle held — the on-ray invariant
-    expect(near.lengthLabel).toBe("1.4 m");
-    expect(far.lengthLabel).toBe("5.7 m"); // only length moved
-});
-
-test("dragMetrics applies the world Y-flip (screen down = world up)", () => {
-    // a screen tip straight DOWN (+y in screen) is world −y with sy < 0 → world DOWN → −90°.
-    expect(dragMetrics(0, 40, 40, -40).angleLabel).toBe("-90°");
-    // straight UP in screen (−y) → world UP → +90°.
-    expect(dragMetrics(0, -40, 40, -40).angleLabel).toBe("90°");
 });
 
 // the click-vs-drag dead-zone: a node grab stays a select until the pointer travels DRAG_PX from
@@ -319,6 +292,38 @@ test("an explicit out-vector governs the readout heading, not the recovered geom
     expect(selectedMetrics(state, tip)?.angleLabel).toBe(
         formatDeg((exitWorld(tip) * 180) / Math.PI),
     );
+});
+
+test("the readout reports the node's quantities, invariant to the out-handle's length (round 14)", () => {
+    // a handle drag along a ray lengthens the out-vector without rotating it. the readout (the one
+    // source both the resting and handle-drag paths read) must report the node's exit heading + chord
+    // to prev — both invariant to |out| — never the handle's own growing length. this is the source
+    // the round-14 feed collapses onto; the old handle-length feed grew with the drag.
+    const { state, sec } = geoTrack();
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 10, 0); // node 1: chord to prev = 10 m, fixed by the node position
+    const tip = lastHandle(state, sec);
+    if (tip === null) throw new Error("tip missing");
+    const a = (30 * Math.PI) / 180;
+    const dir: [number, number] = [Math.cos(a), Math.sin(a)];
+    const order = Handle.order.get(tip);
+    const authoredOut = (len: number) => {
+        setTangent(state, sec, order, {
+            mode: TangentMode.Free,
+            inX: -5,
+            inY: 0,
+            outX: len * dir[0],
+            outY: len * dir[1],
+        });
+        state.step(0);
+        return selectedMetrics(state, tip);
+    };
+    const near = authoredOut(3); // a short out-handle
+    const far = authoredOut(30); // pulled 10× further along the SAME ray
+    expect(near?.angleLabel).toBe("30°"); // the exit heading (the out-vector direction)
+    expect(far?.angleLabel).toBe(near?.angleLabel); // on-ray: heading unchanged
+    expect(near?.lengthLabel).toBe("10 m"); // the chord to prev, not |out|
+    expect(far?.lengthLabel).toBe(near?.lengthLabel); // invariant to the handle length
 });
 
 test("the section entry frame rotates the local heading into world", () => {

@@ -153,23 +153,25 @@ export const snapGuides: SnapGuides = {
     lengthLabel: null,
 };
 
-/** the tangent-handle drag readout feed: the dragged handle's own world angle (°) + length (m),
- *  the authored values under manipulation. distinct from `snapGuides` — a handle drag shows no
- *  guide ray (`editor-ui.md`: node drags snap, handle drags express), only these readout strings.
- *  the App readout prefers this over the magnet labels over the resting metrics (the three-source
- *  precedence). set each move of a live handle drag, cleared with the gesture (`clearGuides`). */
-export const dragReadout: { angleLabel: string | null; lengthLabel: string | null } = {
-    angleLabel: null,
-    lengthLabel: null,
+/** the tangent-handle drag readout target: the eid of the node whose handle is being dragged, or
+ *  null when no handle drag is live. a handle drag reports the SAME quantities the resting readout
+ *  shows for that node (its authored exit heading + chord to prev), never gesture-local handle
+ *  values — one readout rule with no per-gesture exception (feel round 14). the App reads
+ *  `selectedMetrics(this node)`, which updates live as the drag rewrites the out-vector. keyed to
+ *  the dragged node, not the selection, so a boundary-stitch drag (writing the downstream node-0's
+ *  tangent while the upstream tip is selected) reports the downstream node. distinct from
+ *  `snapGuides` — a handle drag shows no guide ray (`editor-ui.md`: node drags snap, handle drags
+ *  express). set on each move of a live handle drag, cleared with the gesture (`clearGuides`). */
+export const dragReadout: { node: number | null } = {
+    node: null,
 };
 
-/** clear every snap guide + the drag readout feed (drag release / teardown). */
+/** clear every snap guide + the drag readout target (drag release / teardown). */
 export function clearGuides(): void {
     snapGuides.ray = null;
     snapGuides.angleLabel = null;
     snapGuides.lengthLabel = null;
-    dragReadout.angleLabel = null;
-    dragReadout.lengthLabel = null;
+    dragReadout.node = null;
 }
 
 /** frame the camera to the default view for a canvas size (also the reset target). */

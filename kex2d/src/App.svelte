@@ -84,21 +84,27 @@ onMount(() => {
     };
 });
 
-// the snap readout text (the Blender modal-transform / SketchUp measurements-box precedent): the
-// selected node's live metrics (° and/or m), read through the per-RAF tick. ONE readout, three
-// sources in precedence — a live tangent-handle drag feeds the dragged handle's own authored angle +
-// length (`dragReadout`); else a node drag with a magnet target latched shows the snapped values
-// (`snapGuides`, they land on the rasters); else at rest the selected node's authored geometry (exit
-// heading + chord, the Figma selected-object dimensions idiom). null when nothing's selected, so the
-// readout is absent then. It renders centered below the node (below), offset clear of the radial buttons.
+// the snap readout text (the Blender modal-transform / SketchUp measurements-box precedent): a
+// node's live metrics (° and/or m), read through the per-RAF tick. ONE readout, ONE source
+// (`selectedMetrics` — the node's authored exit heading + chord to prev, the Figma selected-object
+// dimensions idiom), keyed by three cases in precedence: a live tangent-handle drag reads the
+// DRAGGED node's metrics (feel round 14 — a handle drag reports the node's quantities, never the
+// handle's own angle/length; the out-vector rewrite updates exitWorld live); else a node drag with a
+// magnet target latched shows the snapped values (`snapGuides`, they land on the rasters); else at
+// rest the SELECTED node's metrics. null when there's no target node, so the readout is absent then.
+// Rendered centered below the node (below), offset clear of the radial buttons.
 const snapText = $derived.by((): string | null => {
     void tick;
     let angle: string | null;
     let length: string | null;
-    if (dragReadout.angleLabel !== null || dragReadout.lengthLabel !== null) {
-        // a live tangent-handle drag: the dragged handle's own authored angle + length.
-        angle = dragReadout.angleLabel;
-        length = dragReadout.lengthLabel;
+    if (dragReadout.node !== null) {
+        // a live tangent-handle drag: the dragged node's authored metrics (keyed to the handle's
+        // node, so a boundary-stitch drag reports the downstream node-0). null → no readout (node 0
+        // has no chord, matching its resting readout), never a fall-through to the selection.
+        const m = selectedMetrics(ecs, dragReadout.node);
+        if (m === null) return null;
+        angle = m.angleLabel;
+        length = m.lengthLabel;
     } else if (snapGuides.angleLabel !== null || snapGuides.lengthLabel !== null) {
         // a node drag with a magnet target engaged: the latched snap values (on the rasters).
         angle = snapGuides.angleLabel;

@@ -448,20 +448,6 @@ export function nodeMetrics(
     return { angleLabel, lengthLabel: formatLen(chord) };
 }
 
-/** the dragged tangent handle's readout: its own world angle (°) + length (m), from the handle
- *  knob's screen offset from the node (`tipX/tipY`) and the view scale. the y-flip lives here
- *  (screen `sy < 0` → world Y-up), so while the angle snap holds the tip on the grab ray the
- *  reported angle is constant by construction. these are the authored values under the drag, never a
- *  bake re-derivation. */
-export function dragMetrics(tipX: number, tipY: number, sx: number, sy: number): NodeMetrics {
-    const wx = tipX / sx;
-    const wy = tipY / sy;
-    return {
-        angleLabel: formatDeg((Math.atan2(wy, wx) * 180) / Math.PI),
-        lengthLabel: formatLen(Math.hypot(wx, wy)),
-    };
-}
-
 /** the selected node's live metrics for the resting snap readout (the Figma selected-object
  *  dimensions idiom): the chord to the previous node + the node's **authored world exit heading**
  *  (`exitWorld` — an explicit out-vector else the stored `Auto` heading, rotated into world by the
@@ -601,13 +587,12 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
     const latch = latchAngle(cx + grabHX - nsx, cy + grabHY - nsy, latchRayX, latchRayY);
     const { x: worldX, y: worldY } = screenToWorld(tx, nsx + latch.x, nsy + latch.y);
 
-    // feed the readout the dragged handle's OWN world angle + length — the authored values under
-    // manipulation (the third readout source, above the magnet labels + resting metrics). computed
-    // from the latched screen tip, so while the angle snap holds the tip on the grab ray the angle
-    // is constant by construction. no guide ray: a handle drag expresses, it doesn't snap.
-    const dm = dragMetrics(latch.x, latch.y, tx.sx, tx.sy);
-    dragReadout.angleLabel = dm.angleLabel;
-    dragReadout.lengthLabel = dm.lengthLabel;
+    // the readout reports the dragged node's OWN authored quantities (exit heading + chord to prev),
+    // not the handle's angle/length — the same quantities the resting readout shows, re-derived from
+    // `selectedMetrics` after the write below (feel round 14). keyed to the dragged handle's node
+    // (not the selection), so a boundary-stitch drag reports the downstream node-0. no guide ray: a
+    // handle drag expresses, it doesn't snap.
+    dragReadout.node = eid;
 
     // summon explicit on the first move of an Auto ghost (seed both sides from the arc rule so
     // the coupled side keeps its natural length), then edit the dragged side. node 0 (the entry

@@ -359,10 +359,13 @@ test("tangent edit flow", async ({ page }) => {
     expect(await undoDepth()).toBeGreaterThan(0); // the mode set + handle drag are undoable
     await page.screenshot({ path: join(OUT, "tangent-2-drag.png") });
 
-    // ── 3b. On-ray readout pin (kex2d-geo-ux feel round 3): grab the out-handle and drag OUT along
-    // the grab ray to two different lengths. The DOM snap readout reports the dragged handle's own
-    // authored angle, so the angle text holds CONSTANT while only the length grows — the fix for the
-    // readout drifting when it re-derived the angle from the reshaping curve's flanking samples. ──
+    // ── 3b. Handle-drag readout pin (feel round 14, superseding round 3): grab the out-handle and
+    // drag OUT along the grab ray to two lengths. The DOM snap readout reports the NODE's own
+    // quantities — its authored exit heading (`exitWorld`, = the out-vector direction here) and its
+    // chord to prev — never the handle's angle/length. An on-ray drag rotates neither the out-vector
+    // nor the node, so BOTH the angle AND the length text hold CONSTANT while the handle grows. The
+    // constant LENGTH is the round-14 change: the old feed reported the handle's own length, which
+    // grew from near to far. ──
     const out2 = (await handles()).find((h) => h.side === "out");
     if (!out2) throw new Error("out-handle not re-located for the on-ray readout pin");
     const rayX = out2.x - npos.x;
@@ -370,22 +373,23 @@ test("tangent edit flow", async ({ page }) => {
     const rl = Math.hypot(rayX, rayY);
     const ux = rayX / rl;
     const uy = rayY / rl; // the unit node→knob screen ray; dragging along it stays on the ray
-    const readoutAngle = async (): Promise<string | null> => {
-        const txt = await page.locator(".snap-readout").first().textContent();
-        const m = txt?.match(/-?\d+(?:\.\d+)?°/); // the degree token, e.g. "45°" or "-22.1°"
-        return m ? m[0] : null;
-    };
+    const readoutText = async (): Promise<string | null> =>
+        page.locator(".snap-readout").first().textContent();
+    const degToken = (t: string | null) => t?.match(/-?\d+(?:\.\d+)?°/)?.[0] ?? null;
+    const lenToken = (t: string | null) => t?.match(/-?\d+(?:\.\d+)? m/)?.[0] ?? null;
     await page.mouse.move(cb.x + out2.x, cb.y + out2.y);
     await page.mouse.down();
     await page.mouse.move(cb.x + out2.x + ux * 15, cb.y + out2.y + uy * 15, { steps: 6 });
     await page.waitForTimeout(120); // let the per-RAF tick project the readout
-    const angleNear = await readoutAngle();
+    const near = await readoutText();
     await page.mouse.move(cb.x + out2.x + ux * 55, cb.y + out2.y + uy * 55, { steps: 6 });
     await page.waitForTimeout(120);
-    const angleFar = await readoutAngle();
+    const far = await readoutText();
     await page.mouse.up();
-    expect(angleNear).not.toBeNull(); // the readout is present through the handle drag
-    expect(angleFar).toBe(angleNear); // constant angle along the ray — the on-ray invariant
+    expect(degToken(near)).not.toBeNull(); // the readout is present through the handle drag
+    expect(lenToken(near)).not.toBeNull();
+    expect(degToken(far)).toBe(degToken(near)); // constant heading along the ray
+    expect(lenToken(far)).toBe(lenToken(near)); // constant length = the node's chord, NOT the handle's
 
     // ── 4. RIGHT-CLICK → Tangents ▸ → Reset → the node clears back to live (Auto inference
     // resumes), so it carries no stored tangent again. available here (a tangent exists to clear). ──
