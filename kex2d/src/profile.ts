@@ -1,28 +1,198 @@
-/** the force-authoring primitive: authored force points → a dense per-edge F_n(σ)
- *  profile the substrate integrates. the force
- *  analogue of `spline.ts`'s `sampleChain` — a pure, framework-free authoring layer
- *  the ECS bake feeds into `section.evalForce`. the atoms stay opinion-free: they
- *  consume dense per-edge force and know nothing about points or interpolation.
+/** the force-authoring primitive: authored force keyframes → a dense per-edge
+ *  F_n(σ) profile the substrate integrates. the force analogue of `spline.ts`'s
+ *  `sampleChain` — a pure, framework-free authoring layer the ECS bake feeds into
+ *  `section.evalForce`. the atoms below stay opinion-free: they consume dense
+ *  per-edge force and know nothing about keyframes, easing, or bezier handles.
  *
- *  authoring semantics: linear interpolation between points, an empty profile is a constant
- *  DEFAULT_G, and the first/last point's value is held flat beyond it (the original
- *  core's empty-track-→-default + endpoint-hold). points are input handles authored
- *  on the s-axis; the displayed curve is re-recovered from the swept geometry,
- *  so it sits O(ds) off these values — expected, not a bug. */
+ *  every segment between two adjacent keyframes is a **cubic bezier in (s, g)**.
+ *  presets and explicit handles meet at one handle-resolution seam (`segment`),
+ *  exactly `spline.ts`'s `handle()` shape. a segment's two derived tangents come
+ *  from **one** preset — the **leading** keyframe's easing tag governs the whole
+ *  transition (the Blender F-curve convention: easing lives on the keyframe and
+ *  shapes the following segment). an explicit stored handle overrides its own side
+ *  (per-keyframe, per-side) verbatim. one sampling path evaluates both; "Custom"
+ *  is derived provenance (a segment is custom iff a bounding side holds an explicit
+ *  handle), never a branch flag.
+ *
+ *  the derived tangents are **flat** (horizontal in g) — an S-transition between
+ *  held values, C1 at every keyframe by construction (both sides flat → g'(s)=0
+ *  there). their length comes from the one influence table: Linear = 0 (the bezier
+ *  degenerates to the chord, so g(s) is exactly linear), Ease = 1/3 (s(t) is then
+ *  linear in t, so g(s) is exactly smoothstep), Sharp = 1/2 (the quintic feel;
+ *  center slope grows as influence rises). Ease is the default (FVD++/Planet
+ *  Coaster transition feel).
+ *
+ *  the displayed curve is re-recovered from the swept geometry, so a keyframe sits
+ *  O(ds) off these authored values — expected, not a bug (the one-display-path law). */
 
-/** a force keyframe: a demanded normal force `g` at arclength `s` (m). */
+/** a keyframe's easing tag — the convenient middle layer over the bezier
+ *  substrate. each row maps to one derived-flat-tangent influence (the table
+ *  below): the honest span of FVD++'s degree ladder collapsed to one axis. */
+export enum Easing {
+    Linear = 0,
+    Ease = 1,
+    Sharp = 2,
+}
+
+/** derived-flat-tangent influence per easing tag: the fraction of the segment
+ *  span each flat handle reaches along s. these are the exact ends of the FVD++
+ *  ladder, not tuned values — LINEAR degenerates the bezier to the chord (exactly
+ *  linear g(s)); EASE makes s(t) linear so g(s) is exactly smoothstep = x²(3−2x);
+ *  SHARP = ½ is the quintic feel (both s-handles meet at the segment midpoint). */
+const LINEAR_INFLUENCE = 0;
+const EASE_INFLUENCE = 1 / 3;
+const SHARP_INFLUENCE = 1 / 2;
+
+function influence(ease: Easing): number {
+    switch (ease) {
+        case Easing.Linear:
+            return LINEAR_INFLUENCE;
+        case Easing.Sharp:
+            return SHARP_INFLUENCE;
+        default:
+            return EASE_INFLUENCE;
+    }
+}
+
+/** an explicit bezier handle stored on a keyframe side, as a **(Δs, Δg) offset**
+ *  from the keyframe — the summoned inner layer, mirroring geo's stored `Tangent`.
+ *  the outgoing (`out`) handle reaches forward (Δs ≥ 0) into the following segment;
+ *  the incoming (`in`) handle reaches backward (Δs ≤ 0) into the preceding one. an
+ *  offset present on a side overrides that side's derived flat tangent verbatim. */
+export interface Offset {
+    ds: number;
+    dg: number;
+}
+
+/** a force keyframe: a demanded normal force `g` at arclength `s` (m). `ease`
+ *  governs the *following* segment's derived flat tangents (default `Easing.Ease`
+ *  when absent — the "no stored state" convention). `in`/`out` are the summoned
+ *  explicit handles; a present side substitutes its stored offset for the derived
+ *  tangent at the seam, per-keyframe and per-side. */
 export interface ForcePoint {
     s: number;
     g: number;
+    ease?: Easing;
+    in?: Offset;
+    out?: Offset;
 }
 
 /** the force an empty profile holds — level 1g gravity, a flat straight track. */
 export const DEFAULT_G = 1;
 
-/** the authored force at arclength `s`: linear interpolation between the two
- *  bracketing points, held flat before the first / after the last, DEFAULT_G when
- *  there are none. `points` MUST be sorted by `s` (the ECS layer sorts on
- *  gather); coincident-s points collapse to the earlier value (zero-width span). */
+const EPS = 1e-12;
+
+/** residual bound for the s(t) = target root solve, relative to the segment span.
+ *  ~a few ULP of a double: the Linear-tag exactness error is |Δg|·(residual/span)
+ *  = |Δg|·S_TOL_REL (see `solveT`), so at 1e-13 a Linear segment reproduces the
+ *  analytic linear value to ~1e-13·|Δg|, far below the f32 display-recovery noise
+ *  (~1e-7). derived from the exactness bound, not tuned to a test. */
+const S_TOL_REL = 1e-13;
+const MAX_ITERS = 60;
+
+/** one bezier segment in (s, g): its four control points, resolved from the two
+ *  bounding keyframes' tangents and clamped for x-monotonicity so g(s) stays a
+ *  function. control point s-coords are non-decreasing (`s0 ≤ p1s ≤ p2s ≤ s1`), so
+ *  s(t) is monotone on [0,1] and the root solve has a unique answer. */
+interface Seg {
+    s0: number;
+    g0: number;
+    p1s: number;
+    p1g: number;
+    p2s: number;
+    p2g: number;
+    s1: number;
+    g1: number;
+}
+
+/** resolve + monotone-clamp the segment between keyframes `a` and `b`. the derived
+ *  handles never trigger the clamp (forward, combined reach ≤ span for influence
+ *  ≤ ½); explicit adversarial handles are clamped: each handle's forward s-reach
+ *  is floored at 0 (a backward-pointing handle collapses onto its keyframe) and
+ *  the pair scaled down proportionally if their combined reach would cross
+ *  (Blender's `correct_bezpart`), the g-offset scaled by the same factor so the
+ *  handle's slope is preserved. */
+function segment(a: ForcePoint, b: ForcePoint): Seg {
+    const span = b.s - a.s;
+    // the leading keyframe's tag governs the whole segment: both derived flat
+    // handles take `a.ease`'s influence. an explicit stored handle on either side
+    // overrides its own side verbatim.
+    const reach = influence(a.ease ?? Easing.Ease) * span;
+    const out = a.out ?? { ds: reach, dg: 0 };
+    const inn = b.in ?? { ds: -reach, dg: 0 };
+    let p1s = a.s + out.ds;
+    let p1g = a.g + out.dg;
+    let p2s = b.s + inn.ds;
+    let p2g = b.g + inn.dg;
+
+    if (span > EPS) {
+        // signed forward s-reach of each handle; a backward reach (< 0) clamps to 0.
+        const raw1 = p1s - a.s;
+        const raw2 = b.s - p2s;
+        let d1 = Math.max(0, raw1);
+        let d2 = Math.max(0, raw2);
+        const sum = d1 + d2;
+        const f = sum > span ? span / sum : 1;
+        d1 *= f;
+        d2 *= f;
+        // scale each handle's g-offset by the same over-reach factor `f` so its slope
+        // holds (Blender's correct_bezpart scales the whole vector). a *backward* reach
+        // (raw < 0) is the only collapse — it flattens onto the key to kill the fold; a
+        // *vertical* handle (raw ≈ 0, dg ≠ 0) is kept (its s-length is 0, so it never
+        // over-reaches, and s'(t) ≥ 0 still holds — an infinite-slope departure, monotone).
+        const sc1 = raw1 < -EPS ? 0 : f;
+        const sc2 = raw2 < -EPS ? 0 : f;
+        p1g = a.g + (p1g - a.g) * sc1;
+        p2g = b.g + (p2g - b.g) * sc2;
+        p1s = a.s + d1;
+        p2s = b.s - d2;
+    }
+
+    return { s0: a.s, g0: a.g, p1s, p1g, p2s, p2g, s1: b.s, g1: b.g };
+}
+
+function bez(a0: number, a1: number, a2: number, a3: number, t: number): number {
+    const u = 1 - t;
+    return u * u * u * a0 + 3 * u * u * t * a1 + 3 * u * t * t * a2 + t * t * t * a3;
+}
+
+function bezDeriv(a0: number, a1: number, a2: number, a3: number, t: number): number {
+    const u = 1 - t;
+    return 3 * u * u * (a1 - a0) + 6 * u * t * (a2 - a1) + 3 * t * t * (a3 - a2);
+}
+
+/** the bezier parameter `t` where `s(t) = target`, on a monotone-s segment. a
+ *  safeguarded Newton (bisection bracket, so a near-flat endpoint derivative can't
+ *  diverge): monotone s means the root is unique and bracketed in [0, 1]. `guess`
+ *  warm-starts the search — the dense march passes the previous sample's `t`, so
+ *  successive ascending queries converge in a step or two (never from scratch). */
+function solveT(seg: Seg, target: number, guess: number): number {
+    const span = seg.s1 - seg.s0;
+    const tol = Math.abs(span) * S_TOL_REL;
+    let lo = 0;
+    let hi = 1;
+    let t = guess <= 0 ? 0 : guess >= 1 ? 1 : guess;
+    for (let i = 0; i < MAX_ITERS; i++) {
+        const r = bez(seg.s0, seg.p1s, seg.p2s, seg.s1, t) - target;
+        if (r > 0) hi = t;
+        else lo = t;
+        if (Math.abs(r) <= tol) break;
+        const d = bezDeriv(seg.s0, seg.p1s, seg.p2s, seg.s1, t);
+        let tn = d > EPS ? t - r / d : (lo + hi) / 2;
+        if (!(tn > lo && tn < hi)) tn = (lo + hi) / 2;
+        if (Math.abs(tn - t) <= EPS) {
+            t = tn;
+            break;
+        }
+        t = tn;
+    }
+    return t;
+}
+
+/** the authored force at arclength `s`: the cubic-bezier value of the bracketing
+ *  segment, held flat before the first keyframe / after the last, DEFAULT_G when
+ *  there are none. `points` MUST be sorted by `s` (the ECS layer sorts on gather);
+ *  a coincident-s (zero-width) span collapses to the earlier value. */
 export function sampleForce(points: readonly ForcePoint[], s: number): number {
     const n = points.length;
     if (n === 0) return DEFAULT_G;
@@ -35,16 +205,20 @@ export function sampleForce(points: readonly ForcePoint[], s: number): number {
         if (points[mid].s <= s) lo = mid;
         else hi = mid;
     }
-    const span = points[hi].s - points[lo].s;
-    const f = span > 1e-12 ? (s - points[lo].s) / span : 0;
-    return points[lo].g + f * (points[hi].g - points[lo].g);
+    const a = points[lo];
+    const b = points[hi];
+    if (b.s - a.s <= EPS) return a.g;
+    const seg = segment(a, b);
+    const t = solveT(seg, s, (s - a.s) / (b.s - a.s));
+    return bez(seg.g0, seg.p1g, seg.p2g, seg.g1, t);
 }
 
 /** the dense per-edge force over a section of `length` meters at edge step `ds`:
  *  edge `i` is driven by the force at its leading sample `σ_i = i·ds` (the source-σ
  *  convention `section.evalForce` / the forward integrator use). `edges =
  *  round(length/ds)`, floored at 1 so a zero-length section still integrates one
- *  step. `points` sorted by s. */
+ *  step. `points` sorted by s. marches the bezier `t` monotonically per segment as
+ *  σ ascends (warm-started root solve), never Newton-from-scratch per sample. */
 export function forceProfile(
     points: readonly ForcePoint[],
     length: number,
@@ -52,6 +226,38 @@ export function forceProfile(
 ): Float32Array {
     const edges = Math.max(1, Math.round(length / ds));
     const fN = new Float32Array(edges);
-    for (let i = 0; i < edges; i++) fN[i] = sampleForce(points, i * ds);
+    const n = points.length;
+    if (n === 0) {
+        fN.fill(DEFAULT_G);
+        return fN;
+    }
+    const first = points[0];
+    const last = points[n - 1];
+    let seg = -1; // index of the currently-built segment (points[seg] → points[seg+1])
+    let built: Seg | null = null;
+    let t = 0; // warm-start carried across ascending σ within a segment
+    for (let i = 0; i < edges; i++) {
+        const s = i * ds;
+        if (s <= first.s) {
+            fN[i] = first.g;
+            continue;
+        }
+        if (s >= last.s) {
+            fN[i] = last.g;
+            continue;
+        }
+        // advance to the segment bracketing s: points[cursor].s ≤ s < points[cursor+1].s,
+        // skipping zero-width spans. reset the warm start when the segment changes.
+        let cursor = seg < 0 ? 0 : seg;
+        while (cursor + 1 < n && points[cursor + 1].s <= s) cursor++;
+        if (cursor !== seg) {
+            seg = cursor;
+            built = segment(points[seg], points[seg + 1]);
+            t = 0;
+        }
+        const b = built as Seg;
+        t = solveT(b, s, t);
+        fN[i] = bez(b.g0, b.p1g, b.p2g, b.g1, t);
+    }
     return fN;
 }
