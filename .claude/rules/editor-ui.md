@@ -14,9 +14,9 @@ grows into a new TS root, add it to the `paths` above so its controllers and sto
 too. The posture, gates, surface, field, and motion laws are the kex root ruleset
 (`kex/.claude/rules/ui.md`); this file is its kexedit child — it adds the project's earned bends
 and worked examples, never restates root. kex2d is the worked model of root gate 3 (on the object
-first): no tools, no modes — click a node and drag it, radial extend/delete buttons summoned at
-the selected chain end, force keyframes authored on the timeline curve itself, their typed fields
-in a popover at the point.
+first): no tools, no modes — click a node to select it, move it through the polar length/angle
+knobs on its summoned ring, force keyframes authored on the timeline curve itself, their typed
+fields in a popover at the point.
 
 ## Layered expressiveness
 
@@ -97,15 +97,22 @@ copies this shape:
   earns targethood only when the domain has a real quantum (video frames, musical beats — the
   Blender/DAW case). The timeline arclength axis has none — the AE/Premiere case, landmarks only.
   The shaping viewport *does*: the building vocabulary is the quantum, and **snap quantizes what
-  the piece does** — the tip's exit-tangent incline to the angle raster (kex2d 15°), the chord
-  length to whole meters — never the chord angle, and tip-only (an interior node has no incline).
-  A zoom-dependent ruler tick or a nice-number gridline is display, not content. If nice-value
-  targeting is ever wanted, it's a separate explicitly-enabled grid (the Figma split), never folded
-  into the default magnet.
-- **Families are relative to the content's own frame** (the previous node, the piece being built),
-  never world-absolute. Absolute align-x/y families fight the incline quantum and don't generalize
-  to 3D; new capability arrives by adding families to the one resolver, never by restructuring
-  input.
+  the piece does** — a pure grid, snap-by-default: chord length to whole meters (1 m floor), angle
+  to a 5° grid, uniform tip + interior. A tip snaps its exit-tangent *incline* (the chord that
+  yields it, `incline = 2·chord − tangent`), an interior node its chord angle; the old tip-only
+  asymmetry existed only because a proximity quantum couldn't reach a frozen heading — a plain grid
+  needs none. Ctrl/Cmd bypasses to continuous. A zoom-dependent ruler tick or a nice-number gridline
+  is display, not content. If nice-value targeting is ever wanted, it's a separate
+  explicitly-enabled grid (the Figma split), never folded into the default magnet.
+- **Node movement is per-axis 1D controls in the content's own polar frame** (the previous node,
+  the piece being built), never free-2D or world-absolute. Absolute align-x/y families fight the
+  angle quantum and don't generalize to 3D. The kex2d polar manipulator is the 3D port's template:
+  a pure device-free module owns each axis's locus (chord ray, tangential arc) and its exact
+  screen↔value inverses — values world-space, the y-flip folded inside, no consumer negation —
+  with one grid quantizer per axis. A 1D gesture needs no pool competition, co-fire, or Shift
+  constrain (those dissolved with the free drag). In 3D the angle control becomes pitch, joined by
+  turn/roll rings; length unchanged. New capability is another 1D control on the ring, never
+  restructured input.
 - **Targets must be stable under the gesture and reachable.** A gesture never snaps to geometry it
   is itself moving (the extent-trim self-snap lesson) or to a target the drag can't reach.
 - Snap never fires on a Shift-locked axis — the constraint owns it.
@@ -118,6 +125,11 @@ copies this shape:
   and mid-drag; an engaged snap feeds the same readout its snapped values. Never floating chips at
   the drag point (they collide with summoned controls), never a fixed far corner (too far from the
   action).
+- **The readout reports the node's authored quantities** — its world exit heading and the chord to
+  the previous node — the same value mid-drag and at rest, exactly. Never a bake re-derivation (it
+  drifts with resampling) and never a gesture-local value (a dragged handle's own angle/length is
+  not what the author is placing). The snap must quantize the same authored quantity the write
+  re-heads to, or drag ≠ rest by the gap between the two spaces.
 - **A pointerdown becomes a drag only past a dead-zone** (kex2d `DRAG_PX` = 4, the Figma/Blender
   click-vs-drag threshold); below it, release is a plain click. Window blur cancels an in-flight
   gesture completely — revert the bracketed edit, clear guides and capture. No guide may exist
@@ -139,7 +151,30 @@ The worked example of the layered-expressiveness contract's summoned inner layer
   Esc/click-away exits); the node context menu carries the Handles toggle and the mode submenu.
   Mere selection shows nothing.
 - **Reset always re-infers** — the way back up the layers is one click, from anywhere.
-- **Handle drags are free gestures** — no snap, no guides. Node drags snap; handle drags express.
+- **Handle drags are free gestures** — no raster, no guides. The one landmark is the grab ray: the
+  angle latches to the grab direction while the tip stays within a perpendicular screen-px corridor
+  (the angular window derived from it, never authored in degrees), so pulling out lengthens without
+  bumping the angle; deviate and return and it re-latches (stateless, no monotonic release). Node
+  moves snap the grid; handle drags express.
+- **A section boundary is one node, stitched at the UI.** A geo→geo boundary is two coincident
+  entities (upstream tip + downstream node 0, the rigid-placement invariant). Tangent-editing the
+  tip additionally summons the downstream node-0 out-handle — a single free entry handle (no mode
+  submenu, no cross-section Mirror/Aligned coupling); dragging it writes the downstream section's
+  tangent through its own gesture. Reset on the boundary clears both halves in one undo entry.
+- **Role transitions reconcile role-dependent state.** The tip heading has one source of truth, so
+  a structural op that removes a node's out-segment must reconcile its tangent: **a promotion
+  resets** (delete clears the promoted tip's explicit tangent to `Auto`, then re-heads — the result
+  is indistinguishable from authoring the shorter chain directly), **a demotion preserves** (undo
+  restores the authored interior state). Snapshot for undo *after* reconciling. The law fires when
+  the out-segment is removed — a split's boundary tip keeps its tangent, since it still shapes the
+  downstream first segment under the one-node view.
+
+## Affordance typing
+
+When two adds coexist, the glyphs are op-shaped: add-node is a segment-with-a-dot in the viewport,
+add-section a plain `+` on the clip tail — the surface carries the rest (a 16px clip-in-a-box was
+unreadable, and the inverted assignment was tried first). And one gesture means one thing: append is
+the button, `Enter`, or the menu; double-click is tangent edit, never append.
 
 ## Menus
 
