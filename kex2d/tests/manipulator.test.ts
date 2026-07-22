@@ -2,13 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
     angleControl,
     angleToPoint,
-    chordRay,
     lengthControl,
     lengthToPoint,
     polarFrame,
     screenToAngle,
     screenToLength,
-    tangentArc,
 } from "../src/manipulator";
 import { ANGLE_STEP } from "../src/magnet";
 
@@ -36,29 +34,6 @@ describe("polar frame", () => {
         expect(f.radius).toBe(0);
         expect(f.ux).toBe(1); // a defined fallback direction, never NaN
         expect(f.uy).toBe(0);
-    });
-});
-
-describe("control loci", () => {
-    test("the chord ray runs from the previous node along the chord", () => {
-        const f = polarFrame(PREV, SEL, PX_PER_METER, 0);
-        const ray = chordRay(f);
-        expect(ray.x).toBe(PREV.x);
-        expect(ray.y).toBe(PREV.y);
-        expect(ray.dx).toBeCloseTo(f.ux, 12);
-        expect(ray.dy).toBeCloseTo(f.uy, 12);
-        // the selected node lies on the ray (its perpendicular distance is ~0).
-        const perp = (SEL.x - ray.x) * ray.dy - (SEL.y - ray.y) * ray.dx;
-        expect(perp).toBeCloseTo(0, 9);
-    });
-
-    test("the tangential arc is centered on the previous node through the selected node", () => {
-        const f = polarFrame(PREV, SEL, PX_PER_METER, 0);
-        const arc = tangentArc(f);
-        expect(arc.cx).toBe(PREV.x);
-        expect(arc.cy).toBe(PREV.y);
-        // the selected node lies on the arc (its distance from the center is the radius).
-        expect(Math.hypot(SEL.x - arc.cx, SEL.y - arc.cy)).toBeCloseTo(arc.r, 9);
     });
 });
 

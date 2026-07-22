@@ -368,9 +368,11 @@ editor-ui invariant-domain rule).
   is 1D now). The name is legacy; fold it into `manipulator.ts` when the 3D port touches it. No
   shallot, no DOM — unit-tested in `magnet.test.ts`.
 - `manipulator.ts` — the **polar control substrate**, and the 3D port's template. Pure and
-  device-free: the polar frame around the previous node (`polarFrame`, degenerate-chord guarded),
-  the two control loci (chord ray for length, tangential arc for angle), and the exact screen↔polar
-  inverses each drag resolves through. The `Frame` is a **per-pointermove snapshot** (the incline
+  device-free: the polar frame around the previous node (`polarFrame`, degenerate-chord guarded)
+  and the exact screen↔polar inverses each drag resolves through — `screenToLength` projects onto
+  the chord ray, `screenToAngle` sweeps the tangential arc (the two control loci; nothing draws
+  them, so they're geometry the inverses carry, not their own accessors). The `Frame` is a
+  **per-pointermove snapshot** (the incline
   window derives from the live chord radius — freezing it at gesture start diverges from the feel);
   the angle control emits **world-space** radians, the y-flip folded inside, so no consumer negates.
   Unit-tested in `manipulator.test.ts`.

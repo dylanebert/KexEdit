@@ -90,29 +90,6 @@ export function polarFrame(
     };
 }
 
-/** the chord ray locus (origin + unit direction, screen px) — the length control's track, the ray
- *  from the previous node through the selected node. */
-export interface Ray {
-    x: number;
-    y: number;
-    dx: number;
-    dy: number;
-}
-export function chordRay(f: Frame): Ray {
-    return { x: f.px, y: f.py, dx: f.ux, dy: f.uy };
-}
-
-/** the tangential arc locus (center + radius, screen px) — the angle control's track, the circle
- *  through the selected node centered on the previous node. */
-export interface Arc {
-    cx: number;
-    cy: number;
-    r: number;
-}
-export function tangentArc(f: Frame): Arc {
-    return { cx: f.px, cy: f.py, r: f.radius };
-}
-
 /** screen point → chord length (world metres): the signed projection onto the chord ray ÷ the
  *  scale. a point behind the origin yields a negative length; the caller floors it at the minimum
  *  chord. the exact inverse of `lengthToPoint`. */
