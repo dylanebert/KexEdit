@@ -170,6 +170,34 @@ test("geo authoring flow", async ({ page }) => {
     await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-4).toBe(true);
     await page.screenshot({ path: join(OUT, "geo-2-reshape.png") });
 
+    // ── 3c. Angle-knob drag==rest pin (feel round 8): rotating the TIP's angle knob shows the snapped
+    // exit incline; on release the resting readout must show the SAME number — the round-3 law at the
+    // write end (the fix for a 25° drag that rested at 25.5°: the snap now quantizes the same authored
+    // exit heading the write re-heads to). read the readout's degree token during the drag, then after
+    // release, and assert they match. ──
+    const readoutAngle = async (): Promise<string | null> => {
+        const txt = await page.locator(".snap-readout").first().textContent();
+        const m = txt?.match(/-?\d+(?:\.\d+)?°/); // the degree token, e.g. "-30°" or "25.5°"
+        return m ? m[0] : null;
+    };
+    const tipPos = await nodeAt(6); // the chain end (7 nodes → order 6)
+    if (!tipPos) throw new Error("tip not located");
+    await page.mouse.click(cb.x + tipPos.x, cb.y + tipPos.y); // select the tip → its knobs summon
+    await expect.poll(selectedOrder).toBe(6);
+    const ab = await page.locator(".manip-angle").boundingBox();
+    if (!ab) throw new Error("angle knob not laid out");
+    const ak = { x: ab.x + ab.width / 2, y: ab.y + ab.height / 2 };
+    await page.mouse.move(ak.x, ak.y);
+    await page.mouse.down();
+    await page.mouse.move(ak.x + 28, ak.y - 28, { steps: 10 }); // rotate the tip to a snapped incline
+    await page.waitForTimeout(120); // let the per-RAF tick project the drag readout
+    const dragAngle = await readoutAngle();
+    await page.mouse.up();
+    await page.waitForTimeout(120); // let the resting readout settle
+    const restAngle = await readoutAngle();
+    expect(dragAngle).not.toBeNull();
+    expect(restAngle).toBe(dragAngle); // drag == rest, exactly — no 25→25.5 drift on release
+
     // ── 4. Append gestures (feel round 7 — the retired radial `+` button's replacements): a DOUBLE
     // click on the chain-end point appends a node (Enter's twin), while a PLAIN click never does; and
     // the node menu carries an "Add node" (+ "Delete node") item. the chain end is order 6 (7 nodes).

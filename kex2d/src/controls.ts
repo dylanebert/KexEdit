@@ -320,12 +320,14 @@ export function nodeFrame(
     const sel = sampleScreen(s, tx, Handle.sample.get(eid));
     let tangent: number | null = null;
     if (eid === lastHandle(ecs, section)) {
-        const pi = Handle.sample.get(prevEid);
-        let count = 0;
-        for (const t of ecs.query([Track])) count = Track.count.get(t);
-        const lo = Math.max(0, pi - 1);
-        const hi = Math.min(count - 1, pi + 1);
-        if (hi > lo) tangent = Math.atan2(s.posY[hi] - s.posY[lo], s.posX[hi] - s.posX[lo]);
+        // the incline-snap reference is the previous node's AUTHORED exit heading (`exitWorld`) — the
+        // SAME quantity the write re-heads the tip against (`headLast`: `reflect(exitHeading(prev),
+        // chord)` = 2·chord − exitHeading(prev)), and the same one the resting readout reports. so the
+        // snapped incline shown while dragging equals the resting `exitWorld` after release, EXACTLY.
+        // (feel round 8: reading a flanking-sample re-derivation here diverged by the recovered-vs-
+        // authored heading gap — a −30° drag rested at −32.3° — the round-3 law violated at the write
+        // end. the resting readout already reports the authored quantity, so the snap must too.)
+        tangent = exitWorld(prevEid);
     }
     const f = polarFrame(prev, sel, Math.abs(tx.sx), tangent);
     return f.degenerate ? null : f;

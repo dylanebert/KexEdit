@@ -9,12 +9,15 @@ import {
     formatLen,
     latchAngle,
     LATCH_PX,
+    nodeFrame,
     nodeMetrics,
     normDeg,
     polarNudge,
     selectedMetrics,
 } from "../src/controls";
-import { ANGLE_STEP } from "../src/magnet";
+import { ANGLE_STEP, LENGTH_MIN } from "../src/magnet";
+import { angleControl, angleToPoint, lengthControl, lengthToPoint } from "../src/manipulator";
+import { localize } from "../src/section";
 import { TangentMode } from "../src/spline";
 import {
     addNode,
@@ -27,11 +30,32 @@ import {
     Handle,
     handleAt,
     lastHandle,
+    reheadOnDrag,
+    samples,
     SectionKind,
     sectionInfo,
     seedTangent,
     setTangent,
+    Track,
 } from "../src/track";
+
+// a synthetic view transform (world→screen affine, sy < 0 for the Y-flip) — the drag paths take
+// screen px, so a device-free test projects through this.
+const TX = { sx: 40, sy: -40, ox: 500, oy: 400 };
+const trackOf = (state: State): number => {
+    for (const e of state.query([Track])) return e;
+    throw new Error("no track");
+};
+// replicate `dragManipTo`'s node write: place the tip at a screen point, then localize + rehead
+// (exactly what `dragTo` does inside the controls).
+function writeNode(state: State, eid: number, screen: { x: number; y: number }): void {
+    const world = { x: (screen.x - TX.ox) / TX.sx, y: (screen.y - TX.oy) / TX.sy };
+    const entry = sectionInfo.get(Handle.section.get(eid))?.entry;
+    if (!entry) throw new Error("no entry");
+    const local = localize(entry, { x: world.x, y: world.y, theta: 0 });
+    Handle.pos.set(eid, local.x, local.y);
+    reheadOnDrag(state, eid);
+}
 
 // the readout formatting seam (feel round 6): one degree formatter (`formatDeg`) + one length
 // formatter (`formatLen`) every source funnels through, so a value formats identically regardless of
@@ -333,4 +357,62 @@ test("angle nudge rotates around the previous node by step/radius, holding the l
     // −dir rotates the other way by the same amount.
     const m = polarNudge(PREV0, { x: 4, y: 0 }, "angle", -1, 1, 0.05);
     expect(Math.atan2(m.y, m.x)).toBeCloseTo(-0.25, 9);
+});
+
+// feel round 8 — the write-end readout invariant: the value shown WHILE dragging a knob must equal
+// the value at REST after release, exactly (the round-3 law at the write end). the angle bug: the
+// drag snapped the exit incline against the previous node's geometry-RECOVERED heading (flanking
+// baked samples), while the write re-heads the tip against its AUTHORED heading (`reflect(exitHeading
+// (prev), chord)`), so the resting `exitWorld` landed off the snapped value (25° shown → 25.5° rest).
+
+/** a curved geo section, so the previous node's recovered secant (flanking baked samples) differs
+ *  from its authored heading — which is what makes the drag-vs-rest divergence visible. */
+function curvedTip(): { state: State; tip: number; prev: number } {
+    const { state, sec } = geoTrack();
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 10, 0);
+    addNode(state, sec, 18, 7); // prev — a bend here makes the recovered secant ≠ the authored heading
+    addNode(state, sec, 26, 11); // tip
+    state.step(0);
+    const tip = lastHandle(state, sec);
+    if (tip === null) throw new Error("no tip");
+    const prev = handleAt(state, sec, Handle.order.get(tip) - 1);
+    if (prev === null) throw new Error("no prev");
+    return { state, tip, prev };
+}
+
+test("angle drag: the snapped incline shown equals the resting exit heading (no 25→25.5 drift)", () => {
+    const { state, tip } = curvedTip();
+    const s = samples.get(trackOf(state));
+    if (!s) throw new Error("no samples");
+    const f = nodeFrame(state, s, TX, tip);
+    if (!f) throw new Error("no frame");
+    // drag to a raw chord; snap on quantizes the exit incline to a 5° grid multiple.
+    const raw = angleToPoint(f, 0.42);
+    const res = angleControl(f, raw.x, raw.y, true);
+    if (res.incline === null) throw new Error("the tip must carry an incline");
+    // write the node exactly as the drag does (place on the arc at the snapped chord).
+    writeNode(state, tip, angleToPoint(f, res.angle));
+    // the drag readout showed res.incline; the resting readout shows exitWorld(tip) — they must match.
+    const dragDeg = (res.incline * 180) / Math.PI;
+    const restDeg = (exitWorld(tip) * 180) / Math.PI;
+    expect(restDeg).toBeCloseTo(dragDeg, 4);
+});
+
+test("length drag: the snapped metres shown equal the resting chord (5 m rests at 5 m)", () => {
+    const { state, tip, prev } = curvedTip();
+    const s = samples.get(trackOf(state));
+    if (!s) throw new Error("no samples");
+    const f = nodeFrame(state, s, TX, tip);
+    if (!f) throw new Error("no frame");
+    const raw = lengthToPoint(f, 5.02); // a raw pointer near 5 m
+    const res = lengthControl(f, raw.x, raw.y, true);
+    expect(res.meters).toBe(5); // snapped to the whole metre
+    expect(res.meters).toBeGreaterThanOrEqual(LENGTH_MIN);
+    writeNode(state, tip, lengthToPoint(f, res.meters));
+    state.step(0); // re-bake so the resting samples reflect the write
+    const prevW = { x: s.posX[Handle.sample.get(prev)], y: s.posY[Handle.sample.get(prev)] };
+    const tipW = { x: s.posX[Handle.sample.get(tip)], y: s.posY[Handle.sample.get(tip)] };
+    const restChord = Math.hypot(tipW.x - prevW.x, tipW.y - prevW.y);
+    expect(restChord).toBeCloseTo(res.meters, 4); // dragged 5 m rests at 5 m, not 5.02
 });
