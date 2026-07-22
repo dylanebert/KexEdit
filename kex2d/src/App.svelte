@@ -325,18 +325,18 @@ const nodeItems = $derived.by((): MenuItem[] => {
         return [
             { label: "Handles", checked: nodeEditing, action: () => toggleHandles(eid) },
             { separator: true },
-            { label: "Reset tangent", enabled: nodeHasTangent, action: () => doReset(eid) },
+            { label: "Reset", enabled: nodeHasTangent, action: () => doReset(eid) },
         ];
     }
     return [
-        { label: "Add node", shortcut: "Enter", enabled: nodeIsEnd, action: () => doAdd(eid) },
         {
-            label: "Delete node",
+            label: "Delete",
             shortcut: "Del",
             danger: true,
             enabled: nodeCanTrim,
             action: () => doTrim(eid),
         },
+        { label: "Add", shortcut: "Enter", enabled: nodeIsEnd, action: () => doAdd(eid) },
         { separator: true },
         { label: "Handles", checked: nodeEditing, action: () => toggleHandles(eid) },
         {
@@ -358,7 +358,7 @@ const nodeItems = $derived.by((): MenuItem[] => {
                     action: () => pickMode(TangentMode.Free, eid),
                 },
                 { separator: true },
-                { label: "Reset tangents", enabled: nodeHasTangent, action: () => doReset(eid) },
+                { label: "Reset", enabled: nodeHasTangent, action: () => doReset(eid) },
             ],
         },
     ];

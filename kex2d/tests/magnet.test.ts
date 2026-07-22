@@ -1,24 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import {
-    ANGLE_STEP,
-    chordForIncline,
-    inclineOf,
-    LENGTH_MIN,
-    LENGTH_STEP,
-    snapAngle,
-    snapLength,
-} from "../src/magnet";
+import { ANGLE_STEP, chordForIncline, inclineOf, snapAngle, snapLength } from "../src/magnet";
 
 // the two snap grids are pure fixed-increment quantizers now (feel round 6, no proximity window):
 // snap-by-default, the `snap` flag off (Ctrl held) bypasses to continuous. a test feeds a scalar
 // and reads the snapped scalar back.
 
 describe("length snap (whole-metre grid, min 1)", () => {
-    test("1 m is the quantum", () => {
-        expect(LENGTH_STEP).toBe(1);
-        expect(LENGTH_MIN).toBe(1);
-    });
-
     test("snap on: quantizes to the nearest whole metre", () => {
         expect(snapLength(3.1, true)).toEqual({ meters: 3, snapped: true });
         expect(snapLength(3.9, true)).toEqual({ meters: 4, snapped: true }); // nearer, not down

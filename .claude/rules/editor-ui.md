@@ -185,6 +185,11 @@ bespoke component.
 
 - Right-click context menus are the app's menu language; a summoned menu never covers its invoker;
   functional menus animate minimally.
+- **Rows are terse and frequency-ordered.** A context menu is summoned *on* its subject, so the row
+  names the verb alone — `Delete`, not `Delete node` (the noun restates what the invoker already
+  said, the naming rule's module-scope-is-context). Order by how often a row is reached, not by
+  safety or by the order the features were built; `danger` marks the destructive row, so a
+  frequently-used delete leads without reading as a trap.
 - Flyouts fit the viewport on all four edges: flip the preferred side, clamp the rest.
 - **The positioned menu box is never `overflow: hidden`** — that clips an out-of-box flyout from
   paint *and* hit-testing. The rounded-corner row-wash clip lives on an inner rows wrapper;

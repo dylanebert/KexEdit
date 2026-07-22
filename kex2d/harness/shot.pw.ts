@@ -41,7 +41,7 @@ async function frameTimeline(page: Page): Promise<void> {
 // regression net for the whole context-submenu clip class.
 async function clickFlyout(page: Page, menu: string, parent: string, item: string): Promise<void> {
     const m = page.locator(menu);
-    // exact match: the parent "Tangents" would otherwise substring-collide with "Reset tangents".
+    // exact match: a parent label can substring-collide with one of its own flyout rows.
     await m.getByRole("menuitem", { name: parent, exact: true }).hover(); // real hover opens the flyout
     const target = m.getByRole("menuitem", { name: item });
     await expect(target).toBeVisible();
@@ -200,8 +200,8 @@ test("geo authoring flow", async ({ page }) => {
 
     // ── 4. Append (feel round 12 — extend restored to the ring): a PLAIN click never appends; the
     // ring's extend button (a real `.rbtn` at the chain end) appends, Enter's twin; and the node menu
-    // carries "Add node"/"Delete node". double-click now enters tangent edit (the tangent flow), not
-    // append. the chain end is order 6 (7 nodes). ──
+    // carries Delete + Add, in that order. double-click now enters tangent edit (the tangent flow),
+    // not append. the chain end is order 6 (7 nodes). ──
     const chainEnd = await nodeAt(6);
     if (!chainEnd) throw new Error("chain-end node not located");
     // a plain click selects the chain end but does NOT append.
@@ -217,13 +217,18 @@ test("geo authoring flow", async ({ page }) => {
     await expect.poll(nodeCount).toBe(8);
     await page.keyboard.press("Control+z");
     await expect.poll(nodeCount).toBe(7);
-    // the node menu (right-click the chain end) carries Add node + Delete node (delete stays off-ring).
+    // the node menu (right-click the chain end) carries the structural ops (delete stays off-ring),
+    // ordered by access frequency: Delete before Add. the rows are terse — the menu is ON the node,
+    // so the noun would only restate its subject.
     await page.mouse.click(cb.x + chainEnd.x, cb.y + chainEnd.y, { button: "right" });
     await expect(page.locator(".nodemenu")).toBeVisible();
-    await expect(page.locator(".nodemenu").getByRole("menuitem", { name: "Add node" })).toBeVisible();
-    await expect(
-        page.locator(".nodemenu").getByRole("menuitem", { name: "Delete node" }),
-    ).toBeVisible();
+    await expect
+        .poll(async () =>
+            (await page.locator(".nodemenu [role=menuitem]").allTextContents()).map((t) =>
+                t.replace(/\s+/g, " ").trim(),
+            ),
+        )
+        .toEqual(["Delete Del", "Add Enter", "Handles", "Tangents ▸"]); // ▸ = the submenu affix
     await page.keyboard.press("Escape"); // dismiss the menu
 
     // ── 5. Interior angle drag==rest (feel round 9): the SAME invariant on an INTERIOR node. its angle
@@ -395,7 +400,7 @@ test("tangent edit flow", async ({ page }) => {
     // resumes), so it carries no stored tangent again. available here (a tangent exists to clear). ──
     await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
     await expect(page.locator(".nodemenu")).toBeVisible();
-    await clickFlyout(page, ".nodemenu", "Tangents", "Reset tangents");
+    await clickFlyout(page, ".nodemenu", "Tangents", "Reset");
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
@@ -490,7 +495,7 @@ test("start handle edit flow", async ({ page }) => {
     await expect(page.locator(".nodemenu").getByRole("menuitem", { name: "Handles" })).toBeVisible();
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(OUT, "start-3-menu.png") });
-    await page.locator(".nodemenu").getByRole("menuitem", { name: "Reset tangent" }).click();
+    await page.locator(".nodemenu").getByRole("menuitem", { name: "Reset" }).click();
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);

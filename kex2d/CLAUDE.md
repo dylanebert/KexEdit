@@ -140,9 +140,10 @@ shape hangs off it in the entry frame.
   reachable, never ambient). A handle drag is a **free** direct-manipulation gesture (no raster, no
   guides) with one landmark, the grab-ray angle latch (`latchAngle`, a `LATCH_PX` perpendicular
   corridor — pull out to lengthen without bumping the angle). The **node context menu** is a **right-click on any pickable node** (any mode, not only
-  in tangent edit — the app's context-menu language, `menu.ts` `MenuItem` + `editor.nodeMenu`): Add
-  node / Delete node (chain-end, enablement-gated), a `Handles` toggle (≡ the double-click
-  tangent-edit summon) over a `Tangents ▸` submenu (Mirror | Aligned | Free, a separator, then
+  in tangent edit — the app's context-menu language, `menu.ts` `MenuItem` + `editor.nodeMenu`): the
+  structural ops `Delete` then `Add` (chain-end, enablement-gated; ordered by access frequency, and
+  terse because the menu is *on* the node — the noun would restate its subject), a `Handles` toggle
+  (≡ the double-click tangent-edit summon) over a `Tangents ▸` submenu (Mirror | Aligned | Free, a separator, then
   Reset). Node 0 is reachable: right-click or double-click at the START diamond reaches the first
   section's node 0 (its menu is Handles + Reset only — no mode submenu, no Add/Delete); a geo→geo
   boundary's node 0 is reached by tangent-editing the coincident upstream tip (the stitch).
@@ -477,8 +478,8 @@ reshapes exactly the two segments sharing the node. Node 0 is the pinned entry a
   Ctrl/Cmd bypasses to continuous — with `reheadOnDrag` refreshing the last node's heading after
   the write (node 0 + interior stay frozen). A body drag does nothing but select.
 - **Append / Delete**: append lays a node continuing the last edge by `EXTEND_DIST` — the ring's
-  extend button (slot 0, chain-end only), `Enter`, or the node menu's "Add node"; delete removes the
-  trailing node — `Del`/`Backspace` or the node menu, never below the two nodes a section needs,
+  extend button (slot 0, chain-end only), `Enter`, or the node menu's `Add`; delete removes the
+  trailing node — `Del`/`Backspace` or the node menu's `Delete`, never below the two nodes a section needs,
   resetting-then-re-heading the promoted tip (the role-transition law, `editor-ui.md`).
 - **Tangent edit** (double-click any handled node): summons its in/out handles (hidden on mere
   selection, and the manipulator knobs hide while it's open), dragged freely with the grab-ray angle
