@@ -26,7 +26,7 @@ import {
 } from "./history";
 import Menu from "./Menu.svelte";
 import type { MenuItem } from "./menu";
-import { RADIAL_R } from "./radial";
+import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "./radial";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { stitchNode } from "./tangents";
 import Timeline from "./Timeline.svelte";
@@ -181,6 +181,33 @@ function onManip(e: PointerEvent, axis: "length" | "angle"): void {
     if (e.button !== 0) return; // left button only — a right-click over a knob is a context menu, not a drag
     e.preventDefault();
     controls?.startManip(e, axis);
+}
+
+// the extend (add-node) button — a real DOM `.rbtn` on the ring's front slot (along the heading, where
+// the next piece lays; feel round 12 restored it — double-clicking to append wasn't discoverable).
+// shown only on the selected CHAIN-END node (append is chain-end-only, like the Enter key), hidden in
+// tangent edit. positioned through the shared radial ring (`radial.ts`), the same one the knobs use.
+const extendBtn = $derived.by((): { x: number; y: number } | null => {
+    void tick;
+    const eid = editor.selection;
+    if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
+    if (Handle.order.get(eid) === 0) return null; // the entry anchor never extends
+    const section = Handle.section.get(eid);
+    if (eid !== lastHandle(ecs, section)) return null; // the chain end alone extends
+    const s = samples.get(trackEid);
+    const info = sectionInfo.get(section);
+    if (!s || !info) return null;
+    const tx = viewTransform(canvas);
+    const i = Handle.sample.get(eid);
+    const base = ringBase(Handle.theta.get(eid) + info.entry.theta, tx.sx, tx.sy);
+    const off = ringSlot(base, RadialSlot.Extend);
+    return { x: tx.ox + s.posX[i] * tx.sx + off.x, y: tx.oy + s.posY[i] * tx.sy + off.y };
+});
+
+// the extend button click → append a node at the chain end (Enter's twin), selecting the new node.
+function onExtend(): void {
+    const eid = editor.selection;
+    if (eid !== null) doAdd(eid);
 }
 
 // the readout follows the selected node (the dragged node during a drag — a drag selects what it
@@ -583,10 +610,36 @@ $effect(() => {
     </div>
 {/if}
 
-<!-- the two polar manipulator knobs — real `.rbtn` buttons on the node-action ring (feel round 7:
-     the only affordances left on the ring; append/delete moved to the keyboard + node menu). a
-     press enters the drag gesture (onManip → startManip), not a click. positioned absolutely at the
-     shared-ring screen points, so hover/active/cursor come for free. -->
+<!-- the extend (add-node) button on the ring's front slot (feel round 12): a real `.rbtn` at the
+     selected chain end, along the heading where the next piece lays. a click appends (Enter's twin);
+     delete stays off the ring (Del key + node menu). -->
+{#if extendBtn}
+    <button
+        type="button"
+        class="rbtn extend"
+        title="Add node (Enter)"
+        aria-label="Add node"
+        style="left: {extendBtn.x}px; top: {extendBtn.y}px;"
+        onclick={onExtend}
+    >
+        <!-- add node: a segment stub laying a new node (the filled dot) at the growing end. -->
+        <svg viewBox="0 0 14 14" aria-hidden="true">
+            <path
+                d="M2.5 11.5 L8.4 5.6"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+            />
+            <circle cx="10.3" cy="3.7" r="2.7" fill="currentColor" />
+        </svg>
+    </button>
+{/if}
+
+<!-- the two polar manipulator knobs — real `.rbtn` buttons on the node-action ring flanking the
+     extend button (measure at −60°, pitch at +60°). a press enters the drag gesture (onManip →
+     startManip), not a click. positioned absolutely at the shared-ring screen points, so
+     hover/active/cursor come for free. -->
 {#if manip}
     <button
         type="button"
@@ -796,6 +849,17 @@ $effect(() => {
     .rbtn svg {
         width: 14px;
         height: 14px;
+    }
+    /* the extend (add-node) button: a `.rbtn` at the ring's front slot, positioned absolutely
+       (left/top inline) and centered on it. accent-lit with a hover wash — a click, so the default
+       pointer cursor. */
+    .rbtn.extend {
+        color: var(--accent);
+        transform: translate(-50%, -50%);
+    }
+    .rbtn.extend:hover {
+        background: var(--accent-soft);
+        border-color: var(--accent);
     }
     /* the two polar manipulator knobs: `.rbtn` shells positioned absolutely at their ring screen
        point (left/top inline) and centered on it. accent-lit, with a hover wash — the hover/active

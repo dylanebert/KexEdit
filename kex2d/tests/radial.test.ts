@@ -22,22 +22,24 @@ describe("ringBase (heading → screen angle)", () => {
     });
 });
 
-describe("ring slots (the two knobs)", () => {
+describe("ring slots (the three buttons)", () => {
     test("a slot sits RADIAL_R px from the node at base + slot·60°", () => {
         const base = 0.3;
-        const len = ringSlot(base, RadialSlot.Length);
-        expect(Math.hypot(len.x, len.y)).toBeCloseTo(RADIAL_R, 9);
-        expect(Math.atan2(len.y, len.x)).toBeCloseTo(base, 9); // the length knob is at the front
+        const ext = ringSlot(base, RadialSlot.Extend);
+        expect(Math.hypot(ext.x, ext.y)).toBeCloseTo(RADIAL_R, 9);
+        expect(Math.atan2(ext.y, ext.x)).toBeCloseTo(base, 9); // extend is at the front (the heading)
     });
 
-    test("the length knob is at the front (along the heading) and the angle knob +60° off it", () => {
-        // feel round 7: the length (measure) knob took extend's front slot; the angle (pitch) knob
-        // sits one 60° slot off it.
+    test("extend is at the front; length and angle knobs flank it symmetrically at ±60°", () => {
+        // feel round 12: extend back at the front (slot 0), the two knobs mirror across it at ∓60°.
         const base = 0.3;
         const len = ringSlot(base, RadialSlot.Length);
+        const ext = ringSlot(base, RadialSlot.Extend);
         const ang = ringSlot(base, RadialSlot.Angle);
-        expect(Math.atan2(len.y, len.x)).toBeCloseTo(base, 9); // slot 0 → along the heading
-        const da = Math.atan2(ang.y, ang.x) - Math.atan2(len.y, len.x);
-        expect(da).toBeCloseTo(Math.PI / 3, 9); // +60° off the length knob
+        expect(Math.atan2(ext.y, ext.x)).toBeCloseTo(base, 9); // slot 0 → along the heading
+        const dl = Math.atan2(len.y, len.x) - Math.atan2(ext.y, ext.x);
+        const da = Math.atan2(ang.y, ang.x) - Math.atan2(ext.y, ext.x);
+        expect(dl).toBeCloseTo(-da, 9); // mirror across extend
+        expect(da).toBeCloseTo(Math.PI / 3, 9); // +60°
     });
 });

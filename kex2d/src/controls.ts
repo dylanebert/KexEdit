@@ -681,23 +681,6 @@ export function attachControls(
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
 
-        // Alt-click enters tangent edit on a node (Illustrator's edit-anchor modifier) — the
-        // handle-summon gesture, moved off double-click now that dblclick appends at the chain end. it
-        // reaches node 0 at the START diamond too (uniform with the interior + boundary-stitch path).
-        // a plain click still just selects. (the discoverable path is the node menu's Handles item.)
-        if (e.altKey) {
-            const eid = pickNode(ecs, tx, cx, cy);
-            if (eid !== null) {
-                enterTangentEdit(eid);
-                return;
-            }
-            if (pickStart(ecs, tx, cx, cy)) {
-                const n0 = startNode0(ecs);
-                if (n0 !== null) enterTangentEdit(n0);
-            }
-            return;
-        }
-
         // the selected node's tangent handle wins first — a summoned handle sitting over its
         // node must still grab (the vector-editor priority).
         const th = pickTangentHandle(ecs, tx, cx, cy);
@@ -746,19 +729,27 @@ export function attachControls(
         selectStart(false);
     };
 
-    // double-click the chain-end node → append (extend the chain by a node — Enter's twin, and the
-    // radial `+` button's replacement; feel round 7). append is chain-end-only, so a dblclick on an
-    // interior node or node 0 is a no-op (the two constituent clicks already selected it — a plain
-    // click never appends). Alt-dblclick is the handle-edit gesture, handled on pointerdown. the new
-    // node is selected, so a chain of dblclicks keeps extending.
+    // double-click a node → enter tangent edit (Figma's vector-edit summon; feel round 12 restored
+    // this from Alt-click — it's more discoverable). its in/out handles appear (the same toggle as
+    // the node menu's Handles item). works on any pickable node — chain-end, interior, and node 0 at
+    // the START diamond (a double-click there, no draggable node, reaches the first section's node 0
+    // for its entry handle; at a geo→geo boundary the double-click lands on the coincident tip, whose
+    // tangent edit stitches in node 0's out-handle). the two constituent clicks each select the node;
+    // this fires after, so the final state is the node selected + in edit. append is the ring's extend
+    // button, Enter, or the node menu — not double-click.
     const onDblClick = (e: MouseEvent): void => {
-        if (e.button !== 0 || e.altKey) return;
+        if (e.button !== 0) return;
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
         const eid = pickNode(ecs, tx, cx, cy);
-        if (eid === null) return;
-        const section = Handle.section.get(eid);
-        if (eid === lastHandle(ecs, section)) select(extendTrack(history, ecs, section));
+        if (eid !== null) {
+            enterTangentEdit(eid);
+            return;
+        }
+        if (pickStart(ecs, tx, cx, cy)) {
+            const n0 = startNode0(ecs);
+            if (n0 !== null) enterTangentEdit(n0);
+        }
     };
 
     const onPointerMove = (e: PointerEvent): void => {
