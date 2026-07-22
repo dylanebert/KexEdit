@@ -53,13 +53,14 @@ import {
     sectionForces,
     sectionHandles,
     sections,
+    seedTangent,
     setForcePoint,
     setTangent,
     setTrackV0,
     Track,
     V0,
 } from "../src/track";
-import { TangentMode } from "../src/spline";
+import { editTangent, TangentMode } from "../src/spline";
 
 // track undo/redo, addressed by stable id/order. a fresh device-free State per test
 // (no GPU — history mutates the ECS directly, never bakes), one geo section with the
@@ -124,6 +125,29 @@ test("trim: undo restores the removed node and the promoted tip's pre-trim headi
     redo(h, state);
     expect(orders(state, sec)).toEqual([0, 1]);
     expect(Handle.theta.get(handleAt(state, sec, 1) as number)).toBe(tipAfter);
+});
+
+test("trim: undo restores the authored interior tangent the trim reset on promotion", () => {
+    // deleting the trailing node resets the promoted (once-interior) node to Auto. undo must
+    // restore its authored tangent verbatim — the reconciliation is captured in the trim's
+    // after-snapshot, so the before-snapshot carries the original tangent.
+    const { state, sec } = nodes();
+    addNode(state, sec, 40, 0); // node 2 tip; node 1 interior
+    const seed = seedTangent(state, sec, 1, TangentMode.Aligned);
+    if (!seed) throw new Error("seed");
+    setTangent(state, sec, 1, editTangent(seed, "out", 8, 8)); // author node 1's tangent
+    const authored = handleTangent(state, sec, 1); // the f32-stored value undo must restore
+    const h = createHistory();
+
+    expect(trimTrack(h, state, sec)).toBe(true);
+    expect(handleTangent(state, sec, 1)).toBeUndefined(); // promoted tip reset to Auto
+
+    undo(h, state);
+    expect(orders(state, sec)).toEqual([0, 1, 2]); // node 2 back
+    expect(handleTangent(state, sec, 1)).toEqual(authored); // interior tangent restored verbatim
+
+    redo(h, state);
+    expect(handleTangent(state, sec, 1)).toBeUndefined(); // reset again
 });
 
 test("trim refuses at the two-node floor and records nothing", () => {

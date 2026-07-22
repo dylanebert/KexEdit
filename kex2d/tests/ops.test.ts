@@ -18,21 +18,25 @@ import {
     createTrack,
     deleteSection,
     EXTEND_DIST,
+    exitWorld,
     Handle,
+    handleTangent,
     joinNext,
     reheadOnDrag,
+    removeTrailingHandle,
     samples,
     SectionKind,
     sectionForces,
     sectionHandles,
     sectionInfo,
     sections,
+    seedTangent,
     setTangent,
     splitForce,
     splitGeo,
     Track,
 } from "../src/track";
-import { TangentMode } from "../src/spline";
+import { editTangent, TangentMode } from "../src/spline";
 
 // the multi-section structural ops: append / split / join / delete over the section
 // chain (kex2d/CLAUDE.md, structural ops). the substrate (chain, sectionInfo,
@@ -404,6 +408,39 @@ describe("delete", () => {
         const s = samples.get(eid);
         if (!s) throw new Error("samples missing");
         expect(s.posX[0]).toBeCloseTo(0, 4);
+    });
+
+    test("trimming a downstream section's tip reconciles the promoted tip in the rotated frame", () => {
+        // the boundary case: section B sits at A's climbing exit (entry.theta ≠ 0). author a
+        // tangent on an interior node of B, then trim B's tail. the promoted tip must reset to
+        // Auto and report its re-derived heading through the rotated entry frame — no ghost
+        // out-vector carried across the section boundary.
+        const { state, b } = twoGeo();
+        addNode(state, b, 20, 5); // B now has nodes 0,1,2 (section-local)
+        state.step(0);
+        const seed = seedTangent(state, b, 1, TangentMode.Aligned);
+        if (!seed) throw new Error("seed");
+        setTangent(state, b, 1, editTangent(seed, "out", 8, 8));
+        state.step(0);
+
+        expect(removeTrailingHandle(state, b)).toBe(true); // trim B's tail → node 1 is B's tip
+        state.step(0);
+
+        const h = sectionHandles(state, b);
+        const tip = h[h.length - 1];
+        const prev = h[h.length - 2];
+        expect(handleTangent(state, b, Handle.order.get(tip))).toBeUndefined(); // Auto, no ghost
+        const info = sectionInfo.get(b);
+        if (!info) throw new Error("section b info missing");
+        // local re-heading: reflect(prev heading, chord). prev is B's node 0 (theta 0 local).
+        const chord = Math.atan2(
+            Handle.pos.y.get(tip) - Handle.pos.y.get(prev),
+            Handle.pos.x.get(tip) - Handle.pos.x.get(prev),
+        );
+        const localExit = 2 * chord - Handle.theta.get(prev);
+        expect(Handle.theta.get(tip)).toBeCloseTo(localExit, 10);
+        // the readout reports the Auto heading rotated into world by the (non-zero) entry frame.
+        expect(exitWorld(tip)).toBeCloseTo(localExit + info.entry.theta, 10);
     });
 });
 
