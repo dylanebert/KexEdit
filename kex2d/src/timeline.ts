@@ -163,6 +163,21 @@ function fmtDist(s: number, step: number): string {
     return `${s.toFixed(decimals)}m`;
 }
 
+/** round `v` to `max` decimals, then strip trailing zeros (and a dangling dot) so a
+ *  snapped value prints in its natural vocabulary form (`3.5`, `1`, `24`) while a
+ *  Ctrl-freed value keeps its real precision up to the cap (`3.47`). the strip is
+ *  DETERMINISTIC post-rounding, off the already-`toFixed`'d string — no epsilon window,
+ *  no integer↔decimal flicker. normalizes `-0` → `0`. the force-readout formatting
+ *  funnel (the g-axis gutter labels + the selected-point d/g fields); `max` is the
+ *  precision cap (2 for g, 1 for s/d), never exceeded. */
+export function fmt(v: number, max: number): string {
+    const norm = v
+        .toFixed(max)
+        .replace(/(\.\d*?)0+$/, "$1")
+        .replace(/\.$/, "");
+    return norm === "-0" ? "0" : norm;
+}
+
 /** the auto-fit g-range for the force axis. `lo`/`hi` bound the display, `step` is
  *  the nice gridline spacing. */
 export interface YFit {

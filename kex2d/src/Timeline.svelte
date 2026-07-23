@@ -37,6 +37,7 @@ import {
 import {
     clampView,
     creationTargets,
+    fmt,
     frameAll,
     G_GRID,
     type Mapping,
@@ -1260,7 +1261,7 @@ function render(ctx: CanvasRenderingContext2D): void {
         // gridlines) rather than cram it inward — the interior labels carry the scale.
         if (y >= TOP + LABEL_HALF && y <= h - BOT_PAD - LABEL_HALF) {
             ctx.fillStyle = "rgba(160, 152, 144, 0.7)";
-            ctx.fillText(`${gv.toFixed(dec)}g`, LEFT_GUT - 6, y);
+            ctx.fillText(`${fmt(gv, dec)}g`, LEFT_GUT - 6, y);
         }
     }
 
@@ -1882,8 +1883,8 @@ onMount(() => {
                     scrubFreeze?.x ??
                     clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
                 {@const ay = scrubFreeze?.y ?? clamp(yOf(selPoint.g), TOP, h - BOT_PAD)}
-                {@const dText = (selPoint.startS + selPoint.s).toFixed(1)}
-                {@const gText = selPoint.g.toFixed(2)}
+                {@const dText = fmt(selPoint.startS + selPoint.s, 1)}
+                {@const gText = fmt(selPoint.g, 2)}
                 <div
                     class="ptip"
                     class:below={ay < TOP + TIP_FLIP}

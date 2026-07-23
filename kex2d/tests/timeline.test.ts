@@ -3,6 +3,7 @@ import {
     arcToTime,
     clampView,
     creationTargets,
+    fmt,
     frameAll,
     G_GRID,
     type Mapping,
@@ -131,6 +132,27 @@ describe("niceStep — 1-2-5×10ⁿ", () => {
         expect(niceStep(0.13)).toBeCloseTo(0.1, 12);
         expect(niceStep(0.4)).toBeCloseTo(0.5, 12);
         expect(niceStep(230)).toBe(200);
+    });
+});
+
+describe("fmt — trim trailing zeros to the cap", () => {
+    test("a snapped whole value drops the fractional part entirely", () => {
+        expect(fmt(1, 2)).toBe("1");
+        expect(fmt(24, 1)).toBe("24");
+    });
+    test("a snapped grid value trims to its natural vocabulary form", () => {
+        expect(fmt(3.5, 2)).toBe("3.5");
+    });
+    test("a Ctrl-freed value keeps its real precision up to the cap", () => {
+        expect(fmt(3.47, 2)).toBe("3.47");
+    });
+    test("rounds to the cap before trimming, never exceeding it", () => {
+        expect(fmt(3.456, 2)).toBe("3.46");
+        expect(fmt(1.05, 1)).toBe("1.1");
+    });
+    test("-0 (and anything that rounds to it) normalizes to 0", () => {
+        expect(fmt(-0, 2)).toBe("0");
+        expect(fmt(-0.001, 2)).toBe("0");
     });
 });
 
