@@ -16,6 +16,11 @@ export type MenuItem = {
     /** a selected/active row (the accent-lit state) — e.g. the current tangent mode in a
      *  mode-picker submenu. Omitted = not a selectable row. */
     checked?: boolean;
+    /** an optional leading glyph, as an SVG `path` `d` string drawn in a `0 0 22 14` viewBox
+     *  (stroked in `currentColor`, so it tints with the row). Generic — a caller passes it to
+     *  put a small pictogram beside the label (the easing rows draw their real curve here);
+     *  most menus omit it. */
+    glyph?: string;
     /**
      * whether the action is possible right now. `false` renders the row disabled — dimmed,
      * non-interactive, `aria-disabled` — and the action can't fire. Omitted = always enabled.

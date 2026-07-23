@@ -789,9 +789,10 @@ test("force easing menu flow", async ({ page }) => {
     const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
     const forceEases = () => page.evaluate((): number[] => (window as any).__kex.forceEases());
     const forceEditing = () => page.evaluate((): boolean => (window as any).__kex.forceEditing());
+    const forceHandleSel = () =>
+        page.evaluate((): string | null => (window as any).__kex.forceHandleSel());
     const forceTangents = () =>
-        page.evaluate((): (null | object)[] => (window as any).__kex.forceTangents());
-    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+        page.evaluate((): (null | { outDg: number })[] => (window as any).__kex.forceTangents());
 
     // seed a force section with an airtime bump (the two continuation seed keyframes stage B
     // stamps on convert, plus three bump points) → a chain with interior keyframes to edit.
@@ -802,7 +803,8 @@ test("force easing menu flow", async ({ page }) => {
     await expect(page.locator(".fpt")).toHaveCount(nPts);
 
     // ── 1. Right-click the leading (first) keyframe → the force keyframe menu, in row order
-    // Delete · Easing ▸ · Handles · Reset. ──
+    // Delete · Easing ▸ (the Handles + Reset rows are gone — both subsumed into the Easing list:
+    // Custom steps in, a preset steps back out). ──
     await page.locator(".fpt").first().click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
     await expect
@@ -811,7 +813,7 @@ test("force easing menu flow", async ({ page }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Delete Del", "Easing ▸", "Handles", "Reset"]);
+        .toEqual(["Delete Del", "Easing ▸"]);
     await page.waitForTimeout(200);
     if (page.viewportSize())
         await page.screenshot({
@@ -829,24 +831,20 @@ test("force easing menu flow", async ({ page }) => {
 
     // ── 2b. Right-click the CURVE SPAN between keyframe 0 (s=0) and keyframe 1 (the first
     // bump shoulder, s = 0.2·length) — a chart point, not a diamond — → the same LEADING
-    // keyframe's menu (the Blender convention: a segment addresses the keyframe before it —
-    // a C-review coverage hole). Setting Quintic through it is a value change, not just a
-    // visibility check, so it proves the addressing rather than assuming it. the x target is
-    // a fraction of the force clip's own box (s ≈ 0.1·length, inside the gap between the two
-    // keyframes and clear of both fat hit-circles) — the same chart-click measurement the
-    // other flows use, not a hand-derived diamond midpoint. `openForceMenu` also SELECTS its
-    // target (keyframe 0, from step 1), so its `.ptip` popover is still floating over the
-    // chart near it — Escape deselects and closes the popover first, or it eats the click. ──
+    // keyframe's menu (the Blender convention: a segment addresses the keyframe before it).
+    // Setting Quintic through it is a value change, so it proves the addressing. `openForceMenu`
+    // also SELECTS its target (keyframe 0, from step 1), so its `.ptip` popover is still floating
+    // over the chart near it — Escape deselects and closes the popover first, or it eats the click. ──
     await page.keyboard.press("Escape");
     await expect(page.locator(".ptip")).toHaveCount(0);
     const fcb = await page.locator(".clip").first().boundingBox();
     const kf0 = await page.locator(".fpt").nth(0).boundingBox(); // s=0 seed (~1g)
     const kf1 = await page.locator(".fpt").nth(1).boundingBox(); // first bump shoulder (1g)
     if (!fcb || !kf0 || !kf1) throw new Error("force clip / keyframes not laid out");
-    // the segment hit-target is now gated to the drawn curve (chartCtx's FHIT_R vertical
-    // tolerance), so the click must land ON the span, not at mid-chart. x ≈ 0.1·length sits
-    // halfway between kf0 (s=0) and kf1 (s=0.2·length); the near-flat ~1g span there tracks
-    // the two flanking diamonds, so the mean of their centre-y lands on the curve.
+    // the segment hit-target is gated to the drawn curve (chartCtx's FHIT_R vertical tolerance),
+    // so the click must land ON the span. x ≈ 0.1·length sits halfway between kf0 (s=0) and
+    // kf1 (s=0.2·length); the near-flat ~1g span there tracks the two flanking diamonds, so the
+    // mean of their centre-y lands on the curve.
     const midX = fcb.x + fcb.width * 0.1;
     const midY = (kf0.y + kf0.height / 2 + (kf1.y + kf1.height / 2)) / 2;
     await page.mouse.click(midX, midY, { button: "right" });
@@ -856,13 +854,9 @@ test("force easing menu flow", async ({ page }) => {
     await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Quintic — keyframe 0 moved, not keyframe 1
     expect((await forceEases())[1]).toBe(1); // keyframe 1's own tag (Cubic, untouched) proves it
 
-    // ── 2c. A right-click in EMPTY chart space — over the force section horizontally but far
-    // from the curve vertically — opens NO keyframe menu (the segment hit-target is the drawn
-    // curve, not the whole force-section column; the over-broad "nearest keyframe from anywhere"
-    // is gone). the y is the crest diamond's row (0g, s=0.5·length) taken at midX (s≈0.1·length,
-    // where the curve holds ~1g): provably inside the chartzone (a diamond renders at that y) yet
-    // ~1g away from the curve, past FHIT_R. under the old over-broad chartCtx this opened the
-    // leading keyframe's menu. ──
+    // ── 2c. A right-click in EMPTY chart space (over the force section horizontally but ~1g
+    // from the curve vertically) opens NO keyframe menu — the segment hit-target is the drawn
+    // curve, not the whole force-section column. ──
     const crest = await page.locator(".fpt").nth(2).boundingBox(); // airtime crest (0g)
     if (!crest) throw new Error("crest keyframe not laid out");
     await page.mouse.click(midX, crest.y + crest.height / 2, { button: "right" });
@@ -871,14 +865,15 @@ test("force easing menu flow", async ({ page }) => {
     expect((await forceEases())[0]).toBe(2); // unchanged — the empty-space click was inert
 
     // ── 3. Double-click an interior keyframe → handle-edit sub-mode summons its two handles
-    // (a diamond hit beats the chart's insertion double-click). ──
+    // (the direct gesture into handle edit; a diamond hit beats the chart's insertion double-
+    // click, and it does NOT insert a point). ──
     await page.locator(".fpt").nth(1).dblclick();
     await expect.poll(forceEditing).toBe(true);
     await expect(page.locator(".thit")).toHaveCount(2); // in + out handles (an interior keyframe)
     await expect.poll(forceCount).toBe(nPts); // the double-click summoned, it did NOT insert
 
     // ── 4. Drag a handle → the keyframe gains an explicit tangent (the segment reads Custom).
-    // located by its real DOM box (the .thit grab circle), a real canvas pointer drag. ──
+    // a real canvas pointer drag, located by the .thit grab circle. ──
     const knob = await page.locator(".thit").first().boundingBox();
     if (!knob) throw new Error("handle knob not laid out");
     await page.mouse.move(knob.x + knob.width / 2, knob.y + knob.height / 2);
@@ -893,29 +888,50 @@ test("force easing menu flow", async ({ page }) => {
             clip: { x: 0, y: (page.viewportSize()?.height ?? 0) - 340, width: page.viewportSize()?.width ?? 0, height: 340 },
         });
 
-    // ── 4b. Reopen the menu on the now-Custom keyframe → its Easing ▸ submenu's Custom row
-    // reads checked (derived provenance, not a settable tag — a C-review coverage hole: the
-    // prior test only exercised setting a named row, never the Custom indicator itself). ──
+    // ── 5. Reopen the menu on the now-Custom keyframe → its Easing ▸ submenu's Custom row reads
+    // checked (derived provenance — the segment is bounded by an explicit handle). ──
     await page.locator(".fpt").nth(1).click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
     await page.locator(".fmenu").getByRole("menuitem", { name: "Easing", exact: true }).hover();
     const customRow = page.locator(".fmenu").getByRole("menuitem", { name: "Custom", exact: true });
     await expect(customRow).toBeVisible();
     await expect(customRow).toHaveClass(/checked/);
-    await page.keyboard.press("Escape"); // dismiss without picking a row (Custom is inert anyway)
-    await expect(page.locator(".fmenu")).toHaveCount(0);
 
-    // ── 5. Reset via the keyframe menu, pointer-true (`clickMenuItem` — the same
-    // elementFromPoint-gated coordinate click as a flyout row, a C-review coverage hole:
-    // this row was previously driven by a selector `.click()`), clears the explicit tangent
-    // back to the derived easing (the way back up the layers is one click). ──
+    // ── 6. Pick a PRESET row (Cubic) through the menu → it clears the explicit handles back to
+    // the derived preset (what Reset did, now folded into choosing a named row — the way back up
+    // the layers is the list). pointer-true through clickFlyout. ──
+    await clickFlyout(page, ".fmenu", "Easing", "Cubic");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    await expect.poll(async () => (await forceTangents())[1] === null).toBe(true); // handles cleared
+
+    // ── 7. Pick CUSTOM through the menu → it materializes explicit handles from the current
+    // derived ones (no drag) and steps into handle edit. the segment reads Custom again, from
+    // the list this time. ──
     await page.locator(".fpt").nth(1).click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
-    await clickMenuItem(page, ".fmenu", "Reset");
-    await expect.poll(async () => (await forceTangents())[1] === null).toBe(true);
+    await clickFlyout(page, ".fmenu", "Easing", "Custom");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    await expect.poll(forceEditing).toBe(true); // Custom entered handle edit
+    await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true); // handles materialized
+    await expect(page.locator(".thit")).toHaveCount(2);
 
-    // ── 6. Delete, also pointer-true, removes the keyframe (never previously exercised on
-    // this menu — the other C-review coverage hole). ──
+    // ── 8. Select a handle (click its knob) → the contextual readout swaps from the keyframe
+    // to the handle, and its typed (Δs, Δg) fields appear. type a Δg → the tangent write path
+    // applies it (history-bracketed); undo restores. the OUT handle (reaches into the larger
+    // next span) is well clear of the diamond. ──
+    await page.locator(".thit").last().click(); // no-move click selects, does not drag
+    await expect.poll(forceHandleSel).toBe("out");
+    const dgField = page.locator('.ptip input[aria-label="Handle g offset (g)"]');
+    await expect(dgField).toBeVisible(); // the readout swapped to the handle
+    await dgField.fill("0.6");
+    await dgField.press("Enter"); // Enter blurs → onchange commits through the tangent path
+    await expect.poll(async () => (await forceTangents())[1]?.outDg ?? 0).toBeCloseTo(0.6, 2);
+    await page.keyboard.press("Control+z"); // undo the typed entry
+    await expect.poll(async () => Math.abs((await forceTangents())[1]?.outDg ?? 1)).toBeLessThan(0.01);
+
+    // ── 9. Delete, pointer-true, removes the keyframe. ──
+    await page.keyboard.press("Escape"); // peel: deselect the handle
+    await page.keyboard.press("Escape"); // peel: exit handle edit
     const beforeDelete = await forceCount();
     await page.locator(".fpt").nth(1).click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();

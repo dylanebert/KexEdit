@@ -1071,6 +1071,42 @@ describe("force easing + seeding (stage B)", () => {
         expect(h.undo.length).toBe(1);
     });
 
+    test("history: choosing a preset ease clears explicit handles back to derived, one entry", () => {
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force
+        const id = createForcePoint(state, sec, 10, 1);
+        // author explicit handles (the Custom layer) OUTSIDE any gesture.
+        const tan: ForceTangent = {
+            mode: TangentMode.Free,
+            in: { ds: -1, dg: 0.25 },
+            out: { ds: 1, dg: -0.25 },
+        };
+        setForceTangent(state, id, tan);
+        expect(forceTangent(state, id)).toEqual(tan);
+        const h = createHistory();
+
+        // picking a preset row sets the tag AND clears the handles — one undoable gesture
+        // (subsumes the removed Reset). undo restores BOTH the prior tag and the handles.
+        setForceEaseCmd(h, state, id, Easing.Quintic);
+        expect(h.undo.length).toBe(1);
+        expect(forceEase(state, id)).toBe(Easing.Quintic);
+        expect(forceTangent(state, id)).toBeUndefined(); // back to the derived preset
+
+        undo(h, state);
+        expect(forceEase(state, id)).toBe(Easing.Cubic);
+        expect(forceTangent(state, id)).toEqual(tan); // handles restored in the same step
+        redo(h, state);
+        expect(forceEase(state, id)).toBe(Easing.Quintic);
+        expect(forceTangent(state, id)).toBeUndefined();
+
+        // picking the CURRENT preset still clears handles: the no-op guard is over BOTH the
+        // tag and the handles, so a tag-unchanged pick with explicit handles present records.
+        setForceTangent(state, id, tan);
+        setForceEaseCmd(h, state, id, Easing.Quintic);
+        expect(forceTangent(state, id)).toBeUndefined();
+    });
+
     test("history: a handle drag (beginForceTangent) collapses to one entry; undo clears the handles", () => {
         const { state, sec } = track();
         state.step(0);

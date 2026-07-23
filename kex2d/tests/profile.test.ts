@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_G, Easing, type ForcePoint, forceProfile, sampleForce } from "../src/profile";
+import {
+    DEFAULT_G,
+    Easing,
+    type ForcePoint,
+    forceProfile,
+    sampleForce,
+    segmentControls,
+} from "../src/profile";
 
 // the force-authoring layer (kex2d/CLAUDE.md, force authoring): authored force
 // keyframes → dense per-edge F_n. every segment is a cubic bezier in (s, g); a
@@ -361,5 +368,34 @@ describe("forceProfile — dense per-edge sampling", () => {
 
     test("a zero-length section still integrates one edge (floored at 1)", () => {
         expect(forceProfile([], 0, 0.5).length).toBe(1);
+    });
+});
+
+describe("segmentControls — the resolved control points for the easing glyph", () => {
+    test("a preset segment resolves flat handles at its influence", () => {
+        // Cubic influence = 1/3: both flat handles reach a third of the span, dg = 0.
+        const a: ForcePoint = { s: 0, g: 0, ease: Easing.Cubic };
+        const b: ForcePoint = { s: 12, g: 1 };
+        const cps = segmentControls(a, b);
+        expect(cps.length).toBe(4);
+        expect(cps[0]).toEqual({ s: 0, g: 0 });
+        expect(cps[3]).toEqual({ s: 12, g: 1 });
+        expect(cps[1].s).toBeCloseTo(4, 6); // 1/3 · 12
+        expect(cps[1].g).toBeCloseTo(0, 6);
+        expect(cps[2].s).toBeCloseTo(8, 6); // 12 − 1/3 · 12
+        expect(cps[2].g).toBeCloseTo(1, 6);
+    });
+
+    test("Linear collapses the handles onto the chord", () => {
+        const cps = segmentControls({ s: 0, g: 0, ease: Easing.Linear }, { s: 10, g: 2 });
+        expect(cps[1]).toEqual({ s: 0, g: 0 }); // p1 at the leading keyframe
+        expect(cps[2]).toEqual({ s: 10, g: 2 }); // p2 at the trailing keyframe
+    });
+
+    test("an explicit out handle is reflected verbatim", () => {
+        const a: ForcePoint = { s: 0, g: 0, ease: Easing.Cubic, out: { ds: 2, dg: 0.5 } };
+        const cps = segmentControls(a, { s: 10, g: 1 });
+        expect(cps[1].s).toBeCloseTo(2, 6);
+        expect(cps[1].g).toBeCloseTo(0.5, 6);
     });
 });

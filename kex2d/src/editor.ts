@@ -31,6 +31,12 @@ interface EditorState {
      *  keyframe (the diamond hit beats insertion); a different selection, Esc, or click-away
      *  exits it. NOT a fifth mutually-exclusive selection. */
     forceEdit: number | null;
+    /** which handle of the keyframe in handle-edit sub-mode is selected — `"in"`, `"out"`, or
+     *  null when the keyframe itself holds the readout. a refinement layered on `forceEdit`
+     *  (`forceHandle !== null` implies `forceEdit === force`): clicking a handle knob selects
+     *  it, swapping the contextual readout from the keyframe to the handle's (Δs, Δg) offset;
+     *  re-selecting the keyframe (or Esc) clears it back. NOT a mutually-exclusive selection. */
+    forceHandle: "in" | "out" | null;
     /** stable id of the currently selected section, or null. section selection is a
      *  highlight + the context-menu target; it does NOT gate authoring (force points
      *  are added by cursor position, nodes are dragged in the viewport). */
@@ -70,6 +76,7 @@ export const editor: EditorState = {
     tangentEdit: null,
     force: null,
     forceEdit: null,
+    forceHandle: null,
     section: null,
     start: false,
     context: null,
@@ -165,6 +172,7 @@ export function select(eid: number | null): void {
     if (eid !== null) {
         editor.force = null;
         editor.forceEdit = null;
+        editor.forceHandle = null;
         editor.section = null;
         editor.start = false;
     }
@@ -194,6 +202,7 @@ export function exitTangentEdit(): void {
  *  grabbing its own diamond or nudging it doesn't drop the mode — mirrors `select`). */
 export function selectForce(id: number | null): void {
     if (id !== editor.forceEdit) editor.forceEdit = null;
+    editor.forceHandle = null; // selecting the point itself shows the keyframe readout
     editor.force = id;
     if (id !== null) {
         editor.selection = null;
@@ -213,11 +222,20 @@ export function enterForceEdit(id: number): void {
     editor.section = null;
     editor.start = false;
     editor.forceEdit = id;
+    editor.forceHandle = null; // no handle selected on entry — the keyframe holds the readout
+}
+
+/** select a summoned handle of the edited keyframe (`"in"`/`"out"`, or null to clear back to
+ *  the keyframe readout) — the click-select that swaps the contextual popover to the handle's
+ *  (Δs, Δg). only meaningful inside handle-edit (`forceEdit` set). */
+export function selectForceHandle(side: "in" | "out" | null): void {
+    editor.forceHandle = side;
 }
 
 /** exit force handle-edit mode, keeping the point selected (Esc's first peel). */
 export function exitForceEdit(): void {
     editor.forceEdit = null;
+    editor.forceHandle = null;
 }
 
 /** select a section by its stable id (null to clear). */
@@ -228,6 +246,7 @@ export function selectSection(id: number | null): void {
         editor.tangentEdit = null;
         editor.force = null;
         editor.forceEdit = null;
+        editor.forceHandle = null;
         editor.start = false;
     }
 }
@@ -240,6 +259,7 @@ export function selectStart(on: boolean): void {
         editor.tangentEdit = null;
         editor.force = null;
         editor.forceEdit = null;
+        editor.forceHandle = null;
         editor.section = null;
     }
 }
@@ -320,6 +340,7 @@ export const selectionHook = {
             select(null); // clears the selection + the tangent-edit sub-mode
             editor.force = null;
             editor.forceEdit = null;
+            editor.forceHandle = null;
             editor.section = null;
             editor.start = false;
             return;

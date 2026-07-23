@@ -15,6 +15,7 @@ import {
     openContext,
     openForceMenu,
     selectForce,
+    selectForceHandle,
     selectSection,
     snapActive,
     toggleSnap,
@@ -30,7 +31,6 @@ import {
     deleteForce,
     history,
     redo,
-    resetForceTangent,
     setForceEase,
     undo,
 } from "./history";
@@ -62,11 +62,12 @@ import {
     zoomAt,
 } from "./timeline";
 import { latchAngle } from "./controls";
-import { autoTangent, Easing, type Offset, sampleForce } from "./profile";
+import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls } from "./profile";
 import { TangentMode } from "./spline";
 import {
     bakeOut,
     forceEase,
+    type ForceTangent,
     forceTangent,
     Handle,
     MIN_FORCE_LEN,
@@ -612,6 +613,8 @@ interface FHandle {
     side: "in" | "out";
     x: number; // knob screen point (canvas-local px)
     y: number;
+    ds: number; // the handle's (Δs, Δg) offset from the keyframe — the selected-handle readout
+    dg: number;
     ghost: boolean; // a derived (flat) tangent shown as a hollow affordance, vs an explicit solid one
 }
 // the keyframe currently in handle edit + its rendered handles (in needs a previous
@@ -630,13 +633,25 @@ const editHandles = $derived.by((): { pt: ForcePt; handles: FHandle[] } | null =
     const handles: FHandle[] = [];
     if (prev) {
         const off = tan ? tan.in : derivedIn(pt, prev);
-        handles.push({ side: "in", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ghost: !tan });
+        handles.push({ side: "in", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: !tan });
     }
     if (next) {
         const off = tan ? tan.out : derivedOut(pt, next);
-        handles.push({ side: "out", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ghost: !tan });
+        handles.push({ side: "out", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: !tan });
     }
     return { pt, handles };
+});
+// the selected handle (within handle-edit): its live (Δs, Δg) offset + screen anchor — the
+// contextual readout swaps to it (from the keyframe) while it's picked. derives null when no
+// handle is selected or the edited keyframe is gone (the popover dismisses by subject).
+const selHandle = $derived.by((): { pt: ForcePt; side: "in" | "out"; ds: number; dg: number; x: number; y: number } | null => {
+    void tick;
+    const side = editor.forceHandle;
+    const eh = editHandles;
+    if (side === null || !eh) return null;
+    const hnd = eh.handles.find((hh) => hh.side === side);
+    if (!hnd) return null;
+    return { pt: eh.pt, side, ds: hnd.ds, dg: hnd.dg, x: hnd.x, y: hnd.y };
 });
 // the derived flat tangent offsets (dg = 0): the OUT handle reaches forward by this
 // keyframe's own easing influence over the following span; the IN handle backward by the
@@ -652,6 +667,10 @@ function derivedIn(pt: ForcePt, prev: ForcePt): Offset {
 let dragTan: { id: number; side: "in" | "out" } | null = $state(null);
 let tanGrabDx = 0; // knob screen x − cursor x at grab (relative tracking, no jump)
 let tanGrabDy = 0;
+const THDRAG_PX = 4; // click-vs-drag dead zone on a handle knob (the Figma/Blender threshold)
+let tanDownX = 0; // grab client coords — the dead-zone origin for the click-vs-drag test
+let tanDownY = 0;
+let tanMoved = false; // the gesture crossed the dead zone → a drag, not a select-click
 // the unit keyframe→knob screen ray captured at grab — the gesture-start axis magnet
 // (the geo tangent-handle mechanism, `latchAngle`): while the dragged tip stays within
 // LATCH_PX perpendicular of it the drag latches to the start direction, so a flat ghost
@@ -671,6 +690,11 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
     const rl = Math.hypot(rx, ry);
     tanRayX = rl > 1e-6 ? rx / rl : 0;
     tanRayY = rl > 1e-6 ? ry / rl : 0;
+    // click-vs-drag: selection is decided on release (below) by whether the pointer moved past
+    // the dead zone — a click selects the handle (swaps the readout to it), a drag reshapes it.
+    tanDownX = e.clientX;
+    tanDownY = e.clientY;
+    tanMoved = false;
     beginForceTangent(ecs, pt.id);
     dragTan = { id: pt.id, side: hnd.side };
     beginDrag(canvas, e.pointerId);
@@ -680,6 +704,8 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
 }
 function tanMove(e: PointerEvent): void {
     if (dragTan === null) return;
+    if (!tanMoved && Math.hypot(e.clientX - tanDownX, e.clientY - tanDownY) > THDRAG_PX)
+        tanMoved = true;
     const rect = canvas.getBoundingClientRect();
     applyTan(e.clientX - rect.left + tanGrabDx, e.clientY - rect.top + tanGrabDy);
 }
@@ -696,21 +722,30 @@ function applyTan(cx: number, cy: number): void {
     const latch = latchAngle(cx - kx, cy - ky, tanRayX, tanRayY);
     cx = kx + latch.x;
     cy = ky + latch.y;
+    // the dragged side's raw (Δs, Δg) from the latched cursor; composeTangent applies the
+    // x-monotonicity clamp, the derived seed, and Aligned coupling — the one write path.
+    const cumS = pxToS(clamped, clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w)) - LEFT_GUT);
+    const ds = cumS - (pt.startS + pt.s);
+    const dg = yToG(clamp(cy, TOP, h - BOT_PAD)) - pt.g;
+    const tan = composeTangent(id, side, ds, dg);
+    if (tan) setForceTangent(ecs, id, tan);
+}
+// resolve a keyframe's full explicit tangent after setting `side` to the (Δs, Δg) offset —
+// the write both the handle drag and the typed handle field go through. applies (1) the
+// x-monotonicity clamp (out reaches into [0, next−s], in into [−(s−prev), 0], so g(s) stays a
+// function), (2) the no-jump derived seed for the un-edited side of a still-derived keyframe
+// (Aligned when both sides drive a segment, else Free at a chain end), and (3) Aligned coupling
+// — the other side held collinear in chart pixels, keeping its own length (Blender aligned
+// handles; screen px because the chart's s/g axes differ).
+function composeTangent(id: number, side: "in" | "out", ds: number, dg: number): ForceTangent | null {
+    const pt = forcePts.find((p) => p.id === id);
+    if (!pt) return null;
     const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
     const idx = pts.findIndex((p) => p.id === id);
     const prev = idx > 0 ? pts[idx - 1] : null;
     const next = idx < pts.length - 1 ? pts[idx + 1] : null;
-    // the dragged side's new (Δs, Δg): the cursor's cumulative s minus the keyframe's, with
-    // the x-monotonicity clamp — out reaches forward into [0, next−s], in backward into
-    // [−(s−prev), 0], so g(s) stays a function (the substrate also clamps at bake).
-    const cumS = pxToS(clamped, clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w)) - LEFT_GUT);
-    let ds = cumS - (pt.startS + pt.s);
-    const dg = yToG(clamp(cy, TOP, h - BOT_PAD)) - pt.g;
     if (side === "out") ds = clamp(ds, 0, next ? next.s - pt.s : 0);
     else ds = clamp(ds, prev ? -(pt.s - prev.s) : 0, 0);
-    // seed both sides from the flat tangents on the first move of a derived keyframe (no jump
-    // — the un-dragged side keeps its shape), Aligned when both sides drive a segment else
-    // Free (a single-handle end).
     const existing = forceTangent(ecs, id);
     const both = prev !== null && next !== null;
     let inn: Offset = existing ? { ...existing.in } : prev ? derivedIn(pt, prev) : { ds: 0, dg: 0 };
@@ -719,8 +754,6 @@ function applyTan(cx: number, cy: number): void {
     if (side === "out") out = { ds, dg };
     else inn = { ds, dg };
     if (mode === TangentMode.Aligned && both) {
-        // hold the OTHER side collinear in chart pixels, keeping its own length (Blender
-        // aligned handles) — computed in screen px because the chart's s/g axes differ.
         const drag = side === "out" ? out : inn;
         const px = drag.ds * clamped.pxPerM;
         const py = -drag.dg * pyPerG;
@@ -735,11 +768,15 @@ function applyTan(cx: number, cy: number): void {
             else out = noff;
         }
     }
-    setForceTangent(ecs, id, { mode, in: inn, out });
+    return { mode, in: inn, out };
 }
 function tanUp(): void {
     if (dragTan === null) return;
+    const side = dragTan.side;
     dragTan = null;
+    // a click (no dead-zone crossing) selects the handle — swaps the readout to it; a drag
+    // reshaped it and leaves selection alone (so no handle popover overlaps the diamond after).
+    if (!tanMoved) selectForceHandle(side);
     commit(history); // one handle drag → one entry; a no-move grab records nothing
     window.removeEventListener("pointermove", tanMove);
     window.removeEventListener("pointerup", tanUp);
@@ -840,26 +877,19 @@ const fmenuCustom = $derived.by((): boolean => {
     const next = idx < pts.length - 1 ? pts[idx + 1] : null;
     return next !== null && forceTangent(ecs, next.id) !== undefined;
 });
-const fmenuEditing = $derived.by((): boolean => {
-    void tick;
-    const m = editor.forceMenu;
-    return m !== null && editor.forceEdit === m.id;
-});
-const fmenuHasTangent = $derived.by((): boolean => {
-    void tick;
-    const m = editor.forceMenu;
-    return m !== null && forceTangent(ecs, m.id) !== undefined;
-});
-// the menu as data: Delete, then an Easing ▸ submenu (Linear | Cubic | Quintic checked by the
-// tag, plus a derived Custom indicator checked when explicit handles bound the segment), a
-// separator, the Handles summon toggle, and Reset (enabled only with explicit handles — the
-// way back up the layers).
+// the menu as data: Delete, then an Easing ▸ submenu — Linear | Cubic | Quintic (checked by the
+// tag), a separator, then Custom. each row carries its real curve glyph (drawn from the same
+// influence the segment uses, so the icon can't drift). Custom is both the derived-provenance
+// indicator (checked when explicit handles bound the segment) AND a choice: picking it
+// materializes explicit handles from the derived ones and steps into handle edit; picking a
+// preset clears explicit handles back to that preset — the way back up the layers is the list.
 const fmenuItems = $derived.by((): MenuItem[] => {
     const m = editor.forceMenu;
     if (m === null) return [];
     const id = m.id;
     const easeRow = (label: string, e: Easing): MenuItem => ({
         label,
+        glyph: presetGlyph(e),
         checked: !fmenuCustom && fmenuEase === e,
         action: () => setForceEase(history, ecs, id, e),
     });
@@ -872,20 +902,71 @@ const fmenuItems = $derived.by((): MenuItem[] => {
                 easeRow("Cubic", Easing.Cubic),
                 easeRow("Quintic", Easing.Quintic),
                 { separator: true },
-                // Custom is derived provenance, not a settable tag — a checked-when-active,
-                // inert indicator (the way TO custom is a handle drag, the way back is Reset).
-                { label: "Custom", checked: fmenuCustom, enabled: false },
+                { label: "Custom", glyph: customGlyph(id), checked: fmenuCustom, action: () => chooseCustom(id) },
             ],
         },
-        { separator: true },
-        { label: "Handles", checked: fmenuEditing, action: () => toggleForceHandles(id) },
-        { label: "Reset", enabled: fmenuHasTangent, action: () => resetForceTangent(history, ecs, id) },
     ];
 });
-// Handles: the double-click summon toggle reached from the menu.
-function toggleForceHandles(id: number): void {
-    if (editor.forceEdit === id) exitForceEdit();
-    else enterForceEdit(id);
+// choose Custom: step into handle edit and, if the keyframe is still derived, materialize its
+// explicit handles from the current derived tangents (no curve jump — the ghost values become
+// solid) as one undoable entry. an already-explicit keyframe just re-summons its handles.
+function chooseCustom(id: number): void {
+    enterForceEdit(id);
+    if (forceTangent(ecs, id) !== undefined) return; // already explicit — just edit
+    const pt = forcePts.find((p) => p.id === id);
+    if (!pt) return;
+    const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
+    const idx = pts.findIndex((p) => p.id === id);
+    const prev = idx > 0 ? pts[idx - 1] : null;
+    const next = idx < pts.length - 1 ? pts[idx + 1] : null;
+    const both = prev !== null && next !== null;
+    const inn: Offset = prev ? derivedIn(pt, prev) : { ds: 0, dg: 0 };
+    const out: Offset = next ? derivedOut(pt, next) : { ds: 0, dg: 0 };
+    beginForceTangent(ecs, id);
+    setForceTangent(ecs, id, { mode: both ? TangentMode.Aligned : TangentMode.Free, in: inn, out });
+    commit(history);
+}
+// ── easing-row curve glyphs (the Blender F-curve convention): each row draws its real curve
+// in a 0 0 22 14 viewBox, so the icon is the family it names and can't drift. a preset draws a
+// normalized flat-tangent S at the tag's influence (Linear degenerates to the chord); Custom
+// draws the addressed keyframe's actual following segment, fit to its own bounding box.
+const GLYPH_PAD = 3;
+const GLYPH_W = 22;
+const GLYPH_H = 14;
+const glyphX = (u: number): number => GLYPH_PAD + u * (GLYPH_W - 2 * GLYPH_PAD);
+const glyphY = (u: number): number => GLYPH_H - GLYPH_PAD - u * (GLYPH_H - 2 * GLYPH_PAD);
+function presetGlyph(ease: Easing): string {
+    const i = autoTangent(ease, 1, "out").ds; // the influence fraction (0 | 1/3 | 7/15)
+    return `M${glyphX(0)} ${glyphY(0)} C${glyphX(i)} ${glyphY(0)} ${glyphX(1 - i)} ${glyphY(1)} ${glyphX(1)} ${glyphY(1)}`;
+}
+// build the profile ForcePoint (ease + explicit handles) for a UI force point.
+function toProfilePoint(p: ForcePt): ForcePoint {
+    const t = forceTangent(ecs, p.id);
+    return { s: p.s, g: p.g, ease: forceEase(ecs, p.id), in: t?.in, out: t?.out };
+}
+function customGlyph(id: number): string {
+    const pt = forcePts.find((p) => p.id === id);
+    if (!pt) return presetGlyph(forceEase(ecs, id));
+    const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
+    const idx = pts.findIndex((p) => p.id === id);
+    const next = idx < pts.length - 1 ? pts[idx + 1] : null;
+    if (!next) return presetGlyph(forceEase(ecs, id)); // no following segment — fall back
+    const cps = segmentControls(toProfilePoint(pt), toProfilePoint(next));
+    let minS = Infinity;
+    let maxS = -Infinity;
+    let minG = Infinity;
+    let maxG = -Infinity;
+    for (const c of cps) {
+        minS = Math.min(minS, c.s);
+        maxS = Math.max(maxS, c.s);
+        minG = Math.min(minG, c.g);
+        maxG = Math.max(maxG, c.g);
+    }
+    const spanS = maxS - minS;
+    const spanG = maxG - minG;
+    const nx = (s: number): number => glyphX(spanS > 1e-9 ? (s - minS) / spanS : 0.5);
+    const ny = (g: number): number => (spanG > 1e-9 ? glyphY((g - minG) / spanG) : GLYPH_H / 2);
+    return `M${nx(cps[0].s)} ${ny(cps[0].g)} C${nx(cps[1].s)} ${ny(cps[1].g)} ${nx(cps[2].s)} ${ny(cps[2].g)} ${nx(cps[3].s)} ${ny(cps[3].g)}`;
 }
 // dismiss the force menu on any outside press or Escape (clicks on the menu pass through so
 // its items act first). Escape peels just this layer (capture + stop, so the window handler
@@ -1087,6 +1168,27 @@ function onFieldD(e: Event): void {
 function onFieldG(e: Event): void {
     if (!selPoint) return;
     fieldEdit(selPoint.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
+}
+// ── the selected handle's typed (Δs, Δg) fields ── mirrors the keyframe fields, but the
+// commit goes through the shared tangent write path (composeTangent — x-clamp + Aligned
+// coupling), history-bracketed as one entry. a typed value on a still-derived handle
+// materializes the explicit tangent (the un-edited side seeds from the derived shape).
+function handleFieldEdit(ds: number, dg: number): void {
+    const h = selHandle;
+    if (h === null || !Number.isFinite(ds) || !Number.isFinite(dg)) return; // guard a cleared field
+    const tan = composeTangent(h.pt.id, h.side, ds, dg);
+    if (!tan) return;
+    beginForceTangent(ecs, h.pt.id);
+    setForceTangent(ecs, h.pt.id, tan);
+    commit(history);
+}
+function onHandleS(e: Event): void {
+    if (!selHandle) return;
+    handleFieldEdit(Number.parseFloat((e.currentTarget as HTMLInputElement).value), selHandle.dg);
+}
+function onHandleG(e: Event): void {
+    if (!selHandle) return;
+    handleFieldEdit(selHandle.ds, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
 }
 // label scrub (the shallot inspector idiom): pointer-capture the key label and slide
 // horizontally to revise its value — one history gesture per scrub, rounded to the
@@ -1578,10 +1680,12 @@ onMount(() => {
         // Esc/Del/arrows (controls.ts) stay unambiguous (the selections are mutually exclusive).
         if (editor.force !== null) {
             if (e.key === "Escape") {
-                // dismissal peels one layer: exit handle edit first (keep the point selected),
-                // else clear the selection. the force menu takes Escape before this (capture).
+                // dismissal peels one layer: deselect the handle first (back to the keyframe
+                // readout), then exit handle edit (keep the point selected), then clear the
+                // selection. the force menu takes Escape before this (capture).
                 e.preventDefault();
-                if (editor.forceEdit !== null) exitForceEdit();
+                if (editor.forceHandle !== null) selectForceHandle(null);
+                else if (editor.forceEdit !== null) exitForceEdit();
                 else selectForce(null);
             } else if (e.key === "Delete" || e.key === "Backspace") {
                 e.preventDefault();
@@ -1893,11 +1997,53 @@ onMount(() => {
                 </g>
             {/if}
         </svg>
+        <!-- the selected handle's typed (Δs, Δg) fields: the SAME popover surface, summoned at
+             the handle knob when a handle is picked (the readout swaps from the keyframe to the
+             handle). inert while the handle drags (it's the live readout then). commits go
+             through the tangent write path (x-clamp + Aligned coupling). -->
+        {#if selHandle}
+            {@const hx = clamp(selHandle.x, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
+            {@const hy = clamp(selHandle.y, TOP, h - BOT_PAD)}
+            {@const sText = fmt(selHandle.ds, 2)}
+            {@const hgText = fmt(selHandle.dg, 2)}
+            <div
+                class="ptip"
+                class:below={hy < TOP + TIP_FLIP}
+                class:dragging={dragTan !== null}
+                style="left: {hx}px; top: {hy}px"
+            >
+                <div class="fld">
+                    <span class="key static" role="presentation">Δs</span>
+                    <input
+                        type="number"
+                        step="0.1"
+                        value={sText}
+                        onchange={onHandleS}
+                        onfocus={(e) => e.currentTarget.select()}
+                        onkeydown={(e) => fieldKeydown(e, sText)}
+                        aria-label="Handle s offset (m)"
+                    />
+                    <span class="unit">m</span>
+                </div>
+                <div class="fld">
+                    <span class="key static" role="presentation">Δg</span>
+                    <input
+                        type="number"
+                        step="0.1"
+                        value={hgText}
+                        onchange={onHandleG}
+                        onfocus={(e) => e.currentTarget.select()}
+                        onkeydown={(e) => fieldKeydown(e, hgText)}
+                        aria-label="Handle g offset (g)"
+                    />
+                    <span class="unit">g</span>
+                </div>
+            </div>
         <!-- the selected point's typed s/g fields: a popover summoned AT the diamond
              (on the object, not a docked row). it follows a live drag as the value
              readout, pointer-inert so it never fights the drag; flips below the point
              near the chart top; clamps inside the chart horizontally. -->
-        {#if selPoint}
+        {:else if selPoint}
             {@const mx = ptX(selPoint)}
             {#if scrubFreeze !== null || (mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R)}
                 {@const ax =
@@ -2176,7 +2322,7 @@ onMount(() => {
     }
     .fld {
         display: grid;
-        grid-template-columns: 14px 48px 12px;
+        grid-template-columns: 16px 48px 12px;
         align-items: center;
         gap: 6px;
         padding: 4px 9px;
@@ -2207,6 +2353,15 @@ onMount(() => {
     .fld .key:hover {
         color: var(--fg);
         background: rgba(255, 255, 255, 0.05);
+    }
+    /* a static key label (the handle popover's Δs/Δg): typed entry only, no scrub — so no
+       ew-resize cursor and no scrub-hover wash. */
+    .fld .key.static {
+        cursor: default;
+    }
+    .fld .key.static:hover {
+        color: var(--muted);
+        background: none;
     }
     .fld:focus-within .key {
         color: var(--fg);

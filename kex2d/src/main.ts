@@ -179,6 +179,9 @@ if (import.meta.env.DEV) {
         // whether a force keyframe is in handle-edit sub-mode — the flow asserts a
         // double-click summoned the handles.
         forceEditing: (): boolean => editor.forceEdit !== null,
+        // which handle is selected within handle-edit ("in"/"out"/null) — the flow asserts a
+        // click on a knob selects it (swapping the readout to the handle).
+        forceHandleSel: (): string | null => editor.forceHandle,
         // the explicit handle offsets per point (sorted by s), or null when derived from the
         // easing tag — the flow asserts a handle drag authored explicit handles and Reset
         // clears them.

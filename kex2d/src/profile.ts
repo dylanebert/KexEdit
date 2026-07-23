@@ -165,6 +165,21 @@ function segment(a: ForcePoint, b: ForcePoint): Seg {
     return { s0: a.s, g0: a.g, p1s, p1g, p2s, p2g, s1: b.s, g1: b.g };
 }
 
+/** the four control points of the bezier segment between adjacent keyframes `a` and `b`,
+ *  as absolute (s, g) points — the resolved-and-clamped shape the profile samples. exposed
+ *  for the UI's easing-glyph render (drawing the row's real curve, so the icon can't drift
+ *  from what the segment produces); `p1`/`p2` reflect explicit handles when present, else the
+ *  leading tag's derived flat tangents. */
+export function segmentControls(a: ForcePoint, b: ForcePoint): { s: number; g: number }[] {
+    const seg = segment(a, b);
+    return [
+        { s: seg.s0, g: seg.g0 },
+        { s: seg.p1s, g: seg.p1g },
+        { s: seg.p2s, g: seg.p2g },
+        { s: seg.s1, g: seg.g1 },
+    ];
+}
+
 function bez(a0: number, a1: number, a2: number, a3: number, t: number): number {
     const u = 1 - t;
     return u * u * u * a0 + 3 * u * u * t * a1 + 3 * u * t * t * a2 + t * t * t * a3;

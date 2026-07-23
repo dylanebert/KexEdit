@@ -302,35 +302,22 @@ export function beginForceMove(ecs: State, id: number): void {
     );
 }
 
-/** set a force keyframe's easing tag as one undoable entry (the menu one-shot). the
- *  full easing state (tag + explicit handles) round-trips; records nothing when the
- *  tag is unchanged. */
+/** pick a preset easing row as one undoable entry (the menu one-shot): set the tag AND
+ *  clear the addressed keyframe's explicit handles back to that preset — choosing a named
+ *  row is the way back up the layers, subsuming the old Reset. the full easing state (tag +
+ *  handles) round-trips; records nothing when neither the tag nor the handles changed. */
 export function setForceEase(h: History, ecs: State, id: number, ease: Easing): void {
     const pre = selHook?.snapshot(ecs);
     const before = forcePointState(ecs, id);
     if (!before) return;
     writeForceEase(ecs, id, ease);
+    clearForceTangent(ecs, id); // a preset clears explicit handles — back to derived
     const after = forcePointState(ecs, id);
-    if (after === undefined || before.ease === after.ease) return;
-    record(
-        h,
-        {
-            apply: () => restoreForcePoint(ecs, after),
-            reverse: () => restoreForcePoint(ecs, before),
-        },
-        pre,
-    );
-}
-
-/** clear a force keyframe's explicit handles back to the `ease`-derived default as one
- *  undoable entry (the Reset action). records nothing when there were no handles. */
-export function resetForceTangent(h: History, ecs: State, id: number): void {
-    const pre = selHook?.snapshot(ecs);
-    const before = forcePointState(ecs, id);
-    if (!before) return;
-    clearForceTangent(ecs, id);
-    const after = forcePointState(ecs, id);
-    if (after === undefined || sameForceTangent(before.tangent, after.tangent)) return;
+    if (
+        after === undefined ||
+        (before.ease === after.ease && sameForceTangent(before.tangent, after.tangent))
+    )
+        return;
     record(
         h,
         {

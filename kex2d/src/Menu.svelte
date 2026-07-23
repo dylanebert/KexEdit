@@ -88,7 +88,21 @@ function leaf(item: MenuItem): void {
                 onmouseenter={() => enter(i, item)}
                 onclick={() => leaf(item)}
             >
-                <span>{item.label}</span>
+                <span class="menu-lead">
+                    {#if item.glyph}
+                        <svg class="menu-glyph" viewBox="0 0 22 14" aria-hidden="true">
+                            <path
+                                d={item.glyph}
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.5"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            />
+                        </svg>
+                    {/if}
+                    <span>{item.label}</span>
+                </span>
                 {#if item.checked}<span class="tick" aria-hidden="true">✓</span>{/if}
                 {#if item.shortcut}<span class="sk">{item.shortcut}</span>{/if}
             </button>
@@ -123,6 +137,20 @@ function leaf(item: MenuItem): void {
     .submark {
         font-size: 9px;
         color: var(--muted);
+    }
+    /* the leading label group: an optional glyph beside the label, held together on the row's
+       left while the tick / shortcut sit right (the `.menu-item` space-between). a row with no
+       glyph renders just the label here, laid out identically to before. */
+    .menu-lead {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+    }
+    .menu-glyph {
+        width: 22px;
+        height: 14px;
+        flex: none;
     }
     /* the flyout sits beside its parent row — to the RIGHT (left:100%) by default, flipping LEFT
        / nudging vertically only to stay in the viewport. It's hoisted out of the row, so `top`
