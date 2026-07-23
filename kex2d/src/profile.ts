@@ -54,6 +54,18 @@ function influence(ease: Easing): number {
     }
 }
 
+/** the derived flat-tangent offset for a keyframe `side`, given the segment's
+ *  governing easing tag and its span — exactly what `segment()` computes for a
+ *  side that holds no explicit stored handle, exposed for the UI's derived-ghost
+ *  render and the no-jump handle-summon seed (the geo `autoTangent` analogue:
+ *  `spline.ts`'s `handle()` exposed beside `sampleChain` for the same reason).
+ *  the OUT side reaches forward (Δs ≥ 0) into the segment; IN reaches backward
+ *  (Δs ≤ 0) — both flat (Δg = 0), the S-transition construction. */
+export function autoTangent(ease: Easing, span: number, side: "in" | "out"): Offset {
+    const reach = influence(ease) * span;
+    return side === "out" ? { ds: reach, dg: 0 } : { ds: -reach, dg: 0 };
+}
+
 /** an explicit bezier handle stored on a keyframe side, as a **(Δs, Δg) offset**
  *  from the keyframe — the summoned inner layer, mirroring geo's stored `Tangent`.
  *  the outgoing (`out`) handle reaches forward (Δs ≥ 0) into the following segment;
@@ -115,11 +127,11 @@ interface Seg {
 function segment(a: ForcePoint, b: ForcePoint): Seg {
     const span = b.s - a.s;
     // the leading keyframe's tag governs the whole segment: both derived flat
-    // handles take `a.ease`'s influence. an explicit stored handle on either side
-    // overrides its own side verbatim.
-    const reach = influence(a.ease ?? Easing.Ease) * span;
-    const out = a.out ?? { ds: reach, dg: 0 };
-    const inn = b.in ?? { ds: -reach, dg: 0 };
+    // handles take `a.ease`'s influence via `autoTangent`. an explicit stored
+    // handle on either side overrides its own side verbatim.
+    const ease = a.ease ?? Easing.Ease;
+    const out = a.out ?? autoTangent(ease, span, "out");
+    const inn = b.in ?? autoTangent(ease, span, "in");
     let p1s = a.s + out.ds;
     let p1g = a.g + out.dg;
     let p2s = b.s + inn.ds;

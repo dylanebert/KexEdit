@@ -57,7 +57,7 @@ import {
     yGrow,
     zoomAt,
 } from "./timeline";
-import { Easing, type Offset, sampleForce } from "./profile";
+import { autoTangent, Easing, type Offset, sampleForce } from "./profile";
 import { TangentMode } from "./spline";
 import {
     bakeOut,
@@ -127,17 +127,6 @@ const NUDGE_G = 0.05;
 const NUDGE_G_COARSE = 0.5;
 const THANDLE_R = 4; // px; the summoned tangent-handle knob radius (visual)
 const THIT_R = 10; // px; the invisible grab radius around a handle knob (fat pick zone)
-
-// derived-flat-tangent influence per easing tag — the fraction of a segment's span each
-// flat handle reaches along s. MIRRORS profile.ts's private `influence` table (the locked
-// FVD++ ladder ends: Linear 0 · Ease 1/3 · Sharp 1/2). duplicated only because profile.ts
-// exposes no derived-tangent read; the proper home is a `seedForceTangent` export beside
-// `sampleForce` (a missing-API surprise reported to the stage-A/B owner).
-const FORCE_INFLUENCE: Record<Easing, number> = {
-    [Easing.Linear]: 0,
-    [Easing.Ease]: 1 / 3,
-    [Easing.Sharp]: 1 / 2,
-};
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -662,10 +651,10 @@ const editHandles = $derived.by((): { pt: ForcePt; handles: FHandle[] } | null =
 // PREVIOUS keyframe's influence over the preceding span (easing governs the following
 // segment, so a side's flat length comes from the tag that owns its segment).
 function derivedOut(pt: ForcePt, next: ForcePt): Offset {
-    return { ds: FORCE_INFLUENCE[forceEase(ecs, pt.id)] * (next.s - pt.s), dg: 0 };
+    return autoTangent(forceEase(ecs, pt.id), next.s - pt.s, "out");
 }
 function derivedIn(pt: ForcePt, prev: ForcePt): Offset {
-    return { ds: -FORCE_INFLUENCE[forceEase(ecs, prev.id)] * (pt.s - prev.s), dg: 0 };
+    return autoTangent(forceEase(ecs, prev.id), pt.s - prev.s, "in");
 }
 
 let dragTan: { id: number; side: "in" | "out" } | null = $state(null);
