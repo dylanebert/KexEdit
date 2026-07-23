@@ -274,12 +274,17 @@ export interface AxisSnap {
 }
 
 /** resolve one axis of a force-keyframe drag: a landmark magnet layered over a domain grid
- *  (the viewport geo-grid precedent applied to the timeline). A landmark within `threshold`
- *  screen-px of `rawPx` wins — landmarks own their radius (the Figma snap-to-object-else-grid
- *  order); otherwise the raw value quantizes to `grid` in domain units, always (the semantic
- *  quantum, the way the viewport chord snaps to whole metres). When snapping is bypassed
- *  (`active === false`, Ctrl/Cmd held) the raw value passes through untouched, grid included.
- *  Only a landmark draws a guide (the grid is ambient — the guide model is unchanged);
+ *  (the viewport geo-grid precedent applied to the timeline). Two landmark kinds with distinct
+ *  reach under the bypass. The per-axis **gesture-start** landmark (`startPx`) is a
+ *  direction-intent affordance, not a snap target: it magnetizes in EVERY mode, so a Ctrl/Cmd
+ *  bypass frees values without ever losing the axis pin (plain drag = grid + landmarks + axis
+ *  magnet; Ctrl drag = continuous values + axis magnet; there is deliberately no fully-free
+ *  mode). The **value** landmarks (`targets` — other keyframes, section boundaries, the
+ *  playhead, the 1g baseline) and the `grid` quantum are the value set the bypass zeroes.
+ *  A landmark within `threshold` screen-px of `rawPx` wins (landmarks own their radius, the
+ *  Figma snap-to-object-else-grid order); in the active mode the start landmark competes with
+ *  the value landmarks over the grid, in bypass it's the only magnet. Only a landmark draws a
+ *  guide — the axis magnet is a landmark, so it keeps its flash; the grid stays ambient.
  *  `fromPx` inverts the view affine for the landmark's px → domain conversion (impure view
  *  state, so it's passed in rather than closed over). */
 export function snapAxis(
@@ -289,12 +294,16 @@ export function snapAxis(
     targets: Iterable<number>,
     grid: number,
     fromPx: (px: number) => number,
+    startPx: number | null,
     threshold = SNAP_PX,
 ): AxisSnap {
-    if (!active) return { value: rawVal, guide: null };
-    const hit = snap(rawPx, targets, threshold);
+    const pool = active ? Array.from(targets) : [];
+    if (startPx !== null) pool.push(startPx); // the axis magnet survives the bypass
+    const hit = snap(rawPx, pool, threshold);
     if (hit !== null) return { value: fromPx(hit), guide: hit };
-    return { value: Math.round(rawVal / grid) * grid, guide: null };
+    return active
+        ? { value: Math.round(rawVal / grid) * grid, guide: null }
+        : { value: rawVal, guide: null };
 }
 
 /** the extent-trim magnet targets in chart-local px: content landmarks that are stable

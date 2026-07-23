@@ -487,19 +487,17 @@ function chartCreate(e: MouseEvent): void {
 
 // drag a diamond in both axes (horizontal = s, vertical = g), one undo entry. the
 // last cursor position is kept in canvas space so the per-frame edge-grow (the
-// yView effect's drag branch) can re-map it through a grown axis. shift constrains
-// to the dominant axis (the AE/Photoshop rule), measured from the grab.
+// yView effect's drag branch) can re-map it through a grown axis. Shift is a no-op on a
+// force-keyframe drag: the per-axis gesture-start magnet is the "change just one axis"
+// affordance, so a dominant-axis lock is redundant here (removed 2026-07-23).
 let dragForce: number | null = $state(null);
 let grabDs = 0; // point s − cursor s, so grabbing off-center doesn't snap
 let dragStartS = 0; // the dragged point's section cumulative start (fixed during the drag)
 let dragLen = 0; // the dragged point's section extent (the s clamp domain)
 let dragCx = 0; // last cursor, canvas-local px
 let dragCy = 0;
-let dragShift = false;
 let dragMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
-let dragX0 = 0; // grab cursor + grab values — the shift-constrain anchor
-let dragY0 = 0;
-let dragS0 = 0;
+let dragS0 = 0; // the grab s / g — each axis's gesture-start landmark (always-on magnet)
 let dragG0 = 0;
 function applyDrag(): void {
     if (dragForce === null) return;
@@ -509,34 +507,20 @@ function applyDrag(): void {
     // cursor cumulative s + grab → the point's cumulative s, then − startS → local.
     let s = clamp(pxToS(clamped, cx - LEFT_GUT) + grabDs - dragStartS, 0, dragLen);
     let g = yToG(clamp(dragCy, TOP, h - BOT_PAD));
-    let lockS = false;
-    let lockG = false;
-    if (dragShift) {
-        // lock to whichever axis has moved further since the grab; the other holds
-        if (Math.abs(dragCx - dragX0) >= Math.abs(dragCy - dragY0)) {
-            g = dragG0;
-            lockG = true;
-        } else {
-            s = dragS0;
-            lockS = true;
-        }
-    }
-    // resolve each free axis through the landmark-over-grid magnet (`snapAxis`, timeline.ts):
-    // a landmark within SNAP_PX wins, else the value quantizes to the 1 m / 0.1 g grid; a
-    // Ctrl/Cmd bypass (`snapActive`) passes the raw value through, grid included. only a
-    // landmark flashes a guide — the grid is ambient. each axis carries a gesture-start
-    // landmark (the point's grab s / g) so a mostly-single-axis drag snaps the OTHER axis
-    // back to exactly where it started — the "change just one axis" affordance.
+    // resolve each axis through the landmark-over-grid magnet (`snapAxis`, timeline.ts). Each
+    // axis carries an always-on gesture-start landmark (the grab s / g, the direction-intent
+    // affordance) passed as `startPx`, so it magnetizes even under the Ctrl/Cmd bypass: a plain
+    // drag snaps grid + value landmarks + the axis magnet, a Ctrl drag frees values but keeps
+    // the axis pin. Only a landmark flashes a guide — the grid is ambient.
     snapX = null;
     snapY = null;
     const active = snapActive(dragMod);
-    if (!lockS) {
+    {
         const cumS = dragStartS + s;
         const targets = sTargets({ exclude: dragForce, playhead: true, trackEnd: true });
-        targets.push(sToPx(clamped, dragStartS + dragS0)); // gesture-start s landmark
+        const startPx = sToPx(clamped, dragStartS + dragS0); // gesture-start s landmark
         const r = snapAxis(active, sToPx(clamped, cumS), cumS, targets, S_GRID, (px) =>
-            pxToS(clamped, px),
-        );
+            pxToS(clamped, px), startPx);
         const local = r.value - dragStartS;
         if (r.guide !== null) {
             // a landmark: only latch one the point can actually reach in its section
@@ -548,10 +532,9 @@ function applyDrag(): void {
             s = clamp(local, 0, dragLen); // grid (or bypass) — quantized, kept in the section
         }
     }
-    if (!lockG) {
+    {
         const targets = gTargets(dragForce);
-        targets.push(yOf(dragG0)); // gesture-start g landmark
-        const r = snapAxis(active, yOf(g), g, targets, G_GRID, (py) => yToG(py));
+        const r = snapAxis(active, yOf(g), g, targets, G_GRID, (py) => yToG(py), yOf(dragG0));
         g = r.value;
         snapY = r.guide;
     }
@@ -579,10 +562,7 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     const rect = canvas.getBoundingClientRect();
     dragCx = e.clientX - rect.left;
     dragCy = e.clientY - rect.top;
-    dragShift = e.shiftKey;
     dragMod = e.ctrlKey || e.metaKey;
-    dragX0 = dragCx;
-    dragY0 = dragCy;
     dragS0 = p.s;
     dragG0 = p.g;
     dragStartS = p.startS; // the point's section is fixed while its s is dragged inside it
@@ -604,7 +584,6 @@ function forceMove(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
     dragCx = e.clientX - rect.left;
     dragCy = e.clientY - rect.top;
-    dragShift = e.shiftKey; // live: shift can be pressed/released mid-drag
     dragMod = e.ctrlKey || e.metaKey; // live: bypass can be toggled mid-drag
     applyDrag();
 }

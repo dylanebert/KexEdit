@@ -96,18 +96,20 @@ copies this shape:
   Landmarks: other keyframes, section boundaries, the playhead, physical baselines (1g). A raster
   earns targethood only when the domain has a real quantum (video frames, musical beats — the
   Blender/DAW case). A **force keyframe** has one: it *demands* a value, so 1 m on s and 0.1 g on
-  its force are its authoring vocabulary — a keyframe drag is grid-by-default + landmarks, with a
-  per-axis **gesture-start** landmark (the grab s / g) so a mostly-single-axis drag snaps the other
-  axis back to exactly where it started (the "change just one axis" affordance). Grid steps are
-  named constants (kex2d `S_GRID` / `G_GRID`, `timeline.ts`), the merge is landmark-over-grid (a
-  landmark within `SNAP_PX` wins its radius, else the grid quantizes — the viewport geo-grid
-  precedent), and only a landmark flashes a guide (the grid is ambient). The timeline's
-  *non-authoring* axes stay landmarks-only — the extent trim and the playhead scrub place no value,
-  so they're the AE/Premiere case (nothing to quantize). Ctrl/Cmd bypasses all of it. **Shift (axis
-  lock) and Ctrl (snap bypass) are orthogonal and compose** (the Figma/Photoshop rule): Shift locks
-  the dominant axis, Ctrl kills the grid *and* landmarks on the free axis/axes without ever releasing
-  the lock, so Shift+Ctrl slides the point continuously along the locked axis. The lock is evaluated
-  independently of the bypass — neither modifier gates the other.
+  its force are its authoring vocabulary — a keyframe drag is grid-by-default + landmarks. The
+  per-axis **gesture-start** landmark (the grab s / g) is a *direction-intent affordance, not a
+  snap target*: it magnetizes in **every** mode, so a mostly-single-axis drag snaps the other axis
+  back to exactly where it started (the "change just one axis" affordance) even under the bypass.
+  Grid steps are named constants (kex2d `S_GRID` / `G_GRID`, `timeline.ts`), the merge is
+  landmark-over-grid (a landmark within `SNAP_PX` wins its radius, else the grid quantizes — the
+  viewport geo-grid precedent), and only a landmark flashes a guide (the grid is ambient — the axis
+  magnet is a landmark, so it keeps its flash). The timeline's *non-authoring* axes stay
+  landmarks-only — the extent trim and the playhead scrub place no value, so they're the AE/Premiere
+  case (nothing to quantize). **One modifier, Ctrl/Cmd, frees values but never direction:** it
+  zeroes the grid + value landmarks (continuous values), while the gesture-start axis magnet keeps
+  firing — there is deliberately no fully-free mode. **There is no Shift dominant-axis lock on a
+  force-keyframe drag** (the per-axis start magnet already serves single-axis intent, so a lock is
+  redundant); Shift is a no-op there.
   The shaping viewport carries one too: the building vocabulary is the quantum, and **snap quantizes what
   the piece does** — a pure grid, snap-by-default: chord length to whole meters (1 m floor), angle
   to a 5° grid, uniform tip + interior. A tip snaps its exit-tangent *incline* (the chord that
@@ -127,7 +129,6 @@ copies this shape:
   restructured input.
 - **Targets must be stable under the gesture and reachable.** A gesture never snaps to geometry it
   is itself moving (the extent-trim self-snap lesson) or to a target the drag can't reach.
-- Snap never fires on a Shift-locked axis — the constraint owns it.
 - A snapped axis flashes a guide line (the Figma feedback); the guide clears with the gesture.
   **All guides wear one neutral gray** — a guide informs, it never alarms; the stateful color split
   is retired.
@@ -238,9 +239,9 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   surface + behavior is root `ui.md` "Fields".
 - **Dismissal is layered** (root `ui.md` "Surfaces hold still"): keyframe selection is the
   transient layer between the focused field and the surface.
-- **Shift constrains a two-axis drag** to the dominant axis since the grab (the AE/Photoshop
-  rule), re-evaluated live mid-drag. No hysteresis; the escalation if it flickers is explicit
-  Blender-style axis keys, not a tuned threshold.
+- **No dominant-axis lock on a keyframe drag.** The per-axis gesture-start magnet (Snapping, above)
+  already snaps the near-still axis back to its start, so a Shift lock is redundant; Shift is a
+  no-op on a keyframe drag. Single-axis intent is the magnet's job, not a modifier's.
 - **Scaffolding controls float as satellite surfaces.** A control a staged design will remove
   (the whole-track geo/force toggle before per-section kinds) floats as its own small opaque
   surface OUTSIDE the content it governs; overlapping it reads as a bug, and a docked row would

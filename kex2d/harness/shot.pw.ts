@@ -657,6 +657,33 @@ test("force authoring flow", async ({ page }) => {
     await page.keyboard.press("Control+z");
     await expect.poll(forceCount).toBe(5);
 
+    // ── 2b′. A Ctrl/Cmd drag frees the VALUE but never the per-axis gesture-start magnet (the
+    // reframed contract, kex2d-force-ux): held within SNAP_PX horizontally, the crest's s pins
+    // back to its exact grab while its g moves continuously off the 0.1 g grid. This is the
+    // positive end-to-end proof the axis magnet survives the bypass; snapAxis's bypass-magnet
+    // unit test is the oracle. Undo restores the crest for the rest of the flow. ──
+    await frameTimeline(page); // frame the section so the .fhit boxes are well-placed
+    const beforeCtrl = [...(await forces())].sort((a, b) => a.s - b.s);
+    const crestHit = await page.locator(".fhit").nth(2).boundingBox(); // middle by x = interior
+    if (!crestHit) throw new Error("crest hit target not laid out");
+    const cxC = crestHit.x + crestHit.width / 2;
+    const cyC = crestHit.y + crestHit.height / 2;
+    await page.mouse.move(cxC, cyC);
+    await page.mouse.down();
+    await page.keyboard.down("Control"); // bypass held live, read per pointermove
+    await page.mouse.move(cxC + 6, cyC - 55, { steps: 8 }); // dx < SNAP_PX (magnet), dy large
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    const afterCtrl = [...(await forces())].sort((a, b) => a.s - b.s);
+    expect(afterCtrl[2].s).toBeCloseTo(beforeCtrl[2].s, 2); // s pinned to its grab despite Ctrl
+    expect(Math.abs(afterCtrl[2].g - beforeCtrl[2].g)).toBeGreaterThan(0.1); // g moved freely
+    await page.keyboard.press("Control+z"); // restore the crest
+    await expect.poll(async () => (await forces()).sort((a, b) => a.s - b.s)[2].g).toBeCloseTo(
+        beforeCtrl[2].g,
+        5,
+    );
+    await page.keyboard.press("Escape"); // deselect: clear the crest's .ptip before 2c right-clicks
+
     // ── 2c. Seeded-keys extension (stage E): set the leading seed's easing via the real,
     // pointer-true keyframe menu, then drag its out-handle to author an explicit tangent
     // (the segment reads Custom), then undo both. exercises the __kex ease/tangent hooks

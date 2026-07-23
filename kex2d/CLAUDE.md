@@ -492,8 +492,9 @@ reshapes exactly the two segments sharing the node. Node 0 is the pinned entry a
 **Force authoring** (on the timeline chart, whole-track) — the chart draws every force section's
 points at once. Double-click over a force section's arc places a point at the authored profile's
 value (insertion never bends the curve; the section is resolved from the cursor arclength, no
-selection needed); drag a diamond in both axes (horizontal = s, vertical = g; `Shift` locks the
-dominant axis); `Del` removes, `Esc` deselects; the popover at the selected diamond types or scrubs
+selection needed); drag a diamond in both axes (horizontal = s, vertical = g — the always-on
+per-axis gesture-start magnet is the single-axis affordance, so there's no `Shift` lock; `Ctrl`/`Cmd`
+frees values but not that magnet); `Del` removes, `Esc` deselects; the popover at the selected diamond types or scrubs
 its s/g. Points are authored section-local (s from the section entry) but drawn at their section's
 whole-track cumulative offset. Keyframes, not constraints. Interaction conventions: `editor-ui.md`.
 
