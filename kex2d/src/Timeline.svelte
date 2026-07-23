@@ -759,16 +759,43 @@ function forceCtx(e: MouseEvent, p: ForcePt): void {
     e.stopPropagation();
     openForceMenu(e.clientX, e.clientY, p.id);
 }
+// the recovered force curve's g at a cumulative arclength — a linear interp over the baked
+// per-sample series (clamped to the ends). the curve is the geometry-recovered force the
+// chart draws, so a hit-test against it matches what the eye sees, not the authored profile
+// (a diamond sits O(ds) off the drawn curve). used to gate a chart right-click to the span.
+function curveGAt(cumS: number): number {
+    const c = curve;
+    if (!c || c.n === 0) return Y_BASE;
+    if (cumS <= c.s[0]) return c.f[0];
+    if (cumS >= c.s[c.n - 1]) return c.f[c.n - 1];
+    let lo = 0;
+    let hi = c.n - 1;
+    while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (c.s[mid] <= cumS) lo = mid;
+        else hi = mid;
+    }
+    const span = c.s[hi] - c.s[lo];
+    const t = span > 0 ? (cumS - c.s[lo]) / span : 0;
+    return c.f[lo] + t * (c.f[hi] - c.f[lo]);
+}
 // right-click the curve span between two keyframes → the LEADING keyframe's menu (the
 // Blender convention: easing lives on the keyframe and governs the following segment, so
-// the segment addresses the keyframe before it). over empty/geo, or left of the first
-// keyframe (no leading), it's a no-op.
+// the segment addresses the keyframe before it). the hit-target is the drawn curve span,
+// NOT the whole force-section column: a right-click far above or below the curve is empty
+// chart space and opens nothing. over empty/geo, or left of the first keyframe (no
+// leading), it's a no-op too.
 function chartCtx(e: MouseEvent): void {
     e.preventDefault();
     e.stopPropagation();
     const cumS = chartS(e);
     const c = clips.find((x) => x.kind === SectionKind.Force && cumS >= x.s0 && cumS <= x.s1);
     if (!c) return;
+    // the click must land within the force-point grab radius (FHIT_R — the same fat pick
+    // zone a diamond carries) of the curve span vertically; a click out in empty chart space
+    // addresses no keyframe (a diamond hit is handled by forceCtx, on the marker's own rect).
+    if (Math.abs(e.clientY - canvas.getBoundingClientRect().top - yOf(curveGAt(cumS))) > FHIT_R)
+        return;
     const localS = cumS - c.s0;
     let lead: number | null = null;
     for (const p of sectionForces(ecs, c.id)) {

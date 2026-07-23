@@ -103,7 +103,11 @@ copies this shape:
   landmark within `SNAP_PX` wins its radius, else the grid quantizes — the viewport geo-grid
   precedent), and only a landmark flashes a guide (the grid is ambient). The timeline's
   *non-authoring* axes stay landmarks-only — the extent trim and the playhead scrub place no value,
-  so they're the AE/Premiere case (nothing to quantize). Ctrl/Cmd bypasses all of it.
+  so they're the AE/Premiere case (nothing to quantize). Ctrl/Cmd bypasses all of it. **Shift (axis
+  lock) and Ctrl (snap bypass) are orthogonal and compose** (the Figma/Photoshop rule): Shift locks
+  the dominant axis, Ctrl kills the grid *and* landmarks on the free axis/axes without ever releasing
+  the lock, so Shift+Ctrl slides the point continuously along the locked axis. The lock is evaluated
+  independently of the bypass — neither modifier gates the other.
   The shaping viewport carries one too: the building vocabulary is the quantum, and **snap quantizes what
   the piece does** — a pure grid, snap-by-default: chord length to whole meters (1 m floor), angle
   to a 5° grid, uniform tip + interior. A tip snaps its exit-tangent *incline* (the chord that

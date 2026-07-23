@@ -787,16 +787,35 @@ test("force easing menu flow", async ({ page }) => {
     await page.keyboard.press("Escape");
     await expect(page.locator(".ptip")).toHaveCount(0);
     const fcb = await page.locator(".clip").first().boundingBox();
-    const chartBody = await page.locator(".dock .body").boundingBox();
-    if (!fcb || !chartBody) throw new Error("force clip / timeline body not laid out");
+    const kf0 = await page.locator(".fpt").nth(0).boundingBox(); // s=0 seed (~1g)
+    const kf1 = await page.locator(".fpt").nth(1).boundingBox(); // first bump shoulder (1g)
+    if (!fcb || !kf0 || !kf1) throw new Error("force clip / keyframes not laid out");
+    // the segment hit-target is now gated to the drawn curve (chartCtx's FHIT_R vertical
+    // tolerance), so the click must land ON the span, not at mid-chart. x ≈ 0.1·length sits
+    // halfway between kf0 (s=0) and kf1 (s=0.2·length); the near-flat ~1g span there tracks
+    // the two flanking diamonds, so the mean of their centre-y lands on the curve.
     const midX = fcb.x + fcb.width * 0.1;
-    const midY = chartBody.y + chartBody.height * 0.5;
+    const midY = (kf0.y + kf0.height / 2 + (kf1.y + kf1.height / 2)) / 2;
     await page.mouse.click(midX, midY, { button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
     await clickFlyout(page, ".fmenu", "Easing", "Sharp");
     await expect(page.locator(".fmenu")).toHaveCount(0);
     await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Sharp — keyframe 0 moved, not keyframe 1
     expect((await forceEases())[1]).toBe(1); // keyframe 1's own tag (Ease, untouched) proves it
+
+    // ── 2c. A right-click in EMPTY chart space — over the force section horizontally but far
+    // from the curve vertically — opens NO keyframe menu (the segment hit-target is the drawn
+    // curve, not the whole force-section column; the over-broad "nearest keyframe from anywhere"
+    // is gone). the y is the crest diamond's row (0g, s=0.5·length) taken at midX (s≈0.1·length,
+    // where the curve holds ~1g): provably inside the chartzone (a diamond renders at that y) yet
+    // ~1g away from the curve, past FHIT_R. under the old over-broad chartCtx this opened the
+    // leading keyframe's menu. ──
+    const crest = await page.locator(".fpt").nth(2).boundingBox(); // airtime crest (0g)
+    if (!crest) throw new Error("crest keyframe not laid out");
+    await page.mouse.click(midX, crest.y + crest.height / 2, { button: "right" });
+    await page.waitForTimeout(50);
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    expect((await forceEases())[0]).toBe(2); // unchanged — the empty-space click was inert
 
     // ── 3. Double-click an interior keyframe → handle-edit sub-mode summons its two handles
     // (a diamond hit beats the chart's insertion double-click). ──
