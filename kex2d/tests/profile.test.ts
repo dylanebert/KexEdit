@@ -4,15 +4,15 @@ import { DEFAULT_G, Easing, type ForcePoint, forceProfile, sampleForce } from ".
 // the force-authoring layer (kex2d/CLAUDE.md, force authoring): authored force
 // keyframes → dense per-edge F_n. every segment is a cubic bezier in (s, g); a
 // keyframe side resolves to a derived flat tangent (from its easing tag) or an
-// explicit handle. the influence ends are exact, not tuned — Linear degenerates
-// to the chord (exactly linear), Ease makes s(t) linear (exactly smoothstep), so
+// explicit handle. the influence ends are derived, not tuned — Linear degenerates
+// to the chord (exactly linear), Cubic makes s(t) linear (exactly smoothstep), so
 // their invariants are analytic. tolerances are the root-solve residual (see
-// S_TOL_REL in profile.ts: the Linear/Ease error is |Δg|·1e-13, far below the
+// S_TOL_REL in profile.ts: the Linear/Cubic error is |Δg|·1e-13, far below the
 // asserted 1e-9..1e-10). the O(ds) recovered-vs-authored gap lives one layer up
 // (section.test.ts evalForce) and isn't re-tested here.
 
-// x²(3−2x): the analytic Ease curve. s(t) is linear in t at influence 1/3, so
-// g(s) with a default-Ease segment equals g0 + Δg·smoothstep((s−s0)/span) exactly.
+// x²(3−2x): the analytic Cubic curve. s(t) is linear in t at influence 1/3, so
+// g(s) with a default-Cubic segment equals g0 + Δg·smoothstep((s−s0)/span) exactly.
 const smoothstep = (x: number) => x * x * (3 - 2 * x);
 
 describe("sampleForce — endpoints and empties", () => {
@@ -67,10 +67,10 @@ describe("Linear tag — exactly the old linear interpolation", () => {
     });
 });
 
-describe("Ease tag (the default) — exactly smoothstep", () => {
+describe("Cubic tag (the default) — exactly smoothstep", () => {
     test("an untagged segment is smoothstep, not linear", () => {
         // the behavior change the default flip pins: at s=2.5 (t=¼) the old linear
-        // stub returned 1.5; the Ease default returns 1 + smoothstep(¼)·2 = 1.3125.
+        // stub returned 1.5; the Cubic default returns 1 + smoothstep(¼)·2 = 1.3125.
         const pts: ForcePoint[] = [
             { s: 0, g: 1 },
             { s: 10, g: 3 },
@@ -94,14 +94,14 @@ describe("Ease tag (the default) — exactly smoothstep", () => {
         }
     });
 
-    test("explicitly tagged Ease equals the untagged default", () => {
+    test("explicitly tagged Cubic equals the untagged default", () => {
         const untagged: ForcePoint[] = [
             { s: 0, g: 0 },
             { s: 10, g: 1 },
         ];
         const tagged: ForcePoint[] = [
-            { s: 0, g: 0, ease: Easing.Ease },
-            { s: 10, g: 1, ease: Easing.Ease },
+            { s: 0, g: 0, ease: Easing.Cubic },
+            { s: 10, g: 1, ease: Easing.Cubic },
         ];
         for (let s = 0; s <= 10; s += 0.5) {
             expect(sampleForce(tagged, s)).toBeCloseTo(sampleForce(untagged, s), 12);
@@ -109,13 +109,13 @@ describe("Ease tag (the default) — exactly smoothstep", () => {
     });
 });
 
-describe("Sharp tag — the quintic feel", () => {
-    // influence ½: both s-handles meet at the segment midpoint. still monotone,
-    // symmetric about the center, flatter at the ends than Ease.
-    const sharp = (s: number, g: number): ForcePoint => ({ s, g, ease: Easing.Sharp });
+describe("Quintic tag — the quintic feel", () => {
+    // influence 7/15: the two s-handles reach 7/15 and 8/15 of the span, still
+    // monotone, symmetric about the center, flatter at the ends than Cubic.
+    const quintic = (s: number, g: number): ForcePoint => ({ s, g, ease: Easing.Quintic });
 
     test("endpoints exact, center is the mean, monotone across the span", () => {
-        const pts = [sharp(0, 0), sharp(10, 2)];
+        const pts = [quintic(0, 0), quintic(10, 2)];
         expect(sampleForce(pts, 0)).toBeCloseTo(0, 12);
         expect(sampleForce(pts, 10)).toBeCloseTo(2, 12);
         expect(sampleForce(pts, 5)).toBeCloseTo(1, 10); // symmetric → the mean
@@ -127,65 +127,79 @@ describe("Sharp tag — the quintic feel", () => {
         }
     });
 
-    test("flatter lead-in than Ease (rises later toward the target)", () => {
-        const sharpPts = [sharp(0, 0), sharp(10, 1)];
-        const easePts: ForcePoint[] = [
+    test("center slope matches the true quintic (15/8), not the old influence-½ (2)", () => {
+        // the derived influence 7/15 is chosen so the flat-tangent cubic bezier's
+        // center slope 1/(1−i) equals the true quintic smootherstep's g'(½) = 15/8.
+        // in domain units that's (Δg/span)·15/8 = (2/10)·1.875 = 0.375; the old
+        // influence ½ gave 1/(1−½) = 2 → 0.4. central difference recovers it:
+        // truncation O(h²·g''') ~ 1e-5 and roundoff ~1e-10 sit far under the asserted
+        // 5e-4 window, while the 0.025 gap to the old value is 50× wider — red against
+        // ½, green against 7/15.
+        const pts = [quintic(0, 0), quintic(10, 2)];
+        const h = 1e-3;
+        const slope = (sampleForce(pts, 5 + h) - sampleForce(pts, 5 - h)) / (2 * h);
+        expect(slope).toBeCloseTo(0.375, 3); // (Δg/span)·15/8
+    });
+
+    test("flatter lead-in than Cubic (rises later toward the target)", () => {
+        const quinticPts = [quintic(0, 0), quintic(10, 1)];
+        const cubicPts: ForcePoint[] = [
             { s: 0, g: 0 },
             { s: 10, g: 1 },
         ];
-        // increasing g: the longer flat end keeps Sharp below Ease early on.
-        expect(sampleForce(sharpPts, 2.5)).toBeLessThan(sampleForce(easePts, 2.5));
+        // increasing g: the longer flat end keeps Quintic below Cubic early on.
+        expect(sampleForce(quinticPts, 2.5)).toBeLessThan(sampleForce(cubicPts, 2.5));
     });
 });
 
 describe("leading keyframe governs the whole segment (Blender F-curve convention)", () => {
-    test("A=Sharp, B=Ease → segment A→B is symmetric Sharp, not half-and-half", () => {
-        // both derived handles of the segment take the LEADING key's tag (A=Sharp),
-        // so the transition is the same shape as an all-Sharp segment and B's Ease
+    test("A=Quintic, B=Cubic → segment A→B is symmetric Quintic, not half-and-half", () => {
+        // both derived handles of the segment take the LEADING key's tag (A=Quintic),
+        // so the transition is the same shape as an all-Quintic segment and B's Cubic
         // tag has no effect on the segment arriving at it.
         const mixed: ForcePoint[] = [
-            { s: 0, g: 0, ease: Easing.Sharp },
-            { s: 10, g: 2, ease: Easing.Ease },
+            { s: 0, g: 0, ease: Easing.Quintic },
+            { s: 10, g: 2, ease: Easing.Cubic },
         ];
-        const bothSharp: ForcePoint[] = [
-            { s: 0, g: 0, ease: Easing.Sharp },
-            { s: 10, g: 2, ease: Easing.Sharp },
+        const bothQuintic: ForcePoint[] = [
+            { s: 0, g: 0, ease: Easing.Quintic },
+            { s: 10, g: 2, ease: Easing.Quintic },
         ];
-        const bothEase: ForcePoint[] = [
-            { s: 0, g: 0, ease: Easing.Ease },
-            { s: 10, g: 2, ease: Easing.Ease },
+        const bothCubic: ForcePoint[] = [
+            { s: 0, g: 0, ease: Easing.Cubic },
+            { s: 10, g: 2, ease: Easing.Cubic },
         ];
         for (let s = 0; s <= 10; s += 0.25) {
-            expect(sampleForce(mixed, s)).toBeCloseTo(sampleForce(bothSharp, s), 12);
+            expect(sampleForce(mixed, s)).toBeCloseTo(sampleForce(bothQuintic, s), 12);
         }
-        // and Sharp is genuinely distinct from Ease (guards against a no-op change).
-        expect(Math.abs(sampleForce(mixed, 2.5) - sampleForce(bothEase, 2.5))).toBeGreaterThan(
+        // and Quintic is genuinely distinct from Cubic (guards against a no-op change).
+        expect(Math.abs(sampleForce(mixed, 2.5) - sampleForce(bothCubic, 2.5))).toBeGreaterThan(
             0.01,
         );
     });
 
     test("each key's tag governs its own following segment across a chain", () => {
-        // A=Sharp governs A→B; B=Ease governs B→C; C=Linear is last (governs nothing).
-        // so [0,10] matches an all-Sharp segment and [10,20] matches an Ease-leading
+        // A=Quintic governs A→B; B=Cubic governs B→C; C=Linear is last (governs nothing).
+        // so [0,10] matches an all-Quintic segment and [10,20] matches a Cubic-leading
         // segment — the trailing key's tag never reaches back into the prior segment.
         const chain: ForcePoint[] = [
-            { s: 0, g: 0, ease: Easing.Sharp },
-            { s: 10, g: 2, ease: Easing.Ease },
+            { s: 0, g: 0, ease: Easing.Quintic },
+            { s: 10, g: 2, ease: Easing.Cubic },
             { s: 20, g: 1, ease: Easing.Linear },
         ];
-        const sharpSeg: ForcePoint[] = [
-            { s: 0, g: 0, ease: Easing.Sharp },
-            { s: 10, g: 2, ease: Easing.Sharp },
+        const quinticSeg: ForcePoint[] = [
+            { s: 0, g: 0, ease: Easing.Quintic },
+            { s: 10, g: 2, ease: Easing.Quintic },
         ];
-        const easeSeg: ForcePoint[] = [
-            { s: 10, g: 2, ease: Easing.Ease },
-            { s: 20, g: 1, ease: Easing.Ease },
+        const cubicSeg: ForcePoint[] = [
+            { s: 10, g: 2, ease: Easing.Cubic },
+            { s: 20, g: 1, ease: Easing.Cubic },
         ];
         for (let s = 0; s <= 10; s += 0.25) {
-            expect(sampleForce(chain, s)).toBeCloseTo(sampleForce(sharpSeg, s), 11);
+            expect(sampleForce(chain, s)).toBeCloseTo(sampleForce(quinticSeg, s), 11);
         }
         for (let s = 10; s <= 20; s += 0.25) {
-            expect(sampleForce(chain, s)).toBeCloseTo(sampleForce(easeSeg, s), 11);
+            expect(sampleForce(chain, s)).toBeCloseTo(sampleForce(cubicSeg, s), 11);
         }
     });
 });
@@ -214,7 +228,7 @@ describe("cubic-bezier evaluation — analytic oracle with explicit handles", ()
 
 describe("C1 continuity — flat tangents at every keyframe", () => {
     test("the one-sided slopes at an interior keyframe are both ~0", () => {
-        // default-Ease keyframes have flat (Δg=0) tangents, so g'(s)=0 at each key
+        // default-Cubic keyframes have flat (Δg=0) tangents, so g'(s)=0 at each key
         // and the curve is C1. near a flat key g(s) = g_key + ½g''·(s−s_key)² + …, so
         // a one-sided finite difference is O(h): with h=1e-4 and g'' ~ 6Δg/span² the
         // slope is ~1e-4·|Δg|/span, well under the 1e-3 bound asserted.
@@ -262,7 +276,7 @@ describe("x-monotonicity clamp — g(s) stays a function under adversarial handl
         // ds=0 with dg≠0 is a legal vertical handle (Blender keeps it): the curve
         // leaves the keyframe with an infinite slope. it does NOT over-reach (its
         // s-length is 0), so its dg survives the clamp. control points:
-        // P0=(0,0) P1=(0,1) [the vertical out-handle] P2=(20/3,1) [derived Ease in]
+        // P0=(0,0) P1=(0,1) [the vertical out-handle] P2=(20/3,1) [derived Cubic in]
         // P3=(10,1). the departure is steep (g at small s far above the chord g=s/10)
         // and g(s) is monotone; s'(t) ≥ 0 still holds (p1s = s0, no backward fold).
         const pts: ForcePoint[] = [
@@ -323,14 +337,14 @@ describe("forceProfile — dense per-edge sampling", () => {
         // the marched profile equals the from-scratch point query at every σ_i.
         for (let i = 0; i < fN.length; i++) expect(fN[i]).toBeCloseTo(sampleForce(pts, i * ds), 6);
         expect(fN[0]).toBe(1); // σ = 0 → the first keyframe, held
-        expect(fN[10]).toBeCloseTo(2, 5); // σ = 5, the symmetric midpoint of Ease
+        expect(fN[10]).toBeCloseTo(2, 5); // σ = 5, the symmetric midpoint of Cubic
     });
 
     test("the march matches the point query under explicit handles too", () => {
         const pts: ForcePoint[] = [
             { s: 0, g: 1, out: { ds: 3, dg: 0.5 } },
             { s: 8, g: 2, in: { ds: -2, dg: 0.3 } },
-            { s: 16, g: 0, ease: Easing.Sharp },
+            { s: 16, g: 0, ease: Easing.Quintic },
         ];
         const ds = 0.25;
         const fN = forceProfile(pts, 16, ds);

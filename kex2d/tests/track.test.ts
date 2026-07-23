@@ -947,7 +947,7 @@ describe("force easing + seeding (stage B)", () => {
         state.step(0);
         convertSection(state, sec); // → force (seeds two keyframes)
         const id = createForcePoint(state, sec, 12, 0.5);
-        setForceEase(state, id, Easing.Sharp);
+        setForceEase(state, id, Easing.Quintic);
         // f32-exact offsets (multiples of 1/4) so the round-trip is byte-identical, not just close.
         const tan: ForceTangent = {
             mode: TangentMode.Free,
@@ -958,16 +958,16 @@ describe("force easing + seeding (stage B)", () => {
 
         const snap = snapshotAll(state);
         restoreAll(state, snap); // the structural-op undo unit must round-trip the new fields
-        expect(forceEase(state, id)).toBe(Easing.Sharp);
+        expect(forceEase(state, id)).toBe(Easing.Quintic);
         expect(forceTangent(state, id)).toEqual(tan);
-        // a seed keyframe stays the default: Ease tag, no handles.
+        // a seed keyframe stays the default: Cubic tag, no handles.
         const seed = sectionForces(state, sec).find((p) => p.s === 0);
         if (!seed) throw new Error("seed missing");
-        expect(forceEase(state, seed.id)).toBe(Easing.Ease);
+        expect(forceEase(state, seed.id)).toBe(Easing.Cubic);
         expect(forceTangent(state, seed.id)).toBeUndefined();
     });
 
-    test("a keyframe's ease flows through the bake (forcePayload): Ease ≠ Linear, and busts the hash", () => {
+    test("a keyframe's ease flows through the bake (forcePayload): Cubic ≠ Linear, and busts the hash", () => {
         const { state, eid, sec } = track();
         state.step(0);
         convertSection(state, sec); // → force; two flat seeds at 1g
@@ -977,12 +977,12 @@ describe("force easing + seeding (stage B)", () => {
         const tail = pts[1];
         setForcePoint(state, tail.id, tail.s, 2);
 
-        setForceEase(state, lead.id, Easing.Ease);
+        setForceEase(state, lead.id, Easing.Cubic);
         state.step(0);
         let out = bakeOut.get(eid);
         if (!out) throw new Error("bake missing");
-        const easeF = Array.from(out.fN.subarray(0, Track.count.get(eid) - 1));
-        const easeHash = out.hash;
+        const cubicF = Array.from(out.fN.subarray(0, Track.count.get(eid) - 1));
+        const cubicHash = out.hash;
 
         setForceEase(state, lead.id, Easing.Linear);
         state.step(0);
@@ -990,10 +990,10 @@ describe("force easing + seeding (stage B)", () => {
         if (!out) throw new Error("bake missing");
         const linF = Array.from(out.fN.subarray(0, Track.count.get(eid) - 1));
 
-        expect(out.hash).not.toBe(easeHash); // the ease tag is in the bake hash
+        expect(out.hash).not.toBe(cubicHash); // the ease tag is in the bake hash
         let maxDiff = 0;
-        for (let i = 0; i < Math.min(easeF.length, linF.length); i++) {
-            maxDiff = Math.max(maxDiff, Math.abs(easeF[i] - linF[i]));
+        for (let i = 0; i < Math.min(cubicF.length, linF.length); i++) {
+            maxDiff = Math.max(maxDiff, Math.abs(cubicF[i] - linF[i]));
         }
         expect(maxDiff).toBeGreaterThan(0.05); // the smoothstep vs chord shape reaches the recovery
     });
@@ -1055,19 +1055,19 @@ describe("force easing + seeding (stage B)", () => {
         convertSection(state, sec); // → force
         const id = createForcePoint(state, sec, 10, 1);
         const h = createHistory();
-        expect(forceEase(state, id)).toBe(Easing.Ease); // the fresh-keyframe default
+        expect(forceEase(state, id)).toBe(Easing.Cubic); // the fresh-keyframe default
 
-        setForceEaseCmd(h, state, id, Easing.Sharp);
+        setForceEaseCmd(h, state, id, Easing.Quintic);
         expect(h.undo.length).toBe(1);
-        expect(forceEase(state, id)).toBe(Easing.Sharp);
+        expect(forceEase(state, id)).toBe(Easing.Quintic);
 
         undo(h, state);
-        expect(forceEase(state, id)).toBe(Easing.Ease);
+        expect(forceEase(state, id)).toBe(Easing.Cubic);
         redo(h, state);
-        expect(forceEase(state, id)).toBe(Easing.Sharp);
+        expect(forceEase(state, id)).toBe(Easing.Quintic);
 
         // a no-op set (same tag) records nothing.
-        setForceEaseCmd(h, state, id, Easing.Sharp);
+        setForceEaseCmd(h, state, id, Easing.Quintic);
         expect(h.undo.length).toBe(1);
     });
 

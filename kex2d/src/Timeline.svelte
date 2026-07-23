@@ -61,6 +61,7 @@ import {
     yGrow,
     zoomAt,
 } from "./timeline";
+import { latchAngle } from "./controls";
 import { autoTangent, Easing, type Offset, sampleForce } from "./profile";
 import { TangentMode } from "./spline";
 import {
@@ -602,7 +603,7 @@ function forceUp(): void {
 // ── force keyframe handle edit: the summoned inner layer (the force analogue of geo's
 // tangent edit). double-clicking a diamond enters handle-edit sub-mode (editor.forceEdit),
 // rendering the keyframe's in/out handles; a derived keyframe shows the FLAT ghost tangents
-// (Linear 0 · Ease 1/3 · Sharp 1/2 of the segment span), an explicit one its stored
+// (Linear 0 · Cubic 1/3 · Quintic 7/15 of the segment span), an explicit one its stored
 // offsets. a handle drag is a free gesture constrained only by the x-monotonicity clamp
 // (Blender's rule: handle Δs stays within the segment span so g(s) is a function); dragging
 // the first side of a derived keyframe seeds both from the flat tangents (no jump), Aligned
@@ -651,6 +652,13 @@ function derivedIn(pt: ForcePt, prev: ForcePt): Offset {
 let dragTan: { id: number; side: "in" | "out" } | null = $state(null);
 let tanGrabDx = 0; // knob screen x − cursor x at grab (relative tracking, no jump)
 let tanGrabDy = 0;
+// the unit keyframe→knob screen ray captured at grab — the gesture-start axis magnet
+// (the geo tangent-handle mechanism, `latchAngle`): while the dragged tip stays within
+// LATCH_PX perpendicular of it the drag latches to the start direction, so a flat ghost
+// stays flat and a single-axis pull keeps the other axis pinned. zero when the grab was
+// keyframe-coincident (a zero-length Linear ghost) — no magnet then, matching geo.
+let tanRayX = 0;
+let tanRayY = 0;
 function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -658,6 +666,11 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
     const rect = canvas.getBoundingClientRect();
     tanGrabDx = hnd.x - (e.clientX - rect.left);
     tanGrabDy = hnd.y - (e.clientY - rect.top);
+    const rx = hnd.x - markerX(pt.startS + pt.s);
+    const ry = hnd.y - yOf(pt.g);
+    const rl = Math.hypot(rx, ry);
+    tanRayX = rl > 1e-6 ? rx / rl : 0;
+    tanRayY = rl > 1e-6 ? ry / rl : 0;
     beginForceTangent(ecs, pt.id);
     dragTan = { id: pt.id, side: hnd.side };
     beginDrag(canvas, e.pointerId);
@@ -675,6 +688,14 @@ function applyTan(cx: number, cy: number): void {
     const { id, side } = dragTan;
     const pt = forcePts.find((p) => p.id === id);
     if (!pt) return;
+    // gesture-start axis magnet: latch the candidate knob onto the grab ray while it
+    // stays within the corridor (the geo tangent-handle `latchAngle`), so a mostly-
+    // single-axis drag keeps the other axis at its start — a flat ghost drags flat.
+    const kx = markerX(pt.startS + pt.s);
+    const ky = yOf(pt.g);
+    const latch = latchAngle(cx - kx, cy - ky, tanRayX, tanRayY);
+    cx = kx + latch.x;
+    cy = ky + latch.y;
     const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
     const idx = pts.findIndex((p) => p.id === id);
     const prev = idx > 0 ? pts[idx - 1] : null;
@@ -803,7 +824,7 @@ $effect(() => {
 const fmenuEase = $derived.by((): Easing => {
     void tick;
     const m = editor.forceMenu;
-    return m === null ? Easing.Ease : forceEase(ecs, m.id);
+    return m === null ? Easing.Cubic : forceEase(ecs, m.id);
 });
 // whether the following segment is Custom — bounded by an explicit handle on either side
 // (this keyframe's out or the next keyframe's in). DERIVED provenance, never a stored flag.
@@ -829,7 +850,7 @@ const fmenuHasTangent = $derived.by((): boolean => {
     const m = editor.forceMenu;
     return m !== null && forceTangent(ecs, m.id) !== undefined;
 });
-// the menu as data: Delete, then an Easing ▸ submenu (Linear | Ease | Sharp checked by the
+// the menu as data: Delete, then an Easing ▸ submenu (Linear | Cubic | Quintic checked by the
 // tag, plus a derived Custom indicator checked when explicit handles bound the segment), a
 // separator, the Handles summon toggle, and Reset (enabled only with explicit handles — the
 // way back up the layers).
@@ -848,8 +869,8 @@ const fmenuItems = $derived.by((): MenuItem[] => {
             label: "Easing",
             children: [
                 easeRow("Linear", Easing.Linear),
-                easeRow("Ease", Easing.Ease),
-                easeRow("Sharp", Easing.Sharp),
+                easeRow("Cubic", Easing.Cubic),
+                easeRow("Quintic", Easing.Quintic),
                 { separator: true },
                 // Custom is derived provenance, not a settable tag — a checked-when-active,
                 // inert indicator (the way TO custom is a handle drag, the way back is Reset).

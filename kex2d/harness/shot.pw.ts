@@ -689,12 +689,12 @@ test("force authoring flow", async ({ page }) => {
     // (the segment reads Custom), then undo both. exercises the __kex ease/tangent hooks
     // stage C landed against a keyframe that only exists because of stage B's seeding. ──
     await frameTimeline(page); // bring the whole section into view for the diamond DOM boxes
-    expect((await forceEases())[0]).toBe(1); // Easing.Ease — the fresh-seed default
+    expect((await forceEases())[0]).toBe(1); // Easing.Cubic — the fresh-seed default
     await page.locator(".fpt").first().click({ button: "right" }); // the leading seed (s=0)
     await expect(page.locator(".fmenu")).toBeVisible();
-    await clickFlyout(page, ".fmenu", "Easing", "Sharp");
+    await clickFlyout(page, ".fmenu", "Easing", "Quintic");
     await expect(page.locator(".fmenu")).toHaveCount(0);
-    await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Sharp
+    await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Quintic
 
     await page.locator(".fpt").first().dblclick(); // handle-edit sub-mode on the same seed
     await expect.poll(() => page.evaluate((): boolean => (window as any).__kex.forceEditing())).toBe(
@@ -717,7 +717,33 @@ test("force authoring flow", async ({ page }) => {
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await forceTangents())[0] === null).toBe(true);
     await page.keyboard.press("Control+z");
-    await expect.poll(async () => (await forceEases())[0]).toBe(1); // back to Ease
+    await expect.poll(async () => (await forceEases())[0]).toBe(1); // back to Cubic
+
+    // ── 2d. Handle-drag gesture-start axis magnet (F1, the geo `latchAngle` mechanism):
+    // the seed derives from Cubic, so its out-handle ghost is FLAT (dg=0) → a horizontal
+    // grab ray. dragging it far along x with a small vertical wander (|dy| < LATCH_PX = 8)
+    // stays latched to the ray, so the authored out-handle keeps dg≈0 — the "keep it flat"
+    // affordance. the big diagonal in 2c above left the corridor and freed dg, so this is
+    // the positive proof that the magnet fires (red without the latch: dy maps to ~0.08 g). ──
+    await page.keyboard.press("Escape"); // exit any lingering handle-edit, then re-enter clean
+    await page.locator(".fpt").first().dblclick();
+    await expect.poll(() =>
+        page.evaluate((): boolean => (window as any).__kex.forceEditing()),
+    ).toBe(true);
+    const flatKnob = await page.locator(".thit").first().boundingBox();
+    if (!flatKnob) throw new Error("seed handle knob not laid out for the magnet drag");
+    const fkx = flatKnob.x + flatKnob.width / 2;
+    const fky = flatKnob.y + flatKnob.height / 2;
+    await page.mouse.move(fkx, fky);
+    await page.mouse.down();
+    await page.mouse.move(fkx + 40, fky - 5, { steps: 6 }); // dx large, |dy| < LATCH_PX
+    await page.mouse.up();
+    const magnetTan = (await forceTangents())[0] as { outDs: number; outDg: number } | null;
+    if (!magnetTan) throw new Error("magnet drag authored no handle");
+    expect(Math.abs(magnetTan.outDg)).toBeLessThan(1e-4); // g pinned flat by the axis magnet
+    expect(magnetTan.outDs).toBeGreaterThan(0); // s grew — it moved, not a no-op
+    await page.keyboard.press("Control+z"); // revert so the flow resumes from the derived seed
+    await expect.poll(async () => (await forceTangents())[0] === null).toBe(true);
 
     // ── 3. Convert back to geo (context menu again) → destructive reset to the flat
     // two-node seed. ──
@@ -795,8 +821,8 @@ test("force easing menu flow", async ({ page }) => {
 
     // ── 2. Open Easing ▸ and set Linear — pointer-true through clickFlyout (a coordinate
     // click gated on elementFromPoint reachability, the context-submenu clip regression net).
-    // the leading keyframe's tag flips to Linear (0); Ease (default) is 1. ──
-    expect((await forceEases())[0]).toBe(1); // Easing.Ease default
+    // the leading keyframe's tag flips to Linear (0); Cubic (default) is 1. ──
+    expect((await forceEases())[0]).toBe(1); // Easing.Cubic default
     await clickFlyout(page, ".fmenu", "Easing", "Linear");
     await expect(page.locator(".fmenu")).toHaveCount(0); // picking a row closes the menu
     await expect.poll(async () => (await forceEases())[0]).toBe(0); // Easing.Linear
@@ -804,7 +830,7 @@ test("force easing menu flow", async ({ page }) => {
     // ── 2b. Right-click the CURVE SPAN between keyframe 0 (s=0) and keyframe 1 (the first
     // bump shoulder, s = 0.2·length) — a chart point, not a diamond — → the same LEADING
     // keyframe's menu (the Blender convention: a segment addresses the keyframe before it —
-    // a C-review coverage hole). Setting Sharp through it is a value change, not just a
+    // a C-review coverage hole). Setting Quintic through it is a value change, not just a
     // visibility check, so it proves the addressing rather than assuming it. the x target is
     // a fraction of the force clip's own box (s ≈ 0.1·length, inside the gap between the two
     // keyframes and clear of both fat hit-circles) — the same chart-click measurement the
@@ -825,10 +851,10 @@ test("force easing menu flow", async ({ page }) => {
     const midY = (kf0.y + kf0.height / 2 + (kf1.y + kf1.height / 2)) / 2;
     await page.mouse.click(midX, midY, { button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
-    await clickFlyout(page, ".fmenu", "Easing", "Sharp");
+    await clickFlyout(page, ".fmenu", "Easing", "Quintic");
     await expect(page.locator(".fmenu")).toHaveCount(0);
-    await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Sharp — keyframe 0 moved, not keyframe 1
-    expect((await forceEases())[1]).toBe(1); // keyframe 1's own tag (Ease, untouched) proves it
+    await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Quintic — keyframe 0 moved, not keyframe 1
+    expect((await forceEases())[1]).toBe(1); // keyframe 1's own tag (Cubic, untouched) proves it
 
     // ── 2c. A right-click in EMPTY chart space — over the force section horizontally but far
     // from the curve vertically — opens NO keyframe menu (the segment hit-target is the drawn

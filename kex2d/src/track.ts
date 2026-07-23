@@ -112,7 +112,7 @@ function writeTangent(eid: number, tan: Tangent | undefined): void {
  *  normal force (g). the timeline places, drags, and deletes these; the bake gathers
  *  each section's points (sorted by s) into a dense profile (`profile.forceProfile`).
  *  `ease` is the keyframe's `Easing` tag (the convenient middle layer) — it governs
- *  the *following* segment's derived flat tangents (default `Easing.Ease`, the "no
+ *  the *following* segment's derived flat tangents (default `Easing.Cubic`, the "no
  *  stored state" convention). `tmode` mirrors geo's `Handle.tmode`: 0 = no explicit
  *  handles (derive from `ease`), else a `TangentMode` for the summoned inner layer, in
  *  which case `tin`/`tout` hold the explicit in/out handle **offsets** ((Δs, Δg) as
@@ -135,7 +135,7 @@ const FORCE_TANGENT_NONE = 0;
 
 /** the easing tag a fresh force keyframe gets — the FVD++/Planet-Coaster S-transition
  *  feel, and the "no stored state" default (`profile.ts` reads an absent tag as this). */
-const FORCE_EASE_DEFAULT = Easing.Ease;
+const FORCE_EASE_DEFAULT = Easing.Cubic;
 
 /** a force keyframe's explicit handles — the summoned inner layer, mirroring geo's
  *  `Tangent`. `mode` is the `TangentMode` (which handle drag rotates/mirrors the other);
@@ -909,7 +909,7 @@ export function forceTangent(ecs: State, id: number): ForceTangent | undefined {
     return eid === null ? undefined : readForceTangent(eid);
 }
 
-/** a force keyframe's easing tag by stable id (default `Easing.Ease`). */
+/** a force keyframe's easing tag by stable id (default `Easing.Cubic`). */
 export function forceEase(ecs: State, id: number): Easing {
     const eid = forceAt(ecs, id);
     return eid === null ? FORCE_EASE_DEFAULT : (Force.ease.get(eid) as Easing);

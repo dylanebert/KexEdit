@@ -17,10 +17,10 @@
  *  the derived tangents are **flat** (horizontal in g) — an S-transition between
  *  held values, C1 at every keyframe by construction (both sides flat → g'(s)=0
  *  there). their length comes from the one influence table: Linear = 0 (the bezier
- *  degenerates to the chord, so g(s) is exactly linear), Ease = 1/3 (s(t) is then
- *  linear in t, so g(s) is exactly smoothstep), Sharp = 1/2 (the quintic feel;
- *  center slope grows as influence rises). Ease is the default (FVD++/Planet
- *  Coaster transition feel).
+ *  degenerates to the chord, so g(s) is exactly linear), Cubic = 1/3 (s(t) is then
+ *  linear in t, so g(s) is exactly smoothstep), Quintic = 7/15 (center slope 15/8,
+ *  matched to the true quintic; slope grows as influence rises). Cubic is the
+ *  default (FVD++/Planet Coaster transition feel).
  *
  *  the displayed curve is re-recovered from the swept geometry, so a keyframe sits
  *  O(ds) off these authored values — expected, not a bug (the one-display-path law). */
@@ -30,27 +30,29 @@
  *  below): the honest span of FVD++'s degree ladder collapsed to one axis. */
 export enum Easing {
     Linear = 0,
-    Ease = 1,
-    Sharp = 2,
+    Cubic = 1,
+    Quintic = 2,
 }
 
 /** derived-flat-tangent influence per easing tag: the fraction of the segment
- *  span each flat handle reaches along s. these are the exact ends of the FVD++
- *  ladder, not tuned values — LINEAR degenerates the bezier to the chord (exactly
- *  linear g(s)); EASE makes s(t) linear so g(s) is exactly smoothstep = x²(3−2x);
- *  SHARP = ½ is the quintic feel (both s-handles meet at the segment midpoint). */
+ *  span each flat handle reaches along s. these are derived from the FVD++ ladder,
+ *  not tuned values — LINEAR degenerates the bezier to the chord (exactly linear
+ *  g(s)); CUBIC makes s(t) linear so g(s) is exactly smoothstep = x²(3−2x); QUINTIC
+ *  = 7/15 matches the true quintic smootherstep (6x⁵−15x⁴+10x³): a flat-tangent
+ *  cubic bezier's center slope is 1/(1−i), the quintic's is g'(½) = 15/8, so
+ *  1/(1−i) = 15/8 → i = 7/15 (slope → ∞ as i → 1, so the family spans the ladder). */
 const LINEAR_INFLUENCE = 0;
-const EASE_INFLUENCE = 1 / 3;
-const SHARP_INFLUENCE = 1 / 2;
+const CUBIC_INFLUENCE = 1 / 3;
+const QUINTIC_INFLUENCE = 7 / 15;
 
 function influence(ease: Easing): number {
     switch (ease) {
         case Easing.Linear:
             return LINEAR_INFLUENCE;
-        case Easing.Sharp:
-            return SHARP_INFLUENCE;
+        case Easing.Quintic:
+            return QUINTIC_INFLUENCE;
         default:
-            return EASE_INFLUENCE;
+            return CUBIC_INFLUENCE;
     }
 }
 
@@ -77,7 +79,7 @@ export interface Offset {
 }
 
 /** a force keyframe: a demanded normal force `g` at arclength `s` (m). `ease`
- *  governs the *following* segment's derived flat tangents (default `Easing.Ease`
+ *  governs the *following* segment's derived flat tangents (default `Easing.Cubic`
  *  when absent — the "no stored state" convention). `in`/`out` are the summoned
  *  explicit handles; a present side substitutes its stored offset for the derived
  *  tangent at the seam, per-keyframe and per-side. */
@@ -129,7 +131,7 @@ function segment(a: ForcePoint, b: ForcePoint): Seg {
     // the leading keyframe's tag governs the whole segment: both derived flat
     // handles take `a.ease`'s influence via `autoTangent`. an explicit stored
     // handle on either side overrides its own side verbatim.
-    const ease = a.ease ?? Easing.Ease;
+    const ease = a.ease ?? Easing.Cubic;
     const out = a.out ?? autoTangent(ease, span, "out");
     const inn = b.in ?? autoTangent(ease, span, "in");
     let p1s = a.s + out.ds;
