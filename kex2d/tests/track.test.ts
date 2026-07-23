@@ -13,6 +13,7 @@ import {
     exitWorld,
     extend,
     forceEase,
+    forcePointState,
     type ForceTangent,
     forceTangent,
     Handle,
@@ -45,6 +46,7 @@ import {
 } from "../src/track";
 import {
     appendSection as appendSectionCmd,
+    beginForceMove,
     beginForceTangent,
     commit,
     createHistory,
@@ -1106,5 +1108,39 @@ describe("force easing + seeding (stage B)", () => {
         expect(forceTangent(state, id)).toBeUndefined();
         setForceTangent(state, id, tan); // restore for the round-trip assertion
         expect(forceTangent(state, id)).toEqual(tan);
+    });
+
+    test("history: a position drag (beginForceMove) preserves explicit handles through undo/redo (the same-vs-restore asymmetry)", () => {
+        // beginForceMove's no-op guard (`same`) compares only s/g, but its restore writes the
+        // FULL snapshot (s/g + ease + tangent) on undo/redo. a position drag must never touch
+        // the handles, but the restore path could still clobber them as a side effect if the
+        // snapshot/restore pair ever drifted — pin it explicitly (B-review).
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force
+        const id = createForcePoint(state, sec, 10, 1);
+        // f32-exact offsets (multiples of 1/4) so the round-trip is byte-identical, not just close.
+        const tan: ForceTangent = {
+            mode: TangentMode.Free,
+            in: { ds: -1, dg: 0.25 },
+            out: { ds: 1, dg: -0.25 },
+        };
+        setForceTangent(state, id, tan); // author explicit handles OUTSIDE the drag gesture
+        const h = createHistory();
+
+        beginForceMove(state, id);
+        setForcePoint(state, id, 14, 1.5); // the live drag writes only s/g
+        commit(h);
+        expect(h.undo.length).toBe(1);
+        expect(forcePointState(state, id)?.s).toBe(14);
+        expect(forceTangent(state, id)).toEqual(tan); // the drag itself left the handles alone
+
+        undo(h, state);
+        expect(forcePointState(state, id)?.s).toBe(10); // position reverted
+        expect(forceTangent(state, id)).toEqual(tan); // handles survived the undo
+
+        redo(h, state);
+        expect(forcePointState(state, id)?.s).toBe(14); // position re-applied
+        expect(forceTangent(state, id)).toEqual(tan); // handles survived the redo
     });
 });

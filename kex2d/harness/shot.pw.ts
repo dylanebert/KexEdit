@@ -63,6 +63,32 @@ async function clickFlyout(page: Page, menu: string, parent: string, item: strin
     await page.mouse.click(x, y); // coordinate click a real pointer can land
 }
 
+// Pointer-true click on a TOP-LEVEL menu row (no parent hover needed — the row isn't behind a
+// flyout). Same elementFromPoint-gated coordinate click as clickFlyout, so a Delete/Reset row
+// gets the same regression net a submenu row does: a selector `.click()` fires a handler on a
+// clipped, humanly-unreachable element just as readily here as behind a flyout.
+async function clickMenuItem(page: Page, menu: string, item: string): Promise<void> {
+    // not exact — a row can carry a trailing shortcut span ("Delete Del"), so match by prefix.
+    const target = page.locator(menu).getByRole("menuitem", { name: item });
+    await expect(target).toBeVisible();
+    const b = await target.boundingBox();
+    if (!b) throw new Error(`menu item "${item}" not laid out`);
+    const x = b.x + b.width / 2;
+    const y = b.y + b.height / 2;
+    const reachable = await page.evaluate(
+        (p: { x: number; y: number; label: string }) => {
+            const el = document.elementFromPoint(p.x, p.y);
+            return (el?.closest(".menu-item")?.textContent?.trim().startsWith(p.label)) ?? false;
+        },
+        { x, y, label: item },
+    );
+    expect(
+        reachable,
+        `menu item "${item}" must be hit-testable at its own center (not clipped out of paint)`,
+    ).toBe(true);
+    await page.mouse.click(x, y);
+}
+
 test("geo authoring flow", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -557,6 +583,11 @@ test("force authoring flow", async ({ page }) => {
     const kind = () => page.evaluate((): number => (window as any).__kex.kind());
     const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
     const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
+    const forces = () => page.evaluate((): { s: number; g: number }[] => (window as any).__kex.forces());
+    const forceEases = () => page.evaluate((): number[] => (window as any).__kex.forceEases());
+    const forceTangents = () =>
+        page.evaluate((): (null | object)[] => (window as any).__kex.forceTangents());
+    const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
     // seed a shaped geo track so the convert inherits a real arclength.
@@ -565,19 +596,27 @@ test("force authoring flow", async ({ page }) => {
     expect(await kind()).toBe(0); // TrackKind.Geo
 
     // ── 1. Convert to force via the real section context menu (right-click the clip →
-    // "Convert to Force") → empty 1g profile, no nodes. ──
+    // "Convert to Force") → stage B seeds two continuation keyframes at the recovered entry
+    // force, not an empty profile. this is the FIRST (and only) section, so its entry sample
+    // is 0 — no upstream edge — and the seed falls back to DEFAULT_G (1g): assert the seed
+    // CONTRACT itself (two keys at (0, F_entry) and (length, F_entry)), not just the count. ──
     await page.locator(".clip").first().click({ button: "right" });
     await page.getByRole("menuitem", { name: "Convert to Force" }).click();
     await expect.poll(kind).toBe(1); // TrackKind.Force
     await expect.poll(nodeCount).toBe(0);
-    expect(await forceCount()).toBe(0);
+    await expect.poll(forceCount).toBe(2); // the two seeds (stage B), not an empty profile
+    expect(await forces()).toEqual([
+        { s: 0, g: 1 }, // (0, F_entry) — F_entry = DEFAULT_G, the track-start fallback
+        { s: 24, g: 1 }, // (length, F_entry) — length = DEFAULT_FORCE_LEN (EXTEND_DIST)
+    ]);
     await expect.poll(tTotal).toBeGreaterThan(0); // the flat force track baked
     await page.waitForTimeout(SETTLE_MS);
     await page.screenshot({ path: join(OUT, "force-1-empty.png") });
 
-    // ── 2. Author an airtime bump by force points → the recovered curve reacts. ──
+    // ── 2. Author an airtime bump by force points → the recovered curve reacts. seedForceBump
+    // adds 3 points on top of the 2 seeds → 5. ──
     await page.evaluate(() => (window as any).__kex.seedForceBump());
-    await expect.poll(forceCount).toBe(3);
+    await expect.poll(forceCount).toBe(5);
     await page.waitForTimeout(SETTLE_MS);
     await page.screenshot({ path: join(OUT, "force-2-bump.png") });
     const vp = page.viewportSize();
@@ -589,14 +628,19 @@ test("force authoring flow", async ({ page }) => {
     }
 
     // ── 2b. Double-click the chart inserts a point ON the authored profile (the
-    // envelope-insertion identity): left of the first point the profile holds the
-    // shoulder's exact 1g, so the new point's g must be 1 regardless of the cursor's
-    // y (which lands well off 1g here). then undo removes it. real pixels. ──
+    // envelope-insertion identity): between the leading seed (s=0) and the first bump
+    // shoulder (s≈4.8) the profile holds a flat 1g, so the new point's g must be 1 regardless
+    // of the cursor's y (which lands well off 1g here). the seeds now flank that gap, so the
+    // target x is measured off the force clip's own box (10% in), clear of both keyframes'
+    // fat hit-circles, rather than a fixed offset from the dock edge. identify the CREATED
+    // point (not just rows[0], which is now always the s=0 seed) by diffing before/after. ──
     const body = page.locator(".dock .body");
     const box = await body.boundingBox();
-    if (!box) throw new Error("timeline body not laid out");
-    await page.mouse.dblclick(box.x + 60, box.y + box.height * 0.35);
-    await expect.poll(forceCount).toBe(4);
+    const fcb = await page.locator(".clip").first().boundingBox();
+    if (!box || !fcb) throw new Error("timeline body / force clip not laid out");
+    const before6 = await forces();
+    await page.mouse.dblclick(fcb.x + fcb.width * 0.1, box.y + box.height * 0.35);
+    await expect.poll(forceCount).toBe(6);
     // the create selects the point, so its popover is up — capture it for the feel pass
     // (let its 120ms fade-in finish, or the shot catches a ghost).
     await page.waitForTimeout(300);
@@ -606,12 +650,47 @@ test("force authoring flow", async ({ page }) => {
             clip: { x: 0, y: vp.height - 340, width: vp.width, height: 340 },
         });
     }
-    const rows = await page.evaluate(
-        (): { s: number; g: number }[] => (window as any).__kex.forces(),
-    );
-    expect(rows[0].g).toBeCloseTo(1, 5); // resolved on the profile, not at the cursor
+    const after6 = await forces();
+    const created = after6.find((p) => !before6.some((b) => Math.abs(b.s - p.s) < 1e-6));
+    if (!created) throw new Error("the newly inserted point wasn't found by s-diff");
+    expect(created.g).toBeCloseTo(1, 5); // resolved on the profile, not at the cursor
     await page.keyboard.press("Control+z");
-    await expect.poll(forceCount).toBe(3);
+    await expect.poll(forceCount).toBe(5);
+
+    // ── 2c. Seeded-keys extension (stage E): set the leading seed's easing via the real,
+    // pointer-true keyframe menu, then drag its out-handle to author an explicit tangent
+    // (the segment reads Custom), then undo both. exercises the __kex ease/tangent hooks
+    // stage C landed against a keyframe that only exists because of stage B's seeding. ──
+    await frameTimeline(page); // bring the whole section into view for the diamond DOM boxes
+    expect((await forceEases())[0]).toBe(1); // Easing.Ease — the fresh-seed default
+    await page.locator(".fpt").first().click({ button: "right" }); // the leading seed (s=0)
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await clickFlyout(page, ".fmenu", "Easing", "Sharp");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Sharp
+
+    await page.locator(".fpt").first().dblclick(); // handle-edit sub-mode on the same seed
+    await expect.poll(() => page.evaluate((): boolean => (window as any).__kex.forceEditing())).toBe(
+        true,
+    );
+    const seedKnob = await page.locator(".thit").first().boundingBox(); // its one out-handle
+    if (!seedKnob) throw new Error("seed handle knob not laid out");
+    await page.mouse.move(seedKnob.x + seedKnob.width / 2, seedKnob.y + seedKnob.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+        seedKnob.x + seedKnob.width / 2 + 24,
+        seedKnob.y + seedKnob.height / 2 - 40,
+        { steps: 6 },
+    );
+    await page.mouse.up();
+    await expect.poll(async () => (await forceTangents())[0] !== null).toBe(true);
+    expect(await undoDepth()).toBeGreaterThan(0);
+
+    // undo the handle drag, then the easing set — both revert cleanly.
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await forceTangents())[0] === null).toBe(true);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await forceEases())[0]).toBe(1); // back to Ease
 
     // ── 3. Convert back to geo (context menu again) → destructive reset to the flat
     // two-node seed. ──
@@ -622,22 +701,27 @@ test("force authoring flow", async ({ page }) => {
     expect(await forceCount()).toBe(0);
     await page.screenshot({ path: join(OUT, "force-3-geo.png") });
 
-    // ── 4. Undo the convert → the force track + its points restored byte-identical. ──
+    // ── 4. Undo the convert → the force track + its points restored byte-identical (the
+    // two seeds + the three bump points — the easing/handle edits above were already undone,
+    // so this is exactly the pre-convert-to-geo state). ──
     await page.keyboard.press("Control+z");
     await expect.poll(kind).toBe(1);
-    await expect.poll(forceCount).toBe(3); // the three points came back
+    await expect.poll(forceCount).toBe(5);
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
-// Drive the FORCE EASING MENU + HANDLE-EDIT flow (kex2d-force-ux stage C): seed a force
-// section with three keyframes → RIGHT-CLICK a diamond for the keyframe menu → open the
-// Easing ▸ submenu and set Linear POINTER-TRUE (clickFlyout — the regression net for the
-// context-submenu clip class) → assert the leading keyframe's tag flipped → DOUBLE-CLICK a
-// diamond to summon its handles (the diamond hit beats insertion) → drag a handle to author
-// an explicit tangent (the segment reads Custom) → Reset via the menu clears it back to the
-// derived easing. Every menu interaction is a real pointer event; __kex is read only for
-// assertions.
+// Drive the FORCE EASING MENU + HANDLE-EDIT flow (kex2d-force-ux stage C, extended at stage
+// E): seed a force section with keyframes → RIGHT-CLICK a diamond for the keyframe menu →
+// open the Easing ▸ submenu and set Linear POINTER-TRUE (clickFlyout — the regression net for
+// the context-submenu clip class) → assert the leading keyframe's tag flipped → RIGHT-CLICK
+// the CURVE SPAN between two keyframes (not a diamond) → the same leading-keyframe menu (the
+// segment-span hit-target, a C-review coverage hole) → DOUBLE-CLICK a diamond to summon its
+// handles (the diamond hit beats insertion) → drag a handle to author an explicit tangent (the
+// segment reads Custom) → reopen the menu and assert the Custom row reads checked (another
+// C-review hole) → Reset via the menu, pointer-true (`clickMenuItem`), clears it back to the
+// derived easing → Delete, also pointer-true, removes the keyframe. Every menu interaction is
+// a real pointer event; __kex is read only for assertions.
 test("force easing menu flow", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -690,14 +774,38 @@ test("force easing menu flow", async ({ page }) => {
     await expect(page.locator(".fmenu")).toHaveCount(0); // picking a row closes the menu
     await expect.poll(async () => (await forceEases())[0]).toBe(0); // Easing.Linear
 
-    // ── 3. Double-click the crest (interior keyframe) → handle-edit sub-mode summons its two
-    // handles (a diamond hit beats the chart's insertion double-click). ──
+    // ── 2b. Right-click the CURVE SPAN between keyframe 0 (s=0) and keyframe 1 (the first
+    // bump shoulder, s = 0.2·length) — a chart point, not a diamond — → the same LEADING
+    // keyframe's menu (the Blender convention: a segment addresses the keyframe before it —
+    // a C-review coverage hole). Setting Sharp through it is a value change, not just a
+    // visibility check, so it proves the addressing rather than assuming it. the x target is
+    // a fraction of the force clip's own box (s ≈ 0.1·length, inside the gap between the two
+    // keyframes and clear of both fat hit-circles) — the same chart-click measurement the
+    // other flows use, not a hand-derived diamond midpoint. `openForceMenu` also SELECTS its
+    // target (keyframe 0, from step 1), so its `.ptip` popover is still floating over the
+    // chart near it — Escape deselects and closes the popover first, or it eats the click. ──
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".ptip")).toHaveCount(0);
+    const fcb = await page.locator(".clip").first().boundingBox();
+    const chartBody = await page.locator(".dock .body").boundingBox();
+    if (!fcb || !chartBody) throw new Error("force clip / timeline body not laid out");
+    const midX = fcb.x + fcb.width * 0.1;
+    const midY = chartBody.y + chartBody.height * 0.5;
+    await page.mouse.click(midX, midY, { button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await clickFlyout(page, ".fmenu", "Easing", "Sharp");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Sharp — keyframe 0 moved, not keyframe 1
+    expect((await forceEases())[1]).toBe(1); // keyframe 1's own tag (Ease, untouched) proves it
+
+    // ── 3. Double-click an interior keyframe → handle-edit sub-mode summons its two handles
+    // (a diamond hit beats the chart's insertion double-click). ──
     await page.locator(".fpt").nth(1).dblclick();
     await expect.poll(forceEditing).toBe(true);
     await expect(page.locator(".thit")).toHaveCount(2); // in + out handles (an interior keyframe)
     await expect.poll(forceCount).toBe(nPts); // the double-click summoned, it did NOT insert
 
-    // ── 4. Drag a handle → the crest gains an explicit tangent (the segment reads Custom).
+    // ── 4. Drag a handle → the keyframe gains an explicit tangent (the segment reads Custom).
     // located by its real DOM box (the .thit grab circle), a real canvas pointer drag. ──
     const knob = await page.locator(".thit").first().boundingBox();
     if (!knob) throw new Error("handle knob not laid out");
@@ -713,12 +821,34 @@ test("force easing menu flow", async ({ page }) => {
             clip: { x: 0, y: (page.viewportSize()?.height ?? 0) - 340, width: page.viewportSize()?.width ?? 0, height: 340 },
         });
 
-    // ── 5. Reset via the keyframe menu clears the explicit tangent back to the derived
-    // easing (the way back up the layers is one click). ──
+    // ── 4b. Reopen the menu on the now-Custom keyframe → its Easing ▸ submenu's Custom row
+    // reads checked (derived provenance, not a settable tag — a C-review coverage hole: the
+    // prior test only exercised setting a named row, never the Custom indicator itself). ──
     await page.locator(".fpt").nth(1).click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
-    await page.locator(".fmenu").getByRole("menuitem", { name: "Reset" }).click();
+    await page.locator(".fmenu").getByRole("menuitem", { name: "Easing", exact: true }).hover();
+    const customRow = page.locator(".fmenu").getByRole("menuitem", { name: "Custom", exact: true });
+    await expect(customRow).toBeVisible();
+    await expect(customRow).toHaveClass(/checked/);
+    await page.keyboard.press("Escape"); // dismiss without picking a row (Custom is inert anyway)
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+
+    // ── 5. Reset via the keyframe menu, pointer-true (`clickMenuItem` — the same
+    // elementFromPoint-gated coordinate click as a flyout row, a C-review coverage hole:
+    // this row was previously driven by a selector `.click()`), clears the explicit tangent
+    // back to the derived easing (the way back up the layers is one click). ──
+    await page.locator(".fpt").nth(1).click({ button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await clickMenuItem(page, ".fmenu", "Reset");
     await expect.poll(async () => (await forceTangents())[1] === null).toBe(true);
+
+    // ── 6. Delete, also pointer-true, removes the keyframe (never previously exercised on
+    // this menu — the other C-review coverage hole). ──
+    const beforeDelete = await forceCount();
+    await page.locator(".fpt").nth(1).click({ button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await clickMenuItem(page, ".fmenu", "Delete");
+    await expect.poll(forceCount).toBe(beforeDelete - 1);
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
@@ -960,11 +1090,13 @@ test("playhead parking flow", async ({ page }) => {
     if (!bb) throw new Error("timeline body not laid out");
 
     // ── 1. Author a keyframe by double-clicking the chart over the force section — the
-    // handle the later re-time will drag. ──
+    // handle the later re-time will drag. appendSection already seeded two continuation
+    // keyframes (stage B) at the section's entry/exit; this adds a third, interior one. ──
     const fcb = await page.locator(".clip").nth(1).boundingBox(); // the force clip
     if (!fcb) throw new Error("force clip not laid out");
+    await expect.poll(async () => (await forceCounts())[1]).toBe(2); // the two seeds
     await page.mouse.dblclick(fcb.x + fcb.width / 2, bb.y + bb.height * 0.5);
-    await expect.poll(async () => (await forceCounts())[1]).toBe(1);
+    await expect.poll(async () => (await forceCounts())[1]).toBe(3); // + the authored keyframe
 
     // ── 2. Park the playhead over the force section via a real RULER scrub — a click in
     // the ruler band (above the clip lane) at the force section's x. it parks (held) at
@@ -977,10 +1109,12 @@ test("playhead parking flow", async ({ page }) => {
     if (vp) await page.screenshot({ path: join(OUT, "park-1-anchored.png"), clip: strip() });
 
     // ── 3. Drag the keyframe's g (vertical drag on its fat hit circle) → the force
-    // profile changes, the bake re-times (tTotal shifts). ──
+    // profile changes, the bake re-times (tTotal shifts). three points now exist (the two
+    // seeds + the authored one); grab the AUTHORED one — the middle by s (and so by x), sorted
+    // between the entry seed (s=0) and the exit seed (s=length). ──
     const fhit = page.locator(".fhit");
-    await expect(fhit).toHaveCount(1);
-    const hb = await fhit.boundingBox();
+    await expect(fhit).toHaveCount(3);
+    const hb = await fhit.nth(1).boundingBox();
     if (!hb) throw new Error("force point hit target not laid out");
     await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
     await page.mouse.down();
@@ -1112,25 +1246,29 @@ test("mixed layout dogfood flow", async ({ page }) => {
 
     // ── 2. Author an airtime hill on the force section by real double-clicks over its arc
     // — three points (1g shoulders + a crest), the gotcha's minimum for a dip (one point
-    // is a constant, so it takes three to make a localized bump). ──
+    // is a constant, so it takes three to make a localized bump). appendSection already
+    // seeded two continuation keyframes (stage B) at the section's entry/exit → 2 + 3 = 5. ──
     const fcb = await page.locator(".clip").nth(1).boundingBox();
     if (!fcb) throw new Error("force clip not laid out");
+    await expect.poll(async () => (await forceCounts())[1]).toBe(2); // the two seeds
     const cy = bb.y + bb.height * 0.5;
     for (const f of [0.25, 0.5, 0.75]) await page.mouse.dblclick(fcb.x + fcb.width * f, cy);
-    await expect.poll(async () => (await forceCounts())[1]).toBe(3);
+    await expect.poll(async () => (await forceCounts())[1]).toBe(5); // + the three hill points
 
-    // pull the crest (the middle point by x) below 1g via its fat hit target → an airtime
-    // dip that re-times the ride (the bake's total time shifts).
+    // pull the crest below 1g via its fat hit target → an airtime dip that re-times the
+    // ride (the bake's total time shifts). five points now sort by x as: entry seed, the two
+    // 1g shoulders flanking the crest, the crest itself, exit seed — the crest is the MIDDLE
+    // of the five, not the middle of the three authored points.
     const tBefore = await tTotal();
     const hits = page.locator(".fhit");
-    await expect(hits).toHaveCount(3);
+    await expect(hits).toHaveCount(5);
     const centers = await hits.evaluateAll((els) =>
         els
             .map((el) => el.getBoundingClientRect())
             .map((r) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 }))
             .sort((a, b) => a.x - b.x),
     );
-    const crest = centers[1];
+    const crest = centers[2];
     await page.mouse.move(crest.x, crest.y);
     await page.mouse.down();
     await page.mouse.move(crest.x, crest.y + 22, { steps: 10 });
