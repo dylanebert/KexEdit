@@ -1,5 +1,36 @@
 import { describe, expect, test } from "bun:test";
-import { flyoutFit } from "../src/menu";
+import { flyoutFit, menuFit } from "../src/menu";
+
+describe("menuFit — root context menu viewport fit (flip up/left, clamp)", () => {
+    const Vp = { w: 1280, h: 800 };
+    const size = { w: 132, h: 160 };
+    const pad = 4;
+
+    test("opens down-right at the cursor when it fits", () => {
+        expect(menuFit({ x: 200, y: 100 }, size, Vp)).toEqual({ x: 200, y: 100 });
+    });
+    test("flips UP (bottom edge at the anchor) when opening down would clip the bottom", () => {
+        // y=780 → bottom 940 > 796; room above (780-160=620 ≥ 4) → open upward
+        expect(menuFit({ x: 200, y: 780 }, size, Vp)).toEqual({ x: 200, y: 620 });
+    });
+    test("flips LEFT (right edge at the anchor) when opening right would clip the right edge", () => {
+        // x=1240 → right 1372 > 1276; room left (1240-132=1108 ≥ 4) → open leftward
+        expect(menuFit({ x: 1240, y: 100 }, size, Vp)).toEqual({ x: 1108, y: 100 });
+    });
+    test("flips BOTH axes near the bottom-right corner (the reported-bug corner)", () => {
+        expect(menuFit({ x: 1240, y: 780 }, size, Vp)).toEqual({ x: 1108, y: 620 });
+    });
+    test("a menu taller than the viewport keeps its top-left visible, clipping the bottom", () => {
+        const tall = { w: 132, h: 900 };
+        // no room above (780-900 < 4) → no flip; clamp pins the top at the pad, bottom clips
+        expect(menuFit({ x: 200, y: 780 }, tall, Vp)).toEqual({ x: 200, y: pad });
+    });
+    test("a menu wider than the viewport keeps its left edge at the pad", () => {
+        const wide = { w: 1300, h: 160 };
+        // no room left (1270-1300 < 4) → no flip; clamp pins x at the pad
+        expect(menuFit({ x: 1270, y: 100 }, wide, Vp)).toEqual({ x: pad, y: 100 });
+    });
+});
 
 describe("flyoutFit — submenu flyout viewport fit (all four edges)", () => {
     const Vp = { w: 1000, h: 800 };

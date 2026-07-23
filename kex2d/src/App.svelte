@@ -25,7 +25,7 @@ import {
     trimTrack,
 } from "./history";
 import Menu from "./Menu.svelte";
-import type { MenuItem } from "./menu";
+import { fitMenu, type MenuItem } from "./menu";
 import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "./radial";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { stitchNode } from "./tangents";
@@ -698,11 +698,11 @@ $effect(() => {
 {/if}
 
 <!-- the node context menu (Handles toggle + a Tangents ▸ submenu): summoned by right-click on
-     any pickable node, an instance of the shared menu language (Menu.svelte) positioned at the
-     cursor (its top-left corner, so it never covers the invoker point) — the same look +
-     placement as the section context menu below. -->
+     any pickable node, an instance of the shared menu language (Menu.svelte) placed at the cursor
+     by `fitMenu` — its top-left at the point (never covering the invoker), flipping up/left to
+     stay in the viewport near an edge — the same look + placement as the section context menu. -->
 {#if nmenu}
-    <div class="nodemenu menu" style="left: {nmenu.x}px; top: {nmenu.y}px" role="menu" aria-label="Node">
+    <div class="nodemenu menu" use:fitMenu={{ x: nmenu.x, y: nmenu.y }} role="menu" aria-label="Node">
         <Menu items={nodeItems} onclose={closeNodeMenu} />
     </div>
 {/if}
@@ -712,7 +712,7 @@ $effect(() => {
      is a single contextual item naming the target kind (a section is one of two kinds, so
      the flip is unambiguous) — one click, no submenu. -->
 {#if ctx}
-    <div class="ctxmenu menu" style="left: {ctx.x}px; top: {ctx.y}px" role="menu">
+    <div class="ctxmenu menu" use:fitMenu={{ x: ctx.x, y: ctx.y }} role="menu">
         <Menu items={ctxItems} onclose={closeContext} />
     </div>
 {/if}

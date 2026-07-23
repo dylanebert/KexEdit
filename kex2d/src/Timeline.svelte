@@ -4,7 +4,7 @@ import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
 import { kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
-import type { MenuItem } from "./menu";
+import { fitMenu, type MenuItem } from "./menu";
 import {
     beginDrag,
     closeForceMenu,
@@ -2044,7 +2044,7 @@ onMount(() => {
      shared menu language (Menu.svelte) at the cursor. rendered at the component root so it
      floats over the dock; the same look + placement as the section context menu. -->
 {#if fmenu}
-    <div class="fmenu menu" style="left: {fmenu.x}px; top: {fmenu.y}px" role="menu" aria-label="Force keyframe">
+    <div class="fmenu menu" use:fitMenu={{ x: fmenu.x, y: fmenu.y }} role="menu" aria-label="Force keyframe">
         <Menu items={fmenuItems} onclose={closeForceMenu} />
     </div>
 {/if}

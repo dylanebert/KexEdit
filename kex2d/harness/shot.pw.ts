@@ -899,6 +899,81 @@ test("force easing menu flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
+// Regression net for the context-menu OVERFLOW class (kex2d-force-ux UX fix): a right-click on a
+// keyframe near the BOTTOM of the timeline used to open its menu extending downward PAST the
+// viewport, the bottom rows unreachable. `fitMenu` (menu.ts) now flips the menu up (and left near
+// the right edge) so the whole box stays in the window. This drives it pointer-true: right-click
+// the lowest-on-screen keyframe (its downward-opening menu is the one that overflowed), assert the
+// `.fmenu` bounding rect fits every viewport edge, then open its Easing ▸ flyout from that
+// (up-flipped) menu and assert the SUBMENU fits too — a flyout off a bottom-anchored menu is the
+// second overflow surface. A selector `.click()` proves nothing here; a real box that spills past
+// the viewport is exactly what a human pointer can't reach, so this reads the laid-out rect.
+test("context menu stays in the viewport near the bottom edge", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+
+    // seed a force section with an airtime bump → keyframes spanning the g-range, so the 0g crest
+    // sits LOW in the chart (near the viewport bottom, where its menu would overflow).
+    await page.evaluate(() => (window as any).__kex.seedForceBump());
+    await expect.poll(forceCount).toBeGreaterThanOrEqual(3);
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await frameTimeline(page); // whole force section on-screen so every diamond has a DOM box
+    const nPts = await forceCount();
+    await expect(page.locator(".fpt")).toHaveCount(nPts);
+
+    const vp = page.viewportSize();
+    if (!vp) throw new Error("no viewport size");
+
+    // find the lowest-on-screen keyframe (largest y = nearest the bottom edge) — its
+    // downward-opening context menu is the one the flip fix rescues.
+    const fpts = page.locator(".fpt");
+    let lowest = 0;
+    let lowestY = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < nPts; i++) {
+        const b = await fpts.nth(i).boundingBox();
+        if (b && b.y + b.height / 2 > lowestY) {
+            lowestY = b.y + b.height / 2;
+            lowest = i;
+        }
+    }
+    // the low keyframe really is near the bottom — otherwise this test can't exercise the overflow.
+    expect(lowestY).toBeGreaterThan(vp.height * 0.6);
+
+    await fpts.nth(lowest).click({ button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    const mb = await page.locator(".fmenu").boundingBox();
+    if (!mb) throw new Error("force keyframe menu not laid out");
+    // the whole menu box sits inside the window on all four edges (the bug: mb.y + mb.height > vp.height).
+    expect(mb.y + mb.height).toBeLessThanOrEqual(vp.height);
+    expect(mb.x + mb.width).toBeLessThanOrEqual(vp.width);
+    expect(mb.y).toBeGreaterThanOrEqual(0);
+    expect(mb.x).toBeGreaterThanOrEqual(0);
+
+    // open the Easing ▸ flyout from the (up-flipped) menu → the submenu must fit too.
+    await page.locator(".fmenu").getByRole("menuitem", { name: "Easing", exact: true }).hover();
+    const sub = page.locator(".fmenu .submenu");
+    await expect(sub).toBeVisible();
+    const sb = await sub.boundingBox();
+    if (!sb) throw new Error("Easing submenu flyout not laid out");
+    expect(sb.y + sb.height).toBeLessThanOrEqual(vp.height);
+    expect(sb.x + sb.width).toBeLessThanOrEqual(vp.width);
+    expect(sb.y).toBeGreaterThanOrEqual(0);
+    expect(sb.x).toBeGreaterThanOrEqual(0);
+    await page.keyboard.press("Escape");
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
 // Drive the MULTI-SECTION chain shape: a geo track → append a section → convert it to
 // force (a mixed geo→force chain) → delete the force tail → undo. The ops run through the
 // __kex hooks; sectionCount / sectionKinds assert the chain shape. (Split/join left the
