@@ -258,6 +258,45 @@ export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX)
     return best;
 }
 
+/** the force-keyframe drag grid quanta — the authoring vocabulary a value snaps to when no
+ *  landmark is in range (a force keyframe demands a value, so its axes carry a semantic
+ *  quantum, unlike the landmarks-only extent/scrub axes). hand-tuned at the feel check-in;
+ *  the ONE home for each, so a tweak is a one-line edit. `S_GRID` = arclength (metres),
+ *  `G_GRID` = force (g). */
+export const S_GRID = 1;
+export const G_GRID = 0.1;
+
+/** the resolved snap for one axis of a keyframe drag: the DOMAIN value to write, plus the
+ *  guide px to flash (a landmark hit) or `null` (the grid — ambient, no flash). */
+export interface AxisSnap {
+    value: number;
+    guide: number | null;
+}
+
+/** resolve one axis of a force-keyframe drag: a landmark magnet layered over a domain grid
+ *  (the viewport geo-grid precedent applied to the timeline). A landmark within `threshold`
+ *  screen-px of `rawPx` wins — landmarks own their radius (the Figma snap-to-object-else-grid
+ *  order); otherwise the raw value quantizes to `grid` in domain units, always (the semantic
+ *  quantum, the way the viewport chord snaps to whole metres). When snapping is bypassed
+ *  (`active === false`, Ctrl/Cmd held) the raw value passes through untouched, grid included.
+ *  Only a landmark draws a guide (the grid is ambient — the guide model is unchanged);
+ *  `fromPx` inverts the view affine for the landmark's px → domain conversion (impure view
+ *  state, so it's passed in rather than closed over). */
+export function snapAxis(
+    active: boolean,
+    rawPx: number,
+    rawVal: number,
+    targets: Iterable<number>,
+    grid: number,
+    fromPx: (px: number) => number,
+    threshold = SNAP_PX,
+): AxisSnap {
+    if (!active) return { value: rawVal, guide: null };
+    const hit = snap(rawPx, targets, threshold);
+    if (hit !== null) return { value: fromPx(hit), guide: hit };
+    return { value: Math.round(rawVal / grid) * grid, guide: null };
+}
+
 /** the extent-trim magnet targets in chart-local px: content landmarks that are stable
  *  under the resize (editor-ui.md) — the section's own force points (cumulative arclengths
  *  `ownS`, section-local so fixed while the extent changes) and the parked playhead

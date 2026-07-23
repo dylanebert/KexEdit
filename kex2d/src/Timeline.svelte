@@ -38,6 +38,7 @@ import {
     clampView,
     creationTargets,
     frameAll,
+    G_GRID,
     type Mapping,
     marginArc,
     navDragView,
@@ -45,7 +46,9 @@ import {
     niceStep,
     nodeTickPx,
     pxToS,
+    S_GRID,
     snap,
+    snapAxis,
     sToPx,
     ticks,
     timeToArc,
@@ -518,31 +521,39 @@ function applyDrag(): void {
             lockS = true;
         }
     }
-    // magnet snap each free axis to the nearest target within SNAP_PX, flashing a guide
-    // at the hit (the AE magnet). a Ctrl/Cmd bypass inverts the toggle for the gesture.
+    // resolve each free axis through the landmark-over-grid magnet (`snapAxis`, timeline.ts):
+    // a landmark within SNAP_PX wins, else the value quantizes to the 1 m / 0.1 g grid; a
+    // Ctrl/Cmd bypass (`snapActive`) passes the raw value through, grid included. only a
+    // landmark flashes a guide — the grid is ambient. each axis carries a gesture-start
+    // landmark (the point's grab s / g) so a mostly-single-axis drag snaps the OTHER axis
+    // back to exactly where it started — the "change just one axis" affordance.
     snapX = null;
     snapY = null;
-    if (snapActive(dragMod)) {
-        if (!lockS) {
-            const hit = snap(
-                sToPx(clamped, dragStartS + s),
-                sTargets({ exclude: dragForce, playhead: true, trackEnd: true }),
-            );
-            if (hit !== null) {
-                const local = pxToS(clamped, hit) - dragStartS;
-                if (local >= 0 && local <= dragLen) {
-                    s = local; // only latch a target the point can actually reach in its section
-                    snapX = hit;
-                }
+    const active = snapActive(dragMod);
+    if (!lockS) {
+        const cumS = dragStartS + s;
+        const targets = sTargets({ exclude: dragForce, playhead: true, trackEnd: true });
+        targets.push(sToPx(clamped, dragStartS + dragS0)); // gesture-start s landmark
+        const r = snapAxis(active, sToPx(clamped, cumS), cumS, targets, S_GRID, (px) =>
+            pxToS(clamped, px),
+        );
+        const local = r.value - dragStartS;
+        if (r.guide !== null) {
+            // a landmark: only latch one the point can actually reach in its section
+            if (local >= 0 && local <= dragLen) {
+                s = local;
+                snapX = r.guide;
             }
+        } else {
+            s = clamp(local, 0, dragLen); // grid (or bypass) — quantized, kept in the section
         }
-        if (!lockG) {
-            const hit = snap(yOf(g), gTargets(dragForce));
-            if (hit !== null) {
-                g = yToG(hit);
-                snapY = hit;
-            }
-        }
+    }
+    if (!lockG) {
+        const targets = gTargets(dragForce);
+        targets.push(yOf(dragG0)); // gesture-start g landmark
+        const r = snapAxis(active, yOf(g), g, targets, G_GRID, (py) => yToG(py));
+        g = r.value;
+        snapY = r.guide;
     }
     setForcePoint(ecs, dragForce, s, g);
 }

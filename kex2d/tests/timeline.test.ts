@@ -4,6 +4,7 @@ import {
     clampView,
     creationTargets,
     frameAll,
+    G_GRID,
     type Mapping,
     marginArc,
     MAX_PX_PER_M,
@@ -12,7 +13,9 @@ import {
     niceStep,
     nodeTickPx,
     pxToS,
+    S_GRID,
     snap,
+    snapAxis,
     SNAP_PX,
     sToPx,
     ticks,
@@ -468,6 +471,61 @@ describe("snap — nearest-target magnet", () => {
     test("a NaN value never snaps (comparisons are false)", () => {
         expect(snap(Number.NaN, [0, 5, 10])).toBeNull();
         expect(snap(3, [Number.NaN])).toBeNull(); // a NaN target is skipped, not latched
+    });
+});
+
+describe("snapAxis — landmark magnet over a domain grid", () => {
+    // the force-keyframe drag resolver: a landmark within SNAP_PX px wins (owns its radius),
+    // otherwise the raw value quantizes to the grid; a bypass passes the raw value through
+    // untouched, grid included. only a landmark carries a guide px (the grid is ambient).
+    // fromPx inverts the view affine (px → domain); tests use identity or a plain scale.
+    const id = (px: number): number => px; // domain === px
+
+    test("a landmark within the threshold wins over the grid (priority)", () => {
+        // raw 10.3 grid-rounds to 10, but a landmark sits 3px away → the landmark wins,
+        // and its value comes back through fromPx with the guide px flagged.
+        const r = snapAxis(true, 10.3, 10.3, [13.3], S_GRID, id);
+        expect(r.value).toBe(13.3); // fromPx(13.3), the landmark — not the grid's 10
+        expect(r.guide).toBe(13.3); // a landmark flashes a guide
+    });
+
+    test("no landmark in range → quantizes to the grid, no guide", () => {
+        const r = snapAxis(true, 10.3, 10.3, [40], S_GRID, id); // landmark 29.7px away
+        expect(r.value).toBe(10); // 10.3 → nearest whole metre
+        expect(r.guide).toBeNull(); // the grid is ambient, no flash
+    });
+
+    test("the grid quantizes both directions, at the G_GRID quantum too", () => {
+        expect(snapAxis(true, 0.34, 0.34, [], G_GRID, id).value).toBeCloseTo(0.3, 10);
+        expect(snapAxis(true, 0.36, 0.36, [], G_GRID, id).value).toBeCloseTo(0.4, 10);
+        expect(snapAxis(true, -0.04, -0.04, [], G_GRID, id).value).toBeCloseTo(0, 10);
+    });
+
+    test("bypass (active=false) passes the raw value through — grid AND landmark ignored", () => {
+        // a landmark sits right at rawPx and the value is off-grid, yet neither fires.
+        const r = snapAxis(false, 10.7, 10.7, [10.7], S_GRID, id);
+        expect(r.value).toBe(10.7); // untouched — not the landmark, not the grid's 11
+        expect(r.guide).toBeNull();
+    });
+
+    test("the gesture-start landmark snaps an off-grid value back to exactly its start", () => {
+        // the "change just one axis" affordance: a mostly-other-axis drag leaves this axis's
+        // raw value a hair off its off-grid start; the start landmark (within SNAP_PX) pulls it
+        // back to the exact start, beating the grid it would otherwise round to.
+        const startVal = 7.42; // an off-grid gesture-start
+        const raw = 7.42 + 2; // 2px of incidental drift → within SNAP_PX of the start
+        const r = snapAxis(true, raw, raw, [startVal], S_GRID, id);
+        expect(r.value).toBe(startVal); // back to the exact start, not the grid's 9
+        expect(r.guide).toBe(startVal);
+    });
+
+    test("fromPx inverts the view affine for a landmark hit", () => {
+        // domain = px / 2: a landmark at 20px is domain 10. proves the landmark value is the
+        // inverted domain, not the raw px.
+        const half = (px: number): number => px / 2;
+        const r = snapAxis(true, 21, 10.5, [20], S_GRID, half);
+        expect(r.value).toBe(10); // half(20)
+        expect(r.guide).toBe(20); // the guide stays in px
     });
 });
 

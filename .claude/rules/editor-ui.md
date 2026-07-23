@@ -95,8 +95,16 @@ copies this shape:
 - **Targets are content landmarks or the domain's semantic quantum — never display artifacts.**
   Landmarks: other keyframes, section boundaries, the playhead, physical baselines (1g). A raster
   earns targethood only when the domain has a real quantum (video frames, musical beats — the
-  Blender/DAW case). The timeline arclength axis has none — the AE/Premiere case, landmarks only.
-  The shaping viewport *does*: the building vocabulary is the quantum, and **snap quantizes what
+  Blender/DAW case). A **force keyframe** has one: it *demands* a value, so 1 m on s and 0.1 g on
+  its force are its authoring vocabulary — a keyframe drag is grid-by-default + landmarks, with a
+  per-axis **gesture-start** landmark (the grab s / g) so a mostly-single-axis drag snaps the other
+  axis back to exactly where it started (the "change just one axis" affordance). Grid steps are
+  named constants (kex2d `S_GRID` / `G_GRID`, `timeline.ts`), the merge is landmark-over-grid (a
+  landmark within `SNAP_PX` wins its radius, else the grid quantizes — the viewport geo-grid
+  precedent), and only a landmark flashes a guide (the grid is ambient). The timeline's
+  *non-authoring* axes stay landmarks-only — the extent trim and the playhead scrub place no value,
+  so they're the AE/Premiere case (nothing to quantize). Ctrl/Cmd bypasses all of it.
+  The shaping viewport carries one too: the building vocabulary is the quantum, and **snap quantizes what
   the piece does** — a pure grid, snap-by-default: chord length to whole meters (1 m floor), angle
   to a 5° grid, uniform tip + interior. A tip snaps its exit-tangent *incline* (the chord that
   yields it, `incline = 2·chord − tangent`), an interior node its chord angle; the old tip-only
