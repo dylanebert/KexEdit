@@ -11,6 +11,7 @@
  *  apply/reverse. */
 
 import type { State } from "@dylanebert/shallot";
+import type { Easing } from "./profile";
 import {
     appendSection as appendSectionTrack,
     convertSection as flipSectionKind,
@@ -25,17 +26,20 @@ import {
     type NodeState,
     nodeSnapshot,
     removeTrailingHandle,
+    resetForceTangent as clearForceTangent,
     resetTangent,
     restoreAll,
+    restoreForcePoint,
     restoreNodes,
     restoreSection,
+    sameForceTangent,
     sameNodes,
     Section,
     SectionKind,
     sectionAt,
     type SectionLengthState,
     sectionLengthState,
-    setForcePoint,
+    setForceEase as writeForceEase,
     setSectionLength,
     snapshotAll,
     snapshotSection,
@@ -281,19 +285,71 @@ export function deleteForce(h: History, ecs: State, id: number): void {
         h,
         {
             apply: () => destroyForce(ecs, id),
-            reverse: () => spawnForce(ecs, st.section, st.id, st.s, st.g),
+            reverse: () => spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent),
         },
         pre,
     );
 }
 
 /** open a gesture on a force-point drag (or an inline field edit), snapshotting the
- *  point's `s`/`g`. commit coalesces the live writes into one entry. */
+ *  point's full state. commit coalesces the live writes into one entry; a position
+ *  drag changes only `s`/`g`, so that's the no-op test. */
 export function beginForceMove(ecs: State, id: number): void {
     begin(
         () => forcePointState(ecs, id),
-        (st: ForcePointState) => setForcePoint(ecs, st.id, st.s, st.g),
+        (st: ForcePointState) => restoreForcePoint(ecs, st),
         (a: ForcePointState, b: ForcePointState) => a.s === b.s && a.g === b.g,
+    );
+}
+
+/** set a force keyframe's easing tag as one undoable entry (the menu one-shot). the
+ *  full easing state (tag + explicit handles) round-trips; records nothing when the
+ *  tag is unchanged. */
+export function setForceEase(h: History, ecs: State, id: number, ease: Easing): void {
+    const pre = selHook?.snapshot(ecs);
+    const before = forcePointState(ecs, id);
+    if (!before) return;
+    writeForceEase(ecs, id, ease);
+    const after = forcePointState(ecs, id);
+    if (after === undefined || before.ease === after.ease) return;
+    record(
+        h,
+        {
+            apply: () => restoreForcePoint(ecs, after),
+            reverse: () => restoreForcePoint(ecs, before),
+        },
+        pre,
+    );
+}
+
+/** clear a force keyframe's explicit handles back to the `ease`-derived default as one
+ *  undoable entry (the Reset action). records nothing when there were no handles. */
+export function resetForceTangent(h: History, ecs: State, id: number): void {
+    const pre = selHook?.snapshot(ecs);
+    const before = forcePointState(ecs, id);
+    if (!before) return;
+    clearForceTangent(ecs, id);
+    const after = forcePointState(ecs, id);
+    if (after === undefined || sameForceTangent(before.tangent, after.tangent)) return;
+    record(
+        h,
+        {
+            apply: () => restoreForcePoint(ecs, after),
+            reverse: () => restoreForcePoint(ecs, before),
+        },
+        pre,
+    );
+}
+
+/** open a gesture on a force-keyframe handle drag, snapshotting the keyframe's easing
+ *  state (tag + explicit handles). commit coalesces the live handle writes into one
+ *  entry; a no-move release records nothing. the UI writes through `setForceTangent`. */
+export function beginForceTangent(ecs: State, id: number): void {
+    begin(
+        () => forcePointState(ecs, id),
+        (st: ForcePointState) => restoreForcePoint(ecs, st),
+        (a: ForcePointState, b: ForcePointState) =>
+            a.ease === b.ease && sameForceTangent(a.tangent, b.tangent),
     );
 }
 

@@ -12,12 +12,16 @@ import {
     EXTEND_DIST,
     exitWorld,
     extend,
+    forceEase,
+    type ForceTangent,
+    forceTangent,
     Handle,
     handleAt,
     handleTangent,
     MAX_SAMPLES,
     reheadOnDrag,
     removeTrailingHandle,
+    resetForceTangent,
     resetTangent,
     restoreAll,
     samples,
@@ -28,6 +32,9 @@ import {
     sections,
     sectionSpans,
     seedTangent,
+    setForceEase,
+    setForcePoint,
+    setForceTangent,
     setSectionLength,
     setTangent,
     setTrackV0,
@@ -36,6 +43,16 @@ import {
     toLocal,
     Track,
 } from "../src/track";
+import {
+    appendSection as appendSectionCmd,
+    beginForceTangent,
+    commit,
+    createHistory,
+    redo,
+    setForceEase as setForceEaseCmd,
+    undo,
+} from "../src/history";
+import { DEFAULT_G, Easing } from "../src/profile";
 import { editTangent, type Node, sampleChain, TangentMode } from "../src/spline";
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
@@ -335,8 +352,9 @@ describe("BakeSystem", () => {
     });
 
     test("an empty force profile bakes a flat 1g track over the section length", () => {
-        // convert the flat geo seed to force: no points → constant 1g, which
-        // integrates to a straight level track whose arclength matches the extent.
+        // convert the flat geo seed to force: the two continuation seeds hold the entry
+        // force (1g here, the first section's DEFAULT_G start), so the profile is a
+        // constant 1g that integrates to a straight level track matching the extent.
         const { state, eid, sec } = track();
         state.step(0); // geo bake first, so the convert inherits its arclength
         convertSection(state, sec);
@@ -417,9 +435,9 @@ describe("BakeSystem", () => {
     test("convert force→geo clears the points and reseeds the flat two-node shape", () => {
         const { state, sec } = track();
         state.step(0);
-        convertSection(state, sec); // → force
+        convertSection(state, sec); // → force (seeds the two continuation keyframes)
         createForcePoint(state, sec, 5, 2);
-        expect(sectionForces(state, sec).length).toBe(1);
+        expect(sectionForces(state, sec).length).toBe(3); // 2 seeds + the authored point
 
         convertSection(state, sec); // → geo
         expect(sections(state)[0].kind).toBe(SectionKind.Geo);
@@ -575,7 +593,9 @@ describe("coordinate lens (s ↔ d)", () => {
         const [, f1, f2] = secs;
 
         const before = sectionSpans(state, eid);
-        const pt = sectionForces(state, f2)[0];
+        // the interior authored point (s=5), not a seed keyframe at the section edges.
+        const pt = sectionForces(state, f2).find((p) => p.s === 5);
+        if (!pt) throw new Error("interior force point missing");
         const sBefore = pt.s;
         const dBefore = toGlobal(before, f2, sBefore);
         const offBefore = before.find((sp) => sp.id === f2)?.offset ?? Number.NaN;
@@ -585,7 +605,8 @@ describe("coordinate lens (s ↔ d)", () => {
         state.step(0);
 
         const after = sectionSpans(state, eid);
-        const ptAfter = sectionForces(state, f2)[0];
+        const ptAfter = sectionForces(state, f2).find((p) => p.s === 5);
+        if (!ptAfter) throw new Error("interior force point missing after edit");
         const offAfter = after.find((sp) => sp.id === f2)?.offset ?? Number.NaN;
         const dAfter = toGlobal(after, f2, ptAfter.s);
 
@@ -828,5 +849,262 @@ describe("tangent model (feel round 2)", () => {
         state.step(0);
         const hash = (bakeOut.get(eid)?.hash ?? "").replace(/\|S\d+:/g, "|S:"); // drop the allocator id
         expect(hash).toBe("ds0.5v010|S:0:0,0:0:0,24:0:0");
+    });
+});
+
+// stage B (kex2d-force-ux): force keyframes grow an easing tag + explicit handles, and a
+// fresh force section (append or geo→force convert) is SEEDED with two continuation
+// keyframes at the recovered entry force — stamped from the current bake, not live-inferred.
+describe("force easing + seeding (stage B)", () => {
+    /** a geo→geo chain whose first section curves, so the second section's entry force
+     *  (recovered at the boundary) is clearly ≠ DEFAULT_G — the value a seed must stamp. */
+    function curvedChain(): { state: State; eid: number; a: number; b: number; entryF: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 20, -4);
+        addNode(state, a, 44, -16); // a steepening descent → the exit edge recovers < 1g
+        const b = appendSection(state, SectionKind.Geo); // b is a flat two-node geo section
+        state.step(0);
+        const out = bakeOut.get(eid);
+        const infoB = sectionInfo.get(b);
+        if (!out || !infoB) throw new Error("bake missing");
+        // b's entry force = the edge arriving at b's entry = a's exit edge.
+        const entryF = out.fN[infoB.startSample - 1];
+        return { state, eid, a, b, entryF };
+    }
+
+    test("appendSection(Force) seeds two continuation keyframes at the recovered entry force", () => {
+        const { state, eid, entryF } = curvedChain();
+        expect(Math.abs(entryF - DEFAULT_G)).toBeGreaterThan(0.05); // meaningful: entry ≠ default
+
+        // the appended force section's entry is the current last (geo b) section's exit.
+        const out = bakeOut.get(eid);
+        const infoLast = sectionInfo.get(sections(state)[1].id); // b, the current tail
+        if (!out || !infoLast) throw new Error("bake missing");
+        const expected = out.fN[infoLast.endSample - 1];
+
+        const f = appendSection(state, SectionKind.Force);
+        const pts = sectionForces(state, f);
+        expect(pts.map((p) => p.s)).toEqual([0, EXTEND_DIST]); // the two continuation keyframes
+        for (const p of pts) expect(p.g).toBeCloseTo(expected, 6); // both stamped from the entry
+    });
+
+    test("convert geo→force seeds from the section's recovered entry force, not DEFAULT_G", () => {
+        const { state, b, entryF } = curvedChain();
+        expect(Math.abs(entryF - DEFAULT_G)).toBeGreaterThan(0.05);
+
+        convertSection(state, b); // → force; seeds continue b's entry force
+        const pts = sectionForces(state, b);
+        expect(pts.map((p) => p.s)).toEqual([0, EXTEND_DIST]);
+        for (const p of pts) expect(p.g).toBeCloseTo(entryF, 6);
+    });
+
+    test("a force section at the track start, or with no bake, seeds at DEFAULT_G", () => {
+        // no bake yet: append force before any step → the fallback.
+        const { state } = track();
+        const f = appendSection(state, SectionKind.Force);
+        for (const p of sectionForces(state, f)) expect(p.g).toBe(DEFAULT_G);
+
+        // the first section (entry sample 0) has no upstream edge → DEFAULT_G even with a bake.
+        const t2 = track();
+        t2.state.step(0);
+        convertSection(t2.state, t2.sec);
+        for (const p of sectionForces(t2.state, t2.sec)) expect(p.g).toBe(DEFAULT_G);
+    });
+
+    test("a seed is stamped: an upstream reshape that changes the entry force leaves it unchanged", () => {
+        // convert b→force stamps b's entry force; reshaping a changes b's ACTUAL entry force,
+        // but the stored seed g stays absolute (no hidden global support — the failure mode
+        // this project rejects). the ride re-times; the authored force does not rewrite itself.
+        const { state, eid, a, b, entryF } = curvedChain();
+        convertSection(state, b); // → force, seeds stamped at entryF
+        const seedG = sectionForces(state, b)[0].g;
+        expect(seedG).toBeCloseTo(entryF, 6);
+
+        // reshape a's tip so its exit force changes, then re-bake.
+        const aTip = handleAt(state, a, 2);
+        if (aTip === null) throw new Error("a tip missing");
+        Handle.pos.set(aTip, 44, -2); // a much shallower descent → a different exit force
+        reheadOnDrag(state, aTip);
+        state.step(0);
+        const infoB = sectionInfo.get(b);
+        const out = bakeOut.get(eid);
+        if (!infoB || !out) throw new Error("bake missing");
+        const newEntryF = out.fN[infoB.startSample - 1];
+        expect(Math.abs(newEntryF - entryF)).toBeGreaterThan(0.02); // the actual entry really moved
+
+        // the stamped seed is unchanged despite the upstream edit.
+        expect(sectionForces(state, b)[0].g).toBe(seedG);
+    });
+
+    test("a keyframe's ease + explicit handles survive a whole-track snapshot round-trip", () => {
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force (seeds two keyframes)
+        const id = createForcePoint(state, sec, 12, 0.5);
+        setForceEase(state, id, Easing.Sharp);
+        // f32-exact offsets (multiples of 1/4) so the round-trip is byte-identical, not just close.
+        const tan: ForceTangent = {
+            mode: TangentMode.Free,
+            in: { ds: -2, dg: 0.25 },
+            out: { ds: 3, dg: -0.5 },
+        };
+        setForceTangent(state, id, tan);
+
+        const snap = snapshotAll(state);
+        restoreAll(state, snap); // the structural-op undo unit must round-trip the new fields
+        expect(forceEase(state, id)).toBe(Easing.Sharp);
+        expect(forceTangent(state, id)).toEqual(tan);
+        // a seed keyframe stays the default: Ease tag, no handles.
+        const seed = sectionForces(state, sec).find((p) => p.s === 0);
+        if (!seed) throw new Error("seed missing");
+        expect(forceEase(state, seed.id)).toBe(Easing.Ease);
+        expect(forceTangent(state, seed.id)).toBeUndefined();
+    });
+
+    test("a keyframe's ease flows through the bake (forcePayload): Ease ≠ Linear, and busts the hash", () => {
+        const { state, eid, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force; two flat seeds at 1g
+        // step the profile 1g → 2g by lifting the exit seed, so the leading tag actually shapes it.
+        const pts = sectionForces(state, sec);
+        const lead = pts[0];
+        const tail = pts[1];
+        setForcePoint(state, tail.id, tail.s, 2);
+
+        setForceEase(state, lead.id, Easing.Ease);
+        state.step(0);
+        let out = bakeOut.get(eid);
+        if (!out) throw new Error("bake missing");
+        const easeF = Array.from(out.fN.subarray(0, Track.count.get(eid) - 1));
+        const easeHash = out.hash;
+
+        setForceEase(state, lead.id, Easing.Linear);
+        state.step(0);
+        out = bakeOut.get(eid);
+        if (!out) throw new Error("bake missing");
+        const linF = Array.from(out.fN.subarray(0, Track.count.get(eid) - 1));
+
+        expect(out.hash).not.toBe(easeHash); // the ease tag is in the bake hash
+        let maxDiff = 0;
+        for (let i = 0; i < Math.min(easeF.length, linF.length); i++) {
+            maxDiff = Math.max(maxDiff, Math.abs(easeF[i] - linF[i]));
+        }
+        expect(maxDiff).toBeGreaterThan(0.05); // the smoothstep vs chord shape reaches the recovery
+    });
+
+    test("an explicit force handle flows through the bake (forcePayload passes in/out)", () => {
+        const { state, eid, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force; two flat seeds
+        const pts = sectionForces(state, sec);
+        const lead = pts[0];
+        const tail = pts[1];
+        setForcePoint(state, tail.id, tail.s, 2); // a 1g → 2g step so the shape is visible
+        state.step(0);
+        let out = bakeOut.get(eid);
+        if (!out) throw new Error("bake missing");
+        const derivedF = Array.from(out.fN.subarray(0, Track.count.get(eid) - 1));
+
+        // author an explicit out-handle on the leading keyframe that lifts g early — a shape
+        // the derived flat tangent can't make, so the recovered force must move if in/out reach
+        // forceProfile.
+        setForceTangent(state, lead.id, {
+            mode: TangentMode.Free,
+            in: { ds: 0, dg: 0 },
+            out: { ds: 6, dg: 0.75 },
+        });
+        state.step(0);
+        out = bakeOut.get(eid);
+        if (!out) throw new Error("bake missing");
+        const handF = Array.from(out.fN.subarray(0, Track.count.get(eid) - 1));
+
+        let maxDiff = 0;
+        for (let i = 0; i < Math.min(derivedF.length, handF.length); i++) {
+            maxDiff = Math.max(maxDiff, Math.abs(derivedF[i] - handF[i]));
+        }
+        expect(maxDiff).toBeGreaterThan(0.05);
+    });
+
+    test("history: appending a force section undoes/redoes byte-identical, seeds included", () => {
+        const { state } = track();
+        state.step(0);
+        const h = createHistory();
+        const before = snapshotAll(state);
+
+        const f = appendSectionCmd(h, state, SectionKind.Force);
+        expect(sectionForces(state, f).length).toBe(2); // the two seeds
+        const seeded = snapshotAll(state);
+
+        undo(h, state);
+        expect(sections(state).length).toBe(before.length); // the section is gone
+        expect(snapshotAll(state)).toEqual(before);
+
+        redo(h, state);
+        expect(snapshotAll(state)).toEqual(seeded); // seeds restored verbatim
+    });
+
+    test("history: setForceEase collapses to one entry; undo restores the prior tag", () => {
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force
+        const id = createForcePoint(state, sec, 10, 1);
+        const h = createHistory();
+        expect(forceEase(state, id)).toBe(Easing.Ease); // the fresh-keyframe default
+
+        setForceEaseCmd(h, state, id, Easing.Sharp);
+        expect(h.undo.length).toBe(1);
+        expect(forceEase(state, id)).toBe(Easing.Sharp);
+
+        undo(h, state);
+        expect(forceEase(state, id)).toBe(Easing.Ease);
+        redo(h, state);
+        expect(forceEase(state, id)).toBe(Easing.Sharp);
+
+        // a no-op set (same tag) records nothing.
+        setForceEaseCmd(h, state, id, Easing.Sharp);
+        expect(h.undo.length).toBe(1);
+    });
+
+    test("history: a handle drag (beginForceTangent) collapses to one entry; undo clears the handles", () => {
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force
+        const id = createForcePoint(state, sec, 10, 1);
+        const h = createHistory();
+        expect(forceTangent(state, id)).toBeUndefined(); // derives from ease
+
+        beginForceTangent(state, id);
+        setForceTangent(state, id, {
+            mode: TangentMode.Aligned,
+            in: { ds: -1, dg: 0 },
+            out: { ds: 4, dg: 0.25 },
+        }); // live preview frames
+        setForceTangent(state, id, {
+            mode: TangentMode.Aligned,
+            in: { ds: -1, dg: 0 },
+            out: { ds: 5, dg: 0.5 },
+        });
+        commit(h);
+        expect(h.undo.length).toBe(1); // the whole drag → one entry
+        expect(forceTangent(state, id)?.out).toEqual({ ds: 5, dg: 0.5 });
+
+        undo(h, state);
+        expect(forceTangent(state, id)).toBeUndefined(); // back to the ease-derived default
+
+        // resetForceTangent clears authored handles back to the ease-derived default.
+        const tan: ForceTangent = {
+            mode: TangentMode.Free,
+            in: { ds: -2, dg: 0.25 },
+            out: { ds: 2, dg: -0.25 },
+        };
+        setForceTangent(state, id, tan);
+        resetForceTangent(state, id);
+        expect(forceTangent(state, id)).toBeUndefined();
+        setForceTangent(state, id, tan); // restore for the round-trip assertion
+        expect(forceTangent(state, id)).toEqual(tan);
     });
 });
