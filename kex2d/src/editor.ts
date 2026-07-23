@@ -25,6 +25,12 @@ interface EditorState {
     tangentEdit: number | null;
     /** stable id of the currently selected force point (force section), or null. */
     force: number | null;
+    /** stable id of the force keyframe in handle-edit sub-mode (its in/out handles are
+     *  summoned), or null — the force analogue of `tangentEdit`, layered on force selection:
+     *  `forceEdit !== null` implies `force === forceEdit`. entered by double-clicking a
+     *  keyframe (the diamond hit beats insertion); a different selection, Esc, or click-away
+     *  exits it. NOT a fifth mutually-exclusive selection. */
+    forceEdit: number | null;
     /** stable id of the currently selected section, or null. section selection is a
      *  highlight + the context-menu target; it does NOT gate authoring (force points
      *  are added by cursor position, nodes are dragged in the viewport). */
@@ -40,6 +46,10 @@ interface EditorState {
      *  the target node eid, or null when closed. opened by right-click on any pickable node
      *  (any mode) — the same shared menu language as `context`, rendered once at the app root. */
     nodeMenu: { x: number; y: number; eid: number } | null;
+    /** the force keyframe right-click menu (Delete / Easing ▸ / Handles / Reset): screen
+     *  position + the target point's stable id, or null when closed. the force analogue of
+     *  `nodeMenu`, the same shared menu language. */
+    forceMenu: { x: number; y: number; id: number } | null;
     /** the snapping magnet toggle (AE model): a persistent editor preference, default
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
@@ -59,10 +69,12 @@ export const editor: EditorState = {
     selection: null,
     tangentEdit: null,
     force: null,
+    forceEdit: null,
     section: null,
     start: false,
     context: null,
     nodeMenu: null,
+    forceMenu: null,
     snap: true,
     dragging: false,
     hover: "viewport",
@@ -152,6 +164,7 @@ export function select(eid: number | null): void {
     editor.selection = eid;
     if (eid !== null) {
         editor.force = null;
+        editor.forceEdit = null;
         editor.section = null;
         editor.start = false;
     }
@@ -165,6 +178,7 @@ export function select(eid: number | null): void {
 export function enterTangentEdit(eid: number): void {
     editor.selection = eid;
     editor.force = null;
+    editor.forceEdit = null;
     editor.section = null;
     editor.start = false;
     editor.tangentEdit = eid;
@@ -175,8 +189,11 @@ export function exitTangentEdit(): void {
     editor.tangentEdit = null;
 }
 
-/** select a force point by its stable id (null to clear). */
+/** select a force point by its stable id (null to clear). selecting a *different* subject
+ *  (another point, null) exits handle edit; re-selecting the edited point keeps it (so
+ *  grabbing its own diamond or nudging it doesn't drop the mode — mirrors `select`). */
 export function selectForce(id: number | null): void {
+    if (id !== editor.forceEdit) editor.forceEdit = null;
     editor.force = id;
     if (id !== null) {
         editor.selection = null;
@@ -186,6 +203,23 @@ export function selectForce(id: number | null): void {
     }
 }
 
+/** enter handle-edit mode on a force keyframe — the summon (double-click). selects the point
+ *  (clearing the other selections) and layers the edit sub-mode on it, so its in/out handles
+ *  render and grab. mirrors geo's `enterTangentEdit`. */
+export function enterForceEdit(id: number): void {
+    editor.force = id;
+    editor.selection = null;
+    editor.tangentEdit = null;
+    editor.section = null;
+    editor.start = false;
+    editor.forceEdit = id;
+}
+
+/** exit force handle-edit mode, keeping the point selected (Esc's first peel). */
+export function exitForceEdit(): void {
+    editor.forceEdit = null;
+}
+
 /** select a section by its stable id (null to clear). */
 export function selectSection(id: number | null): void {
     editor.section = id;
@@ -193,6 +227,7 @@ export function selectSection(id: number | null): void {
         editor.selection = null;
         editor.tangentEdit = null;
         editor.force = null;
+        editor.forceEdit = null;
         editor.start = false;
     }
 }
@@ -204,6 +239,7 @@ export function selectStart(on: boolean): void {
         editor.selection = null;
         editor.tangentEdit = null;
         editor.force = null;
+        editor.forceEdit = null;
         editor.section = null;
     }
 }
@@ -230,6 +266,18 @@ export function closeNodeMenu(): void {
     editor.nodeMenu = null;
 }
 
+/** open the force keyframe context menu at a screen point, targeting a point (also selects
+ *  it, so the target reads highlighted). */
+export function openForceMenu(x: number, y: number, id: number): void {
+    selectForce(id);
+    editor.forceMenu = { x, y, id };
+}
+
+/** close the force keyframe context menu. */
+export function closeForceMenu(): void {
+    editor.forceMenu = null;
+}
+
 // ── history selection hook ────────────────────────────────────────────────────────
 // the editor's snapshot/restore for undo/redo, injected into `history` at boot (`setSelectionHook`)
 // so the coupling points inward — history calls this, never imports editor. a NODE is snapshotted by
@@ -240,7 +288,7 @@ export function closeNodeMenu(): void {
 
 type SelSnapshot =
     | { kind: "node"; section: number; order: number; editing: boolean }
-    | { kind: "force"; id: number }
+    | { kind: "force"; id: number; editing: boolean }
     | { kind: "section"; id: number }
     | { kind: "start" }
     | null;
@@ -258,17 +306,20 @@ export const selectionHook = {
                 editing: editor.tangentEdit === sel,
             };
         }
-        if (editor.force !== null) return { kind: "force", id: editor.force };
+        if (editor.force !== null)
+            return { kind: "force", id: editor.force, editing: editor.forceEdit === editor.force };
         if (editor.section !== null) return { kind: "section", id: editor.section };
         if (editor.start) return { kind: "start" };
         return null;
     },
     restore(ecs: State, snap: unknown): void {
         editor.nodeMenu = null; // its rows (checked mode, enablement) went stale when the document changed
+        editor.forceMenu = null; // same — the force keyframe menu's rows go stale on any restore
         const s = snap as SelSnapshot;
         if (s === null) {
             select(null); // clears the selection + the tangent-edit sub-mode
             editor.force = null;
+            editor.forceEdit = null;
             editor.section = null;
             editor.start = false;
             return;
@@ -282,6 +333,7 @@ export const selectionHook = {
             }
             case "force":
                 selectForce(s.id);
+                editor.forceEdit = s.editing ? s.id : null; // re-summon the handles if they were open
                 break;
             case "section":
                 selectSection(s.id);

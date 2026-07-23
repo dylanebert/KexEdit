@@ -17,6 +17,8 @@ import { tangentHandles } from "./tangents";
 import {
     addNode,
     bakeOut,
+    forceEase,
+    forceTangent,
     Handle,
     handleAt,
     handleTangent,
@@ -171,6 +173,34 @@ if (import.meta.env.DEV) {
         // resolves its g ON the profile (not at the cursor's y).
         forces: (): { s: number; g: number }[] =>
             sectionForces(ecs, sec()).map((p) => ({ s: p.s, g: p.g })),
+        // the easing tag per point (sorted by s) — the menu flow asserts an Easing ▸ pick
+        // flips the leading keyframe's tag.
+        forceEases: (): number[] => sectionForces(ecs, sec()).map((p) => forceEase(ecs, p.id)),
+        // whether a force keyframe is in handle-edit sub-mode — the flow asserts a
+        // double-click summoned the handles.
+        forceEditing: (): boolean => editor.forceEdit !== null,
+        // the explicit handle offsets per point (sorted by s), or null when derived from the
+        // easing tag — the flow asserts a handle drag authored explicit handles and Reset
+        // clears them.
+        forceTangents: (): (null | {
+            mode: number;
+            inDs: number;
+            inDg: number;
+            outDs: number;
+            outDg: number;
+        })[] =>
+            sectionForces(ecs, sec()).map((p) => {
+                const t = forceTangent(ecs, p.id);
+                return t
+                    ? {
+                          mode: t.mode,
+                          inDs: t.in.ds,
+                          inDg: t.in.dg,
+                          outDs: t.out.ds,
+                          outDg: t.out.dg,
+                      }
+                    : null;
+            }),
         // flip geo↔force on the section (destructive convert, one undo entry).
         convert: (): void => convertSection(history, ecs, sec()),
         // author a force point at (s, g) — the "place a point on the curve" step.

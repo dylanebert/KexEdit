@@ -630,6 +630,99 @@ test("force authoring flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
+// Drive the FORCE EASING MENU + HANDLE-EDIT flow (kex2d-force-ux stage C): seed a force
+// section with three keyframes → RIGHT-CLICK a diamond for the keyframe menu → open the
+// Easing ▸ submenu and set Linear POINTER-TRUE (clickFlyout — the regression net for the
+// context-submenu clip class) → assert the leading keyframe's tag flipped → DOUBLE-CLICK a
+// diamond to summon its handles (the diamond hit beats insertion) → drag a handle to author
+// an explicit tangent (the segment reads Custom) → Reset via the menu clears it back to the
+// derived easing. Every menu interaction is a real pointer event; __kex is read only for
+// assertions.
+test("force easing menu flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
+    const forceEases = () => page.evaluate((): number[] => (window as any).__kex.forceEases());
+    const forceEditing = () => page.evaluate((): boolean => (window as any).__kex.forceEditing());
+    const forceTangents = () =>
+        page.evaluate((): (null | object)[] => (window as any).__kex.forceTangents());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+
+    // seed a force section with an airtime bump (the two continuation seed keyframes stage B
+    // stamps on convert, plus three bump points) → a chain with interior keyframes to edit.
+    await page.evaluate(() => (window as any).__kex.seedForceBump());
+    await expect.poll(forceCount).toBeGreaterThanOrEqual(3);
+    const nPts = await forceCount();
+    await frameTimeline(page); // bring the whole force section into view for the diamond DOM boxes
+    await expect(page.locator(".fpt")).toHaveCount(nPts);
+
+    // ── 1. Right-click the leading (first) keyframe → the force keyframe menu, in row order
+    // Delete · Easing ▸ · Handles · Reset. ──
+    await page.locator(".fpt").first().click({ button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await expect
+        .poll(async () =>
+            (await page.locator(".fmenu [role=menuitem]").allTextContents()).map((t) =>
+                t.replace(/\s+/g, " ").trim(),
+            ),
+        )
+        .toEqual(["Delete Del", "Easing ▸", "Handles", "Reset"]);
+    await page.waitForTimeout(200);
+    if (page.viewportSize())
+        await page.screenshot({
+            path: join(OUT, "force-easing-menu.png"),
+            clip: { x: 0, y: (page.viewportSize()?.height ?? 0) - 340, width: page.viewportSize()?.width ?? 0, height: 340 },
+        });
+
+    // ── 2. Open Easing ▸ and set Linear — pointer-true through clickFlyout (a coordinate
+    // click gated on elementFromPoint reachability, the context-submenu clip regression net).
+    // the leading keyframe's tag flips to Linear (0); Ease (default) is 1. ──
+    expect((await forceEases())[0]).toBe(1); // Easing.Ease default
+    await clickFlyout(page, ".fmenu", "Easing", "Linear");
+    await expect(page.locator(".fmenu")).toHaveCount(0); // picking a row closes the menu
+    await expect.poll(async () => (await forceEases())[0]).toBe(0); // Easing.Linear
+
+    // ── 3. Double-click the crest (interior keyframe) → handle-edit sub-mode summons its two
+    // handles (a diamond hit beats the chart's insertion double-click). ──
+    await page.locator(".fpt").nth(1).dblclick();
+    await expect.poll(forceEditing).toBe(true);
+    await expect(page.locator(".thit")).toHaveCount(2); // in + out handles (an interior keyframe)
+    await expect.poll(forceCount).toBe(nPts); // the double-click summoned, it did NOT insert
+
+    // ── 4. Drag a handle → the crest gains an explicit tangent (the segment reads Custom).
+    // located by its real DOM box (the .thit grab circle), a real canvas pointer drag. ──
+    const knob = await page.locator(".thit").first().boundingBox();
+    if (!knob) throw new Error("handle knob not laid out");
+    await page.mouse.move(knob.x + knob.width / 2, knob.y + knob.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(knob.x + knob.width / 2 + 24, knob.y + knob.height / 2 - 40, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
+    await page.waitForTimeout(200);
+    if (page.viewportSize())
+        await page.screenshot({
+            path: join(OUT, "force-handle-edit.png"),
+            clip: { x: 0, y: (page.viewportSize()?.height ?? 0) - 340, width: page.viewportSize()?.width ?? 0, height: 340 },
+        });
+
+    // ── 5. Reset via the keyframe menu clears the explicit tangent back to the derived
+    // easing (the way back up the layers is one click). ──
+    await page.locator(".fpt").nth(1).click({ button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await page.locator(".fmenu").getByRole("menuitem", { name: "Reset" }).click();
+    await expect.poll(async () => (await forceTangents())[1] === null).toBe(true);
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
 // Drive the MULTI-SECTION chain shape: a geo track → append a section → convert it to
 // force (a mixed geo→force chain) → delete the force tail → undo. The ops run through the
 // __kex hooks; sectionCount / sectionKinds assert the chain shape. (Split/join left the
