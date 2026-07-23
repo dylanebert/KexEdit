@@ -11,22 +11,25 @@
  *  apply/reverse. */
 
 import type { State } from "@dylanebert/shallot";
-import type { Easing } from "./profile";
+import { type Easing, segmentSeed } from "./profile";
 import {
     appendSection as appendSectionTrack,
+    clearForceTangentSide,
     convertSection as flipSectionKind,
     createForcePoint,
     deleteSection as deleteSectionTrack,
     destroyForce,
     extend,
+    forceEase,
     type ForcePointState,
     forcePointState,
+    forceTangent,
     Handle,
     joinNext,
     type NodeState,
+    nextForce,
     nodeSnapshot,
     removeTrailingHandle,
-    resetForceTangent as clearForceTangent,
     resetTangent,
     restoreAll,
     restoreForcePoint,
@@ -40,6 +43,7 @@ import {
     type SectionLengthState,
     sectionLengthState,
     setForceEase as writeForceEase,
+    setForceTangent,
     setSectionLength,
     snapshotAll,
     snapshotSection,
@@ -50,6 +54,7 @@ import {
     trackV0State,
     setTrackV0,
 } from "./track";
+import { TangentMode } from "./spline";
 
 /** a do/undo pair. `apply` is the do / redo direction, `reverse` is undo. both
  *  mutate the canonical data directly (there's no runtime mirror to sync). */
@@ -302,30 +307,81 @@ export function beginForceMove(ecs: State, id: number): void {
     );
 }
 
-/** pick a preset easing row as one undoable entry (the menu one-shot): set the tag AND
- *  clear the addressed keyframe's explicit handles back to that preset — choosing a named
- *  row is the way back up the layers, subsuming the old Reset. the full easing state (tag +
- *  handles) round-trips; records nothing when neither the tag nor the handles changed. */
-export function setForceEase(h: History, ecs: State, id: number, ease: Easing): void {
+/** record one undoable entry over the addressed segment's two bounding keyframes — the
+ *  leading keyframe `id` and its successor `next` (if any) — after `mutate` has already
+ *  run on the live data. the command restores both keyframes, so a single undo reverts
+ *  the whole segment-scoped gesture; nothing records when neither keyframe changed. */
+function recordSegment(h: History, ecs: State, id: number, mutate: () => void): void {
     const pre = selHook?.snapshot(ecs);
-    const before = forcePointState(ecs, id);
-    if (!before) return;
-    writeForceEase(ecs, id, ease);
-    clearForceTangent(ecs, id); // a preset clears explicit handles — back to derived
-    const after = forcePointState(ecs, id);
-    if (
-        after === undefined ||
-        (before.ease === after.ease && sameForceTangent(before.tangent, after.tangent))
-    )
-        return;
+    const next = nextForce(ecs, id);
+    const beforeA = forcePointState(ecs, id);
+    if (!beforeA) return;
+    const beforeB = next !== null ? forcePointState(ecs, next) : undefined;
+    mutate();
+    const afterA = forcePointState(ecs, id);
+    const afterB = next !== null ? forcePointState(ecs, next) : undefined;
+    if (afterA === undefined) return;
+    const sameA = beforeA.ease === afterA.ease && sameForceTangent(beforeA.tangent, afterA.tangent);
+    const sameB =
+        beforeB === undefined ||
+        afterB === undefined ||
+        sameForceTangent(beforeB.tangent, afterB.tangent);
+    if (sameA && sameB) return;
+    const restore = (a: ForcePointState, b?: ForcePointState): void => {
+        restoreForcePoint(ecs, a);
+        if (b) restoreForcePoint(ecs, b);
+    };
     record(
         h,
-        {
-            apply: () => restoreForcePoint(ecs, after),
-            reverse: () => restoreForcePoint(ecs, before),
-        },
+        { apply: () => restore(afterA, afterB), reverse: () => restore(beforeA, beforeB) },
         pre,
     );
+}
+
+/** pick a preset easing row as one undoable entry (the menu one-shot): set the leading
+ *  keyframe's tag AND clear the **addressed segment's** two bounding sides back to that
+ *  preset — this keyframe's out and the next keyframe's in, never this keyframe's in
+ *  (which belongs to the preceding segment). choosing a named row is the way back up the
+ *  layers, subsuming the old Reset. one gesture over both keyframes; records nothing when
+ *  neither the tag nor either bounding side changed. */
+export function setForceEase(h: History, ecs: State, id: number, ease: Easing): void {
+    recordSegment(h, ecs, id, () => {
+        const next = nextForce(ecs, id);
+        writeForceEase(ecs, id, ease);
+        clearForceTangentSide(ecs, id, "out"); // the segment's leading (out) side
+        if (next !== null) clearForceTangentSide(ecs, next, "in"); // its trailing (in) side
+    });
+}
+
+/** materialize the addressed segment's explicit handles from its current derived shape —
+ *  this keyframe's out + the next keyframe's in, seeded so the curve never jumps (a Linear
+ *  segment seeds chord-aligned; see `profile.segmentSeed`) — as one undoable entry. the
+ *  UI (`chooseCustom`) pairs this with entering handle edit. a bounding side that is
+ *  already explicit is left as-is; records nothing at a terminal keyframe (no segment). */
+export function materializeCustom(h: History, ecs: State, id: number): void {
+    recordSegment(h, ecs, id, () => {
+        const next = nextForce(ecs, id);
+        if (next === null) return;
+        const a = forcePointState(ecs, id);
+        const b = forcePointState(ecs, next);
+        if (!a || !b) return;
+        const pa = { s: a.s, g: a.g, ease: forceEase(ecs, id) };
+        const pb = { s: b.s, g: b.g };
+        const exA = forceTangent(ecs, id);
+        if (exA?.out === undefined)
+            setForceTangent(ecs, id, {
+                mode: exA?.mode ?? TangentMode.Aligned,
+                in: exA?.in,
+                out: segmentSeed(pa, pb, "out"),
+            });
+        const exB = forceTangent(ecs, next);
+        if (exB?.in === undefined)
+            setForceTangent(ecs, next, {
+                mode: exB?.mode ?? TangentMode.Aligned,
+                in: segmentSeed(pa, pb, "in"),
+                out: exB?.out,
+            });
+    });
 }
 
 /** open a gesture on a force-keyframe handle drag, snapshotting the keyframe's easing

@@ -6,6 +6,7 @@ import {
     forceProfile,
     sampleForce,
     segmentControls,
+    segmentSeed,
 } from "../src/profile";
 
 // the force-authoring layer (kex2d/CLAUDE.md, force authoring): authored force
@@ -397,5 +398,43 @@ describe("segmentControls — the resolved control points for the easing glyph",
         const cps = segmentControls(a, { s: 10, g: 1 });
         expect(cps[1].s).toBeCloseTo(2, 6);
         expect(cps[1].g).toBeCloseTo(0.5, 6);
+    });
+});
+
+describe("segmentSeed — the no-jump Custom materialization seed", () => {
+    // a preset segment seeds the derived flat tangent verbatim (autoTangent).
+    test("a Cubic segment seeds the flat derived tangent (dg = 0)", () => {
+        const a: ForcePoint = { s: 0, g: 1, ease: Easing.Cubic };
+        const b: ForcePoint = { s: 12, g: 3 };
+        expect(segmentSeed(a, b, "out")).toEqual({ ds: 4, dg: 0 }); // 1/3 · 12, flat
+        expect(segmentSeed(a, b, "in")).toEqual({ ds: -4, dg: 0 });
+    });
+
+    // the Linear special case: a plain Linear autoTangent is zero-length (ungrabbable, sits on
+    // the diamond), so a Linear segment seeds CHORD-ALIGNED at influence 1/3 — grabbable handles
+    // whose control points still land on the chord, so the sampled curve is byte-identical.
+    test("Custom on a Linear segment: chord-aligned seed, grabbable handles, byte-identical profile", () => {
+        const a: ForcePoint = { s: 0, g: 1, ease: Easing.Linear };
+        const b: ForcePoint = { s: 12, g: 3 };
+        const slope = (b.g - a.g) / (b.s - a.s); // 2/12 = 1/6
+        const seedOut = segmentSeed(a, b, "out");
+        const seedIn = segmentSeed(a, b, "in");
+
+        // grabbable: nonzero-length (unlike the plain Linear autoTangent), reaching 1/3 the span.
+        expect(seedOut.ds).toBeCloseTo(4, 12); // 1/3 · 12
+        expect(seedIn.ds).toBeCloseTo(-4, 12);
+        expect(Math.hypot(seedOut.ds, seedOut.dg)).toBeGreaterThan(1);
+        expect(Math.hypot(seedIn.ds, seedIn.dg)).toBeGreaterThan(1);
+        // chord-aligned: dg = chordSlope · ds on both sides (both control points on the chord).
+        expect(seedOut.dg).toBeCloseTo(slope * seedOut.ds, 12);
+        expect(seedIn.dg).toBeCloseTo(slope * seedIn.ds, 12);
+
+        // byte-identical: the materialized explicit-handle segment draws the exact same straight
+        // line as the plain Linear tag (the profile output is unchanged), now with real handles.
+        const aCustom: ForcePoint = { ...a, out: seedOut };
+        const bCustom: ForcePoint = { ...b, in: seedIn };
+        const linear = forceProfile([a, b], 12, 0.1);
+        const custom = forceProfile([aCustom, bCustom], 12, 0.1);
+        expect(custom).toEqual(linear);
     });
 });

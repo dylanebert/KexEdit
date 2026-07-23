@@ -30,6 +30,7 @@ import {
     createForce,
     deleteForce,
     history,
+    materializeCustom,
     redo,
     setForceEase,
     undo,
@@ -632,12 +633,14 @@ const editHandles = $derived.by((): { pt: ForcePt; handles: FHandle[] } | null =
     const tan = forceTangent(ecs, id);
     const handles: FHandle[] = [];
     if (prev) {
-        const off = tan ? tan.in : derivedIn(pt, prev);
-        handles.push({ side: "in", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: !tan });
+        // each side is independently explicit-or-derived: a stored offset shows solid, an
+        // absent one shows the derived flat ghost (the segment-scoped Custom model).
+        const off = tan?.in ?? derivedIn(pt, prev);
+        handles.push({ side: "in", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.in === undefined });
     }
     if (next) {
-        const off = tan ? tan.out : derivedOut(pt, next);
-        handles.push({ side: "out", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: !tan });
+        const off = tan?.out ?? derivedOut(pt, next);
+        handles.push({ side: "out", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.out === undefined });
     }
     return { pt, handles };
 });
@@ -706,6 +709,11 @@ function tanMove(e: PointerEvent): void {
     if (dragTan === null) return;
     if (!tanMoved && Math.hypot(e.clientX - tanDownX, e.clientY - tanDownY) > THDRAG_PX)
         tanMoved = true;
+    // the dead zone gates the WRITE, not just the release verdict: a sub-threshold jitter
+    // during a click must not write a tangent (materializing a ghost to explicit + recording
+    // a stray history entry). no `applyTan` until the gesture is a real drag; below it, tanUp
+    // resolves the release as a select-click.
+    if (!tanMoved) return;
     const rect = canvas.getBoundingClientRect();
     applyTan(e.clientX - rect.left + tanGrabDx, e.clientY - rect.top + tanGrabDy);
 }
@@ -746,14 +754,18 @@ function composeTangent(id: number, side: "in" | "out", ds: number, dg: number):
     const next = idx < pts.length - 1 ? pts[idx + 1] : null;
     if (side === "out") ds = clamp(ds, 0, next ? next.s - pt.s : 0);
     else ds = clamp(ds, prev ? -(pt.s - prev.s) : 0, 0);
+    // per-side materialization: dragging a side makes THAT side explicit; the other side is
+    // left exactly as it was (an absent side stays derived, so customizing one segment never
+    // spuriously customizes the neighbour — the segment-scoped Custom model). the un-edited
+    // side is seeded ONLY to feed the Aligned coupling, and coupling fires only when the other
+    // side is ALSO already explicit (a derived partner has nothing to align to).
     const existing = forceTangent(ecs, id);
-    const both = prev !== null && next !== null;
-    let inn: Offset = existing ? { ...existing.in } : prev ? derivedIn(pt, prev) : { ds: 0, dg: 0 };
-    let out: Offset = existing ? { ...existing.out } : next ? derivedOut(pt, next) : { ds: 0, dg: 0 };
-    const mode = existing ? existing.mode : both ? TangentMode.Aligned : TangentMode.Free;
+    const mode = existing?.mode ?? TangentMode.Aligned;
+    let inn: Offset | undefined = existing?.in;
+    let out: Offset | undefined = existing?.out;
     if (side === "out") out = { ds, dg };
     else inn = { ds, dg };
-    if (mode === TangentMode.Aligned && both) {
+    if (mode === TangentMode.Aligned && inn && out) {
         const drag = side === "out" ? out : inn;
         const px = drag.ds * clamped.pxPerM;
         const py = -drag.dg * pyPerG;
@@ -863,30 +875,48 @@ const fmenuEase = $derived.by((): Easing => {
     const m = editor.forceMenu;
     return m === null ? Easing.Cubic : forceEase(ecs, m.id);
 });
-// whether the following segment is Custom — bounded by an explicit handle on either side
-// (this keyframe's out or the next keyframe's in). DERIVED provenance, never a stored flag.
+// whether the following segment is Custom — bounded by an explicit handle on either
+// SIDE of the segment (this keyframe's out or the next keyframe's in), never the far
+// sides (this keyframe's in / the next's out, which belong to the neighbouring segments).
+// DERIVED provenance, per-side, never a stored flag — agrees exactly with what a preset
+// pick on this keyframe clears (setForceEase's segment-scoped clear).
 const fmenuCustom = $derived.by((): boolean => {
     void tick;
     const m = editor.forceMenu;
     if (m === null) return false;
     const pt = forcePts.find((p) => p.id === m.id);
     if (!pt) return false;
-    if (forceTangent(ecs, m.id) !== undefined) return true;
+    if (forceTangent(ecs, m.id)?.out !== undefined) return true;
     const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
     const idx = pts.findIndex((p) => p.id === m.id);
     const next = idx < pts.length - 1 ? pts[idx + 1] : null;
-    return next !== null && forceTangent(ecs, next.id) !== undefined;
+    return next !== null && forceTangent(ecs, next.id)?.in !== undefined;
 });
-// the menu as data: Delete, then an Easing ▸ submenu — Linear | Cubic | Quintic (checked by the
-// tag), a separator, then Custom. each row carries its real curve glyph (drawn from the same
-// influence the segment uses, so the icon can't drift). Custom is both the derived-provenance
-// indicator (checked when explicit handles bound the segment) AND a choice: picking it
-// materializes explicit handles from the derived ones and steps into handle edit; picking a
-// preset clears explicit handles back to that preset — the way back up the layers is the list.
+// whether the target keyframe is the last in its section — it governs no following
+// segment, so its menu carries no Easing ▸ entry (nothing to ease). its in-handle is still
+// reachable by double-clicking it (the preceding segment addresses the keyframe before it).
+const fmenuTerminal = $derived.by((): boolean => {
+    void tick;
+    const m = editor.forceMenu;
+    if (m === null) return false;
+    const pt = forcePts.find((p) => p.id === m.id);
+    if (!pt) return false;
+    const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
+    return pts[pts.length - 1]?.id === m.id;
+});
+// the menu as data: Delete, then (for a non-terminal keyframe) an Easing ▸ submenu — Linear |
+// Cubic | Quintic (checked by the tag), a separator, then Custom. each row carries its real
+// curve glyph (drawn from the same influence the segment uses, so the icon can't drift). Custom
+// is both the derived-provenance indicator (checked when an explicit handle bounds the segment)
+// AND a choice: picking it materializes the segment's handles from the derived ones and steps
+// into handle edit; picking a preset clears them back to that preset — the way back up the
+// layers is the list. the terminal keyframe governs no segment, so it shows Delete alone.
 const fmenuItems = $derived.by((): MenuItem[] => {
     const m = editor.forceMenu;
     if (m === null) return [];
     const id = m.id;
+    const del: MenuItem = { label: "Delete", shortcut: "Del", danger: true, action: () => deleteForce(history, ecs, id) };
+    if (fmenuTerminal) return [del];
     const easeRow = (label: string, e: Easing): MenuItem => ({
         label,
         glyph: presetGlyph(e),
@@ -894,7 +924,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
         action: () => setForceEase(history, ecs, id, e),
     });
     return [
-        { label: "Delete", shortcut: "Del", danger: true, action: () => deleteForce(history, ecs, id) },
+        del,
         {
             label: "Easing",
             children: [
@@ -907,24 +937,14 @@ const fmenuItems = $derived.by((): MenuItem[] => {
         },
     ];
 });
-// choose Custom: step into handle edit and, if the keyframe is still derived, materialize its
-// explicit handles from the current derived tangents (no curve jump — the ghost values become
-// solid) as one undoable entry. an already-explicit keyframe just re-summons its handles.
+// choose Custom on the addressed segment (this keyframe → the next): step into handle edit on
+// this keyframe and materialize the segment's two bounding sides — this keyframe's out and the
+// next keyframe's in — from their current derived shape (no curve jump; a Linear segment seeds
+// chord-aligned so the handles are grabbable), as one undoable entry (`materializeCustom`). an
+// already-explicit side is left as-is.
 function chooseCustom(id: number): void {
     enterForceEdit(id);
-    if (forceTangent(ecs, id) !== undefined) return; // already explicit — just edit
-    const pt = forcePts.find((p) => p.id === id);
-    if (!pt) return;
-    const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
-    const idx = pts.findIndex((p) => p.id === id);
-    const prev = idx > 0 ? pts[idx - 1] : null;
-    const next = idx < pts.length - 1 ? pts[idx + 1] : null;
-    const both = prev !== null && next !== null;
-    const inn: Offset = prev ? derivedIn(pt, prev) : { ds: 0, dg: 0 };
-    const out: Offset = next ? derivedOut(pt, next) : { ds: 0, dg: 0 };
-    beginForceTangent(ecs, id);
-    setForceTangent(ecs, id, { mode: both ? TangentMode.Aligned : TangentMode.Free, in: inn, out });
-    commit(history);
+    materializeCustom(history, ecs, id);
 }
 // ── easing-row curve glyphs (the Blender F-curve convention): each row draws its real curve
 // in a 0 0 22 14 viewBox, so the icon is the family it names and can't drift. a preset draws a

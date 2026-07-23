@@ -20,6 +20,7 @@ import {
     handleAt,
     handleTangent,
     MAX_SAMPLES,
+    nextForce,
     reheadOnDrag,
     removeTrailingHandle,
     resetForceTangent,
@@ -50,6 +51,7 @@ import {
     beginForceTangent,
     commit,
     createHistory,
+    materializeCustom,
     redo,
     setForceEase as setForceEaseCmd,
     undo,
@@ -1071,40 +1073,129 @@ describe("force easing + seeding (stage B)", () => {
         expect(h.undo.length).toBe(1);
     });
 
-    test("history: choosing a preset ease clears explicit handles back to derived, one entry", () => {
+    test("history: choosing a preset clears the addressed segment's bounding sides (out + next.in), one entry", () => {
+        // a preset on the LEADING keyframe X addresses segment X→next: it clears X's OUT and the
+        // next keyframe's IN (the segment's two bounding sides), never X's IN (the preceding
+        // segment). one gesture over both keyframes; undo restores both byte-identical.
         const { state, sec } = track();
         state.step(0);
-        convertSection(state, sec); // → force
-        const id = createForcePoint(state, sec, 10, 1);
-        // author explicit handles (the Custom layer) OUTSIDE any gesture.
-        const tan: ForceTangent = {
+        convertSection(state, sec); // → force; seeds at s=0 and s=EXTEND_DIST
+        const x = createForcePoint(state, sec, 10, 1); // a middle keyframe (prev=seed@0, next=seed@len)
+        const next = nextForce(state, x);
+        if (next === null) throw new Error("next keyframe missing");
+        // X carries explicit handles on BOTH sides; the next keyframe holds BOTH sides too — the
+        // clear must remove only its IN (the addressed segment's trailing side) and PRESERVE its
+        // OUT + coupling mode (the seam the review flagged — per-side optional is the contract).
+        const xTan: ForceTangent = {
             mode: TangentMode.Free,
             in: { ds: -1, dg: 0.25 },
             out: { ds: 1, dg: -0.25 },
         };
-        setForceTangent(state, id, tan);
-        expect(forceTangent(state, id)).toEqual(tan);
+        setForceTangent(state, x, xTan);
+        const nextTan: ForceTangent = {
+            mode: TangentMode.Aligned,
+            in: { ds: -2, dg: 0.5 },
+            out: { ds: 2, dg: -0.5 },
+        };
+        setForceTangent(state, next, nextTan);
         const h = createHistory();
 
-        // picking a preset row sets the tag AND clears the handles — one undoable gesture
-        // (subsumes the removed Reset). undo restores BOTH the prior tag and the handles.
-        setForceEaseCmd(h, state, id, Easing.Quintic);
+        setForceEaseCmd(h, state, x, Easing.Quintic);
         expect(h.undo.length).toBe(1);
-        expect(forceEase(state, id)).toBe(Easing.Quintic);
-        expect(forceTangent(state, id)).toBeUndefined(); // back to the derived preset
+        expect(forceEase(state, x)).toBe(Easing.Quintic);
+        // X's OUT (the segment's leading side) is cleared; its IN (the preceding segment) survives.
+        expect(forceTangent(state, x)).toEqual({
+            mode: TangentMode.Free,
+            in: { ds: -1, dg: 0.25 },
+        });
+        // the next keyframe's IN (the trailing side) is cleared; its OUT + mode survive (the seam).
+        expect(forceTangent(state, next)).toEqual({
+            mode: TangentMode.Aligned,
+            out: { ds: 2, dg: -0.5 },
+        });
+
+        undo(h, state); // one entry restores BOTH keyframes
+        expect(forceEase(state, x)).toBe(Easing.Cubic);
+        expect(forceTangent(state, x)).toEqual(xTan);
+        expect(forceTangent(state, next)).toEqual(nextTan);
+        redo(h, state);
+        expect(forceTangent(state, x)).toEqual({
+            mode: TangentMode.Free,
+            in: { ds: -1, dg: 0.25 },
+        });
+        expect(forceTangent(state, next)).toEqual({
+            mode: TangentMode.Aligned,
+            out: { ds: 2, dg: -0.5 },
+        });
+    });
+
+    test("history: a preset leaves a keyframe's explicit in-handle from the preceding segment untouched (scenario a)", () => {
+        // X carries an explicit IN (the preceding segment W→X is Custom through it) and no OUT.
+        // a preset pick on X addresses segment X→next and must not disturb X's IN — the review's
+        // "clobbered the preceding segment" failure. the keyframe-scoped clear wiped X entirely.
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec);
+        const x = createForcePoint(state, sec, 10, 1);
+        const xIn: ForceTangent = { mode: TangentMode.Free, in: { ds: -1.5, dg: 0.25 } };
+        setForceTangent(state, x, xIn);
+        const h = createHistory();
+
+        setForceEaseCmd(h, state, x, Easing.Linear);
+        expect(forceEase(state, x)).toBe(Easing.Linear);
+        expect(forceTangent(state, x)).toEqual(xIn); // X.in survived; only X.out (already derived) was addressed
+    });
+
+    test("history: a preset clears the trailing in-handle when the segment is Custom solely through it (scenario b)", () => {
+        // segment X→next is Custom ONLY through next's explicit IN (X.out is derived). a preset on
+        // X — even the SAME tag X already carries — must clear that trailing in-side and record it
+        // (the no-op guard covers the tag AND both bounding sides), so the segment's Custom
+        // provenance unchecks. the keyframe-scoped clear left it checked-but-ineffective.
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec);
+        const x = createForcePoint(state, sec, 10, 1);
+        const next = nextForce(state, x);
+        if (next === null) throw new Error("next keyframe missing");
+        const nextIn: ForceTangent = { mode: TangentMode.Free, in: { ds: -2, dg: 0.5 } };
+        setForceTangent(state, next, nextIn);
+        const h = createHistory();
+        expect(forceTangent(state, x)?.out).toBeUndefined(); // X.out derived
+        expect(forceTangent(state, next)?.in).toBeDefined(); // provenance is the trailing in
+
+        setForceEaseCmd(h, state, x, Easing.Cubic); // Cubic is X's current (default) tag — no tag change
+        expect(h.undo.length).toBe(1); // records despite the unchanged tag: the trailing side changed
+        expect(forceTangent(state, next)).toBeUndefined(); // Custom provenance gone
 
         undo(h, state);
-        expect(forceEase(state, id)).toBe(Easing.Cubic);
-        expect(forceTangent(state, id)).toEqual(tan); // handles restored in the same step
-        redo(h, state);
-        expect(forceEase(state, id)).toBe(Easing.Quintic);
-        expect(forceTangent(state, id)).toBeUndefined();
+        expect(forceTangent(state, next)).toEqual(nextIn); // restored in the same entry
+    });
 
-        // picking the CURRENT preset still clears handles: the no-op guard is over BOTH the
-        // tag and the handles, so a tag-unchanged pick with explicit handles present records.
-        setForceTangent(state, id, tan);
-        setForceEaseCmd(h, state, id, Easing.Quintic);
-        expect(forceTangent(state, id)).toBeUndefined();
+    test("history: materializeCustom seeds the segment's two bounding sides, one entry; undo clears both", () => {
+        // choosing Custom on segment X→next materializes X's OUT + next's IN from the derived
+        // shape (no jump), leaving X's IN and next's OUT alone. one gesture over both keyframes.
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec);
+        const x = createForcePoint(state, sec, 10, 1);
+        const next = nextForce(state, x);
+        if (next === null) throw new Error("next keyframe missing");
+        const h = createHistory();
+        expect(forceTangent(state, x)).toBeUndefined();
+        expect(forceTangent(state, next)).toBeUndefined();
+
+        materializeCustom(h, state, x);
+        expect(h.undo.length).toBe(1);
+        // X's OUT materialized (the leading side), IN still derived (absent).
+        expect(forceTangent(state, x)?.out).toBeDefined();
+        expect(forceTangent(state, x)?.in).toBeUndefined();
+        // next's IN materialized (the trailing side), OUT still derived (absent).
+        expect(forceTangent(state, next)?.in).toBeDefined();
+        expect(forceTangent(state, next)?.out).toBeUndefined();
+
+        undo(h, state); // one entry clears both back to fully derived
+        expect(forceTangent(state, x)).toBeUndefined();
+        expect(forceTangent(state, next)).toBeUndefined();
     });
 
     test("history: a handle drag (beginForceTangent) collapses to one entry; undo clears the handles", () => {

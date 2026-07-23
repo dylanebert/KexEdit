@@ -68,6 +68,24 @@ export function autoTangent(ease: Easing, span: number, side: "in" | "out"): Off
     return side === "out" ? { ds: reach, dg: 0 } : { ds: -reach, dg: 0 };
 }
 
+/** the offset to **materialize** a keyframe `side` with when stepping the segment
+ *  between `a` (leading) and `b` (trailing) up to Custom — seeded from the segment's
+ *  current derived shape so the curve never jumps. for a preset-eased segment this is
+ *  exactly the derived flat tangent (`autoTangent`). the **Linear** case is special:
+ *  its derived tangent is zero-length (the bezier degenerates to the chord), which draws
+ *  ungrabbable handles, so a Linear segment seeds **chord-aligned at influence 1/3** —
+ *  the handle points along the chord (Δg = chordSlope·Δs), reaching a third of the span.
+ *  both control points then land on the chord, so the segment still draws the identical
+ *  straight line, but the handles are grabbable. */
+export function segmentSeed(a: ForcePoint, b: ForcePoint, side: "in" | "out"): Offset {
+    const span = b.s - a.s;
+    const ease = a.ease ?? Easing.Cubic;
+    if (ease !== Easing.Linear) return autoTangent(ease, span, side);
+    const slope = span > EPS ? (b.g - a.g) / span : 0;
+    const reach = (side === "out" ? 1 : -1) * influence(Easing.Cubic) * span;
+    return { ds: reach, dg: slope * reach };
+}
+
 /** an explicit bezier handle stored on a keyframe side, as a **(Δs, Δg) offset**
  *  from the keyframe — the summoned inner layer, mirroring geo's stored `Tangent`.
  *  the outgoing (`out`) handle reaches forward (Δs ≥ 0) into the following segment;

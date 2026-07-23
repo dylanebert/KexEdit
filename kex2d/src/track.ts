@@ -128,64 +128,79 @@ export const Force = {
     tout: sparse(vec2),
 };
 
-/** the numeric `Force.tmode` for a keyframe with no explicit handles (the derived-
- *  from-`ease` default). `TangentMode` starts at 1, so 0 is the third, default state
- *  — the same convention as geo's `TANGENT_AUTO`. */
-const FORCE_TANGENT_NONE = 0;
-
 /** the easing tag a fresh force keyframe gets — the FVD++/Planet-Coaster S-transition
  *  feel, and the "no stored state" default (`profile.ts` reads an absent tag as this). */
 const FORCE_EASE_DEFAULT = Easing.Cubic;
 
+/** `Force.tmode` bits. the low two bits hold the `TangentMode` (1/2/3); the two flag
+ *  bits mark which sides carry an explicit handle. a keyframe's two sides are
+ *  **independently optional** (per-side, per the segment-scoped Custom model): the
+ *  segment X→X+1 is Custom iff X's OUT or X+1's IN holds an explicit handle, so a
+ *  preset/Custom on one segment must clear/materialize one side without touching the
+ *  keyframe's far side (which belongs to the neighbouring segment). 0 (no flags) = the
+ *  derived-from-`ease` default. */
+const TIN_PRESENT = 1 << 2;
+const TOUT_PRESENT = 1 << 3;
+
 /** a force keyframe's explicit handles — the summoned inner layer, mirroring geo's
  *  `Tangent`. `mode` is the `TangentMode` (which handle drag rotates/mirrors the other);
- *  `in`/`out` are the stored (Δs, Δg) handle offsets `profile.segment` consumes. present
- *  only when the keyframe is not derived-from-`ease`. */
+ *  `in`/`out` are the stored (Δs, Δg) handle offsets `profile.segment` consumes. each
+ *  side is **independently optional**: an absent side derives from `ease`, a present one
+ *  overrides it verbatim. the whole record is undefined only when both sides derive. */
 export interface ForceTangent {
     mode: TangentMode;
-    in: Offset;
-    out: Offset;
+    in?: Offset;
+    out?: Offset;
 }
 
-/** read a force keyframe's explicit handles, or undefined when it derives from `ease`
- *  — the projection onto `profile.ForcePoint`'s `in`/`out`. mirrors geo's `readTangent`. */
+/** read a force keyframe's explicit handles, or undefined when both sides derive from
+ *  `ease` — the projection onto `profile.ForcePoint`'s `in`/`out`. mirrors geo's
+ *  `readTangent`; each side is present only when its flag bit is set. */
 function readForceTangent(eid: number): ForceTangent | undefined {
-    const mode = Force.tmode.get(eid);
-    if (mode === FORCE_TANGENT_NONE) return undefined;
-    return {
-        mode: mode as TangentMode,
-        in: { ds: Force.tin.x.get(eid), dg: Force.tin.y.get(eid) },
-        out: { ds: Force.tout.x.get(eid), dg: Force.tout.y.get(eid) },
-    };
+    const raw = Force.tmode.get(eid);
+    const inOn = (raw & TIN_PRESENT) !== 0;
+    const outOn = (raw & TOUT_PRESENT) !== 0;
+    if (!inOn && !outOn) return undefined;
+    const tan: ForceTangent = { mode: (raw & 0b11) as TangentMode };
+    if (inOn) tan.in = { ds: Force.tin.x.get(eid), dg: Force.tin.y.get(eid) };
+    if (outOn) tan.out = { ds: Force.tout.x.get(eid), dg: Force.tout.y.get(eid) };
+    return tan;
 }
 
-/** write a force keyframe's explicit handles onto its columns; undefined clears them
- *  back to the derived-from-`ease` default (zeroed). the one place `Force.tmode`/`tin`/
- *  `tout` are written together. mirrors geo's `writeTangent`. */
+/** write a force keyframe's explicit handles onto its columns; undefined (or a record
+ *  with neither side) clears them back to the derived-from-`ease` default (zeroed). the
+ *  one place `Force.tmode`/`tin`/`tout` are written together. mirrors geo's `writeTangent`.
+ *  the absent side stores zeroes so an undo round-trip is byte-identical. */
 function writeForceTangent(eid: number, tan: ForceTangent | undefined): void {
-    if (tan) {
-        Force.tmode.set(eid, tan.mode);
-        Force.tin.set(eid, tan.in.ds, tan.in.dg);
-        Force.tout.set(eid, tan.out.ds, tan.out.dg);
+    if (tan && (tan.in || tan.out)) {
+        let raw = tan.mode & 0b11;
+        if (tan.in) {
+            raw |= TIN_PRESENT;
+            Force.tin.set(eid, tan.in.ds, tan.in.dg);
+        } else Force.tin.set(eid, 0, 0);
+        if (tan.out) {
+            raw |= TOUT_PRESENT;
+            Force.tout.set(eid, tan.out.ds, tan.out.dg);
+        } else Force.tout.set(eid, 0, 0);
+        Force.tmode.set(eid, raw);
     } else {
-        Force.tmode.set(eid, FORCE_TANGENT_NONE);
+        Force.tmode.set(eid, 0);
         Force.tin.set(eid, 0, 0);
         Force.tout.set(eid, 0, 0);
     }
 }
 
-/** whether two explicit force handles are equal (both absent = equal) — the gesture
- *  no-op test the handle-drag/reset history wrappers use. */
+/** whether two (Δs, Δg) offsets are equal (both absent = equal). */
+function sameOffset(a?: Offset, b?: Offset): boolean {
+    if (!a || !b) return !a && !b;
+    return a.ds === b.ds && a.dg === b.dg;
+}
+
+/** whether two explicit force handles are equal (both absent = equal, per-side) — the
+ *  gesture no-op test the handle-drag/reset history wrappers use. */
 export function sameForceTangent(a?: ForceTangent, b?: ForceTangent): boolean {
-    if (!a && !b) return true;
-    if (!a || !b) return false;
-    return (
-        a.mode === b.mode &&
-        a.in.ds === b.in.ds &&
-        a.in.dg === b.in.dg &&
-        a.out.ds === b.out.ds &&
-        a.out.dg === b.out.dg
-    );
+    if (!a || !b) return !a && !b;
+    return a.mode === b.mode && sameOffset(a.in, b.in) && sameOffset(a.out, b.out);
 }
 
 type Samples = {
@@ -937,6 +952,32 @@ export function resetForceTangent(ecs: State, id: number): void {
     if (eid !== null) writeForceTangent(eid, undefined);
 }
 
+/** clear ONE side (in/out) of a force keyframe's explicit handles back to derived,
+ *  keeping the other side. the segment-scoped Reset: choosing a preset on the leading
+ *  keyframe clears the addressed segment's two bounding sides — this keyframe's out and
+ *  the next keyframe's in — never the far sides, which belong to the neighbouring
+ *  segments. no-op when the side is already derived. */
+export function clearForceTangentSide(ecs: State, id: number, side: "in" | "out"): void {
+    const eid = forceAt(ecs, id);
+    if (eid === null) return;
+    const tan = readForceTangent(eid);
+    if (!tan) return;
+    if (side === "in") tan.in = undefined;
+    else tan.out = undefined;
+    writeForceTangent(eid, tan);
+}
+
+/** the next force keyframe after `id` in its own section (ascending s), or null when
+ *  `id` is the section's last — the trailing bound of the segment a preset/Custom on
+ *  `id` addresses. */
+export function nextForce(ecs: State, id: number): number | null {
+    const eid = forceAt(ecs, id);
+    if (eid === null) return null;
+    const rows = sectionForces(ecs, Force.section.get(eid));
+    const idx = rows.findIndex((r) => r.id === id);
+    return idx >= 0 && idx < rows.length - 1 ? rows[idx + 1].id : null;
+}
+
 // ── force-section extent ──────────────────────────────────────────────────────
 
 /** a force section's undoable extent, keyed by stable id — the end-handle drag
@@ -1340,7 +1381,7 @@ function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number): strin
             for (const p of sectionForces(ecs, sec.id)) {
                 h += `,${p.id}=${p.s}:${p.g}:${Force.ease.get(p.eid)}`;
                 const mode = Force.tmode.get(p.eid);
-                if (mode !== FORCE_TANGENT_NONE) {
+                if (mode !== 0) {
                     h += `~${mode}:${Force.tin.x.get(p.eid)}:${Force.tin.y.get(p.eid)}:${Force.tout.x.get(p.eid)}:${Force.tout.y.get(p.eid)}`;
                 }
             }
@@ -1484,7 +1525,7 @@ export const TrackPlugin: Plugin = {
                 s: 0,
                 g: 0,
                 ease: FORCE_EASE_DEFAULT,
-                tmode: FORCE_TANGENT_NONE,
+                tmode: 0,
                 tin: [0, 0],
                 tout: [0, 0],
             }),

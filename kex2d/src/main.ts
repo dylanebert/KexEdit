@@ -187,20 +187,27 @@ if (import.meta.env.DEV) {
         // clears them.
         forceTangents: (): (null | {
             mode: number;
+            inOn: boolean;
             inDs: number;
             inDg: number;
+            outOn: boolean;
             outDs: number;
             outDg: number;
         })[] =>
             sectionForces(ecs, sec()).map((p) => {
                 const t = forceTangent(ecs, p.id);
+                // each side is independently optional (the segment-scoped Custom model): an
+                // absent side reads 0 and its `*On` flag is false, so the flow can assert which
+                // side actually carries an explicit handle.
                 return t
                     ? {
                           mode: t.mode,
-                          inDs: t.in.ds,
-                          inDg: t.in.dg,
-                          outDs: t.out.ds,
-                          outDg: t.out.dg,
+                          inOn: t.in !== undefined,
+                          inDs: t.in?.ds ?? 0,
+                          inDg: t.in?.dg ?? 0,
+                          outOn: t.out !== undefined,
+                          outDs: t.out?.ds ?? 0,
+                          outDg: t.out?.dg ?? 0,
                       }
                     : null;
             }),

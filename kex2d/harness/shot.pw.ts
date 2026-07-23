@@ -872,9 +872,30 @@ test("force easing menu flow", async ({ page }) => {
     await expect(page.locator(".thit")).toHaveCount(2); // in + out handles (an interior keyframe)
     await expect.poll(forceCount).toBe(nPts); // the double-click summoned, it did NOT insert
 
-    // ── 4. Drag a handle → the keyframe gains an explicit tangent (the segment reads Custom).
-    // a real canvas pointer drag, located by the .thit grab circle. ──
-    const knob = await page.locator(".thit").first().boundingBox();
+    // ── 3b. Dead-zone: a CLICK on a handle knob with a sub-threshold jitter (2-3 px, under
+    // DRAG_PX) selects the handle but writes NO tangent and records NO history — it must not
+    // materialize a ghost to explicit on a jittery click (the F2 review finding: the write was
+    // gated only on the release verdict, not the dead zone). the IN handle (reaches backward,
+    // away from step 4's out-drag). ──
+    const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
+    const beforeJitter = await undoDepth();
+    const inKnob = await page.locator(".thit").first().boundingBox();
+    if (!inKnob) throw new Error("in-handle knob not laid out");
+    await page.mouse.move(inKnob.x + inKnob.width / 2, inKnob.y + inKnob.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(inKnob.x + inKnob.width / 2 + 2, inKnob.y + inKnob.height / 2 - 2, { steps: 2 });
+    await page.mouse.up();
+    await expect.poll(forceHandleSel).toBe("in"); // the jittery click SELECTED the handle
+    expect((await forceTangents())[1]).toBeNull(); // …but wrote NO explicit tangent
+    expect(await undoDepth()).toBe(beforeJitter); // …and recorded NO history entry
+    await page.keyboard.press("Escape"); // peel: deselect the handle, stay in handle edit
+    await expect.poll(forceHandleSel).toBeNull();
+
+    // ── 4. Drag the OUT handle → the keyframe's OUT side gains an explicit tangent, so its
+    // FOLLOWING segment (the one its menu addresses) reads Custom. a real canvas pointer drag,
+    // located by the .thit grab circle. the out handle reaches into the larger next span, clear
+    // of the diamond. ──
+    const knob = await page.locator(".thit").last().boundingBox();
     if (!knob) throw new Error("handle knob not laid out");
     await page.mouse.move(knob.x + knob.width / 2, knob.y + knob.height / 2);
     await page.mouse.down();
@@ -929,9 +950,22 @@ test("force easing menu flow", async ({ page }) => {
     await page.keyboard.press("Control+z"); // undo the typed entry
     await expect.poll(async () => Math.abs((await forceTangents())[1]?.outDg ?? 1)).toBeLessThan(0.01);
 
-    // ── 9. Delete, pointer-true, removes the keyframe. ──
-    await page.keyboard.press("Escape"); // peel: deselect the handle
-    await page.keyboard.press("Escape"); // peel: exit handle edit
+    // ── 9. The TERMINAL keyframe (the last one, governing no following segment) drops the
+    // Easing ▸ entry entirely — its menu is Delete alone (there is no transition to ease). ──
+    await page.locator(".fpt").last().click({ button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await expect
+        .poll(async () =>
+            (await page.locator(".fmenu [role=menuitem]").allTextContents()).map((t) =>
+                t.replace(/\s+/g, " ").trim(),
+            ),
+        )
+        .toEqual(["Delete Del"]); // no Easing ▸ on the terminal keyframe
+    await page.keyboard.press("Escape"); // close the menu
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+
+    // ── 10. Delete, pointer-true, removes an interior keyframe. ──
+    await page.keyboard.press("Escape"); // deselect the terminal keyframe
     const beforeDelete = await forceCount();
     await page.locator(".fpt").nth(1).click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
