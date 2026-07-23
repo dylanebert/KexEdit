@@ -1198,6 +1198,31 @@ describe("force easing + seeding (stage B)", () => {
         expect(forceTangent(state, next)).toBeUndefined();
     });
 
+    test("history: materializeCustom stores Free when a preserved side is non-collinear with the seed", () => {
+        // X carries an explicit OFF-FLAT in-handle (the preceding segment W→X is Custom through
+        // it, its in-handle dragged off horizontal); X's out is still derived. materializing the
+        // FOLLOWING segment X→next seeds X's out flat — non-collinear with the off-flat in. the
+        // stored mode must be Free: Aligned ⟹ collinear, and re-aligning either side to force
+        // collinearity would jump a handle.
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force; seeds @0 and @len
+        const x = createForcePoint(state, sec, 10, 1);
+        const next = nextForce(state, x);
+        if (next === null) throw new Error("next keyframe missing");
+        const xIn: ForceTangent = { mode: TangentMode.Aligned, in: { ds: -2, dg: 0.5 } };
+        setForceTangent(state, x, xIn);
+        const h = createHistory();
+
+        materializeCustom(h, state, x); // materialize X→next; seeds X's out + next's in
+        const tan = forceTangent(state, x);
+        if (!tan) throw new Error("X tangent missing");
+        expect(tan.mode).toBe(TangentMode.Free); // the seeded flat out ≠ collinear with the off-flat in
+        expect(tan.in).toEqual({ ds: -2, dg: 0.5 }); // in unchanged — never re-aligned
+        expect(tan.out?.dg).toBe(0); // out seeded flat (derived), not aligned to the in's slope
+        expect(tan.out?.ds).toBeGreaterThan(0); // forward reach into the segment
+    });
+
     test("history: a handle drag (beginForceTangent) collapses to one entry; undo clears the handles", () => {
         const { state, sec } = track();
         state.step(0);

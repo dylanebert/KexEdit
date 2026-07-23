@@ -96,6 +96,21 @@ export interface Offset {
     dg: number;
 }
 
+/** whether two handle offsets lie on one straight line through the keyframe — the
+ *  geometric precondition for storing `TangentMode.Aligned` (angle mirrored, `Aligned ⟹
+ *  collinear`). a missing side is vacuously aligned (a single-sided keyframe has nothing
+ *  to diverge from). the cross product is compared against a relative tolerance derived
+ *  from f32 handle storage: a genuinely-collinear pair round-tripped through the f32
+ *  `Force.tin`/`tout` columns perturbs by ≤ ~2·2^-24 in angle, so |cross|/(|a|·|b|) ≤
+ *  ~1.2e-7; `COLLINEAR_TOL` clears that with margin while staying orders below any
+ *  deliberate off-flat handle's angle. */
+export function collinear(a?: Offset, b?: Offset): boolean {
+    if (!a || !b) return true;
+    const cross = a.ds * b.dg - a.dg * b.ds;
+    const scale = Math.hypot(a.ds, a.dg) * Math.hypot(b.ds, b.dg);
+    return Math.abs(cross) <= scale * COLLINEAR_TOL;
+}
+
 /** a force keyframe: a demanded normal force `g` at arclength `s` (m). `ease`
  *  governs the *following* segment's derived flat tangents (default `Easing.Cubic`
  *  when absent — the "no stored state" convention). `in`/`out` are the summoned
@@ -113,6 +128,11 @@ export interface ForcePoint {
 export const DEFAULT_G = 1;
 
 const EPS = 1e-12;
+
+/** collinearity tolerance for `collinear`, relative to the handle magnitudes. f32 handle
+ *  storage (2^-24 unit roundoff) perturbs a collinear pair's angle by ≤ ~2·2^-24 ≈ 1.2e-7;
+ *  1e-6 clears that with margin, far below any deliberate off-flat handle's angle. */
+const COLLINEAR_TOL = 1e-6;
 
 /** residual bound for the s(t) = target root solve, relative to the segment span.
  *  ~a few ULP of a double: the Linear-tag exactness error is |Δg|·(residual/span)

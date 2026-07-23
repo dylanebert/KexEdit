@@ -741,8 +741,9 @@ function applyTan(cx: number, cy: number): void {
 // resolve a keyframe's full explicit tangent after setting `side` to the (Δs, Δg) offset —
 // the write both the handle drag and the typed handle field go through. applies (1) the
 // x-monotonicity clamp (out reaches into [0, next−s], in into [−(s−prev), 0], so g(s) stays a
-// function), (2) the no-jump derived seed for the un-edited side of a still-derived keyframe
-// (Aligned when both sides drive a segment, else Free at a chain end), and (3) Aligned coupling
+// function), (2) per-side materialization — only the dragged side becomes explicit, the
+// un-edited side left exactly as it was (an absent side stays derived, the segment-scoped
+// Custom model), and (3) Aligned coupling
 // — the other side held collinear in chart pixels, keeping its own length (Blender aligned
 // handles; screen px because the chart's s/g axes differ).
 function composeTangent(id: number, side: "in" | "out", ds: number, dg: number): ForceTangent | null {

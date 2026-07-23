@@ -11,7 +11,7 @@
  *  apply/reverse. */
 
 import type { State } from "@dylanebert/shallot";
-import { type Easing, segmentSeed } from "./profile";
+import { collinear, type Easing, segmentSeed } from "./profile";
 import {
     appendSection as appendSectionTrack,
     clearForceTangentSide,
@@ -325,7 +325,7 @@ function recordSegment(h: History, ecs: State, id: number, mutate: () => void): 
     const sameB =
         beforeB === undefined ||
         afterB === undefined ||
-        sameForceTangent(beforeB.tangent, afterB.tangent);
+        (beforeB.ease === afterB.ease && sameForceTangent(beforeB.tangent, afterB.tangent));
     if (sameA && sameB) return;
     const restore = (a: ForcePointState, b?: ForcePointState): void => {
         restoreForcePoint(ecs, a);
@@ -367,20 +367,29 @@ export function materializeCustom(h: History, ecs: State, id: number): void {
         if (!a || !b) return;
         const pa = { s: a.s, g: a.g, ease: forceEase(ecs, id) };
         const pb = { s: b.s, g: b.g };
+        // when a bounding side is already explicit, materializing the other must not claim a
+        // collinearity the two sides don't have: store Aligned only when the resulting in/out
+        // pair is collinear (a single-sided keyframe or a derived-flat pair qualifies), else
+        // Free. never re-align the preserved side to force collinearity — that would jump a
+        // handle (the Aligned ⟹ collinear invariant).
         const exA = forceTangent(ecs, id);
-        if (exA?.out === undefined)
+        if (exA?.out === undefined) {
+            const out = segmentSeed(pa, pb, "out");
             setForceTangent(ecs, id, {
-                mode: exA?.mode ?? TangentMode.Aligned,
+                mode: collinear(exA?.in, out) ? TangentMode.Aligned : TangentMode.Free,
                 in: exA?.in,
-                out: segmentSeed(pa, pb, "out"),
+                out,
             });
+        }
         const exB = forceTangent(ecs, next);
-        if (exB?.in === undefined)
+        if (exB?.in === undefined) {
+            const inn = segmentSeed(pa, pb, "in");
             setForceTangent(ecs, next, {
-                mode: exB?.mode ?? TangentMode.Aligned,
-                in: segmentSeed(pa, pb, "in"),
+                mode: collinear(inn, exB?.out) ? TangentMode.Aligned : TangentMode.Free,
+                in: inn,
                 out: exB?.out,
             });
+        }
     });
 }
 
