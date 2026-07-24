@@ -927,6 +927,12 @@ test("force easing menu flow", async ({ page }) => {
     const outDgSnap = (await forceTangents())[1]?.outDg ?? 0;
     expect(Math.abs(outDgSnap)).toBeGreaterThan(0.05);
     expect(Math.abs(outDgSnap * 10 - Math.round(outDgSnap * 10))).toBeLessThan(1e-6);
+    // (b2) Δs, by contrast, is CONTINUOUS (F3d): a handle's horizontal offset is curvature
+    // shaping, not a placement on the arclength, so it is NOT grid-quantized. The ~24-px drag's
+    // Δs lands off the 1-m grid; re-enable the Δs quantize and it snaps to an integer → red.
+    const outDsCont = (await forceTangents())[1]?.outDs ?? 0;
+    expect(Math.abs(outDsCont)).toBeGreaterThan(0.05); // a real, nonzero reach
+    expect(Math.abs(outDsCont - Math.round(outDsCont))).toBeGreaterThan(1e-3); // off the 1-m grid
     // …and the readout swapped to the handle, printing that snapped value in vocabulary form
     // (trailing zeros trimmed) — the popover shows the handle's own (Δs, Δg), not the keyframe's.
     const hgReadout = page.locator('.ptip input[aria-label="Handle g offset (g)"]');
@@ -963,12 +969,12 @@ test("force easing menu flow", async ({ page }) => {
     await expect.poll(async () => (await forceTangents())[1]?.outDg ?? 0).not.toBe(beforeScrubDg);
     expect(await undoDepth()).toBe(beforeScrubUndo + 1); // the whole scrub → one entry
 
-    // ── 4b. Ctrl/Cmd FREES the offset grid. Reset step 4's handle to derived, re-enter, and drag
-    // the OUT knob with the modifier held to an off-round pixel target: the bypass keeps both Δs
-    // and Δg continuous. A working bypass leaves at least one axis off its grid (a continuous
-    // real hits both the 1-m and the 0.1-g grid simultaneously with vanishing probability); a
-    // broken bypass snaps BOTH → the assert goes red. Fresh-from-flat so the grab-ray latch
-    // releases on the large move. ──
+    // ── 4b. Ctrl/Cmd frees the Δg grid (Δs is already continuous by default, F3d — the modifier's
+    // remaining job is the Δg quantum). Reset step 4's handle to derived, re-enter, and drag the OUT
+    // knob with the modifier held to an off-round pixel target: the bypass keeps Δg continuous, so it
+    // lands off the 0.1-g grid (a continuous real hits the grid with vanishing probability); a broken
+    // bypass snaps Δg → the assert goes red. Fresh-from-flat so the grab-ray latch releases on the
+    // large move. ──
     await page.locator(".fpt").nth(1).click({ button: "right" });
     await clickFlyout(page, ".fmenu", "Easing", "Cubic");
     await expect(page.locator(".fmenu")).toHaveCount(0);
@@ -985,9 +991,9 @@ test("force easing menu flow", async ({ page }) => {
     await page.keyboard.up("Control");
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
     const free = (await forceTangents())[1];
-    const dsOnGrid = Math.abs((free?.outDs ?? 0) - Math.round(free?.outDs ?? 0)) < 1e-6; // S_GRID = 1 m
+    expect(Math.abs(free?.outDg ?? 0)).toBeGreaterThan(0.05); // a real, nonzero vertical reach
     const dgOnGrid = Math.abs((free?.outDg ?? 0) * 10 - Math.round((free?.outDg ?? 0) * 10)) < 1e-6; // G_GRID = 0.1 g
-    expect(dsOnGrid && dgOnGrid).toBe(false); // the bypass freed at least one axis off its grid
+    expect(dgOnGrid).toBe(false); // the bypass freed Δg off its 0.1-g grid
 
     // ── 4d. Handle popover placement (F3c): vertical-primary, matching the keyframe popover's
     // above/below reading. The box sits above/below the knob, horizontally centred on it, on the
@@ -1216,6 +1222,76 @@ test("context menu stays in the viewport near the bottom edge", async ({ page })
     expect(sb.y).toBeGreaterThanOrEqual(0);
     expect(sb.x).toBeGreaterThanOrEqual(0);
     await page.keyboard.press("Escape");
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Handle drags must behave like keyframe/node drags at the view edges, through the SAME mechanisms:
+// (1) a handle HELD past the chart edge EDGE-PANS the value axis (the shared growValueAxis path,
+// factored from the keyframe drag), and (2) on RELEASE the range ACCOMMODATES the handle endpoint so
+// a knob never sits outside the visible range (yTarget's content extent, extended to explicit handle
+// endpoints — the same accommodate keyframes get through the curve scan). The gRange hook reads the
+// displayed g-range (yView); a real canvas pointer drives the drag past the edge. Each half carries
+// its own mutation: unwire the handle branch → no pan; drop the handle-endpoint inclusion → no fit.
+test("handle drag edge-pans the value axis and a released handle stays in range", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
+    const forceEditing = () => page.evaluate((): boolean => (window as any).__kex.forceEditing());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+    const forces = () =>
+        page.evaluate((): { s: number; g: number }[] => (window as any).__kex.forces());
+    const forceTangents = () =>
+        page.evaluate((): (null | { outDg: number })[] => (window as any).__kex.forceTangents());
+    const gRange = () => page.evaluate((): [number, number] => (window as any).__kex.gRange());
+
+    // seed a force bump → an interior shoulder keyframe (nth 1) whose OUT handle has room downward.
+    await page.evaluate(() => (window as any).__kex.seedForceBump());
+    await expect.poll(forceCount).toBeGreaterThanOrEqual(3);
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await frameTimeline(page);
+
+    const body = await page.locator(".dock .body").boundingBox();
+    if (!body) throw new Error("timeline body not laid out");
+    const chartBotY = body.y + body.height - 8; // BOT_PAD (Timeline.svelte)
+
+    await page.locator(".fpt").nth(1).dblclick(); // enter handle edit → its two handles summon
+    await expect.poll(forceEditing).toBe(true);
+    await expect(page.locator(".thit")).toHaveCount(2);
+
+    // ── 1. Edge-pan: grab the OUT knob, drag it straight DOWN well past the chart bottom, and HOLD.
+    // The shared edge-grow fires per frame while the cursor is held beyond the edge, so the displayed
+    // range's floor keeps dropping (the held handle rides the growing axis). Mutation: revert the
+    // handle branch in the yView effect to `return` (unwire the path) → the axis holds → the floor
+    // never drops → this times out red. ──
+    const [lo0] = await gRange();
+    const knob = await page.locator(".thit").last().boundingBox();
+    if (!knob) throw new Error("out handle knob not laid out");
+    const knobX = knob.x + knob.width / 2;
+    await page.mouse.move(knobX, knob.y + knob.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(knobX, chartBotY + 140, { steps: 8 }); // straight down, past the bottom, HELD
+    await expect.poll(async () => (await gRange())[0]).toBeLessThan(lo0 - 1.0); // the view panned down
+    await page.mouse.up();
+    await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
+
+    // ── 2. Release accommodate: the OUT handle now overshoots far below the drawn curve (its knob
+    // sat at the panned floor). The range must include its ENDPOINT (keyframe g + Δg) — yFit pads
+    // FIT_PAD (0.4 g) past the content extent, so the settled floor lands strictly BELOW the
+    // endpoint. Mutation: drop the handle-endpoint inclusion in yTarget → the view fits the curve
+    // only (its dip sits well above the overshoot knob), so the floor never reaches the endpoint and
+    // instead lazily contracts back up → this times out red. ──
+    const g1 = (await forces())[1].g;
+    const endpointG = g1 + ((await forceTangents())[1]?.outDg ?? 0);
+    await expect.poll(async () => (await gRange())[0]).toBeLessThan(endpointG - 0.2);
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });

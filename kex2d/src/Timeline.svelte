@@ -267,6 +267,20 @@ const yTarget = $derived.by((): YFit => {
             if (c.f[i] > hi) hi = c.f[i];
         }
     }
+    // include the edited keyframe's EXPLICIT handle endpoints in the content extent, through the
+    // one place handle endpoints are computed (`editHandles`), so a released handle drag never
+    // leaves a knob outside the visible range — the accommodate keyframes get through the curve
+    // scan, extended to the drawn control points. a derived (ghost) handle stays within the curve
+    // hull, so only a stored offset can overshoot it; only those count.
+    const eh = editHandles;
+    if (eh) {
+        for (const hnd of eh.handles) {
+            if (hnd.ghost) continue;
+            const g = eh.pt.g + hnd.dg;
+            if (g < lo) lo = g;
+            if (g > hi) hi = g;
+        }
+    }
     return yFit(lo, hi, Y_BASE);
 });
 
@@ -291,21 +305,21 @@ $effect(() => {
             yInit = true;
             return;
         }
+        // drag mode: the axis HOLDS during a keyframe or handle drag — the live re-bake must
+        // never re-fit the view under the held cursor — until the cursor is dragged PAST the
+        // chart edge, where the shared edge-grow (growValueAxis) scrolls the value axis to
+        // follow. auto-fit resumes on release and eases to the new curve's range.
         if (dragForce !== null) {
-            // drag mode: the axis HOLDS during a keyframe drag — the live re-bake
-            // must never re-fit the view under the held cursor — until the cursor
-            // is dragged PAST the chart edge, where yGrow edge-scrolls to follow
-            // (speed ∝ overshoot, per frame — the standard drag auto-scroll rule).
-            // auto-fit resumes on release and eases to the new curve's range.
-            const grown = yGrow(cur, dragCy, TOP, h - BOT_PAD, EDGE_RATE, [CAP_LO, CAP_HI]);
-            if (grown !== cur) {
-                yView = grown;
-                applyDrag(); // re-map the held cursor through the grown axis → the point follows
-            }
+            growValueAxis(dragCy, applyDrag);
             return;
         }
         if (draggingLen) return; // a length resize holds the y-axis too (no re-fit under the drag)
-        if (dragTan !== null) return; // a handle drag reshapes the curve — hold the axis under it
+        if (dragTan !== null) {
+            // a handle drag edge-pans through the SAME mechanism (F3d) — only once it's a real
+            // drag (tanMoved), so a mere handle click, whose tanCx/tanCy are unset, never pans.
+            if (tanMoved) growValueAxis(tanCy, () => applyTan(tanCx, tanCy));
+            return;
+        }
         // grow toward an out-of-view bound fast; ooze back from an over-wide one slow.
         const lo = cur.lo + (t.lo - cur.lo) * (t.lo < cur.lo ? Y_OUT : Y_IN);
         const hi = cur.hi + (t.hi - cur.hi) * (t.hi > cur.hi ? Y_OUT : Y_IN);
@@ -317,6 +331,19 @@ $effect(() => {
             yView = { lo: nlo, hi: nhi, step };
     });
 });
+
+// edge-scroll grow-to-follow, shared by keyframe and handle drags (the standard drag
+// auto-scroll rule): while the dragged cursor `cy` is held past the top/bottom chart edge,
+// grow the value axis toward it (yGrow, timeline.ts) and re-map the held drag through the
+// grown axis via `reapply` so the dragged element follows. the document (x) axis never pans
+// under a content edit (editor-ui.md), so this is value-axis only. runs per frame from the
+// yView effect; a within-chart cursor leaves the axis unchanged (yGrow returns it by identity).
+function growValueAxis(cy: number, reapply: () => void): void {
+    const grown = yGrow(yView, cy, TOP, h - BOT_PAD, EDGE_RATE, [CAP_LO, CAP_HI]);
+    if (grown === yView) return;
+    yView = grown;
+    reapply();
+}
 
 const yOf = (val: number): number =>
     TOP + (1 - (val - yView.lo) / (yView.hi - yView.lo)) * (h - BOT_PAD - TOP);
@@ -721,6 +748,8 @@ let tanGrabDy = 0;
 const THDRAG_PX = 4; // click-vs-drag dead zone on a handle knob (the Figma/Blender threshold)
 let tanDownX = 0; // grab client coords — the dead-zone origin for the click-vs-drag test
 let tanDownY = 0;
+let tanCx = 0; // last applyTan args (canvas-local, grab offset folded in) — the per-frame
+let tanCy = 0; // edge-grow re-maps the held handle through the grown axis (the keyframe-drag mirror)
 let tanMoved = false; // the gesture crossed the dead zone → a drag, not a select-click
 let tanMod = false; // Ctrl/Cmd held (live) — frees the offset-space grid snap (the keyframe-drag bypass)
 // the unit keyframe→knob screen ray captured at grab — the gesture-start axis magnet
@@ -769,7 +798,9 @@ function tanMove(e: PointerEvent): void {
     // resolves the release as a select-click.
     if (!tanMoved) return;
     const rect = canvas.getBoundingClientRect();
-    applyTan(e.clientX - rect.left + tanGrabDx, e.clientY - rect.top + tanGrabDy);
+    tanCx = e.clientX - rect.left + tanGrabDx;
+    tanCy = e.clientY - rect.top + tanGrabDy;
+    applyTan(tanCx, tanCy);
 }
 function applyTan(cx: number, cy: number): void {
     if (dragTan === null) return;
@@ -789,13 +820,14 @@ function applyTan(cx: number, cy: number): void {
     const cumS = pxToS(clamped, clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w)) - LEFT_GUT);
     let ds = cumS - (pt.startS + pt.s);
     let dg = yToG(clamp(cy, TOP, h - BOT_PAD)) - pt.g;
-    // grid quantize the offsets to the keyframe-snap vocabulary (S_GRID / G_GRID), so a snapped
-    // handle reads as vocabulary ("+0.5 g over 3 m"); Ctrl/Cmd frees to continuous. the axis
-    // magnet already fired above (latchAngle); this is the grid path of the shared `snapAxis`
-    // resolver (empty targets, no value landmark) — magnet, THEN grid, then composeTangent's
-    // x-clamp last, since the clamp is the hard invariant that must win.
+    // Δg grid-quantizes to the force vocabulary (G_GRID), so a snapped handle reads as
+    // vocabulary ("+0.5 g"); Ctrl/Cmd frees it to continuous. Δs stays CONTINUOUS (F3d): a
+    // keyframe's s is a placement on the arclength (vocabulary), but a handle's Δs is curvature
+    // shaping — inherently continuous — so it is never quantized. the gesture-start axis magnet
+    // already fired above (latchAngle) on both axes; this is the grid path of the shared
+    // `snapAxis` resolver (empty targets, no value landmark) — magnet, THEN the Δg grid, then
+    // composeTangent's x-clamp last, since the clamp is the hard invariant that must win.
     const active = snapActive(tanMod);
-    ds = snapAxis(active, 0, ds, [], S_GRID, (x) => x, null).value;
     dg = snapAxis(active, 0, dg, [], G_GRID, (x) => x, null).value;
     const tan = composeTangent(id, side, ds, dg);
     if (tan) setForceTangent(ecs, id, tan);
@@ -1861,9 +1893,21 @@ onMount(() => {
     };
     host.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKey);
+    // DEV-only harness read: the displayed value-axis (g) range. `yView` is component-local view
+    // state — never authored, so it's off the main.ts `__kex` authoring surface; the timeline
+    // augments the hook here. The edge-pan flow reads it to assert a held handle drag grows the
+    // range and a release accommodates the handle endpoint.
+    if (import.meta.env.DEV) {
+        const k = (window as unknown as { __kex?: Record<string, unknown> }).__kex;
+        if (k) k.gRange = (): [number, number] => [yView.lo, yView.hi];
+    }
     return () => {
         host.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKey);
+        if (import.meta.env.DEV) {
+            const k = (window as unknown as { __kex?: Record<string, unknown> }).__kex;
+            if (k) delete k.gRange;
+        }
         endScrub(); // drop any in-flight scrub listeners if we unmount mid-drag
         sliderUp(); // and any in-flight player-slider drag
         panUp(); // and any in-flight middle-drag pan
