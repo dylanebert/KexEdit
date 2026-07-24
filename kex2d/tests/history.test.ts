@@ -5,6 +5,7 @@ import {
     enterTangentEdit,
     openNodeMenu,
     select,
+    selectForce,
     selectionHook,
     selectSection,
     selectStart,
@@ -12,6 +13,7 @@ import {
 import {
     appendSection,
     beginForceMove,
+    beginForceMoves,
     beginMove,
     beginV0,
     commit,
@@ -19,9 +21,11 @@ import {
     createForce,
     createHistory,
     deleteForce,
+    deleteForces,
     extendTrack,
     redo,
     resetTangents,
+    setForcesEase,
     setSelectionHook,
     trimTrack,
     undo,
@@ -44,6 +48,7 @@ import {
     createSection,
     createTrack,
     EXTEND_DIST,
+    forceEase,
     Handle,
     handleAt,
     handleTangent,
@@ -61,6 +66,7 @@ import {
     V0,
 } from "../src/track";
 import { editTangent, TangentMode } from "../src/spline";
+import { Easing } from "../src/profile";
 
 // track undo/redo, addressed by stable id/order. a fresh device-free State per test
 // (no GPU — history mutates the ECS directly, never bakes), one geo section with the
@@ -245,6 +251,107 @@ test("a no-move force-point release records nothing", () => {
     beginForceMove(state, id);
     commit(h); // released without moving
     expect(h.undo.length).toBe(1); // only the create
+});
+
+// ── force bulk ops (stage 3: timeline multiselect) — the shared-delta move, the one-entry bulk
+// delete, and bulk easing on non-terminal members. the pure rigid-clamp math is in timeline.test.ts;
+// these pin the history contract (one entry, undo restores the set + track state).
+
+test("beginForceMoves: a shared-delta bulk move collapses to one entry, offsets preserved, undo restores all", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const a = createForce(h, state, sec, 5, 1);
+    const b = createForce(h, state, sec, 10, 2);
+
+    // the whole set moves by ONE shared (Δs, Δg) = (+3, +0.5) — what the drag/nudge write.
+    beginForceMoves(state, [a, b]);
+    setForcePoint(state, a, 8, 1.5);
+    setForcePoint(state, b, 13, 2.5);
+    commit(h);
+
+    expect(h.undo.length).toBe(3); // two creates + the whole bulk move → one entry
+    expect(points(state, sec)).toEqual([
+        { id: a, s: 8, g: 1.5 },
+        { id: b, s: 13, g: 2.5 },
+    ]);
+    // relative offset preserved exactly (5 m apart before and after).
+    expect(points(state, sec)[1].s - points(state, sec)[0].s).toBe(5);
+
+    undo(h, state);
+    expect(points(state, sec)).toEqual([
+        { id: a, s: 5, g: 1 },
+        { id: b, s: 10, g: 2 },
+    ]);
+});
+
+test("a no-move bulk release records nothing (every member unchanged)", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const a = createForce(h, state, sec, 5, 1);
+    const b = createForce(h, state, sec, 10, 2);
+    beginForceMoves(state, [a, b]);
+    commit(h); // released without moving either member
+    expect(h.undo.length).toBe(2); // only the two creates
+});
+
+test("deleteForces: the whole set deletes in ONE entry; undo restores every point and the selection set", () => {
+    clearSelection();
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const a = createForce(h, state, sec, 5, 1);
+    const b = createForce(h, state, sec, 10, 2);
+    const c = createForce(h, state, sec, 15, 0.5);
+
+    // a shift-click set of all three, c active.
+    selectForce(a);
+    selectForce(b, "toggle");
+    selectForce(c, "toggle");
+    expect(editor.forces.ids.size).toBe(3);
+
+    deleteForces(h, state, [a, b, c]);
+    expect(points(state, sec)).toEqual([]);
+    expect(h.undo.length).toBe(4); // three creates + ONE bulk delete
+
+    undo(h, state);
+    // track state restored verbatim…
+    expect(points(state, sec)).toEqual([
+        { id: a, s: 5, g: 1 },
+        { id: b, s: 10, g: 2 },
+        { id: c, s: 15, g: 0.5 },
+    ]);
+    // …and the selection SET restored (undo restores both, per the SelectionHook).
+    expect([...editor.forces.ids].sort((x, y) => x - y)).toEqual([a, b, c].sort((x, y) => x - y));
+});
+
+test("setForcesEase: applies to the selected NON-terminal keyframes only, one entry, undo restores", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    // A → B → C in one section: A and B govern a following segment (non-terminal), C is terminal.
+    const a = createForce(h, state, sec, 5, 1);
+    const b = createForce(h, state, sec, 10, 2);
+    const c = createForce(h, state, sec, 15, 1);
+    // all three start at the default ease (Cubic) — distinct from Linear so the write is observable.
+    expect(forceEase(state, a)).toBe(Easing.Cubic);
+    expect(forceEase(state, c)).toBe(Easing.Cubic);
+
+    setForcesEase(h, state, [a, b, c], Easing.Linear);
+    expect(forceEase(state, a)).toBe(Easing.Linear); // non-terminal → eased
+    expect(forceEase(state, b)).toBe(Easing.Linear); // non-terminal → eased
+    expect(forceEase(state, c)).toBe(Easing.Cubic); // terminal → governs no segment, untouched
+    expect(h.undo.length).toBe(4); // three creates + ONE bulk ease
+
+    undo(h, state);
+    expect(forceEase(state, a)).toBe(Easing.Cubic);
+    expect(forceEase(state, b)).toBe(Easing.Cubic);
+});
+
+test("setForcesEase on an all-terminal set records nothing (no applicable keyframe)", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const only = createForce(h, state, sec, 5, 1); // the section's sole point — terminal
+    setForcesEase(h, state, [only], Easing.Linear);
+    expect(h.undo.length).toBe(1); // only the create; nothing to ease
+    expect(forceEase(state, only)).toBe(Easing.Cubic);
 });
 
 test("convert geo→force undoes byte-identical to the shaped geo track", () => {

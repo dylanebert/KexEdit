@@ -68,8 +68,10 @@ function leaf(item: MenuItem): void {
                 role="menuitem"
                 aria-haspopup="menu"
                 aria-expanded={open === i}
-                onmouseenter={() => enter(i, item)}
-                onclick={() => (open = i)}
+                disabled={item.enabled === false}
+                aria-disabled={item.enabled === false || undefined}
+                onmouseenter={() => item.enabled !== false && enter(i, item)}
+                onclick={() => item.enabled !== false && (open = i)}
                 bind:this={rowEls[i]}
             >
                 <span>{item.label}</span>

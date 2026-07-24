@@ -297,6 +297,33 @@ export function deleteForce(h: History, ecs: State, id: number): void {
     );
 }
 
+/** delete a SET of force points by id as ONE undoable entry (the bulk delete — force multi-delete
+ *  is unconditional). undo re-spawns them all verbatim into their original sections; ids already
+ *  gone are skipped, and nothing records when the set is empty. the size-1 case is `deleteForce`. */
+export function deleteForces(h: History, ecs: State, ids: readonly number[]): void {
+    const pre = selHook?.snapshot(ecs); // the selected SET — captured before any point is destroyed
+    const sts: ForcePointState[] = [];
+    for (const id of ids) {
+        const st = forcePointState(ecs, id);
+        if (st) sts.push(st);
+    }
+    if (sts.length === 0) return;
+    for (const st of sts) destroyForce(ecs, st.id);
+    record(
+        h,
+        {
+            apply: () => {
+                for (const st of sts) destroyForce(ecs, st.id);
+            },
+            reverse: () => {
+                for (const st of sts)
+                    spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent);
+            },
+        },
+        pre,
+    );
+}
+
 /** open a gesture on a force-point drag (or an inline field edit), snapshotting the
  *  point's full state. commit coalesces the live writes into one entry; a position
  *  drag changes only `s`/`g`, so that's the no-op test. */
@@ -305,6 +332,28 @@ export function beginForceMove(ecs: State, id: number): void {
         () => forcePointState(ecs, id),
         (st: ForcePointState) => restoreForcePoint(ecs, st),
         (a: ForcePointState, b: ForcePointState) => a.s === b.s && a.g === b.g,
+    );
+}
+
+/** open a gesture on a MULTI force-point move (the shared-delta bulk drag / arrow-nudge),
+ *  snapshotting every member's full state in `ids` order. commit coalesces the live writes into
+ *  one entry; the no-op test is that no member's `s`/`g` changed, so a click or a nudge back to
+ *  start records nothing. the size-1 case is `beginForceMove`. */
+export function beginForceMoves(ecs: State, ids: readonly number[]): void {
+    begin(
+        () => {
+            const sts: ForcePointState[] = [];
+            for (const id of ids) {
+                const st = forcePointState(ecs, id);
+                if (st) sts.push(st);
+            }
+            return sts.length ? sts : undefined;
+        },
+        (sts: ForcePointState[]) => {
+            for (const st of sts) restoreForcePoint(ecs, st);
+        },
+        (a: ForcePointState[], b: ForcePointState[]) =>
+            a.length === b.length && a.every((s, i) => s.s === b[i].s && s.g === b[i].g),
     );
 }
 
@@ -352,6 +401,50 @@ export function setForceEase(h: History, ecs: State, id: number, ease: Easing): 
         clearForceTangentSide(ecs, id, "out"); // the segment's leading (out) side
         if (next !== null) clearForceTangentSide(ecs, next, "in"); // its trailing (in) side
     });
+}
+
+/** apply a preset easing to every APPLICABLE (non-terminal) keyframe in `ids` as ONE undoable
+ *  entry (the bulk Easing ▸ — AE/Unity bulk interpolation): each such keyframe's tag is set and its
+ *  addressed segment's two bounding sides (its own out + the next keyframe's in) cleared back to the
+ *  preset, matching what a single `setForceEase` does per keyframe. a terminal keyframe (governs no
+ *  following segment) is skipped — the enablement grays those rows at the UI. records nothing when
+ *  no applicable keyframe changed. the single-keyframe case is `setForceEase`. */
+export function setForcesEase(h: History, ecs: State, ids: readonly number[], ease: Easing): void {
+    const pre = selHook?.snapshot(ecs);
+    // the affected keyframes: each applicable leading keyframe + the successor it re-eases (deduped),
+    // so one command restores every touched keyframe.
+    const affected = new Set<number>();
+    for (const id of ids) {
+        const next = nextForce(ecs, id);
+        if (next === null) continue; // terminal — no segment to ease
+        affected.add(id);
+        affected.add(next);
+    }
+    if (affected.size === 0) return;
+    const before: ForcePointState[] = [];
+    for (const id of affected) {
+        const st = forcePointState(ecs, id);
+        if (st) before.push(st);
+    }
+    for (const id of ids) {
+        const next = nextForce(ecs, id);
+        if (next === null) continue;
+        writeForceEase(ecs, id, ease);
+        clearForceTangentSide(ecs, id, "out"); // the segment's leading (out) side
+        clearForceTangentSide(ecs, next, "in"); // its trailing (in) side
+    }
+    const after = before.map((b) => forcePointState(ecs, b.id));
+    if (
+        before.every((b, i) => {
+            const a = after[i];
+            return a !== undefined && b.ease === a.ease && sameForceTangent(b.tangent, a.tangent);
+        })
+    )
+        return; // nothing changed
+    const restore = (states: (ForcePointState | undefined)[]): void => {
+        for (const st of states) if (st) restoreForcePoint(ecs, st);
+    };
+    record(h, { apply: () => restore(after), reverse: () => restore(before) }, pre);
 }
 
 /** materialize the addressed segment's explicit handles from its current derived shape —

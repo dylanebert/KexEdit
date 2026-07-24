@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { TangentMode } from "../src/spline";
 import {
     arcToTime,
+    clampDelta,
     clampView,
     composeTangent,
     creationTargets,
@@ -15,6 +16,7 @@ import {
     navWindow,
     niceStep,
     nodeTickPx,
+    nudgeForces,
     pxToS,
     retargetMode,
     S_GRID,
@@ -792,5 +794,95 @@ describe("creationTargets — keyframe-creation landmark set", () => {
     });
     test("origin + track end even with no interior boundaries (a single section)", () => {
         expect(creationTargets(v, [], 24, null)).toEqual([sToPx(v, 0), sToPx(v, 24)]);
+    });
+});
+
+describe("clampDelta — the rigid group Δs clamp (AE comp-start block)", () => {
+    test("a single member degenerates to today's clamp(s + Δs, 0, len)", () => {
+        const m = [{ s: 5, len: 10 }]; // its own Δs range is [−5, 5]
+        expect(clampDelta(m, 3)).toBe(3); // 5 + 3 = 8, in [0, 10]
+        expect(clampDelta(m, 8)).toBe(5); // upper: len − s = 5
+        expect(clampDelta(m, -8)).toBe(-5); // lower: −s = −5
+        expect(clampDelta(m, 0)).toBe(0);
+    });
+
+    test("the tightest member binds the whole group — both bounds", () => {
+        // A wide [−5, 5]; B binds the LOWER at −1; C binds the UPPER at +1 → intersection [−1, 1].
+        const members = [
+            { s: 5, len: 10 }, // Δs ∈ [−5, 5]
+            { s: 1, len: 9 }, // Δs ∈ [−1, 8]  ← lower bound −1
+            { s: 3, len: 4 }, // Δs ∈ [−3, 1]  ← upper bound 1
+        ];
+        expect(clampDelta(members, 4)).toBe(1); // upper: C's len − s
+        expect(clampDelta(members, -4)).toBe(-1); // lower: B's −s
+        expect(clampDelta(members, 0.5)).toBe(0.5); // inside the range → unchanged
+    });
+
+    test("0 is always allowed — the start is never clamped away", () => {
+        const members = [
+            { s: 0, len: 3 }, // pinned at its low edge — can't go down
+            { s: 3, len: 3 }, // pinned at its high edge — can't go up
+        ];
+        expect(clampDelta(members, 0)).toBe(0);
+        expect(clampDelta(members, 1)).toBe(0);
+        expect(clampDelta(members, -1)).toBe(0);
+    });
+
+    test("preserves relative offsets: every member shifts by the SAME clamped Δs", () => {
+        const members = [
+            { s: 2, len: 10 },
+            { s: 6, len: 10 },
+        ];
+        const ds = clampDelta(members, 3); // both far from bounds → 3
+        expect(ds).toBe(3);
+        const moved = members.map((m) => m.s + ds);
+        expect(moved[1] - moved[0]).toBe(members[1].s - members[0].s); // gap unchanged
+    });
+
+    test("an out-of-extent member (s > len) is excluded from the binding set — no drag at rest", () => {
+        // orphan: a section shortened under a keyframe leaves s past len (setSectionLength keeps s).
+        // its own interval [−s, len − s] is empty and would drag the block leftward — it's excluded.
+        const members = [
+            { s: 5, len: 3 }, // s > len — out of extent (orphan)
+            { s: 1, len: 10 }, // in extent, own range [−1, 9]
+        ];
+        expect(clampDelta(members, 0)).toBe(0); // AT REST: no drag (the orphan must not pull siblings)
+        expect(clampDelta(members, 2)).toBe(2); // a positive drag moves the in-bounds member normally
+        expect(clampDelta(members, -5)).toBe(-1); // only the in-bounds member binds (its own −s)
+    });
+
+    test("every member out of extent → empty binding set, Δs passes through (outer clamp bounds writes)", () => {
+        const members = [
+            { s: 5, len: 3 },
+            { s: 8, len: 4 },
+        ];
+        expect(clampDelta(members, 2)).toBe(2);
+        expect(clampDelta(members, -2)).toBe(-2);
+    });
+});
+
+describe("nudgeForces — arrow-nudge writes for the selected force set", () => {
+    test("single-select rounds the ABSOLUTE result to the field grid (pre-multiselect semantics)", () => {
+        // an off-grid s (1.007) nudged right by 0.1 re-quantizes onto the 0.1 grid; g rounds to 0.01.
+        expect(nudgeForces([{ id: 1, s: 1.007, g: 2, len: 10 }], 0.1, 0)).toEqual([
+            { id: 1, s: 1.1, g: 2 }, // 1.007 + 0.1 = 1.107 → round to 0.1 → 1.1
+        ]);
+        expect(nudgeForces([{ id: 1, s: 3, g: 1.007, len: 10 }], 0, 0.05)).toEqual([
+            { id: 1, s: 3, g: 1.06 }, // 1.007 + 0.05 = 1.057 → round to 0.01 → 1.06
+        ]);
+    });
+
+    test("multi: the clamp binds off the nudge grid — offsets preserved exactly, no member past its extent", () => {
+        // B sits 0.05 from its upper bound (a non-grid amount); a +0.1 nudge must move the block by
+        // exactly that 0.05 (the rigid clamp, applied LAST) — NOT a rounded 0.1 that clamps B alone.
+        const members = [
+            { id: 1, s: 2, g: 1, len: 10 },
+            { id: 2, s: 9.95, g: 1, len: 10 },
+        ];
+        const w = nudgeForces(members, 0.1, 0);
+        expect(w[0].s).toBeCloseTo(2.05, 10); // A rode the clamped 0.05
+        expect(w[1].s).toBeCloseTo(10, 10); // B reached its extent, not past
+        expect(w[1].s).toBeLessThanOrEqual(members[1].len); // hard [0, len] invariant holds
+        expect(w[1].s - w[0].s).toBeCloseTo(members[1].s - members[0].s, 10); // offset preserved
     });
 });

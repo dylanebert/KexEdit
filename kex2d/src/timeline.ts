@@ -327,6 +327,56 @@ export function snapAxis(
         : { value: rawVal, guide: null };
 }
 
+/** the rigid group clamp for a multi-keyframe s-drag/nudge (AE comp-start: the block stops as one).
+ *  given each selected member's section-local `s` and extent `len`, clamp a desired shared Δs so
+ *  EVERY in-extent member stays within its own `[0, len]` — the tightest member bounds the group, so
+ *  the relative offsets are preserved exactly. the binding interval intersects `[−s, len − s]` over
+ *  members with `0 ≤ s ≤ len` ONLY; an out-of-extent member (`s > len`, reachable by shortening a
+ *  section under a keyframe — `setSectionLength` leaves the point's s) has an empty own-interval, so
+ *  it would drag the whole block leftward — it's excluded from the binding set and instead rides the
+ *  shared Δs under its own outer `clamp(s + Δs, 0, len)` (what a single-select drag of that orphan
+ *  already does). the binding interval always contains 0, so the start is never clamped away; when
+ *  EVERY member is out of extent the set is empty and Δs passes through unclamped (the per-member
+ *  outer clamp still bounds each write). a single in-extent member degenerates to today's
+ *  `clamp(s + Δs, 0, len)`. @example clampDelta([{ s: 5, len: 10 }, { s: 1, len: 2 }], 3) // → 1 */
+export function clampDelta(members: readonly { s: number; len: number }[], ds: number): number {
+    let lo = -Infinity;
+    let hi = Infinity;
+    for (const m of members) {
+        if (m.s > m.len) continue; // out of extent: excluded from the binding set (rides the outer clamp)
+        if (-m.s > lo) lo = -m.s; // Δs ≥ −s keeps the member ≥ 0
+        if (m.len - m.s < hi) hi = m.len - m.s; // Δs ≤ len − s keeps it ≤ len
+    }
+    const r = Math.min(Math.max(ds, lo), hi); // empty binding set → lo/hi stay ∓∞, Δs unclamped
+    return r === 0 ? 0 : r; // normalize −0 (from a member pinned at s = 0) so `=== 0` holds downstream
+}
+
+/** the per-member `(s, g)` writes for one arrow-nudge of the selected force set (Timeline.svelte's
+ *  keyboard handler). two regimes: a SINGLE selection rounds the ABSOLUTE result to the field grid
+ *  (s → 0.1, g → 0.01), re-quantizing an off-grid point onto the grid — the pre-multiselect nudge
+ *  semantics, preserved byte-for-byte. a MULTI set moves by ONE shared delta: the nudge step is
+ *  already grid-sized, so the rigid clamp is applied LAST (the hard `[0, len]` invariant wins with no
+ *  post-clamp rounding — a rounded Δs could exceed the clamp bound and break the offsets), and every
+ *  relative offset is preserved exactly. @example nudgeForces([{ id: 1, s: 1.007, g: 2, len: 10 }], 0, 0.05) */
+export function nudgeForces(
+    members: readonly { id: number; s: number; g: number; len: number }[],
+    ds: number,
+    dg: number,
+): { id: number; s: number; g: number }[] {
+    if (members.length === 1) {
+        const p = members[0];
+        return [
+            {
+                id: p.id,
+                s: Math.round(clampN(p.s + ds, 0, p.len) * 10) / 10,
+                g: Math.round((p.g + dg) * 100) / 100,
+            },
+        ];
+    }
+    const d = clampDelta(members, ds); // the rigid group clamp — LAST, no rounding after it
+    return members.map((m) => ({ id: m.id, s: clampN(m.s + d, 0, m.len), g: m.g + dg }));
+}
+
 /** resolve a force keyframe's explicit tangent after setting one `side` to the (Δs, Δg) offset —
  *  the pure core of the handle write both a drag and the typed field go through. applies, in order:
  *  (1) the x-monotonicity clamp (`out` reaches into `[0, nextS − s]`, `in` into `[−(s − prevS), 0]`,

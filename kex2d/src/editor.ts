@@ -375,6 +375,14 @@ export function exitForceEdit(): void {
     editor.forceHandle = null;
 }
 
+/** promote an already-selected force keyframe to the ACTIVE member without disturbing set
+ *  membership — grabbing or right-clicking a member of a multi-set makes it the single subject the
+ *  popover, readout, and single-subject menu rows bind to (the anchor). no-op when `id` isn't a
+ *  member (the grammar's Blender active-object model, over a set). */
+export function activateForce(id: number): void {
+    if (editor.forces.ids.has(id)) editor.forces.active = id;
+}
+
 /** select a section by stable id. "replace" (default) collapses the section set to `id` (or clears
  *  it when null); "toggle" adds/removes it (shift-click). either non-clearing form sweeps the
  *  other kinds. */
@@ -423,10 +431,13 @@ export function closeNodeMenu(): void {
     editor.nodeMenu = null;
 }
 
-/** open the force keyframe context menu at a screen point, targeting a point (also selects
- *  it, so the target reads highlighted). */
+/** open the force keyframe context menu at a screen point, targeting a point. a right-click on a
+ *  member of a multi-set keeps the set and promotes the target to active (bulk rows — Delete,
+ *  Easing — act on the whole set; single-subject rows on the active); a right-click outside the set
+ *  replace-selects just it (today's single-select behavior). */
 export function openForceMenu(x: number, y: number, id: number): void {
-    selectForce(id);
+    if (editor.forces.ids.has(id)) editor.forces.active = id;
+    else selectForce(id);
     editor.forceMenu = { x, y, id };
 }
 

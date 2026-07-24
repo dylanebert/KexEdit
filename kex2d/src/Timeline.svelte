@@ -6,6 +6,7 @@ import { kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
 import { fitMenu, type MenuItem } from "./menu";
 import {
+    activateForce,
     beginDrag,
     closeForceMenu,
     editor,
@@ -24,20 +25,22 @@ import {
 import {
     appendSection,
     beginForceMove,
+    beginForceMoves,
     beginForceTangent,
     beginLength,
     cancel,
     commit,
     createForce,
-    deleteForce,
+    deleteForces,
     history,
     materializeCustom,
     redo,
-    setForceEase,
+    setForcesEase,
     setForceTangentMode,
     undo,
 } from "./history";
 import {
+    clampDelta,
     clampView,
     composeTangent,
     creationTargets,
@@ -50,6 +53,7 @@ import {
     navWindow,
     niceStep,
     nodeTickPx,
+    nudgeForces,
     pxToS,
     S_GRID,
     snap,
@@ -489,6 +493,13 @@ const selForce = $derived.by((): number | null => {
     void tick;
     return editor.force;
 });
+// the whole selected force SET (membership, for the diamond highlight) — single-select is the
+// size-1 case. read through the tick like the rest of `editor`; the per-frame `forcePts` rebuild
+// re-evaluates the `.has` in the render loop. active is `selForce` above (the single subject).
+const selForceSet = $derived.by((): Set<number> => {
+    void tick;
+    return editor.forces.ids;
+});
 const selPoint = $derived.by((): ForcePt | null => {
     if (selForce === null) return null;
     return forcePts.find((p) => p.id === selForce) ?? null;
@@ -517,21 +528,21 @@ let snapY: number | null = $state(null); // an active g-axis snap: horizontal gu
 // moving magnet — the playhead. no ruler ticks: they're the zoom-dependent 1-2-5 raster,
 // display not content. the caller excludes the dragged point and picks whether its own
 // moving edge (the track end) is a target.
-function sTargets(opts: { exclude?: number; playhead: boolean; trackEnd: boolean }): number[] {
+function sTargets(opts: { exclude?: Set<number>; playhead: boolean; trackEnd: boolean }): number[] {
     const v = clamped;
     const out: number[] = [sToPx(v, 0)];
     for (const b of bounds) out.push(sToPx(v, b));
     if (opts.trackEnd) out.push(sToPx(v, sTotal));
-    for (const p of forcePts) if (p.id !== opts.exclude) out.push(sToPx(v, p.startS + p.s));
+    for (const p of forcePts) if (!opts.exclude?.has(p.id)) out.push(sToPx(v, p.startS + p.s));
     if (opts.playhead && paused && cartS !== null) out.push(sToPx(v, cartS));
     return out;
 }
 // the g-axis snap targets in chart py (the vertical magnet): content landmarks only
 // (editor-ui.md) — the 1g baseline (the physical gravity landmark) + every other point's
 // g. no integer-g gridline raster: 1g survives as a physical baseline, not as a gridline.
-function gTargets(exclude?: number): number[] {
+function gTargets(exclude?: Set<number>): number[] {
     const out: number[] = [yOf(Y_BASE)];
-    for (const p of forcePts) if (p.id !== exclude) out.push(yOf(p.g));
+    for (const p of forcePts) if (!exclude?.has(p.id)) out.push(yOf(p.g));
     return out;
 }
 
@@ -571,55 +582,71 @@ function chartCreate(e: MouseEvent): void {
 // yView effect's drag branch) can re-map it through a grown axis. Shift is a no-op on a
 // force-keyframe drag: the per-axis gesture-start magnet is the "change just one axis"
 // affordance, so a dominant-axis lock is redundant here (removed 2026-07-23).
-let dragForce: number | null = $state(null);
+let dragForce: number | null = $state(null); // the ANCHOR point id (snap resolves on it)
 let grabDs = 0; // point s − cursor s, so grabbing off-center doesn't snap
-let dragStartS = 0; // the dragged point's section cumulative start (fixed during the drag)
-let dragLen = 0; // the dragged point's section extent (the s clamp domain)
+let dragStartS = 0; // the ANCHOR's section cumulative start (fixed during the drag)
+let dragLen = 0; // the ANCHOR's section extent (the anchor's own s clamp domain)
 let dragCx = 0; // last cursor, canvas-local px
 let dragCy = 0;
 let dragMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
 let dragS0 = 0; // the grab s / g — each axis's gesture-start landmark (always-on magnet)
 let dragG0 = 0;
+// the dragged SET, captured at gesture start: every selected member's start s/g + its own section
+// extent (the rigid-clamp bounds). single-select is the size-1 case (just the anchor). the whole
+// set moves by ONE shared (Δs, Δg) — relative offsets preserved exactly — resolved on the anchor.
+let dragMembers: { id: number; s0: number; g0: number; len: number }[] = [];
+let dragMemberSet: Set<number> = new Set(); // the member ids, so the snap excludes every moving point
 function applyDrag(): void {
     if (dragForce === null) return;
     // both axes clamp the cursor to the chart: the view never moves under a drag,
     // so past an edge the point rides it (y follows only as the edge-grow expands).
     const cx = clamp(dragCx, LEFT_GUT, Math.max(LEFT_GUT, w));
-    // cursor cumulative s + grab → the point's cumulative s, then − startS → local.
-    let s = clamp(pxToS(clamped, cx - LEFT_GUT) + grabDs - dragStartS, 0, dragLen);
-    let g = yToG(clamp(dragCy, TOP, h - BOT_PAD));
-    // resolve each axis through the landmark-over-grid magnet (`snapAxis`, timeline.ts). Each
-    // axis carries an always-on gesture-start landmark (the grab s / g, the direction-intent
-    // affordance) passed as `startPx`, so it magnetizes even under the Ctrl/Cmd bypass: a plain
-    // drag snaps grid + value landmarks + the axis magnet, a Ctrl drag frees values but keeps
-    // the axis pin. Only a landmark flashes a guide — the grid is ambient.
+    // resolve the ANCHOR through the snap first (grid + landmarks + the gesture-start axis magnet),
+    // exactly as a single drag does — the shared delta then derives from where the anchor lands and
+    // the OTHER members follow it. cursor cumulative s + grab → the anchor's cumulative s, − startS →
+    // local (clamped to the anchor's own [0, len]).
+    let sAnchor = clamp(pxToS(clamped, cx - LEFT_GUT) + grabDs - dragStartS, 0, dragLen);
+    let gAnchor = yToG(clamp(dragCy, TOP, h - BOT_PAD));
     snapX = null;
     snapY = null;
     const active = snapActive(dragMod);
     {
-        const cumS = dragStartS + s;
-        const targets = sTargets({ exclude: dragForce, playhead: true, trackEnd: true });
+        const cumS = dragStartS + sAnchor;
+        const targets = sTargets({ exclude: dragMemberSet, playhead: true, trackEnd: true });
         const startPx = sToPx(clamped, dragStartS + dragS0); // gesture-start s landmark
         const r = snapAxis(active, sToPx(clamped, cumS), cumS, targets, S_GRID, (px) =>
             pxToS(clamped, px), startPx);
         const local = r.value - dragStartS;
         if (r.guide !== null) {
-            // a landmark: only latch one the point can actually reach in its section
+            // a landmark: only latch one the anchor can actually reach in its own section
             if (local >= 0 && local <= dragLen) {
-                s = local;
+                sAnchor = local;
                 snapX = r.guide;
             }
         } else {
-            s = clamp(local, 0, dragLen); // grid (or bypass) — quantized, kept in the section
+            sAnchor = clamp(local, 0, dragLen); // grid (or bypass) — quantized, kept in the section
         }
     }
     {
-        const targets = gTargets(dragForce);
-        const r = snapAxis(active, yOf(g), g, targets, G_GRID, (py) => yToG(py), yOf(dragG0));
-        g = r.value;
+        const targets = gTargets(dragMemberSet);
+        const r = snapAxis(active, yOf(gAnchor), gAnchor, targets, G_GRID, (py) => yToG(py), yOf(dragG0));
+        gAnchor = r.value;
         snapY = r.guide;
     }
-    setForcePoint(ecs, dragForce, s, g);
+    // the shared delta from the anchor's resolved position, then the RIGID group clamp: Δs shrinks
+    // so every member stays in its own [0, len] (the tightest binds — AE comp-start block). when the
+    // clamp overrides the anchor's own s-snap the block has hit a wall, so drop the guide. g is
+    // unbounded, so its shared delta and guide pass through. the single-member case never clamps
+    // (the anchor already sits in its own bounds), so it stays byte-identical to today.
+    const dsRaw = sAnchor - dragS0;
+    const dg = gAnchor - dragG0;
+    const ds = clampDelta(
+        dragMembers.map((m) => ({ s: m.s0, len: m.len })),
+        dsRaw,
+    );
+    if (ds !== dsRaw) snapX = null;
+    for (const m of dragMembers)
+        setForcePoint(ecs, m.id, clamp(m.s0 + ds, 0, m.len), m.g0 + dg);
 }
 // double-press detection for the diamond summon: a keyframe drag captures the pointer on
 // pointerdown, which retargets the compatibility `dblclick` off the diamond (onto the canvas),
@@ -632,26 +659,43 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     if (e.button !== 0) return; // left-only drag; right opens the keyframe menu
     e.preventDefault();
     e.stopPropagation(); // don't also deselect via the chartzone below
+    // shift-click TOGGLES set membership (the consensus grammar) — a selection gesture, not a drag.
+    if (e.shiftKey) {
+        selectForce(p.id, "toggle");
+        return;
+    }
     if (lastFdownId === p.id && e.timeStamp - lastFdownT < FDBL_MS) {
         lastFdownT = 0;
         lastFdownId = -1;
-        enterForceEdit(p.id); // second press on the same diamond → summon its handles
+        enterForceEdit(p.id); // second press on the same diamond → summon its handles (single-subject)
         return;
     }
     lastFdownT = e.timeStamp;
     lastFdownId = p.id;
+    // grabbing a MEMBER of a multi-set keeps the set and drags the whole block (p becomes the active
+    // anchor); grabbing a non-member replace-selects just it (single drag) — the standard
+    // clicked-selected-vs-unselected rule.
+    if (editor.forces.ids.has(p.id)) activateForce(p.id);
+    else selectForce(p.id);
+    // the drag set: every selected member's start s/g + its own extent (size-1 for a single drag).
+    const set = editor.forces.ids;
+    const members = set.size > 1 ? forcePts.filter((fp) => set.has(fp.id)) : [p];
+    dragMembers = members.map((fp) => ({ id: fp.id, s0: fp.s, g0: fp.g, len: fp.len }));
+    dragMemberSet = new Set(dragMembers.map((m) => m.id));
     const rect = canvas.getBoundingClientRect();
     dragCx = e.clientX - rect.left;
     dragCy = e.clientY - rect.top;
     dragMod = e.ctrlKey || e.metaKey;
-    dragS0 = p.s;
+    dragS0 = p.s; // the anchor's start s/g — each axis's gesture-start magnet
     dragG0 = p.g;
-    dragStartS = p.startS; // the point's section is fixed while its s is dragged inside it
+    dragStartS = p.startS; // the anchor's section is fixed while its s is dragged inside it
     dragLen = p.len;
-    grabDs = p.startS + p.s - chartS(e); // cumulative grab offset (point − cursor)
-    beginForceMove(ecs, p.id);
+    grabDs = p.startS + p.s - chartS(e); // cumulative grab offset (anchor − cursor)
+    beginForceMoves(
+        ecs,
+        dragMembers.map((m) => m.id),
+    );
     dragForce = p.id;
-    selectForce(p.id);
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", forceMove);
     window.addEventListener("pointerup", forceUp);
@@ -1060,35 +1104,75 @@ const fmenuTerminal = $derived.by((): boolean => {
     const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
     return pts[pts.length - 1]?.id === m.id;
 });
-// the menu as data: Delete, then (for a non-terminal keyframe) an Easing ▸ submenu — Linear |
-// Cubic | Quintic (checked by the tag), a separator, then Custom. each row carries its real
-// curve glyph (drawn from the same influence the segment uses, so the icon can't drift). Custom
-// is both the derived-provenance indicator (checked when an explicit handle bounds the segment)
-// AND a choice: picking it materializes the segment's handles from the derived ones and steps
-// into handle edit; picking a preset clears them back to that preset — the way back up the
-// layers is the list. the terminal keyframe governs no segment, so it shows Delete alone.
+// whether the selection is a multi-set — a right-click keeps the set, so Delete + Easing act on it.
+const multiForce = $derived.by((): boolean => {
+    void tick;
+    return editor.forces.ids.size > 1;
+});
+// the selected keyframes that GOVERN a following segment (non-terminal) — the bulk Easing targets
+// (AE/Unity bulk interpolation). a terminal keyframe (last in its section) eases nothing, so it's
+// excluded; when the set has none applicable the Easing ▸ row grays out (never hides — the
+// enablement law). single-select is the size-1 case (`[active]` when the active is non-terminal).
+const bulkEaseIds = $derived.by((): number[] => {
+    void tick;
+    const ids = editor.forces.ids;
+    const res: number[] = [];
+    for (const p of forcePts) {
+        if (!ids.has(p.id)) continue;
+        const secPts = forcePts.filter((q) => q.section === p.section).sort((a, b) => a.s - b.s);
+        if (secPts[secPts.length - 1]?.id !== p.id) res.push(p.id); // not the section's last → non-terminal
+    }
+    return res;
+});
+// the menu as data: Delete (the whole SET, one entry — force multi-delete is unconditional), then an
+// Easing ▸ submenu — Linear | Cubic | Quintic (checked by the ACTIVE keyframe's tag), a separator,
+// then Custom. the preset rows apply to ALL selected non-terminal keyframes (bulkEaseIds); the row
+// grays when none is applicable. each row carries its real curve glyph (drawn from the same
+// influence the segment uses, so the icon can't drift). Custom is single-subject (the active): both
+// the derived-provenance indicator (checked when an explicit handle bounds its segment) AND a choice
+// — picking it materializes the segment's handles and steps into handle edit; picking a preset
+// clears them back. a single terminal keyframe governs no segment, so it shows Delete alone.
 const fmenuItems = $derived.by((): MenuItem[] => {
     const m = editor.forceMenu;
     if (m === null) return [];
-    const id = m.id;
+    const id = m.id; // the active member (openForceMenu promotes the right-clicked one) — single subject
     const items: MenuItem[] = [
-        { label: "Delete", shortcut: "Del", danger: true, action: () => deleteForce(history, ecs, id) },
+        {
+            label: "Delete",
+            shortcut: "Del",
+            danger: true,
+            action: () => deleteForces(history, ecs, [...editor.forces.ids]),
+        },
     ];
-    if (!fmenuTerminal) {
+    // shown whenever any easing target could exist (a multi-set, or a single non-terminal keyframe);
+    // enabled only when the selection has a non-terminal member — else grayed, never hidden.
+    if (multiForce || !fmenuTerminal) {
+        const targets = bulkEaseIds;
         const easeRow = (label: string, e: Easing): MenuItem => ({
             label,
             glyph: presetGlyph(e),
             checked: !fmenuCustom && fmenuEase === e,
-            action: () => setForceEase(history, ecs, id, e),
+            action: () => setForcesEase(history, ecs, targets, e),
         });
         items.push({
             label: "Easing",
+            enabled: targets.length > 0,
             children: [
                 easeRow("Linear", Easing.Linear),
                 easeRow("Cubic", Easing.Cubic),
                 easeRow("Quintic", Easing.Quintic),
                 { separator: true },
-                { label: "Custom", glyph: customGlyph(id), checked: fmenuCustom, action: () => chooseCustom(id) },
+                // Custom is single-subject (the active) and steps into handle edit on it — a terminal
+                // keyframe governs no segment, a state single-select can't reach (its whole Easing ▸ is
+                // hidden), so gray Custom when the active is terminal even while non-terminal siblings
+                // keep the preset rows live.
+                {
+                    label: "Custom",
+                    enabled: !fmenuTerminal,
+                    glyph: customGlyph(id),
+                    checked: fmenuCustom,
+                    action: () => chooseCustom(id),
+                },
             ],
         });
     }
@@ -1509,10 +1593,12 @@ function fieldKeydown(e: KeyboardEvent, reset: string): void {
     }
 }
 function deleteSelectedForce(): void {
-    if (editor.force === null) return;
-    // no explicit deselect: deleting the point makes `selPoint` derive null (the popover
-    // dismisses by subject existence) and the $effect above clears the stale id. one mechanism.
-    deleteForce(history, ecs, editor.force);
+    if (editor.force === null) return; // active is null iff the set is empty
+    // force multi-delete is UNCONDITIONAL: delete the whole selected set in ONE undo entry. no
+    // explicit deselect — the popover/menu derive null once the subjects are gone and the $effect
+    // above clears the stale active id (one mechanism for every death path). single-select is the
+    // size-1 case.
+    deleteForces(history, ecs, [...editor.forces.ids]);
 }
 function cancelForceDrag(): void {
     if (dragForce === null) return;
@@ -1960,21 +2046,23 @@ onMount(() => {
                     e.key === "ArrowUp" ||
                     e.key === "ArrowDown")
             ) {
-                // arrow-nudge the point in its authoring domain (s = distance, g = force),
-                // but only while the pointer is over the timeline (the hovered-surface
-                // router — a node nudge in the viewport must not also move a force point).
-                // Shift coarse; one press = one undo entry, routed through the setter.
-                const p = selPoint;
-                if (p === null) return;
+                // arrow-nudge the selected force set — only while the pointer is over the timeline (the
+                // hovered-surface router — a node nudge in the viewport must not also move a force
+                // point). single-select rounds the absolute result to the field grid (pre-multiselect
+                // semantics); a multi-set moves by one shared delta under the rigid clamp, offsets
+                // preserved (`nudgeForces`, timeline.ts). Shift coarse; one press = one undo entry.
+                const members = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
+                if (members.length === 0) return;
                 e.preventDefault();
-                const ds = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
-                const dg = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
-                let s = p.s + (e.key === "ArrowLeft" ? -ds : e.key === "ArrowRight" ? ds : 0);
-                let g = p.g + (e.key === "ArrowUp" ? dg : e.key === "ArrowDown" ? -dg : 0);
-                s = Math.round(clamp(s, 0, p.len) * 10) / 10;
-                g = Math.round(g * 100) / 100;
-                beginForceMove(ecs, p.id);
-                setForcePoint(ecs, p.id, s, g);
+                const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
+                const stepG = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
+                const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
+                const dg = e.key === "ArrowUp" ? stepG : e.key === "ArrowDown" ? -stepG : 0;
+                beginForceMoves(
+                    ecs,
+                    members.map((m) => m.id),
+                );
+                for (const w of nudgeForces(members, ds, dg)) setForcePoint(ecs, w.id, w.s, w.g);
                 commit(history);
             }
         }
@@ -2226,7 +2314,7 @@ onMount(() => {
                     {@const mx = ptX(p)}
                     {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                         {@const my = yOf(p.g)}
-                        <g class="fpt" class:sel={p.id === selForce}>
+                        <g class="fpt" class:sel={selForceSet.has(p.id)} class:active={p.id === selForce}>
                             <circle
                                 class="fhit"
                                 cx={mx}
@@ -2880,6 +2968,13 @@ onMount(() => {
         fill: var(--accent);
         stroke: var(--fg);
         stroke-width: 1.4;
+    }
+    /* the ACTIVE member of a multi-selection — the single subject the popover/readout and the
+       single-subject menu rows bind to (Blender's active-object model). a brighter ring over the
+       shared selected fill so which diamond the fields edit reads at a glance. */
+    .fpt.active .fmarker {
+        stroke: #fff;
+        stroke-width: 1.8;
     }
 
     /* the summoned tangent handles on the edited force keyframe (the force analogue of the
