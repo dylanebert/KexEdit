@@ -13,12 +13,14 @@ force, joined by anchor propagation. Both atomic idioms author within a section:
 
 - **geo** — author node positions in the viewport (polar length/angle manipulators) →
   stored-heading cubic Hermite → physical F_n force curve, shown live in the timeline.
-- **force** — place force points on the timeline curve (filled-diamond keyframes) → linear-interp
-  dense F_n(s) → integrate the swept geometry → the *recovered* force curve, shown live.
+- **force** — place force points on the timeline curve (filled-diamond keyframes, easing-tagged,
+  optional explicit handles) → per-segment cubic-bezier dense F_n(s) → integrate the swept
+  geometry → the *recovered* force curve, shown live.
 
 The bidirectional shape↔force integration is validated exact and oracle-gated (RK4) — the
 foundation everything builds on. A section's geo↔force flip is a **destructive convert**: it
-resets to that kind's default (force → the empty 1g profile at the default extent; geo
+resets to that kind's default (force → two seed keyframes continuing the entry force, at the
+default extent; geo
 → the flat two-node seed), made safe by byte-identical undo — no confirm dialog. **Structural ops**
 build the chain: append (geo/force at the end), split (a geo section at an interior node, a force
 section at an arclength s), join (adjacent same-kind), delete (downstream closes the gap + rebases
@@ -159,11 +161,16 @@ in the dense baked form.
 
 ## Model (force authoring)
 
-The mirror idiom: author the force, integrate the geometry. `Force` points (`{id, s, g}` ECS
-entities, stable-id addressed for undo like `Handle.order`) are placed, dragged, and deleted on the
-timeline curve. The authoring layer is deliberately minimal: **linear interpolation** between
-points, an empty profile is a constant 1g, and the first/last value holds flat beyond it
-(`profile.ts sampleForce`). The bake samples this into a dense per-edge F_n(σ) (`forceProfile`, σ =
+The mirror idiom: author the force, integrate the geometry. `Force` points (`{id, s, g}` + easing
+tag + optional explicit per-side tangents, ECS entities, stable-id addressed for undo like
+`Handle.order`) are placed, dragged, and deleted on the timeline curve. Every segment between
+adjacent keyframes is a **cubic bezier in (s, g)** resolved at one seam (`profile.segment`): each
+side derives flat tangents from the *leading* keyframe's easing tag (influence Linear 0 |
+Cubic 1/3 | Quintic 7/15 — Cubic is exact smoothstep) unless an explicit stored tangent overrides
+it; Custom is derived provenance (explicit tangents bound the segment), never a stored flag.
+Append/convert **seed two keyframes continuing the recovered entry force**; deleted down to empty
+falls back to constant `DEFAULT_G`, and the first/last value holds flat beyond (`profile.ts
+sampleForce`). The bake samples this into a dense per-edge F_n(σ) (`forceProfile`, σ =
 i·ds source convention) and integrates it (`section.evalForce`) from the section entry.
 
 - **Points are keyframes, not constraints**. Filled diamonds, no drop-line, no driving/driven —
@@ -286,10 +293,13 @@ editor-ui invariant-domain rule).
   per-edge ds). `invertRange`/`invert` (the exact reflection inverse, round-trip validation only —
   see Hard gotchas), `replay` (forward-integrate F_n back to positions). `V_WARN` + re-exports
   `forward`'s `V_FLOOR`.
-- `profile.ts` — the FORCE authoring primitive (the force analogue of `spline.ts`): `sampleForce`
-  (linear interp of points, held endpoints, `DEFAULT_G` empty) + `forceProfile` (dense per-edge
-  F_n(σ), σ = i·ds, `edges = round(length/ds)`). Opinion-free: the substrate consumes dense
-  F_n, this builds it from authored points. Unit-tested in `tests/profile.test.ts`.
+- `profile.ts` — the FORCE authoring primitive (the force analogue of `spline.ts`): per-segment
+  cubic-bezier eval at the handle-resolution seam (`segment`: easing-tag-derived flat tangents via
+  the influence table ?? explicit stored; `autoTangent`/`segmentSeed`/`segmentControls` shared
+  with the UI), Blender-style x-monotonicity clamp, `sampleForce` (held endpoints, `DEFAULT_G`
+  empty) + `forceProfile` (dense per-edge F_n(σ), σ = i·ds, `edges = round(length/ds)`,
+  warm-started t-march). Opinion-free: the substrate consumes dense F_n, this builds it from
+  authored points. Unit-tested in `tests/profile.test.ts`.
 
 **Kernel atoms (future optimization tier's reference — NOT on the live path):**
 
@@ -527,8 +537,11 @@ via a whole-track snapshot pair (byte-identical).
   form, then closes the node menu (whose rows go stale on any restore). History never imports
   editor — the coupling is inverted at that seam. `withReconcile` is deleted.
 - **A single force point holds its value everywhere** (endpoint hold), so one point can't make a
-  *dip* — it's a constant. A localized airtime bump needs three (1g shoulders + the crest). The empty
-  profile is a flat `DEFAULT_G` (1g), so a fresh geo→force convert is a straight level track.
+  *dip* — it's a constant. A localized airtime bump needs three (1g shoulders + the crest). An
+  *empty* profile is a flat `DEFAULT_G` (1g), but a fresh convert/append is NOT empty: it seeds
+  (0, F_entry) and (length, F_entry) from the bake's recovered entry force — a fresh geo→force
+  convert continues the entry force, level only when that entry is 1g. Deleting every keyframe
+  restores the 1g fallback.
 - **The track start is a fixed-position `startEntry` anchor at the origin** (initial speed
   `Track.v0`, default `V0`; authored via the selectable START diamond's popover), not a node — a
   geo→force convert carries no geo start position (the convert is destructive; position is cosmetic). The force

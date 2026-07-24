@@ -163,12 +163,19 @@ The worked example of the layered-expressiveness contract's summoned inner layer
 - **The surface is summoned**: double-click enters tangent edit (handles visible only there;
   Esc/click-away exits); the node context menu carries the Handles toggle and the mode submenu.
   Mere selection shows nothing.
-- **Reset always re-infers** — the way back up the layers is one click, from anywhere.
+- **Reset always re-infers** — the way back up the layers is one click, from anywhere. On the
+  force chart that click is picking an easing preset (Easing ▸ subsumes Reset — choosing the
+  layer is the reset; no separate Reset row, and the Tangents ▸ mode submenu appears only while
+  explicit handles exist).
 - **Handle drags are free gestures** — no raster, no guides. The one landmark is the grab ray: the
   angle latches to the grab direction while the tip stays within a perpendicular screen-px corridor
   (the angular window derived from it, never authored in degrees), so pulling out lengthens without
   bumping the angle; deviate and return and it re-latches (stateless, no monotonic release). Node
   moves snap the grid; handle drags express.
+- **The force chart bends free-gesture on the value axis only.** A handle's Δg snaps the g-grid in
+  offset space (the space the readout prints — a snapped transition reads "+0.5 g"); Δs stays
+  continuous: a keyframe's s is *placement* (authoring vocabulary, snapped), a handle's Δs is
+  *curvature shaping* (inherently continuous). Ctrl frees Δg; the grab-ray latch is unchanged.
 - **A section boundary is one node, stitched at the UI.** A geo→geo boundary is two coincident
   entities (upstream tip + downstream node 0, the rigid-placement invariant). Tangent-editing the
   tip additionally summons the downstream node-0 out-handle — a single free entry handle (no mode
@@ -242,6 +249,20 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
 - **No dominant-axis lock on a keyframe drag.** The per-axis gesture-start magnet (Snapping, above)
   already snaps the near-still axis back to its start, so a Shift lock is redundant; Shift is a
   no-op on a keyframe drag. Single-axis intent is the magnet's job, not a modifier's.
+- **Easing lives on the leading keyframe** (the Blender F-curve convention) and governs its
+  following segment. The curve span between two keyframes is a *hit-target addressing the leading
+  keyframe*, never a selectable object — right-click the curve to change that transition, without
+  adding a new selection kind. The terminal keyframe carries no Easing submenu.
+- **The easing middle layer is a small named menu, never a scalar.** The layers trade one decision
+  degree per step for strictly more expressiveness: default (zero decisions) → named eases (one
+  categorical pick — Linear | Cubic | Quintic, the FVD++ ladder vocabulary) → handles (the full
+  manifold). A continuous knob between menu and handles inverts the trade (AE's keyframe-velocity
+  influence dialog is the cautionary case); asymmetry and overshoot live in the handle layer.
+- **Custom is derived provenance — and a choice.** The Easing menu's Custom row is checked iff
+  explicit tangents bound the addressed segment (this keyframe's out + the next one's in), never a
+  stored flag. Choosing Custom materializes the current derived tangents in place (no curve jump);
+  choosing a preset clears those two sides back to it. Presets and handles are one bezier family
+  resolved at one seam — there is no second evaluator.
 - **Scaffolding controls float as satellite surfaces.** A control a staged design will remove
   (the whole-track geo/force toggle before per-section kinds) floats as its own small opaque
   surface OUTSIDE the content it governs; overlapping it reads as a bug, and a docked row would
