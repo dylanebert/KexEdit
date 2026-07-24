@@ -20,12 +20,14 @@ import {
     beginV0,
     commit,
     convertSection,
+    convertSections,
     createForce,
     createHistory,
     deleteForce,
     deleteForces,
     extendTrack,
     redo,
+    removeSections,
     resetTangents,
     resetTangentsBulk,
     setForcesEase,
@@ -383,6 +385,62 @@ test("convert geo→force undoes byte-identical to the shaped geo track", () => 
         theta: Handle.theta.get(e),
     }));
     expect(after).toEqual(before); // the geo chain restored exactly
+});
+
+// ── section bulk ops (shift-click set — Premiere multi-clip) ─────────────────────
+
+test("removeSections: a SET of sections deletes in ONE entry; undo restores all sections + the selection set", () => {
+    clearSelection();
+    const { state, sec: a } = nodes(); // one geo section, order 0
+    const h = createHistory();
+    const b = appendSection(h, state, SectionKind.Geo); // order 1
+    const c = appendSection(h, state, SectionKind.Geo); // order 2
+    expect(sections(state).map((s) => s.id)).toEqual([a, b, c]);
+
+    // a shift-click set of two of the three, b active.
+    selectSection(a);
+    selectSection(b, "toggle");
+    expect(editor.sections.ids.size).toBe(2);
+
+    expect(removeSections(h, state, [a, b])).toBe(true);
+    expect(sections(state).map((s) => s.id)).toEqual([c]);
+    expect(h.undo.length).toBe(3); // two appends + ONE bulk delete
+
+    undo(h, state);
+    expect(
+        sections(state)
+            .map((s) => s.id)
+            .sort((x, y) => x - y),
+    ).toEqual([a, b, c].sort((x, y) => x - y));
+    // the selection SET restored (undo restores both, per the SelectionHook).
+    expect([...editor.sections.ids].sort((x, y) => x - y)).toEqual([a, b].sort((x, y) => x - y));
+});
+
+test("removeSections refuses (records nothing) when the set is EVERY section — the last-section floor", () => {
+    clearSelection();
+    const { state, sec: a } = nodes();
+    const h = createHistory();
+    const b = appendSection(h, state, SectionKind.Geo);
+    expect(removeSections(h, state, [a, b])).toBe(false); // would leave zero
+    expect(sections(state).length).toBe(2); // untouched
+    expect(h.undo.length).toBe(1); // only the append — the refused delete recorded nothing
+});
+
+test("convertSections: flips EVERY section in a SET in ONE entry, regardless of its own kind (no shared destination)", () => {
+    clearSelection();
+    const { state, sec: a } = nodes(); // geo
+    const h = createHistory();
+    const b = appendSection(h, state, SectionKind.Force); // a mixed-kind chain: geo, force
+    expect(sections(state).map((s) => s.kind)).toEqual([SectionKind.Geo, SectionKind.Force]);
+
+    convertSections(h, state, [a, b]);
+    // each section flipped its OWN kind independently — convert has no direction parameter to
+    // converge on, so a mixed set stays mixed (just swapped), never collapsing to one kind.
+    expect(sections(state).map((s) => s.kind)).toEqual([SectionKind.Force, SectionKind.Geo]);
+    expect(h.undo.length).toBe(2); // the append + ONE bulk convert
+
+    undo(h, state);
+    expect(sections(state).map((s) => s.kind)).toEqual([SectionKind.Geo, SectionKind.Force]);
 });
 
 // ── track initial speed (v0) — a per-track scalar on the same gesture substrate ──

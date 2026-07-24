@@ -158,15 +158,16 @@ const TrackDrawSystem: System = {
             }
             ctx.stroke();
 
-            // selected-section overlay: overdraw its FEASIBLE span in a brightened analog
-            // of its OWN kind color (the Ableton/Premiere selected-clip idiom, `selected`
-            // in colors.ts) so the whole-section handle (convert / delete target) reads.
-            // an infeasible sub-segment is skipped here (same feasibility check as the two
+            // selected-section overlay: overdraw every selected section's FEASIBLE span in a
+            // brightened analog of its OWN kind color (the Ableton/Premiere selected-clip idiom,
+            // `selected` in colors.ts) so the whole-section handle (convert / delete target)
+            // reads — a multi-set (shift-click) washes every member, single-select the size-1
+            // case. an infeasible sub-segment is skipped here (same feasibility check as the two
             // passes above) so it stays under the dashed-red pass instead of being painted
             // over — priority stays infeasible-red > selection (brightened kind) > kind color.
-            if (editor.section !== null) {
-                const info = sectionInfo.get(editor.section);
-                const seg = segs.find((s) => s.id === editor.section);
+            for (const secId of editor.sections.ids) {
+                const info = sectionInfo.get(secId);
+                const seg = segs.find((s) => s.id === secId);
                 if (info && seg) {
                     ctx.setLineDash([]);
                     ctx.strokeStyle = selected(seg.color);

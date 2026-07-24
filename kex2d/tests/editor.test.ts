@@ -1,8 +1,10 @@
 import { beforeEach, expect, test } from "bun:test";
 import {
+    closeContext,
     editor,
     enterForceEdit,
     enterTangentEdit,
+    openContext,
     type Selection,
     select,
     selectForce,
@@ -176,4 +178,26 @@ test("entering force handle-edit collapses a multi-point set to its subject", ()
     expect([...editor.forces.ids]).toEqual([6]);
     expect(editor.force).toBe(6);
     expect(editor.forceEdit).toBe(6);
+});
+
+// ── section context menu: promote-vs-replace on right-click (mirrors openNodeMenu/openForceMenu) ──
+
+test("openContext on a member of a multi-set promotes it active, keeping the whole set", () => {
+    selectSection(1);
+    selectSection(2, "toggle");
+    selectSection(3, "toggle"); // a shift-click set {1,2,3}, active 3
+    openContext(50, 60, 1); // right-click a non-active MEMBER
+    expect([...editor.sections.ids].sort((a, b) => a - b)).toEqual([1, 2, 3]); // set preserved
+    expect(editor.sections.active).toBe(1); // promoted, not replaced
+    expect(editor.context).toEqual({ x: 50, y: 60, section: 1 });
+    closeContext();
+    expect(editor.context).toBeNull();
+});
+
+test("openContext outside the set replace-selects just the target (today's single-select)", () => {
+    selectSection(1);
+    selectSection(2, "toggle"); // a set {1,2}
+    openContext(10, 20, 9); // right-click a section NOT in the set
+    expect([...editor.sections.ids]).toEqual([9]); // replaced, not kept
+    expect(editor.sections.active).toBe(9);
 });

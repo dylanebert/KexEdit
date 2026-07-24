@@ -15,6 +15,7 @@ import {
     nodeMetrics,
     normDeg,
     polarNudge,
+    sectionsDeletable,
     selectedMetrics,
     suffixRun,
 } from "../src/controls";
@@ -609,6 +610,28 @@ describe("suffixRun — geo multi-delete enablement", () => {
 
     test("an empty set disqualifies", () => {
         expect(suffixRun([], count5)).toBeNull();
+    });
+});
+
+// the section multi-delete enablement (`sectionsDeletable`, pure/device-free): Delete acts on a
+// section SET iff it's smaller than the total section count — never every section, since the chain
+// keeps at least one (the last-section floor, lifted from `deleteSection`'s per-call guard).
+describe("sectionsDeletable — section multi-delete enablement", () => {
+    test("a set smaller than the total is deletable", () => {
+        expect(sectionsDeletable(2, 3)).toBe(true);
+    });
+
+    test("the single-section case (selected = 1) reduces to today's total > 1", () => {
+        expect(sectionsDeletable(1, 1)).toBe(false); // the only section — can't delete it
+        expect(sectionsDeletable(1, 2)).toBe(true);
+    });
+
+    test("a set equal to the total (every section) disqualifies", () => {
+        expect(sectionsDeletable(3, 3)).toBe(false);
+    });
+
+    test("an empty set disqualifies", () => {
+        expect(sectionsDeletable(0, 3)).toBe(false);
     });
 });
 

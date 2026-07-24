@@ -409,10 +409,14 @@ export function selectStart(on: boolean): void {
     }
 }
 
-/** open the section context menu at a screen point, targeting a section (also selects
- *  it, so the target reads highlighted). */
+/** open the section context menu at a screen point, targeting a section. a right-click on a
+ *  member of a multi-set keeps the set and promotes the target to active (the bulk rows — Delete,
+ *  Convert — act on the whole set; single-subject rows, like Convert's named destination, read the
+ *  active); a right-click outside the set replace-selects just it (today's single-select behavior).
+ *  mirrors `openNodeMenu`/`openForceMenu`. */
 export function openContext(x: number, y: number, section: number): void {
-    selectSection(section);
+    if (editor.sections.ids.has(section)) editor.sections.active = section;
+    else selectSection(section);
     editor.context = { x, y, section };
 }
 

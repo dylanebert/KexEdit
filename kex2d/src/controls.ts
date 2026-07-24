@@ -23,6 +23,7 @@ import {
     extendTrack,
     history,
     removeSection,
+    removeSections,
     trimSuffix,
     trimTrack,
 } from "./history";
@@ -456,6 +457,14 @@ export function suffixRun(
     for (let i = 1; i < k; i++) if (orders[i] !== orders[i - 1] + 1) return null; // contiguous
     if (n - k < 2) return null; // a section keeps ≥ 2 nodes
     return { section, k };
+}
+
+/** whether Delete is valid on a section SET — the last-section floor (`deleteSection`'s own guard,
+ *  lifted to the set): a set smaller than the total section count, never every section (one must
+ *  survive). the single-section case (`selected` = 1) reduces to `total > 1`, today's enablement.
+ *  pure — device-free, unit-tested; the bulk row grays out otherwise (never hidden). */
+export function sectionsDeletable(selected: number, total: number): boolean {
+    return selected > 0 && selected < total;
 }
 
 /** wrap a degree value into (−180, 180]. */
@@ -961,7 +970,7 @@ export function attachControls(
         }
         const sec = pickSection(ecs, tx, cx, cy);
         if (sec !== null) {
-            selectSection(sec);
+            selectSection(sec, e.shiftKey ? "toggle" : "replace"); // shift-click toggles the set
             return;
         }
         // truly empty space: arm a marquee (box-select). the deselect an empty CLICK does is
@@ -1208,11 +1217,15 @@ export function attachControls(
             return;
         }
 
-        // a whole section selected: delete it (Del; also the context-menu action).
+        // a whole section (or section SET) selected: delete it (Del; also the context-menu action).
+        // a multi-set deletes as ONE entry, guarded at the last-section floor (`removeSections`); the
+        // size-1 case is `removeSection`.
         if (editor.section !== null) {
             if (e.key === "Delete" || e.key === "Backspace") {
                 e.preventDefault();
-                if (removeSection(history, ecs, editor.section)) selectSection(null);
+                if (editor.sections.ids.size > 1) {
+                    if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
+                } else if (removeSection(history, ecs, editor.section)) selectSection(null);
             }
             return;
         }

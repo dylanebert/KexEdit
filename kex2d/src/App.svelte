@@ -1,7 +1,14 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
-import { attachControls, manipKnobs, nodeMembers, selectedMetrics, suffixRun } from "./controls";
+import {
+    attachControls,
+    manipKnobs,
+    nodeMembers,
+    sectionsDeletable,
+    selectedMetrics,
+    suffixRun,
+} from "./controls";
 import {
     beginDrag,
     closeContext,
@@ -18,9 +25,11 @@ import {
     beginV0,
     commit,
     convertSection,
+    convertSections,
     extendTrack,
     history,
     removeSection,
+    removeSections,
     resetTangents,
     resetTangentsBulk,
     setTangentModes,
@@ -529,21 +538,44 @@ const ctxKind = $derived.by((): SectionKind | null => {
     if (ctx === null) return null;
     return sections(ecs).find((s) => s.id === ctx.section)?.kind ?? null;
 });
-// the kind the convert flips TO — the label names the destination, not the toggle.
+// the kind the convert flips TO — the label names the destination, not the toggle. single-subject
+// (a mixed-kind SET has no shared destination, so the bulk row below is unlabeled).
 const ctxTarget = $derived(ctxKind === SectionKind.Force ? "Geo" : "Force");
-// Delete is impossible on the last section (the chain keeps at least one — `deleteSection`
-// returns false at length 1). enablement DERIVES from that state, the same structural move
-// as the menu's visibility deriving from its subject existing: the disabled render is the
-// UI truth, the handler guard is just defense in depth.
+// whether the section selection is a multi-set — a right-click keeps the set (`openContext`
+// promotes the target to active), so Delete + Convert act on the whole set. single-select is the
+// size-1 case (today's menu).
+const sectionMulti = $derived.by((): boolean => {
+    void tick;
+    return editor.sections.ids.size > 1;
+});
+// Delete is impossible when the set is EVERY section (the chain keeps at least one —
+// `sectionsDeletable`, controls.ts, lifts `deleteSection`'s per-call floor to the set).
+// enablement DERIVES from that state, the same structural move as the menu's visibility deriving
+// from its subject existing: the disabled render is the UI truth, the handler guard is just
+// defense in depth. the single-section case (`selected` = 1) reduces to today's `total > 1`.
 const canDelete = $derived.by((): boolean => {
     void tick;
-    return sections(ecs).length > 1;
+    return sectionsDeletable(editor.sections.ids.size, sections(ecs).length);
 });
 // the context menu as data: one array of MenuItems, rendered by the shared menu language.
-// Convert is always possible (any section flips geo↔force); Delete carries its derived
-// enablement.
+// single-select: Convert names the destination kind (today's row). multi-select (Premiere
+// multi-clip): Convert flips EVERY selected section's own kind — there's no shared destination to
+// converge on (`convertSection` has no direction parameter, it just swaps a section's own kind), so
+// the row reads generic; Delete carries the set-lifted enablement.
 const ctxItems = $derived.by((): MenuItem[] => {
     if (ctx === null) return [];
+    if (sectionMulti) {
+        return [
+            { label: "Convert", action: ctxConvertSet },
+            {
+                label: "Delete",
+                shortcut: "Del",
+                danger: true,
+                enabled: canDelete,
+                action: ctxDeleteSet,
+            },
+        ];
+    }
     return [
         { label: `Convert to ${ctxTarget}`, action: ctxConvert },
         { label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: ctxDelete },
@@ -559,6 +591,15 @@ function ctxDelete(): void {
     // no explicit close: removing the section makes `ctx` derive null, so the menu dismisses
     // by subject existence (one mechanism) and the $effect clears the stale target id.
     if (removeSection(history, ecs, ctx.section)) selectSection(null);
+}
+// the bulk context-menu actions over the whole section set (one undo entry each) — the
+// `doDeleteSet`/`doResetSet` analogue for sections.
+function ctxConvertSet(): void {
+    convertSections(history, ecs, [...editor.sections.ids]);
+    closeContext();
+}
+function ctxDeleteSet(): void {
+    if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
 }
 // dismiss the menu on any outside press or Escape (clicks on the menu itself pass through
 // so its items can act before it closes).

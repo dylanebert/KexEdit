@@ -41,6 +41,7 @@ import {
     Section,
     SectionKind,
     sectionAt,
+    sections,
     seedTangent,
     setTangent,
     type SectionLengthState,
@@ -708,4 +709,36 @@ export function removeSection(h: History, ecs: State, section: number): boolean 
     const after = snapshotAll(ecs);
     record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return true;
+}
+
+/** delete a SET of sections by id as ONE undoable entry (the bulk Delete — Premiere multi-clip).
+ *  guards the last-section floor: refuses (records nothing, returns false) when the set is EVERY
+ *  section, since one must always survive — the same floor `deleteSection` enforces per-call, lifted
+ *  to the set so a partial bulk delete can't stop one section short of empty (`sectionsDeletable`,
+ *  `controls.ts`, is the UI's matching enablement predicate). undo respawns every removed section
+ *  verbatim (whole-track snapshot — a delete reorders every downstream section). the size-1 case is
+ *  `removeSection`. */
+export function removeSections(h: History, ecs: State, ids: readonly number[]): boolean {
+    const targets = new Set(ids);
+    if (targets.size === 0 || targets.size >= sections(ecs).length) return false;
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotAll(ecs);
+    for (const id of targets) deleteSectionTrack(ecs, id);
+    const after = snapshotAll(ecs);
+    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
+    return true;
+}
+
+/** flip EVERY section in a SET to its opposite kind as ONE undoable entry (the bulk Convert). there
+ *  is no shared "destination" to converge on — `convertSection`'s flip takes no direction parameter,
+ *  it just swaps a section's own kind — so a mixed-kind set flips each member independently, exactly
+ *  what running the single convert on each member would do; nothing is skipped. no-op on an empty
+ *  set. the size-1 case is `convertSection`. */
+export function convertSections(h: History, ecs: State, ids: readonly number[]): void {
+    if (ids.length === 0) return;
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotAll(ecs);
+    for (const id of ids) flipSectionKind(ecs, id);
+    const after = snapshotAll(ecs);
+    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
 }

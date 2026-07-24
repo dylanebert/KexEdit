@@ -474,10 +474,12 @@ const forcePts = $derived.by((): ForcePt[] => {
     }
     return res;
 });
-// the selected section id (read through the per-RAF tick; editor is plain state).
-const selSection = $derived.by((): number | null => {
+// the whole selected section SET (membership, for the clip highlight) — single-select is the
+// size-1 case. read through the tick like the rest of `editor`; the per-frame `clips` rebuild
+// re-evaluates the `.has` in the render loop (the `selForceSet` pattern above).
+const selSections = $derived.by((): Set<number> => {
     void tick;
-    return editor.section;
+    return editor.sections.ids;
 });
 // the geo section that OWNS the selected node — its clip gets a quiet context wash (which
 // clip the selection lives in). node and section selection are mutually exclusive
@@ -1276,13 +1278,15 @@ $effect(() => {
     };
 });
 
-// select a section by clicking its clip (the same `editor.section` the viewport span
-// selects — one object, two surfaces). pointerdown so it feels immediate.
+// select a section by clicking its clip (the same `editor.sections` set the viewport span
+// selects — one object, two surfaces). pointerdown so it feels immediate. shift-click toggles
+// membership (Premiere multi-clip); no clip marquee (the marker lane's own boundary — a chart
+// marquee only ever hits diamonds).
 function selectClip(e: PointerEvent, c: Clip): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation(); // don't also scrub via the ruler zone beneath
-    selectSection(c.id);
+    selectSection(c.id, e.shiftKey ? "toggle" : "replace");
 }
 // right-click a clip → the section context menu (Convert / Delete) at the cursor.
 function clipMenu(e: MouseEvent, c: Clip): void {
@@ -2213,7 +2217,7 @@ onMount(() => {
                             {@const isF = c.kind === SectionKind.Force}
                             <rect
                                 class="clip {isF ? 'force' : 'geo'}"
-                                class:sel={c.id === selSection}
+                                class:sel={selSections.has(c.id)}
                                 class:wash={c.id === washSection}
                                 x={x0 + 0.5}
                                 y={RULER_H + CLIP_PAD}
