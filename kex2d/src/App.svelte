@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
-import { attachControls, manipKnobs, selectedMetrics } from "./controls";
+import { attachControls, manipKnobs, nodeMembers, selectedMetrics, suffixRun } from "./controls";
 import {
     beginDrag,
     closeContext,
@@ -22,6 +22,9 @@ import {
     history,
     removeSection,
     resetTangents,
+    resetTangentsBulk,
+    setTangentModes,
+    trimSuffix,
     trimTrack,
 } from "./history";
 import Menu from "./Menu.svelte";
@@ -198,6 +201,7 @@ const extendBtn = $derived.by((): { x: number; y: number } | null => {
     void tick;
     const eid = editor.selection;
     if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
+    if (editor.nodes.ids.size > 1) return null; // Add is single-subject — grayed in the menu, gone from the ring
     if (Handle.order.get(eid) === 0) return null; // the entry anchor never extends
     const section = Handle.section.get(eid);
     if (eid !== lastHandle(ecs, section)) return null; // the chain end alone extends
@@ -311,6 +315,29 @@ const nodeCanTrim = $derived.by((): boolean => {
     const m = editor.nodeMenu;
     return nodeIsEnd && m !== null && sectionHandles(ecs, Handle.section.get(m.eid)).length > 2;
 });
+// whether the node selection is a multi-set — a right-click keeps the set (openNodeMenu promotes the
+// target to active), so Delete + the Tangents ▸ rows act on the whole set, single-subject rows (Add,
+// Handles) gray out. single-select is the size-1 case (today's menu).
+const nodeMulti = $derived.by((): boolean => {
+    void tick;
+    return editor.nodes.ids.size > 1;
+});
+// the selected node set as stable (section, order) members — the bulk ops read this (a raw eid can't
+// cross a snapshot restore); `nodeMembers` (controls.ts) is the one source of truth.
+// whether the set is a Delete-able suffix run — a contiguous suffix of ONE section, excluding node 0,
+// leaving ≥ 2 (the enablement predicate). the bulk Delete row grays out otherwise (never hidden).
+const nodeSuffixOk = $derived.by((): boolean => {
+    void tick;
+    return suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length) !== null;
+});
+// whether ANY selected member carries a stored tangent — the bulk Reset's enablement (a no-op on an
+// all-live set), the set analogue of `nodeHasTangent`.
+const nodeSetHasTangent = $derived.by((): boolean => {
+    void tick;
+    for (const m of nodeMembers(ecs))
+        if (handleTangent(ecs, m.section, m.order) !== undefined) return true;
+    return false;
+});
 // the node menu as data (the shared MenuItem language): Add node / Delete node (chain-end-only, so
 // enablement-gated — the menu is Delete's only pointer path, the ring carries no trash button), then
 // a Handles toggle over a Tangents submenu (the three modes carry their `checked`; Reset carries its
@@ -321,6 +348,46 @@ const nodeItems = $derived.by((): MenuItem[] => {
     const m = editor.nodeMenu;
     if (m === null) return [];
     const eid = m.eid;
+    // a multi-selection: the bulk rows (the gray-never-hide law). Delete acts on the whole set iff
+    // it's a valid suffix run (else grayed); Add + Handles are single-subject, so they gray out;
+    // Tangents ▸ modes + Reset apply to every member in one entry. the mode `checked` reflects the
+    // ACTIVE member (Blender active-only).
+    if (nodeMulti) {
+        return [
+            {
+                label: "Delete",
+                shortcut: "Del",
+                danger: true,
+                enabled: nodeSuffixOk,
+                action: doDeleteSet,
+            },
+            { label: "Add", shortcut: "Enter", enabled: false },
+            { separator: true },
+            { label: "Handles", enabled: false },
+            {
+                label: "Tangents",
+                children: [
+                    {
+                        label: "Mirror",
+                        checked: nodeMode === TangentMode.Mirror,
+                        action: () => pickModeSet(TangentMode.Mirror),
+                    },
+                    {
+                        label: "Aligned",
+                        checked: nodeMode === TangentMode.Aligned,
+                        action: () => pickModeSet(TangentMode.Aligned),
+                    },
+                    {
+                        label: "Free",
+                        checked: nodeMode === TangentMode.Free,
+                        action: () => pickModeSet(TangentMode.Free),
+                    },
+                    { separator: true },
+                    { label: "Reset", enabled: nodeSetHasTangent, action: doResetSet },
+                ],
+            },
+        ];
+    }
     if (Handle.order.get(eid) === 0) {
         return [
             { label: "Handles", checked: nodeEditing, action: () => toggleHandles(eid) },
@@ -399,6 +466,21 @@ function pickMode(target: TangentMode, eid: number): void {
 // stitched "one node" view); everywhere else the stitch is null and it's a plain single-node reset.
 function doReset(eid: number): void {
     resetTangents(history, ecs, eid, stitchNode(ecs, eid));
+}
+
+// the bulk node-menu actions over the whole selection set (one undo entry each). Delete trims the
+// suffix run then prunes the selection to the surviving tip (the live-pruner answer — the destroyed
+// eids leave the set here). Reset + the mode picks apply per member across the affected sections.
+function doDeleteSet(): void {
+    const run = suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length);
+    if (run !== null && trimSuffix(history, ecs, run.section, run.k))
+        select(lastHandle(ecs, run.section));
+}
+function doResetSet(): void {
+    resetTangentsBulk(history, ecs, nodeMembers(ecs));
+}
+function pickModeSet(mode: TangentMode): void {
+    setTangentModes(history, ecs, nodeMembers(ecs), mode);
 }
 
 // dismiss the node menu on any outside press or Escape (clicks on the menu pass through so

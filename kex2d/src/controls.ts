@@ -17,22 +17,28 @@ import {
 import { hits, merge, normRect } from "./marquee";
 import {
     beginMove,
+    beginMoves,
     cancel,
     commit,
     extendTrack,
     history,
     removeSection,
+    trimSuffix,
     trimTrack,
 } from "./history";
 import {
     angleControl,
     angleToPoint,
+    type ChainNode,
     type Frame,
     lengthControl,
     lengthToPoint,
+    polarDelta,
     polarFrame,
+    screenToAngle,
+    screenToLength,
 } from "./manipulator";
-import { LENGTH_MIN } from "./magnet";
+import { LENGTH_MIN, LENGTH_STEP, snapAngle } from "./magnet";
 import { RadialSlot, ringBase, ringSlot } from "./radial";
 import { localize } from "./section";
 import { editTangent, TangentMode } from "./spline";
@@ -46,6 +52,7 @@ import {
     reheadOnDrag,
     samples,
     SectionKind,
+    sectionHandles,
     sectionInfo,
     sections,
     seedTangent,
@@ -146,6 +153,21 @@ let manipDX = 0;
 let manipDY = 0;
 let manipCX = 0;
 let manipCY = 0;
+// the multi-node group move (per-node polar delta). true when the drag opened on a multi-selection:
+// the active node keeps its ring, its gesture derives one Δlength/Δangle, and that same delta applies
+// to every selected node in its own polar frame. the derivation frame is FROZEN at gesture start
+// (the camera never moves mid-drag) so the pointer→delta mapping is stable, and the active node's
+// start length/angle are the delta's zero. the affected sections are what the one undo entry covers.
+let manipMulti = false;
+let manipFrame0: Frame | null = null;
+let manipLen0 = 0;
+let manipAng0 = 0;
+// the group move's FROZEN start snapshot: each affected section's full section-local chain + the
+// selected orders within it, captured at gesture start. `applyMultiDelta` reads its START positions
+// from here (never live `Handle.pos`), so a cumulative-from-start delta lands absolute — every
+// pointermove writes live from the same frozen start, so it can't re-read the moved positions and
+// double-apply the delta. null outside a group gesture; the nudge path re-freezes per keypress.
+let manipChains: Map<number, FrozenSection> | null = null;
 // the tangent handle under drag (the selected node's in/out handle), or null. mutually
 // exclusive with `dragManip` + `panning` — one gesture at a time.
 let dragTangent: { eid: number; side: TangentSide } | null = null;
@@ -412,6 +434,30 @@ export function polarNudge(
     return { x: prev.x + Math.cos(na) * r, y: prev.y + Math.sin(na) * r };
 }
 
+/** whether a selected node set is a Delete-able **suffix run** — a contiguous suffix of ONE section's
+ *  chain, excluding node 0, that leaves ≥ 2 nodes (the enablement the user named: end-of-geo yes,
+ *  intermediate no). `members` are the selected nodes' (section, order); `count(section)` yields that
+ *  section's node count. returns the section and the number of trailing nodes to trim (`k`), or null
+ *  when the set spans two sections, has a gap, includes node 0, or would leave < 2 nodes. pure —
+ *  device-free, unit-tested. the size-1 case is a single tip (today's trim). */
+export function suffixRun(
+    members: readonly { section: number; order: number }[],
+    count: (section: number) => number,
+): { section: number; k: number } | null {
+    if (members.length === 0) return null;
+    const section = members[0].section;
+    for (const m of members) if (m.section !== section) return null; // spans two sections
+    const orders = [...new Set(members.map((m) => m.order))].sort((a, b) => a - b);
+    if (orders.length !== members.length) return null; // a duplicate order (never expected)
+    if (orders[0] === 0) return null; // excludes node 0 (the entry anchor)
+    const k = orders.length;
+    const n = count(section);
+    if (orders[k - 1] !== n - 1) return null; // must reach the chain tip (a suffix, not interior)
+    for (let i = 1; i < k; i++) if (orders[i] !== orders[i - 1] + 1) return null; // contiguous
+    if (n - k < 2) return null; // a section keeps ≥ 2 nodes
+    return { section, k };
+}
+
 /** wrap a degree value into (−180, 180]. */
 export function normDeg(d: number): number {
     const w = ((((d + 180) % 360) + 360) % 360) - 180;
@@ -474,6 +520,134 @@ export function selectedMetrics(ecs: State, eid: number): NodeMetrics | null {
     return nodeMetrics(prev, node, exitWorld(eid));
 }
 
+/** the distinct sections the selected node set spans — what one group-move undo entry covers, and
+ *  the grouping the per-section delta application walks. */
+function sectionsOf(ecs: State, ids: Iterable<number>): number[] {
+    const out: number[] = [];
+    for (const eid of ids) {
+        if (!ecs.has(eid, Handle)) continue;
+        const sec = Handle.section.get(eid);
+        if (!out.includes(sec)) out.push(sec);
+    }
+    return out;
+}
+
+/** the selected node set as stable (section, order) members — the suffix-run enablement + the bulk
+ *  tangent ops read this (a raw eid can't cross a snapshot restore). */
+export function nodeMembers(ecs: State): { section: number; order: number }[] {
+    const out: { section: number; order: number }[] = [];
+    for (const eid of editor.nodes.ids)
+        if (ecs.has(eid, Handle))
+            out.push({ section: Handle.section.get(eid), order: Handle.order.get(eid) });
+    return out;
+}
+
+/** a group move's frozen start snapshot for one section: the full section-local chain at gesture
+ *  start (`ChainNode[]`) + the selected orders within it. `applyMultiDelta` reads start positions
+ *  from here so a cumulative-from-start delta lands absolute, not accumulated. */
+interface FrozenSection {
+    chain: ChainNode[];
+    selected: Set<number>;
+}
+
+/** freeze each affected section's section-local chain + its selected orders at group-move start.
+ *  production passes `editor.nodes.ids`; a test passes an explicit id set. the chain reads the LIVE
+ *  positions once, at the freeze — every subsequent `applyMultiDelta` reads back from the frozen
+ *  copy, so it's the delta's fixed zero for the whole gesture. */
+export function freezeChains(ecs: State, ids: Iterable<number>): Map<number, FrozenSection> {
+    const out = new Map<number, FrozenSection>();
+    for (const eid of ids) {
+        if (!ecs.has(eid, Handle)) continue;
+        const sec = Handle.section.get(eid);
+        let fs = out.get(sec);
+        if (!fs) {
+            fs = {
+                chain: sectionHandles(ecs, sec).map((h) => ({
+                    order: Handle.order.get(h),
+                    x: Handle.pos.x.get(h),
+                    y: Handle.pos.y.get(h),
+                })),
+                selected: new Set<number>(),
+            };
+            out.set(sec, fs);
+        }
+        fs.selected.add(Handle.order.get(eid));
+    }
+    return out;
+}
+
+/** apply one shared polar `delta` to a group move's FROZEN start snapshot — per section, run its
+ *  frozen start chain + selected orders through `polarDelta` (ascending order, running-prev anchor —
+ *  each node in its own polar frame) and write each moved node's local position to LIVE `Handle.pos`,
+ *  then rehead the section tip (the same `reheadOnDrag` a single drag runs). the contract is reads
+ *  come from the frozen start, writes go to live: so a cumulative-from-start delta lands absolute —
+ *  applying `d` then `d'` from the same snapshot equals a single application of `d'`, no accumulation
+ *  (the positions a previous frame moved are never re-read as the next frame's start). */
+export function applyMultiDelta(
+    ecs: State,
+    chains: Map<number, FrozenSection>,
+    axis: "length" | "angle",
+    delta: number,
+): void {
+    for (const [sec, fs] of chains) {
+        const targets = polarDelta(fs.chain, fs.selected, axis, delta, LENGTH_MIN);
+        for (const eid of sectionHandles(ecs, sec)) {
+            const p = targets.get(Handle.order.get(eid));
+            if (p) Handle.pos.set(eid, p.x, p.y);
+        }
+        const tip = lastHandle(ecs, sec);
+        if (tip !== null) reheadOnDrag(ecs, tip); // headLast re-derives the tip from its predecessor
+    }
+}
+
+/** feed the readout the ACTIVE node's live metrics during a group move — its authored world exit
+ *  heading + the chord to its previous node (computed off the section-local positions, so it needs
+ *  no re-bake), the Blender active-only readout. the ring + readout stay on the active member. */
+function feedMultiReadout(ecs: State, active: number): void {
+    const sec = Handle.section.get(active);
+    const prev = handleAt(ecs, sec, Handle.order.get(active) - 1);
+    if (prev === null) return;
+    const dx = Handle.pos.x.get(active) - Handle.pos.x.get(prev);
+    const dy = Handle.pos.y.get(active) - Handle.pos.y.get(prev);
+    snapGuides.lengthLabel = formatLen(Math.hypot(dx, dy));
+    snapGuides.angleLabel = formatDeg((exitWorld(active) * 180) / Math.PI);
+}
+
+/** advance a GROUP manipulator drag (a multi-selection): derive one Δlength/Δangle from the active
+ *  node's gesture against the frozen start frame — snap-by-default quantizes the DELTA (1 m / 5°),
+ *  Ctrl bypasses — then apply it to every selected node in its own polar frame (`applyMultiDelta`).
+ *  no guide ray (a single ray is ambiguous over a set); the readout stays on the active member. */
+function dragMultiTo(
+    ecs: State,
+    active: number,
+    axis: "length" | "angle",
+    cx: number,
+    cy: number,
+    snap: boolean,
+): void {
+    const f0 = manipFrame0;
+    if (!f0 || !manipChains) return;
+    const ntx = cx + manipDX;
+    const nty = cy + manipDY;
+    clearGuides();
+    let delta: number;
+    if (axis === "length") {
+        const raw = screenToLength(f0, ntx, nty) - manipLen0;
+        delta = snap ? Math.round(raw / LENGTH_STEP) * LENGTH_STEP : raw;
+    } else {
+        const raw = normAngleDelta(screenToAngle(f0, ntx, nty) - manipAng0);
+        delta = snap ? snapAngle(raw) : raw;
+    }
+    applyMultiDelta(ecs, manipChains, axis, delta);
+    feedMultiReadout(ecs, active);
+}
+
+/** wrap an angle difference into (−π, π] — so a group angle drag reads a small delta across the
+ *  atan2 branch cut rather than a near-full-turn jump. */
+function normAngleDelta(d: number): number {
+    return Math.atan2(Math.sin(d), Math.cos(d));
+}
+
 /** advance a manipulator drag: rebuild the polar frame from the live positions, resolve the grabbed
  *  1D control (length along the chord ray, angle along the tangential arc) through the stage-4
  *  inverse, and write the node's new world position. the dead-zone latch keeps a sub-DRAG_PX grab a
@@ -490,6 +664,11 @@ function dragManipTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): vo
     const { x: cx, y: cy } = pointerToCanvas(canvas, e);
     manipArmed = armDrag(manipArmed, cx - manipCX, cy - manipCY);
     if (!manipArmed) return;
+    if (manipMulti) {
+        // a multi-selection: derive one delta from the active node and apply it to the whole set.
+        dragMultiTo(ecs, sel, dragManip, cx, cy, snapActive(e.ctrlKey || e.metaKey));
+        return;
+    }
     const tx = viewTransform(canvas);
     const f = nodeFrame(ecs, s, tx, sel); // rebuilt per move (live radius — the per-move snapshot)
     if (!f) return;
@@ -705,14 +884,15 @@ export function attachControls(
         // the node reads it highlighted.
         const node = pickNode(ecs, tx, cx, cy);
         if (node !== null) {
-            select(node);
+            // openNodeMenu promotes a right-clicked SET member to active (keeping the set — the bulk
+            // rows act on it) and replace-selects a non-member (today's single-select), so the menu
+            // never collapses a multi-selection on a right-click (the Blender active-object grammar).
             openNodeMenu(e.clientX, e.clientY, node);
             return;
         }
         if (pickStart(ecs, tx, cx, cy)) {
             const n0 = startNode0(ecs);
             if (n0 !== null) {
-                select(n0);
                 openNodeMenu(e.clientX, e.clientY, n0);
                 return;
             }
@@ -878,6 +1058,9 @@ export function attachControls(
         if (dragManip === null) return;
         dragManip = null;
         manipArmed = false;
+        manipMulti = false;
+        manipFrame0 = null;
+        manipChains = null;
         clearGuides();
         commit(history); // one drag → one undo entry (a no-move click records nothing)
     };
@@ -901,6 +1084,9 @@ export function attachControls(
         if (dragManip === null) return;
         dragManip = null;
         manipArmed = false;
+        manipMulti = false;
+        manipFrame0 = null;
+        manipChains = null;
         clearGuides();
         cancel(); // interrupted drag: restore the pre-gesture pose
     };
@@ -967,6 +1153,23 @@ export function attachControls(
             const step = (e.shiftKey ? NUDGE_PX_COARSE : NUDGE_PX) / camera.zoom;
             const axis = e.key === "ArrowUp" || e.key === "ArrowDown" ? "length" : "angle";
             const dir = e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : -1;
+            if (editor.nodes.ids.size > 1) {
+                // a multi-selection: one shared delta from the active node (length = a metre step;
+                // angle = the step's arc at the active radius) applied to the whole set, one entry.
+                let delta = dir * step;
+                if (axis === "angle") {
+                    const p = nodeWorld(s, prevEid);
+                    const n = nodeWorld(s, eid);
+                    const r = Math.hypot(n.x - p.x, n.y - p.y);
+                    delta = r > 1e-9 ? (dir * step) / r : 0;
+                }
+                beginMoves(ecs, sectionsOf(ecs, editor.nodes.ids));
+                // each keypress is a whole begin→apply→commit, so re-freeze from the just-committed
+                // live positions — the delta's zero is this press's start, not the gesture's.
+                applyMultiDelta(ecs, freezeChains(ecs, editor.nodes.ids), axis, delta);
+                commit(history);
+                return;
+            }
             const t = polarNudge(
                 nodeWorld(s, prevEid),
                 nodeWorld(s, eid),
@@ -1016,6 +1219,22 @@ export function attachControls(
 
         // a node selected: extend, or trim the chain end.
         if (editor.selection === null) return;
+
+        // a MULTI node set: Delete acts on the whole set iff it's a valid suffix run (a contiguous
+        // suffix of one section, excluding node 0, leaving ≥ 2) — trimmed as ONE undo entry, then the
+        // selection prunes to the surviving tip (the live-pruner answer: the destroyed eids leave the
+        // set here, never lingering to alias a recycled entity). anything else is a no-op (the menu
+        // grays the row). Enter/extend is single-subject, so a multi-set doesn't extend.
+        if (editor.nodes.ids.size > 1) {
+            if (e.key === "Delete" || e.key === "Backspace") {
+                e.preventDefault();
+                const run = suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length);
+                if (run !== null && trimSuffix(history, ecs, run.section, run.k))
+                    select(lastHandle(ecs, run.section));
+            }
+            return;
+        }
+
         const section = Handle.section.get(editor.selection);
         if (!endSelected(ecs)) return;
         if (e.key === "Enter") {
@@ -1053,7 +1272,20 @@ export function attachControls(
             snapGuides.angleLabel = m.angleLabel;
             snapGuides.lengthLabel = m.lengthLabel;
         }
-        beginMove(ecs, Handle.section.get(sel)); // open the drag gesture; commit/cancel on release
+        manipMulti = editor.nodes.ids.size > 1;
+        if (manipMulti) {
+            // the group move: freeze the active node's derivation frame (the camera holds still
+            // through the drag) + its start length/angle (the delta's zero), and open ONE undo entry
+            // over every affected section (`beginMoves` generalizes `beginMove`).
+            const f0 = nodeFrame(ecs, s, tx, sel);
+            manipFrame0 = f0;
+            manipLen0 = f0 ? screenToLength(f0, ns.x, ns.y) : 0;
+            manipAng0 = f0 ? screenToAngle(f0, ns.x, ns.y) : 0;
+            manipChains = freezeChains(ecs, editor.nodes.ids); // the delta's frozen start (read every move)
+            beginMoves(ecs, sectionsOf(ecs, editor.nodes.ids));
+        } else {
+            beginMove(ecs, Handle.section.get(sel)); // open the drag gesture; commit/cancel on release
+        }
         beginDrag(canvas, e.pointerId); // capture on the canvas → its move/up handlers run the drag
     };
 

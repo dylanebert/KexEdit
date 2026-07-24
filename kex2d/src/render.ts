@@ -245,7 +245,8 @@ const HandleDrawSystem: System = {
         const { element: canvas, ctx } = Canvas2D;
         if (!ctx) return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
-        const sel = editor.selection;
+        const sel = editor.selection; // the active member (the ring + readout anchor)
+        const members = editor.nodes.ids; // the whole selection set (single-select is the size-1 case)
 
         // pre-compute the red set: nodes at/past the chain's first infeasibility
         // (energy-out reachable) plus orphan nodes (their section's segment failed to
@@ -276,10 +277,13 @@ const HandleDrawSystem: System = {
             const i = Handle.sample.get(eid);
             const cx = ox + s0.posX[i] * sx;
             const cy = oy + s0.posY[i] * sy;
-            const highlighted = eid === sel;
+            const active = eid === sel;
+            const member = members.has(eid); // a selected member (active or not)
             const bad = badHandles.has(eid);
 
-            if (highlighted) {
+            if (member) {
+                // every selected member wears the soft accent ring; the active one is set apart by
+                // its brighter node stroke below (the ring + readout are active-only).
                 ctx.save();
                 ctx.strokeStyle = "rgba(255, 209, 102, 0.45)";
                 ctx.lineWidth = 1.5;
@@ -299,8 +303,14 @@ const HandleDrawSystem: System = {
             }
 
             ctx.fillStyle = bad ? "#5a2c25" : "#ffd166";
-            ctx.strokeStyle = bad ? COLOR_INFEASIBLE : highlighted ? "#f0ece8" : "#8a6a2a";
-            ctx.lineWidth = highlighted ? 2 : 1.5;
+            ctx.strokeStyle = bad
+                ? COLOR_INFEASIBLE
+                : active
+                  ? "#f0ece8" // the active member — the brightest stroke (its ring anchors here)
+                  : member
+                    ? "#d8cbb0" // a non-active selected member — brighter than rest, dimmer than active
+                    : "#8a6a2a";
+            ctx.lineWidth = member ? 2 : 1.5;
             ctx.beginPath();
             ctx.arc(cx, cy, HANDLE_R, 0, Math.PI * 2);
             ctx.fill();

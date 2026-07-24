@@ -25,6 +25,7 @@ import {
     forcePointState,
     forceTangent,
     Handle,
+    handleTangent,
     joinNext,
     type NodeState,
     nextForce,
@@ -40,6 +41,8 @@ import {
     Section,
     SectionKind,
     sectionAt,
+    seedTangent,
+    setTangent,
     type SectionLengthState,
     sectionLengthState,
     setForceEase as writeForceEase,
@@ -54,7 +57,7 @@ import {
     trackV0State,
     setTrackV0,
 } from "./track";
-import { TangentMode } from "./spline";
+import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { retargetMode } from "./timeline";
 
 /** a do/undo pair. `apply` is the do / redo direction, `reverse` is undo. both
@@ -259,6 +262,98 @@ export function beginMove(ecs: State, section: number): void {
         (s: NodeState[]) => restoreNodes(ecs, section, s),
         sameNodes,
     );
+}
+
+/** open a gesture on a MULTI-node move (the per-node polar-delta group drag / nudge), snapshotting
+ *  every affected section's pose in `sections` order. commit coalesces the live writes into one
+ *  entry over the whole affected set; the no-op test is that no section's nodes changed, so a click
+ *  or a nudge back to start records nothing. the size-1 case is `beginMove`. */
+export function beginMoves(ecs: State, sections: readonly number[]): void {
+    begin(
+        () => sections.map((s) => nodeSnapshot(ecs, s)),
+        (snaps: NodeState[][]) => {
+            for (let i = 0; i < sections.length; i++) restoreNodes(ecs, sections[i], snaps[i]);
+        },
+        (a: NodeState[][], b: NodeState[][]) =>
+            a.length === b.length && a.every((s, i) => sameNodes(s, b[i])),
+    );
+}
+
+/** trim a section's `k` trailing nodes as ONE undoable entry (the geo multi-delete — the suffix run
+ *  the enablement predicate cleared: `suffixRun`). `removeTrailingHandle` floors at the two nodes a
+ *  section needs, so it stops early rather than over-trim; the whole-section snapshot pair collapses
+ *  all `k` removes into a single restore, so undo brings back every trimmed node (and its selection,
+ *  re-resolved by stable (section, order) at the stack layer). no-op (records nothing) when nothing
+ *  was removed. returns true when at least one node was trimmed. */
+export function trimSuffix(h: History, ecs: State, section: number, k: number): boolean {
+    const pre = selHook?.snapshot(ecs); // the selected SET — captured before any node is destroyed
+    const before = snapshotSection(ecs, section);
+    let removed = 0;
+    for (let i = 0; i < k; i++) {
+        if (!removeTrailingHandle(ecs, section)) break;
+        removed++;
+    }
+    if (removed === 0) return false;
+    const after = snapshotSection(ecs, section);
+    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+    return true;
+}
+
+/** Reset a SET of nodes' tangent(s) back to live (`Auto`) as ONE undoable entry (the bulk Reset over
+ *  a multi-selection) — each member's own tangent cleared through its section's reset path, one
+ *  command over the affected sections. unlike the single `resetTangents` it doesn't couple a
+ *  boundary stitch (a bulk reset clears each member's own half); records nothing when no member
+ *  carried a tangent. */
+export function resetTangentsBulk(
+    h: History,
+    ecs: State,
+    members: readonly { section: number; order: number }[],
+): void {
+    const pre = selHook?.snapshot(ecs);
+    const secs = [...new Set(members.map((m) => m.section))];
+    const before = secs.map((s) => nodeSnapshot(ecs, s));
+    for (const m of members) resetTangent(ecs, m.section, m.order);
+    const after = secs.map((s) => nodeSnapshot(ecs, s));
+    if (secs.every((_, i) => sameNodes(before[i], after[i]))) return; // nothing cleared
+    const restore = (snap: NodeState[][]): void => {
+        for (let i = 0; i < secs.length; i++) restoreNodes(ecs, secs[i], snap[i]);
+    };
+    record(h, { apply: () => restore(after), reverse: () => restore(before) }, pre);
+}
+
+/** set a SET of nodes' tangent MODE as ONE undoable entry (the bulk Tangents ▸ over a
+ *  multi-selection) — each member seeded from the arc rule when live then re-collinearized to the
+ *  mode (`Mirror`/`Aligned` recouple, `Free` relabels), exactly the per-node `pickMode` move, one
+ *  command over the affected sections. picking `Aligned` on a live-inferred member is a no-op (it
+ *  already displays Aligned — no stamp); records nothing when no member changed. */
+export function setTangentModes(
+    h: History,
+    ecs: State,
+    members: readonly { section: number; order: number }[],
+    mode: TangentMode,
+): void {
+    const pre = selHook?.snapshot(ecs);
+    const secs = [...new Set(members.map((m) => m.section))];
+    const before = secs.map((s) => nodeSnapshot(ecs, s));
+    for (const m of members) {
+        const cur = handleTangent(ecs, m.section, m.order);
+        if (cur === undefined && mode === TangentMode.Aligned) continue; // inferred already Aligned
+        const base = cur ?? seedTangent(ecs, m.section, m.order, mode);
+        if (!base) continue;
+        const next =
+            mode === TangentMode.Mirror
+                ? mirrorTangent(base)
+                : mode === TangentMode.Aligned
+                  ? alignTangent(base)
+                  : { ...base, mode: TangentMode.Free };
+        setTangent(ecs, m.section, m.order, next);
+    }
+    const after = secs.map((s) => nodeSnapshot(ecs, s));
+    if (secs.every((_, i) => sameNodes(before[i], after[i]))) return; // nothing changed
+    const restore = (snap: NodeState[][]): void => {
+        for (let i = 0; i < secs.length; i++) restoreNodes(ecs, secs[i], snap[i]);
+    };
+    record(h, { apply: () => restore(after), reverse: () => restore(before) }, pre);
 }
 
 // ── force points ─────────────────────────────────────────────────────────────

@@ -421,8 +421,13 @@ export function closeContext(): void {
     editor.context = null;
 }
 
-/** open the node context menu at a screen point, targeting a pickable node. */
+/** open the node context menu at a screen point, targeting a pickable node. a right-click on a
+ *  member of a multi-set keeps the set and promotes the target to active (the bulk rows — Delete,
+ *  Tangents, Reset — act on the whole set; single-subject rows on the active); a right-click outside
+ *  the set replace-selects just it (today's single-select behavior). mirrors `openForceMenu`. */
 export function openNodeMenu(x: number, y: number, eid: number): void {
+    if (editor.nodes.ids.has(eid)) editor.nodes.active = eid;
+    else select(eid);
     editor.nodeMenu = { x, y, eid };
 }
 

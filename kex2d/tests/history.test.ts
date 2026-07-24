@@ -7,6 +7,7 @@ import {
     select,
     selectForce,
     selectionHook,
+    selectNodes,
     selectSection,
     selectStart,
 } from "../src/editor";
@@ -15,6 +16,7 @@ import {
     beginForceMove,
     beginForceMoves,
     beginMove,
+    beginMoves,
     beginV0,
     commit,
     convertSection,
@@ -25,8 +27,11 @@ import {
     extendTrack,
     redo,
     resetTangents,
+    resetTangentsBulk,
     setForcesEase,
     setSelectionHook,
+    setTangentModes,
+    trimSuffix,
     trimTrack,
     undo,
 } from "../src/history";
@@ -718,4 +723,137 @@ test("single-node Reset (no stitch) clears just that node", () => {
     expect(h.undo.length).toBe(1);
     undo(h, state);
     expect(handleTangent(state, sec, 1)).toBeDefined();
+});
+
+// ── multiselect bulk ops (stage 4) ─────────────────────────────────────────────────
+// the geo group move (`beginMoves`) and multi-delete (`trimSuffix`) each collapse to ONE undo entry
+// over the affected section set; undo restores geometry AND the selection set (re-resolved by stable
+// (section, order)). the selection hook is wired at module load, so a snapshot walks `editor.nodes`.
+
+function fourNodes(): { state: State; sec: number; e: number[] } {
+    const { state, sec } = nodes(); // orders 0,1
+    addNode(state, sec, 2 * EXTEND_DIST, 0); // order 2
+    addNode(state, sec, 3 * EXTEND_DIST, 0); // order 3 (the tip)
+    const e = [0, 1, 2, 3].map((o) => handleAt(state, sec, o) as number);
+    return { state, sec, e };
+}
+
+test("bulk move: a multi-node gesture is ONE undo entry; undo restores geometry, selection kept", () => {
+    const { state, sec, e } = fourNodes();
+    const h = createHistory();
+    selectNodes([e[1], e[2]], e[2]); // a 2-node set (orders 1,2), active order 2
+    const before1 = poseOf(state, sec, 1);
+    const before2 = poseOf(state, sec, 2);
+
+    // the gesture: open over the affected section, write both nodes' new local positions, commit.
+    beginMoves(state, [sec]);
+    Handle.pos.set(e[1], before1.x + 5, before1.y + 3);
+    Handle.pos.set(e[2], before2.x + 5, before2.y + 3);
+    commit(h);
+    expect(h.undo.length).toBe(1); // one entry for the whole group move
+
+    expect(poseOf(state, sec, 1).x).toBeCloseTo(before1.x + 5, 9);
+    undo(h, state);
+    expect(poseOf(state, sec, 1)).toEqual(before1); // geometry restored
+    expect(poseOf(state, sec, 2)).toEqual(before2);
+    // a move destroys no node, so the selection eids stay valid and are untouched by undo.
+    expect(editor.nodes.ids).toEqual(new Set([e[1], e[2]]));
+    expect(editor.nodes.active).toBe(e[2]);
+});
+
+test("bulk move: a no-op gesture (no node moved) records nothing", () => {
+    const { state, sec, e } = fourNodes();
+    const h = createHistory();
+    selectNodes([e[1], e[2]], e[2]);
+    beginMoves(state, [sec]);
+    commit(h); // no writes between begin and commit
+    expect(h.undo.length).toBe(0);
+});
+
+test("bulk delete (trimSuffix): k trims are ONE entry; undo restores geometry + the selection set", () => {
+    const { state, sec, e } = fourNodes();
+    const h = createHistory();
+    selectNodes([e[2], e[3]], e[3]); // the suffix run {2,3}
+    const pose2 = poseOf(state, sec, 2);
+    const pose3 = poseOf(state, sec, 3);
+
+    expect(trimSuffix(h, state, sec, 2)).toBe(true);
+    select(handleAt(state, sec, 1)); // the handler prunes the selection to the surviving tip
+    expect(orders(state, sec)).toEqual([0, 1]);
+    expect(h.undo.length).toBe(1); // one entry for both trims
+
+    undo(h, state);
+    expect(orders(state, sec)).toEqual([0, 1, 2, 3]); // geometry restored
+    expect(poseOf(state, sec, 2)).toEqual(pose2);
+    expect(poseOf(state, sec, 3)).toEqual(pose3);
+    // the selection set is restored by stable (section, order) → the re-spawned eids.
+    const restored = [...editor.nodes.ids].map((eid) => Handle.order.get(eid)).sort();
+    expect(restored).toEqual([2, 3]);
+    expect(Handle.order.get(editor.nodes.active as number)).toBe(3); // active re-anchored
+});
+
+test("bulk delete: trimSuffix floors at 2 nodes even when asked for more", () => {
+    const { state, sec, e } = fourNodes();
+    const h = createHistory();
+    selectNodes([e[1], e[2], e[3]], e[3]);
+    // asking to trim 3 (down to node 0) stops at the 2-node floor — 2 removed, not 3.
+    expect(trimSuffix(h, state, sec, 3)).toBe(true);
+    expect(orders(state, sec)).toEqual([0, 1]);
+});
+
+test("bulk reset: clears every selected member's tangent in one entry; undo restores them", () => {
+    const { state, sec, e } = fourNodes();
+    const h = createHistory();
+    // author explicit tangents on nodes 1 and 2 (Free), so the reset has something to clear.
+    for (const o of [1, 2]) {
+        const seed = seedTangent(state, sec, o, TangentMode.Free);
+        if (seed) setTangent(state, sec, o, seed);
+    }
+    expect(handleTangent(state, sec, 1)).not.toBeUndefined();
+    resetTangentsBulk(h, state, [
+        { section: sec, order: 1 },
+        { section: sec, order: 2 },
+    ]);
+    expect(handleTangent(state, sec, 1)).toBeUndefined(); // cleared to Auto
+    expect(handleTangent(state, sec, 2)).toBeUndefined();
+    expect(h.undo.length).toBe(1);
+    undo(h, state);
+    expect(handleTangent(state, sec, 1)).not.toBeUndefined(); // restored
+    expect(handleTangent(state, sec, 2)).not.toBeUndefined();
+    void e;
+});
+
+test("bulk reset: an all-live set records nothing (no tangent to clear)", () => {
+    const { state, sec } = fourNodes();
+    const h = createHistory();
+    resetTangentsBulk(h, state, [
+        { section: sec, order: 1 },
+        { section: sec, order: 2 },
+    ]);
+    expect(h.undo.length).toBe(0);
+});
+
+test("bulk tangent-mode: sets every member's mode in one entry; picking Aligned on live is a no-op", () => {
+    const { state, sec } = fourNodes();
+    const h = createHistory();
+    // Free on both interior/tip members → both turn explicit Free.
+    setTangentModes(
+        h,
+        state,
+        [
+            { section: sec, order: 1 },
+            { section: sec, order: 2 },
+        ],
+        TangentMode.Free,
+    );
+    expect(handleTangent(state, sec, 1)?.mode).toBe(TangentMode.Free);
+    expect(handleTangent(state, sec, 2)?.mode).toBe(TangentMode.Free);
+    expect(h.undo.length).toBe(1);
+
+    // Aligned on an all-live set is a no-op (inference already displays Aligned — no stamp).
+    const { state: s2, sec: sec2 } = fourNodes();
+    const h2 = createHistory();
+    setTangentModes(h2, s2, [{ section: sec2, order: 1 }], TangentMode.Aligned);
+    expect(h2.undo.length).toBe(0);
+    expect(handleTangent(s2, sec2, 1)).toBeUndefined();
 });

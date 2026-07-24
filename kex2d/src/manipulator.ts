@@ -154,3 +154,76 @@ export function angleControl(f: Frame, px: number, py: number, snap: boolean): A
     const incline = snap ? snapAngle(inclineOf(chord, f.tangent)) : inclineOf(chord, f.tangent);
     return { angle: chordForIncline(incline, f.tangent), incline, snapped: snap };
 }
+
+// ── per-node polar delta (the multiselect group move) ───────────────────────────────
+// a multi-node move applies ONE shared Δlength / Δangle to every selected node, each in its own
+// polar frame around its previous node (Blender's Individual Origins). the transform runs in the
+// SECTION-LOCAL frame (nodes are stored section-local, and a fixed entry rotation commutes with a
+// rotation delta, so a world-frame Δθ IS a local-frame Δθ — no world/bake round-trip needed, so the
+// group stays coherent mid-gesture without a re-bake). the chord VECTOR transform reads START
+// positions (order-independent); the ANCHOR reads the running (possibly already-moved) previous
+// node, walked ascending, so a selected RUN carries rigidly (the per-move-snapshot live-frame
+// rebuild, `manipulator.ts` — a consecutive selected pair anchors the later on the moved earlier).
+
+/** one node of a section's chain in section-local coordinates: its stable `order` (0 = the entry
+ *  anchor) and local position. */
+export interface ChainNode {
+    order: number;
+    x: number;
+    y: number;
+}
+
+/** apply a shared polar delta to a set of selected nodes within one section's chain, in the chain's
+ *  own section-local frame. `nodes` is the section's full order-set (0 = entry anchor, never
+ *  selected); `selected` the orders to move. the same Δ transforms EACH selected node's chord to its
+ *  previous node — `"length"` adds `delta` metres (floored at `minChord`), `"angle"` rotates the
+ *  chord by `delta` radians CCW — anchored on the running previous node (start when unselected, else
+ *  its already-computed target), walked ascending so a selected run carries rigidly. returns the new
+ *  local position per selected order. pure — the size-1 case degenerates to a single node's own
+ *  chord transform (today's polar move). */
+export function polarDelta(
+    nodes: readonly ChainNode[],
+    selected: ReadonlySet<number>,
+    axis: "length" | "angle",
+    delta: number,
+    minChord: number,
+): Map<number, { x: number; y: number }> {
+    const start = new Map<number, { x: number; y: number }>();
+    const cur = new Map<number, { x: number; y: number }>();
+    for (const n of nodes) {
+        start.set(n.order, { x: n.x, y: n.y });
+        cur.set(n.order, { x: n.x, y: n.y });
+    }
+    const out = new Map<number, { x: number; y: number }>();
+    const orders = [...selected].sort((a, b) => a - b);
+    for (const k of orders) {
+        const ps = start.get(k - 1); // start previous (the chord vector reference)
+        const ns = start.get(k); // start node
+        const pc = cur.get(k - 1); // running previous (the anchor — may have moved this pass)
+        if (!ps || !ns || !pc) continue; // a selected node always has a previous (order ≥ 1)
+        let vx = ns.x - ps.x;
+        let vy = ns.y - ps.y;
+        if (axis === "length") {
+            const r = Math.hypot(vx, vy);
+            const nr = Math.max(minChord, r + delta);
+            if (r > EPS) {
+                vx = (vx / r) * nr;
+                vy = (vy / r) * nr;
+            } else {
+                vx = nr; // degenerate chord (shouldn't occur — minChord ≥ 1): fall back to +x
+                vy = 0;
+            }
+        } else {
+            const c = Math.cos(delta);
+            const s = Math.sin(delta);
+            const rx = vx * c - vy * s;
+            const ry = vx * s + vy * c;
+            vx = rx;
+            vy = ry;
+        }
+        const np = { x: pc.x + vx, y: pc.y + vy };
+        cur.set(k, np);
+        out.set(k, np);
+    }
+    return out;
+}

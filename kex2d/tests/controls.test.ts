@@ -1,11 +1,13 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
+    applyMultiDelta,
     armDrag,
     beyondDeadZone,
     DRAG_PX,
     formatDeg,
     formatLen,
+    freezeChains,
     latchAngle,
     LATCH_PX,
     manipKnobs,
@@ -14,6 +16,7 @@ import {
     normDeg,
     polarNudge,
     selectedMetrics,
+    suffixRun,
 } from "../src/controls";
 import { ANGLE_STEP, LENGTH_MIN } from "../src/magnet";
 import { angleControl, angleToPoint, lengthControl, lengthToPoint } from "../src/manipulator";
@@ -519,4 +522,139 @@ test("angle drag on an INTERIOR node reports the frozen exit heading, not the ch
     expect(selectedMetrics(state, interior)?.angleLabel).toBe(
         formatDeg((exitWorld(interior) * 180) / Math.PI),
     );
+});
+
+// the geo multi-delete enablement (`suffixRun`, pure/device-free): Delete acts on a node set iff it
+// is a CONTIGUOUS SUFFIX of ONE section's chain, excluding node 0, leaving ≥ 2 nodes — then it's k
+// trims in one entry. anything else grays the row. `count` yields a section's node count.
+describe("suffixRun — geo multi-delete enablement", () => {
+    // a 5-node section (orders 0..4); the count fn a test can shadow per case.
+    const count5 = (): number => 5;
+
+    test("a contiguous suffix reaching the tip enables — returns the section + trim count k", () => {
+        // orders {3,4} in a 5-node chain: a suffix ending at the tip (4), leaves 3 nodes.
+        const run = suffixRun(
+            [
+                { section: 7, order: 3 },
+                { section: 7, order: 4 },
+            ],
+            count5,
+        );
+        expect(run).toEqual({ section: 7, k: 2 });
+    });
+
+    test("the single tip is the size-1 case (today's trim) — k = 1", () => {
+        expect(suffixRun([{ section: 7, order: 4 }], count5)).toEqual({ section: 7, k: 1 });
+    });
+
+    test("a gap in the run disqualifies (not contiguous)", () => {
+        // {2,4}: skips order 3 — not a contiguous suffix.
+        expect(
+            suffixRun(
+                [
+                    { section: 7, order: 2 },
+                    { section: 7, order: 4 },
+                ],
+                count5,
+            ),
+        ).toBeNull();
+    });
+
+    test("an interior suffix that doesn't reach the tip disqualifies", () => {
+        // {2,3} in a 5-node chain: contiguous but order 4 (the tip) is unselected — intermediate.
+        expect(
+            suffixRun(
+                [
+                    { section: 7, order: 2 },
+                    { section: 7, order: 3 },
+                ],
+                count5,
+            ),
+        ).toBeNull();
+    });
+
+    test("including node 0 (the entry anchor) disqualifies", () => {
+        // even a full-chain selection {0..4} is not deletable — node 0 is the pinned entry.
+        const all = [0, 1, 2, 3, 4].map((order) => ({ section: 7, order }));
+        expect(suffixRun(all, count5)).toBeNull();
+    });
+
+    test("leaving fewer than 2 nodes disqualifies (a section keeps ≥ 2)", () => {
+        // a 3-node chain (orders 0..2): trimming {1,2} would leave only node 0 — below the floor.
+        const count3 = (): number => 3;
+        expect(
+            suffixRun(
+                [
+                    { section: 7, order: 1 },
+                    { section: 7, order: 2 },
+                ],
+                count3,
+            ),
+        ).toBeNull();
+        // trimming just the tip {2} leaves 2 nodes — allowed.
+        expect(suffixRun([{ section: 7, order: 2 }], count3)).toEqual({ section: 7, k: 1 });
+    });
+
+    test("spanning two sections disqualifies (one section only)", () => {
+        expect(
+            suffixRun(
+                [
+                    { section: 7, order: 4 },
+                    { section: 9, order: 4 },
+                ],
+                count5,
+            ),
+        ).toBeNull();
+    });
+
+    test("an empty set disqualifies", () => {
+        expect(suffixRun([], count5)).toBeNull();
+    });
+});
+
+// the group-drag wiring (`freezeChains` + `applyMultiDelta`): a drag derives a CUMULATIVE-from-start
+// delta each pointermove and applies it to a FROZEN gesture-start snapshot, so successive frames read
+// the same zero and land absolute — no accumulation. the pre-fix code read live `Handle.pos` as the
+// start each frame, so frame 2's cumulative delta compounded on frame 1's already-moved positions (a
+// 10 m chord dragged +3 then +5 ran away to 18/36 instead of 15/30). this pins the no-accumulation
+// property at the wiring the blocker lived in.
+describe("applyMultiDelta — group-drag idempotence (no accumulation)", () => {
+    // a colinear 3-node geo section: node 0 (entry) at origin, nodes 1 and 2 along +x at 10 m chords.
+    // entry frame is identity (first section), so section-local == world here.
+    function triple(): { state: State; n1: number; n2: number } {
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 10, 0);
+        addNode(state, sec, 20, 0);
+        state.step(0);
+        const n1 = handleAt(state, sec, 1);
+        const n2 = handleAt(state, sec, 2);
+        if (n1 === null || n2 === null) throw new Error("nodes missing");
+        return { state, n1, n2 };
+    }
+    const localOf = (eid: number): { x: number; y: number } => ({
+        x: Handle.pos.x.get(eid),
+        y: Handle.pos.y.get(eid),
+    });
+
+    test("apply d then d' from the frozen start == a single application of d'", () => {
+        // frame 1: cumulative +3. frame 2: cumulative +5 — both read the SAME frozen start ({0,10,20}).
+        // a length +5 on the frozen chain, selected {1,2}: node1 chord 10→15 anchored at origin → (15,0);
+        // node2 chord 10→15 anchored on the moved node1 (15,0) → (30,0). the intermediate +3 leaves no
+        // trace — that's the property.
+        const { state, n1, n2 } = triple();
+        const frozen = freezeChains(state, [n1, n2]);
+        applyMultiDelta(state, frozen, "length", 3);
+        applyMultiDelta(state, frozen, "length", 5);
+        expect(localOf(n1).x).toBeCloseTo(15, 4);
+        expect(localOf(n1).y).toBeCloseTo(0, 4);
+        expect(localOf(n2).x).toBeCloseTo(30, 4);
+        expect(localOf(n2).y).toBeCloseTo(0, 4);
+
+        // and it equals a single +5 applied once on a fresh identical track (the reference).
+        const ref = triple();
+        applyMultiDelta(ref.state, freezeChains(ref.state, [ref.n1, ref.n2]), "length", 5);
+        expect(localOf(n1).x).toBeCloseTo(localOf(ref.n1).x, 4);
+        expect(localOf(n2).x).toBeCloseTo(localOf(ref.n2).x, 4);
+    });
 });
