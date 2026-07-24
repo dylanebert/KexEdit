@@ -17,19 +17,6 @@ const SETTLE_MS = Number(process.env.KEX_SETTLE_MS ?? "2500");
 // window.__kex is the DEV harness hook (src/main.ts); the harness is outside the project
 // tsconfig, so these page-context reads use `any` freely.
 
-// two laid-out DOM rects overlap iff they intersect on BOTH axes — the popover-vs-workspace
-// no-overlap assert reads the real rendered boxes, the same idiom as the menu-overflow flow's
-// viewport-fit check (a selector test proves nothing about where a box actually paints).
-type Rect = { x: number; y: number; width: number; height: number };
-function overlaps(a: Rect, b: Rect): boolean {
-    return (
-        a.x < b.x + b.width &&
-        b.x < a.x + a.width &&
-        a.y < b.y + b.height &&
-        b.y < a.y + a.height
-    );
-}
-
 // Appending a section PANS the timeline to reveal the new clip — the x-axis is a document
 // axis, so a content edit never rescales/refits it (kex2d-ux-foundations stage C). The
 // overflowing track then scrolls earlier clips off-screen, so this frames the whole chain
@@ -932,16 +919,24 @@ test("force easing menu flow", async ({ page }) => {
     const hgReadout = page.locator('.ptip input[aria-label="Handle g offset (g)"]');
     await expect(hgReadout).toBeVisible();
     expect(Number(await hgReadout.inputValue())).toBeCloseTo(outDgSnap, 6);
-    // (d) the re-anchored popover clears the workspace: its box overlaps neither the OUT knob it
-    // addresses (dragged up, so the popover flips below the diamond) nor the diamond marker. The
-    // old placement anchored the popover ON the knob — the overlap that motivated
-    // drag-doesn't-select.
+    // (d) the popover re-anchored to the KEYFRAME, clear of the workspace: its box is centered on
+    // the diamond (the keyframe popover idiom), NOT on the handle knob it reads — anchoring on the
+    // knob (the old placement, ~an influence-span to the side) sat it over the workspace, the
+    // overlap that motivated drag-doesn't-select. Centering is what a bounding-box compare can pin
+    // robustly: the 12-px vertical offset means neither anchor overlaps the thing it hangs off, so
+    // the horizontal center is the load-bearing difference (a knob anchor lands it a whole handle
+    // arm to the side). Also assert the popover flipped clear of the up-dragged knob (its box sits
+    // below the diamond, away from the knob it addresses).
     const tipBox = await page.locator(".ptip").boundingBox();
-    const outKnobBox = await page.locator(".thit").last().boundingBox();
-    const diaBox = await page.locator(".fpt").nth(1).locator(".fmarker").boundingBox();
-    if (!tipBox || !outKnobBox || !diaBox) throw new Error("popover / knob / diamond not laid out");
-    expect(overlaps(tipBox, outKnobBox)).toBe(false);
-    expect(overlaps(tipBox, diaBox)).toBe(false);
+    const diaHit = await page.locator(".fpt").nth(1).locator(".fhit").boundingBox();
+    const outKnob = await page.locator(".thit").last().boundingBox();
+    if (!tipBox || !diaHit || !outKnob) throw new Error("popover / diamond / knob not laid out");
+    const tipCx = tipBox.x + tipBox.width / 2;
+    const diaCx = diaHit.x + diaHit.width / 2;
+    expect(Math.abs(tipCx - diaCx)).toBeLessThan(8); // centered on the diamond, not the knob
+    // the up-dragged OUT knob sits above the diamond; the popover flipped below, so its top edge
+    // is below the knob's bottom — no vertical overlap with the knob it reads.
+    expect(tipBox.y).toBeGreaterThan(outKnob.y + outKnob.height);
 
     await page.waitForTimeout(200);
     if (page.viewportSize())
