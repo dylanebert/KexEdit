@@ -674,6 +674,7 @@ const THDRAG_PX = 4; // click-vs-drag dead zone on a handle knob (the Figma/Blen
 let tanDownX = 0; // grab client coords — the dead-zone origin for the click-vs-drag test
 let tanDownY = 0;
 let tanMoved = false; // the gesture crossed the dead zone → a drag, not a select-click
+let tanMod = false; // Ctrl/Cmd held (live) — frees the offset-space grid snap (the keyframe-drag bypass)
 // the unit keyframe→knob screen ray captured at grab — the gesture-start axis magnet
 // (the geo tangent-handle mechanism, `latchAngle`): while the dragged tip stays within
 // LATCH_PX perpendicular of it the drag latches to the start direction, so a flat ghost
@@ -693,11 +694,15 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
     const rl = Math.hypot(rx, ry);
     tanRayX = rl > 1e-6 ? rx / rl : 0;
     tanRayY = rl > 1e-6 ? ry / rl : 0;
-    // click-vs-drag: selection is decided on release (below) by whether the pointer moved past
-    // the dead zone — a click selects the handle (swaps the readout to it), a drag reshapes it.
+    // any interaction addresses the handle (the Blender rule — the last-touched control is the
+    // active one): selecting on pointerdown swaps the readout to this handle for both a click and
+    // a drag. the dead zone keeps its one job below — gating the WRITE, not the selection — so a
+    // jittery click still selects but never materializes a tangent.
+    selectForceHandle(hnd.side);
     tanDownX = e.clientX;
     tanDownY = e.clientY;
     tanMoved = false;
+    tanMod = e.ctrlKey || e.metaKey;
     beginForceTangent(ecs, pt.id);
     dragTan = { id: pt.id, side: hnd.side };
     beginDrag(canvas, e.pointerId);
@@ -707,6 +712,7 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
 }
 function tanMove(e: PointerEvent): void {
     if (dragTan === null) return;
+    tanMod = e.ctrlKey || e.metaKey; // live: the grid bypass can be toggled mid-drag
     if (!tanMoved && Math.hypot(e.clientX - tanDownX, e.clientY - tanDownY) > THDRAG_PX)
         tanMoved = true;
     // the dead zone gates the WRITE, not just the release verdict: a sub-threshold jitter
@@ -730,11 +736,19 @@ function applyTan(cx: number, cy: number): void {
     const latch = latchAngle(cx - kx, cy - ky, tanRayX, tanRayY);
     cx = kx + latch.x;
     cy = ky + latch.y;
-    // the dragged side's raw (Δs, Δg) from the latched cursor; composeTangent applies the
-    // x-monotonicity clamp, the derived seed, and Aligned coupling — the one write path.
+    // the dragged side's raw (Δs, Δg) from the latched cursor, both in OFFSET space (metres
+    // and g from the keyframe — the space the readout prints).
     const cumS = pxToS(clamped, clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w)) - LEFT_GUT);
-    const ds = cumS - (pt.startS + pt.s);
-    const dg = yToG(clamp(cy, TOP, h - BOT_PAD)) - pt.g;
+    let ds = cumS - (pt.startS + pt.s);
+    let dg = yToG(clamp(cy, TOP, h - BOT_PAD)) - pt.g;
+    // grid quantize the offsets to the keyframe-snap vocabulary (S_GRID / G_GRID), so a snapped
+    // handle reads as vocabulary ("+0.5 g over 3 m"); Ctrl/Cmd frees to continuous. the axis
+    // magnet already fired above (latchAngle); this is the grid path of the shared `snapAxis`
+    // resolver (empty targets, no value landmark) — magnet, THEN grid, then composeTangent's
+    // x-clamp last, since the clamp is the hard invariant that must win.
+    const active = snapActive(tanMod);
+    ds = snapAxis(active, 0, ds, [], S_GRID, (x) => x, null).value;
+    dg = snapAxis(active, 0, dg, [], G_GRID, (x) => x, null).value;
     const tan = composeTangent(id, side, ds, dg);
     if (tan) setForceTangent(ecs, id, tan);
 }
@@ -785,11 +799,10 @@ function composeTangent(id: number, side: "in" | "out", ds: number, dg: number):
 }
 function tanUp(): void {
     if (dragTan === null) return;
-    const side = dragTan.side;
     dragTan = null;
-    // a click (no dead-zone crossing) selects the handle — swaps the readout to it; a drag
-    // reshaped it and leaves selection alone (so no handle popover overlaps the diamond after).
-    if (!tanMoved) selectForceHandle(side);
+    // selection already happened on pointerdown (the Blender rule — any interaction addresses the
+    // handle); nothing to decide on release. the popover re-anchors clear of the workspace, so a
+    // drag leaving the handle selected no longer overlaps the diamond it addresses.
     commit(history); // one handle drag → one entry; a no-move grab records nothing
     window.removeEventListener("pointermove", tanMove);
     window.removeEventListener("pointerup", tanUp);
@@ -2023,13 +2036,27 @@ onMount(() => {
              handle). inert while the handle drags (it's the live readout then). commits go
              through the tangent write path (x-clamp + Aligned coupling). -->
         {#if selHandle}
-            {@const hx = clamp(selHandle.x, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
-            {@const hy = clamp(selHandle.y, TOP, h - BOT_PAD)}
+            <!-- anchored at the KEYFRAME diamond (the keyframe popover idiom, `ptX`/`yOf` of the
+                 point), not at the handle knob — anchoring on the knob (the old placement) sat the
+                 popover over the workspace, the overlap that originally motivated
+                 drag-doesn't-select. it then flips to the vertical side AWAY from the selected
+                 knob so it clears the handle it reads: a knob pulled up sends the popover below, a
+                 knob pulled down sends it above; a flat handle falls back to the keyframe idiom
+                 (above, flipping below only near the chart top). -->
+            {@const dY = yOf(selHandle.pt.g)}
+            {@const hx = clamp(ptX(selHandle.pt), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
+            {@const hy = clamp(dY, TOP, h - BOT_PAD)}
+            {@const hBelow =
+                selHandle.y < dY - THANDLE_R
+                    ? true
+                    : selHandle.y > dY + THANDLE_R
+                      ? false
+                      : hy < TOP + TIP_FLIP}
             {@const sText = fmt(selHandle.ds, 2)}
             {@const hgText = fmt(selHandle.dg, 2)}
             <div
                 class="ptip"
-                class:below={hy < TOP + TIP_FLIP}
+                class:below={hBelow}
                 class:dragging={dragTan !== null}
                 style="left: {hx}px; top: {hy}px"
             >

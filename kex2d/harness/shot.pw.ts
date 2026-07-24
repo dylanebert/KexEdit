@@ -17,6 +17,19 @@ const SETTLE_MS = Number(process.env.KEX_SETTLE_MS ?? "2500");
 // window.__kex is the DEV harness hook (src/main.ts); the harness is outside the project
 // tsconfig, so these page-context reads use `any` freely.
 
+// two laid-out DOM rects overlap iff they intersect on BOTH axes — the popover-vs-workspace
+// no-overlap assert reads the real rendered boxes, the same idiom as the menu-overflow flow's
+// viewport-fit check (a selector test proves nothing about where a box actually paints).
+type Rect = { x: number; y: number; width: number; height: number };
+function overlaps(a: Rect, b: Rect): boolean {
+    return (
+        a.x < b.x + b.width &&
+        b.x < a.x + a.width &&
+        a.y < b.y + b.height &&
+        b.y < a.y + a.height
+    );
+}
+
 // Appending a section PANS the timeline to reveal the new clip — the x-axis is a document
 // axis, so a content edit never rescales/refits it (kex2d-ux-foundations stage C). The
 // overflowing track then scrolls earlier clips off-screen, so this frames the whole chain
@@ -792,7 +805,10 @@ test("force easing menu flow", async ({ page }) => {
     const forceHandleSel = () =>
         page.evaluate((): string | null => (window as any).__kex.forceHandleSel());
     const forceTangents = () =>
-        page.evaluate((): (null | { outDg: number })[] => (window as any).__kex.forceTangents());
+        page.evaluate(
+            (): (null | { outDs: number; outDg: number })[] =>
+                (window as any).__kex.forceTangents(),
+        );
 
     // seed a force section with an airtime bump (the two continuation seed keyframes stage B
     // stamps on convert, plus three bump points) → a chain with interior keyframes to edit.
@@ -902,12 +918,63 @@ test("force easing menu flow", async ({ page }) => {
     await page.mouse.move(knob.x + knob.width / 2 + 24, knob.y + knob.height / 2 - 40, { steps: 6 });
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
+
+    // (a) the DRAG selected the dragged side (the Blender rule — any interaction addresses the
+    // handle). On pre-F3 code a drag left selection untouched, so this is the red-first pin.
+    await expect.poll(forceHandleSel).toBe("out");
+    // (b) the offset grid snapped Δg to a 0.1-g multiple (a real, nonzero offset). Remove the
+    // grid quantize and the ~40-px drag's continuous Δg is essentially never a 0.1 multiple → red.
+    const outDgSnap = (await forceTangents())[1]?.outDg ?? 0;
+    expect(Math.abs(outDgSnap)).toBeGreaterThan(0.05);
+    expect(Math.abs(outDgSnap * 10 - Math.round(outDgSnap * 10))).toBeLessThan(1e-6);
+    // …and the readout swapped to the handle, printing that snapped value in vocabulary form
+    // (trailing zeros trimmed) — the popover shows the handle's own (Δs, Δg), not the keyframe's.
+    const hgReadout = page.locator('.ptip input[aria-label="Handle g offset (g)"]');
+    await expect(hgReadout).toBeVisible();
+    expect(Number(await hgReadout.inputValue())).toBeCloseTo(outDgSnap, 6);
+    // (d) the re-anchored popover clears the workspace: its box overlaps neither the OUT knob it
+    // addresses (dragged up, so the popover flips below the diamond) nor the diamond marker. The
+    // old placement anchored the popover ON the knob — the overlap that motivated
+    // drag-doesn't-select.
+    const tipBox = await page.locator(".ptip").boundingBox();
+    const outKnobBox = await page.locator(".thit").last().boundingBox();
+    const diaBox = await page.locator(".fpt").nth(1).locator(".fmarker").boundingBox();
+    if (!tipBox || !outKnobBox || !diaBox) throw new Error("popover / knob / diamond not laid out");
+    expect(overlaps(tipBox, outKnobBox)).toBe(false);
+    expect(overlaps(tipBox, diaBox)).toBe(false);
+
     await page.waitForTimeout(200);
     if (page.viewportSize())
         await page.screenshot({
             path: join(OUT, "force-handle-edit.png"),
             clip: { x: 0, y: (page.viewportSize()?.height ?? 0) - 340, width: page.viewportSize()?.width ?? 0, height: 340 },
         });
+
+    // ── 4b. Ctrl/Cmd FREES the offset grid. Reset step 4's handle to derived, re-enter, and drag
+    // the OUT knob with the modifier held to an off-round pixel target: the bypass keeps both Δs
+    // and Δg continuous. A working bypass leaves at least one axis off its grid (a continuous
+    // real hits both the 1-m and the 0.1-g grid simultaneously with vanishing probability); a
+    // broken bypass snaps BOTH → the assert goes red. Fresh-from-flat so the grab-ray latch
+    // releases on the large move. ──
+    await page.locator(".fpt").nth(1).click({ button: "right" });
+    await clickFlyout(page, ".fmenu", "Easing", "Cubic");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    await expect.poll(async () => (await forceTangents())[1] === null).toBe(true);
+    await page.locator(".fpt").nth(1).dblclick();
+    await expect.poll(forceEditing).toBe(true);
+    const gk = await page.locator(".thit").last().boundingBox();
+    if (!gk) throw new Error("out handle knob not laid out for the bypass drag");
+    await page.mouse.move(gk.x + gk.width / 2, gk.y + gk.height / 2);
+    await page.mouse.down({ button: "left" });
+    await page.keyboard.down("Control");
+    await page.mouse.move(gk.x + gk.width / 2 + 13, gk.y + gk.height / 2 - 37, { steps: 6 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
+    const free = (await forceTangents())[1];
+    const dsOnGrid = Math.abs((free?.outDs ?? 0) - Math.round(free?.outDs ?? 0)) < 1e-6; // S_GRID = 1 m
+    const dgOnGrid = Math.abs((free?.outDg ?? 0) * 10 - Math.round((free?.outDg ?? 0) * 10)) < 1e-6; // G_GRID = 0.1 g
+    expect(dsOnGrid && dgOnGrid).toBe(false); // the bypass freed at least one axis off its grid
 
     // ── 5. Reopen the menu on the now-Custom keyframe → its Easing ▸ submenu's Custom row reads
     // checked (derived provenance — the segment is bounded by an explicit handle). ──
