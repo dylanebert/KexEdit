@@ -1011,15 +1011,16 @@ $effect(() => {
         background: rgba(255, 255, 255, 0.04);
     }
     /* the key doubles as the scrub handle (the shallot cell-handle treatment): a
-       full-row-height cell whose hit area extends to the row edges, ew-resize + wash on
-       hover. */
+       full-row-height cell whose hit area extends left to the row edge, ew-resize + wash on
+       hover. the label centers within that whole extended box (no padding), so the glyph sits
+       at the wash's centre rather than reading as right-aligned when hovered. */
     .vtip .key {
         display: inline-flex;
         align-items: center;
         justify-content: center;
         align-self: stretch;
         margin: -4px 0 -4px -9px;
-        padding: 4px 0 4px 9px;
+        padding: 4px 0;
         color: var(--muted);
         cursor: ew-resize;
         user-select: none;

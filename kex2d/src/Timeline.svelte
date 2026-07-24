@@ -125,6 +125,9 @@ const NODE_TICK_R = 3; // px; a geo section's read-only node-tick circle radius 
 const FHIT_R = 12; // px; the invisible grab/hover radius around a force point (fat pick zone)
 const TIP_HALF = 52; // px; half the point popover's width — clamps it inside the chart
 const TIP_FLIP = 64; // px; a point nearer than this to the chart top flips the popover below
+const TIP_W = 108; // px; the popover's full width — the handle popover flips its outward side when it would clip
+const TIP_GAP = 12; // px; the popover's offset from its anchor (the handle popover's side gap == the point popover's vertical gap)
+const TIP_VHALF = 28; // px; half the popover height — the vertical clamp for the side-anchored handle popover
 // arrow-nudge steps for the selected force point (AE): s in meters, g in g, Shift coarse.
 // fixed-domain steps (the timeline authors in the invariant distance domain), rounded to
 // the field's displayed precision so a nudge lands clean.
@@ -1233,7 +1236,7 @@ const SCRUB_G = 0.01; // g per px
 // a surface never moves under its own gesture (the point moves, the control stays
 // put; it re-anchors to the point on release). also holds the popover visible if
 // the scrub carries the diamond out of view.
-let scrubFreeze: { x: number; y: number } | null = $state(null);
+let scrubFreeze: { x: number; y: number; right?: boolean } | null = $state(null);
 function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
     const p = selPoint;
     if (p === null) return;
@@ -1266,6 +1269,63 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
     label.addEventListener("pointerup", up);
     // a cancelled pointer must still close the gesture — a left-open one would
     // swallow the next edit (one gesture at a time).
+    label.addEventListener("pointercancel", up);
+}
+// handle field scrub — the same shallot-inspector affordance as the keyframe d/F fields, on the
+// tangent (Δs, Δg) inputs. slides the offset; the write goes through the shared tangent path
+// (composeTangent — x-monotonicity clamp + Aligned coupling), one history entry. Δs clamps to its
+// monotonicity span on the accumulator (the keyframe-s scrub clamps to [0, len] the same way); Δg
+// is unbounded. the popover anchor FREEZES at gesture start — the knob rides a Δs/Δg scrub, but
+// the control stays put (a surface never moves under its own gesture).
+function handleScrub(e: PointerEvent, axis: "s" | "g"): void {
+    const sh = selHandle;
+    if (sh === null) return;
+    e.preventDefault();
+    const label = e.currentTarget as HTMLElement;
+    beginDrag(label, e.pointerId);
+    // freeze the popover's side-anchor at gesture start — the knob rides a Δs/Δg scrub, but the
+    // control stays put (see the selHandle block for the outward-side geometry).
+    const rightFits = sh.x + TIP_GAP + TIP_W <= w;
+    const leftFits = sh.x - TIP_GAP - TIP_W >= LEFT_GUT;
+    scrubFreeze = {
+        x: clamp(sh.x, LEFT_GUT, Math.max(LEFT_GUT, w)),
+        y: clamp(sh.y, TOP + TIP_VHALF, Math.max(TOP + TIP_VHALF, h - BOT_PAD - TIP_VHALF)),
+        right: sh.side === "out" ? rightFits || !leftFits : !leftFits && rightFits,
+    };
+    const id = sh.pt.id;
+    const side = sh.side;
+    // the x-monotonicity span for Δs, fixed for the gesture (neighbour s don't move) — mirrors
+    // composeTangent's clamp so the accumulator can't run past it.
+    const pts = forcePts.filter((p) => p.section === sh.pt.section).sort((a, b) => a.s - b.s);
+    const idx = pts.findIndex((p) => p.id === id);
+    const prev = idx > 0 ? pts[idx - 1] : null;
+    const next = idx < pts.length - 1 ? pts[idx + 1] : null;
+    const dsLo = side === "out" ? 0 : prev ? -(sh.pt.s - prev.s) : 0;
+    const dsHi = side === "out" ? (next ? next.s - sh.pt.s : 0) : 0;
+    beginForceTangent(ecs, id);
+    let ds = sh.ds;
+    let dg = sh.dg;
+    const move = (ev: PointerEvent): void => {
+        if (axis === "s") {
+            ds = clamp(ds + ev.movementX * SCRUB_S, dsLo, dsHi);
+            const tan = composeTangent(id, side, Math.round(ds * 10) / 10, dg);
+            if (tan) setForceTangent(ecs, id, tan);
+        } else {
+            dg += ev.movementX * SCRUB_G;
+            const tan = composeTangent(id, side, ds, Math.round(dg * 100) / 100);
+            if (tan) setForceTangent(ecs, id, tan);
+        }
+    };
+    const up = (): void => {
+        label.removeEventListener("pointermove", move);
+        label.removeEventListener("pointerup", up);
+        label.removeEventListener("pointercancel", up);
+        scrubFreeze = null; // re-anchor to the knob
+        commit(history);
+    };
+    label.addEventListener("pointermove", move);
+    label.addEventListener("pointerup", up);
+    // a cancelled pointer must still close the gesture (one gesture at a time).
     label.addEventListener("pointercancel", up);
 }
 // field keys: Enter commits (blur fires change); Escape reverts the edit and blurs
@@ -2036,32 +2096,36 @@ onMount(() => {
              handle). inert while the handle drags (it's the live readout then). commits go
              through the tangent write path (x-clamp + Aligned coupling). -->
         {#if selHandle}
-            <!-- anchored at the KEYFRAME diamond (the keyframe popover idiom, `ptX`/`yOf` of the
-                 point), not at the handle knob — anchoring on the knob (the old placement) sat the
-                 popover over the workspace, the overlap that originally motivated
-                 drag-doesn't-select. it then flips to the vertical side AWAY from the selected
-                 knob so it clears the handle it reads: a knob pulled up sends the popover below, a
-                 knob pulled down sends it above; a flat handle falls back to the keyframe idiom
-                 (above, flipping below only near the chart top). -->
-            {@const dY = yOf(selHandle.pt.g)}
-            {@const hx = clamp(ptX(selHandle.pt), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
-            {@const hy = clamp(dY, TOP, h - BOT_PAD)}
-            {@const hBelow =
-                selHandle.y < dY - THANDLE_R
-                    ? true
-                    : selHandle.y > dY + THANDLE_R
-                      ? false
-                      : hy < TOP + TIP_FLIP}
+            <!-- anchored at the SELECTED KNOB, offset OUTWARD to its far HORIZONTAL side — beyond
+                 the knob in the direction the handle reaches (an OUT knob reaches +s, so the popover
+                 sits to its right; an IN knob to its left), vertically centred on the knob. that's
+                 the dead space away from the diamond, so the box never sits over the knob, arm,
+                 diamond, or the other knob (they're all on the opposite side). attention lives where
+                 the drag just ended (F3's diamond anchor pulled the eye off the drag). viewport
+                 fit: the outward side flips when it would clip the chart edge; the vertical clamp
+                 keeps the box in view without ever moving it back toward the diamond. -->
+            {@const kx = scrubFreeze?.x ?? selHandle.x}
+            {@const ky = scrubFreeze?.y ?? selHandle.y}
+            {@const hx = clamp(kx, LEFT_GUT, Math.max(LEFT_GUT, w))}
+            {@const hy = clamp(ky, TOP + TIP_VHALF, Math.max(TOP + TIP_VHALF, h - BOT_PAD - TIP_VHALF))}
+            {@const rightFits = kx + TIP_GAP + TIP_W <= w}
+            {@const leftFits = kx - TIP_GAP - TIP_W >= LEFT_GUT}
+            {@const hRight = scrubFreeze?.right ?? (selHandle.side === "out" ? rightFits || !leftFits : !leftFits && rightFits)}
             {@const sText = fmt(selHandle.ds, 2)}
             {@const hgText = fmt(selHandle.dg, 2)}
             <div
                 class="ptip"
-                class:below={hBelow}
+                class:side-right={hRight}
+                class:side-left={!hRight}
                 class:dragging={dragTan !== null}
                 style="left: {hx}px; top: {hy}px"
             >
                 <div class="fld">
-                    <span class="key static" role="presentation">Δs</span>
+                    <span
+                        class="key"
+                        onpointerdown={(e) => handleScrub(e, "s")}
+                        role="presentation">Δs</span
+                    >
                     <input
                         type="number"
                         step="0.1"
@@ -2074,7 +2138,11 @@ onMount(() => {
                     <span class="unit">m</span>
                 </div>
                 <div class="fld">
-                    <span class="key static" role="presentation">Δg</span>
+                    <span
+                        class="key"
+                        onpointerdown={(e) => handleScrub(e, "g")}
+                        role="presentation">Δg</span
+                    >
                     <input
                         type="number"
                         step="0.1"
@@ -2360,6 +2428,14 @@ onMount(() => {
     .ptip.below {
         transform: translate(-50%, 12px);
     }
+    /* the handle popover anchors to a horizontal side of the knob (out → right, in → left),
+       vertically centred, so it lands in the dead space away from the diamond. */
+    .ptip.side-right {
+        transform: translate(12px, -50%);
+    }
+    .ptip.side-left {
+        transform: translate(calc(-100% - 12px), -50%);
+    }
     .ptip.dragging {
         pointer-events: none;
     }
@@ -2382,15 +2458,18 @@ onMount(() => {
         background: rgba(255, 255, 255, 0.04);
     }
     /* the key doubles as the scrub handle (the shallot cell-handle treatment): a
-       full-row-height centered cell whose hit area extends to the row's edges (the
-       negative-margin/padding pair), ew-resize + brighten/wash on hover. */
+       full-row-height cell whose hit area extends left to the row's edge (the negative
+       margin), ew-resize + brighten/wash on hover. the label centers within that whole
+       extended box (content-box == border-box, no padding), so the glyph sits at the wash's
+       centre — a padding-left offset would keep the glyph at the cell centre but leave the
+       hover wash bulging left of it, reading as right-aligned. */
     .fld .key {
         display: inline-flex;
         align-items: center;
         justify-content: center;
         align-self: stretch;
         margin: -4px 0 -4px -9px;
-        padding: 4px 0 4px 9px;
+        padding: 4px 0;
         color: var(--muted);
         cursor: ew-resize;
         user-select: none;
@@ -2401,15 +2480,6 @@ onMount(() => {
     .fld .key:hover {
         color: var(--fg);
         background: rgba(255, 255, 255, 0.05);
-    }
-    /* a static key label (the handle popover's Δs/Δg): typed entry only, no scrub — so no
-       ew-resize cursor and no scrub-hover wash. */
-    .fld .key.static {
-        cursor: default;
-    }
-    .fld .key.static:hover {
-        color: var(--muted);
-        background: none;
     }
     .fld:focus-within .key {
         color: var(--fg);
