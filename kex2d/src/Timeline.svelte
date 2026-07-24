@@ -123,11 +123,12 @@ const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
 const NODE_TICK_R = 3; // px; a geo section's read-only node-tick circle radius (visual)
 const FHIT_R = 12; // px; the invisible grab/hover radius around a force point (fat pick zone)
-const TIP_HALF = 52; // px; half the point popover's width — clamps it inside the chart
+const TIP_HALF = 52; // px; half the popover's width — clamps a knob/point-centred popover inside the chart
 const TIP_FLIP = 64; // px; a point nearer than this to the chart top flips the popover below
-const TIP_W = 108; // px; the popover's full width — the handle popover flips its outward side when it would clip
-const TIP_GAP = 12; // px; the popover's offset from its anchor (the handle popover's side gap == the point popover's vertical gap)
-const TIP_VHALF = 28; // px; half the popover height — the vertical clamp for the side-anchored handle popover
+const TIP_W = 108; // px; the popover's full width — the handle popover's horizontal dodge flips outward side when it would clip
+const TIP_GAP = 12; // px; the popover's offset from its anchor (the same gap the point popover uses vertically)
+const TIP_VHALF = 28; // px; half the popover height — the vertical clamp for a side-dodged handle popover
+const TIP_H = 2 * TIP_VHALF; // px; the popover's full height — the vertical fit test for the above/below default
 // arrow-nudge steps for the selected force point (AE): s in meters, g in g, Shift coarse.
 // fixed-domain steps (the timeline authors in the invariant distance domain), rounded to
 // the field's displayed precision so a nudge lands clean.
@@ -155,6 +156,50 @@ let framed = false;
 let sFrozen: number | null = $state(null);
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
+
+type TipMode = "above" | "below" | "left" | "right";
+// place the handle popover: vertical-primary, matching the keyframe popover's above/below
+// reading. the box sits above or below the knob, horizontally centred on it, the vertical side
+// chosen AWAY from the diamond (an up-pointing handle → above the knob). only when the chart edge
+// forces the flip toward the diamond (the workspace) does it dodge horizontally OUTWARD instead
+// (out → right, in → left — the F3b direction): the box then clears the knob, arm, diamond, and
+// other knob, all of which sit on the diamond side. the side position is that collision fallback,
+// never the default. the returned (x, y) is the knob-anchor; the CSS transform offsets the box by
+// mode. `dx`/`dy` are the diamond (keyframe) screen centre.
+function handleTip(
+    kx: number,
+    ky: number,
+    dx: number,
+    dy: number,
+    side: "in" | "out",
+    w: number,
+    h: number,
+): { x: number; y: number; mode: TipMode } {
+    void dx;
+    const bot = h - BOT_PAD;
+    // the vertical side away from the diamond: knob at or above the diamond → the popover goes
+    // above the knob (a flat handle defaults above, its diamond is off to the side either way).
+    const preferAbove = dy >= ky;
+    const aboveFits = ky - TIP_GAP - TIP_H >= TOP;
+    const belowFits = ky + TIP_GAP + TIP_H <= bot;
+    if (preferAbove ? aboveFits : belowFits) {
+        return {
+            x: clamp(kx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
+            y: clamp(ky, TOP, bot),
+            mode: preferAbove ? "above" : "below",
+        };
+    }
+    // collision fallback: the edge would flip the box back over the workspace, so dodge the knob
+    // horizontally outward; flip inward only if the outward side would itself clip (the deep edge).
+    const rightFits = kx + TIP_GAP + TIP_W <= w;
+    const leftFits = kx - TIP_GAP - TIP_W >= LEFT_GUT;
+    const goRight = side === "out" ? rightFits || !leftFits : !leftFits && rightFits;
+    return {
+        x: clamp(kx, LEFT_GUT, Math.max(LEFT_GUT, w)),
+        y: clamp(ky, TOP + TIP_VHALF, Math.max(TOP + TIP_VHALF, bot - TIP_VHALF)),
+        mode: goRight ? "right" : "left",
+    };
+}
 
 // the baked F_n force curve as per-sample (arclength, force) points — the chart data
 // and the source of the distance domain. no time resample: the x-axis is distance.
@@ -1236,7 +1281,7 @@ const SCRUB_G = 0.01; // g per px
 // a surface never moves under its own gesture (the point moves, the control stays
 // put; it re-anchors to the point on release). also holds the popover visible if
 // the scrub carries the diamond out of view.
-let scrubFreeze: { x: number; y: number; right?: boolean } | null = $state(null);
+let scrubFreeze: { x: number; y: number; mode?: TipMode } | null = $state(null);
 function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
     const p = selPoint;
     if (p === null) return;
@@ -1283,15 +1328,19 @@ function handleScrub(e: PointerEvent, axis: "s" | "g"): void {
     e.preventDefault();
     const label = e.currentTarget as HTMLElement;
     beginDrag(label, e.pointerId);
-    // freeze the popover's side-anchor at gesture start — the knob rides a Δs/Δg scrub, but the
-    // control stays put (see the selHandle block for the outward-side geometry).
-    const rightFits = sh.x + TIP_GAP + TIP_W <= w;
-    const leftFits = sh.x - TIP_GAP - TIP_W >= LEFT_GUT;
-    scrubFreeze = {
-        x: clamp(sh.x, LEFT_GUT, Math.max(LEFT_GUT, w)),
-        y: clamp(sh.y, TOP + TIP_VHALF, Math.max(TOP + TIP_VHALF, h - BOT_PAD - TIP_VHALF)),
-        right: sh.side === "out" ? rightFits || !leftFits : !leftFits && rightFits,
-    };
+    // freeze the popover's placement at gesture start — the knob rides a Δs/Δg scrub, but the
+    // control stays put (a surface never moves under its own gesture). the mode freezes too, so a
+    // scrub that carries the knob toward an edge never re-dodges mid-gesture.
+    const tip = handleTip(
+        sh.x,
+        sh.y,
+        markerX(sh.pt.startS + sh.pt.s),
+        yOf(sh.pt.g),
+        sh.side,
+        w,
+        h,
+    );
+    scrubFreeze = { x: tip.x, y: tip.y, mode: tip.mode };
     const id = sh.pt.id;
     const side = sh.side;
     // the x-monotonicity span for Δs, fixed for the gesture (neighbour s don't move) — mirrors
@@ -2096,29 +2145,25 @@ onMount(() => {
              handle). inert while the handle drags (it's the live readout then). commits go
              through the tangent write path (x-clamp + Aligned coupling). -->
         {#if selHandle}
-            <!-- anchored at the SELECTED KNOB, offset OUTWARD to its far HORIZONTAL side — beyond
-                 the knob in the direction the handle reaches (an OUT knob reaches +s, so the popover
-                 sits to its right; an IN knob to its left), vertically centred on the knob. that's
-                 the dead space away from the diamond, so the box never sits over the knob, arm,
-                 diamond, or the other knob (they're all on the opposite side). attention lives where
-                 the drag just ended (F3's diamond anchor pulled the eye off the drag). viewport
-                 fit: the outward side flips when it would clip the chart edge; the vertical clamp
-                 keeps the box in view without ever moving it back toward the diamond. -->
-            {@const kx = scrubFreeze?.x ?? selHandle.x}
-            {@const ky = scrubFreeze?.y ?? selHandle.y}
-            {@const hx = clamp(kx, LEFT_GUT, Math.max(LEFT_GUT, w))}
-            {@const hy = clamp(ky, TOP + TIP_VHALF, Math.max(TOP + TIP_VHALF, h - BOT_PAD - TIP_VHALF))}
-            {@const rightFits = kx + TIP_GAP + TIP_W <= w}
-            {@const leftFits = kx - TIP_GAP - TIP_W >= LEFT_GUT}
-            {@const hRight = scrubFreeze?.right ?? (selHandle.side === "out" ? rightFits || !leftFits : !leftFits && rightFits)}
+            <!-- anchored at the SELECTED KNOB, above/below primary — the keyframe popover's
+                 reading (`handleTip`): centred on the knob, on the vertical side away from the
+                 diamond (an up-pointing handle → above the knob). only an edge that would flip it
+                 back over the workspace dodges it horizontally outward instead — the collision
+                 fallback, never the default. attention lives where the drag just ended (F3's
+                 diamond anchor pulled the eye off the drag; F3b's horizontal side read as a
+                 different surface kind than the keyframe popover). frozen during a field scrub. -->
+            {@const tip = scrubFreeze?.mode
+                ? { x: scrubFreeze.x, y: scrubFreeze.y, mode: scrubFreeze.mode }
+                : handleTip(selHandle.x, selHandle.y, markerX(selHandle.pt.startS + selHandle.pt.s), yOf(selHandle.pt.g), selHandle.side, w, h)}
             {@const sText = fmt(selHandle.ds, 2)}
             {@const hgText = fmt(selHandle.dg, 2)}
             <div
                 class="ptip"
-                class:side-right={hRight}
-                class:side-left={!hRight}
+                class:below={tip.mode === "below"}
+                class:side-right={tip.mode === "right"}
+                class:side-left={tip.mode === "left"}
                 class:dragging={dragTan !== null}
-                style="left: {hx}px; top: {hy}px"
+                style="left: {tip.x}px; top: {tip.y}px"
             >
                 <div class="fld">
                     <span
@@ -2428,8 +2473,9 @@ onMount(() => {
     .ptip.below {
         transform: translate(-50%, 12px);
     }
-    /* the handle popover anchors to a horizontal side of the knob (out → right, in → left),
-       vertically centred, so it lands in the dead space away from the diamond. */
+    /* the handle popover's horizontal DODGE (the collision fallback only): out → right, in →
+       left, vertically centred, when an edge would flip the default above/below back over the
+       workspace. the default above/below reuse the point popover's `.ptip` / `.ptip.below`. */
     .ptip.side-right {
         transform: translate(12px, -50%);
     }

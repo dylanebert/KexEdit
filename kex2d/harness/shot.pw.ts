@@ -932,27 +932,9 @@ test("force easing menu flow", async ({ page }) => {
     const hgReadout = page.locator('.ptip input[aria-label="Handle g offset (g)"]');
     await expect(hgReadout).toBeVisible();
     expect(Number(await hgReadout.inputValue())).toBeCloseTo(outDgSnap, 6);
-    // (d) the popover re-anchored OUTWARD of the SELECTED KNOB, on its far horizontal side —
-    // attention lives where the drag just ended. The OUT knob reaches +s, so the popover sits
-    // immediately to its RIGHT (a small gap past the knob), vertically centred on it, in the dead
-    // space away from the diamond. `popover-is-right-of-the-knob` is the load-bearing difference:
-    // F3's diamond anchor centred the box down-LEFT of the knob, so reverting turns this red.
-    const tipBox = await page.locator(".ptip").boundingBox();
-    const diaHit = await page.locator(".fpt").nth(1).locator(".fhit").boundingBox();
-    const outKnobBox = await page.locator(".thit").last().boundingBox();
-    const inKnobBox = await page.locator(".thit").first().boundingBox();
-    if (!tipBox || !diaHit || !outKnobBox || !inKnobBox)
-        throw new Error("popover / diamond / knobs not laid out");
-    const outKnobCy = outKnobBox.y + outKnobBox.height / 2;
-    const gap = tipBox.x - (outKnobBox.x + outKnobBox.width);
-    expect(gap).toBeGreaterThan(0); // right of the knob (outward), not over it or the diamond
-    expect(gap).toBeLessThan(24); // …and adjacent to it, not floating away
-    expect(outKnobCy).toBeGreaterThanOrEqual(tipBox.y); // vertically centred on the knob
-    expect(outKnobCy).toBeLessThanOrEqual(tipBox.y + tipBox.height);
-    // the outward offset overlaps none of the workspace elements the popover hangs off.
-    expect(overlaps(tipBox, outKnobBox)).toBe(false);
-    expect(overlaps(tipBox, inKnobBox)).toBe(false);
-    expect(overlaps(tipBox, diaHit)).toBe(false);
+    // (d) the popover re-anchored at the SELECTED KNOB (attention lives where the drag just
+    // ended). Its above/below-vs-dodge placement is pinned in the dedicated 4d scenarios below,
+    // on the crest — two constructed cases where the vertical fit is deterministic.
 
     await page.waitForTimeout(200);
     if (page.viewportSize())
@@ -1006,6 +988,96 @@ test("force easing menu flow", async ({ page }) => {
     const dsOnGrid = Math.abs((free?.outDs ?? 0) - Math.round(free?.outDs ?? 0)) < 1e-6; // S_GRID = 1 m
     const dgOnGrid = Math.abs((free?.outDg ?? 0) * 10 - Math.round((free?.outDg ?? 0) * 10)) < 1e-6; // G_GRID = 0.1 g
     expect(dsOnGrid && dgOnGrid).toBe(false); // the bypass freed at least one axis off its grid
+
+    // ── 4d. Handle popover placement (F3c): vertical-primary, matching the keyframe popover's
+    // above/below reading. The box sits above/below the knob, horizontally centred on it, on the
+    // side AWAY from the diamond; only an edge that would flip it back over the workspace dodges it
+    // horizontally outward (the collision fallback, never the default). Two constructed cases on the
+    // CREST (nth 2, an interior keyframe near the chart BOTTOM): an up-handle with room = the
+    // default above; a down-handle pinned to the bottom edge = the dodge. ──
+    await page.keyboard.press("Escape"); // leave keyframe 1's handle edit clean before the crest
+    await page.keyboard.press("Escape");
+    const body = await page.locator(".dock .body").boundingBox();
+    if (!body) throw new Error("timeline body not laid out");
+    const CHART_TOP = 46; // RULER_H (26) + GAP_H (20) — Timeline.svelte
+    const CHART_BOT_PAD = 8; // BOT_PAD
+    const TIP_REACH = 68; // TIP_H (56) + TIP_GAP (12) — the vertical room the box needs to fit
+    const chartTopY = body.y + CHART_TOP;
+    const chartBotY = body.y + body.height - CHART_BOT_PAD;
+
+    await page.locator(".fpt").nth(2).dblclick(); // enter handle edit on the crest
+    await expect.poll(forceEditing).toBe(true);
+    await expect(page.locator(".thit")).toHaveCount(2);
+    const crestDia = await page.locator(".fpt").nth(2).locator(".fhit").boundingBox();
+    if (!crestDia) throw new Error("crest diamond not laid out");
+    const crestX = crestDia.x + crestDia.width / 2;
+    const crestY = crestDia.y + crestDia.height / 2;
+
+    // (i) DEFAULT above: drag the OUT knob straight UP to the midpoint between the top fit-line and
+    // the crest — the box has clear room above, so it reads like the keyframe popover: above the
+    // knob, centred, on the side away from the (below) diamond. NOT dodged to a side.
+    const upY = (chartTopY + TIP_REACH + crestY) / 2;
+    const uk = await page.locator(".thit").last().boundingBox();
+    if (!uk) throw new Error("crest out knob not laid out for the up drag");
+    await page.mouse.move(uk.x + uk.width / 2, uk.y + uk.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(crestX + 2, upY, { steps: 8 }); // straight up (the grab-ray latch keeps s≈0)
+    await page.mouse.up();
+    await expect.poll(async () => ((await forceTangents())[2]?.outDg ?? 0) > 0.05).toBe(true); // points UP
+    {
+        const tipBox = await page.locator(".ptip").boundingBox();
+        const knobBox = await page.locator(".thit").last().boundingBox();
+        const inKnob = await page.locator(".thit").first().boundingBox();
+        const dia = await page.locator(".fpt").nth(2).locator(".fhit").boundingBox();
+        if (!tipBox || !knobBox || !inKnob || !dia)
+            throw new Error("default-placement boxes not laid out");
+        const knobCx = knobBox.x + knobBox.width / 2;
+        const knobCy = knobBox.y + knobBox.height / 2;
+        expect(dia.y + dia.height / 2).toBeGreaterThan(knobCy); // handle up → the diamond is BELOW the knob
+        expect(tipBox.y + tipBox.height).toBeLessThanOrEqual(knobCy + 1); // …so the box is ABOVE the knob
+        expect(knobCx).toBeGreaterThanOrEqual(tipBox.x); // horizontally centred on the knob (not dodged)
+        expect(knobCx).toBeLessThanOrEqual(tipBox.x + tipBox.width);
+        expect(overlaps(tipBox, knobBox)).toBe(false); // clears every workspace element it hangs off
+        expect(overlaps(tipBox, inKnob)).toBe(false);
+        expect(overlaps(tipBox, dia)).toBe(false);
+    }
+
+    // (ii) DODGE (the F3b refutation, now pinned): drag the OUT knob DOWN past the chart bottom so
+    // it clamps to the edge, just below the near-bottom crest diamond. The preferred vertical side
+    // (below, away from the diamond) no longer fits, and flipping back ABOVE would land the box over
+    // the diamond — so it dodges horizontally OUTWARD (out → right) instead. Red-first: a naive
+    // always-vertical placement flips above and OVERLAPS the crest diamond, so the no-overlap assert
+    // goes red without the dodge (verified against a no-dodge mutation on the bridge).
+    const dk = await page.locator(".thit").last().boundingBox();
+    if (!dk) throw new Error("crest out knob not laid out for the dodge");
+    await page.mouse.move(dk.x + dk.width / 2, dk.y + dk.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(crestX + 14, chartBotY + 60, { steps: 8 }); // past the bottom → clamps to the edge
+    await page.mouse.up();
+    await expect.poll(async () => ((await forceTangents())[2]?.outDg ?? 0) < -0.05).toBe(true); // points DOWN
+    {
+        const tipBox = await page.locator(".ptip").boundingBox();
+        const knobBox = await page.locator(".thit").last().boundingBox();
+        const inKnob = await page.locator(".thit").first().boundingBox();
+        const dia = await page.locator(".fpt").nth(2).locator(".fhit").boundingBox();
+        if (!tipBox || !knobBox || !inKnob || !dia)
+            throw new Error("dodge-placement boxes not laid out");
+        const knobCy = knobBox.y + knobBox.height / 2;
+        expect(tipBox.x).toBeGreaterThan(knobBox.x + knobBox.width); // dodged to the OUTWARD side (right)
+        expect(tipBox.x - (knobBox.x + knobBox.width)).toBeLessThan(24); // …adjacent, not floating away
+        // the box rides at the knob's vertical level (a side dodge, not above/below) — the in-view
+        // clamp may push it up to a half-height when the knob is pinned to the very chart edge.
+        expect(Math.abs(knobCy - (tipBox.y + tipBox.height / 2))).toBeLessThanOrEqual(32);
+        // the load-bearing pin (the F3b scenario): the dodge clears the diamond fat-pick box and the
+        // arm's knobs. A naive vertical flip would land over the diamond just above → this goes red.
+        expect(overlaps(tipBox, dia)).toBe(false);
+        expect(overlaps(tipBox, knobBox)).toBe(false);
+        expect(overlaps(tipBox, inKnob)).toBe(false);
+    }
+
+    await page.keyboard.press("Escape"); // deselect the handle
+    await page.keyboard.press("Escape"); // exit crest handle edit → clean for step 5
+    await expect.poll(forceEditing).toBe(false);
 
     // ── 5. Reopen the menu on the now-Custom keyframe → its Easing ▸ submenu's Custom row reads
     // checked (derived provenance — the segment is bounded by an explicit handle). ──
