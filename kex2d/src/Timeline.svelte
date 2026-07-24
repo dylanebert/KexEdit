@@ -37,6 +37,7 @@ import {
 } from "./history";
 import {
     clampView,
+    composeTangent,
     creationTargets,
     fmt,
     frameAll,
@@ -64,7 +65,6 @@ import {
 } from "./timeline";
 import { latchAngle } from "./controls";
 import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls } from "./profile";
-import { TangentMode } from "./spline";
 import {
     bakeOut,
     forceEase,
@@ -165,17 +165,15 @@ type TipMode = "above" | "below" | "left" | "right";
 // (out → right, in → left — the F3b direction): the box then clears the knob, arm, diamond, and
 // other knob, all of which sit on the diamond side. the side position is that collision fallback,
 // never the default. the returned (x, y) is the knob-anchor; the CSS transform offsets the box by
-// mode. `dx`/`dy` are the diamond (keyframe) screen centre.
+// mode. `dy` is the diamond (keyframe) screen-centre y.
 function handleTip(
     kx: number,
     ky: number,
-    dx: number,
     dy: number,
     side: "in" | "out",
     w: number,
     h: number,
 ): { x: number; y: number; mode: TipMode } {
-    void dx;
     const bot = h - BOT_PAD;
     // the vertical side away from the diamond: knob at or above the diamond → the popover goes
     // above the knob (a flat handle defaults above, its diamond is off to the side either way).
@@ -829,53 +827,20 @@ function applyTan(cx: number, cy: number): void {
     // composeTangent's x-clamp last, since the clamp is the hard invariant that must win.
     const active = snapActive(tanMod);
     dg = snapAxis(active, 0, dg, [], G_GRID, (x) => x, null).value;
-    const tan = composeTangent(id, side, ds, dg);
+    const tan = tangentFor(id, side, ds, dg);
     if (tan) setForceTangent(ecs, id, tan);
 }
-// resolve a keyframe's full explicit tangent after setting `side` to the (Δs, Δg) offset —
-// the write both the handle drag and the typed handle field go through. applies (1) the
-// x-monotonicity clamp (out reaches into [0, next−s], in into [−(s−prev), 0], so g(s) stays a
-// function), (2) per-side materialization — only the dragged side becomes explicit, the
-// un-edited side left exactly as it was (an absent side stays derived, the segment-scoped
-// Custom model), and (3) Aligned coupling
-// — the other side held collinear in chart pixels, keeping its own length (Blender aligned
-// handles; screen px because the chart's s/g axes differ).
-function composeTangent(id: number, side: "in" | "out", ds: number, dg: number): ForceTangent | null {
+// resolve a keyframe's full explicit tangent by feeding the pure `composeTangent` (timeline.ts)
+// this keyframe's neighbours and the live axis scales — the write both the handle drag and the
+// typed handle field go through. null when the point is gone (the gesture opens nothing).
+function tangentFor(id: number, side: "in" | "out", ds: number, dg: number): ForceTangent | null {
     const pt = forcePts.find((p) => p.id === id);
     if (!pt) return null;
     const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
     const idx = pts.findIndex((p) => p.id === id);
-    const prev = idx > 0 ? pts[idx - 1] : null;
-    const next = idx < pts.length - 1 ? pts[idx + 1] : null;
-    if (side === "out") ds = clamp(ds, 0, next ? next.s - pt.s : 0);
-    else ds = clamp(ds, prev ? -(pt.s - prev.s) : 0, 0);
-    // per-side materialization: dragging a side makes THAT side explicit; the other side is
-    // left exactly as it was (an absent side stays derived, so customizing one segment never
-    // spuriously customizes the neighbour — the segment-scoped Custom model). the un-edited
-    // side is seeded ONLY to feed the Aligned coupling, and coupling fires only when the other
-    // side is ALSO already explicit (a derived partner has nothing to align to).
-    const existing = forceTangent(ecs, id);
-    const mode = existing?.mode ?? TangentMode.Aligned;
-    let inn: Offset | undefined = existing?.in;
-    let out: Offset | undefined = existing?.out;
-    if (side === "out") out = { ds, dg };
-    else inn = { ds, dg };
-    if (mode === TangentMode.Aligned && inn && out) {
-        const drag = side === "out" ? out : inn;
-        const px = drag.ds * clamped.pxPerM;
-        const py = -drag.dg * pyPerG;
-        const len = Math.hypot(px, py);
-        if (len > 1e-6) {
-            const other = side === "out" ? inn : out;
-            const olen = Math.hypot(other.ds * clamped.pxPerM, other.dg * pyPerG);
-            const nx = (-px / len) * olen;
-            const ny = (-py / len) * olen;
-            const noff: Offset = { ds: nx / clamped.pxPerM, dg: -ny / pyPerG };
-            if (side === "out") inn = noff;
-            else out = noff;
-        }
-    }
-    return { mode, in: inn, out };
+    const prevS = idx > 0 ? pts[idx - 1].s : null;
+    const nextS = idx < pts.length - 1 ? pts[idx + 1].s : null;
+    return composeTangent(side, ds, dg, prevS, pt.s, nextS, forceTangent(ecs, id), clamped.pxPerM, pyPerG);
 }
 function tanUp(): void {
     if (dragTan === null) return;
@@ -1123,15 +1088,23 @@ function clipMenu(e: MouseEvent, c: Clip): void {
 // ── the append tail: a `+` after the last clip opens a two-choice geo/force flyout —
 // the one append affordance (a keyboard append would return as part of the toolbar item's
 // deliberate keyboard-vocabulary pass, not a bare letter key).
-let appendOpen = $state(false);
+// the flyout root-mounts (out of the dock's `overflow: hidden`, which clipped it from paint AND
+// hit-testing near the right edge), so its anchor is the `+` button's screen rect, captured on
+// open and fed to `fitMenu` (the same viewport-flip the cursor menus get). null = closed.
+let appendAnchor: { x: number; y: number } | null = $state(null);
 function toggleAppend(e: PointerEvent): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    appendOpen = !appendOpen;
+    if (appendAnchor) {
+        appendAnchor = null;
+        return;
+    }
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    appendAnchor = { x: r.left - 3, y: r.bottom + 2 }; // open just below the button, its left edge
 }
 function append(kind: SectionKind): void {
-    appendOpen = false;
+    appendAnchor = null;
     selectSection(appendSection(history, ecs, kind));
 }
 // the append flyout as data, one instance of the shared menu language. both choices are
@@ -1148,11 +1121,12 @@ const appendItems: MenuItem[] = [
 // click-away closes the flyout (clicks inside the control keep it open — the choice
 // buttons close it themselves via append()).
 $effect(() => {
-    if (!appendOpen) return;
+    if (!appendAnchor) return;
     const close = (ev: PointerEvent): void => {
         const t = ev.target as HTMLElement | null;
-        if (t?.closest(".clip-append")) return;
-        appendOpen = false;
+        // the flyout is root-mounted, not a child of `.clip-append`, so both are kept open.
+        if (t?.closest(".clip-append") || t?.closest(".clip-flyout")) return;
+        appendAnchor = null;
     };
     window.addEventListener("pointerdown", close, { capture: true });
     return () => window.removeEventListener("pointerdown", close, { capture: true });
@@ -1290,7 +1264,7 @@ function onFieldG(e: Event): void {
 function handleFieldEdit(ds: number, dg: number): void {
     const h = selHandle;
     if (h === null || !Number.isFinite(ds) || !Number.isFinite(dg)) return; // guard a cleared field
-    const tan = composeTangent(h.pt.id, h.side, ds, dg);
+    const tan = tangentFor(h.pt.id, h.side, ds, dg);
     if (!tan) return;
     beginForceTangent(ecs, h.pt.id);
     setForceTangent(ecs, h.pt.id, tan);
@@ -1363,15 +1337,7 @@ function handleScrub(e: PointerEvent, axis: "s" | "g"): void {
     // freeze the popover's placement at gesture start — the knob rides a Δs/Δg scrub, but the
     // control stays put (a surface never moves under its own gesture). the mode freezes too, so a
     // scrub that carries the knob toward an edge never re-dodges mid-gesture.
-    const tip = handleTip(
-        sh.x,
-        sh.y,
-        markerX(sh.pt.startS + sh.pt.s),
-        yOf(sh.pt.g),
-        sh.side,
-        w,
-        h,
-    );
+    const tip = handleTip(sh.x, sh.y, yOf(sh.pt.g), sh.side, w, h);
     scrubFreeze = { x: tip.x, y: tip.y, mode: tip.mode };
     const id = sh.pt.id;
     const side = sh.side;
@@ -1389,11 +1355,11 @@ function handleScrub(e: PointerEvent, axis: "s" | "g"): void {
     const move = (ev: PointerEvent): void => {
         if (axis === "s") {
             ds = clamp(ds + ev.movementX * SCRUB_S, dsLo, dsHi);
-            const tan = composeTangent(id, side, Math.round(ds * 10) / 10, dg);
+            const tan = tangentFor(id, side, Math.round(ds * 10) / 10, dg);
             if (tan) setForceTangent(ecs, id, tan);
         } else {
             dg += ev.movementX * SCRUB_G;
-            const tan = composeTangent(id, side, ds, Math.round(dg * 100) / 100);
+            const tan = tangentFor(id, side, ds, Math.round(dg * 100) / 100);
             if (tan) setForceTangent(ecs, id, tan);
         }
     };
@@ -1846,9 +1812,9 @@ onMount(() => {
             }
             return;
         }
-        if (appendOpen && e.key === "Escape") {
+        if (appendAnchor && e.key === "Escape") {
             e.preventDefault();
-            appendOpen = false;
+            appendAnchor = null;
             return;
         }
         // force-point select/delete/nudge — guarded on a live force selection so geo-node
@@ -2198,7 +2164,7 @@ onMount(() => {
                  different surface kind than the keyframe popover). frozen during a field scrub. -->
             {@const tip = scrubFreeze?.mode
                 ? { x: scrubFreeze.x, y: scrubFreeze.y, mode: scrubFreeze.mode }
-                : handleTip(selHandle.x, selHandle.y, markerX(selHandle.pt.startS + selHandle.pt.s), yOf(selHandle.pt.g), selHandle.side, w, h)}
+                : handleTip(selHandle.x, selHandle.y, yOf(selHandle.pt.g), selHandle.side, w, h)}
             {@const sText = fmt(selHandle.ds, 2)}
             {@const hgText = fmt(selHandle.dg, 2)}
             <div
@@ -2310,7 +2276,7 @@ onMount(() => {
                 <div class="clip-append" style="left: {ax + 6}px; top: {RULER_H + GAP_H / 2}px">
                     <button
                         class="clip-add"
-                        class:open={appendOpen}
+                        class:open={appendAnchor !== null}
                         type="button"
                         onpointerdown={toggleAppend}
                         title="Append section"
@@ -2329,11 +2295,6 @@ onMount(() => {
                             />
                         </svg>
                     </button>
-                    {#if appendOpen}
-                        <div class="clip-flyout menu" role="menu">
-                            <Menu items={appendItems} onclose={() => (appendOpen = false)} />
-                        </div>
-                    {/if}
                 </div>
             {/if}
         {/if}
@@ -2418,6 +2379,14 @@ onMount(() => {
 {#if fmenu}
     <div class="fmenu menu" use:fitMenu={{ x: fmenu.x, y: fmenu.y }} role="menu" aria-label="Force keyframe">
         <Menu items={fmenuItems} onclose={closeForceMenu} />
+    </div>
+{/if}
+
+<!-- the append flyout: the `+`-button's two-choice geo/force menu, root-mounted (out of the
+     dock's overflow clip) and viewport-fitted by `fitMenu`, anchored just below the button. -->
+{#if appendAnchor}
+    <div class="clip-flyout menu" use:fitMenu={appendAnchor} role="menu" aria-label="Append section">
+        <Menu items={appendItems} onclose={() => (appendAnchor = null)} />
     </div>
 {/if}
 
@@ -2931,14 +2900,13 @@ onMount(() => {
         background: rgba(255, 255, 255, 0.12);
         color: var(--fg);
     }
-    /* the append flyout: an instance of the shared `.menu` language (App.svelte) — only its
-       anchored position, width, and entrance are its own. */
+    /* the append flyout: an instance of the shared `.menu` language, root-mounted and placed by
+       `fitMenu` (left/top written by the action) — the same fixed-position, viewport-flipping
+       treatment as the force keyframe menu, so the dock's `overflow: hidden` can't clip it. */
     .clip-flyout {
-        position: absolute;
-        top: 20px;
-        left: -3px;
+        position: fixed;
         min-width: 62px;
-        z-index: 4;
+        z-index: 10;
         animation: tip-in 120ms ease;
     }
 

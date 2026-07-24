@@ -5,6 +5,12 @@
  *  it. ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom,
  *  _renderTicks, findGoodStep). */
 
+import type { Offset } from "./profile";
+import { TangentMode } from "./spline";
+import type { ForceTangent } from "./track";
+
+const clampN = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
+
 /** view-state: a single affine over the distance axis. `pan` is the content pixel at
  *  the left edge (scroll-like); `pxPerM` is the horizontal scale (px per meter). */
 export interface View {
@@ -319,6 +325,52 @@ export function snapAxis(
     return active
         ? { value: Math.round(rawVal / grid) * grid, guide: null }
         : { value: rawVal, guide: null };
+}
+
+/** resolve a force keyframe's explicit tangent after setting one `side` to the (Δs, Δg) offset —
+ *  the pure core of the handle write both a drag and the typed field go through. applies, in order:
+ *  (1) the x-monotonicity clamp (`out` reaches into `[0, nextS − s]`, `in` into `[−(s − prevS), 0]`,
+ *  so g(s) stays a function; an absent neighbour clamps that reach to 0); (2) per-side
+ *  materialization — only the dragged `side` becomes explicit, the un-edited side left exactly as
+ *  `existing` had it, so customizing one segment never spuriously customizes the neighbour (the
+ *  segment-scoped Custom model); (3) Aligned coupling — when the mode is Aligned and BOTH sides are
+ *  now present, the un-dragged side is held collinear with the dragged one in CHART PIXELS (screen px
+ *  because the chart's s and g axes have different scales), keeping its own length (Blender aligned
+ *  handles). `pxPerM` is the s-axis scale (px per metre), `pyPerG` the force-axis scale (px per g). */
+export function composeTangent(
+    side: "in" | "out",
+    ds: number,
+    dg: number,
+    prevS: number | null,
+    s: number,
+    nextS: number | null,
+    existing: ForceTangent | undefined,
+    pxPerM: number,
+    pyPerG: number,
+): ForceTangent {
+    if (side === "out") ds = clampN(ds, 0, nextS !== null ? nextS - s : 0);
+    else ds = clampN(ds, prevS !== null ? -(s - prevS) : 0, 0);
+    const mode = existing?.mode ?? TangentMode.Aligned;
+    let inn: Offset | undefined = existing?.in;
+    let out: Offset | undefined = existing?.out;
+    if (side === "out") out = { ds, dg };
+    else inn = { ds, dg };
+    if (mode === TangentMode.Aligned && inn && out) {
+        const drag = side === "out" ? out : inn;
+        const px = drag.ds * pxPerM;
+        const py = -drag.dg * pyPerG;
+        const len = Math.hypot(px, py);
+        if (len > 1e-6) {
+            const other = side === "out" ? inn : out;
+            const olen = Math.hypot(other.ds * pxPerM, other.dg * pyPerG);
+            const nx = (-px / len) * olen;
+            const ny = (-py / len) * olen;
+            const noff: Offset = { ds: nx / pxPerM, dg: -ny / pyPerG };
+            if (side === "out") inn = noff;
+            else out = noff;
+        }
+    }
+    return { mode, in: inn, out };
 }
 
 /** the extent-trim magnet targets in chart-local px: content landmarks that are stable

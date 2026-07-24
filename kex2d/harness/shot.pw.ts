@@ -806,7 +806,7 @@ test("force easing menu flow", async ({ page }) => {
         page.evaluate((): string | null => (window as any).__kex.forceHandleSel());
     const forceTangents = () =>
         page.evaluate(
-            (): (null | { outDs: number; outDg: number })[] =>
+            (): (null | { inOn: boolean; outDs: number; outDg: number })[] =>
                 (window as any).__kex.forceTangents(),
         );
 
@@ -918,6 +918,12 @@ test("force easing menu flow", async ({ page }) => {
     await page.mouse.move(knob.x + knob.width / 2 + 24, knob.y + knob.height / 2 - 40, { steps: 6 });
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
+
+    // per-side materialization: dragging keyframe 1's OUT handle customizes only that side. Its
+    // IN side — the trailing bound of the PRECEDING segment (kf0→kf1) — stays derived, so an
+    // out-drag never spuriously customizes the segment behind the keyframe (composeTangent's
+    // segment-scoped Custom model). A both-sides materialize would flip inOn true → red.
+    expect((await forceTangents())[1]?.inOn).toBe(false);
 
     // (a) the DRAG selected the dragged side (the Blender rule — any interaction addresses the
     // handle). On pre-F3 code a drag left selection untouched, so this is the red-first pin.
@@ -1373,9 +1379,23 @@ test("section clip strip flow", async ({ page }) => {
     await page.waitForTimeout(SETTLE_MS);
     if (vp) await page.screenshot({ path: join(OUT, "clip-1-strip.png"), clip: strip() });
 
-    // ── 1. Append a force section via the real + flyout → a mixed geo→force chain. ──
+    // ── 1. Append a force section via the real + flyout → a mixed geo→force chain. the flyout
+    // root-mounts (out of the dock's overflow clip), so assert its item is hit-testable at its
+    // own center — a real pointer's reach, the Menus reachability net (a selector .click() fires
+    // on a clipped, humanly-unreachable row). ──
     await page.locator(".clip-add").click();
-    await page.getByRole("menuitem", { name: "Append force section" }).click();
+    const forceItem = page.locator(".clip-flyout").getByRole("menuitem", { name: "Append force section" });
+    await expect(forceItem).toBeVisible();
+    const fib = await forceItem.boundingBox();
+    if (!fib) throw new Error("append flyout item not laid out");
+    const fix = fib.x + fib.width / 2;
+    const fiy = fib.y + fib.height / 2;
+    const flyoutReach = await page.evaluate(
+        (p: { x: number; y: number }) => document.elementFromPoint(p.x, p.y)?.closest(".menu-item") !== null,
+        { x: fix, y: fiy },
+    );
+    expect(flyoutReach, "append flyout item must be hit-testable at its own center (not clipped)").toBe(true);
+    await page.mouse.click(fix, fiy);
     await expect.poll(sectionCount).toBe(2);
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
     // the append selects the new (force) section — its clip reads selected.

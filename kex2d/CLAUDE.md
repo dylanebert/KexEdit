@@ -359,8 +359,8 @@ editor-ui invariant-domain rule).
   (selected section). All edits route through `history`. Also the readout metric seam: `nodeMetrics`
   (pure: node → `{angleLabel?, lengthLabel}`, over the authored `exitWorld` heading + chord) +
   `selectedMetrics` (the impure glue over the baked samples) + the shared formatters
-  (`oneDecimal`/`formatDeg`/`formatLen`, one decimal always, −0 normalized, trailing `.0` stripped —
-  the sole formatting funnel).
+  (`formatDeg`/`formatLen`, one decimal always, −0 normalized, trailing `.0` stripped — the geo
+  readout's degree/length funnel, sharing `timeline.ts`'s `fmt` trim, the force readout's funnel).
 - `magnet.ts` — the two pure grid quantizers a manipulator drag resolves through (`snapLength`, 1 m
   grid + 1 m floor; `snapAngle`, `ANGLE_STEP` = 5°) plus the incline algebra
   (`inclineOf`/`chordForIncline`) a tip's exit-tangent snap needs. Grid, not magnet: the screen-px

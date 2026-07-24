@@ -23,7 +23,6 @@ import {
     nextForce,
     reheadOnDrag,
     removeTrailingHandle,
-    resetForceTangent,
     resetTangent,
     restoreAll,
     samples,
@@ -1249,16 +1248,13 @@ describe("force easing + seeding (stage B)", () => {
         undo(h, state);
         expect(forceTangent(state, id)).toBeUndefined(); // back to the ease-derived default
 
-        // resetForceTangent clears authored handles back to the ease-derived default.
+        // a Free two-sided tangent round-trips through set/read, both sides preserved.
         const tan: ForceTangent = {
             mode: TangentMode.Free,
             in: { ds: -2, dg: 0.25 },
             out: { ds: 2, dg: -0.25 },
         };
         setForceTangent(state, id, tan);
-        resetForceTangent(state, id);
-        expect(forceTangent(state, id)).toBeUndefined();
-        setForceTangent(state, id, tan); // restore for the round-trip assertion
         expect(forceTangent(state, id)).toEqual(tan);
     });
 

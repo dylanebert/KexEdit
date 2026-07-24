@@ -870,9 +870,11 @@ export function destroyForce(ecs: State, id: number): void {
     if (eid !== null) ecs.destroy(eid);
 }
 
-/** a force point's undoable state, keyed by stable id (+ its section, so a restore
- *  re-homes it): its position (`s`/`g`), its easing tag, and its explicit handles.
- *  the drag/field/easing gestures snapshot this. */
+/** a force point's undoable state, keyed by stable id: its position (`s`/`g`), its easing
+ *  tag, and its explicit handles. `section` records which section owns the point;
+ *  `restoreForcePoint` addresses the existing point by id and does NOT rewrite `Force.section`
+ *  — a point changes section only inside a structural op, which snapshots the whole track. the
+ *  drag/field/easing gestures snapshot this. */
 export interface ForcePointState {
     section: number;
     id: number;
@@ -943,13 +945,6 @@ export function setForceEase(ecs: State, id: number, ease: Easing): void {
 export function setForceTangent(ecs: State, id: number, tan: ForceTangent | null): void {
     const eid = forceAt(ecs, id);
     if (eid !== null) writeForceTangent(eid, tan ?? undefined);
-}
-
-/** clear a force keyframe's explicit handles back to the `ease`-derived default — the
- *  Reset action (the way back up the layers). keeps the easing tag. */
-export function resetForceTangent(ecs: State, id: number): void {
-    const eid = forceAt(ecs, id);
-    if (eid !== null) writeForceTangent(eid, undefined);
 }
 
 /** clear ONE side (in/out) of a force keyframe's explicit handles back to derived,

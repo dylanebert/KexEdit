@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { TangentMode } from "../src/spline";
 import {
     arcToTime,
     clampView,
+    composeTangent,
     creationTargets,
     fmt,
     frameAll,
@@ -574,6 +576,86 @@ describe("snapAxis — landmark magnet over a domain grid", () => {
         const r = snapAxis(true, 21, 10.5, [20], S_GRID, half, null);
         expect(r.value).toBe(10); // half(20)
         expect(r.guide).toBe(20); // the guide stays in px
+    });
+});
+
+describe("composeTangent — force-handle write resolver", () => {
+    // the chart's two axis scales (px per metre on s, px per g on the force axis) — distinct, which
+    // is why the Aligned coupling is resolved in screen px, not domain units.
+    const Pxm = 10;
+    const Pyg = 20;
+
+    describe("per-side materialization — only the dragged side becomes explicit", () => {
+        test("an out-drag with no existing tangent leaves the IN side derived (absent)", () => {
+            const t = composeTangent("out", 2, 0.3, 0, 5, 10, undefined, Pxm, Pyg);
+            expect(t.out).toEqual({ ds: 2, dg: 0.3 });
+            // the guarded behavior: the un-edited in side is NOT seeded. Mutating the resolver to
+            // materialize both sides (e.g. `inn ??= { ds: 0, dg: 0 }`) makes this defined → red.
+            expect(t.in).toBeUndefined();
+        });
+
+        test("an out-drag leaves an existing IN side EXACTLY as it was (Free — no coupling)", () => {
+            const existing = { mode: TangentMode.Free, in: { ds: -1, dg: 0.1 } };
+            const t = composeTangent("out", 2, 0.3, 0, 5, 10, existing, Pxm, Pyg);
+            expect(t.out).toEqual({ ds: 2, dg: 0.3 });
+            expect(t.in).toEqual({ ds: -1, dg: 0.1 }); // untouched: customizing out never edits in
+            expect(t.mode).toBe(TangentMode.Free); // the existing mode is preserved
+        });
+
+        test("no existing tangent defaults the mode to Aligned (never a no-mode state)", () => {
+            const t = composeTangent("in", -1, 0, -3, 5, 10, undefined, Pxm, Pyg);
+            expect(t.mode).toBe(TangentMode.Aligned);
+        });
+    });
+
+    describe("Aligned coupling — the opposite side re-collinearizes in screen px", () => {
+        test("dragging OUT off-axis swings the existing IN side anti-collinear, its length kept", () => {
+            // both sides start collinear along the s-axis; the out-drag goes off-axis (up in g).
+            const existing = {
+                mode: TangentMode.Aligned,
+                in: { ds: -2, dg: 0 },
+                out: { ds: 4, dg: 0 },
+            };
+            const t = composeTangent("out", 2, 1, 0, 5, 10, existing, Pxm, Pyg);
+            expect(t.out).toEqual({ ds: 2, dg: 1 });
+            if (!t.in) throw new Error("aligned coupling must keep the in side present");
+            // screen-space vectors: (Δs·pxPerM, −Δg·pyPerG). Aligned ⟹ the two are anti-parallel
+            // (cross ≈ 0, dot < 0), and the coupled side keeps its ORIGINAL screen length (20 px).
+            const outPx = { x: t.out!.ds * Pxm, y: -t.out!.dg * Pyg };
+            const inPx = { x: t.in.ds * Pxm, y: -t.in.dg * Pyg };
+            const cross = outPx.x * inPx.y - outPx.y * inPx.x;
+            const dot = outPx.x * inPx.x + outPx.y * inPx.y;
+            expect(cross).toBeCloseTo(0, 6); // collinear
+            expect(dot).toBeLessThan(0); // anti-parallel, not co-directional
+            expect(Math.hypot(inPx.x, inPx.y)).toBeCloseTo(20, 6); // original in-length preserved
+            // guard: delete the coupling block and the in side stays { -2, 0 } → cross ≠ 0 → red.
+        });
+
+        test("Free mode does NOT couple — the opposite side is left alone", () => {
+            const existing = {
+                mode: TangentMode.Free,
+                in: { ds: -2, dg: 0 },
+                out: { ds: 4, dg: 0 },
+            };
+            const t = composeTangent("out", 2, 1, 0, 5, 10, existing, Pxm, Pyg);
+            expect(t.in).toEqual({ ds: -2, dg: 0 }); // unchanged under Free
+        });
+    });
+
+    describe("x-monotonicity clamp — Δs stays within the segment span", () => {
+        test("an OUT reach clamps to [0, nextS − s]", () => {
+            expect(composeTangent("out", 100, 0, 0, 5, 8, undefined, Pxm, Pyg).out!.ds).toBe(3);
+            expect(composeTangent("out", -5, 0, 0, 5, 8, undefined, Pxm, Pyg).out!.ds).toBe(0);
+        });
+        test("an IN reach clamps to [−(s − prevS), 0]", () => {
+            expect(composeTangent("in", -100, 0, 2, 5, 8, undefined, Pxm, Pyg).in!.ds).toBe(-3);
+            expect(composeTangent("in", 5, 0, 2, 5, 8, undefined, Pxm, Pyg).in!.ds).toBe(0);
+        });
+        test("an absent neighbour collapses the reach to 0 (a chain end / first keyframe)", () => {
+            expect(composeTangent("out", 5, 0, 0, 5, null, undefined, Pxm, Pyg).out!.ds).toBe(0);
+            expect(composeTangent("in", -5, 0, null, 5, 10, undefined, Pxm, Pyg).in!.ds).toBe(0);
+        });
+        // guard: drop the clamp and the OUT Δs stays 100 (past nextS) → g(s) no longer a function → red.
     });
 });
 

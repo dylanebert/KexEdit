@@ -50,6 +50,7 @@ import {
     setTangent,
     Track,
 } from "./track";
+import { fmt } from "./timeline";
 import {
     camera,
     clearGuides,
@@ -402,28 +403,18 @@ export function normDeg(d: number): number {
     return w === -180 ? 180 : w; // the wrap lands 180° on −180; the readout wants 180
 }
 
-/** round to one decimal, then strip an exact trailing `.0` (feel round 11: `5°` not `5.0°`, but
- *  `5.5°` stays). the strip is DETERMINISTIC post-rounding — the string is derived from the
- *  already-rounded value, so `4.999` rounds to `5.0` → displays `5`, with no epsilon window and no
- *  integer↔decimal flicker (unlike the round-10-era pre-rounding branch). normalizes `-0.0` → `0`. */
-function oneDecimal(x: number): string {
-    const dec = x.toFixed(1);
-    const norm = dec === "-0.0" ? "0.0" : dec;
-    return norm.endsWith(".0") ? norm.slice(0, -2) : norm;
-}
-
 /** format a degree value for the readout — the one degree seam every source funnels through, so a
  *  value formats identically regardless of source (`App.svelte`'s precedence). one decimal with an
- *  exact `.0` dropped. */
+ *  exact `.0` dropped (`fmt`, the shared trim, `5°` not `5.0°` but `5.5°` stays). */
 export function formatDeg(d: number): string {
-    return `${oneDecimal(normDeg(d))}°`;
+    return `${fmt(normDeg(d), 1)}°`;
 }
 
 /** format a chord length (metres) for the readout — the one length seam every source funnels
  *  through, the same rule as `formatDeg` (one decimal, `.0` dropped): a whole-metre length reads
  *  `5 m`, a continuous (Ctrl-bypass) length `5.3 m`. */
 export function formatLen(m: number): string {
-    return `${oneDecimal(m)} m`;
+    return `${fmt(m, 1)} m`;
 }
 
 /** a selected node's live readout metrics. `lengthLabel` is always present (the chord length to the
