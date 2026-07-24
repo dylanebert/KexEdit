@@ -55,6 +55,7 @@ import {
     setTrackV0,
 } from "./track";
 import { TangentMode } from "./spline";
+import { retargetMode } from "./timeline";
 
 /** a do/undo pair. `apply` is the do / redo direction, `reverse` is undo. both
  *  mutate the canonical data directly (there's no runtime mirror to sync). */
@@ -391,6 +392,27 @@ export function materializeCustom(h: History, ecs: State, id: number): void {
             });
         }
     });
+}
+
+/** set a force keyframe's tangent MODE as one undoable entry (the Tangents ▸ menu one-shot,
+ *  the geo `pickMode` analogue): reconcile the existing handle pair to the new mode retroactively
+ *  (`retargetMode` — `Aligned`/`Mirror` re-collinearize in chart pixels, `Free` relabels), keeping
+ *  the pair jump-consistent with `composeTangent`'s per-drag coupling. keyframe-scoped (the mode is
+ *  a per-keyframe property); records nothing when the tangent is unchanged (picking the current
+ *  mode). the menu only offers this on a keyframe that already holds explicit handles, so a derived
+ *  keyframe (no mode to edit) never reaches it. `pxPerM`/`pyPerG` are the live chart axis scales. */
+export function setForceTangentMode(
+    h: History,
+    ecs: State,
+    id: number,
+    mode: TangentMode,
+    pxPerM: number,
+    pyPerG: number,
+): void {
+    beginForceTangent(ecs, id);
+    const cur = forceTangent(ecs, id);
+    if (cur) setForceTangent(ecs, id, retargetMode(cur, mode, pxPerM, pyPerG));
+    commit(h);
 }
 
 /** open a gesture on a force-keyframe handle drag, snapshotting the keyframe's easing

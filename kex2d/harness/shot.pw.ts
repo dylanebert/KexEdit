@@ -1157,6 +1157,154 @@ test("force easing menu flow", async ({ page }) => {
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
+// G2: the Tangents ▸ mode submenu (Mirror | Aligned | Free — the geo node menu's convention on a
+// force keyframe) and the chord-aligned derived-Linear ghost display. Both are handle-layer feel
+// features rendered on the real timeline, so both are driven pointer-true and asserted against the
+// drawn DOM + __kex state.
+test("force tangent mode + linear ghost flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
+    const forceEases = () => page.evaluate((): number[] => (window as any).__kex.forceEases());
+    const forceEditing = () => page.evaluate((): boolean => (window as any).__kex.forceEditing());
+    const forceTangents = () =>
+        page.evaluate(
+            (): (null | {
+                mode: number;
+                inOn: boolean;
+                inDs: number;
+                inDg: number;
+                outOn: boolean;
+                outDs: number;
+                outDg: number;
+            })[] => (window as any).__kex.forceTangents(),
+        );
+
+    // seed an airtime bump on a force section: two continuation seeds + three bump points = five
+    // keyframes, kf1..kf3 interior (each governs a following segment).
+    await page.evaluate(() => (window as any).__kex.seedForceBump());
+    await expect.poll(forceCount).toBeGreaterThanOrEqual(5);
+    const nPts = await forceCount();
+    await frameTimeline(page);
+    await expect(page.locator(".fpt")).toHaveCount(nPts);
+
+    // ── A. Chord-aligned derived-Linear ghost (feature 2). Set kf1's following segment to Linear,
+    // enter handle edit (no drag → both sides stay derived ghosts), and assert the OUT ghost knob
+    // is DRAWN forward of the diamond (chord-aligned at influence 1/3), not collapsed to a dot on
+    // it. Red-first: revert `derivedOut` to the flat `autoTangent` and a Linear ghost's Δs → 0, so
+    // the knob lands on the diamond → `ghostCx − diaCx ≈ 0` → red. ──
+    await page.locator(".fpt").nth(1).click({ button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await clickFlyout(page, ".fmenu", "Easing", "Linear");
+    await expect.poll(async () => (await forceEases())[1]).toBe(0); // Easing.Linear
+    await page.keyboard.press("Escape"); // deselect (clear the keyframe .ptip floating over the chart)
+    await expect(page.locator(".ptip")).toHaveCount(0);
+    await page.locator(".fpt").nth(1).dblclick(); // handle-edit sub-mode
+    await expect.poll(forceEditing).toBe(true);
+    await expect(page.locator(".tknob.ghost")).toHaveCount(2); // both sides derived (hollow ghosts)
+    const dia1 = await page.locator(".fpt").nth(1).locator(".fhit").boundingBox();
+    const outGhost = await page.locator(".tknob.ghost").last().boundingBox(); // handles render in, then OUT
+    if (!dia1 || !outGhost) throw new Error("kf1 diamond / out ghost not laid out");
+    const diaCx = dia1.x + dia1.width / 2;
+    const ghostCx = outGhost.x + outGhost.width / 2;
+    expect(ghostCx - diaCx).toBeGreaterThan(12); // chord-aligned reach forward, not a dot on the diamond
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await expect.poll(forceEditing).toBe(false);
+
+    // ── B. Tangents ▸ mode submenu (feature 1). Give kf1 BOTH explicit handles so the coupling is
+    // observable: Custom on kf1 materializes its OUT, Custom on kf0 materializes kf1's IN. First
+    // reset kf1 back to a preset (Cubic) so the seeds are flat. ──
+    await page.locator(".fpt").nth(1).click({ button: "right" });
+    await clickFlyout(page, ".fmenu", "Easing", "Cubic");
+    await expect.poll(async () => (await forceEases())[1]).toBe(1); // back to Cubic
+    await page.keyboard.press("Escape");
+    await page.locator(".fpt").nth(1).click({ button: "right" });
+    await clickFlyout(page, ".fmenu", "Easing", "Custom"); // materializes kf1.out, enters handle edit
+    await expect.poll(async () => (await forceTangents())[1]?.outOn === true).toBe(true);
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await expect.poll(forceEditing).toBe(false);
+    await page.locator(".fpt").nth(0).click({ button: "right" });
+    await clickFlyout(page, ".fmenu", "Easing", "Custom"); // materializes kf1.in (the kf0→kf1 trailing side)
+    await expect
+        .poll(async () => {
+            const t = (await forceTangents())[1];
+            return t?.inOn === true && t?.outOn === true;
+        })
+        .toBe(true);
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await expect.poll(forceEditing).toBe(false);
+
+    // ── B1. kf1 now holds both sides, default mode Aligned (a flat pair materializes Aligned). Its
+    // menu carries a Tangents ▸ row, and Aligned is the checked mode inside the submenu. ──
+    await page.locator(".fpt").nth(1).click({ button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await expect
+        .poll(async () =>
+            (await page.locator(".fmenu [role=menuitem]").allTextContents()).map((t) =>
+                t.replace(/\s+/g, " ").trim(),
+            ),
+        )
+        .toEqual(["Delete Del", "Easing ▸", "Tangents ▸"]);
+    await page.locator(".fmenu").getByRole("menuitem", { name: "Tangents", exact: true }).hover();
+    await expect(
+        page.locator(".fmenu").getByRole("menuitem", { name: "Aligned", exact: true }),
+    ).toHaveClass(/checked/);
+
+    // ── B2. Pick Free through the Tangents ▸ flyout → the stored mode flips to Free (2). ──
+    await clickFlyout(page, ".fmenu", "Tangents", "Free");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    await expect.poll(async () => (await forceTangents())[1]?.mode).toBe(2); // TangentMode.Free
+
+    // ── B3. Under Free, dragging the OUT handle no longer couples the IN side (Aligned would swing
+    // it collinear). Enter handle edit, record kf1's IN offset, drag OUT far off-axis, assert IN is
+    // unchanged. Red-first: fold Free into composeTangent's coupling branch and IN moves → red. ──
+    await page.locator(".fpt").nth(1).dblclick();
+    await expect.poll(forceEditing).toBe(true);
+    const inBefore = (await forceTangents())[1];
+    if (!inBefore) throw new Error("kf1 must hold explicit handles for the decouple check");
+    const outKnob = await page.locator(".thit").last().boundingBox(); // in, then OUT
+    if (!outKnob) throw new Error("kf1 out knob not laid out");
+    await page.mouse.move(outKnob.x + outKnob.width / 2, outKnob.y + outKnob.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(outKnob.x + outKnob.width / 2 + 10, outKnob.y + outKnob.height / 2 - 44, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => Math.abs((await forceTangents())[1]?.outDg ?? 0)).toBeGreaterThan(0.05); // OUT moved
+    const inAfter = (await forceTangents())[1];
+    expect(inAfter?.inDs).toBeCloseTo(inBefore.inDs, 6); // IN untouched — Free does not couple
+    expect(inAfter?.inDg).toBeCloseTo(inBefore.inDg, 6);
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await expect.poll(forceEditing).toBe(false);
+
+    // ── C. A DERIVED-only keyframe (no explicit handles) shows NO Tangents ▸ row — there is no
+    // stored mode to edit. kf3 (interior, untouched by A/B) is fully derived. ──
+    await page.locator(".fpt").nth(3).click({ button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    expect((await forceTangents())[3]).toBeNull(); // kf3 is derived (no explicit handles)
+    await expect
+        .poll(async () =>
+            (await page.locator(".fmenu [role=menuitem]").allTextContents()).map((t) =>
+                t.replace(/\s+/g, " ").trim(),
+            ),
+        )
+        .toEqual(["Delete Del", "Easing ▸"]); // no Tangents ▸ on a derived keyframe
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
 // Regression net for the context-menu OVERFLOW class (kex2d-force-ux UX fix): a right-click on a
 // keyframe near the BOTTOM of the timeline used to open its menu extending downward PAST the
 // viewport, the bottom rows unreachable. `fitMenu` (menu.ts) now flips the menu up (and left near

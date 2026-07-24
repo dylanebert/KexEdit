@@ -16,6 +16,7 @@ import {
     niceStep,
     nodeTickPx,
     pxToS,
+    retargetMode,
     S_GRID,
     snap,
     snapAxis,
@@ -656,6 +657,88 @@ describe("composeTangent — force-handle write resolver", () => {
             expect(composeTangent("in", -5, 0, null, 5, 10, undefined, Pxm, Pyg).in!.ds).toBe(0);
         });
         // guard: drop the clamp and the OUT Δs stays 100 (past nextS) → g(s) no longer a function → red.
+    });
+
+    describe("Mirror coupling — the opposite side matches the dragged side's length too", () => {
+        test("dragging OUT swings the IN side anti-collinear AND to the SAME screen length", () => {
+            const existing = {
+                mode: TangentMode.Mirror,
+                in: { ds: -1, dg: 0 }, // a SHORT in side (10 px) — Mirror must grow it to the drag's length
+                out: { ds: 4, dg: 0 },
+            };
+            const t = composeTangent("out", 2, 1, 0, 5, 10, existing, Pxm, Pyg);
+            expect(t.out).toEqual({ ds: 2, dg: 1 });
+            if (!t.in) throw new Error("mirror coupling must keep the in side present");
+            const outPx = { x: t.out!.ds * Pxm, y: -t.out!.dg * Pyg };
+            const inPx = { x: t.in.ds * Pxm, y: -t.in.dg * Pyg };
+            const cross = outPx.x * inPx.y - outPx.y * inPx.x;
+            const dot = outPx.x * inPx.x + outPx.y * inPx.y;
+            expect(cross).toBeCloseTo(0, 6); // collinear
+            expect(dot).toBeLessThan(0); // anti-parallel
+            // Mirror equalizes: the in side takes the DRAGGED side's screen length, not its own.
+            expect(Math.hypot(inPx.x, inPx.y)).toBeCloseTo(Math.hypot(outPx.x, outPx.y), 6);
+            // guard: with Mirror excluded from the coupling branch, the in side stays {-1,0} (10 px)
+            // → its length ≠ the drag's ~28 px → red.
+        });
+    });
+});
+
+describe("retargetMode — the Tangents ▸ mode-switch reconcile (chart pixels)", () => {
+    const Pxm = 10;
+    const Pyg = 20;
+
+    test("Free just relabels — the offsets are untouched (a corner stays a corner)", () => {
+        const tan = {
+            mode: TangentMode.Aligned,
+            in: { ds: -2, dg: 0.3 },
+            out: { ds: 4, dg: -0.1 },
+        };
+        const t = retargetMode(tan, TangentMode.Free, Pxm, Pyg);
+        expect(t).toEqual({
+            mode: TangentMode.Free,
+            in: { ds: -2, dg: 0.3 },
+            out: { ds: 4, dg: -0.1 },
+        });
+    });
+
+    test("Aligned re-collinearizes a Free corner in screen px, keeping each side's own length", () => {
+        // a corner: in flat along −s, out straight up. switching to Aligned must swing the IN side
+        // anti-collinear with OUT (the survivor) while KEEPING its own screen length.
+        const tan = { mode: TangentMode.Free, in: { ds: -3, dg: 0 }, out: { ds: 0, dg: 2 } };
+        const inLen0 = Math.hypot(-3 * Pxm, 0 * Pyg); // 30 px
+        const t = retargetMode(tan, TangentMode.Aligned, Pxm, Pyg);
+        expect(t.mode).toBe(TangentMode.Aligned);
+        if (!t.in || !t.out) throw new Error("both sides must survive");
+        // the OUT survivor is unchanged; the IN side is now anti-parallel to it in px, own length kept.
+        expect(t.out.ds).toBeCloseTo(0, 6);
+        expect(t.out.dg).toBeCloseTo(2, 6);
+        const outPx = { x: t.out.ds * Pxm, y: -t.out.dg * Pyg };
+        const inPx = { x: t.in.ds * Pxm, y: -t.in.dg * Pyg };
+        expect(outPx.x * inPx.y - outPx.y * inPx.x).toBeCloseTo(0, 6); // collinear
+        expect(outPx.x * inPx.x + outPx.y * inPx.y).toBeLessThan(0); // anti-parallel
+        expect(Math.hypot(inPx.x, inPx.y)).toBeCloseTo(inLen0, 6); // in's OWN length preserved
+        // guard: a no-op reconcile (return the tan unchanged) leaves in={-3,0} → not collinear with
+        // out={0,2} (cross = (-30)(−40) − 0 ≠ 0) → red.
+    });
+
+    test("Mirror re-collinearizes AND equalizes both sides to the survivor's length", () => {
+        const tan = { mode: TangentMode.Free, in: { ds: -1, dg: 0 }, out: { ds: 0, dg: 2 } };
+        const outLen = Math.hypot(0 * Pxm, 2 * Pyg); // 40 px (the survivor)
+        const t = retargetMode(tan, TangentMode.Mirror, Pxm, Pyg);
+        if (!t.in || !t.out) throw new Error("both sides must survive");
+        const outPx = { x: t.out.ds * Pxm, y: -t.out.dg * Pyg };
+        const inPx = { x: t.in.ds * Pxm, y: -t.in.dg * Pyg };
+        expect(outPx.x * inPx.y - outPx.y * inPx.x).toBeCloseTo(0, 6); // collinear
+        expect(Math.hypot(inPx.x, inPx.y)).toBeCloseTo(outLen, 6); // in grew to the survivor's length
+        expect(Math.hypot(outPx.x, outPx.y)).toBeCloseTo(outLen, 6);
+    });
+
+    test("a single-sided tangent just relabels the mode (nothing to align to)", () => {
+        const tan = { mode: TangentMode.Free, out: { ds: 4, dg: 1 } };
+        expect(retargetMode(tan, TangentMode.Aligned, Pxm, Pyg)).toEqual({
+            mode: TangentMode.Aligned,
+            out: { ds: 4, dg: 1 },
+        });
     });
 });
 

@@ -333,10 +333,13 @@ export function snapAxis(
  *  so g(s) stays a function; an absent neighbour clamps that reach to 0); (2) per-side
  *  materialization — only the dragged `side` becomes explicit, the un-edited side left exactly as
  *  `existing` had it, so customizing one segment never spuriously customizes the neighbour (the
- *  segment-scoped Custom model); (3) Aligned coupling — when the mode is Aligned and BOTH sides are
- *  now present, the un-dragged side is held collinear with the dragged one in CHART PIXELS (screen px
- *  because the chart's s and g axes have different scales), keeping its own length (Blender aligned
- *  handles). `pxPerM` is the s-axis scale (px per metre), `pyPerG` the force-axis scale (px per g). */
+ *  segment-scoped Custom model); (3) mode coupling — when BOTH sides are now present, an Aligned
+ *  keyframe holds the un-dragged side collinear with the dragged one in CHART PIXELS (screen px
+ *  because the chart's s and g axes have different scales), keeping its own length; a Mirror keyframe
+ *  additionally matches the dragged side's length (Blender aligned/mirrored handles). a `Free`
+ *  keyframe never couples, and a materialization that would customize the absent neighbour is not one
+ *  the coupling reaches (it fires only when both sides are already explicit). `pxPerM` is the s-axis
+ *  scale (px per metre), `pyPerG` the force-axis scale (px per g). */
 export function composeTangent(
     side: "in" | "out",
     ds: number,
@@ -355,14 +358,18 @@ export function composeTangent(
     let out: Offset | undefined = existing?.out;
     if (side === "out") out = { ds, dg };
     else inn = { ds, dg };
-    if (mode === TangentMode.Aligned && inn && out) {
+    if ((mode === TangentMode.Aligned || mode === TangentMode.Mirror) && inn && out) {
         const drag = side === "out" ? out : inn;
         const px = drag.ds * pxPerM;
         const py = -drag.dg * pyPerG;
         const len = Math.hypot(px, py);
         if (len > 1e-6) {
             const other = side === "out" ? inn : out;
-            const olen = Math.hypot(other.ds * pxPerM, other.dg * pyPerG);
+            // Aligned keeps the coupled side's own length; Mirror equalizes it to the dragged side's.
+            const olen =
+                mode === TangentMode.Mirror
+                    ? len
+                    : Math.hypot(other.ds * pxPerM, other.dg * pyPerG);
             const nx = (-px / len) * olen;
             const ny = (-py / len) * olen;
             const noff: Offset = { ds: nx / pxPerM, dg: -ny / pyPerG };
@@ -370,6 +377,45 @@ export function composeTangent(
             else out = noff;
         }
     }
+    return { mode, in: inn, out };
+}
+
+/** re-collinearize a force keyframe's two explicit handle offsets onto one line through the
+ *  keyframe, in CHART PIXELS (the space `composeTangent`'s coupling maintains, so the reconciled
+ *  pair and the next drag agree — no jump) — what switching the Tangents ▸ mode does (the geo
+ *  `alignTangent`/`mirrorTangent` analogue for the anisotropic force chart). `Aligned` keeps each
+ *  side's own pixel length; `Mirror` equalizes both to the survivor's; `Free` just relabels. the
+ *  survivor direction is the OUT (departure) handle when it has pixel length, else IN. a single-sided
+ *  or fully-degenerate tangent relabels the mode without moving a handle. */
+export function retargetMode(
+    tan: ForceTangent,
+    mode: TangentMode,
+    pxPerM: number,
+    pyPerG: number,
+): ForceTangent {
+    if (mode === TangentMode.Free || !tan.in || !tan.out) return { ...tan, mode };
+    const inPx = { x: tan.in.ds * pxPerM, y: -tan.in.dg * pyPerG };
+    const outPx = { x: tan.out.ds * pxPerM, y: -tan.out.dg * pyPerG };
+    const outLen = Math.hypot(outPx.x, outPx.y);
+    const inLen = Math.hypot(inPx.x, inPx.y);
+    // the forward (departure) direction: the OUT handle when it has length, else IN back-projected.
+    let fx: number;
+    let fy: number;
+    if (outLen > 1e-6) {
+        fx = outPx.x / outLen;
+        fy = outPx.y / outLen;
+    } else if (inLen > 1e-6) {
+        fx = -inPx.x / inLen;
+        fy = -inPx.y / inLen;
+    } else {
+        return { ...tan, mode }; // no direction to align to
+    }
+    const survivorLen = outLen > 1e-6 ? outLen : inLen;
+    const outLenNew = mode === TangentMode.Mirror ? survivorLen : outLen;
+    const inLenNew = mode === TangentMode.Mirror ? survivorLen : inLen;
+    // out reaches forward, in reaches backward (anti-parallel through the keyframe).
+    const out: Offset = { ds: (fx * outLenNew) / pxPerM, dg: (fy * outLenNew) / -pyPerG };
+    const inn: Offset = { ds: (-fx * inLenNew) / pxPerM, dg: (-fy * inLenNew) / -pyPerG };
     return { mode, in: inn, out };
 }
 

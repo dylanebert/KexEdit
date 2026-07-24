@@ -33,6 +33,7 @@ import {
     materializeCustom,
     redo,
     setForceEase,
+    setForceTangentMode,
     undo,
 } from "./history";
 import {
@@ -64,7 +65,8 @@ import {
     zoomAt,
 } from "./timeline";
 import { latchAngle } from "./controls";
-import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls } from "./profile";
+import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls, segmentSeed } from "./profile";
+import { TangentMode } from "./spline";
 import {
     bakeOut,
     forceEase,
@@ -729,15 +731,18 @@ const selHandle = $derived.by((): { pt: ForcePt; side: "in" | "out"; ds: number;
     if (!hnd) return null;
     return { pt: eh.pt, side, ds: hnd.ds, dg: hnd.dg, x: hnd.x, y: hnd.y };
 });
-// the derived flat tangent offsets (dg = 0): the OUT handle reaches forward by this
-// keyframe's own easing influence over the following span; the IN handle backward by the
-// PREVIOUS keyframe's influence over the preceding span (easing governs the following
-// segment, so a side's flat length comes from the tag that owns its segment).
+// the derived ghost tangent offsets shown for an un-customized handle side — the SAME shape a
+// Custom-materialize would seed (`segmentSeed`), so grabbing a ghost never jumps. a preset-eased
+// segment's ghost is the flat tangent (dg = 0) at the tag's influence; a **Linear** segment's
+// ghost is chord-aligned at influence 1/3 (its flat tangent is zero-length — a dot on the diamond —
+// so it draws along the chord instead, grabbable). the OUT handle reaches forward over the
+// FOLLOWING segment (governed by this keyframe's ease); the IN handle backward over the PRECEDING
+// segment (governed by the previous keyframe's ease).
 function derivedOut(pt: ForcePt, next: ForcePt): Offset {
-    return autoTangent(forceEase(ecs, pt.id), next.s - pt.s, "out");
+    return segmentSeed(toProfilePoint(pt), toProfilePoint(next), "out");
 }
 function derivedIn(pt: ForcePt, prev: ForcePt): Offset {
-    return autoTangent(forceEase(ecs, prev.id), pt.s - prev.s, "in");
+    return segmentSeed(toProfilePoint(prev), toProfilePoint(pt), "in");
 }
 
 let dragTan: { id: number; side: "in" | "out" } | null = $state(null);
@@ -951,6 +956,20 @@ const fmenuCustom = $derived.by((): boolean => {
     const next = idx < pts.length - 1 ? pts[idx + 1] : null;
     return next !== null && forceTangent(ecs, next.id)?.in !== undefined;
 });
+// whether the target keyframe holds explicit handles (any presence bit set) — a derived-only
+// keyframe has no tangent mode to edit, so it shows no Tangents ▸ submenu.
+const fmenuHasHandles = $derived.by((): boolean => {
+    void tick;
+    const m = editor.forceMenu;
+    return m !== null && forceTangent(ecs, m.id) !== undefined;
+});
+// the target keyframe's tangent mode — a stored tangent's own mode (Aligned when derived, though
+// the submenu that reads this only shows when a tangent is stored).
+const fmenuMode = $derived.by((): TangentMode => {
+    void tick;
+    const m = editor.forceMenu;
+    return (m !== null && forceTangent(ecs, m.id)?.mode) || TangentMode.Aligned;
+});
 // whether the target keyframe is the last in its section — it governs no following
 // segment, so its menu carries no Easing ▸ entry (nothing to ease). its in-handle is still
 // reachable by double-clicking it (the preceding segment addresses the keyframe before it).
@@ -974,17 +993,17 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     const m = editor.forceMenu;
     if (m === null) return [];
     const id = m.id;
-    const del: MenuItem = { label: "Delete", shortcut: "Del", danger: true, action: () => deleteForce(history, ecs, id) };
-    if (fmenuTerminal) return [del];
-    const easeRow = (label: string, e: Easing): MenuItem => ({
-        label,
-        glyph: presetGlyph(e),
-        checked: !fmenuCustom && fmenuEase === e,
-        action: () => setForceEase(history, ecs, id, e),
-    });
-    return [
-        del,
-        {
+    const items: MenuItem[] = [
+        { label: "Delete", shortcut: "Del", danger: true, action: () => deleteForce(history, ecs, id) },
+    ];
+    if (!fmenuTerminal) {
+        const easeRow = (label: string, e: Easing): MenuItem => ({
+            label,
+            glyph: presetGlyph(e),
+            checked: !fmenuCustom && fmenuEase === e,
+            action: () => setForceEase(history, ecs, id, e),
+        });
+        items.push({
             label: "Easing",
             children: [
                 easeRow("Linear", Easing.Linear),
@@ -993,9 +1012,34 @@ const fmenuItems = $derived.by((): MenuItem[] => {
                 { separator: true },
                 { label: "Custom", glyph: customGlyph(id), checked: fmenuCustom, action: () => chooseCustom(id) },
             ],
-        },
-    ];
+        });
+    }
+    // a keyframe with explicit handles (either side) carries a Tangents ▸ mode submenu (Mirror |
+    // Aligned | Free, checked by the stored mode) — the geo node menu's convention. shown even at a
+    // terminal keyframe (whose only handle is the incoming in-side). no Reset row: the way back to
+    // derived is picking a preset in Easing ▸ (which clears the segment's handles).
+    if (fmenuHasHandles) {
+        const modeRow = (label: string, mode: TangentMode): MenuItem => ({
+            label,
+            checked: fmenuMode === mode,
+            action: () => pickForceMode(id, mode),
+        });
+        items.push({
+            label: "Tangents",
+            children: [
+                modeRow("Mirror", TangentMode.Mirror),
+                modeRow("Aligned", TangentMode.Aligned),
+                modeRow("Free", TangentMode.Free),
+            ],
+        });
+    }
+    return items;
 });
+// set the addressed keyframe's tangent mode as one undo entry (the geo `pickMode` analogue),
+// reconciling the handle pair in chart pixels so it stays jump-consistent with the drag coupling.
+function pickForceMode(id: number, mode: TangentMode): void {
+    setForceTangentMode(history, ecs, id, mode, clamped.pxPerM, pyPerG);
+}
 // choose Custom on the addressed segment (this keyframe → the next): step into handle edit on
 // this keyframe and materialize the segment's two bounding sides — this keyframe's out and the
 // next keyframe's in — from their current derived shape (no curve jump; a Linear segment seeds

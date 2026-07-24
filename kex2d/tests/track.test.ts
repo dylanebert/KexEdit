@@ -53,6 +53,7 @@ import {
     materializeCustom,
     redo,
     setForceEase as setForceEaseCmd,
+    setForceTangentMode as setForceTangentModeCmd,
     undo,
 } from "../src/history";
 import { DEFAULT_G, Easing } from "../src/profile";
@@ -1069,6 +1070,41 @@ describe("force easing + seeding (stage B)", () => {
 
         // a no-op set (same tag) records nothing.
         setForceEaseCmd(h, state, id, Easing.Quintic);
+        expect(h.undo.length).toBe(1);
+    });
+
+    test("history: setForceTangentMode reconciles the pair, collapses to one entry, undoes byte-identical", () => {
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force
+        const id = createForcePoint(state, sec, 10, 1);
+        // a corner (Free): in flat along −s, out straight up — NOT collinear, so an Aligned switch
+        // must actually reshape the pair (the reconcile is observable).
+        const corner: ForceTangent = {
+            mode: TangentMode.Free,
+            in: { ds: -2, dg: 0 },
+            out: { ds: 0, dg: 1 },
+        };
+        setForceTangent(state, id, corner);
+        const h = createHistory();
+
+        // isotropic scales (1 px/m, 1 px/g) keep the reconcile math in offset space for the assert.
+        setForceTangentModeCmd(h, state, id, TangentMode.Aligned, 1, 1);
+        expect(h.undo.length).toBe(1);
+        const after = forceTangent(state, id);
+        expect(after?.mode).toBe(TangentMode.Aligned);
+        if (!after?.in || !after?.out) throw new Error("both sides must survive the reconcile");
+        // Aligned ⟹ collinear: the in/out offsets now lie on one line through the keyframe.
+        const cross = after.in.ds * after.out.dg - after.in.dg * after.out.ds;
+        expect(cross).toBeCloseTo(0, 6);
+
+        undo(h, state);
+        expect(forceTangent(state, id)).toEqual(corner); // Free + the corner offsets restored exactly
+        redo(h, state);
+        expect(forceTangent(state, id)?.mode).toBe(TangentMode.Aligned);
+
+        // re-picking the current mode is a no-op (the reconcile is idempotent) — records nothing.
+        setForceTangentModeCmd(h, state, id, TangentMode.Aligned, 1, 1);
         expect(h.undo.length).toBe(1);
     });
 
