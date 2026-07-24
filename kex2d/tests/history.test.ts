@@ -501,6 +501,64 @@ test("a command executed with nothing selected round-trips selection cleanly (st
     expect(editor.selection).toBeNull(); // post (also null) restored
 });
 
+// the substrate is a per-kind SET (single-select the size-1 case), so the hook snapshots the whole
+// set by stable form and re-resolves each member across the eid recycle — the same recycle-safety
+// law the scalar snapshot followed, now over a set. active rides along by its own stable form.
+test("a multi-node selection set restores by (section, order) across an eid recycle, active preserved", () => {
+    clearSelection();
+    const { state, sec } = nodes(); // orders 0, 1
+    addNode(state, sec, 40, 0); // order 2
+    addNode(state, sec, 60, 0); // order 3
+    const h = createHistory();
+
+    // a shift-click set of three nodes, the last toggled-in active.
+    select(handleAt(state, sec, 1) as number);
+    select(handleAt(state, sec, 2) as number, "toggle");
+    select(handleAt(state, sec, 3) as number, "toggle");
+    expect(editor.nodes.ids.size).toBe(3);
+    expect(Handle.order.get(editor.nodes.active as number)).toBe(3);
+
+    // a whole-track structural op — restoreAll on undo respawns every node, so eids recycle LIFO.
+    appendSection(h, state, SectionKind.Geo);
+    undo(h, state);
+
+    // the SET restored, each member re-resolved to its new eid by stable (section, order).
+    const restored = [...editor.nodes.ids]
+        .map((e) => Handle.order.get(e as number))
+        .sort((a, b) => a - b);
+    expect(restored).toEqual([1, 2, 3]);
+    expect(editor.nodes.active).not.toBeNull();
+    expect(Handle.order.get(editor.nodes.active as number)).toBe(3); // active preserved by stable form
+});
+
+// when the snapshotted active can't be re-resolved on restore (its node was deleted), rebuild
+// (editor.ts) promotes the LAST-inserted survivor, not the oldest. driven straight through the hook's
+// snapshot → delete-the-active → restore: a genuine undo/redo always restores a track consistent with
+// its own snapshot, so the active-drop branch is reached by removing the active between capture and
+// restore. ≥2 survivors, so a regression to first-survivor is caught (order 1 vs the promoted 2).
+test("restore promotes the last-inserted survivor when the snapshotted active didn't survive", () => {
+    clearSelection();
+    const { state, sec } = nodes(); // orders 0, 1
+    addNode(state, sec, 40, 0); // order 2
+    addNode(state, sec, 60, 0); // order 3 (the active tip)
+    const h = createHistory();
+
+    // a three-node set, the tip active, insertion order [1, 2, 3].
+    select(handleAt(state, sec, 1) as number);
+    select(handleAt(state, sec, 2) as number, "toggle");
+    select(handleAt(state, sec, 3) as number, "toggle");
+    const snap = selectionHook.snapshot(state);
+
+    trimTrack(h, state, sec); // delete the active (order 3) — it can no longer be re-resolved
+    expect(handleAt(state, sec, 3)).toBeNull();
+
+    selectionHook.restore(state, snap);
+    const restored = [...editor.nodes.ids].map((e) => Handle.order.get(e)).sort((a, b) => a - b);
+    expect(restored).toEqual([1, 2]); // the dead active dropped, the two survivors kept
+    expect(editor.nodes.active).not.toBeNull();
+    expect(Handle.order.get(editor.nodes.active as number)).toBe(2); // last-inserted survivor, not order 1
+});
+
 // the boundary Reset (kex2d-geo-ux stage 1): a geo→geo boundary is one node at the UI — the
 // upstream tip + the coincident downstream section's node 0. Reset on the tip's node menu clears
 // BOTH halves back to Auto in ONE undoable entry (each through its own section's reset path), so a

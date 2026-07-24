@@ -8,28 +8,88 @@
  *  over its target. */
 
 import type { State } from "@dylanebert/shallot";
-import { Handle, handleAt } from "./track";
+import { forceAt, Handle, handleAt, sectionAt } from "./track";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
  *  (the Blender/Unity hovered-surface model). */
 export type Surface = "viewport" | "timeline";
 
+/** a per-kind selection: a set of members with the last-selected one active. single-select is the
+ *  size-1 case (the substrate, not a parallel path). the node kind holds live eids (resolved fresh
+ *  each pick); the force and section kinds hold stable ids (`Force.id` / `Section.id`), per the
+ *  stable-form recycle-safety law. members are insertion-ordered (JS Set), so toggling out the active
+ *  member promotes the most-recently-added survivor deterministically. */
+export interface Selection {
+    /** the selected members — eids (node kind) or stable ids (force/section kind). */
+    ids: Set<number>;
+    /** the active (last-selected) member: the single subject the readout, popover, manipulator ring,
+     *  and snap resolution anchor to. null iff `ids` is empty; otherwise always a member of `ids`. */
+    active: number | null;
+}
+
+function emptySel(): Selection {
+    return { ids: new Set(), active: null };
+}
+
+/** the last member in insertion order, or null — the active-promotion pick when the active is
+ *  toggled out (the most-recently-added survivor). */
+export function lastMember(ids: Set<number>): number | null {
+    let last: number | null = null;
+    for (const id of ids) last = id;
+    return last;
+}
+
+/** replace a selection with a single member, or clear it (null) — the size-1 (or size-0) case that
+ *  makes single-select the default form. */
+export function setMember(sel: Selection, id: number | null): void {
+    sel.ids.clear();
+    if (id !== null) sel.ids.add(id);
+    sel.active = id;
+}
+
+/** toggle `id` in a selection (shift-click semantics): add it and make it active, or remove it —
+ *  promoting the most-recently-added survivor active when the removed member was the active one. */
+export function toggleMember(sel: Selection, id: number): void {
+    if (sel.ids.delete(id)) {
+        if (sel.active === id) sel.active = lastMember(sel.ids);
+    } else {
+        sel.ids.add(id);
+        sel.active = id;
+    }
+}
+
+function clearSel(sel: Selection): void {
+    sel.ids.clear();
+    sel.active = null;
+}
+
 interface EditorState {
-    /** eid of the currently selected node (geo section), or null. */
+    /** the selected geo nodes (a set + active member). ids are live eids, resolved fresh each pick
+     *  and re-resolved by stable (section, order) across an undo (the eid recycles). */
+    nodes: Selection;
+    /** the selected force keyframes (set + active), addressed by stable `Force.id`. */
+    forces: Selection;
+    /** the selected sections (set + active), addressed by stable `Section.id`. */
+    sections: Selection;
+    /** the active geo node eid, or null — the single-subject accessor over `nodes` (its active
+     *  member). reading it is "the one subject" (readout, ring, manipulator, snap); assigning it is
+     *  a replace-select (`select`). readers wanting the whole set read `nodes` directly. */
     selection: number | null;
-    /** eid of the node in tangent-edit mode (its handles are summoned), or null — a
-     *  sub-mode layered on node selection: `tangentEdit !== null` implies
-     *  `selection === tangentEdit`. entered by double-clicking a node (Figma vector edit);
-     *  any selection change to a different subject, Esc, or click-away exits it. NOT a fifth
-     *  mutually-exclusive selection — a refinement of the node-selection state. */
-    tangentEdit: number | null;
-    /** stable id of the currently selected force point (force section), or null. */
+    /** the active force keyframe id, or null — the single-subject accessor over `forces`. */
     force: number | null;
+    /** the active section id, or null — the single-subject accessor over `sections`. */
+    section: number | null;
+    /** eid of the node in tangent-edit mode (its handles are summoned), or null — a
+     *  sub-mode layered on node selection: `tangentEdit !== null` implies the node set is exactly
+     *  `{tangentEdit}` with it active. entered by double-clicking a node (Figma vector edit);
+     *  any selection change to a different subject (or the set growing past it), Esc, or click-away
+     *  exits it. NOT a fifth mutually-exclusive selection — a refinement of the node-selection state. */
+    tangentEdit: number | null;
     /** stable id of the force keyframe in handle-edit sub-mode (its in/out handles are
      *  summoned), or null — the force analogue of `tangentEdit`, layered on force selection:
-     *  `forceEdit !== null` implies `force === forceEdit`. entered by double-clicking a
-     *  keyframe (the diamond hit beats insertion); a different selection, Esc, or click-away
-     *  exits it. NOT a fifth mutually-exclusive selection. */
+     *  `forceEdit !== null` implies the force set is exactly `{forceEdit}` with it active. entered by
+     *  double-clicking a keyframe (the diamond hit beats insertion); a different selection, Esc, or
+     *  click-away exits it. NOT a fifth mutually-exclusive selection. */
     forceEdit: number | null;
     /** which handle of the keyframe in handle-edit sub-mode is selected — `"in"`, `"out"`, or
      *  null when the keyframe itself holds the readout. a refinement layered on `forceEdit`
@@ -37,10 +97,6 @@ interface EditorState {
      *  it, swapping the contextual readout from the keyframe to the handle's (Δs, Δg) offset;
      *  re-selecting the keyframe (or Esc) clears it back. NOT a mutually-exclusive selection. */
     forceHandle: "in" | "out" | null;
-    /** stable id of the currently selected section, or null. section selection is a
-     *  highlight + the context-menu target; it does NOT gate authoring (force points
-     *  are added by cursor position, nodes are dragged in the viewport). */
-    section: number | null;
     /** whether the track START anchor is selected. there's one START per track, so a
      *  boolean; selecting it summons the initial-speed (v0) field popover. */
     start: boolean;
@@ -72,12 +128,30 @@ interface EditorState {
 }
 
 export const editor: EditorState = {
-    selection: null,
+    nodes: emptySel(),
+    forces: emptySel(),
+    sections: emptySel(),
+    get selection(): number | null {
+        return this.nodes.active;
+    },
+    set selection(v: number | null) {
+        select(v);
+    },
+    get force(): number | null {
+        return this.forces.active;
+    },
+    set force(v: number | null) {
+        selectForce(v);
+    },
+    get section(): number | null {
+        return this.sections.active;
+    },
+    set section(v: number | null) {
+        selectSection(v);
+    },
     tangentEdit: null,
-    force: null,
     forceEdit: null,
     forceHandle: null,
-    section: null,
     start: false,
     context: null,
     nodeMenu: null,
@@ -159,36 +233,84 @@ export function toggleSnap(): void {
  *  invert, so a bypass turns it off while on and summons it while off). */
 export const snapActive = (mod: boolean): boolean => editor.snap !== mod;
 
-// the four selections are mutually exclusive — selecting one clears the others, so
-// the contextual actions (node extend/trim, force field popover, section ops, v0
-// popover) never fight over which target a key press means.
+// the four selection kinds are mutually exclusive — selecting into one clears the others, so the
+// contextual actions (node extend/trim, force field popover, section ops, v0 popover) never fight
+// over which target a key press means. each `select*` grows a `mode`: "replace" (the default, and
+// today's single-select behavior — collapse the kind to one member) and "toggle" (shift-click
+// membership: add-and-activate, or remove-and-promote). the edit sub-modes stay single-subject —
+// entering one collapses its kind to that one member (`enter*Edit` route through the replace form).
 
-/** select a node (null to clear). selecting a *different* subject (another node, null,
- *  empty space) exits tangent edit; re-selecting the edited node keeps it (so grabbing its
- *  own handle or nudging it doesn't drop the mode). */
-export function select(eid: number | null): void {
-    if (eid !== editor.tangentEdit) editor.tangentEdit = null;
-    editor.selection = eid;
-    if (eid !== null) {
-        editor.force = null;
-        editor.forceEdit = null;
-        editor.forceHandle = null;
-        editor.section = null;
-        editor.start = false;
-    }
+/** the two selection forms: "replace" (collapse the kind to one member — today's behavior) and
+ *  "toggle" (shift-click add/remove membership). */
+export type SelectMode = "replace" | "toggle";
+
+/** clear the non-node kinds — the mutual-exclusion sweep a node select runs (switching to / staying
+ *  in the node kind). leaves `nodes` and `tangentEdit` for the caller. */
+function exclusiveNode(): void {
+    clearSel(editor.forces);
+    clearSel(editor.sections);
+    editor.forceEdit = null;
+    editor.forceHandle = null;
+    editor.start = false;
 }
 
-/** enter tangent-edit mode on a node — the summon (double-click). selects the node (clearing
- *  the other selections) and layers the edit sub-mode on it, so its handles render and grab.
- *  node 0 (the entry anchor) is editable too — it exposes its single out-handle (the entry
- *  handle), reached at the START diamond or, at a geo→geo boundary, stitched onto its coincident
- *  upstream tip. */
-export function enterTangentEdit(eid: number): void {
-    editor.selection = eid;
-    editor.force = null;
-    editor.forceEdit = null;
-    editor.section = null;
+function exclusiveForce(): void {
+    clearSel(editor.nodes);
+    clearSel(editor.sections);
+    editor.tangentEdit = null;
     editor.start = false;
+}
+
+function exclusiveSection(): void {
+    clearSel(editor.nodes);
+    clearSel(editor.forces);
+    editor.tangentEdit = null;
+    editor.forceEdit = null;
+    editor.forceHandle = null;
+    editor.start = false;
+}
+
+/** drop tangent edit unless the node selection is exactly its subject (a set that grew past one, or
+ *  whose active moved off it, leaves the single-subject sub-mode). */
+function reconcileTangent(): void {
+    if (
+        editor.tangentEdit !== null &&
+        (editor.nodes.ids.size !== 1 || editor.nodes.active !== editor.tangentEdit)
+    )
+        editor.tangentEdit = null;
+}
+
+/** drop force handle-edit unless the force selection is exactly its subject. */
+function reconcileForceEdit(): void {
+    if (
+        editor.forceEdit !== null &&
+        (editor.forces.ids.size !== 1 || editor.forces.active !== editor.forceEdit)
+    )
+        editor.forceEdit = null;
+}
+
+/** select a geo node. "replace" (default) collapses the node set to `eid` (or clears it when null) —
+ *  today's behavior; "toggle" adds/removes `eid` (shift-click). either non-clearing form sweeps the
+ *  other kinds. a select to a different subject exits tangent edit; re-selecting the edited node (as
+ *  the sole member) keeps it, so grabbing its own handle or nudging it doesn't drop the mode. */
+export function select(eid: number | null, mode: SelectMode = "replace"): void {
+    if (eid === null || mode === "replace") {
+        setMember(editor.nodes, eid);
+        if (eid !== null) exclusiveNode();
+    } else {
+        exclusiveNode();
+        toggleMember(editor.nodes, eid);
+    }
+    reconcileTangent();
+}
+
+/** enter tangent-edit mode on a node — the summon (double-click). collapses the node selection to
+ *  this one subject (clearing the other kinds) and layers the edit sub-mode on it, so its handles
+ *  render and grab. node 0 (the entry anchor) is editable too — it exposes its single out-handle
+ *  (the entry handle), reached at the START diamond or, at a geo→geo boundary, stitched onto its
+ *  coincident upstream tip. */
+export function enterTangentEdit(eid: number): void {
+    select(eid);
     editor.tangentEdit = eid;
 }
 
@@ -197,32 +319,28 @@ export function exitTangentEdit(): void {
     editor.tangentEdit = null;
 }
 
-/** select a force point by its stable id (null to clear). selecting a *different* subject
- *  (another point, null) exits handle edit; re-selecting the edited point keeps it (so
- *  grabbing its own diamond or nudging it doesn't drop the mode — mirrors `select`). */
-export function selectForce(id: number | null): void {
-    if (id !== editor.forceEdit) editor.forceEdit = null;
-    editor.forceHandle = null; // selecting the point itself shows the keyframe readout
-    editor.force = id;
-    if (id !== null) {
-        editor.selection = null;
-        editor.tangentEdit = null;
-        editor.section = null;
-        editor.start = false;
+/** select a force keyframe by stable id. "replace" (default) collapses the force set to `id` (or
+ *  clears it when null); "toggle" adds/removes it (shift-click). either non-clearing form sweeps the
+ *  other kinds and resets the handle sub-selection (the keyframe itself holds the readout). a select
+ *  to a different subject exits handle edit; re-selecting the edited point (sole member) keeps it. */
+export function selectForce(id: number | null, mode: SelectMode = "replace"): void {
+    if (id === null || mode === "replace") {
+        setMember(editor.forces, id);
+        if (id !== null) exclusiveForce();
+    } else {
+        exclusiveForce();
+        toggleMember(editor.forces, id);
     }
+    editor.forceHandle = null; // selecting the point itself shows the keyframe readout
+    reconcileForceEdit();
 }
 
-/** enter handle-edit mode on a force keyframe — the summon (double-click). selects the point
- *  (clearing the other selections) and layers the edit sub-mode on it, so its in/out handles
- *  render and grab. mirrors geo's `enterTangentEdit`. */
+/** enter handle-edit mode on a force keyframe — the summon (double-click). collapses the force
+ *  selection to this one subject (clearing the other kinds) and layers the edit sub-mode on it, so
+ *  its in/out handles render and grab. mirrors geo's `enterTangentEdit`. */
 export function enterForceEdit(id: number): void {
-    editor.force = id;
-    editor.selection = null;
-    editor.tangentEdit = null;
-    editor.section = null;
-    editor.start = false;
+    selectForce(id);
     editor.forceEdit = id;
-    editor.forceHandle = null; // no handle selected on entry — the keyframe holds the readout
 }
 
 /** select a summoned handle of the edited keyframe (`"in"`/`"out"`, or null to clear back to
@@ -238,16 +356,16 @@ export function exitForceEdit(): void {
     editor.forceHandle = null;
 }
 
-/** select a section by its stable id (null to clear). */
-export function selectSection(id: number | null): void {
-    editor.section = id;
-    if (id !== null) {
-        editor.selection = null;
-        editor.tangentEdit = null;
-        editor.force = null;
-        editor.forceEdit = null;
-        editor.forceHandle = null;
-        editor.start = false;
+/** select a section by stable id. "replace" (default) collapses the section set to `id` (or clears
+ *  it when null); "toggle" adds/removes it (shift-click). either non-clearing form sweeps the
+ *  other kinds. */
+export function selectSection(id: number | null, mode: SelectMode = "replace"): void {
+    if (id === null || mode === "replace") {
+        setMember(editor.sections, id);
+        if (id !== null) exclusiveSection();
+    } else {
+        exclusiveSection();
+        toggleMember(editor.sections, id);
     }
 }
 
@@ -255,12 +373,12 @@ export function selectSection(id: number | null): void {
 export function selectStart(on: boolean): void {
     editor.start = on;
     if (on) {
-        editor.selection = null;
+        clearSel(editor.nodes);
+        clearSel(editor.forces);
+        clearSel(editor.sections);
         editor.tangentEdit = null;
-        editor.force = null;
         editor.forceEdit = null;
         editor.forceHandle = null;
-        editor.section = null;
     }
 }
 
@@ -300,35 +418,63 @@ export function closeForceMenu(): void {
 
 // ── history selection hook ────────────────────────────────────────────────────────
 // the editor's snapshot/restore for undo/redo, injected into `history` at boot (`setSelectionHook`)
-// so the coupling points inward — history calls this, never imports editor. a NODE is snapshotted by
-// its stable (section, order), not its eid: `restoreSection`/`restoreAll` recycle the allocator LIFO,
-// so a raw eid would remap to a DIFFERENT node after an undo. force/section address by stable id, the
-// START by a flag. undo restores each command's pre-selection, redo its post; a selection change
-// alone is never a command.
+// so the coupling points inward — history calls this, never imports editor. the whole selection SET
+// is snapshotted: a NODE by its stable (section, order), not its eid (`restoreSection`/`restoreAll`
+// recycle the allocator LIFO, so a raw eid would remap to a DIFFERENT node after an undo), force and
+// section by stable id, the START by a flag; the active member rides along in the same form. undo
+// restores each command's pre-selection, redo its post; a selection change alone is never a command.
 
+interface NodeRef {
+    section: number;
+    order: number;
+}
 type SelSnapshot =
-    | { kind: "node"; section: number; order: number; editing: boolean }
-    | { kind: "force"; id: number; editing: boolean }
-    | { kind: "section"; id: number }
+    | { kind: "node"; members: NodeRef[]; active: NodeRef; editing: boolean }
+    | { kind: "force"; ids: number[]; active: number; editing: boolean }
+    | { kind: "section"; ids: number[]; active: number }
     | { kind: "start" }
     | null;
 
-/** the `SelectionHook` (`history.ts`) the app injects at boot: capture the current selection in a
+/** rebuild a selection set from restored members, re-anchoring the active (or promoting the
+ *  most-recently-added survivor when the snapshotted active didn't survive the restore). */
+function rebuild(sel: Selection, ids: number[], active: number | null): void {
+    sel.ids.clear(); // mutate in place (like setMember/toggleMember) so no held reference goes stale
+    for (const id of ids) sel.ids.add(id);
+    sel.active = active !== null && sel.ids.has(active) ? active : lastMember(sel.ids);
+}
+
+/** the `SelectionHook` (`history.ts`) the app injects at boot: capture the current selection set in a
  *  restorable form + restore it. history holds the snapshot opaquely. */
 export const selectionHook = {
     snapshot(ecs: State): SelSnapshot {
-        const sel = editor.selection;
-        if (sel !== null && ecs.has(sel, Handle)) {
-            return {
-                kind: "node",
-                section: Handle.section.get(sel),
-                order: Handle.order.get(sel),
-                editing: editor.tangentEdit === sel,
+        const n = editor.nodes;
+        if (n.active !== null && ecs.has(n.active, Handle)) {
+            const members: NodeRef[] = [];
+            for (const eid of n.ids)
+                if (ecs.has(eid, Handle))
+                    members.push({
+                        section: Handle.section.get(eid),
+                        order: Handle.order.get(eid),
+                    });
+            const active = {
+                section: Handle.section.get(n.active),
+                order: Handle.order.get(n.active),
             };
+            return { kind: "node", members, active, editing: editor.tangentEdit === n.active };
         }
-        if (editor.force !== null)
-            return { kind: "force", id: editor.force, editing: editor.forceEdit === editor.force };
-        if (editor.section !== null) return { kind: "section", id: editor.section };
+        if (editor.forces.active !== null)
+            return {
+                kind: "force",
+                ids: [...editor.forces.ids],
+                active: editor.forces.active,
+                editing: editor.forceEdit === editor.forces.active,
+            };
+        if (editor.sections.active !== null)
+            return {
+                kind: "section",
+                ids: [...editor.sections.ids],
+                active: editor.sections.active,
+            };
         if (editor.start) return { kind: "start" };
         return null;
     },
@@ -337,27 +483,49 @@ export const selectionHook = {
         editor.forceMenu = null; // same — the force keyframe menu's rows go stale on any restore
         const s = snap as SelSnapshot;
         if (s === null) {
-            select(null); // clears the selection + the tangent-edit sub-mode
-            editor.force = null;
+            clearSel(editor.nodes); // clears the selection + (below) the tangent-edit sub-mode
+            clearSel(editor.forces);
+            clearSel(editor.sections);
+            editor.tangentEdit = null;
             editor.forceEdit = null;
             editor.forceHandle = null;
-            editor.section = null;
             editor.start = false;
             return;
         }
         switch (s.kind) {
             case "node": {
-                const eid = handleAt(ecs, s.section, s.order); // re-resolve across the eid recycle
-                select(eid); // null when the node didn't survive — clears cleanly
-                editor.tangentEdit = eid !== null && s.editing ? eid : null;
+                const ids: number[] = [];
+                for (const m of s.members) {
+                    const eid = handleAt(ecs, m.section, m.order); // re-resolve across the eid recycle
+                    if (eid !== null) ids.push(eid); // drop a member that didn't survive
+                }
+                const active = handleAt(ecs, s.active.section, s.active.order);
+                rebuild(editor.nodes, ids, active);
+                exclusiveNode();
+                editor.tangentEdit =
+                    s.editing && editor.nodes.ids.size === 1 ? editor.nodes.active : null;
                 break;
             }
             case "force":
-                selectForce(s.id);
-                editor.forceEdit = s.editing ? s.id : null; // re-summon the handles if they were open
+                // prune ids whose point didn't survive the restore, matching the node path — a
+                // dropped active then promotes the last survivor via rebuild's has-check
+                rebuild(
+                    editor.forces,
+                    s.ids.filter((id) => forceAt(ecs, id) !== null),
+                    s.active,
+                );
+                exclusiveForce();
+                editor.forceHandle = null;
+                editor.forceEdit =
+                    s.editing && editor.forces.ids.size === 1 ? editor.forces.active : null;
                 break;
             case "section":
-                selectSection(s.id);
+                rebuild(
+                    editor.sections,
+                    s.ids.filter((id) => sectionAt(ecs, id) !== null),
+                    s.active,
+                );
+                exclusiveSection();
                 break;
             case "start":
                 selectStart(true);
