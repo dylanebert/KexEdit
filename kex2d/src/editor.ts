@@ -304,6 +304,25 @@ export function select(eid: number | null, mode: SelectMode = "replace"): void {
     reconcileTangent();
 }
 
+/** replace the node selection with a computed set (the marquee's atomic write): members `ids`,
+ *  `active` active, the other kinds swept when non-empty. the set-valued analog of `select` — one
+ *  write of a whole merged hit set, same exclusivity + reconcile. an empty set clears the node kind
+ *  only (the caller sweeps the rest for a full deselect, matching empty-click). */
+export function selectNodes(ids: number[], active: number | null): void {
+    rebuild(editor.nodes, ids, active);
+    if (ids.length) exclusiveNode();
+    reconcileTangent();
+}
+
+/** replace the force selection with a computed set (the marquee's atomic write) — the force
+ *  analog of `selectNodes`. */
+export function selectForces(ids: number[], active: number | null): void {
+    rebuild(editor.forces, ids, active);
+    if (ids.length) exclusiveForce();
+    editor.forceHandle = null;
+    reconcileForceEdit();
+}
+
 /** enter tangent-edit mode on a node — the summon (double-click). collapses the node selection to
  *  this one subject (clearing the other kinds) and layers the edit sub-mode on it, so its handles
  *  render and grab. node 0 (the entry anchor) is editable too — it exposes its single out-handle

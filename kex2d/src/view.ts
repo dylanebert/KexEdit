@@ -1,9 +1,17 @@
+import type { Rect } from "./marquee";
+
 interface Canvas2DRef {
     element: HTMLCanvasElement;
     ctx: CanvasRenderingContext2D;
 }
 
 export const Canvas2D: Canvas2DRef = {} as Canvas2DRef;
+
+/** the live viewport marquee (box-select) rect in screen px, or null when no marquee drag is
+ *  armed — the render pass draws it in the neutral guide register (`MarqueeDrawSystem`). set each
+ *  pointermove once the drag clears the dead zone, cleared on release / cancel / teardown. a
+ *  transient like `snapGuides`, kept separate so it's independent of a manipulator drag's guides. */
+export const marquee: { rect: Rect | null } = { rect: null };
 
 /** default framing: half the world-meters shown across the canvas width (the initial
  *  zoom fits ±this many meters horizontally). */

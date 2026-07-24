@@ -8,11 +8,13 @@ import {
     openContext,
     openNodeMenu,
     select,
+    selectNodes,
     selectSection,
     selectStart,
     snapActive,
     toggleSnap,
 } from "./editor";
+import { hits, merge, normRect } from "./marquee";
 import {
     beginMove,
     cancel,
@@ -56,6 +58,7 @@ import {
     clearGuides,
     dragReadout,
     frameContent,
+    marquee,
     panCamera,
     pointerToCanvas,
     screenToWorld,
@@ -159,6 +162,18 @@ let latchRayY = 0;
 let panning = false;
 let panX = 0;
 let panY = 0;
+
+// marquee (box-select) state: a left-drag begun on empty viewport space (after the pick
+// fall-through finds nothing). mutually exclusive with the manip/tangent/pan gestures — it
+// starts only when none of them grabbed. `armed` follows the shared dead-zone latch: below
+// DRAG_PX the press stays a plain click (the existing deselect-on-empty-click), and only past it
+// does a rect appear and the merge fire on release. `shift` (captured at grab) picks replace vs
+// toggle. no history gesture — a selection change is not an undoable command.
+let dragMarquee = false;
+let marqueeArmed = false;
+let marqueeX0 = 0;
+let marqueeY0 = 0;
+let marqueeShift = false;
 
 /** the single track's sample buffers (one track in this prototype). */
 function trackSamples(ecs: State): ReturnType<typeof samples.get> {
@@ -511,6 +526,75 @@ function dragManipTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): vo
     }
 }
 
+/** the marquee's candidate points: every **draggable** geo node in screen px — the same set
+ *  `pickNode` grabs (order-0 entry anchors excluded), so the box selects the authoring atoms and
+ *  never node 0 / START / a section span (the locked decision). */
+function nodeCandidates(
+    ecs: State,
+    s: NonNullable<ReturnType<typeof samples.get>>,
+    tx: ViewTx,
+): { id: number; x: number; y: number }[] {
+    const out: { id: number; x: number; y: number }[] = [];
+    for (const eid of ecs.query([Handle])) {
+        if (Handle.order.get(eid) === 0) continue; // the entry anchor is not an authoring atom
+        const w = nodeWorld(s, eid);
+        out.push({ id: eid, x: tx.ox + w.x * tx.sx, y: tx.oy + w.y * tx.sy });
+    }
+    return out;
+}
+
+/** advance a marquee drag: arm past the dead zone, then publish the normalized rect for the render
+ *  overlay (screen px — the camera never moves mid-marquee, so no view transform is needed). below
+ *  the dead zone there is no rect (the press is still a plain click). */
+function dragMarqueeTo(canvas: HTMLCanvasElement, e: PointerEvent): void {
+    const { x: cx, y: cy } = pointerToCanvas(canvas, e);
+    marqueeArmed = armDrag(marqueeArmed, cx - marqueeX0, cy - marqueeY0);
+    marquee.rect = marqueeArmed ? normRect(marqueeX0, marqueeY0, cx, cy) : null;
+}
+
+/** finish a marquee on release: an un-armed press was a plain click (the existing deselect-on-empty
+ *  behavior; shift-click preserves the selection). an armed one collects the hits under the rect,
+ *  merges them into the node set (replace, or toggle under shift), and applies — an empty plain
+ *  marquee deselecting all, like an empty click. clears the rect + drag state either way. */
+function finishMarquee(ecs: State, canvas: HTMLCanvasElement): void {
+    const armed = marqueeArmed;
+    const rect = marquee.rect;
+    const shift = marqueeShift;
+    dragMarquee = false;
+    marqueeArmed = false;
+    marquee.rect = null;
+    if (!armed || !rect) {
+        if (!shift) {
+            select(null);
+            selectSection(null);
+            selectStart(false);
+        }
+        return;
+    }
+    const s = trackSamples(ecs);
+    if (!s) return;
+    const tx = viewTransform(canvas);
+    const res = merge(
+        editor.nodes,
+        hits(rect, nodeCandidates(ecs, s, tx)),
+        shift ? "toggle" : "replace",
+    );
+    if (!shift && res.ids.length === 0) {
+        select(null);
+        selectSection(null);
+        selectStart(false);
+    } else {
+        selectNodes(res.ids, res.active);
+    }
+}
+
+/** cancel a marquee (Esc / blur / pointercancel) — drop the rect + drag state, no selection change. */
+function cancelMarquee(): void {
+    dragMarquee = false;
+    marqueeArmed = false;
+    marquee.rect = null;
+}
+
 /** the baked-sample range `F` frames: the selected section (or the selected node's
  *  section) if there is a selection, else the whole track — the Blender frame-content
  *  rule (frame the selection, or everything when nothing is selected). */
@@ -700,9 +784,16 @@ export function attachControls(
             selectSection(sec);
             return;
         }
-        select(null);
-        selectSection(null);
-        selectStart(false);
+        // truly empty space: arm a marquee (box-select). the deselect an empty CLICK does is
+        // deferred to release — below DRAG_PX the press is still a click (existing behavior).
+        // shift = toggle. no history gesture (a selection change is not an undoable command).
+        dragMarquee = true;
+        marqueeArmed = false;
+        marqueeX0 = cx;
+        marqueeY0 = cy;
+        marqueeShift = e.shiftKey;
+        marquee.rect = null;
+        beginDrag(canvas, e.pointerId);
     };
 
     // double-click a node → enter tangent edit (Figma's vector-edit summon; feel round 12 restored
@@ -734,6 +825,10 @@ export function attachControls(
             Object.assign(camera, panCamera(camera, x - panX, y - panY));
             panX = x;
             panY = y;
+            return;
+        }
+        if (dragMarquee) {
+            dragMarqueeTo(canvas, e);
             return;
         }
         if (dragTangent !== null) {
@@ -770,6 +865,10 @@ export function attachControls(
             canvas.style.cursor = "";
             return;
         }
+        if (dragMarquee) {
+            finishMarquee(ecs, canvas);
+            return;
+        }
         if (dragTangent !== null) {
             dragTangent = null;
             clearGuides();
@@ -787,6 +886,10 @@ export function attachControls(
         if (panning) {
             panning = false;
             canvas.style.cursor = "";
+            return;
+        }
+        if (dragMarquee) {
+            cancelMarquee();
             return;
         }
         if (dragTangent !== null) {
@@ -807,7 +910,7 @@ export function attachControls(
     // reattaching to the old node on the next move. tear it down like a pointercancel: revert the
     // bracketed edit, drop the drag/pan state (cancelDrag), and clear the capture flag (endDrag).
     const onBlur = (): void => {
-        if (dragManip === null && dragTangent === null && !panning) return;
+        if (dragManip === null && dragTangent === null && !panning && !dragMarquee) return;
         cancelDrag();
         endDragGesture();
     };
@@ -879,6 +982,14 @@ export function attachControls(
         }
 
         if (e.key === "Escape") {
+            // a marquee in flight is the topmost dismissal rung — cancel it clean (no selection
+            // change, rect gone, capture released) before the selection ladder below.
+            if (dragMarquee) {
+                e.preventDefault();
+                cancelMarquee();
+                endDragGesture();
+                return;
+            }
             // dismissal peels one layer: exit tangent edit first (keep the node selected), else
             // clear the selection. the node menu is inside App and takes Escape first (capture),
             // so it closes before this handler sees the key.
@@ -970,6 +1081,7 @@ export function attachControls(
         window.removeEventListener("blur", onBlur);
         canvas.style.cursor = ""; // detaching mid-pan must not leave a stuck grabbing cursor
         clearGuides(); // detaching mid-drag must not leave a stuck guide for the remount
+        cancelMarquee(); // detaching mid-marquee must not leave a stuck rect for the remount
         endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on
     };
 

@@ -16,6 +16,7 @@ import {
     openForceMenu,
     selectForce,
     selectForceHandle,
+    selectForces,
     selectSection,
     snapActive,
     toggleSnap,
@@ -64,7 +65,8 @@ import {
     yGrow,
     zoomAt,
 } from "./timeline";
-import { latchAngle } from "./controls";
+import { DRAG_PX, latchAngle } from "./controls";
+import { hits, merge, normRect, type Rect } from "./marquee";
 import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls, segmentSeed } from "./profile";
 import { TangentMode } from "./spline";
 import {
@@ -675,6 +677,82 @@ function forceUp(): void {
     window.removeEventListener("pointermove", forceMove);
     window.removeEventListener("pointerup", forceUp);
     window.removeEventListener("pointercancel", forceUp);
+}
+
+// ── marquee (box-select) on the chart: a left-drag begun on empty chart space (the chartzone,
+// after the diamonds' own grab). the targets are the force keyframe diamonds — the box does not
+// cross into the marker/clip lane (it only ever hits diamonds). below DRAG_PX the press stays a
+// plain click (the existing deselect-on-empty-chart), and only past it does a rect appear and the
+// merge fire on release. shift = toggle. no history gesture (a selection change is not a command).
+let marqueeStart: { x: number; y: number } | null = null;
+let marqueeRect: Rect | null = $state(null); // canvas-local px; drawn as the SVG box
+let marqueeArmed = false;
+let marqueeShift = false;
+function marqueeDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    // layered dismissal: a chart click while a popover field is focused only blurs it (the
+    // browser's own focus change), never arms a marquee or deselects — the NEXT click does.
+    const ae = document.activeElement;
+    if (ae instanceof HTMLElement && ae.closest(".ptip")) return;
+    const rect = canvas.getBoundingClientRect();
+    marqueeStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    marqueeRect = null;
+    marqueeArmed = false;
+    marqueeShift = e.shiftKey;
+    beginDrag(canvas, e.pointerId);
+    window.addEventListener("pointermove", marqueeMove);
+    window.addEventListener("pointerup", marqueeUp);
+    window.addEventListener("pointercancel", marqueeCancel);
+    window.addEventListener("keydown", marqueeEsc, { capture: true });
+    window.addEventListener("blur", marqueeCancel);
+}
+function marqueeMove(e: PointerEvent): void {
+    if (!marqueeStart) return;
+    const rect = canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    if (!marqueeArmed && Math.hypot(cx - marqueeStart.x, cy - marqueeStart.y) >= DRAG_PX)
+        marqueeArmed = true;
+    marqueeRect = marqueeArmed ? normRect(marqueeStart.x, marqueeStart.y, cx, cy) : null;
+}
+function marqueeUp(): void {
+    if (!marqueeStart) return;
+    const armed = marqueeArmed;
+    const rect = marqueeRect;
+    const shift = marqueeShift;
+    marqueeCancel(); // detach listeners + clear rect/state
+    if (!armed || !rect) {
+        if (!shift) {
+            selectForce(null); // a plain click on empty chart deselects (shift-click preserves)
+            selectSection(null);
+        }
+        return;
+    }
+    const cand = forcePts.map((p) => ({ id: p.id, x: ptX(p), y: yOf(p.g) }));
+    const res = merge(editor.forces, hits(rect, cand), shift ? "toggle" : "replace");
+    if (!shift && res.ids.length === 0) {
+        selectForce(null);
+        selectSection(null);
+    } else {
+        selectForces(res.ids, res.active);
+    }
+}
+function marqueeCancel(): void {
+    marqueeStart = null;
+    marqueeRect = null;
+    marqueeArmed = false;
+    window.removeEventListener("pointermove", marqueeMove);
+    window.removeEventListener("pointerup", marqueeUp);
+    window.removeEventListener("pointercancel", marqueeCancel);
+    window.removeEventListener("keydown", marqueeEsc, { capture: true });
+    window.removeEventListener("blur", marqueeCancel);
+    endDragGesture(); // release the drag flag + capture (a mid-gesture Esc/blur has no pointerup)
+}
+function marqueeEsc(e: KeyboardEvent): void {
+    if (e.key !== "Escape" || !marqueeStart) return;
+    e.stopImmediatePropagation(); // the marquee is the topmost dismissal rung while active
+    e.preventDefault();
+    marqueeCancel();
 }
 
 // ── force keyframe handle edit: the summoned inner layer (the force analogue of geo's
@@ -2030,17 +2108,7 @@ onMount(() => {
                     height={Math.max(0, h - BOT_PAD - TOP)}
                     ondblclick={chartCreate}
                     oncontextmenu={chartCtx}
-                    onpointerdown={(e) => {
-                        if (e.button !== 0) return;
-                        // layered dismissal: while a popover field is focused, a chart
-                        // click only commits/blurs the field (the innermost transient
-                        // layer, via the browser's own focus change); the NEXT click
-                        // deselects the point and the section.
-                        const ae = document.activeElement;
-                        if (ae instanceof HTMLElement && ae.closest(".ptip")) return;
-                        selectForce(null);
-                        selectSection(null);
-                    }}
+                    onpointerdown={marqueeDown}
                     role="presentation"
                 />
             {/if}
@@ -2134,6 +2202,18 @@ onMount(() => {
                 {/if}
                 {#if snapY !== null}
                     <line class="snapguide" x1={LEFT_GUT} x2={w} y1={snapY} y2={snapY} />
+                {/if}
+                <!-- the marquee (box-select) rect: a left-drag over empty chart space, clipped to
+                     the chart so it never paints into the marker lane (its targets are the diamonds
+                     only). the neutral guide register — a faint fill + a thin border. -->
+                {#if marqueeRect}
+                    <rect
+                        class="marquee"
+                        x={marqueeRect.minX}
+                        y={marqueeRect.minY}
+                        width={marqueeRect.maxX - marqueeRect.minX}
+                        height={marqueeRect.maxY - marqueeRect.minY}
+                    />
                 {/if}
             </g>
             <!-- force points across every force section: a filled diamond at (s, g) —
@@ -2735,6 +2815,15 @@ onMount(() => {
         stroke: var(--guide);
         stroke-width: 1;
         opacity: 0.9;
+        pointer-events: none;
+    }
+
+    /* the marquee (box-select) rect: the neutral guide register — a faint fill + a thin border,
+       the same gray the snap guide wears. visual only; the chartzone owns the gesture. */
+    .marquee {
+        fill: color-mix(in srgb, var(--guide) 12%, transparent);
+        stroke: var(--guide);
+        stroke-width: 1;
         pointer-events: none;
     }
 
