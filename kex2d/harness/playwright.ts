@@ -16,7 +16,11 @@ export interface RunArgs {
     stage: Stage;
     /** env for the run, built from the staged paths (`null` when native) so output dirs resolve host-side */
     env: (staged: WindowsPaths | null) => Record<string, string>;
-    /** hard ceiling on the whole spawn — a backstop above Playwright's own timeout, never the guard */
+    /**
+     * hard ceiling on the whole spawn — a backstop above Playwright's own timeout, never the guard.
+     * Under WSL it kills the powershell child only; Windows-side grandchildren can survive it
+     * (`wsl.ts`, stage cleanup).
+     */
     timeoutMs: number;
 }
 
@@ -67,7 +71,7 @@ export function runPlaywright(run: RunArgs): RunResult {
         [
             "powershell.exe",
             "-Command",
-            `${assigns} $env:PLAYWRIGHT_BROWSERS_PATH = "$env:LOCALAPPDATA\\ms-playwright"; cd '${staged.win}'; bunx playwright test --config ${tail}`,
+            `$ErrorActionPreference = 'Stop'; ${assigns} cd '${staged.win}'; bunx playwright test --config ${tail}`,
         ],
         { stdout: "pipe", stderr: "inherit", timeout: run.timeoutMs },
     );

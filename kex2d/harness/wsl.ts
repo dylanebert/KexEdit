@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // WSL bridge: kex2d runs under WSL, but the shallot runtime needs WebGPU, which lives on the
@@ -8,6 +8,11 @@ import { dirname, join } from "node:path";
 
 export const isWSL =
     process.platform === "linux" && existsSync("/proc/sys/fs/binfmt_misc/WSLInterop");
+
+// Every host round-trip is time-bounded — provisioning sits outside Playwright's own timeouts and the
+// caller's spawn ceiling, so an unresponsive host would otherwise hang the capture forever.
+const PROBE_TIMEOUT_MS = 15_000;
+const INSTALL_TIMEOUT_MS = 180_000;
 
 /** true if a real-GPU display is reachable (WSL always is; bare Linux needs an X/Wayland display). */
 export function detectDisplay(): boolean {
@@ -21,18 +26,26 @@ export interface WindowsPaths {
     wsl: string;
 }
 
+function probe(cmd: string[], what: string): string {
+    const result = Bun.spawnSync(cmd, {
+        stdout: "pipe",
+        stderr: "inherit",
+        timeout: PROBE_TIMEOUT_MS,
+    });
+    if (result.exitCode === null)
+        throw new Error(`${what} did not answer within ${PROBE_TIMEOUT_MS}ms (\`${cmd[0]}\` killed)`);
+    if (result.exitCode !== 0) throw new Error(`${what} failed (exit ${result.exitCode})`);
+    const out = new TextDecoder().decode(result.stdout).trim().replace(/\r/g, "");
+    if (!out) throw new Error(`${what} returned nothing`);
+    return out;
+}
+
 function windowsTempPaths(name: string): WindowsPaths {
-    const winTemp = new TextDecoder()
-        .decode(
-            Bun.spawnSync(["powershell.exe", "-Command", "Write-Host -NoNewline $env:TEMP"], {
-                stdout: "pipe",
-            }).stdout,
-        )
-        .trim()
-        .replace(/\r/g, "");
-    const wslTemp = new TextDecoder()
-        .decode(Bun.spawnSync(["wslpath", winTemp], { stdout: "pipe" }).stdout)
-        .trim();
+    const winTemp = probe(
+        ["powershell.exe", "-Command", "Write-Host -NoNewline $env:TEMP"],
+        "Windows TEMP probe",
+    );
+    const wslTemp = probe(["wslpath", winTemp], `wslpath of ${winTemp}`);
     return { win: `${winTemp}\\${name}`, wsl: join(wslTemp, name) };
 }
 
@@ -45,17 +58,56 @@ export interface Stage {
     clean?: string[];
 }
 
-function version(pkgJson: string): string | null {
+/** marker file holding the dependency key the stage's `node_modules` was provisioned for */
+const MARKER = ".provisioned";
+
+function readJson(path: string, what: string): Record<string, unknown> {
+    let text: string;
+    try {
+        text = readFileSync(path, "utf8");
+    } catch (e) {
+        throw new Error(`${what} is unreadable (${path}): ${e instanceof Error ? e.message : e}`);
+    }
+    try {
+        return JSON.parse(text) as Record<string, unknown>;
+    } catch (e) {
+        throw new Error(`${what} is not valid JSON (${path}): ${e instanceof Error ? e.message : e}`);
+    }
+}
+
+// Key the host's node_modules by the WHOLE dependency block, not by one package's installed version:
+// an installed version satisfies a caret range forever, so a version key never reinstalls after a
+// dependency edit, and a torn install can leave a satisfying package.json inside an incomplete tree.
+function depsKey(deps: Record<string, string>): string {
+    const sorted = Object.keys(deps)
+        .sort()
+        .map((k) => [k, deps[k]]);
+    return Bun.hash(JSON.stringify(sorted)).toString(16);
+}
+
+function installedVersion(pkgJson: string): string | null {
     if (!existsSync(pkgJson)) return null;
-    return JSON.parse(readFileSync(pkgJson, "utf8")).version ?? null;
+    try {
+        return (JSON.parse(readFileSync(pkgJson, "utf8")).version as string | undefined) ?? null;
+    } catch {
+        return null;
+    }
 }
 
 // Mirror the harness's Playwright files into a PERSISTENT Windows TEMP dir so the host Chrome can run
-// them, provisioning deps there only when the installed Playwright stops satisfying the harness's pin.
-// The install is the cold-run cliff (tens of seconds) and buys nothing while `node_modules` matches, so
-// it is version-keyed — shallot's `scripts/wsl-bridge.ts provisionHost` is the precedent. No browser
-// download: the capture config launches `channel: "chrome"`, the host's own Chrome, not a Playwright
-// chromium. Returns both path views — `win` for the PowerShell `cd`, `wsl` for reading screenshots back.
+// them, provisioning deps there only when the staged dependency block changes. The install is the
+// cold-run cliff (tens of seconds) and buys nothing while `node_modules` matches, so it is keyed by a
+// marker file written ONLY after a clean install — a torn or failed install leaves no marker, so the
+// next run reinstalls. shallot's `scripts/wsl-bridge.ts provisionHost` is the precedent.
+//
+// No browser download: the capture config launches `channel: "chrome"`, the host's own Chrome, never a
+// Playwright-managed chromium. If a config here ever launches bundled chromium (or a non-Chrome
+// browser), provisioning must add `bunx playwright install <browser>` back behind this same marker.
+//
+// Note: a spawn-ceiling kill (`playwright.ts` timeout) kills only the powershell child WSL-side —
+// Windows-side grandchildren (bun, node, chrome) can survive holding this dir open, so the next run's
+// `clean` can hit EBUSY. That needs manual host cleanup (end the stray processes); there is no job
+// object across the WSL boundary.
 export function stageOnWindows(srcDir: string, stage: Stage): WindowsPaths {
     const paths = windowsTempPaths(stage.name);
 
@@ -68,29 +120,43 @@ export function stageOnWindows(srcDir: string, stage: Stage): WindowsPaths {
         cpSync(join(srcDir, file), dest);
     }
 
-    const pin = JSON.parse(readFileSync(join(paths.wsl, "package.json"), "utf8")).dependencies?.[
-        "@playwright/test"
-    ];
+    const pkg = readJson(join(paths.wsl, "package.json"), "staged package.json");
+    const deps = (pkg.dependencies ?? {}) as Record<string, string>;
+    const pin = deps["@playwright/test"];
     if (!pin) throw new Error("staged package.json declares no @playwright/test dependency");
-    const installed = version(join(paths.wsl, "node_modules/@playwright/test/package.json"));
 
-    if (installed && Bun.semver.satisfies(installed, pin)) {
-        console.log(`Windows host provisioned: @playwright/test ${installed} satisfies ${pin}.`);
+    const key = depsKey(deps);
+    const marker = join(paths.wsl, MARKER);
+    const tree = join(paths.wsl, "node_modules/@playwright/test/package.json");
+    if (existsSync(marker) && readFileSync(marker, "utf8").trim() === key && existsSync(tree)) {
+        console.log(`Windows host provisioned (deps ${key}); skipping install.`);
         return paths;
     }
 
-    console.log(
-        `Installing @playwright/test ${pin} on the Windows host (found: ${installed ?? "none"})...`,
+    console.log(`Installing host deps (key ${key}, @playwright/test ${pin})...`);
+    rmSync(marker, { force: true });
+    const install = Bun.spawnSync(
+        [
+            "powershell.exe",
+            "-Command",
+            `$ErrorActionPreference = 'Stop'; cd '${paths.win}'; bun install`,
+        ],
+        { stdout: "inherit", stderr: "pipe", timeout: INSTALL_TIMEOUT_MS },
     );
-    Bun.spawnSync(["powershell.exe", "-Command", `cd '${paths.win}'; bun install --silent`], {
-        stdout: "inherit",
-        stderr: "inherit",
-    });
-    const now = version(join(paths.wsl, "node_modules/@playwright/test/package.json"));
+    const stderr = new TextDecoder().decode(install.stderr ?? new Uint8Array()).trim();
+    if (install.exitCode === null)
+        throw new Error(`host \`bun install\` did not finish within ${INSTALL_TIMEOUT_MS}ms`);
+    if (install.exitCode !== 0)
+        throw new Error(`host \`bun install\` failed (exit ${install.exitCode}): ${stderr}`);
+
+    const now = installedVersion(join(paths.wsl, "node_modules/@playwright/test/package.json"));
     if (!now || !Bun.semver.satisfies(now, pin))
         throw new Error(
-            `host provisioning failed: @playwright/test ${now ?? "missing"} does not satisfy ${pin}`,
+            `host provisioning failed: @playwright/test ${now ?? "missing"} does not satisfy ${pin}${
+                stderr ? ` — ${stderr}` : ""
+            }`,
         );
 
+    writeFileSync(marker, `${key}\n`);
     return paths;
 }
