@@ -10,7 +10,10 @@ export default defineConfig({
     workers: 1,
     reporter: [["list"]],
     timeout: 60_000,
-    globalTimeout: 120_000,
+    // A wedge backstop, not a budget: it must clear the whole suite with room to grow, or it silently
+    // truncates the run (at 120s it killed the last test and still reported the rest green).
+    // `capture.ts`'s spawn ceiling sits above this one.
+    globalTimeout: 300_000,
 
     expect: { timeout: 5_000 },
 

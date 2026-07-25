@@ -8,8 +8,12 @@ import { detectDisplay } from "./wsl";
 // real-GPU Chrome (shallot's runtime needs a device even though kex2d renders canvas2D), copy the
 // screenshots back. Display-gated; on WSL it runs via Windows Chrome, on a headed Linux box natively.
 //
-//   bun run capture            → screenshots into harness/shots/
-//   bun run capture --out DIR  → into DIR
+//   bun run capture                     → screenshots into harness/shots/
+//   bun run capture --out DIR           → into DIR
+//   bun run capture -- -g "geo authoring flow"
+//                                       → only the matching flows; every arg but `--out` passes
+//                                         through to `playwright test`, so `-g`/`--repeat-each`/
+//                                         `--reporter` all work
 
 const harnessDir = import.meta.dir;
 const projectDir = resolve(harnessDir, "..");
@@ -18,6 +22,7 @@ const PORT = 3014;
 const args = process.argv.slice(2);
 const outIdx = args.indexOf("--out");
 const outDir = resolve(outIdx !== -1 ? args[outIdx + 1] : join(harnessDir, "shots"));
+const testArgs = outIdx !== -1 ? [...args.slice(0, outIdx), ...args.slice(outIdx + 2)] : args;
 
 if (!detectDisplay()) {
     console.log("No display available. Skipping capture.");
@@ -45,12 +50,17 @@ console.log("Running capture flow...");
 const run = runPlaywright({
     dir: harnessDir,
     config: "capture.pw.config.ts",
-    stage: { name: "kex2d-harness", files: ["package.json", "capture.pw.config.ts", "shot.pw.ts"] },
+    args: testArgs,
+    stage: {
+        name: "kex2d-harness",
+        files: ["package.json", "capture.pw.config.ts", "shot.pw.ts"],
+        clean: ["shots", "test-results"],
+    },
     env: (staged) => ({
         KEX_PORT: String(PORT),
         KEX_OUT: staged ? `${staged.win}\\shots` : outDir,
     }),
-    timeoutMs: 180_000,
+    timeoutMs: 360_000,
 });
 
 if (run.staged) {

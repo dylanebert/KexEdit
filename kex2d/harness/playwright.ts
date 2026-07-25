@@ -1,4 +1,4 @@
-import { isWSL, stageOnWindows, type WindowsPaths } from "./wsl";
+import { isWSL, type Stage, stageOnWindows, type WindowsPaths } from "./wsl";
 
 // The one place that runs `playwright test`. Native it spawns directly; under WSL it stages the
 // config + flow onto the Windows host and drives them through powershell so the host's real-GPU
@@ -12,8 +12,8 @@ export interface RunArgs {
     config: string;
     /** trailing `playwright test` args */
     args?: string[];
-    /** WSL staging: a temp-dir name + the files (relative to `dir`) copied to the host to run from */
-    stage: { name: string; files: string[] };
+    /** WSL staging: the persistent host dir the run is mirrored into (`wsl.ts`) */
+    stage: Stage;
     /** env for the run, built from the staged paths (`null` when native) so output dirs resolve host-side */
     env: (staged: WindowsPaths | null) => Record<string, string>;
     /** hard ceiling on the whole spawn — a backstop above Playwright's own timeout, never the guard */
@@ -57,7 +57,7 @@ export function runPlaywright(run: RunArgs): RunResult {
         };
     }
 
-    const staged = stageOnWindows(run.dir, run.stage.name, run.stage.files);
+    const staged = stageOnWindows(run.dir, run.stage);
     const env = run.env(staged);
     const assigns = Object.entries(env)
         .map(([k, v]) => `$env:${k} = '${quote(v)}';`)

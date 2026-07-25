@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // WSL bridge: kex2d runs under WSL, but the shallot runtime needs WebGPU, which lives on the
@@ -36,29 +36,61 @@ function windowsTempPaths(name: string): WindowsPaths {
     return { win: `${winTemp}\\${name}`, wsl: join(wslTemp, name) };
 }
 
-// Mirror the harness's Playwright files to a fresh Windows TEMP dir so the host Chrome can run them,
-// then install their deps there. `files` are relative to `srcDir`. Returns both path views — `win`
-// for the PowerShell `cd`, `wsl` for reading screenshots back.
-export function stageOnWindows(srcDir: string, name: string, files: string[]): WindowsPaths {
-    const paths = windowsTempPaths(name);
+export interface Stage {
+    /** persistent Windows TEMP dir name — its `node_modules` survives between runs */
+    name: string;
+    /** files (relative to `srcDir`) mirrored to the host every run */
+    files: string[];
+    /** dirs (relative to the stage) wiped every run, so a run never reads the previous run's output */
+    clean?: string[];
+}
 
-    rmSync(paths.wsl, { recursive: true, force: true });
+function version(pkgJson: string): string | null {
+    if (!existsSync(pkgJson)) return null;
+    return JSON.parse(readFileSync(pkgJson, "utf8")).version ?? null;
+}
+
+// Mirror the harness's Playwright files into a PERSISTENT Windows TEMP dir so the host Chrome can run
+// them, provisioning deps there only when the installed Playwright stops satisfying the harness's pin.
+// The install is the cold-run cliff (tens of seconds) and buys nothing while `node_modules` matches, so
+// it is version-keyed — shallot's `scripts/wsl-bridge.ts provisionHost` is the precedent. No browser
+// download: the capture config launches `channel: "chrome"`, the host's own Chrome, not a Playwright
+// chromium. Returns both path views — `win` for the PowerShell `cd`, `wsl` for reading screenshots back.
+export function stageOnWindows(srcDir: string, stage: Stage): WindowsPaths {
+    const paths = windowsTempPaths(stage.name);
+
     mkdirSync(paths.wsl, { recursive: true });
-    for (const file of files) {
+    for (const dir of stage.clean ?? [])
+        rmSync(join(paths.wsl, dir), { recursive: true, force: true });
+    for (const file of stage.files) {
         const dest = join(paths.wsl, file);
         mkdirSync(dirname(dest), { recursive: true });
         cpSync(join(srcDir, file), dest);
     }
 
-    console.log("Installing Playwright dependencies on the Windows host...");
-    Bun.spawnSync(
-        [
-            "powershell.exe",
-            "-Command",
-            `cd '${paths.win}'; bun install --silent; bunx playwright install chromium`,
-        ],
-        { stdout: "inherit", stderr: "inherit" },
+    const pin = JSON.parse(readFileSync(join(paths.wsl, "package.json"), "utf8")).dependencies?.[
+        "@playwright/test"
+    ];
+    if (!pin) throw new Error("staged package.json declares no @playwright/test dependency");
+    const installed = version(join(paths.wsl, "node_modules/@playwright/test/package.json"));
+
+    if (installed && Bun.semver.satisfies(installed, pin)) {
+        console.log(`Windows host provisioned: @playwright/test ${installed} satisfies ${pin}.`);
+        return paths;
+    }
+
+    console.log(
+        `Installing @playwright/test ${pin} on the Windows host (found: ${installed ?? "none"})...`,
     );
+    Bun.spawnSync(["powershell.exe", "-Command", `cd '${paths.win}'; bun install --silent`], {
+        stdout: "inherit",
+        stderr: "inherit",
+    });
+    const now = version(join(paths.wsl, "node_modules/@playwright/test/package.json"));
+    if (!now || !Bun.semver.satisfies(now, pin))
+        throw new Error(
+            `host provisioning failed: @playwright/test ${now ?? "missing"} does not satisfy ${pin}`,
+        );
 
     return paths;
 }
