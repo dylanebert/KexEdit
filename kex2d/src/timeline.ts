@@ -232,18 +232,26 @@ export function yEase(v: YFit, target: YFit, grow: number, shrink: number): YFit
 /** edge-scroll grow-to-follow for a value drag (the standard "scroll only when the
  *  pointer leaves the viewport" rule): grow the range ONLY when the dragged cursor `cy`
  *  is dragged BEYOND the chart — above `top` or below `bot` — by an amount proportional
- *  to how far past the edge it is (× `rate`). Unbounded: the value axis has no authoring
- *  ceiling, and the drag's own reach is the limit (the caller re-fits on release). a cursor
- *  inside the chart, even resting on a keyframe at the very edge, returns the range UNCHANGED
- *  by identity (so grabbing a near-boundary keyframe never moves the axis — only dragging
- *  past it does). per-frame application keeps it growing while held beyond the edge. */
-export function yGrow(v: YFit, cy: number, top: number, bot: number, rate: number): YFit {
+ *  to how far past the edge it is (× `rate`), clamped to `cap`. The cap is what keeps the
+ *  gesture usable: growth is proportional to the SPAN, so it compounds per frame and an
+ *  uncapped hold runs to absurd g in well under a second. a cursor inside the chart, even
+ *  resting on a keyframe at the very edge, returns the range UNCHANGED by identity (so
+ *  grabbing a near-boundary keyframe never moves the axis — only dragging past it does).
+ *  per-frame application keeps it growing while held beyond the edge. */
+export function yGrow(
+    v: YFit,
+    cy: number,
+    top: number,
+    bot: number,
+    rate: number,
+    cap: [number, number],
+): YFit {
     const valPerPx = (v.hi - v.lo) / Math.max(1, bot - top);
     let lo = v.lo;
     let hi = v.hi;
-    if (cy < top) hi += (top - cy) * valPerPx * rate;
-    else if (cy > bot) lo -= (cy - bot) * valPerPx * rate;
-    else return v; // cursor within the chart — unchanged (same reference → caller skips)
+    if (cy < top && hi < cap[1]) hi = Math.min(cap[1], hi + (top - cy) * valPerPx * rate);
+    else if (cy > bot && lo > cap[0]) lo = Math.max(cap[0], lo - (cy - bot) * valPerPx * rate);
+    else return v; // within the chart, or already at the cap — unchanged (caller skips by identity)
     return { lo, hi, step: niceStep((hi - lo) / 5) };
 }
 

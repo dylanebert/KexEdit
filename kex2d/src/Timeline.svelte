@@ -122,9 +122,13 @@ const PLAYER_GAP = 32; // px the media player floats above the dock's top edge
 const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer than this to the plot edge
 // reference comfort limits (g) — drawn as faint lines to read the force curve against, and the
 // value axis's RESTING frame: the window the view sits in whenever the data fits inside it (the
-// seed before any data arrives, and the minimum `yFit` expands from). One constant, no ladder —
-// an edge drag grows the axis as far as it's dragged, and the release re-fits back to here.
+// seed before any data arrives, and the minimum `yFit` expands from). One constant, no ladder.
 const BAND: [number, number] = [-2, 6];
+// the ceiling on edge-drag growth: the band with 1 g of headroom on each side — the original
+// bound, restored after uncapped growth proved unusable (compounding per-frame growth runs to
+// extreme g almost instantly). Derived from BAND, so the band stays the one authored constant.
+const GROW_HEADROOM = 1;
+const GROW_CAP: [number, number] = [BAND[0] - GROW_HEADROOM, BAND[1] + GROW_HEADROOM];
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
@@ -297,8 +301,8 @@ let yInit = false;
 const Y_OUT = 0.3; // per-frame approach when EXPANDING the view (snappy)
 const Y_IN = 0.05; // per-frame approach when CONTRACTING (lazy — no snap-back)
 const EDGE_RATE = 0.2; // edge-scroll speed (∝ px past the edge); a by-eye feel constant
-// a gesture holds the axis (below) and grows it freely at the edge, so the frame a release leaves
-// behind is the gesture's, not the content's. `yReturn` marks the re-fit that follows: it runs at
+// a gesture holds the axis (below) and grows it at the edge (up to GROW_CAP), so the frame a
+// release leaves behind is the gesture's, not the content's. `yReturn` marks the re-fit that follows: it runs at
 // the EXPANSION rate, so the room a drag borrowed comes back in ~0.35 s however far it was grown,
 // instead of oozing for ~2.5 s — long enough that the next gesture re-freezes it and the grown axis
 // just stands. A contraction with no gesture behind it (a delete, an undo) keeps the lazy rate:
@@ -347,7 +351,7 @@ $effect(() => {
 // under a content edit (editor-ui.md), so this is value-axis only. runs per frame from the
 // yView effect; a within-chart cursor leaves the axis unchanged (yGrow returns it by identity).
 function growValueAxis(cy: number, reapply: () => void): void {
-    const grown = yGrow(yView, cy, TOP, h - BOT_PAD, EDGE_RATE);
+    const grown = yGrow(yView, cy, TOP, h - BOT_PAD, EDGE_RATE, GROW_CAP);
     if (grown === yView) return;
     yView = grown;
     reapply();
@@ -516,9 +520,9 @@ $effect(() => {
     if (editor.force !== null && selPoint === null) selectForce(null);
 });
 // whether the selection is a multi-set — a right-click keeps the set, so Delete + Easing act on it,
-// and the typed-field popover stays shut (its d/F fields edit ONE keyframe, and over a set the
-// active member isn't labelled as their subject, so they'd silently edit one of many). Nothing
-// replaces it: the diamonds' own selected/active styling is the multi feedback, as in AE.
+// while the single-subject rows (Custom) gray out. The typed-field popover is NOT one of those: it
+// addresses the ACTIVE member, like every other active-anchored surface, and shows on a multi-set
+// exactly as on a single selection (editor-ui.md multi law).
 const multiForce = $derived(selForceSet.size > 1);
 
 const markerX = (s: number): number => LEFT_GUT + sToPx(clamped, s);
@@ -2457,10 +2461,11 @@ onMount(() => {
         <!-- the selected point's typed s/g fields: a popover summoned AT the diamond
              (on the object, not a docked row). it follows a live drag as the value
              readout, pointer-inert so it never fights the drag; flips below the point
-             near the chart top; clamps inside the chart horizontally. A MULTI set has no
-             single subject for them to edit, so it doesn't open at all (nothing takes its
-             place — the diamonds' selected/active styling is the feedback, as in AE). -->
-        {:else if selPoint && !multiForce}
+             near the chart top; clamps inside the chart horizontally. On a MULTI set it
+             shows for the ACTIVE (last-selected) point exactly as for a single selection —
+             the active member is what every single-subject surface addresses (editor-ui.md
+             multi law; the timeline keeps its popover, the canvas hides its ring). -->
+        {:else if selPoint}
             {@const mx = ptX(selPoint)}
             {#if scrubFreeze !== null || (mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R)}
                 {@const ax =

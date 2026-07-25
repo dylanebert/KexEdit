@@ -36,10 +36,8 @@ import {
     lengthToPoint,
     polarDelta,
     polarFrame,
-    screenToAngle,
-    screenToLength,
 } from "./manipulator";
-import { LENGTH_MIN, LENGTH_STEP, snapAngle } from "./magnet";
+import { LENGTH_MIN } from "./magnet";
 import { RadialSlot, ringBase, ringSlot } from "./radial";
 import { localize } from "./section";
 import { editTangent, TangentMode } from "./spline";
@@ -154,21 +152,6 @@ let manipDX = 0;
 let manipDY = 0;
 let manipCX = 0;
 let manipCY = 0;
-// the multi-node group move (per-node polar delta). true when the drag opened on a multi-selection:
-// the active node keeps its ring, its gesture derives one Δlength/Δangle, and that same delta applies
-// to every selected node in its own polar frame. the derivation frame is FROZEN at gesture start
-// (the camera never moves mid-drag) so the pointer→delta mapping is stable, and the active node's
-// start length/angle are the delta's zero. the affected sections are what the one undo entry covers.
-let manipMulti = false;
-let manipFrame0: Frame | null = null;
-let manipLen0 = 0;
-let manipAng0 = 0;
-// the group move's FROZEN start snapshot: each affected section's full section-local chain + the
-// selected orders within it, captured at gesture start. `applyMultiDelta` reads its START positions
-// from here (never live `Handle.pos`), so a cumulative-from-start delta lands absolute — every
-// pointermove writes live from the same frozen start, so it can't re-read the moved positions and
-// double-apply the delta. null outside a group gesture; the nudge path re-freezes per keypress.
-let manipChains: Map<number, FrozenSection> | null = null;
 // the tangent handle under drag (the selected node's in/out handle), or null. mutually
 // exclusive with `dragManip` + `panning` — one gesture at a time.
 let dragTangent: { eid: number; side: TangentSide } | null = null;
@@ -609,54 +592,6 @@ export function applyMultiDelta(
     }
 }
 
-/** feed the readout the ACTIVE node's live metrics during a group move — its authored world exit
- *  heading + the chord to its previous node (computed off the section-local positions, so it needs
- *  no re-bake), the Blender active-only readout. the ring + readout stay on the active member. */
-function feedMultiReadout(ecs: State, active: number): void {
-    const sec = Handle.section.get(active);
-    const prev = handleAt(ecs, sec, Handle.order.get(active) - 1);
-    if (prev === null) return;
-    const dx = Handle.pos.x.get(active) - Handle.pos.x.get(prev);
-    const dy = Handle.pos.y.get(active) - Handle.pos.y.get(prev);
-    snapGuides.lengthLabel = formatLen(Math.hypot(dx, dy));
-    snapGuides.angleLabel = formatDeg((exitWorld(active) * 180) / Math.PI);
-}
-
-/** advance a GROUP manipulator drag (a multi-selection): derive one Δlength/Δangle from the active
- *  node's gesture against the frozen start frame — snap-by-default quantizes the DELTA (1 m / 5°),
- *  Ctrl bypasses — then apply it to every selected node in its own polar frame (`applyMultiDelta`).
- *  no guide ray (a single ray is ambiguous over a set); the readout stays on the active member. */
-function dragMultiTo(
-    ecs: State,
-    active: number,
-    axis: "length" | "angle",
-    cx: number,
-    cy: number,
-    snap: boolean,
-): void {
-    const f0 = manipFrame0;
-    if (!f0 || !manipChains) return;
-    const ntx = cx + manipDX;
-    const nty = cy + manipDY;
-    clearGuides();
-    let delta: number;
-    if (axis === "length") {
-        const raw = screenToLength(f0, ntx, nty) - manipLen0;
-        delta = snap ? Math.round(raw / LENGTH_STEP) * LENGTH_STEP : raw;
-    } else {
-        const raw = normAngleDelta(screenToAngle(f0, ntx, nty) - manipAng0);
-        delta = snap ? snapAngle(raw) : raw;
-    }
-    applyMultiDelta(ecs, manipChains, axis, delta);
-    feedMultiReadout(ecs, active);
-}
-
-/** wrap an angle difference into (−π, π] — so a group angle drag reads a small delta across the
- *  atan2 branch cut rather than a near-full-turn jump. */
-function normAngleDelta(d: number): number {
-    return Math.atan2(Math.sin(d), Math.cos(d));
-}
-
 /** advance a manipulator drag: rebuild the polar frame from the live positions, resolve the grabbed
  *  1D control (length along the chord ray, angle along the tangential arc) through the stage-4
  *  inverse, and write the node's new world position. the dead-zone latch keeps a sub-DRAG_PX grab a
@@ -673,11 +608,6 @@ function dragManipTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): vo
     const { x: cx, y: cy } = pointerToCanvas(canvas, e);
     manipArmed = armDrag(manipArmed, cx - manipCX, cy - manipCY);
     if (!manipArmed) return;
-    if (manipMulti) {
-        // a multi-selection: derive one delta from the active node and apply it to the whole set.
-        dragMultiTo(ecs, sel, dragManip, cx, cy, snapActive(e.ctrlKey || e.metaKey));
-        return;
-    }
     const tx = viewTransform(canvas);
     const f = nodeFrame(ecs, s, tx, sel); // rebuilt per move (live radius — the per-move snapshot)
     if (!f) return;
@@ -1067,9 +997,6 @@ export function attachControls(
         if (dragManip === null) return;
         dragManip = null;
         manipArmed = false;
-        manipMulti = false;
-        manipFrame0 = null;
-        manipChains = null;
         clearGuides();
         commit(history); // one drag → one undo entry (a no-move click records nothing)
     };
@@ -1093,9 +1020,6 @@ export function attachControls(
         if (dragManip === null) return;
         dragManip = null;
         manipArmed = false;
-        manipMulti = false;
-        manipFrame0 = null;
-        manipChains = null;
         clearGuides();
         cancel(); // interrupted drag: restore the pre-gesture pose
     };
@@ -1165,6 +1089,8 @@ export function attachControls(
             if (editor.nodes.ids.size > 1) {
                 // a multi-selection: one shared delta from the active node (length = a metre step;
                 // angle = the step's arc at the active radius) applied to the whole set, one entry.
+                // this is the ONLY group-move path — a multi-set shows no ring, so the capability
+                // lives on the keyboard alone (Blender's gizmo-less move; editor-ui.md multi law).
                 let delta = dir * step;
                 if (axis === "angle") {
                     const p = nodeWorld(s, prevEid);
@@ -1285,20 +1211,7 @@ export function attachControls(
             snapGuides.angleLabel = m.angleLabel;
             snapGuides.lengthLabel = m.lengthLabel;
         }
-        manipMulti = editor.nodes.ids.size > 1;
-        if (manipMulti) {
-            // the group move: freeze the active node's derivation frame (the camera holds still
-            // through the drag) + its start length/angle (the delta's zero), and open ONE undo entry
-            // over every affected section (`beginMoves` generalizes `beginMove`).
-            const f0 = nodeFrame(ecs, s, tx, sel);
-            manipFrame0 = f0;
-            manipLen0 = f0 ? screenToLength(f0, ns.x, ns.y) : 0;
-            manipAng0 = f0 ? screenToAngle(f0, ns.x, ns.y) : 0;
-            manipChains = freezeChains(ecs, editor.nodes.ids); // the delta's frozen start (read every move)
-            beginMoves(ecs, sectionsOf(ecs, editor.nodes.ids));
-        } else {
-            beginMove(ecs, Handle.section.get(sel)); // open the drag gesture; commit/cancel on release
-        }
+        beginMove(ecs, Handle.section.get(sel)); // open the drag gesture; commit/cancel on release
         beginDrag(canvas, e.pointerId); // capture on the canvas → its move/up handlers run the drag
     };
 

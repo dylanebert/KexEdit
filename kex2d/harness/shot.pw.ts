@@ -1444,17 +1444,24 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
 
     // ── 1. Edge-pan: grab the OUT knob, drag it straight DOWN well past the chart bottom, and HOLD.
     // The shared edge-grow fires per frame while the cursor is held beyond the edge, so the displayed
-    // range's floor keeps dropping (the held handle rides the growing axis). Mutation: revert the
-    // handle branch in the yView effect to `return` (unwire the path) → the axis holds → the floor
-    // never drops → this times out red. ──
+    // range's floor keeps dropping (the held handle rides the growing axis) — until it lands on the
+    // growth CAP and stops. Growth is span-proportional, so it compounds per frame; uncapped, a held
+    // drag runs to absurd g in well under a second (the hand check that sent stage 8 back), which is
+    // what the cap bounds. Mutation: revert the handle branch in the yView effect to `return` (unwire
+    // the path) → the axis holds → the floor never drops → this times out red. Mutation: drop the cap
+    // from `yGrow` → the floor keeps falling past it → the hold-still assert goes red. ──
+    const GROW_LO = -3; // Timeline.svelte GROW_CAP[0] = BAND[0] - 1 g of headroom
     const [lo0] = await gRange();
+    expect(lo0).toBeGreaterThan(GROW_LO); // the resting frame sits inside the cap — there IS room to grow
     const knob = await page.locator(".thit").last().boundingBox();
     if (!knob) throw new Error("out handle knob not laid out");
     const knobX = knob.x + knob.width / 2;
     await page.mouse.move(knobX, knob.y + knob.height / 2);
     await page.mouse.down();
     await page.mouse.move(knobX, chartBotY + 140, { steps: 8 }); // straight down, past the bottom, HELD
-    await expect.poll(async () => (await gRange())[0]).toBeLessThan(lo0 - 1.0); // the view panned down
+    await expect.poll(async () => (await gRange())[0]).toBeCloseTo(GROW_LO, 3); // grew down to the cap
+    await page.waitForTimeout(400); // …held past the edge for many more frames…
+    expect((await gRange())[0]).toBeCloseTo(GROW_LO, 3); // …and stopped there, never past it
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
 
@@ -2095,9 +2102,10 @@ test("viewport kind color shot", async ({ page }) => {
 // Drive the VIEWPORT MULTISELECT flow (kex2d-multiselect stage 6): seed a shaped geo track →
 // MARQUEE-select an interior run of nodes (a real rect drag from empty viewport space, past
 // DRAG_PX) → SHIFT+MARQUEE toggles a member out then back in (the active-promotion rule, fired
-// through a real gesture rather than the unit suite) → drag the active node's real LENGTH knob —
-// the per-node polar delta move — and assert every selected node moved in its own frame while the
-// untouched neighbors on BOTH sides of the run held their authored position exactly (the chain-
+// through a real gesture rather than the unit suite) → assert the canvas shows NO contextual chrome
+// over the set (no knobs, no extend button, no readout — stage 8) and drive the per-node polar delta
+// move through the ARROW-NUDGE instead, asserting every selected node moved in its own frame while
+// the untouched neighbors on BOTH sides of the run held their authored position exactly (the chain-
 // coupling locality: an unselected node's own control point never moves) → MARQUEE-select a valid
 // Delete-able SUFFIX RUN (reaches the chain end) and delete it through the real node menu (Delete
 // reads enabled) → MARQUEE-select an interior (non-suffix) run and assert the same Delete row
@@ -2198,22 +2206,19 @@ test("viewport multiselect flow", async ({ page }) => {
     await expect.poll(nodeSelOrders).toEqual([2, 3, 4]);
     expect(await selectedOrder()).toBe(4); // restored for the move step below
 
-    // ── 3. Per-node polar delta: drag the ACTIVE node's real LENGTH knob outward along its own
-    // chord (node 3 → node 4). Every selected node (2, 3, 4) must move — each in its own polar
-    // frame, chained in ascending order — while the untouched nodes on BOTH sides of the run (0, 1
-    // upstream; 5, 6 downstream) hold their authored position exactly: an unselected node's own
-    // control point never moves, only the selected suffix's does (the chain-coupling locality). ──
+    // ── 3. The canvas shows NO contextual controls over a multi-set (stage 8, user-locked): both
+    // manipulator knobs, the ring's extend button, and the metrics readout are all gone — every one
+    // of them is single-subject. So the per-node polar delta lives on the KEYBOARD alone (capability
+    // without chrome, Blender's gizmo-less move): one Shift+ArrowUp is one shared Δlength, applied
+    // to each selected node in its own polar frame, as one undo entry. Every selected node (2, 3, 4)
+    // must move — chained in ascending order — while the untouched nodes on BOTH sides of the run
+    // (0, 1 upstream; 5, 6 downstream) hold their authored position exactly: an unselected node's
+    // own control point never moves, only the selected suffix's does (the chain-coupling locality).
+    // Mutation: drop the `nodeMulti` guards in App.svelte → the knobs/readout reappear → red. ──
+    for (const sel of [".manip-length", ".manip-angle", ".rbtn.extend", ".snap-readout"])
+        await expect(page.locator(sel)).toHaveCount(0);
     const before = await poses();
-    const lb = await page.locator(".manip-length").boundingBox();
-    if (!lb) throw new Error("length knob not laid out for the multi-selected ring");
-    const lk = { x: lb.x + lb.width / 2, y: lb.y + lb.height / 2 };
-    const rl = Math.hypot(pt[4].x - pt[3].x, pt[4].y - pt[3].y);
-    const ux = (pt[4].x - pt[3].x) / rl;
-    const uy = (pt[4].y - pt[3].y) / rl;
-    await page.mouse.move(lk.x, lk.y);
-    await page.mouse.down();
-    await page.mouse.move(lk.x + ux * 60, lk.y + uy * 60, { steps: 12 });
-    await page.mouse.up();
+    await page.keyboard.press("Shift+ArrowUp"); // the length axis, coarse step
     const after = await poses();
     for (const o of [0, 1, 5, 6]) {
         expect(after[o][0]).toBeCloseTo(before[o][0], 5);
@@ -2334,11 +2339,17 @@ test("timeline multiselect flow", async ({ page }) => {
     const active1 = await forceSelActive();
     expect(active1).not.toBeNull();
     expect(await forceSelIds()).toContain(active1); // the active member is always a set member
-    // stage 7: the typed-field popover does NOT open over a multi-set — its d/F fields edit ONE
-    // keyframe, and nothing on the surface says which, so they'd silently edit one of many. Nothing
-    // replaces it; the diamonds' own sel/active styling (asserted above) is the multi feedback.
-    // Mutation: drop the `!multiForce` guard on the popover → the fields appear → red.
-    await expect(page.locator(".ptip")).toHaveCount(0);
+    // stage 8 (user-locked, reverting stage 7's guard): the typed-field popover DOES open over a
+    // multi-set, addressing the ACTIVE (last-selected) member exactly as on a single selection —
+    // the active member is what every single-subject surface anchors to. Its two fields must read
+    // that member's own values (index 3, the s=0.8·len shoulder asserted `active` above), not some
+    // other member's. Mutation: re-add a `!multiForce` guard → count 0 → red.
+    await expect(page.locator(".ptip")).toHaveCount(1);
+    const activePt = (await forces())[3]; // one section, so its local s IS the global d
+    const tipD = await page.locator('.ptip input[aria-label="Point distance (m)"]').inputValue();
+    const tipG = await page.locator('.ptip input[aria-label="Point force (g)"]').inputValue();
+    expect(Number(tipD)).toBeCloseTo(activePt.s, 1);
+    expect(Number(tipG)).toBeCloseTo(activePt.g, 2);
     await page.waitForTimeout(200);
     if (page.viewportSize())
         await page.screenshot({

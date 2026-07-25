@@ -443,45 +443,47 @@ describe("yEase — the displayed range's asymmetric approach to its fit", () =>
 });
 
 describe("yGrow — edge-triggered grow-to-follow", () => {
+    // the caller's growth ceiling: the comfort band ([-2, 6]) with 1 g of headroom each side.
+    const Cap: [number, number] = [-3, 7];
     const Top = 34;
     const Bot = 174; // 140px chart
     const Rate = 0.2;
     const view: YFit = { lo: 0.4, hi: 1.4, step: 0.2 };
 
     test("a cursor anywhere inside the chart leaves the range unchanged (grab is stable)", () => {
-        expect(yGrow(view, (Top + Bot) / 2, Top, Bot, Rate)).toBe(view); // middle
-        expect(yGrow(view, Top, Top, Bot, Rate)).toBe(view); // resting AT the top edge
-        expect(yGrow(view, Bot, Top, Bot, Rate)).toBe(view); // resting AT the bottom edge
+        expect(yGrow(view, (Top + Bot) / 2, Top, Bot, Rate, Cap)).toBe(view); // middle
+        expect(yGrow(view, Top, Top, Bot, Rate, Cap)).toBe(view); // resting AT the top edge
+        expect(yGrow(view, Bot, Top, Bot, Rate, Cap)).toBe(view); // resting AT the bottom edge
     });
 
     test("dragging below the bottom edge grows lo downward, hi fixed", () => {
-        const g = yGrow(view, Bot + 20, Top, Bot, Rate);
+        const g = yGrow(view, Bot + 20, Top, Bot, Rate, Cap);
         expect(g).not.toBe(view);
         expect(g.lo).toBeLessThan(view.lo);
         expect(g.hi).toBe(view.hi);
     });
 
     test("dragging above the top edge grows hi upward, lo fixed", () => {
-        const g = yGrow(view, Top - 20, Top, Bot, Rate);
+        const g = yGrow(view, Top - 20, Top, Bot, Rate, Cap);
         expect(g.hi).toBeGreaterThan(view.hi);
         expect(g.lo).toBe(view.lo);
     });
 
     test("further past the edge grows faster (speed ∝ distance outside)", () => {
-        const shallow = yGrow(view, Bot + 5, Top, Bot, Rate);
-        const deep = yGrow(view, Bot + 40, Top, Bot, Rate);
+        const shallow = yGrow(view, Bot + 5, Top, Bot, Rate, Cap);
+        const deep = yGrow(view, Bot + 40, Top, Bot, Rate, Cap);
         expect(view.lo - deep.lo).toBeGreaterThan(view.lo - shallow.lo);
     });
 
-    test("growth is UNCAPPED — the drag's own reach is the only limit", () => {
-        // no authoring ceiling on the value axis (the ±11 cap was deleted 2026-07-24): a range
-        // already far outside the comfort band keeps growing, and the caller re-fits on release.
-        const far: YFit = { lo: -40, hi: 6, step: 10 };
-        expect(yGrow(far, Bot + 20, Top, Bot, Rate).lo).toBeLessThan(far.lo);
-        // growth is proportional to the SPAN, so it compounds per frame rather than approaching
-        // any bound — one deep-overshoot frame already moves the floor by more than the span.
-        const g = yGrow({ lo: -3, hi: 7, step: 2 }, Bot + 20, Top, Bot, 100);
-        expect(g.lo).toBeLessThan(-3 - 10);
+    test("never grows past the cap — growth compounds, so the ceiling is what keeps it usable", () => {
+        // uncapped, growth is proportional to the SPAN, so a held drag reaches absurd g almost
+        // instantly (the hand check: "rapidly goes to ultra extreme"). the band ± 1 g bounds it.
+        const atCap: YFit = { lo: Cap[0], hi: Cap[1], step: 2 };
+        expect(yGrow(atCap, Bot + 20, Top, Bot, Rate, Cap)).toBe(atCap); // lo already at cap
+        expect(yGrow(atCap, Top - 20, Top, Bot, Rate, Cap)).toBe(atCap); // hi already at cap
+        // a huge single step still lands exactly on the cap, never beyond
+        expect(yGrow({ lo: -2.9, hi: 1, step: 1 }, Bot + 20, Top, Bot, 100, Cap).lo).toBe(Cap[0]);
+        expect(yGrow({ lo: -2, hi: 6.9, step: 1 }, Top - 20, Top, Bot, 100, Cap).hi).toBe(Cap[1]);
     });
 });
 

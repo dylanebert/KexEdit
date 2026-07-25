@@ -97,6 +97,18 @@ onMount(() => {
     };
 });
 
+// whether the node selection is a multi-set. the CANVAS shows NO contextual controls over one
+// (editor-ui.md multi law, user-locked after three feel rounds): the whole node-action ring — both
+// manipulator knobs and the extend button — and the metrics readout all hide, because every one of
+// them is single-subject and a multi selection has no single subject. The group move survives as the
+// arrow-nudge (controls.ts), capability without chrome. Single-select is the size-1 case, unchanged.
+//
+// a plain function, NOT a `$derived`: `editor` is a plain singleton, so a derived over it has no
+// invalidation signal of its own and only re-runs on `tick` — and one tick-driven derived reading
+// another goes stale within a frame (the readout vanished at rest after a manipulator drag, capture-
+// caught). Every caller below is already inside a `void tick` derived, so the read is live there.
+const nodeMulti = (): boolean => editor.nodes.ids.size > 1;
+
 // the snap readout text (the Blender modal-transform / SketchUp measurements-box precedent): a
 // node's live metrics (° and/or m), read through the per-RAF tick. ONE readout, ONE source
 // (`selectedMetrics` — the node's authored exit heading + chord to prev, the Figma selected-object
@@ -108,6 +120,7 @@ onMount(() => {
 // readout is absent then. Rendered centered below the node (below), offset clear of the ring buttons.
 const snapText = $derived.by((): string | null => {
     void tick;
+    if (nodeMulti()) return null; // no contextual chrome on a multi-set (the multi law, above)
     let angle: string | null;
     let length: string | null;
     if (dragReadout.node !== null) {
@@ -173,14 +186,16 @@ function doTrim(eid: number): void {
 
 // the two polar manipulator knobs — real DOM `.rbtn` buttons on the node-action ring (feel round 6),
 // peers of the extend button they flank: the length knob (measure/ruler) at −60° off the heading, the
-// angle knob (pitch/↕) at +60°. shown on EVERY selected node (not just the chain end), hidden in
-// tangent edit (its handles own the surface). positions come from `manipKnobs` (controls.ts), the one
-// home for the knob geometry, so a button sits exactly where its drag axis is anchored.
+// angle knob (pitch/↕) at +60°. shown on EVERY singly-selected node (not just the chain end), hidden
+// in tangent edit (its handles own the surface) and on a multi-set (the multi law). positions come
+// from `manipKnobs` (controls.ts), the one home for the knob geometry, so a button sits exactly where
+// its drag axis is anchored.
 const manip = $derived.by(
     (): { length: { x: number; y: number }; angle: { x: number; y: number } } | null => {
         void tick;
         const eid = editor.selection;
         if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
+        if (nodeMulti()) return null;
         const s = samples.get(trackEid);
         if (!s) return null;
         const knobs = manipKnobs(ecs, s, viewTransform(canvas), eid);
@@ -210,7 +225,7 @@ const extendBtn = $derived.by((): { x: number; y: number } | null => {
     void tick;
     const eid = editor.selection;
     if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
-    if (editor.nodes.ids.size > 1) return null; // Add is single-subject — grayed in the menu, gone from the ring
+    if (nodeMulti()) return null; // the whole ring goes on a multi-set (Add stays, grayed, in the menu)
     if (Handle.order.get(eid) === 0) return null; // the entry anchor never extends
     const section = Handle.section.get(eid);
     if (eid !== lastHandle(ecs, section)) return null; // the chain end alone extends
@@ -324,13 +339,9 @@ const nodeCanTrim = $derived.by((): boolean => {
     const m = editor.nodeMenu;
     return nodeIsEnd && m !== null && sectionHandles(ecs, Handle.section.get(m.eid)).length > 2;
 });
-// whether the node selection is a multi-set — a right-click keeps the set (openNodeMenu promotes the
-// target to active), so Delete + the Tangents ▸ rows act on the whole set, single-subject rows (Add,
-// Handles) gray out. single-select is the size-1 case (today's menu).
-const nodeMulti = $derived.by((): boolean => {
-    void tick;
-    return editor.nodes.ids.size > 1;
-});
+// `nodeMulti()` (above) is the menu's multi fork too — a right-click keeps the set (openNodeMenu
+// promotes the target to active), so Delete + the Tangents ▸ rows act on the whole set, single-subject
+// rows (Add, Handles) gray out. single-select is the size-1 case (today's menu).
 // whether the set is a Delete-able suffix run — a contiguous suffix of ONE section, excluding node 0,
 // leaving ≥ 2 (the enablement predicate). the bulk Delete row grays out otherwise (never hidden).
 const nodeSuffixOk = $derived.by((): boolean => {
@@ -359,7 +370,7 @@ const nodeItems = $derived.by((): MenuItem[] => {
     // it's a valid suffix run (else grayed); Add + Handles are single-subject, so they gray out;
     // Tangents ▸ modes + Reset apply to every member in one entry. the mode `checked` reflects the
     // ACTIVE member (Blender active-only).
-    if (nodeMulti) {
+    if (nodeMulti()) {
         return [
             {
                 label: "Delete",
