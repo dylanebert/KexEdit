@@ -730,10 +730,17 @@ function forceUp(): void {
 // cross into the marker/clip lane (it only ever hits diamonds). below DRAG_PX the press stays a
 // plain click (the existing deselect-on-empty-chart), and only past it does a rect appear and the
 // merge fire on release. shift = toggle. no history gesture (a selection change is not a command).
+//
+// the gesture arms with ZERO side effects at pointerdown — the pointer capture (`beginDrag`) is
+// taken only once the dead zone is crossed. capture retargets the whole pointer stream, including
+// the compatibility mouse events, to the captured canvas, which breaks the browser's two-click
+// dblclick accumulation on the chartzone rect — so capturing on every plain press silently killed
+// `chartCreate` (double-click authoring). a click and a dblclick must reach the rect untouched.
 let marqueeStart: { x: number; y: number } | null = null;
 let marqueeRect: Rect | null = $state(null); // canvas-local px; drawn as the SVG box
-let marqueeArmed = false;
+let marqueeArmed = false; // past the dead zone → the rect is live AND the canvas holds capture
 let marqueeShift = false;
+let marqueePointer = -1; // the pressed pointer, captured on arm (not on down)
 function marqueeDown(e: PointerEvent): void {
     if (e.button !== 0) return;
     // layered dismissal: a chart click while a popover field is focused only blurs it (the
@@ -745,7 +752,7 @@ function marqueeDown(e: PointerEvent): void {
     marqueeRect = null;
     marqueeArmed = false;
     marqueeShift = e.shiftKey;
-    beginDrag(canvas, e.pointerId);
+    marqueePointer = e.pointerId;
     window.addEventListener("pointermove", marqueeMove);
     window.addEventListener("pointerup", marqueeUp);
     window.addEventListener("pointercancel", marqueeCancel);
@@ -757,8 +764,10 @@ function marqueeMove(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
     const cx = e.clientX - rect.left;
     const cy = e.clientY - rect.top;
-    if (!marqueeArmed && Math.hypot(cx - marqueeStart.x, cy - marqueeStart.y) >= DRAG_PX)
+    if (!marqueeArmed && Math.hypot(cx - marqueeStart.x, cy - marqueeStart.y) >= DRAG_PX) {
         marqueeArmed = true;
+        beginDrag(canvas, marqueePointer); // capture + the drag flag, only now that it IS a drag
+    }
     marqueeRect = marqueeArmed ? normRect(marqueeStart.x, marqueeStart.y, cx, cy) : null;
 }
 function marqueeUp(): void {
@@ -784,15 +793,19 @@ function marqueeUp(): void {
     }
 }
 function marqueeCancel(): void {
+    const captured = marqueeArmed; // only an armed marquee ever took the capture
     marqueeStart = null;
     marqueeRect = null;
     marqueeArmed = false;
+    marqueePointer = -1;
     window.removeEventListener("pointermove", marqueeMove);
     window.removeEventListener("pointerup", marqueeUp);
     window.removeEventListener("pointercancel", marqueeCancel);
     window.removeEventListener("keydown", marqueeEsc, { capture: true });
     window.removeEventListener("blur", marqueeCancel);
-    endDragGesture(); // release the drag flag + capture (a mid-gesture Esc/blur has no pointerup)
+    // release the drag flag + capture (a mid-gesture Esc/blur has no pointerup). guarded: an
+    // un-armed press holds no capture, so ending here would clear some other gesture's flag.
+    if (captured) endDragGesture();
 }
 function marqueeEsc(e: KeyboardEvent): void {
     if (e.key !== "Escape" || !marqueeStart) return;
