@@ -1064,6 +1064,20 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.length.set(eid, snap.length);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
+    invalidateBake(ecs);
+}
+
+/** force the next `BakeSystem` pass to bake, whatever the authored state hashes to.
+ *  a restore respawns nodes with `Handle.sample` at 0, and the restored state can hash
+ *  exactly like the live bake (an op and its undo landing between two frames) — the
+ *  hash gate would then skip forever and leave the node→sample map reading the track
+ *  origin, so `pickNode`/`nodeAt` see every node stacked at sample 0. `bakeHash` never
+ *  produces "", so this can't collide with a real state. */
+function invalidateBake(ecs: State): void {
+    for (const t of ecs.query([Track])) {
+        const out = bakeOut.get(t);
+        if (out) out.hash = "";
+    }
 }
 
 /** the recovered force (g) arriving at a boundary sample from the current bake — the
@@ -1157,6 +1171,7 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
         for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
     }
+    invalidateBake(ecs);
 }
 
 /** append a new section of `kind` at the end of the chain. geo gets the flat

@@ -50,6 +50,7 @@ import {
     beginForceTangent,
     commit,
     createHistory,
+    extendTrack as extendTrackCmd,
     materializeCustom,
     redo,
     setForcesEase,
@@ -287,6 +288,40 @@ describe("BakeSystem", () => {
         Handle.pos.set(sectionHandles(state, sec)[1], EXTEND_DIST, 1); // move a node
         state.step(0);
         expect(out.fN[0]).not.toBe(999); // hash miss → re-baked
+    });
+
+    test("an op and its undo between two frames still resync the node→sample map", () => {
+        // a restore destroys and respawns the section's nodes (`Handle.sample` back to
+        // 0), and the restored authored state hashes exactly like the live bake — so a
+        // hash-only gate skips forever and every node reads sample 0 (the whole track
+        // picks at the origin). the restore must force the next bake.
+        const { state, eid, sec } = track();
+        addNode(state, sec, 40, 4);
+        state.step(0);
+        const before = sectionHandles(state, sec).map((h) => Handle.sample.get(h));
+        expect(before[before.length - 1]).toBeGreaterThan(0);
+
+        const h = createHistory();
+        // restoreSection path: extend + undo, no frame between.
+        extendTrackCmd(h, state, sec);
+        undo(h, state);
+        state.step(0);
+        expect(sectionHandles(state, sec).map((n) => Handle.sample.get(n))).toEqual(before);
+
+        // restoreAll path: append a section + undo, no frame between.
+        appendSectionCmd(h, state, SectionKind.Geo);
+        undo(h, state);
+        state.step(0);
+        expect(sectionHandles(state, sec).map((n) => Handle.sample.get(n))).toEqual(before);
+
+        // and the samples the map points at are still the baked node positions.
+        const s = samples.get(eid);
+        if (!s) throw new Error("samples missing");
+        for (const n of sectionHandles(state, sec)) {
+            const i = Handle.sample.get(n);
+            expect(s.posX[i]).toBeCloseTo(Handle.pos.x.get(n), 4);
+            expect(s.posY[i]).toBeCloseTo(Handle.pos.y.get(n), 4);
+        }
     });
 
     test("a steep straight climb beyond the energy budget flags downstream infeasible", () => {
