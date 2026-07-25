@@ -116,6 +116,14 @@ if (import.meta.env.DEV) {
         // double-click at the START reached node 0 (order 0), the entry anchor.
         selectedOrder: (): number | null =>
             editor.selection === null ? null : Handle.order.get(editor.selection),
+        // the whole selected node SET, by order (kex2d-multiselect stage 6) — `selectedOrder`
+        // above is the ACTIVE member (the substrate's single-subject accessor); this is the
+        // membership the marquee/shift-toggle/suffix-delete flows assert against. sorted for a
+        // stable read (a JS Set's insertion order isn't what a flow wants to assert on); eids
+        // don't survive a snapshot restore (`editor.ts`), so this reads through `Handle.order`,
+        // not the raw eid, like the tangent/pose accessors above.
+        nodeSelOrders: (): number[] =>
+            [...editor.nodes.ids].map((eid) => Handle.order.get(eid)).sort((a, b) => a - b),
         // the START diamond's screen point (canvas-local px) — sample 0, the world origin the
         // first section's node 0 sits at. the START-handle flow double-/right-clicks here to reach
         // node 0's entry handle (nodeAt(0) is null by contract, so this is its locator).
@@ -182,6 +190,13 @@ if (import.meta.env.DEV) {
         // which handle is selected within handle-edit ("in"/"out"/null) — the flow asserts a
         // click on a knob selects it (swapping the readout to the handle).
         forceHandleSel: (): string | null => editor.forceHandle,
+        // the whole selected force keyframe SET, by stable id (kex2d-multiselect stage 6) —
+        // `editor.forces.ids` already stores stable ids (not eids), so no re-resolution is
+        // needed; sorted for a stable read, the set analog of `forceHandleSel`'s single subject.
+        forceSelIds: (): number[] => [...editor.forces.ids].sort((a, b) => a - b),
+        // the active force keyframe's stable id, or null — the set's single-subject accessor
+        // (`editor.force`), added alongside `forceSelIds` since no scalar accessor read it before.
+        forceSelActive: (): number | null => editor.force,
         // the explicit handle offsets per point (sorted by s), or null when derived from the
         // easing tag — the flow asserts a handle drag authored explicit handles and Reset
         // clears them.
@@ -235,6 +250,9 @@ if (import.meta.env.DEV) {
         sectionForceCounts: (): number[] =>
             sections(ecs).map((x) => sectionForces(ecs, x.id).length),
         selectedSection: (): number | null => editor.section,
+        // the whole selected section SET, by stable id (kex2d-multiselect stage 6) — the
+        // membership behind `selectedSection`'s active member; sorted for a stable read.
+        sectionSelIds: (): number[] => [...editor.sections.ids].sort((a, b) => a - b),
         // the parked/parking playhead's arclength on the bake — the flow parks via a
         // real ruler scrub, drags a keyframe, and asserts this held under the re-time.
         cartArc: (): number | null => cartArc(track),

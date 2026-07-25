@@ -102,6 +102,27 @@ async function clickMenuItem(page: Page, menu: string, item: string): Promise<vo
     await page.mouse.click(x, y);
 }
 
+// A marquee (box-select) drag from one page-space corner to another — shared by the viewport
+// (canvas coordinates) and timeline (chart coordinates) multiselect flows: both surfaces resolve
+// the SAME gesture (a left-drag past DRAG_PX, optionally toggling under Shift), so one raw-pointer
+// helper drives either. Shift is held from BEFORE pointerdown (captured at grab —
+// `marqueeShift`/`shift` in controls.ts/Timeline.svelte) through release, matching a real shift-drag.
+async function marqueeDrag(
+    page: Page,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    shift = false,
+): Promise<void> {
+    if (shift) await page.keyboard.down("Shift");
+    await page.mouse.move(x0, y0);
+    await page.mouse.down();
+    await page.mouse.move(x1, y1, { steps: 10 });
+    await page.mouse.up();
+    if (shift) await page.keyboard.up("Shift");
+}
+
 test("geo authoring flow", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -2067,6 +2088,306 @@ test("viewport kind color shot", async ({ page }) => {
     );
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(OUT, "kind-color-selected.png"), clip: zoomedClip });
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Drive the VIEWPORT MULTISELECT flow (kex2d-multiselect stage 6): seed a shaped geo track →
+// MARQUEE-select an interior run of nodes (a real rect drag from empty viewport space, past
+// DRAG_PX) → SHIFT+MARQUEE toggles a member out then back in (the active-promotion rule, fired
+// through a real gesture rather than the unit suite) → drag the active node's real LENGTH knob —
+// the per-node polar delta move — and assert every selected node moved in its own frame while the
+// untouched neighbors on BOTH sides of the run held their authored position exactly (the chain-
+// coupling locality: an unselected node's own control point never moves) → MARQUEE-select a valid
+// Delete-able SUFFIX RUN (reaches the chain end) and delete it through the real node menu (Delete
+// reads enabled) → MARQUEE-select an interior (non-suffix) run and assert the same Delete row
+// reads disabled (grayed, never hidden) and a real click on it does nothing. Every gesture is a
+// real pointer drag/click, located via exact node screen points (`__kex.nodeAt`); `nodeSelOrders`/
+// `poses` are read-only asserts, never how a selection or move is performed.
+test("viewport multiselect flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+    const nodeSelOrders = () =>
+        page.evaluate((): number[] => (window as any).__kex.nodeSelOrders());
+    const selectedOrder = () =>
+        page.evaluate((): number | null => (window as any).__kex.selectedOrder());
+    const poses = () => page.evaluate((): number[][] => (window as any).__kex.poses());
+    const nodeAt = (order: number) =>
+        page.evaluate(
+            (o: number): { x: number; y: number } | null => (window as any).__kex.nodeAt(o),
+            order,
+        );
+
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await expect.poll(nodeCount).toBe(7);
+    await page.keyboard.press("f"); // hover defaults to the viewport
+    await page.waitForTimeout(SETTLE_MS);
+
+    const canvas = page.locator("#app > canvas");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+
+    // every draggable node's screen point (orders 1-6; order 0 is the pinned entry anchor, never
+    // a marquee target) — the rects below are computed from these EXACT points, never guessed
+    // pixels, so a marquee's boundary can only ever hit the nodes it's meant to.
+    const pt: Record<number, { x: number; y: number }> = {};
+    for (let o = 1; o <= 6; o++) {
+        const p = await nodeAt(o);
+        if (!p) throw new Error(`node ${o} not located`);
+        pt[o] = p;
+    }
+    const yAll = Object.values(pt).map((p) => p.y);
+    const yLo = Math.min(...yAll) - 80; // well clear of PICK_R/SECTION_PICK_R at every rect corner
+    const yHi = Math.max(...yAll) + 80;
+    const mid = (a: number, b: number): number => (a + b) / 2;
+
+    // ── 1. MARQUEE-select the interior run [2,3,4] (replace) — a rect bounded at the MIDPOINTS to
+    // node 1 and node 5, so it can only ever hit 2/3/4 regardless of the hill's exact shape. ──
+    const xLo1 = mid(pt[1].x, pt[2].x);
+    const xHi1 = mid(pt[4].x, pt[5].x);
+    await marqueeDrag(page, cb.x + xLo1, cb.y + yLo, cb.x + xHi1, cb.y + yHi);
+    await expect.poll(nodeSelOrders).toEqual([2, 3, 4]);
+    expect(await selectedOrder()).toBe(4); // the last hit — the active member (Blender active-object)
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: join(OUT, "multiselect-viewport-marquee.png") });
+
+    // ── 2. SHIFT+MARQUEE a rect bounding node 4 ALONE (midpoints to its two neighbors) toggles it
+    // OUT of the set — the active-promotion rule (the most-recently-added survivor, node 3)
+    // fires through a real gesture, not just the unit suite. the same rect toggles it back IN,
+    // re-activating it. ──
+    const xLo4 = mid(pt[3].x, pt[4].x);
+    const xHi4 = mid(pt[4].x, pt[5].x);
+    await marqueeDrag(page, cb.x + xLo4, cb.y + yLo, cb.x + xHi4, cb.y + yHi, true);
+    await expect.poll(nodeSelOrders).toEqual([2, 3]);
+    expect(await selectedOrder()).toBe(3); // promoted survivor
+    await marqueeDrag(page, cb.x + xLo4, cb.y + yLo, cb.x + xHi4, cb.y + yHi, true);
+    await expect.poll(nodeSelOrders).toEqual([2, 3, 4]);
+    expect(await selectedOrder()).toBe(4); // re-added → active again
+
+    // ── 3. Per-node polar delta: drag the ACTIVE node's real LENGTH knob outward along its own
+    // chord (node 3 → node 4). Every selected node (2, 3, 4) must move — each in its own polar
+    // frame, chained in ascending order — while the untouched nodes on BOTH sides of the run (0, 1
+    // upstream; 5, 6 downstream) hold their authored position exactly: an unselected node's own
+    // control point never moves, only the selected suffix's does (the chain-coupling locality). ──
+    const before = await poses();
+    const lb = await page.locator(".manip-length").boundingBox();
+    if (!lb) throw new Error("length knob not laid out for the multi-selected ring");
+    const lk = { x: lb.x + lb.width / 2, y: lb.y + lb.height / 2 };
+    const rl = Math.hypot(pt[4].x - pt[3].x, pt[4].y - pt[3].y);
+    const ux = (pt[4].x - pt[3].x) / rl;
+    const uy = (pt[4].y - pt[3].y) / rl;
+    await page.mouse.move(lk.x, lk.y);
+    await page.mouse.down();
+    await page.mouse.move(lk.x + ux * 60, lk.y + uy * 60, { steps: 12 });
+    await page.mouse.up();
+    const after = await poses();
+    for (const o of [0, 1, 5, 6]) {
+        expect(after[o][0]).toBeCloseTo(before[o][0], 5);
+        expect(after[o][1]).toBeCloseTo(before[o][1], 5);
+    }
+    for (const o of [2, 3, 4]) {
+        const moved = Math.hypot(after[o][0] - before[o][0], after[o][1] - before[o][1]);
+        expect(moved).toBeGreaterThan(0.05);
+    }
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: join(OUT, "multiselect-viewport-move.png") });
+    await page.keyboard.press("Control+z"); // one entry reverts the whole group
+    await expect.poll(async () => (await poses())[4][0]).toBeCloseTo(before[4][0], 5);
+
+    // ── 4. MARQUEE-select the Delete-able SUFFIX RUN [4,5,6] (reaches the chain end, excludes
+    // node 0, leaves ≥ 2) → right-click a MEMBER (node 5, keeping the set) → the node menu's
+    // Delete row reads ENABLED → a real pointer-true click removes all three in one entry. ──
+    const xLo456 = mid(pt[3].x, pt[4].x);
+    const xHi456 = pt[6].x + (pt[6].x - pt[5].x); // past the chain end, one more gap's worth
+    await marqueeDrag(page, cb.x + xLo456, cb.y + yLo, cb.x + xHi456, cb.y + yHi);
+    await expect.poll(nodeSelOrders).toEqual([4, 5, 6]);
+    await page.mouse.click(cb.x + pt[5].x, cb.y + pt[5].y, { button: "right" });
+    await expect(page.locator(".nodemenu")).toBeVisible();
+    const validDelete = page.locator(".nodemenu").getByRole("menuitem", { name: "Delete" });
+    await expect(validDelete).toBeEnabled();
+    await clickMenuItem(page, ".nodemenu", "Delete");
+    await expect.poll(nodeCount).toBe(4);
+    await expect.poll(nodeSelOrders).toEqual([3]); // pruned to the surviving tip
+    await page.keyboard.press("Control+z");
+    await expect.poll(nodeCount).toBe(7);
+
+    // ── 5. MARQUEE-select an INTERIOR (non-suffix) run [2,3] — contiguous, excludes node 0, but
+    // doesn't reach the chain end — the SAME Delete row reads DISABLED (grayed, never hidden); a
+    // real click on it does nothing (the row is inert, not just visually dim). ──
+    const xLo23 = mid(pt[1].x, pt[2].x);
+    const xHi23 = mid(pt[3].x, pt[4].x);
+    await marqueeDrag(page, cb.x + xLo23, cb.y + yLo, cb.x + xHi23, cb.y + yHi);
+    await expect.poll(nodeSelOrders).toEqual([2, 3]);
+    await page.mouse.click(cb.x + pt[2].x, cb.y + pt[2].y, { button: "right" });
+    await expect(page.locator(".nodemenu")).toBeVisible();
+    const invalidDelete = page.locator(".nodemenu").getByRole("menuitem", { name: "Delete" });
+    await expect(invalidDelete).toBeDisabled();
+    const idb = await invalidDelete.boundingBox();
+    if (idb) await page.mouse.click(idb.x + idb.width / 2, idb.y + idb.height / 2);
+    await expect.poll(nodeCount).toBe(7); // the grayed row did nothing
+    await page.keyboard.press("Escape");
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Drive the TIMELINE MULTISELECT flow (kex2d-multiselect stage 6): seed an airtime force bump →
+// CHART-MARQUEE selects its three interior keyframes (a real rect drag on the chartzone, excluding
+// the two continuation seeds at the section's own bounds) → a per-diamond SHIFT-CLICK toggles the
+// active member out (promoting the survivor) and back in → a plain-click MULTI-DRAG grabbed on a
+// non-active member applies the SAME shared Δs to the whole set, RIGID-CLAMPED so the tightest
+// member (nearest the section's own extent) bounds the whole group — the AE comp-start block,
+// offsets preserved, then undoes clean as one entry → a right-click keeps the set and the Easing ▸
+// menu's bulk preset applies to every selected NON-TERMINAL keyframe in one entry, leaving the two
+// unselected seeds at their default tag. Every gesture is a real pointer drag/click, located via
+// the diamonds' own laid-out boxes (`.fhit`); `forceSelIds`/`forceSelActive`/`forces`/`forceEases`
+// are read-only asserts.
+test("timeline multiselect flow", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
+    const forceSelIds = () => page.evaluate((): number[] => (window as any).__kex.forceSelIds());
+    const forceSelActive = () =>
+        page.evaluate((): number | null => (window as any).__kex.forceSelActive());
+    const forces = () =>
+        page.evaluate((): { s: number; g: number }[] => (window as any).__kex.forces());
+    const forceEases = () => page.evaluate((): number[] => (window as any).__kex.forceEases());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+
+    await page.evaluate(() => (window as any).__kex.seedForceBump());
+    await expect.poll(forceCount).toBe(5); // the two continuation seeds + the three bump points
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    await frameTimeline(page); // the whole section on-screen for exact diamond boxes
+
+    const fpt = page.locator(".fpt");
+    await expect(fpt).toHaveCount(5);
+    const fhit = page.locator(".fhit");
+    const fhitCenter = async (i: number): Promise<{ cx: number; cy: number }> => {
+        const b = await fhit.nth(i).boundingBox();
+        if (!b) throw new Error(`force point ${i} not laid out`);
+        return { cx: b.x + b.width / 2, cy: b.y + b.height / 2 };
+    };
+    const b0 = await fhitCenter(0); // the leading seed (s=0)
+    const b1 = await fhitCenter(1); // shoulder (s=0.2·len)
+    const b2 = await fhitCenter(2); // the airtime crest (s=0.5·len)
+    const b3 = await fhitCenter(3); // shoulder (s=0.8·len)
+    const b4 = await fhitCenter(4); // the trailing seed (s=len)
+    const bodyBox = await page.locator(".dock .body").boundingBox();
+    if (!bodyBox) throw new Error("timeline body not laid out");
+    const mid = (a: number, b: number): number => (a + b) / 2;
+    const CHART_TOP = 46; // RULER_H (26) + GAP_H (20) — Timeline.svelte, the chartzone's own top
+    const CHART_BOT_PAD = 8; // BOT_PAD
+
+    // ── 1. CHART-MARQUEE the three interior keyframes: x bounded at the midpoints to the two
+    // seeds, y spans the chartzone's own inner band (only x needs to exclude the seeds — they
+    // sit at the section's own bounds, well outside the interior x-range regardless of g). ──
+    const xLo = mid(b0.cx, b1.cx);
+    const xHi = mid(b3.cx, b4.cx);
+    const chartTop = bodyBox.y + CHART_TOP + 4;
+    const chartBot = bodyBox.y + bodyBox.height - CHART_BOT_PAD - 4;
+    await marqueeDrag(page, xLo, chartTop, xHi, chartBot);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(3);
+    for (const i of [1, 2, 3]) await expect(fpt.nth(i)).toHaveClass(/sel/);
+    for (const i of [0, 4]) await expect(fpt.nth(i)).not.toHaveClass(/sel/);
+    await expect(fpt.nth(3)).toHaveClass(/active/); // the last hit — the active member
+    const active1 = await forceSelActive();
+    expect(active1).not.toBeNull();
+    expect(await forceSelIds()).toContain(active1); // the active member is always a set member
+    await page.waitForTimeout(200);
+    if (page.viewportSize())
+        await page.screenshot({
+            path: join(OUT, "multiselect-timeline-marquee.png"),
+            clip: {
+                x: 0,
+                y: (page.viewportSize()?.height ?? 0) - 340,
+                width: page.viewportSize()?.width ?? 0,
+                height: 340,
+            },
+        });
+
+    // ── 2. SHIFT-CLICK the ACTIVE diamond (the s=0.8·len shoulder) toggles it OUT — the survivor
+    // (the crest) promotes active — then the SAME shift-click toggles it back IN, re-activating. ──
+    await page.keyboard.down("Shift");
+    await page.mouse.click(b3.cx, b3.cy);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(2);
+    await expect(fpt.nth(3)).not.toHaveClass(/sel/);
+    await expect(fpt.nth(2)).toHaveClass(/active/); // promoted survivor
+    await page.keyboard.down("Shift");
+    await page.mouse.click(b3.cx, b3.cy);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(3);
+    await expect(fpt.nth(3)).toHaveClass(/sel/);
+    await expect(fpt.nth(3)).toHaveClass(/active/); // re-added → active again
+
+    // ── 3. MULTI-DRAG, RIGID CLAMP: grab the CREST (a member, but NOT the active one — a plain
+    // click on a set member drags the whole block without collapsing it) and drag it FAR right —
+    // past the tightest member's own room. the shared Δs clamps to that member's own [0, len]: the
+    // s=0.8·len shoulder has the least room (0.2·len), so it lands EXACTLY at the section's extent
+    // while every member's OFFSET from the others is preserved (the AE comp-start block); the two
+    // unselected seeds never move. ──
+    const before = await forces();
+    const clipBox = await page.locator(".clip").first().boundingBox();
+    if (!clipBox) throw new Error("force clip not laid out");
+    await page.mouse.move(b2.cx, b2.cy);
+    await page.mouse.down();
+    // 0.4·clipWidth ≈ 0.4·len in s — well past the tightest member's 0.2·len room, but still well
+    // inside the clip's own box (so the pointer never leaves the viewport).
+    await page.mouse.move(b2.cx + clipBox.width * 0.4, b2.cy, { steps: 12 });
+    await page.mouse.up();
+    const after = await forces();
+    expect(after[0]).toEqual(before[0]); // the leading seed never moved — no tie possible at s=0
+    const ds = after[1].s - before[1].s; // the shoulder's shift — unambiguous, nothing ties here
+    expect(ds).toBeGreaterThan(2); // a real, clamped-but-substantial shift
+    expect(after[2].s - before[2].s).toBeCloseTo(ds, 5); // the crest — the SAME shared offset
+    const len = before[4].s; // the section's own extent, read off the pre-drag (unambiguous) snapshot
+    // the clamp binds EXACTLY at the tightest member's own room: its pre-drag distance to the
+    // extent equals the shared delta (the definition of "the tightest member bounds the group").
+    // asserted algebraically, not by re-reading a POST-drag index — the clamped member now sits at
+    // s = len, tied with the untouched trailing seed (also at len), so `after`'s sort order between
+    // that pair is no longer determined by identity (a stable sort ties on the ORIGINAL entity
+    // order, not which one is "the seed") — exactly the spec's accepted "no auto-merge, coincident
+    // points keep current engine behavior".
+    expect(before[3].s + ds).toBeCloseTo(len, 3);
+    const atLen = after.filter((p) => Math.abs(p.s - len) < 1e-3);
+    expect(atLen.length).toBe(2); // the seed AND the clamped member now coincide — no auto-merge
+    expect(atLen.some((p) => Math.abs(p.g - before[4].g) < 1e-6)).toBe(true); // the seed's g survived
+    await page.keyboard.press("Control+z"); // one entry reverts the whole group
+    await expect.poll(async () => (await forces())[3].s).toBeCloseTo(before[3].s, 3);
+
+    // ── 4. BULK EASING: right-click a member (the crest, keeping the set) → the Easing ▸ preset
+    // applies to every SELECTED NON-TERMINAL keyframe (all three interior points — none is the
+    // section's last) in one entry; the two UNSELECTED seeds keep their default tag. ──
+    expect((await forceEases())[1]).toBe(1); // Easing.Cubic, the fresh-seed default
+    await page.mouse.click(b2.cx, b2.cy, { button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await clickFlyout(page, ".fmenu", "Easing", "Quintic");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    const eased = await forceEases();
+    expect(eased[1]).toBe(2); // Easing.Quintic — the s=0.2·len shoulder, bulk-applied
+    expect(eased[2]).toBe(2); // the crest
+    expect(eased[3]).toBe(2); // the s=0.8·len shoulder
+    expect(eased[0]).toBe(1); // the leading seed — NOT selected, untouched
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await forceEases())[1]).toBe(1);
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
