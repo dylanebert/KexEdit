@@ -36,12 +36,25 @@ function overlaps(a: Rect, b: Rect): boolean {
     );
 }
 
-// Await one PROJECTED frame. The app writes its DOM from a per-RAF tick, so a value produced by a
-// pointer event is readable only after a real frame has run — the honest form of "let the per-RAF
-// tick project the readout". Two rAFs per frame: the first runs the tick, the second lands after
-// the DOM write it schedules.
+// Await `n` PROJECTED frames — 2n rAF callbacks, so 2n real frames. The app writes its DOM from a
+// per-RAF tick, so a value produced by a pointer event is readable only one callback after the tick
+// that computed it: the first callback runs the tick, the second lands after the DOM write it
+// schedules. That pair is the unit here, hence the doubling — a caller measuring *app* frames
+// (per-frame growth, say) wants half the number it would otherwise write.
+//
+// Raced against a wall clock: a stalled rAF (an occluded or throttled headless page) would
+// otherwise hang to the 60s test timeout with nothing to read. The budget is generous — this is a
+// wedge detector, never a timing assert.
 function frames(page: Page, n = 1): Promise<void> {
-    return page.evaluate(
+    const budget = 5000 + n * 100;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stalled = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+            () => reject(new Error(`rAF stalled: ${n} frames never ran in ${budget}ms`)),
+            budget,
+        );
+    });
+    const ran = page.evaluate(
         (k: number) =>
             new Promise<void>((resolve) => {
                 let left = k * 2;
@@ -53,6 +66,7 @@ function frames(page: Page, n = 1): Promise<void> {
             }),
         n,
     );
+    return Promise.race([ran, stalled]).finally(() => clearTimeout(timer));
 }
 
 // Where a canvas node sits on the page, waited to a real POST-BAKE value.
@@ -68,16 +82,23 @@ function frames(page: Page, n = 1): Promise<void> {
 // origin is exactly the condition the pointer needs, so poll for it and never cache a node point
 // across an edit.
 async function nodePoint(page: Page, order: number): Promise<{ x: number; y: number }> {
-    const read = (): Promise<{ x: number; y: number } | null> =>
-        page.evaluate((o: number): { x: number; y: number } | null => {
-            const kex = (window as any).__kex;
-            const p = kex.nodeAt(o);
-            const origin = kex.startAt();
-            if (!p || !origin) return null;
-            return Math.hypot(p.x - origin.x, p.y - origin.y) > 1 ? p : null;
-        }, order);
-    await expect.poll(read).not.toBeNull();
-    const pt = await read();
+    // the polled read is the one that gets RETURNED — re-reading after the poll would hand back a
+    // second, unvalidated evaluation (a fresh edit landing between the two is exactly the stale
+    // point this helper exists to prevent).
+    let seen: { x: number; y: number } | null = null;
+    await expect
+        .poll(async () => {
+            seen = await page.evaluate((o: number): { x: number; y: number } | null => {
+                const kex = (window as any).__kex;
+                const p = kex.nodeAt(o);
+                const origin = kex.startAt();
+                if (!p || !origin) return null;
+                return Math.hypot(p.x - origin.x, p.y - origin.y) > 1 ? p : null;
+            }, order);
+            return seen !== null;
+        })
+        .toBe(true);
+    const pt: { x: number; y: number } | null = seen;
     if (!pt) throw new Error(`node ${order} never left the track origin — the bake never landed`);
     return pt;
 }
@@ -101,6 +122,42 @@ async function seedHill(page: Page): Promise<void> {
     await expect.poll(tTotal).not.toBe(flat); // …and now the hill's
 }
 
+// The page-coordinate center of a selected node's polar manipulator knob, waited to a box that
+// really belongs to THAT node.
+//
+// The ring's knob buttons are DOM, positioned from the per-RAF tick — so when the selection MOVES
+// from one node to another, `.manip-*` keeps the PREVIOUS node's ring position for a frame while
+// `__kex.selectedOrder` already answers with the new one (selection is written synchronously). A box
+// read on that evidence is hundreds of px away (measured: 573 px, exactly the old node's ring), and
+// pressing there lands on empty canvas — an armed marquee, which DESELECTS on release. That is the
+// geo flow's vanishing `.snap-readout`: 4/10 failures at 4 workers, and the drag never touched the
+// knob at all. `.rbtn.manip` centers on its ring point, so "on this node's ring" is the honest
+// condition; it also subsumes the appear-from-nothing case Playwright's own auto-wait covers.
+const RING_REACH = 70; // radial.ts RADIAL_R (46) + the button's own 15px radius, with slack
+async function knobCenter(
+    page: Page,
+    cb: { x: number; y: number },
+    order: number,
+    axis: "length" | "angle",
+): Promise<{ x: number; y: number }> {
+    const n = await nodePoint(page, order);
+    const knob = page.locator(`.manip-${axis}`);
+    let seen: { x: number; y: number } | null = null;
+    await expect
+        .poll(async () => {
+            const b = await knob.boundingBox();
+            if (!b) return false;
+            const c = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+            if (Math.hypot(c.x - (cb.x + n.x), c.y - (cb.y + n.y)) > RING_REACH) return false;
+            seen = c;
+            return true;
+        })
+        .toBe(true);
+    const c: { x: number; y: number } | null = seen;
+    if (!c) throw new Error(`the ${axis} knob never landed on node ${order}'s ring`);
+    return c;
+}
+
 // Appending a section PANS the timeline to reveal the new clip — the x-axis is a document
 // axis, so a content edit never rescales/refits it (kex2d-ux-foundations stage C). The
 // overflowing track then scrolls earlier clips off-screen, so this frames the whole chain
@@ -112,13 +169,18 @@ async function frameTimeline(page: Page): Promise<void> {
     if (!bb) throw new Error("timeline body not laid out");
     await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height * 0.7); // over the chart body
     await page.mouse.wheel(0, 3000); // deltaY ≫ 0 → zoom out, floored at the whole-track fit
-    // "framed" IS the condition the callers need: the wheel writes `view` synchronously but the
-    // clip boxes only move on the next tick, and the positional `.clip.nth()` locators below
-    // require every section on-screen. So poll the last clip's right edge back inside the body —
-    // already true when the track was fitted before the wheel, so it costs nothing then.
+    // "every section on-screen" IS the condition the positional `.clip.nth()` locators need, and it
+    // takes BOTH halves: the wheel writes `view` synchronously, but the clip LIST is projected by
+    // the per-RAF tick and a clip outside the view is culled from the DOM entirely — so right after
+    // an append `.clip.last()` still names the OLD last clip and its right edge says nothing about
+    // the new one. Poll the clip count up to the real section count first, THEN the last clip's
+    // right edge back inside the body.
+    const sections = await page.evaluate((): number => (window as any).__kex.sectionCount());
+    const clips = page.locator(".clip");
     await expect
         .poll(async () => {
-            const last = await page.locator(".clip").last().boundingBox();
+            if ((await clips.count()) !== sections) return false;
+            const last = await clips.last().boundingBox();
             return last !== null && last.x + last.width <= bb.x + bb.width;
         })
         .toBe(true);
@@ -241,6 +303,7 @@ test("geo authoring flow", async ({ page }) => {
     await page.keyboard.press("Enter");
     await expect.poll(nodeCount).toBe(8);
     expect(await undoDepth()).toBe(1);
+    await page.waitForTimeout(SHOT_MS); // the clip strip re-projects per RAF — settle before the shot
     await page.screenshot({ path: join(OUT, "geo-1-extend.png") });
 
     // ── 2. Undo: Ctrl+Z drops the extended node, clearing the entry. ──
@@ -253,7 +316,11 @@ test("geo authoring flow", async ({ page }) => {
     // select-only — a drag across it selects but never moves the node; (b) the LENGTH knob is a real
     // `.rbtn` button (feel round 6) — pressing it and dragging along the chord lengthens it, re-baking
     // the recovered force. Located by its real DOM box (pointer-true), not by canvas coords. ──
-    await page.keyboard.press("f"); // hover defaults to the viewport, so `f` routes there
+    // `f` frames the hovered surface; hover defaults to the viewport, so it routes there. Nothing
+    // is awaited after it anywhere in this file: `frameViewport` writes the camera singleton
+    // synchronously, and every screen point below (`__kex.nodeAt`/`startAt`) reads that same
+    // singleton — not a projected DOM value.
+    await page.keyboard.press("f");
 
     const canvas = page.locator("#app > canvas");
     const cb = await canvas.boundingBox();
@@ -281,9 +348,7 @@ test("geo authoring flow", async ({ page }) => {
     // real pointerdown on the button's own box, then a real drag; the button captures on the canvas.
     const tBefore = await tTotal();
     const n2 = await nodePoint(page, 2);
-    const lb = await page.locator(".manip-length").boundingBox();
-    if (!lb) throw new Error("length knob button not laid out");
-    const lk = { x: lb.x + lb.width / 2, y: lb.y + lb.height / 2 }; // the button center (page coords)
+    const lk = await knobCenter(page, cb, 3, "length"); // the button center (page coords)
     const rl = Math.hypot(n3.x - n2.x, n3.y - n2.y);
     const ux = (n3.x - n2.x) / rl;
     const uy = (n3.y - n2.y) / rl; // the chord ray screen direction; dragging along it lengthens it
@@ -315,9 +380,9 @@ test("geo authoring flow", async ({ page }) => {
     const tipPos = await nodePoint(page, 6); // the chain end (7 nodes → order 6)
     await page.mouse.click(cb.x + tipPos.x, cb.y + tipPos.y); // select the tip → its knobs summon
     await expect.poll(selectedOrder).toBe(6);
-    const ab = await page.locator(".manip-angle").boundingBox();
-    if (!ab) throw new Error("angle knob not laid out");
-    const ak = { x: ab.x + ab.width / 2, y: ab.y + ab.height / 2 };
+    // the selection just moved off node 3, so the knob box has to be waited onto THIS node's ring
+    // (`knobCenter`) — the stale box is empty canvas, and pressing it deselects on release.
+    const ak = await knobCenter(page, cb, 6, "angle");
     await page.mouse.move(ak.x, ak.y);
     await page.mouse.down();
     await page.mouse.move(ak.x + 28, ak.y - 28, { steps: 10 }); // rotate the tip to a snapped incline
@@ -373,9 +438,7 @@ test("geo authoring flow", async ({ page }) => {
     const interiorPos = await nodePoint(page, 3); // an interior node of the seeded hill
     await page.mouse.click(cb.x + interiorPos.x, cb.y + interiorPos.y);
     await expect.poll(selectedOrder).toBe(3);
-    const iab = await page.locator(".manip-angle").boundingBox();
-    if (!iab) throw new Error("interior angle knob not laid out");
-    const iak = { x: iab.x + iab.width / 2, y: iab.y + iab.height / 2 };
+    const iak = await knobCenter(page, cb, 3, "angle"); // waited onto node 3's own ring
     await page.mouse.move(iak.x, iak.y);
     await page.mouse.down();
     await page.mouse.move(iak.x + 26, iak.y + 26, { steps: 10 }); // rotate the interior node
@@ -575,7 +638,6 @@ test("start handle edit flow", async ({ page }) => {
     // separates at pixel scale (hover defaults to the viewport, so `f` routes there).
     await expect.poll(tTotal).toBeGreaterThan(0);
     await page.keyboard.press("f");
-    await frames(page); // `frameViewport` writes the camera synchronously; one tick paints it
 
     const canvas = page.locator("#app > canvas");
     const cb = await canvas.boundingBox();
@@ -694,6 +756,7 @@ test("force authoring flow", async ({ page }) => {
     // seed a shaped geo track so the convert inherits a real arclength.
     await seedHill(page);
     expect(await kind()).toBe(0); // TrackKind.Geo
+    const tGeo = await tTotal(); // the hill's own bake — the convert's shot waits for this to MOVE
 
     // ── 1. Convert to force via the real section context menu (right-click the clip →
     // "Convert to Force") → stage B seeds two continuation keyframes at the recovered entry
@@ -709,7 +772,9 @@ test("force authoring flow", async ({ page }) => {
         { s: 0, g: 1 }, // (0, F_entry) — F_entry = DEFAULT_G, the track-start fallback
         { s: 24, g: 1 }, // (length, F_entry) — length = DEFAULT_FORCE_LEN (EXTEND_DIST)
     ]);
-    await expect.poll(tTotal).toBeGreaterThan(0); // the flat force track baked
+    // the flat force track BAKED — `tTotal > 0` was already true of the pre-convert geo bake, so
+    // only a CHANGE proves the shot below shows the converted track (the bake-readiness law).
+    await expect.poll(tTotal).not.toBe(tGeo);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "force-1-empty.png") });
 
@@ -1419,10 +1484,14 @@ test("context menu stays in the viewport near the bottom edge", async ({ page })
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
     // seed a force section with an airtime bump → keyframes spanning the g-range, so the 0g crest
-    // sits LOW in the chart (near the viewport bottom, where its menu would overflow).
+    // sits LOW in the chart (near the viewport bottom, where its menu would overflow). the bump's
+    // own bake is what the diamonds are read off, and `tTotal > 0` is satisfied by the FLAT SEED's
+    // bake (already landed on load), so wait out the flat one and then for it to CHANGE.
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    const tFlat = await tTotal();
     await page.evaluate(() => (window as any).__kex.seedForceBump());
     await expect.poll(forceCount).toBeGreaterThanOrEqual(3);
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await expect.poll(tTotal).not.toBe(tFlat);
     await frameTimeline(page); // whole force section on-screen so every diamond has a DOM box
     const nPts = await forceCount();
     await expect(page.locator(".fpt")).toHaveCount(nPts);
@@ -1498,9 +1567,13 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
     const gRange = () => page.evaluate((): [number, number] => (window as any).__kex.gRange());
 
     // seed a force bump → an interior shoulder keyframe (nth 1) whose OUT handle has room downward.
+    // the flat seed already bakes `tTotal > 0` on load, so wait it out and then for the bump's own
+    // bake to CHANGE it — the diamonds below are read off that bake.
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    const tFlat = await tTotal();
     await page.evaluate(() => (window as any).__kex.seedForceBump());
     await expect.poll(forceCount).toBeGreaterThanOrEqual(3);
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await expect.poll(tTotal).not.toBe(tFlat);
     await frameTimeline(page);
 
     const body = await page.locator(".dock .body").boundingBox();
@@ -1529,8 +1602,8 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
     await page.mouse.down();
     await page.mouse.move(knobX, chartBotY + 140, { steps: 8 }); // straight down, past the bottom, HELD
     await expect.poll(async () => (await gRange())[0]).toBeCloseTo(GROW_LO, 3); // grew down to the cap
-    await frames(page, 24); // …held past the edge for 24 more frames (growth compounds per FRAME,
-    // so frames — not milliseconds — are the unit this hold is measured in)…
+    await frames(page, 12); // …held past the edge for 24 more frames (`frames` awaits 2n of them;
+    // growth compounds per FRAME, so frames — not milliseconds — are this hold's unit)…
     expect((await gRange())[0]).toBeCloseTo(GROW_LO, 3); // …and stopped there, never past it
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
@@ -1566,13 +1639,21 @@ test("multi-section flow", async ({ page }) => {
 
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
     const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
     await seedHill(page);
     expect(await sectionCount()).toBe(1);
 
-    // ── 1. Append a geo section, then convert it to force → a mixed geo→force chain. ──
+    // ── 1. Append a geo section, then convert it to force → a mixed geo→force chain. the convert
+    // seeds its keyframes from the RECOVERED ENTRY FORCE, which `sectionInfo` only carries once the
+    // appended section is in the bake — and the section COUNT is satisfied the instant `append`
+    // returns, a frame earlier (the bake-readiness law). Racing it seeds `DEFAULT_G` or the
+    // recovered force by coin flip, and `sections-mixed.png` flips with it. So wait for the bake
+    // itself to move. ──
+    const tGeo = await tTotal();
     await page.evaluate(() => (window as any).__kex.append(0)); // SectionKind.Geo
     await expect.poll(sectionCount).toBe(2);
+    await expect.poll(tTotal).not.toBe(tGeo); // the appended section is IN the bake
     await page.evaluate(() => (window as any).__kex.convertAt(1));
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
     await page.waitForTimeout(SHOT_MS);
@@ -2202,9 +2283,16 @@ test("viewport multiselect flow", async ({ page }) => {
 
     // every draggable node's screen point (orders 1-6; order 0 is the pinned entry anchor, never
     // a marquee target) — the rects below are computed from these EXACT points, never guessed
-    // pixels, so a marquee's boundary can only ever hit the nodes it's meant to.
+    // pixels, so a marquee's boundary can only ever hit the nodes it's meant to. A snapshot restore
+    // (every undo below) DESTROYS and respawns these nodes, and the map they're picked through
+    // (`Handle.sample`) is rebuilt a frame later — so a cached point goes stale exactly when the
+    // next marquee or right-click is about to use it. Re-locate through `nodePoint` (which waits the
+    // re-bake out) after every respawning op; never reuse a point across one.
     const pt: Record<number, { x: number; y: number }> = {};
-    for (let o = 1; o <= 6; o++) pt[o] = await nodePoint(page, o);
+    const locate = async (): Promise<void> => {
+        for (let o = 1; o <= 6; o++) pt[o] = await nodePoint(page, o);
+    };
+    await locate();
     const yAll = Object.values(pt).map((p) => p.y);
     const yLo = Math.min(...yAll) - 80; // well clear of PICK_R/SECTION_PICK_R at every rect corner
     const yHi = Math.max(...yAll) + 80;
@@ -2282,6 +2370,7 @@ test("viewport multiselect flow", async ({ page }) => {
     await page.screenshot({ path: join(OUT, "multiselect-viewport-move.png") });
     await page.keyboard.press("Control+z"); // one entry reverts the whole group
     await expect.poll(async () => (await poses())[4][0]).toBeCloseTo(before[4][0], 5);
+    await locate(); // the undo respawned every node — re-locate before the next pointer gesture
 
     // ── 4. MARQUEE-select the Delete-able SUFFIX RUN [4,5,6] (reaches the chain end, excludes
     // node 0, leaves ≥ 2) → right-click a MEMBER (node 5, keeping the set) → the node menu's
@@ -2298,7 +2387,8 @@ test("viewport multiselect flow", async ({ page }) => {
     await expect.poll(nodeCount).toBe(4);
     await expect.poll(nodeSelOrders).toEqual([3]); // pruned to the surviving tip
     await page.keyboard.press("Control+z");
-    await expect.poll(nodeCount).toBe(7);
+    await expect.poll(nodeCount).toBe(7); // the count is satisfied by the synchronous restore…
+    await locate(); // …and this waits out the re-bake that rebuilds the points
 
     // ── 5. MARQUEE-select an INTERIOR (non-suffix) run [2,3] — contiguous, excludes node 0, but
     // doesn't reach the chain end — the SAME Delete row reads DISABLED (grayed, never hidden); a
