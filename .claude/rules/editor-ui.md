@@ -148,6 +148,53 @@ copies this shape:
   gesture completely — revert the bracketed edit, clear guides and capture. No guide may exist
   without a live, threshold-crossed drag.
 
+## Multiselect
+
+The consensus grammar, compiled from Figma / Blender / AE / Unity / Premiere / Godot official
+behavior (2026-07). kex2d is the worked example; any editor surface with selection copies this
+shape:
+
+- **Shift-click = toggle membership**, on every selectable target on every surface. Click empty =
+  deselect all. Delete acts on the whole selection. **Ctrl/Cmd stays unbound for selection** — it's
+  the snap-bypass modifier, and the reference camps disagree incompatibly on what a Ctrl-click
+  should mean (add vs deep-select vs interpolation-toggle).
+- **Marquee = bare left-drag on empty space** (pan never lives on left-drag; free the gesture the
+  way every reference does). Shift+marquee toggles each hit. Point-in-rect over the *authoring
+  atoms* only (draggable nodes, keyframe diamonds — never pinned anchors, START, or section spans);
+  crosses section boundaries freely; below `DRAG_PX` the press stays a click. **A gesture sharing a
+  surface with a dblclick handler takes pointer capture only past the dead zone** — capture at
+  pointerdown retargets the compatibility click stream and silently kills two-click accumulation.
+- **Set + active member** (Blender's active object; Unity's `activeGameObject`): selection is a
+  per-kind set with the last-selected member active; single-select is the size-1 case — one
+  substrate, never a parallel multi path beside scalar selections. Kinds stay mutually exclusive.
+  Edit sub-modes (tangent/handle edit) collapse the selection to their one subject on entry.
+  Removing the active promotes the **last-inserted survivor**. Scalar accessors read the active.
+- **Promote vs replace**: a click, grab, or right-click on a set member keeps the set and promotes
+  the member to active; on a non-member it replace-selects. One rule across menus and drag anchors.
+- **Multi context UI** (settled by hand across three feel rounds): the viewport shows **no
+  contextual controls** on a multi-set — ring, knobs, and readout all hide; single-select context on
+  a multi selection is invalid. The timeline keeps the active point's popover exactly as
+  single-select. No shared-delta readout, no count chip, no Mixed sentinel — AE shows nothing extra
+  for a multi-keyframe selection; the members' highlight with the active set apart is the multi
+  feedback.
+- **Inapplicable bulk rows gray, never hide** (`MenuItem.enabled`); enablement is a pure,
+  unit-tested predicate. Esc clears the whole set as one dismissal rung, not N.
+- **Multi-drag = one shared delta, offsets preserved exactly** (universal, all keyframe editors).
+  Snap resolves on the grabbed anchor first; the **rigid group clamp applies last and wins** (the
+  tightest in-bounds member stops the block; a member already out of its own bounds is excluded
+  from the binding set and rides its own outer clamp). A clamp that overrides the anchor's snap
+  drops the snap guide. Every member writes from its gesture-start snapshot — never accumulate
+  increments.
+- **Geo group move = the same Δlength/Δangle applied per node in its own polar frame** (Blender's
+  Individual Origins), the snap quantizing the *delta*, Ctrl bypassing. Ascending chain walk with a
+  running-prev anchor inside one pass; the gesture **reads from a frozen gesture-start chain
+  snapshot and writes live** — re-reading moved positions under cumulative-from-start deltas
+  compounds the delta and runs away. Angle delta is chord rotation, not incline (no single incline
+  reference exists across a set). Reached by arrow-nudge only, per the context-UI law above.
+- **History**: one undo entry per bulk op or gesture; single-op gestures generalize to sets; the
+  selection hook snapshots the whole set by stable forms plus the active, and restores across
+  entity-id recycle.
+
 ## Tangent editing
 
 The worked example of the layered-expressiveness contract's summoned inner layer (kex2d
