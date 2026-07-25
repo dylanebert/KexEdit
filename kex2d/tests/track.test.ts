@@ -55,6 +55,7 @@ import {
     redo,
     setForcesEase,
     setForceTangentMode as setForceTangentModeCmd,
+    trimTrack as trimTrackCmd,
     undo,
 } from "../src/history";
 import { DEFAULT_G, Easing } from "../src/profile";
@@ -290,11 +291,12 @@ describe("BakeSystem", () => {
         expect(out.fN[0]).not.toBe(999); // hash miss → re-baked
     });
 
-    test("an op and its undo between two frames still resync the node→sample map", () => {
-        // a restore destroys and respawns the section's nodes (`Handle.sample` back to
-        // 0), and the restored authored state hashes exactly like the live bake — so a
-        // hash-only gate skips forever and every node reads sample 0 (the whole track
-        // picks at the origin). the restore must force the next bake.
+    test("any op that respawns nodes resyncs the node→sample map (restore, convert, trim+extend)", () => {
+        // respawning a node resets its `Handle.sample` to 0, and content that round-trips
+        // within one frame hashes exactly like the live bake — so a hash-only gate skips
+        // forever and every respawned node reads sample 0 (the whole track picks at the
+        // origin). every node creator must force the next bake, not just the restore paths:
+        // an op+undo pair, a geo→force→geo convert, and a trim+extend pairing all land here.
         const { state, eid, sec } = track();
         addNode(state, sec, 40, 4);
         state.step(0);
@@ -322,6 +324,34 @@ describe("BakeSystem", () => {
             expect(s.posX[i]).toBeCloseTo(Handle.pos.x.get(n), 4);
             expect(s.posY[i]).toBeCloseTo(Handle.pos.y.get(n), 4);
         }
+
+        // convertSection path: geo→force→geo with no frame between rebuilds the IDENTICAL
+        // flat seed, so the round-tripped hash matches the live one.
+        const flat = track();
+        flat.state.step(0);
+        const seeded = sectionHandles(flat.state, flat.sec).map((h) => Handle.sample.get(h));
+        expect(seeded[seeded.length - 1]).toBeGreaterThan(0);
+        convertSection(flat.state, flat.sec); // geo → force (the nodes are destroyed)
+        convertSection(flat.state, flat.sec); // force → geo (respawned as the same flat seed)
+        flat.state.step(0);
+        expect(sectionHandles(flat.state, flat.sec).map((h) => Handle.sample.get(h))).toEqual(
+            seeded,
+        );
+
+        // forward pairing (no undo involved): trim the tip and extend it straight back inside
+        // one frame — Del-then-Enter, key-repeat reachable — and the chain is identical again.
+        const grown = track();
+        extend(grown.state, grown.sec);
+        grown.state.step(0);
+        const tip = sectionHandles(grown.state, grown.sec).map((h) => Handle.sample.get(h));
+        expect(tip[tip.length - 1]).toBeGreaterThan(0);
+        const h2 = createHistory();
+        trimTrackCmd(h2, grown.state, grown.sec);
+        extendTrackCmd(h2, grown.state, grown.sec);
+        grown.state.step(0);
+        expect(sectionHandles(grown.state, grown.sec).map((h) => Handle.sample.get(h))).toEqual(
+            tip,
+        );
     });
 
     test("a steep straight climb beyond the energy budget flags downstream infeasible", () => {

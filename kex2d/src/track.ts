@@ -492,6 +492,7 @@ export function addNode(ecs: State, sectionId: number, x: number, y: number): nu
     Handle.sample.set(eid, 0);
     Handle.pos.set(eid, x, y);
     writeTangent(eid, undefined); // a fresh node is Auto — the arc rule (the live growth tip)
+    invalidateBake(ecs);
     if (prev === null) {
         Handle.theta.set(eid, 0); // node 0 is a fixed local flat anchor (the entry)
     } else {
@@ -558,6 +559,7 @@ export function spawnNode(
     Handle.pos.set(eid, x, y);
     Handle.theta.set(eid, theta);
     writeTangent(eid, tan);
+    invalidateBake(ecs);
     return eid;
 }
 
@@ -1064,15 +1066,15 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.length.set(eid, snap.length);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
-    invalidateBake(ecs);
 }
 
 /** force the next `BakeSystem` pass to bake, whatever the authored state hashes to.
- *  a restore respawns nodes with `Handle.sample` at 0, and the restored state can hash
- *  exactly like the live bake (an op and its undo landing between two frames) — the
- *  hash gate would then skip forever and leave the node→sample map reading the track
- *  origin, so `pickNode`/`nodeAt` see every node stacked at sample 0. `bakeHash` never
- *  produces "", so this can't collide with a real state. */
+ *  called by the two node creators (`addNode`/`spawnNode`), so ANY respawn invalidates:
+ *  a fresh node's `Handle.sample` is 0, and authored content that round-trips inside one
+ *  frame hashes exactly like the live bake (an op and its undo, a geo→force→geo convert, a
+ *  trim then extend) — the hash gate would then skip forever and leave the node→sample map
+ *  reading the track origin, so `pickNode`/`nodeAt` see every node stacked at sample 0.
+ *  `bakeHash` never produces "", so this can't collide with a real state. */
 function invalidateBake(ecs: State): void {
     for (const t of ecs.query([Track])) {
         const out = bakeOut.get(t);
@@ -1171,7 +1173,6 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
         for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
     }
-    invalidateBake(ecs);
 }
 
 /** append a new section of `kind` at the end of the chain. geo gets the flat
