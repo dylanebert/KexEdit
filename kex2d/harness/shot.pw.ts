@@ -18,7 +18,19 @@ const OUT = process.env.KEX_OUT ?? "shots";
 // easing token). Nothing deterministic is bought past that — the cart LOOPS, so the scene never
 // settles — so this is used only immediately before a screenshot. Every other wait here is a
 // condition (`coding.md` forbids sleep-as-condition-wait).
-const SHOT_MS = Number(process.env.KEX_SHOT_MS ?? "300");
+//
+// Validated, not coerced: `Number("")` is 0 (which silently kills every settle) and garbage is NaN
+// (which reaches `waitForTimeout` as a NaN delay). `capture.ts` forwards a validated value; this
+// guard covers a direct `playwright test` run.
+function settleMs(): number {
+    const raw = process.env.KEX_SHOT_MS;
+    if (raw === undefined) return 300;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0)
+        throw new Error(`KEX_SHOT_MS must be a non-negative integer (got ${JSON.stringify(raw)})`);
+    return n;
+}
+const SHOT_MS = settleMs();
 
 // window.__kex is the DEV harness hook (src/main.ts); the harness is outside the project
 // tsconfig, so these page-context reads use `any` freely.
@@ -69,18 +81,24 @@ function frames(page: Page, n = 1): Promise<void> {
     return Promise.race([ran, stalled]).finally(() => clearTimeout(timer));
 }
 
-// Where a canvas node sits on the page, waited to a real POST-BAKE value.
+// Where a canvas node sits on the page, waited to a real POST-BAKE value — for ops that RESPAWN
+// nodes, and only those.
 //
 // `__kex.nodeAt` resolves a node through `Handle.sample` — the bake's node→sample map — and
 // `controls.ts`'s `pickNode` shares that lookup. Raw setup pokes (`seedHill`) and every snapshot
-// restore (an undo, a delete) land SYNCHRONOUSLY, but the map they invalidate is only rebuilt when
-// `BakeSystem` runs on the next frame; until then a freshly spawned handle's `sample` still reads 0,
-// so EVERY node reports the track origin. `nodeCount` and `tTotal > 0` are both satisfied by the
-// synchronous write, so neither is a bake-readiness condition — a right-click placed on their
-// evidence lands on empty space and opens no menu (the `.nodemenu` flake; measured 1/10 by logging
-// `nodeAt(6)` against `startAt()` right before shot.pw.ts's chain-end right-click). Being off the
-// origin is exactly the condition the pointer needs, so poll for it and never cache a node point
-// across an edit.
+// restore that respawns nodes (an undo of an extend/delete) land SYNCHRONOUSLY, but the map they
+// invalidate is only rebuilt when `BakeSystem` runs on the next frame; until then a freshly spawned
+// handle's `sample` still reads 0, so EVERY node reports the track origin. `nodeCount` and
+// `tTotal > 0` are both satisfied by the synchronous write, so neither is a bake-readiness condition
+// — a right-click placed on their evidence lands on empty space and opens no menu (the `.nodemenu`
+// flake; measured 1/10 by logging `nodeAt(6)` against `startAt()` right before shot.pw.ts's
+// chain-end right-click). Being off the origin is exactly the condition the pointer needs, so poll
+// for it and never cache a node point across a respawning edit.
+//
+// It establishes NOTHING after an IN-PLACE write (`restoreNodes`: a move/nudge undo, a gesture
+// cancel) — `Handle.sample` is untouched there, so the predicate is already true against the
+// pre-undo bake and this hands back a stale point. Wait on the bake landing on the expected
+// geometry instead (the group-nudge undo below).
 async function nodePoint(page: Page, order: number): Promise<{ x: number; y: number }> {
     // the polled read is the one that gets RETURNED — re-reading after the poll would hand back a
     // second, unvalidated evaluation (a fresh edit landing between the two is exactly the stale
@@ -133,7 +151,16 @@ async function seedHill(page: Page): Promise<void> {
 // geo flow's vanishing `.snap-readout`: 4/10 failures at 4 workers, and the drag never touched the
 // knob at all. `.rbtn.manip` centers on its ring point, so "on this node's ring" is the honest
 // condition; it also subsumes the appear-from-nothing case Playwright's own auto-wait covers.
-const RING_REACH = 70; // radial.ts RADIAL_R (46) + the button's own 15px radius, with slack
+//
+// ON the ring, not within reach of it: a knob center orbits at exactly `RADIAL_R` (`.rbtn.manip` is
+// `translate(-50%,-50%)` onto `manipKnobs`' ring point, which is `nodeAt` + a `ringSlot` offset of
+// that magnitude), so the honest predicate is |dist − RADIAL_R| < tol. A one-sided `dist > 70` would
+// accept an adjacent node's ring anywhere out to 116px — the stale-ring failure this exists to catch
+// measured 573px, but nothing bounds it that far.
+const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R — the harness is outside the project tsconfig
+// layout rounding only: both boxes' edges land on the device pixel grid (0.5px at
+// deviceScaleFactor 2) on both axes, so the radius can move ~1px; 2px is well inside a 46px orbit.
+const RING_TOL = 2;
 async function knobCenter(
     page: Page,
     cb: { x: number; y: number },
@@ -148,7 +175,8 @@ async function knobCenter(
             const b = await knob.boundingBox();
             if (!b) return false;
             const c = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-            if (Math.hypot(c.x - (cb.x + n.x), c.y - (cb.y + n.y)) > RING_REACH) return false;
+            const r = Math.hypot(c.x - (cb.x + n.x), c.y - (cb.y + n.y));
+            if (Math.abs(r - RADIAL_R) > RING_TOL) return false;
             seen = c;
             return true;
         })
@@ -169,19 +197,22 @@ async function frameTimeline(page: Page): Promise<void> {
     if (!bb) throw new Error("timeline body not laid out");
     await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height * 0.7); // over the chart body
     await page.mouse.wheel(0, 3000); // deltaY ≫ 0 → zoom out, floored at the whole-track fit
-    // "every section on-screen" IS the condition the positional `.clip.nth()` locators need, and it
-    // takes BOTH halves: the wheel writes `view` synchronously, but the clip LIST is projected by
-    // the per-RAF tick and a clip outside the view is culled from the DOM entirely — so right after
-    // an append `.clip.last()` still names the OLD last clip and its right edge says nothing about
-    // the new one. Poll the clip count up to the real section count first, THEN the last clip's
-    // right edge back inside the body.
+    // "every section is IN the DOM and the chain's two outer edges are inside the body" is what the
+    // positional `.clip.nth()` locators need, and it takes all three parts: the wheel writes `view`
+    // synchronously, but the clip LIST is projected by the per-RAF tick and a clip outside the view
+    // is culled from the DOM entirely — so right after an append `.clip.last()` still names the OLD
+    // last clip and its right edge says nothing about the new one. The count closes that gap; the
+    // two edges close the other one, since culling is OVERLAP-based (a clip hanging off either end
+    // of the body is still rendered, still counted, and still not fully on-screen).
     const sections = await page.evaluate((): number => (window as any).__kex.sectionCount());
     const clips = page.locator(".clip");
     await expect
         .poll(async () => {
             if ((await clips.count()) !== sections) return false;
+            const first = await clips.first().boundingBox();
             const last = await clips.last().boundingBox();
-            return last !== null && last.x + last.width <= bb.x + bb.width;
+            if (!first || !last) return false;
+            return first.x >= bb.x && last.x + last.width <= bb.x + bb.width;
         })
         .toBe(true);
 }
@@ -1602,8 +1633,9 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
     await page.mouse.down();
     await page.mouse.move(knobX, chartBotY + 140, { steps: 8 }); // straight down, past the bottom, HELD
     await expect.poll(async () => (await gRange())[0]).toBeCloseTo(GROW_LO, 3); // grew down to the cap
-    await frames(page, 12); // …held past the edge for 24 more frames (`frames` awaits 2n of them;
-    // growth compounds per FRAME, so frames — not milliseconds — are this hold's unit)…
+    await frames(page, 24); // …held past the edge for 48 more real frames (`frames` awaits 2n rAF
+    // callbacks). Growth compounds per FRAME, so frames — not milliseconds — are this hold's unit,
+    // and the count is the detection power: a ~1e-4/frame leak past the cap hides inside 24.
     expect((await gRange())[0]).toBeCloseTo(GROW_LO, 3); // …and stopped there, never past it
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
@@ -2283,11 +2315,13 @@ test("viewport multiselect flow", async ({ page }) => {
 
     // every draggable node's screen point (orders 1-6; order 0 is the pinned entry anchor, never
     // a marquee target) — the rects below are computed from these EXACT points, never guessed
-    // pixels, so a marquee's boundary can only ever hit the nodes it's meant to. A snapshot restore
-    // (every undo below) DESTROYS and respawns these nodes, and the map they're picked through
+    // pixels, so a marquee's boundary can only ever hit the nodes it's meant to. A STRUCTURAL undo
+    // (the delete undo below) destroys and respawns these nodes, and the map they're picked through
     // (`Handle.sample`) is rebuilt a frame later — so a cached point goes stale exactly when the
     // next marquee or right-click is about to use it. Re-locate through `nodePoint` (which waits the
-    // re-bake out) after every respawning op; never reuse a point across one.
+    // re-bake out) after every respawning op; never reuse a point across one. A MOVE undo is the
+    // other case — it rewrites poses in place, so the cached points come back valid and the wait is
+    // for the bake to land on them again (step 3).
     const pt: Record<number, { x: number; y: number }> = {};
     const locate = async (): Promise<void> => {
         for (let o = 1; o <= 6; o++) pt[o] = await nodePoint(page, o);
@@ -2370,7 +2404,23 @@ test("viewport multiselect flow", async ({ page }) => {
     await page.screenshot({ path: join(OUT, "multiselect-viewport-move.png") });
     await page.keyboard.press("Control+z"); // one entry reverts the whole group
     await expect.poll(async () => (await poses())[4][0]).toBeCloseTo(before[4][0], 5);
-    await locate(); // the undo respawned every node — re-locate before the next pointer gesture
+    // A MOVE undo writes poses IN PLACE (`restoreNodes`) — no respawn, so `Handle.sample` never
+    // resets and `nodePoint`'s off-origin predicate is instantly true against the still-NUDGED bake
+    // (re-locating here returns pre-undo points, ~20px off). The cached `pt` ARE the post-undo
+    // targets, so the honest wait is the bake landing back ON them.
+    const orders = [1, 2, 3, 4, 5, 6];
+    await expect
+        .poll(async () => {
+            const now = await page.evaluate(
+                (os: number[]): ({ x: number; y: number } | null)[] =>
+                    os.map((o) => (window as any).__kex.nodeAt(o)),
+                orders,
+            );
+            return now.every(
+                (p, i) => p !== null && Math.hypot(p.x - pt[orders[i]].x, p.y - pt[orders[i]].y) < 1,
+            );
+        })
+        .toBe(true);
 
     // ── 4. MARQUEE-select the Delete-able SUFFIX RUN [4,5,6] (reaches the chain end, excludes
     // node 0, leaves ≥ 2) → right-click a MEMBER (node 5, keeping the set) → the node menu's
@@ -2551,6 +2601,17 @@ test("timeline multiselect flow", async ({ page }) => {
     expect(atLen.some((p) => Math.abs(p.g - before[4].g) < 1e-6)).toBe(true); // the seed's g survived
     await page.keyboard.press("Control+z"); // one entry reverts the whole group
     await expect.poll(async () => (await forces())[3].s).toBeCloseTo(before[3].s, 3);
+    // …and the DIAMONDS are back where the cached boxes say. The undo writes authored `s` in place
+    // (no respawn), so the poll above is satisfied a frame before the per-RAF tick re-projects the
+    // DOM — right-clicking the cached `b2` on that evidence lands 0.4·clipWidth away on empty chart
+    // and opens no menu (reproduced 2/2 on full 4-worker runs). Same law as the viewport flow's
+    // move-undo: after an IN-PLACE restore, wait for the projection to land back on the target.
+    await expect
+        .poll(async () => {
+            const b = await fhit.nth(2).boundingBox();
+            return b !== null && Math.abs(b.x + b.width / 2 - b2.cx) < 1;
+        })
+        .toBe(true);
 
     // ── 4. BULK EASING: right-click a member (the crest, keeping the set) → the Easing ▸ preset
     // applies to every SELECTED NON-TERMINAL keyframe (all three interior points — none is the
