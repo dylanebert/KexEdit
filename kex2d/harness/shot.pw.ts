@@ -12,7 +12,13 @@ import { expect, type Page, test } from "@playwright/test";
 
 const PORT = process.env.KEX_PORT ?? "3014";
 const OUT = process.env.KEX_OUT ?? "shots";
-const SETTLE_MS = Number(process.env.KEX_SETTLE_MS ?? "2500");
+
+// The ONE fixed wait left in this file, and it is cosmetic: a shot taken the frame a surface
+// appears catches it mid-fade (popovers fade in over 120ms, transitions run ~150ms on the shared
+// easing token). Nothing deterministic is bought past that — the cart LOOPS, so the scene never
+// settles — so this is used only immediately before a screenshot. Every other wait here is a
+// condition (`coding.md` forbids sleep-as-condition-wait).
+const SHOT_MS = Number(process.env.KEX_SHOT_MS ?? "300");
 
 // window.__kex is the DEV harness hook (src/main.ts); the harness is outside the project
 // tsconfig, so these page-context reads use `any` freely.
@@ -30,6 +36,71 @@ function overlaps(a: Rect, b: Rect): boolean {
     );
 }
 
+// Await one PROJECTED frame. The app writes its DOM from a per-RAF tick, so a value produced by a
+// pointer event is readable only after a real frame has run — the honest form of "let the per-RAF
+// tick project the readout". Two rAFs per frame: the first runs the tick, the second lands after
+// the DOM write it schedules.
+function frames(page: Page, n = 1): Promise<void> {
+    return page.evaluate(
+        (k: number) =>
+            new Promise<void>((resolve) => {
+                let left = k * 2;
+                const step = (): void => {
+                    if (--left <= 0) resolve();
+                    else requestAnimationFrame(step);
+                };
+                requestAnimationFrame(step);
+            }),
+        n,
+    );
+}
+
+// Where a canvas node sits on the page, waited to a real POST-BAKE value.
+//
+// `__kex.nodeAt` resolves a node through `Handle.sample` — the bake's node→sample map — and
+// `controls.ts`'s `pickNode` shares that lookup. Raw setup pokes (`seedHill`) and every snapshot
+// restore (an undo, a delete) land SYNCHRONOUSLY, but the map they invalidate is only rebuilt when
+// `BakeSystem` runs on the next frame; until then a freshly spawned handle's `sample` still reads 0,
+// so EVERY node reports the track origin. `nodeCount` and `tTotal > 0` are both satisfied by the
+// synchronous write, so neither is a bake-readiness condition — a right-click placed on their
+// evidence lands on empty space and opens no menu (the `.nodemenu` flake; measured 1/10 by logging
+// `nodeAt(6)` against `startAt()` right before shot.pw.ts's chain-end right-click). Being off the
+// origin is exactly the condition the pointer needs, so poll for it and never cache a node point
+// across an edit.
+async function nodePoint(page: Page, order: number): Promise<{ x: number; y: number }> {
+    const read = (): Promise<{ x: number; y: number } | null> =>
+        page.evaluate((o: number): { x: number; y: number } | null => {
+            const kex = (window as any).__kex;
+            const p = kex.nodeAt(o);
+            const origin = kex.startAt();
+            if (!p || !origin) return null;
+            return Math.hypot(p.x - origin.x, p.y - origin.y) > 1 ? p : null;
+        }, order);
+    await expect.poll(read).not.toBeNull();
+    const pt = await read();
+    if (!pt) throw new Error(`node ${order} never left the track origin — the bake never landed`);
+    return pt;
+}
+
+// Seed the shaped hill AND wait for it to bake.
+//
+// `seedHill` pokes components raw (test setup, not authoring), so it lands synchronously — while
+// `tTotal` still answers with the DEFAULT FLAT SEED's own bake, which is already > 0 on load. So
+// `await expect.poll(tTotal).toBeGreaterThan(0)` after the poke proves nothing, and whatever reads
+// the bake next gets the flat seed: `append`/`convert` seed a force section from the RECOVERED
+// ENTRY FORCE, so racing them produced two different tracks run to run (the `viewport kind color
+// shot` captured a feasible 6.0s spiral instead of the insufficient-velocity tail it exists to
+// show — caught by the shot flipping between otherwise-identical runs). Wait out the flat bake
+// first so the ride time MOVING is the hill's own bake landing.
+async function seedHill(page: Page): Promise<void> {
+    const tTotal = (): Promise<number> =>
+        page.evaluate((): number => (window as any).__kex.tTotal());
+    await expect.poll(tTotal).toBeGreaterThan(0); // the flat seed's bake, before the poke
+    const flat = await tTotal();
+    await page.evaluate(() => (window as any).__kex.seedHill());
+    await expect.poll(tTotal).not.toBe(flat); // …and now the hill's
+}
+
 // Appending a section PANS the timeline to reveal the new clip — the x-axis is a document
 // axis, so a content edit never rescales/refits it (kex2d-ux-foundations stage C). The
 // overflowing track then scrolls earlier clips off-screen, so this frames the whole chain
@@ -41,7 +112,16 @@ async function frameTimeline(page: Page): Promise<void> {
     if (!bb) throw new Error("timeline body not laid out");
     await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height * 0.7); // over the chart body
     await page.mouse.wheel(0, 3000); // deltaY ≫ 0 → zoom out, floored at the whole-track fit
-    await page.waitForTimeout(SETTLE_MS);
+    // "framed" IS the condition the callers need: the wheel writes `view` synchronously but the
+    // clip boxes only move on the next tick, and the positional `.clip.nth()` locators below
+    // require every section on-screen. So poll the last clip's right edge back inside the body —
+    // already true when the track was fitted before the wheel, so it costs nothing then.
+    await expect
+        .poll(async () => {
+            const last = await page.locator(".clip").last().boundingBox();
+            return last !== null && last.x + last.width <= bb.x + bb.width;
+        })
+        .toBe(true);
 }
 
 // Pointer-true click on a context-submenu flyout item: really HOVER the parent row to open the
@@ -142,10 +222,9 @@ test("geo authoring flow", async ({ page }) => {
     const poses = () => page.evaluate((): number[][] => (window as any).__kex.poses());
 
     // seed the airtime hill and wait for its first bake (the recovered force curve).
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     await expect.poll(nodeCount).toBe(7);
-    await page.waitForTimeout(SETTLE_MS); // let the cart + curve settle for the baseline shot
+    await page.waitForTimeout(SHOT_MS);
 
     // read-only baseline: the shaped track + its recovered F_n force curve.
     await page.screenshot({ path: join(OUT, "full.png") });
@@ -175,22 +254,15 @@ test("geo authoring flow", async ({ page }) => {
     // `.rbtn` button (feel round 6) — pressing it and dragging along the chord lengthens it, re-baking
     // the recovered force. Located by its real DOM box (pointer-true), not by canvas coords. ──
     await page.keyboard.press("f"); // hover defaults to the viewport, so `f` routes there
-    await page.waitForTimeout(SETTLE_MS);
 
     const canvas = page.locator("#app > canvas");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
     const selectedOrder = () =>
         page.evaluate((): number | null => (window as any).__kex.selectedOrder());
-    const nodeAt = (order: number) =>
-        page.evaluate(
-            (o: number): { x: number; y: number } | null => (window as any).__kex.nodeAt(o),
-            order,
-        );
 
     // select node 3 (the crest) by a real body click; the polar knob buttons summon on it.
-    const n3 = await nodeAt(3);
-    if (!n3) throw new Error("node 3 not located");
+    const n3 = await nodePoint(page, 3);
     await page.mouse.click(cb.x + n3.x, cb.y + n3.y);
     await expect.poll(selectedOrder).toBe(3);
     await expect(page.locator(".manip-length")).toBeVisible(); // the DOM knob buttons appeared
@@ -208,9 +280,9 @@ test("geo authoring flow", async ({ page }) => {
     // chord lengthens, the crest moves, and the recovered force + ride time shift. pointer-true: a
     // real pointerdown on the button's own box, then a real drag; the button captures on the canvas.
     const tBefore = await tTotal();
-    const n2 = await nodeAt(2);
+    const n2 = await nodePoint(page, 2);
     const lb = await page.locator(".manip-length").boundingBox();
-    if (!n2 || !lb) throw new Error("length knob button / node 2 not located");
+    if (!lb) throw new Error("length knob button not laid out");
     const lk = { x: lb.x + lb.width / 2, y: lb.y + lb.height / 2 }; // the button center (page coords)
     const rl = Math.hypot(n3.x - n2.x, n3.y - n2.y);
     const ux = (n3.x - n2.x) / rl;
@@ -240,8 +312,7 @@ test("geo authoring flow", async ({ page }) => {
         const m = txt?.match(/-?\d+(?:\.\d+)?°/); // the degree token, e.g. "-30°" or "25.5°"
         return m ? m[0] : null;
     };
-    const tipPos = await nodeAt(6); // the chain end (7 nodes → order 6)
-    if (!tipPos) throw new Error("tip not located");
+    const tipPos = await nodePoint(page, 6); // the chain end (7 nodes → order 6)
     await page.mouse.click(cb.x + tipPos.x, cb.y + tipPos.y); // select the tip → its knobs summon
     await expect.poll(selectedOrder).toBe(6);
     const ab = await page.locator(".manip-angle").boundingBox();
@@ -250,10 +321,10 @@ test("geo authoring flow", async ({ page }) => {
     await page.mouse.move(ak.x, ak.y);
     await page.mouse.down();
     await page.mouse.move(ak.x + 28, ak.y - 28, { steps: 10 }); // rotate the tip to a snapped incline
-    await page.waitForTimeout(120); // let the per-RAF tick project the drag readout
+    await frames(page); // the readout is projected by the per-RAF tick, so read one frame on
     const dragAngle = await readoutAngle();
     await page.mouse.up();
-    await page.waitForTimeout(120); // let the resting readout settle
+    await frames(page);
     const restAngle = await readoutAngle();
     expect(dragAngle).not.toBeNull();
     expect(restAngle).toBe(dragAngle); // drag == rest, exactly — no 25→25.5 drift on release
@@ -262,25 +333,30 @@ test("geo authoring flow", async ({ page }) => {
     // ring's extend button (a real `.rbtn` at the chain end) appends, Enter's twin; and the node menu
     // carries Delete + Add, in that order. double-click now enters tangent edit (the tangent flow),
     // not append. the chain end is order 6 (7 nodes). ──
-    const chainEnd = await nodeAt(6);
-    if (!chainEnd) throw new Error("chain-end node not located");
+    const chainEnd = await nodePoint(page, 6);
     // a plain click selects the chain end but does NOT append.
     await page.mouse.click(cb.x + chainEnd.x, cb.y + chainEnd.y);
     await expect.poll(selectedOrder).toBe(6);
     expect(await nodeCount()).toBe(7); // no append on a plain click
     // the chain end shows the three-button ring: measure (−60°) · extend (front) · pitch (+60°).
     await expect(page.locator(".rbtn.extend")).toBeVisible();
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "geo-3-ring.png") });
     // the ring's extend button appends one node; undo drops it.
     await page.locator(".rbtn.extend").click();
     await expect.poll(nodeCount).toBe(8);
     await page.keyboard.press("Control+z");
     await expect.poll(nodeCount).toBe(7);
+    // the undo RESPAWNS this section's nodes, so re-locate the chain end instead of reusing the
+    // pre-append point: `nodeCount` is satisfied by the synchronous restore, a frame before the
+    // re-bake rebuilds the node→sample map the pointer picks through (`nodePoint`). It has to land
+    // back where it was — the undo restores the geometry byte-identical — so assert that too.
+    const chainEndBack = await nodePoint(page, 6);
+    expect(Math.hypot(chainEndBack.x - chainEnd.x, chainEndBack.y - chainEnd.y)).toBeLessThan(1);
     // the node menu (right-click the chain end) carries the structural ops (delete stays off-ring),
     // ordered by access frequency: Delete before Add. the rows are terse — the menu is ON the node,
     // so the noun would only restate its subject.
-    await page.mouse.click(cb.x + chainEnd.x, cb.y + chainEnd.y, { button: "right" });
+    await page.mouse.click(cb.x + chainEndBack.x, cb.y + chainEndBack.y, { button: "right" });
     await expect(page.locator(".nodemenu")).toBeVisible();
     await expect
         .poll(async () =>
@@ -294,8 +370,7 @@ test("geo authoring flow", async ({ page }) => {
     // ── 5. Interior angle drag==rest (feel round 9): the SAME invariant on an INTERIOR node. its angle
     // knob snaps the chord, but the readout reports the node's (frozen) exit heading — drag AND rest,
     // the same number. before the fix the drag showed the chord (moving), the rest the heading. ──
-    const interiorPos = await nodeAt(3); // an interior node of the seeded hill
-    if (!interiorPos) throw new Error("interior node not located");
+    const interiorPos = await nodePoint(page, 3); // an interior node of the seeded hill
     await page.mouse.click(cb.x + interiorPos.x, cb.y + interiorPos.y);
     await expect.poll(selectedOrder).toBe(3);
     const iab = await page.locator(".manip-angle").boundingBox();
@@ -304,10 +379,10 @@ test("geo authoring flow", async ({ page }) => {
     await page.mouse.move(iak.x, iak.y);
     await page.mouse.down();
     await page.mouse.move(iak.x + 26, iak.y + 26, { steps: 10 }); // rotate the interior node
-    await page.waitForTimeout(120);
+    await frames(page);
     const iDrag = await readoutAngle();
     await page.mouse.up();
-    await page.waitForTimeout(120);
+    await frames(page);
     const iRest = await readoutAngle();
     expect(iDrag).not.toBeNull();
     expect(iRest).toBe(iDrag); // interior drag == rest — one consistent quantity (the exit heading)
@@ -342,11 +417,6 @@ test("tangent edit flow", async ({ page }) => {
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
     const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
     const editing = () => page.evaluate((): boolean => (window as any).__kex.editing());
-    const nodeAt = (order: number) =>
-        page.evaluate(
-            (o: number): { x: number; y: number } | null => (window as any).__kex.nodeAt(o),
-            order,
-        );
     const tangent = () =>
         page.evaluate(
             (): { mode: number; inX: number; inY: number; outX: number; outY: number } | null =>
@@ -360,11 +430,9 @@ test("tangent edit flow", async ({ page }) => {
     // seed the shaped hill, then frame it so the interior node's handles separate at pixel
     // scale (the default ±280 m framing leaves the ~23 m hill a squiggle — `F` fits it; hover
     // defaults to the viewport, so no pre-move is needed to route the key there).
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     await expect.poll(nodeCount).toBe(7);
     await page.keyboard.press("f");
-    await page.waitForTimeout(SETTLE_MS);
 
     const canvas = page.locator("#app > canvas");
     const cb = await canvas.boundingBox();
@@ -373,12 +441,11 @@ test("tangent edit flow", async ({ page }) => {
     // ── 1. DOUBLE-CLICK the crest (interior node, order 3) → tangent edit (feel round 12 restored the
     // double-click summon from Alt-click — it's more discoverable). its arc-rule ghost handles draw;
     // the inferred node carries no stored tangent (Auto). ──
-    const npos = await nodeAt(3);
-    if (!npos) throw new Error("node 3 not located");
+    const npos = await nodePoint(page, 3);
     await page.mouse.dblclick(cb.x + npos.x, cb.y + npos.y);
     await expect.poll(editing).toBe(true);
     expect(await tangent()).toBeNull(); // inferred — the default add flow stamps nothing
-    await page.waitForTimeout(300); // let the handles settle before the shot
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "tangent-1-summon.png") });
 
     // ── 2. RIGHT-CLICK the node → the NODE context menu (Handles + Tangents ▸) → open the
@@ -387,7 +454,7 @@ test("tangent edit flow", async ({ page }) => {
     await expect(page.locator(".nodemenu")).toBeVisible();
     await page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents", exact: true }).hover();
     await expect(page.locator(".nodemenu").getByRole("menuitem", { name: "Free" })).toBeVisible();
-    await page.waitForTimeout(300); // the menu + submenu fade-in, for the shot
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "tangent-1b-menu.png") });
     await clickFlyout(page, ".nodemenu", "Tangents", "Free");
     await expect(page.locator(".nodemenu")).toHaveCount(0); // picking an item closes the menu
@@ -445,10 +512,10 @@ test("tangent edit flow", async ({ page }) => {
     await page.mouse.move(cb.x + out2.x, cb.y + out2.y);
     await page.mouse.down();
     await page.mouse.move(cb.x + out2.x + ux * 15, cb.y + out2.y + uy * 15, { steps: 6 });
-    await page.waitForTimeout(120); // let the per-RAF tick project the readout
+    await frames(page); // the readout is projected by the per-RAF tick, so read one frame on
     const near = await readoutText();
     await page.mouse.move(cb.x + out2.x + ux * 55, cb.y + out2.y + uy * 55, { steps: 6 });
-    await page.waitForTimeout(120);
+    await frames(page);
     const far = await readoutText();
     await page.mouse.up();
     expect(degToken(near)).not.toBeNull(); // the readout is present through the handle drag
@@ -508,7 +575,7 @@ test("start handle edit flow", async ({ page }) => {
     // separates at pixel scale (hover defaults to the viewport, so `f` routes there).
     await expect.poll(tTotal).toBeGreaterThan(0);
     await page.keyboard.press("f");
-    await page.waitForTimeout(SETTLE_MS);
+    await frames(page); // `frameViewport` writes the camera synchronously; one tick paints it
 
     const canvas = page.locator("#app > canvas");
     const cb = await canvas.boundingBox();
@@ -523,7 +590,7 @@ test("start handle edit flow", async ({ page }) => {
     await expect.poll(editing).toBe(true);
     expect(await selectedOrder()).toBe(0); // the entry anchor, reached at the START
     expect(await tangent()).toBeNull(); // Auto — the default flow stamps nothing
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "start-1-summon.png") });
 
     // ── 2. Drag the OUT-handle up → the entry handle is authored (a single free handle) and the
@@ -553,7 +620,7 @@ test("start handle edit flow", async ({ page }) => {
         page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents", exact: true }),
     ).toHaveCount(0); // no mode submenu on node 0
     await expect(page.locator(".nodemenu").getByRole("menuitem", { name: "Handles" })).toBeVisible();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "start-3-menu.png") });
     await page.locator(".nodemenu").getByRole("menuitem", { name: "Reset" }).click();
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
@@ -582,13 +649,13 @@ test("tool rail shot", async ({ page }) => {
     await expect(rail).toBeVisible();
     // default-on: the magnet toggle reads pressed and lit.
     await expect(snap).toHaveAttribute("aria-pressed", "true");
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(SHOT_MS);
     await rail.screenshot({ path: join(OUT, "tool-rail-on.png") });
 
     // ── S toggles it off (global, the AE magnet key) → aria-pressed flips, the icon dims. ──
     await page.keyboard.press("s");
     await expect(snap).toHaveAttribute("aria-pressed", "false");
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(SHOT_MS);
     await rail.screenshot({ path: join(OUT, "tool-rail-off.png") });
 
     // S again restores the default — keep the toggle honest across the flow.
@@ -625,8 +692,7 @@ test("force authoring flow", async ({ page }) => {
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
     // seed a shaped geo track so the convert inherits a real arclength.
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     expect(await kind()).toBe(0); // TrackKind.Geo
 
     // ── 1. Convert to force via the real section context menu (right-click the clip →
@@ -644,14 +710,14 @@ test("force authoring flow", async ({ page }) => {
         { s: 24, g: 1 }, // (length, F_entry) — length = DEFAULT_FORCE_LEN (EXTEND_DIST)
     ]);
     await expect.poll(tTotal).toBeGreaterThan(0); // the flat force track baked
-    await page.waitForTimeout(SETTLE_MS);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "force-1-empty.png") });
 
     // ── 2. Author an airtime bump by force points → the recovered curve reacts. seedForceBump
     // adds 3 points on top of the 2 seeds → 5. ──
     await page.evaluate(() => (window as any).__kex.seedForceBump());
     await expect.poll(forceCount).toBe(5);
-    await page.waitForTimeout(SETTLE_MS);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "force-2-bump.png") });
     const vp = page.viewportSize();
     if (vp) {
@@ -677,7 +743,7 @@ test("force authoring flow", async ({ page }) => {
     await expect.poll(forceCount).toBe(6);
     // the create selects the point, so its popover is up — capture it for the feel pass
     // (let its 120ms fade-in finish, or the shot catches a ghost).
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(SHOT_MS);
     if (vp) {
         await page.screenshot({
             path: join(OUT, "force-popover.png"),
@@ -851,7 +917,7 @@ test("force easing menu flow", async ({ page }) => {
             ),
         )
         .toEqual(["Delete Del", "Easing ▸"]);
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(SHOT_MS);
     if (page.viewportSize())
         await page.screenshot({
             path: join(OUT, "force-easing-menu.png"),
@@ -897,7 +963,10 @@ test("force easing menu flow", async ({ page }) => {
     const crest = await page.locator(".fpt").nth(2).boundingBox(); // airtime crest (0g)
     if (!crest) throw new Error("crest keyframe not laid out");
     await page.mouse.click(midX, crest.y + crest.height / 2, { button: "right" });
-    await page.waitForTimeout(50);
+    // a menu that IS going to open renders on the next tick, so one projected frame is the
+    // condition that makes this absence assert mean something (a bare `toHaveCount(0)` passes
+    // instantly against a menu that simply hasn't rendered yet).
+    await frames(page);
     await expect(page.locator(".fmenu")).toHaveCount(0);
     expect((await forceEases())[0]).toBe(2); // unchanged — the empty-space click was inert
 
@@ -969,7 +1038,7 @@ test("force easing menu flow", async ({ page }) => {
     // ended). Its above/below-vs-dodge placement is pinned in the dedicated 4d scenarios below,
     // on the crest — two constructed cases where the vertical fit is deterministic.
 
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(SHOT_MS);
     if (page.viewportSize())
         await page.screenshot({
             path: join(OUT, "force-handle-edit.png"),
@@ -1460,7 +1529,8 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
     await page.mouse.down();
     await page.mouse.move(knobX, chartBotY + 140, { steps: 8 }); // straight down, past the bottom, HELD
     await expect.poll(async () => (await gRange())[0]).toBeCloseTo(GROW_LO, 3); // grew down to the cap
-    await page.waitForTimeout(400); // …held past the edge for many more frames…
+    await frames(page, 24); // …held past the edge for 24 more frames (growth compounds per FRAME,
+    // so frames — not milliseconds — are the unit this hold is measured in)…
     expect((await gRange())[0]).toBeCloseTo(GROW_LO, 3); // …and stopped there, never past it
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
@@ -1496,10 +1566,8 @@ test("multi-section flow", async ({ page }) => {
 
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
     const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
-    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     expect(await sectionCount()).toBe(1);
 
     // ── 1. Append a geo section, then convert it to force → a mixed geo→force chain. ──
@@ -1507,7 +1575,7 @@ test("multi-section flow", async ({ page }) => {
     await expect.poll(sectionCount).toBe(2);
     await page.evaluate(() => (window as any).__kex.convertAt(1));
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
-    await page.waitForTimeout(SETTLE_MS);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "sections-mixed.png") });
 
     // ── 2. Delete the force tail → 1 (downstream rebases); undo restores it. ──
@@ -1542,17 +1610,15 @@ test("section clip strip flow", async ({ page }) => {
         page.evaluate((): number[] => (window as any).__kex.sectionLengths());
     const selectedSection = () =>
         page.evaluate((): number | null => (window as any).__kex.selectedSection());
-    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
     const vp = page.viewportSize();
     const strip = () =>
         vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
 
     // seed one geo section → one geo clip in the lane.
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     await expect(page.locator(".clip")).toHaveCount(1);
-    await page.waitForTimeout(SETTLE_MS);
+    await page.waitForTimeout(SHOT_MS);
     if (vp) await page.screenshot({ path: join(OUT, "clip-1-strip.png"), clip: strip() });
 
     // ── 1. Append a force section via the real + flyout → a mixed geo→force chain. the flyout
@@ -1578,7 +1644,7 @@ test("section clip strip flow", async ({ page }) => {
     await expect.poll(selectedSection).toBe((await sectionIds())[1]);
     await frameTimeline(page); // append never pans; frame the grown chain into view
     await expect(page.locator(".clip")).toHaveCount(2);
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(SHOT_MS);
     if (vp) await page.screenshot({ path: join(OUT, "clip-2-append.png"), clip: strip() });
 
     // ── 2. Click the geo clip → editor.section becomes the first section (one object,
@@ -1639,14 +1705,12 @@ test("section menu + keyframe flow", async ({ page }) => {
         page.evaluate((): number[] => (window as any).__kex.sectionForceCounts());
     const selectedSection = () =>
         page.evaluate((): number | null => (window as any).__kex.selectedSection());
-    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
     const vp = page.viewportSize();
     const strip = () =>
         vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
 
     // seed a geo section, append a force one via the real + flyout → a mixed chain.
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     await page.locator(".clip-add").click();
     await page.getByRole("menuitem", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
@@ -1670,7 +1734,7 @@ test("section menu + keyframe flow", async ({ page }) => {
     if (!fcb) throw new Error("force clip not laid out");
     await page.mouse.dblclick(fcb.x + fcb.width / 2, bb.y + bb.height * 0.5);
     await expect.poll(async () => (await forceCounts())[1]).toBeGreaterThan(before[1]);
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(SHOT_MS);
     if (vp) await page.screenshot({ path: join(OUT, "section-2-keyframe.png"), clip: strip() });
 
     // ── 3. Right-click the force clip → "Convert to Geo" (real context menu). ──
@@ -1717,8 +1781,7 @@ test("playhead parking flow", async ({ page }) => {
         vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
 
     // seed a geo section, append a force one via the real + flyout → a mixed chain.
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     await page.locator(".clip-add").click();
     await page.getByRole("menuitem", { name: "Append force section" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
@@ -1807,7 +1870,7 @@ test("v0 authoring flow", async ({ page }) => {
     if (!cb) throw new Error("viewport canvas not laid out");
     await page.mouse.click(cb.x + cb.width / 2, cb.y + (cb.height - DOCK_RESERVE) / 2);
     await expect(page.locator(".vtip")).toBeVisible();
-    await page.waitForTimeout(300); // let the popover's 120ms fade-in finish before the shot
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "v0-1-selected.png") });
 
     // ── 2. Scrub the v₀ label to the right → the speed rises, one undo entry. ──
@@ -1869,8 +1932,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
         vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
 
     // seed a shaped geo lead-in (section 0) — the shaped track the chain grows from.
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     await expect.poll(sectionCount).toBe(1);
 
     // ── 1. Append a force section after the lead-in via the real + flyout. ──
@@ -1913,7 +1975,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
     await page.mouse.move(crest.x, crest.y + 22, { steps: 10 });
     await page.mouse.up();
     await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-3).toBe(true);
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(SHOT_MS);
     if (vp) await page.screenshot({ path: join(OUT, "dogfood-1-hill.png"), clip: strip() });
 
     // ── 3. Append a geo turnaround after the hill via the real + flyout → the composed
@@ -1945,7 +2007,7 @@ test("geometry atoms lab", async ({ page }) => {
     await page.goto(`http://localhost:${PORT}/geometry-lab.html`, { waitUntil: "load" });
     const panels = page.locator(".panel");
     await expect(panels).toHaveCount(3);
-    await page.waitForTimeout(500); // let the canvases paint
+    await page.waitForTimeout(SHOT_MS);
 
     await page.screenshot({ path: join(OUT, "geometry-lab.png"), fullPage: true });
     const names = ["geometry-sparsity", "geometry-roundtrip", "geometry-conditioning"];
@@ -1970,7 +2032,7 @@ test("loop solve lab", async ({ page }) => {
     await page.goto(`http://localhost:${PORT}/loop-lab.html`, { waitUntil: "load" });
     const panels = page.locator(".panel");
     await expect(panels).toHaveCount(3);
-    await page.waitForTimeout(500); // let the canvases paint
+    await page.waitForTimeout(SHOT_MS);
 
     await page.screenshot({ path: join(OUT, "loop-lab.png"), fullPage: true });
     const names = ["loop-geometry", "loop-force", "loop-infeasible"];
@@ -1995,7 +2057,7 @@ test("FVD limit lab", async ({ page }) => {
     await page.goto(`http://localhost:${PORT}/fvd-lab.html`, { waitUntil: "load" });
     const panels = page.locator(".panel");
     await expect(panels).toHaveCount(3);
-    await page.waitForTimeout(500); // let the canvases paint
+    await page.waitForTimeout(SHOT_MS);
 
     await page.screenshot({ path: join(OUT, "fvd-lab.png"), fullPage: true });
     const names = ["fvd-overlay", "fvd-tracking", "fvd-warmstart"];
@@ -2020,7 +2082,7 @@ test("collocation solver lab", async ({ page }) => {
     await page.goto(`http://localhost:${PORT}/collocate-lab.html`, { waitUntil: "load" });
     const panels = page.locator(".panel");
     await expect(panels).toHaveCount(3);
-    await page.waitForTimeout(500); // let the canvases paint
+    await page.waitForTimeout(SHOT_MS);
 
     await page.screenshot({ path: join(OUT, "collocate-lab.png"), fullPage: true });
     const names = ["collocate-convergence", "collocate-overlay", "collocate-force"];
@@ -2036,10 +2098,12 @@ test("collocation solver lab", async ({ page }) => {
 // (real wheel zoom-at-cursor, not a fixed-scale clip) so the track polyline's per-
 // section kind color reads at pixel scale, not just the clip strip. The other flows'
 // full-page shots leave the polyline too small (and handle-occluded) to judge by eye.
-// The chain's force section runs into "insufficient velocity" (the flat 1g profile
-// drains the hill's energy) — a happy accident that also exercises the two priority
-// fixes: the tail draws dashed red over the kind color, and (2nd shot) still draws
-// dashed red under the selected-section accent overlay, not painted over by it.
+// The appended force section CONTINUES the hill's recovered entry force (the two
+// continuation keyframes an append seeds), so the chain is feasible end to end and the
+// shot reads as the kind-color boundary it exists to show. It used to capture an
+// "insufficient velocity" dashed-red tail instead, from a flat 1g profile — that came
+// from appending before the hill had baked, so the seeds continued the FLAT seed's exit,
+// and it flipped run to run; the infeasible-tail priority fixes need their own scenario.
 test("viewport kind color shot", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -2052,17 +2116,15 @@ test("viewport kind color shot", async ({ page }) => {
     await expect(page.locator(".dock")).toBeVisible();
 
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
-    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
     // a shaped geo lead-in, then an appended force section (default flat 1g profile).
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     await page.evaluate(() => (window as any).__kex.append(1)); // SectionKind.Force
     await expect.poll(sectionCount).toBe(2);
 
     // the kind-colored curve, in the dock's chart — geo span cool blue, force span
     // accent gold, the same language as the clip strip right above it.
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(SHOT_MS);
     const vp = page.viewportSize();
     if (vp) {
         await page.screenshot({
@@ -2081,7 +2143,7 @@ test("viewport kind color shot", async ({ page }) => {
     const cy = cb.y + (cb.height - DOCK_RESERVE) / 2;
     await page.mouse.move(cx, cy);
     await page.mouse.wheel(0, -1800); // deltaY < 0 → zoom in
-    await page.waitForTimeout(SETTLE_MS);
+    await page.waitForTimeout(SHOT_MS);
 
     const zoomedClip = { x: cb.x, y: cb.y, width: cb.width, height: cb.height - DOCK_RESERVE };
     await page.screenshot({ path: join(OUT, "kind-color.png"), clip: zoomedClip });
@@ -2093,7 +2155,7 @@ test("viewport kind color shot", async ({ page }) => {
     await expect.poll(() => page.evaluate(() => (window as any).__kex.selectedSection())).not.toBe(
         null,
     );
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "kind-color-selected.png"), clip: zoomedClip });
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
@@ -2124,23 +2186,15 @@ test("viewport multiselect flow", async ({ page }) => {
     await expect(page.locator(".dock")).toBeVisible();
 
     const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
-    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
     const nodeSelOrders = () =>
         page.evaluate((): number[] => (window as any).__kex.nodeSelOrders());
     const selectedOrder = () =>
         page.evaluate((): number | null => (window as any).__kex.selectedOrder());
     const poses = () => page.evaluate((): number[][] => (window as any).__kex.poses());
-    const nodeAt = (order: number) =>
-        page.evaluate(
-            (o: number): { x: number; y: number } | null => (window as any).__kex.nodeAt(o),
-            order,
-        );
 
-    await page.evaluate(() => (window as any).__kex.seedHill());
-    await expect.poll(tTotal).toBeGreaterThan(0);
+    await seedHill(page);
     await expect.poll(nodeCount).toBe(7);
     await page.keyboard.press("f"); // hover defaults to the viewport
-    await page.waitForTimeout(SETTLE_MS);
 
     const canvas = page.locator("#app > canvas");
     const cb = await canvas.boundingBox();
@@ -2150,11 +2204,7 @@ test("viewport multiselect flow", async ({ page }) => {
     // a marquee target) — the rects below are computed from these EXACT points, never guessed
     // pixels, so a marquee's boundary can only ever hit the nodes it's meant to.
     const pt: Record<number, { x: number; y: number }> = {};
-    for (let o = 1; o <= 6; o++) {
-        const p = await nodeAt(o);
-        if (!p) throw new Error(`node ${o} not located`);
-        pt[o] = p;
-    }
+    for (let o = 1; o <= 6; o++) pt[o] = await nodePoint(page, o);
     const yAll = Object.values(pt).map((p) => p.y);
     const yLo = Math.min(...yAll) - 80; // well clear of PICK_R/SECTION_PICK_R at every rect corner
     const yHi = Math.max(...yAll) + 80;
@@ -2167,7 +2217,7 @@ test("viewport multiselect flow", async ({ page }) => {
     await marqueeDrag(page, cb.x + xLo1, cb.y + yLo, cb.x + xHi1, cb.y + yHi);
     await expect.poll(nodeSelOrders).toEqual([2, 3, 4]);
     expect(await selectedOrder()).toBe(4); // the last hit — the active member (Blender active-object)
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "multiselect-viewport-marquee.png") });
 
     // ── 2. SHIFT+MARQUEE a rect bounding node 4 ALONE (midpoints to its two neighbors) toggles it
@@ -2228,7 +2278,7 @@ test("viewport multiselect flow", async ({ page }) => {
         const moved = Math.hypot(after[o][0] - before[o][0], after[o][1] - before[o][1]);
         expect(moved).toBeGreaterThan(0.05);
     }
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "multiselect-viewport-move.png") });
     await page.keyboard.press("Control+z"); // one entry reverts the whole group
     await expect.poll(async () => (await poses())[4][0]).toBeCloseTo(before[4][0], 5);
@@ -2350,7 +2400,7 @@ test("timeline multiselect flow", async ({ page }) => {
     const tipG = await page.locator('.ptip input[aria-label="Point force (g)"]').inputValue();
     expect(Number(tipD)).toBeCloseTo(activePt.s, 1);
     expect(Number(tipG)).toBeCloseTo(activePt.g, 2);
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(SHOT_MS);
     if (page.viewportSize())
         await page.screenshot({
             path: join(OUT, "multiselect-timeline-marquee.png"),
