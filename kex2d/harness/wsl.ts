@@ -33,7 +33,9 @@ function probe(cmd: string[], what: string): string {
         timeout: PROBE_TIMEOUT_MS,
     });
     if (result.exitCode === null)
-        throw new Error(`${what} did not answer within ${PROBE_TIMEOUT_MS}ms (\`${cmd[0]}\` killed)`);
+        throw new Error(
+            `${what} did not answer within ${PROBE_TIMEOUT_MS}ms (\`${cmd[0]}\` killed)`,
+        );
     if (result.exitCode !== 0) throw new Error(`${what} failed (exit ${result.exitCode})`);
     const out = new TextDecoder().decode(result.stdout).trim().replace(/\r/g, "");
     if (!out) throw new Error(`${what} returned nothing`);
@@ -71,18 +73,36 @@ function readJson(path: string, what: string): Record<string, unknown> {
     try {
         return JSON.parse(text) as Record<string, unknown>;
     } catch (e) {
-        throw new Error(`${what} is not valid JSON (${path}): ${e instanceof Error ? e.message : e}`);
+        throw new Error(
+            `${what} is not valid JSON (${path}): ${e instanceof Error ? e.message : e}`,
+        );
     }
 }
 
-// Key the host's node_modules by the WHOLE dependency block, not by one package's installed version:
-// an installed version satisfies a caret range forever, so a version key never reinstalls after a
-// dependency edit, and a torn install can leave a satisfying package.json inside an incomplete tree.
-function depsKey(deps: Record<string, string>): string {
+/**
+ * The provisioning key a staged `package.json` asks for, plus the Playwright range it declares.
+ *
+ * Keyed on the WHOLE dependency block, not on one package's installed version: an installed version
+ * satisfies a caret range forever, so a version key never reinstalls after a dependency edit. Key
+ * order is normalized, so a reordered block is the same key.
+ */
+export function provisionKey(pkg: Record<string, unknown>): { key: string; pin: string } {
+    const deps = (pkg.dependencies ?? {}) as Record<string, string>;
+    const pin = deps["@playwright/test"];
+    if (!pin) throw new Error("staged package.json declares no @playwright/test dependency");
     const sorted = Object.keys(deps)
         .sort()
         .map((k) => [k, deps[k]]);
-    return Bun.hash(JSON.stringify(sorted)).toString(16);
+    return { key: Bun.hash(JSON.stringify(sorted)).toString(16), pin };
+}
+
+/**
+ * Whether the host stage can be reused as-is: its marker records THIS key AND the install it
+ * claims is really on disk. Both halves are load-bearing — a torn install can leave a satisfying
+ * `package.json` inside an incomplete tree, and a marker is written only after a verified install.
+ */
+export function provisioned(marker: string | null, key: string, treeExists: boolean): boolean {
+    return marker !== null && marker.trim() === key && treeExists;
 }
 
 function installedVersion(pkgJson: string): string | null {
@@ -120,15 +140,14 @@ export function stageOnWindows(srcDir: string, stage: Stage): WindowsPaths {
         cpSync(join(srcDir, file), dest);
     }
 
-    const pkg = readJson(join(paths.wsl, "package.json"), "staged package.json");
-    const deps = (pkg.dependencies ?? {}) as Record<string, string>;
-    const pin = deps["@playwright/test"];
-    if (!pin) throw new Error("staged package.json declares no @playwright/test dependency");
-
-    const key = depsKey(deps);
+    const { key, pin } = provisionKey(
+        readJson(join(paths.wsl, "package.json"), "staged package.json"),
+    );
     const marker = join(paths.wsl, MARKER);
     const tree = join(paths.wsl, "node_modules/@playwright/test/package.json");
-    if (existsSync(marker) && readFileSync(marker, "utf8").trim() === key && existsSync(tree)) {
+    if (
+        provisioned(existsSync(marker) ? readFileSync(marker, "utf8") : null, key, existsSync(tree))
+    ) {
         console.log(`Windows host provisioned (deps ${key}); skipping install.`);
         return paths;
     }

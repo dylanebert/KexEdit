@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { boolEnv, intEnv, parseArgs, UsageError } from "./args";
 import { runPlaywright } from "./playwright";
 import { startServer } from "./server";
 import { detectDisplay } from "./wsl";
@@ -46,60 +47,26 @@ function fail(msg: string): never {
     process.exit(2);
 }
 
-function usage(msg: string): never {
-    fail(`${msg}\nusage: bun run capture [--out DIR] [-- <playwright test args>]`);
-}
-
-// An env knob as an integer in range. `Number` alone maps "" to 0 and garbage to NaN, and both reach
-// Playwright as a value rather than an error — zero workers runs no tests at all (burning to the
-// global timeout after the shot set is already wiped), NaN lands in a timeout.
-function intEnv(name: string, fallback: number, min: number, max: number): number {
-    const raw = process.env[name];
-    if (raw === undefined) return fallback;
-    const n = Number(raw);
-    if (!Number.isInteger(n) || n < min || n > max)
-        usage(`${name} must be an integer in [${min}, ${max}] (got ${JSON.stringify(raw)})`);
-    return n;
-}
-
-function boolEnv(name: string): boolean {
-    const raw = process.env[name];
-    if (raw === undefined) return false;
-    if (raw !== "0" && raw !== "1") usage(`${name} must be 0 or 1 (got ${JSON.stringify(raw)})`);
-    return raw === "1";
-}
-
-const argv = process.argv.slice(2);
-const testArgs: string[] = [];
-let out: string | null = null;
-for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--out") {
-        const value = argv[i + 1];
-        if (value === undefined || value.startsWith("-")) usage("--out needs a directory");
-        out = value;
-        i++;
-    } else if (arg.startsWith("--out=")) {
-        const value = arg.slice("--out=".length);
-        if (!value) usage("--out= needs a directory");
-        out = value;
-    } else if (arg !== "--") {
-        testArgs.push(arg);
+// The pure decision layer (`args.ts`) throws; here is where a bad command line becomes an exit.
+function resolveArgs<T>(f: () => T): T {
+    try {
+        return f();
+    } catch (e) {
+        if (e instanceof UsageError)
+            fail(`${e.message}\nusage: bun run capture [--out DIR] [-- <playwright test args>]`);
+        throw e;
     }
-    // A bare `--` is dropped: `bun run capture -- -g <pattern>` is the documented recipe and bun
-    // forwards the separator itself, but passed on it reaches Playwright's CLI as an end-of-options
-    // marker, so `-g` degrades to a positional file filter — the whole suite runs while `capture.ts`
-    // still counts the run selective (measured: 22 tests vs the filter's 1). It addresses bun, not us.
 }
-const outDir = resolve(out ?? join(harnessDir, "shots"));
-const selective = testArgs.length > 0;
-// `--list` collects and prints the suite without running it: no browser, no shots, no dev server.
-const listing = testArgs.includes("--list");
 
-const port = intEnv("KEX_PORT", DEFAULT_PORT, 1024, 65_535);
-const workers = intEnv("KEX_WORKERS", DEFAULT_WORKERS, 1, 64);
-const shotMs = intEnv("KEX_SHOT_MS", DEFAULT_SHOT_MS, 0, 60_000);
-const headed = boolEnv("KEX_HEADED");
+const { out, testArgs, selective, listing } = resolveArgs(() => parseArgs(process.argv.slice(2)));
+const outDir = resolve(out ?? join(harnessDir, "shots"));
+
+const { port, workers, shotMs, headed } = resolveArgs(() => ({
+    port: intEnv("KEX_PORT", process.env.KEX_PORT, DEFAULT_PORT, 1024, 65_535),
+    workers: intEnv("KEX_WORKERS", process.env.KEX_WORKERS, DEFAULT_WORKERS, 1, 64),
+    shotMs: intEnv("KEX_SHOT_MS", process.env.KEX_SHOT_MS, DEFAULT_SHOT_MS, 0, 60_000),
+    headed: boolEnv("KEX_HEADED", process.env.KEX_HEADED),
+}));
 // The host staging dir is per-port by default, so two sessions on different ports never share one
 // `node_modules`/`shots` tree (the concurrent-capture hazard: a second capture kills the first's
 // server and rebinds the port with its own tree).
@@ -222,7 +189,9 @@ writeFileSync(
 
 cleanup();
 if (run.exitCode !== 0) {
-    console.error(`capture FAILED${run.timedOut ? " (spawn ceiling — Playwright did not exit)" : ""}`);
+    console.error(
+        `capture FAILED${run.timedOut ? " (spawn ceiling — Playwright did not exit)" : ""}`,
+    );
     process.exit(1);
 }
 if (!wholeSuite) {

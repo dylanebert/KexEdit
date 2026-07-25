@@ -32,8 +32,17 @@ function settleMs(): number {
 }
 const SHOT_MS = settleMs();
 
-// window.__kex is the DEV harness hook (src/main.ts); the harness is outside the project
-// tsconfig, so these page-context reads use `any` freely.
+// Layout constants MIRRORED from the app, because this file is staged to the host STANDALONE
+// (`wsl.ts`) and so can import nothing from `src/`. Each names its source; a change there is a
+// change here.
+const CHART_TOP = 46; // RULER_H (26) + GAP_H (20) — Timeline.svelte, the chartzone's own top
+const CHART_BOT_PAD = 8; // BOT_PAD — Timeline.svelte
+// The viewport's default framing centers the world origin in the region above the dock (240 + a
+// 16px inset kept clear), not in the canvas — App.svelte.
+const DOCK_RESERVE = 256;
+
+// window.__kex is the DEV harness hook (src/main.ts); these page-context reads use `any` freely —
+// the hook is a DEV-only surface with no shared type.
 
 // two laid-out DOM rects overlap iff they intersect on BOTH axes — the popover-vs-workspace
 // no-overlap assert reads the real rendered boxes (a selector test proves nothing about where a
@@ -41,10 +50,7 @@ const SHOT_MS = settleMs();
 type Rect = { x: number; y: number; width: number; height: number };
 function overlaps(a: Rect, b: Rect): boolean {
     return (
-        a.x < b.x + b.width &&
-        b.x < a.x + a.width &&
-        a.y < b.y + b.height &&
-        b.y < a.y + a.height
+        a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
     );
 }
 
@@ -157,7 +163,7 @@ async function seedHill(page: Page): Promise<void> {
 // that magnitude), so the honest predicate is |dist − RADIAL_R| < tol. A one-sided `dist > 70` would
 // accept an adjacent node's ring anywhere out to 116px — the stale-ring failure this exists to catch
 // measured 573px, but nothing bounds it that far.
-const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R — the harness is outside the project tsconfig
+const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R (staged standalone — see the block up top)
 // layout rounding only: both boxes' edges land on the device pixel grid (0.5px at
 // deviceScaleFactor 2) on both axes, so the radius can move ~1px; 2px is well inside a 46px orbit.
 const RING_TOL = 2;
@@ -264,7 +270,7 @@ async function clickMenuItem(page: Page, menu: string, item: string): Promise<vo
     const reachable = await page.evaluate(
         (p: { x: number; y: number; label: string }) => {
             const el = document.elementFromPoint(p.x, p.y);
-            return (el?.closest(".menu-item")?.textContent?.trim().startsWith(p.label)) ?? false;
+            return el?.closest(".menu-item")?.textContent?.trim().startsWith(p.label) ?? false;
         },
         { x, y, label: item },
     );
@@ -517,8 +523,8 @@ test("tangent edit flow", async ({ page }) => {
                 (window as any).__kex.tangent(),
         );
     const handles = () =>
-        page.evaluate(
-            (): { side: string; x: number; y: number }[] => (window as any).__kex.tangentHandles(),
+        page.evaluate((): { side: string; x: number; y: number }[] =>
+            (window as any).__kex.tangentHandles(),
         );
 
     // seed the shaped hill, then frame it so the interior node's handles separate at pixel
@@ -546,7 +552,10 @@ test("tangent edit flow", async ({ page }) => {
     // Tangents submenu → set FREE (a corner becomes expressible). ──
     await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
     await expect(page.locator(".nodemenu")).toBeVisible();
-    await page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents", exact: true }).hover();
+    await page
+        .locator(".nodemenu")
+        .getByRole("menuitem", { name: "Tangents", exact: true })
+        .hover();
     await expect(page.locator(".nodemenu").getByRole("menuitem", { name: "Free" })).toBeVisible();
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "tangent-1b-menu.png") });
@@ -574,9 +583,9 @@ test("tangent edit flow", async ({ page }) => {
     if (!dragged) throw new Error("tangent null after drag");
     expect(dragged.mode).toBe(2); // still Free
     // the dragged out-vector moved by a real distance…
-    expect(
-        Math.hypot(dragged.outX - summoned.outX, dragged.outY - summoned.outY),
-    ).toBeGreaterThan(0.1);
+    expect(Math.hypot(dragged.outX - summoned.outX, dragged.outY - summoned.outY)).toBeGreaterThan(
+        0.1,
+    );
     // …while the in-vector held its seeded value (Free's per-side independence).
     expect(dragged.inX).toBeCloseTo(summoned.inX, 5);
     expect(dragged.inY).toBeCloseTo(summoned.inY, 5);
@@ -660,8 +669,8 @@ test("start handle edit flow", async ({ page }) => {
                 (window as any).__kex.tangent(),
         );
     const handles = () =>
-        page.evaluate(
-            (): { side: string; x: number; y: number }[] => (window as any).__kex.tangentHandles(),
+        page.evaluate((): { side: string; x: number; y: number }[] =>
+            (window as any).__kex.tangentHandles(),
         );
 
     // the default flat seed bakes on load — no seedHill, so the START diamond at the origin sits
@@ -712,7 +721,9 @@ test("start handle edit flow", async ({ page }) => {
     await expect(
         page.locator(".nodemenu").getByRole("menuitem", { name: "Tangents", exact: true }),
     ).toHaveCount(0); // no mode submenu on node 0
-    await expect(page.locator(".nodemenu").getByRole("menuitem", { name: "Handles" })).toBeVisible();
+    await expect(
+        page.locator(".nodemenu").getByRole("menuitem", { name: "Handles" }),
+    ).toBeVisible();
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "start-3-menu.png") });
     await page.locator(".nodemenu").getByRole("menuitem", { name: "Reset" }).click();
@@ -777,7 +788,8 @@ test("force authoring flow", async ({ page }) => {
     const kind = () => page.evaluate((): number => (window as any).__kex.kind());
     const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
     const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
-    const forces = () => page.evaluate((): { s: number; g: number }[] => (window as any).__kex.forces());
+    const forces = () =>
+        page.evaluate((): { s: number; g: number }[] => (window as any).__kex.forces());
     const forceEases = () => page.evaluate((): number[] => (window as any).__kex.forceEases());
     const forceTangents = () =>
         page.evaluate((): (null | object)[] => (window as any).__kex.forceTangents());
@@ -874,10 +886,9 @@ test("force authoring flow", async ({ page }) => {
     expect(afterCtrl[2].s).toBeCloseTo(beforeCtrl[2].s, 2); // s pinned to its grab despite Ctrl
     expect(Math.abs(afterCtrl[2].g - beforeCtrl[2].g)).toBeGreaterThan(0.1); // g moved freely
     await page.keyboard.press("Control+z"); // restore the crest
-    await expect.poll(async () => (await forces()).sort((a, b) => a.s - b.s)[2].g).toBeCloseTo(
-        beforeCtrl[2].g,
-        5,
-    );
+    await expect
+        .poll(async () => (await forces()).sort((a, b) => a.s - b.s)[2].g)
+        .toBeCloseTo(beforeCtrl[2].g, 5);
     await page.keyboard.press("Escape"); // deselect: clear the crest's .ptip before 2c right-clicks
 
     // ── 2c. Seeded-keys extension (stage E): set the leading seed's easing via the real,
@@ -893,9 +904,9 @@ test("force authoring flow", async ({ page }) => {
     await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Quintic
 
     await page.locator(".fpt").first().dblclick(); // handle-edit sub-mode on the same seed
-    await expect.poll(() => page.evaluate((): boolean => (window as any).__kex.forceEditing())).toBe(
-        true,
-    );
+    await expect
+        .poll(() => page.evaluate((): boolean => (window as any).__kex.forceEditing()))
+        .toBe(true);
     const seedKnob = await page.locator(".thit").first().boundingBox(); // its one out-handle
     if (!seedKnob) throw new Error("seed handle knob not laid out");
     await page.mouse.move(seedKnob.x + seedKnob.width / 2, seedKnob.y + seedKnob.height / 2);
@@ -923,9 +934,9 @@ test("force authoring flow", async ({ page }) => {
     // the positive proof that the magnet fires (red without the latch: dy maps to ~0.08 g). ──
     await page.keyboard.press("Escape"); // exit any lingering handle-edit, then re-enter clean
     await page.locator(".fpt").first().dblclick();
-    await expect.poll(() =>
-        page.evaluate((): boolean => (window as any).__kex.forceEditing()),
-    ).toBe(true);
+    await expect
+        .poll(() => page.evaluate((): boolean => (window as any).__kex.forceEditing()))
+        .toBe(true);
     const flatKnob = await page.locator(".thit").first().boundingBox();
     if (!flatKnob) throw new Error("seed handle knob not laid out for the magnet drag");
     const fkx = flatKnob.x + flatKnob.width / 2;
@@ -988,9 +999,8 @@ test("force easing menu flow", async ({ page }) => {
     const forceHandleSel = () =>
         page.evaluate((): string | null => (window as any).__kex.forceHandleSel());
     const forceTangents = () =>
-        page.evaluate(
-            (): (null | { inOn: boolean; outDs: number; outDg: number })[] =>
-                (window as any).__kex.forceTangents(),
+        page.evaluate((): (null | { inOn: boolean; outDs: number; outDg: number })[] =>
+            (window as any).__kex.forceTangents(),
         );
 
     // seed a force section with an airtime bump (the two continuation seed keyframes stage B
@@ -1017,7 +1027,12 @@ test("force easing menu flow", async ({ page }) => {
     if (page.viewportSize())
         await page.screenshot({
             path: join(OUT, "force-easing-menu.png"),
-            clip: { x: 0, y: (page.viewportSize()?.height ?? 0) - 340, width: page.viewportSize()?.width ?? 0, height: 340 },
+            clip: {
+                x: 0,
+                y: (page.viewportSize()?.height ?? 0) - 340,
+                width: page.viewportSize()?.width ?? 0,
+                height: 340,
+            },
         });
 
     // ── 2. Open Easing ▸ and set Linear — pointer-true through clickFlyout (a coordinate
@@ -1085,7 +1100,9 @@ test("force easing menu flow", async ({ page }) => {
     if (!inKnob) throw new Error("in-handle knob not laid out");
     await page.mouse.move(inKnob.x + inKnob.width / 2, inKnob.y + inKnob.height / 2);
     await page.mouse.down();
-    await page.mouse.move(inKnob.x + inKnob.width / 2 + 2, inKnob.y + inKnob.height / 2 - 2, { steps: 2 });
+    await page.mouse.move(inKnob.x + inKnob.width / 2 + 2, inKnob.y + inKnob.height / 2 - 2, {
+        steps: 2,
+    });
     await page.mouse.up();
     await expect.poll(forceHandleSel).toBe("in"); // the jittery click SELECTED the handle
     expect((await forceTangents())[1]).toBeNull(); // …but wrote NO explicit tangent
@@ -1101,7 +1118,9 @@ test("force easing menu flow", async ({ page }) => {
     if (!knob) throw new Error("handle knob not laid out");
     await page.mouse.move(knob.x + knob.width / 2, knob.y + knob.height / 2);
     await page.mouse.down();
-    await page.mouse.move(knob.x + knob.width / 2 + 24, knob.y + knob.height / 2 - 40, { steps: 6 });
+    await page.mouse.move(knob.x + knob.width / 2 + 24, knob.y + knob.height / 2 - 40, {
+        steps: 6,
+    });
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
 
@@ -1138,7 +1157,12 @@ test("force easing menu flow", async ({ page }) => {
     if (page.viewportSize())
         await page.screenshot({
             path: join(OUT, "force-handle-edit.png"),
-            clip: { x: 0, y: (page.viewportSize()?.height ?? 0) - 340, width: page.viewportSize()?.width ?? 0, height: 340 },
+            clip: {
+                x: 0,
+                y: (page.viewportSize()?.height ?? 0) - 340,
+                width: page.viewportSize()?.width ?? 0,
+                height: 340,
+            },
         });
 
     // ── 4c. The handle (Δs, Δg) fields carry the slider/scrub affordance, the same drag-to-slide
@@ -1156,7 +1180,9 @@ test("force easing menu flow", async ({ page }) => {
     const beforeScrubUndo = await undoDepth();
     await page.mouse.move(dgKeyBox.x + dgKeyBox.width / 2, dgKeyBox.y + dgKeyBox.height / 2);
     await page.mouse.down();
-    await page.mouse.move(dgKeyBox.x + dgKeyBox.width / 2 + 40, dgKeyBox.y + dgKeyBox.height / 2, { steps: 10 });
+    await page.mouse.move(dgKeyBox.x + dgKeyBox.width / 2 + 40, dgKeyBox.y + dgKeyBox.height / 2, {
+        steps: 10,
+    });
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1]?.outDg ?? 0).not.toBe(beforeScrubDg);
     expect(await undoDepth()).toBe(beforeScrubUndo + 1); // the whole scrub → one entry
@@ -1197,9 +1223,7 @@ test("force easing menu flow", async ({ page }) => {
     await page.keyboard.press("Escape");
     const body = await page.locator(".dock .body").boundingBox();
     if (!body) throw new Error("timeline body not laid out");
-    const CHART_TOP = 46; // RULER_H (26) + GAP_H (20) — Timeline.svelte
-    const CHART_BOT_PAD = 8; // BOT_PAD
-    const TIP_REACH = 68; // TIP_H (56) + TIP_GAP (12) — the vertical room the box needs to fit
+    const tipReach = 68; // TIP_H (56) + TIP_GAP (12) — the vertical room the box needs to fit
     const chartTopY = body.y + CHART_TOP;
     const chartBotY = body.y + body.height - CHART_BOT_PAD;
 
@@ -1214,7 +1238,7 @@ test("force easing menu flow", async ({ page }) => {
     // (i) DEFAULT above: drag the OUT knob straight UP to the midpoint between the top fit-line and
     // the crest — the box has clear room above, so it reads like the keyframe popover: above the
     // knob, centred, on the side away from the (below) diamond. NOT dodged to a side.
-    const upY = (chartTopY + TIP_REACH + crestY) / 2;
+    const upY = (chartTopY + tipReach + crestY) / 2;
     const uk = await page.locator(".thit").last().boundingBox();
     if (!uk) throw new Error("crest out knob not laid out for the up drag");
     await page.mouse.move(uk.x + uk.width / 2, uk.y + uk.height / 2);
@@ -1316,7 +1340,9 @@ test("force easing menu flow", async ({ page }) => {
     await dgField.press("Enter"); // Enter blurs → onchange commits through the tangent path
     await expect.poll(async () => (await forceTangents())[1]?.outDg ?? 0).toBeCloseTo(0.6, 2);
     await page.keyboard.press("Control+z"); // undo the typed entry
-    await expect.poll(async () => Math.abs((await forceTangents())[1]?.outDg ?? 1)).toBeLessThan(0.01);
+    await expect
+        .poll(async () => Math.abs((await forceTangents())[1]?.outDg ?? 1))
+        .toBeLessThan(0.01);
 
     // ── 9. The TERMINAL keyframe (the last one, governing no following segment) drops the
     // Easing ▸ entry entirely — its menu is Delete alone (there is no transition to ease). ──
@@ -1463,9 +1489,13 @@ test("force tangent mode + linear ghost flow", async ({ page }) => {
     if (!outKnob) throw new Error("kf1 out knob not laid out");
     await page.mouse.move(outKnob.x + outKnob.width / 2, outKnob.y + outKnob.height / 2);
     await page.mouse.down();
-    await page.mouse.move(outKnob.x + outKnob.width / 2 + 10, outKnob.y + outKnob.height / 2 - 44, { steps: 6 });
+    await page.mouse.move(outKnob.x + outKnob.width / 2 + 10, outKnob.y + outKnob.height / 2 - 44, {
+        steps: 6,
+    });
     await page.mouse.up();
-    await expect.poll(async () => Math.abs((await forceTangents())[1]?.outDg ?? 0)).toBeGreaterThan(0.05); // OUT moved
+    await expect
+        .poll(async () => Math.abs((await forceTangents())[1]?.outDg ?? 0))
+        .toBeGreaterThan(0.05); // OUT moved
     const inAfter = (await forceTangents())[1];
     expect(inAfter?.inDs).toBeCloseTo(inBefore.inDs, 6); // IN untouched — Free does not couple
     expect(inAfter?.inDg).toBeCloseTo(inBefore.inDg, 6);
@@ -1577,7 +1607,9 @@ test("context menu stays in the viewport near the bottom edge", async ({ page })
 // endpoints — the same accommodate keyframes get through the curve scan). The gRange hook reads the
 // displayed g-range (yView); a real canvas pointer drives the drag past the edge. Each half carries
 // its own mutation: unwire the handle branch → no pan; drop the handle-endpoint inclusion → no fit.
-test("handle drag edge-pans the value axis and a released handle stays in range", async ({ page }) => {
+test("handle drag edge-pans the value axis and a released handle stays in range", async ({
+    page,
+}) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
@@ -1623,20 +1655,20 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
     // what the cap bounds. Mutation: revert the handle branch in the yView effect to `return` (unwire
     // the path) → the axis holds → the floor never drops → this times out red. Mutation: drop the cap
     // from `yGrow` → the floor keeps falling past it → the hold-still assert goes red. ──
-    const GROW_LO = -3; // Timeline.svelte GROW_CAP[0] = BAND[0] - 1 g of headroom
+    const growLo = -3; // Timeline.svelte GROW_CAP[0] = BAND[0] - 1 g of headroom
     const [lo0] = await gRange();
-    expect(lo0).toBeGreaterThan(GROW_LO); // the resting frame sits inside the cap — there IS room to grow
+    expect(lo0).toBeGreaterThan(growLo); // the resting frame sits inside the cap — there IS room to grow
     const knob = await page.locator(".thit").last().boundingBox();
     if (!knob) throw new Error("out handle knob not laid out");
     const knobX = knob.x + knob.width / 2;
     await page.mouse.move(knobX, knob.y + knob.height / 2);
     await page.mouse.down();
     await page.mouse.move(knobX, chartBotY + 140, { steps: 8 }); // straight down, past the bottom, HELD
-    await expect.poll(async () => (await gRange())[0]).toBeCloseTo(GROW_LO, 3); // grew down to the cap
+    await expect.poll(async () => (await gRange())[0]).toBeCloseTo(growLo, 3); // grew down to the cap
     await frames(page, 24); // …held past the edge for 48 more real frames (`frames` awaits 2n rAF
     // callbacks). Growth compounds per FRAME, so frames — not milliseconds — are this hold's unit,
     // and the count is the detection power: a ~1e-4/frame leak past the cap hides inside 24.
-    expect((await gRange())[0]).toBeCloseTo(GROW_LO, 3); // …and stopped there, never past it
+    expect((await gRange())[0]).toBeCloseTo(growLo, 3); // …and stopped there, never past it
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
 
@@ -1739,17 +1771,23 @@ test("section clip strip flow", async ({ page }) => {
     // own center — a real pointer's reach, the Menus reachability net (a selector .click() fires
     // on a clipped, humanly-unreachable row). ──
     await page.locator(".clip-add").click();
-    const forceItem = page.locator(".clip-flyout").getByRole("menuitem", { name: "Append force section" });
+    const forceItem = page
+        .locator(".clip-flyout")
+        .getByRole("menuitem", { name: "Append force section" });
     await expect(forceItem).toBeVisible();
     const fib = await forceItem.boundingBox();
     if (!fib) throw new Error("append flyout item not laid out");
     const fix = fib.x + fib.width / 2;
     const fiy = fib.y + fib.height / 2;
     const flyoutReach = await page.evaluate(
-        (p: { x: number; y: number }) => document.elementFromPoint(p.x, p.y)?.closest(".menu-item") !== null,
+        (p: { x: number; y: number }) =>
+            document.elementFromPoint(p.x, p.y)?.closest(".menu-item") !== null,
         { x: fix, y: fiy },
     );
-    expect(flyoutReach, "append flyout item must be hit-testable at its own center (not clipped)").toBe(true);
+    expect(
+        flyoutReach,
+        "append flyout item must be hit-testable at its own center (not clipped)",
+    ).toBe(true);
     await page.mouse.click(fix, fiy);
     await expect.poll(sectionCount).toBe(2);
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
@@ -1788,9 +1826,7 @@ test("section clip strip flow", async ({ page }) => {
 
     // undo restores the pre-drag extent, one entry.
     await page.keyboard.press("Control+z");
-    await expect
-        .poll(async () => (await sectionLengths())[1])
-        .toBeCloseTo(before[1], 3);
+    await expect.poll(async () => (await sectionLengths())[1]).toBeCloseTo(before[1], 3);
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
@@ -1974,10 +2010,8 @@ test("v0 authoring flow", async ({ page }) => {
     await expect.poll(tTotal).toBeGreaterThan(0);
     const v0Default = await v0();
 
-    // ── 1. Click the START anchor → its v0 popover appears. the default camera centers the
-    // world origin horizontally and vertically in the region above the dock (240 + 16px
-    // inset kept clear), NOT the canvas center — so the click follows that framing. ──
-    const DOCK_RESERVE = 256;
+    // ── 1. Click the START anchor → its v0 popover appears. The framing (DOCK_RESERVE) is the
+    // camera's, not the canvas center — so the click follows it. ──
     const canvas = page.locator("#app > canvas");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
@@ -2251,7 +2285,6 @@ test("viewport kind color shot", async ({ page }) => {
     const canvas = page.locator("#app > canvas");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
-    const DOCK_RESERVE = 256;
     const cx = cb.x + cb.width / 2;
     const cy = cb.y + (cb.height - DOCK_RESERVE) / 2;
     await page.mouse.move(cx, cy);
@@ -2265,9 +2298,9 @@ test("viewport kind color shot", async ({ page }) => {
     // must not paint solid over the dashed-red infeasible sub-segment (the priority
     // fix: infeasible-red > selection accent).
     await page.locator(".clip").nth(1).click();
-    await expect.poll(() => page.evaluate(() => (window as any).__kex.selectedSection())).not.toBe(
-        null,
-    );
+    await expect
+        .poll(() => page.evaluate(() => (window as any).__kex.selectedSection()))
+        .not.toBe(null);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "kind-color-selected.png"), clip: zoomedClip });
 
@@ -2417,7 +2450,8 @@ test("viewport multiselect flow", async ({ page }) => {
                 orders,
             );
             return now.every(
-                (p, i) => p !== null && Math.hypot(p.x - pt[orders[i]].x, p.y - pt[orders[i]].y) < 1,
+                (p, i) =>
+                    p !== null && Math.hypot(p.x - pt[orders[i]].x, p.y - pt[orders[i]].y) < 1,
             );
         })
         .toBe(true);
@@ -2511,8 +2545,6 @@ test("timeline multiselect flow", async ({ page }) => {
     const bodyBox = await page.locator(".dock .body").boundingBox();
     if (!bodyBox) throw new Error("timeline body not laid out");
     const mid = (a: number, b: number): number => (a + b) / 2;
-    const CHART_TOP = 46; // RULER_H (26) + GAP_H (20) — Timeline.svelte, the chartzone's own top
-    const CHART_BOT_PAD = 8; // BOT_PAD
 
     // ── 1. CHART-MARQUEE the three interior keyframes: x bounded at the midpoints to the two
     // seeds, y spans the chartzone's own inner band (only x needs to exclude the seeds — they
@@ -2631,4 +2663,3 @@ test("timeline multiselect flow", async ({ page }) => {
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
-

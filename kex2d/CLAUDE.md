@@ -626,6 +626,14 @@ with no GPU device; the unit suite is canvas2D + device-free, no real-GPU leg.
 `harness/` — Playwright harness (`bun run capture` → `harness/shots/`, gitignored). The `geo authoring
 flow` test drives the real UI (seed → extend → undo → reshape) and the `force authoring flow` test
 (seed → real mode-toggle convert → author a bump by points → convert back → undo) assert
-`window.__kex` state via `expect.poll` (no sleeps); the lab tests screenshot the atom pages. Self-contained sub-package outside
-the project `tsconfig`/`biome`. Drives the host's **real-GPU Chrome via the WSL→Windows bridge**
-(shallot's `run()` acquires a WebGPU device even though kex2d is canvas2D). Display-gated.
+`window.__kex` state via `expect.poll` (no sleeps); the lab tests screenshot the atom pages. Drives
+the host's **real-GPU Chrome via the WSL→Windows bridge** (shallot's `run()` acquires a WebGPU
+device even though kex2d is canvas2D). Display-gated.
+
+It's a **sub-package with its own `package.json`** (Playwright is declared there, not in the app) —
+`cd harness && bun install` once per checkout, or `bun check` can't resolve `@playwright/test`. Its
+code IS under the project `tsconfig` + `biome`, and the pure pieces (`args.ts`'s CLI/env validators,
+`wsl.ts`'s provisioning key) are unit-tested in `tests/harness.test.ts`. But `capture.pw.config.ts`
+and `shot.pw.ts` are **staged to the Windows host standalone** (`wsl.ts`), so they can import
+nothing — app constants they need are mirrored at the top of the file with their source named, and
+each env knob is re-validated there for a direct `playwright test` run.
