@@ -331,8 +331,6 @@ const nodeMulti = $derived.by((): boolean => {
     void tick;
     return editor.nodes.ids.size > 1;
 });
-// the selected node set as stable (section, order) members — the bulk ops read this (a raw eid can't
-// cross a snapshot restore); `nodeMembers` (controls.ts) is the one source of truth.
 // whether the set is a Delete-able suffix run — a contiguous suffix of ONE section, excluding node 0,
 // leaving ≥ 2 (the enablement predicate). the bulk Delete row grays out otherwise (never hidden).
 const nodeSuffixOk = $derived.by((): boolean => {

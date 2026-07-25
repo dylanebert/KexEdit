@@ -8,6 +8,8 @@ import {
     type Selection,
     select,
     selectForce,
+    selectForces,
+    selectNodes,
     selectSection,
     selectStart,
     setMember,
@@ -113,6 +115,58 @@ test("toggling out the active with ≥2 survivors promotes the last-inserted one
     select(3, "toggle"); // remove the active while TWO survivors {1,2} remain
     expect([...editor.nodes.ids]).toEqual([1, 2]);
     expect(editor.selection).toBe(2); // the last-inserted survivor — a regression to order 1 would pass every ≤1-survivor test
+});
+
+// ── set appliers (the marquee's atomic write: one merged hit set + its active, written in one go) ──
+
+test("selectNodes writes a whole set and re-anchors the active", () => {
+    selectNodes([10, 20, 30], 20);
+    expect([...editor.nodes.ids]).toEqual([10, 20, 30]);
+    expect(editor.selection).toBe(20); // the caller's active, not the last member
+});
+
+test("selectNodes falls back to the last-inserted member when the given active isn't in the set", () => {
+    selectNodes([10, 20, 30], 99); // 99 was never a member (a dropped/stale active)
+    expect(editor.selection).toBe(30);
+    selectNodes([10, 20], null);
+    expect(editor.selection).toBe(20);
+});
+
+test("a non-empty set applier sweeps the other kinds; an empty one clears only its own", () => {
+    selectSection(3);
+    selectNodes([10, 20], 10);
+    expect(editor.sections.ids.size).toBe(0); // swept
+    expect([...editor.nodes.ids]).toEqual([10, 20]);
+
+    // an empty write is the marquee's "hit nothing" case: it clears the node kind alone, leaving
+    // the full deselect (the other kinds + START) to the caller, matching empty-click.
+    selectSection(3);
+    select(10, "toggle"); // node kind again, sections swept
+    selectSection(3, "toggle"); // …and back to sections, so a stale kind exists to observe
+    selectNodes([], null);
+    expect(editor.nodes.ids.size).toBe(0);
+    expect([...editor.sections.ids]).toEqual([3]); // untouched — the caller owns the rest
+});
+
+test("a set applier that grows past a sub-mode's subject drops the sub-mode", () => {
+    select(10);
+    enterTangentEdit(10);
+    selectNodes([10, 20], 20);
+    expect(editor.tangentEdit).toBeNull();
+
+    selectForce(5);
+    enterForceEdit(5);
+    selectForces([5, 6], 6);
+    expect(editor.forceEdit).toBeNull();
+    expect(editor.forceHandle).toBeNull();
+});
+
+test("selectForces writes the force set and sweeps the other kinds", () => {
+    select(10);
+    selectForces([5, 6, 7], 6);
+    expect(editor.nodes.ids.size).toBe(0);
+    expect([...editor.forces.ids]).toEqual([5, 6, 7]);
+    expect(editor.force).toBe(6);
 });
 
 // ── kind exclusivity ──

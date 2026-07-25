@@ -768,7 +768,17 @@ function marqueeMove(e: PointerEvent): void {
         marqueeArmed = true;
         beginDrag(canvas, marqueePointer); // capture + the drag flag, only now that it IS a drag
     }
-    marqueeRect = marqueeArmed ? normRect(marqueeStart.x, marqueeStart.y, cx, cy) : null;
+    // clamp the moving corner to the chart: the rect paints under `fclip`, so an unclamped drag
+    // into the gutter/ruler would select diamonds the clip hides (a panned-off point). the drawn
+    // box and the hit box must be the same box.
+    marqueeRect = marqueeArmed
+        ? normRect(
+              marqueeStart.x,
+              marqueeStart.y,
+              clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w)),
+              clamp(cy, TOP, Math.max(TOP, h - BOT_PAD)),
+          )
+        : null;
 }
 function marqueeUp(): void {
     if (!marqueeStart) return;
@@ -1130,6 +1140,7 @@ const multiForce = $derived.by((): boolean => {
 // enablement law). single-select is the size-1 case (`[active]` when the active is non-terminal).
 const bulkEaseIds = $derived.by((): number[] => {
     void tick;
+    if (editor.forceMenu === null) return []; // only the open menu reads this (`fmenuTerminal`'s guard)
     const ids = editor.forces.ids;
     const res: number[] = [];
     for (const p of forcePts) {
@@ -2106,6 +2117,7 @@ onMount(() => {
         panUp(); // and any in-flight middle-drag pan
         navUp(); // and any in-flight navigator drag
         cancelForceDrag(); // and any in-flight force-point drag
+        marqueeCancel(); // and any in-flight chart marquee (its listeners live on window)
         cancelTanDrag(); // and any in-flight handle drag
         cancelLenDrag(); // and any in-flight extent drag
         endDragGesture(); // clear the drag flag if we tore down mid-drag (no release event)

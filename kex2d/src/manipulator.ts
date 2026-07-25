@@ -35,10 +35,12 @@ const EPS = 1e-9;
  *  and the loci collapse to the origin; the inverses stay finite but the round-trip only holds for a
  *  non-degenerate frame.
  *
- *  **the frame is a per-pointermove snapshot, not a gesture-start freeze.** its `radius` is the
- *  live chord radius that `angleToPoint` holds constant through an angle drag, so the caller rebuilds
- *  the frame each move against the live selected-node position — the node stays on its own arc as the
- *  angle changes. */
+ *  **a single-node drag rebuilds the frame per pointermove, not once at gesture start.** its
+ *  `radius` is the live chord radius that `angleToPoint` holds constant through an angle drag, so the
+ *  caller rebuilds the frame each move against the live selected-node position — the node stays on
+ *  its own arc as the angle changes. the group move (`polarDelta` below) is the deliberate exception:
+ *  it derives a cumulative delta, which needs a fixed zero, so its caller freezes one frame at
+ *  gesture start. */
 export interface Frame {
     /** the previous node — the polar origin, screen px. */
     px: number;
@@ -162,8 +164,8 @@ export function angleControl(f: Frame, px: number, py: number, snap: boolean): A
 // rotation delta, so a world-frame Δθ IS a local-frame Δθ — no world/bake round-trip needed, so the
 // group stays coherent mid-gesture without a re-bake). the chord VECTOR transform reads START
 // positions (order-independent); the ANCHOR reads the running (possibly already-moved) previous
-// node, walked ascending, so a selected RUN carries rigidly (the per-move-snapshot live-frame
-// rebuild, `manipulator.ts` — a consecutive selected pair anchors the later on the moved earlier).
+// node, walked ascending, so a selected RUN carries rigidly — a consecutive selected pair anchors
+// the later on the moved earlier.
 
 /** one node of a section's chain in section-local coordinates: its stable `order` (0 = the entry
  *  anchor) and local position. */

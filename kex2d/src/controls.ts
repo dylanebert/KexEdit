@@ -959,7 +959,7 @@ export function attachControls(
         // body drag); else select the section under the click; else deselect (Figma-style).
         const eid = pickNode(ecs, tx, cx, cy);
         if (eid !== null) {
-            select(eid);
+            select(eid, e.shiftKey ? "toggle" : "replace"); // shift-click toggles the set
             return;
         }
         // the START anchor (initial-speed handle) before the section span it sits on —
