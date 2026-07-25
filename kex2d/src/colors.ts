@@ -41,6 +41,26 @@ export function selected(base: string): string {
     return oklchToHex(l + SELECT_L_LIFT, c * SELECT_C_BOOST, h);
 }
 
+/** the hover rung's share of the selection step. derived from the clip strip, where both rungs
+ *  already exist over one background (`Timeline.svelte`: base fill 28% → hover 42% of the kind
+ *  token, selected `--geo-sel`/`--accent-sel` at 60%): composite those three over the dock surface
+ *  and hover's OKLCH lightness step is 0.29 of the selection's — 0.288 to 0.297 across both kind
+ *  colors and every surface tone the clips sit on. so the canvas twin sits at the same relative
+ *  height in the stack instead of copying an alpha that means nothing to an opaque stroke. */
+export const HOVER_STEP = 0.3;
+
+/** an element's hover color: its own base color one rung up — the same OKLCH move `selected`
+ *  makes, at `HOVER_STEP` of its size, hue held. the canvas twin of the clip strip's hover fill,
+ *  a step below the selection lift, and one knob so a feel round retunes the rung alone. */
+export function hovered(base: string): string {
+    const { l, c, h } = hexToOklch(base);
+    return oklchToHex(
+        l + SELECT_L_LIFT * HOVER_STEP,
+        c * (1 + (SELECT_C_BOOST - 1) * HOVER_STEP),
+        h,
+    );
+}
+
 // ── OKLab / OKLCH (Björn Ottosson): sRGB hex ⇆ OKLCH, the perceptual space the selection
 // tone-variant derives in — a uniform white-mix in sRGB desaturates; OKLCH holds chroma. ──
 

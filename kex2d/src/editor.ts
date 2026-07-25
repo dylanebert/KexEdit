@@ -120,6 +120,12 @@ interface EditorState {
      *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
      *  on the chrome under the cursor. ephemeral, read via the per-RAF tick. */
     dragging: boolean;
+    /** the stable id of the viewport section span under the pointer, or null — the ephemeral
+     *  hover read the render overlay draws one kind-color rung up (`hovered`, colors.ts), the
+     *  canvas twin of the clip strip's hover fill. written per pointermove by the controls'
+     *  `pickSection`, cleared on pointer leave and for the whole of any gesture (`beginDrag`).
+     *  viewport-local by design: hovering a clip does not light the span, and vice versa. */
+    hoverSection: number | null;
     /** which surface the pointer is over — routes the surface-scoped keys (`F` frames it,
      *  arrows act on it), ending the viewport-nudge vs timeline-playhead double-fire.
      *  defaults to the viewport, so keys route there before the pointer visits the dock;
@@ -158,6 +164,7 @@ export const editor: EditorState = {
     forceMenu: null,
     snap: true,
     dragging: false,
+    hoverSection: null,
     hover: "viewport",
 };
 
@@ -187,6 +194,9 @@ export function beginDrag(el: Element, pointerId: number): void {
     dragEl = el;
     dragId = pointerId;
     editor.dragging = true;
+    // the canvas hover has no `:hover` for the CSS rule below to kill, so the same suppression is
+    // an explicit clear here: nothing lights up under a live gesture, whichever surface owns it.
+    editor.hoverSection = null;
     try {
         el.setPointerCapture(pointerId);
     } catch {

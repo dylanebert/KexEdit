@@ -2101,10 +2101,23 @@ test("viewport kind color shot", async ({ page, boot }) => {
     const cy = cb.y + (cb.height - DOCK_RESERVE) / 2;
     await page.mouse.move(cx, cy);
     await page.mouse.wheel(0, -1800); // deltaY < 0 → zoom in
-    await page.waitForTimeout(SHOT_MS);
 
+    // The zoom-at-cursor leaves the pointer ON the geo span (the default framing put the chain
+    // start under it), which lights the HOVER rung — so the base-rung shot parks the pointer off
+    // the track first, and the hover rung gets its own shot below. Measured: without this the
+    // base shot's geo span came back #83b2e6, not #78a5d6.
     const zoomedClip = { x: cb.x, y: cb.y, width: cb.width, height: cb.height - DOCK_RESERVE };
+    await page.mouse.move(cb.x + 4, cb.y + 4);
+    await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "kind-color.png"), clip: zoomedClip });
+
+    // hover the geo span → it lifts one rung in its OWN kind color (`hovered` in colors.ts, the
+    // canvas twin of the clip strip's hover fill) while the force span and the dock's own surfaces
+    // hold their base color: hover is viewport-local, deliberately unsynced across surfaces. A shot
+    // pair against `kind-color.png`, same clip and camera, only the pointer moved.
+    await page.mouse.move(cx, cy);
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "kind-color-hover.png"), clip: zoomedClip });
 
     // select the force section — the accent overlay is a BRIGHTENED analog of the section's own
     // gold, not a flat recolor, so the boundary still reads as a kind boundary while selected.

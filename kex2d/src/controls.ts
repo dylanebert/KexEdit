@@ -958,6 +958,18 @@ export function attachControls(
             dragManipTo(ecs, canvas, e);
             return;
         }
+        // no gesture under way: track the section span under the pointer — the ephemeral hover the
+        // render overlay draws one kind-color rung up (`hovered`, colors.ts). `editor.dragging`
+        // catches a gesture owned by ANOTHER surface sweeping over the canvas (a timeline drag);
+        // the viewport's own gestures returned above, and each cleared the flag via `beginDrag`.
+        if (editor.dragging) return;
+        const { x: cx, y: cy } = pointerToCanvas(canvas, e);
+        editor.hoverSection = pickSection(ecs, viewTransform(canvas), cx, cy);
+    };
+
+    // the pointer leaving the canvas clears the hover (no move fires outside it).
+    const onPointerLeave = (): void => {
+        editor.hoverSection = null;
     };
 
     // wheel = zoom-at-cursor; trackpad pinch arrives as ctrl+wheel (browser convention)
@@ -1220,6 +1232,7 @@ export function attachControls(
     canvas.addEventListener("dblclick", onDblClick);
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerleave", onPointerLeave);
     canvas.addEventListener("pointerup", endDrag);
     canvas.addEventListener("pointercancel", cancelDrag);
     canvas.addEventListener("wheel", onWheel, { passive: false });
@@ -1232,12 +1245,14 @@ export function attachControls(
         canvas.removeEventListener("dblclick", onDblClick);
         canvas.removeEventListener("pointerdown", onPointerDown);
         canvas.removeEventListener("pointermove", onPointerMove);
+        canvas.removeEventListener("pointerleave", onPointerLeave);
         canvas.removeEventListener("pointerup", endDrag);
         canvas.removeEventListener("pointercancel", cancelDrag);
         canvas.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKeyDown);
         window.removeEventListener("blur", onBlur);
         canvas.style.cursor = ""; // detaching mid-pan must not leave a stuck grabbing cursor
+        editor.hoverSection = null; // nor a lit span the remount has no pointer over
         clearGuides(); // detaching mid-drag must not leave a stuck guide for the remount
         cancelMarquee(); // detaching mid-marquee must not leave a stuck rect for the remount
         endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on

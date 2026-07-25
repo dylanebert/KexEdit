@@ -1,6 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
-import { COLOR_ACCENT, COLOR_GUIDE_RAY, kindSegments, selected } from "./colors";
+import { COLOR_ACCENT, COLOR_GUIDE_RAY, hovered, kindSegments, selected } from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { editHandleSets } from "./tangents";
@@ -84,6 +84,33 @@ const GridSystem: System = {
 let screenXs = new Float32Array(0);
 let screenYs = new Float32Array(0);
 
+/** stroke the FEASIBLE sub-paths of a sample range — the one move behind the kind, hover, and
+ *  selection passes: an edge draws only when both its endpoints baked feasible, so the dashed-red
+ *  pass owns the rest alone and the priority stack holds however the passes stack up. */
+function strokeFeasible(
+    ctx: CanvasRenderingContext2D,
+    xs: Float32Array,
+    ys: Float32Array,
+    feasible: Uint8Array,
+    from: number,
+    to: number,
+): void {
+    ctx.beginPath();
+    let inPath = false;
+    for (let i = from; i < to; i++) {
+        if (feasible[i] === 1 && feasible[i + 1] === 1) {
+            if (!inPath) {
+                ctx.moveTo(xs[i], ys[i]);
+                inPath = true;
+            }
+            ctx.lineTo(xs[i + 1], ys[i + 1]);
+        } else {
+            inPath = false;
+        }
+    }
+    ctx.stroke();
+}
+
 const TrackDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
@@ -116,27 +143,13 @@ const TrackDrawSystem: System = {
             ctx.save();
             // the realized track (the baked geometry the cart rides) — solid, one pass
             // per section in its kind color (geo cool blue / force accent gold, the same
-            // language the clip strip uses). infeasible-red and the selected-section
-            // overlay overdraw this in the passes below (priority: infeasible > selection
-            // > kind).
+            // language the clip strip uses). infeasible-red, the hovered span, and the
+            // selected-section overlay overdraw this in the passes below (priority:
+            // infeasible > selection > hover > kind).
             ctx.lineWidth = 2;
             for (const seg of segs) {
                 ctx.strokeStyle = seg.color;
-                ctx.beginPath();
-                let inPath = false;
-                for (let i = seg.startSample; i < seg.endSample; i++) {
-                    const ok = out.feasible[i] === 1 && out.feasible[i + 1] === 1;
-                    if (ok) {
-                        if (!inPath) {
-                            ctx.moveTo(xs[i], ys[i]);
-                            inPath = true;
-                        }
-                        ctx.lineTo(xs[i + 1], ys[i + 1]);
-                    } else {
-                        inPath = false;
-                    }
-                }
-                ctx.stroke();
+                strokeFeasible(ctx, xs, ys, out.feasible, seg.startSample, seg.endSample);
             }
 
             // infeasible pass — dashed red
@@ -158,13 +171,29 @@ const TrackDrawSystem: System = {
             }
             ctx.stroke();
 
+            // hover overlay: the section span under the pointer, redrawn one rung up in its OWN
+            // kind color (`hovered` in colors.ts — the canvas twin of the clip strip's hover
+            // fill), at the kind pass's width, so the read is tone alone. an already-selected
+            // section shows nothing: the selection rung is the stronger read of the same span.
+            const hov = editor.hoverSection;
+            if (hov !== null && !editor.sections.ids.has(hov)) {
+                const info = sectionInfo.get(hov);
+                const seg = segs.find((s) => s.id === hov);
+                if (info && seg) {
+                    ctx.setLineDash([]);
+                    ctx.strokeStyle = hovered(seg.color);
+                    ctx.lineWidth = 2;
+                    strokeFeasible(ctx, xs, ys, out.feasible, info.startSample, info.endSample);
+                }
+            }
+
             // selected-section overlay: overdraw every selected section's FEASIBLE span in a
             // brightened analog of its OWN kind color (the Ableton/Premiere selected-clip idiom,
             // `selected` in colors.ts) so the whole-section handle (convert / delete target)
             // reads — a multi-set (shift-click) washes every member, single-select the size-1
-            // case. an infeasible sub-segment is skipped here (same feasibility check as the two
+            // case. an infeasible sub-segment is skipped here (same feasibility check as the
             // passes above) so it stays under the dashed-red pass instead of being painted
-            // over — priority stays infeasible-red > selection (brightened kind) > kind color.
+            // over — priority stays infeasible-red > selection (brightened kind) > hover > kind.
             for (const secId of editor.sections.ids) {
                 const info = sectionInfo.get(secId);
                 const seg = segs.find((s) => s.id === secId);
@@ -172,21 +201,7 @@ const TrackDrawSystem: System = {
                     ctx.setLineDash([]);
                     ctx.strokeStyle = selected(seg.color);
                     ctx.lineWidth = 3;
-                    ctx.beginPath();
-                    let inSel = false;
-                    for (let i = info.startSample; i < info.endSample; i++) {
-                        const ok = out.feasible[i] === 1 && out.feasible[i + 1] === 1;
-                        if (ok) {
-                            if (!inSel) {
-                                ctx.moveTo(xs[i], ys[i]);
-                                inSel = true;
-                            }
-                            ctx.lineTo(xs[i + 1], ys[i + 1]);
-                        } else {
-                            inSel = false;
-                        }
-                    }
-                    ctx.stroke();
+                    strokeFeasible(ctx, xs, ys, out.feasible, info.startSample, info.endSample);
                 }
             }
             ctx.restore();

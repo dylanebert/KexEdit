@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hexToOklch, selected } from "../src/colors";
+import { hexToOklch, hovered, selected } from "../src/colors";
 
 // an independent sRGB #rrggbb reader (not the module under test).
 function rgb(hex: string): [number, number, number] {
@@ -42,5 +42,31 @@ describe("selected — OKLCH tone variant", () => {
 
     test("returns a well-formed lowercase 6-digit hex", () => {
         expect(selected("#010203")).toMatch(/^#[0-9a-f]{6}$/);
+    });
+});
+
+describe("hovered — the rung below selection", () => {
+    const kinds = ["#78a5d6", "#d49560"];
+
+    test("lifts lightness, but strictly less than selection does", () => {
+        for (const base of kinds) {
+            const l = hexToOklch(base).l;
+            expect(hexToOklch(hovered(base)).l).toBeGreaterThan(l);
+            expect(hexToOklch(hovered(base)).l).toBeLessThan(hexToOklch(selected(base)).l);
+        }
+    });
+
+    test("preserves hue", () => {
+        for (const base of kinds) {
+            expect(hexToOklch(hovered(base)).h).toBeCloseTo(hexToOklch(base).h, 1);
+        }
+    });
+
+    test("keeps its chroma — the modest rung stays inside sRGB", () => {
+        // the gamut map reduces chroma to fit, so a lift can silently drain the color: it's why
+        // `selected`, lifting further, lands BELOW this rung's chroma on both kind colors.
+        for (const base of kinds) {
+            expect(hexToOklch(hovered(base)).c).toBeGreaterThan(hexToOklch(base).c);
+        }
     });
 });
