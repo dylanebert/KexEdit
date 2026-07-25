@@ -124,8 +124,11 @@ const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer tha
 const BAND: [number, number] = [-2, 6];
 // the initial y-frame before real data arrives: the reference band + 1g headroom.
 const Y_HEADROOM = 1;
-const CAP_LO = BAND[0] - Y_HEADROOM;
-const CAP_HI = BAND[1] + Y_HEADROOM;
+const FRAME_LO = BAND[0] - Y_HEADROOM;
+const FRAME_HI = BAND[1] + Y_HEADROOM;
+// hard ceiling for edge-drag axis growth — deliberately far past the comfort band (authoring
+// beyond "safe" is allowed); ±10 g reachable inside the chart, the same 1g headroom to land on it.
+const CAP: [number, number] = [-11, 11];
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
@@ -294,7 +297,7 @@ const yTarget = $derived.by((): YFit => {
 // fit data (it never hugs tight), and `yView` approaches it ASYMMETRICALLY: it grows
 // fast and contracts lazily — the AE/Unity "grow when content needs it, never snap
 // back" feel, smoothed for the web.
-let yView: YFit = $state({ lo: CAP_LO, hi: CAP_HI, step: 1 });
+let yView: YFit = $state({ lo: FRAME_LO, hi: FRAME_HI, step: 1 });
 let yInit = false;
 const Y_OUT = 0.3; // per-frame approach when EXPANDING the view (snappy)
 const Y_IN = 0.05; // per-frame approach when CONTRACTING (lazy — no snap-back)
@@ -345,7 +348,7 @@ $effect(() => {
 // under a content edit (editor-ui.md), so this is value-axis only. runs per frame from the
 // yView effect; a within-chart cursor leaves the axis unchanged (yGrow returns it by identity).
 function growValueAxis(cy: number, reapply: () => void): void {
-    const grown = yGrow(yView, cy, TOP, h - BOT_PAD, EDGE_RATE, [CAP_LO, CAP_HI]);
+    const grown = yGrow(yView, cy, TOP, h - BOT_PAD, EDGE_RATE, CAP);
     if (grown === yView) return;
     yView = grown;
     reapply();
