@@ -19,7 +19,8 @@ import {
     selectedMetrics,
     suffixRun,
 } from "../src/controls";
-import { ANGLE_STEP, LENGTH_MIN } from "../src/magnet";
+import { LENGTH_MIN } from "../src/magnet";
+import { ANGLE_STEP_DEFAULT as ANGLE_STEP } from "../src/settings";
 import { angleControl, angleToPoint, lengthControl, lengthToPoint } from "../src/manipulator";
 import { localize } from "../src/section";
 import { TangentMode } from "../src/spline";

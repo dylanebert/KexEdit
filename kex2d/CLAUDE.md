@@ -104,8 +104,8 @@ kind- and count-agnostic (they read the flat SoA).
 
 Manipulator authoring, mouse-driven. The **control scheme** and the **representation** are separate:
 the controls place node positions through two snapped 1D polar controls around the previous node
-(length on a 1 m grid with a 1 m floor, angle on a 5° grid, Ctrl bypasses both to continuous), body
-click being select-only; the canonical representation is the F_n curve. Each node carries a
+(length on a 1 m grid with a 1 m floor, angle on a 5° grid — both increments per-user configurable,
+`settings.ts`; Ctrl bypasses both to continuous), body click being select-only; the canonical representation is the F_n curve. Each node carries a
 **section-local** position and a tangent — **live-inferred**
 (`Auto`, the default: no stored vectors, direction from `Handle.theta` via the arc rule) or
 **explicit** (stored `in`/`out` vectors, the summoned inner layer, below). **Node 0 is the section
@@ -371,12 +371,21 @@ editor-ui invariant-domain rule).
   `selectedMetrics` (the impure glue over the baked samples) + the shared formatters
   (`formatDeg`/`formatLen`, one decimal always, −0 normalized, trailing `.0` stripped — the geo
   readout's degree/length funnel, sharing `timeline.ts`'s `fmt` trim, the force readout's funnel).
-- `magnet.ts` — the two pure grid quantizers a manipulator drag resolves through (`snapLength`, 1 m
-  grid + 1 m floor; `snapAngle`, `ANGLE_STEP` = 5°) plus the incline algebra
+- `magnet.ts` — the two pure grid quantizers a manipulator drag resolves through (`snapLength`,
+  `snapSteps.length` grid + the `LENGTH_MIN` 1 m floor; `snapAngle`, the `snapSteps.angle` grid) plus
+  the incline algebra
   (`inclineOf`/`chordForIncline`) a tip's exit-tangent snap needs. Grid, not magnet: the screen-px
   target pool, `COMBINE_DOT` co-fire, and shift-lock dissolved with the free 2D drag (each gesture
   is 1D now). The name is legacy; fold it into `manipulator.ts` when the 3D port touches it. No
   shallot, no DOM — unit-tested in `magnet.test.ts`.
+- `settings.ts` — the **per-user preference home**: load / clamp / save over `localStorage` (one JSON
+  object under `SNAP_KEY`), since the prototype has no document to hold a preference. Today the two
+  manipulator snap quanta — `snapSteps` (`angle` rad, default 5°, floor 1°; `length` m, default 1,
+  floor 0.1) read LIVE by `magnet.ts`, written by the rail magnet's popover, loaded once in
+  `main.ts`. Storage failure is swallowed (a denied `localStorage` never breaks authoring) and every
+  read resolves through the clamps. Deliberately NOT configurable: the timeline's `S_GRID`/`G_GRID`
+  force grids (fixed constants) and `LENGTH_MIN` (the chord floor, a different quantity).
+  Unit-tested in `settings.test.ts`.
 - `manipulator.ts` — the **polar control substrate**, and the 3D port's template. Pure and
   device-free: the polar frame around the previous node (`polarFrame`, degenerate-chord guarded)
   and the exact screen↔polar inverses each drag resolves through — `screenToLength` projects onto
@@ -417,7 +426,10 @@ editor-ui invariant-domain rule).
   collide). A node's arclength is derived, so a tick displays and never drags. The **tool rail** (`.tool-rail`) is the snap magnet toggle's home — an icon-only vertical
   strip on the dock's left edge (the Premiere tool-strip precedent), anatomy of the one earned dock,
   bounded to persistent global authoring toggles with a keyboard twin (`toggleSnap`, `S`; today just
-  the magnet). It's inside the dock's DOM, so it's the timeline surface for `editor.hover`. The chart
+  the magnet). **Right-clicking the magnet** summons its increments popover (`.snap-pop`) — the two
+  manipulator quanta (angle °, length m) as fields in the shared idiom, written straight to
+  `settings.ts` (no history entry: a per-user preference, not track state). It's inside the dock's
+  DOM, so it's the timeline surface for `editor.hover`. The chart
   draws the baked F_n curve over arclength + **section boundary guides**
   (dashed verticals); the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator**
   minimap pans/zooms. The chart is a **whole-track force-authoring surface**: it draws every force
@@ -486,8 +498,12 @@ reshapes exactly the two segments sharing the node. Node 0 is the pinned entry a
 - **The manipulators** (the two knobs on the selected node's ring): **length** along the chord from
   the previous node, **angle** along the circle through the node centered on the previous node.
   Dragged (pointerdown on the knob captures the pointer, past the `DRAG_PX` dead zone) or
-  arrow-nudged (left/right = angle, up/down = length). Both purely snapped — 5° and 1 m grids,
-  Ctrl/Cmd bypasses to continuous — with `reheadOnDrag` refreshing the last node's heading after
+  arrow-nudged (left/right = angle, up/down = length). A **drag** is purely snapped — the 5° and 1 m
+  grids, both per-user configurable off the rail magnet's popover (`settings.ts`), Ctrl/Cmd bypasses
+  to continuous. A **nudge** is not on those grids: it steps by a fixed screen-px increment
+  (`NUDGE_PX`, `NUDGE_PX_COARSE` with Shift) converted through the camera zoom, so the keyboard moves
+  by a constant on-screen distance whatever the snap increments are. Both go
+  through `reheadOnDrag` refreshing the last node's heading after
   the write (node 0 + interior stay frozen). A body drag does nothing but select.
 - **Append / Delete**: append lays a node continuing the last edge by `EXTEND_DIST` — the ring's
   extend button (slot 0, chain-end only), `Enter`, or the node menu's `Add`; delete removes the

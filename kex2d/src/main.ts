@@ -13,6 +13,7 @@ import {
     setSelectionHook,
 } from "./history";
 import { RenderPlugin } from "./render";
+import { loadSnapSteps } from "./settings";
 import { tangentHandles } from "./tangents";
 import {
     addNode,
@@ -43,6 +44,10 @@ const { state: ecs, dispose } = await run({
 // wire the editor's selection snapshot into the history stack (the injected hook — history stores the
 // snapshot opaquely and never imports editor). undo restores each command's pre-selection, redo its post.
 setSelectionHook(selectionHook);
+
+// pull the persisted per-user preferences (the manipulator snap quanta) into their live singleton
+// before anything reads them — a stored value only ever resolves through the clamps.
+loadSnapSteps();
 
 // DEV-only harness inspection hook: the capture flow's geo-authoring assertions read
 // node/undo/track state through this and drive the real UI (extend, drag, undo).

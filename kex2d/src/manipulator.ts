@@ -2,16 +2,18 @@
  *  Coaster piece controls, extending to turn/roll in 3D). a selected node moves not by a free 2D
  *  drag but along two separate axes in the polar frame around its **previous node**:
  *
- *  - **length** — the chord `previous → selected`, snapped to whole metres (min 1 m);
+ *  - **length** — the chord `previous → selected`, snapped to the length grid (default whole
+ *    metres, min 1 m);
  *  - **angle** — the circle through the selected node centered on the previous node; snapped to the
- *    5° grid uniformly — at a growth tip the displayed and snapped value is the exit incline, at an
+ *    angle grid uniformly (default 5°) — at a growth tip the displayed and snapped value is the exit incline, at an
  *    interior node the chord angle itself (feel round 6: a plain grid, no incline quantum, so no
  *    "interior rotates free" asymmetry).
  *
  *  each axis has a **locus** (the chord ray, the tangential arc) the drag rides, and a screen→value
  *  **inverse** (`screenToLength`/`screenToAngle`) with an exact forward (`lengthToPoint`/
- *  `angleToPoint`), so a value round-trips through its locus. the snap grids run through `magnet.ts`
- *  (one home for the increment constants). the module takes **screen px** in (the caller projects
+ *  `angleToPoint`), so a value round-trips through its locus. the snap grids run through `magnet.ts`,
+ *  which reads its two increments live from `settings.ts` (per-user, configurable off the tool
+ *  rail's magnet) — this module never sees them. it takes **screen px** in (the caller projects
  *  world→screen at the boundary) and works device-free — directly `bun test`-able; no shallot, no DOM.
  *
  *  **the semantic values are world-space.** `screenToLength` already returns world metres; the
@@ -125,14 +127,15 @@ export function angleToPoint(f: Frame, angle: number): { x: number; y: number } 
 }
 
 /** the length control: resolve a raw screen point to a chord length in world metres. snap-by-default
- *  quantizes to whole metres (min 1); the Ctrl modifier (`snap === false`) bypasses to continuous
- *  (still ≥ 1). the length family is universal — tip + interior. */
+ *  quantizes to the length grid (default whole metres, min 1); the Ctrl modifier (`snap === false`)
+ *  bypasses to continuous (still ≥ 1). the length family is universal — tip + interior. */
 export function lengthControl(f: Frame, px: number, py: number, snap: boolean): LengthSnap {
     return snapLength(screenToLength(f, px, py), snap);
 }
 
 /** the angle control: resolve a raw screen point to a chord angle (+ the tip's exit incline), both
- *  in **world** radians. snap-by-default quantizes to the 5° grid (`snapAngle`), applied uniformly —
+ *  in **world** radians. snap-by-default quantizes to the angle grid (`snapAngle`, default 5°),
+ *  applied uniformly —
  *  at a growth tip (`tangent` set) it snaps the **exit incline** to the grid and maps back to the
  *  chord that yields it (`incline` is that value); at an interior node (`tangent` null) it snaps the
  *  **chord angle** to the grid (`incline` null — a frozen heading has no incline to display). the

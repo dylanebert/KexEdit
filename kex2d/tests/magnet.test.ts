@@ -1,5 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { ANGLE_STEP, chordForIncline, inclineOf, snapAngle, snapLength } from "../src/magnet";
+import { afterEach, describe, expect, test } from "bun:test";
+import { chordForIncline, inclineOf, snapAngle, snapLength } from "../src/magnet";
+import {
+    ANGLE_STEP_DEFAULT as ANGLE_STEP,
+    LENGTH_STEP_DEFAULT,
+    setSnapAngle,
+    setSnapLength,
+} from "../src/settings";
 
 // the two snap grids are pure fixed-increment quantizers now (feel round 6, no proximity window):
 // snap-by-default, the `snap` flag off (Ctrl held) bypasses to continuous. a test feeds a scalar
@@ -47,5 +53,40 @@ describe("angle snap (5° grid)", () => {
         const chord = 0.35;
         const incline = inclineOf(chord, tangent);
         expect(chordForIncline(incline, tangent)).toBeCloseTo(chord, 12);
+    });
+});
+
+// the two increments are per-user settings (`settings.ts`), read LIVE per quantize — an edited
+// value takes effect on the next drag with nothing to re-wire. one input, two grids, two answers.
+describe("configurable increments", () => {
+    const deg = (d: number): number => (d * Math.PI) / 180;
+
+    afterEach(() => {
+        setSnapAngle(ANGLE_STEP);
+        setSnapLength(LENGTH_STEP_DEFAULT);
+    });
+
+    test("the angle increment decides what an angle snaps to", () => {
+        expect(snapAngle(deg(2.6))).toBeCloseTo(deg(5), 9); // default 5° grid: up to 5°
+        setSnapAngle(deg(2));
+        expect(snapAngle(deg(2.6))).toBeCloseTo(deg(2), 9); // 2° grid: down to 2°
+        expect(snapAngle(deg(7))).toBeCloseTo(deg(8), 9);
+    });
+
+    test("the length increment decides what a chord snaps to", () => {
+        expect(snapLength(3.3, true).meters).toBeCloseTo(3, 12); // default 1 m grid
+        setSnapLength(0.5);
+        expect(snapLength(3.3, true).meters).toBeCloseTo(3.5, 12); // half-metre grid
+        expect(snapLength(3.2, true).meters).toBeCloseTo(3, 12);
+    });
+
+    test("the 1 m chord floor is a separate quantity — a fine grid doesn't lower it", () => {
+        setSnapLength(0.1);
+        expect(snapLength(0.24, true).meters).toBe(1); // quantizes to 0.2, still floored to 1
+    });
+
+    test("the Ctrl bypass stays continuous whatever the increment is", () => {
+        setSnapLength(5);
+        expect(snapLength(3.3, false).meters).toBeCloseTo(3.3, 12);
     });
 });

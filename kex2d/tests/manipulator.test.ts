@@ -10,7 +10,7 @@ import {
     screenToAngle,
     screenToLength,
 } from "../src/manipulator";
-import { ANGLE_STEP } from "../src/magnet";
+import { ANGLE_STEP_DEFAULT as ANGLE_STEP } from "../src/settings";
 
 // the manipulator works entirely in screen px (the caller projects world→screen at the boundary),
 // so a test builds the previous + selected node's screen points directly. the previous node is the

@@ -70,6 +70,13 @@ import {
     zoomAt,
 } from "./timeline";
 import { DRAG_PX, latchAngle } from "./controls";
+import {
+    ANGLE_STEP_MIN,
+    LENGTH_STEP_MIN,
+    setSnapAngle,
+    setSnapLength,
+    snapSteps,
+} from "./settings";
 import { hits, merge, normRect, type Rect } from "./marquee";
 import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls, segmentSeed } from "./profile";
 import { TangentMode } from "./spline";
@@ -100,6 +107,17 @@ const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $pr
 const snapOn = $derived.by((): boolean => {
     void tick;
     return editor.snap;
+});
+// the manipulator snap QUANTA (settings.ts) — a per-user preference, not track state. read through
+// the same per-RAF tick as the toggle, so the popover's fields display the live values and a clamped
+// write shows its clamp. the angle lives in radians and is authored in degrees, converted here.
+const snapDeg = $derived.by((): number => {
+    void tick;
+    return (snapSteps.angle * 180) / Math.PI;
+});
+const snapLen = $derived.by((): number => {
+    void tick;
+    return snapSteps.length;
 });
 
 // the timeline shows the baked F_n force curve the realized track produces, plus
@@ -758,7 +776,7 @@ function marqueeDown(e: PointerEvent): void {
     // layered dismissal: a chart click while a popover field is focused only blurs it (the
     // browser's own focus change), never arms a marquee or deselects — the NEXT click does.
     const ae = document.activeElement;
-    if (ae instanceof HTMLElement && ae.closest(".ptip")) return;
+    if (ae instanceof HTMLElement && (ae.closest(".ptip") || ae.closest(".snap-pop"))) return;
     const rect = canvas.getBoundingClientRect();
     marqueeStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     marqueeRect = null;
@@ -1372,6 +1390,85 @@ $effect(() => {
         // the flyout is root-mounted, not a child of `.clip-append`, so both are kept open.
         if (t?.closest(".clip-append") || t?.closest(".clip-flyout")) return;
         appendAnchor = null;
+    };
+    window.addEventListener("pointerdown", close, { capture: true });
+    return () => window.removeEventListener("pointerdown", close, { capture: true });
+});
+
+// ── the snap-increment popover: right-click the rail's magnet for the two manipulator quanta
+// (angle °, length m) as fields in the shared idiom. The increments hang off the snap control
+// itself — Blender's snap popover and Godot's Configure Snap dialog both do, and right-click is
+// this app's summon language. They're per-user preferences (settings.ts): live on write, persisted,
+// no history entry. Root-mounted + `fitMenu` like the append flyout, so the dock's `overflow:
+// hidden` can't clip it and it flips up off the bottom edge; anchored just right of the button, so
+// it never covers its invoker.
+const ANGLE_MIN_DEG = Math.round(((ANGLE_STEP_MIN * 180) / Math.PI) * 100) / 100;
+let snapPop: { x: number; y: number } | null = $state(null);
+const degText = $derived(fmt(snapDeg, 2));
+const lenText = $derived(fmt(snapLen, 2));
+function toggleSnapPop(e: MouseEvent): void {
+    e.preventDefault(); // the app's own summoned surface replaces the browser context menu
+    e.stopPropagation();
+    if (snapPop) {
+        snapPop = null;
+        return;
+    }
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    snapPop = { x: r.right + 6, y: r.top };
+}
+// a typed value is clamped (1° / 0.1 m floors), so the field must be written back from the RESOLVED
+// setting, not left showing what the author typed: Svelte skips a DOM write when the derived text
+// didn't change, so a rejected (cleared field) or re-clamped entry would otherwise leave the input
+// disagreeing with the live grid.
+function onSnapDeg(e: Event): void {
+    const input = e.currentTarget as HTMLInputElement;
+    const deg = Number.parseFloat(input.value);
+    if (Number.isFinite(deg)) setSnapAngle((deg * Math.PI) / 180);
+    input.value = fmt((snapSteps.angle * 180) / Math.PI, 2);
+}
+function onSnapLen(e: Event): void {
+    const input = e.currentTarget as HTMLInputElement;
+    const m = Number.parseFloat(input.value);
+    if (Number.isFinite(m)) setSnapLength(m);
+    input.value = fmt(snapSteps.length, 2);
+}
+// the key label is the field idiom's scrub handle (root ui.md "Fields"): slide to revise, rounded to
+// the displayed precision. no history gesture — a preference isn't authored track state — and the
+// accumulator clamps at its floor so a long backward slide banks no distance to undo.
+const SCRUB_DEG = 0.25; // ° per px
+function snapScrub(e: PointerEvent, axis: "angle" | "length"): void {
+    if (e.button !== 0) return; // a right-press here would open the native menu with the drag open
+    e.preventDefault();
+    const label = e.currentTarget as HTMLElement;
+    beginDrag(label, e.pointerId);
+    // seed from the settings themselves, not the tick-derived display (which lags a frame)
+    let acc = axis === "angle" ? (snapSteps.angle * 180) / Math.PI : snapSteps.length;
+    const move = (ev: PointerEvent): void => {
+        if (axis === "angle") {
+            acc = Math.max(ANGLE_MIN_DEG, acc + ev.movementX * SCRUB_DEG);
+            setSnapAngle(((Math.round(acc * 100) / 100) * Math.PI) / 180);
+        } else {
+            acc = Math.max(LENGTH_STEP_MIN, acc + ev.movementX * SCRUB_S);
+            setSnapLength(Math.round(acc * 100) / 100);
+        }
+    };
+    const up = (): void => {
+        label.removeEventListener("pointermove", move);
+        label.removeEventListener("pointerup", up);
+        label.removeEventListener("pointercancel", up);
+    };
+    label.addEventListener("pointermove", move);
+    label.addEventListener("pointerup", up);
+    label.addEventListener("pointercancel", up); // a cancelled pointer still ends the gesture
+}
+// click-away closes it; a press on the popover or on the rail button itself is kept (the button
+// toggles it, and a field press must not dismiss the surface it's in).
+$effect(() => {
+    if (!snapPop) return;
+    const close = (ev: PointerEvent): void => {
+        const t = ev.target as HTMLElement | null;
+        if (t?.closest(".snap-pop") || t?.closest(".rail-tool")) return;
+        snapPop = null;
     };
     window.addEventListener("pointerdown", close, { capture: true });
     return () => window.removeEventListener("pointerdown", close, { capture: true });
@@ -2064,6 +2161,11 @@ onMount(() => {
             appendAnchor = null;
             return;
         }
+        if (snapPop && e.key === "Escape") {
+            e.preventDefault();
+            snapPop = null;
+            return;
+        }
         // force-point select/delete/nudge — guarded on a live force selection so geo-node
         // Esc/Del/arrows (controls.ts) stay unambiguous (the selections are mutually exclusive).
         if (editor.force !== null) {
@@ -2147,13 +2249,16 @@ onMount(() => {
          holds only persistent global authoring toggles with a keyboard twin; today just the snap
          magnet (lit when on / default, dimmed when off; `S` also toggles, Ctrl/Cmd bypasses
          per-gesture). it sits inside the dock's DOM, so it counts as the timeline surface for
-         `editor.hover` (the aside's enter/leave already fired). -->
+         `editor.hover` (the aside's enter/leave already fired). right-click summons the magnet's
+         own increments popover (below) — the setting lives on the control it governs. -->
     <div class="tool-rail" aria-label="Timeline tools">
         <button
             class="rail-tool"
             class:on={snapOn}
+            class:open={snapPop !== null}
             type="button"
             onclick={toggleSnap}
+            oncontextmenu={toggleSnapPop}
             title="Snapping (S)"
             aria-label="Snapping"
             aria-pressed={snapOn}
@@ -2645,6 +2750,49 @@ onMount(() => {
     </div>
 {/if}
 
+<!-- the snap increments: the two manipulator quanta as fields in the shared idiom, summoned by
+     right-click on the rail's magnet (Blender's snap popover / Godot's Configure Snap — the
+     increments live on the snap control). the `S` toggle and the Ctrl bypass are independent of the
+     configured values. root-mounted + `fitMenu` so the dock's clip can't swallow it near the
+     bottom edge; the fields commit no undo entry (a per-user preference, not track state). -->
+{#if snapPop}
+    <div class="snap-pop menu" use:fitMenu={snapPop} role="group" aria-label="Snap increments">
+        <!-- the rows clip to the rounded corners on their own wrapper, never on the `.menu` box
+             (Menu.svelte's `.menu-rows` split — a clipped menu box swallows a flyout from paint AND
+             hit-testing, so the trap doesn't get primed here). -->
+        <div class="snap-rows">
+            <div class="fld">
+                <span class="key" onpointerdown={(e) => snapScrub(e, "angle")} role="presentation">∠</span>
+                <input
+                    type="number"
+                    step="1"
+                    min={ANGLE_MIN_DEG}
+                    value={degText}
+                    onchange={onSnapDeg}
+                    onfocus={(e) => e.currentTarget.select()}
+                    onkeydown={(e) => fieldKeydown(e, degText)}
+                    aria-label="Snap angle increment (degrees)"
+                />
+                <span class="unit">°</span>
+            </div>
+            <div class="fld">
+                <span class="key" onpointerdown={(e) => snapScrub(e, "length")} role="presentation">L</span>
+                <input
+                    type="number"
+                    step="0.1"
+                    min={LENGTH_STEP_MIN}
+                    value={lenText}
+                    onchange={onSnapLen}
+                    onfocus={(e) => e.currentTarget.select()}
+                    onkeydown={(e) => fieldKeydown(e, lenText)}
+                    aria-label="Snap length increment (m)"
+                />
+                <span class="unit">m</span>
+            </div>
+        </div>
+    </div>
+{/if}
+
 <style>
     /* `height` and `bottom` are inline-styled from the DOCK_HEIGHT / DOCK_INSET constants
        (view.ts, the single source the viewport camera also reserves from) — not set here. */
@@ -2710,6 +2858,12 @@ onMount(() => {
     .rail-tool.on {
         color: var(--accent);
         opacity: 1;
+    }
+    /* its increments popover is open: the same held wash the append `+` wears while its flyout is
+       up, so the summoned surface reads as belonging to this button. */
+    .rail-tool.open {
+        opacity: 1;
+        background: rgba(255, 255, 255, 0.1);
     }
     .rail-tool svg {
         width: 15px;
@@ -2851,6 +3005,7 @@ onMount(() => {
     :global([data-dragging]) .fmenu,
     :global([data-dragging]) .nav-window,
     :global([data-dragging]) .ptip,
+    :global([data-dragging]) .snap-pop,
     :global([data-dragging]) .play,
     :global([data-dragging]) .rail-tool,
     :global([data-dragging]) .scrub {
@@ -3179,6 +3334,28 @@ onMount(() => {
         min-width: 62px;
         z-index: 10;
         animation: tip-in 120ms ease;
+    }
+
+    /* the snap-increment popover: the shared `.menu` surface hosting two `.fld` rows (the field
+       idiom — key · value · unit, transparent inputs, a focus row wash), root-mounted and fixed
+       like the append flyout so the dock's clip can't swallow it. */
+    .snap-pop {
+        position: fixed;
+        z-index: 10;
+        animation: tip-in 120ms ease;
+    }
+    /* the rows carry the corner clip (so the focus wash rounds) and the surface's own inner pad —
+       the `.menu` box above stays `overflow: visible`, per the menus law. */
+    .snap-rows {
+        padding: 3px 0;
+        border-radius: inherit;
+        overflow: hidden;
+    }
+    /* the `.menu` surface suppresses selection for menu rows; a field's number is text the author
+       drags across and retypes, so it opts back in. */
+    .snap-pop input {
+        user-select: text;
+        -webkit-user-select: text;
     }
 
     /* the force keyframe context menu: an instance of the shared `.menu` language at the

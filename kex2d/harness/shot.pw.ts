@@ -80,6 +80,10 @@ const FORCE_LEN = 24; // MIRRORS src/track.ts DEFAULT_FORCE_LEN (= EXTEND_DIST) 
 const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R — the knob orbit (see `knobCenter` below)
 const TIP_REACH = 68; // TIP_H (56) + TIP_GAP (12) — Timeline.svelte, the vertical room a popover needs
 const GROW_LO = -3; // Timeline.svelte GROW_CAP[0] = BAND[0] (−2) − GROW_HEADROOM (1) — the growth floor
+// The shipped manipulator snap quanta as the popover DISPLAYS them — src/settings.ts
+// ANGLE_STEP_DEFAULT (5°, stored in radians) and LENGTH_STEP_DEFAULT (1 m).
+const SNAP_DEG = "5";
+const SNAP_LEN = "1";
 
 // window.__kex is the DEV harness hook (src/main.ts); these page-context reads use `any` freely —
 // the hook is a DEV-only surface with no shared type.
@@ -750,6 +754,11 @@ test("start handle edit flow", async ({ page, boot }) => {
 // dock affordance — not a viewport overlay, not a second dock). Assert the toggle's lit/dimmed
 // state rides `aria-pressed` (positive, not absence-of-error), and capture the default-on and
 // toggled-off looks. `S` toggles it globally (the AE magnet key, not hover-gated).
+//
+// Then the magnet's SNAP-INCREMENT popover, summoned by right-click on that same button
+// (Blender/Godot: the increments live on the snap control): the two quanta fields, their scrub
+// handle, and the per-user persistence — the typed value survives a page reload, which is the whole
+// point of the localStorage home and can only be proven in a real browser.
 test("tool rail shot", async ({ page, boot }) => {
     await boot();
 
@@ -770,6 +779,61 @@ test("tool rail shot", async ({ page, boot }) => {
     // S again restores the default — keep the toggle honest across the flow.
     await page.keyboard.press("s");
     await expect(snap).toHaveAttribute("aria-pressed", "true");
+
+    // ── right-click the magnet → its increments popover, at the shipped defaults (5° / 1 m). ──
+    const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
+    const pop = page.locator(".snap-pop");
+    const angleField = pop.locator('input[aria-label="Snap angle increment (degrees)"]');
+    const lenField = pop.locator('input[aria-label="Snap length increment (m)"]');
+    await snap.click({ button: "right" });
+    await expect(pop).toBeVisible();
+    await expect(angleField).toHaveValue(SNAP_DEG);
+    await expect(lenField).toHaveValue(SNAP_LEN);
+    const undoBefore = await undoDepth();
+    // the field is reachable where it actually paints — a selector-targeted assert proves nothing
+    // about a box a human pointer can hit (the menus law: verify pointer-true).
+    const fb = await angleField.boundingBox();
+    if (!fb) throw new Error("snap angle field not laid out");
+    expect(
+        await page.evaluate(
+            (p) => document.elementFromPoint(p.x, p.y)?.getAttribute("aria-label") ?? null,
+            { x: fb.x + fb.width / 2, y: fb.y + fb.height / 2 },
+        ),
+    ).toBe("Snap angle increment (degrees)");
+    await page.waitForTimeout(SHOT_MS);
+    const strip = dockStrip(page);
+    if (strip) await page.screenshot({ path: join(OUT, "tool-rail-increments.png"), clip: strip });
+
+    // ── the key label is the field idiom's scrub handle: slide right → the increment rises. ──
+    const key = pop.locator(".fld").first().locator(".key");
+    const kb = await key.boundingBox();
+    if (!kb) throw new Error("snap angle scrub handle not laid out");
+    await page.mouse.move(kb.x + kb.width / 2, kb.y + kb.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(kb.x + kb.width / 2 + 80, kb.y + kb.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await expect
+        .poll(async () => Number(await angleField.inputValue()))
+        .toBeGreaterThan(Number(SNAP_DEG));
+
+    // ── a typed value persists per user: it survives a full reload (localStorage, no document). ──
+    await angleField.fill("12");
+    await angleField.press("Enter");
+    await expect(angleField).toHaveValue("12");
+    // neither write is an authoring edit — a preference must not land on the undo stack (every other
+    // field in this app commits a history entry, so this is the invariant a next author would break).
+    expect(await undoDepth()).toBe(undoBefore);
+    await page.reload({ waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+    await snap.click({ button: "right" });
+    await expect(pop).toBeVisible();
+    await expect(angleField).toHaveValue("12");
+
+    // a value below the 1° floor clamps, and the FIELD is corrected to the clamped value — a
+    // rejected entry left on screen would have the popover lying about the live grid.
+    await angleField.fill("0.4");
+    await angleField.press("Enter");
+    await expect(angleField).toHaveValue("1");
 });
 
 // Drive the FORCE-AUTHORING flow: a geo track →
