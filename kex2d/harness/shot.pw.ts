@@ -2344,6 +2344,51 @@ test("collocation solver lab", async ({ page, boot }) => {
     }
 });
 
+// The geo→force fit-lab observability page (kex2d-geoforce-spike stage 5). Unlike the other lab
+// pages above, this one is NOT ready on module load: it auto-runs the whole 10-scenario corpus
+// through the solver in the background (`fitlab.ts` `pump`, chunked via `setTimeout(…, 0)` so the
+// page stays responsive), so readiness is `window.__fitlab.ready()` polled, not a panel count or a
+// fixed wait — a count is never bake-readiness's sibling law, one layer up the stack (the ready
+// flag, not a proxy for it). `errors()` empty is this page's `pageerror`: a corpus that stops
+// solving mid-run must not read as a green page (`fitlab.ts` records a throw per scenario rather
+// than swallowing it). `rows().length === 10` is every scenario having attempted AND succeeded (a
+// caught throw leaves a row absent, not present-and-false), and every row's `converged` is the
+// solver actually reaching its exit tolerance — divergence on the corpus is a bug, not an expected
+// mode (the spec's locked decision). The iteration-speed budget: the corpus takes ~1.3s of solve
+// wall time (stage-3 live log), so 10s gives ~8x headroom against a contended worker (the default
+// 4-worker suite shares the host's CPU across parallel pages) — generous enough that only a real
+// stall, not scheduling noise, trips it.
+//
+// Then flip to valley-explicit — the far-shooting spike scenario the stage-3 log calls out (a 38g
+// spike edge fits force to 0.033g yet integrates 39.7m off) — and land on frame 0, the warm start:
+// the fit-lab code comment says the collocation spine starts AT the target, so the interesting
+// motion through playback lives in the FORCE graph, not the viewport; frame 0 is the story frame
+// for that gap, before the polish closes it.
+test("fit lab", async ({ page, boot }) => {
+    await boot("/fit-lab.html");
+    const panels = page.locator(".panel");
+    await expect(panels).toHaveCount(3); // geometry, force, corpus table
+
+    const ready = () => page.evaluate((): boolean => (window as any).__fitlab.ready());
+    const errors = () => page.evaluate((): string[] => (window as any).__fitlab.errors());
+    const rows = () =>
+        page.evaluate((): { name: string; converged: boolean }[] =>
+            (window as any).__fitlab.rows(),
+        );
+
+    await expect.poll(ready, { timeout: 10_000 }).toBe(true);
+    expect(await errors()).toEqual([]);
+    const solved = await rows();
+    expect(solved.length).toBe(10);
+    for (const r of solved) expect(r.converged, `${r.name} did not converge`).toBe(true);
+
+    await page.evaluate(() => (window as any).__fitlab.select("valley-explicit"));
+    await page.evaluate(() => (window as any).__fitlab.setFrame(0));
+
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "fit-lab.png"), fullPage: true });
+});
+
 // Drive the VIEWPORT KIND-COLOR shot (kex2d-ux-foundations stage D): a geo section
 // appended by a force section, both feasible — zooms the viewport in on the boundary
 // (real wheel zoom-at-cursor, not a fixed-scale clip) so the track polyline's per-
