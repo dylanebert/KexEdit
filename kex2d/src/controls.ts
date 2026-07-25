@@ -976,8 +976,24 @@ export function attachControls(
     // and zooms the same way. preventDefault stops the page from scrolling/zooming under
     // it (needs a non-passive listener). deltaY is normalized to px — Firefox reports
     // line/page deltas (deltaMode 1/2), which would otherwise zoom imperceptibly.
+    //
+    // and it is a NO-OP while a gesture is live (`ui.md` "nothing moves under its own gesture").
+    // Every gesture caches screen px at grab — the manipulator's cursor→node offset
+    // (`manipDX/manipDY`), a tangent drag's knob offset + latch ray, a marquee's anchor corner —
+    // and the camera is the map those px resolve through, so moving it mid-gesture resolves the
+    // rest of the drag against a map the grab never saw: the manip/tangent drags write a wrong
+    // pose on the next move, and the marquee's box slides across the content under the pointer
+    // (its rect and its release hit-test both re-read the live camera, so what's drawn stays what's
+    // picked — the anchor is what drifts). One rule, no per-gesture exceptions — zoom-during-pan is
+    // eaten too. The predicate is `editor.dragging`, the ONE flag every gesture on either surface
+    // raises through `beginDrag` (editor.ts), so it can't go stale as gestures are added, and it
+    // reads the live field (not a tick projection, which would lag a frame). The event is still
+    // swallowed: dropping preventDefault would hand a ctrl+wheel to the browser's own page zoom
+    // mid-drag. `F` (`frameViewport`, the key handler below) is the OTHER path that still moves the
+    // camera mid-gesture — the same rule, not yet closed.
     const onWheel = (e: WheelEvent): void => {
         e.preventDefault();
+        if (editor.dragging) return;
         const { x, y } = pointerToCanvas(canvas, e);
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientHeight : 1;
         Object.assign(camera, zoomAt(camera, x, y, Math.exp(-e.deltaY * unit * WHEEL_ZOOM_RATE)));

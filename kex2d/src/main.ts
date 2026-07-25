@@ -34,7 +34,7 @@ import {
     TrackPlugin,
     V0,
 } from "./track";
-import { Canvas2D, viewTransform } from "./view";
+import { camera, Canvas2D, viewTransform } from "./view";
 
 const { state: ecs, dispose } = await run({
     plugins: [ProfilePlugin, TrackPlugin, CartPlugin, RenderPlugin],
@@ -66,6 +66,13 @@ if (import.meta.env.DEV) {
         nodeCount: (): number => sectionHandles(ecs, sec()).length,
         undoDepth: (): number => history.undo.length,
         tTotal: (): number => bakeOut.get(track)?.tTotal ?? 0,
+        // the whole viewport camera — `[zoom, ox, oy]`, view state, never authored, so it's
+        // read-only like poses(). All three, not just the scale: one wheel tick writes the origin
+        // too (`zoomAt` holds the world point under the cursor), so a scale-only read would call a
+        // camera that shifted without rescaling unchanged. The wheel-guard flow asserts it comes
+        // out identical across a mid-gesture wheel and moves under an idle one; the timeline's own
+        // x view has a separate reader (`xView`), in Timeline.svelte where that state lives.
+        cam: (): [number, number, number] => [camera.zoom, camera.ox, camera.oy],
         // the authored initial speed — the flow drives the real v0 popover and asserts it.
         v0: (): number => Track.v0.get(track),
         // section-local pose signature — the flow asserts an undo reverts geometry.

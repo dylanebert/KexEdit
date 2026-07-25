@@ -2346,7 +2346,10 @@ test("viewport infeasible shot", async ({ page, boot }) => {
 // coupling locality: an unselected node's own control point never moves) → MARQUEE-select a valid
 // Delete-able SUFFIX RUN (reaches the chain end) and delete it through the real node menu (Delete
 // reads enabled) → MARQUEE-select an interior (non-suffix) run and assert the same Delete row
-// reads disabled (grayed, never hidden) and a real click on it does nothing. Every gesture is a
+// reads disabled (grayed, never hidden) and a real click on it does nothing → finally, WHEEL
+// DURING A GESTURE: a wheel tick held inside a live marquee leaves the camera scale exactly where
+// it was, while the same tick at rest zooms (kex2d-ux-burndown stage 3 — this flow already owns the
+// marquee, the gesture the guard exists for). Every gesture is a
 // real pointer drag/click, located via exact node screen points (`__kex.nodeAt`); `nodeSelOrders`/
 // `poses` are read-only asserts, never how a selection or move is performed.
 test("viewport multiselect flow", async ({ page, boot }) => {
@@ -2510,6 +2513,32 @@ test("viewport multiselect flow", async ({ page, boot }) => {
     if (idb) await page.mouse.click(idb.x + idb.width / 2, idb.y + idb.height / 2);
     await expect.poll(nodeCount).toBe(7); // the grayed row did nothing
     await page.keyboard.press("Escape");
+
+    // ── 6. WHEEL IS A NO-OP DURING A LIVE GESTURE (kex2d-ux-burndown stage 3). Every gesture
+    // caches screen px at grab and resolves the rest of the drag through the camera, so a
+    // mid-gesture zoom hands it a map its grab never saw (`controls.ts` `onWheel` carries the
+    // per-gesture damage). The contract is the camera itself: the whole `[zoom, ox, oy]` must come
+    // out IDENTICAL across a held gesture — a no-op writes nothing — and the marquee is the gesture
+    // driven here because this flow already owns it and it authors nothing, so the assert is about
+    // the camera alone. The idle wheel after release is the positive control: the same event at the
+    // same place, which MUST zoom, so a guard that merely killed the wheel outright can't pass the
+    // pair (it is also what proves the mid-gesture tick was reaching this surface at all). The
+    // timeline half of the one rule rides the timeline multiselect flow. Mutation: drop the
+    // `editor.dragging` early-return in `controls.ts` `onWheel` → the held camera moves → red
+    // (proven against that build: zoom 51.857 → 81.328 under the held marquee). ──
+    const cam = () => page.evaluate((): number[] => (window as any).__kex.cam());
+    const held = await cam();
+    await page.mouse.move(cb.x + xLo23, cb.y + yLo);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + xHi23, cb.y + yHi, { steps: 6 }); // past DRAG_PX → a real marquee
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(1); // the gesture IS live
+    await page.mouse.wheel(0, -600); // a zoom-in tick a resting viewport would answer
+    await frames(page, 2); // the wheel is dispatched, not awaited — let any write land
+    expect(await cam()).toEqual(held);
+    await page.mouse.up();
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
+    await page.mouse.wheel(0, -600);
+    await expect.poll(async () => (await cam())[0]).toBeGreaterThan(held[0]);
 });
 
 // Drive the TIMELINE MULTISELECT flow (kex2d-multiselect stage 6): seed an airtime force bump →
@@ -2520,7 +2549,9 @@ test("viewport multiselect flow", async ({ page, boot }) => {
 // member (nearest the section's own extent) bounds the whole group — the AE comp-start block,
 // offsets preserved, then undoes clean as one entry → a right-click keeps the set and the Easing ▸
 // menu's bulk preset applies to every selected NON-TERMINAL keyframe in one entry, leaving the two
-// unselected seeds at their default tag. Every gesture is a real pointer drag/click, located via
+// unselected seeds at their default tag → finally, WHEEL DURING A GESTURE: a wheel tick held inside
+// a live chart marquee leaves the document axis exactly where it was, while the same tick at rest
+// zooms (kex2d-ux-burndown stage 3, the timeline half of the one rule). Every gesture is a real pointer drag/click, located via
 // the diamonds' own laid-out boxes (`.fhit`); `forceSelIds`/`forceSelActive`/`forces`/`forceEases`
 // are read-only asserts.
 test("timeline multiselect flow", async ({ page, boot }) => {
@@ -2664,4 +2695,29 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     expect(eased[0]).toBe(1); // the leading seed — NOT selected, untouched
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await forceEases())[1]).toBe(1);
+
+    // ── 5. WHEEL IS A NO-OP DURING A LIVE GESTURE (kex2d-ux-burndown stage 3) — the timeline half
+    // of the one rule; the viewport half rides the viewport multiselect flow, and both surfaces
+    // guard on the same `editor.dragging` flag. A live gesture reads its cursor against the
+    // document axis, so a mid-drag zoom moves the surface under its own gesture. The chart marquee
+    // drives it (it authors nothing, and — unlike the viewport's — it takes capture only PAST the
+    // dead zone, so `data-dragging` here is a real armed gesture, not a mere pointerdown; the flip
+    // side is that this surface's pre-dead-zone press is the one window the guard leaves open, and
+    // it is deliberately not asserted). The idle wheel after release is the positive control (and
+    // is what proves the mid-gesture tick reached this surface). Mutation: drop the `editor.dragging`
+    // early-return in `Timeline.svelte` `onWheel` → the held view zooms → red (proven against that
+    // build: `[pan, pxPerM]` [0, 16.20] → [638.12, 45.83] under the held marquee). ──
+    const xView = () => page.evaluate((): number[] => (window as any).__kex.xView());
+    const rest = await xView();
+    await page.mouse.move(xLo, chartTop);
+    await page.mouse.down();
+    await page.mouse.move(xHi, chartBot, { steps: 6 }); // past the dead zone → the marquee arms
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(1); // the gesture IS live
+    await page.mouse.wheel(0, -600); // a zoom-in tick a resting chart would answer
+    await frames(page, 2); // the wheel is dispatched, not awaited — let any write land
+    expect(await xView()).toEqual(rest);
+    await page.mouse.up();
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
+    await page.mouse.wheel(0, -600);
+    await expect.poll(async () => (await xView())[1]).toBeGreaterThan(rest[1]);
 });

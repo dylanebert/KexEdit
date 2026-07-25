@@ -2110,8 +2110,14 @@ function stepKey(e: KeyboardEvent): void {
     parkFromTime(ecs, eid); // anchor the stepped time to the content under it
 }
 onMount(() => {
+    // a no-op while a gesture is live — the viewport's rule, on this surface (`controls.ts`
+    // `onWheel` carries the why: one rule, `editor.dragging` as the one live-gesture flag, the
+    // event still swallowed). Here it holds the DOCUMENT axis still under a keyframe drag, an
+    // extent trim, a handle drag, or a chart marquee, each of which reads the cursor against
+    // the live `view`.
     const onWheel = (e: WheelEvent): void => {
         e.preventDefault();
+        if (editor.dragging) return;
         const x = e.clientX - canvas.getBoundingClientRect().left - LEFT_GUT; // chart-local anchor
         // curve-editor standard (Unity/AE): plain wheel zooms, shift+wheel pans.
         // a trackpad's horizontal axis pans too; pinch arrives as ctrl+wheel → zoom.
@@ -2214,20 +2220,29 @@ onMount(() => {
     };
     host.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKey);
-    // DEV-only harness read: the displayed value-axis (g) range. `yView` is component-local view
-    // state — never authored, so it's off the main.ts `__kex` authoring surface; the timeline
-    // augments the hook here. The edge-pan flow reads it to assert a held handle drag grows the
-    // range and a release accommodates the handle endpoint.
+    // DEV-only harness reads: the displayed value-axis (g) range and the document axis's stored
+    // view. Both are component-local view state — never authored, so they're off the main.ts
+    // `__kex` authoring surface; the timeline augments the hook here. The edge-pan flow reads
+    // `gRange` to assert a held handle drag grows the range and a release accommodates the handle
+    // endpoint; the wheel-guard flow reads `xView` (the viewport `cam` twin) to assert a
+    // mid-gesture wheel wrote nothing. `xView` is `view` itself — what the wheel writes — not the
+    // `clamped` projection the chart draws, which folds in `chartW`/`sTotal` the wheel never touches.
     if (import.meta.env.DEV) {
         const k = (window as unknown as { __kex?: Record<string, unknown> }).__kex;
-        if (k) k.gRange = (): [number, number] => [yView.lo, yView.hi];
+        if (k) {
+            k.gRange = (): [number, number] => [yView.lo, yView.hi];
+            k.xView = (): [number, number] => [view.pan, view.pxPerM];
+        }
     }
     return () => {
         host.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKey);
         if (import.meta.env.DEV) {
             const k = (window as unknown as { __kex?: Record<string, unknown> }).__kex;
-            if (k) delete k.gRange;
+            if (k) {
+                delete k.gRange;
+                delete k.xView;
+            }
         }
         endScrub(); // drop any in-flight scrub listeners if we unmount mid-drag
         sliderUp(); // and any in-flight player-slider drag
