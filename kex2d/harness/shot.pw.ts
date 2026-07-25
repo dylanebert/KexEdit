@@ -81,9 +81,12 @@ const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R — the knob orbit (see `
 const TIP_REACH = 68; // TIP_H (56) + TIP_GAP (12) — Timeline.svelte, the vertical room a popover needs
 const GROW_LO = -3; // Timeline.svelte GROW_CAP[0] = BAND[0] (−2) − GROW_HEADROOM (1) — the growth floor
 // The shipped manipulator snap quanta as the popover DISPLAYS them — src/settings.ts
-// ANGLE_STEP_DEFAULT (5°, stored in radians) and LENGTH_STEP_DEFAULT (1 m).
+// ANGLE_STEP_DEFAULT (5°, stored in radians) and LENGTH_STEP_DEFAULT (1 m), plus the range ends the
+// fields clamp to: ANGLE_STEP_MIN (1°) / ANGLE_STEP_MAX (180°).
 const SNAP_DEG = "5";
 const SNAP_LEN = "1";
+const SNAP_DEG_MIN = "1";
+const SNAP_DEG_MAX = "180";
 
 // window.__kex is the DEV harness hook (src/main.ts); these page-context reads use `any` freely —
 // the hook is a DEV-only surface with no shared type.
@@ -829,11 +832,15 @@ test("tool rail shot", async ({ page, boot }) => {
     await expect(pop).toBeVisible();
     await expect(angleField).toHaveValue("12");
 
-    // a value below the 1° floor clamps, and the FIELD is corrected to the clamped value — a
-    // rejected entry left on screen would have the popover lying about the live grid.
+    // both range ends clamp, and the FIELD is corrected to the clamped value — a rejected entry left
+    // on screen would have the popover lying about the live grid. The ceiling matters because the
+    // value persists: an extreme typed once would otherwise collapse the control across reloads.
     await angleField.fill("0.4");
     await angleField.press("Enter");
-    await expect(angleField).toHaveValue("1");
+    await expect(angleField).toHaveValue(SNAP_DEG_MIN);
+    await angleField.fill("400");
+    await angleField.press("Enter");
+    await expect(angleField).toHaveValue(SNAP_DEG_MAX);
 });
 
 // Drive the FORCE-AUTHORING flow: a geo track →

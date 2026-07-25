@@ -380,10 +380,11 @@ editor-ui invariant-domain rule).
   shallot, no DOM — unit-tested in `magnet.test.ts`.
 - `settings.ts` — the **per-user preference home**: load / clamp / save over `localStorage` (one JSON
   object under `SNAP_KEY`), since the prototype has no document to hold a preference. Today the two
-  manipulator snap quanta — `snapSteps` (`angle` rad, default 5°, floor 1°; `length` m, default 1,
-  floor 0.1) read LIVE by `magnet.ts`, written by the rail magnet's popover, loaded once in
+  manipulator snap quanta — `snapSteps` (`angle` rad, default 5°, range [1°, 180°]; `length` m,
+  default 1, range [0.1, 100]) read LIVE by `magnet.ts`, written by the rail magnet's popover, loaded once in
   `main.ts`. Storage failure is swallowed (a denied `localStorage` never breaks authoring) and every
-  read resolves through the clamps. Deliberately NOT configurable: the timeline's `S_GRID`/`G_GRID`
+  read resolves through the clamps — which bound BOTH ends, since a persisted extreme would otherwise
+  collapse the control across reloads (recoverability, not precision). Deliberately NOT configurable: the timeline's `S_GRID`/`G_GRID`
   force grids (fixed constants) and `LENGTH_MIN` (the chord floor, a different quantity).
   Unit-tested in `settings.test.ts`.
 - `manipulator.ts` — the **polar control substrate**, and the 3D port's template. Pure and

@@ -11,6 +11,11 @@
  *  `LENGTH_MIN` (`magnet.ts`) is a different quantity, the floor a chord can never collapse below,
  *  not a grid.
  *
+ *  Both quanta clamp to a RANGE, not just a floor: a floor alone lets a typed extreme persist (it's
+ *  in storage, so it survives the reload) and collapse the control — past a 180° grid every angle
+ *  rounds to one direction, and a 100 m+ length grid quantizes every chord onto the `LENGTH_MIN`
+ *  floor. The ceilings exist for recoverability, not precision.
+ *
  *  The clamps are pure (and the load path's only shape guard); storage is the one impure edge and
  *  swallows its own failure, since a disabled or full `localStorage` must never break authoring.
  *  Values are stored in the units the app computes in — radians and metres — so nothing converts
@@ -20,10 +25,17 @@
 export const ANGLE_STEP_DEFAULT = Math.PI / 36;
 /** the finest configurable angle grid: 1° (Blender's snap-increment floor). */
 export const ANGLE_STEP_MIN = Math.PI / 180;
+/** the coarsest configurable angle grid: 180° — the largest grid with more than one snap point per
+ *  half-turn. Past it every real angle rounds to one direction, i.e. the control stops working, and
+ *  the value persists across a reload; the ceiling's job is recoverability, not precision. */
+export const ANGLE_STEP_MAX = Math.PI;
 /** the default chord-length grid: whole metres. */
 export const LENGTH_STEP_DEFAULT = 1;
 /** the finest configurable chord-length grid: 0.1 m. */
 export const LENGTH_STEP_MIN = 0.1;
+/** the coarsest configurable chord-length grid: 100 m — beyond any section scale, so it bounds the
+ *  same collapse (every chord quantizing to the `LENGTH_MIN` floor) without bounding real authoring. */
+export const LENGTH_STEP_MAX = 100;
 
 /** the `localStorage` key the whole preference object lives under. */
 export const SNAP_KEY = "kex2d.snap";
@@ -43,16 +55,20 @@ export const snapSteps: SnapSteps = {
     length: LENGTH_STEP_DEFAULT,
 };
 
-/** a candidate angle grid clamped into the configurable range: at least `ANGLE_STEP_MIN`, and the
- *  default for anything non-finite (a corrupt stored value, a cleared field). */
+/** a candidate angle grid clamped into `[ANGLE_STEP_MIN, ANGLE_STEP_MAX]`, and the default for
+ *  anything non-finite (a corrupt stored value, a cleared field). */
 export function clampAngleStep(rad: number): number {
-    return Number.isFinite(rad) ? Math.max(ANGLE_STEP_MIN, rad) : ANGLE_STEP_DEFAULT;
+    return Number.isFinite(rad)
+        ? Math.min(ANGLE_STEP_MAX, Math.max(ANGLE_STEP_MIN, rad))
+        : ANGLE_STEP_DEFAULT;
 }
 
-/** a candidate chord-length grid clamped into the configurable range: at least `LENGTH_STEP_MIN`,
- *  the default when non-finite. */
+/** a candidate chord-length grid clamped into `[LENGTH_STEP_MIN, LENGTH_STEP_MAX]`, the default when
+ *  non-finite. */
 export function clampLengthStep(m: number): number {
-    return Number.isFinite(m) ? Math.max(LENGTH_STEP_MIN, m) : LENGTH_STEP_DEFAULT;
+    return Number.isFinite(m)
+        ? Math.min(LENGTH_STEP_MAX, Math.max(LENGTH_STEP_MIN, m))
+        : LENGTH_STEP_DEFAULT;
 }
 
 /** set the angle grid (radians) — clamped, live immediately, persisted. */

@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
     ANGLE_STEP_DEFAULT,
+    ANGLE_STEP_MAX,
     ANGLE_STEP_MIN,
     clampAngleStep,
     clampLengthStep,
     LENGTH_STEP_DEFAULT,
+    LENGTH_STEP_MAX,
     LENGTH_STEP_MIN,
     loadSnapSteps,
     setSnapAngle,
@@ -45,28 +47,38 @@ afterEach(() => {
 });
 
 describe("snap-step clamps", () => {
-    test("angle floors at 1° and falls back to the default when non-finite", () => {
+    test("angle clamps into [1°, 180°] and falls back to the default when non-finite", () => {
         expect(clampAngleStep(deg(0.5))).toBeCloseTo(ANGLE_STEP_MIN, 12);
         expect(clampAngleStep(0)).toBeCloseTo(ANGLE_STEP_MIN, 12);
         expect(clampAngleStep(-deg(10))).toBeCloseTo(ANGLE_STEP_MIN, 12);
         expect(clampAngleStep(Number.NaN)).toBeCloseTo(ANGLE_STEP_DEFAULT, 12);
         expect(clampAngleStep(Number.POSITIVE_INFINITY)).toBeCloseTo(ANGLE_STEP_DEFAULT, 12);
-        // an in-range value passes through untouched
+        // the ceiling: a typed extreme (or a hand-edited store) can't collapse the grid — above 180°
+        // every real angle would round to one direction, and the value persists across a reload
+        expect(clampAngleStep(deg(1000))).toBeCloseTo(ANGLE_STEP_MAX, 12);
+        expect(clampAngleStep(deg(181))).toBeCloseTo(ANGLE_STEP_MAX, 12);
+        // an in-range value passes through untouched, at either end
         expect(clampAngleStep(deg(12))).toBeCloseTo(deg(12), 12);
+        expect(clampAngleStep(deg(180))).toBeCloseTo(ANGLE_STEP_MAX, 12);
     });
 
-    test("length floors at 0.1 m and falls back to the default when non-finite", () => {
+    test("length clamps into [0.1 m, 100 m] and falls back to the default when non-finite", () => {
         expect(clampLengthStep(0.02)).toBeCloseTo(LENGTH_STEP_MIN, 12);
         expect(clampLengthStep(0)).toBeCloseTo(LENGTH_STEP_MIN, 12);
         expect(clampLengthStep(Number.NaN)).toBeCloseTo(LENGTH_STEP_DEFAULT, 12);
+        expect(clampLengthStep(1e6)).toBeCloseTo(LENGTH_STEP_MAX, 12); // the ceiling
         expect(clampLengthStep(2.5)).toBeCloseTo(2.5, 12);
     });
 
-    test("the setters clamp what they write to the live values", () => {
+    test("the setters clamp what they write to the live values, both ends", () => {
         setSnapAngle(deg(0.25));
         expect(snapSteps.angle).toBeCloseTo(ANGLE_STEP_MIN, 12);
+        setSnapAngle(deg(4000));
+        expect(snapSteps.angle).toBeCloseTo(ANGLE_STEP_MAX, 12);
         setSnapLength(-3);
         expect(snapSteps.length).toBeCloseTo(LENGTH_STEP_MIN, 12);
+        setSnapLength(5000);
+        expect(snapSteps.length).toBeCloseTo(LENGTH_STEP_MAX, 12);
     });
 });
 

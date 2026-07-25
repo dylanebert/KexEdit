@@ -71,7 +71,9 @@ import {
 } from "./timeline";
 import { DRAG_PX, latchAngle } from "./controls";
 import {
+    ANGLE_STEP_MAX,
     ANGLE_STEP_MIN,
+    LENGTH_STEP_MAX,
     LENGTH_STEP_MIN,
     setSnapAngle,
     setSnapLength,
@@ -1403,6 +1405,7 @@ $effect(() => {
 // hidden` can't clip it and it flips up off the bottom edge; anchored just right of the button, so
 // it never covers its invoker.
 const ANGLE_MIN_DEG = Math.round(((ANGLE_STEP_MIN * 180) / Math.PI) * 100) / 100;
+const ANGLE_MAX_DEG = Math.round(((ANGLE_STEP_MAX * 180) / Math.PI) * 100) / 100;
 let snapPop: { x: number; y: number } | null = $state(null);
 const degText = $derived(fmt(snapDeg, 2));
 const lenText = $derived(fmt(snapLen, 2));
@@ -1434,7 +1437,8 @@ function onSnapLen(e: Event): void {
 }
 // the key label is the field idiom's scrub handle (root ui.md "Fields"): slide to revise, rounded to
 // the displayed precision. no history gesture — a preference isn't authored track state — and the
-// accumulator clamps at its floor so a long backward slide banks no distance to undo.
+// accumulator clamps to the setting's own range, so a slide held past either end banks no distance
+// to undo on the way back.
 const SCRUB_DEG = 0.25; // ° per px
 function snapScrub(e: PointerEvent, axis: "angle" | "length"): void {
     if (e.button !== 0) return; // a right-press here would open the native menu with the drag open
@@ -1445,10 +1449,10 @@ function snapScrub(e: PointerEvent, axis: "angle" | "length"): void {
     let acc = axis === "angle" ? (snapSteps.angle * 180) / Math.PI : snapSteps.length;
     const move = (ev: PointerEvent): void => {
         if (axis === "angle") {
-            acc = Math.max(ANGLE_MIN_DEG, acc + ev.movementX * SCRUB_DEG);
+            acc = clamp(acc + ev.movementX * SCRUB_DEG, ANGLE_MIN_DEG, ANGLE_MAX_DEG);
             setSnapAngle(((Math.round(acc * 100) / 100) * Math.PI) / 180);
         } else {
-            acc = Math.max(LENGTH_STEP_MIN, acc + ev.movementX * SCRUB_S);
+            acc = clamp(acc + ev.movementX * SCRUB_S, LENGTH_STEP_MIN, LENGTH_STEP_MAX);
             setSnapLength(Math.round(acc * 100) / 100);
         }
     };
@@ -2767,6 +2771,7 @@ onMount(() => {
                     type="number"
                     step="1"
                     min={ANGLE_MIN_DEG}
+                    max={ANGLE_MAX_DEG}
                     value={degText}
                     onchange={onSnapDeg}
                     onfocus={(e) => e.currentTarget.select()}
@@ -2781,6 +2786,7 @@ onMount(() => {
                     type="number"
                     step="0.1"
                     min={LENGTH_STEP_MIN}
+                    max={LENGTH_STEP_MAX}
                     value={lenText}
                     onchange={onSnapLen}
                     onfocus={(e) => e.currentTarget.select()}
