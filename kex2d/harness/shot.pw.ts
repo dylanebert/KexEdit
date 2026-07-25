@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Page, test as base } from "@playwright/test";
 
 // kex2d's capture flows. Each test boots the page, drives one authoring surface through REAL
 // pointer and keyboard events, asserts the resulting state through the DEV-only `window.__kex` hook
@@ -41,6 +41,31 @@ const OUT = process.env.KEX_OUT ?? "shots";
 // settles — so this is used only immediately before a screenshot. Every other wait here is a
 // condition (`coding.md` forbids sleep-as-condition-wait).
 const SHOT_MS = intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000);
+
+// The boot every flow shares, and the uncaught-exception gate around it.
+//
+// `boot()` opens the app and waits for the dock — the app's own mounted-and-laid-out gate.
+// `boot("/some-lab.html")` opens a lab page instead; a lab states its own readiness (its `.panel`
+// count), so there is nothing shared to wait on there.
+//
+// The `pageerror` listener is attached in fixture SETUP, before any navigation, and the teardown
+// asserts nothing landed in it: an uncaught exception in the app is a defect, and without this the
+// flow screenshots straight past it. Console errors are deliberately NOT collected — the only live
+// traffic there is the lab pages' favicon 404s, and an error that matters throws.
+type Boot = (path?: string) => Promise<void>;
+
+const test = base.extend<{ boot: Boot }>({
+    boot: async ({ page }, use) => {
+        mkdirSync(OUT, { recursive: true });
+        const thrown: string[] = [];
+        page.on("pageerror", (e) => thrown.push(e.stack ?? e.message));
+        await use(async (path = "/") => {
+            await page.goto(`http://localhost:${PORT}${path}`, { waitUntil: "load" });
+            if (path === "/") await expect(page.locator(".dock")).toBeVisible();
+        });
+        expect(thrown, `the page threw an uncaught exception:\n${thrown.join("\n")}`).toEqual([]);
+    },
+});
 
 // Layout constants MIRRORED from the app, because this file is staged to the host STANDALONE
 // (`wsl.ts`) and so can import nothing from `src/`. Each names its source; a change there is a
@@ -325,16 +350,8 @@ async function marqueeDrag(
     if (shift) await page.keyboard.up("Shift");
 }
 
-test("geo authoring flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("geo authoring flow", async ({ page, boot }) => {
+    await boot();
     await expect(page.locator(".player")).toBeVisible();
 
     // read helpers over the DEV hook. expect.poll drives every wait — no fixed sleeps.
@@ -504,8 +521,6 @@ test("geo authoring flow", async ({ page }) => {
     const iRest = await readoutAngle();
     expect(iDrag).not.toBeNull();
     expect(iRest).toBe(iDrag); // interior drag == rest — one consistent quantity (the exit heading)
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the TANGENT-EDIT flow (kex2d-authoring-surface stage 9): seed a shaped geo track →
@@ -520,16 +535,8 @@ test("geo authoring flow", async ({ page }) => {
 // the drag lands where the pointer goes. The submenu items (Free, Reset) are clicked pointer-true
 // via clickFlyout — a coordinate click gated on elementFromPoint reachability, the regression net
 // for the context-submenu clip class (a selector .click() would fire on a clipped, unreachable row).
-test("tangent edit flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("tangent edit flow", async ({ page, boot }) => {
+    await boot();
 
     const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
@@ -650,8 +657,6 @@ test("tangent edit flow", async ({ page }) => {
     await expect(page.locator(".nodemenu")).toBeVisible();
     await clickFlyout(page, ".nodemenu", "Tangents", "Reset");
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the START-HANDLE EDIT flow (kex2d-geo-ux stage 1): the section entry (node 0) is now
@@ -663,16 +668,8 @@ test("tangent edit flow", async ({ page }) => {
 // menu (Handles + Reset ONLY — no mode submenu) → Reset clears it back to live. Every affordance is
 // a real canvas pointer event located via __kex (canvas-drawn handles carry no DOM box); the node
 // menu is asserted for the ABSENCE of a "Tangents" submenu, the node-0 menu's distinguishing shape.
-test("start handle edit flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("start handle edit flow", async ({ page, boot }) => {
+    await boot();
 
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
     const editing = () => page.evaluate((): boolean => (window as any).__kex.editing());
@@ -746,8 +743,6 @@ test("start handle edit flow", async ({ page }) => {
     await page.screenshot({ path: join(OUT, "start-3-menu.png") });
     await page.locator(".nodemenu").getByRole("menuitem", { name: "Reset" }).click();
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Screenshot the TIMELINE TOOL RAIL (kex2d-authoring-surface): the thin icon-only strip on the
@@ -755,16 +750,8 @@ test("start handle edit flow", async ({ page }) => {
 // dock affordance — not a viewport overlay, not a second dock). Assert the toggle's lit/dimmed
 // state rides `aria-pressed` (positive, not absence-of-error), and capture the default-on and
 // toggled-off looks. `S` toggles it globally (the AE magnet key, not hover-gated).
-test("tool rail shot", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("tool rail shot", async ({ page, boot }) => {
+    await boot();
 
     const rail = page.locator(".tool-rail");
     const snap = rail.locator(".rail-tool");
@@ -783,8 +770,6 @@ test("tool rail shot", async ({ page }) => {
     // S again restores the default — keep the toggle honest across the flow.
     await page.keyboard.press("s");
     await expect(snap).toHaveAttribute("aria-pressed", "true");
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the FORCE-AUTHORING flow: a geo track →
@@ -792,16 +777,8 @@ test("tool rail shot", async ({ page }) => {
 // an airtime bump by force points → convert back to geo (resets to the flat seed) →
 // undo, which restores the force track with its points byte-identical. The mode toggle
 // and undo run through the real UI; point placement uses the __kex hook for precision.
-test("force authoring flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("force authoring flow", async ({ page, boot }) => {
+    await boot();
 
     const kind = () => page.evaluate((): number => (window as any).__kex.kind());
     const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
@@ -975,8 +952,6 @@ test("force authoring flow", async ({ page }) => {
     await page.keyboard.press("Control+z");
     await expect.poll(kind).toBe(1);
     await expect.poll(forceCount).toBe(5);
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the FORCE EASING MENU + HANDLE-EDIT flow (kex2d-force-ux stage C, extended at stage
@@ -990,16 +965,8 @@ test("force authoring flow", async ({ page }) => {
 // C-review hole) → Reset via the menu, pointer-true (`clickMenuItem`), clears it back to the
 // derived easing → Delete, also pointer-true, removes the keyframe. Every menu interaction is
 // a real pointer event; __kex is read only for assertions.
-test("force easing menu flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("force easing menu flow", async ({ page, boot }) => {
+    await boot();
 
     const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
     const forceEases = () => page.evaluate((): number[] => (window as any).__kex.forceEases());
@@ -1358,24 +1325,14 @@ test("force easing menu flow", async ({ page }) => {
     await expect(page.locator(".fmenu")).toBeVisible();
     await clickMenuItem(page, ".fmenu", "Delete");
     await expect.poll(forceCount).toBe(beforeDelete - 1);
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // G2: the Tangents ▸ mode submenu (Mirror | Aligned | Free — the geo node menu's convention on a
 // force keyframe) and the chord-aligned derived-Linear ghost display. Both are handle-layer feel
 // features rendered on the real timeline, so both are driven pointer-true and asserted against the
 // drawn DOM + __kex state.
-test("force tangent mode + linear ghost flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
+    await boot();
 
     const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
     const forceEases = () => page.evaluate((): number[] => (window as any).__kex.forceEases());
@@ -1510,8 +1467,6 @@ test("force tangent mode + linear ghost flow", async ({ page }) => {
         .toEqual(["Delete Del", "Easing ▸"]); // no Tangents ▸ on a derived keyframe
     await page.keyboard.press("Escape");
     await expect(page.locator(".fmenu")).toHaveCount(0);
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Regression net for the context-menu OVERFLOW class (kex2d-force-ux UX fix): a right-click on a
@@ -1523,16 +1478,8 @@ test("force tangent mode + linear ghost flow", async ({ page }) => {
 // (up-flipped) menu and assert the SUBMENU fits too — a flyout off a bottom-anchored menu is the
 // second overflow surface. A selector `.click()` proves nothing here; a real box that spills past
 // the viewport is exactly what a human pointer can't reach, so this reads the laid-out rect.
-test("context menu stays in the viewport near the bottom edge", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("context menu stays in the viewport near the bottom edge", async ({ page, boot }) => {
+    await boot();
 
     const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
@@ -1589,8 +1536,6 @@ test("context menu stays in the viewport near the bottom edge", async ({ page })
     expect(sb.y).toBeGreaterThanOrEqual(0);
     expect(sb.x).toBeGreaterThanOrEqual(0);
     await page.keyboard.press("Escape");
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Handle drags must behave like keyframe/node drags at the view edges, through the SAME mechanisms:
@@ -1602,16 +1547,9 @@ test("context menu stays in the viewport near the bottom edge", async ({ page })
 // its own mutation: unwire the handle branch → no pan; drop the handle-endpoint inclusion → no fit.
 test("handle drag edge-pans the value axis and a released handle stays in range", async ({
     page,
+    boot,
 }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+    await boot();
 
     const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
     const forceEditing = () => page.evaluate((): boolean => (window as any).__kex.forceEditing());
@@ -1673,8 +1611,6 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
     const g1 = (await forces())[1].g;
     const endpointG = g1 + ((await forceTangents())[1]?.outDg ?? 0);
     await expect.poll(async () => (await gRange())[0]).toBeLessThan(endpointG - 0.2);
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the MULTI-SECTION chain shape: a geo track → append a section → convert it to
@@ -1682,16 +1618,8 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
 // __kex hooks; sectionCount / sectionKinds assert the chain shape. (Split/join left the
 // editor — deferred to the conversion tier — so they're no longer exercised here; the
 // substrate ops stay covered by the unit suite.)
-test("multi-section flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("multi-section flow", async ({ page, boot }) => {
+    await boot();
 
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
     const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
@@ -1720,8 +1648,6 @@ test("multi-section flow", async ({ page }) => {
     await expect.poll(sectionCount).toBe(1);
     await page.keyboard.press("Control+z");
     await expect.poll(sectionCount).toBe(2);
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the CLIP STRIP flow (section-editor spec stage 1): the section lane in the
@@ -1729,16 +1655,8 @@ test("multi-section flow", async ({ page }) => {
 // flyout → select the geo clip → drag the force clip's right-edge extent trim → undo.
 // Every affordance is driven through the real DOM (clip rect, flyout, trim handle); the
 // __kex hook is read only for assertions, never to perform the op.
-test("section clip strip flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("section clip strip flow", async ({ page, boot }) => {
+    await boot();
 
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
     const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
@@ -1817,8 +1735,6 @@ test("section clip strip flow", async ({ page }) => {
     // undo restores the pre-drag extent, one entry.
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await sectionLengths())[1]).toBeCloseTo(before[1], 3);
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the SECTION MENU + DIRECT-BY-POSITION flow (section-editor stage 2): a mixed
@@ -1826,16 +1742,8 @@ test("section clip strip flow", async ({ page }) => {
 // position WITHOUT selecting the section → right-click Convert and Delete via the real
 // context menu. The whole point is that authoring and section ops no longer depend on a
 // "current section" selection. Everything is driven through the real DOM.
-test("section menu + keyframe flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("section menu + keyframe flow", async ({ page, boot }) => {
+    await boot();
 
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
     const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
@@ -1887,8 +1795,6 @@ test("section menu + keyframe flow", async ({ page }) => {
     await page.locator(".clip").nth(1).click({ button: "right" });
     await page.getByRole("menuitem", { name: "Delete" }).click();
     await expect.poll(sectionCount).toBe(1);
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the CONTENT-ANCHORED PLAYHEAD PARKING flow (section-editor stage 3, fork 4): a
@@ -1896,16 +1802,8 @@ test("section menu + keyframe flow", async ({ page }) => {
 // via a REAL ruler scrub → drag the keyframe's g so the bake re-times → assert the parked
 // playhead's arclength held (glued to the track feature) while the ride re-timed. Without
 // content-anchoring the playhead is pinned to ride-time and would slide under the re-time.
-test("playhead parking flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("playhead parking flow", async ({ page, boot }) => {
+    await boot();
 
     const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
     const forceCounts = () =>
@@ -1967,8 +1865,6 @@ test("playhead parking flow", async ({ page }) => {
     expect(arc2).toBeCloseTo(arc1, 1);
     expect(await parked()).toBe(true);
     if (strip) await page.screenshot({ path: join(OUT, "park-2-held.png"), clip: strip });
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the V0 AUTHORING flow (section-editor stage 4, fork 5): select the fixed START
@@ -1976,16 +1872,8 @@ test("playhead parking flow", async ({ page }) => {
 // each one undo entry → assert __kex.v0. The default flat seed keeps the START diamond
 // clear of shape nodes (its one node sits a full EXTEND_DIST out) so it picks cleanly.
 // Real affordances throughout; __kex is read only for assertions.
-test("v0 authoring flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("v0 authoring flow", async ({ page, boot }) => {
+    await boot();
 
     const v0 = () => page.evaluate((): number => (window as any).__kex.v0());
     const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
@@ -2032,8 +1920,6 @@ test("v0 authoring flow", async ({ page }) => {
     // undo restores the default speed.
     await page.keyboard.press("Control+z");
     await expect.poll(v0).toBeCloseTo(v0Default, 3);
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the MIXED-LAYOUT DOGFOOD (section-editor stage 5): compose the whole chain the
@@ -2044,16 +1930,8 @@ test("v0 authoring flow", async ({ page }) => {
 // author sculpts the geometry and judges where the surface fights — stays the user's.
 // Precise geometry isn't asserted: the claim is the composed chain builds through real
 // clicks and bakes, and the authored hill re-times the ride.
-test("mixed layout dogfood flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("mixed layout dogfood flow", async ({ page, boot }) => {
+    await boot();
 
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
     const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
@@ -2120,22 +1998,13 @@ test("mixed layout dogfood flow", async ({ page }) => {
     await expect(page.locator(".clip")).toHaveCount(3);
     await page.screenshot({ path: join(OUT, "dogfood-2-chain.png") });
     if (strip) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip });
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // The geometry→force atom observability page:
 // the ∂F/∂P sparsity heatmap, the round-trip overlay, and the conditioning plot.
 // Pure canvas2D (no GPU) rendered on module load; capture the page + each panel.
-test("geometry atoms lab", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/geometry-lab.html`, { waitUntil: "load" });
+test("geometry atoms lab", async ({ page, boot }) => {
+    await boot("/geometry-lab.html");
     const panels = page.locator(".panel");
     await expect(panels).toHaveCount(3);
     await page.waitForTimeout(SHOT_MS);
@@ -2145,22 +2014,13 @@ test("geometry atoms lab", async ({ page }) => {
     for (let i = 0; i < names.length; i++) {
         await panels.nth(i).screenshot({ path: join(OUT, `${names[i]}.png`) });
     }
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // The Stage-2 loop-solve observability page:
 // draft-vs-solved geometry under the band, the force curve entering the band,
 // and the infeasible pin losing loudly. Pure canvas2D rendered on module load.
-test("loop solve lab", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/loop-lab.html`, { waitUntil: "load" });
+test("loop solve lab", async ({ page, boot }) => {
+    await boot("/loop-lab.html");
     const panels = page.locator(".panel");
     await expect(panels).toHaveCount(3);
     await page.waitForTimeout(SHOT_MS);
@@ -2170,22 +2030,13 @@ test("loop solve lab", async ({ page }) => {
     for (let i = 0; i < names.length; i++) {
         await panels.nth(i).screenshot({ path: join(OUT, `${names[i]}.png`) });
     }
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // The Stage-3 FVD-limit observability page:
 // the sketch→oracle overlay on the loop, tracking across aggressiveness, and
 // warm-start cost per target edit. Pure canvas2D rendered on module load.
-test("FVD limit lab", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/fvd-lab.html`, { waitUntil: "load" });
+test("FVD limit lab", async ({ page, boot }) => {
+    await boot("/fvd-lab.html");
     const panels = page.locator(".panel");
     await expect(panels).toHaveCount(3);
     await page.waitForTimeout(SHOT_MS);
@@ -2195,22 +2046,13 @@ test("FVD limit lab", async ({ page }) => {
     for (let i = 0; i < names.length; i++) {
         await panels.nth(i).screenshot({ path: join(OUT, `${names[i]}.png`) });
     }
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // The collocation solver observability page:
 // the LM convergence curve, the solved-vs-analytic overlay, and the solved-vs-
 // target force. Pure canvas2D (no GPU) rendered on module load.
-test("collocation solver lab", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/collocate-lab.html`, { waitUntil: "load" });
+test("collocation solver lab", async ({ page, boot }) => {
+    await boot("/collocate-lab.html");
     const panels = page.locator(".panel");
     await expect(panels).toHaveCount(3);
     await page.waitForTimeout(SHOT_MS);
@@ -2220,8 +2062,6 @@ test("collocation solver lab", async ({ page }) => {
     for (let i = 0; i < names.length; i++) {
         await panels.nth(i).screenshot({ path: join(OUT, `${names[i]}.png`) });
     }
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the VIEWPORT KIND-COLOR shot (kex2d-ux-foundations stage D): a geo section
@@ -2236,16 +2076,8 @@ test("collocation solver lab", async ({ page }) => {
 // from appending before the hill had baked, so the seeds continued the FLAT seed's exit,
 // and it flipped run to run. The two infeasible-red priority renders that accident covered now
 // have their own deliberate scenario — `viewport infeasible shot` below.
-test("viewport kind color shot", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("viewport kind color shot", async ({ page, boot }) => {
+    await boot();
 
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
 
@@ -2284,8 +2116,6 @@ test("viewport kind color shot", async ({ page }) => {
         .not.toBe(null);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "kind-color-selected.png"), clip: zoomedClip });
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the INFEASIBLE-TRACK shot: the two stacked-language renders the kind-color flow above
@@ -2310,16 +2140,8 @@ test("viewport kind color shot", async ({ page }) => {
 // ·g·Δs/v²` — with v floored at V_FLOOR (0.01) that denominator amplifies the f32 residue into a
 // scribble the moment the section's own speed collapses. So the pull-up stays comfortably
 // feasible and only the ramp goes red.
-test("viewport infeasible shot", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("viewport infeasible shot", async ({ page, boot }) => {
+    await boot();
 
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
     const v0 = () => page.evaluate((): number => (window as any).__kex.v0());
@@ -2428,8 +2250,6 @@ test("viewport infeasible shot", async ({ page }) => {
     await expect.poll(selectedSection).toBe(ids[1]);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "infeasible-selected.png"), clip });
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the VIEWPORT MULTISELECT flow (kex2d-multiselect stage 6): seed a shaped geo track →
@@ -2445,16 +2265,8 @@ test("viewport infeasible shot", async ({ page }) => {
 // reads disabled (grayed, never hidden) and a real click on it does nothing. Every gesture is a
 // real pointer drag/click, located via exact node screen points (`__kex.nodeAt`); `nodeSelOrders`/
 // `poses` are read-only asserts, never how a selection or move is performed.
-test("viewport multiselect flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("viewport multiselect flow", async ({ page, boot }) => {
+    await boot();
 
     const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
     const nodeSelOrders = () =>
@@ -2614,8 +2426,6 @@ test("viewport multiselect flow", async ({ page }) => {
     if (idb) await page.mouse.click(idb.x + idb.width / 2, idb.y + idb.height / 2);
     await expect.poll(nodeCount).toBe(7); // the grayed row did nothing
     await page.keyboard.press("Escape");
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
 
 // Drive the TIMELINE MULTISELECT flow (kex2d-multiselect stage 6): seed an airtime force bump →
@@ -2629,16 +2439,8 @@ test("viewport multiselect flow", async ({ page }) => {
 // unselected seeds at their default tag. Every gesture is a real pointer drag/click, located via
 // the diamonds' own laid-out boxes (`.fhit`); `forceSelIds`/`forceSelActive`/`forces`/`forceEases`
 // are read-only asserts.
-test("timeline multiselect flow", async ({ page }) => {
-    mkdirSync(OUT, { recursive: true });
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => {
-        if (m.type() === "error") errors.push(`console: ${m.text()}`);
-    });
-
-    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-    await expect(page.locator(".dock")).toBeVisible();
+test("timeline multiselect flow", async ({ page, boot }) => {
+    await boot();
 
     const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
     const forceSelIds = () => page.evaluate((): number[] => (window as any).__kex.forceSelIds());
@@ -2778,6 +2580,4 @@ test("timeline multiselect flow", async ({ page }) => {
     expect(eased[0]).toBe(1); // the leading seed — NOT selected, untouched
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await forceEases())[1]).toBe(1);
-
-    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
