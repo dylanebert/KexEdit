@@ -27,6 +27,7 @@ import {
     SectionKind,
     sectionForces,
     sectionHandles,
+    sectionInfo,
     sections,
     Track,
     TrackPlugin,
@@ -250,6 +251,39 @@ if (import.meta.env.DEV) {
         sectionForceCounts: (): number[] =>
             sections(ecs).map((x) => sectionForces(ecs, x.id).length),
         selectedSection: (): number | null => editor.section,
+        // the bake's own infeasibility signal (`bakeOut.feasible`/`firstInfeasible`) — the input
+        // the dashed-red track pass and the warning banner both read: the first infeasible sample,
+        // how many samples are infeasible track-wide, the stable id of the section that OWNS the first one
+        // (the infeasible-shot flow asserts the selection accent lands on that same section), and
+        // that section's feasible `head` — the samples before the red, which are exactly what the
+        // accent has left to paint under it. a sample on a section boundary is shared, and this
+        // resolves it to the UPSTREAM section — the exit-inclusive convention `toLocal` already
+        // uses. read-only, like poses().
+        infeasibleSpan: (): {
+            first: number;
+            count: number;
+            section: number | null;
+            head: number;
+        } => {
+            const out = bakeOut.get(track);
+            if (!out) return { first: -1, count: 0, section: null, head: 0 };
+            const n = Track.count.get(track);
+            let count = 0;
+            for (let i = 0; i < n; i++) if (out.feasible[i] === 0) count++;
+            const first = out.firstInfeasible;
+            let section: number | null = null;
+            let head = 0;
+            if (first >= 0)
+                for (const s of sections(ecs)) {
+                    const info = sectionInfo.get(s.id);
+                    if (info && first >= info.startSample && first <= info.endSample) {
+                        section = s.id;
+                        head = first - info.startSample;
+                        break;
+                    }
+                }
+            return { first, count, section, head };
+        },
         // the whole selected section SET, by stable id (kex2d-multiselect stage 6) — the
         // membership behind `selectedSection`'s active member; sorted for a stable read.
         sectionSelIds: (): number[] => [...editor.sections.ids].sort((a, b) => a - b),

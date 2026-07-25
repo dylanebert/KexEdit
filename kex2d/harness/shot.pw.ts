@@ -40,6 +40,8 @@ const CHART_BOT_PAD = 8; // BOT_PAD — Timeline.svelte
 // The viewport's default framing centers the world origin in the region above the dock (240 + a
 // 16px inset kept clear), not in the canvas — App.svelte.
 const DOCK_RESERVE = 256;
+const FORCE_LEN = 24; // MIRRORS src/track.ts DEFAULT_FORCE_LEN (= EXTEND_DIST) — a force
+// section's extent on convert/append, so mid-extent is FORCE_LEN / 2.
 
 // window.__kex is the DEV harness hook (src/main.ts); these page-context reads use `any` freely —
 // the hook is a DEV-only surface with no shared type.
@@ -2294,15 +2296,160 @@ test("viewport kind color shot", async ({ page }) => {
     const zoomedClip = { x: cb.x, y: cb.y, width: cb.width, height: cb.height - DOCK_RESERVE };
     await page.screenshot({ path: join(OUT, "kind-color.png"), clip: zoomedClip });
 
-    // select the force section (it holds the infeasible tail) — the accent overlay
-    // must not paint solid over the dashed-red infeasible sub-segment (the priority
-    // fix: infeasible-red > selection accent).
+    // select the force section — the accent overlay is a BRIGHTENED analog of the section's own
+    // gold, not a flat recolor, so the boundary still reads as a kind boundary while selected.
+    // (The infeasible-red > selection priority is the `viewport infeasible shot` flow below; this
+    // chain is feasible end to end.)
     await page.locator(".clip").nth(1).click();
     await expect
         .poll(() => page.evaluate(() => (window as any).__kex.selectedSection()))
         .not.toBe(null);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "kind-color-selected.png"), clip: zoomedClip });
+
+    if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
+});
+
+// Drive the INFEASIBLE-TRACK shot: the two stacked-language renders the kind-color flow above
+// used to cover only by accident (an append racing the bake), authored deliberately here —
+// (a) dashed infeasible red over a kind-colored chain, (b) that same red UNDER a selected
+// section's accent overlay, which must not paint over it (`editor-ui.md` Kind color: priority is
+// infeasible-red > selection > kind, and dash is reserved for infeasibility).
+//
+// The scenario is a hill the launch can't climb, and every number in it is derived from the
+// energy budget, not tuned: speed comes only from height (`v² = v0² − 2g·Δy`, g = 9.80665), so a
+// launch at 16 m/s buys 13.0 m of rise before v hits V_WARN (1 m/s) and the track goes red. The
+// chain spends it in two sections — a 2g pull-up (the seed section, converted to force, with one
+// authored keyframe at mid-extent) climbs 5.8 m and leaves at 33° still doing 11.9 m/s, then the
+// appended geo ramp continues straight at that angle and runs out of height 56% of the way up.
+// Nothing in the authoring steps reads the bake (a convert at the track start seeds `DEFAULT_G`
+// outright, and both a keyframe create and a geo append are pure component writes), so this chain
+// can't drift run to run the way the raced append did.
+//
+// The red must land in the GEO ramp, and that placement is load-bearing, not cosmetic: a geo
+// section's shape is AUTHORED (positions in, force recovered out), so it draws a clean straight
+// line no matter how depleted the cart is, whereas a force section INTEGRATES `dθ = (F_n − cos θ)
+// ·g·Δs/v²` — with v floored at V_FLOOR (0.01) that denominator amplifies the f32 residue into a
+// scribble the moment the section's own speed collapses. So the pull-up stays comfortably
+// feasible and only the ramp goes red.
+test("viewport infeasible shot", async ({ page }) => {
+    mkdirSync(OUT, { recursive: true });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+        if (m.type() === "error") errors.push(`console: ${m.text()}`);
+    });
+
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+    await expect(page.locator(".dock")).toBeVisible();
+
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+    const v0 = () => page.evaluate((): number => (window as any).__kex.v0());
+    const kind = () => page.evaluate((): number => (window as any).__kex.kind());
+    const forceCount = () => page.evaluate((): number => (window as any).__kex.forceCount());
+    const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
+    const sectionIds = () => page.evaluate((): number[] => (window as any).__kex.sectionIds());
+    const selectedSection = () =>
+        page.evaluate((): number | null => (window as any).__kex.selectedSection());
+    const startAt = () =>
+        page.evaluate((): { x: number; y: number } | null => (window as any).__kex.startAt());
+    // the bake's own feasibility flags (src/main.ts) — the render's input, not a pixel read.
+    type Span = { first: number; count: number; section: number | null; head: number };
+    const infeasibleSpan = () => page.evaluate((): Span => (window as any).__kex.infeasibleSpan());
+
+    // the default flat seed bakes on load — the START diamond at the world origin has no shape
+    // node on top of it, so it picks cleanly (the v0 flow's framing).
+    await expect.poll(tTotal).toBeGreaterThan(0);
+
+    // ── 1. Author the launch speed through the REAL START popover: 16 m/s. ──
+    const canvas = page.locator("#app > canvas");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    const cx = cb.x + cb.width / 2;
+    const cy = cb.y + (cb.height - DOCK_RESERVE) / 2;
+    await page.mouse.click(cx, cy);
+    await expect(page.locator(".vtip")).toBeVisible();
+    await page.locator(".vtip input").fill("16");
+    await page.keyboard.press("Enter");
+    await expect.poll(v0).toBeCloseTo(16, 3);
+
+    // ── 2. Flip the seed section to force and author the pull-up: the convert seeds two
+    // continuation keyframes at `DEFAULT_G` (a section entering at the track start has no upstream
+    // sample to recover a force from, so `bakeEntryForce` hands back the 1g fallback), and one
+    // authored keyframe at mid-extent pulls 2g — enough to leave at 33°, gently enough that the
+    // section's own speed never approaches the floor. ──
+    await page.evaluate(() => (window as any).__kex.convert());
+    await expect.poll(kind).toBe(1); // SectionKind.Force
+    await expect.poll(forceCount).toBe(2); // the two seeded continuation keyframes
+    await page.evaluate((s: number) => (window as any).__kex.placeForce(s, 2), FORCE_LEN / 2);
+    await expect.poll(forceCount).toBe(3);
+
+    // ── 3. Append the geo ramp — a straight two-node seed placed rigidly at the pull-up's exit,
+    // so it climbs at the exit angle until the energy runs out. ──
+    await page.evaluate(() => (window as any).__kex.append(0)); // SectionKind.Geo
+    await expect.poll(sectionCount).toBe(2);
+
+    // ── 4. The chain is really infeasible, by the app's own signal. This is also the honest
+    // bake-readiness wait: nothing in this chain is infeasible until the appended ramp is IN the
+    // bake (the pull-up alone exits at 11.9 m/s), so a count or a `tTotal > 0` would pass on the
+    // previous track — the flag flipping is the bake output changing. ──
+    // the polled read is the one that gets USED (`nodePoint`'s rule): re-reading after the poll
+    // would assert against a second, unvalidated evaluation.
+    const seen: Span[] = [];
+    await expect
+        .poll(async () => {
+            seen[0] = await infeasibleSpan();
+            return seen[0].first;
+        })
+        .toBeGreaterThan(0);
+    const span = seen[0];
+    if (!span) throw new Error("the bake never reported an infeasible sample");
+    const ids = await sectionIds();
+    // the RAMP owns the red, and the pull-up is clean (a boundary sample resolves upstream, so
+    // this equality also says the first infeasible sample is past the pull-up's last one).
+    expect(span.section).toBe(ids[1]);
+    // the chain is meaningfully red, not one blip: `count` is every infeasible sample track-wide,
+    // and samples are `ds` = 0.5 m apart (DS_NOMINAL, src/track.ts), so 8 of them is 7 edges =
+    // 3.5 m of dashed track — several dash periods at any framing that shows the chain.
+    expect(span.count).toBeGreaterThanOrEqual(8);
+    // …and the ramp still has a FEASIBLE head under the red, held to the same floor — without it
+    // the accent in shot (b) would have nothing to paint and "red survives the accent" is vacuous.
+    expect(span.head).toBeGreaterThanOrEqual(8);
+    // and the user-facing half of the same signal, at the layer they see it.
+    await expect(page.locator(".warning")).toBeVisible();
+
+    // ── 5. (a) infeasible red over kind color. Drop the START selection first (its popover would
+    // sit over the chain), then frame the track with a real `F`: the load framing spans ±280 m, so
+    // the 43 × 19 m chain sits in it as a ~110 px squiggle — held, but far too small to judge a
+    // dash pattern by eye. `F` fits it (the same reason the tangent flow frames its hill). ──
+    await page.keyboard.press("Escape"); // Enter already blurred the field, so this deselects
+    await expect(page.locator(".vtip")).toHaveCount(0);
+    const originBefore = await startAt();
+    if (!originBefore) throw new Error("START point not located");
+    await page.mouse.move(cx, cy); // the hovered-surface router: `F` frames the viewport
+    await page.keyboard.press("f");
+    // …and the frame really landed: the load framing centers the world ORIGIN, the fit centers the
+    // chain's BOX, so the START diamond travels far down-left. A swallowed key would otherwise
+    // shoot the squiggle and pass. (Screen px, not world — this reads the same transform the
+    // canvas draws through.)
+    await expect
+        .poll(async () => {
+            const p = await startAt();
+            return p ? Math.hypot(p.x - originBefore.x, p.y - originBefore.y) : 0;
+        })
+        .toBeGreaterThan(100);
+    await page.waitForTimeout(SHOT_MS);
+    const clip = { x: cb.x, y: cb.y, width: cb.width, height: cb.height - DOCK_RESERVE };
+    await page.screenshot({ path: join(OUT, "infeasible-kind-color.png"), clip });
+
+    // ── 6. (b) infeasible red UNDER the selection accent: select the ramp — the section that owns
+    // the red — through its real clip. Its feasible head brightens; its infeasible tail must stay
+    // dashed red, not be overpainted. ──
+    await frameTimeline(page);
+    await page.locator(".clip").nth(1).click();
+    await expect.poll(selectedSection).toBe(ids[1]);
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "infeasible-selected.png"), clip });
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
