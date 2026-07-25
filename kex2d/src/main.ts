@@ -34,7 +34,7 @@ import {
     TrackPlugin,
     V0,
 } from "./track";
-import { camera, Canvas2D, viewTransform } from "./view";
+import { camera, Canvas2D, snapGuides, viewTransform } from "./view";
 
 const { state: ecs, dispose } = await run({
     plugins: [ProfilePlugin, TrackPlugin, CartPlugin, RenderPlugin],
@@ -73,6 +73,17 @@ if (import.meta.env.DEV) {
         // out identical across a mid-gesture wheel and moves under an idle one; the timeline's own
         // x view has a separate reader (`xView`), in Timeline.svelte where that state lives.
         cam: (): [number, number, number] => [camera.zoom, camera.ox, camera.oy],
+        // `view.ts snapGuides` — and only that: whether the incline ray is being drawn, plus the two
+        // readout labels a manipulator drag publishes (`dragReadout`, which `clearGuides` also resets,
+        // belongs to handle drags and is not mirrored here). The ray is canvas-drawn and the labels
+        // are one input to a readout that has other sources, so "no guide is on screen" has no honest
+        // DOM assert — the blur-cancel flow asserts the ray IS up mid-drag and that the whole thing is
+        // cleared by the cancel. Read-only, like cam()/poses().
+        guides: (): { ray: boolean; angle: string | null; length: string | null } => ({
+            ray: snapGuides.ray !== null,
+            angle: snapGuides.angleLabel,
+            length: snapGuides.lengthLabel,
+        }),
         // the authored initial speed — the flow drives the real v0 popover and asserts it.
         v0: (): number => Track.v0.get(track),
         // section-local pose signature — the flow asserts an undo reverts geometry.

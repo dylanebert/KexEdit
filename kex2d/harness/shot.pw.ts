@@ -528,6 +528,120 @@ test("geo authoring flow", async ({ page, boot }) => {
     const iRest = await readoutAngle();
     expect(iDrag).not.toBeNull();
     expect(iRest).toBe(iDrag); // interior drag == rest — one consistent quantity (the exit heading)
+
+    // ── 6. POLAR ARROW-NUDGE — the manipulators' KEYBOARD twin (kex2d-geo-ux): left/right step the
+    // chord ANGLE around the previous node, up/down step the chord LENGTH along it, each press its
+    // own undo entry. `polarNudge`'s math is unit-covered; what is not is the KEY WIRING — which key
+    // reaches which axis, in which direction, and that a press brackets exactly one history entry.
+    // Section 0's entry frame is the identity, so a stored pose IS its world point and the chord from
+    // node 2 to node 3 is the polar pair (r, a) the two axes address. Each axis is pinned by BOTH
+    // halves: the quantity it moves, and the one it must leave exactly alone — a swapped mapping
+    // passes "something moved" and fails these. The step is `NUDGE_PX`(2)/zoom ≈ 0.05 m here, two
+    // decades above the f32 hold tolerances below. Mutations: stub the arrow branch → nothing moves →
+    // red; swap the axis map (ArrowUp → "angle") → both holds go red. ──
+    const chord = async (): Promise<{ r: number; a: number }> => {
+        const p = await poses();
+        const dx = p[3][0] - p[2][0];
+        const dy = p[3][1] - p[2][1];
+        return { r: Math.hypot(dx, dy), a: Math.atan2(dy, dx) };
+    };
+    // one press, waited into the BAKE before the next one reads it. The nudge resolves its polar
+    // frame from the SAMPLES (`nodeWorld`), which `BakeSystem` rewrites the frame AFTER the authored
+    // write — so two presses inside one frame both step from the same stale geometry and the second
+    // overwrites the first (measured: a right-then-left pair landed a full step short of where it
+    // started, not back at it). The bake-readiness law again, on the WRITE side: an op that resolves
+    // through the bake needs it to have landed, exactly as a pointer aimed at a node does. The step
+    // is defined in screen px (`NUDGE_PX` = 2, converted through the zoom), so the node's own screen
+    // point moving is the honest evidence the write reached the samples.
+    const nodeScreen = () =>
+        page.evaluate((): { x: number; y: number } | null => (window as any).__kex.nodeAt(3));
+    const nudge = async (key: string): Promise<void> => {
+        const at = await nodeScreen();
+        if (!at) throw new Error("node 3 has no bake point to nudge from");
+        await page.keyboard.press(key);
+        await expect
+            .poll(async () => {
+                const p = await nodeScreen();
+                return p !== null && Math.hypot(p.x - at.x, p.y - at.y) > 0.5;
+            })
+            .toBe(true);
+    };
+    const c0 = await chord();
+    const undo0 = await undoDepth();
+    await nudge("ArrowRight");
+    const cR = await chord();
+    expect(cR.a - c0.a).toBeGreaterThan(5e-3); // right = a positive angle step…
+    expect(Math.abs(cR.r - c0.r)).toBeLessThan(1e-3); // …and the chord length is untouched
+    expect(await undoDepth()).toBe(undo0 + 1); // one press = one entry
+    await nudge("ArrowLeft");
+    const cL = await chord();
+    expect(cL.a).toBeCloseTo(c0.a, 3); // left is the same axis, the other way — back where it started
+    expect(await undoDepth()).toBe(undo0 + 2);
+    await nudge("ArrowUp");
+    const cU = await chord();
+    expect(cU.r - c0.r).toBeGreaterThan(5e-3); // up = a positive length step…
+    expect(Math.abs(cU.a - c0.a)).toBeLessThan(1e-3); // …and the chord angle is untouched
+    expect(await undoDepth()).toBe(undo0 + 3);
+    await nudge("ArrowDown");
+    const cD = await chord();
+    expect(cD.r).toBeCloseTo(c0.r, 3); // down is the same axis, the other way
+    expect(await undoDepth()).toBe(undo0 + 4);
+
+    // ── 7. BLUR CANCELS A LIVE MANIPULATOR DRAG, completely (`editor-ui.md`: "Window blur cancels an
+    // in-flight gesture completely — revert the bracketed edit, clear guides and capture. No guide may
+    // exist without a live, threshold-crossed drag"). A blur delivers no pointerup, so without the
+    // teardown the gesture SURVIVES the focus loss: the ray stays painted over a track nothing is
+    // dragging, and the next move resumes against the stale grab. This drives `cancelDrag`'s MANIP
+    // branch alone — the tangent / marquee / pan branches, and the timeline's missing blur cancel
+    // entirely, are not pinned here. Driven on the TIP (order 6) because the guide ray exists only
+    // where an exit incline does — `angleControl` returns `incline: null` at an interior node, so the
+    // same drag on node 3 would make the ray assert vacuous; it also rides the magnet's default-on
+    // state (a flow that pressed `S` first would take the ray poll red for an unrelated reason). The
+    // blur is DISPATCHED: no Playwright gesture deterministically defocuses a headless page's window,
+    // and the app's listener is a plain `window` blur listener, so the dispatched event is the same
+    // handler on the same path (this is the one event here that isn't pointer-true, and it can't be).
+    // The mid-drag reads are the positive controls — a cancel that "passes" because nothing was ever
+    // live proves nothing. Mutations: empty `onBlur` → the pose stays moved, the ray stays up,
+    // `data-dragging` stays 1 → red; `cancel()` → `commit(history)` in `cancelDrag`'s manip branch →
+    // the pose holds AND an entry lands → red. ──
+    const guides = () =>
+        page.evaluate((): { ray: boolean; angle: string | null; length: string | null } =>
+            (window as any).__kex.guides(),
+        );
+    const tip = await nodePoint(page, 6);
+    await page.mouse.click(cb.x + tip.x, cb.y + tip.y); // the chain end — a tip has an exit incline
+    await expect.poll(selectedOrder).toBe(6);
+    const bk = await knobCenter(page, cb, 6, "angle");
+    const pre = (await poses())[6];
+    const undoPre = await undoDepth();
+    await page.mouse.move(bk.x, bk.y);
+    await page.mouse.down();
+    await page.mouse.move(bk.x + 30, bk.y + 30, { steps: 8 }); // well past DRAG_PX
+    // `data-dragging` is the CAPTURE flag (`beginDrag`, raised at pointerdown), so it says a gesture
+    // is open, not that it armed; the ray below is what says armed — `snapGuides.ray` is written past
+    // `dragManipTo`'s `if (!manipArmed) return`. The pair's load-bearing half is the `toHaveCount(0)`
+    // after the blur, which pins `endDragGesture()`.
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(1);
+    await expect.poll(async () => (await guides()).ray).toBe(true); // the guide ray IS up (armed)
+    const mid = (await poses())[6];
+    expect(Math.hypot(mid[0] - pre[0], mid[1] - pre[1])).toBeGreaterThan(0.01); // …and it moved
+    expect(await undoDepth()).toBe(undoPre); // a live gesture has committed nothing yet
+
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    const reverted = (await poses())[6];
+    for (const i of [0, 1, 2]) expect(reverted[i]).toBeCloseTo(pre[i], 5); // pose AND heading revert
+    expect(await guides()).toEqual({ ray: false, angle: null, length: null }); // nothing left drawn
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0); // the capture flag cleared
+    expect(await undoDepth()).toBe(undoPre); // a cancelled gesture never happened
+    // and the drag does not RESUME on the next move — the stale-grab failure the teardown exists for
+    // (the button is still physically down; only the gesture is gone). The point is the SAME physical
+    // pointer path continued past the grab, not a box being aimed at, so the cached-`bk` law doesn't
+    // apply: nothing here has to be hit, and re-locating would defeat what the move is testing.
+    await page.mouse.move(bk.x + 60, bk.y + 60, { steps: 6 });
+    const stale = (await poses())[6];
+    for (const i of [0, 1]) expect(stale[i]).toBeCloseTo(pre[i], 5);
+    await page.mouse.up(); // release cleanly — a torn-down gesture commits nothing on pointerup
+    expect(await undoDepth()).toBe(undoPre);
 });
 
 // Drive the TANGENT-EDIT flow (kex2d-authoring-surface stage 9): seed a shaped geo track →
@@ -574,9 +688,20 @@ test("tangent edit flow", async ({ page, boot }) => {
     // double-click summon from Alt-click — it's more discoverable). its arc-rule ghost handles draw;
     // the inferred node carries no stored tangent (Auto). ──
     const npos = await nodePoint(page, 3);
+    // a PLAIN click first, so the knobs-hidden assert below has a positive control: on a plain
+    // selection the node-action ring's two polar knobs are up (they are what tangent edit replaces).
+    await page.mouse.click(cb.x + npos.x, cb.y + npos.y);
+    await expect(page.locator(".manip-length")).toBeVisible();
+    await expect(page.locator(".manip-angle")).toBeVisible();
     await page.mouse.dblclick(cb.x + npos.x, cb.y + npos.y);
     await expect.poll(editing).toBe(true);
     expect(await tangent()).toBeNull(); // inferred — the default add flow stamps nothing
+    // the KNOBS HIDE while tangent edit owns the node (`editor-ui.md` layered expressiveness: the
+    // inner layer's handles own the surface; App.svelte's `manip` derived returns null on
+    // `editor.tangentEdit === eid`). Both halves matter — visible on plain selection, gone here — so
+    // inverting that guard fails one or the other. Mutation: `editor.tangentEdit !== eid` → red.
+    await expect(page.locator(".manip-length")).toHaveCount(0);
+    await expect(page.locator(".manip-angle")).toHaveCount(0);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "tangent-1-summon.png") });
 
@@ -664,6 +789,19 @@ test("tangent edit flow", async ({ page, boot }) => {
     await expect(page.locator(".nodemenu")).toBeVisible();
     await clickFlyout(page, ".nodemenu", "Tangents", "Reset");
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
+
+    // ── 5. Esc exits the sub-mode back to plain selection, and the knobs COME BACK — the summon is a
+    // round trip, not a one-way hide (a guard that never restores would pass the step-1 assert alone).
+    // Escape is LAYERED, so both layers below it have to be pinned or the press peels the wrong one:
+    // the node menu has to be gone (a menu still mounted takes the key first — measured: this poll is
+    // what made the exit land), and tangent edit has to still be ON, or the key falls through to the
+    // selection rung and the knob asserts go red for the wrong reason.
+    await expect(page.locator(".nodemenu")).toHaveCount(0);
+    expect(await editing()).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect.poll(editing).toBe(false);
+    await expect(page.locator(".manip-length")).toBeVisible();
+    await expect(page.locator(".manip-angle")).toBeVisible();
 });
 
 // Drive the START-HANDLE EDIT flow (kex2d-geo-ux stage 1): the section entry (node 0) is now
@@ -1694,6 +1832,8 @@ test("multi-section flow", async ({ page, boot }) => {
 
     const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
     const sectionKinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
+    const selectedSection = () =>
+        page.evaluate((): number | null => (window as any).__kex.selectedSection());
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
 
     await seedHill(page);
@@ -1719,6 +1859,75 @@ test("multi-section flow", async ({ page, boot }) => {
     await expect.poll(sectionCount).toBe(1);
     await page.keyboard.press("Control+z");
     await expect.poll(sectionCount).toBe(2);
+
+    // ── 3. THE SELECTED NODE'S CLIP WASHES — the cross-surface context read (kex2d-geo-ux stage 3):
+    // "which clip does the selection live in", a quieter register than the selected-clip state. It is
+    // keyed to the OWNING section (`washSection` = `Handle.section` of the active node), which only a
+    // chain with MORE THAN ONE geo clip can prove: with a single geo section every wrong answer
+    // ("always the first clip", "always a geo clip") is indistinguishable from the right one. So grow
+    // the chain to geo · force · geo and select a node in each end. ──
+    const tMixed = await tTotal();
+    await page.evaluate(() => (window as any).__kex.append(0)); // SectionKind.Geo — the third section
+    await expect.poll(sectionCount).toBe(3);
+    await expect.poll(tTotal).not.toBe(tMixed); // the appended section is IN the bake
+    // `F` frames the SELECTION when there is one (`frameRange`), and every screen point below is
+    // computed against that camera — so pin the precondition rather than inferring it from what the
+    // undo happened to restore.
+    expect(await selectedSection()).toBeNull();
+    await page.keyboard.press("f"); // nothing selected → the whole chain frames
+    await frameTimeline(page); // …and every clip on-screen, so `.clip.nth()` is section order
+    const clips = page.locator(".clip");
+    await expect(clips).toHaveCount(3);
+    const washed = async (): Promise<boolean[]> => {
+        const cls = await clips.evaluateAll((els) => els.map((e) => e.getAttribute("class") ?? ""));
+        return cls.map((c) => c.split(/\s+/).includes("wash"));
+    };
+
+    const canvas = page.locator("#app > canvas");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+
+    // a node in the FIRST section (the seeded hill) → its own clip washes, the other two don't.
+    // Mutations: `washSection` → null → red here; → the second section's id → red here.
+    const nodeSelOrders = () =>
+        page.evaluate((): number[] => (window as any).__kex.nodeSelOrders());
+    const n3 = await nodePoint(page, 3);
+    await page.mouse.click(cb.x + n3.x, cb.y + n3.y);
+    await expect.poll(nodeSelOrders).toEqual([3]);
+    await expect.poll(washed).toEqual([true, false, false]);
+
+    // …and a node in the THIRD section moves it. That section's nodes have no `__kex` locator (the
+    // hooks address section 0), so they're reached the way an author would: a marquee over the strip
+    // of viewport downstream of the first section's tip — everything right of it belongs to the force
+    // section (which has no nodes) or to the third (whose order-0 entry a marquee never takes, so the
+    // rect can only resolve to its one draggable node). The `[false, false, true]` shape is what
+    // discriminates: had the rect caught a first-section node instead, clip 0 would light.
+    const tip = await nodePoint(page, 6); // the first section's chain end = the geo/force boundary
+    await marqueeDrag(
+        page,
+        cb.x + tip.x + 24,
+        cb.y + 6,
+        cb.x + cb.width - 6,
+        cb.y + cb.height - DOCK_RESERVE,
+    );
+    await expect.poll(nodeSelOrders).toEqual([1]); // its one draggable node — orders are per-section
+    await expect.poll(washed).toEqual([false, false, true]);
+    // …and the wash PAINTS: the class alone would survive deleting the `.clip.geo.wash` rule that is
+    // the whole feature. Both clips are geo and neither is hovered (the pointer is over the canvas),
+    // so their resolved fills differ only by the wash rung.
+    const fills = await clips.evaluateAll((els) => els.map((e) => getComputedStyle(e).fill));
+    expect(fills[2]).not.toBe(fills[0]);
+    await page.waitForTimeout(SHOT_MS);
+    const strip = dockStrip(page);
+    if (strip) await page.screenshot({ path: join(OUT, "sections-wash.png"), clip: strip });
+
+    // selecting a CLIP instead takes the selection with it (node and section selection are mutually
+    // exclusive, `editor.ts`), so the wash goes out entirely — a washed clip is never also the
+    // selected clip, which is the whole reason the wash is a quieter register than `sel`.
+    // Mutation: key `washSection` to `editor.section` → the selected clip washes → red.
+    await clips.nth(0).click();
+    await expect(clips.nth(0)).toHaveClass(/sel/);
+    await expect.poll(washed).toEqual([false, false, false]);
 });
 
 // Drive the CLIP STRIP flow (section-editor spec stage 1): the section lane in the

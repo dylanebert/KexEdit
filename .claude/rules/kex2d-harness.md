@@ -31,7 +31,15 @@ AND honest. Structure + install story: `kex2d/CLAUDE.md` "Verify".
   components synchronously, but the bake's node→sample map rebuilds on the *next* frame —
   `nodeCount` and `tTotal > 0` are satisfied pre-bake, so a gesture placed on that evidence
   reads the previous track. Wait on bake output actually changing (e.g. `nodePoint` off the
-  track origin).
+  track origin). It binds the WRITE side too: an op that *resolves* through the bake needs the
+  same wait between consecutive invocations, not only before a pointer lands — two arrow-nudges
+  inside one frame both read the same stale `nodeWorld` frame and the second overwrites the first
+  (measured: a right-then-left pair landed a step short of where it started).
+- **Pin both layers before a layered dismissal.** Escape peels exactly one rung (menu → sub-mode →
+  selection), so a flow that presses it must first wait the rung above OFF (`.nodemenu` count 0 — a
+  menu still mounted swallows the key in capture phase) and assert the rung it means to peel is
+  still ON. Neither is a formality: without the first the press is eaten, and without the second a
+  green run can be peeling a rung the flow never meant to name.
 - **Never drive a pointer through a box cached across an edit or undo.** After a respawning
   restore, re-locate through the bake-ready reader (`nodePoint`); after an in-place restore
   (`restoreNodes` — no respawn, so off-origin polls are vacuously true), poll the live position
