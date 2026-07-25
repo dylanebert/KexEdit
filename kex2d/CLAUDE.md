@@ -583,6 +583,13 @@ via a whole-track snapshot pair (byte-identical).
   tiny, so coasting past an infeasible region behaves like "cart paused at peak then continued."
 - **Quaternion DOF (when 3D lands).** Unit-norm constraint. Use the log-map (axis-angle delta) as the
   local update variable, matching `sim/curvature.rs::angular_delta_from`.
+- **Tick-derived `editor.*` reads lag a frame.** Svelte components read the plain `editor`
+  singleton through `$derived` of the per-RAF `tick` prop, so an `$effect` gated on such a value
+  outlives the real state change by up to a frame. Where the lagging listener *swallows*
+  (capture-phase + `stopImmediatePropagation`) or is non-idempotent, that lag is a defect: make
+  the listener permanent (`onMount`) and early-return on the live `editor.*` field — the
+  Timeline force-menu Escape fix is the shape. A lagging listener that only re-calls an
+  idempotent close is tolerable.
 
 ## References
 
@@ -638,6 +645,8 @@ worktree type-checks without a manual step. **Never fix a missing `@playwright/t
 and the app stops mounting. Its code IS under the project `tsconfig` + `biome`, and the pure pieces
 (`args.ts`'s CLI/env validators + the `--out` wipe guard, `wsl.ts`'s provisioning key) are
 unit-tested in `tests/harness.test.ts`. But `capture.pw.config.ts` and `shot.pw.ts` are **staged to
-the Windows host standalone** (`wsl.ts`), so they can import nothing — app constants they need are
-mirrored at the top of the file with their source named, and the env knobs are validated there by a
-verbatim copy of `args.ts`'s `intEnv`/`boolEnv`, pinned character-identical by the unit tests.
+the Windows host standalone** (`wsl.ts`), so they can import nothing outside the staged set — app
+constants they need are mirrored at the top of the file with their source named, and the env knobs
+are validated there by a verbatim copy of `args.ts`'s `intEnv`/`boolEnv`, pinned
+character-identical by the unit tests. Flow-authoring laws + verifier-integrity conventions:
+`.claude/rules/kex2d-harness.md` (auto-loads on harness files).
