@@ -51,7 +51,6 @@ import {
     marginArc,
     navDragView,
     navWindow,
-    niceStep,
     nodeTickPx,
     nudgeForces,
     pxToS,
@@ -64,6 +63,7 @@ import {
     trimTargets,
     type View,
     xGrow,
+    yEase,
     yFit,
     type YFit,
     yGrow,
@@ -120,15 +120,11 @@ const BOT_PAD = 8; // chart inset, bottom
 const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
 const PLAYER_GAP = 32; // px the media player floats above the dock's top edge
 const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer than this to the plot edge
-// reference comfort limits (g) — drawn as faint lines to read the force curve against.
+// reference comfort limits (g) — drawn as faint lines to read the force curve against, and the
+// value axis's RESTING frame: the window the view sits in whenever the data fits inside it (the
+// seed before any data arrives, and the minimum `yFit` expands from). One constant, no ladder —
+// an edge drag grows the axis as far as it's dragged, and the release re-fits back to here.
 const BAND: [number, number] = [-2, 6];
-// the initial y-frame before real data arrives: the reference band + 1g headroom.
-const Y_HEADROOM = 1;
-const FRAME_LO = BAND[0] - Y_HEADROOM;
-const FRAME_HI = BAND[1] + Y_HEADROOM;
-// hard ceiling for edge-drag axis growth — deliberately far past the comfort band (authoring
-// beyond "safe" is allowed); ±10 g reachable inside the chart, the same 1g headroom to land on it.
-const CAP: [number, number] = [-11, 11];
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
@@ -290,25 +286,31 @@ const yTarget = $derived.by((): YFit => {
             if (g > hi) hi = g;
         }
     }
-    return yFit(lo, hi, Y_BASE);
+    return yFit(lo, hi, Y_BASE, BAND);
 });
 
-// the *displayed* g-range. `yTarget` is a stable default frame that only expands to
-// fit data (it never hugs tight), and `yView` approaches it ASYMMETRICALLY: it grows
-// fast and contracts lazily — the AE/Unity "grow when content needs it, never snap
-// back" feel, smoothed for the web.
-let yView: YFit = $state({ lo: FRAME_LO, hi: FRAME_HI, step: 1 });
+// the *displayed* g-range. `yTarget` is the resting BAND expanded to fit data (it never hugs
+// tight), and `yView` approaches it ASYMMETRICALLY: it grows fast and contracts lazily — the
+// AE/Unity "grow when content needs it, never snap back" feel, smoothed for the web.
+let yView: YFit = $state({ lo: BAND[0], hi: BAND[1], step: 1 });
 let yInit = false;
 const Y_OUT = 0.3; // per-frame approach when EXPANDING the view (snappy)
 const Y_IN = 0.05; // per-frame approach when CONTRACTING (lazy — no snap-back)
 const EDGE_RATE = 0.2; // edge-scroll speed (∝ px past the edge); a by-eye feel constant
+// a gesture holds the axis (below) and grows it freely at the edge, so the frame a release leaves
+// behind is the gesture's, not the content's. `yReturn` marks the re-fit that follows: it runs at
+// the EXPANSION rate, so the room a drag borrowed comes back in ~0.35 s however far it was grown,
+// instead of oozing for ~2.5 s — long enough that the next gesture re-freezes it and the grown axis
+// just stands. A contraction with no gesture behind it (a delete, an undo) keeps the lazy rate:
+// THAT is the "content shrank, don't snap back" case.
+let yHeld = false;
+let yReturn = false;
 $effect(() => {
     void tick; // the ONLY dependency: one run per animation frame
     // untracked: the body reads + writes yView, so a tracked read would make the
     // effect depend on its own write and loop. tick alone paces it.
     untrack(() => {
         const t = yTarget;
-        const cur = yView;
         if (!yInit) {
             yView = t; // first valid range appears instantly, no ease-in from the seed
             yInit = true;
@@ -318,26 +320,23 @@ $effect(() => {
         // never re-fit the view under the held cursor — until the cursor is dragged PAST the
         // chart edge, where the shared edge-grow (growValueAxis) scrolls the value axis to
         // follow. auto-fit resumes on release and eases to the new curve's range.
-        if (dragForce !== null) {
-            growValueAxis(dragCy, applyDrag);
-            return;
-        }
-        if (draggingLen) return; // a length resize holds the y-axis too (no re-fit under the drag)
-        if (dragTan !== null) {
+        if (dragForce !== null || draggingLen || dragTan !== null) {
+            yHeld = true;
+            if (dragForce !== null) growValueAxis(dragCy, applyDrag);
             // a handle drag edge-pans through the SAME mechanism (F3d) — only once it's a real
             // drag (tanMoved), so a mere handle click, whose tanCx/tanCy are unset, never pans.
-            if (tanMoved) growValueAxis(tanCy, () => applyTan(tanCx, tanCy));
+            else if (dragTan !== null && tanMoved)
+                growValueAxis(tanCy, () => applyTan(tanCx, tanCy));
+            // (a length resize holds the y-axis with no edge-grow — it authors no g value)
             return;
         }
-        // grow toward an out-of-view bound fast; ooze back from an over-wide one slow.
-        const lo = cur.lo + (t.lo - cur.lo) * (t.lo < cur.lo ? Y_OUT : Y_IN);
-        const hi = cur.hi + (t.hi - cur.hi) * (t.hi > cur.hi ? Y_OUT : Y_IN);
-        const span = Math.max(1e-6, hi - lo);
-        const nlo = Math.abs(lo - t.lo) < span * 1e-3 ? t.lo : lo; // snap when within ε
-        const nhi = Math.abs(hi - t.hi) < span * 1e-3 ? t.hi : hi;
-        const step = niceStep((nhi - nlo) / 5); // step from the displayed span, not the target
-        if (nlo !== cur.lo || nhi !== cur.hi || step !== cur.step)
-            yView = { lo: nlo, hi: nhi, step };
+        if (yHeld) {
+            yHeld = false;
+            yReturn = true;
+        }
+        const eased = yEase(yView, t, Y_OUT, yReturn ? Y_OUT : Y_IN);
+        if (eased.lo === t.lo && eased.hi === t.hi) yReturn = false; // the borrowed room is back
+        if (eased !== yView) yView = eased;
     });
 });
 
@@ -348,7 +347,7 @@ $effect(() => {
 // under a content edit (editor-ui.md), so this is value-axis only. runs per frame from the
 // yView effect; a within-chart cursor leaves the axis unchanged (yGrow returns it by identity).
 function growValueAxis(cy: number, reapply: () => void): void {
-    const grown = yGrow(yView, cy, TOP, h - BOT_PAD, EDGE_RATE, CAP);
+    const grown = yGrow(yView, cy, TOP, h - BOT_PAD, EDGE_RATE);
     if (grown === yView) return;
     yView = grown;
     reapply();
@@ -516,6 +515,12 @@ const selPoint = $derived.by((): ForcePt | null => {
 $effect(() => {
     if (editor.force !== null && selPoint === null) selectForce(null);
 });
+// whether the selection is a multi-set — a right-click keeps the set, so Delete + Easing act on it,
+// and the typed-field popover stays shut (its d/F fields edit ONE keyframe, and over a set the
+// active member isn't labelled as their subject, so they'd silently edit one of many). Nothing
+// replaces it: the diamonds' own selected/active styling is the multi feedback, as in AE.
+const multiForce = $derived(selForceSet.size > 1);
+
 const markerX = (s: number): number => LEFT_GUT + sToPx(clamped, s);
 // a force point's chart x — its section-local s placed at its section's cumulative
 // offset. points are authored local; the chart draws whole-track cumulative.
@@ -1131,11 +1136,6 @@ const fmenuTerminal = $derived.by((): boolean => {
     if (!pt) return false;
     const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
     return pts[pts.length - 1]?.id === m.id;
-});
-// whether the selection is a multi-set — a right-click keeps the set, so Delete + Easing act on it.
-const multiForce = $derived.by((): boolean => {
-    void tick;
-    return editor.forces.ids.size > 1;
 });
 // the selected keyframes that GOVERN a following segment (non-terminal) — the bulk Easing targets
 // (AE/Unity bulk interpolation). a terminal keyframe (last in its section) eases nothing, so it's
@@ -2457,8 +2457,10 @@ onMount(() => {
         <!-- the selected point's typed s/g fields: a popover summoned AT the diamond
              (on the object, not a docked row). it follows a live drag as the value
              readout, pointer-inert so it never fights the drag; flips below the point
-             near the chart top; clamps inside the chart horizontally. -->
-        {:else if selPoint}
+             near the chart top; clamps inside the chart horizontally. A MULTI set has no
+             single subject for them to edit, so it doesn't open at all (nothing takes its
+             place — the diamonds' selected/active styling is the feedback, as in AE). -->
+        {:else if selPoint && !multiForce}
             {@const mx = ptX(selPoint)}
             {#if scrubFreeze !== null || (mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R)}
                 {@const ax =

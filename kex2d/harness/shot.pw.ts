@@ -2334,6 +2334,11 @@ test("timeline multiselect flow", async ({ page }) => {
     const active1 = await forceSelActive();
     expect(active1).not.toBeNull();
     expect(await forceSelIds()).toContain(active1); // the active member is always a set member
+    // stage 7: the typed-field popover does NOT open over a multi-set — its d/F fields edit ONE
+    // keyframe, and nothing on the surface says which, so they'd silently edit one of many. Nothing
+    // replaces it; the diamonds' own sel/active styling (asserted above) is the multi feedback.
+    // Mutation: drop the `!multiForce` guard on the popover → the fields appear → red.
+    await expect(page.locator(".ptip")).toHaveCount(0);
     await page.waitForTimeout(200);
     if (page.viewportSize())
         await page.screenshot({

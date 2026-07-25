@@ -29,6 +29,7 @@ import {
     trimTargets,
     type View,
     xGrow,
+    yEase,
     yFit,
     type YFit,
     yGrow,
@@ -352,78 +353,135 @@ describe("ticks — visible 1-2-5 grid", () => {
 });
 
 describe("yFit — stable default frame that expands to fit", () => {
+    // the caller's resting window: Timeline.svelte's comfort band, the axis's minimum frame.
+    const Frame: [number, number] = [-2, 6];
     const isClean = (s: number, m: number): boolean => {
         const r = Math.log10(s / m);
         return Math.abs(r - Math.round(r)) < 1e-9;
     };
 
     test("bounds are nice 1-2-5 multiples and bracket the data + base", () => {
-        const f = yFit(0.2, 4.4, 1);
+        const f = yFit(0.2, 9.4, 1, Frame);
         expect([1, 2, 5].some((m) => isClean(f.step, m))).toBe(true);
         expect(f.lo).toBeLessThanOrEqual(0.2);
-        expect(f.hi).toBeGreaterThanOrEqual(4.4);
+        expect(f.hi).toBeGreaterThanOrEqual(9.4);
         expect(f.lo).toBeLessThanOrEqual(1); // base (1g) always in range
         expect(f.hi).toBeGreaterThanOrEqual(1);
     });
 
     test("a gentle near-1g curve shows the same stable frame regardless of small data", () => {
         // the whole point: zero vs one keyframe near 1g must NOT rescale the axis.
-        const flat = yFit(1, 1, 1); // no spread (e.g. no pins)
-        const tiny = yFit(0.8, 1.3, 1); // a small authored bump
+        const flat = yFit(1, 1, 1, Frame); // no spread (e.g. no pins)
+        const tiny = yFit(0.8, 1.3, 1, Frame); // a small authored bump
         expect(tiny.lo).toBe(flat.lo);
         expect(tiny.hi).toBe(flat.hi);
         expect(flat.lo).toBeLessThan(0); // a calm window, not a hug of [1,1]
         expect(flat.hi).toBeGreaterThan(2);
     });
 
-    test("data beyond the frame expands the view (never clips)", () => {
-        expect(yFit(1, 6, 1).hi).toBeGreaterThanOrEqual(6); // strong positive g shown
-        expect(yFit(-2.5, 1, 1).lo).toBeLessThanOrEqual(-2.5); // airtime shown
+    test("in-band data rests EXACTLY at the frame — never wider than the data demands", () => {
+        // the outward 1-2-5 rounding is for a bound the DATA pushed past; rounding the frame
+        // itself wider would stand the axis off the comfort window it's meant to sit in.
+        const f = yFit(0.8, 1.3, 1, Frame);
+        expect(f.lo).toBe(Frame[0]);
+        expect(f.hi).toBe(Frame[1]);
+    });
+
+    test("data beyond the frame expands the view (never clips), the other bound held", () => {
+        const up = yFit(1, 9, 1, Frame);
+        expect(up.hi).toBeGreaterThanOrEqual(9); // strong positive g shown
+        expect(up.lo).toBe(Frame[0]); // the untouched bound stays at the frame
+        expect(yFit(-4.5, 1, 1, Frame).lo).toBeLessThanOrEqual(-4.5); // airtime shown
     });
 
     test("always includes the base even when data sits away from it", () => {
-        expect(yFit(4, 6, 1).lo).toBeLessThanOrEqual(1);
+        expect(yFit(4, 6, 1, Frame).lo).toBeLessThanOrEqual(1);
+    });
+});
+
+describe("yEase — the displayed range's asymmetric approach to its fit", () => {
+    const Target: YFit = { lo: -2, hi: 6, step: 2 };
+    const Grow = 0.3;
+    const Lazy = 0.05;
+    const settle = (from: YFit, shrink: number): number => {
+        let v = from;
+        let n = 0;
+        while ((v.lo !== Target.lo || v.hi !== Target.hi) && n < 10000) {
+            v = yEase(v, Target, Grow, shrink);
+            n++;
+        }
+        return n;
+    };
+
+    test("a range already at its target is returned by identity (caller skips the write)", () => {
+        expect(yEase(Target, Target, Grow, Lazy)).toBe(Target);
+    });
+
+    test("an out-of-view bound expands at the grow rate, an over-wide one contracts at shrink", () => {
+        const narrow = yEase({ lo: -1, hi: 4, step: 1 }, Target, Grow, Lazy);
+        expect(narrow.lo).toBeCloseTo(-1 + (-2 - -1) * Grow, 9);
+        const wide = yEase({ lo: -20, hi: 20, step: 10 }, Target, Grow, Lazy);
+        expect(wide.lo).toBeCloseTo(-20 + (-2 - -20) * Lazy, 9);
+    });
+
+    test("the return rate decides whether a grown axis stands: lazy oozes, grow-rate snaps back", () => {
+        // the g-range feel bug: an edge drag grows the axis geometrically (a ±20 range inside half
+        // a second), so giving the room back at the lazy rate takes many times longer than taking
+        // it — long enough that the next gesture re-freezes it and the grown view just stands.
+        const grown: YFit = { lo: -20, hi: 20, step: 10 };
+        const lazy = settle(grown, Lazy);
+        const prompt = settle(grown, Grow);
+        expect(lazy).toBeGreaterThan(100); // > 1.6 s at 60fps
+        expect(prompt).toBeLessThan(30); // ~0.4 s — the same order as the growth that took it
+    });
+
+    test("both bounds converge exactly, so the approach terminates", () => {
+        const v = yEase({ lo: -2.0004, hi: 6.0004, step: 2 }, Target, Grow, Lazy);
+        expect(v.lo).toBe(Target.lo); // inside the ε window → snapped, not asymptotic
+        expect(v.hi).toBe(Target.hi);
     });
 });
 
 describe("yGrow — edge-triggered grow-to-follow", () => {
-    const Cap: [number, number] = [-3, 7];
     const Top = 34;
     const Bot = 174; // 140px chart
     const Rate = 0.2;
     const view: YFit = { lo: 0.4, hi: 1.4, step: 0.2 };
 
     test("a cursor anywhere inside the chart leaves the range unchanged (grab is stable)", () => {
-        expect(yGrow(view, (Top + Bot) / 2, Top, Bot, Rate, Cap)).toBe(view); // middle
-        expect(yGrow(view, Top, Top, Bot, Rate, Cap)).toBe(view); // resting AT the top edge
-        expect(yGrow(view, Bot, Top, Bot, Rate, Cap)).toBe(view); // resting AT the bottom edge
+        expect(yGrow(view, (Top + Bot) / 2, Top, Bot, Rate)).toBe(view); // middle
+        expect(yGrow(view, Top, Top, Bot, Rate)).toBe(view); // resting AT the top edge
+        expect(yGrow(view, Bot, Top, Bot, Rate)).toBe(view); // resting AT the bottom edge
     });
 
     test("dragging below the bottom edge grows lo downward, hi fixed", () => {
-        const g = yGrow(view, Bot + 20, Top, Bot, Rate, Cap);
+        const g = yGrow(view, Bot + 20, Top, Bot, Rate);
         expect(g).not.toBe(view);
         expect(g.lo).toBeLessThan(view.lo);
         expect(g.hi).toBe(view.hi);
     });
 
     test("dragging above the top edge grows hi upward, lo fixed", () => {
-        const g = yGrow(view, Top - 20, Top, Bot, Rate, Cap);
+        const g = yGrow(view, Top - 20, Top, Bot, Rate);
         expect(g.hi).toBeGreaterThan(view.hi);
         expect(g.lo).toBe(view.lo);
     });
 
     test("further past the edge grows faster (speed ∝ distance outside)", () => {
-        const shallow = yGrow(view, Bot + 5, Top, Bot, Rate, Cap);
-        const deep = yGrow(view, Bot + 40, Top, Bot, Rate, Cap);
+        const shallow = yGrow(view, Bot + 5, Top, Bot, Rate);
+        const deep = yGrow(view, Bot + 40, Top, Bot, Rate);
         expect(view.lo - deep.lo).toBeGreaterThan(view.lo - shallow.lo);
     });
 
-    test("never grows past the cap", () => {
-        const atCap: YFit = { lo: Cap[0], hi: Cap[1], step: 2 };
-        expect(yGrow(atCap, Bot + 20, Top, Bot, Rate, Cap)).toBe(atCap); // lo already at cap
-        // a huge single step still clamps to the cap, never beyond
-        const g = yGrow({ lo: -2.9, hi: 1, step: 1 }, Bot + 20, Top, Bot, 100, Cap);
-        expect(g.lo).toBe(Cap[0]);
+    test("growth is UNCAPPED — the drag's own reach is the only limit", () => {
+        // no authoring ceiling on the value axis (the ±11 cap was deleted 2026-07-24): a range
+        // already far outside the comfort band keeps growing, and the caller re-fits on release.
+        const far: YFit = { lo: -40, hi: 6, step: 10 };
+        expect(yGrow(far, Bot + 20, Top, Bot, Rate).lo).toBeLessThan(far.lo);
+        // growth is proportional to the SPAN, so it compounds per frame rather than approaching
+        // any bound — one deep-overshoot frame already moves the floor by more than the span.
+        const g = yGrow({ lo: -3, hi: 7, step: 2 }, Bot + 20, Top, Bot, 100);
+        expect(g.lo).toBeLessThan(-3 - 10);
     });
 });
 

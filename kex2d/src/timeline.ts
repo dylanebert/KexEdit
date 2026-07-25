@@ -192,50 +192,58 @@ export interface YFit {
     step: number;
 }
 
-/** the stable default frame the force axis falls back to (a calm window around 1g),
- *  so a gentle near-1g curve always shows the SAME range — no jarring rescale between
- *  zero and one keyframe. it is a floor, not a clamp: data beyond it expands the view. */
-const FIT_FLOOR: [number, number] = [-1, 4];
 const FIT_PAD = 0.4; // g of breathing room past the data extremes
 
-/** fit a g-range to the data `[min, max]` (and always `base`, the 1g line). The view
- *  is anchored to the stable `FIT_FLOOR` frame and only EXPANDS to include data beyond
- *  it — it never hugs tight, the way After Effects / Unity keep the curve view steady
- *  and grow only when content would clip. Rounds OUTWARD to a nice 1-2-5 step (a pin
- *  wiggle within a step leaves the axis still). The caller eases toward this and
- *  contracts lazily, so an edit grows the view promptly but never snaps it back. */
-export function yFit(min: number, max: number, base: number): YFit {
-    const lo = Math.min(FIT_FLOOR[0], base, min - FIT_PAD);
-    const hi = Math.max(FIT_FLOOR[1], base, max + FIT_PAD);
+/** fit a g-range to the data `[min, max]` (and always `base`, the 1g line). The view is anchored
+ *  to `frame` — the stable resting window the caller owns (kex2d: the comfort band itself) —
+ *  and only EXPANDS to include data beyond it, the way After Effects / Unity keep the curve view
+ *  steady and grow only when content would clip. A bound the data pushes past rounds OUTWARD to a
+ *  nice 1-2-5 step (a pin wiggle within a step leaves the axis still); a bound the data does NOT
+ *  reach stays exactly at the frame, since rounding the frame itself wider would show slack the
+ *  data never asked for. The caller eases toward this. */
+export function yFit(min: number, max: number, base: number, frame: [number, number]): YFit {
+    const lo = Math.min(frame[0], base, min - FIT_PAD);
+    const hi = Math.max(frame[1], base, max + FIT_PAD);
     const step = niceStep((hi - lo) / 5);
-    return { lo: Math.floor(lo / step) * step, hi: Math.ceil(hi / step) * step, step };
+    return {
+        lo: lo < frame[0] ? Math.floor(lo / step) * step : frame[0],
+        hi: hi > frame[1] ? Math.ceil(hi / step) * step : frame[1],
+        step,
+    };
+}
+
+/** one frame of the displayed g-range's approach to its fit `target` — asymmetric by direction:
+ *  `grow` is the rate a bound moves OUTWARD (content needs the room now), `shrink` the rate it
+ *  comes back IN. Each bound eases independently, snaps to the target within a thousandth of the
+ *  span (so the approach terminates instead of asymptoting), and the gridline step is derived from
+ *  the DISPLAYED span, not the target's. Returns `v` itself when nothing moved, so the caller can
+ *  skip the write by identity. */
+export function yEase(v: YFit, target: YFit, grow: number, shrink: number): YFit {
+    const lo = v.lo + (target.lo - v.lo) * (target.lo < v.lo ? grow : shrink);
+    const hi = v.hi + (target.hi - v.hi) * (target.hi > v.hi ? grow : shrink);
+    const span = Math.max(1e-6, hi - lo);
+    const nlo = Math.abs(lo - target.lo) < span * 1e-3 ? target.lo : lo;
+    const nhi = Math.abs(hi - target.hi) < span * 1e-3 ? target.hi : hi;
+    const step = niceStep((nhi - nlo) / 5);
+    if (nlo === v.lo && nhi === v.hi && step === v.step) return v;
+    return { lo: nlo, hi: nhi, step };
 }
 
 /** edge-scroll grow-to-follow for a value drag (the standard "scroll only when the
  *  pointer leaves the viewport" rule): grow the range ONLY when the dragged cursor `cy`
  *  is dragged BEYOND the chart — above `top` or below `bot` — by an amount proportional
- *  to how far past the edge it is (× `rate`), clamped to `cap`. a cursor inside the
- *  chart, even resting on a keyframe at the very edge, returns the range UNCHANGED by
- *  identity (so grabbing a near-boundary keyframe never moves the axis — only dragging
+ *  to how far past the edge it is (× `rate`). Unbounded: the value axis has no authoring
+ *  ceiling, and the drag's own reach is the limit (the caller re-fits on release). a cursor
+ *  inside the chart, even resting on a keyframe at the very edge, returns the range UNCHANGED
+ *  by identity (so grabbing a near-boundary keyframe never moves the axis — only dragging
  *  past it does). per-frame application keeps it growing while held beyond the edge. */
-export function yGrow(
-    v: YFit,
-    cy: number,
-    top: number,
-    bot: number,
-    rate: number,
-    cap: [number, number],
-): YFit {
+export function yGrow(v: YFit, cy: number, top: number, bot: number, rate: number): YFit {
     const valPerPx = (v.hi - v.lo) / Math.max(1, bot - top);
     let lo = v.lo;
     let hi = v.hi;
-    if (cy < top && hi < cap[1]) {
-        hi = Math.min(cap[1], hi + (top - cy) * valPerPx * rate);
-    } else if (cy > bot && lo > cap[0]) {
-        lo = Math.max(cap[0], lo - (cy - bot) * valPerPx * rate);
-    } else {
-        return v; // cursor within the chart — unchanged (same reference → caller skips)
-    }
+    if (cy < top) hi += (top - cy) * valPerPx * rate;
+    else if (cy > bot) lo -= (cy - bot) * valPerPx * rate;
+    else return v; // cursor within the chart — unchanged (same reference → caller skips)
     return { lo, hi, step: niceStep((hi - lo) / 5) };
 }
 
