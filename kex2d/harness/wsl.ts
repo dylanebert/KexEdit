@@ -54,7 +54,11 @@ function windowsTempPaths(name: string): WindowsPaths {
 export interface Stage {
     /** persistent Windows TEMP dir name — its `node_modules` survives between runs */
     name: string;
-    /** files (relative to `srcDir`) mirrored to the host every run */
+    /**
+     * files (relative to `srcDir`) mirrored to the host every run — the `package.json` is required
+     * (it carries the Playwright pin), and staging the `bun.lock` beside it is what lets the host
+     * install `--frozen-lockfile` instead of re-resolving the ranges
+     */
     files: string[];
     /** dirs (relative to the stage) wiped every run, so a run never reads the previous run's output */
     clean?: string[];
@@ -79,27 +83,50 @@ function readJson(path: string, what: string): Record<string, unknown> {
     }
 }
 
-/**
- * The provisioning key a staged `package.json` asks for, plus the Playwright range it declares.
- *
- * Keyed on the WHOLE dependency block, not on one package's installed version: an installed version
- * satisfies a caret range forever, so a version key never reinstalls after a dependency edit. Key
- * order is normalized, so a reordered block is the same key.
- */
-export function provisionKey(pkg: Record<string, unknown>): { key: string; pin: string } {
-    const deps = (pkg.dependencies ?? {}) as Record<string, string>;
-    const pin = deps["@playwright/test"];
-    if (!pin) throw new Error("staged package.json declares no @playwright/test dependency");
-    const sorted = Object.keys(deps)
-        .sort()
-        .map((k) => [k, deps[k]]);
-    return { key: Bun.hash(JSON.stringify(sorted)).toString(16), pin };
+/** every `package.json` block that changes what an install produces */
+const DEP_BLOCKS = [
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+    "overrides",
+    "trustedDependencies",
+] as const;
+
+/** object keys sorted at every depth, so a reordered block is the same key */
+function normalize(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === "object")
+        return Object.keys(value as Record<string, unknown>)
+            .sort()
+            .map((k) => [k, normalize((value as Record<string, unknown>)[k])]);
+    return value ?? null;
 }
 
 /**
- * Whether the host stage can be reused as-is: its marker records THIS key AND the install it
- * claims is really on disk. Both halves are load-bearing — a torn install can leave a satisfying
- * `package.json` inside an incomplete tree, and a marker is written only after a verified install.
+ * The provisioning key a staged install asks for, plus the Playwright range it declares.
+ *
+ * Keyed on every dependency-relevant block of the staged `package.json` PLUS the staged lockfile
+ * text, never on one package's installed version: an installed version satisfies a caret range
+ * forever, so a version key would never reinstall after a dependency edit — and the ranges alone
+ * miss a transitive bump that only the lock records.
+ */
+export function provisionKey(
+    pkg: Record<string, unknown>,
+    lock: string,
+): { key: string; pin: string } {
+    const deps = (pkg.dependencies ?? {}) as Record<string, string>;
+    const pin = deps["@playwright/test"];
+    if (!pin) throw new Error("staged package.json declares no @playwright/test dependency");
+    const blocks = DEP_BLOCKS.map((block) => [block, normalize(pkg[block] ?? null)]);
+    return { key: Bun.hash(JSON.stringify([blocks, lock])).toString(16), pin };
+}
+
+/**
+ * Whether the host stage can be reused as-is: its marker records THIS key AND the install it claims
+ * is really on disk. A torn install can't reach here — the marker is deleted before the install and
+ * written only after the result is verified — so the `treeExists` half covers what the ordering
+ * can't see: a `node_modules` deleted (or a stage dir emptied) out from under a valid marker.
  */
 export function provisioned(marker: string | null, key: string, treeExists: boolean): boolean {
     return marker !== null && marker.trim() === key && treeExists;
@@ -115,10 +142,11 @@ function installedVersion(pkgJson: string): string | null {
 }
 
 // Mirror the harness's Playwright files into a PERSISTENT Windows TEMP dir so the host Chrome can run
-// them, provisioning deps there only when the staged dependency block changes. The install is the
-// cold-run cliff (tens of seconds) and buys nothing while `node_modules` matches, so it is keyed by a
-// marker file written ONLY after a clean install — a torn or failed install leaves no marker, so the
-// next run reinstalls. shallot's `scripts/wsl-bridge.ts provisionHost` is the precedent.
+// them, provisioning deps there only when the staged dependency blocks or the staged lockfile change.
+// The install is the cold-run cliff (tens of seconds) and buys nothing while `node_modules` matches,
+// so it is keyed by a marker file written ONLY after a clean install — a torn or failed install
+// leaves no marker, so the next run reinstalls. shallot's `scripts/wsl-bridge.ts provisionHost` is
+// the precedent.
 //
 // No browser download: the capture config launches `channel: "chrome"`, the host's own Chrome, never a
 // Playwright-managed chromium. If a config here ever launches bundled chromium (or a non-Chrome
@@ -140,8 +168,13 @@ export function stageOnWindows(srcDir: string, stage: Stage): WindowsPaths {
         cpSync(join(srcDir, file), dest);
     }
 
+    // The staged lock is part of the key AND the install's input: with it, the host reproduces this
+    // checkout's tree exactly instead of re-resolving the declared ranges into whatever is newest.
+    const stagedLock = join(paths.wsl, "bun.lock");
+    const lock = existsSync(stagedLock) ? readFileSync(stagedLock, "utf8") : "";
     const { key, pin } = provisionKey(
         readJson(join(paths.wsl, "package.json"), "staged package.json"),
+        lock,
     );
     const marker = join(paths.wsl, MARKER);
     const tree = join(paths.wsl, "node_modules/@playwright/test/package.json");
@@ -158,7 +191,7 @@ export function stageOnWindows(srcDir: string, stage: Stage): WindowsPaths {
         [
             "powershell.exe",
             "-Command",
-            `$ErrorActionPreference = 'Stop'; cd '${paths.win}'; bun install`,
+            `$ErrorActionPreference = 'Stop'; cd '${paths.win}'; bun install${lock ? " --frozen-lockfile" : ""}`,
         ],
         { stdout: "inherit", stderr: "pipe", timeout: INSTALL_TIMEOUT_MS },
     );

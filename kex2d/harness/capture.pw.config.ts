@@ -10,27 +10,39 @@ import { defineConfig } from "@playwright/test";
 //   KEX_HEADED=1    → drive the host's visible Chrome instead of headless
 //
 // `capture.ts` validates both and forwards them explicitly; these fallbacks (and their guards) are
-// for a direct `playwright test --config capture.pw.config.ts` run. `Number("")` is 0 and
-// `Number("50%")` is NaN, and Playwright takes either as a worker count — zero workers runs nothing.
-function workerCount(): number {
-    const raw = process.env.KEX_WORKERS;
-    if (raw === undefined) return 4;
+// for a direct `playwright test --config capture.pw.config.ts` run. This file is staged to the
+// Windows host STANDALONE (`wsl.ts`), so it can import nothing: `UsageError`, `intEnv` and `boolEnv`
+// below are MIRRORED VERBATIM from `harness/args.ts`, and `tests/harness.test.ts` pins them
+// character-identical to it — a drifting copy is a guard that only LOOKS enforced.
+class UsageError extends Error {}
+
+function intEnv(
+    env: Record<string, string | undefined>,
+    name: string,
+    fallback: number,
+    min: number,
+    max: number,
+): number {
+    const raw = env[name];
+    if (raw === undefined) return fallback;
     const n = Number(raw);
-    if (!Number.isInteger(n) || n < 1)
-        throw new Error(`KEX_WORKERS must be a positive integer (got ${JSON.stringify(raw)})`);
+    if (!/^\d+$/.test(raw) || n < min || n > max)
+        throw new UsageError(
+            `${name} must be an integer in [${min}, ${max}] (got ${JSON.stringify(raw)})`,
+        );
     return n;
 }
 
-function headedFlag(): boolean {
-    const raw = process.env.KEX_HEADED;
+function boolEnv(env: Record<string, string | undefined>, name: string): boolean {
+    const raw = env[name];
     if (raw === undefined) return false;
     if (raw !== "0" && raw !== "1")
-        throw new Error(`KEX_HEADED must be 0 or 1 (got ${JSON.stringify(raw)})`);
+        throw new UsageError(`${name} must be 0 or 1 (got ${JSON.stringify(raw)})`);
     return raw === "1";
 }
 
-const workers = workerCount();
-const headed = headedFlag();
+const workers = intEnv(process.env, "KEX_WORKERS", 4, 1, 64);
+const headed = boolEnv(process.env, "KEX_HEADED");
 
 export default defineConfig({
     testDir: ".",

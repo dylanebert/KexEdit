@@ -1,6 +1,14 @@
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+    cpSync,
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    rmSync,
+    statSync,
+    writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
-import { boolEnv, intEnv, parseArgs, UsageError } from "./args";
+import { boolEnv, intEnv, parseArgs, UsageError, wipeable } from "./args";
 import { runPlaywright } from "./playwright";
 import { startServer } from "./server";
 import { detectDisplay } from "./wsl";
@@ -21,8 +29,9 @@ import { detectDisplay } from "./wsl";
 // `KEX_PORT` (default 3014) + `KEX_STAGE` for the dev-server port and the host staging dir — the two
 // that make a second session's capture isolatable (a capture kills whatever holds its port).
 //
-// A full run (no passthrough args) owns the shot set and wipes `--out` first. A SELECTIVE run merges
-// its shots over what's there instead, so iterating on one flow can't destroy the reference set. A
+// A full run (no passthrough args) owns the shot set and wipes `--out` first — so it refuses to run
+// at all unless that dir is absent, empty, or a prior shot set (`args.ts` `wipeable`). A SELECTIVE
+// run merges its shots over what's there instead, so iterating on one flow can't destroy the set. A
 // `--list` run captures nothing, so it touches neither. Every capturing run — green or red — copies
 // its shots back (a failure's shots are the diagnostic) and writes `RUN.json` beside them recording
 // what produced the set: `reference: true` means a full run at that HEAD, at the default knobs, ran
@@ -62,15 +71,27 @@ const { out, testArgs, selective, listing } = resolveArgs(() => parseArgs(proces
 const outDir = resolve(out ?? join(harnessDir, "shots"));
 
 const { port, workers, shotMs, headed } = resolveArgs(() => ({
-    port: intEnv("KEX_PORT", process.env.KEX_PORT, DEFAULT_PORT, 1024, 65_535),
-    workers: intEnv("KEX_WORKERS", process.env.KEX_WORKERS, DEFAULT_WORKERS, 1, 64),
-    shotMs: intEnv("KEX_SHOT_MS", process.env.KEX_SHOT_MS, DEFAULT_SHOT_MS, 0, 60_000),
-    headed: boolEnv("KEX_HEADED", process.env.KEX_HEADED),
+    port: intEnv(process.env, "KEX_PORT", DEFAULT_PORT, 1024, 65_535),
+    workers: intEnv(process.env, "KEX_WORKERS", DEFAULT_WORKERS, 1, 64),
+    shotMs: intEnv(process.env, "KEX_SHOT_MS", DEFAULT_SHOT_MS, 0, 60_000),
+    headed: boolEnv(process.env, "KEX_HEADED"),
 }));
 // The host staging dir is per-port by default, so two sessions on different ports never share one
 // `node_modules`/`shots` tree (the concurrent-capture hazard: a second capture kills the first's
 // server and rebinds the port with its own tree).
 const stageName = process.env.KEX_STAGE || `kex2d-harness-${port}`;
+
+// A full run wipes `--out` (below) and the path is caller-supplied, so the target is checked before
+// anything else happens: a directory holding files this harness did not write is a usage error, not
+// a shot dir. Without this, `--out=.` deletes the kex2d tree.
+if (!selective) {
+    const stat = statSync(outDir, { throwIfNoEntry: false });
+    if (stat && !stat.isDirectory()) fail(`--out ${outDir} is not a directory`);
+    if (!wipeable(stat ? readdirSync(outDir) : null))
+        fail(
+            `refusing to wipe ${outDir}: it holds files this harness did not write (a shot set carries RUN.json).\nname a fresh --out DIR, or clear that one yourself if it really is a stale shot set`,
+        );
+}
 
 if (!detectDisplay()) {
     console.log("No display available. Skipping capture.");
@@ -84,7 +105,7 @@ const launch = (args: string[]): ReturnType<typeof runPlaywright> =>
         args,
         stage: {
             name: stageName,
-            files: ["package.json", "capture.pw.config.ts", "shot.pw.ts"],
+            files: ["package.json", "bun.lock", "capture.pw.config.ts", "shot.pw.ts"],
             clean: ["shots", "test-results"],
         },
         // The staged host run is a fresh powershell environment, so a knob only reaches the run if

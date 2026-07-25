@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { boolEnv, intEnv, parseArgs, UsageError } from "../harness/args";
+import { boolEnv, intEnv, parseArgs, UsageError, wipeable } from "../harness/args";
 import { provisioned, provisionKey } from "../harness/wsl";
 
 // The capture orchestrator's pure decision layer. Everything here decides something the gate's
@@ -65,87 +67,212 @@ describe("parseArgs — the shot-set fate of a command line", () => {
         expect(() => parseArgs(["--out"])).toThrow(UsageError);
         expect(() => parseArgs(["--out="])).toThrow(UsageError);
     });
+
+    test("the `=` form takes the same flag-shaped-value guard as the spaced one", () => {
+        // `--out=-g` reads as a typo for `--out -g`, and a bare `./-x` would be created and then
+        // WIPED. Both forms resolve through one guard, so neither can be the lenient one.
+        expect(() => parseArgs(["--out=-g"])).toThrow(UsageError);
+        expect(() => parseArgs(["--out=-x"])).toThrow(UsageError);
+    });
+});
+
+describe("wipeable — what a full run is allowed to destroy", () => {
+    test("a dir this harness could have written is fair game", () => {
+        expect(wipeable(null)).toBe(true); // nothing there yet
+        expect(wipeable([])).toBe(true); // an empty dir
+        expect(wipeable(["RUN.json", "full.png"])).toBe(true); // a prior shot set
+    });
+
+    test("anything else is refused — `--out=.` must never reach the wipe", () => {
+        // the live hazard: `--out` is caller-supplied and a full run `rmSync(recursive)`s it, so
+        // `--out=.` / `--out ..` / `--out $HOME` all reach a source tree. RUN.json is the shot set's
+        // provenance stamp AND its permission slip; without it the dir is somebody else's.
+        expect(wipeable(["src", "harness", "package.json"])).toBe(false);
+        expect(wipeable(["full.png"])).toBe(false); // shot-shaped, but nothing says we wrote it
+        expect(wipeable([".git"])).toBe(false);
+    });
 });
 
 describe("intEnv / boolEnv — the fail-closed knob pass", () => {
     test("an unset knob takes the default", () => {
-        expect(intEnv("KEX_WORKERS", undefined, 4, 1, 64)).toBe(4);
-        expect(boolEnv("KEX_HEADED", undefined)).toBe(false);
+        expect(intEnv({}, "KEX_WORKERS", 4, 1, 64)).toBe(4);
+        expect(boolEnv({}, "KEX_HEADED")).toBe(false);
     });
 
     test("a legal value parses, at the range's ends included", () => {
-        expect(intEnv("KEX_WORKERS", "8", 4, 1, 64)).toBe(8);
-        expect(intEnv("KEX_WORKERS", "1", 4, 1, 64)).toBe(1);
-        expect(intEnv("KEX_WORKERS", "64", 4, 1, 64)).toBe(64);
-        expect(boolEnv("KEX_HEADED", "1")).toBe(true);
-        expect(boolEnv("KEX_HEADED", "0")).toBe(false);
+        expect(intEnv({ KEX_WORKERS: "8" }, "KEX_WORKERS", 4, 1, 64)).toBe(8);
+        expect(intEnv({ KEX_WORKERS: "1" }, "KEX_WORKERS", 4, 1, 64)).toBe(1);
+        expect(intEnv({ KEX_WORKERS: "64" }, "KEX_WORKERS", 4, 1, 64)).toBe(64);
+        expect(boolEnv({ KEX_HEADED: "1" }, "KEX_HEADED")).toBe(true);
+        expect(boolEnv({ KEX_HEADED: "0" }, "KEX_HEADED")).toBe(false);
     });
 
-    test("the two values `Number` would silently accept are rejected", () => {
-        // `Number("")` is 0 — zero workers runs NO tests, burning to the global timeout after the
-        // shot set is already wiped; `Number("50%")` is NaN, which lands in a timeout.
-        expect(() => intEnv("KEX_WORKERS", "", 4, 1, 64)).toThrow(UsageError);
-        expect(() => intEnv("KEX_WORKERS", "50%", 4, 1, 64)).toThrow(UsageError);
+    test("the knob is read by NAME, so the value can't drift from the name in the error", () => {
+        // the whole env goes in and the lookup happens inside: a call site can't pass KEX_WORKERS's
+        // raw value under KEX_PORT's name and range.
+        const env = { KEX_PORT: "3015", KEX_WORKERS: "2" };
+        expect(intEnv(env, "KEX_PORT", 3014, 1024, 65_535)).toBe(3015);
+        expect(intEnv(env, "KEX_SHOT_MS", 300, 0, 60_000)).toBe(300); // absent → default
     });
 
-    test("out-of-range and non-integer values are rejected", () => {
-        expect(() => intEnv("KEX_WORKERS", "0", 4, 1, 64)).toThrow(UsageError);
-        expect(() => intEnv("KEX_WORKERS", "65", 4, 1, 64)).toThrow(UsageError);
-        expect(() => intEnv("KEX_WORKERS", "2.5", 4, 1, 64)).toThrow(UsageError);
-        expect(() => intEnv("KEX_PORT", "80", 3014, 1024, 65_535)).toThrow(UsageError);
+    test("blank is rejected even where 0 is IN range — the fail-open case", () => {
+        // `Number("")` is 0 and so is `Number(" ")`. At `min: 0` (KEX_SHOT_MS) the range check
+        // backstops nothing, so an empty knob would silently kill every pre-shot settle; at
+        // `min: 1` it would run zero workers, burning to the global timeout with the shot set
+        // already wiped. The blank forms are rejected by the parse, not by the range.
+        for (const raw of ["", " ", "\t", "\n"]) {
+            expect(() => intEnv({ KEX_SHOT_MS: raw }, "KEX_SHOT_MS", 300, 0, 60_000)).toThrow(
+                UsageError,
+            );
+            expect(() => intEnv({ KEX_WORKERS: raw }, "KEX_WORKERS", 4, 1, 64)).toThrow(UsageError);
+        }
+        expect(intEnv({ KEX_SHOT_MS: "0" }, "KEX_SHOT_MS", 300, 0, 60_000)).toBe(0); // a real 0 passes
+    });
+
+    test("only a plain digit string parses — no `Number` coercion sneaks a value in", () => {
+        // every one of these is a number to `Number` and none of them is what the caller typed:
+        // 0x10 is 16, 1e3 is 1000, "+8"/"8."/" 3014 " are 8/8/3014. They reach Playwright as
+        // silently different knobs, so they're usage errors.
+        for (const raw of ["0x10", "1e3", "+8", "8.", " 3014 ", "08_", "50%", "2.5", "-1"])
+            expect(() => intEnv({ KEX_WORKERS: raw }, "KEX_WORKERS", 4, 1, 64)).toThrow(UsageError);
+    });
+
+    test("out-of-range values are rejected", () => {
+        expect(() => intEnv({ KEX_WORKERS: "0" }, "KEX_WORKERS", 4, 1, 64)).toThrow(UsageError);
+        expect(() => intEnv({ KEX_WORKERS: "65" }, "KEX_WORKERS", 4, 1, 64)).toThrow(UsageError);
+        expect(() => intEnv({ KEX_PORT: "80" }, "KEX_PORT", 3014, 1024, 65_535)).toThrow(
+            UsageError,
+        );
+        expect(() => intEnv({ KEX_PORT: "65536" }, "KEX_PORT", 3014, 1024, 65_535)).toThrow(
+            UsageError,
+        );
+        expect(() => intEnv({ KEX_SHOT_MS: "60001" }, "KEX_SHOT_MS", 300, 0, 60_000)).toThrow(
+            UsageError,
+        );
     });
 
     test("the error names the knob and the value it saw", () => {
-        expect(() => intEnv("KEX_PORT", "80", 3014, 1024, 65_535)).toThrow(
+        expect(() => intEnv({ KEX_PORT: "80" }, "KEX_PORT", 3014, 1024, 65_535)).toThrow(
             'KEX_PORT must be an integer in [1024, 65535] (got "80")',
         );
-        expect(() => boolEnv("KEX_HEADED", "true")).toThrow(
+        expect(() => boolEnv({ KEX_HEADED: "true" }, "KEX_HEADED")).toThrow(
             'KEX_HEADED must be 0 or 1 (got "true")',
         );
     });
 
     test("a boolean knob takes only 0 or 1 — no truthy-string coercion", () => {
-        expect(() => boolEnv("KEX_HEADED", "true")).toThrow(UsageError);
-        expect(() => boolEnv("KEX_HEADED", "")).toThrow(UsageError);
+        expect(() => boolEnv({ KEX_HEADED: "true" }, "KEX_HEADED")).toThrow(UsageError);
+        expect(() => boolEnv({ KEX_HEADED: "" }, "KEX_HEADED")).toThrow(UsageError);
+    });
+});
+
+describe("the staged host files mirror the knob guards verbatim", () => {
+    // `capture.pw.config.ts` and `shot.pw.ts` are staged to the Windows host STANDALONE (`wsl.ts`),
+    // so they can import nothing and carry their own copy of the guards. Hand-written copies had
+    // already drifted — no upper bound on either host-side knob, `KEX_PORT` read raw, and a comment
+    // claiming a blank-guard that wasn't there — so the copies are pinned character-identical to
+    // the original, and pinned to be REACHED (a verbatim but unused copy guards nothing).
+    const read = (name: string): string =>
+        readFileSync(join(import.meta.dir, "..", "harness", name), "utf8");
+    const fn = (source: string, name: string): string => {
+        const start = source.indexOf(`function ${name}(`);
+        const end = source.indexOf("\n}\n", start);
+        if (start < 0 || end < 0) throw new Error(`no ${name}() found in the source`);
+        return source.slice(start, end + 2);
+    };
+    const args = read("args.ts");
+    const config = read("capture.pw.config.ts");
+    const shot = read("shot.pw.ts");
+    const capture = read("capture.ts");
+
+    test("the copies are character-identical to args.ts", () => {
+        expect(fn(config, "intEnv")).toBe(fn(args, "intEnv"));
+        expect(fn(config, "boolEnv")).toBe(fn(args, "boolEnv"));
+        expect(fn(shot, "intEnv")).toBe(fn(args, "intEnv"));
+    });
+
+    test("every knob is read through a guard, at the same range on both sides", () => {
+        expect(config).toContain('intEnv(process.env, "KEX_WORKERS", 4, 1, 64)');
+        expect(config).toContain('boolEnv(process.env, "KEX_HEADED")');
+        expect(shot).toContain('intEnv(process.env, "KEX_PORT", 3014, 1024, 65_535)');
+        expect(shot).toContain('intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000)');
+        expect(capture).toContain('intEnv(process.env, "KEX_PORT", DEFAULT_PORT, 1024, 65_535)');
+        expect(capture).toContain('intEnv(process.env, "KEX_WORKERS", DEFAULT_WORKERS, 1, 64)');
+        expect(capture).toContain('intEnv(process.env, "KEX_SHOT_MS", DEFAULT_SHOT_MS, 0, 60_000)');
+        expect(capture).toContain('boolEnv(process.env, "KEX_HEADED")');
+    });
+
+    test("the orchestrator's defaults are the numbers the host-side fallbacks use", () => {
+        expect(capture).toContain("const DEFAULT_PORT = 3014;");
+        expect(capture).toContain("const DEFAULT_WORKERS = 4;");
+        expect(capture).toContain("const DEFAULT_SHOT_MS = 300;");
     });
 });
 
 describe("provisionKey / provisioned — when the host reinstalls", () => {
     const pkg = { dependencies: { "@playwright/test": "^1.59.1", playwright: "^1.59.1" } };
+    const lock =
+        '{"lockfileVersion":1,"packages":{"@playwright/test":["@playwright/test@1.59.1"]}}';
+    const key = (p: Record<string, unknown>, l = lock): string => provisionKey(p, l).key;
 
     test("the key covers the whole dependency block and is order-independent", () => {
-        const { key, pin } = provisionKey(pkg);
+        const { key: k, pin } = provisionKey(pkg, lock);
         expect(pin).toBe("^1.59.1");
         expect(
-            provisionKey({ dependencies: { playwright: "^1.59.1", "@playwright/test": "^1.59.1" } })
-                .key,
-        ).toBe(key);
+            key({ dependencies: { playwright: "^1.59.1", "@playwright/test": "^1.59.1" } }),
+        ).toBe(k);
     });
 
     test("a changed RANGE changes the key even though the installed version still satisfies it", () => {
         // the whole point of hashing the block rather than reading the installed version: 1.59.1
         // satisfies ^1.59.1 forever, so a version key would never reinstall after this edit.
-        const bumped = { dependencies: { ...pkg.dependencies, "@playwright/test": "^1.62.0" } };
-        expect(provisionKey(bumped).key).not.toBe(provisionKey(pkg).key);
+        expect(
+            key({ dependencies: { ...pkg.dependencies, "@playwright/test": "^1.62.0" } }),
+        ).not.toBe(key(pkg));
     });
 
     test("an added dependency changes the key", () => {
-        const added = { dependencies: { ...pkg.dependencies, "@axe-core/playwright": "^4.0.0" } };
-        expect(provisionKey(added).key).not.toBe(provisionKey(pkg).key);
+        expect(
+            key({ dependencies: { ...pkg.dependencies, "@axe-core/playwright": "^4.0.0" } }),
+        ).not.toBe(key(pkg));
+    });
+
+    test("EVERY dependency-relevant block is in the key, not just `dependencies`", () => {
+        // a caret range resolves to whatever is newest, so the blocks that steer resolution decide
+        // what the host's node_modules actually becomes: an override or a devDependency edit that
+        // left the key alone would be a stage serving a tree nobody asked for.
+        for (const block of [
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
+            "overrides",
+        ])
+            expect(key({ ...pkg, [block]: { "@playwright/test": "1.60.0" } })).not.toBe(key(pkg));
+        expect(key({ ...pkg, trustedDependencies: ["playwright"] })).not.toBe(key(pkg));
+    });
+
+    test("the LOCK is in the key — a transitive bump the ranges can't see still reinstalls", () => {
+        // the lock is what the host installs from (`--frozen-lockfile`), so an identical
+        // package.json over a different lock is a different tree.
+        expect(key(pkg, `${lock}\n// resolved elsewhere`)).not.toBe(key(pkg));
+        expect(key(pkg, "")).not.toBe(key(pkg)); // no lock staged at all is its own state
     });
 
     test("a package.json declaring no Playwright is a hard error, not an empty key", () => {
-        expect(() => provisionKey({ dependencies: { svelte: "^5.0.0" } })).toThrow(
+        expect(() => provisionKey({ dependencies: { svelte: "^5.0.0" } }, lock)).toThrow(
             "no @playwright/test dependency",
         );
-        expect(() => provisionKey({})).toThrow("no @playwright/test dependency");
+        expect(() => provisionKey({}, lock)).toThrow("no @playwright/test dependency");
     });
 
     test("the stage is reused only when the marker matches AND the tree is really there", () => {
-        const key = provisionKey(pkg).key;
-        expect(provisioned(`${key}\n`, key, true)).toBe(true); // the marker is written with a newline
-        expect(provisioned(null, key, true)).toBe(false); // never provisioned
-        expect(provisioned("deadbeef", key, true)).toBe(false); // provisioned for other deps
-        expect(provisioned(`${key}\n`, key, false)).toBe(false); // marker without the install
+        const k = key(pkg);
+        expect(provisioned(`${k}\n`, k, true)).toBe(true); // the marker is written with a newline
+        expect(provisioned(null, k, true)).toBe(false); // never provisioned
+        expect(provisioned("deadbeef", k, true)).toBe(false); // provisioned for other deps
+        // the marker's own ordering (deleted before the install, written after the result is
+        // verified) already rules a torn install out; this half catches a node_modules deleted
+        // from under a valid marker — a hand-cleaned stage dir, or the host's TEMP swept.
+        expect(provisioned(`${k}\n`, k, false)).toBe(false);
     });
 });

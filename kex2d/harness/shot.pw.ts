@@ -10,7 +10,31 @@ import { expect, type Page, test } from "@playwright/test";
 // real UI (keyboard extend/trim, undo). The force-authoring flow is the next test.
 // Screenshots land in KEX_OUT (a Windows path when staged; copied back).
 
-const PORT = process.env.KEX_PORT ?? "3014";
+// Env knobs, validated not coerced: `capture.ts` forwards values it has already checked, and these
+// guards cover a direct `playwright test` run. This file is staged to the Windows host STANDALONE
+// (`wsl.ts`), so it can import nothing: `UsageError` and `intEnv` are MIRRORED VERBATIM from
+// `harness/args.ts`, and `tests/harness.test.ts` pins them character-identical to it — a drifting
+// copy is a guard that only LOOKS enforced.
+class UsageError extends Error {}
+
+function intEnv(
+    env: Record<string, string | undefined>,
+    name: string,
+    fallback: number,
+    min: number,
+    max: number,
+): number {
+    const raw = env[name];
+    if (raw === undefined) return fallback;
+    const n = Number(raw);
+    if (!/^\d+$/.test(raw) || n < min || n > max)
+        throw new UsageError(
+            `${name} must be an integer in [${min}, ${max}] (got ${JSON.stringify(raw)})`,
+        );
+    return n;
+}
+
+const PORT = String(intEnv(process.env, "KEX_PORT", 3014, 1024, 65_535));
 const OUT = process.env.KEX_OUT ?? "shots";
 
 // The ONE fixed wait left in this file, and it is cosmetic: a shot taken the frame a surface
@@ -18,30 +42,21 @@ const OUT = process.env.KEX_OUT ?? "shots";
 // easing token). Nothing deterministic is bought past that — the cart LOOPS, so the scene never
 // settles — so this is used only immediately before a screenshot. Every other wait here is a
 // condition (`coding.md` forbids sleep-as-condition-wait).
-//
-// Validated, not coerced: `Number("")` is 0 (which silently kills every settle) and garbage is NaN
-// (which reaches `waitForTimeout` as a NaN delay). `capture.ts` forwards a validated value; this
-// guard covers a direct `playwright test` run.
-function settleMs(): number {
-    const raw = process.env.KEX_SHOT_MS;
-    if (raw === undefined) return 300;
-    const n = Number(raw);
-    if (!Number.isInteger(n) || n < 0)
-        throw new Error(`KEX_SHOT_MS must be a non-negative integer (got ${JSON.stringify(raw)})`);
-    return n;
-}
-const SHOT_MS = settleMs();
+const SHOT_MS = intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000);
 
 // Layout constants MIRRORED from the app, because this file is staged to the host STANDALONE
 // (`wsl.ts`) and so can import nothing from `src/`. Each names its source; a change there is a
 // change here.
 const CHART_TOP = 46; // RULER_H (26) + GAP_H (20) — Timeline.svelte, the chartzone's own top
 const CHART_BOT_PAD = 8; // BOT_PAD — Timeline.svelte
-// The viewport's default framing centers the world origin in the region above the dock (240 + a
-// 16px inset kept clear), not in the canvas — App.svelte.
+// The viewport's default framing centers the world origin in the region above the dock, not in the
+// canvas — src/view.ts DOCK_RESERVE = DOCK_HEIGHT (240) + DOCK_INSET (16), read by App.svelte.
 const DOCK_RESERVE = 256;
 const FORCE_LEN = 24; // MIRRORS src/track.ts DEFAULT_FORCE_LEN (= EXTEND_DIST) — a force
 // section's extent on convert/append, so mid-extent is FORCE_LEN / 2.
+const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R — the knob orbit (see `knobCenter` below)
+const TIP_REACH = 68; // TIP_H (56) + TIP_GAP (12) — Timeline.svelte, the vertical room a popover needs
+const GROW_LO = -3; // Timeline.svelte GROW_CAP[0] = BAND[0] (−2) − GROW_HEADROOM (1) — the growth floor
 
 // window.__kex is the DEV harness hook (src/main.ts); these page-context reads use `any` freely —
 // the hook is a DEV-only surface with no shared type.
@@ -165,7 +180,6 @@ async function seedHill(page: Page): Promise<void> {
 // that magnitude), so the honest predicate is |dist − RADIAL_R| < tol. A one-sided `dist > 70` would
 // accept an adjacent node's ring anywhere out to 116px — the stale-ring failure this exists to catch
 // measured 573px, but nothing bounds it that far.
-const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R (staged standalone — see the block up top)
 // layout rounding only: both boxes' edges land on the device pixel grid (0.5px at
 // deviceScaleFactor 2) on both axes, so the radius can move ~1px; 2px is well inside a 46px orbit.
 const RING_TOL = 2;
@@ -1225,7 +1239,6 @@ test("force easing menu flow", async ({ page }) => {
     await page.keyboard.press("Escape");
     const body = await page.locator(".dock .body").boundingBox();
     if (!body) throw new Error("timeline body not laid out");
-    const tipReach = 68; // TIP_H (56) + TIP_GAP (12) — the vertical room the box needs to fit
     const chartTopY = body.y + CHART_TOP;
     const chartBotY = body.y + body.height - CHART_BOT_PAD;
 
@@ -1240,7 +1253,7 @@ test("force easing menu flow", async ({ page }) => {
     // (i) DEFAULT above: drag the OUT knob straight UP to the midpoint between the top fit-line and
     // the crest — the box has clear room above, so it reads like the keyframe popover: above the
     // knob, centred, on the side away from the (below) diamond. NOT dodged to a side.
-    const upY = (chartTopY + tipReach + crestY) / 2;
+    const upY = (chartTopY + TIP_REACH + crestY) / 2;
     const uk = await page.locator(".thit").last().boundingBox();
     if (!uk) throw new Error("crest out knob not laid out for the up drag");
     await page.mouse.move(uk.x + uk.width / 2, uk.y + uk.height / 2);
@@ -1643,7 +1656,7 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
 
     const body = await page.locator(".dock .body").boundingBox();
     if (!body) throw new Error("timeline body not laid out");
-    const chartBotY = body.y + body.height - 8; // BOT_PAD (Timeline.svelte)
+    const chartBotY = body.y + body.height - CHART_BOT_PAD;
 
     await page.locator(".fpt").nth(1).dblclick(); // enter handle edit → its two handles summon
     await expect.poll(forceEditing).toBe(true);
@@ -1657,20 +1670,19 @@ test("handle drag edge-pans the value axis and a released handle stays in range"
     // what the cap bounds. Mutation: revert the handle branch in the yView effect to `return` (unwire
     // the path) → the axis holds → the floor never drops → this times out red. Mutation: drop the cap
     // from `yGrow` → the floor keeps falling past it → the hold-still assert goes red. ──
-    const growLo = -3; // Timeline.svelte GROW_CAP[0] = BAND[0] - 1 g of headroom
     const [lo0] = await gRange();
-    expect(lo0).toBeGreaterThan(growLo); // the resting frame sits inside the cap — there IS room to grow
+    expect(lo0).toBeGreaterThan(GROW_LO); // the resting frame sits inside the cap — there IS room to grow
     const knob = await page.locator(".thit").last().boundingBox();
     if (!knob) throw new Error("out handle knob not laid out");
     const knobX = knob.x + knob.width / 2;
     await page.mouse.move(knobX, knob.y + knob.height / 2);
     await page.mouse.down();
     await page.mouse.move(knobX, chartBotY + 140, { steps: 8 }); // straight down, past the bottom, HELD
-    await expect.poll(async () => (await gRange())[0]).toBeCloseTo(growLo, 3); // grew down to the cap
+    await expect.poll(async () => (await gRange())[0]).toBeCloseTo(GROW_LO, 3); // grew down to the cap
     await frames(page, 24); // …held past the edge for 48 more real frames (`frames` awaits 2n rAF
     // callbacks). Growth compounds per FRAME, so frames — not milliseconds — are this hold's unit,
     // and the count is the detection power: a ~1e-4/frame leak past the cap hides inside 24.
-    expect((await gRange())[0]).toBeCloseTo(growLo, 3); // …and stopped there, never past it
+    expect((await gRange())[0]).toBeCloseTo(GROW_LO, 3); // …and stopped there, never past it
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
 

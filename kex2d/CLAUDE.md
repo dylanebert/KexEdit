@@ -630,10 +630,14 @@ flow` test drives the real UI (seed → extend → undo → reshape) and the `fo
 the host's **real-GPU Chrome via the WSL→Windows bridge** (shallot's `run()` acquires a WebGPU
 device even though kex2d is canvas2D). Display-gated.
 
-It's a **sub-package with its own `package.json`** (Playwright is declared there, not in the app) —
-`cd harness && bun install` once per checkout, or `bun check` can't resolve `@playwright/test`. Its
-code IS under the project `tsconfig` + `biome`, and the pure pieces (`args.ts`'s CLI/env validators,
-`wsl.ts`'s provisioning key) are unit-tested in `tests/harness.test.ts`. But `capture.pw.config.ts`
-and `shot.pw.ts` are **staged to the Windows host standalone** (`wsl.ts`), so they can import
-nothing — app constants they need are mirrored at the top of the file with their source named, and
-each env knob is re-validated there for a direct `playwright test` run.
+It's a **sub-package with its own `package.json` + committed `bun.lock`** (Playwright is declared
+there, not in the app). `bun check` self-provisions it — the `harness:deps` script installs
+`--cwd harness --frozen-lockfile` when `harness/node_modules` is missing, so a fresh clone or
+worktree type-checks without a manual step. **Never fix a missing `@playwright/test` with a root
+`bun install`**: that replaces the `node_modules/@dylanebert/shallot` dev symlink with npm shallot
+and the app stops mounting. Its code IS under the project `tsconfig` + `biome`, and the pure pieces
+(`args.ts`'s CLI/env validators + the `--out` wipe guard, `wsl.ts`'s provisioning key) are
+unit-tested in `tests/harness.test.ts`. But `capture.pw.config.ts` and `shot.pw.ts` are **staged to
+the Windows host standalone** (`wsl.ts`), so they can import nothing — app constants they need are
+mirrored at the top of the file with their source named, and the env knobs are validated there by a
+verbatim copy of `args.ts`'s `intEnv`/`boolEnv`, pinned character-identical by the unit tests.
