@@ -595,8 +595,8 @@ export function applyMultiDelta(
 /** advance a manipulator drag: rebuild the polar frame from the live positions, resolve the grabbed
  *  1D control (length along the chord ray, angle along the tangential arc) through the stage-4
  *  inverse, and write the node's new world position. the dead-zone latch keeps a sub-DRAG_PX grab a
- *  plain click; no Shift constrain — each gesture is already 1-DOF. snap-by-default (integer metres /
- *  5° grid), Ctrl/Cmd bypasses. the readout is fed per-control through the one formatting seam
+ *  plain click; no Shift constrain — each gesture is already 1-DOF. snap-by-default (the two
+ *  configured grids, `settings.ts`, defaults 1 m / 5°), Ctrl/Cmd bypasses. the readout is fed per-control through the one formatting seam
  *  (`formatDeg`/`formatLen`) into the magnet-labels source — the source `startManip` seeded, so it
  *  owns the gesture start-to-end (no mid-gesture switch); a tip angle snap also flashes the guide ray
  *  (world radians — `SnapGuideSystem` maps it to screen, no consumer negation). */

@@ -349,8 +349,11 @@ editor-ui invariant-domain rule).
   null, rendered once at the app root. Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
   bypasses per-gesture) and `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
-  viewport-nudge vs timeline-playhead double-fire. Plain singleton, read by Svelte via the per-RAF
-  tick.
+  viewport-nudge vs timeline-playhead double-fire. `hoverSection` (a stable `Section.id` or null) is
+  the viewport's own hover read — written per pointermove by `controls.pickSection`, drawn one
+  kind-color rung up by the track overlay, cleared on pointer leave and for the whole of any gesture
+  (`beginDrag`, the one suppression point); viewport-local, never synced with the clip strip's CSS
+  hover. Plain singleton, read by Svelte via the per-RAF tick.
 - `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
   `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).
@@ -371,7 +374,7 @@ editor-ui invariant-domain rule).
   `selectedMetrics` (the impure glue over the baked samples) + the shared formatters
   (`formatDeg`/`formatLen`, one decimal always, −0 normalized, trailing `.0` stripped — the geo
   readout's degree/length funnel, sharing `timeline.ts`'s `fmt` trim, the force readout's funnel).
-- `magnet.ts` — the two pure grid quantizers a manipulator drag resolves through (`snapLength`,
+- `magnet.ts` — the two grid quantizers a manipulator drag resolves through (`snapLength`,
   `snapSteps.length` grid + the `LENGTH_MIN` 1 m floor; `snapAngle`, the `snapSteps.angle` grid) plus
   the incline algebra
   (`inclineOf`/`chordForIncline`) a tip's exit-tangent snap needs. Grid, not magnet: the screen-px
@@ -450,7 +453,10 @@ editor-ui invariant-domain rule).
   not per-menu special cases.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), section-entry **anchor diamonds**, the
-  selected-section accent overlay, the node handles (selected/orphan/infeasible), the cart, the
+  hover + selected-section span overlays (each in the section's OWN kind color — one rung up under
+  the pointer (`hovered`), brightened when selected (`selected`); priority infeasible-red >
+  selection > hover > kind, all three stroked through one `strokeFeasible`), the node handles
+  (selected/orphan/infeasible), the cart, the
   **Timeline** dock, and the three-button radial ring around the selected node (`radial.ts`: the
   two manipulator knobs flanking extend, the extend button chain-end-only, all hidden in tangent
   edit). In
@@ -479,8 +485,11 @@ editor-ui invariant-domain rule).
   (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`selectNode`/`selectedOrder`/`nodeAt`/
   `startAt`/`seedHill`/`nudge`), tangent state (`tangent`/`mode`/`inX`/`inY`/`outX`/`outY`/
   `tangentHandles`/`editing`), force state (`kind`/`forceCount`/`forces`/`convert`/`placeForce`/
-  `seedForceBump`), and the multi-section ops (`sectionCount`/`sectionKinds`/`append`/`deleteAt`/
-  `convertAt`) the capture harness drives; never ships. Screen-space affordances are driven
+  `seedForceBump`), the multi-section ops (`sectionCount`/`sectionKinds`/`append`/`deleteAt`/
+  `convertAt`), and the read-only VIEW observables a behavior with no honest DOM assert needs —
+  `cam` (the whole `[zoom, ox, oy]`, the wheel-guard flow's contract) and `guides` (whether the
+  canvas-drawn incline ray is up, plus the two readout labels) — all driven by the capture harness;
+  never ships. Screen-space affordances are driven
   pointer-true through the real DOM (`.rbtn`, `.manip-length`, `.manip-angle`), not through hooks.
 
 ## Editing model

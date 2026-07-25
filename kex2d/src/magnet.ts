@@ -45,7 +45,8 @@ export function snapAngle(a: number): number {
  *  multiple; the modifier (`snap === false`, Ctrl held) bypasses to continuous. the `LENGTH_MIN`
  *  floor holds either way. */
 export interface LengthSnap {
-    /** the resolved chord length, metres (whole-metre when `snapped`, else continuous; floored). */
+    /** the resolved chord length, metres (on the `snapSteps.length` grid when `snapped`, else
+     *  continuous; floored either way). */
     meters: number;
     snapped: boolean;
 }
