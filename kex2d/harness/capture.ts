@@ -8,7 +8,15 @@ import {
     writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { boolEnv, intEnv, parseArgs, UsageError, wipeable } from "./args";
+import {
+    boolEnv,
+    collectedCount,
+    executedCount,
+    intEnv,
+    parseArgs,
+    UsageError,
+    wipeable,
+} from "./args";
 import { runPlaywright } from "./playwright";
 import { startServer } from "./server";
 import { detectDisplay } from "./wsl";
@@ -131,30 +139,16 @@ if (listing) {
 
 // The suite-count oracle's left-hand side: what the config COLLECTS for this run. Cheap (~3s, no
 // browser) and taken before anything is wiped, so a config that collects nothing fails loud with the
-// shot set intact.
+// shot set intact. Both sides of the oracle parse in `args.ts`, where they are unit-tested.
 const collected = ((): number | null => {
     if (selective) return null;
     console.log("Collecting the suite (--list)...");
     const list = launch(["--list"]);
     if (list.exitCode !== 0) fail(`the suite did not collect (--list exit ${list.exitCode})`);
-    const total = /^Total:\s+(\d+) test/m.exec(list.stdout);
-    if (!total) fail("the --list pre-pass reported no collected count");
-    return Number(total[1]);
+    const total = collectedCount(list.stdout);
+    if (total === null) fail("the --list pre-pass reported no collected count");
+    return total;
 })();
-
-// The oracle's right-hand side: every test Playwright ACCOUNTED FOR, summed across its summary lines
-// ("22 passed (17.4s)", "1 failed", "2 did not run" — the last is exactly what a globalTimeout
-// truncation reports). Null when no summary line parsed at all, which fails the comparison closed.
-function executedCount(stdout: string): number | null {
-    const re = /^\s+(\d+) (passed|failed|flaky|skipped|interrupted|did not run)\b/gm;
-    let total = 0;
-    let seen = false;
-    for (const m of stdout.matchAll(re)) {
-        total += Number(m[1]);
-        seen = true;
-    }
-    return seen ? total : null;
-}
 
 if (!selective) rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });

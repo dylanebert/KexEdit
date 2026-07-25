@@ -1,7 +1,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { boolEnv, intEnv, parseArgs, UsageError, wipeable } from "../harness/args";
+import {
+    boolEnv,
+    collectedCount,
+    executedCount,
+    intEnv,
+    parseArgs,
+    UsageError,
+    wipeable,
+} from "../harness/args";
 import { provisioned, provisionKey } from "../harness/wsl";
 
 // The capture orchestrator's pure decision layer. Everything here decides something the gate's
@@ -163,6 +171,97 @@ describe("intEnv / boolEnv — the fail-closed knob pass", () => {
     test("a boolean knob takes only 0 or 1 — no truthy-string coercion", () => {
         expect(() => boolEnv({ KEX_HEADED: "true" }, "KEX_HEADED")).toThrow(UsageError);
         expect(() => boolEnv({ KEX_HEADED: "" }, "KEX_HEADED")).toThrow(UsageError);
+    });
+});
+
+describe("collectedCount / executedCount — the suite-count oracle's two sides", () => {
+    // Both sides parse ANOTHER tool's stdout, so the fixtures are Playwright list-reporter text
+    // verbatim in shape. The oracle exists because a truncated run reports the tests it did run as
+    // green: without the comparison, a `globalTimeout` that kills the tail reads as a clean gate.
+
+    test("the collected side reads the --list total, singular form included", () => {
+        expect(
+            collectedCount(
+                [
+                    "Listing tests:",
+                    "  shot.pw.ts:321:1 › geo authoring flow",
+                    "  shot.pw.ts:521:1 › tangent edit flow",
+                    "Total: 23 tests in 1 file",
+                    "",
+                ].join("\n"),
+            ),
+        ).toBe(23);
+        expect(collectedCount("Total: 1 test in 1 file\n")).toBe(1);
+    });
+
+    test("no Total line is null, never 0 — the pre-pass must fail loud, not collect nothing", () => {
+        expect(collectedCount("")).toBeNull();
+        expect(
+            collectedCount("Listing tests:\n  shot.pw.ts:321:1 › geo authoring flow\n"),
+        ).toBeNull();
+    });
+
+    test("a clean run accounts for every collected test", () => {
+        const green = [
+            "Running 23 tests using 4 workers",
+            "",
+            "  ✓  1 shot.pw.ts:321:1 › geo authoring flow (12.1s)",
+            "  ✓  2 shot.pw.ts:521:1 › tangent edit flow (8.3s)",
+            "",
+            "  23 passed (17.4s)",
+            "",
+        ].join("\n");
+        expect(executedCount(green)).toBe(23);
+    });
+
+    test("a FAILED run still accounts for all 23 — this is a coverage count, not a pass count", () => {
+        // load-bearing: `capture.ts` reports "the run was truncated" when the two sides disagree, so
+        // a summary that forgot to sum `failed` would misdiagnose every ordinary red run as a
+        // truncation. The exit code is what fails a red run; this count only asks "did they all run".
+        const failed = [
+            "Running 23 tests using 4 workers",
+            "",
+            "  ✘  2 shot.pw.ts:521:1 › tangent edit flow (9.0s)",
+            "",
+            "  1 failed",
+            "    shot.pw.ts:521:1 › tangent edit flow ──────────────────────────────",
+            "  22 passed (21.0s)",
+            "",
+        ].join("\n");
+        expect(executedCount(failed)).toBe(23);
+    });
+
+    test("every accounted-for category counts, `did not run` above all", () => {
+        // `did not run` is what a globalTimeout truncation reports for the tests it killed; the rest
+        // round out the set Playwright can print. A category left out of the alternation goes
+        // uncounted, and an uncounted test is exactly the run the oracle must refuse.
+        expect(executedCount("  2 did not run\n  19 passed (120.0s)\n")).toBe(21);
+        expect(executedCount("  1 flaky\n  1 skipped\n  1 interrupted\n  20 passed (30s)\n")).toBe(
+            23,
+        );
+    });
+
+    test("a summary short of the collected total is the truncation the gate refuses", () => {
+        // the other truncation shape: the tail is simply missing from the summary. 21 ≠ 23, so
+        // `wholeSuite` is false and the capture exits 1 with the shot set marked non-reference.
+        expect(executedCount("  21 passed (120.0s)\n")).toBe(21);
+    });
+
+    test("no summary line at all is null, which fails the comparison closed", () => {
+        expect(executedCount("")).toBeNull();
+        expect(executedCount("Running 23 tests using 4 workers\n")).toBeNull();
+    });
+
+    test("only the summary block counts — a test TITLE can't inflate the total", () => {
+        // the anchor is the guard: a count is a line's first token after its indent. Drop `^\s+` and
+        // the title's own "3 passed" lands in the sum, so a green run reads as more tests than were
+        // ever collected — a mismatch in the direction nothing else catches.
+        const titled = [
+            "  ✓  1 shot.pw.ts:900:1 › force 3 passed points flow (4.0s)",
+            "  1) shot.pw.ts:900:1 › force 3 passed points flow ───────────────",
+            "  23 passed (17.4s)",
+        ].join("\n");
+        expect(executedCount(titled)).toBe(23);
     });
 });
 

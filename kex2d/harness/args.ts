@@ -99,3 +99,34 @@ export function boolEnv(env: Record<string, string | undefined>, name: string): 
         throw new UsageError(`${name} must be 0 or 1 (got ${JSON.stringify(raw)})`);
     return raw === "1";
 }
+
+/**
+ * The suite-count oracle's LEFT-hand side: what a `--list` pre-pass says the config COLLECTS,
+ * off its `Total: 23 tests in 1 file` line. Null when no such line parsed — a config that collects
+ * nothing (or a Playwright that failed before reporting) must fail the run, never pass it silently.
+ */
+export function collectedCount(stdout: string): number | null {
+    const total = /^Total:\s+(\d+) test/m.exec(stdout);
+    return total ? Number(total[1]) : null;
+}
+
+/**
+ * The oracle's RIGHT-hand side: every test Playwright ACCOUNTED FOR, summed across its summary
+ * lines (`22 passed (17.4s)`, `1 failed`, `2 did not run` — the last is exactly what a
+ * `globalTimeout` truncation reports, and the whole reason this count exists). Null when no summary
+ * line parsed at all, which fails the comparison closed.
+ *
+ * Anchored at a line's leading indent so only the summary block counts: a per-test progress line
+ * (`✓  1 shot.pw.ts:321:1 › geo authoring flow`) and a failure-detail line (`shot.pw.ts:321:1 › …`)
+ * both start with something other than a digit after the indent.
+ */
+export function executedCount(stdout: string): number | null {
+    const re = /^\s+(\d+) (passed|failed|flaky|skipped|interrupted|did not run)\b/gm;
+    let total = 0;
+    let seen = false;
+    for (const m of stdout.matchAll(re)) {
+        total += Number(m[1]);
+        seen = true;
+    }
+    return seen ? total : null;
+}

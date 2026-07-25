@@ -2,13 +2,11 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 
-// Boot the kex2d page and drive the GEO-AUTHORING flow end to end (seed a shaped track →
-// see the recovered F_n force curve → extend the chain → undo → reshape a node and watch
-// the curve react), asserting the UI wiring against
-// window.__kex at each step and screenshotting the states. The DEV-only __kex hook
-// (src/main.ts) reads node/undo/track state and drives the geo edits; the flow drives the
-// real UI (keyboard extend/trim, undo). The force-authoring flow is the next test.
-// Screenshots land in KEX_OUT (a Windows path when staged; copied back).
+// kex2d's capture flows. Each test boots the page, drives one authoring surface through REAL
+// pointer and keyboard events, asserts the resulting state through the DEV-only `window.__kex` hook
+// (src/main.ts — read-only for the asserts; it performs an op only where a gesture can't reach the
+// setup), and screenshots what it built. Screenshots land in KEX_OUT (a Windows path when staged;
+// copied back). Each test carries its own header saying what it drives and what it pins.
 
 // Env knobs, validated not coerced: `capture.ts` forwards values it has already checked, and these
 // guards cover a direct `playwright test` run. This file is staged to the Windows host STANDALONE
@@ -69,6 +67,15 @@ function overlaps(a: Rect, b: Rect): boolean {
     return (
         a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
     );
+}
+
+// The rect every timeline shot clips to: the bottom band of the viewport, full width. Taller than
+// the dock itself (DOCK_RESERVE) so the strip sits inside the frame with the chart's upper reaches
+// above it. Null when the page reports no viewport size — the guard each caller wraps its shot in.
+const STRIP_H = 340;
+function dockStrip(page: Page): Rect | null {
+    const vp = page.viewportSize();
+    return vp ? { x: 0, y: vp.height - STRIP_H, width: vp.width, height: STRIP_H } : null;
 }
 
 // Await `n` PROJECTED frames — 2n rAF callbacks, so 2n real frames. The app writes its DOM from a
@@ -343,13 +350,8 @@ test("geo authoring flow", async ({ page }) => {
 
     // read-only baseline: the shaped track + its recovered F_n force curve.
     await page.screenshot({ path: join(OUT, "full.png") });
-    const vp = page.viewportSize();
-    if (vp) {
-        await page.screenshot({
-            path: join(OUT, "timeline.png"),
-            clip: { x: 0, y: vp.height - 340, width: vp.width, height: 340 },
-        });
-    }
+    const strip = dockStrip(page);
+    if (strip) await page.screenshot({ path: join(OUT, "timeline.png"), clip: strip });
 
     // ── 1. Extend: select the chain end, press Enter → one node, one undo entry. ──
     await page.evaluate(() => (window as any).__kex.selectEnd());
@@ -843,13 +845,8 @@ test("force authoring flow", async ({ page }) => {
     await expect.poll(forceCount).toBe(5);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "force-2-bump.png") });
-    const vp = page.viewportSize();
-    if (vp) {
-        await page.screenshot({
-            path: join(OUT, "force-timeline.png"),
-            clip: { x: 0, y: vp.height - 340, width: vp.width, height: 340 },
-        });
-    }
+    const strip = dockStrip(page);
+    if (strip) await page.screenshot({ path: join(OUT, "force-timeline.png"), clip: strip });
 
     // ── 2b. Double-click the chart inserts a point ON the authored profile (the
     // envelope-insertion identity): between the leading seed (s=0) and the first bump
@@ -868,12 +865,7 @@ test("force authoring flow", async ({ page }) => {
     // the create selects the point, so its popover is up — capture it for the feel pass
     // (let its 120ms fade-in finish, or the shot catches a ghost).
     await page.waitForTimeout(SHOT_MS);
-    if (vp) {
-        await page.screenshot({
-            path: join(OUT, "force-popover.png"),
-            clip: { x: 0, y: vp.height - 340, width: vp.width, height: 340 },
-        });
-    }
+    if (strip) await page.screenshot({ path: join(OUT, "force-popover.png"), clip: strip });
     const after6 = await forces();
     const created = after6.find((p) => !before6.some((b) => Math.abs(b.s - p.s) < 1e-6));
     if (!created) throw new Error("the newly inserted point wasn't found by s-diff");
@@ -1040,16 +1032,9 @@ test("force easing menu flow", async ({ page }) => {
         )
         .toEqual(["Delete Del", "Easing ▸"]);
     await page.waitForTimeout(SHOT_MS);
-    if (page.viewportSize())
-        await page.screenshot({
-            path: join(OUT, "force-easing-menu.png"),
-            clip: {
-                x: 0,
-                y: (page.viewportSize()?.height ?? 0) - 340,
-                width: page.viewportSize()?.width ?? 0,
-                height: 340,
-            },
-        });
+    const menuStrip = dockStrip(page);
+    if (menuStrip)
+        await page.screenshot({ path: join(OUT, "force-easing-menu.png"), clip: menuStrip });
 
     // ── 2. Open Easing ▸ and set Linear — pointer-true through clickFlyout (a coordinate
     // click gated on elementFromPoint reachability, the context-submenu clip regression net).
@@ -1170,16 +1155,9 @@ test("force easing menu flow", async ({ page }) => {
     // on the crest — two constructed cases where the vertical fit is deterministic.
 
     await page.waitForTimeout(SHOT_MS);
-    if (page.viewportSize())
-        await page.screenshot({
-            path: join(OUT, "force-handle-edit.png"),
-            clip: {
-                x: 0,
-                y: (page.viewportSize()?.height ?? 0) - 340,
-                width: page.viewportSize()?.width ?? 0,
-                height: 340,
-            },
-        });
+    const editStrip = dockStrip(page);
+    if (editStrip)
+        await page.screenshot({ path: join(OUT, "force-handle-edit.png"), clip: editStrip });
 
     // ── 4c. The handle (Δs, Δg) fields carry the slider/scrub affordance, the same drag-to-slide
     // as the keyframe d/F fields. Grab the Δg key label and slide it right: the OUT tangent's Δg
@@ -1770,15 +1748,13 @@ test("section clip strip flow", async ({ page }) => {
     const selectedSection = () =>
         page.evaluate((): number | null => (window as any).__kex.selectedSection());
 
-    const vp = page.viewportSize();
-    const strip = () =>
-        vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
+    const strip = dockStrip(page);
 
     // seed one geo section → one geo clip in the lane.
     await seedHill(page);
     await expect(page.locator(".clip")).toHaveCount(1);
     await page.waitForTimeout(SHOT_MS);
-    if (vp) await page.screenshot({ path: join(OUT, "clip-1-strip.png"), clip: strip() });
+    if (strip) await page.screenshot({ path: join(OUT, "clip-1-strip.png"), clip: strip });
 
     // ── 1. Append a force section via the real + flyout → a mixed geo→force chain. the flyout
     // root-mounts (out of the dock's overflow clip), so assert its item is hit-testable at its
@@ -1810,7 +1786,7 @@ test("section clip strip flow", async ({ page }) => {
     await frameTimeline(page); // append never pans; frame the grown chain into view
     await expect(page.locator(".clip")).toHaveCount(2);
     await page.waitForTimeout(SHOT_MS);
-    if (vp) await page.screenshot({ path: join(OUT, "clip-2-append.png"), clip: strip() });
+    if (strip) await page.screenshot({ path: join(OUT, "clip-2-append.png"), clip: strip });
 
     // ── 2. Click the geo clip → editor.section becomes the first section (one object,
     // two surfaces: the same selection the viewport span drives). ──
@@ -1836,7 +1812,7 @@ test("section clip strip flow", async ({ page }) => {
     await page.mouse.up();
     await page.keyboard.up("Control");
     await expect.poll(async () => (await sectionLengths())[1]).toBeGreaterThan(before[1]);
-    if (vp) await page.screenshot({ path: join(OUT, "clip-3-trim.png"), clip: strip() });
+    if (strip) await page.screenshot({ path: join(OUT, "clip-3-trim.png"), clip: strip });
 
     // undo restores the pre-drag extent, one entry.
     await page.keyboard.press("Control+z");
@@ -1868,9 +1844,7 @@ test("section menu + keyframe flow", async ({ page }) => {
         page.evaluate((): number[] => (window as any).__kex.sectionForceCounts());
     const selectedSection = () =>
         page.evaluate((): number | null => (window as any).__kex.selectedSection());
-    const vp = page.viewportSize();
-    const strip = () =>
-        vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
+    const strip = dockStrip(page);
 
     // seed a geo section, append a force one via the real + flyout → a mixed chain.
     await seedHill(page);
@@ -1898,12 +1872,12 @@ test("section menu + keyframe flow", async ({ page }) => {
     await page.mouse.dblclick(fcb.x + fcb.width / 2, bb.y + bb.height * 0.5);
     await expect.poll(async () => (await forceCounts())[1]).toBeGreaterThan(before[1]);
     await page.waitForTimeout(SHOT_MS);
-    if (vp) await page.screenshot({ path: join(OUT, "section-2-keyframe.png"), clip: strip() });
+    if (strip) await page.screenshot({ path: join(OUT, "section-2-keyframe.png"), clip: strip });
 
     // ── 3. Right-click the force clip → "Convert to Geo" (real context menu). ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    if (vp) await page.screenshot({ path: join(OUT, "section-3-menu.png"), clip: strip() });
+    if (strip) await page.screenshot({ path: join(OUT, "section-3-menu.png"), clip: strip });
     await page.getByRole("menuitem", { name: "Convert to Geo" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,0");
     await page.keyboard.press("Control+z"); // convert is one undo entry
@@ -1939,9 +1913,7 @@ test("playhead parking flow", async ({ page }) => {
     const cartArc = () => page.evaluate((): number | null => (window as any).__kex.cartArc());
     const parked = () => page.evaluate((): boolean => (window as any).__kex.parked());
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
-    const vp = page.viewportSize();
-    const strip = () =>
-        vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
+    const strip = dockStrip(page);
 
     // seed a geo section, append a force one via the real + flyout → a mixed chain.
     await seedHill(page);
@@ -1971,7 +1943,7 @@ test("playhead parking flow", async ({ page }) => {
     const arc1 = await cartArc();
     const tt1 = await tTotal();
     if (arc1 === null) throw new Error("cartArc null after park");
-    if (vp) await page.screenshot({ path: join(OUT, "park-1-anchored.png"), clip: strip() });
+    if (strip) await page.screenshot({ path: join(OUT, "park-1-anchored.png"), clip: strip });
 
     // ── 3. Drag the keyframe's g (vertical drag on its fat hit circle) → the force
     // profile changes, the bake re-times (tTotal shifts). three points now exist (the two
@@ -1994,7 +1966,7 @@ test("playhead parking flow", async ({ page }) => {
     if (arc2 === null) throw new Error("cartArc null after re-time");
     expect(arc2).toBeCloseTo(arc1, 1);
     expect(await parked()).toBe(true);
-    if (vp) await page.screenshot({ path: join(OUT, "park-2-held.png"), clip: strip() });
+    if (strip) await page.screenshot({ path: join(OUT, "park-2-held.png"), clip: strip });
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
@@ -2088,9 +2060,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
     const forceCounts = () =>
         page.evaluate((): number[] => (window as any).__kex.sectionForceCounts());
     const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
-    const vp = page.viewportSize();
-    const strip = () =>
-        vp ? { x: 0, y: vp.height - 340, width: vp.width, height: 340 } : undefined;
+    const strip = dockStrip(page);
 
     // seed a shaped geo lead-in (section 0) — the shaped track the chain grows from.
     await seedHill(page);
@@ -2137,7 +2107,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
     await page.mouse.up();
     await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-3).toBe(true);
     await page.waitForTimeout(SHOT_MS);
-    if (vp) await page.screenshot({ path: join(OUT, "dogfood-1-hill.png"), clip: strip() });
+    if (strip) await page.screenshot({ path: join(OUT, "dogfood-1-hill.png"), clip: strip });
 
     // ── 3. Append a geo turnaround after the hill via the real + flyout → the composed
     // chain: geo lead-in, force hill, geo turnaround. (The turnaround's geometry is the
@@ -2149,7 +2119,7 @@ test("mixed layout dogfood flow", async ({ page }) => {
     await frameTimeline(page); // append never pans; frame the grown chain into view
     await expect(page.locator(".clip")).toHaveCount(3);
     await page.screenshot({ path: join(OUT, "dogfood-2-chain.png") });
-    if (vp) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip() });
+    if (strip) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip });
 
     if (errors.length) console.log(`KEX_PAGE_NOTES ${JSON.stringify(errors)}`);
 });
@@ -2264,7 +2234,8 @@ test("collocation solver lab", async ({ page }) => {
 // shot reads as the kind-color boundary it exists to show. It used to capture an
 // "insufficient velocity" dashed-red tail instead, from a flat 1g profile — that came
 // from appending before the hill had baked, so the seeds continued the FLAT seed's exit,
-// and it flipped run to run; the infeasible-tail priority fixes need their own scenario.
+// and it flipped run to run. The two infeasible-red priority renders that accident covered now
+// have their own deliberate scenario — `viewport infeasible shot` below.
 test("viewport kind color shot", async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     const errors: string[] = [];
@@ -2286,13 +2257,8 @@ test("viewport kind color shot", async ({ page }) => {
     // the kind-colored curve, in the dock's chart — geo span cool blue, force span
     // accent gold, the same language as the clip strip right above it.
     await page.waitForTimeout(SHOT_MS);
-    const vp = page.viewportSize();
-    if (vp) {
-        await page.screenshot({
-            path: join(OUT, "kind-color-curve.png"),
-            clip: { x: 0, y: vp.height - 340, width: vp.width, height: 340 },
-        });
-    }
+    const strip = dockStrip(page);
+    if (strip) await page.screenshot({ path: join(OUT, "kind-color-curve.png"), clip: strip });
 
     // zoom the viewport in on the chain start (a real wheel zoom-at-cursor, over the
     // canvas — the default framing already centers the track's origin there).
@@ -2732,16 +2698,9 @@ test("timeline multiselect flow", async ({ page }) => {
     expect(Number(tipD)).toBeCloseTo(activePt.s, 1);
     expect(Number(tipG)).toBeCloseTo(activePt.g, 2);
     await page.waitForTimeout(SHOT_MS);
-    if (page.viewportSize())
-        await page.screenshot({
-            path: join(OUT, "multiselect-timeline-marquee.png"),
-            clip: {
-                x: 0,
-                y: (page.viewportSize()?.height ?? 0) - 340,
-                width: page.viewportSize()?.width ?? 0,
-                height: 340,
-            },
-        });
+    const strip = dockStrip(page);
+    if (strip)
+        await page.screenshot({ path: join(OUT, "multiselect-timeline-marquee.png"), clip: strip });
 
     // ── 2. SHIFT-CLICK the ACTIVE diamond (the s=0.8·len shoulder) toggles it OUT — the survivor
     // (the crest) promotes active — then the SAME shift-click toggles it back IN, re-activating. ──
