@@ -376,26 +376,10 @@ export function createForce(h: History, ecs: State, section: number, s: number, 
     return id;
 }
 
-/** delete a force point by id, recording an undoable remove — undo re-spawns it
- *  verbatim (into its original section). no-op if the id is already gone. */
-export function deleteForce(h: History, ecs: State, id: number): void {
-    const pre = selHook?.snapshot(ecs); // the point being deleted — captured before it's destroyed
-    const st = forcePointState(ecs, id);
-    if (!st) return;
-    destroyForce(ecs, id);
-    record(
-        h,
-        {
-            apply: () => destroyForce(ecs, id),
-            reverse: () => spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent),
-        },
-        pre,
-    );
-}
-
 /** delete a SET of force points by id as ONE undoable entry (the bulk delete — force multi-delete
  *  is unconditional). undo re-spawns them all verbatim into their original sections; ids already
- *  gone are skipped, and nothing records when the set is empty. the size-1 case is `deleteForce`. */
+ *  gone are skipped, and nothing records when the set is empty. a single-id array (`[id]`) is the
+ *  size-1 case — deleting one point. */
 export function deleteForces(h: History, ecs: State, ids: readonly number[]): void {
     const pre = selHook?.snapshot(ecs); // the selected SET — captured before any point is destroyed
     const sts: ForcePointState[] = [];
@@ -484,27 +468,15 @@ function recordSegment(h: History, ecs: State, id: number, mutate: () => void): 
     );
 }
 
-/** pick a preset easing row as one undoable entry (the menu one-shot): set the leading
- *  keyframe's tag AND clear the **addressed segment's** two bounding sides back to that
- *  preset — this keyframe's out and the next keyframe's in, never this keyframe's in
- *  (which belongs to the preceding segment). choosing a named row is the way back up the
- *  layers, subsuming the old Reset. one gesture over both keyframes; records nothing when
- *  neither the tag nor either bounding side changed. */
-export function setForceEase(h: History, ecs: State, id: number, ease: Easing): void {
-    recordSegment(h, ecs, id, () => {
-        const next = nextForce(ecs, id);
-        writeForceEase(ecs, id, ease);
-        clearForceTangentSide(ecs, id, "out"); // the segment's leading (out) side
-        if (next !== null) clearForceTangentSide(ecs, next, "in"); // its trailing (in) side
-    });
-}
-
 /** apply a preset easing to every APPLICABLE (non-terminal) keyframe in `ids` as ONE undoable
- *  entry (the bulk Easing ▸ — AE/Unity bulk interpolation): each such keyframe's tag is set and its
- *  addressed segment's two bounding sides (its own out + the next keyframe's in) cleared back to the
- *  preset, matching what a single `setForceEase` does per keyframe. a terminal keyframe (governs no
- *  following segment) is skipped — the enablement grays those rows at the UI. records nothing when
- *  no applicable keyframe changed. the single-keyframe case is `setForceEase`. */
+ *  entry (the menu one-shot, the bulk Easing ▸ — AE/Unity bulk interpolation): each such
+ *  keyframe's tag is set and its addressed segment's two bounding sides (its own out + the next
+ *  keyframe's in) cleared back to the preset — this keyframe's out and the next keyframe's in,
+ *  never this keyframe's in (which belongs to the preceding segment). choosing a named row is the
+ *  way back up the layers, subsuming the old Reset. a terminal keyframe (governs no following
+ *  segment) is skipped — the enablement grays those rows at the UI. records nothing when no
+ *  applicable keyframe changed. a single-id array (`[id]`) is the size-1 case — one gesture over
+ *  the addressed keyframe and its successor, exactly the menu's single-select pick. */
 export function setForcesEase(h: History, ecs: State, ids: readonly number[], ease: Easing): void {
     const pre = selHook?.snapshot(ecs);
     // the affected keyframes: each applicable leading keyframe + the successor it re-eases (deduped),

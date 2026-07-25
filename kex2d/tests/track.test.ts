@@ -52,7 +52,7 @@ import {
     createHistory,
     materializeCustom,
     redo,
-    setForceEase as setForceEaseCmd,
+    setForcesEase,
     setForceTangentMode as setForceTangentModeCmd,
     undo,
 } from "../src/history";
@@ -1051,7 +1051,7 @@ describe("force easing + seeding (stage B)", () => {
         expect(snapshotAll(state)).toEqual(seeded); // seeds restored verbatim
     });
 
-    test("history: setForceEase collapses to one entry; undo restores the prior tag", () => {
+    test("history: setForcesEase (size-1) collapses to one entry; undo restores the prior tag", () => {
         const { state, sec } = track();
         state.step(0);
         convertSection(state, sec); // → force
@@ -1059,7 +1059,7 @@ describe("force easing + seeding (stage B)", () => {
         const h = createHistory();
         expect(forceEase(state, id)).toBe(Easing.Cubic); // the fresh-keyframe default
 
-        setForceEaseCmd(h, state, id, Easing.Quintic);
+        setForcesEase(h, state, [id], Easing.Quintic);
         expect(h.undo.length).toBe(1);
         expect(forceEase(state, id)).toBe(Easing.Quintic);
 
@@ -1069,7 +1069,7 @@ describe("force easing + seeding (stage B)", () => {
         expect(forceEase(state, id)).toBe(Easing.Quintic);
 
         // a no-op set (same tag) records nothing.
-        setForceEaseCmd(h, state, id, Easing.Quintic);
+        setForcesEase(h, state, [id], Easing.Quintic);
         expect(h.undo.length).toBe(1);
     });
 
@@ -1135,7 +1135,7 @@ describe("force easing + seeding (stage B)", () => {
         setForceTangent(state, next, nextTan);
         const h = createHistory();
 
-        setForceEaseCmd(h, state, x, Easing.Quintic);
+        setForcesEase(h, state, [x], Easing.Quintic);
         expect(h.undo.length).toBe(1);
         expect(forceEase(state, x)).toBe(Easing.Quintic);
         // X's OUT (the segment's leading side) is cleared; its IN (the preceding segment) survives.
@@ -1176,7 +1176,7 @@ describe("force easing + seeding (stage B)", () => {
         setForceTangent(state, x, xIn);
         const h = createHistory();
 
-        setForceEaseCmd(h, state, x, Easing.Linear);
+        setForcesEase(h, state, [x], Easing.Linear);
         expect(forceEase(state, x)).toBe(Easing.Linear);
         expect(forceTangent(state, x)).toEqual(xIn); // X.in survived; only X.out (already derived) was addressed
     });
@@ -1198,7 +1198,7 @@ describe("force easing + seeding (stage B)", () => {
         expect(forceTangent(state, x)?.out).toBeUndefined(); // X.out derived
         expect(forceTangent(state, next)?.in).toBeDefined(); // provenance is the trailing in
 
-        setForceEaseCmd(h, state, x, Easing.Cubic); // Cubic is X's current (default) tag — no tag change
+        setForcesEase(h, state, [x], Easing.Cubic); // Cubic is X's current (default) tag — no tag change
         expect(h.undo.length).toBe(1); // records despite the unchanged tag: the trailing side changed
         expect(forceTangent(state, next)).toBeUndefined(); // Custom provenance gone
 

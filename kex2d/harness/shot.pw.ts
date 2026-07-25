@@ -2175,6 +2175,29 @@ test("viewport multiselect flow", async ({ page }) => {
     await expect.poll(nodeSelOrders).toEqual([2, 3, 4]);
     expect(await selectedOrder()).toBe(4); // re-added → active again
 
+    // ── 2b. SHIFT-CLICK a node's BODY (not a marquee) toggles it — the exact gesture
+    // `controls.ts`'s `onPointerDown` fires on `pickNode`'s hit (`select(eid, e.shiftKey ?
+    // "toggle" : "replace")`, kexedit c897c70). shift-click the active MEMBER (node 4) toggles it
+    // OUT (the survivor, node 3, promotes active); shift-click a NON-member (node 5) toggles it IN,
+    // made active — then both are shift-clicked back to restore [2,3,4] active 4 for the move step
+    // below. ──
+    const shiftClickNode = async (o: number): Promise<void> => {
+        await page.keyboard.down("Shift");
+        await page.mouse.click(cb.x + pt[o].x, cb.y + pt[o].y);
+        await page.keyboard.up("Shift");
+    };
+    await shiftClickNode(4);
+    await expect.poll(nodeSelOrders).toEqual([2, 3]);
+    expect(await selectedOrder()).toBe(3); // promoted survivor
+    await shiftClickNode(5);
+    await expect.poll(nodeSelOrders).toEqual([2, 3, 5]);
+    expect(await selectedOrder()).toBe(5); // toggled in → active
+    await shiftClickNode(5);
+    await expect.poll(nodeSelOrders).toEqual([2, 3]);
+    await shiftClickNode(4);
+    await expect.poll(nodeSelOrders).toEqual([2, 3, 4]);
+    expect(await selectedOrder()).toBe(4); // restored for the move step below
+
     // ── 3. Per-node polar delta: drag the ACTIVE node's real LENGTH knob outward along its own
     // chord (node 3 → node 4). Every selected node (2, 3, 4) must move — each in its own polar
     // frame, chained in ascending order — while the untouched nodes on BOTH sides of the run (0, 1

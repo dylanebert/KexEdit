@@ -23,7 +23,6 @@ import {
     convertSections,
     createForce,
     createHistory,
-    deleteForce,
     deleteForces,
     extendTrack,
     redo,
@@ -223,11 +222,11 @@ test("createForce: undo removes the point, redo re-spawns it verbatim", () => {
     expect(points(state, sec)).toEqual([{ id, s: 12, g: 0.5 }]); // same id + values
 });
 
-test("deleteForce: undo re-spawns the removed point verbatim", () => {
+test("deleteForces: a size-1 set undoes re-spawning the removed point verbatim", () => {
     const { state, sec } = nodes();
     const h = createHistory();
     const id = createForce(h, state, sec, 7, 0.2);
-    deleteForce(h, state, id);
+    deleteForces(h, state, [id]);
     expect(points(state, sec)).toEqual([]);
 
     undo(h, state);

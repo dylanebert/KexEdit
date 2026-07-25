@@ -1090,7 +1090,7 @@ const fmenuEase = $derived.by((): Easing => {
 // SIDE of the segment (this keyframe's out or the next keyframe's in), never the far
 // sides (this keyframe's in / the next's out, which belong to the neighbouring segments).
 // DERIVED provenance, per-side, never a stored flag — agrees exactly with what a preset
-// pick on this keyframe clears (setForceEase's segment-scoped clear).
+// pick on this keyframe clears (setForcesEase's segment-scoped clear).
 const fmenuCustom = $derived.by((): boolean => {
     void tick;
     const m = editor.forceMenu;
