@@ -1289,17 +1289,21 @@ function customGlyph(id: number): string {
 // dismiss the force menu on any outside press or Escape (clicks on the menu pass through so
 // its items act first). Escape peels just this layer (capture + stop, so the window handler
 // below doesn't also deselect the point) — root ui.md's one-layer dismissal.
-$effect(() => {
-    if (fmenu === null) return;
+//
+// the listeners are PERMANENT and gate on the live `editor.forceMenu`, never on the reactive
+// `fmenu`: `fmenu` derives through the per-RAF `tick`, so a lifetime bound to it outlives the
+// logical close by at least a frame — and a capture-phase swallow that outlives its own layer
+// eats the next Escape (the one meant to deselect the keyframe) from a menu already closed.
+onMount(() => {
     const onDown = (e: PointerEvent): void => {
+        if (editor.forceMenu === null) return;
         if ((e.target as HTMLElement | null)?.closest(".fmenu")) return;
         closeForceMenu();
     };
     const onEsc = (e: KeyboardEvent): void => {
-        if (e.key === "Escape") {
-            e.stopImmediatePropagation();
-            closeForceMenu();
-        }
+        if (editor.forceMenu === null || e.key !== "Escape") return;
+        e.stopImmediatePropagation();
+        closeForceMenu();
     };
     window.addEventListener("pointerdown", onDown, { capture: true });
     window.addEventListener("keydown", onEsc, { capture: true });
