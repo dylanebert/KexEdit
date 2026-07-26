@@ -8,7 +8,7 @@ paths:
 
 Conventions for `kex2d/harness/` (Playwright flows over the real UI, `bun run capture`). Each
 law below was earned by a root-caused flake or a live defect — they are why the suite is fast
-AND honest. Structure + install story: `kex2d/CLAUDE.md` "Verify".
+AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
 
 ## Iteration discipline
 
