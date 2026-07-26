@@ -111,13 +111,24 @@ copies this shape:
   force-keyframe drag** (the per-axis start magnet already serves single-axis intent, so a lock is
   redundant); Shift is a no-op there.
   The shaping viewport carries one too: the building vocabulary is the quantum, and **snap quantizes what
-  the piece does** — a pure grid, snap-by-default: chord length to whole meters (1 m floor), angle
-  to a 5° grid, uniform tip + interior. A tip snaps its exit-tangent *incline* (the chord that
+  the piece does** — a pure grid, snap-by-default: chord length and angle on per-user configurable
+  increments (defaults 1 m / 5°; the 1 m `LENGTH_MIN` chord floor is a separate quantity), uniform
+  tip + interior. A tip snaps its exit-tangent *incline* (the chord that
   yields it, `incline = 2·chord − tangent`), an interior node its chord angle; the old tip-only
   asymmetry existed only because a proximity quantum couldn't reach a frozen heading — a plain grid
   needs none. Ctrl/Cmd bypasses to continuous. A zoom-dependent ruler tick or a nice-number gridline
   is display, not content. If nice-value targeting is ever wanted, it's a separate
   explicitly-enabled grid (the Figma split), never folded into the default magnet.
+- **Manipulator quanta are per-user configurable; timeline grids stay fixed** (the Figma split:
+  configure the quanta users vary, fix the rest — `S_GRID`/`G_GRID` remain named constants). The
+  increment fields live in a popover summoned by right-click on the snap toggle itself (the
+  Blender/Godot attachment; the app's context-menu language), persist per-user (localStorage),
+  and clamp at **both ends** — floors 1° / 0.1 m, ceilings 180° / 100 m — because a persisted
+  extreme collapses the control across reloads; the ceiling's job is recoverability, not
+  precision. The field always displays the resolved live value (a rejected or clamped entry
+  writes back), and the bypass modifier stays independent of the configured value. A popover's
+  dismissal exemption targets the *invoker*, never its rail — a class-wide exemption silently
+  breaks when a second rail tool arrives.
 - **Node movement is per-axis 1D controls in the content's own polar frame** (the previous node,
   the piece being built), never free-2D or world-absolute. Absolute align-x/y families fight the
   angle quantum and don't generalize to 3D. The kex2d polar manipulator is the 3D port's template:
@@ -273,8 +284,15 @@ span, chart curve, navigator. One resolver produces the colored spans (kex2d `ki
 `colors.ts`); surfaces project it, never re-derive. Selection is a **brightened analog of the
 element's own color** (the Ableton/Premiere clip idiom), derived by one mix-toward-white helper
 over the kind token, never a flat accent recolor — flat accent over force gold reads as no
-selection at all. When languages stack, priority is infeasible-red > selection (brightened kind)
-> kind color, and dash stays reserved for infeasibility.
+selection at all. **Hover is the rung below selection**, a `hovered()` variant of the element's
+own kind color with one derived knob (kex2d `HOVER_STEP`, derived from the clip strip's
+composited hover-fill step, never tuned). When languages stack, priority is infeasible-red >
+selection (brightened kind) > hover > kind color, enforced by feasibility-skip in every color
+pass rather than draw order; dash stays reserved for infeasibility. Hover's boundaries travel
+with the rung: suppressed for the whole of any gesture (guard on the one live-gesture flag),
+invisible on an already-selected element (selection is the stronger read of the same span), and
+no cross-surface hover sync — a clip's CSS hover and the viewport span stay local to their own
+surfaces.
 
 ## Keyframe / curve-editor conventions
 
@@ -285,7 +303,11 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   (the DAW/AE envelope-insertion identity: insertion never bends the curve), never at the cursor's
   y-value.
 - **Nothing moves under its own gesture** (root `ui.md` "Surfaces hold still"). Chart addition:
-  both axes clamp the cursor to the chart during a keyframe drag.
+  both axes clamp the cursor to the chart during a keyframe drag. Camera / document-axis
+  navigation is a no-op while any gesture is live — a mid-gesture view change corrupts
+  screen-space grabs — guarded on the *one* live-gesture flag (kex2d `editor.dragging`) so the
+  rule can't go stale as gestures are added. Wheel is closed; `F` is a known open hole
+  (roadmap). The 3D `app/` viewport faces the identical hazard.
 - **Arrow cursor over keyframes** (AE/Unity/Blender); grab hands mean pannable surfaces. Hover
   affordance is the marker's fill change, not the cursor.
 - **Numeric fields are summoned at the object.** A selected keyframe's fields float in a popover
