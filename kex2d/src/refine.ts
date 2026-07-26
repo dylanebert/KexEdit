@@ -33,9 +33,11 @@
  *  phase is entered only from a state that holds the floor, so a refinement that ended
  *  un-authorable is never thinned further.
  *
- *  **Every accept is evaluated under the true objective**, never a proxy: a split trial and
- *  a removal counterfactual are each a real `polish` solve of the candidate knot set, judged
- *  on the geometry it integrates into.
+ *  **Every decision is made under the true objective**, never a proxy — and that covers the
+ *  CHOICE as well as the accept. A split trial and a removal counterfactual are each a real
+ *  `polish` solve of the candidate knot set, judged on the geometry its spine tracks; and the
+ *  prune scan is exhaustive, because ordering candidates by anything cheaper would let that
+ *  proxy pick which key dies, and with it every counterfactual evaluated afterwards.
  *
  *  **The probe is unregularized, and that is the point.** A candidate evaluation asks one
  *  question — CAN this knot set reach the floor? — and the answer is the tightest geometry
@@ -54,9 +56,11 @@
  *  **Every trial is judged in the region it touches, not globally.** A split is a LOCAL
  *  refinement, so the question it answers is whether the residual went down where it landed.
  *  The global max is dominated by whichever segment is currently worst, which is usually not
- *  the one just refined — measured on `hill-explicit`, the global max rose 0.073 → 0.077 on
- *  a split that was working, and the very next round reached the floor. Judging globally
- *  reads that blip as a stall and gives up one round short of the answer.
+ *  the one just refined, so a working split routinely leaves it flat or nudges it up — and a
+ *  global test reads that as a stall and pays for a corner it does not need. Measured by
+ *  running the whole corpus under the global rule (`worked = trial.deviation < cur.deviation`):
+ *  4 of 10 scenarios plant a spurious corner that the local rule avoids, and two of them also
+ *  spend a key for it — `double-hump` 15 keys against 14, `loop-explicit` 14 against 13.
  *
  *  **Corners are stall-triggered.** A broken key (`polish.Corners`) is the one discrete
  *  state the continuous solve cannot wander into, and the loop introduces it only when
@@ -74,13 +78,14 @@
  *  `heldFloor` false, the honest un-authorable outcome the authorability directive
  *  sanctions: a spike narrower than the authoring grid is approximated away, not chased.
  *
- *  **The key budget is derived, not set.** A segment earns a split only if BOTH halves keep
- *  at least one interior sample of the uniform grid the force is integrated on — an
- *  arclength span of `2·ds`. Under that a segment's shape drives no dense sample at all, so
- *  it is unobservable in the geometry it is supposed to be fixing, and the fairing energy's
- *  `1/span³` pricing (`polish.fairRows`) would charge its curvature by orders of magnitude
- *  more than its parent's for nothing. The budget is what that admissibility rule leaves,
- *  and the loop reports `"budget"` when it runs out.
+ *  **The key budget is derived, not set.** A segment earns a split only if BOTH halves keep an
+ *  interior sample of the uniform grid the force is integrated on. An open interval of
+ *  arclength `2·ds` contains a multiple of `ds` at ANY phase, so `2·ds` is the tight
+ *  phase-free bound for that — below it whether a child brackets a sample depends on where the
+ *  grid happens to fall, and a child that brackets none drives no force the geometry can see
+ *  while `polish.fairRows`'s `1/span³` still prices its curvature against its parent's by the
+ *  cube of their ratio. The budget is what that admissibility rule leaves, and the loop
+ *  reports `"budget"` when it runs out.
  *
  *  **Deterministic.** Same bake, same answer: every argmax breaks ties toward the lower
  *  index, both sorts break ties on the index they are ordering, and `polish` carries no
@@ -96,6 +101,159 @@ import {
     spine,
 } from "./polish";
 import type { Entry } from "./section";
+
+/** the arclength frame every placement rule below reads: the dense samples' own arclengths
+ *  (`fit.arclength`), the uniform spine step the deviation profile is indexed on, and the
+ *  observability floor a split must clear. Bundled because the rules are pure functions of it
+ *  — which is what lets them be tested without a 30-second corpus solve. */
+export interface Frame {
+    sigma: Float64Array;
+    /** the spine's realized step, so spine sample `j` sits at arclength `j·ds`. */
+    ds: number;
+    /** the shortest segment a split may leave: `2·ds` (see `siteIn`). */
+    minSpan: number;
+}
+
+/** one segment's residual reading. */
+export interface Seg {
+    /** the worst spine deviation inside the segment (m). */
+    worst: number;
+    /** the arclength that HALVES the segment's integrated residual. */
+    half: number;
+}
+
+/** per segment: the worst spine deviation inside it, and the arclength that halves its
+ *  integrated residual. Samples past the last knot belong to the last segment — that stretch
+ *  is the flat hold the final key drives (`fit.arclength`).
+ *
+ *  The two readings answer different questions and the split uses both. `worst` says where the
+ *  discrepancy constraint BINDS, so it picks the segment. `half` says where to cut it: de
+ *  Boor's equidistribution principle, the standard adaptive-mesh placement — put the knot where
+ *  each child inherits half the work. Splitting at the residual PEAK instead is Schneider's
+ *  rule for fitting a curve to data, and it is wrong under this prior: a peak sitting near an
+ *  existing knot puts the new one right beside it, and the fairing energy's `1/span³` scaling
+ *  then prices the sliver against its neighbour by the cube of their ratio. Measured on
+ *  `full-loop`, peak-splitting produced 1.0 m segments beside a 35.4 m one — a 44,000× pricing
+ *  disparity — and the discrepancy search collapsed λ from 1.1e-3 to 2.9e-9 to afford the
+ *  slivers any curvature at all, which is no regularization anywhere: the dense peak went
+ *  6.1 → 24.2 g. Equidistribution cannot produce that, because a child can only be short where
+ *  the residual it carries is concentrated enough to earn it.
+ *
+ * @example
+ * const segs = residual(frame, knots, result.deviations);
+ */
+export function residual(f: Frame, knots: readonly number[], devs: ArrayLike<number>): Seg[] {
+    // `worst` opens at 0, the honest reading for a segment bracketing no sample — a deviation
+    // is never negative, and a sentinel below zero would make `over` score an unobservable
+    // region as an improvement. `half` opens at the segment MIDPOINT, which is where
+    // equidistribution lands when the residual is uniform and, in particular, when it is
+    // identically zero: leaving it at 0 would send `siteIn` to the leftmost admissible index,
+    // the sliver placement this rule exists to prevent.
+    const segs = knots.slice(0, -1).map((_, k) => ({
+        worst: 0,
+        half: 0.5 * (f.sigma[knots[k]] + f.sigma[knots[k + 1]]),
+        sum: 0,
+    }));
+    const seg = (a: number, k: number): number => {
+        while (k + 2 < knots.length && f.sigma[knots[k + 1]] <= a) k++;
+        return k;
+    };
+    let k = 0;
+    for (let j = 1; j < devs.length; j++) {
+        k = seg(j * f.ds, k);
+        segs[k].sum += devs[j];
+        segs[k].worst = Math.max(segs[k].worst, devs[j]);
+    }
+    const run = segs.map(() => 0);
+    k = 0;
+    for (let j = 1; j < devs.length; j++) {
+        const a = j * f.ds;
+        k = seg(a, k);
+        if (segs[k].sum > 0 && run[k] < 0.5 * segs[k].sum) segs[k].half = a;
+        run[k] += devs[j];
+    }
+    return segs;
+}
+
+/** the admissible dense index nearest arclength `a` strictly inside `(prev, next)`, or −1 when
+ *  the segment is too short to carry one.
+ *
+ *  Admissible means both halves keep at least `minSpan = 2·ds` of arclength. An open interval
+ *  that long contains a multiple of `ds` at ANY phase, so it is the tight phase-free bound for
+ *  "each child still brackets an interior sample of the grid the force is integrated on" —
+ *  derived, not chosen. Below it a child's shape drives no sample the geometry can see, and
+ *  `polish.fairRows`'s `1/span³` would price its curvature against its parent's by the cube of
+ *  their ratio for nothing. */
+export function siteIn(f: Frame, prev: number, next: number, a: number): number {
+    let best = -1;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (let i = prev + 1; i < next; i++) {
+        if (f.sigma[i] - f.sigma[prev] < f.minSpan) continue;
+        // sigma ascends, so once the right half is too short every later index is too.
+        if (f.sigma[next] - f.sigma[i] < f.minSpan) break;
+        const d = Math.abs(f.sigma[i] - a);
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+/** where to split: the worst segment that can carry a knot, at its own equidistribution point.
+ *  `seg` is that segment's index — the region the trial is then judged in — and `segs` is the
+ *  residual reading it came from, so the caller need not recompute it. `site` is −1 when no
+ *  segment can carry another knot, which is the derived key budget. */
+export function splitSite(
+    f: Frame,
+    knots: readonly number[],
+    devs: ArrayLike<number>,
+): { site: number; seg: number; segs: Seg[] } {
+    const segs = residual(f, knots, devs);
+    const order = segs.map((_, k) => k);
+    order.sort((x, y) => segs[y].worst - segs[x].worst || x - y);
+    for (const k of order) {
+        const i = siteIn(f, knots[k], knots[k + 1], segs[k].half);
+        if (i >= 0) return { site: i, seg: k, segs };
+    }
+    return { site: -1, seg: -1, segs };
+}
+
+/** the worst residual across a run of segments — the reading a local trial has to move. */
+export function over(segs: readonly Seg[], lo: number, hi: number): number {
+    let w = 0;
+    for (let k = Math.max(0, lo); k <= Math.min(segs.length - 1, hi); k++)
+        w = Math.max(w, segs[k].worst);
+    return w;
+}
+
+/** where to break: the interior knot nearest the residual peak that is not a corner already,
+ *  or −1 when every interior knot is one. */
+export function cornerSite(
+    f: Frame,
+    knots: readonly number[],
+    cornerKnots: readonly number[],
+    devs: ArrayLike<number>,
+): number {
+    let peak = -1;
+    let a = 0;
+    for (let j = 1; j < devs.length; j++)
+        if (devs[j] > peak) {
+            peak = devs[j];
+            a = j * f.ds;
+        }
+    let best = -1;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (let k = 1; k + 1 < knots.length; k++) {
+        if (cornerKnots.includes(knots[k])) continue;
+        const d = Math.abs(f.sigma[knots[k]] - a);
+        if (d < bestD) {
+            bestD = d;
+            best = knots[k];
+        }
+    }
+    return best;
+}
 
 /** the geo bake the loop refines against — `polish.Bake` plus the dense recovered force the
  *  warm start is fitted from. A `section.SectionResult` satisfies it. */
@@ -184,10 +342,10 @@ export function refine(opts: RefineOpts): RefineResult {
 
     const sp = spine(bake, opts.ds);
     const floor = opts.floor ?? authoringFloor(sp);
-    const sigma = arclength(bake.ds);
-    // the observability floor: a segment shorter than two uniform steps brackets no interior
-    // sample of the grid the force is integrated on (see the module note).
-    const minSpan = 2 * sp.ds;
+    // the arclength frame every placement rule reads (`Frame`), including the observability
+    // floor: a segment shorter than two uniform steps brackets no interior sample of the grid
+    // the force is integrated on (see the module note).
+    const frame: Frame = { sigma: arclength(bake.ds), ds: sp.ds, minSpan: 2 * sp.ds };
 
     let probes = 0;
     let solves = 0;
@@ -226,128 +384,6 @@ export function refine(opts: RefineOpts): RefineResult {
     /** the discrepancy constraint: a state that holds it is authorable at these keys. */
     const held = (r: PolishResult): boolean => r.converged && r.deviation <= floor;
 
-    /** per segment: the worst spine deviation inside it, and the arclength that HALVES its
-     *  integrated residual. Samples past the last knot belong to the last segment — that
-     *  stretch is the flat hold the final key drives (`fit.arclength`).
-     *
-     *  The two readings answer different questions and the split uses both. `worst` says
-     *  where the discrepancy constraint BINDS, so it picks the segment. `half` says where to
-     *  cut it: de Boor's equidistribution principle, the standard adaptive-mesh placement —
-     *  put the knot where each child inherits half the work. Splitting at the residual PEAK
-     *  instead is Schneider's rule for fitting a curve to data, and it is wrong under this
-     *  prior: a peak sitting near an existing knot puts the new one right beside it, and the
-     *  fairing energy's `1/span³` scaling then prices the sliver against its neighbour by the
-     *  cube of their ratio. Measured on `full-loop`, peak-splitting produced 1.0 m segments
-     *  beside a 35.4 m one — a 44,000× pricing disparity — and the discrepancy search
-     *  collapsed λ from 1.1e-3 to 2.9e-9 to afford the slivers any curvature at all, which is
-     *  no regularization anywhere: the dense peak went 6.1 → 24.2 g. Equidistribution cannot
-     *  produce that, because a child can only be short where the residual it carries is
-     *  concentrated enough to earn it. */
-    const residual = (
-        knots: readonly number[],
-        devs: Float64Array,
-    ): { worst: number; half: number }[] => {
-        // `worst` opens at 0, the honest reading for a segment bracketing no sample — a
-        // deviation is never negative, and a sentinel below zero would make `over` score an
-        // unobservable region as an improvement. `half` opens at the segment MIDPOINT, which
-        // is where equidistribution lands when the residual is uniform and, in particular,
-        // when it is identically zero: leaving it at 0 would send `siteIn` to the leftmost
-        // admissible index, the sliver placement this rule exists to prevent.
-        const segs = knots.slice(0, -1).map((_, k) => ({
-            worst: 0,
-            half: 0.5 * (sigma[knots[k]] + sigma[knots[k + 1]]),
-            sum: 0,
-        }));
-        const seg = (a: number, k: number): number => {
-            while (k + 2 < knots.length && sigma[knots[k + 1]] <= a) k++;
-            return k;
-        };
-        let k = 0;
-        for (let j = 1; j < devs.length; j++) {
-            const a = j * sp.ds;
-            k = seg(a, k);
-            segs[k].sum += devs[j];
-            segs[k].worst = Math.max(segs[k].worst, devs[j]);
-        }
-        const run = segs.map(() => 0);
-        k = 0;
-        for (let j = 1; j < devs.length; j++) {
-            const a = j * sp.ds;
-            k = seg(a, k);
-            if (segs[k].sum > 0 && run[k] < 0.5 * segs[k].sum) segs[k].half = a;
-            run[k] += devs[j];
-        }
-        return segs;
-    };
-
-    /** the admissible dense index nearest arclength `a` strictly inside `(prev, next)`, or
-     *  −1 when the segment is too short to carry one. */
-    const siteIn = (prev: number, next: number, a: number): number => {
-        let best = -1;
-        let bestD = Number.POSITIVE_INFINITY;
-        for (let i = prev + 1; i < next; i++) {
-            if (sigma[i] - sigma[prev] < minSpan) continue;
-            // sigma ascends, so once the right half is too short every later index is too.
-            if (sigma[next] - sigma[i] < minSpan) break;
-            const d = Math.abs(sigma[i] - a);
-            if (d < bestD) {
-                bestD = d;
-                best = i;
-            }
-        }
-        return best;
-    };
-
-    /** where to split: the worst segment that can carry a knot, at its own equidistribution
-     *  point. `seg` is that segment's index — the region the trial is then judged in. */
-    const splitSite = (
-        knots: readonly number[],
-        devs: Float64Array,
-    ): { site: number; seg: number; segs: { worst: number; half: number }[] } => {
-        const segs = residual(knots, devs);
-        const order = segs.map((_, k) => k);
-        order.sort((x, y) => segs[y].worst - segs[x].worst || x - y);
-        for (const k of order) {
-            const i = siteIn(knots[k], knots[k + 1], segs[k].half);
-            if (i >= 0) return { site: i, seg: k, segs };
-        }
-        return { site: -1, seg: -1, segs };
-    };
-
-    /** the worst residual across a run of segments — the reading a local trial moves. */
-    const over = (segs: { worst: number }[], lo: number, hi: number): number => {
-        let w = 0;
-        for (let k = Math.max(0, lo); k <= Math.min(segs.length - 1, hi); k++)
-            w = Math.max(w, segs[k].worst);
-        return w;
-    };
-
-    /** where to break: the interior knot nearest the residual peak that is not one already. */
-    const cornerSite = (
-        knots: readonly number[],
-        cornerKnots: readonly number[],
-        devs: Float64Array,
-    ): number => {
-        let peak = -1;
-        let a = 0;
-        for (let j = 1; j < devs.length; j++)
-            if (devs[j] > peak) {
-                peak = devs[j];
-                a = j * sp.ds;
-            }
-        let best = -1;
-        let bestD = Number.POSITIVE_INFINITY;
-        for (let k = 1; k + 1 < knots.length; k++) {
-            if (cornerKnots.includes(knots[k])) continue;
-            const d = Math.abs(sigma[knots[k]] - a);
-            if (d < bestD) {
-                bestD = d;
-                best = knots[k];
-            }
-        }
-        return best;
-    };
-
     let knots = [0, n - 1];
     let cornerKnots: number[] = [];
     let cur = probe(knots, cornerKnots);
@@ -370,7 +406,7 @@ export function refine(opts: RefineOpts): RefineResult {
             log("budget", -1, cur.deviation);
             break;
         }
-        const { site, seg, segs } = splitSite(knots, cur.deviations);
+        const { site, seg, segs } = splitSite(frame, knots, cur.deviations);
         if (site < 0) {
             log("budget", -1, cur.deviation);
             break;
@@ -380,19 +416,21 @@ export function refine(opts: RefineOpts): RefineResult {
         // the split turned segment `seg` into `seg` and `seg + 1`; the region is both halves.
         const worked =
             trial.converged &&
-            over(residual(next, trial.deviations), seg, seg + 1) < segs[seg].worst;
+            over(residual(frame, next, trial.deviations), seg, seg + 1) < segs[seg].worst;
         if (!worked) {
             log("stall", site, trial.deviation);
-            const broken = cornerSite(knots, cornerKnots, cur.deviations);
-            const kk = broken < 0 ? -1 : knots.indexOf(broken);
-            if (kk > 0) {
+            // −1 when every interior knot is already a corner; `cornerSite` never returns an
+            // endpoint, so any other value is a real interior key.
+            const broken = cornerSite(frame, knots, cornerKnots, cur.deviations);
+            if (broken >= 0) {
+                const kk = knots.indexOf(broken);
                 const withCorner = [...cornerKnots, broken].sort((x, y) => x - y);
                 const ct = probe(knots, withCorner);
                 // the corner joins segments kk − 1 and kk; hold it to the same local test,
                 // so the vocabulary only pays where the split could not deliver.
                 if (
                     ct.converged &&
-                    over(residual(knots, ct.deviations), kk - 1, kk) < over(segs, kk - 1, kk)
+                    over(residual(frame, knots, ct.deviations), kk - 1, kk) < over(segs, kk - 1, kk)
                 ) {
                     cornerKnots = withCorner;
                     cur = ct;
@@ -422,33 +460,33 @@ export function refine(opts: RefineOpts): RefineResult {
     // holds the floor too.
     if (held(cur))
         for (;;) {
-            // candidates ranked cheapest-first by the MERGED PIECE's own dense-force error
-            // (`FitStep.errors`) — Lyche–Mørken's knot-removal estimate, the ranking
-            // `fit.ts` already prunes by. It is free next to a solve, and it orders the
-            // search only: every acceptance below is still the true counterfactual, judged
-            // on the geometry the candidate integrates into. A bad ranking costs an extra
-            // probe, never a wrong removal.
-            const rank: { k: number; est: number }[] = [];
+            // EVERY candidate is probed, and the winner is the removal whose counterfactual
+            // holds with the most slack. Probing in some cheap order and taking the first
+            // that holds would be far cheaper, but the order would then decide WHICH key
+            // dies, and that changes the state every later counterfactual is evaluated
+            // against — so a proxy would be choosing the answer while the module claimed the
+            // true objective chose it. Measured, an ordering swap moved `hill-auto` between
+            // 9 and 8 keys. Ordering is not a free variable here, so there is no ordering:
+            // the scan is exhaustive and the comparison is the true objective's own reading.
+            let best = -1;
+            let bestR: PolishResult | null = null;
             for (let k = 1; k + 1 < knots.length; k++) {
-                const cand = knots.filter((_, i) => i !== k);
-                rank.push({ k, est: fitKnots(bake.fN, bake.ds, cand).steps[0].errors[k - 1] });
-            }
-            rank.sort((x, y) => x.est - y.est || x.k - y.k);
-            let gone = -1;
-            for (const { k } of rank) {
-                const cand = knots.filter((_, i) => i !== k);
                 const r = probe(
-                    cand,
+                    knots.filter((_, i) => i !== k),
                     cornerKnots.filter((c) => c !== knots[k]),
                 );
-                if (!held(r)) continue;
-                gone = knots[k];
-                knots = cand;
-                cornerKnots = cornerKnots.filter((c) => c !== gone);
-                cur = r;
-                break;
+                // strict `<` keeps the lowest key index on a tie, so the scan is order-free
+                // in its result as well as its cost.
+                if (held(r) && (bestR === null || r.deviation < bestR.deviation)) {
+                    best = k;
+                    bestR = r;
+                }
             }
-            if (gone < 0) break;
+            if (bestR === null) break;
+            const gone = knots[best];
+            knots = knots.filter((_, i) => i !== best);
+            cornerKnots = cornerKnots.filter((c) => c !== gone);
+            cur = bestR;
             log("prune", gone, cur.deviation);
         }
 
