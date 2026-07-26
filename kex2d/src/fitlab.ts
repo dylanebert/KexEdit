@@ -34,6 +34,7 @@
 // Read-only: nothing here authors. Served by vite at /fit-lab.html; captured by the
 // Playwright harness, which drives the `window.__fitlab` hook below.
 
+import { census, type HandleStats, handleState, type Scale } from "./census";
 import { type FitStep, fit } from "./fit";
 import { polish, type PolishMode, type PolishResult } from "./polish";
 import { type ForcePoint, forceProfile } from "./profile";
@@ -64,25 +65,7 @@ const PANEL_H = 340;
  *  a 150-frame pipeline does not flash past. */
 const FRAME_MS = 50;
 
-/** a handle pair reads as collinear when the off-line tip sits within half a CSS pixel of
- *  the other side's ray. Derived from the display, which is where the judgment lives: a
- *  sub-pixel break is not a break anyone can see, and the (s, g) axes carry different
- *  units, so an angle in data space would be a made-up number. */
-const ALIGN_PX = 0.5;
-
 type Phase = "recover" | "fit" | "polish";
-
-/** how a keyframe's two handles sit relative to each other — the editor's tangent-mode
- *  vocabulary (`editor-ui.md` Tangent editing), read off the drawn geometry. */
-type HandleState = "mirror" | "aligned" | "broken" | "single";
-
-interface HandleStats {
-    mirror: number;
-    aligned: number;
-    broken: number;
-    /** a chain end: one side only, so there is nothing to break. */
-    single: number;
-}
 
 /** one scenario's row in the corpus table. */
 interface Row {
@@ -376,6 +359,9 @@ interface Chart {
     py: (g: number) => number;
     lo: number;
     hi: number;
+    /** the px-per-unit of the same transform, for `census.ts` — the handle judgment is a
+     *  screen-space one, and only the linear part of the mapping enters it. */
+    scale: Scale;
 }
 
 const PAD_L = 46;
@@ -398,30 +384,8 @@ function chart(s: Solve, alt: Solve | null): Chart {
         py: (g) => PANEL_H - PAD_B - ((g - lo) / (hi - lo)) * (PANEL_H - PAD_B - PAD_T),
         lo,
         hi,
+        scale: { s: (PANEL_W - PAD_L - PAD_R) / length, g: (PANEL_H - PAD_B - PAD_T) / (hi - lo) },
     };
-}
-
-/** classify a keyframe's handles in SCREEN space: collinear-through-the-key within
- *  `ALIGN_PX`, and mirrored when the two screen lengths match too. A side pointing the same
- *  way as the other (a cusp) is broken by construction. */
-function handleState(
-    kx: number,
-    ky: number,
-    a: { x: number; y: number } | null,
-    b: { x: number; y: number } | null,
-): HandleState {
-    if (!a || !b) return "single";
-    const ux = a.x - kx;
-    const uy = a.y - ky;
-    const wx = b.x - kx;
-    const wy = b.y - ky;
-    const lu = Math.hypot(ux, uy);
-    const lw = Math.hypot(wx, wy);
-    if (lu < ALIGN_PX || lw < ALIGN_PX) return "broken"; // a collapsed side has no direction
-    if (ux * wx + uy * wy >= 0) return "broken";
-    const cross = Math.abs(ux * wy - uy * wx);
-    if (cross / Math.min(lu, lw) > ALIGN_PX) return "broken";
-    return Math.abs(lu - lw) <= ALIGN_PX ? "mirror" : "aligned";
 }
 
 function tipsOf(
@@ -432,15 +396,6 @@ function tipsOf(
         p.in ? { x: c.px(p.s + p.in.ds), y: c.py(p.g + p.in.dg) } : null,
         p.out ? { x: c.px(p.s + p.out.ds), y: c.py(p.g + p.out.dg) } : null,
     ];
-}
-
-function handleStats(points: readonly ForcePoint[], c: Chart): HandleStats {
-    const stats: HandleStats = { mirror: 0, aligned: 0, broken: 0, single: 0 };
-    for (const p of points) {
-        const [a, b] = tipsOf(p, c);
-        stats[handleState(c.px(p.s), c.py(p.g), a, b)]++;
-    }
-    return stats;
 }
 
 // ── the page shell ──
@@ -749,7 +704,7 @@ function drawForce(): void {
                 const kx = px(p.s);
                 const ky = py(p.g);
                 const [a, b] = tipsOf(p, c);
-                const state = handleState(kx, ky, a, b);
+                const state = handleState(p, c.scale);
                 ctx.strokeStyle = state === "broken" ? RED : GREEN;
                 ctx.fillStyle = ctx.strokeStyle;
                 ctx.lineWidth = 1;
@@ -932,7 +887,7 @@ function drawLines(): void {
           ? `fit error ${fmt(fr.step.maxError, 3)} g vs tol ${FIT_TOL} g` +
             (frame === s.warm ? " · this frame IS the warm start" : "")
           : "the observation the fit chases";
-    const hs = fr.points ? handleStats(fr.points, chart(s, other())) : null;
+    const hs = fr.points ? census(fr.points, chart(s, other()).scale) : null;
     const handles = hs
         ? ` · handles ${hs.mirror} mirrored / ${hs.aligned} aligned / ${hs.broken} broken` +
           ` / ${hs.single} one-sided`
@@ -1145,7 +1100,7 @@ setTimeout(pump, 0);
         const s = current();
         const points = s?.frames[frame].points;
         return s && points
-            ? handleStats(points, chart(s, other()))
+            ? census(points, chart(s, other()).scale)
             : { mirror: 0, aligned: 0, broken: 0, single: 0 };
     },
     /** keyframes on THIS frame — what `handles()` censuses. Not `points().length`, which is

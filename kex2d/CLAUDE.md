@@ -311,6 +311,12 @@ editor-ui invariant-domain rule).
   reference (`tests/helpers/dense.ts`).
 - `collocate.ts` — the dense-spine solver kernel (LM Gauss-Newton, PHR augmented-Lagrangian band).
   Kept as reference for the deferred optimization tier; the live path does not call it.
+- `census.ts` — the **vocabulary census**: which tangent-mode shape (`mirror`/`aligned`/`broken`/
+  `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
+  authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`
+  axes carry different units, so a data-space angle would be a made-up number), which makes the
+  surface's `Scale` part of it. One instrument shared by the fit lab's overlay and the conversion
+  tier's oracle asserts, so the two can't disagree. Unit-tested in `census.test.ts`.
 
 **ECS + UI layer (the live app):**
 
@@ -647,7 +653,10 @@ oracle, not self-consistency.
 
 Investigation labs (run explicitly, not part of `bun test`) — the kernel-atom / future-tier
 reference: `tests/geometry.lab.ts`, `tests/collocate.lab.ts`, `tests/loop.lab.ts`,
-`tests/conditioning.lab.ts`, `tests/fvd.lab.ts`, `tests/hill.lab.ts`. Visual counterparts
+`tests/conditioning.lab.ts`, `tests/fvd.lab.ts`, `tests/hill.lab.ts`, and
+`tests/attribution.lab.ts` (the conversion tier's attribution sweep — one printed row per
+corpus solve over `polish`'s mode × DOF axes, so flipping one axis attributes a metric change
+to it; violence numbers are ds-dependent and censuses are final-frame only). Visual counterparts
 `geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` (canvas2D, captured by
 the harness).
 

@@ -1,16 +1,26 @@
 import { describe, expect, test } from "bun:test";
+import { ALIGN_PX, census, type Scale } from "../src/census";
 import { fit } from "../src/fit";
 import {
+    applyDof,
     AUTHOR_EPS,
     authoringFloor,
     chordDeficit,
+    forceMatrix,
     polish,
     type PolishResult,
+    readDof,
     spine,
     TOL_FEAS,
     violence,
 } from "../src/polish";
-import { type ForcePoint, forceProfile, segmentControls } from "../src/profile";
+import {
+    collinear,
+    type ForcePoint,
+    forceProfile,
+    sampleForce,
+    segmentControls,
+} from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { type Entry, evalForce, evalGeo } from "../src/section";
 import { G_GRID } from "../src/timeline";
@@ -288,11 +298,10 @@ describe("constrained polish — the corpus", () => {
                 expect(out.snapshots.length).toBeGreaterThan(1);
                 expect(out.snapshots.length).toBeLessThanOrEqual(120);
                 for (const snap of out.snapshots) {
-                    expect(snap.x.length).toBe(out.edges + 1);
-                    expect(snap.y.length).toBe(out.edges + 1);
                     expect(snap.fN.length).toBe(out.edges);
                     expect(snap.points.length).toBe(out.keys);
                     expect(Number.isFinite(snap.feasibility)).toBe(true);
+                    expect(Number.isFinite(snap.deviation)).toBe(true);
                 }
                 // playback ends on the answer.
                 const last = out.snapshots[out.snapshots.length - 1];
@@ -490,7 +499,6 @@ describe("constrained polish — calm mode", () => {
                 expect(out.snapshots.length).toBeGreaterThan(1);
                 expect(out.snapshots.length).toBeLessThanOrEqual(120);
                 const last = out.snapshots[out.snapshots.length - 1];
-                expect(last.x.length).toBe(out.edges + 1);
                 expect(last.fN.length).toBe(out.edges);
                 expect(last.feasibility).toBeCloseTo(out.feasibility, 12);
                 for (let k = 0; k < out.keys; k++) expect(last.points[k].g).toBe(out.points[k].g);
@@ -635,6 +643,401 @@ describe("constrained polish — calm mode", () => {
             expect(b.points[k].out?.dg).toBe(a.points[k].out?.dg);
             expect(b.points[k].in?.dg).toBe(a.points[k].in?.dg);
         }
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────
+// The AUTHORABLE DOF family (`handles: "aligned"`, spec `kex2d-geoforce-convert` lock 1):
+// one slope `m` per key instead of two independent handle Δg, so a BROKEN key is
+// unrepresentable rather than penalized.
+//
+// THE ATTRIBUTION RUN — the DOF restriction alone, prior unchanged (the Δg Tikhonov
+// pushed through the reparameterization, so λ measures the same quantity in both
+// families). Final-frame censuses only; violence numbers are ds-dependent, so read them
+// against this corpus at its own `scenario.ds`, never across one.
+//
+//   census, broken keys summed over the corpus:  exact  117 → 0     calm  50 → 0
+//   deviation (exact): within 4× of the free family on every scenario, and still an order
+//     under the authoring floor on nine of ten. valley-explicit is the tenth.
+//   violence (exact, maxΔg free → aligned): 0.29→0.24, 2.82→1.14, 11.4→3.6, 1.88→1.02,
+//     4.60→1.85, 16.1→4.02, 3.83→3.78, 141→**1866**, 2.35→0.71, 56.3→33.8.
+//   violence (calm, maxΔg free → aligned): unchanged within ±10% on eight, full-loop
+//     1.03→0.92, valley-explicit 46.1→33.8; peak g within ±2% except valley 35.1→15.9.
+//
+// The finding to carry into stage 2: **the vocabulary constraint fixes the census, not
+// the magnitudes.** loop-explicit's exact-mode handles get 13× LOUDER under the
+// restriction — aligned, and enormous — because near the geometry floor the problem is
+// ill-posed in both families and nothing in a flat Δg→0 prior prefers a quiet slope.
+// That is the gap the fairing seminorm is for, and it is why no per-scenario violence
+// ceiling is pinned here: stage 2 is expected to move every one of these.
+const AlignedDeviation: Record<string, number> = {
+    "circular-arc": 0.00045,
+    "parabola-hill": 0.0033,
+    "full-loop": 0.027,
+    "s-curve": 0.0026,
+    "straight-fillet": 0.0146,
+    "hill-auto": 0.0022,
+    "hill-explicit": 0.0043,
+    "loop-explicit": 0.0155,
+    "double-hump": 0.0023,
+    // 0.288 m against a 0.104 m floor. The aligned family cannot draw valley-explicit's
+    // ~38 g spike at the warm start's knots — a spike narrower than one keyframe span
+    // needs a split or an explicit corner, which is stage 3's refine loop. Recorded as
+    // the family's floor residual, NOT as a failure: the authorability directive
+    // sanctions approximating an un-authorable feature away, and this scenario is where
+    // that trade shows up as geometry.
+    "valley-explicit": 0.33,
+};
+
+/** the scenarios whose aligned solve reaches the derived authoring floor. The one absent
+ *  is the stage-3 input above — pinned as a SET so a scenario silently falling out of the
+ *  floor is a failure, not an unnoticed drift. */
+const AlignedHoldsFloor = new Set(
+    scenarios.map((s) => s.name).filter((n) => n !== "valley-explicit"),
+);
+
+const alignedExact = new Map<string, PolishResult>();
+const alignedCalm = new Map<string, PolishResult>();
+function aligned(name: string, mode: "exact" | "calm"): PolishResult {
+    const cache = mode === "exact" ? alignedExact : alignedCalm;
+    const hit = cache.get(name);
+    if (hit) return hit;
+    const { s, entry, bake } = bakeOf(name);
+    const f = fit(bake.fN, bake.ds, FIT_TOL);
+    const out = polish({ bake, entry, points: f.points, ds: s.ds, mode, handles: "aligned" });
+    cache.set(name, out);
+    return out;
+}
+
+/** the fit lab's own panel transform, which is the surface the census judges on
+ *  (`census.ts`: the classification is screen-space, and a count taken against a picture
+ *  nobody looks at is a count of nothing). Mirrored rather than imported — `fitlab.ts` is
+ *  a DOM page. */
+function panelScale(points: readonly ForcePoint[], length: number, ds: number): Scale {
+    const dense = forceProfile(points, length, ds);
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = Number.NEGATIVE_INFINITY;
+    for (const g of dense) {
+        lo = Math.min(lo, g);
+        hi = Math.max(hi, g);
+    }
+    for (const p of points) {
+        lo = Math.min(lo, p.g);
+        hi = Math.max(hi, p.g);
+    }
+    return { s: (620 - 46 - 14) / length, g: (340 - 34 - 26) / Math.max(hi - lo, 1e-3) };
+}
+
+function censusOf(r: PolishResult) {
+    return census(r.points, panelScale(r.points, r.length, r.ds));
+}
+
+describe("constrained polish — the authorable DOF", () => {
+    test("the two families have the sizes the vocabulary implies", () => {
+        const { bake } = bakeOf("hill-explicit");
+        const pts = fit(bake.fN, bake.ds, FIT_TOL).points;
+        const K = pts.length;
+        // free: a value per key plus a Δg per handle. aligned: a value AND a slope per key.
+        expect(readDof(pts, "free").length).toBe(3 * K - 2);
+        expect(readDof(pts, "aligned").length).toBe(2 * K);
+    });
+
+    test("free mode round-trips a profile exactly; aligned projects onto its family", () => {
+        const { bake } = bakeOf("hill-explicit");
+        const pts = fit(bake.fN, bake.ds, FIT_TOL).points;
+        const back = applyDof(pts, "free", readDof(pts, "free"));
+        for (let k = 0; k < pts.length; k++) {
+            expect(back[k].g).toBe(pts[k].g);
+            expect(back[k].in?.dg).toBe(pts[k].in?.dg);
+            expect(back[k].out?.dg).toBe(pts[k].out?.dg);
+            // Δs is never a DOF — placement is held fixed, which is what keeps the map linear.
+            expect(back[k].in?.ds).toBe(pts[k].in?.ds);
+            expect(back[k].out?.ds).toBe(pts[k].out?.ds);
+        }
+
+        // the warm start's handles are NOT collinear (that is the whole problem), so the
+        // aligned read has to project. Pin that it is the least-squares projection: any
+        // other slope leaves a larger Σ(m·Δs − Δg)² residual at that key.
+        const m = readDof(pts, "aligned");
+        const K = pts.length;
+        let broke = 0;
+        for (let k = 0; k < K; k++) {
+            if (!collinear(pts[k].in, pts[k].out)) broke++;
+            const resid = (slope: number): number => {
+                let sum = 0;
+                for (const side of [pts[k].in, pts[k].out])
+                    if (side) sum += (slope * side.ds - side.dg) ** 2;
+                return sum;
+            };
+            const at = resid(m[K + k]);
+            expect(resid(m[K + k] + 1e-3)).toBeGreaterThanOrEqual(at);
+            expect(resid(m[K + k] - 1e-3)).toBeGreaterThanOrEqual(at);
+        }
+        expect(broke).toBeGreaterThan(0);
+    });
+
+    test("every aligned profile is collinear at every key — the construction", () => {
+        const { bake } = bakeOf("hill-explicit");
+        const pts = fit(bake.fN, bake.ds, FIT_TOL).points;
+        const K = pts.length;
+        const dof = readDof(pts, "aligned");
+        // arbitrary slopes, including a sign flip and a huge one: collinearity is not a
+        // property of the solved answer, it is a property of the parameterization.
+        for (let k = 0; k < K; k++) dof[K + k] = ((k % 5) - 2) * 17.3;
+        for (const p of applyDof(pts, "aligned", dof)) expect(collinear(p.in, p.out)).toBe(true);
+    });
+
+    test("rejects a DOF vector of the wrong width", () => {
+        const { bake } = bakeOf("hill-auto");
+        const pts = fit(bake.fN, bake.ds, FIT_TOL).points;
+        expect(() => applyDof(pts, "aligned", new Float64Array(3 * pts.length))).toThrow(
+            /aligned over \d+ keys takes \d+ dof/,
+        );
+        expect(() => applyDof(pts, "free", new Float64Array(2 * pts.length))).toThrow(
+            /free over \d+ keys takes \d+ dof/,
+        );
+    });
+
+    test("rejects a handles option it could not mean anything over", () => {
+        const { s, entry, bake } = bakeOf("hill-auto");
+        const base = { bake, entry, points: fit(bake.fN, bake.ds, FIT_TOL).points, ds: s.ds };
+        // an unknown string would fall through to the free family and silently report a
+        // solve in a vocabulary nobody asked for — the same silent-no-op class the mode,
+        // floor, and lambda guards refuse.
+        expect(() => polish({ ...base, handles: "Aligned" as never })).toThrow(
+            /handles must be "free" or "aligned"/,
+        );
+        expect(() => polish({ ...base, handles: "" as never })).toThrow(/handles must be/);
+    });
+
+    test("the aligned force map is LINEAR: finite differences reproduce the probed matrix", () => {
+        // `F = A·dof` is what lets the LM/PHR machinery survive the reparameterization
+        // untouched, so it is checked against the production evaluator directly rather
+        // than assumed from the algebra. valley-explicit is the corpus's worst case: the
+        // steepest dense curve and the largest handle offsets.
+        const { s, bake } = bakeOf("valley-explicit");
+        const pts = fit(bake.fN, bake.ds, FIT_TOL).points;
+        const sp = spine(bake, s.ds);
+        const E = sp.edges;
+        const A = forceMatrix(pts, "aligned", E, sp.ds);
+        const P = readDof(pts, "aligned").length;
+        expect(A.length).toBe(P);
+
+        // TOL: the map is exactly linear, so the only error is `sampleForce`'s root solve
+        // — its s-residual is bounded by S_TOL_REL (1e-13) of the span, giving a value
+        // error of ~1e-13·|Δg| ≈ 1e-10 at this corpus's offsets. Divided by the smallest
+        // 2δ below that is ~1e-9; 1e-7 relative clears it by two decades and is still far
+        // tighter than any nonlinearity would be.
+        const Tol = 1e-7;
+        const base = readDof(pts, "aligned");
+        const F = (d: Float64Array): Float64Array => {
+            const prof = applyDof(pts, "aligned", d);
+            const out = new Float64Array(E);
+            for (let j = 0; j < E; j++) out[j] = sampleForce(prof, j * sp.ds);
+            return out;
+        };
+
+        // 1. central differences at a NON-ZERO base, two step sizes an order apart. A
+        //    linear map's difference quotient equals the derivative at every δ; a
+        //    nonlinear one's moves with δ, so agreeing at both is the real check.
+        let worstFd = 0;
+        for (const delta of [1, 0.1]) {
+            for (let p = 0; p < P; p++) {
+                const up = Float64Array.from(base);
+                const dn = Float64Array.from(base);
+                up[p] += delta;
+                dn[p] -= delta;
+                const fu = F(up);
+                const fd = F(dn);
+                for (let j = 0; j < E; j++) {
+                    const slope = (fu[j] - fd[j]) / (2 * delta);
+                    worstFd = Math.max(
+                        worstFd,
+                        Math.abs(slope - A[p][j]) / (1 + Math.abs(A[p][j])),
+                    );
+                }
+            }
+        }
+        expect(worstFd).toBeLessThan(Tol);
+
+        // 2. the map has no constant term and reconstructs exactly: F(0) = 0 and
+        //    F(d) = A·d for an arbitrary d, not just near the base.
+        for (const g of F(new Float64Array(P))) expect(g).toBe(0);
+        const d = Float64Array.from(base, (v, i) => v * 1.7 - 0.4 * ((i % 3) - 1));
+        const got = F(d);
+        let worstLin = 0;
+        for (let j = 0; j < E; j++) {
+            let sum = 0;
+            for (let p = 0; p < P; p++) sum += A[p][j] * d[p];
+            worstLin = Math.max(worstLin, Math.abs(sum - got[j]) / (1 + Math.abs(got[j])));
+        }
+        expect(worstLin).toBeLessThan(Tol);
+    });
+
+    test("the corpus's free-mode answer IS broken — the census bar has teeth", () => {
+        // the negative control for every "0 broken" assert below, and the check-in's
+        // complaint in one number: solving the same ten shapes in the independent-handle
+        // family leaves 117 keys an author would meet as `Free`.
+        let total = 0;
+        for (const s of scenarios) {
+            const c = censusOf(solved(s.name).out);
+            expect(c.broken).toBeGreaterThan(0);
+            total += c.broken;
+        }
+        expect(total).toBe(117);
+    });
+
+    for (const scenario of scenarios) {
+        describe(scenario.name, () => {
+            test("converges in the aligned family, both modes", () => {
+                for (const mode of ["exact", "calm"] as const) {
+                    const out = aligned(scenario.name, mode);
+                    expect(out.handles).toBe("aligned");
+                    expect(out.mode).toBe(mode);
+                    expect(out.converged).toBe(true);
+                    expect(out.feasibility).toBeLessThan(TOL_FEAS);
+                    expect(Math.abs(out.exit.dx)).toBeLessThan(TOL_FEAS);
+                    expect(Math.abs(out.exit.dy)).toBeLessThan(TOL_FEAS);
+                    expect(Math.abs(out.exit.dtheta) * out.length).toBeLessThan(TOL_FEAS);
+                }
+            });
+
+            test("re-integrated through the live evalForce path, the exit is pinned", () => {
+                for (const mode of ["exact", "calm"] as const) {
+                    const out = aligned(scenario.name, mode);
+                    const r = reference(scenario.name, out.points, out.length, out.ds);
+                    expect(r.exit).toBeLessThanOrEqual(EXIT_TOL);
+                    expect(r.exitTheta).toBeLessThanOrEqual(EXIT_ANG_TOL);
+                }
+            });
+
+            test("censuses 0 broken by construction, in both modes", () => {
+                for (const mode of ["exact", "calm"] as const) {
+                    const out = aligned(scenario.name, mode);
+                    const sc = panelScale(out.points, out.length, out.ds);
+                    expect(census(out.points, sc).broken).toBe(0);
+                    // and the reading is about COLLINEARITY, not about handles too short
+                    // to judge: `census` calls a sub-pixel side broken, so a scale that
+                    // collapsed them would pass this for the wrong reason. Measured worst
+                    // on the corpus: 0.79 px (hill-auto calm, whose handles go flat).
+                    for (const p of out.points)
+                        for (const side of [p.in, p.out])
+                            if (side)
+                                expect(Math.hypot(side.ds * sc.s, side.dg * sc.g)).toBeGreaterThan(
+                                    ALIGN_PX,
+                                );
+                    // the scale-free half of the same claim, in the editor's own predicate.
+                    for (const p of out.points) expect(collinear(p.in, p.out)).toBe(true);
+                }
+            });
+
+            test("keeps the warm start's keyframe placement, same as the free family", () => {
+                const { fit: f } = solved(scenario.name);
+                for (const mode of ["exact", "calm"] as const) {
+                    const out = aligned(scenario.name, mode);
+                    expect(out.keys).toBe(f.points.length);
+                    for (let k = 0; k < out.keys; k++) {
+                        expect(out.points[k].s).toBe(f.points[k].s);
+                        expect(out.points[k].out?.ds).toBe(f.points[k].out?.ds);
+                        expect(out.points[k].in?.ds).toBe(f.points[k].in?.ds);
+                    }
+                }
+            });
+
+            test("records the family's floor residual at the warm start's knots", () => {
+                // exact + aligned is the TIGHTEST geometry this vocabulary reaches, so its
+                // deviation is the honest answer to "can the aligned family draw this
+                // shape at these knots". Nine scenarios clear the derived authoring floor;
+                // the tenth is stage 3's input, not a failure (see `AlignedDeviation`).
+                const out = aligned(scenario.name, "exact");
+                const r = reference(scenario.name, out.points, out.length, out.ds);
+                expect(r.dev).toBeLessThanOrEqual(AlignedDeviation[scenario.name]);
+                expect(out.deviation).toBeLessThanOrEqual(AlignedDeviation[scenario.name]);
+                expect(Math.abs(r.dev - out.deviation)).toBeLessThan(1e-3);
+                const holds = AlignedHoldsFloor.has(scenario.name);
+                expect(out.deviation <= authoringFloor(out.spine)).toBe(holds);
+                expect(aligned(scenario.name, "calm").heldFloor).toBe(holds);
+            });
+
+            test("the solver's force model is still the production evaluator", () => {
+                // the aligned twin of the free-family pin: the reparameterization changed
+                // the matrix's columns, so re-prove that what the solve drove is what a
+                // force section would load.
+                const out = aligned(scenario.name, "calm");
+                const last = out.snapshots[out.snapshots.length - 1];
+                const arr = forceProfile(out.points, out.length, out.ds);
+                expect(arr.length).toBe(out.edges);
+                for (let j = 0; j < out.edges; j++)
+                    expect(Math.abs(arr[j] - last.fN[j])).toBeLessThanOrEqual(F32_TOL);
+            });
+        });
+    }
+
+    test("the free family is untouched by the option existing", () => {
+        // the negative control for the whole reparameterization: `handles` defaults to
+        // free, and asking for it explicitly is the same solve to the last bit.
+        const { s, entry, bake } = bakeOf("valley-explicit");
+        const f = fit(bake.fN, bake.ds, FIT_TOL);
+        const base = { bake, entry, points: f.points, ds: s.ds };
+        const implicit = polish(base);
+        const explicit = polish({ ...base, handles: "free" });
+        expect(implicit.handles).toBe("free");
+        expect(explicit.iters).toBe(implicit.iters);
+        expect(explicit.deviation).toBe(implicit.deviation);
+        expect(explicit.maxDg).toBe(implicit.maxDg);
+        for (let k = 0; k < implicit.keys; k++) {
+            expect(explicit.points[k].g).toBe(implicit.points[k].g);
+            expect(explicit.points[k].in?.dg).toBe(implicit.points[k].in?.dg);
+        }
+    });
+
+    test("the Δg prior reaches the aligned family through the slopes", () => {
+        // the Tikhonov block penalizes the handle OFFSETS in both families; in the aligned
+        // one it reaches them through `Δg = m·Δs`, chain rule and all. If those rows named
+        // the wrong DOF — or none — calm mode would silently BE exact mode: converged,
+        // reporting a λ, penalizing nothing. So drive λ to the strong end of the bracket
+        // and check the handles actually go flat against the unregularized solve.
+        const { s, entry, bake } = bakeOf("parabola-hill");
+        const base = {
+            bake,
+            entry,
+            points: fit(bake.fN, bake.ds, FIT_TOL).points,
+            ds: s.ds,
+            mode: "calm" as const,
+            handles: "aligned" as const,
+        };
+        const strong = polish({ ...base, lambda: 1e3 });
+        const none = polish({ ...base, lambda: 0 });
+        expect(strong.maxDg).toBeLessThan(G_GRID / 2);
+        expect(none.maxDg).toBeGreaterThan(10 * strong.maxDg);
+    });
+
+    test("aligned mode is deterministic: two solves are identical", () => {
+        const { s, entry, bake } = bakeOf("full-loop");
+        const f = fit(bake.fN, bake.ds, FIT_TOL);
+        const base = { bake, entry, points: f.points, ds: s.ds, handles: "aligned" as const };
+        const a = polish(base);
+        const b = polish(base);
+        expect(b.iters).toBe(a.iters);
+        expect(b.deviation).toBe(a.deviation);
+        for (let k = 0; k < a.keys; k++) {
+            expect(b.points[k].g).toBe(a.points[k].g);
+            expect(b.points[k].out?.dg).toBe(a.points[k].out?.dg);
+        }
+    });
+
+    test("the spike scenario is approximated away, not fought", () => {
+        // valley-explicit is the one shape the aligned family cannot draw at these knots
+        // (a ~38 g spike narrower than a keyframe span). The authorability directive
+        // sanctions the trade, and this is what it buys: the peak of the dense force it
+        // drives falls by more than half, and every key stays authorable. What it COSTS
+        // is the floor, pinned above — the pair is the input to stage 3's refine loop.
+        const free = calmed("valley-explicit");
+        const al = aligned("valley-explicit", "calm");
+        expect(censusOf(free).broken).toBe(9);
+        expect(censusOf(al).broken).toBe(0);
+        expect(al.peakG).toBeLessThan(0.6 * free.peakG);
+        expect(al.deviation).toBeGreaterThan(free.deviation);
     });
 });
 

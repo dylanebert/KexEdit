@@ -7,8 +7,9 @@
  *  force error integrates twice, so a 0.033 g fit can land 39.7 m off. This step closes
  *  the geometry instead, in the ALL-LOCAL (collocation) formulation.
  *
- *  **variables.** the sparse profile's continuous DOF — every keyframe's `g` plus every
- *  handle's `dg`, `3K − 2` of them — AND a dense state spine `(x_j, y_j, θ_j)`,
+ *  **variables.** the sparse profile's continuous DOF — every keyframe's `g` plus its
+ *  shaping, `3K − 2` of them in the free family and `2K` in the authorable one
+ *  (`HandleDof`) — AND a dense state spine `(x_j, y_j, θ_j)`,
  *  `j = 1..E`, over the uniform grid a force section integrates on. Speed is not a
  *  variable: the integrator's energy step telescopes exactly, so `v²_j = v₀² − 2g(y_j −
  *  y₀)` is an identity, not a constraint. Keyframe **s stays fixed** — placement is
@@ -75,6 +76,12 @@
  *
  *  ---
  *
+ *  **two independent axes.** `handles` picks the DOF family the solve lives in — the free
+ *  independent-handle one or the authorable aligned one (`HandleDof`, which is where that
+ *  choice is argued). `mode` picks the stopping rule and the prior. They are orthogonal on
+ *  purpose: holding one fixed while flipping the other is how a change in the output's
+ *  violence or its vocabulary census gets attributed to the right cause.
+ *
  *  **two modes.** `"exact"` (the default) drives the geometry to the numeric floor — it
  *  is the oracle that proves the formulation reaches f32 resolution, and nothing about it
  *  changes when calm mode is asked for. But the last decade of that descent buys geometry
@@ -89,7 +96,7 @@
  *  that the geometry residual is mostly noise, and Morozov says stop rather than fit it.
  *
  *  **(ii) a Tikhonov block on the handles.** `½·(λL/nH)·Σ Δg²` over the `2K − 2` handle
- *  DOF — the keyframe values stay unpenalized, because a loop's 52 g key is signal, not
+ *  OFFSETS — the keyframe values stay unpenalized, because a loop's 52 g key is signal, not
  *  roughness. Zeroing a handle's Δg makes that side a FLAT tangent, i.e. the shape a
  *  named easing tag derives. Which tag depends on the Δs the warm start brought and this
  *  solve holds fixed: on a `fit.ts` warm start those are `span/3`, exactly
@@ -100,9 +107,9 @@
  *  rather than
  *  distance-from-the-observed-dense-curve: the observation IS the violent thing on a spike
  *  scenario (valley-explicit's dense recovered curve peaks at 38 g), so pulling toward it
- *  pulls toward the spike. Δg is linear in the DOF, so the penalty is exactly quadratic —
- *  one residual row per handle DOF, landing in the existing `H_pp`/`rhsP` blocks. No new
- *  linear algebra, no cross terms, no change to the state band.
+ *  pulls toward the spike. Δg is linear in the DOF in EITHER family, so the penalty is
+ *  exactly quadratic — one residual row per handle offset, landing in the existing
+ *  `H_pp`/`rhsP` blocks. No new linear algebra, no cross terms, no change to the state band.
  *
  *  **λ by the discrepancy principle**, never a constant: log-bisection over a FIXED bracket
  *  for the largest λ whose solve still holds the floor, keeping only solves verified
@@ -116,7 +123,7 @@
 
 import { bandFactor, bandSolve, bandStore } from "./banded";
 import { V_FLOOR } from "./forward";
-import { type ForcePoint, forceProfile, sampleForce } from "./profile";
+import { type ForcePoint, forceProfile, type Offset, sampleForce } from "./profile";
 import type { Entry } from "./section";
 
 const G = 9.80665;
@@ -146,23 +153,22 @@ export interface Spine {
     theta: Float64Array;
 }
 
-/** one playback frame: the spine, the profile, and the residuals at an accepted step. */
+/** one playback frame: the profile and the residuals at an accepted step. Deliberately
+ *  carries NO geometry — the lab draws each frame's shape by re-integrating that frame's
+ *  profile through the live f32 `evalForce` path, which is the thing worth looking at, so
+ *  a copy of the solver's own f64 spine would only be a second answer to the same
+ *  question. Read `deviation`/`feasibility` for how the spine stands. */
 export interface Snapshot {
     /** accepted-step index (frames are decimated, so these are not contiguous). */
     step: number;
     /** AL outer round the step belongs to. */
     outer: number;
-    /** the spine geometry (m), length `edges + 1`. */
-    x: Float32Array;
-    y: Float32Array;
     /** the profile at this step. */
     points: ForcePoint[];
     /** the dense force it drives (g), length `edges`. */
     fN: Float32Array;
     /** worst constraint violation, position-equivalent m. */
     feasibility: number;
-    /** exit gap |P_E − P*_E| (m). */
-    exit: number;
     /** max |P_j − P*_j| over the spine (m). */
     deviation: number;
     phi: number;
@@ -202,6 +208,9 @@ export interface PolishResult {
     rho: number;
     /** which mode produced this. */
     mode: PolishMode;
+    /** which DOF family it was solved in. `"aligned"` output is broken-handle-free by
+     *  construction — the census reads 0 broken without anything checking. */
+    handles: HandleDof;
     /** the Tikhonov weight the answer was solved at. 0 in exact mode; in calm mode, 0 means
      *  the search found no slack at all and fell back, `LAM_MAX` means it saturated the
      *  bracket — read either as a clip, not as a located discrepancy point. */
@@ -250,6 +259,8 @@ export interface PolishOpts {
     maxSnapshots?: number;
     /** `"exact"` (default) or `"calm"`. */
     mode?: PolishMode;
+    /** which DOF the solve carries: `"free"` (default) or the authorable `"aligned"`. */
+    handles?: HandleDof;
     /** override the derived authoring floor (m) calm mode stops against; finite and > 0.
      *  For probing the discrepancy principle — at the numeric floor calm mode degenerates
      *  to exact. */
@@ -385,8 +396,32 @@ export function spine(bake: Bake, dsNominal: number): Spine {
     return { edges, ds, length, x, y, theta };
 }
 
-/** the profile with every value zeroed and every handle's Δs kept — the shell the DOF
- *  are read into and probed through. */
+/** which continuous DOF the solve carries per keyframe.
+ *
+ *  `"free"` (the default) is the full independent-handle family — `3K − 2`: every
+ *  keyframe's `g`, then every handle's Δg. The vocabulary `fit.ts` warm-starts in, and
+ *  the one that reaches the numeric floor, so it stays the oracle baseline.
+ *
+ *  `"aligned"` is the AUTHORABLE family — `2K`: every keyframe's `g`, then ONE SLOPE `m`
+ *  per key, both sides' offsets derived as `Δg = m·Δs` (each side's Δs is fixed by the
+ *  warm start, as every `s` in this solve is). The two handles are then collinear through
+ *  the key by construction, so a BROKEN key — the editor's `Free` shape, the ugliness the
+ *  spike's check-in could see but not name — is *unrepresentable* rather than penalized.
+ *  A soft alignment penalty would not do: "almost aligned" still censuses and still reads
+ *  broken in the menu, because the vocabulary is discrete. Broken stays expressible, as an
+ *  explicit per-key corner the refine loop introduces — never something a continuous
+ *  solve wanders into.
+ *
+ *  The reparameterization is LINEAR, so `F = A·dof` and every piece of machinery below
+ *  carries over untouched; only the matrix's columns change. */
+export type HandleDof = "free" | "aligned";
+
+function dofCount(keys: number, handles: HandleDof): number {
+    return handles === "aligned" ? 2 * keys : 3 * keys - 2;
+}
+
+/** the profile with every value zeroed and every handle's Δs kept — the shell a DOF
+ *  vector is written into and probed through. */
 function shell(pts: readonly ForcePoint[]): ForcePoint[] {
     const out: ForcePoint[] = [];
     for (const p of pts) {
@@ -398,18 +433,116 @@ function shell(pts: readonly ForcePoint[]): ForcePoint[] {
     return out;
 }
 
-/** DOF layout: `g_k` (k = 0..K−1), then `out_k.dg` (k = 0..K−2), then `in_k.dg`
- *  (k = 1..K−1). `3K − 2` in all. */
-function poke(pts: ForcePoint[], keys: number, p: number, val: number): void {
-    if (p < keys) pts[p].g = val;
-    else if (p < 2 * keys - 1) (pts[p - keys].out as { dg: number }).dg = val;
-    else (pts[p - (2 * keys - 2)].in as { dg: number }).dg = val;
+/** the DOF vector a warm start reads as. Free mode copies its values out (layout: `g_k`,
+ *  k = 0..K−1, then `out_k.dg`, k = 0..K−2, then `in_k.dg`, k = 1..K−1).
+ *
+ *  Aligned mode (layout: `g_k` then `m_k`, both k = 0..K−1) has to PROJECT: a fit's two
+ *  sides are independent and generally not collinear, so each key's slope is the
+ *  least-squares fit `m = Σ Δs·Δg / Σ Δs²` over its present sides — the same metric the
+ *  Tikhonov block measures Δg in, so the warm start is the closest profile the aligned
+ *  family holds rather than an arbitrary one. A key whose sides all have Δs = 0 carries no
+ *  shape in this vocabulary at all: its `m` is unidentifiable, starts at 0, and the LM
+ *  damping leaves it there. */
+export function readDof(pts: readonly ForcePoint[], handles: HandleDof): Float64Array {
+    const K = pts.length;
+    const dof = new Float64Array(dofCount(K, handles));
+    for (let k = 0; k < K; k++) dof[k] = pts[k].g;
+    if (handles === "free") {
+        for (let k = 0; k + 1 < K; k++) dof[K + k] = pts[k].out?.dg ?? 0;
+        for (let k = 1; k < K; k++) dof[2 * K - 1 + (k - 1)] = pts[k].in?.dg ?? 0;
+        return dof;
+    }
+    for (let k = 0; k < K; k++) {
+        let num = 0;
+        let den = 0;
+        for (const side of [pts[k].in, pts[k].out]) {
+            if (!side) continue;
+            num += side.ds * side.dg;
+            den += side.ds * side.ds;
+        }
+        dof[K + k] = den > 0 ? num / den : 0;
+    }
+    return dof;
 }
 
-function peek(pts: readonly ForcePoint[], keys: number, p: number): number {
-    if (p < keys) return pts[p].g;
-    if (p < 2 * keys - 1) return (pts[p - keys].out as { dg: number }).dg;
-    return (pts[p - (2 * keys - 2)].in as { dg: number }).dg;
+/** the profile a DOF vector materializes, in `profile.ts`'s representation — the inverse
+ *  of `readDof`, and the ONE place the aligned family's `Δg = m·Δs` construction lives. A
+ *  side the warm start left absent stays absent, so the returned profile carries exactly
+ *  the shape the warm start's handles did. */
+export function applyDof(
+    pts: readonly ForcePoint[],
+    handles: HandleDof,
+    dof: ArrayLike<number>,
+): ForcePoint[] {
+    const K = pts.length;
+    const need = dofCount(K, handles);
+    if (dof.length !== need)
+        throw new Error(`applyDof: ${handles} over ${K} keys takes ${need} dof, got ${dof.length}`);
+    const out = shell(pts);
+    for (let k = 0; k < K; k++) out[k].g = dof[k];
+    if (handles === "free") {
+        for (let k = 0; k + 1 < K; k++) if (out[k].out) (out[k].out as Offset).dg = dof[K + k];
+        for (let k = 1; k < K; k++)
+            if (out[k].in) (out[k].in as Offset).dg = dof[2 * K - 1 + (k - 1)];
+        return out;
+    }
+    for (let k = 0; k < K; k++) {
+        const m = dof[K + k];
+        const i = out[k].in;
+        const o = out[k].out;
+        if (i) i.dg = m * i.ds;
+        if (o) o.dg = m * o.ds;
+    }
+    return out;
+}
+
+/** the profile→force map, PROBED through the production evaluator: column `p` is the
+ *  dense force one unit of DOF `p` drives on the uniform grid, so `F = A·dof` exactly
+ *  (linear in the DOF once every `s` is fixed — see the module note). Probing rather than
+ *  re-deriving is what makes the solver's force model BE the shipped evaluator, so the two
+ *  cannot drift; the bezier algebra is written once, in `profile.ts`. */
+export function forceMatrix(
+    pts: readonly ForcePoint[],
+    handles: HandleDof,
+    edges: number,
+    ds: number,
+): Float64Array[] {
+    const P = dofCount(pts.length, handles);
+    const unit = new Float64Array(P);
+    const A: Float64Array[] = [];
+    for (let p = 0; p < P; p++) {
+        unit[p] = 1;
+        const probe = applyDof(pts, handles, unit);
+        unit[p] = 0;
+        const col = new Float64Array(edges);
+        for (let j = 0; j < edges; j++) col[j] = sampleForce(probe, j * ds);
+        A.push(col);
+    }
+    return A;
+}
+
+/** the Tikhonov rows: one per handle Δg the profile carries, as `(DOF index, ∂Δg/∂dof)`.
+ *  In free mode a Δg IS a DOF, so the coefficient is 1 and these are exactly the rows the
+ *  spike shipped. In aligned mode `Δg = m·Δs`, so the SAME penalty pushed through the
+ *  reparameterization gives each row that side's Δs — λ therefore measures the same
+ *  quantity in both families, which is what lets a metric change be attributed to the DOF
+ *  restriction rather than to a silently different prior. Ordered outs-then-ins, matching
+ *  the free layout. */
+function regRows(pts: readonly ForcePoint[], handles: HandleDof): { p: number; c: number }[] {
+    const K = pts.length;
+    const rows: { p: number; c: number }[] = [];
+    for (let k = 0; k + 1 < K; k++) {
+        const o = pts[k].out;
+        if (o) rows.push({ p: K + k, c: handles === "free" ? 1 : o.ds });
+    }
+    for (let k = 1; k < K; k++) {
+        const i = pts[k].in;
+        if (i)
+            rows.push(
+                handles === "free" ? { p: 2 * K - 1 + (k - 1), c: 1 } : { p: K + k, c: i.ds },
+            );
+    }
+    return rows;
 }
 
 /**
@@ -453,16 +586,21 @@ export function polish(opts: PolishOpts): PolishResult {
     // the untouched warm start comes back wearing converged diagnostics.
     if (opts.mode !== undefined && opts.mode !== "exact" && opts.mode !== "calm")
         throw new Error(`polish: mode must be "exact" or "calm", got ${JSON.stringify(opts.mode)}`);
+    if (opts.handles !== undefined && opts.handles !== "free" && opts.handles !== "aligned")
+        throw new Error(
+            `polish: handles must be "free" or "aligned", got ${JSON.stringify(opts.handles)}`,
+        );
     if (opts.floor !== undefined && (!(opts.floor > 0) || !Number.isFinite(opts.floor)))
         throw new Error(`polish: floor must be a finite number > 0, got ${opts.floor}`);
     if (opts.lambda !== undefined && (!(opts.lambda >= 0) || !Number.isFinite(opts.lambda)))
         throw new Error(`polish: lambda must be a finite number >= 0, got ${opts.lambda}`);
 
+    const handles = opts.handles ?? "free";
     const sp = spine(bake, opts.ds);
     const E = sp.edges;
     const h = sp.ds;
     const L = sp.length;
-    const P = 3 * K - 2;
+    const P = dofCount(K, handles);
     const ns = 3 * E;
     const B = 5; // half-bandwidth of the state block: a defect spans two 3-var blocks
     const lam = L; // the heading defect's position-equivalent scale
@@ -492,18 +630,11 @@ export function polish(opts: PolishOpts): PolishResult {
     const rhoCap = 1e6 * rho0;
     const maxSnaps = Math.max(1, Math.floor(opts.maxSnapshots ?? 120));
 
-    // the profile→force map, PROBED through the production evaluator: column p is the
-    // dense force a unit DOF p drives, and F = A·dof exactly (linear in the DOF once s
-    // is fixed). `rowDofs` is the ≤4-wide stencil per edge; `supp` its transpose.
-    const probeShell = shell(pts);
-    const A: Float64Array[] = [];
-    for (let p = 0; p < P; p++) {
-        poke(probeShell, K, p, 1);
-        const col = new Float64Array(E);
-        for (let j = 0; j < E; j++) col[j] = sampleForce(probeShell, j * h);
-        poke(probeShell, K, p, 0);
-        A.push(col);
-    }
+    // the probed profile→force map (`forceMatrix`). `rowDofs` is the ≤4-wide stencil per
+    // edge — a dense sample lies in one segment, so its force reads the two bounding keys'
+    // values and their two facing handles, whichever family those handles come from —
+    // and `supp` is its transpose.
+    const A = forceMatrix(pts, handles, E, h);
     const rowDofs: number[][] = [];
     for (let j = 0; j < E; j++) rowDofs.push([]);
     const supp: number[][] = [];
@@ -519,6 +650,8 @@ export function polish(opts: PolishOpts): PolishResult {
 
     const mode = opts.mode ?? "exact";
     const floor = opts.floor ?? authoringFloor(sp);
+    const dof0 = readDof(pts, handles);
+    const reg = regRows(pts, handles);
     // every λ the search tries is part of what this call cost, so the answer reports the
     // running totals rather than the winning solve's own counts.
     let totalIters = 0;
@@ -560,13 +693,14 @@ export function polish(opts: PolishOpts): PolishResult {
 
     function solve(lambda: number): PolishResult {
         solves++;
-        // the Tikhonov weight per handle DOF. `λ·L` puts the penalty on the tracking loss's
+        // the Tikhonov weight per handle Δg. `λ·L` puts the penalty on the tracking loss's
         // own scale (that loss carries total weight Σh = L), and dividing by the handle count
         // makes it a mean — so Φ_reg = ½·λ·L·⟨Δg²⟩ balances a tracking loss of rms deviation
         // √(λ·⟨Δg²⟩) metres, and λ is comparable across scenarios of different length and
-        // keyframe count. Only the `2K − 2` handle DOF are penalized (K >= 2 is enforced
-        // above, so that count is >= 2); keyframe values are signal.
-        const wReg = (lambda * L) / (2 * K - 2);
+        // keyframe count. The penalty is over the `2K − 2` handle OFFSETS in both DOF
+        // families (K >= 2 is enforced above, so `reg.length` is >= 2); keyframe values are
+        // signal, and in aligned mode the slopes reach it through `regRows`' chain rule.
+        const wReg = (lambda * L) / reg.length;
 
         // ---- variables: z = [x_1,y_1,θ_1, …, x_E,y_E,θ_E, dof_0..dof_{P−1}] ----
         const n = ns + P;
@@ -576,7 +710,7 @@ export function polish(opts: PolishOpts): PolishResult {
             z[3 * (j - 1) + 1] = sp.y[j];
             z[3 * (j - 1) + 2] = sp.theta[j];
         }
-        for (let p = 0; p < P; p++) z[ns + p] = peek(pts, K, p);
+        for (let p = 0; p < P; p++) z[ns + p] = dof0[p];
 
         // a state's column in the normal system, −1 for the pinned entry (state 0 is a
         // constant, so its columns are dropped), and the matching value accessors.
@@ -651,7 +785,11 @@ export function polish(opts: PolishOpts): PolishResult {
                 const dy = yAt(zz, j) - sp.y[j];
                 phi += 0.5 * h * (dx * dx + dy * dy);
             }
-            if (wReg > 0) for (let p = K; p < P; p++) phi += 0.5 * wReg * zz[ns + p] * zz[ns + p];
+            if (wReg > 0)
+                for (const r of reg) {
+                    const dg = r.c * zz[ns + r.p];
+                    phi += 0.5 * wReg * dg * dg;
+                }
             for (let k = 0; k < nc; k++) {
                 const r = C[k] + mult[k] / rho;
                 phi += 0.5 * rho * r * r;
@@ -716,10 +854,11 @@ export function polish(opts: PolishOpts): PolishResult {
                 addRow([colY(j)], [1], h, yAt(zz, j) - sp.y[j]);
             }
 
-            // the Tikhonov block: one residual row per handle DOF, r = Δg, ∂r/∂dof = 1. Lands
-            // in H_pp + rhsP alone — it touches no state, so the band and the Schur shape are
+            // the Tikhonov block: one residual row per handle offset, r = Δg = c·dof, so
+            // ∂r/∂dof = c (1 in the free family, that side's Δs in the aligned one). Lands in
+            // H_pp + rhsP alone — it touches no state, so the band and the Schur shape are
             // untouched.
-            if (wReg > 0) for (let p = K; p < P; p++) addRow([ns + p], [1], wReg, zz[ns + p]);
+            if (wReg > 0) for (const r of reg) addRow([ns + r.p], [r.c], wReg, r.c * zz[ns + r.p]);
 
             for (let j = 0; j < E; j++) {
                 const t0 = thAt(zz, j);
@@ -832,12 +971,6 @@ export function polish(opts: PolishOpts): PolishResult {
         let stride = 1;
         let stepIdx = 0;
         const frame = (outer: number, phi: number, mu: number): Snapshot => {
-            const x = new Float32Array(E + 1);
-            const y = new Float32Array(E + 1);
-            for (let j = 0; j <= E; j++) {
-                x[j] = xAt(z, j);
-                y[j] = yAt(z, j);
-            }
             const st = constrain(z);
             const fN = new Float32Array(E);
             for (let j = 0; j < E; j++) fN[j] = fBuf[j];
@@ -845,12 +978,9 @@ export function polish(opts: PolishOpts): PolishResult {
             return {
                 step: stepIdx,
                 outer,
-                x,
-                y,
                 points: profile(),
                 fN,
                 feasibility: st.feas,
-                exit: Math.hypot(C[3 * E], C[3 * E + 1]),
                 deviation: dev,
                 phi,
                 mu,
@@ -874,9 +1004,7 @@ export function polish(opts: PolishOpts): PolishResult {
 
         /** the current DOF as a profile in `profile.ts`'s representation. */
         function profile(): ForcePoint[] {
-            const out = shell(pts);
-            for (let p = 0; p < P; p++) poke(out, K, p, z[ns + p]);
-            return out;
+            return applyDof(pts, handles, z.subarray(ns));
         }
 
         // ---- PHR augmented Lagrangian: LM inners, λ update + stall escalation between ----
@@ -985,6 +1113,7 @@ export function polish(opts: PolishOpts): PolishResult {
             at,
             rho,
             mode,
+            handles,
             lambda,
             floor,
             heldFloor: dev <= floor,
