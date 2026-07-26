@@ -6,7 +6,8 @@
  *  `scenario.ds`), and a census is a final-frame reading. */
 
 import { describe, expect, test } from "bun:test";
-import { authoringFloor, spine, violence } from "../src/polish";
+import { fitKnots } from "../src/fit";
+import { authoringFloor, polish, spine, violence } from "../src/polish";
 import { collinear, forceProfile } from "../src/profile";
 import {
     cornerSite,
@@ -29,6 +30,14 @@ interface Case {
     ds: number;
     r: RefineResult;
 }
+
+// A single real solve's budget (ms). Every test below that runs one carries it, because
+// bun's 5 s default is a wall clock and this file's unit is a full LM/PHR solve — measured
+// worst here is a ~3 s refinement, and `bun test` runs the suite files concurrently, which
+// moves whole-suite wall time by ~2×. An order above the measurement still catches a hang,
+// since the AL's outer/inner caps bound a solve's work absolutely (polish.test.ts, same
+// constant, same argument).
+const SOLVE_MS = 30_000;
 
 const t0 = performance.now();
 const CORPUS: Case[] = scenarios.map((s) => {
@@ -118,16 +127,15 @@ describe("refine — the corpus contract", () => {
         }
     });
 
-    test("the converted section must carry the solve's own ds", () => {
-        // THE STAGE-7 CONTRACT, pinned as measured. The floor is held on the grid the solve
-        // targeted; the same profile marched at the nominal step is a different section, and
-        // on half the corpus it misses the floor by multiples. This is not a solver defect —
-        // `spine` chooses `length/edges` deliberately — but it IS a trap the conversion command
-        // can fall into silently, so the cost is recorded here rather than discovered there.
-        const ratios = CORPUS.map((c) => {
-            expect(c.r.final.ds).toBeCloseTo(c.r.final.length / c.r.final.edges, 12);
-            return { name: c.name, over: reference(c, c.ds) / c.r.floor };
-        });
+    test("marching the answer at the nominal ds misses the floor by multiples", () => {
+        // The COST of getting stage 7's ds contract wrong, pinned as measured. The floor is
+        // held on the grid the solve targeted (`spine`'s `length/edges`); the same profile
+        // marched at the nominal step is a different section, and on half the corpus it misses
+        // the floor by multiples. This is not a solver defect — `spine` chooses that step
+        // deliberately — but it IS a trap the conversion command can fall into silently, so
+        // the cost is recorded here rather than discovered there. The requirement itself is
+        // stage 7's and lives in the spec; what this file owns is the measurement.
+        const ratios = CORPUS.map((c) => ({ name: c.name, over: reference(c, c.ds) / c.r.floor }));
         // Five of ten miss by a MULTIPLE of the floor (2.7x to 7.2x); the other five sit within
         // rounding of it, so the split is read at 2x rather than at 1x where three scenarios
         // straddle the line.
@@ -141,17 +149,57 @@ describe("refine — the corpus contract", () => {
     });
 
     test("key counts at or under the stage-2 baseline", () => {
+        // the tier's authorability headline, per scenario: 138 baseline keys across the corpus
+        // become 94. The total is the sum of the column below, so it is not asserted again.
         for (const c of CORPUS) {
             const k = KEYS[c.name];
             expect(c.r.final.keys).toBe(k.refined);
             expect(c.r.final.keys).toBeLessThanOrEqual(k.base);
             expect(c.r.knots.length).toBe(c.r.final.keys);
         }
-        // the tier's authorability headline, read off the solves rather than off the table:
-        // 138 baseline keys across the corpus become 94.
-        const refined = CORPUS.reduce((a, c) => a + c.r.final.keys, 0);
-        expect(refined).toBe(94);
     });
+
+    test("every scenario ends on the floor, not on a budget or a divergence", () => {
+        // `outcome` is the distinction a caller cannot make from `heldFloor` alone: "budget"
+        // is the sanctioned un-authorable outcome (approximate the feature away), "diverged"
+        // is a solve that failed and is a defect to surface. Neither may appear here.
+        for (const c of CORPUS) {
+            expect(c.r.outcome).toBe("floor");
+            for (const e of c.r.events) expect(e.kind).not.toBe("diverged");
+        }
+    });
+
+    test(
+        "an unconverged probe is a waypoint, not a termination",
+        () => {
+            // the measured reason `refine` guards its probes on a READABLE residual profile
+            // rather than on convergence. The opening probe is the loop's own two-key λ = 0 solve,
+            // reproduced here: on these two scenarios it does NOT converge — a two-key profile is
+            // nowhere near the shape — and both still refine to answers that hold the floor.
+            // Guarding on convergence instead (the obvious reading of "guard every probe")
+            // terminates at the opening state: measured, parabola-hill 11 keys → 2, s-curve
+            // 15 → 2, both un-authorable. So the assert has two halves and needs both.
+            for (const name of ["parabola-hill", "s-curve"]) {
+                const c = pick(name);
+                const open = fitKnots(c.bake.fN, c.bake.ds, [0, c.bake.edges - 1]);
+                const probe = polish({
+                    bake: c.bake,
+                    entry: c.entry,
+                    points: open.points,
+                    ds: c.ds,
+                    mode: "calm",
+                    handles: "aligned",
+                    lambda: 0,
+                    floor: c.r.floor,
+                });
+                expect(probe.converged).toBe(false);
+                expect(c.r.events[0].kind).toBe("init");
+                expect(c.r.final.heldFloor).toBe(true);
+                expect(c.r.final.keys).toBeGreaterThan(2);
+            }
+        },
+        SOLVE_MS,
+    );
 
     test("the exit stays pinned in the recovered convention", () => {
         // stage 2's contract: the quantity `chain()` hands downstream, three decades under
@@ -216,26 +264,49 @@ describe("refine — the corpus contract", () => {
         for (const c of CORPUS) expect(c.r.events[0].kind).toBe("init");
     });
 
-    test("same bake in, same refinement out", () => {
-        const c = pick("straight-fillet");
-        const again = refine({ bake: c.bake, entry: c.entry, ds: c.ds });
-        expect(again.knots).toEqual(c.r.knots);
-        expect(again.cornerKnots).toEqual(c.r.cornerKnots);
-        expect(again.events).toEqual(c.r.events);
-        expect(again.final.points).toEqual(c.r.final.points);
-        expect(again.final.lambda).toBe(c.r.final.lambda);
-    });
+    test(
+        "same bake in, same refinement out",
+        () => {
+            const c = pick("straight-fillet");
+            const again = refine({ bake: c.bake, entry: c.entry, ds: c.ds });
+            expect(again.knots).toEqual(c.r.knots);
+            expect(again.cornerKnots).toEqual(c.r.cornerKnots);
+            expect(again.events).toEqual(c.r.events);
+            expect(again.final.points).toEqual(c.r.final.points);
+            expect(again.final.lambda).toBe(c.r.final.lambda);
+            expect(again.outcome).toBe(c.r.outcome);
+        },
+        SOLVE_MS,
+    );
 
     test("the corpus refine stays inside its measured budget", () => {
-        // measured 53 s over the 10 scenarios (2026-07-26, WSL2). The ceiling is a regression
-        // tripwire for the loop's solve count — the split phase costs about one unregularized
-        // probe per key, and the prune phase probes every candidate every round because the
-        // scan is exhaustive by design — not a machine-speed bar, so it sits clear of the
-        // measurement.
+        // THE COST TRIPWIRE is per scenario, in PROBES — a machine-independent count of the
+        // loop's own decisions, unlike a wall clock. Measured 2026-07-26 (WSL2) and pinned
+        // with ~25% headroom, so a rounding-scale trajectory change passes and a structural
+        // one (a split rule that stops halving, a prune scan that re-probes) fails here
+        // rather than in a timeout on someone else's machine. Note double-hump's 105: the
+        // prune phase re-probes every candidate every round, which is quadratic in the keys
+        // it drops, and that scenario drops 8.
+        const Probes: Record<string, number> = {
+            "circular-arc": 4,
+            "parabola-hill": 38,
+            "full-loop": 23,
+            "s-curve": 34,
+            "straight-fillet": 15,
+            "hill-auto": 50,
+            "hill-explicit": 19,
+            "loop-explicit": 45,
+            "double-hump": 131,
+            "valley-explicit": 56,
+        };
+        for (const c of CORPUS) expect(c.r.probes).toBeLessThanOrEqual(Probes[c.name]);
+        // the wall clock is a SANITY CEILING only — a hang detector. Measured 54 s over the
+        // ten scenarios; the bar sits at 150 s so machine speed and suite contention can
+        // never make it the thing that fails.
         expect(CORPUS_MS).toBeLessThan(150_000);
         // the cost discipline that makes it affordable: candidates are probed at lambda = 0
-        // (one solve) and the full discrepancy search runs once per scenario.
-        // every probe is one solve; the final search is the only multi-solve call.
+        // (one solve) and the full discrepancy search runs once per scenario, so every probe
+        // is one solve and the final search is the only multi-solve call.
         for (const c of CORPUS) expect(c.r.solves).toBe(c.r.probes + c.r.final.solves);
     });
 });
@@ -264,6 +335,45 @@ function sharpValley(): { bake: SectionResult; entry: Entry; ds: number } {
 describe("refine — corners and the key budget", () => {
     const fx = sharpValley();
     const tight = refine({ ...fx, floor: 0.05 });
+    // the floor where the corner is the MECHANISM rather than the plumbing: tight enough
+    // that the aligned family cannot draw the V, loose enough that breaking it is reachable.
+    // (0.05 is past that — see the budget test. 0.13 and looser it holds without corners.)
+    const held = refine({ ...fx, floor: 0.12 });
+
+    test(
+        "the corner is what makes the shape authorable, not just what fires",
+        () => {
+            // THE MECHANISM, held keys fixed so the corner is the only variable. At floor 0.12
+            // the loop lands on 6 keys with three of them broken and holds. Re-solve those SAME
+            // six knots in the same calm aligned family with the corner set emptied and the
+            // answer misses by 1.7× (0.198 m against 0.12) — the slope break is unrepresentable,
+            // which is the whole reason the discrete state exists. Un-authorable → authorable.
+            expect(held.outcome).toBe("floor");
+            expect(held.final.heldFloor).toBe(true);
+            expect(held.final.keys).toBe(6);
+            expect(held.final.corners).toEqual([1, 2, 3]);
+
+            const warm = fitKnots(fx.bake.fN, fx.bake.ds, held.knots);
+            const base = { bake: fx.bake, entry: fx.entry, points: warm.points, ds: fx.ds };
+            const opts = {
+                ...base,
+                mode: "calm" as const,
+                handles: "aligned" as const,
+                floor: 0.12,
+            };
+            const without = polish({ ...opts, corners: [] });
+            expect(without.converged).toBe(true);
+            expect(without.heldFloor).toBe(false);
+            expect(without.deviation).toBeGreaterThan(1.5 * held.floor);
+            // and the control's own control: hand the SAME solve the corner set back and it
+            // reproduces the refinement's answer, so the miss above is the corners' absence and
+            // not something else about re-solving at fixed knots.
+            const with_ = polish({ ...opts, corners: held.final.corners });
+            expect(with_.heldFloor).toBe(true);
+            expect(with_.deviation).toBeCloseTo(held.final.deviation, 9);
+        },
+        SOLVE_MS,
+    );
 
     test("a corner is introduced only by a stall", () => {
         const kinds = tight.events.map((e) => e.kind);
@@ -271,6 +381,30 @@ describe("refine — corners and the key budget", () => {
         // the trigger law: nothing else may precede a corner.
         for (let i = 0; i < kinds.length; i++)
             if (kinds[i] === "corner") expect(kinds[i - 1]).toBe("stall");
+    });
+
+    test("an accepted corner never leaves the profile worse", () => {
+        // THE ACCEPT RULE, as the invariant rather than as the code's shape: a corner is a
+        // claim about the target, so it has to move the reading the whole profile is judged
+        // on. Judging it locally instead — over the two segments the broken knot joins, which
+        // is what the loop used to do — lets it pass by improving a region the stall never
+        // implicated: measured on this fixture under that rule, the corner at knot 22 was
+        // accepted while the global deviation ROSE from 0.11933 to 0.11949, and the site that
+        // actually stalled (48) went on stalling either side of it.
+        //
+        // A "stall" event carries the REJECTED trial's deviation, so the state to compare
+        // against is the last event that changed one.
+        let prev = tight.events[0].deviation;
+        let corners = 0;
+        for (const e of tight.events) {
+            if (e.kind === "corner") {
+                expect(e.deviation).toBeLessThan(prev);
+                corners++;
+            }
+            if (e.kind !== "stall" && e.kind !== "budget" && e.kind !== "diverged")
+                prev = e.deviation;
+        }
+        expect(corners).toBeGreaterThan(1);
     });
 
     test("corners are interior, ascending, and reach the solve", () => {
@@ -301,19 +435,27 @@ describe("refine — corners and the key budget", () => {
         const kinds = tight.events.map((e) => e.kind);
         expect(kinds[kinds.length - 1]).toBe("budget");
         expect(tight.final.heldFloor).toBe(false);
-        // the sanctioned outcome: un-authorable is reported, never thrown, and the profile
-        // still comes back usable. And the prune phase never runs on it — a refinement that
-        // missed the floor is not thinned further.
+        // the sanctioned outcome, and the DISTINCTION that makes it readable: `outcome` says
+        // the grid ran out, not that a solve failed, so a caller can approximate the feature
+        // away here and surface a defect there. Un-authorable is reported, never thrown, and
+        // the profile still comes back usable. And the prune phase never runs on it — a
+        // refinement that missed the floor is not thinned further.
+        expect(tight.outcome).toBe("budget");
+        expect(kinds).not.toContain("diverged");
         expect(kinds).not.toContain("prune");
         expect(tight.final.points.length).toBe(tight.knots.length);
     });
 
-    test("at its own derived floor the same shape needs no corner", () => {
-        const r = refine(fx);
-        expect(r.final.heldFloor).toBe(true);
-        expect(r.cornerKnots).toEqual([]);
-        expect(r.floor).toBeCloseTo(authoringFloor(spine(fx.bake, fx.ds)), 12);
-    });
+    test(
+        "at its own derived floor the same shape needs no corner",
+        () => {
+            const r = refine(fx);
+            expect(r.final.heldFloor).toBe(true);
+            expect(r.cornerKnots).toEqual([]);
+            expect(r.floor).toBeCloseTo(authoringFloor(spine(fx.bake, fx.ds)), 12);
+        },
+        SOLVE_MS,
+    );
 });
 
 // ---- the selection rule, directly ----

@@ -86,12 +86,6 @@ export interface FitStep {
     maxError: number;
     /** the dense edge index that error sits at; −1 when nothing is off. */
     at: number;
-    /** the same error resolved PER PIECE — `errors[j]` is what the piece between
-     *  `knots[j]` and `knots[j + 1]` leaves behind, so `maxError` is its max. Length
-     *  `knots.length − 1`. The removal-counterfactual ranking reads it: refit a knot's two
-     *  pieces as one and this is the merged piece's own cost, isolated from whatever the
-     *  rest of the profile is doing (Lyche–Mørken's knot-removal error estimate). */
-    errors: number[];
 }
 
 /** the fit's s-frame: the cumulative chord arclength of each dense sample, `σ_i =
@@ -248,7 +242,6 @@ function step(
 ): FitStep {
     const knots = [pieces[0].a];
     const points: ForcePoint[] = [{ s: sigma[pieces[0].a], g: fN[pieces[0].a] }];
-    const errors: number[] = [];
     let maxError = 0;
     let at = -1;
     for (const p of pieces) {
@@ -256,13 +249,12 @@ function step(
         points[points.length - 1].out = { ds: reach, dg: p.p1g - fN[p.a] };
         points.push({ s: sigma[p.b], g: fN[p.b], in: { ds: -reach, dg: p.p2g - fN[p.b] } });
         knots.push(p.b);
-        errors.push(p.err);
         if (p.err > maxError) {
             maxError = p.err;
             at = p.at;
         }
     }
-    return { phase, knots, points, maxError, at, errors };
+    return { phase, knots, points, maxError, at };
 }
 
 /**
@@ -295,7 +287,6 @@ export function fit(fN: ArrayLike<number>, ds: ArrayLike<number>, tol: number): 
             points,
             maxError: 0,
             at: -1,
-            errors: [],
         };
         return { points, length, maxError: 0, at: -1, steps: [only] };
     }

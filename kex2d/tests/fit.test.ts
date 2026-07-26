@@ -294,7 +294,7 @@ describe("sparse init — the atom", () => {
         expect(f.at).toBe(-1);
         expect(sampleForce(f.points, 0.25)).toBe(2.5);
         expect(f.steps).toEqual([
-            { phase: "init", knots: [0], points: f.points, maxError: 0, at: -1, errors: [] },
+            { phase: "init", knots: [0], points: f.points, maxError: 0, at: -1 },
         ]);
     });
 
@@ -382,15 +382,6 @@ describe("sparse init — a fit at prescribed knots", () => {
             expect(r.points[k].out?.ds).toBeCloseTo(span / 3, 12);
             expect(r.points[k + 1].in?.ds).toBeCloseTo(-span / 3, 12);
         }
-    });
-
-    test("per-piece errors resolve the whole-profile max", () => {
-        expect(last.errors.length).toBe(last.knots.length - 1);
-        expect(Math.max(...last.errors)).toBeCloseTo(last.maxError, 15);
-        // the removal-counterfactual ranking reads exactly this, per merged piece.
-        const drop = last.knots.filter((_, i) => i !== 1);
-        const merged = fitKnots(bake.fN, bake.ds, drop).steps[0];
-        expect(merged.errors[0]).toBeGreaterThanOrEqual(Math.min(last.errors[0], last.errors[1]));
     });
 
     test("the s-frame is the dense curve's cumulative chord", () => {

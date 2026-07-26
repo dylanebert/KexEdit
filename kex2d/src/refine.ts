@@ -33,11 +33,15 @@
  *  phase is entered only from a state that holds the floor, so a refinement that ended
  *  un-authorable is never thinned further.
  *
- *  **Every decision is made under the true objective**, never a proxy — and that covers the
- *  CHOICE as well as the accept. A split trial and a removal counterfactual are each a real
- *  `polish` solve of the candidate knot set, judged on the geometry its spine tracks; and the
- *  prune scan is exhaustive, because ordering candidates by anything cheaper would let that
- *  proxy pick which key dies, and with it every counterfactual evaluated afterwards.
+ *  **Every accept is made under the true objective**, never a proxy. A split trial and a
+ *  removal counterfactual are each a real `polish` solve of the candidate knot set, judged on
+ *  the geometry its spine tracks; and the prune scan is exhaustive, because ordering
+ *  candidates by anything cheaper would let that proxy pick which key dies, and with it every
+ *  counterfactual evaluated afterwards. The prune WINNER is the one place the objective does
+ *  not decide: every holding removal drops exactly one key, so minimal-keys is indifferent
+ *  among them and a tiebreak has to choose. It is declared rather than derived (see the prune
+ *  block), and it steers the trajectory — so the loop is greedy single-removal descent to a
+ *  local minimum in keys, not a proof of the global one.
  *
  *  **The probe is unregularized, and that is the point.** A candidate evaluation asks one
  *  question — CAN this knot set reach the floor? — and the answer is the tightest geometry
@@ -53,7 +57,7 @@
  *  the same thing when it blips: a knot set wrongly screened out just gets one more split,
  *  never a wrong answer, because the final search re-verifies against the floor itself.
  *
- *  **Every trial is judged in the region it touches, not globally.** A split is a LOCAL
+ *  **Every SPLIT is judged in the region it touches, not globally.** A split is a LOCAL
  *  refinement, so the question it answers is whether the residual went down where it landed.
  *  The global max is dominated by whichever segment is currently worst, which is usually not
  *  the one just refined, so a working split routinely leaves it flat or nudges it up — and a
@@ -62,21 +66,37 @@
  *  4 of 10 scenarios plant a spurious corner that the local rule avoids, and two of them also
  *  spend a key for it — `double-hump` 15 keys against 14, `loop-explicit` 14 against 13.
  *
- *  **Corners are stall-triggered.** A broken key (`polish.Corners`) is the one discrete
- *  state the continuous solve cannot wander into, and the loop introduces it only when
- *  splitting STALLS — when the split fails to reduce the residual in its own region. That is
- *  the signature of a slope discontinuity in the target: more resolution either side of a
- *  corner buys nothing, because the aligned family cannot bend there at any density. Stall
- *  is an outcome, not a threshold — nothing is detected, measured against a bar, or tuned.
- *  The corner is then held to the same local test over the two segments it joins, so it has
- *  to do what the split could not before the vocabulary pays for it. If it cannot either,
- *  the split is taken anyway and the loop presses on: the floor is still violated, and the
- *  rule is to split while it is.
+ *  **Corners are stall-TRIGGERED and peak-LOCATED, and they answer globally.** A broken key
+ *  (`polish.Corners`) is the one discrete state the continuous solve cannot wander into, and
+ *  the loop introduces it only when splitting STALLS — when a split fails to reduce the
+ *  residual in its own region. That is the signature of a slope discontinuity in the target:
+ *  more resolution either side of a corner buys nothing, because the aligned family cannot
+ *  bend there at any density. Stall is an outcome, not a threshold — nothing is detected,
+ *  measured against a bar, or tuned. But the stall only says resolution has stopped paying;
+ *  it does not say WHERE the target breaks. That is the global residual argmax, so the corner
+ *  goes to the interior knot nearest it and must lower the global deviation to be kept. This
+ *  is the one place the loop reasons globally, and it is the only decision here that is about
+ *  the target rather than about the mesh.
+ *
+ *  Both halves of that were measured on the sharp-valley fixture, whose one genuine slope
+ *  break sits at arclength ~15 m. Judging the corner LOCALLY over the two segments it joins
+ *  is what let it pass for free: at floor 0.05 every accepted corner cleared a local test in
+ *  a region the stall never implicated, while the stalled site went on stalling round after
+ *  round. Locating it in the STALLED segment instead is coherent but wrong about the shape —
+ *  it spends corners wherever splitting last ran out (the flat tail, knots 45/55/61), and at
+ *  floor 0.12 it never reaches the floor at all (0.131 m, 26 keys), where locating at the
+ *  peak breaks the three knots bracketing the V and holds it with SIX. If no interior knot is
+ *  left to break, the split is taken anyway and the loop presses on: the floor is still
+ *  violated, and the rule is to split while it is.
  *
  *  **Termination is the floor or the budget, never a stall.** The loop stops when the floor
- *  holds, or when no segment can carry another knot — and the latter comes back
- *  `heldFloor` false, the honest un-authorable outcome the authorability directive
- *  sanctions: a spike narrower than the authoring grid is approximated away, not chased.
+ *  holds, or when no segment can carry another knot. The second is the honest un-authorable
+ *  outcome the authorability directive sanctions — a spike narrower than the authoring grid
+ *  is approximated away, not chased — and it is reported as `"budget"`, kept apart from
+ *  `"diverged"`, which is a probe whose residual profile came back unreadable and is a defect
+ *  to surface. Both come back `heldFloor` false, so `RefineResult.outcome` is what tells them
+ *  apart. `"diverged"` is DEFENSIVE: it has never been observed firing, on the corpus or on
+ *  the fixtures, including deliberate attempts to provoke it.
  *
  *  **The key budget is derived, not set.** A segment earns a split only if BOTH halves keep an
  *  interior sample of the uniform grid the force is integrated on. An open interval of
@@ -227,8 +247,15 @@ export function over(segs: readonly Seg[], lo: number, hi: number): number {
     return w;
 }
 
-/** where to break: the interior knot nearest the residual peak that is not a corner already,
- *  or −1 when every interior knot is one. */
+/** where to break: the interior knot nearest the GLOBAL residual peak that is not a corner
+ *  already, or −1 when every interior knot is one.
+ *
+ *  Global, unlike every split rule in this module, because a corner is not a refinement — it
+ *  is a claim about the TARGET, that its slope breaks somewhere, and a slope break shows up
+ *  as the residual argmax of the whole profile rather than of whichever segment happened to
+ *  stall. The stall only says resolution has stopped paying, so it is the trigger; the peak
+ *  is the locator. And what the corner is judged against is global too, for the same reason —
+ *  see `refine`. */
 export function cornerSite(
     f: Frame,
     knots: readonly number[],
@@ -274,9 +301,26 @@ export interface RefineOpts {
 }
 
 /** what one structural decision did. `"stall"` records a split trial that failed to reduce
- *  the residual (the corner trigger) and is followed by the `"corner"` it triggered or by
- *  `"budget"`; `"budget"` is the terminal event of a refinement that ended un-authorable. */
-export type RefineEventKind = "init" | "split" | "prune" | "corner" | "stall" | "budget";
+ *  the residual in its own region (the corner trigger) and is followed by the `"corner"` it
+ *  triggered, by the `"split"` taken anyway, or by a terminal event. The two terminal kinds
+ *  are the ones a caller has to tell apart: `"budget"` is the SANCTIONED outcome — no
+ *  segment can carry another knot, so the feature is narrower than the authoring grid and
+ *  gets approximated away — while `"diverged"` is a numerical failure of the solve itself
+ *  and is a defect to surface, never an authoring verdict. */
+export type RefineEventKind =
+    | "init"
+    | "split"
+    | "prune"
+    | "corner"
+    | "stall"
+    | "budget"
+    | "diverged";
+
+/** how the loop ended: the floor held, the derived key budget ran out (sanctioned), or a
+ *  probe came back with a residual profile the loop cannot read — a non-finite entry, which
+ *  leaves no deterministic site to cut at. The third is a defect to surface; the profile
+ *  still comes back, but nothing chose its keys. */
+export type RefineOutcome = "floor" | "budget" | "diverged";
 
 /** the loop's state after one structural decision — the refine timeline. */
 export interface RefineEvent {
@@ -303,6 +347,12 @@ export interface RefineResult {
     cornerKnots: number[];
     /** the deviation target every accept was measured against (m). */
     floor: number;
+    /** how the loop ended. `"floor"` is the answer; `"budget"` is the sanctioned
+     *  un-authorable outcome (`final.heldFloor` false, and that is not an error);
+     *  `"diverged"` is a solver defect to surface rather than a statement about the shape.
+     *  Note a probe that merely failed to CONVERGE is neither — it is a normal waypoint the
+     *  loop refines past (see `readable` in `refine`). */
+    outcome: RefineOutcome;
     /** the calm λ-search over the settled state — the answer. Read `points`, `heldFloor`,
      *  `peakG`, and the census off it; a refinement that ran out of budget comes back with
      *  `heldFloor` false, which is the honest un-authorable outcome, not an error. */
@@ -384,8 +434,24 @@ export function refine(opts: RefineOpts): RefineResult {
     /** the discrepancy constraint: a state that holds it is authorable at these keys. */
     const held = (r: PolishResult): boolean => r.converged && r.deviation <= floor;
 
+    /** whether a probe's residual profile can be READ — which is all the loop asks of one
+     *  before splitting again. Convergence is a different question and a stricter one: a
+     *  probe that ran out of AL outers still returns the real geometry of a real profile, and
+     *  early in a refinement it is the NORMAL case, not a failure — measured, the two-key
+     *  opening probe fails to converge on 2 of the 10 corpus scenarios (`parabola-hill`,
+     *  `s-curve`) and both refine to answers that hold the floor. So convergence gates only
+     *  the claim that the floor HOLDS (`held`), never whether the loop may continue. What it
+     *  cannot survive is a non-finite entry: `splitSite` sorts on these numbers and a NaN
+     *  makes the comparison — and with it the whole refinement — non-deterministic. */
+    const readable = (r: PolishResult): boolean => {
+        for (let j = 0; j < r.deviations.length; j++)
+            if (!Number.isFinite(r.deviations[j])) return false;
+        return true;
+    };
+
     let knots = [0, n - 1];
     let cornerKnots: number[] = [];
+    let outcome: RefineOutcome = "floor";
     let cur = probe(knots, cornerKnots);
     const events: RefineEvent[] = [
         { kind: "init", knots: [...knots], corners: [], at: -1, deviation: cur.deviation },
@@ -397,17 +463,32 @@ export function refine(opts: RefineOpts): RefineResult {
     // ---- split phase: grow toward the floor, breaking a key where growth stalls ----
     // The guard is `2n`: splits are bounded by the n − 2 interior samples and corners
     // independently by the n − 2 interior knots, so the two together cannot reach it. It is a
-    // guard, not a schedule — and it exits through the same `"budget"` event every other
-    // terminal path uses, because a loop that fell out unmarked would report a refinement
-    // that never happened.
+    // guard, not a schedule — and it exits through a logged terminal event, because a loop
+    // that fell out unmarked would report a refinement that never happened. The kind is
+    // `"diverged"`: reaching it contradicts that counting argument, so it is a defect in the
+    // loop's own bookkeeping, not a statement that the shape ran out of grid.
+    //
+    // The opening probe is guarded exactly like every trial below, by the same predicate:
+    // `readable`, not `converged` (see the definition — an unconverged probe is a waypoint,
+    // and on 2 of 10 corpus scenarios the opening one is). An unreadable profile is where the
+    // loop genuinely cannot continue, because there is no deterministic site to cut at, and
+    // it reports `"diverged"` rather than `"budget"` so a caller cannot read a numerical
+    // failure as the sanctioned approximate-it-away outcome.
     for (let round = 0; ; round++) {
+        if (!readable(cur)) {
+            outcome = "diverged";
+            log("diverged", -1, cur.deviation);
+            break;
+        }
         if (held(cur)) break;
         if (round >= 2 * n) {
-            log("budget", -1, cur.deviation);
+            outcome = "diverged";
+            log("diverged", -1, cur.deviation);
             break;
         }
         const { site, seg, segs } = splitSite(frame, knots, cur.deviations);
         if (site < 0) {
+            outcome = "budget";
             log("budget", -1, cur.deviation);
             break;
         }
@@ -419,33 +500,36 @@ export function refine(opts: RefineOpts): RefineResult {
             over(residual(frame, next, trial.deviations), seg, seg + 1) < segs[seg].worst;
         if (!worked) {
             log("stall", site, trial.deviation);
-            // −1 when every interior knot is already a corner; `cornerSite` never returns an
-            // endpoint, so any other value is a real interior key.
+            // one of the stalled segment's two bounds, or −1 when neither can be broken (an
+            // endpoint, or a corner already); `cornerSite` never returns an endpoint, so any
+            // other value is a real interior key.
             const broken = cornerSite(frame, knots, cornerKnots, cur.deviations);
             if (broken >= 0) {
-                const kk = knots.indexOf(broken);
                 const withCorner = [...cornerKnots, broken].sort((x, y) => x - y);
                 const ct = probe(knots, withCorner);
-                // the corner joins segments kk − 1 and kk; hold it to the same local test,
-                // so the vocabulary only pays where the split could not deliver.
-                if (
-                    ct.converged &&
-                    over(residual(frame, knots, ct.deviations), kk - 1, kk) < over(segs, kk - 1, kk)
-                ) {
+                // GLOBAL, and deliberately not the local test a split gets. A split is a
+                // local refinement, so it is judged where it landed; a corner is a claim that
+                // the target's slope breaks, which is a property of the whole profile — it is
+                // located at the global residual argmax (`cornerSite`) and it has to move
+                // that same global reading to be worth a broken key. Judging it locally over
+                // the two segments it joins is what let it pass for free: measured on the
+                // sharp-valley fixture at floor 0.05, every corner cleared a local test in a
+                // region the stall never implicated while the stalled site went on stalling.
+                if (ct.converged && ct.deviation < cur.deviation) {
                     cornerKnots = withCorner;
                     cur = ct;
                     log("corner", broken, cur.deviation);
                     continue;
                 }
             }
-            // A trial that did not CONVERGE is not an answer to adopt. Taking it would hand
-            // the next round a residual profile from a solve that ran out of AL outers — the
-            // array `splitSite` reads to choose where to cut — and `held` could never become
-            // true again, so the run would report un-authorable for a numerical reason rather
-            // than a geometric one. A non-reducing but CONVERGED trial is different and is
-            // taken below: the floor is still violated, and the rule is to split while it is.
-            if (!trial.converged) {
-                log("budget", -1, cur.deviation);
+            // A trial whose residual profile is unreadable is the one thing the loop cannot
+            // take: the next round would sort NaNs to choose where to cut. A trial that
+            // merely failed to converge IS taken — same waypoint argument as the opening
+            // probe — and so is a converged one that did not reduce anything: the floor is
+            // still violated, and the rule is to split while it is.
+            if (!readable(trial)) {
+                outcome = "diverged";
+                log("diverged", -1, cur.deviation);
                 break;
             }
         }
@@ -460,14 +544,25 @@ export function refine(opts: RefineOpts): RefineResult {
     // holds the floor too.
     if (held(cur))
         for (;;) {
-            // EVERY candidate is probed, and the winner is the removal whose counterfactual
-            // holds with the most slack. Probing in some cheap order and taking the first
+            // EVERY candidate is probed. Probing in some cheap order and taking the first
             // that holds would be far cheaper, but the order would then decide WHICH key
             // dies, and that changes the state every later counterfactual is evaluated
-            // against — so a proxy would be choosing the answer while the module claimed the
-            // true objective chose it. Measured, an ordering swap moved `hill-auto` between
-            // 9 and 8 keys. Ordering is not a free variable here, so there is no ordering:
-            // the scan is exhaustive and the comparison is the true objective's own reading.
+            // against — measured, an ordering swap moved `hill-auto` between 9 and 8 keys.
+            // So there is no ranking: the scan is exhaustive and the ACCEPT is the true
+            // objective's own reading (does this removal still hold the floor?).
+            //
+            // Choosing among the removals that hold is a different question, and the
+            // objective does not answer it: each drops exactly one key, so minimal-keys is
+            // indifferent across all of them. This is a declared TIEBREAK — most slack
+            // (lowest counterfactual deviation), lowest key index on an exact tie — not a
+            // derivation, and it is not parameter-free in the sense the accept rule is: it
+            // picks the state every later round descends from, so it steers the trajectory.
+            // Measured, inverting it to max-slack moves the corpus 94 → 95 keys
+            // (`valley-explicit` 9 → 10). What the loop is, then, is greedy single-removal
+            // descent under a declared tiebreak: minimal keys is the objective it descends
+            // toward, not a guarantee it reaches the global minimum. Exhaustive search over
+            // removal SETS would be the guarantee and is not on the table — the corpus
+            // already costs ~50 s at one solve per candidate per round.
             let best = -1;
             let bestR: PolishResult | null = null;
             for (let k = 1; k + 1 < knots.length; k++) {
@@ -503,5 +598,5 @@ export function refine(opts: RefineOpts): RefineResult {
         floor,
     });
     solves += final.solves;
-    return { knots, cornerKnots, floor, final, events, probes, solves };
+    return { knots, cornerKnots, floor, outcome, final, events, probes, solves };
 }

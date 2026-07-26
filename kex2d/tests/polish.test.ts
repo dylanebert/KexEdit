@@ -1373,15 +1373,56 @@ describe("constrained polish — the authorable DOF", () => {
         { s: 15, g: 2, in: { ds: -3, dg: 1.5 } },
     ];
 
-    test("an empty corner set is the plain aligned family, column for column", () => {
-        // the negative control for the whole discrete state: a solve with no corners must be
-        // the stage-1/2 aligned layout, or stage 3 would have moved the fixed-knot answer.
-        const pts = fit(bakeOf("hill-auto").bake.fN, bakeOf("hill-auto").bake.ds, FIT_TOL).points;
-        expect(readDof(pts, "aligned", [])).toEqual(readDof(pts, "aligned"));
-        expect(fairRows(pts, "aligned", [])).toEqual(fairRows(pts, "aligned"));
-        const dof = readDof(pts, "aligned");
-        expect(applyDof(pts, "aligned", dof, [])).toEqual(applyDof(pts, "aligned", dof));
-    });
+    test(
+        "the fixed-knot exact answer is pinned, scenario by scenario",
+        () => {
+            // THE NEGATIVE CONTROL for the whole conversion tier: exact mode at the fit's knots is
+            // the oracle baseline every stage is measured against, and no stage may move it. This
+            // is a REFERENCE pin — two independent reductions of the solved DOF vector, captured
+            // 2026-07-26 from a state verified byte-identical against the pre-tier commit. `abs`
+            // catches any change in magnitude, `weighted` any change in WHERE the change sits
+            // (a permuted or shifted layout with the same absolute mass moves it and not `abs`).
+            //
+            // Asserting instead that `corners: []` matches the defaulted call — the shape this
+            // test used to have — pins nothing: both arguments enter the same code path, so no
+            // mutation of the corner logic could fail it.
+            //
+            // The comparison is RELATIVE at 1e-6 because the values span three orders of
+            // magnitude. That is six decades under any real drift of this path (a stage that
+            // moved it would move the layout, not its seventh digit) and clear of the float
+            // floor: the AL stops at `TOL_FEAS` = 1e-6 position-equivalent, so an engine whose
+            // `Math.sin` differs in the last bits can land one iteration apart. Read a failure at
+            // exactly this scale as an engine difference; anything larger is a regression.
+            const Gold: Record<string, { keys: number; abs: number; weighted: number }> = {
+                "circular-arc": { keys: 4, abs: 5.821978, weighted: 11.828743 },
+                "parabola-hill": { keys: 12, abs: 40.274351, weighted: 155.699418 },
+                "full-loop": { keys: 7, abs: 61.311801, weighted: -64.655197 },
+                "s-curve": { keys: 16, abs: 44.133395, weighted: 310.214267 },
+                "straight-fillet": { keys: 6, abs: 24.889362, weighted: 101.345874 },
+                "hill-auto": { keys: 13, abs: 64.806449, weighted: 710.904178 },
+                "hill-explicit": { keys: 15, abs: 53.690427, weighted: 93.01819 },
+                "loop-explicit": { keys: 32, abs: 1538.638226, weighted: -5292.653725 },
+                "double-hump": { keys: 22, abs: 66.642162, weighted: 413.311148 },
+                "valley-explicit": { keys: 11, abs: 223.441118, weighted: 2821.364816 },
+            };
+            for (const s of scenarios) {
+                const { out } = solved(s.name);
+                const g = Gold[s.name];
+                expect(g).toBeDefined();
+                expect(out.keys).toBe(g.keys);
+                const dof = readDof(out.points, "free");
+                let abs = 0;
+                let weighted = 0;
+                for (let i = 0; i < dof.length; i++) {
+                    abs += Math.abs(dof[i]);
+                    weighted += (i + 1) * dof[i];
+                }
+                expect(abs / g.abs).toBeCloseTo(1, 6);
+                expect(weighted / g.weighted).toBeCloseTo(1, 6);
+            }
+        },
+        SOLVE_MS,
+    );
 
     test("a corner is one more DOF, and it unbinds that key's two sides", () => {
         expect(readDof(kinked, "aligned", [1]).length).toBe(readDof(kinked, "aligned").length + 1);
@@ -1411,28 +1452,32 @@ describe("constrained polish — the authorable DOF", () => {
         expect(corner).toBeCloseTo(0.4091, 3);
     });
 
-    test("a corner solve still locates a real lambda, and does not clip the bracket", () => {
-        // `LAM_MAX`'s safety argument is made for the FREE family and leans, for aligned, on
-        // that family's null space being 2-D. A corner makes a slope break at its key free, so
-        // the corner family's null space is strictly LARGER and the plain-aligned headroom pin
-        // does not transfer — measured, circular-arc accepts 1.8e+2 with a corner against
-        // 8.4e+1 without, so the corner family sits CLOSER to the top of the bracket. Still
-        // clear of it; if this ever clips, the reported lambda is a bracket artifact by the
-        // module's own reasoning and the top needs re-arguing.
-        const { s: sc, entry, bake } = bakeOf("circular-arc");
-        const warm = fit(bake.fN, bake.ds, FIT_TOL).points;
-        const opts = { bake, entry, points: warm, ds: sc.ds, mode: "calm" as const };
-        const plain = polish({ ...opts, handles: "aligned" as const });
-        const broken = polish({ ...opts, handles: "aligned" as const, corners: [2] });
-        for (const r of [plain, broken]) {
-            expect(r.converged).toBe(true);
-            expect(r.heldFloor).toBe(true);
-            expect(r.lambda).toBeGreaterThan(0);
-            expect(r.lambda).toBeLessThan(1e3);
-        }
-        expect(broken.lambda).toBeGreaterThan(plain.lambda);
-        expect(broken.corners).toEqual([2]);
-    });
+    test(
+        "a corner solve still locates a real lambda, and does not clip the bracket",
+        () => {
+            // `LAM_MAX`'s safety argument is made for the FREE family and leans, for aligned, on
+            // that family's null space being 2-D. A corner makes a slope break at its key free, so
+            // the corner family's null space is strictly LARGER and the plain-aligned headroom pin
+            // does not transfer — measured, circular-arc accepts 1.8e+2 with a corner against
+            // 8.4e+1 without, so the corner family sits CLOSER to the top of the bracket. Still
+            // clear of it; if this ever clips, the reported lambda is a bracket artifact by the
+            // module's own reasoning and the top needs re-arguing.
+            const { s: sc, entry, bake } = bakeOf("circular-arc");
+            const warm = fit(bake.fN, bake.ds, FIT_TOL).points;
+            const opts = { bake, entry, points: warm, ds: sc.ds, mode: "calm" as const };
+            const plain = polish({ ...opts, handles: "aligned" as const });
+            const broken = polish({ ...opts, handles: "aligned" as const, corners: [2] });
+            for (const r of [plain, broken]) {
+                expect(r.converged).toBe(true);
+                expect(r.heldFloor).toBe(true);
+                expect(r.lambda).toBeGreaterThan(0);
+                expect(r.lambda).toBeLessThan(1e3);
+            }
+            expect(broken.lambda).toBeGreaterThan(plain.lambda);
+            expect(broken.corners).toEqual([2]);
+        },
+        SOLVE_MS,
+    );
 
     test("a corner outside the aligned family, or at an end, is refused", () => {
         // refused at the boundary for the reason every other option here is: each of these

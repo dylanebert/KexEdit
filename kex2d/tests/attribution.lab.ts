@@ -250,8 +250,13 @@ for (const s of scenarios) {
     const t0 = performance.now();
     const r = refine({ bake, entry, ds: s.ds });
     const ms = performance.now() - t0;
-    const rough = (pts: readonly ForcePoint[]): number =>
-        fairNorm(fairRows(pts, "aligned"), readDof(pts, "aligned"));
+    // the corner set is part of the PRICE, not a detail: a broken key's two sides carry two
+    // slopes, and reading them corner-free least-squares-projects both onto one, so the
+    // roughness printed would be of a profile the solve never produced. Same class as the
+    // stage-2 domain law (a quantized tag leaves the span/3 reach family, so `fairRows` stops
+    // applying) — here the profile is still in the family, but the LAYOUT has to match.
+    const rough = (pts: readonly ForcePoint[], corners: readonly number[] = []): number =>
+        fairNorm(fairRows(pts, "aligned", corners), readDof(pts, "aligned", corners));
     refineRows.push(
         [
             s.name,
@@ -265,7 +270,7 @@ for (const s of scenarios) {
             base.peakG.toFixed(2),
             r.final.peakG.toFixed(2),
             rough(base.points).toExponential(1),
-            rough(r.final.points).toExponential(1),
+            rough(r.final.points, r.final.corners).toExponential(1),
             `${r.final.points.filter((p) => !collinear(p.in, p.out)).length}`,
             `${r.cornerKnots.length}`,
             `${r.probes}`,
@@ -281,6 +286,7 @@ for (const s of scenarios) {
                             corner: "C",
                             stall: "!",
                             budget: "B",
+                            diverged: "D",
                         })[e.kind],
                 )
                 .join(""),

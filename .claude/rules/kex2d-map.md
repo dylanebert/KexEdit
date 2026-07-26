@@ -152,14 +152,29 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   then prices the sliver by the cube of the ratio — measured, it collapsed λ six decades and
   quadrupled the dense peak), a split is judged in **its own region** rather than on the global
   max (a global test reads a working split as a stall on 4/10 scenarios and buys corners it
-  does not need), and a **corner** (`polish.Corners`, the one broken-key state) is introduced
-  only when a split stalls. The **prune scan is exhaustive on purpose** — ordering candidates
-  by anything cheaper lets that proxy pick which key dies, and with it every counterfactual
-  evaluated afterwards (measured: a rank swap moved hill-auto between 8 and 9 keys). The
-  placement rules are pure module-scope functions over a `Frame` (`residual`/`siteIn`/
-  `splitSite`/`over`/`cornerSite`), unit-tested apart from any solve. Split-while-violated
-  against prune-only-while-held is the hysteresis; a refinement that runs out of admissible
-  sites returns `heldFloor` false, the sanctioned un-authorable outcome.
+  does not need), and a **corner** (`polish.Corners`, the one broken-key state) is
+  stall-TRIGGERED but peak-LOCATED and judged GLOBALLY — the stall only says resolution has
+  stopped paying, while where the target's slope breaks is the global residual argmax, and a
+  broken key has to lower that same global reading to be kept. Judging the corner locally over
+  the two segments it joins let it pass by improving a region the stall never implicated
+  (measured: an accepted corner RAISED the global deviation while the stalled site kept
+  stalling); locating it in the stalled segment spends corners in the flat tail and misses a
+  floor that peak-location holds with 6 keys instead of 26. The **prune scan is exhaustive on
+  purpose** — ordering candidates by anything cheaper lets that proxy pick which key dies, and
+  with it every counterfactual evaluated afterwards (measured: a rank swap moved hill-auto
+  between 8 and 9 keys) — but the **winner among holding removals is a declared tiebreak**
+  (most slack, lowest key index on a tie), not the objective: each drops exactly one key, so
+  minimal-keys is indifferent among them. The loop is greedy single-removal descent under that
+  tiebreak; minimal keys is what it descends toward, not a guarantee (measured: inverting the
+  tiebreak moves the corpus 94 → 95 keys). The placement rules are pure module-scope functions
+  over a `Frame` (`residual`/`siteIn`/`splitSite`/`over`/`cornerSite`), unit-tested apart from
+  any solve. Split-while-violated against prune-only-while-held is the hysteresis. A probe is
+  guarded on a **readable** residual profile, not on convergence — an unconverged probe is a
+  waypoint, and the two-key opening probe genuinely fails to converge on 2/10 scenarios that
+  then hold the floor. `RefineResult.outcome` separates the three endings: `"floor"`,
+  `"budget"` (no admissible site left — the sanctioned un-authorable outcome, `heldFloor`
+  false), and `"diverged"` (an unreadable profile — a defect to surface, never an authoring
+  verdict; defensive, never observed firing).
   **A converted section must carry the solve's own `ds`** (`length/edges`, what `spine` chose so
   the section spans the bake exactly) — a force section stores its own step, and marching the
   same profile at the nominal step instead misses the floor by up to 7× (pinned in
