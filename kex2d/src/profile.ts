@@ -111,6 +111,21 @@ export function collinear(a?: Offset, b?: Offset): boolean {
     return Math.abs(cross) <= scale * COLLINEAR_TOL;
 }
 
+/** whether the segment between adjacent keyframes `a` and `b` is **Custom** — derived
+ *  provenance, never a stored flag: the segment is custom iff a bounding side holds an
+ *  explicit handle (`a.out` or `b.in`), since either one substitutes for the tag at the
+ *  seam. Its complement is a NAMED segment, shaped by `a.ease`'s derived flat tangents
+ *  alone. The conversion tier's reading of the Custom row (`quantize.ts`); the editor's own
+ *  menu answers it separately over the ECS `ForceTangent` components, which are a different
+ *  representation of the same law rather than a call into this.
+ *
+ * @example
+ * const named = points.slice(0, -1).filter((p, k) => !custom(p, points[k + 1])).length;
+ */
+export function custom(a: ForcePoint, b: ForcePoint): boolean {
+    return a.out !== undefined || b.in !== undefined;
+}
+
 /** a force keyframe: a demanded normal force `g` at arclength `s` (m). `ease`
  *  governs the *following* segment's derived flat tangents (default `Easing.Cubic`
  *  when absent — the "no stored state" convention). `in`/`out` are the summoned

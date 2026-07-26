@@ -198,7 +198,7 @@ editor-ui invariant-domain rule).
 The per-file map (what each module owns, its seams and test homes) + the external references:
 `.claude/rules/kex2d-map.md`. Layers: pure substrate + physics atoms (`section.ts`, `forward.ts`,
 `spline.ts`, `bake.ts`, `profile.ts`); kernel atoms, the deferred optimization tier's reference,
-NOT on the live path (`force.ts`, `banded.ts`, `collocate.ts`, `census.ts`, `fit.ts`, `polish.ts`, `refine.ts`); ECS + UI (`track.ts`,
+NOT on the live path (`force.ts`, `banded.ts`, `collocate.ts`, `census.ts`, `fit.ts`, `polish.ts`, `refine.ts`, `quantize.ts`); ECS + UI (`track.ts`,
 `cart.ts`, `editor.ts`, `history.ts`, `controls.ts`, `magnet.ts`, `settings.ts`, `manipulator.ts`,
 `radial.ts`, `tangents.ts`, `timeline.ts`, `Timeline.svelte`, `menu.ts` + `Menu.svelte`,
 `App.svelte` / `render.ts` / `view.ts`, `main.ts`).

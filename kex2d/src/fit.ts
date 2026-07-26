@@ -44,8 +44,10 @@
  *  geometry after integration rather than force element-wise.
  *
  *  no easing tag is stored — every side that drives a piece carries an explicit handle,
- *  so the tag never reaches `segment()`. quantizing fitted tangents back onto the named
- *  easing ladder is deferred (spec: Scope). */
+ *  so the tag never reaches `segment()`. snapping back onto the named easing ladder is
+ *  `quantize.ts`'s business, and it happens after the solve rather than here: a named tag
+ *  demands a FLAT tangent at both of a segment's keys, which is a constraint the profile
+ *  has to be re-projected onto, not a rounding of a fitted handle. */
 
 import type { ForcePoint } from "./profile";
 

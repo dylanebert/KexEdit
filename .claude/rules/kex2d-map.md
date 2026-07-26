@@ -188,6 +188,26 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   a surface and two are comparable only at the same scale. The scale-free question (are a key's
   two handles one line) is `profile.collinear` — a collinear profile still censuses `broken`
   wherever its handles draw under `ALIGN_PX`. Unit-tested in `census.test.ts`.
+- `quantize.ts` — **easing-tag quantization**: the vocabulary snap over a settled answer. A
+  named easing demands a FLAT tangent (`F′ = 0`) at BOTH of a segment's keys — the ladder is a
+  hold-to-hold transition language — so naming is a CONSTRAINT the profile is re-projected onto,
+  not a rounding of the solved handles (rounding in place holds the floor on 0 of 84 corpus
+  segments, the closest 4.0x past it; re-solving recovers 5). The state is expressed in the representation itself: a key with no explicit
+  handles resolves both sides from the Cubic tag, which lands on the same span/3 reach with
+  Δg = 0, so `polish` carries it as a DOF REMOVAL (`slopeSlots`) — the mirror of a corner, which
+  adds one. A segment is named iff neither bounding side is explicit (`profile.custom`, derived
+  provenance). Three things worth not re-deriving: the tolerance is the authoring FLOOR itself
+  (a snap is admissible iff the re-solved geometry still holds it, so no quantization tolerance
+  exists to tune); only the **Cubic** rung is reachable, because Linear (reach 0) and Quintic
+  (7/15) leave the family `polish.fairRows` is closed-form on and the tier would have to price
+  a roughness it cannot compute — so a named segment stores no tag at all, Cubic being the
+  absent-value default; and recovery is SMALL by nature, 5 of 84 corpus segments on 4 of 10
+  scenarios, because a geo→force profile ramps (the 94 settled key slopes run |m| = 7.3e-3 to
+  84.7 g/m, median 0.29, none near zero) and only a genuine turnover can be named. Minimal keys
+  and named tags compete for one slack budget and `refine`'s prune spends it first (measured: pre-prune states name 10 more segments across four
+  scenarios, at 6 more keys) — trading them would need the exchange rate lock 4 forbids. A named
+  tag is not free either: it costs up to 1.07× the dense peak and 1.27× the seminorm. Corpus
+  gate ~17 s on top of refine's.
 
 **ECS + UI layer (the live app):**
 

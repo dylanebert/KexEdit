@@ -126,7 +126,7 @@
 
 import { bandFactor, bandSolve, bandStore } from "./banded";
 import { V_FLOOR } from "./forward";
-import { type ForcePoint, forceProfile, type Offset, sampleForce } from "./profile";
+import { Easing, type ForcePoint, forceProfile, type Offset, sampleForce } from "./profile";
 import type { Entry } from "./section";
 
 const G = 9.80665;
@@ -257,9 +257,11 @@ export interface PolishOpts {
     bake: Bake;
     /** the entry the bake was evaluated from; state 0 is pinned here. */
     entry: Entry;
-    /** stage-2's `fit().points` — the warm start. Every segment's two sides must carry
-     *  explicit handles reaching exactly `span/3` in s (the fit's own shape): that is the
-     *  family the fairing prior is closed-form on, and it is enforced (`fairRows`). */
+    /** stage-2's `fit().points` — the warm start. Every explicit handle must reach exactly
+     *  `span/3` in s (the fit's own shape): that is the family the fairing prior is
+     *  closed-form on, and it is enforced (`fairRows`). In the ALIGNED family a key may
+     *  instead carry no handles at all — the FLAT state, whose derived Cubic tangents land
+     *  on that same reach with Δg = 0 (`slopeSlots`); the free family requires every side. */
     points: readonly ForcePoint[];
     /** nominal edge step (m); the realized step is `length/round(length/ds)`. */
     ds: number;
@@ -455,7 +457,14 @@ export function spine(bake: Bake, dsNominal: number): Spine {
  *  solve wanders into.
  *
  *  The reparameterization is LINEAR, so `F = A·dof` and every piece of machinery below
- *  carries over untouched; only the matrix's columns change. */
+ *  carries over untouched; only the matrix's columns change.
+ *
+ *  The aligned family carries two discrete per-key states beside its continuous slope, and
+ *  they are the two rungs of the editor's easing layering either side of it: a CORNER
+ *  (`Corners`) splits the slope in two, a FLAT (`slopeSlots`) removes it — a key on its
+ *  derived easing tangents, which is what a named-easing segment is made of. Neither is
+ *  something the continuous solve can wander into; an outer loop chooses them
+ *  (`refine.ts`, `quantize.ts`). */
 export type HandleDof = "free" | "aligned";
 
 /** the CORNER set: which keys carry a broken (per-side independent) slope inside the
@@ -472,22 +481,48 @@ export type HandleDof = "free" | "aligned";
  *  Free mode takes no corners: its handles are already independent per side. */
 export type Corners = readonly number[];
 
-/** which DOF drives each key's `in`/`out` handle in the aligned family. `out` is always the
- *  key's own base slope; `in` is the same slope unless the key is a corner, in which case
- *  it is that corner's appended DOF. */
-function slopeSlots(keys: number, corners: Corners): { inSlot: Int32Array; outSlot: Int32Array } {
-    const inSlot = new Int32Array(keys);
-    const outSlot = new Int32Array(keys);
-    for (let k = 0; k < keys; k++) {
-        inSlot[k] = keys + k;
-        outSlot[k] = keys + k;
+/** which DOF drives each key's `in`/`out` handle in the aligned family, and how many the
+ *  family then carries. `out` is always the key's own base slope; `in` is the same slope
+ *  unless the key is a corner, in which case it is that corner's appended DOF.
+ *
+ *  **A key with NO explicit side is FLAT and carries no slope at all** — `segment`
+ *  resolves both of its sides from the Cubic tag, which is the span/3 reach with Δg = 0,
+ *  so its shape is fully determined by the two neighbouring `g` values and there is
+ *  nothing left to solve. That is the named-easing vocabulary state (`quantize.ts`), and
+ *  it is the mirror of a corner: a corner ADDS a slope to a key, a flat REMOVES one.
+ *  Unlike a corner it is not declared, because the profile representation already carries
+ *  it — an absent handle IS the state (`profile.ts`'s derived-provenance law), so reading
+ *  it from the points keeps one source of truth.
+ *
+ *  Slots are laid out `g_0..g_{K−1}`, then one slope per NON-flat key in key order, then
+ *  the corner slopes. Two states are contradictory and refused at `polish`'s boundary, as
+ *  every other precondition here is: a corner on a flat key (there is no slope to break),
+ *  and an INTERIOR key with one explicit side and one derived — that key's two sides then
+ *  carry different slopes, which is a break no `Corners` entry declares, and it would come
+ *  for free where the corner mechanism charges a DOF. The layout below handles it coherently
+ *  (the present side drives the slot, the absent one contributes Δg = 0), so the refusal is
+ *  about the vocabulary rather than about the algebra. Chain ends are exempt: they carry one
+ *  side by nature. */
+function slopeSlots(
+    pts: readonly ForcePoint[],
+    corners: Corners,
+): { inSlot: Int32Array; outSlot: Int32Array; dof: number } {
+    const K = pts.length;
+    const inSlot = new Int32Array(K).fill(-1);
+    const outSlot = new Int32Array(K).fill(-1);
+    let next = K;
+    for (let k = 0; k < K; k++) {
+        if (!pts[k].in && !pts[k].out) continue;
+        inSlot[k] = next;
+        outSlot[k] = next;
+        next++;
     }
-    for (let r = 0; r < corners.length; r++) inSlot[corners[r]] = 2 * keys + r;
-    return { inSlot, outSlot };
+    for (let r = 0; r < corners.length; r++) inSlot[corners[r]] = next + r;
+    return { inSlot, outSlot, dof: next + corners.length };
 }
 
-function dofCount(keys: number, handles: HandleDof, corners: Corners = []): number {
-    return handles === "aligned" ? 2 * keys + corners.length : 3 * keys - 2;
+function dofCount(pts: readonly ForcePoint[], handles: HandleDof, corners: Corners = []): number {
+    return handles === "aligned" ? slopeSlots(pts, corners).dof : 3 * pts.length - 2;
 }
 
 /** the profile with every value zeroed and every handle's Δs kept — the shell a DOF
@@ -520,7 +555,7 @@ export function readDof(
     corners: Corners = [],
 ): Float64Array {
     const K = pts.length;
-    const P = dofCount(K, handles, corners);
+    const P = dofCount(pts, handles, corners);
     const dof = new Float64Array(P);
     for (let k = 0; k < K; k++) dof[k] = pts[k].g;
     if (handles === "free") {
@@ -528,7 +563,7 @@ export function readDof(
         for (let k = 1; k < K; k++) dof[2 * K - 1 + (k - 1)] = pts[k].in?.dg ?? 0;
         return dof;
     }
-    const { inSlot, outSlot } = slopeSlots(K, corners);
+    const { inSlot, outSlot } = slopeSlots(pts, corners);
     const num = new Float64Array(P);
     const den = new Float64Array(P);
     for (let k = 0; k < K; k++)
@@ -555,7 +590,7 @@ export function applyDof(
     corners: Corners = [],
 ): ForcePoint[] {
     const K = pts.length;
-    const need = dofCount(K, handles, corners);
+    const need = dofCount(pts, handles, corners);
     if (dof.length !== need)
         throw new Error(`applyDof: ${handles} over ${K} keys takes ${need} dof, got ${dof.length}`);
     const out = shell(pts);
@@ -566,7 +601,7 @@ export function applyDof(
             if (out[k].in) (out[k].in as Offset).dg = dof[2 * K - 1 + (k - 1)];
         return out;
     }
-    const { inSlot, outSlot } = slopeSlots(K, corners);
+    const { inSlot, outSlot } = slopeSlots(pts, corners);
     for (let k = 0; k < K; k++) {
         const i = out[k].in;
         const o = out[k].out;
@@ -588,7 +623,7 @@ export function forceMatrix(
     ds: number,
     corners: Corners = [],
 ): Float64Array[] {
-    const P = dofCount(pts.length, handles, corners);
+    const P = dofCount(pts, handles, corners);
     const unit = new Float64Array(P);
     const A: Float64Array[] = [];
     for (let p = 0; p < P; p++) {
@@ -653,17 +688,35 @@ export interface FairRow {
  *  measures the quantity its name claims, and it does so silently: measured under-price of
  *  several-fold at a span/10 reach, and a strictly straight `Easing.Linear` segment (reach
  *  0, chord-aligned Δg) priced as bent. `polish` REFUSES an off-family warm start at the
- *  boundary for that reason (`REACH_EPS`); a caller outside the family — stage 4's
- *  quantizer, whose named tags leave it by construction — must integrate `(F″)²`
- *  numerically instead of calling this. A side the warm start left absent carries no DOF
- *  term: `segment` substitutes a flat derived tangent there, Δg = 0. */
+ *  boundary for that reason (`REACH_EPS`); a caller outside the family must integrate
+ *  `(F″)²` numerically instead of calling this.
+ *
+ *  An ABSENT side is INSIDE the family and carries no DOF term: `segment` substitutes the
+ *  tag's derived tangent there, which for Cubic is Δg = 0 at exactly span/3, so the terms it
+ *  would contribute to `A + B` and `A − B` are both zero and dropping the row is exact
+ *  (verified against quadrature in `polish.test.ts`). That is the whole flat/named-easing
+ *  state (`slopeSlots`), and it is why `quantize.ts` stays inside this form rather than
+ *  integrating numerically — a named segment is Cubic by derivation, not by convention.
+ *
+ *  **That holds for the Cubic tag ONLY**, which is what the guard below enforces: an absent
+ *  side under `Easing.Quintic` reaches 7/15 and bends a curve this form still prices as the
+ *  Cubic one (measured: true roughness 9.096 → 14.042 while the closed form returns 9.096
+ *  unchanged, a silent 35% under-price). So the tag is refused here rather than only in
+ *  `polish`, since this function is exported and a mis-price is exactly the failure the
+ *  domain paragraph exists to prevent. */
 export function fairRows(
     pts: readonly ForcePoint[],
     handles: HandleDof,
     corners: Corners = [],
 ): FairRow[] {
     const K = pts.length;
-    const { inSlot, outSlot } = slopeSlots(K, corners);
+    for (let k = 0; k < K; k++)
+        if (pts[k].ease !== undefined && pts[k].ease !== Easing.Cubic)
+            throw new Error(
+                `fairRows: keyframe ${k} carries ease ${pts[k].ease}; only the Cubic (span/3) ` +
+                    `reach is the family this closed form prices`,
+            );
+    const { inSlot, outSlot } = slopeSlots(pts, corners);
     const rows: FairRow[] = [];
     for (let k = 0; k + 1 < K; k++) {
         const a = pts[k];
@@ -748,8 +801,18 @@ export function polish(opts: PolishOpts): PolishResult {
             throw new Error(`polish: keyframe ${k} is not finite`);
         if (k > 0 && !(pts[k].s > pts[k - 1].s))
             throw new Error(`polish: keyframe s must ascend, got ${pts[k - 1].s} then ${pts[k].s}`);
-        if (k < K - 1 && !pts[k].out) throw new Error(`polish: keyframe ${k} has no out handle`);
-        if (k > 0 && !pts[k].in) throw new Error(`polish: keyframe ${k} has no in handle`);
+        // an `ease` other than the default is refused rather than ignored: `segment`
+        // resolves an ABSENT side from the tag, and only `Easing.Cubic` puts that derived
+        // tangent at the span/3 reach this solve's algebra is exact on (`FLAT` below).
+        // Refusing everywhere, not just where a side is absent, because a tag a caller
+        // stored under explicit handles is dormant rather than dead — it re-emerges the
+        // moment those handles are cleared — and `shell` does not carry it, so a solve
+        // would silently hand back a profile that lost it.
+        if (pts[k].ease !== undefined && pts[k].ease !== Easing.Cubic)
+            throw new Error(
+                `polish: keyframe ${k} carries ease ${pts[k].ease}; only the Cubic (span/3) ` +
+                    `reach is the family the fairing energy is closed-form on`,
+            );
     }
     // the span/3 reach precondition, refused for the same reason as the guards above: off
     // that family `fairRows` is no longer `∫(F″)² ds` (its note), and it mis-prices
@@ -759,19 +822,22 @@ export function polish(opts: PolishOpts): PolishResult {
     // `Easing.Linear` segment (reach 0, chord-aligned Δg) draws a strictly straight line
     // that the closed form charges for. A caller outside the family must price its
     // profiles by numerical integration instead.
+    //
+    // An ABSENT side is inside the family, not outside it: `segment` substitutes the
+    // Cubic tag's derived tangent there, which reaches exactly span/3 with Δg = 0 — the
+    // FLAT state (`slopeSlots`), which is what a named-easing segment is made of.
     for (let k = 0; k + 1 < K; k++) {
         const span = pts[k + 1].s - pts[k].s;
         const want = span / 3;
         const bar = REACH_EPS * span;
-        // both sides are present: the loop above refused a segment missing either.
-        const out = pts[k].out as Offset;
-        const inn = pts[k + 1].in as Offset;
-        if (!(Math.abs(out.ds - want) <= bar))
+        const out = pts[k].out;
+        const inn = pts[k + 1].in;
+        if (out && !(Math.abs(out.ds - want) <= bar))
             throw new Error(
                 `polish: keyframe ${k} out handle reaches ${out.ds} in s, not the span/3 ` +
                     `(${want}) the fairing energy is closed-form on`,
             );
-        if (!(Math.abs(inn.ds + want) <= bar))
+        if (inn && !(Math.abs(inn.ds + want) <= bar))
             throw new Error(
                 `polish: keyframe ${k + 1} in handle reaches ${inn.ds} in s, not the span/3 ` +
                     `(${-want}) the fairing energy is closed-form on`,
@@ -794,9 +860,28 @@ export function polish(opts: PolishOpts): PolishResult {
         throw new Error(`polish: lambda must be a finite number >= 0, got ${opts.lambda}`);
 
     const handles = opts.handles ?? "free";
+    // the FREE family has no flat state: its DOF is one Δg per SIDE, so an absent side
+    // would leave a column driving nothing — the layout is positional there, and a hole in
+    // it is a dead column rather than a smaller family. A caller wanting a flat side in
+    // this family materializes it as an explicit Δg = 0 handle, which is exactly the same
+    // profile. (The aligned family drops the whole key's slope instead; `slopeSlots`.)
+    if (handles === "free")
+        for (let k = 0; k < K; k++) {
+            if (k < K - 1 && !pts[k].out)
+                throw new Error(`polish: keyframe ${k} has no out handle`);
+            if (k > 0 && !pts[k].in) throw new Error(`polish: keyframe ${k} has no in handle`);
+        }
     // the corner set, refused at the boundary like every other option here: a corner
-    // outside the aligned family, at an endpoint, or out of order would silently produce a
-    // DOF layout whose columns no longer mean what `slopeSlots` says they mean.
+    // outside the aligned family, at an endpoint, out of order, or on a flat key would
+    // silently produce a DOF layout whose columns no longer mean what `slopeSlots` says
+    // they mean.
+    if (handles === "aligned")
+        for (let k = 1; k + 1 < K; k++)
+            if (!pts[k].in !== !pts[k].out)
+                throw new Error(
+                    `polish: keyframe ${k} has one explicit side and one derived — that is a ` +
+                        `slope break no corner declares. Give it both sides or neither.`,
+                );
     const corners = opts.corners ?? [];
     if (corners.length > 0) {
         if (handles !== "aligned")
@@ -809,13 +894,15 @@ export function polish(opts: PolishOpts): PolishResult {
                 );
             if (r > 0 && !(c > corners[r - 1]))
                 throw new Error(`polish: corners must ascend, got ${corners[r - 1]} then ${c}`);
+            if (!pts[c].in && !pts[c].out)
+                throw new Error(`polish: corner ${c} is a flat key — it has no slope to break`);
         }
     }
     const sp = spine(bake, opts.ds);
     const E = sp.edges;
     const h = sp.ds;
     const L = sp.length;
-    const P = dofCount(K, handles, corners);
+    const P = dofCount(pts, handles, corners);
     const ns = 3 * E;
     // half-bandwidth of the state block: a defect spans two 3-var blocks (5), and the
     // recovered exit heading reads three consecutive θ (6).

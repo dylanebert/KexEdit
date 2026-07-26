@@ -19,6 +19,7 @@ import {
 } from "../src/polish";
 import {
     collinear,
+    Easing,
     type ForcePoint,
     forceProfile,
     type Offset,
@@ -1478,6 +1479,168 @@ describe("constrained polish — the authorable DOF", () => {
         },
         SOLVE_MS,
     );
+
+    test("a flat key is one FEWER dof, and its absent sides ARE the Cubic tangents", () => {
+        // THE EQUIVALENCE the whole flat state rests on: a key with no handles is not a
+        // special case in the evaluator, it is the same profile as one whose handles are
+        // explicitly `{ ±span/3, 0 }` — because `segment` resolves an absent side from the
+        // tag, and Cubic (the absent-tag default) reaches exactly span/3 flat. If that ever
+        // stopped holding, `polish` would be pricing and solving a curve `forceProfile`
+        // does not draw, so it is checked against the production evaluator itself, at
+        // f32 bit equality over the whole dense march.
+        const { bake } = bakeOf("hill-explicit");
+        const pts = fit(bake.fN, bake.ds, FIT_TOL).points;
+        const K = pts.length;
+        const flat: ForcePoint[] = pts.map((p, k) =>
+            k === 2 ? { s: p.s, g: p.g } : { s: p.s, g: p.g, in: p.in, out: p.out },
+        );
+        const materialized: ForcePoint[] = flat.map((p, k) => {
+            if (k !== 2) return p;
+            const q: ForcePoint = { s: p.s, g: p.g };
+            q.in = { ds: -(p.s - flat[1].s) / 3, dg: 0 };
+            q.out = { ds: (flat[3].s - p.s) / 3, dg: 0 };
+            return q;
+        });
+        const length = bake.ds.reduce((a: number, b: number) => a + b, 0);
+        expect(forceProfile(flat, length, 0.5)).toEqual(forceProfile(materialized, length, 0.5));
+
+        // one slope leaves the family with the key, so the aligned layout is 2K − 1. The
+        // free family has no flat state at all (its DOF is per SIDE), which is why it is
+        // refused at the boundary rather than silently carrying a dead column.
+        expect(readDof(flat, "aligned").length).toBe(2 * K - 1);
+        const back = applyDof(flat, "aligned", readDof(flat, "aligned"));
+        expect(back[2].in).toBeUndefined();
+        expect(back[2].out).toBeUndefined();
+        for (const k of [1, 3]) expect(collinear(back[k].in, back[k].out)).toBe(true);
+    });
+
+    test("the closed form still IS ∫(F″)² ds with a flat key", () => {
+        // THE DOMAIN QUESTION for the new state, and the one that could go wrong silently:
+        // `fairRows` skips an absent side, which is only correct if that side's true
+        // contribution is zero — Δg = 0 at the span/3 reach, so A + B and A − B both keep
+        // exactly the terms the closed form derives. Checked against the same independent
+        // quadrature the span/3 family is checked against, and against the materialized
+        // twin, so a skipped side that should have carried a term cannot hide.
+        //
+        // Same tolerance argument as the family's own oracle above (1e-6 relative).
+        let seed = 20260727;
+        const rnd = (): number => {
+            seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+            return seed / 0x7fffffff;
+        };
+        let worst = 0;
+        let flatKeys = 0;
+        let ends = 0;
+        for (let trial = 0; trial < 20; trial++) {
+            const K = 4 + Math.floor(rnd() * 4);
+            const pts: ForcePoint[] = [];
+            let s = 0;
+            for (let k = 0; k < K; k++) {
+                pts.push({ s, g: (rnd() - 0.5) * 20 });
+                s += 1 + rnd() * 12;
+            }
+            // ONE slope per KEY, both its sides on it: the aligned family represents this
+            // profile exactly, so `readDof` has nothing to project away and the closed form
+            // and the quadrature are reading the same curve. (Per-SEGMENT slopes would make
+            // every key a kink, the aligned read would project it, and the two numbers would
+            // honestly disagree — which is what the family's own oracle above pins.)
+            const slope = pts.map(() => (rnd() - 0.5) * 4);
+            for (let k = 0; k + 1 < K; k++) {
+                const reach = (pts[k + 1].s - pts[k].s) / 3;
+                pts[k].out = { ds: reach, dg: slope[k] * reach };
+                pts[k + 1].in = { ds: -reach, dg: slope[k + 1] * -reach };
+            }
+            // flatten a run of keys, so both a lone flat key and an adjacent pair (a NAMED
+            // segment, whose two sides are both absent) are priced.
+            // `cut` reaches 0 and K−1 on purpose: a flat ENDPOINT loses its only side, and
+            // the corpus spends 2 of its 10 flats there (full-loop key 6, s-curve key 14).
+            const cut = Math.floor(rnd() * K);
+            const wide = rnd() < 0.5 && cut + 1 < K;
+            const flat: ForcePoint[] = pts.map((p, k) =>
+                k === cut || (wide && k === cut + 1)
+                    ? { s: p.s, g: p.g }
+                    : { s: p.s, g: p.g, in: p.in, out: p.out },
+            );
+            ends += cut === 0 || cut === K - 1 || (wide && cut + 1 === K - 1) ? 1 : 0;
+            flatKeys += wide ? 2 : 1;
+            const num = quadRoughness(flat);
+            expect(num).toBeGreaterThan(1e-3);
+            const closed = fairNorm(fairRows(flat, "aligned"), readDof(flat, "aligned"));
+            worst = Math.max(worst, Math.abs(closed - num) / num);
+
+            // the MATERIALIZED TWIN: the same profile with every flattened side written out
+            // as an explicit `{±span/3, 0}` handle. It is a different DOF layout (those keys
+            // get their slope back) over an identical curve, so an equal price is the claim
+            // that the flat state is a representation change and not a discount.
+            const twin: ForcePoint[] = flat.map((p, k) => {
+                if (p.in || p.out) return p;
+                const q: ForcePoint = { s: p.s, g: p.g };
+                if (k > 0) q.in = { ds: -(p.s - flat[k - 1].s) / 3, dg: 0 };
+                if (k + 1 < K) q.out = { ds: (flat[k + 1].s - p.s) / 3, dg: 0 };
+                return q;
+            });
+            const twinClosed = fairNorm(fairRows(twin, "aligned"), readDof(twin, "aligned"));
+            expect(twinClosed).toBeCloseTo(closed, 9);
+            expect(readDof(twin, "aligned").length).toBeGreaterThan(
+                readDof(flat, "aligned").length,
+            );
+        }
+        expect(flatKeys).toBeGreaterThan(20);
+        expect(ends).toBeGreaterThan(3);
+        expect(worst).toBeLessThan(1e-6);
+    });
+
+    test("a tag the solve cannot honour is refused, not ignored", () => {
+        // THE MATERIALIZATION BOUNDARY. `segment` resolves an absent side at the TAG's
+        // influence, and only Cubic's is the span/3 the fairing energy is closed-form on —
+        // so a Linear or Quintic tag would have `polish` price and solve a curve that is
+        // not the one `forceProfile` draws. It is refused everywhere rather than only where
+        // a side is absent, because a tag stored under explicit handles is dormant, not
+        // dead: `shell` does not carry it, so the answer would silently come back without
+        // it. `quantize.ts` stores no tag at all for exactly this reason.
+        const { s: sc, entry, bake } = bakeOf("circular-arc");
+        const warm = fit(bake.fN, bake.ds, FIT_TOL).points;
+        const call = (pts: ForcePoint[], o: Record<string, unknown> = {}) =>
+            polish({ bake, entry, points: pts, ds: sc.ds, handles: "aligned", ...o });
+        const tagged = warm.map((p, k) => (k === 0 ? { ...p, ease: Easing.Linear } : p));
+        expect(() => call(tagged)).toThrow(/carries ease/);
+        expect(() => call(warm.map((p) => ({ ...p, ease: Easing.Quintic })))).toThrow(
+            /carries ease/,
+        );
+        // the default tag IS the family, so storing it is a no-op rather than an error.
+        expect(() => call(warm.map((p) => ({ ...p, ease: Easing.Cubic })))).not.toThrow();
+
+        // `fairRows` guards it too, not just `polish`: it is exported, and pricing an
+        // off-family tag is silent (measured, a Quintic flat side under-prices by 35%).
+        expect(() => fairRows(tagged, "aligned")).toThrow(/carries ease/);
+
+        // the free family keeps its original contract: every side explicit.
+        const flat = warm.map((p, k) => (k === 1 ? { s: p.s, g: p.g } : p));
+        expect(() => call(flat, { handles: "free" })).toThrow(/keyframe 1 has no out handle/);
+        // and a corner is the other discrete state at a key, so it cannot also be flat.
+        expect(() => call(flat, { corners: [1] })).toThrow(/corner 1 is a flat key/);
+    });
+
+    test("a half-flat interior key is a corner nobody declared, so it is refused", () => {
+        // The vocabulary lock says a broken key is a DECLARED state that costs a DOF
+        // (`Corners`). A key with one explicit side and one derived carries two different
+        // slopes — a break — and would get it for free, outside that mechanism. The algebra
+        // handles it fine (the present side drives the slot, the absent one contributes
+        // Δg = 0), so nothing would fail loudly; that is exactly why it is refused at the
+        // boundary. Chain ends are exempt — they carry one side by nature, which is why the
+        // corpus's own answers (and every flat endpoint) still solve.
+        const { s: sc, entry, bake } = bakeOf("circular-arc");
+        const warm = fit(bake.fN, bake.ds, FIT_TOL).points;
+        const call = (pts: ForcePoint[]) =>
+            polish({ bake, entry, points: pts, ds: sc.ds, handles: "aligned" });
+        const halfIn = warm.map((p, k) => (k === 1 ? { s: p.s, g: p.g, out: p.out } : p));
+        const halfOut = warm.map((p, k) => (k === 1 ? { s: p.s, g: p.g, in: p.in } : p));
+        expect(() => call(halfIn)).toThrow(/one explicit side and one derived/);
+        expect(() => call(halfOut)).toThrow(/one explicit side and one derived/);
+        // both sides gone is the flat state and is fine; both present is the plain family.
+        expect(() => call(warm.map((p, k) => (k === 1 ? { s: p.s, g: p.g } : p)))).not.toThrow();
+        expect(() => call(warm)).not.toThrow();
+    });
 
     test("a corner outside the aligned family, or at an end, is refused", () => {
         // refused at the boundary for the reason every other option here is: each of these

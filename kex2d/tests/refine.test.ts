@@ -21,7 +21,7 @@ import {
 } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { type Entry, evalForce, evalGeo, type SectionResult } from "../src/section";
-import { reflect, TangentMode, type Node, type Tangent } from "../src/spline";
+import { sharpValley } from "./helpers/valley";
 
 interface Case {
     name: string;
@@ -312,25 +312,6 @@ describe("refine — the corpus contract", () => {
 });
 
 // ---- the corner: the one discrete state, and the budget outcome ----
-
-/** a sharp V with a `Free` tangent at the trough — a genuine slope discontinuity in the
- *  target, which is what a corner is for. Compact on purpose: the corner path only engages
- *  under a floor far tighter than this shape's derived one (0.26 m — the chord deficit of a
- *  98 g spike is large), so the fixture drives it with an explicit `floor`, which is exactly
- *  what that option exists for. */
-function sharpValley(): { bake: SectionResult; entry: Entry; ds: number } {
-    const t: Tangent = { mode: TangentMode.Free, inX: 5, inY: -6, outX: 5, outY: 10 };
-    const dip: Node = { x: 14, y: -5, theta: 0, tangent: t };
-    const exit = Math.atan2(t.outY, t.outX);
-    const p3 = { x: 30, y: -3 };
-    const nodes: Node[] = [
-        { x: 0, y: 0, theta: 0 },
-        dip,
-        { ...p3, theta: reflect(exit, Math.atan2(p3.y - dip.y, p3.x - dip.x)) },
-    ];
-    const entry: Entry = { x: 0, y: 0, theta: 0, v: 14 };
-    return { bake: evalGeo(entry, nodes, 0.5), entry, ds: 0.5 };
-}
 
 describe("refine — corners and the key budget", () => {
     const fx = sharpValley();
