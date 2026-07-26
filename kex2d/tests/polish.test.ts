@@ -1361,6 +1361,68 @@ describe("constrained polish — the authorable DOF", () => {
         expect(al.peakG).toBeLessThan(0.6 * free.peakG);
         expect(al.deviation).toBeGreaterThan(free.deviation);
     });
+
+    // ---- the CORNER: the one broken-key state, introduced only by the refine loop ----
+
+    /** a profile with a genuine SLOPE BREAK at its middle key — in-slope 0.4 against
+     *  out-slope 0.9 — with every reach at span/3 so the closed form still applies. The
+     *  aligned family cannot draw this; the corner family can. */
+    const kinked: ForcePoint[] = [
+        { s: 0, g: 1, out: { ds: 2, dg: 1.2 } },
+        { s: 6, g: 3, in: { ds: -2, dg: -0.8 }, out: { ds: 3, dg: 2.7 } },
+        { s: 15, g: 2, in: { ds: -3, dg: 1.5 } },
+    ];
+
+    test("an empty corner set is the plain aligned family, column for column", () => {
+        // the negative control for the whole discrete state: a solve with no corners must be
+        // the stage-1/2 aligned layout, or stage 3 would have moved the fixed-knot answer.
+        const pts = fit(bakeOf("hill-auto").bake.fN, bakeOf("hill-auto").bake.ds, FIT_TOL).points;
+        expect(readDof(pts, "aligned", [])).toEqual(readDof(pts, "aligned"));
+        expect(fairRows(pts, "aligned", [])).toEqual(fairRows(pts, "aligned"));
+        const dof = readDof(pts, "aligned");
+        expect(applyDof(pts, "aligned", dof, [])).toEqual(applyDof(pts, "aligned", dof));
+    });
+
+    test("a corner is one more DOF, and it unbinds that key's two sides", () => {
+        expect(readDof(kinked, "aligned", [1]).length).toBe(readDof(kinked, "aligned").length + 1);
+        // every slot in the corner layout carries exactly ONE side here, so the projection is
+        // exact and the round-trip reproduces the kink.
+        const back = applyDof(kinked, "aligned", readDof(kinked, "aligned", [1]), [1]);
+        expect(back).toEqual(kinked);
+        expect(collinear(back[1].in, back[1].out)).toBe(false);
+        // without the corner the same read least-squares both sides onto one slope, which is
+        // the vocabulary constraint doing its job: the kink is unrepresentable.
+        const flat = applyDof(kinked, "aligned", readDof(kinked, "aligned"));
+        expect(collinear(flat[1].in, flat[1].out)).toBe(true);
+        expect(flat).not.toEqual(kinked);
+    });
+
+    test("the corner layout prices ∫(F″)² like every other — freedom, not a discount", () => {
+        // λ must price the same function of the PROFILE whichever layout carries it, or the
+        // discrepancy search could buy a lower fairing energy by declaring a corner instead
+        // of by getting smoother. Checked against the free family (which represents the kink
+        // exactly too) AND against the quadrature oracle, so a mis-routed slope cannot hide.
+        expect(applyDof(kinked, "free", readDof(kinked, "free"))).toEqual(kinked);
+        const free = fairNorm(fairRows(kinked, "free"), readDof(kinked, "free"));
+        const corner = fairNorm(fairRows(kinked, "aligned", [1]), readDof(kinked, "aligned", [1]));
+        expect(corner).toBeCloseTo(free, 9);
+        expect(corner).toBeCloseTo(quadRoughness(kinked), 6);
+        // and the absolute number, so the three readings agreeing on ZERO would still fail.
+        expect(corner).toBeCloseTo(0.4091, 3);
+    });
+
+    test("a corner outside the aligned family, or at an end, is refused", () => {
+        // refused at the boundary for the reason every other option here is: each of these
+        // silently produces a DOF layout whose columns no longer mean what `slopeSlots` says.
+        const { s: sc, entry, bake } = bakeOf("circular-arc");
+        const warm = fit(bake.fN, bake.ds, FIT_TOL).points;
+        const call = (o: Record<string, unknown>) =>
+            polish({ bake, entry, points: warm, ds: sc.ds, ...o });
+        expect(() => call({ handles: "free", corners: [1] })).toThrow(/aligned-family state/);
+        expect(() => call({ handles: "aligned", corners: [0] })).toThrow(/interior key index/);
+        expect(() => call({ handles: "aligned", corners: [1.5] })).toThrow(/interior key index/);
+        expect(() => call({ handles: "aligned", corners: [2, 1] })).toThrow(/corners must ascend/);
+    });
 });
 
 describe("constrained polish — the target spine", () => {

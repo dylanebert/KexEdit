@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fit } from "../src/fit";
+import { arclength, fit, fitKnots } from "../src/fit";
 import { type ForcePoint, forceProfile, sampleForce, segmentControls } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { evalGeo } from "../src/section";
@@ -294,7 +294,7 @@ describe("sparse init — the atom", () => {
         expect(f.at).toBe(-1);
         expect(sampleForce(f.points, 0.25)).toBe(2.5);
         expect(f.steps).toEqual([
-            { phase: "init", knots: [0], points: f.points, maxError: 0, at: -1 },
+            { phase: "init", knots: [0], points: f.points, maxError: 0, at: -1, errors: [] },
         ]);
     });
 
@@ -352,5 +352,66 @@ describe("sparse init — the atom", () => {
         expect(loose.maxError).toBeLessThanOrEqual(0.1);
         expect(tight.maxError).toBeLessThanOrEqual(0.001);
         expect(tight.points.length).toBeGreaterThan(loose.points.length);
+    });
+});
+
+describe("sparse init — a fit at prescribed knots", () => {
+    // the refine loop owns knot placement itself (`refine.ts`), so it needs the same
+    // per-piece least squares at a knot set IT chose. Same builder, same span/3 family.
+    const s = scenarios.find((x) => x.name === "hill-auto");
+    if (!s) throw new Error("no scenario hill-auto");
+    const bake = evalGeo({ x: 0, y: 0, theta: 0, v: s.v0 }, s.nodes, s.ds);
+    const f = fit(bake.fN, bake.ds, TOL);
+    const last = f.steps[f.steps.length - 1];
+
+    test("re-fitting the fit's own knots reproduces the fit exactly", () => {
+        const again = fitKnots(bake.fN, bake.ds, last.knots);
+        expect(again.points).toEqual(f.points);
+        expect(again.length).toBe(f.length);
+        expect(again.maxError).toBeCloseTo(f.maxError, 15);
+        expect(again.steps.length).toBe(1);
+    });
+
+    test("a coarser knot set fits worse but stays in the span/3 family", () => {
+        const coarse = [0, last.knots[Math.floor(last.knots.length / 2)], bake.fN.length - 1];
+        const r = fitKnots(bake.fN, bake.ds, coarse);
+        expect(r.points.length).toBe(3);
+        expect(r.maxError).toBeGreaterThan(f.maxError);
+        for (let k = 0; k + 1 < r.points.length; k++) {
+            const span = r.points[k + 1].s - r.points[k].s;
+            expect(r.points[k].out?.ds).toBeCloseTo(span / 3, 12);
+            expect(r.points[k + 1].in?.ds).toBeCloseTo(-span / 3, 12);
+        }
+    });
+
+    test("per-piece errors resolve the whole-profile max", () => {
+        expect(last.errors.length).toBe(last.knots.length - 1);
+        expect(Math.max(...last.errors)).toBeCloseTo(last.maxError, 15);
+        // the removal-counterfactual ranking reads exactly this, per merged piece.
+        const drop = last.knots.filter((_, i) => i !== 1);
+        const merged = fitKnots(bake.fN, bake.ds, drop).steps[0];
+        expect(merged.errors[0]).toBeGreaterThanOrEqual(Math.min(last.errors[0], last.errors[1]));
+    });
+
+    test("the s-frame is the dense curve's cumulative chord", () => {
+        const sigma = arclength(bake.ds);
+        expect(sigma.length).toBe(bake.edges);
+        expect(sigma[0]).toBe(0);
+        for (let i = 1; i < sigma.length; i++)
+            expect(sigma[i] - sigma[i - 1]).toBeCloseTo(bake.ds[i - 1], 12);
+        // the last knot sits one edge short of the extent, per the leading-sample convention.
+        expect(f.points[f.points.length - 1].s).toBeCloseTo(sigma[bake.edges - 1], 12);
+        expect(() => arclength([0.5, 0])).toThrow(/ds\[1\] is 0/);
+    });
+
+    test("a knot list that does not span the dense curve is refused", () => {
+        const { fN, ds } = bake;
+        const n = fN.length;
+        expect(() => fitKnots(fN, ds, [1, n - 1])).toThrow(/must span/);
+        expect(() => fitKnots(fN, ds, [0, n - 2])).toThrow(/must span/);
+        expect(() => fitKnots(fN, ds, [0, 5, 5, n - 1])).toThrow(/must ascend/);
+        expect(() => fitKnots(fN, ds, [0, 2.5, n - 1])).toThrow(/knot 1 is 2.5/);
+        expect(() => fitKnots(fN, ds, [0])).toThrow(/>= 2 knots/);
+        expect(() => fitKnots([1, 2], [0.5], [0, 1])).toThrow(/2 forces against 1 chords/);
     });
 });

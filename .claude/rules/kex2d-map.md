@@ -139,6 +139,22 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   reference (`tests/helpers/dense.ts`).
 - `collocate.ts` — the dense-spine solver kernel (LM Gauss-Newton, PHR augmented-Lagrangian band).
   Kept as reference for the deferred optimization tier; the live path does not call it.
+- `refine.ts` — the **discrete outer refinement** around `polish`: choose WHERE the keys go
+  by solving, reading the residual, and moving the knots there, instead of inheriting the
+  warm-start fit's (which places knots against the dense force — the wrong target, since
+  force error integrates twice). Opens at two keys and splits toward the derived authoring
+  floor, then prunes every key a removal counterfactual can spare; the objective is
+  discrepancy-constrained MINIMAL KEYS, parameter-free (the floor is a constraint, not a
+  term). Three laws worth not re-deriving: a candidate is probed at **λ = 0** (the tightest
+  the family reaches — the feasibility question, one solve, and the reason the loop is
+  affordable at all), a split lands at the segment's **equidistribution point** and never its
+  residual peak (peak-splitting puts a knot beside its neighbour, and `fairRows`'s `1/span³`
+  then prices the sliver by the cube of the ratio — measured, it collapsed λ six decades and
+  quadrupled the dense peak), and a **corner** (`polish.Corners`, the one broken-key state) is
+  introduced only when a split STALLS in its own region. Split-while-violated against
+  prune-only-while-held is the hysteresis; a refinement that runs out of admissible sites
+  returns `heldFloor` false, the sanctioned un-authorable outcome. Unit-tested in
+  `refine.test.ts` (the 10-scenario corpus gate, ~36 s).
 - `census.ts` — the **vocabulary census**: which tangent-mode shape (`mirror`/`aligned`/`broken`/
   `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
   authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`

@@ -210,6 +210,12 @@ export interface PolishResult {
     /** max |spine − target| over the samples (m), and where. */
     deviation: number;
     at: number;
+    /** the whole deviation profile the max was taken over, `|P_j − P*_j|` at every spine
+     *  sample (m), length `edges + 1`. Index 0 is the pinned entry, so it is exactly 0.
+     *  `deviation` is its max and `at` its argmax; this is the same reading resolved per
+     *  sample, which is what a refinement loop needs to decide WHERE the residual sits
+     *  rather than only how big it is (`refine.ts`). */
+    deviations: Float64Array;
     /** final penalty after any escalation. */
     rho: number;
     /** which mode produced this. */
@@ -219,6 +225,9 @@ export interface PolishResult {
      *  any surface that draws its handles at a legible size, since `census` also calls a
      *  side too short to show a direction broken. */
     handles: HandleDof;
+    /** the keys solved with a broken slope (`Corners`); empty unless the caller asked. Every
+     *  one of them censuses `broken` on purpose — that is the discrete state, not a defect. */
+    corners: number[];
     /** the fairing weight the answer was solved at. 0 in exact mode; in calm mode, 0 means
      *  the search found no slack at all and fell back — a clip, not a located discrepancy
      *  point. `LAM_MAX` is the clip at the other end, and it is a FREE-family outcome: no
@@ -271,6 +280,9 @@ export interface PolishOpts {
     mode?: PolishMode;
     /** which DOF the solve carries: `"free"` (default) or the authorable `"aligned"`. */
     handles?: HandleDof;
+    /** the keys carrying a broken slope (`Corners`) — aligned mode only, ascending and
+     *  interior. Default none, which is the plain aligned family column for column. */
+    corners?: Corners;
     /** override the derived authoring floor (m) calm mode stops against; finite and > 0.
      *  For probing the discrepancy principle — at the numeric floor calm mode degenerates
      *  to exact. */
@@ -446,8 +458,36 @@ export function spine(bake: Bake, dsNominal: number): Spine {
  *  carries over untouched; only the matrix's columns change. */
 export type HandleDof = "free" | "aligned";
 
-function dofCount(keys: number, handles: HandleDof): number {
-    return handles === "aligned" ? 2 * keys : 3 * keys - 2;
+/** the CORNER set: which keys carry a broken (per-side independent) slope inside the
+ *  aligned family — the explicit discrete state the vocabulary reserves for a genuine
+ *  slope discontinuity, and the one `HandleDof` calls unrepresentable by the continuous
+ *  solve. Entries are key indices, strictly ascending, and INTERIOR (0 and `K − 1` carry
+ *  one side each, so there is nothing there to break).
+ *
+ *  A corner adds exactly one DOF: the key's `out` side keeps the base slope `m_k` and its
+ *  `in` side gets its own, appended after the `2K` base DOF in corner order. So an empty
+ *  corner set reproduces the plain aligned layout column for column — the refine loop's
+ *  discrete state cannot perturb a fixed-knot solve that has no corners.
+ *
+ *  Free mode takes no corners: its handles are already independent per side. */
+export type Corners = readonly number[];
+
+/** which DOF drives each key's `in`/`out` handle in the aligned family. `out` is always the
+ *  key's own base slope; `in` is the same slope unless the key is a corner, in which case
+ *  it is that corner's appended DOF. */
+function slopeSlots(keys: number, corners: Corners): { inSlot: Int32Array; outSlot: Int32Array } {
+    const inSlot = new Int32Array(keys);
+    const outSlot = new Int32Array(keys);
+    for (let k = 0; k < keys; k++) {
+        inSlot[k] = keys + k;
+        outSlot[k] = keys + k;
+    }
+    for (let r = 0; r < corners.length; r++) inSlot[corners[r]] = 2 * keys + r;
+    return { inSlot, outSlot };
+}
+
+function dofCount(keys: number, handles: HandleDof, corners: Corners = []): number {
+    return handles === "aligned" ? 2 * keys + corners.length : 3 * keys - 2;
 }
 
 /** the profile with every value zeroed and every handle's Δs kept — the shell a DOF
@@ -468,30 +508,39 @@ function shell(pts: readonly ForcePoint[]): ForcePoint[] {
  *
  *  Aligned mode (layout: `g_k` then `m_k`, both k = 0..K−1) has to PROJECT: a fit's two
  *  sides are independent and generally not collinear, so each key's slope is the
- *  least-squares fit `m = Σ Δs·Δg / Σ Δs²` over its present sides — Δg measured in the
- *  metric the fairing rows carry, so the warm start is the closest profile the aligned
- *  family holds rather than an arbitrary one. A key whose sides all have Δs = 0 carries no
- *  shape in this vocabulary at all: its `m` is unidentifiable, starts at 0, and the LM
- *  damping leaves it there. */
-export function readDof(pts: readonly ForcePoint[], handles: HandleDof): Float64Array {
+ *  least-squares fit `m = Σ Δs·Δg / Σ Δs²` over the sides that SHARE it — Δg measured in
+ *  the metric the fairing rows carry, so the warm start is the closest profile the aligned
+ *  family holds rather than an arbitrary one. A corner's two sides no longer share a slope,
+ *  so each projects alone and the projection is exact there. A slot whose sides all have
+ *  Δs = 0 carries no shape in this vocabulary at all: its `m` is unidentifiable, starts at
+ *  0, and the LM damping leaves it there. */
+export function readDof(
+    pts: readonly ForcePoint[],
+    handles: HandleDof,
+    corners: Corners = [],
+): Float64Array {
     const K = pts.length;
-    const dof = new Float64Array(dofCount(K, handles));
+    const P = dofCount(K, handles, corners);
+    const dof = new Float64Array(P);
     for (let k = 0; k < K; k++) dof[k] = pts[k].g;
     if (handles === "free") {
         for (let k = 0; k + 1 < K; k++) dof[K + k] = pts[k].out?.dg ?? 0;
         for (let k = 1; k < K; k++) dof[2 * K - 1 + (k - 1)] = pts[k].in?.dg ?? 0;
         return dof;
     }
-    for (let k = 0; k < K; k++) {
-        let num = 0;
-        let den = 0;
-        for (const side of [pts[k].in, pts[k].out]) {
+    const { inSlot, outSlot } = slopeSlots(K, corners);
+    const num = new Float64Array(P);
+    const den = new Float64Array(P);
+    for (let k = 0; k < K; k++)
+        for (const [side, p] of [
+            [pts[k].in, inSlot[k]],
+            [pts[k].out, outSlot[k]],
+        ] as [Offset | undefined, number][]) {
             if (!side) continue;
-            num += side.ds * side.dg;
-            den += side.ds * side.ds;
+            num[p] += side.ds * side.dg;
+            den[p] += side.ds * side.ds;
         }
-        dof[K + k] = den > 0 ? num / den : 0;
-    }
+    for (let p = K; p < P; p++) dof[p] = den[p] > 0 ? num[p] / den[p] : 0;
     return dof;
 }
 
@@ -503,9 +552,10 @@ export function applyDof(
     pts: readonly ForcePoint[],
     handles: HandleDof,
     dof: ArrayLike<number>,
+    corners: Corners = [],
 ): ForcePoint[] {
     const K = pts.length;
-    const need = dofCount(K, handles);
+    const need = dofCount(K, handles, corners);
     if (dof.length !== need)
         throw new Error(`applyDof: ${handles} over ${K} keys takes ${need} dof, got ${dof.length}`);
     const out = shell(pts);
@@ -516,12 +566,12 @@ export function applyDof(
             if (out[k].in) (out[k].in as Offset).dg = dof[2 * K - 1 + (k - 1)];
         return out;
     }
+    const { inSlot, outSlot } = slopeSlots(K, corners);
     for (let k = 0; k < K; k++) {
-        const m = dof[K + k];
         const i = out[k].in;
         const o = out[k].out;
-        if (i) i.dg = m * i.ds;
-        if (o) o.dg = m * o.ds;
+        if (i) i.dg = dof[inSlot[k]] * i.ds;
+        if (o) o.dg = dof[outSlot[k]] * o.ds;
     }
     return out;
 }
@@ -536,13 +586,14 @@ export function forceMatrix(
     handles: HandleDof,
     edges: number,
     ds: number,
+    corners: Corners = [],
 ): Float64Array[] {
-    const P = dofCount(pts.length, handles);
+    const P = dofCount(pts.length, handles, corners);
     const unit = new Float64Array(P);
     const A: Float64Array[] = [];
     for (let p = 0; p < P; p++) {
         unit[p] = 1;
-        const probe = applyDof(pts, handles, unit);
+        const probe = applyDof(pts, handles, unit, corners);
         unit[p] = 0;
         const col = new Float64Array(edges);
         for (let j = 0; j < edges; j++) col[j] = sampleForce(probe, j * ds);
@@ -606,8 +657,13 @@ export interface FairRow {
  *  quantizer, whose named tags leave it by construction — must integrate `(F″)²`
  *  numerically instead of calling this. A side the warm start left absent carries no DOF
  *  term: `segment` substitutes a flat derived tangent there, Δg = 0. */
-export function fairRows(pts: readonly ForcePoint[], handles: HandleDof): FairRow[] {
+export function fairRows(
+    pts: readonly ForcePoint[],
+    handles: HandleDof,
+    corners: Corners = [],
+): FairRow[] {
     const K = pts.length;
+    const { inSlot, outSlot } = slopeSlots(K, corners);
     const rows: FairRow[] = [];
     for (let k = 0; k + 1 < K; k++) {
         const a = pts[k];
@@ -618,17 +674,20 @@ export function fairRows(pts: readonly ForcePoint[], handles: HandleDof): FairRo
         const sum: FairRow = { p: [], c: [] };
         const chord: FairRow = { p: [k, k + 1], c: [-c, c] };
         // `coef` is ∂Δg/∂dof for that side: 1 where a Δg IS the DOF, that side's Δs where
-        // a slope drives it.
+        // a slope drives it. A corner routes only its `in` side to a different slope, so
+        // the price of the SAME profile is unchanged — a corner buys freedom, not a
+        // discount.
         if (a.out) {
             const coef = handles === "free" ? 1 : a.out.ds;
-            sum.p.push(K + k);
+            const p = handles === "free" ? K + k : outSlot[k];
+            sum.p.push(p);
             sum.c.push(c * (Math.sqrt(3) / 2) * coef);
-            chord.p.push(K + k);
+            chord.p.push(p);
             chord.c.push(-1.5 * c * coef);
         }
         if (b.in) {
             const coef = handles === "free" ? 1 : b.in.ds;
-            const p = handles === "free" ? 2 * K - 1 + k : K + k + 1;
+            const p = handles === "free" ? 2 * K - 1 + k : inSlot[k + 1];
             sum.p.push(p);
             sum.c.push(c * (Math.sqrt(3) / 2) * coef);
             chord.p.push(p);
@@ -735,11 +794,28 @@ export function polish(opts: PolishOpts): PolishResult {
         throw new Error(`polish: lambda must be a finite number >= 0, got ${opts.lambda}`);
 
     const handles = opts.handles ?? "free";
+    // the corner set, refused at the boundary like every other option here: a corner
+    // outside the aligned family, at an endpoint, or out of order would silently produce a
+    // DOF layout whose columns no longer mean what `slopeSlots` says they mean.
+    const corners = opts.corners ?? [];
+    if (corners.length > 0) {
+        if (handles !== "aligned")
+            throw new Error(`polish: corners are an aligned-family state, not ${handles}`);
+        for (let r = 0; r < corners.length; r++) {
+            const c = corners[r];
+            if (!Number.isInteger(c) || c < 1 || c > K - 2)
+                throw new Error(
+                    `polish: corner ${c} is not an interior key index in [1, ${K - 2}]`,
+                );
+            if (r > 0 && !(c > corners[r - 1]))
+                throw new Error(`polish: corners must ascend, got ${corners[r - 1]} then ${c}`);
+        }
+    }
     const sp = spine(bake, opts.ds);
     const E = sp.edges;
     const h = sp.ds;
     const L = sp.length;
-    const P = dofCount(K, handles);
+    const P = dofCount(K, handles, corners);
     const ns = 3 * E;
     // half-bandwidth of the state block: a defect spans two 3-var blocks (5), and the
     // recovered exit heading reads three consecutive θ (6).
@@ -775,7 +851,7 @@ export function polish(opts: PolishOpts): PolishResult {
     // edge — a dense sample lies in one segment, so its force reads the two bounding keys'
     // values and their two facing handles, whichever family those handles come from —
     // and `supp` is its transpose.
-    const A = forceMatrix(pts, handles, E, h);
+    const A = forceMatrix(pts, handles, E, h, corners);
     const rowDofs: number[][] = [];
     for (let j = 0; j < E; j++) rowDofs.push([]);
     const supp: number[][] = [];
@@ -791,10 +867,10 @@ export function polish(opts: PolishOpts): PolishResult {
 
     const mode = opts.mode ?? "exact";
     const floor = opts.floor ?? authoringFloor(sp);
-    const dof0 = readDof(pts, handles);
+    const dof0 = readDof(pts, handles, corners);
     // the fairing rows, plus their columns in the normal system (`ns + p`) built once —
     // the rows are a function of the s-coordinates alone, which this solve holds fixed.
-    const fair = fairRows(pts, handles);
+    const fair = fairRows(pts, handles, corners);
     const fairCols = fair.map((r) => r.p.map((p) => ns + p));
     // every λ the search tries is part of what this call cost, so the answer reports the
     // running totals rather than the winning solve's own counts.
@@ -940,6 +1016,15 @@ export function polish(opts: PolishOpts): PolishResult {
                 }
             }
             return { dev, at };
+        };
+
+        /** the same reading resolved per sample — built once, for the answer only, so the
+         *  playback frames stay allocation-free. */
+        const devProfile = (zz: Float64Array): Float64Array => {
+            const out = new Float64Array(E + 1);
+            for (let j = 1; j <= E; j++)
+                out[j] = Math.hypot(xAt(zz, j) - sp.x[j], yAt(zz, j) - sp.y[j]);
+            return out;
         };
 
         /** Φ = tracking + the shifted-quadratic AL term. Mirrors `assemble` exactly. */
@@ -1173,7 +1258,7 @@ export function polish(opts: PolishOpts): PolishResult {
 
         /** the current DOF as a profile in `profile.ts`'s representation. */
         function profile(): ForcePoint[] {
-            return applyDof(pts, handles, z.subarray(ns));
+            return applyDof(pts, handles, z.subarray(ns), corners);
         }
 
         // ---- PHR augmented Lagrangian: LM inners, λ update + stall escalation between ----
@@ -1280,9 +1365,11 @@ export function polish(opts: PolishOpts): PolishResult {
             },
             deviation: dev,
             at,
+            deviations: devProfile(z),
             rho,
             mode,
             handles,
+            corners: [...corners],
             lambda,
             floor,
             heldFloor: dev <= floor,

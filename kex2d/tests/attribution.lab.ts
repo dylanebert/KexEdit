@@ -22,8 +22,18 @@
 
 import { census } from "../src/census";
 import { fit } from "../src/fit";
-import { authoringFloor, type HandleDof, type PolishMode, polish, spine } from "../src/polish";
-import { type ForcePoint, forceProfile } from "../src/profile";
+import {
+    authoringFloor,
+    fairNorm,
+    fairRows,
+    type HandleDof,
+    type PolishMode,
+    polish,
+    readDof,
+    spine,
+} from "../src/polish";
+import { collinear, type ForcePoint, forceProfile } from "../src/profile";
+import { refine } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { type Entry, evalForce, evalGeo, type SectionResult } from "../src/section";
 import { G_GRID } from "../src/timeline";
@@ -196,3 +206,85 @@ for (const s of scenarios) {
 }
 
 console.log(rows.join("\n"));
+
+// ---- stage 3: the refine loop against the fixed-knot baseline it replaces ----
+// The tier's shipping answer is the last row's `aligned`/`calm` pair; this sweep re-solves
+// it with the KNOTS chosen by `refine` instead of by `fit`, so the delta attributes to lock
+// 3/4 (placement) rather than to the DOF family or the prior. Roughness is the fairing
+// seminorm, which with the dense peak is what "violence" means after stage 2's metric law —
+// maxDg does not measure it.
+const REFINE_HEAD = [
+    "scenario",
+    "baseK",
+    "refK",
+    "floor",
+    "baseDev",
+    "refDev",
+    "baseHeld",
+    "refHeld",
+    "basePeak",
+    "refPeak",
+    "baseRough",
+    "refRough",
+    "brk",
+    "corners",
+    "probes",
+    "solves",
+    "ms",
+    "events",
+];
+const refineRows: string[] = [REFINE_HEAD.join("\t")];
+for (const s of scenarios) {
+    const entry: Entry = { x: 0, y: 0, theta: 0, v: s.v0 };
+    const bake = evalGeo(entry, s.nodes, s.ds);
+    const warm = fit(bake.fN, bake.ds, FIT_TOL);
+    const floor = authoringFloor(spine(bake, s.ds));
+    const base = polish({
+        bake,
+        entry,
+        points: warm.points,
+        ds: s.ds,
+        mode: "calm",
+        handles: "aligned",
+    });
+    const t0 = performance.now();
+    const r = refine({ bake, entry, ds: s.ds });
+    const ms = performance.now() - t0;
+    const rough = (pts: readonly ForcePoint[]): number =>
+        fairNorm(fairRows(pts, "aligned"), readDof(pts, "aligned"));
+    refineRows.push(
+        [
+            s.name,
+            `${base.keys}`,
+            `${r.final.keys}`,
+            floor.toFixed(4),
+            base.deviation.toFixed(4),
+            r.final.deviation.toFixed(4),
+            base.heldFloor ? "y" : "NO",
+            r.final.heldFloor ? "y" : "NO",
+            base.peakG.toFixed(2),
+            r.final.peakG.toFixed(2),
+            rough(base.points).toExponential(1),
+            rough(r.final.points).toExponential(1),
+            `${r.final.points.filter((p) => !collinear(p.in, p.out)).length}`,
+            `${r.cornerKnots.length}`,
+            `${r.probes}`,
+            `${r.solves}`,
+            ms.toFixed(0),
+            r.events
+                .map(
+                    (e) =>
+                        ({
+                            init: "i",
+                            split: "s",
+                            prune: "p",
+                            corner: "C",
+                            stall: "!",
+                            budget: "B",
+                        })[e.kind],
+                )
+                .join(""),
+        ].join("\t"),
+    );
+}
+console.log(`\n${refineRows.join("\n")}`);

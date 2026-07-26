@@ -86,6 +86,36 @@ export interface FitStep {
     maxError: number;
     /** the dense edge index that error sits at; −1 when nothing is off. */
     at: number;
+    /** the same error resolved PER PIECE — `errors[j]` is what the piece between
+     *  `knots[j]` and `knots[j + 1]` leaves behind, so `maxError` is its max. Length
+     *  `knots.length − 1`. The removal-counterfactual ranking reads it: refit a knot's two
+     *  pieces as one and this is the merged piece's own cost, isolated from whatever the
+     *  rest of the profile is doing (Lyche–Mørken's knot-removal error estimate). */
+    errors: number[];
+}
+
+/** the fit's s-frame: the cumulative chord arclength of each dense sample, `σ_i =
+ *  Σ_{k<i} ds_k`, length `ds.length`. The frame every `ForcePoint.s` this module emits is
+ *  expressed in, and the one a caller placing its own knots addresses them by (`fitKnots`).
+ *  Note the last entry is `length − ds[n−1]`, not `length` — a dense edge carries the force
+ *  recovered at its LEADING sample, so the final knot sits one edge short of the extent and
+ *  the profile holds flat over the remainder (`profile.sampleForce`).
+ *
+ * @example
+ * const sigma = arclength(bake.ds);
+ * const s = sigma[knot];
+ */
+export function arclength(ds: ArrayLike<number>): Float64Array {
+    const n = ds.length;
+    const sigma = new Float64Array(Math.max(1, n));
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+        if (!(ds[i] > 0) || !Number.isFinite(ds[i]))
+            throw new Error(`arclength: ds[${i}] is ${ds[i]}`);
+        sigma[i] = total;
+        total += ds[i];
+    }
+    return sigma;
 }
 
 const EPS = 1e-12;
@@ -184,6 +214,23 @@ function piece(fN: ArrayLike<number>, sigma: Float64Array, a: number, b: number)
     return { a, b, p1g, p2g, err, at };
 }
 
+/** the dense input validated into its s-frame — the one place `fit` and `fitKnots` agree on
+ *  what a well-formed dense force curve is. */
+function frame(
+    who: string,
+    fN: ArrayLike<number>,
+    ds: ArrayLike<number>,
+): { n: number; sigma: Float64Array; length: number } {
+    const n = fN.length;
+    if (ds.length !== n) throw new Error(`${who}: ${n} forces against ${ds.length} chords`);
+    for (let i = 0; i < n; i++)
+        if (!Number.isFinite(fN[i])) throw new Error(`${who}: fN[${i}] is ${fN[i]}`);
+    const sigma = arclength(ds);
+    let length = 0;
+    for (let i = 0; i < n; i++) length += ds[i];
+    return { n, sigma, length };
+}
+
 /** the current piece list expressed as a step: the knots, the profile they fit, and the
  *  worst dense sample any piece leaves behind. Every side that drives a piece carries an
  *  explicit handle reaching span/3, so the profile is `profile.segment`-exact. */
@@ -195,6 +242,7 @@ function step(
 ): FitStep {
     const knots = [pieces[0].a];
     const points: ForcePoint[] = [{ s: sigma[pieces[0].a], g: fN[pieces[0].a] }];
+    const errors: number[] = [];
     let maxError = 0;
     let at = -1;
     for (const p of pieces) {
@@ -202,12 +250,13 @@ function step(
         points[points.length - 1].out = { ds: reach, dg: p.p1g - fN[p.a] };
         points.push({ s: sigma[p.b], g: fN[p.b], in: { ds: -reach, dg: p.p2g - fN[p.b] } });
         knots.push(p.b);
+        errors.push(p.err);
         if (p.err > maxError) {
             maxError = p.err;
             at = p.at;
         }
     }
-    return { phase, knots, points, maxError, at };
+    return { phase, knots, points, maxError, at, errors };
 }
 
 /**
@@ -227,21 +276,21 @@ function step(
  * const dense = forceProfile(f.points, f.length, 0.5);
  */
 export function fit(fN: ArrayLike<number>, ds: ArrayLike<number>, tol: number): Fit {
-    const n = fN.length;
-    if (ds.length !== n) throw new Error(`fit: ${n} forces against ${ds.length} chords`);
+    if (fN.length !== ds.length)
+        throw new Error(`fit: ${fN.length} forces against ${ds.length} chords`);
     if (!(tol >= 0)) throw new Error(`fit: tol must be >= 0, got ${tol}`);
-    const sigma = new Float64Array(Math.max(1, n));
-    let length = 0;
-    for (let i = 0; i < n; i++) {
-        if (!Number.isFinite(fN[i])) throw new Error(`fit: fN[${i}] is ${fN[i]}`);
-        if (!(ds[i] > 0) || !Number.isFinite(ds[i])) throw new Error(`fit: ds[${i}] is ${ds[i]}`);
-        sigma[i] = length;
-        length += ds[i];
-    }
+    const { n, sigma, length } = frame("fit", fN, ds);
     if (n === 0) return { points: [], length: 0, maxError: 0, at: -1, steps: [] };
     if (n === 1) {
         const points: ForcePoint[] = [{ s: 0, g: fN[0] }];
-        const only: FitStep = { phase: "init", knots: [0], points, maxError: 0, at: -1 };
+        const only: FitStep = {
+            phase: "init",
+            knots: [0],
+            points,
+            maxError: 0,
+            at: -1,
+            errors: [],
+        };
         return { points, length, maxError: 0, at: -1, steps: [only] };
     }
 
@@ -280,4 +329,45 @@ export function fit(fN: ArrayLike<number>, ds: ArrayLike<number>, tol: number): 
 
     const last = steps[steps.length - 1];
     return { points: last.points, length, maxError: last.maxError, at: last.at, steps };
+}
+
+/**
+ * fit the same per-piece least squares at a PRESCRIBED knot set instead of searching for
+ * one — the warm-start builder for a caller that owns knot placement itself (`refine.ts`,
+ * whose split/prune loop chooses knots against the integrated geometry rather than against
+ * the dense force). `knots` are dense sample indices, ascending, opening at 0 and closing
+ * at `fN.length − 1`; the returned profile is built exactly as `fit`'s answer is, so it
+ * lands in the span/3 reach family `polish` requires.
+ *
+ * Throws on the inputs `fit` throws on, plus a knot list that isn't a strictly ascending
+ * run of in-range integers spanning the whole dense curve.
+ *
+ * @example
+ * const f = fitKnots(bake.fN, bake.ds, [0, 40, bake.fN.length - 1]);
+ * const p = polish({ bake, entry, points: f.points, ds, handles: "aligned" });
+ */
+export function fitKnots(
+    fN: ArrayLike<number>,
+    ds: ArrayLike<number>,
+    knots: readonly number[],
+): Fit {
+    if (fN.length !== ds.length)
+        throw new Error(`fitKnots: ${fN.length} forces against ${ds.length} chords`);
+    const { n, sigma, length } = frame("fitKnots", fN, ds);
+    if (n < 2) throw new Error(`fitKnots: need >= 2 dense samples, got ${n}`);
+    if (knots.length < 2) throw new Error(`fitKnots: need >= 2 knots, got ${knots.length}`);
+    if (knots[0] !== 0 || knots[knots.length - 1] !== n - 1)
+        throw new Error(
+            `fitKnots: knots must span [0, ${n - 1}], got [${knots[0]}, ${knots[knots.length - 1]}]`,
+        );
+    for (let j = 0; j < knots.length; j++) {
+        if (!Number.isInteger(knots[j])) throw new Error(`fitKnots: knot ${j} is ${knots[j]}`);
+        if (j > 0 && !(knots[j] > knots[j - 1]))
+            throw new Error(`fitKnots: knots must ascend, got ${knots[j - 1]} then ${knots[j]}`);
+    }
+    const pieces: Piece[] = [];
+    for (let j = 0; j + 1 < knots.length; j++)
+        pieces.push(piece(fN, sigma, knots[j], knots[j + 1]));
+    const only = step(fN, sigma, pieces, "init");
+    return { points: only.points, length, maxError: only.maxError, at: only.at, steps: [only] };
 }
