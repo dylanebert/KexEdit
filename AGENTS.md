@@ -9,6 +9,19 @@ Roller coaster editor using Force Vector Design (FVD).
 - `app/` — placeholder for the Shallot-based web editor (not yet implemented)
 - `kex2d/` — 2D coaster prototype (Shallot + Svelte + canvas2D). Sections-of-atoms track model: a chain of geo (author shape → recover force) and force (author F_n → integrate geometry) sections joined by anchor propagation, with structural ops (append/split/join/delete/convert). An optimization tier (invoked cross-kind conversion/fitting over the kernel atoms) is a future scope-first spike. Parallel to `app/`. Model + code map: `kex2d/AGENTS.md`
 
+## Rules
+
+`.claude/rules/` holds the per-area conventions, all path-scoped. Globs match the path from the repo root, not your cwd:
+
+- `app/**/*` → `.claude/rules/app.md`
+- `plugins/blender/**/*` → `.claude/rules/blender.md`
+- `packages/core/**/*` → `.claude/rules/core.md`
+- `**/*.svelte`, `**/*.css`, `app/**/*.ts`, `kex2d/**/*.ts` → `.claude/rules/editor-ui.md`
+- `kex2d/harness/**/*`, `kex2d/tests/harness.test.ts` → `.claude/rules/kex2d-harness.md`
+- `kex2d/src/**/*`, `kex2d/tests/**/*` → `.claude/rules/kex2d-map.md`
+
+Read the ones whose globs match the files you're editing. Claude Code loads them for you on a matching read; other runtimes read them from this index. Each rule's `paths:` frontmatter is the source of truth — edit it first, then mirror it here, in order.
+
 ## Architecture
 
 ```
