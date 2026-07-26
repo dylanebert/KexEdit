@@ -208,8 +208,10 @@ export interface PolishResult {
     rho: number;
     /** which mode produced this. */
     mode: PolishMode;
-    /** which DOF family it was solved in. `"aligned"` output is broken-handle-free by
-     *  construction — the census reads 0 broken without anything checking. */
+    /** which DOF family it was solved in. `"aligned"` output is collinear at every key by
+     *  construction (`profile.collinear`, the scale-free claim); it censuses 0 broken on
+     *  any surface that draws its handles at a legible size, since `census` also calls a
+     *  side too short to show a direction broken. */
     handles: HandleDof;
     /** the Tikhonov weight the answer was solved at. 0 in exact mode; in calm mode, 0 means
      *  the search found no slack at all and fell back, `LAM_MAX` means it saturated the
@@ -521,6 +523,12 @@ export function forceMatrix(
     return A;
 }
 
+/** one Tikhonov row: the DOF a handle offset reads, and `∂Δg/∂dof` there. */
+export interface RegRow {
+    p: number;
+    c: number;
+}
+
 /** the Tikhonov rows: one per handle Δg the profile carries, as `(DOF index, ∂Δg/∂dof)`.
  *  In free mode a Δg IS a DOF, so the coefficient is 1 and these are exactly the rows the
  *  spike shipped. In aligned mode `Δg = m·Δs`, so the SAME penalty pushed through the
@@ -528,9 +536,9 @@ export function forceMatrix(
  *  quantity in both families, which is what lets a metric change be attributed to the DOF
  *  restriction rather than to a silently different prior. Ordered outs-then-ins, matching
  *  the free layout. */
-function regRows(pts: readonly ForcePoint[], handles: HandleDof): { p: number; c: number }[] {
+export function regRows(pts: readonly ForcePoint[], handles: HandleDof): RegRow[] {
     const K = pts.length;
-    const rows: { p: number; c: number }[] = [];
+    const rows: RegRow[] = [];
     for (let k = 0; k + 1 < K; k++) {
         const o = pts[k].out;
         if (o) rows.push({ p: K + k, c: handles === "free" ? 1 : o.ds });
@@ -543,6 +551,24 @@ function regRows(pts: readonly ForcePoint[], handles: HandleDof): { p: number; c
             );
     }
     return rows;
+}
+
+/** the prior's seminorm at a DOF vector: `Σ Δg²` over the handle offsets the rows name.
+ *  This is the quantity λ prices, and it is a function of the PROFILE — an already
+ *  collinear profile costs the same read as free handles or as slopes, because the rows
+ *  carry the reparameterization's chain rule. `Φ_reg = ½·wReg·regNorm`.
+ *
+ * @example
+ * const rows = regRows(points, "aligned");
+ * const reg = regNorm(rows, readDof(points, "aligned"));
+ */
+export function regNorm(rows: readonly RegRow[], dof: ArrayLike<number>): number {
+    let sum = 0;
+    for (const r of rows) {
+        const dg = r.c * dof[r.p];
+        sum += dg * dg;
+    }
+    return sum;
 }
 
 /**
@@ -785,11 +811,7 @@ export function polish(opts: PolishOpts): PolishResult {
                 const dy = yAt(zz, j) - sp.y[j];
                 phi += 0.5 * h * (dx * dx + dy * dy);
             }
-            if (wReg > 0)
-                for (const r of reg) {
-                    const dg = r.c * zz[ns + r.p];
-                    phi += 0.5 * wReg * dg * dg;
-                }
+            if (wReg > 0) phi += 0.5 * wReg * regNorm(reg, zz.subarray(ns));
             for (let k = 0; k < nc; k++) {
                 const r = C[k] + mult[k] / rho;
                 phi += 0.5 * rho * r * r;

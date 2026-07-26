@@ -315,8 +315,11 @@ editor-ui invariant-domain rule).
   `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
   authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`
   axes carry different units, so a data-space angle would be a made-up number), which makes the
-  surface's `Scale` part of it. One instrument shared by the fit lab's overlay and the conversion
-  tier's oracle asserts, so the two can't disagree. Unit-tested in `census.test.ts`.
+  surface's `Scale` part of it. The CLASSIFIER is shared by the fit lab's overlay and the
+  conversion tier's oracle asserts; the `Scale` is each caller's own, so a census is a reading of
+  a surface and two are comparable only at the same scale. The scale-free question (are a key's
+  two handles one line) is `profile.collinear` — a collinear profile still censuses `broken`
+  wherever its handles draw under `ALIGN_PX`. Unit-tested in `census.test.ts`.
 
 **ECS + UI layer (the live app):**
 

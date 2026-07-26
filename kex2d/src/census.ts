@@ -4,8 +4,8 @@
  *  Aligned | Free), so "how authorable is this profile" is a count over that vocabulary,
  *  not a continuous score — a key whose two sides are *almost* collinear still reads Free
  *  in the menu and still draws as a kink. This module is the instrument that counts it,
- *  pure and framework-free so the fit lab's overlay and the solver's authorability
- *  asserts make the identical judgment (extracted from `fitlab.ts`, which drew it first).
+ *  pure and framework-free, shared by the fit lab's overlay and the solver's authorability
+ *  asserts (extracted from `fitlab.ts`, which drew it first).
  *
  *  **the judgment is made in SCREEN space**, which is where it lives: the (s, g) axes
  *  carry different units, so an angle in data space would be a made-up number, while half
@@ -13,7 +13,16 @@
  *  the judgment, not a nuisance parameter — a bend legible on a zoomed-in chart is not one
  *  on a zoomed-out chart, and both readings are correct for their surface. Only the
  *  MAGNITUDES of `Scale` matter, so a flipped axis (canvas y grows down) classifies
- *  identically. */
+ *  identically.
+ *
+ *  **What is shared is the classifier, not the scale.** Each caller builds its own
+ *  `Scale` from the panel it draws (`fitlab.ts` pads its g-range 6% and unions the other
+ *  solve's range; the tests build a bare one), so two censuses of the same profile are
+ *  comparable only at the same scale, and a count is a reading OF a surface. For the
+ *  scale-free question — are these two handles one line through the key — the predicate is
+ *  `profile.collinear`, which reads the stored offsets and never touches a panel. A
+ *  collinear profile can still census `broken` where its handles draw smaller than
+ *  `ALIGN_PX`: that is the panel being too small to show them, not the shape breaking. */
 
 import type { ForcePoint } from "./profile";
 

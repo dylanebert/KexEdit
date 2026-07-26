@@ -30,8 +30,10 @@ describe("handle census — the vocabulary classifier", () => {
     test("a cusp is broken: both sides reach the same way", () => {
         // the in handle points FORWARD, so the curve doubles back through the key.
         expect(handleState(key([1, 1], [1, 1]), SC)).toBe("broken");
-        // …and the degenerate case of it, one side exactly perpendicular-free: a dot
-        // product of zero is still not opposing.
+        // …and perpendicular sides, which are broken too. This does NOT pin the cusp
+        // test's `>= 0` boundary — perpendicular is also nowhere near collinear, so the
+        // collinearity check below would catch it either way. It pins the verdict, not
+        // the branch that reaches it.
         expect(handleState(key([0, -1], [1, 0]), SC)).toBe("broken");
     });
 

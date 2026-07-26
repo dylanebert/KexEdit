@@ -10,6 +10,8 @@ import {
     polish,
     type PolishResult,
     readDof,
+    regNorm,
+    regRows,
     spine,
     TOL_FEAS,
     violence,
@@ -18,6 +20,7 @@ import {
     collinear,
     type ForcePoint,
     forceProfile,
+    type Offset,
     sampleForce,
     segmentControls,
 } from "../src/profile";
@@ -728,6 +731,12 @@ function panelScale(points: readonly ForcePoint[], length: number, ds: number): 
     return { s: (620 - 46 - 14) / length, g: (340 - 34 - 26) / Math.max(hi - lo, 1e-3) };
 }
 
+/** a handle's drawn length on a surface (px) — what `handleState` reads a direction from,
+ *  and the only thing that can make a collinear key census `broken`. */
+function drawnPx(o: Offset, sc: Scale): number {
+    return Math.hypot(o.ds * sc.s, o.dg * sc.g);
+}
+
 function censusOf(r: PolishResult) {
     return census(r.points, panelScale(r.points, r.length, r.ds));
 }
@@ -911,23 +920,33 @@ describe("constrained polish — the authorable DOF", () => {
                 }
             });
 
-            test("censuses 0 broken by construction, in both modes", () => {
+            test("is collinear at every key by construction — the vocabulary claim", () => {
+                // the STRUCTURAL half of lock 1, and the one that says the DOF family did
+                // its job: `Δg = m·Δs` per side puts both handles on one line through the
+                // key, so the editor's `Free` shape is unrepresentable. `collinear` is the
+                // editor's own predicate (the precondition for storing
+                // `TangentMode.Aligned`) over the stored offsets, so no surface, panel, or
+                // zoom enters it — this assert cannot be moved by a display decision.
+                for (const mode of ["exact", "calm"] as const)
+                    for (const p of aligned(scenario.name, mode).points)
+                        expect(collinear(p.in, p.out)).toBe(true);
+            });
+
+            test("censuses 0 broken on the lab's panel — the legibility report", () => {
+                // the DISPLAY half, and only that. `census` judges in screen space, so
+                // this reports what the fit lab's panel shows at its own transform, not
+                // what the family can represent — and the two genuinely part company,
+                // because `handleState` also calls a side shorter than ALIGN_PX broken
+                // (it carries no direction to read there). The corpus's shortest handle on
+                // this panel is 0.79 px against a 0.5 px threshold — hill-auto calm, whose
+                // handles go flat — so the identical profiles census 3 broken on a
+                // half-scale panel and 71 on a quarter-scale one (pinned below). Read a
+                // failure here as handles too small to draw, never as broken vocabulary:
+                // that claim is the collinearity test above.
                 for (const mode of ["exact", "calm"] as const) {
                     const out = aligned(scenario.name, mode);
                     const sc = panelScale(out.points, out.length, out.ds);
                     expect(census(out.points, sc).broken).toBe(0);
-                    // and the reading is about COLLINEARITY, not about handles too short
-                    // to judge: `census` calls a sub-pixel side broken, so a scale that
-                    // collapsed them would pass this for the wrong reason. Measured worst
-                    // on the corpus: 0.79 px (hill-auto calm, whose handles go flat).
-                    for (const p of out.points)
-                        for (const side of [p.in, p.out])
-                            if (side)
-                                expect(Math.hypot(side.ds * sc.s, side.dg * sc.g)).toBeGreaterThan(
-                                    ALIGN_PX,
-                                );
-                    // the scale-free half of the same claim, in the editor's own predicate.
-                    for (const p of out.points) expect(collinear(p.in, p.out)).toBe(true);
                 }
             });
 
@@ -973,6 +992,42 @@ describe("constrained polish — the authorable DOF", () => {
         });
     }
 
+    test("a broken reading on an aligned profile is the panel's, never a bend", () => {
+        // what makes the split above honest, as an identity rather than a caveat: on a
+        // collinear profile the only branch of `handleState` that can return broken is the
+        // short-side one, so `broken` counts exactly the two-sided keys whose shorter
+        // handle falls under ALIGN_PX — at ANY scale. Shrink the lab's panel and the count
+        // climbs (0 at full scale, 3 at half, 71 at quarter over the corpus's twenty
+        // solves) while not one profile changes. Stage 3's splits shorten Δs-dominated
+        // handles, so this is the reading that keeps a smaller drawn handle from arriving
+        // as a vocabulary failure.
+        const totals = new Map<number, number>([
+            [1, 0],
+            [0.5, 0],
+            [0.25, 0],
+        ]);
+        for (const s of scenarios)
+            for (const mode of ["exact", "calm"] as const) {
+                const out = aligned(s.name, mode);
+                const sc = panelScale(out.points, out.length, out.ds);
+                for (const [f, total] of totals) {
+                    const scaled: Scale = { s: sc.s * f, g: sc.g * f };
+                    let tiny = 0;
+                    for (const p of out.points) {
+                        if (!p.in || !p.out) continue;
+                        if (Math.min(drawnPx(p.in, scaled), drawnPx(p.out, scaled)) < ALIGN_PX)
+                            tiny++;
+                    }
+                    const { broken } = census(out.points, scaled);
+                    expect(broken).toBe(tiny);
+                    totals.set(f, total + broken);
+                }
+            }
+        expect(totals.get(1)).toBe(0);
+        expect(totals.get(0.5)).toBeGreaterThan(0);
+        expect(totals.get(0.25)).toBeGreaterThan(totals.get(0.5) as number);
+    });
+
     test("the free family is untouched by the option existing", () => {
         // the negative control for the whole reparameterization: `handles` defaults to
         // free, and asking for it explicitly is the same solve to the last bit.
@@ -989,6 +1044,41 @@ describe("constrained polish — the authorable DOF", () => {
             expect(explicit.points[k].g).toBe(implicit.points[k].g);
             expect(explicit.points[k].in?.dg).toBe(implicit.points[k].in?.dg);
         }
+    });
+
+    test("the prior prices the profile, not the family it is written in", () => {
+        // the aligned Tikhonov coefficient is `Δg = m·Δs`'s chain rule — that side's Δs —
+        // and the corpus alone cannot tell: a `fit.ts` warm start's handles are all
+        // span/3, so a wrong-but-uniform coefficient just rescales λ and every solve
+        // still converges. Price ONE hand-built profile in both families instead, with
+        // spans an order apart, where the coefficient has nowhere to hide.
+        //
+        // The profile is already collinear (Δg = m·Δs at every key), so both families
+        // represent it exactly and the seminorm — Σ Δg² over the four handle offsets —
+        // must come out the same number, by hand:
+        //
+        //   key 0: m = 2,    out Δs = 1  → Δg = 2
+        //   key 1: m = −1,   in  Δs = −1 → Δg = 1,   out Δs = 9 → Δg = −9
+        //   key 2: m = 0.5,  in  Δs = −9 → Δg = −4.5
+        //   Σ Δg² = 4 + 1 + 81 + 20.25 = 106.25
+        //
+        // Every value here is a dyadic rational, so the sum is exact in f64 and the
+        // assert is an equality, not a tolerance.
+        const pts: ForcePoint[] = [
+            { s: 0, g: 1, out: { ds: 1, dg: 2 } },
+            { s: 3, g: 4, in: { ds: -1, dg: 1 }, out: { ds: 9, dg: -9 } },
+            { s: 30, g: 2, in: { ds: -9, dg: -4.5 } },
+        ];
+        for (const p of pts) expect(collinear(p.in, p.out)).toBe(true);
+
+        const free = regRows(pts, "free");
+        const alignedRows = regRows(pts, "aligned");
+        // the row COUNT is the family-independent half (one row per handle offset), so it
+        // is `wReg = λL/rows` that matches too, and equal seminorms mean equal Φ_reg.
+        expect(free.length).toBe(4);
+        expect(alignedRows.length).toBe(4);
+        expect(regNorm(free, readDof(pts, "free"))).toBe(106.25);
+        expect(regNorm(alignedRows, readDof(pts, "aligned"))).toBe(106.25);
     });
 
     test("the Δg prior reaches the aligned family through the slopes", () => {
