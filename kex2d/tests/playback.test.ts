@@ -11,7 +11,16 @@
 
 import { describe, expect, test } from "bun:test";
 import { arclength, fit } from "../src/fit";
-import { baseline, cornerKeys, eventLabel, pipeline, segments } from "../src/playback";
+import {
+    baseline,
+    cornerKeys,
+    eventLabel,
+    forceRange,
+    type Frame,
+    panelScale,
+    pipeline,
+    segments,
+} from "../src/playback";
 import { polish } from "../src/polish";
 import { collinear } from "../src/profile";
 import { quantize } from "../src/quantize";
@@ -136,14 +145,28 @@ describe("the conversion timeline", () => {
         expect(frames[0].points).toBeNull(); // the dense recovery, before any profile exists
     });
 
-    test("each solve phase ends on its ANSWER, not on the last surviving step", () => {
-        // `snapshots` are decimated accepted steps, and calm mode's answer comes out of a λ
-        // search that ran several solves — so the last snapshot is not the answer, and a
-        // timeline that stopped there would draw a curve the corpus table does not report.
+    test("the contract playback leans on: the last recorded step IS the answer", () => {
+        // `polish` guarantees it ("playback must end on the answer" — at the frame cap it
+        // replaces the last entry rather than overflowing it), and this module is the
+        // consumer that would silently start drawing a non-answer if that ever changed. So
+        // the guarantee is pinned HERE, on the value, not assumed.
+        const snaps = r.final.snapshots;
+        expect(snaps.length).toBeGreaterThan(0);
+        expect(snaps[snaps.length - 1].points).toEqual(r.final.points);
+    });
+
+    test("each solve phase ends on its answer, and draws it exactly once", () => {
+        // The failure this pins is a DUPLICATE: appending a separate answer frame after the
+        // last snapshot draws the identical state twice, which reads as a final solver step
+        // that changed nothing. Object identity cannot see that (the duplicate is
+        // value-equal), so the assert is that the phase's last two frames DIFFER.
         const polished = frames.filter((f) => f.phase === "polish");
-        expect(polished[polished.length - 1].points).toBe(r.final.points);
-        const quantized = frames.filter((f) => f.phase === "quantize");
-        expect(quantized[quantized.length - 1].points).toBe(q.final.points);
+        const last = polished[polished.length - 1];
+        expect(last.points).toEqual(r.final.points);
+        expect(last.label).toContain("answer");
+        expect(polished.length).toBeGreaterThan(1);
+        expect(polished[polished.length - 2].points).not.toEqual(last.points);
+        // the timeline as a whole ends on what the tables report.
         expect(frames[frames.length - 1].points).toBe(q.final.points);
     });
 
@@ -157,12 +180,10 @@ describe("the conversion timeline", () => {
         expect(quantized[0].label).toBe("quantize · nothing named");
     });
 
-    test("the segment labels carry the decision counts", () => {
-        const refineSeg = segs[1];
-        const splits = r.events.filter((e) => e.kind === "split").length;
-        expect(splits).toBeGreaterThan(0);
-        expect(refineSeg.label).toContain(`${splits} split`);
-        expect(refineSeg.label).toContain(`(${r.events.length})`);
+    test("the polish segment says which solve it was", () => {
+        // the refine segment carries no summary label on purpose: the strip expands that
+        // phase into one chip per decision, so a label there would render nowhere.
+        expect(segs[1].label).toBe("refine");
         expect(segs[2].label).toContain("calm λ-search");
     });
 });
@@ -201,6 +222,57 @@ describe("the corner state on the timeline", () => {
     );
 });
 
+describe("the force panel's transform", () => {
+    const frames = (vals: number[][]): Frame[] =>
+        vals.map((fN) => ({
+            phase: "polish" as const,
+            label: "",
+            points: [],
+            fN,
+            snap: null,
+            step: null,
+            event: null,
+            corners: [],
+        }));
+
+    test("the range spans every frame, not just the last", () => {
+        // the whole point of ranging over frames: an early refine state overshoots wildly,
+        // and a range fitted to the answer would clip exactly the part playback exists to
+        // show. 6% padding either side of [-4, 10] is 0.84.
+        const { lo, hi } = forceRange(
+            frames([
+                [1, 2],
+                [-4, 10],
+                [0, 1],
+            ]),
+        );
+        expect(lo).toBeCloseTo(-4.84, 10);
+        expect(hi).toBeCloseTo(10.84, 10);
+    });
+
+    test("the extra curves are in the range too", () => {
+        const { lo, hi } = forceRange(frames([[1, 2]]), [Float64Array.from([-9, 0])]);
+        expect(lo).toBeLessThan(-9);
+        expect(hi).toBeGreaterThan(2);
+    });
+
+    test("a range over nothing is a defect, not a NaN axis", () => {
+        expect(() => forceRange([])).toThrow(/no finite force/);
+    });
+
+    test("the scale is px per unit on each axis", () => {
+        // the numbers the census judges in: 560 px of plot across the s span, 280 px up.
+        const sc = panelScale(56, 0, 28);
+        expect(sc.s).toBeCloseTo((620 - 46 - 14) / 56, 10);
+        expect(sc.g).toBeCloseTo((340 - 34 - 26) / 28, 10);
+    });
+
+    test("a degenerate box is refused rather than dividing by zero", () => {
+        expect(() => panelScale(0, 0, 1)).toThrow(/length must be > 0/);
+        expect(() => panelScale(10, 1, 1)).toThrow(/must ascend/);
+    });
+});
+
 describe("the legacy fit→polish timeline", () => {
     test(
         "still recover → fit → polish, one frame per fit step",
@@ -214,7 +286,12 @@ describe("the legacy fit→polish timeline", () => {
             const segs = segments(frames, "exact");
             expect(segs.map((s) => s.phase)).toEqual(["recover", "fit", "polish"]);
             expect(frames.filter((fr) => fr.step !== null).length).toBe(f.steps.length);
-            expect(frames[frames.length - 1].points).toBe(out.points);
+            // value, not identity: the last frame IS the solve's terminal step, and that step
+            // already carries the answer (see the contract test above). Asserting identity
+            // here is what made the duplicate answer frame look required.
+            const last = frames[frames.length - 1];
+            expect(last.points).toEqual(out.points);
+            expect(last.label).toContain("answer");
             expect(segs[2].label).toContain("exact");
         },
         SOLVE_MS,

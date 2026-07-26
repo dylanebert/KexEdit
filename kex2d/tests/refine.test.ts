@@ -289,6 +289,10 @@ describe("refine — the corpus contract", () => {
             // it. circular-arc is the cheapest scenario that still splits.
             const c = pick("circular-arc");
             const e = c.r.events[c.r.events.length - 1];
+            // the re-probe below hands `polish` no corners, so say out loud that this state
+            // carries none — otherwise a corpus that grew a corner scenario would fail here
+            // with a profile diff instead of naming the precondition it broke.
+            expect(e.corners).toEqual([]);
             const warm = fitKnots(c.bake.fN, c.bake.ds, e.knots);
             const again = polish({
                 bake: c.bake,

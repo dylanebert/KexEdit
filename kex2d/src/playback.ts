@@ -11,11 +11,15 @@
  *  the dense force a profile already implies. So playback is deterministic in the same sense
  *  the pipeline is: same bake, same frames, and no wall clock anywhere in what is shown.
  *
- *  **Each solve phase ends on its own ANSWER frame.** `snapshots` are decimated accepted
- *  steps of the solve that produced the answer, so the last of them is not guaranteed to BE
- *  the answer — and in calm mode the answer comes out of a λ search that ran several solves.
- *  Appending the answer explicitly is what makes the last frame of a phase the thing the
- *  corpus table reports, rather than the closest step that happened to survive decimation.
+ *  **Each solve phase ends ON its answer, and draws it once.** `snapshots` are decimated
+ *  accepted steps, but `polish` guarantees the terminal one is recorded (`polish.ts`,
+ *  "playback must end on the answer" — at the frame cap it REPLACES the last entry rather
+ *  than overflowing it), and in calm mode the snapshots come from the λ the search kept. So
+ *  the last snapshot already IS the answer: this module labels it as such and appends
+ *  nothing. Appending a separate answer frame would draw the identical state twice, which
+ *  reads as a solver step that changed nothing. The one phase that needs an explicit answer
+ *  frame is a quantize that named nothing — it ran no solve of its own, so it has no
+ *  snapshots to label (`pipeline`).
  *
  *  **The legacy `fit` phase is the OTHER pipeline.** `fit.ts` places knots against the dense
  *  force, which is the wrong target (`refine.ts`'s note), and the shipping conversion path
@@ -23,11 +27,63 @@
  *  because the lab still draws the fit→polish baseline as the oracle/`exact` comparison the
  *  spike's numbers were taken on. `baseline` is that one; `pipeline` is the real one. */
 
+import type { Scale } from "./census";
 import type { FitStep } from "./fit";
 import type { PolishResult, Snapshot } from "./polish";
 import { type ForcePoint, forceProfile } from "./profile";
 import type { QuantizeResult } from "./quantize";
 import type { RefineEvent, RefineResult } from "./refine";
+
+/** the force panel's box, in CSS px. Here rather than in `fitlab.ts` because the panel's
+ *  transform is part of what the vocabulary census MEANS — the classification is
+ *  screen-space (`census.ts`), so "does the displayed profile read as broken" is a question
+ *  about these numbers, and a test that asked it at a scale of its own would be asking about
+ *  a picture nobody looks at. */
+export const PANEL = { w: 620, h: 340, padL: 46, padR: 14, padT: 26, padB: 34 } as const;
+
+/** the g-range the force panel fits: every frame's dense force plus whatever reference
+ *  curves are drawn beside them, padded 6%. Spanning every FRAME (not just the answer) is
+ *  what keeps an early wild state from clipping mid-playback.
+ *
+ * @example
+ * const { lo, hi } = forceRange(frames, [bake.fN, finalDense]);
+ */
+export function forceRange(
+    frames: readonly Frame[],
+    extra: readonly ArrayLike<number>[] = [],
+): { lo: number; hi: number } {
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = Number.NEGATIVE_INFINITY;
+    const sweep = (vals: ArrayLike<number>): void => {
+        for (let i = 0; i < vals.length; i++) {
+            lo = Math.min(lo, vals[i]);
+            hi = Math.max(hi, vals[i]);
+        }
+    };
+    for (const vals of extra) sweep(vals);
+    for (const fr of frames) if (fr.fN) sweep(fr.fN);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi))
+        throw new Error("playback: no finite force values to range over");
+    const pad = 0.06 * Math.max(hi - lo, 1e-3);
+    return { lo: lo - pad, hi: hi + pad };
+}
+
+/** the px-per-unit of the force panel's transform — the `Scale` the handle census judges
+ *  in. Only the linear part of the mapping enters the judgment, so this is the whole of it.
+ *
+ * @example
+ * const sc = panelScale(out.length, lo, hi);
+ * census(out.points, sc).broken; // what an author would meet as `Free`
+ */
+export function panelScale(length: number, lo: number, hi: number): Scale {
+    if (!(length > 0) || !Number.isFinite(length))
+        throw new Error(`playback: panel length must be > 0, got ${length}`);
+    if (!(hi > lo)) throw new Error(`playback: panel g-range must ascend, got ${lo}..${hi}`);
+    return {
+        s: (PANEL.w - PANEL.padL - PANEL.padR) / length,
+        g: (PANEL.h - PANEL.padB - PANEL.padT) / (hi - lo),
+    };
+}
 
 /** which stage of a pipeline a frame belongs to. `fit` appears only in the baseline
  *  timeline, `refine`/`quantize` only in the pipeline one. */
@@ -74,11 +130,22 @@ function recovered(): Frame {
     };
 }
 
-/** one frame per accepted LM step the solve kept. */
-function stepFrames(phase: Phase, out: PolishResult, label: (s: Snapshot) => string): Frame[] {
-    return out.snapshots.map((snap) => ({
+/** one frame per accepted LM step the solve kept, the last of them labelled as the answer it
+ *  is (see the module note — `polish` guarantees the terminal step is recorded). Throws on a
+ *  solve that recorded no step, which `polish` cannot produce: `maxSnapshots` floors at 1 and
+ *  the terminal frame is always written, so an empty list means the contract this module
+ *  reads has changed under it. */
+function solveFrames(
+    phase: Phase,
+    out: PolishResult,
+    step: (s: Snapshot) => string,
+    answer: string,
+): Frame[] {
+    const last = out.snapshots.length - 1;
+    if (last < 0) throw new Error(`playback: ${phase} recorded no step to draw`);
+    return out.snapshots.map((snap, i) => ({
         phase,
-        label: label(snap),
+        label: i === last ? answer : step(snap),
         points: snap.points,
         fN: snap.fN,
         snap,
@@ -88,8 +155,7 @@ function stepFrames(phase: Phase, out: PolishResult, label: (s: Snapshot) => str
     }));
 }
 
-/** the phase's terminal frame: the answer itself, not the last step that survived
- *  decimation (see the module note). */
+/** a phase's answer with no solve behind it — the quantize that named nothing. */
 function answerFrame(phase: Phase, out: PolishResult, label: string): Frame {
     return {
         phase,
@@ -138,8 +204,12 @@ export function eventLabel(e: RefineEvent, sigma: ArrayLike<number>): string {
             return `refine · stall${at} · trial rejected at ${dev}`;
         case "budget":
             return `refine · budget · no admissible site · ${dev}`;
-        default:
+        case "diverged":
             return `refine · diverged · ${dev}`;
+        // a kind added to `RefineEventKind` later renders as ITSELF. Falling through to
+        // `diverged` would label it the one outcome that means "a defect to surface".
+        default:
+            return `refine · ${e.kind} · ${dev}`;
     }
 }
 
@@ -170,8 +240,12 @@ export function baseline(steps: readonly FitStep[], out: PolishResult): Frame[] 
     });
     return [
         ...frames,
-        ...stepFrames("polish", out, (s) => `polish · iter ${s.step}`),
-        answerFrame("polish", out, `polish · answer · ${out.keys} keys`),
+        ...solveFrames(
+            "polish",
+            out,
+            (s) => `polish · iter ${s.step}`,
+            `polish · answer · ${out.keys} keys`,
+        ),
     ];
 }
 
@@ -197,19 +271,28 @@ export function pipeline(r: RefineResult, q: QuantizeResult, sigma: ArrayLike<nu
             corners: cornerKeys(e),
         });
     frames.push(
-        ...stepFrames("polish", r.final, (s) => `polish · iter ${s.step}`),
-        answerFrame(
+        ...solveFrames(
             "polish",
             r.final,
+            (s) => `polish · iter ${s.step}`,
             `polish · answer · ${r.final.keys} keys · λ ${r.final.lambda.toExponential(1)}`,
         ),
     );
-    // `quantize` hands its input back BY IDENTITY when nothing could be named, and that
-    // no-op ran no solve of its own — so the phase is exactly its answer frame there.
+    // `quantize` hands its input back BY IDENTITY when nothing could be named. It still SPENT
+    // probes reaching that conclusion — one per candidate segment — but it produced no new
+    // answer, so there are no snapshots of its own to draw and the phase is one frame. When it
+    // did name something, `q.final` is its own solve and draws its own steps.
     const tag = q.named.length === 0 ? "nothing named" : `${q.named.length} named`;
-    if (q.final !== r.final)
-        frames.push(...stepFrames("quantize", q.final, (s) => `quantize · iter ${s.step}`));
-    frames.push(answerFrame("quantize", q.final, `quantize · ${tag}`));
+    frames.push(
+        ...(q.final === r.final
+            ? [answerFrame("quantize", q.final, `quantize · ${tag}`)]
+            : solveFrames(
+                  "quantize",
+                  q.final,
+                  (s) => `quantize · iter ${s.step}`,
+                  `quantize · ${tag}`,
+              )),
+    );
     return frames;
 }
 
@@ -231,19 +314,8 @@ export function segments(frames: readonly Frame[], note: string): Segment[] {
         if (seg.phase === "fit") seg.label = `fit · split → prune (${n})`;
         else if (seg.phase === "polish") seg.label = `polish · ${note} (${n})`;
         else if (seg.phase === "quantize") seg.label = `quantize (${n})`;
-        else if (seg.phase === "refine") {
-            const kinds = frames
-                .slice(seg.start, seg.end + 1)
-                .reduce<Record<string, number>>((acc, fr) => {
-                    const k = fr.event?.kind;
-                    if (k) acc[k] = (acc[k] ?? 0) + 1;
-                    return acc;
-                }, {});
-            const parts = (["split", "prune", "corner", "stall"] as const)
-                .filter((k) => kinds[k])
-                .map((k) => `${kinds[k]} ${k}`);
-            seg.label = `refine · ${parts.join(" / ") || "no split"} (${n})`;
-        }
+        // `refine` keeps the bare phase name: the strip expands that phase into one chip per
+        // decision (`fitlab.drawPhases`), so a summary label there would render nowhere.
     }
     return segs;
 }

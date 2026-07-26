@@ -17,13 +17,19 @@
 //      segments, deviation against the derived floor, violence, the refine loop's decision
 //      counts and probe cost, and how it ended.
 //
-// **Three modes, and only one of them is the shipping path.** `exact` and `calm` are the
-// spike's fit→polish baseline: `fit.ts` places knots against the dense FORCE curve, which is
-// the wrong target, and the polish then moves values at those fixed knots. They stay because
-// every number the spike measured was taken there, and because exact is the oracle floor the
-// tier is judged against. `convert` is the tier: `refine.ts` opens at two keys and chooses
-// knots against the integrated GEOMETRY, then `quantize.ts` snaps what it can onto the named
-// -easing vocabulary. `M` cycles them; the neighbouring mode's final curve draws as a ghost.
+// **Three modes, and the shipping one is the DEFAULT.** `convert` is the tier — `refine.ts`
+// opens at two keys and chooses knots against the integrated GEOMETRY, then `quantize.ts`
+// snaps what it can onto the named-easing vocabulary — and it is what a scenario shows on
+// open and on every flip. `exact` and `calm` are the spike's fit→polish baseline, where
+// `fit.ts` places knots against the dense FORCE curve (the wrong target) and the polish then
+// moves values at those fixed knots. They stay because every number the spike measured was
+// taken there and because exact is the geometric oracle floor, but exact is DELIBERATELY
+// DEGENERATE as an authoring surface: near the geometry floor the loss is flat in a large
+// subspace, and the answer buys its last decimals with extreme broken handles (loop-explicit
+// maxΔg 141, 32 keys). So it is never the default view and never an automatic overlay — `M`
+// cycles the modes, and in convert mode the exact curve draws as a ghost only when the
+// `oracle` box asks for it. In the baseline modes the exact↔calm ghost stays automatic:
+// there the comparison IS the claim (calm buys a quiet profile for geometry nobody can see).
 //
 // The scrubber is ONE timeline across whichever pipeline is selected, phase-segmented —
 // recover → refine → polish → quantize in convert mode, recover → fit → polish in the
@@ -31,17 +37,29 @@
 // `polish().snapshots`, `fit().steps`), assembled by the pure `playback.ts`; nothing here
 // re-derives a solve, so what plays back is deterministic and carries no wall clock.
 //
-// **The convert corpus is never auto-run.** Measured on this host: 70 s for all ten (refine
-// 52 s + quantize 18 s), from 0.5 s for circular-arc to 26 s for double-hump — against 1.3 s
-// for the exact baseline. So `ready()` stays the exact corpus's gate, a convert solve is
-// scheduled per scenario on demand, and the whole convert corpus is a button.
+// **The convert corpus is never auto-run, though it is the default VIEW.** Measured on this
+// host: 70 s for all ten (refine 52 s + quantize 18 s), from 0.5 s for circular-arc to 26 s
+// for double-hump — against 1.3 s for the exact baseline. So the exact corpus still
+// auto-runs in the background (it fills the baseline table and gates `ready()`), the
+// selected scenario's convert solve is scheduled on demand one macrotask out so the page
+// paints "solving…" rather than freezing, and the whole convert corpus is a button.
 //
 // Read-only: nothing here authors. Served by vite at /fit-lab.html; captured by the
 // Playwright harness, which drives the `window.__fitlab` hook below.
 
 import { census, type HandleStats, handleState, type Scale } from "./census";
 import { arclength, fit } from "./fit";
-import { baseline, type Frame, type Phase, pipeline, type Segment, segments } from "./playback";
+import {
+    baseline,
+    forceRange,
+    type Frame,
+    PANEL,
+    panelScale,
+    type Phase,
+    pipeline,
+    type Segment,
+    segments,
+} from "./playback";
 import { polish, type PolishMode, type PolishResult } from "./polish";
 import { type ForcePoint, forceProfile } from "./profile";
 import { namedSegments, quantize, type QuantizeResult } from "./quantize";
@@ -67,8 +85,8 @@ const GREEN = "#7fa87a";
 const GHOST = "#9b7fc0";
 const MONO = "10px 'JetBrains Mono', monospace";
 
-const PANEL_W = 620;
-const PANEL_H = 340;
+const PANEL_W = PANEL.w;
+const PANEL_H = PANEL.h;
 /** playback pace: one frame per ~20 fps — fast enough to read as motion, slow enough that
  *  a 150-frame pipeline does not flash past. */
 const FRAME_MS = 50;
@@ -264,19 +282,9 @@ function run(scenario: Scenario, mode: LabMode): Solve {
     for (const p of out.points) keyPeak = Math.max(keyPeak, Math.abs(p.g));
 
     // the force range spans EVERY frame plus both reference curves, so no panel ever clips
-    // a spike the eye is here to see.
-    let gLo = Number.POSITIVE_INFINITY;
-    let gHi = Number.NEGATIVE_INFINITY;
-    const sweep = (vals: ArrayLike<number>): void => {
-        for (let i = 0; i < vals.length; i++) {
-            gLo = Math.min(gLo, vals[i]);
-            gHi = Math.max(gHi, vals[i]);
-        }
-    };
-    sweep(bake.fN);
-    sweep(finalDense);
-    for (const fr of frames) if (fr.fN) sweep(fr.fN);
-    const gPad = 0.06 * Math.max(gHi - gLo, 1e-3);
+    // a spike the eye is here to see. Pure, and shared with the census oracle
+    // (`quantize.test.ts`), which has to judge the profile at the scale the panel draws it.
+    const { lo: gLo, hi: gHi } = forceRange(frames, [bake.fN, finalDense]);
 
     let minX = Number.POSITIVE_INFINITY;
     let maxX = Number.NEGATIVE_INFINITY;
@@ -346,8 +354,8 @@ function run(scenario: Scenario, mode: LabMode): Solve {
         segments: segs,
         warm,
         row,
-        gLo: gLo - gPad,
-        gHi: gHi + gPad,
+        gLo,
+        gHi,
         bounds: { minX, maxX, minY, maxY },
         geom: frames.map(() => null),
     };
@@ -378,10 +386,10 @@ interface Chart {
     scale: Scale;
 }
 
-const PAD_L = 46;
-const PAD_B = 34;
-const PAD_T = 26;
-const PAD_R = 14;
+const PAD_L = PANEL.padL;
+const PAD_B = PANEL.padB;
+const PAD_T = PANEL.padT;
+const PAD_R = PANEL.padR;
 
 /** the force graph's transform. The g-range is the UNION of the two modes' ranges whenever
  *  both are solved: the ghost is another solve's curve, outside this one's sweep (calm's
@@ -398,7 +406,7 @@ function chart(s: Solve, alt: Solve | null): Chart {
         py: (g) => PANEL_H - PAD_B - ((g - lo) / (hi - lo)) * (PANEL_H - PAD_B - PAD_T),
         lo,
         hi,
-        scale: { s: (PANEL_W - PAD_L - PAD_R) / length, g: (PANEL_H - PAD_B - PAD_T) / (hi - lo) },
+        scale: panelScale(length, lo, hi),
     };
 }
 
@@ -449,6 +457,15 @@ const handlesBox = el("input", undefined, handlesLabel);
 handlesBox.type = "checkbox";
 handlesBox.checked = true;
 handlesLabel.appendChild(document.createTextNode(" handles"));
+/** the degenerate oracle, opt-in. The exact solve is the geometric floor and NOT an
+ *  authoring surface, so in convert mode it is drawn only when asked for — otherwise the
+ *  shipping profile would share its panel (and its axis) with a curve whose handles are
+ *  extreme by construction. */
+const oracleLabel = el("label", "mono check", bar);
+const oracleBox = el("input", undefined, oracleLabel);
+oracleBox.type = "checkbox";
+oracleBox.checked = false;
+oracleLabel.appendChild(document.createTextNode(" exact oracle (degenerate)"));
 const frameLabel = el("span", "mono", bar);
 const phaseBar = el("div", "phases", controls);
 const scrub = el("input", "scrub", controls);
@@ -498,8 +515,8 @@ const forceCtx = canvasIn(
     PANEL_H,
 );
 const tablePanel = panel(
-    "corpus — the fit→polish baseline",
-    `Every scenario solved exact on load; the calm columns fill in on <code>Solve calm corpus</code> (calm costs 5.1× exact's wall time — measured — so it is never in the auto-run). This is the SPIKE's pipeline, kept as the oracle floor: <code>dev warm</code> → <code>dev</code> is what the constrained polish buys over the fit alone; <code>peak</code> vs <code>key peak</code> is what the keyframes hide; <code>maxΔg</code> exact vs calm is the authorability trade. Click a row to flip the panels to it.`,
+    "oracle baseline — the spike's fit→polish, NOT the shipping path",
+    `Every scenario solved exact on load; the calm columns fill in on <code>Solve calm corpus</code> (calm costs 5.1× exact's wall time — measured — so it is never in the auto-run). This is the SPIKE's pipeline, kept as the geometric floor the tier is judged against, and <code>exact</code> is <code>deliberately degenerate</code> as an authoring surface: it drives geometry to the numeric floor and pays with extreme broken handles (loop-explicit: 32 keys, maxΔg 141). Read it as the oracle, never as output — the shipping answer is the conversion table below. <code>dev warm</code> → <code>dev</code> is what the constrained polish buys over the fit alone; <code>peak</code> vs <code>key peak</code> is what the keyframes hide; <code>maxΔg</code> exact vs calm is the authorability trade. Click a row to flip the panels to it.`,
 );
 tablePanel.className = "panel wide";
 const table = el("table", undefined, tablePanel);
@@ -524,12 +541,14 @@ const attempted: Record<LabMode, boolean[]> = {
     convert: scenarios.map(() => false),
 };
 const errors: string[] = [];
-let mode: LabMode = "exact";
+/** the SHIPPING pipeline is what the page opens on, and what every scenario flip lands in.
+ *  The baseline modes are reached deliberately (`M`), never by default. */
+let mode: LabMode = "convert";
 let selected = 0;
 let frame = 0;
 let playing = false;
 let ready = false;
-let pumping: LabMode | null = null;
+const pumping: Record<Exclude<LabMode, "exact">, boolean> = { calm: false, convert: false };
 let elapsed = 0;
 
 function current(): Solve | null {
@@ -537,10 +556,12 @@ function current(): Solve | null {
 }
 
 /** the solve drawn as a ghost beside this one. exact and calm are each other's comparison —
- *  that pairing is what the spike's violence claim is read off — and convert's is the exact
- *  baseline, the geometric oracle floor it is judged against. */
+ *  that pairing is what the spike's violence claim is read off, so it stays automatic. The
+ *  shipping view's ghost is the exact oracle, which is opt-in: it is the geometric floor and
+ *  a deliberately degenerate authoring surface, so it may inform the picture only when asked
+ *  for. It also widens the shared axis, which is exactly why it must not arrive uninvited. */
 function other(): Solve | null {
-    if (mode === "convert") return solves.exact[selected];
+    if (mode === "convert") return oracleBox.checked ? solves.exact[selected] : null;
     return solves[mode === "exact" ? "calm" : "exact"][selected];
 }
 
@@ -787,7 +808,9 @@ function drawForce(): void {
                     // read as a key with no vocabulary rather than the one it has. What it
                     // resolves to is the Cubic tag's derived tangents: span/3 either side at
                     // Δg = 0 (`profile.segment`), which is exactly these two stubs.
-                    ctx.strokeStyle = GREEN;
+                    // its own register: the legend's `○ flat` wears this neutral too, and
+                    // green already means `aligned` two glyphs away.
+                    ctx.strokeStyle = TEXT;
                     for (const reach of [
                         k > 0 ? -(p.s - pts[k - 1].s) / 3 : 0,
                         k + 1 < pts.length ? (pts[k + 1].s - p.s) / 3 : 0,
@@ -1004,7 +1027,7 @@ function drawConvertTable(): void {
 
 /** one character per refine decision, so the strip reads as the loop's own trace. */
 const EVENT_GLYPH: Record<RefineEvent["kind"], string> = {
-    init: "○",
+    init: "I",
     split: "S",
     prune: "P",
     corner: "C",
@@ -1075,7 +1098,11 @@ function drawLines(): void {
         ` · ${r.converged ? "converged" : "NOT CONVERGED"} · ${r.ms.toFixed(0)} ms` +
         (mode === "exact"
             ? ""
-            : ` · λ ${fmt(r.lambda, 1)} · dev ${fmt(r.dev)} vs floor ${fmt(r.floor)} m` +
+            : ` · λ ${fmt(r.lambda, 1)} · dev ${fmt(r.dev)} m (f32 round-trip)` +
+              // the verdict is the SOLVE's own reading, on its f64 spine — a different
+              // quantity from the f32 number beside it (they agree to ~1e-5 here, but
+              // printing one and judging by the other would be a category error).
+              ` · spine ${fmt(s.out.deviation)} vs floor ${fmt(r.floor)} m` +
               ` · ${r.heldFloor ? "floor held" : "FLOOR MISSED"}`) +
         (cv ? ` · outcome ${cv.outcome}` : "");
 
@@ -1083,9 +1110,14 @@ function drawLines(): void {
     const brief = (x: Solve): string =>
         `${x.mode}: dev ${fmt(x.row.dev)} m · peak ${fmt(x.row.peak, 1)} g · maxΔg ${fmt(x.row.maxDg, 1)}`;
     const ghost = mode === "convert" ? "exact" : mode === "exact" ? "calm" : "exact";
+    // with the oracle box off there IS an exact solve, it is just not overlaid — saying
+    // "not solved" would send a reader to re-solve something already in the table.
+    const hidden = mode === "convert" && !oracleBox.checked && solves.exact[selected] !== null;
     cmpLine.textContent = alt
         ? `${brief(s)}    ‖    ${brief(alt)}`
-        : `${brief(s)}    ‖    ${ghost} not solved — press M`;
+        : hidden
+          ? `${brief(s)}    ‖    exact oracle solved, hidden — tick the box to overlay it`
+          : `${brief(s)}    ‖    ${ghost} not solved — press M`;
 
     const fr = s.frames[frame];
     const live = geometryAt(s, frame);
@@ -1170,6 +1202,7 @@ function select(name: string): void {
     picker.value = name;
     need(i, mode);
     reframe();
+    status();
 }
 
 /** flip the panels between the two baseline modes and the conversion tier, solving the new
@@ -1228,6 +1261,12 @@ modeBtn.onclick = (): void => setMode(nextMode());
 calmBtn.onclick = (): void => pumpMode("calm");
 convertBtn.onclick = (): void => pumpMode("convert");
 handlesBox.onchange = (): void => draw();
+// the oracle changes the shared axis as well as what is drawn, so the whole panel set
+// re-reads rather than just the force graph.
+oracleBox.onchange = (): void => {
+    reframe();
+    draw();
+};
 scrub.oninput = (): void => {
     pause();
     setFrame(Number(scrub.value));
@@ -1307,14 +1346,16 @@ function pump(): void {
  *  conversion tier (~70 s measured — one scenario per macrotask, and double-hump's 26 s is
  *  one of them). */
 function pumpMode(m: Exclude<LabMode, "exact">): void {
-    if (pumping) return;
-    pumping = m;
+    // per SWEEP, not one shared flag: the two are independent corpora, and sharing a flag
+    // makes `solveCalm()` a silent no-op for as long as a convert sweep is running.
+    if (pumping[m]) return;
+    pumping[m] = true;
     const btn = m === "calm" ? calmBtn : convertBtn;
     btn.disabled = true;
     const step = (): void => {
         const next = attempted[m].findIndex((a) => !a);
         if (next < 0) {
-            pumping = null;
+            pumping[m] = false;
             btn.textContent = `${m} corpus solved`;
             status();
             return;
@@ -1329,10 +1370,9 @@ function pumpMode(m: Exclude<LabMode, "exact">): void {
     setTimeout(step, 0);
 }
 
-picker.value = scenarios[0].name;
-draw();
-drawTable();
-drawConvertTable();
+// open on the shipping pipeline for the first scenario: `select` schedules its convert
+// solve, and the exact corpus auto-run below fills the baseline table behind it.
+select(scenarios[0].name);
 status();
 setTimeout(pump, 0);
 

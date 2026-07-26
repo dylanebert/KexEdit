@@ -7,6 +7,8 @@
 
 import { describe, expect, test } from "bun:test";
 import { census, type Scale } from "../src/census";
+import { arclength } from "../src/fit";
+import { forceRange, panelScale, pipeline } from "../src/playback";
 import { fairNorm, fairRows, polish, readDof, violence } from "../src/polish";
 import { collinear, custom, Easing, type ForcePoint, forceProfile } from "../src/profile";
 import { flatten, namedSegments, quantize, type QuantizeResult } from "../src/quantize";
@@ -184,6 +186,27 @@ describe("quantize — the corpus contract", () => {
             moved += interior;
         }
         expect(moved).toBe(8);
+    });
+
+    test("the profile the LAB DISPLAYS censuses 0 broken, on every scenario", () => {
+        // One rung up from the test above, and the claim the stage-6 check-in rests on: not a
+        // scale chosen for a test, but the PANEL's own — `panelScale` over the range the force
+        // graph actually fits (`forceRange` across every playback frame of the shipping
+        // pipeline). A screen-space census is a reading OF a surface, so a hand-built scale
+        // answers a question about no picture; and the panel's g-range spans the refine loop's
+        // early wild states, which stretches the axis and makes every later handle draw
+        // SHORTER than it would on a scale fitted to the answer alone. That is the direction
+        // that matters: `census` calls a side too short to carry a direction `broken`, so the
+        // displayed scale is the harder reading, not the easier one.
+        for (const c of CORPUS) {
+            const frames = pipeline(c.r, c.q, arclength(c.bake.ds));
+            const dense = forceProfile(c.q.final.points, c.q.final.length, c.q.final.ds);
+            const { lo, hi } = forceRange(frames, [c.bake.fN, dense]);
+            const stats = census(c.q.final.points, panelScale(c.q.final.length, lo, hi));
+            expect(stats.broken, `${c.name} draws a broken key`).toBe(c.q.final.corners.length);
+            expect(stats.broken).toBe(0);
+            expect(stats.mirror + stats.aligned + stats.broken + stats.single).toBe(c.q.final.keys);
+        }
     });
 
     test("nothing named is a no-op, by identity", () => {

@@ -2412,12 +2412,20 @@ test("fit lab", async ({ page, boot }) => {
             (window as any).__fitlab.rows(),
         );
 
+    // THE DEFAULT VIEW IS THE SHIPPING PIPELINE, before anything here touches the page. The
+    // exact baseline is the geometric oracle and a deliberately degenerate authoring surface
+    // (it buys its last decimals with extreme broken handles), so a scenario must never open
+    // in it — asserted first, since every later `setMode` would mask a wrong default.
+    expect(await page.evaluate(() => (window as any).__fitlab.mode())).toBe("convert");
+
     await expect.poll(ready, { timeout: 10_000 }).toBe(true);
     expect(await errors()).toEqual([]);
     const solved = await rows();
     expect(solved.length).toBe(10);
     for (const r of solved) expect(r.converged, `${r.name} did not converge`).toBe(true);
 
+    // the baseline legs below are the oracle, reached deliberately — never the default.
+    await page.evaluate(() => (window as any).__fitlab.setMode("exact"));
     await page.evaluate(() => (window as any).__fitlab.select("valley-explicit"));
     const phases = await page.evaluate((): { phase: string; start: number; end: number }[] =>
         (window as any).__fitlab.phases(),
@@ -2460,10 +2468,18 @@ test("fit lab", async ({ page, boot }) => {
     // arriving, not the `setMode` call returning.
     await page.evaluate(() => (window as any).__fitlab.select("full-loop"));
     await page.evaluate(() => (window as any).__fitlab.setMode("convert"));
+    // a solve that THREW leaves no row, so polling on the row alone would burn the whole
+    // budget and then fail with a timeout instead of the message the page already recorded.
     await expect
-        .poll(() => page.evaluate(() => (window as any).__fitlab.metrics() !== null), {
-            timeout: 30_000,
-        })
+        .poll(
+            () =>
+                page.evaluate(
+                    () =>
+                        (window as any).__fitlab.metrics() !== null ||
+                        (window as any).__fitlab.errors().length > 0,
+                ),
+            { timeout: 30_000 },
+        )
         .toBe(true);
     expect(await errors()).toEqual([]);
 
