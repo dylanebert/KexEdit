@@ -2360,10 +2360,25 @@ test("collocation solver lab", async ({ page, boot }) => {
 // stall, not scheduling noise, trips it.
 //
 // Then flip to valley-explicit — the far-shooting spike scenario the stage-3 log calls out (a 38g
-// spike edge fits force to 0.033g yet integrates 39.7m off) — and land on frame 0, the warm start:
+// spike edge fits force to 0.033g yet integrates 39.7m off) — and land on the WARM-START frame:
 // the fit-lab code comment says the collocation spine starts AT the target, so the interesting
-// motion through playback lives in the FORCE graph, not the viewport; frame 0 is the story frame
-// for that gap, before the polish closes it.
+// motion through playback lives in the FORCE graph, not the viewport, and the warm start is the
+// story frame for that gap, before the polish closes it. It is no longer frame 0: stage 4b made
+// the scrubber one phase-segmented timeline over the whole pipeline (recover → fit → polish), so
+// frame 0 is now the dense recovery, before any profile exists, and the warm start is the fit
+// phase's last frame — `warmFrame()`, asked for by name rather than by an index this flow would
+// have to keep in sync with the fitter's step count.
+//
+// Two stage-4b assertions ride along, both of them the check-in's questions made checkable:
+// `phases()` is the pipeline actually being segmented (three phases, contiguous, spanning every
+// frame) rather than a scrubber relabelled; and `handles()` at the warm start accounts for every
+// keyframe, with at least one BROKEN pair — the authorability directive's evidence (a fitted key
+// carries independent per-side tangents, so the solved curve reads ugly even where it is
+// geometrically right). Then flip loop-explicit to calm mode — the scenario where calm mode's
+// claim is largest (maxΔg 141 → 0, peak 50.6 → 29.8 g, stage-3b log) and cheapest to solve
+// (~130ms measured, against ~1.5s for the corpus's slowest calm solve) — for the comparison shot.
+// Calm is never auto-run: the calm corpus costs 5.1× exact's wall time (measured 6.7s vs 1.3s),
+// which would leave the ready() poll below 1.5× headroom instead of ~8×.
 test("fit lab", async ({ page, boot }) => {
     await boot("/fit-lab.html");
     const panels = page.locator(".panel");
@@ -2383,10 +2398,40 @@ test("fit lab", async ({ page, boot }) => {
     for (const r of solved) expect(r.converged, `${r.name} did not converge`).toBe(true);
 
     await page.evaluate(() => (window as any).__fitlab.select("valley-explicit"));
-    await page.evaluate(() => (window as any).__fitlab.setFrame(0));
+    const phases = await page.evaluate((): { phase: string; start: number; end: number }[] =>
+        (window as any).__fitlab.phases(),
+    );
+    const frames = await page.evaluate((): number => (window as any).__fitlab.frames());
+    expect(phases.map((p) => p.phase)).toEqual(["recover", "fit", "polish"]);
+    expect(phases[0].start).toBe(0);
+    expect(phases[2].end).toBe(frames - 1);
+    for (let i = 1; i < phases.length; i++) expect(phases[i].start).toBe(phases[i - 1].end + 1);
+
+    const warm = await page.evaluate((): number => (window as any).__fitlab.warmFrame());
+    expect(warm).toBe(phases[1].end); // the fit phase's last frame IS the warm start
+    await page.evaluate((f: number) => (window as any).__fitlab.setFrame(f), warm);
+    const handles = await page.evaluate(
+        (): { mirror: number; aligned: number; broken: number; single: number } =>
+            (window as any).__fitlab.handles(),
+    );
+    const keys = await page.evaluate((): number => (window as any).__fitlab.frameKeys());
+    expect(handles.mirror + handles.aligned + handles.broken + handles.single).toBe(keys);
+    expect(handles.broken).toBeGreaterThan(0);
 
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "fit-lab.png"), fullPage: true });
+
+    await page.evaluate(() => (window as any).__fitlab.select("loop-explicit"));
+    await page.evaluate(() => (window as any).__fitlab.setMode("calm"));
+    expect(await errors()).toEqual([]);
+    const calm = await page.evaluate((): { name: string; maxDg: number; heldFloor: boolean }[] =>
+        (window as any).__fitlab.rows("calm"),
+    );
+    expect(calm.map((r) => r.name)).toEqual(["loop-explicit"]);
+    expect(calm[0].heldFloor).toBe(true);
+
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "fit-lab-calm.png"), fullPage: true });
 });
 
 // Drive the VIEWPORT KIND-COLOR shot (kex2d-ux-foundations stage D): a geo section

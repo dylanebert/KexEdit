@@ -178,6 +178,89 @@ describe("sparse init — the corpus fit", () => {
     }
 });
 
+// The step trace (spike stage 4b): `fit` reports one entry per structural decision it
+// makes — the opening single piece, then each accepted split, then each accepted prune —
+// so fit-lab's pipeline scrubber can play knots appearing and pruning away. It is a
+// RECORD, not a second algorithm: the last entry IS the returned fit, and that identity
+// is what these tests pin. If the trace ever needed its own reconstruction step, it could
+// disagree with the answer, and the picture would be a lie about the fit it claims to show.
+describe("sparse init — the step trace", () => {
+    for (const scenario of scenarios) {
+        test(`${scenario.name}: the trace replays the fit it returned`, () => {
+            const { r } = bakeOf(scenario.name);
+            const f = fit(r.fN, r.ds, TOL);
+            const sigma = sigmas(r.ds, r.edges);
+
+            expect(f.steps[0].phase).toBe("init");
+            expect(f.steps[0].knots).toEqual([0, r.edges - 1]);
+
+            let splits = 0;
+            let prunes = 0;
+            for (let i = 0; i < f.steps.length; i++) {
+                const st = f.steps[i];
+                // knots address dense samples, ascending, spanning the whole input, and the
+                // points hang off exactly those samples (the interpolation law, per step).
+                expect(st.knots.length).toBe(st.points.length);
+                expect(st.knots[0]).toBe(0);
+                expect(st.knots[st.knots.length - 1]).toBe(r.edges - 1);
+                for (let k = 1; k < st.knots.length; k++) {
+                    expect(st.knots[k]).toBeGreaterThan(st.knots[k - 1]);
+                }
+                st.knots.forEach((k, j) => {
+                    expect(st.points[j].s).toBe(sigma[k]);
+                    expect(st.points[j].g).toBe(r.fN[k]);
+                });
+                // every step's self-reported error, re-measured through the PRODUCTION
+                // evaluator over the whole dense input — not just the final one. Without
+                // this the numbers fit-lab prints per frame are the fitter's word for its
+                // own accuracy at every frame but the last.
+                expect(st.maxError).toBeCloseTo(roundTrip(st.points, r.fN, sigma).err, 12);
+                if (i === 0) continue;
+                const before = f.steps[i - 1].knots.length;
+                if (st.phase === "split") {
+                    // splits never resume after pruning starts — the two passes are ordered.
+                    expect(prunes).toBe(0);
+                    expect(st.knots.length).toBe(before + 1);
+                    splits++;
+                } else {
+                    expect(st.phase).toBe("prune");
+                    expect(st.knots.length).toBe(before - 1);
+                    // a prune is only ever accepted within tolerance, so every entry from
+                    // the first one on already holds the bar the split pass reached.
+                    expect(st.maxError).toBeLessThanOrEqual(TOL);
+                    prunes++;
+                }
+            }
+            expect(2 + splits - prunes).toBe(f.points.length);
+
+            // the answer IS the last step, by identity and not by copy. Asserted with
+            // `toBe` deliberately: a structural `toEqual` would keep passing if someone
+            // rebuilt the trace alongside the fit, which is exactly the drift that would
+            // make the playback a picture of something the fit never did. Breaking the
+            // identity should force a conscious re-establishment of the invariant.
+            const last = f.steps[f.steps.length - 1];
+            expect(last.points).toBe(f.points);
+            expect(last.maxError).toBe(f.maxError);
+            expect(last.at).toBe(f.at);
+        });
+    }
+
+    test("the corpus exercises both phases", () => {
+        // otherwise every per-scenario assertion about splits or prunes above is vacuous.
+        let splits = 0;
+        let prunes = 0;
+        for (const scenario of scenarios) {
+            const { r } = bakeOf(scenario.name);
+            for (const st of fit(r.fN, r.ds, TOL).steps) {
+                if (st.phase === "split") splits++;
+                else if (st.phase === "prune") prunes++;
+            }
+        }
+        expect(splits).toBeGreaterThan(0);
+        expect(prunes).toBeGreaterThan(0);
+    });
+});
+
 describe("sparse init — the atom", () => {
     // the 2×2 Bernstein normal matrix over a full span has eigenvalues ∫B1²±∫B1B2 =
     // 0.150 and 0.021, so its condition number is ~7 and an f64 solve returns the
@@ -199,6 +282,8 @@ describe("sparse init — the atom", () => {
         expect(f.length).toBe(0);
         expect(f.maxError).toBe(0);
         expect(f.at).toBe(-1);
+        // nothing was decided, so there is nothing to replay.
+        expect(f.steps).toEqual([]);
     });
 
     test("a single edge fits to one held keyframe", () => {
@@ -208,6 +293,9 @@ describe("sparse init — the atom", () => {
         expect(f.maxError).toBe(0);
         expect(f.at).toBe(-1);
         expect(sampleForce(f.points, 0.25)).toBe(2.5);
+        expect(f.steps).toEqual([
+            { phase: "init", knots: [0], points: f.points, maxError: 0, at: -1 },
+        ]);
     });
 
     test("a lone interior sample is interpolated, not averaged: no split", () => {
@@ -239,6 +327,9 @@ describe("sparse init — the atom", () => {
         expect(f.points.length).toBe(2);
         expect(f.maxError).toBeLessThan(Exact);
         expect(sampleForce(f.points, 7.3)).toBeCloseTo(1.75, 12);
+        // the opening piece already holds the bar, so nothing is decided after it.
+        expect(f.steps.length).toBe(1);
+        expect(f.steps[0].phase).toBe("init");
     });
 
     test("a cubic curve is in the representation's own family: two keyframes, exactly", () => {

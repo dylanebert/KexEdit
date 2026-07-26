@@ -62,6 +62,30 @@ export interface Fit {
     /** the dense edge index `maxError` sits at — −1 when no edge is off at all (an exact
      *  fit, or an empty input). */
     at: number;
+    /** one entry per structural decision, in order: the opening single piece, then each
+     *  accepted split, then each accepted prune. Empty only for an empty input. The LAST
+     *  entry is the answer — `points`, `maxError`, and `at` are read off it, and `points`
+     *  is that step's array by identity, so the trace can never disagree with the fit it
+     *  traces. Treat the whole result as read-only: editing a returned keyframe in place
+     *  would silently rewrite the trace's final frame. Copy before authoring on it. */
+    steps: FitStep[];
+}
+
+/** which pass produced a step: the opening piece, a knot added, a knot removed. */
+export type FitPhase = "init" | "split" | "prune";
+
+/** the fit's state after one structural decision — what the pipeline playback draws. */
+export interface FitStep {
+    phase: FitPhase;
+    /** dense sample indices of the knots, ascending; first 0, last `n − 1`. The knot's
+     *  identity — `points[i]` is the same knot expressed in the profile representation. */
+    knots: number[];
+    /** the profile those knots fit, built exactly as the final answer is. */
+    points: ForcePoint[];
+    /** max |fitted − dense| over every dense edge at this step (g). */
+    maxError: number;
+    /** the dense edge index that error sits at; −1 when nothing is off. */
+    at: number;
 }
 
 const EPS = 1e-12;
@@ -160,6 +184,32 @@ function piece(fN: ArrayLike<number>, sigma: Float64Array, a: number, b: number)
     return { a, b, p1g, p2g, err, at };
 }
 
+/** the current piece list expressed as a step: the knots, the profile they fit, and the
+ *  worst dense sample any piece leaves behind. Every side that drives a piece carries an
+ *  explicit handle reaching span/3, so the profile is `profile.segment`-exact. */
+function step(
+    fN: ArrayLike<number>,
+    sigma: Float64Array,
+    pieces: readonly Piece[],
+    phase: FitPhase,
+): FitStep {
+    const knots = [pieces[0].a];
+    const points: ForcePoint[] = [{ s: sigma[pieces[0].a], g: fN[pieces[0].a] }];
+    let maxError = 0;
+    let at = -1;
+    for (const p of pieces) {
+        const reach = (sigma[p.b] - sigma[p.a]) / 3;
+        points[points.length - 1].out = { ds: reach, dg: p.p1g - fN[p.a] };
+        points.push({ s: sigma[p.b], g: fN[p.b], in: { ds: -reach, dg: p.p2g - fN[p.b] } });
+        knots.push(p.b);
+        if (p.err > maxError) {
+            maxError = p.err;
+            at = p.at;
+        }
+    }
+    return { phase, knots, points, maxError, at };
+}
+
 /**
  * fit a sparse force profile to the dense per-edge force `fN` with per-edge chords `ds`
  * (a section bake's `fN`/`ds` — edge `i` carries the force recovered at its leading
@@ -188,20 +238,26 @@ export function fit(fN: ArrayLike<number>, ds: ArrayLike<number>, tol: number): 
         sigma[i] = length;
         length += ds[i];
     }
-    if (n === 0) return { points: [], length: 0, maxError: 0, at: -1 };
-    if (n === 1) return { points: [{ s: 0, g: fN[0] }], length, maxError: 0, at: -1 };
+    if (n === 0) return { points: [], length: 0, maxError: 0, at: -1, steps: [] };
+    if (n === 1) {
+        const points: ForcePoint[] = [{ s: 0, g: fN[0] }];
+        const only: FitStep = { phase: "init", knots: [0], points, maxError: 0, at: -1 };
+        return { points, length, maxError: 0, at: -1, steps: [only] };
+    }
 
     // top-down: split the worst piece at its max-error sample until every dense edge
     // is within tol. a split touches only its own piece (knots interpolate the data,
     // sides are independent), and each half is strictly shorter, so the loop lands at
     // worst on a knot per dense sample.
     const pieces: Piece[] = [piece(fN, sigma, 0, n - 1)];
+    const steps: FitStep[] = [step(fN, sigma, pieces, "init")];
     for (;;) {
         let worst = 0;
         for (let j = 1; j < pieces.length; j++) if (pieces[j].err > pieces[worst].err) worst = j;
         const p = pieces[worst];
         if (p.err <= tol) break;
         pieces.splice(worst, 1, piece(fN, sigma, p.a, p.at), piece(fN, sigma, p.at, p.b));
+        steps.push(step(fN, sigma, pieces, "split"));
     }
 
     // removal counterfactual: drop the knot whose two pieces refit as one within tol,
@@ -219,19 +275,9 @@ export function fit(fN: ArrayLike<number>, ds: ArrayLike<number>, tol: number): 
         }
         if (!merged) break;
         pieces.splice(best, 2, merged);
+        steps.push(step(fN, sigma, pieces, "prune"));
     }
 
-    const points: ForcePoint[] = [{ s: sigma[pieces[0].a], g: fN[pieces[0].a] }];
-    let maxError = 0;
-    let at = -1;
-    for (const p of pieces) {
-        const reach = (sigma[p.b] - sigma[p.a]) / 3;
-        points[points.length - 1].out = { ds: reach, dg: p.p1g - fN[p.a] };
-        points.push({ s: sigma[p.b], g: fN[p.b], in: { ds: -reach, dg: p.p2g - fN[p.b] } });
-        if (p.err > maxError) {
-            maxError = p.err;
-            at = p.at;
-        }
-    }
-    return { points, length, maxError, at };
+    const last = steps[steps.length - 1];
+    return { points: last.points, length, maxError: last.maxError, at: last.at, steps };
 }
