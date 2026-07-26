@@ -9,7 +9,7 @@ import {
     segmentSeed,
 } from "../src/profile";
 
-// the force-authoring layer (kex2d/CLAUDE.md, force authoring): authored force
+// the force-authoring layer (kex2d/AGENTS.md, force authoring): authored force
 // keyframes → dense per-edge F_n. every segment is a cubic bezier in (s, g); a
 // keyframe side resolves to a derived flat tangent (from its easing tag) or an
 // explicit handle. the influence ends are derived, not tuned — Linear degenerates

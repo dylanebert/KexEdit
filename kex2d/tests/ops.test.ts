@@ -39,7 +39,7 @@ import {
 import { editTangent, TangentMode } from "../src/spline";
 
 // the multi-section structural ops: append / split / join / delete over the section
-// chain (kex2d/CLAUDE.md, structural ops). the substrate (chain, sectionInfo,
+// chain (kex2d/AGENTS.md, structural ops). the substrate (chain, sectionInfo,
 // local storage) is covered in section.test.ts; this pins the ECS-authoring layer —
 // chain continuity across a boundary, split/join losslessness (f32 rigid round-off),
 // and the rigid-placement payoff: an upstream edit rigidly carries downstream. device-free.

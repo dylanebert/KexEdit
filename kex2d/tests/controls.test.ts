@@ -302,7 +302,7 @@ test("an explicit out-vector governs the readout heading, not the recovered geom
 
 // the ring (extend button + both knobs) orbits the node's AUTHORED exit heading, the same quantity
 // `extend()` lays the next node along — not `Handle.theta`, which is dead state once a node carries
-// an explicit out-vector (the CLAUDE.md gotcha, and the round-8/13 family of bugs). Rotating the
+// an explicit out-vector (the kex2d/AGENTS.md gotcha, and the round-8/13 family of bugs). Rotating the
 // authored vector must therefore rotate the ring; reading the dead field leaves it stuck.
 test("the ring base tracks the authored exit heading, not the stale Handle.theta", () => {
     const { state, sec } = geoTrack();

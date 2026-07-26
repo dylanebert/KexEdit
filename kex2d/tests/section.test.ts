@@ -12,7 +12,7 @@ import {
 import type { Node } from "../src/spline";
 import { withThetas } from "./helpers/chain";
 
-// the section substrate (kex2d/CLAUDE.md, the section substrate): entry → sampled points
+// the section substrate (kex2d/AGENTS.md, the section substrate): entry → sampled points
 // → exit, chained by anchor propagation. the two atoms wrap the oracle-gated
 // integrator (`forward.integrate`) and the display recovery (`bake.forces`), so
 // physics carries from those gates; these tests pin the CONTRACT the substrate
