@@ -184,7 +184,8 @@ export interface PolishResult {
     /** accepted LM steps — total across outers AND across every λ the discrepancy search
      *  tried, so it reads as the call's whole cost. `solves` is how many solves that was. */
     iters: number;
-    /** how many full solves ran: 1 in exact mode, up to `LAM_STEPS + 3` in calm mode. */
+    /** how many full solves ran: 1 in exact mode; in calm mode the two bracket probes plus
+     *  either the λ = 0 fallback or the `LAM_STEPS` bisection, so at most `LAM_STEPS + 2`. */
     solves: number;
     /** AL outer rounds run by the solve that produced this answer. */
     outers: number;

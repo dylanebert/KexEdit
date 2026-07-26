@@ -110,7 +110,6 @@ interface Row {
     keyPeak: number;
     /** the violence pins the authorability comparison turns on. */
     maxDg: number;
-    mode: PolishMode;
     /** calm mode only: the Tikhonov weight, and whether the derived floor actually held. */
     lambda: number;
     heldFloor: boolean;
@@ -331,7 +330,6 @@ function run(scenario: Scenario, mode: PolishMode): Solve {
         peak,
         keyPeak,
         maxDg: out.maxDg,
-        mode,
         lambda: out.lambda,
         heldFloor: out.heldFloor,
     };
@@ -401,14 +399,6 @@ function chart(s: Solve, alt: Solve | null): Chart {
         lo,
         hi,
     };
-}
-
-/** the live chart for the selected scenario + mode — one source for the drawing, the
- *  handle census, and the harness hook, so a count can never be measured against a
- *  different transform than the one on screen. */
-function chartNow(): Chart | null {
-    const s = current();
-    return s ? chart(s, other()) : null;
 }
 
 /** classify a keyframe's handles in SCREEN space: collinear-through-the-key within
@@ -1147,12 +1137,15 @@ setTimeout(pump, 0);
     warmFrame: (): number => current()?.warm ?? 0,
     phases: (): { phase: Phase; start: number; end: number }[] =>
         (current()?.segments ?? []).map((s) => ({ phase: s.phase, start: s.start, end: s.end })),
-    /** how the current frame's keyframes carry their handles. */
+    /** how the current frame's keyframes carry their handles. Censused through
+     *  `chart(s, other())`, the transform the panels draw with: the classification is
+     *  screen-space, so a count taken against any other transform would be a count of a
+     *  picture nobody is looking at. */
     handles: (): HandleStats => {
-        const c = chartNow();
-        const points = current()?.frames[frame].points;
-        return c && points
-            ? handleStats(points, c)
+        const s = current();
+        const points = s?.frames[frame].points;
+        return s && points
+            ? handleStats(points, chart(s, other()))
             : { mirror: 0, aligned: 0, broken: 0, single: 0 };
     },
     /** keyframes on THIS frame — what `handles()` censuses. Not `points().length`, which is

@@ -499,7 +499,7 @@ describe("constrained polish — calm mode", () => {
             test("the solver's force model is still the production evaluator", () => {
                 // the exact-mode twin of this pins that F = A·dof never drifts from the
                 // shipped evaluator. Calm mode needs its own: the snapshots come from the
-                // WINNING λ's solve, one of up to eleven, so this is also what proves the
+                // WINNING λ's solve, one of up to ten, so this is also what proves the
                 // returned profile and the returned playback are the same solve.
                 const out = calmed(scenario.name);
                 const last = out.snapshots[out.snapshots.length - 1];
@@ -592,7 +592,7 @@ describe("constrained polish — calm mode", () => {
 
     test("iters reports the whole search, not the winning solve", () => {
         // the corpus table reads `iters` as what the call cost, and the search runs the
-        // solve up to eleven times — a per-solve count under-reports it by most of an
+        // solve up to ten times — a per-solve count under-reports it by most of an
         // order of magnitude. Pinned against the winning λ re-solved alone.
         const name = "valley-explicit";
         const { s, entry, bake } = bakeOf(name);
