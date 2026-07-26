@@ -1,9 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { fit } from "../src/fit";
-import { polish, type PolishResult, spine, TOL_FEAS } from "../src/polish";
+import {
+    AUTHOR_EPS,
+    authoringFloor,
+    chordDeficit,
+    polish,
+    type PolishResult,
+    spine,
+    TOL_FEAS,
+    violence,
+} from "../src/polish";
 import { type ForcePoint, forceProfile, segmentControls } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { type Entry, evalForce, evalGeo } from "../src/section";
+import { G_GRID } from "../src/timeline";
 
 // the geo→force spike's constrained polish (kex/specs/kex2d-geoforce-spike.md stage 3):
 // the sparse profile whose INTEGRATED geometry matches the bake, exit pinned. Two bars,
@@ -109,6 +119,17 @@ function solved(name: string) {
     const val = { fit: f, out };
     cache.set(name, val);
     return val;
+}
+
+const calm = new Map<string, PolishResult>();
+function calmed(name: string) {
+    const hit = calm.get(name);
+    if (hit) return hit;
+    const { s, entry, bake } = bakeOf(name);
+    const f = fit(bake.fN, bake.ds, FIT_TOL);
+    const out = polish({ bake, entry, points: f.points, ds: s.ds, mode: "calm" });
+    calm.set(name, out);
+    return out;
 }
 
 /** THE REFERENCE CHECK. Integrate a profile through the LIVE f32 `evalForce` path and
@@ -312,6 +333,307 @@ describe("constrained polish — the corpus", () => {
             expect(out.feasibility).toBeGreaterThan(1e4 * TOL_FEAS);
             expect(out.exit.dist).toBe(0);
             expect(out.deviation).toBe(0);
+        }
+    });
+});
+
+// Calm mode's violence — PROVISIONAL, same as the `Deviation` table above and for the same
+// reason: what the regularizer can reach is a property of the shape, the keyframe
+// placement, and where the bisection lands, and no closed form bounds it. These are the
+// drift tripwires for the before/after that is the human check-in's verdict input (spec
+// stage 3b), not derived bars. `peakG` is the peak of the DENSE force the profile drives
+// (the one that catches inter-key overshoot invisible in the diamonds); `maxDg` the largest
+// handle offset an author would have to grab.
+//
+// Each is the measured value plus ~10% headroom, floored at G_GRID/2 for the handles so a
+// scenario whose handles go flat isn't pinned against zero. The headroom is deliberate: the
+// discrepancy search lands wherever a bisection branch falls, and full-loop's accepted λ
+// sits under 1% below its floor — one flipped branch there moves λ by a bisection step and
+// the violence with it, which is drift to look at, not a regression. The real teeth are
+// elsewhere in this block: `calm ≤ exact` on handles, and the strict-reduction assert on
+// the spike scenarios.
+const CalmViolence: Record<string, { peakG: number; maxDg: number }> = {
+    "circular-arc": { peakG: 2.02, maxDg: 0.05 },
+    "parabola-hill": { peakG: 3.67, maxDg: 0.66 },
+    "full-loop": { peakG: 6.62, maxDg: 1.14 },
+    "s-curve": { peakG: 4.24, maxDg: 0.86 },
+    "straight-fillet": { peakG: 3.26, maxDg: 1.87 },
+    "hill-auto": { peakG: 4.71, maxDg: 0.05 },
+    "hill-explicit": { peakG: 3.17, maxDg: 1.08 },
+    "loop-explicit": { peakG: 32.8, maxDg: 0.05 },
+    "double-hump": { peakG: 4.47, maxDg: 0.05 },
+    "valley-explicit": { peakG: 38.6, maxDg: 50.7 },
+};
+
+// The spike scenarios — the Auto↔explicit tangent boundaries whose ~38 g recovered-F_n
+// discontinuity is what made the exact solve violent (spec stage 1 corpus note). These are
+// where the reduction has to be MEASURABLE, not merely non-regressive.
+const Spikes = ["loop-explicit", "valley-explicit"];
+
+describe("constrained polish — calm mode", () => {
+    test("the authoring floor is derived, and it is the two terms", () => {
+        // the discrepancy level: what the integrator structurally cannot remove, plus what
+        // the readout structurally cannot show. Not a corpus-fitted number.
+        const { bake } = bakeOf("valley-explicit");
+        const sp = spine(bake, 0.5);
+        expect(authoringFloor(sp)).toBeCloseTo(chordDeficit(sp) + AUTHOR_EPS, 12);
+        // a bake the integrator CAN draw exactly has no deficit: a straight polyline
+        // resampled at uniform arclength has chords of exactly ds.
+        const straight = spine(
+            { posX: [0, 3, 6], posY: [0, 4, 8], theta: [0, 0, 0], ds: [5, 5], edges: 2 },
+            0.7,
+        );
+        expect(chordDeficit(straight)).toBeCloseTo(0, 9);
+        // and a bending one has a strictly positive deficit, on every corpus scenario.
+        for (const s of scenarios) {
+            const d = chordDeficit(spine(bakeOf(s.name).bake, s.ds));
+            expect(d).toBeGreaterThan(0);
+            expect(Number.isFinite(d)).toBe(true);
+        }
+    });
+
+    test("exact mode is untouched by the mode option", () => {
+        const { out } = solved("loop-explicit");
+        expect(out.mode).toBe("exact");
+        expect(out.lambda).toBe(0);
+        expect(out.solves).toBe(1);
+        // the floor is reported in exact mode but never acted on — exact stops at the
+        // numeric floor, three orders below it.
+        expect(out.deviation).toBeLessThan(out.floor);
+        expect(out.heldFloor).toBe(true);
+    });
+
+    test("rejects a mode option it could not mean anything over", () => {
+        // each of these silently produces a solve that LOOKS answered: an unknown mode
+        // string falls through to calm, a non-positive floor lands every search on the
+        // fallback, and a λ of Infinity/NaN poisons Φ so every trial step is rejected and
+        // the untouched warm start comes back wearing converged diagnostics — the same
+        // silent-no-op class the entry and warm-start guards refuse.
+        const { s, entry, bake } = bakeOf("hill-auto");
+        const base = { bake, entry, points: fit(bake.fN, bake.ds, FIT_TOL).points, ds: s.ds };
+        expect(() => polish({ ...base, mode: "clam" as never })).toThrow(
+            /mode must be "exact" or "calm"/,
+        );
+        expect(() => polish({ ...base, mode: "" as never })).toThrow(/mode must be/);
+        for (const floor of [0, -1, Number.NaN, Number.POSITIVE_INFINITY])
+            expect(() => polish({ ...base, mode: "calm", floor })).toThrow(
+                /floor must be a finite number > 0/,
+            );
+        for (const lambda of [-1, Number.NaN, Number.POSITIVE_INFINITY])
+            expect(() => polish({ ...base, mode: "calm", lambda })).toThrow(
+                /lambda must be a finite number >= 0/,
+            );
+        // exact mode ignores the VALUE but still refuses a meaningless one.
+        expect(() => polish({ ...base, lambda: Number.NaN })).toThrow(/lambda must be/);
+        // and the valid ends of both ranges pass.
+        expect(() => polish({ ...base, mode: "calm", lambda: 0 })).not.toThrow();
+    });
+
+    for (const scenario of scenarios) {
+        describe(scenario.name, () => {
+            test("re-integrated through the live evalForce path, the exit is still pinned", () => {
+                const out = calmed(scenario.name);
+                expect(out.converged).toBe(true);
+                expect(out.feasibility).toBeLessThan(TOL_FEAS);
+                const r = reference(scenario.name, out.points, out.length, out.ds);
+                expect(r.exit).toBeLessThanOrEqual(EXIT_TOL);
+                expect(r.exitTheta).toBeLessThanOrEqual(EXIT_ANG_TOL);
+            });
+
+            test("stops AT the derived authoring floor, never past it", () => {
+                const out = calmed(scenario.name);
+                expect(out.floor).toBeCloseTo(
+                    authoringFloor(spine(bakeOf(scenario.name).bake, scenario.ds)),
+                    12,
+                );
+                expect(out.deviation).toBeLessThanOrEqual(out.floor);
+                expect(out.heldFloor).toBe(true);
+                // and the independent f32 measurement agrees — same 1e-4 spine-vs-reference
+                // slack the exact-mode ceiling test derives.
+                const r = reference(scenario.name, out.points, out.length, out.ds);
+                expect(r.dev).toBeLessThanOrEqual(out.floor + 1e-4);
+                expect(Math.abs(r.dev - out.deviation)).toBeLessThan(1e-4);
+            });
+
+            test("keeps the warm start's keyframe placement, same as exact", () => {
+                const { fit: f } = solved(scenario.name);
+                const out = calmed(scenario.name);
+                expect(out.keys).toBe(f.points.length);
+                for (let k = 0; k < out.keys; k++) {
+                    expect(out.points[k].s).toBe(f.points[k].s);
+                    expect(out.points[k].out?.ds).toBe(f.points[k].out?.ds);
+                    expect(out.points[k].in?.ds).toBe(f.points[k].in?.ds);
+                }
+            });
+
+            test("is calmer than exact, and inside its pinned violence", () => {
+                const { out: ex } = solved(scenario.name);
+                const cm = calmed(scenario.name);
+                const pin = CalmViolence[scenario.name];
+                expect(pin).toBeDefined();
+                expect(cm.maxDg).toBeLessThanOrEqual(pin.maxDg);
+                expect(cm.peakG).toBeLessThanOrEqual(pin.peakG);
+                // handles never get worse. Peak dense force may tick UP on a smooth shape
+                // (removing handles reshapes the interior a little), bounded by half the
+                // force axis's authoring quantum — the coarsest change the chart's readout
+                // could show.
+                expect(cm.maxDg).toBeLessThanOrEqual(ex.maxDg);
+                expect(cm.peakG).toBeLessThanOrEqual(ex.peakG + G_GRID / 2);
+                // the reported violence is the profile's own, not a solver diagnostic.
+                const v = violence(cm.points, cm.length, cm.ds);
+                expect(v.peakG).toBeCloseTo(cm.peakG, 12);
+                expect(v.maxDg).toBeCloseTo(cm.maxDg, 12);
+            });
+
+            test("emits playable snapshots ending on the answer", () => {
+                const out = calmed(scenario.name);
+                expect(out.snapshots.length).toBeGreaterThan(1);
+                expect(out.snapshots.length).toBeLessThanOrEqual(120);
+                const last = out.snapshots[out.snapshots.length - 1];
+                expect(last.x.length).toBe(out.edges + 1);
+                expect(last.fN.length).toBe(out.edges);
+                expect(last.feasibility).toBeCloseTo(out.feasibility, 12);
+                for (let k = 0; k < out.keys; k++) expect(last.points[k].g).toBe(out.points[k].g);
+            });
+
+            test("the solver's force model is still the production evaluator", () => {
+                // the exact-mode twin of this pins that F = A·dof never drifts from the
+                // shipped evaluator. Calm mode needs its own: the snapshots come from the
+                // WINNING λ's solve, one of up to eleven, so this is also what proves the
+                // returned profile and the returned playback are the same solve.
+                const out = calmed(scenario.name);
+                const last = out.snapshots[out.snapshots.length - 1];
+                const arr = forceProfile(out.points, out.length, out.ds);
+                expect(arr.length).toBe(out.edges);
+                for (let j = 0; j < out.edges; j++)
+                    expect(Math.abs(arr[j] - last.fN[j])).toBeLessThanOrEqual(F32_TOL);
+            });
+        });
+    }
+
+    test("the spike scenarios are measurably calmer — the check-in's finding", () => {
+        // The human check-in's complaint, in numbers: on the Auto↔explicit boundaries the
+        // exact solve buys sub-mm geometry with handles no one would author.
+        for (const name of Spikes) {
+            const { out: ex } = solved(name);
+            const cm = calmed(name);
+            expect(cm.maxDg).toBeLessThan(0.9 * ex.maxDg);
+            expect(cm.peakG).toBeLessThan(0.9 * ex.peakG);
+        }
+    });
+
+    test("with λ forced to 0 the violence comes straight back", () => {
+        // the negative control for the Tikhonov block. Same loosened floor, no penalty —
+        // so the geometry is free to sit anywhere inside the floor and nothing prefers the
+        // calm member. It lands on exact mode's answer, violence and all.
+        for (const name of Spikes) {
+            const { s, entry, bake } = bakeOf(name);
+            const { out: ex } = solved(name);
+            const f = fit(bake.fN, bake.ds, FIT_TOL);
+            const out = polish({
+                bake,
+                entry,
+                points: f.points,
+                ds: s.ds,
+                mode: "calm",
+                lambda: 0,
+            });
+            expect(out.lambda).toBe(0);
+            expect(out.solves).toBe(1);
+            expect(out.maxDg).toBeCloseTo(ex.maxDg, 6);
+            expect(out.peakG).toBeCloseTo(ex.peakG, 6);
+            // and that IS the violence the search removes.
+            expect(calmed(name).maxDg).toBeLessThan(0.9 * out.maxDg);
+        }
+    });
+
+    test("with the floor set to the numeric one, calm mode falls back to exact", () => {
+        // the negative control for discrepancy stopping. At TOL_FEAS there is no slack to
+        // spend, so no λ in the bracket holds the floor and the search falls back to the
+        // unregularized solve — the same answer exact mode gives, violence and all. That
+        // answer does NOT reach the floor it was given, and `heldFloor` is the only field
+        // that says so: λ = 0 marks the fallback, `converged` is about feasibility, and
+        // `deviation` needs the floor beside it to read.
+        const name = "loop-explicit";
+        const { s, entry, bake } = bakeOf(name);
+        const { out: ex } = solved(name);
+        const out = polish({
+            bake,
+            entry,
+            points: fit(bake.fN, bake.ds, FIT_TOL).points,
+            ds: s.ds,
+            mode: "calm",
+            floor: TOL_FEAS,
+        });
+        expect(out.lambda).toBe(0);
+        expect(out.floor).toBe(TOL_FEAS);
+        expect(out.deviation).toBe(ex.deviation);
+        expect(out.maxDg).toBe(ex.maxDg);
+        expect(out.converged).toBe(true);
+        expect(out.heldFloor).toBe(false);
+        // the held path, for contrast: same scenario, the derived floor.
+        expect(calmed(name).heldFloor).toBe(true);
+    });
+
+    test("a fallback that misses the floor is flagged, not dressed up as held", () => {
+        // the real-input version of the control above, no floor override. A coarse fit
+        // (tol 10× stage 2's) over a bendy shape leaves the unregularized solve ITSELF
+        // outside the derived floor, so the fallback returns the tightest geometry it has
+        // while missing the target — `converged` and `lambda` look exactly like a held
+        // answer, and only `heldFloor` separates them.
+        const { s, entry, bake } = bakeOf("full-loop");
+        const coarse = fit(bake.fN, bake.ds, 10 * FIT_TOL);
+        const out = polish({ bake, entry, points: coarse.points, ds: s.ds, mode: "calm" });
+        expect(out.converged).toBe(true);
+        expect(out.lambda).toBe(0);
+        expect(out.deviation).toBeGreaterThan(out.floor);
+        expect(out.heldFloor).toBe(false);
+    });
+
+    test("iters reports the whole search, not the winning solve", () => {
+        // the corpus table reads `iters` as what the call cost, and the search runs the
+        // solve up to eleven times — a per-solve count under-reports it by most of an
+        // order of magnitude. Pinned against the winning λ re-solved alone.
+        const name = "valley-explicit";
+        const { s, entry, bake } = bakeOf(name);
+        const cm = calmed(name);
+        expect(cm.solves).toBeGreaterThan(1);
+        const one = polish({
+            bake,
+            entry,
+            points: fit(bake.fN, bake.ds, FIT_TOL).points,
+            ds: s.ds,
+            mode: "calm",
+            lambda: cm.lambda,
+        });
+        expect(one.solves).toBe(1);
+        expect(one.iters).toBeGreaterThan(0);
+        expect(cm.iters).toBeGreaterThan(one.iters);
+    });
+
+    test("a saturated bracket is one solve, and λ there is a clip", () => {
+        // loop-explicit's whole handle family fits inside its floor, so the strong-end
+        // probe holds on the first try and the bisection never runs. Its λ is LAM_MAX —
+        // the end of the bracket, not a discrepancy point the search located.
+        const out = calmed("loop-explicit");
+        expect(out.solves).toBe(1);
+        expect(out.lambda).toBe(1e3);
+        expect(out.maxDg).toBeLessThan(G_GRID / 2);
+    });
+
+    test("calm mode is deterministic: two solves are identical", () => {
+        const { s, entry, bake } = bakeOf("full-loop");
+        const f = fit(bake.fN, bake.ds, FIT_TOL);
+        const base = { bake, entry, points: f.points, ds: s.ds, mode: "calm" as const };
+        const a = polish(base);
+        const b = polish(base);
+        expect(b.lambda).toBe(a.lambda);
+        expect(b.iters).toBe(a.iters);
+        expect(b.deviation).toBe(a.deviation);
+        for (let k = 0; k < a.keys; k++) {
+            expect(b.points[k].g).toBe(a.points[k].g);
+            expect(b.points[k].out?.dg).toBe(a.points[k].out?.dg);
+            expect(b.points[k].in?.dg).toBe(a.points[k].in?.dg);
         }
     });
 });
