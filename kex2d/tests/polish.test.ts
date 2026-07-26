@@ -53,13 +53,31 @@ const FIT_TOL = 0.05;
 // and 50× below what the author can perceive. Measured worst on the corpus: 1.7e-4 m.
 const EXIT_TOL = 1e-3;
 
-// EXIT_ANG_TOL — the reference exit HEADING residual (rad). `evalForce` re-recovers its
-// exit from the swept geometry (the one-display-path law), and that bisector tangent
-// differs from the integrator's own θ by ¼(θ_{j−1} − 2θ_j + θ_{j+1}) = O(ds²·κ′) — the
-// known source-vs-centered convention gap, ~1e-4 rad here — so the pin cannot be tighter
-// than that whatever the solver does. 1e-3 rad = 0.057°, above that gap and still under
-// the 0.1° readout quantum (`formatDeg`). Measured worst: 1.5e-4 rad.
+// EXIT_ANG_TOL — the reference exit HEADING residual (rad), measured on the quantity a
+// downstream section consumes: `evalForce` re-recovers its exit from the swept geometry
+// (the one-display-path law), so the bar reads that bisector tangent, not the integrator's
+// own θ. The solve pins the same recovered quantity (`polish.ts` `exitTheta`), so the only
+// floor left is the f32 path's — ~1e-6 rad of accumulated rounding. The CEILING is the
+// readout: `controls.formatDeg` prints one decimal, so 0.1° = 1.7e-3 rad is the coarsest
+// heading error the surface could show. 1e-3 rad = 0.057° sits under it and three decades
+// above the float floor. Measured worst over all 40 corpus solves: 1.3e-5 rad (7.3e-4°).
+//
+// It used to be the other way round: with the equality written in the INTEGRATOR's
+// convention the recovered exit was free by ¼(θ_{E−2} − 2θ_{E−1} + θ_E) = O(ds²·κ′),
+// which reached 3.6e-3 rad (0.21°) on loop-explicit aligned+calm and needed a named
+// per-scenario exception. Pinning the recovery instead closed it by ~380× and the
+// exception is gone.
 const EXIT_ANG_TOL = 1e-3;
+
+// A cold corpus solve's budget (ms). The solves are memoized per (scenario, mode, family),
+// so whichever test touches a pair first pays for the whole thing — and a calm solve is a
+// full discrepancy bisection, up to ten LM/PHR solves. Measured worst with this file run
+// alone: 2.6 s (double-hump, aligned, both modes). `bun test` runs the 30 suite files
+// concurrently and the whole-suite wall time varies ~2× with that contention, so bun's 5 s
+// default leaves no margin — it fired on double-hump under load while the same test passes
+// in 2.6 s alone. An order above the measurement still catches a genuine hang, since the
+// AL's outer/inner caps bound a solve's work absolutely.
+const SOLVE_MS = 30_000;
 
 // `forceProfile` writes f32 and the corpus's polished peak reaches ~51 g, so one rounding
 // is ≤ 51·2^-24 ≈ 3e-6; 1e-5 clears it with margin (fit.test.ts's constant, same reason).
@@ -190,6 +208,36 @@ function reference(name: string, points: readonly ForcePoint[], length: number, 
  *  construction, so it is a per-scenario pin here and never a cross-mode bar. */
 function roughnessOf(r: PolishResult): number {
     return fairNorm(fairRows(r.points, r.handles), readDof(r.points, r.handles));
+}
+
+/** `∫(F″)² ds` by NUMERICAL QUADRATURE — the seminorm's own definition, independent of
+ *  `fairRows`'s algebra at every step: F comes from `profile.sampleForce` (the shipped
+ *  bezier + root solve), F″ from a central second difference of it, and the integral from
+ *  4-point Gauss-Legendre inside each segment — never across a knot, where F″ jumps.
+ *
+ *  This is the truth `fairRows` is checked against, and the only way to price a profile
+ *  that has left the span/3 reach family (where the closed form stops being exact).
+ *  4-point Gauss-Legendre on [−1, 1] (Abramowitz & Stegun table 25.4), exact for the
+ *  degree-6 integrand a cubic's (F″)² would be even before the difference stencil. */
+const Gx = [-0.8611363115940526, -0.3399810435848563, 0.3399810435848563, 0.8611363115940526];
+const Gw = [0.3478548451374538, 0.6521451548625461, 0.6521451548625461, 0.3478548451374538];
+function quadRoughness(pts: readonly ForcePoint[]): number {
+    let total = 0;
+    for (let k = 0; k + 1 < pts.length; k++) {
+        const span = pts[k + 1].s - pts[k].s;
+        const mid = 0.5 * (pts[k].s + pts[k + 1].s);
+        const h = span / 100;
+        let acc = 0;
+        for (let i = 0; i < Gx.length; i++) {
+            const at = mid + 0.5 * span * Gx[i];
+            const f2 =
+                (sampleForce(pts, at + h) - 2 * sampleForce(pts, at) + sampleForce(pts, at - h)) /
+                (h * h);
+            acc += Gw[i] * f2 * f2;
+        }
+        total += 0.5 * span * acc;
+    }
+    return total;
 }
 
 describe("constrained polish — the corpus", () => {
@@ -458,14 +506,18 @@ describe("constrained polish — calm mode", () => {
 
     for (const scenario of scenarios) {
         describe(scenario.name, () => {
-            test("re-integrated through the live evalForce path, the exit is still pinned", () => {
-                const out = calmed(scenario.name);
-                expect(out.converged).toBe(true);
-                expect(out.feasibility).toBeLessThan(TOL_FEAS);
-                const r = reference(scenario.name, out.points, out.length, out.ds);
-                expect(r.exit).toBeLessThanOrEqual(EXIT_TOL);
-                expect(r.exitTheta).toBeLessThanOrEqual(EXIT_ANG_TOL);
-            });
+            test(
+                "re-integrated through the live evalForce path, the exit is still pinned",
+                () => {
+                    const out = calmed(scenario.name);
+                    expect(out.converged).toBe(true);
+                    expect(out.feasibility).toBeLessThan(TOL_FEAS);
+                    const r = reference(scenario.name, out.points, out.length, out.ds);
+                    expect(r.exit).toBeLessThanOrEqual(EXIT_TOL);
+                    expect(r.exitTheta).toBeLessThanOrEqual(EXIT_ANG_TOL);
+                },
+                SOLVE_MS,
+            );
 
             test("stops AT the derived authoring floor, never past it", () => {
                 const out = calmed(scenario.name);
@@ -504,10 +556,23 @@ describe("constrained polish — calm mode", () => {
                 // slack calm mode spends, it buys a smoother profile than the exact solve
                 // it traded away. Measured margin is 3 to 13 orders of magnitude on nine
                 // scenarios and 1.9× on valley-explicit, whose fallback finds little slack.
-                // Neither `maxDg` nor `peakG` is a cross-mode bar any more: the answer is
-                // free to sit anywhere inside the authoring floor, and the fairing prior
-                // does not price either of them.
-                expect(roughnessOf(cm)).toBeLessThan(roughnessOf(ex));
+                // `peakG` is NOT a cross-mode bar — the answer is free to sit anywhere
+                // inside the authoring floor and the fairing prior does not price the peak.
+                //
+                // Strict only where a prior was actually applied: the documented λ = 0
+                // fallback returns solve(0), which IS the exact answer, so equality there
+                // is the contract rather than a regression.
+                if (cm.lambda > 0) expect(roughnessOf(cm)).toBeLessThan(roughnessOf(ex));
+                else expect(roughnessOf(cm)).toBeLessThanOrEqual(roughnessOf(ex));
+                // and `maxDg` still falls in the FREE family — every one of the ten, by 1.2×
+                // (valley-explicit) to 10.6× (full-loop). Handle size stopped measuring
+                // violence under this prior, but "the calm answer's handles are no larger
+                // than the exact answer's" remains an invariant here, not a pin, because a
+                // free handle's Δs is fixed: only its Δg moves, so a smoother profile cannot
+                // reach further. The ALIGNED family is where it genuinely breaks (one slope
+                // serves both sides, so a chord-aligned handle grows), which is why this
+                // assert lives in the free block alone.
+                expect(cm.maxDg).toBeLessThanOrEqual(ex.maxDg);
                 // the reported violence is the profile's own, not a solver diagnostic.
                 const v = violence(cm.points, cm.length, cm.ds);
                 expect(v.peakG).toBeCloseTo(cm.peakG, 12);
@@ -599,6 +664,11 @@ describe("constrained polish — calm mode", () => {
         expect(out.maxDg).toBe(ex.maxDg);
         expect(out.converged).toBe(true);
         expect(out.heldFloor).toBe(false);
+        // and the profile is exact mode's to the last bit, seminorm included — which is
+        // why the per-scenario roughness comparison above allows EQUALITY at λ = 0 rather
+        // than demanding a strict reduction. This is the branch that says so; the free
+        // corpus never lands on the fallback, the aligned family does.
+        expect(roughnessOf(out)).toBe(roughnessOf(ex));
         // the held path, for contrast: same scenario, the derived floor.
         expect(calmed(name).heldFloor).toBe(true);
     });
@@ -657,21 +727,25 @@ describe("constrained polish — calm mode", () => {
         );
     });
 
-    test("calm mode is deterministic: two solves are identical", () => {
-        const { s, entry, bake } = bakeOf("full-loop");
-        const f = fit(bake.fN, bake.ds, FIT_TOL);
-        const base = { bake, entry, points: f.points, ds: s.ds, mode: "calm" as const };
-        const a = polish(base);
-        const b = polish(base);
-        expect(b.lambda).toBe(a.lambda);
-        expect(b.iters).toBe(a.iters);
-        expect(b.deviation).toBe(a.deviation);
-        for (let k = 0; k < a.keys; k++) {
-            expect(b.points[k].g).toBe(a.points[k].g);
-            expect(b.points[k].out?.dg).toBe(a.points[k].out?.dg);
-            expect(b.points[k].in?.dg).toBe(a.points[k].in?.dg);
-        }
-    });
+    test(
+        "calm mode is deterministic: two solves are identical",
+        () => {
+            const { s, entry, bake } = bakeOf("full-loop");
+            const f = fit(bake.fN, bake.ds, FIT_TOL);
+            const base = { bake, entry, points: f.points, ds: s.ds, mode: "calm" as const };
+            const a = polish(base);
+            const b = polish(base);
+            expect(b.lambda).toBe(a.lambda);
+            expect(b.iters).toBe(a.iters);
+            expect(b.deviation).toBe(a.deviation);
+            for (let k = 0; k < a.keys; k++) {
+                expect(b.points[k].g).toBe(a.points[k].g);
+                expect(b.points[k].out?.dg).toBe(a.points[k].out?.dg);
+                expect(b.points[k].in?.dg).toBe(a.points[k].in?.dg);
+            }
+        },
+        SOLVE_MS,
+    );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────
@@ -723,24 +797,34 @@ const AlignedDeviation: Record<string, number> = {
     "valley-explicit": 0.33,
 };
 
-/** the one corpus solve whose live-path exit HEADING misses `EXIT_ANG_TOL`, named here
- *  rather than folded into that constant — which is derived from the readout quantum and
- *  stays the bar for the other nineteen (measured worst among them: 4.4e-4 rad, 0.025°).
+/** the DENSE peak the aligned answer drives (g) — the violence bar for this family, pinned
+ *  per scenario at the measured value plus ~10% headroom, one-sided, exactly as
+ *  `CalmViolence` is and PROVISIONAL for the same reason. `maxDg` is deliberately not here:
+ *  under the fairing prior a chord-aligned handle on a steep ramp is a large Δg drawing a
+ *  straight line, so handle size stopped measuring violence (the metric law, spec lock 2)
+ *  and the dense peak is what an author feels.
  *
- *  The mechanism, measured: the SPINE's exit heading is pinned to ~5e-12 rad in every solve,
- *  so this bar reads the f32 re-integration, where the recovered bisector exit differs from
- *  the integrator's by O(ds²·κ′). Under the fairing prior the discrepancy search on this
- *  scenario accepts λ = 2e-4 (against `LAM_MAX` under the flat Δg prior) and the answer sits
- *  AT the position floor — 8.9 cm of a 9.0 cm budget — carrying a 2–8 g tail where the bake
- *  runs flat at 1 g. Large κ′ at the exit, so the gap opens to 3.6e-3 rad = 0.21°, twice the
- *  0.1° the heading readout resolves. The position pin is unaffected (6e-5 m).
+ *  The headline these guard is loop-explicit: the flat Δg prior left it at 29.8 g, the
+ *  fairing seminorm halves it to 14.3. Nothing pinned that before.
  *
- *  This is a real cost of the prior change, not a tolerance: the profile is smoother by the
- *  seminorm's own measure (roughness 1.6e+9 → 5.1e+2) while tracking a different force
- *  altogether at the tail, which is the ill-posedness lock 1 diagnosed showing up at the
- *  boundary. The lever is knot placement — stage 3's refine loop — the same conclusion
- *  valley-explicit's floor residual reached. */
-const AlignedCalmHeading: Record<string, number> = { "loop-explicit": 4e-3 };
+ *  Read them as tripwires per scenario, never as a cross-mode bar — calm makes the peak
+ *  slightly WORSE than the aligned exact solve on five of the ten (parabola-hill 3.30 →
+ *  3.71, s-curve 3.97 → 4.23, hill-auto 4.18 → 4.41, hill-explicit 2.87 → 2.89,
+ *  double-hump 4.18 → 4.49). That is the discrepancy principle spending geometry slack it
+ *  is allowed to spend: the prior prices the seminorm, not the peak, and inside the
+ *  authoring floor the answer is free to sit anywhere. */
+const AlignedCalmPeak: Record<string, number> = {
+    "circular-arc": 2.0,
+    "parabola-hill": 4.09,
+    "full-loop": 6.73,
+    "s-curve": 4.66,
+    "straight-fillet": 2.93,
+    "hill-auto": 4.86,
+    "hill-explicit": 3.18,
+    "loop-explicit": 15.7,
+    "double-hump": 4.94,
+    "valley-explicit": 17.6,
+};
 
 /** the scenarios whose aligned solve reaches the derived authoring floor. The one absent
  *  is the stage-3 input above — pinned as a SET so a scenario silently falling out of the
@@ -948,30 +1032,41 @@ describe("constrained polish — the authorable DOF", () => {
 
     for (const scenario of scenarios) {
         describe(scenario.name, () => {
-            test("converges in the aligned family, both modes", () => {
-                for (const mode of ["exact", "calm"] as const) {
-                    const out = aligned(scenario.name, mode);
-                    expect(out.handles).toBe("aligned");
-                    expect(out.mode).toBe(mode);
-                    expect(out.converged).toBe(true);
-                    expect(out.feasibility).toBeLessThan(TOL_FEAS);
-                    expect(Math.abs(out.exit.dx)).toBeLessThan(TOL_FEAS);
-                    expect(Math.abs(out.exit.dy)).toBeLessThan(TOL_FEAS);
-                    expect(Math.abs(out.exit.dtheta) * out.length).toBeLessThan(TOL_FEAS);
-                }
-            });
+            test(
+                "converges in the aligned family, both modes",
+                () => {
+                    for (const mode of ["exact", "calm"] as const) {
+                        const out = aligned(scenario.name, mode);
+                        expect(out.handles).toBe("aligned");
+                        expect(out.mode).toBe(mode);
+                        expect(out.converged).toBe(true);
+                        expect(out.feasibility).toBeLessThan(TOL_FEAS);
+                        expect(Math.abs(out.exit.dx)).toBeLessThan(TOL_FEAS);
+                        expect(Math.abs(out.exit.dy)).toBeLessThan(TOL_FEAS);
+                        expect(Math.abs(out.exit.dtheta) * out.length).toBeLessThan(TOL_FEAS);
+                    }
+                },
+                SOLVE_MS,
+            );
 
             test("re-integrated through the live evalForce path, the exit is pinned", () => {
+                // one bar for both modes and every scenario: the exception the
+                // integrator-convention pin needed is gone (`EXIT_ANG_TOL`).
                 for (const mode of ["exact", "calm"] as const) {
                     const out = aligned(scenario.name, mode);
                     const r = reference(scenario.name, out.points, out.length, out.ds);
                     expect(r.exit).toBeLessThanOrEqual(EXIT_TOL);
-                    const bar =
-                        mode === "calm"
-                            ? (AlignedCalmHeading[scenario.name] ?? EXIT_ANG_TOL)
-                            : EXIT_ANG_TOL;
-                    expect(r.exitTheta).toBeLessThanOrEqual(bar);
+                    expect(r.exitTheta).toBeLessThanOrEqual(EXIT_ANG_TOL);
                 }
+            });
+
+            test("the dense peak it drives is inside its pinned violence", () => {
+                const out = aligned(scenario.name, "calm");
+                const pin = AlignedCalmPeak[scenario.name];
+                expect(pin).toBeDefined();
+                expect(out.peakG).toBeLessThanOrEqual(pin);
+                // the reported peak is the profile's own, not a solver diagnostic.
+                expect(violence(out.points, out.length, out.ds).peakG).toBeCloseTo(out.peakG, 12);
             });
 
             test("is collinear at every key by construction — the vocabulary claim", () => {
@@ -1082,6 +1177,26 @@ describe("constrained polish — the authorable DOF", () => {
         expect(totals.get(0.25)).toBeGreaterThan(totals.get(0.5) as number);
     });
 
+    test("no aligned solve saturates the λ bracket", () => {
+        // The bracket's top is argued safe by REACHING the seminorm's null space: four
+        // free-mode scenarios clip at `LAM_MAX` with their roughness collapsed to rounding,
+        // and a seminorm cannot go under zero, so a wider top would buy nothing there.
+        // That argument covers the free family ONLY. The aligned family's null space is
+        // just 2-D (one slope per key, so only a globally straight profile is free), and no
+        // aligned solve in this corpus can sit in it while holding the floor — every one of
+        // them stops short. So `LAM_MAX` is doing no work in this family, and if it ever
+        // did, the answer would be a clip rather than a located discrepancy point and the
+        // bracket would need re-arguing. Measured largest accepted aligned λ: 8.4e+1,
+        // 1.1 decades under the top.
+        let worst = 0;
+        for (const s of scenarios) worst = Math.max(worst, aligned(s.name, "calm").lambda);
+        expect(worst).toBeLessThan(1e3);
+        expect(worst).toBeLessThan(0.2 * 1e3);
+        // and the free family DOES reach it — the negative control that keeps the assert
+        // above from passing on a bracket that nothing can ever hit.
+        expect(calmed("loop-explicit").lambda).toBe(1e3);
+    });
+
     test("the free family is untouched by the option existing", () => {
         // the negative control for the whole reparameterization: `handles` defaults to
         // free, and asking for it explicitly is the same solve to the last bit.
@@ -1146,42 +1261,14 @@ describe("constrained polish — the authorable DOF", () => {
         // form that converges. So integrate the seminorm's own definition NUMERICALLY,
         // through the production evaluator, and demand the closed form reproduce it.
         //
-        // The quadrature is independent of the algebra under test at every step: F comes
-        // from `profile.sampleForce` (the shipped bezier + root solve), F″ from a central
-        // second difference of it, and the integral from 4-point Gauss-Legendre inside each
-        // segment — never across a knot, where F″ jumps.
+        // The quadrature (`quadRoughness`) is independent of the algebra under test at
+        // every step — see its own note.
         //
         // TOL: the difference stencil is EXACT here (its error term carries F⁗, zero for a
         // cubic), so the error is the root solve's, `S_TOL_REL` = 1e-13 of the span in s,
         // which enters as |F′|·1e-13·span / h² ≈ 1e-9 against an F″ of order 1 at
         // h = span/100. Squared and integrated that is ~1e-8 relative; 1e-6 clears it by
         // two decades and is still four decades tighter than any algebra slip.
-        // 4-point Gauss-Legendre on [−1, 1] (Abramowitz & Stegun table 25.4), exact for the
-        // degree-6 integrand a cubic's (F″)² would be even before the difference stencil.
-        const Gx = [
-            -0.8611363115940526, -0.3399810435848563, 0.3399810435848563, 0.8611363115940526,
-        ];
-        const Gw = [0.3478548451374538, 0.6521451548625461, 0.6521451548625461, 0.3478548451374538];
-        const roughness = (pts: readonly ForcePoint[]): number => {
-            let total = 0;
-            for (let k = 0; k + 1 < pts.length; k++) {
-                const span = pts[k + 1].s - pts[k].s;
-                const mid = 0.5 * (pts[k].s + pts[k + 1].s);
-                const h = span / 100;
-                let acc = 0;
-                for (let i = 0; i < Gx.length; i++) {
-                    const at = mid + 0.5 * span * Gx[i];
-                    const f2 =
-                        (sampleForce(pts, at + h) -
-                            2 * sampleForce(pts, at) +
-                            sampleForce(pts, at - h)) /
-                        (h * h);
-                    acc += Gw[i] * f2 * f2;
-                }
-                total += 0.5 * span * acc;
-            }
-            return total;
-        };
 
         // a deterministic LCG, not Math.random: a corpus of profiles that differs per run
         // would make a failure unreproducible.
@@ -1213,7 +1300,7 @@ describe("constrained polish — the authorable DOF", () => {
                     if (p.in) p.in.dg = m * p.in.ds;
                     if (p.out) p.out.dg = m * p.out.ds;
                 }
-            const num = roughness(pts);
+            const num = quadRoughness(pts);
             expect(num).toBeGreaterThan(1e-3); // a flat corpus would prove nothing
             const families: HandleDof[] = align ? ["free", "aligned"] : ["free"];
             for (const handles of families) {
@@ -1357,6 +1444,64 @@ describe("constrained polish — the atom", () => {
         ).toThrow(/keyframe 0 is not finite/);
     });
 
+    test("rejects a warm start that has left the span/3 reach family", () => {
+        // THE DOMAIN GUARD. `fairRows` is closed-form only where every handle reaches
+        // span/3 in s — that is what keeps s(t) linear in the bezier parameter, so F is an
+        // ordinary cubic in s and the Bernstein second differences integrate to
+        // 12(A² + AB + B²)/span³. Off that family the same expression prices the
+        // CHORD-parameterized cubic through the same four control values, which is a
+        // different curve, and it mis-prices SILENTLY: the form stays PSD, the solve still
+        // converges, and the answer is regularized against a roughness nobody asked for.
+        //
+        // Both directions of the error, measured here rather than asserted in prose:
+        const span = 2;
+        const key = (reach: number): ForcePoint[] => [
+            { s: 0, g: 0, out: { ds: reach, dg: 1 } },
+            { s: span, g: 1, in: { ds: -reach, dg: 1 } },
+        ];
+        //   under-price: the closed form is blind to the reach (it reads the four control
+        //   VALUES), so shortening the handles leaves it at 6.00 on this profile while the
+        //   true energy climbs — 10.9 at span/4, 30.7 at span/10, a 5.1× under-price. The
+        //   bar is 4× because the claim is "silently wrong", not a tuned ratio.
+        const short = key(span / 10);
+        expect(
+            fairNorm(fairRows(key(span / 3), "free"), readDof(key(span / 3), "free")),
+        ).toBeCloseTo(quadRoughness(key(span / 3)), 6);
+        expect(quadRoughness(short)).toBeGreaterThan(
+            4 * fairNorm(fairRows(short, "free"), readDof(short, "free")),
+        );
+        //   over-price: `Easing.Linear`'s reach 0 with chord-aligned Δg draws a straight
+        //   line — true roughness zero — and the closed form charges for it anyway. This
+        //   is the one stage 4's quantizer will meet, since a named tag leaves the family.
+        const straight: ForcePoint[] = [
+            { s: 0, g: 0, out: { ds: 0, dg: 0 } },
+            { s: span, g: 1, in: { ds: 0, dg: 0 } },
+        ];
+        expect(quadRoughness(straight)).toBeLessThan(1e-6);
+        expect(fairNorm(fairRows(straight, "free"), readDof(straight, "free"))).toBeGreaterThan(1);
+
+        // so `polish` refuses the input at the boundary rather than solving against a
+        // prior that means something else.
+        const { s, entry, bake } = bakeOf("hill-auto");
+        const base = { bake, entry, ds: s.ds };
+        for (const reach of [span / 4, span / 10, 0, span / 2])
+            expect(() => polish({ ...base, points: key(reach) })).toThrow(
+                /handle reaches .* not the span\/3/,
+            );
+        // one side off is enough — the guard reads each side, not their sum.
+        expect(() =>
+            polish({
+                ...base,
+                points: [
+                    { s: 0, g: 0, out: { ds: span / 3, dg: 1 } },
+                    { s: span, g: 1, in: { ds: -span / 4, dg: 1 } },
+                ],
+            }),
+        ).toThrow(/keyframe 1 in handle reaches/);
+        // and the family itself passes, at both signs of the in-side convention.
+        expect(() => polish({ ...base, points: key(span / 3) })).not.toThrow();
+    });
+
     test("rejects an entry the physics could not start from", () => {
         const { s, bake } = bakeOf("hill-auto");
         const f = fit(bake.fN, bake.ds, FIT_TOL);
@@ -1448,5 +1593,25 @@ describe("constrained polish — the atom", () => {
         expect(out.deviation).toBeLessThan(1e-9);
         expect(out.exit.dist).toBeLessThan(TOL_FEAS);
         for (const p of out.points) expect(p.g).toBeCloseTo(1, 6);
+
+        // and the SINGLE-EDGE grid, the other branch of the recovered exit-heading stencil
+        // (`polish.ts` `exitTheta`): with one edge there is no θ_{E−2} to extrapolate from,
+        // so `bake.forces` reads the exit as the bare chord bisector and the pin has to
+        // match that instead of the three-term form. Reachable whenever the nominal step is
+        // coarser than ⅔ of the section, and it would otherwise index a state that is not
+        // there.
+        const one = polish({
+            bake,
+            entry,
+            ds: 20,
+            points: [
+                { s: 0, g: 1, out: { ds: 20 / 3, dg: 0 } },
+                { s: 20, g: 1, in: { ds: -20 / 3, dg: 0 } },
+            ],
+        });
+        expect(one.edges).toBe(1);
+        expect(one.converged).toBe(true);
+        expect(Math.abs(one.exit.dtheta)).toBeLessThan(TOL_FEAS);
+        expect(one.exit.dist).toBeLessThan(TOL_FEAS);
     });
 });

@@ -22,7 +22,9 @@
  *    C_y,j = y_{j+1} − y_j − h·sin ½(θ_j + θ_{j+1})
  *    C_θ,j = Λ·(θ_{j+1} − θ_j − (F_j − cos θ_j)·g·h / v²_j)
  *
- *  plus the hard exit equality on the LAST state (x, y, θ — v follows from y). That is
+ *  plus the hard exit equality on the LAST state (x, y, θ — v follows from y). The heading
+ *  half of that equality is written in the RECOVERED convention, not the integrator's, so
+ *  it pins the quantity a downstream section actually consumes (`exitTheta` below). That is
  *  what the formulation buys: "the exit depends recursively on everything before it"
  *  becomes one rule on one variable, and the spine's warm start is the TARGET GEOMETRY
  *  itself, so a warm start that shoots 39.7 m away never appears — its error lives in
@@ -62,11 +64,11 @@
  *  `λ ← λ + ρ·C`, ρ escalates only on a stalled outer). Exact feasibility at finite ρ;
  *  a plain penalty would have to be cranked until the normal system stiffened. The
  *  normal system is `[H_ss H_sp; H_spᵀ H_pp]`: the state block is symmetric banded
- *  (half-bandwidth 5 — a defect touches two adjacent 3-var blocks, the same width
- *  `collocate.ts` assembles), and the profile block is small, so one Schur complement
- *  over the state band solves it. Both factorizations are `banded.ts` — the state band
- *  at b = 5, the P×P Schur block at b = P−1 (a general dense LDLᵀ). No new linear
- *  algebra.
+ *  (half-bandwidth 6 — a defect touches two adjacent 3-var blocks, which is the 5
+ *  `collocate.ts` assembles, and the recovered exit heading reaches one block further
+ *  back), and the profile block is small, so one Schur complement over the state band
+ *  solves it. Both factorizations are `banded.ts` — the state band at b = 6, the P×P
+ *  Schur block at b = P−1 (a general dense LDLᵀ). No new linear algebra.
  *
  *  **the v² barrier.** the model divides by the raw `v²` (smooth, the differentiability
  *  win — `force.ts` makes the same choice) where the shipped integrator clamps
@@ -200,7 +202,10 @@ export interface PolishResult {
     converged: boolean;
     /** worst constraint violation, position-equivalent m. */
     feasibility: number;
-    /** exit residual on the solved spine: position gap (m) and heading gap (rad). */
+    /** exit residual on the solved spine: position gap (m) and heading gap (rad). The
+     *  heading is the RECOVERED exit — the bisector-tangent quantity `evalForce` hands the
+     *  next section — not the integrator's own θ_E, so this reads the same gap a downstream
+     *  section would see. */
     exit: { dx: number; dy: number; dtheta: number; dist: number };
     /** max |spine − target| over the samples (m), and where. */
     deviation: number;
@@ -215,8 +220,9 @@ export interface PolishResult {
      *  side too short to show a direction broken. */
     handles: HandleDof;
     /** the fairing weight the answer was solved at. 0 in exact mode; in calm mode, 0 means
-     *  the search found no slack at all and fell back, `LAM_MAX` means it saturated the
-     *  bracket — read either as a clip, not as a located discrepancy point. */
+     *  the search found no slack at all and fell back — a clip, not a located discrepancy
+     *  point. `LAM_MAX` is the clip at the other end, and it is a FREE-family outcome: no
+     *  aligned solve on this corpus reaches it (`LAM_MAX`'s note). */
     lambda: number;
     /** the deviation target the discrepancy principle stopped against (m). Reported in
      *  exact mode too, where it is informational — exact stops at the numeric floor. */
@@ -243,7 +249,8 @@ export interface PolishOpts {
     /** the entry the bake was evaluated from; state 0 is pinned here. */
     entry: Entry;
     /** stage-2's `fit().points` — the warm start. Every segment's two sides must carry
-     *  explicit handles (the fit's own shape). */
+     *  explicit handles reaching exactly `span/3` in s (the fit's own shape): that is the
+     *  family the fairing prior is closed-form on, and it is enforced (`fairRows`). */
     points: readonly ForcePoint[];
     /** nominal edge step (m); the realized step is `length/round(length/ds)`. */
     ds: number;
@@ -345,15 +352,31 @@ export function violence(
     return { peakG, maxDg };
 }
 
+/** how far a handle's s-reach may sit from `span/3` and still count as the family the
+ *  fairing energy is closed-form on, RELATIVE to the span. `fit.ts` builds each reach as
+ *  `(s_b − s_a)/3` out of the same two f64 s-values this check subtracts, so a warm start
+ *  from there matches bit-exactly; the slack is for a caller that reached the same number
+ *  by a different route. Eight f64 roundings — each ≤ ½ ulp — is a generous count for any
+ *  such route, and the nearest reach anyone would actually author sits span/12 away (a
+ *  quarter-span handle), fourteen orders above this bar. So the guard can neither fire on
+ *  rounding nor miss a real departure. */
+const REACH_EPS = 8 * Number.EPSILON;
+
 /** the λ bracket the discrepancy search bisects, in the units `lambda` carries (m⁶/g²: a
  *  profile of rms curvature `c` g/m² costs as much as `√λ·c` metres of rms deviation). The
  *  span is deliberately wide of the interesting decade at both ends — this corpus accepts λ
  *  between 2e-6 and 8e+1, the two DOF families several decades apart, since the aligned
  *  family's much smaller null space (one slope serving both of a key's segments) makes a
- *  given λ bite harder. `LAM_MIN` is weaker than any regularization worth the name;
- *  `LAM_MAX` reaches the seminorm's NULL SPACE wherever the family has one — four free-mode
- *  scenarios clip there with their roughness at or below 1e-7 of the warm start's, and a
- *  seminorm cannot go under zero, so a wider top would buy nothing. */
+ *  given λ bite harder. `LAM_MIN` is weaker than any regularization worth the name.
+ *
+ *  `LAM_MAX` is argued safe-by-construction for the FREE family, and only there: it reaches
+ *  that family's seminorm NULL SPACE — four free-mode scenarios clip at the top with their
+ *  roughness at or below 1e-7 of the warm start's, and a seminorm cannot go under zero, so
+ *  a wider top would buy nothing. The aligned family has no such argument. Its null space is
+ *  2-D (one slope per key, so only a globally straight profile is free), which no aligned
+ *  solve can reach while holding the floor: the largest λ this corpus accepts there is
+ *  8.4e+1, 1.1 decades short of the top, pinned in `polish.test.ts`. If an aligned solve
+ *  ever did clip, its λ would be a bracket artifact and the top would need re-arguing. */
 const LAM_MIN = 1e-9;
 const LAM_MAX = 1e3;
 
@@ -572,13 +595,17 @@ export interface FairRow {
  *  function of the PROFILE either way — which is what lets a metric change be attributed to
  *  the DOF restriction rather than to a silently different prior.
  *
- *  **The span/3 precondition.** A handle that reaches something other than `span/3` makes
- *  `s(t)` nonlinear, F(s) non-polynomial, and this form prices the chord-parameterized cubic
- *  through the same four control values instead of the true `∫(F″)² ds`. It stays a valid
- *  PSD roughness prior on the same DOF, but it is exact only on the fit family — which is
- *  every profile this solve sees (`fit.ts` builds span/3 by construction, pinned in
- *  `polish.test.ts`). A side the warm start left absent carries no DOF term: `segment`
- *  substitutes a flat derived tangent there, Δg = 0. */
+ *  **DOMAIN: the span/3 reach family, and nothing else.** A handle that reaches something
+ *  other than `span/3` makes `s(t)` nonlinear, F(s) non-polynomial, and this form prices
+ *  the chord-parameterized cubic through the same four control values instead of the true
+ *  `∫(F″)² ds`. It stays a valid PSD roughness prior on the same DOF — it just no longer
+ *  measures the quantity its name claims, and it does so silently: measured under-price of
+ *  several-fold at a span/10 reach, and a strictly straight `Easing.Linear` segment (reach
+ *  0, chord-aligned Δg) priced as bent. `polish` REFUSES an off-family warm start at the
+ *  boundary for that reason (`REACH_EPS`); a caller outside the family — stage 4's
+ *  quantizer, whose named tags leave it by construction — must integrate `(F″)²`
+ *  numerically instead of calling this. A side the warm start left absent carries no DOF
+ *  term: `segment` substitutes a flat derived tangent there, Δg = 0. */
 export function fairRows(pts: readonly ForcePoint[], handles: HandleDof): FairRow[] {
     const K = pts.length;
     const rows: FairRow[] = [];
@@ -665,6 +692,32 @@ export function polish(opts: PolishOpts): PolishResult {
         if (k < K - 1 && !pts[k].out) throw new Error(`polish: keyframe ${k} has no out handle`);
         if (k > 0 && !pts[k].in) throw new Error(`polish: keyframe ${k} has no in handle`);
     }
+    // the span/3 reach precondition, refused for the same reason as the guards above: off
+    // that family `fairRows` is no longer `∫(F″)² ds` (its note), and it mis-prices
+    // SILENTLY — the form stays PSD, the solve still converges, and the answer comes back
+    // regularized against a roughness nobody asked for. Measured both ways in
+    // `polish.test.ts`: a span/10 reach is under-priced several-fold, and an
+    // `Easing.Linear` segment (reach 0, chord-aligned Δg) draws a strictly straight line
+    // that the closed form charges for. A caller outside the family must price its
+    // profiles by numerical integration instead.
+    for (let k = 0; k + 1 < K; k++) {
+        const span = pts[k + 1].s - pts[k].s;
+        const want = span / 3;
+        const bar = REACH_EPS * span;
+        // both sides are present: the loop above refused a segment missing either.
+        const out = pts[k].out as Offset;
+        const inn = pts[k + 1].in as Offset;
+        if (!(Math.abs(out.ds - want) <= bar))
+            throw new Error(
+                `polish: keyframe ${k} out handle reaches ${out.ds} in s, not the span/3 ` +
+                    `(${want}) the fairing energy is closed-form on`,
+            );
+        if (!(Math.abs(inn.ds + want) <= bar))
+            throw new Error(
+                `polish: keyframe ${k + 1} in handle reaches ${inn.ds} in s, not the span/3 ` +
+                    `(${-want}) the fairing energy is closed-form on`,
+            );
+    }
     // the mode options, refused at the boundary for the same reason the warm-start guards
     // above exist: each of these silently produces a solve that LOOKS answered. An unknown
     // mode string falls through to calm; a non-positive floor makes every λ miss and lands
@@ -688,7 +741,9 @@ export function polish(opts: PolishOpts): PolishResult {
     const L = sp.length;
     const P = dofCount(K, handles);
     const ns = 3 * E;
-    const B = 5; // half-bandwidth of the state block: a defect spans two 3-var blocks
+    // half-bandwidth of the state block: a defect spans two 3-var blocks (5), and the
+    // recovered exit heading reads three consecutive θ (6).
+    const B = 6;
     const lam = L; // the heading defect's position-equivalent scale
     const v0sq = entry.v * entry.v;
     const y0 = entry.y;
@@ -811,6 +866,31 @@ export function polish(opts: PolishOpts): PolishResult {
         const thAt = (zz: Float64Array, j: number): number =>
             j === 0 ? entry.theta : zz[3 * (j - 1) + 2];
 
+        // ---- the exit heading, in the RECOVERED convention ----
+        // The target `sp.theta[E]` is the geo bake's RECOVERED exit (`bake.forces`: the
+        // chord bisector), and the recovered exit is also what `evalForce` hands the next
+        // section. Pinning the integrator's own θ_E instead would leave the quantity
+        // downstream consumes free by the gap between the two conventions,
+        // ¼(θ_{E−2} − 2θ_{E−1} + θ_E) = O(ds²·κ′) — and measured, that gap WAS the whole
+        // live-path heading error: θ_E landed within 5.3e-6 rad of target at every λ while
+        // the recovered exit missed by up to 3.6e-3 rad (0.21°, twice the readout quantum).
+        //
+        // At feasibility the position defects say each chord angle is m_j = ½(θ_j + θ_{j+1}),
+        // and `forces` extrapolates its free end as θ_rec = 1.5·m_{E−1} − 0.5·m_{E−2}, which
+        // substitutes to the stencil below (its M = 1 branch is the bare bisector instead).
+        // Linear in the states, so this is one more linear equality with a constant
+        // Jacobian; away from feasibility the two forms differ by the defects themselves,
+        // which is under `tol` wherever the answer lives.
+        const exitAt = E >= 2 ? [E - 2, E - 1, E] : [0, 1];
+        const exitW = E >= 2 ? [-0.25, 0.5, 0.75] : [0.5, 0.5];
+        const exitCols = exitAt.map(colT);
+        const exitJac = exitW.map((w) => lam * w);
+        const exitTheta = (zz: Float64Array): number => {
+            let t = 0;
+            for (let i = 0; i < exitAt.length; i++) t += exitW[i] * thAt(zz, exitAt[i]);
+            return t;
+        };
+
         // ---- constraints: 3 per edge (x, y, θ defects), then the 3 exit rows ----
         const nc = 3 * E + 3;
         const C = new Float64Array(nc);
@@ -843,7 +923,7 @@ export function polish(opts: PolishOpts): PolishResult {
             }
             C[3 * E] = xAt(zz, E) - sp.x[E];
             C[3 * E + 1] = yAt(zz, E) - sp.y[E];
-            C[3 * E + 2] = lam * (thAt(zz, E) - sp.theta[E]);
+            C[3 * E + 2] = lam * (exitTheta(zz) - sp.theta[E]);
             for (let k = 3 * E; k < nc; k++) feas = Math.max(feas, Math.abs(C[k]));
             return { feas, ok };
         };
@@ -994,7 +1074,7 @@ export function polish(opts: PolishOpts): PolishResult {
 
             addRow([colX(E)], [1], rho, C[3 * E] + mult[3 * E] / rho);
             addRow([colY(E)], [1], rho, C[3 * E + 1] + mult[3 * E + 1] / rho);
-            addRow([colT(E)], [lam], rho, C[3 * E + 2] + mult[3 * E + 2] / rho);
+            addRow(exitCols, exitJac, rho, C[3 * E + 2] + mult[3 * E + 2] / rho);
 
             let grad = 0;
             for (let k = 0; k < ns; k++) grad = Math.max(grad, Math.abs(rhsS[k]));
