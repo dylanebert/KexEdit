@@ -174,6 +174,10 @@ export function refine(opts: RefineOpts): RefineResult {
     const n = bake.fN.length;
     if (bake.ds.length !== n)
         throw new Error(`refine: ${n} forces against ${bake.ds.length} chords`);
+    // `sigma` runs over the `ds` frame while `spine` sums only the first `edges` chords, so
+    // a bake whose `edges` disagrees would put knot arclengths and spine arclengths on two
+    // silently different scales. A `SectionResult` satisfies this; a hand-built SoA need not.
+    if (bake.edges !== n) throw new Error(`refine: ${n} forces against ${bake.edges} edges`);
     if (n < 2) throw new Error(`refine: need >= 2 dense samples, got ${n}`);
     if (opts.floor !== undefined && (!(opts.floor > 0) || !Number.isFinite(opts.floor)))
         throw new Error(`refine: floor must be a finite number > 0, got ${opts.floor}`);
@@ -190,7 +194,14 @@ export function refine(opts: RefineOpts): RefineResult {
 
     /** the key indices `polish` takes, from the knot values the loop tracks. */
     const cornerKeys = (knots: readonly number[], cornerKnots: readonly number[]): Corners =>
-        cornerKnots.map((c) => knots.indexOf(c));
+        cornerKnots.map((c) => {
+            const k = knots.indexOf(c);
+            // the loop only ever breaks a knot it holds and drops the corner with its knot,
+            // so this cannot fire from here; it is the guard for a caller that hand-builds a
+            // state, where the alternative is `polish` reporting a corner at key −1.
+            if (k < 0) throw new Error(`refine: corner knot ${c} is not in the knot set`);
+            return k;
+        });
 
     /** one candidate evaluation: the unregularized solve of a knot set, judged on geometry. */
     const probe = (knots: readonly number[], cornerKnots: readonly number[]): PolishResult => {
@@ -236,7 +247,17 @@ export function refine(opts: RefineOpts): RefineResult {
         knots: readonly number[],
         devs: Float64Array,
     ): { worst: number; half: number }[] => {
-        const segs = knots.slice(0, -1).map(() => ({ worst: -1, half: 0, sum: 0 }));
+        // `worst` opens at 0, the honest reading for a segment bracketing no sample — a
+        // deviation is never negative, and a sentinel below zero would make `over` score an
+        // unobservable region as an improvement. `half` opens at the segment MIDPOINT, which
+        // is where equidistribution lands when the residual is uniform and, in particular,
+        // when it is identically zero: leaving it at 0 would send `siteIn` to the leftmost
+        // admissible index, the sliver placement this rule exists to prevent.
+        const segs = knots.slice(0, -1).map((_, k) => ({
+            worst: 0,
+            half: 0.5 * (sigma[knots[k]] + sigma[knots[k + 1]]),
+            sum: 0,
+        }));
         const seg = (a: number, k: number): number => {
             while (k + 2 < knots.length && sigma[knots[k + 1]] <= a) k++;
             return k;
@@ -253,7 +274,7 @@ export function refine(opts: RefineOpts): RefineResult {
         for (let j = 1; j < devs.length; j++) {
             const a = j * sp.ds;
             k = seg(a, k);
-            if (run[k] < 0.5 * segs[k].sum) segs[k].half = a;
+            if (segs[k].sum > 0 && run[k] < 0.5 * segs[k].sum) segs[k].half = a;
             run[k] += devs[j];
         }
         return segs;
@@ -282,15 +303,15 @@ export function refine(opts: RefineOpts): RefineResult {
     const splitSite = (
         knots: readonly number[],
         devs: Float64Array,
-    ): { site: number; seg: number } => {
+    ): { site: number; seg: number; segs: { worst: number; half: number }[] } => {
         const segs = residual(knots, devs);
         const order = segs.map((_, k) => k);
         order.sort((x, y) => segs[y].worst - segs[x].worst || x - y);
         for (const k of order) {
             const i = siteIn(knots[k], knots[k + 1], segs[k].half);
-            if (i >= 0) return { site: i, seg: k };
+            if (i >= 0) return { site: i, seg: k, segs };
         }
-        return { site: -1, seg: -1 };
+        return { site: -1, seg: -1, segs };
     };
 
     /** the worst residual across a run of segments — the reading a local trial moves. */
@@ -338,22 +359,28 @@ export function refine(opts: RefineOpts): RefineResult {
     };
 
     // ---- split phase: grow toward the floor, breaking a key where growth stalls ----
-    // every accepted split adds a knot and every accepted corner adds one to a finite set,
-    // so `n` rounds is past any reachable state; it is a guard, not a schedule.
-    for (let round = 0; round < n; round++) {
+    // The guard is `2n`: splits are bounded by the n − 2 interior samples and corners
+    // independently by the n − 2 interior knots, so the two together cannot reach it. It is a
+    // guard, not a schedule — and it exits through the same `"budget"` event every other
+    // terminal path uses, because a loop that fell out unmarked would report a refinement
+    // that never happened.
+    for (let round = 0; ; round++) {
         if (held(cur)) break;
-        const { site, seg } = splitSite(knots, cur.deviations);
+        if (round >= 2 * n) {
+            log("budget", -1, cur.deviation);
+            break;
+        }
+        const { site, seg, segs } = splitSite(knots, cur.deviations);
         if (site < 0) {
             log("budget", -1, cur.deviation);
             break;
         }
         const next = [...knots, site].sort((x, y) => x - y);
         const trial = probe(next, cornerKnots);
-        const before = residual(knots, cur.deviations);
         // the split turned segment `seg` into `seg` and `seg + 1`; the region is both halves.
         const worked =
             trial.converged &&
-            over(residual(next, trial.deviations), seg, seg + 1) < before[seg].worst;
+            over(residual(next, trial.deviations), seg, seg + 1) < segs[seg].worst;
         if (!worked) {
             log("stall", site, trial.deviation);
             const broken = cornerSite(knots, cornerKnots, cur.deviations);
@@ -365,13 +392,23 @@ export function refine(opts: RefineOpts): RefineResult {
                 // so the vocabulary only pays where the split could not deliver.
                 if (
                     ct.converged &&
-                    over(residual(knots, ct.deviations), kk - 1, kk) < over(before, kk - 1, kk)
+                    over(residual(knots, ct.deviations), kk - 1, kk) < over(segs, kk - 1, kk)
                 ) {
                     cornerKnots = withCorner;
                     cur = ct;
                     log("corner", broken, cur.deviation);
                     continue;
                 }
+            }
+            // A trial that did not CONVERGE is not an answer to adopt. Taking it would hand
+            // the next round a residual profile from a solve that ran out of AL outers — the
+            // array `splitSite` reads to choose where to cut — and `held` could never become
+            // true again, so the run would report un-authorable for a numerical reason rather
+            // than a geometric one. A non-reducing but CONVERGED trial is different and is
+            // taken below: the floor is still violated, and the rule is to split while it is.
+            if (!trial.converged) {
+                log("budget", -1, cur.deviation);
+                break;
             }
         }
         knots = next;

@@ -106,12 +106,18 @@ export interface FitStep {
  * const s = sigma[knot];
  */
 export function arclength(ds: ArrayLike<number>): Float64Array {
+    return sigmaOf("arclength", ds);
+}
+
+/** `arclength`, reporting under the caller's own name — so `fit`'s chord guard still says
+ *  `fit:` rather than naming a helper the caller never called. */
+function sigmaOf(who: string, ds: ArrayLike<number>): Float64Array {
     const n = ds.length;
-    const sigma = new Float64Array(Math.max(1, n));
+    const sigma = new Float64Array(n);
     let total = 0;
     for (let i = 0; i < n; i++) {
         if (!(ds[i] > 0) || !Number.isFinite(ds[i]))
-            throw new Error(`arclength: ds[${i}] is ${ds[i]}`);
+            throw new Error(`${who}: ds[${i}] is ${ds[i]}`);
         sigma[i] = total;
         total += ds[i];
     }
@@ -225,7 +231,7 @@ function frame(
     if (ds.length !== n) throw new Error(`${who}: ${n} forces against ${ds.length} chords`);
     for (let i = 0; i < n; i++)
         if (!Number.isFinite(fN[i])) throw new Error(`${who}: fN[${i}] is ${fN[i]}`);
-    const sigma = arclength(ds);
+    const sigma = sigmaOf(who, ds);
     let length = 0;
     for (let i = 0; i < n; i++) length += ds[i];
     return { n, sigma, length };

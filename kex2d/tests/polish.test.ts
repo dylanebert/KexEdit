@@ -1411,6 +1411,29 @@ describe("constrained polish — the authorable DOF", () => {
         expect(corner).toBeCloseTo(0.4091, 3);
     });
 
+    test("a corner solve still locates a real lambda, and does not clip the bracket", () => {
+        // `LAM_MAX`'s safety argument is made for the FREE family and leans, for aligned, on
+        // that family's null space being 2-D. A corner makes a slope break at its key free, so
+        // the corner family's null space is strictly LARGER and the plain-aligned headroom pin
+        // does not transfer — measured, circular-arc accepts 1.8e+2 with a corner against
+        // 8.4e+1 without, so the corner family sits CLOSER to the top of the bracket. Still
+        // clear of it; if this ever clips, the reported lambda is a bracket artifact by the
+        // module's own reasoning and the top needs re-arguing.
+        const { s: sc, entry, bake } = bakeOf("circular-arc");
+        const warm = fit(bake.fN, bake.ds, FIT_TOL).points;
+        const opts = { bake, entry, points: warm, ds: sc.ds, mode: "calm" as const };
+        const plain = polish({ ...opts, handles: "aligned" as const });
+        const broken = polish({ ...opts, handles: "aligned" as const, corners: [2] });
+        for (const r of [plain, broken]) {
+            expect(r.converged).toBe(true);
+            expect(r.heldFloor).toBe(true);
+            expect(r.lambda).toBeGreaterThan(0);
+            expect(r.lambda).toBeLessThan(1e3);
+        }
+        expect(broken.lambda).toBeGreaterThan(plain.lambda);
+        expect(broken.corners).toEqual([2]);
+    });
+
     test("a corner outside the aligned family, or at an end, is refused", () => {
         // refused at the boundary for the reason every other option here is: each of these
         // silently produces a DOF layout whose columns no longer mean what `slopeSlots` says.
@@ -1422,6 +1445,26 @@ describe("constrained polish — the authorable DOF", () => {
         expect(() => call({ handles: "aligned", corners: [0] })).toThrow(/interior key index/);
         expect(() => call({ handles: "aligned", corners: [1.5] })).toThrow(/interior key index/);
         expect(() => call({ handles: "aligned", corners: [2, 1] })).toThrow(/corners must ascend/);
+    });
+});
+
+describe("constrained polish — the deviation profile", () => {
+    // `deviations` is a SECOND implementation of the loop `deviation`/`at` come from, and it
+    // is the array `refine.ts` reads to decide where every split, stall verdict, and corner
+    // goes. An off-by-one in it would leave `deviation`/`at` correct and every refinement
+    // decision quietly wrong, so its contract is pinned against the readings it must agree
+    // with rather than against itself.
+    test("it resolves the same reading the max was taken over", () => {
+        for (const name of ["circular-arc", "hill-auto", "valley-explicit"]) {
+            const r = solved(name).out;
+            expect(r.deviations.length).toBe(r.edges + 1);
+            // state 0 is the pinned entry, so it is exactly 0 — not merely small.
+            expect(r.deviations[0]).toBe(0);
+            expect(Math.max(...r.deviations)).toBe(r.deviation);
+            expect(r.deviations[r.at]).toBe(r.deviation);
+            expect(r.at).toBeGreaterThan(0);
+            for (const d of r.deviations) expect(Number.isFinite(d)).toBe(true);
+        }
     });
 });
 

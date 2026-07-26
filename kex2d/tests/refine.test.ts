@@ -234,10 +234,16 @@ describe("refine — corners and the key budget", () => {
         expect(tight.final.corners).toEqual(tight.cornerKnots.map((c) => tight.knots.indexOf(c)));
     });
 
-    test("a corner key really is broken, and only a corner key is", () => {
+    test("only a corner key can census broken, and here every one does", () => {
+        // The structural half is the vocabulary claim and holds by construction: a non-corner
+        // key's two sides share one slope, so it cannot census broken. The converse is a
+        // MEASURED pin, not a guarantee — a corner whose two slopes happened to converge
+        // would census collinear and is not a defect. Pinned so a corner quietly collapsing
+        // to a plain key across the corpus is visible.
         const broken = tight.final.points
             .map((p, i) => (collinear(p.in, p.out) ? -1 : i))
             .filter((i) => i >= 0);
+        for (const i of broken) expect(tight.final.corners).toContain(i);
         expect(broken).toEqual(tight.final.corners);
     });
 
