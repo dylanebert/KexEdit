@@ -95,20 +95,21 @@
  *  (a calibrated proxy, see `chordDeficit`) plus the 0.05 m the readout resolves to. Below
  *  that the geometry residual is mostly noise, and Morozov says stop rather than fit it.
  *
- *  **(ii) a Tikhonov block on the handles.** `½·(λL/nH)·Σ Δg²` over the `2K − 2` handle
- *  OFFSETS — the keyframe values stay unpenalized, because a loop's 52 g key is signal, not
- *  roughness. Zeroing a handle's Δg makes that side a FLAT tangent, i.e. the shape a
- *  named easing tag derives. Which tag depends on the Δs the warm start brought and this
- *  solve holds fixed: on a `fit.ts` warm start those are `span/3`, exactly
- *  `CUBIC_INFLUENCE`, so a zeroed handle there IS `Easing.Cubic` — a property of stage 2's
- *  output, not something the polish arranges. On that warm start the penalty therefore
- *  regularizes toward the default named-easing member of the near-null space, the
- *  zero-decision layer of `editor-ui.md`'s easing ladder. It is also the right operator
- *  rather than
+ *  **(ii) a fairing seminorm on the profile.** `½·λ·∫(F″)² ds` — the smoothing-spline
+ *  penalty (Green & Silverman, *Nonparametric Regression and Generalized Linear Models*,
+ *  ch. 2), the standard roughness operator for a curve over fixed knots, and here an exact
+ *  closed-form quadratic in the DOF (`fairRows`). It replaced a flat `Σ Δg² → 0` Tikhonov
+ *  block, which was a cruder statement of the same wish and priced the wrong thing: a zero
+ *  Δg is a FLAT tangent, so that prior pulled every segment toward one named tag
+ *  (`Easing.Cubic` at the fit's span/3 reach) and 4 of the 10 corpus scenarios saturated
+ *  to all-Cubic — an artifact of the operator, not of the curves wanting flatness. The
+ *  fairing seminorm penalizes CURVATURE, so its null space is the profiles that are
+ *  piecewise-linear in s: a ramp, a hold, and every straight transition between them cost
+ *  nothing, and only genuine bending is priced. It is also the right operator rather than
  *  distance-from-the-observed-dense-curve: the observation IS the violent thing on a spike
  *  scenario (valley-explicit's dense recovered curve peaks at 38 g), so pulling toward it
- *  pulls toward the spike. Δg is linear in the DOF in EITHER family, so the penalty is
- *  exactly quadratic — one residual row per handle offset, landing in the existing
+ *  pulls toward the spike. F is linear in the DOF in EITHER family, so the penalty is
+ *  exactly quadratic — two residual rows per SEGMENT, landing in the existing
  *  `H_pp`/`rhsP` blocks. No new linear algebra, no cross terms, no change to the state band.
  *
  *  **λ by the discrepancy principle**, never a constant: log-bisection over a FIXED bracket
@@ -213,7 +214,7 @@ export interface PolishResult {
      *  any surface that draws its handles at a legible size, since `census` also calls a
      *  side too short to show a direction broken. */
     handles: HandleDof;
-    /** the Tikhonov weight the answer was solved at. 0 in exact mode; in calm mode, 0 means
+    /** the fairing weight the answer was solved at. 0 in exact mode; in calm mode, 0 means
      *  the search found no slack at all and fell back, `LAM_MAX` means it saturated the
      *  bracket — read either as a clip, not as a located discrepancy point. */
     lambda: number;
@@ -267,7 +268,7 @@ export interface PolishOpts {
      *  For probing the discrepancy principle — at the numeric floor calm mode degenerates
      *  to exact. */
     floor?: number;
-    /** skip the λ search and solve calm mode at this Tikhonov weight; finite and >= 0. For
+    /** skip the λ search and solve calm mode at this fairing weight; finite and >= 0. For
      *  probing the regularizer — at 0 calm mode degenerates to exact. Exact mode ignores
      *  the value but still validates it. */
     lambda?: number;
@@ -344,11 +345,15 @@ export function violence(
     return { peakG, maxDg };
 }
 
-/** the λ bracket the discrepancy search bisects, in the units `lambda` carries (m²/g²: an
- *  rms handle of `d` g costs as much as `√(λ·d²)` metres of rms deviation). The span is
- *  deliberately wide of the interesting decade (~1e-4 on this corpus, where a 0.05 m floor
- *  meets handles of a few g) at both ends: `LAM_MIN` is weaker than no regularization
- *  worth the name, `LAM_MAX` strong enough to drive every handle to flat. */
+/** the λ bracket the discrepancy search bisects, in the units `lambda` carries (m⁶/g²: a
+ *  profile of rms curvature `c` g/m² costs as much as `√λ·c` metres of rms deviation). The
+ *  span is deliberately wide of the interesting decade at both ends — this corpus accepts λ
+ *  between 2e-6 and 8e+1, the two DOF families several decades apart, since the aligned
+ *  family's much smaller null space (one slope serving both of a key's segments) makes a
+ *  given λ bite harder. `LAM_MIN` is weaker than any regularization worth the name;
+ *  `LAM_MAX` reaches the seminorm's NULL SPACE wherever the family has one — four free-mode
+ *  scenarios clip there with their roughness at or below 1e-7 of the warm start's, and a
+ *  seminorm cannot go under zero, so a wider top would buy nothing. */
 const LAM_MIN = 1e-9;
 const LAM_MAX = 1e3;
 
@@ -440,8 +445,8 @@ function shell(pts: readonly ForcePoint[]): ForcePoint[] {
  *
  *  Aligned mode (layout: `g_k` then `m_k`, both k = 0..K−1) has to PROJECT: a fit's two
  *  sides are independent and generally not collinear, so each key's slope is the
- *  least-squares fit `m = Σ Δs·Δg / Σ Δs²` over its present sides — the same metric the
- *  Tikhonov block measures Δg in, so the warm start is the closest profile the aligned
+ *  least-squares fit `m = Σ Δs·Δg / Σ Δs²` over its present sides — Δg measured in the
+ *  metric the fairing rows carry, so the warm start is the closest profile the aligned
  *  family holds rather than an arbitrary one. A key whose sides all have Δs = 0 carries no
  *  shape in this vocabulary at all: its `m` is unidentifiable, starts at 0, and the LM
  *  damping leaves it there. */
@@ -523,50 +528,105 @@ export function forceMatrix(
     return A;
 }
 
-/** one Tikhonov row: the DOF a handle offset reads, and `∂Δg/∂dof` there. */
-export interface RegRow {
-    p: number;
-    c: number;
+/** one row of the fairing seminorm's square root: the DOF the row reads (`p`) and their
+ *  coefficients (`c`), so the row's value is `Σ c·dof[p]` and the sum of the rows' squares
+ *  is the seminorm itself. */
+export interface FairRow {
+    p: number[];
+    c: number[];
 }
 
-/** the Tikhonov rows: one per handle Δg the profile carries, as `(DOF index, ∂Δg/∂dof)`.
- *  In free mode a Δg IS a DOF, so the coefficient is 1 and these are exactly the rows the
- *  spike shipped. In aligned mode `Δg = m·Δs`, so the SAME penalty pushed through the
- *  reparameterization gives each row that side's Δs — λ therefore measures the same
- *  quantity in both families, which is what lets a metric change be attributed to the DOF
- *  restriction rather than to a silently different prior. Ordered outs-then-ins, matching
- *  the free layout. */
-export function regRows(pts: readonly ForcePoint[], handles: HandleDof): RegRow[] {
+/** the FAIRING SEMINORM as rows: `∫(F″)² ds` written as a sum of squared linear forms in
+ *  the DOF, two rows per segment, closed-form and derived rather than tuned.
+ *
+ *  **The energy.** Over one segment the profile is the cubic bezier `profile.segment`
+ *  resolves, and the fit family's handles reach exactly `span/3` in s (`fit.ts`), so `s(t)`
+ *  is linear in the bezier parameter and F is an ordinary cubic in s. In the Bernstein
+ *  basis with controls `P₀ = g_a`, `P₁ = g_a + Δg_out`, `P₂ = g_b + Δg_in`, `P₃ = g_b`,
+ *  writing `x = (s − s_a)/span`:
+ *
+ *    span²·F″ = 6[(1 − x)·A + x·B],   A = P₀ − 2P₁ + P₂,   B = P₁ − 2P₂ + P₃
+ *    ∫₀^span (F″)² ds = span^(−3)·∫₀¹ 36[(1 − x)A + xB]² dx = 12·(A² + AB + B²)/span³
+ *
+ *  and `A² + AB + B² = ¾(A + B)² + ¼(A − B)²` — the exact Cholesky of `[[1, ½], [½, 1]]`,
+ *  so the segment's energy is a sum of two squares and lands as two Gauss-Newton residual
+ *  rows. Substituting `A + B = −(Δg_out + Δg_in)` and `A − B = 2(g_b − g_a) −
+ *  3(Δg_out − Δg_in)`, with `c = √(12/span³)`:
+ *
+ *    r_sum   = c·(√3/2)·(Δg_out + Δg_in)
+ *    r_chord = c·((g_b − g_a) − 1.5·(Δg_out − Δg_in))
+ *
+ *  **What it prices.** `r_chord` vanishes exactly when both handles lie along the segment's
+ *  chord and `r_sum` when they oppose; both vanish together iff F″ ≡ 0 there. So the null
+ *  space is the profiles that are LINEAR in s on each segment — a ramp, a hold, and any
+ *  straight transition are free, and only bending is paid for (Green & Silverman's
+ *  unbiased-for-the-linear-trend property). That is the whole point of replacing the flat
+ *  `Δg → 0` block, whose null space was a single named tag.
+ *
+ *  In the ALIGNED family the null space is far smaller: one slope serves both of a key's
+ *  segments, so a piecewise-linear profile with a slope break at a key is unrepresentable
+ *  and only a globally straight one costs nothing.
+ *
+ *  **Both families, one price.** `∂Δg/∂dof` is 1 in the free family (a Δg IS a DOF) and
+ *  that side's Δs in the aligned one (`Δg = m·Δs`, chain rule), so λ prices the same
+ *  function of the PROFILE either way — which is what lets a metric change be attributed to
+ *  the DOF restriction rather than to a silently different prior.
+ *
+ *  **The span/3 precondition.** A handle that reaches something other than `span/3` makes
+ *  `s(t)` nonlinear, F(s) non-polynomial, and this form prices the chord-parameterized cubic
+ *  through the same four control values instead of the true `∫(F″)² ds`. It stays a valid
+ *  PSD roughness prior on the same DOF, but it is exact only on the fit family — which is
+ *  every profile this solve sees (`fit.ts` builds span/3 by construction, pinned in
+ *  `polish.test.ts`). A side the warm start left absent carries no DOF term: `segment`
+ *  substitutes a flat derived tangent there, Δg = 0. */
+export function fairRows(pts: readonly ForcePoint[], handles: HandleDof): FairRow[] {
     const K = pts.length;
-    const rows: RegRow[] = [];
+    const rows: FairRow[] = [];
     for (let k = 0; k + 1 < K; k++) {
-        const o = pts[k].out;
-        if (o) rows.push({ p: K + k, c: handles === "free" ? 1 : o.ds });
-    }
-    for (let k = 1; k < K; k++) {
-        const i = pts[k].in;
-        if (i)
-            rows.push(
-                handles === "free" ? { p: 2 * K - 1 + (k - 1), c: 1 } : { p: K + k, c: i.ds },
-            );
+        const a = pts[k];
+        const b = pts[k + 1];
+        const span = b.s - a.s;
+        if (!(span > 0)) continue;
+        const c = Math.sqrt(12 / (span * span * span));
+        const sum: FairRow = { p: [], c: [] };
+        const chord: FairRow = { p: [k, k + 1], c: [-c, c] };
+        // `coef` is ∂Δg/∂dof for that side: 1 where a Δg IS the DOF, that side's Δs where
+        // a slope drives it.
+        if (a.out) {
+            const coef = handles === "free" ? 1 : a.out.ds;
+            sum.p.push(K + k);
+            sum.c.push(c * (Math.sqrt(3) / 2) * coef);
+            chord.p.push(K + k);
+            chord.c.push(-1.5 * c * coef);
+        }
+        if (b.in) {
+            const coef = handles === "free" ? 1 : b.in.ds;
+            const p = handles === "free" ? 2 * K - 1 + k : K + k + 1;
+            sum.p.push(p);
+            sum.c.push(c * (Math.sqrt(3) / 2) * coef);
+            chord.p.push(p);
+            chord.c.push(1.5 * c * coef);
+        }
+        rows.push(sum, chord);
     }
     return rows;
 }
 
-/** the prior's seminorm at a DOF vector: `Σ Δg²` over the handle offsets the rows name.
- *  This is the quantity λ prices, and it is a function of the PROFILE — an already
- *  collinear profile costs the same read as free handles or as slopes, because the rows
- *  carry the reparameterization's chain rule. `Φ_reg = ½·wReg·regNorm`.
+/** the seminorm at a DOF vector: `∫(F″)² ds` over the whole profile, the quantity λ
+ *  prices. It is a function of the PROFILE — a collinear profile costs the same read as
+ *  free handles or as slopes, because the rows carry the reparameterization's chain rule.
+ *  `Φ_fair = ½·wFair·fairNorm`.
  *
  * @example
- * const rows = regRows(points, "aligned");
- * const reg = regNorm(rows, readDof(points, "aligned"));
+ * const rows = fairRows(points, "aligned");
+ * const roughness = fairNorm(rows, readDof(points, "aligned"));
  */
-export function regNorm(rows: readonly RegRow[], dof: ArrayLike<number>): number {
+export function fairNorm(rows: readonly FairRow[], dof: ArrayLike<number>): number {
     let sum = 0;
     for (const r of rows) {
-        const dg = r.c * dof[r.p];
-        sum += dg * dg;
+        let v = 0;
+        for (let i = 0; i < r.p.length; i++) v += r.c[i] * dof[r.p[i]];
+        sum += v * v;
     }
     return sum;
 }
@@ -677,7 +737,10 @@ export function polish(opts: PolishOpts): PolishResult {
     const mode = opts.mode ?? "exact";
     const floor = opts.floor ?? authoringFloor(sp);
     const dof0 = readDof(pts, handles);
-    const reg = regRows(pts, handles);
+    // the fairing rows, plus their columns in the normal system (`ns + p`) built once —
+    // the rows are a function of the s-coordinates alone, which this solve holds fixed.
+    const fair = fairRows(pts, handles);
+    const fairCols = fair.map((r) => r.p.map((p) => ns + p));
     // every λ the search tries is part of what this call cost, so the answer reports the
     // running totals rather than the winning solve's own counts.
     let totalIters = 0;
@@ -719,14 +782,13 @@ export function polish(opts: PolishOpts): PolishResult {
 
     function solve(lambda: number): PolishResult {
         solves++;
-        // the Tikhonov weight per handle Δg. `λ·L` puts the penalty on the tracking loss's
-        // own scale (that loss carries total weight Σh = L), and dividing by the handle count
-        // makes it a mean — so Φ_reg = ½·λ·L·⟨Δg²⟩ balances a tracking loss of rms deviation
-        // √(λ·⟨Δg²⟩) metres, and λ is comparable across scenarios of different length and
-        // keyframe count. The penalty is over the `2K − 2` handle OFFSETS in both DOF
-        // families (K >= 2 is enforced above, so `reg.length` is >= 2); keyframe values are
-        // signal, and in aligned mode the slopes reach it through `regRows`' chain rule.
-        const wReg = (lambda * L) / reg.length;
+        // the fairing weight. Φ_fair = ½·λ·∫(F″)² ds = ½·λ·L·⟨(F″)²⟩ against a tracking loss
+        // of ½·L·⟨dev²⟩ (that loss carries total weight Σh = L), so a profile of rms
+        // curvature `c` costs as much as √λ·c metres of rms deviation and λ stays comparable
+        // across scenarios of different length and keyframe count — the same reading the
+        // Δg prior's λ·L/nH had, over a different operator. λ's UNITS moved with the operator
+        // (m⁶/g² against that prior's m²/g²), so read `LAM_MIN`/`LAM_MAX` in the new ones.
+        const wFair = lambda;
 
         // ---- variables: z = [x_1,y_1,θ_1, …, x_E,y_E,θ_E, dof_0..dof_{P−1}] ----
         const n = ns + P;
@@ -811,7 +873,7 @@ export function polish(opts: PolishOpts): PolishResult {
                 const dy = yAt(zz, j) - sp.y[j];
                 phi += 0.5 * h * (dx * dx + dy * dy);
             }
-            if (wReg > 0) phi += 0.5 * wReg * regNorm(reg, zz.subarray(ns));
+            if (wFair > 0) phi += 0.5 * wFair * fairNorm(fair, zz.subarray(ns));
             for (let k = 0; k < nc; k++) {
                 const r = C[k] + mult[k] / rho;
                 phi += 0.5 * rho * r * r;
@@ -876,11 +938,16 @@ export function polish(opts: PolishOpts): PolishResult {
                 addRow([colY(j)], [1], h, yAt(zz, j) - sp.y[j]);
             }
 
-            // the Tikhonov block: one residual row per handle offset, r = Δg = c·dof, so
-            // ∂r/∂dof = c (1 in the free family, that side's Δs in the aligned one). Lands in
-            // H_pp + rhsP alone — it touches no state, so the band and the Schur shape are
-            // untouched.
-            if (wReg > 0) for (const r of reg) addRow([ns + r.p], [r.c], wReg, r.c * zz[ns + r.p]);
+            // the fairing block: two residual rows per segment, each r = Σ c·dof, so ∂r/∂dof
+            // is the row's own coefficients. Lands in H_pp + rhsP alone — it touches no
+            // state, so the band and the Schur shape are untouched.
+            if (wFair > 0)
+                for (let r = 0; r < fair.length; r++) {
+                    const row = fair[r];
+                    let v = 0;
+                    for (let i = 0; i < row.p.length; i++) v += row.c[i] * zz[ns + row.p[i]];
+                    addRow(fairCols[r], row.c, wFair, v);
+                }
 
             for (let j = 0; j < E; j++) {
                 const t0 = thAt(zz, j);

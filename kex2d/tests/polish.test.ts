@@ -6,12 +6,13 @@ import {
     AUTHOR_EPS,
     authoringFloor,
     chordDeficit,
+    fairNorm,
+    fairRows,
     forceMatrix,
+    type HandleDof,
     polish,
     type PolishResult,
     readDof,
-    regNorm,
-    regRows,
     spine,
     TOL_FEAS,
     violence,
@@ -26,7 +27,6 @@ import {
 } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { type Entry, evalForce, evalGeo } from "../src/section";
-import { G_GRID } from "../src/timeline";
 
 // the geo→force spike's constrained polish (kex/specs/kex2d-geoforce-spike.md stage 3):
 // the sparse profile whose INTEGRATED geometry matches the bake, exit pinned. Two bars,
@@ -182,6 +182,14 @@ function reference(name: string, points: readonly ForcePoint[], length: number, 
         exitTheta: Math.abs(out.exit.theta - bake.theta[bake.edges]),
         edges: out.edges,
     };
+}
+
+/** the fairing seminorm of an answer, read in the family it was solved in — `∫(F″)² ds`,
+ *  the quantity the prior prices and the one that survives the operator change. `maxDg`
+ *  measures a handle's SIZE, which a chord-aligned handle on a steep ramp makes large by
+ *  construction, so it is a per-scenario pin here and never a cross-mode bar. */
+function roughnessOf(r: PolishResult): number {
+    return fairNorm(fairRows(r.points, r.handles), readDof(r.points, r.handles));
 }
 
 describe("constrained polish — the corpus", () => {
@@ -350,31 +358,38 @@ describe("constrained polish — the corpus", () => {
 });
 
 // Calm mode's violence — PROVISIONAL, same as the `Deviation` table above and for the same
-// reason: what the regularizer can reach is a property of the shape, the keyframe
-// placement, and where the bisection lands, and no closed form bounds it. These are the
-// drift tripwires for the before/after that is the human check-in's verdict input (spec
-// stage 3b), not derived bars. `peakG` is the peak of the DENSE force the profile drives
-// (the one that catches inter-key overshoot invisible in the diamonds); `maxDg` the largest
-// handle offset an author would have to grab.
+// reason: what the prior can reach is a property of the shape, the keyframe placement, and
+// where the bisection lands, and no closed form bounds it. These are the drift tripwires for
+// the before/after that is the human check-in's verdict input (spec stage 6), not derived
+// bars. `peakG` is the peak of the DENSE force the profile drives (the one that catches
+// inter-key overshoot invisible in the diamonds); `maxDg` the largest handle offset an
+// author would have to grab.
 //
-// Each is the measured value plus ~10% headroom, floored at G_GRID/2 for the handles so a
-// scenario whose handles go flat isn't pinned against zero. The headroom is deliberate: the
-// discrepancy search lands wherever a bisection branch falls, and full-loop's accepted λ
-// sits under 1% below its floor — one flipped branch there moves λ by a bisection step and
-// the violence with it, which is drift to look at, not a regression. The real teeth are
-// elsewhere in this block: `calm ≤ exact` on handles, and the strict-reduction assert on
-// the spike scenarios.
+// Each is the measured value plus ~10% headroom. The headroom is deliberate: the discrepancy
+// search lands wherever a bisection branch falls, and several scenarios' accepted λ sit
+// under 1% below their floor — one flipped branch there moves λ by a bisection step and the
+// violence with it, which is drift to look at, not a regression. The real teeth are
+// elsewhere in this block: the seminorm falling against exact, and the strict-reduction
+// assert on the spike scenarios.
+//
+// RE-PINNED for the fairing seminorm (spec stage 2), everything else held. The handle
+// numbers rose across the board and that is the operator, not a regression: the flat Δg
+// prior drove handles to zero (four scenarios pinned at the G_GRID/2 floor, i.e. every
+// segment flat = all-Cubic), while the fairing prior prices CURVATURE and leaves a
+// chord-aligned handle — large Δg, straight line — free. Read the peaks for violence: they
+// moved by less than ±5% except loop-explicit, which halved (29.8 → 28.5 free, 29.8 → 14.3
+// in the aligned family).
 const CalmViolence: Record<string, { peakG: number; maxDg: number }> = {
-    "circular-arc": { peakG: 2.02, maxDg: 0.05 },
-    "parabola-hill": { peakG: 3.67, maxDg: 0.66 },
-    "full-loop": { peakG: 6.62, maxDg: 1.14 },
-    "s-curve": { peakG: 4.24, maxDg: 0.86 },
-    "straight-fillet": { peakG: 3.26, maxDg: 1.87 },
-    "hill-auto": { peakG: 4.71, maxDg: 0.05 },
-    "hill-explicit": { peakG: 3.17, maxDg: 1.08 },
-    "loop-explicit": { peakG: 32.8, maxDg: 0.05 },
-    "double-hump": { peakG: 4.47, maxDg: 0.05 },
-    "valley-explicit": { peakG: 38.6, maxDg: 50.7 },
+    "circular-arc": { peakG: 2.04, maxDg: 0.25 },
+    "parabola-hill": { peakG: 3.73, maxDg: 1.19 },
+    "full-loop": { peakG: 7.13, maxDg: 2.23 },
+    "s-curve": { peakG: 4.24, maxDg: 1.7 },
+    "straight-fillet": { peakG: 3.45, maxDg: 1.87 },
+    "hill-auto": { peakG: 4.76, maxDg: 1.86 },
+    "hill-explicit": { peakG: 3.22, maxDg: 1.75 },
+    "loop-explicit": { peakG: 31.3, maxDg: 16.4 },
+    "double-hump": { peakG: 4.48, maxDg: 1.64 },
+    "valley-explicit": { peakG: 38.7, maxDg: 51.6 },
 };
 
 // The spike scenarios — the Auto↔explicit tangent boundaries whose ~38 g recovered-F_n
@@ -485,12 +500,14 @@ describe("constrained polish — calm mode", () => {
                 expect(pin).toBeDefined();
                 expect(cm.maxDg).toBeLessThanOrEqual(pin.maxDg);
                 expect(cm.peakG).toBeLessThanOrEqual(pin.peakG);
-                // handles never get worse. Peak dense force may tick UP on a smooth shape
-                // (removing handles reshapes the interior a little), bounded by half the
-                // force axis's authoring quantum — the coarsest change the chart's readout
-                // could show.
-                expect(cm.maxDg).toBeLessThanOrEqual(ex.maxDg);
-                expect(cm.peakG).toBeLessThanOrEqual(ex.peakG + G_GRID / 2);
+                // the cross-mode invariant, in the prior's OWN quantity: whatever geometry
+                // slack calm mode spends, it buys a smoother profile than the exact solve
+                // it traded away. Measured margin is 3 to 13 orders of magnitude on nine
+                // scenarios and 1.9× on valley-explicit, whose fallback finds little slack.
+                // Neither `maxDg` nor `peakG` is a cross-mode bar any more: the answer is
+                // free to sit anywhere inside the authoring floor, and the fairing prior
+                // does not price either of them.
+                expect(roughnessOf(cm)).toBeLessThan(roughnessOf(ex));
                 // the reported violence is the profile's own, not a solver diagnostic.
                 const v = violence(cm.points, cm.length, cm.ds);
                 expect(v.peakG).toBeCloseTo(cm.peakG, 12);
@@ -534,7 +551,7 @@ describe("constrained polish — calm mode", () => {
     });
 
     test("with λ forced to 0 the violence comes straight back", () => {
-        // the negative control for the Tikhonov block. Same loosened floor, no penalty —
+        // the negative control for the fairing block. Same loosened floor, no penalty —
         // so the geometry is free to sit anywhere inside the floor and nothing prefers the
         // calm member. It lands on exact mode's answer, violence and all.
         for (const name of Spikes) {
@@ -623,13 +640,21 @@ describe("constrained polish — calm mode", () => {
     });
 
     test("a saturated bracket is one solve, and λ there is a clip", () => {
-        // loop-explicit's whole handle family fits inside its floor, so the strong-end
-        // probe holds on the first try and the bisection never runs. Its λ is LAM_MAX —
-        // the end of the bracket, not a discrepancy point the search located.
+        // loop-explicit's whole free family fits inside its floor, so the strong-end probe
+        // holds on the first try and the bisection never runs. Its λ is LAM_MAX — the end
+        // of the bracket, not a discrepancy point the search located — and the answer sits
+        // in the seminorm's NULL SPACE: piecewise-linear in s, roughness collapsed to
+        // rounding (1e-11 against the warm start's 3.9e+5, seventeen orders). That is what
+        // "the strong end is strong enough" means, and it is the assert that would catch a
+        // bracket whose top no longer reaches.
+        const { bake } = bakeOf("loop-explicit");
+        const warm = fit(bake.fN, bake.ds, FIT_TOL).points;
         const out = calmed("loop-explicit");
         expect(out.solves).toBe(1);
         expect(out.lambda).toBe(1e3);
-        expect(out.maxDg).toBeLessThan(G_GRID / 2);
+        expect(roughnessOf(out)).toBeLessThan(
+            1e-6 * fairNorm(fairRows(warm, "free"), readDof(warm, "free")),
+        );
     });
 
     test("calm mode is deterministic: two solves are identical", () => {
@@ -654,9 +679,9 @@ describe("constrained polish — calm mode", () => {
 // one slope `m` per key instead of two independent handle Δg, so a BROKEN key is
 // unrepresentable rather than penalized.
 //
-// THE ATTRIBUTION RUN — the DOF restriction alone, prior unchanged (the Δg Tikhonov
-// pushed through the reparameterization, so λ measures the same quantity in both
-// families). Final-frame censuses only; violence numbers are ds-dependent, so read them
+// THE ATTRIBUTION RUN — the DOF restriction alone, prior unchanged (the flat Δg Tikhonov it
+// was run under, pushed through the reparameterization, so λ measured the same quantity in
+// both families). Final-frame censuses only; violence numbers are ds-dependent, so read them
 // against this corpus at its own `scenario.ds`, never across one.
 //
 //   census, broken keys summed over the corpus:  exact  117 → 0     calm  50 → 0
@@ -667,12 +692,18 @@ describe("constrained polish — calm mode", () => {
 //   violence (calm, maxΔg free → aligned): unchanged within ±10% on eight, full-loop
 //     1.03→0.92, valley-explicit 46.1→33.8; peak g within ±2% except valley 35.1→15.9.
 //
-// The finding to carry into stage 2: **the vocabulary constraint fixes the census, not
+// The finding carried into stage 2: **the vocabulary constraint fixes the census, not
 // the magnitudes.** loop-explicit's exact-mode handles get 13× LOUDER under the
 // restriction — aligned, and enormous — because near the geometry floor the problem is
-// ill-posed in both families and nothing in a flat Δg→0 prior prefers a quiet slope.
-// That is the gap the fairing seminorm is for, and it is why no per-scenario violence
-// ceiling is pinned here: stage 2 is expected to move every one of these.
+// ill-posed in both families and nothing in the DOF choice prefers a quiet slope.
+//
+// STAGE 2's answer to that, measured: the exact-mode numbers above are UNTOUCHED by the
+// fairing seminorm, and structurally so — exact mode carries no prior at all (λ = 0), which
+// is what makes it the oracle baseline. The 1866 is therefore not a number any prior can
+// move; only calm mode has a prior to change. There the fairing seminorm halves the spike
+// scenario's dense peak in this family (loop-explicit 29.8 → 14.3 g) and un-saturates the
+// vocabulary (below), while handle SIZES rise, since a chord-aligned handle is large and
+// straight. Violence lives in `CalmViolence`, per scenario, for that reason.
 const AlignedDeviation: Record<string, number> = {
     "circular-arc": 0.00045,
     "parabola-hill": 0.0033,
@@ -691,6 +722,25 @@ const AlignedDeviation: Record<string, number> = {
     // that trade shows up as geometry.
     "valley-explicit": 0.33,
 };
+
+/** the one corpus solve whose live-path exit HEADING misses `EXIT_ANG_TOL`, named here
+ *  rather than folded into that constant — which is derived from the readout quantum and
+ *  stays the bar for the other nineteen (measured worst among them: 4.4e-4 rad, 0.025°).
+ *
+ *  The mechanism, measured: the SPINE's exit heading is pinned to ~5e-12 rad in every solve,
+ *  so this bar reads the f32 re-integration, where the recovered bisector exit differs from
+ *  the integrator's by O(ds²·κ′). Under the fairing prior the discrepancy search on this
+ *  scenario accepts λ = 2e-4 (against `LAM_MAX` under the flat Δg prior) and the answer sits
+ *  AT the position floor — 8.9 cm of a 9.0 cm budget — carrying a 2–8 g tail where the bake
+ *  runs flat at 1 g. Large κ′ at the exit, so the gap opens to 3.6e-3 rad = 0.21°, twice the
+ *  0.1° the heading readout resolves. The position pin is unaffected (6e-5 m).
+ *
+ *  This is a real cost of the prior change, not a tolerance: the profile is smoother by the
+ *  seminorm's own measure (roughness 1.6e+9 → 5.1e+2) while tracking a different force
+ *  altogether at the tail, which is the ill-posedness lock 1 diagnosed showing up at the
+ *  boundary. The lever is knot placement — stage 3's refine loop — the same conclusion
+ *  valley-explicit's floor residual reached. */
+const AlignedCalmHeading: Record<string, number> = { "loop-explicit": 4e-3 };
 
 /** the scenarios whose aligned solve reaches the derived authoring floor. The one absent
  *  is the stage-3 input above — pinned as a SET so a scenario silently falling out of the
@@ -916,7 +966,11 @@ describe("constrained polish — the authorable DOF", () => {
                     const out = aligned(scenario.name, mode);
                     const r = reference(scenario.name, out.points, out.length, out.ds);
                     expect(r.exit).toBeLessThanOrEqual(EXIT_TOL);
-                    expect(r.exitTheta).toBeLessThanOrEqual(EXIT_ANG_TOL);
+                    const bar =
+                        mode === "calm"
+                            ? (AlignedCalmHeading[scenario.name] ?? EXIT_ANG_TOL)
+                            : EXIT_ANG_TOL;
+                    expect(r.exitTheta).toBeLessThanOrEqual(bar);
                 }
             });
 
@@ -938,9 +992,9 @@ describe("constrained polish — the authorable DOF", () => {
                 // what the family can represent — and the two genuinely part company,
                 // because `handleState` also calls a side shorter than ALIGN_PX broken
                 // (it carries no direction to read there). The corpus's shortest handle on
-                // this panel is 0.79 px against a 0.5 px threshold — hill-auto calm, whose
-                // handles go flat — so the identical profiles census 3 broken on a
-                // half-scale panel and 71 on a quarter-scale one (pinned below). Read a
+                // this panel is 0.86 px against a 0.5 px threshold — hill-auto exact — so
+                // the identical profiles census 1 broken on a half-scale panel and 32 on a
+                // quarter-scale one (pinned below). Read a
                 // failure here as handles too small to draw, never as broken vocabulary:
                 // that claim is the collinearity test above.
                 for (const mode of ["exact", "calm"] as const) {
@@ -997,7 +1051,7 @@ describe("constrained polish — the authorable DOF", () => {
         // collinear profile the only branch of `handleState` that can return broken is the
         // short-side one, so `broken` counts exactly the two-sided keys whose shorter
         // handle falls under ALIGN_PX — at ANY scale. Shrink the lab's panel and the count
-        // climbs (0 at full scale, 3 at half, 71 at quarter over the corpus's twenty
+        // climbs (0 at full scale, 1 at half, 32 at quarter over the corpus's twenty
         // solves) while not one profile changes. Stage 3's splits shorten Δs-dominated
         // handles, so this is the reading that keeps a smaller drawn handle from arriving
         // as a vocabulary failure.
@@ -1047,46 +1101,138 @@ describe("constrained polish — the authorable DOF", () => {
     });
 
     test("the prior prices the profile, not the family it is written in", () => {
-        // the aligned Tikhonov coefficient is `Δg = m·Δs`'s chain rule — that side's Δs —
+        // the aligned fairing coefficient is `Δg = m·Δs`'s chain rule — that side's Δs —
         // and the corpus alone cannot tell: a `fit.ts` warm start's handles are all
         // span/3, so a wrong-but-uniform coefficient just rescales λ and every solve
         // still converges. Price ONE hand-built profile in both families instead, with
         // spans an order apart, where the coefficient has nowhere to hide.
         //
-        // The profile is already collinear (Δg = m·Δs at every key), so both families
-        // represent it exactly and the seminorm — Σ Δg² over the four handle offsets —
-        // must come out the same number, by hand:
+        // The profile is collinear (Δg = m·Δs at every key) and its handles reach span/3,
+        // so both families represent it exactly and the seminorm — ∫(F″)² ds, closed form
+        // 12(A² + AB + B²)/span³ per segment over the control-value second differences
+        // A = P₀ − 2P₁ + P₂, B = P₁ − 2P₂ + P₃ — must come out the same number, by hand:
         //
-        //   key 0: m = 2,    out Δs = 1  → Δg = 2
-        //   key 1: m = −1,   in  Δs = −1 → Δg = 1,   out Δs = 9 → Δg = −9
-        //   key 2: m = 0.5,  in  Δs = −9 → Δg = −4.5
-        //   Σ Δg² = 4 + 1 + 81 + 20.25 = 106.25
+        //   key 0: m = 3,    out Δs = 2/3  → Δg = 2
+        //   key 1: m = −6,   in  Δs = −2/3 → Δg = 4,   out Δs = 16/3 → Δg = −32
+        //   key 2: m = 1.5,  in  Δs = −16/3 → Δg = −8
         //
-        // Every value here is a dyadic rational, so the sum is exact in f64 and the
-        // assert is an equality, not a tolerance.
+        //   segment 0 (span 2,  Δg_chord 4):  A = 4,  B = −10 → 76·12/2³    = 114
+        //   segment 1 (span 16, Δg_chord −8): A = 48, B = −8  → 1984·12/16³ = 5.8125
+        //   ∫(F″)² ds = 119.8125
+        //
+        // Every control value is dyadic, so the hand sum is exact; the rows carry an
+        // irrational √(12/span³) each, so the READ is exact to f64 rounding, not to the bit.
         const pts: ForcePoint[] = [
-            { s: 0, g: 1, out: { ds: 1, dg: 2 } },
-            { s: 3, g: 4, in: { ds: -1, dg: 1 }, out: { ds: 9, dg: -9 } },
-            { s: 30, g: 2, in: { ds: -9, dg: -4.5 } },
+            { s: 0, g: 1, out: { ds: 2 / 3, dg: 2 } },
+            { s: 2, g: 5, in: { ds: -2 / 3, dg: 4 }, out: { ds: 16 / 3, dg: -32 } },
+            { s: 18, g: -3, in: { ds: -16 / 3, dg: -8 } },
         ];
         for (const p of pts) expect(collinear(p.in, p.out)).toBe(true);
 
-        const free = regRows(pts, "free");
-        const alignedRows = regRows(pts, "aligned");
-        // the row COUNT is the family-independent half (one row per handle offset), so it
-        // is `wReg = λL/rows` that matches too, and equal seminorms mean equal Φ_reg.
+        const free = fairRows(pts, "free");
+        const alignedRows = fairRows(pts, "aligned");
+        // two rows per SEGMENT in both families — the square root of the segment energy's
+        // 2×2 form — so `wFair = λ` matches too and equal seminorms mean equal Φ_fair.
         expect(free.length).toBe(4);
         expect(alignedRows.length).toBe(4);
-        expect(regNorm(free, readDof(pts, "free"))).toBe(106.25);
-        expect(regNorm(alignedRows, readDof(pts, "aligned"))).toBe(106.25);
+        expect(fairNorm(free, readDof(pts, "free"))).toBeCloseTo(119.8125, 9);
+        expect(fairNorm(alignedRows, readDof(pts, "aligned"))).toBeCloseTo(119.8125, 9);
     });
 
-    test("the Δg prior reaches the aligned family through the slopes", () => {
-        // the Tikhonov block penalizes the handle OFFSETS in both families; in the aligned
-        // one it reaches them through `Δg = m·Δs`, chain rule and all. If those rows named
-        // the wrong DOF — or none — calm mode would silently BE exact mode: converged,
-        // reporting a λ, penalizing nothing. So drive λ to the strong end of the bracket
-        // and check the handles actually go flat against the unregularized solve.
+    test("the closed-form fairing matrix IS ∫(F″)² ds — against quadrature", () => {
+        // THE ORACLE for the prior. `fairRows` is derived algebra (the Bernstein second
+        // differences, integrated), and algebra is exactly what a typo hides in — a wrong
+        // 1.5, a √3/2 on the wrong row, a span power off by one all still produce a PSD
+        // form that converges. So integrate the seminorm's own definition NUMERICALLY,
+        // through the production evaluator, and demand the closed form reproduce it.
+        //
+        // The quadrature is independent of the algebra under test at every step: F comes
+        // from `profile.sampleForce` (the shipped bezier + root solve), F″ from a central
+        // second difference of it, and the integral from 4-point Gauss-Legendre inside each
+        // segment — never across a knot, where F″ jumps.
+        //
+        // TOL: the difference stencil is EXACT here (its error term carries F⁗, zero for a
+        // cubic), so the error is the root solve's, `S_TOL_REL` = 1e-13 of the span in s,
+        // which enters as |F′|·1e-13·span / h² ≈ 1e-9 against an F″ of order 1 at
+        // h = span/100. Squared and integrated that is ~1e-8 relative; 1e-6 clears it by
+        // two decades and is still four decades tighter than any algebra slip.
+        // 4-point Gauss-Legendre on [−1, 1] (Abramowitz & Stegun table 25.4), exact for the
+        // degree-6 integrand a cubic's (F″)² would be even before the difference stencil.
+        const Gx = [
+            -0.8611363115940526, -0.3399810435848563, 0.3399810435848563, 0.8611363115940526,
+        ];
+        const Gw = [0.3478548451374538, 0.6521451548625461, 0.6521451548625461, 0.3478548451374538];
+        const roughness = (pts: readonly ForcePoint[]): number => {
+            let total = 0;
+            for (let k = 0; k + 1 < pts.length; k++) {
+                const span = pts[k + 1].s - pts[k].s;
+                const mid = 0.5 * (pts[k].s + pts[k + 1].s);
+                const h = span / 100;
+                let acc = 0;
+                for (let i = 0; i < Gx.length; i++) {
+                    const at = mid + 0.5 * span * Gx[i];
+                    const f2 =
+                        (sampleForce(pts, at + h) -
+                            2 * sampleForce(pts, at) +
+                            sampleForce(pts, at - h)) /
+                        (h * h);
+                    acc += Gw[i] * f2 * f2;
+                }
+                total += 0.5 * span * acc;
+            }
+            return total;
+        };
+
+        // a deterministic LCG, not Math.random: a corpus of profiles that differs per run
+        // would make a failure unreproducible.
+        let seed = 20260726;
+        const rnd = (): number => {
+            seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+            return seed / 0x7fffffff;
+        };
+        let worst = 0;
+        for (let trial = 0; trial < 20; trial++) {
+            const K = 3 + Math.floor(rnd() * 5);
+            const pts: ForcePoint[] = [];
+            let s = 0;
+            for (let k = 0; k < K; k++) {
+                pts.push({ s, g: (rnd() - 0.5) * 20 });
+                s += 1 + rnd() * 12;
+            }
+            // span/3 handles, the fit family the closed form is exact on. Half the trials
+            // get a collinear profile so the aligned family represents it too.
+            const align = trial % 2 === 0;
+            for (let k = 0; k + 1 < K; k++) {
+                const reach = (pts[k + 1].s - pts[k].s) / 3;
+                pts[k].out = { ds: reach, dg: (rnd() - 0.5) * 8 };
+                pts[k + 1].in = { ds: -reach, dg: (rnd() - 0.5) * 8 };
+            }
+            if (align)
+                for (const p of pts) {
+                    const m = (rnd() - 0.5) * 4;
+                    if (p.in) p.in.dg = m * p.in.ds;
+                    if (p.out) p.out.dg = m * p.out.ds;
+                }
+            const num = roughness(pts);
+            expect(num).toBeGreaterThan(1e-3); // a flat corpus would prove nothing
+            const families: HandleDof[] = align ? ["free", "aligned"] : ["free"];
+            for (const handles of families) {
+                const closed = fairNorm(fairRows(pts, handles), readDof(pts, handles));
+                worst = Math.max(worst, Math.abs(closed - num) / num);
+            }
+        }
+        expect(worst).toBeLessThan(1e-6);
+    });
+
+    test("the fairing prior reaches the aligned family through the slopes", () => {
+        // the fairing block prices the same curvature in both families; in the aligned one
+        // it reaches the handles through `Δg = m·Δs`, chain rule and all. If those rows
+        // named the wrong DOF — or none — calm mode would silently BE exact mode:
+        // converged, reporting a λ, penalizing nothing. So drive λ to the strong end of the
+        // bracket and check the seminorm actually collapses against the unregularized
+        // solve. It is the SEMINORM that has to fall, not `maxDg`: a chord-aligned handle
+        // on a steep ramp is a large Δg drawing a straight line, which is what this prior
+        // wants and the old flat one forbade.
         const { s, entry, bake } = bakeOf("parabola-hill");
         const base = {
             bake,
@@ -1098,8 +1244,7 @@ describe("constrained polish — the authorable DOF", () => {
         };
         const strong = polish({ ...base, lambda: 1e3 });
         const none = polish({ ...base, lambda: 0 });
-        expect(strong.maxDg).toBeLessThan(G_GRID / 2);
-        expect(none.maxDg).toBeGreaterThan(10 * strong.maxDg);
+        expect(roughnessOf(strong)).toBeLessThan(0.01 * roughnessOf(none));
     });
 
     test("aligned mode is deterministic: two solves are identical", () => {

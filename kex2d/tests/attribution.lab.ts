@@ -26,6 +26,7 @@ import { authoringFloor, type HandleDof, type PolishMode, polish, spine } from "
 import { type ForcePoint, forceProfile } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { type Entry, evalForce, evalGeo, type SectionResult } from "../src/section";
+import { G_GRID } from "../src/timeline";
 
 /** stage 2's own bar, half the force axis's authoring quantum (`fit.test.ts`). */
 const FIT_TOL = 0.05;
@@ -46,6 +47,44 @@ function panelScale(points: readonly ForcePoint[], length: number, ds: number) {
         hi = Math.max(hi, p.g);
     }
     return { s: PANEL_W / length, g: PANEL_H / Math.max(hi - lo, 1e-3) };
+}
+
+/** how many segments read as each NAMED EASING — the stage-2 attribution's other half.
+ *
+ *  The prior decides which member of the near-null space the solve lands on, and the two
+ *  candidates are named tags rather than arbitrary handles: a segment whose two facing
+ *  handles are FLAT is `Easing.Cubic` at the fit's span/3 reach (`profile.ts`'s influence
+ *  table), and one whose handles lie along its CHORD is `Easing.Linear` (the bezier
+ *  degenerates to the straight line). Anything else is Custom — the handle layer.
+ *
+ *  The tolerance is the force axis's own authoring quantum (`G_GRID`, half of it), the same
+ *  bar `polish.test.ts` reads "handles went flat" at: a Δg the chart's readout cannot show
+ *  is a Δg the author would meet as the named tag. NOT stage 4's quantizer — that one
+ *  re-integrates and owns its own derivation; this is a census, and it counts only.
+ *
+ *  A flat segment between equal-valued keys is BOTH (the chord is horizontal); it counts
+ *  Cubic, the default tag. */
+function easings(points: readonly ForcePoint[]): { cubic: number; linear: number; custom: number } {
+    const tol = G_GRID / 2;
+    const out = { cubic: 0, linear: 0, custom: 0 };
+    for (let k = 0; k + 1 < points.length; k++) {
+        const a = points[k];
+        const b = points[k + 1];
+        const span = b.s - a.s;
+        const slope = span > 0 ? (b.g - a.g) / span : 0;
+        const sides = [a.out, b.in];
+        let flat = true;
+        let chord = true;
+        for (const side of sides) {
+            if (!side) continue;
+            if (Math.abs(side.dg) > tol) flat = false;
+            if (Math.abs(side.dg - slope * side.ds) > tol) chord = false;
+        }
+        if (flat) out.cubic++;
+        else if (chord) out.linear++;
+        else out.custom++;
+    }
+    return out;
 }
 
 /** the profile re-integrated through the LIVE f32 `evalForce` path and measured against
@@ -99,6 +138,9 @@ const HEAD = [
     "algn",
     "mirr",
     "sngl",
+    "eCub",
+    "eLin",
+    "eCus",
     "minPx",
     "iters",
     "ms",
@@ -117,6 +159,7 @@ for (const s of scenarios) {
             const ms = performance.now() - t0;
             const sc = panelScale(out.points, out.length, out.ds);
             const c = census(out.points, sc);
+            const e = easings(out.points);
             const r = reference(bake, entry, out.points, out.length, out.ds);
             let minPx = Number.POSITIVE_INFINITY;
             for (const p of out.points)
@@ -141,6 +184,9 @@ for (const s of scenarios) {
                     `${c.aligned}`,
                     `${c.mirror}`,
                     `${c.single}`,
+                    `${e.cubic}`,
+                    `${e.linear}`,
+                    `${e.custom}`,
                     minPx.toFixed(2),
                     `${out.iters}`,
                     ms.toFixed(0),

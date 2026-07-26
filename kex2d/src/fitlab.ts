@@ -93,7 +93,7 @@ interface Row {
     keyPeak: number;
     /** the violence pins the authorability comparison turns on. */
     maxDg: number;
-    /** calm mode only: the Tikhonov weight, and whether the derived floor actually held. */
+    /** calm mode only: the fairing weight, and whether the derived floor actually held. */
     lambda: number;
     heldFloor: boolean;
 }
