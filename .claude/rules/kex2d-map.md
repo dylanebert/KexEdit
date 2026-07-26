@@ -174,7 +174,9 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   then hold the floor. `RefineResult.outcome` separates the three endings: `"floor"`,
   `"budget"` (no admissible site left — the sanctioned un-authorable outcome, `heldFloor`
   false), and `"diverged"` (an unreadable profile — a defect to surface, never an authoring
-  verdict; defensive, never observed firing).
+  verdict; defensive, never observed firing). Each `RefineEvent` also carries the λ = 0 probe
+  PROFILE of the state it reports — read-only instrumentation the loop never reads back, so a
+  timeline can draw what each decision landed on without re-solving it (`playback.ts`).
   **A converted section must carry the solve's own `ds`** (`length/edges`, what `spine` chose so
   the section spans the bake exactly) — a force section stores its own step, and marching the
   same profile at the nominal step instead misses the floor by up to 7× (pinned in
@@ -208,6 +210,19 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   scenarios, at 6 more keys) — trading them would need the exchange rate lock 4 forbids. A named
   tag is not free either: it costs up to 1.07× the dense peak and 1.27× the seminorm. Corpus
   gate ~17 s on top of refine's.
+- `playback.ts` — the fit lab's **playback timeline**: the pipeline's decisions turned into
+  frames a scrubber walks (`fitlab.ts` draws them; this decides what they are). Not a kernel
+  atom — it solves nothing — but it lives with them because what it asserts is a
+  correspondence with what the kernel decided: one frame per `RefineEvent` (the split /
+  prune / corner stream, carrying the λ = 0 probe profile that state actually held), one per
+  accepted LM step, and one ANSWER frame closing each solve phase — snapshots are decimated,
+  so the last surviving step is not the answer and a timeline ending there would draw a curve
+  no table reports. Corners arrive as dense knots and are resolved to KEY indices once, here.
+  The legacy `baseline` timeline (recover → fit → polish) stays beside `pipeline` because the
+  exact fit→polish solve is the oracle floor the tier is compared against. Unit-tested in
+  `playback.test.ts` — the label/corner rules against hand-built events (including the
+  `budget`/`diverged` kinds the corpus never produces), the timeline shape against real
+  solves.
 
 **ECS + UI layer (the live app):**
 

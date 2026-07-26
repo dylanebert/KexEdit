@@ -120,6 +120,7 @@ import {
     type PolishResult,
     spine,
 } from "./polish";
+import type { ForcePoint } from "./profile";
 import type { Entry } from "./section";
 
 /** the arclength frame every placement rule below reads: the dense samples' own arclengths
@@ -336,6 +337,12 @@ export interface RefineEvent {
     /** the probe deviation of the state the event describes (m) — for a `"stall"`, the
      *  deviation of the rejected trial. */
     deviation: number;
+    /** the λ = 0 probe profile at `knots`/`corners` — the state the event reports, so a
+     *  reader can see the answer each structural decision landed on without re-solving it.
+     *  Note it tracks `knots`, not `deviation`: a `"stall"` reports the state that stalled
+     *  here while its `deviation` is the rejected trial's. Read-only instrumentation (the
+     *  fit lab's playback timeline, `playback.ts`); nothing in the loop reads it back. */
+    points: readonly ForcePoint[];
 }
 
 export interface RefineResult {
@@ -449,15 +456,40 @@ export function refine(opts: RefineOpts): RefineResult {
         return true;
     };
 
+    /** the event stream owns its profiles: `polish` hands back fresh objects per call, and a
+     *  copy keeps a reader from reaching into a solve's own answer through the timeline. */
+    const carry = (pts: readonly ForcePoint[]): ForcePoint[] =>
+        pts.map((p) => {
+            const q: ForcePoint = { s: p.s, g: p.g };
+            if (p.ease !== undefined) q.ease = p.ease;
+            if (p.in) q.in = { ...p.in };
+            if (p.out) q.out = { ...p.out };
+            return q;
+        });
+
     let knots = [0, n - 1];
     let cornerKnots: number[] = [];
     let outcome: RefineOutcome = "floor";
     let cur = probe(knots, cornerKnots);
     const events: RefineEvent[] = [
-        { kind: "init", knots: [...knots], corners: [], at: -1, deviation: cur.deviation },
+        {
+            kind: "init",
+            knots: [...knots],
+            corners: [],
+            at: -1,
+            deviation: cur.deviation,
+            points: carry(cur.points),
+        },
     ];
     const log = (kind: RefineEventKind, at: number, deviation: number): void => {
-        events.push({ kind, knots: [...knots], corners: [...cornerKnots], at, deviation });
+        events.push({
+            kind,
+            knots: [...knots],
+            corners: [...cornerKnots],
+            at,
+            deviation,
+            points: carry(cur.points),
+        });
     };
 
     // ---- split phase: grow toward the floor, breaking a key where growth stalls ----

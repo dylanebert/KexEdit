@@ -2379,10 +2379,31 @@ test("collocation solver lab", async ({ page, boot }) => {
 // (~130ms measured, against ~1.5s for the corpus's slowest calm solve) — for the comparison shot.
 // Calm is never auto-run: the calm corpus costs 5.1× exact's wall time (measured 6.7s vs 1.3s),
 // which would leave the ready() poll below 1.5× headroom instead of ~8×.
+//
+// Everything above is the fit→polish BASELINE, which the conversion tier does not use: `fit.ts`
+// places knots against the dense force, while `refine.ts` opens at TWO keys and places them
+// against the integrated geometry instead. The tier's own leg is appended at the end of this flow
+// (kex2d-geoforce-convert stage 5) rather than given its own page, per the iteration-discipline
+// law — a boot costs 3–5s and this page then re-runs its exact corpus on top.
+//
+// That leg's budget is the new one, and it is a different order from everything above. Measured
+// 2026-07-26 (WSL2, bun, one scenario at a time): the whole convert corpus is 70s — refine 52s +
+// quantize 18s — from 0.5s (circular-arc) to 26s (double-hump), against 1.3s for the ten exact
+// solves. So the corpus is NOT auto-run and cannot be, and this leg buys ONE scenario: `full-loop`,
+// the cheapest whose pipeline exercises every part of the display — the refine loop both SPLITS
+// and PRUNES (init + 6 splits + 1 prune), and the vocabulary snap actually NAMES a segment (1 of
+// 6), which is what puts a flat key on screen. `straight-fillet` is cheaper (0.98s) but names
+// nothing, and the flat-key asserts would then pass vacuously.
+//
+// That solve measures 4.0s in bun and 3.56s in the captured page — `metrics().ms`, the page's own
+// reading, which is the honest per-solve number rather than anything this flow times. The poll
+// gets 30s, ~8x it, the same headroom the exact corpus's poll above is set with; it is a stall
+// tripwire, not a performance assert. The whole flow runs 9.0s at one worker (6.6s of it this leg
+// plus the page's own exact corpus), inside the suite's 45s budget with the other flows parallel.
 test("fit lab", async ({ page, boot }) => {
     await boot("/fit-lab.html");
     const panels = page.locator(".panel");
-    await expect(panels).toHaveCount(3); // geometry, force, corpus table
+    await expect(panels).toHaveCount(4); // geometry, force, corpus table, conversion table
 
     const ready = () => page.evaluate((): boolean => (window as any).__fitlab.ready());
     const errors = () => page.evaluate((): string[] => (window as any).__fitlab.errors());
@@ -2432,6 +2453,93 @@ test("fit lab", async ({ page, boot }) => {
 
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "fit-lab-calm.png"), fullPage: true });
+
+    // ── the conversion tier (stage 5): the real pipeline on the timeline ──
+    // A convert solve is scheduled one macrotask out rather than run inline, so the page paints
+    // its "solving…" state instead of freezing blank — which means readiness here is the ROW
+    // arriving, not the `setMode` call returning.
+    await page.evaluate(() => (window as any).__fitlab.select("full-loop"));
+    await page.evaluate(() => (window as any).__fitlab.setMode("convert"));
+    await expect
+        .poll(() => page.evaluate(() => (window as any).__fitlab.metrics() !== null), {
+            timeout: 30_000,
+        })
+        .toBe(true);
+    expect(await errors()).toEqual([]);
+
+    // The refine timeline IS the phase strip now: four phases, contiguous, spanning every frame,
+    // and the refine one made of the loop's own decisions. Asserting the kinds (not just a count)
+    // is what makes this the pipeline rather than a relabelled scrubber — a split GROWS the mesh
+    // and a prune SHRINKS it again, and both have to be on screen for the stage-6 check-in to
+    // judge where the keys came from.
+    const convertPhases = await page.evaluate((): { phase: string; start: number; end: number }[] =>
+        (window as any).__fitlab.phases(),
+    );
+    const convertFrames = await page.evaluate((): number => (window as any).__fitlab.frames());
+    expect(convertPhases.map((p) => p.phase)).toEqual(["recover", "refine", "polish", "quantize"]);
+    expect(convertPhases[0].start).toBe(0);
+    expect(convertPhases[3].end).toBe(convertFrames - 1);
+    for (let i = 1; i < convertPhases.length; i++)
+        expect(convertPhases[i].start).toBe(convertPhases[i - 1].end + 1);
+
+    const events = await page.evaluate((): { kind: string; keys: number; frame: number }[] =>
+        (window as any).__fitlab.events(),
+    );
+    expect(events[0].kind).toBe("init");
+    expect(events[0].keys).toBe(2); // the loop opens at the profile's two ends, never at a fit
+    expect(events.filter((e) => e.kind === "split").length).toBeGreaterThan(0);
+    expect(events.filter((e) => e.kind === "prune").length).toBeGreaterThan(0);
+    expect(events.filter((e) => e.kind === "diverged").length).toBe(0);
+    // every decision is a frame INSIDE the refine phase, so the strip's chips and the scrubber
+    // address the same timeline.
+    for (const e of events) {
+        expect(e.frame).toBeGreaterThanOrEqual(convertPhases[1].start);
+        expect(e.frame).toBeLessThanOrEqual(convertPhases[1].end);
+    }
+    expect(await page.evaluate(() => (window as any).__fitlab.outcome())).toBe("floor");
+    // the settled knot set is the loop's last word, the frame before the answering solve.
+    expect(await page.evaluate((): number => (window as any).__fitlab.warmFrame())).toBe(
+        convertPhases[1].end,
+    );
+
+    // The vocabulary census on the ANSWER frame — the surface stage 6 judges. The aligned family
+    // cannot express a broken key, so `broken` is exactly the corners the loop chose (zero on the
+    // whole corpus at the derived floor, `refine.test.ts`), and `flat` is the named-easing state
+    // counted as itself rather than hidden inside `single`.
+    await page.evaluate((f: number) => (window as any).__fitlab.setFrame(f), convertFrames - 1);
+    const vocab = await page.evaluate(
+        (): {
+            mirror: number;
+            aligned: number;
+            broken: number;
+            single: number;
+            flat: number;
+            corners: number;
+            named: number;
+            segments: number;
+            keys: number;
+        } => (window as any).__fitlab.vocab(),
+    );
+    const convertRow = await page.evaluate((): { keys: number; heldFloor: boolean; ms: number } =>
+        (window as any).__fitlab.metrics(),
+    );
+    expect(vocab.mirror + vocab.aligned + vocab.broken + vocab.single).toBe(vocab.keys);
+    expect(vocab.keys).toBe(convertRow.keys);
+    expect(vocab.broken).toBe(vocab.corners);
+    expect(vocab.corners).toBe(0); // no corpus scenario needs one at the derived floor
+    expect(vocab.segments).toBe(vocab.keys - 1);
+    // full-loop names 1 of its 6 segments (measured), and naming a segment is expressed by
+    // REMOVING both its keys' handles — so a named segment must show up as at least two flat
+    // keys, the state the panel draws hollow. Without a scenario that names something, every
+    // flat-key assert here would pass on zero.
+    expect(vocab.named).toBeGreaterThan(0);
+    expect(vocab.named).toBeLessThan(vocab.segments);
+    expect(vocab.flat).toBeGreaterThanOrEqual(vocab.named + 1); // n named segments span n+1 keys
+    expect(vocab.flat).toBeLessThanOrEqual(vocab.single);
+    expect(convertRow.heldFloor).toBe(true);
+
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "fit-lab-convert.png"), fullPage: true });
 });
 
 // Drive the VIEWPORT KIND-COLOR shot (kex2d-ux-foundations stage D): a geo section

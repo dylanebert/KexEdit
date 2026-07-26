@@ -6,7 +6,7 @@
  *  `scenario.ds`), and a census is a final-frame reading. */
 
 import { describe, expect, test } from "bun:test";
-import { fitKnots } from "../src/fit";
+import { arclength, fitKnots } from "../src/fit";
 import { authoringFloor, polish, spine, violence } from "../src/polish";
 import { collinear, forceProfile } from "../src/profile";
 import {
@@ -263,6 +263,50 @@ describe("refine — the corpus contract", () => {
         expect(pruned).toBeGreaterThan(5);
         for (const c of CORPUS) expect(c.r.events[0].kind).toBe("init");
     });
+
+    test("every event carries the profile of the state it reports", () => {
+        // the timeline instrumentation (`playback.ts` draws one frame per event and draws
+        // the answer the loop actually held there). The claim is that `points` tracks the
+        // event's own KNOTS: a key per knot, each at that knot's arclength. A copy taken at
+        // the wrong moment — the final answer, the pre-split state on a split — breaks the
+        // count or the placement on the first structural decision.
+        for (const c of CORPUS) {
+            const sigma = arclength(c.bake.ds);
+            for (const e of c.r.events) {
+                expect(e.points.length).toBe(e.knots.length);
+                for (let k = 0; k < e.points.length; k++)
+                    expect(e.points[k].s).toBe(sigma[e.knots[k]]);
+            }
+        }
+    });
+
+    test(
+        "an event's profile is the probe's own answer, reproducible",
+        () => {
+            // stronger than the shape check above: re-run the λ = 0 probe of a settled
+            // event's knot set and the stream's copy must come back bit-for-bit, which is
+            // what makes the timeline a reading of the solve rather than a picture beside
+            // it. circular-arc is the cheapest scenario that still splits.
+            const c = pick("circular-arc");
+            const e = c.r.events[c.r.events.length - 1];
+            const warm = fitKnots(c.bake.fN, c.bake.ds, e.knots);
+            const again = polish({
+                bake: c.bake,
+                entry: c.entry,
+                points: warm.points,
+                ds: c.ds,
+                mode: "calm",
+                handles: "aligned",
+                corners: [],
+                lambda: 0,
+                floor: c.r.floor,
+                maxSnapshots: 1,
+            });
+            expect(again.points).toEqual([...e.points]);
+            expect(again.deviation).toBe(e.deviation);
+        },
+        SOLVE_MS,
+    );
 
     test(
         "same bake in, same refinement out",

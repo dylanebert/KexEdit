@@ -1,43 +1,51 @@
-// The geo→force fit research app (spec `kex/specs/kex2d-geoforce-spike.md` stages 4 + 4b). A
-// standalone canvas2D + DOM page — no shallot, no GPU, no Svelte — over the pure kernel
-// (`scenarios.ts` → `section.evalGeo` → `fit.ts` → `polish.ts` → `section.evalForce`):
+// The geo→force conversion research app (spec `kex/specs/kex2d-geoforce-convert.md` stage 5,
+// after the spike's stages 4 + 4b). A standalone canvas2D + DOM page — no shallot, no GPU, no
+// Svelte — over the pure kernel:
 //
-//   1. the VIEWPORT overlay — the original baked geo polyline, the geometry the stage-2
-//      warm start integrates into, and the geometry the current frame's profile really
+//   1. the VIEWPORT overlay — the original baked geo polyline, the geometry the phase's
+//      opening state integrates into, and the geometry the current frame's profile really
 //      integrates into through the live f32 `evalForce` path, both exits marked;
-//   2. the FORCE graph — the dense recovered F_n the fit chased, the stage-2 warm start,
-//      the current sparse profile's dense force, its keyframe diamonds, and every
-//      keyframe's BEZIER HANDLES colored by whether the two sides are collinear through
-//      the key. The y-range spans every playback frame, so inter-key overshoot
-//      (valley-explicit reaches 40 g between keys at −6.5 and 2.6 g) is never clipped out;
-//   3. the METRICS table — the whole corpus, solved exact on load: keys, iterations, wall
-//      time, the reference exit gap, geometry deviation warm → polished, the dense peak
-//      against the keyframe peak (their gap IS the overshoot), and the calm-mode violence
-//      columns once the calm corpus is solved.
+//   2. the FORCE graph — the dense recovered F_n (the target), the opening reference, the
+//      current sparse profile's dense force, its keyframe diamonds, and each keyframe's
+//      VOCABULARY drawn as itself: bezier handles colored by collinearity, a ring on a
+//      CORNER (the one deliberate break), and a hollow diamond with flat stubs on a FLAT
+//      key (no explicit handles — the state a named easing is stored as). The y-range spans
+//      every playback frame, so inter-key overshoot is never clipped out;
+//   3. the CORPUS table — every scenario solved exact on load (the oracle baseline), with
+//      the calm columns filling in on demand;
+//   4. the CONVERSION table — what the real tier does per scenario: keys, corners, named
+//      segments, deviation against the derived floor, violence, the refine loop's decision
+//      counts and probe cost, and how it ended.
 //
-// The scrubber is ONE timeline across the whole pipeline, phase-segmented: the dense
-// recovery it starts from, the fit (knots appearing under the split pass, then pruning
-// away), then the polish iterations. Frames are what the kernel already decided —
-// `fit().steps` and `polish().snapshots` — never a re-derivation here.
+// **Three modes, and only one of them is the shipping path.** `exact` and `calm` are the
+// spike's fit→polish baseline: `fit.ts` places knots against the dense FORCE curve, which is
+// the wrong target, and the polish then moves values at those fixed knots. They stay because
+// every number the spike measured was taken there, and because exact is the oracle floor the
+// tier is judged against. `convert` is the tier: `refine.ts` opens at two keys and chooses
+// knots against the integrated GEOMETRY, then `quantize.ts` snaps what it can onto the named
+// -easing vocabulary. `M` cycles them; the neighbouring mode's final curve draws as a ghost.
 //
-// Two things the second human check-in asked for, and why they are drawn the way they are:
+// The scrubber is ONE timeline across whichever pipeline is selected, phase-segmented —
+// recover → refine → polish → quantize in convert mode, recover → fit → polish in the
+// baseline. Frames are what the kernel already decided (`refine().events`,
+// `polish().snapshots`, `fit().steps`), assembled by the pure `playback.ts`; nothing here
+// re-derives a solve, so what plays back is deterministic and carries no wall clock.
 //
-//   - **handles, always visible.** The check-in could see the solved curve was ugly but not
-//     WHY. A fitted keyframe carries independent per-side tangents (`fit.ts`: no C1
-//     coupling), and the polish moves them independently too, so most keys end up BROKEN —
-//     neither mirrored nor aligned, the editor's `Free` shape. Drawing them, red when
-//     broken, makes the authorability cost of a geometrically-right answer legible.
-//   - **exact vs calm, toggled** (`M`), with the other mode's final curve drawn as a ghost
-//     once both exist. Calm mode's whole claim is that it buys a quiet profile for geometry
-//     nobody can see, and that claim is a comparison, not a number.
+// **The convert corpus is never auto-run.** Measured on this host: 70 s for all ten (refine
+// 52 s + quantize 18 s), from 0.5 s for circular-arc to 26 s for double-hump — against 1.3 s
+// for the exact baseline. So `ready()` stays the exact corpus's gate, a convert solve is
+// scheduled per scenario on demand, and the whole convert corpus is a button.
 //
 // Read-only: nothing here authors. Served by vite at /fit-lab.html; captured by the
 // Playwright harness, which drives the `window.__fitlab` hook below.
 
 import { census, type HandleStats, handleState, type Scale } from "./census";
-import { type FitStep, fit } from "./fit";
+import { arclength, fit } from "./fit";
+import { baseline, type Frame, type Phase, pipeline, type Segment, segments } from "./playback";
 import { polish, type PolishMode, type PolishResult } from "./polish";
 import { type ForcePoint, forceProfile } from "./profile";
+import { namedSegments, quantize, type QuantizeResult } from "./quantize";
+import { refine, type RefineEvent, type RefineResult } from "./refine";
 import { type Scenario, scenarios } from "./scenarios";
 import { type Entry, evalForce, evalGeo, type SectionResult } from "./section";
 import { niceStep } from "./timeline";
@@ -65,7 +73,9 @@ const PANEL_H = 340;
  *  a 150-frame pipeline does not flash past. */
 const FRAME_MS = 50;
 
-type Phase = "recover" | "fit" | "polish";
+/** the three pipelines the page can show: the spike's fit→polish baseline in its two modes,
+ *  and the conversion tier itself. */
+type LabMode = PolishMode | "convert";
 
 /** one scenario's row in the corpus table. */
 interface Row {
@@ -96,54 +106,57 @@ interface Row {
     /** calm mode only: the fairing weight, and whether the derived floor actually held. */
     lambda: number;
     heldFloor: boolean;
+    /** the deviation target the answer was measured against (m). */
+    floor: number;
+    /** convert mode only — the tier's own readings; absent on a baseline row. */
+    convert?: {
+        /** keys carrying the deliberate broken slope. */
+        corners: number;
+        /** segments the vocabulary snap could name, out of how many there are. */
+        named: number;
+        segments: number;
+        /** the refine loop's decisions, by kind. */
+        splits: number;
+        prunes: number;
+        stalls: number;
+        /** how the loop ended — `"floor"` is the answer, `"budget"` the sanctioned
+         *  un-authorable one, `"diverged"` a defect. */
+        outcome: string;
+        /** the whole tier's cost: λ = 0 candidate probes, and total solves. */
+        probes: number;
+        solves: number;
+    };
 }
 
-/** one playback frame. Frame 0 is the DENSE RECOVERY — the spiky observed curve, before any
- *  profile exists. Then one frame per `fit().steps` entry (the split pass adding knots, the
- *  prune pass taking them away; the last of them IS the warm start), then one per accepted
- *  polish step. Without the fit frames the scrubber would start mid-solve and the delta the
- *  spike is about (a 0.03 g fit landing 40 m off) would never be on screen. */
-interface Frame {
-    phase: Phase;
-    label: string;
-    /** null on the recovery frame — no profile exists there yet. */
-    points: readonly ForcePoint[] | null;
-    /** the dense force this frame's profile drives, on the uniform integration grid. */
-    fN: ArrayLike<number> | null;
-    /** the solver's dense spine at this step; null outside the polish phase. */
-    snap: PolishResult["snapshots"][number] | null;
-    /** the fit's own diagnostics at this step; null outside the fit phase. */
-    step: FitStep | null;
-}
-
-/** a contiguous run of frames belonging to one pipeline phase — the segmented scrub bar. */
-interface Segment {
-    phase: Phase;
-    label: string;
-    start: number;
-    end: number;
-}
-
-/** everything one scenario's panels draw from, for ONE polish mode. */
+/** everything one scenario's panels draw from, for ONE pipeline. */
 interface Solve {
     scenario: Scenario;
-    mode: PolishMode;
+    mode: LabMode;
     entry: Entry;
     bake: SectionResult;
     /** the bake's cumulative chord arclength, length `bake.edges + 1`. */
     sigma: Float64Array;
+    /** the answer: the polish result in a baseline mode, the quantized one in convert. */
     out: PolishResult;
-    /** max |fitted − dense| the stage-2 fit left behind (g). */
+    /** the refine loop and the vocabulary snap behind it; null in a baseline mode. */
+    refined: RefineResult | null;
+    quantized: QuantizeResult | null;
+    /** max |fitted − dense| the stage-2 fit left behind (g); 0 in convert mode, which never
+     *  fits against the dense force. */
     fitError: number;
-    /** the warm start's dense force on the polish's uniform grid. */
-    warmDense: ArrayLike<number>;
-    /** the geometry the warm start integrates into — the static "fit alone" reference. */
-    warmGeom: SectionResult;
+    /** the OPENING reference's dense force on the uniform grid, and the geometry it
+     *  integrates into: the fit-alone warm start in a baseline mode, the refine loop's
+     *  two-key opening in convert. The static "before the solve chose anything" curve. */
+    openDense: ArrayLike<number>;
+    openGeom: SectionResult;
+    /** what that opening is called on the panels. */
+    openLabel: string;
     /** the dense force of the FINAL profile — what the other mode draws as its ghost. */
     finalDense: Float32Array;
     frames: Frame[];
     segments: Segment[];
-    /** index of the warm-start frame (the fit's last step). */
+    /** the story frame: the last state before the answering solve — the fit's last step in
+     *  a baseline mode, the refine loop's settled knot set in convert. */
     warm: number;
     row: Row;
     /** force-graph range, over every frame (never re-fit per frame). */
@@ -189,77 +202,60 @@ function measure(
     return { dev, exit };
 }
 
-/** bake → fit → polish → the reference round-trip, for one scenario in one mode. */
-function run(scenario: Scenario, mode: PolishMode): Solve {
+/** bake → the selected pipeline → the reference round-trip, for one scenario.
+ *
+ *  The frames' dense arrays are built eagerly (a `forceProfile` per structural step) because
+ *  the y-range below has to span them — a range fitted to a subset would clip exactly the
+ *  early wild pieces worth seeing. It is cheap beside the solves: ~40 ms across the whole
+ *  baseline corpus against 1.3 s of solve. */
+function run(scenario: Scenario, mode: LabMode): Solve {
     const entry = entryOf(scenario.v0);
     const t0 = performance.now();
     const bake = evalGeo(entry, scenario.nodes, scenario.ds);
-    const f = fit(bake.fN, bake.ds, FIT_TOL);
-    const out = polish({ bake, entry, points: f.points, ds: scenario.ds, mode });
+    const ds = scenario.ds;
+
+    let out: PolishResult;
+    let frames: Frame[];
+    let refined: RefineResult | null = null;
+    let quantized: QuantizeResult | null = null;
+    let fitError = 0;
+    // the frame the faint "before" curve is read from, and the story frame the hook exposes.
+    let open: number;
+    let warm: number;
+    let openLabel: string;
+    let note: string;
+    if (mode === "convert") {
+        refined = refine({ bake, entry, ds });
+        quantized = quantize({ bake, entry, ds, answer: refined.final });
+        out = quantized.final;
+        frames = pipeline(refined, quantized, arclength(bake.ds));
+        // frame 0 is the recovery, so the refine events occupy 1..events.length: the first
+        // is the two-key opening and the last is the settled knot set.
+        open = 1;
+        warm = refined.events.length;
+        openLabel = "opening (2 keys)";
+        note = "calm λ-search";
+    } else {
+        const f = fit(bake.fN, bake.ds, FIT_TOL);
+        out = polish({ bake, entry, points: f.points, ds, mode });
+        fitError = f.maxError;
+        frames = baseline(f.steps, out);
+        open = f.steps.length;
+        warm = open;
+        openLabel = "fit alone";
+        note = mode;
+    }
     const ms = performance.now() - t0;
 
     const sigma = new Float64Array(bake.edges + 1);
     for (let i = 0; i < bake.edges; i++) sigma[i + 1] = sigma[i] + bake.ds[i];
 
-    // one frame per pipeline decision. The fit frames' dense arrays are built eagerly (a
-    // `forceProfile` per step: ≤ 57 steps × ≤ 433 edges on the corpus, ~40 ms across all
-    // ten against 1.3 s of solve) because the y-range below has to span them — a range
-    // fitted to a subset would clip exactly the early wild pieces worth seeing.
-    const frames: Frame[] = [
-        {
-            phase: "recover",
-            label: "dense recovered F_n",
-            points: null,
-            fN: null,
-            snap: null,
-            step: null,
-        },
-    ];
-    f.steps.forEach((step, i) => {
-        frames.push({
-            phase: "fit",
-            label:
-                i === 0
-                    ? `fit · first piece · ${step.knots.length} keys`
-                    : `fit · ${step.phase} ${i} · ${step.knots.length} keys`,
-            points: step.points,
-            fN: forceProfile(step.points, out.length, out.ds),
-            snap: null,
-            step,
-        });
-    });
-    const warm = frames.length - 1;
-    const warmDense = frames[warm].fN;
-    if (!warmDense) throw new Error("fit produced no steps");
-    for (const snap of out.snapshots) {
-        frames.push({
-            phase: "polish",
-            label: `polish · iter ${snap.step}`,
-            points: snap.points,
-            fN: snap.fN,
-            snap,
-            step: null,
-        });
-    }
-
-    const segments: Segment[] = [];
-    frames.forEach((fr, i) => {
-        const tail = segments[segments.length - 1];
-        if (tail && tail.phase === fr.phase) tail.end = i;
-        else segments.push({ phase: fr.phase, label: fr.phase, start: i, end: i });
-    });
-    for (const seg of segments) {
-        const n = seg.end - seg.start + 1;
-        seg.label =
-            seg.phase === "recover"
-                ? "recover"
-                : seg.phase === "fit"
-                  ? `fit · split → prune (${n})`
-                  : `polish · ${mode} (${n})`;
-    }
+    const segs = segments(frames, note);
+    const openDense = frames[open].fN;
+    if (!openDense) throw new Error(`fitlab: frame ${open} carries no profile`);
 
     const finalDense = forceProfile(out.points, out.length, out.ds);
-    const warmGeom = evalForce(entry, warmDense, out.ds);
+    const openGeom = evalForce(entry, openDense, out.ds);
     const solved = evalForce(entry, finalDense, out.ds);
 
     let peak = 0;
@@ -298,24 +294,39 @@ function run(scenario: Scenario, mode: PolishMode): Solve {
     box(solved.posX, solved.posY, solved.edges);
 
     const solvedM = measure(bake, sigma, solved, out.ds);
+    const kinds = (kind: RefineEvent["kind"]): number =>
+        refined ? refined.events.filter((e) => e.kind === kind).length : 0;
     const row: Row = {
         name: scenario.name,
         keys: out.keys,
         dense: bake.edges,
-        steps: f.steps.length,
+        steps: refined ? refined.events.length : frames.filter((fr) => fr.step !== null).length,
         iters: out.iters,
         outers: out.outers,
         converged: out.converged,
         ms,
         exit: solvedM.exit,
-        warmDev: measure(bake, sigma, warmGeom, out.ds).dev,
+        warmDev: measure(bake, sigma, openGeom, out.ds).dev,
         dev: solvedM.dev,
         peak,
         keyPeak,
         maxDg: out.maxDg,
         lambda: out.lambda,
         heldFloor: out.heldFloor,
+        floor: out.floor,
     };
+    if (refined && quantized)
+        row.convert = {
+            corners: refined.cornerKnots.length,
+            named: quantized.named.length,
+            segments: Math.max(0, out.points.length - 1),
+            splits: kinds("split"),
+            prunes: kinds("prune"),
+            stalls: kinds("stall"),
+            outcome: refined.outcome,
+            probes: refined.probes + quantized.probes,
+            solves: refined.solves + quantized.solves,
+        };
 
     return {
         scenario,
@@ -324,12 +335,15 @@ function run(scenario: Scenario, mode: PolishMode): Solve {
         bake,
         sigma,
         out,
-        fitError: f.maxError,
-        warmDense,
-        warmGeom,
+        refined,
+        quantized,
+        fitError,
+        openDense,
+        openGeom,
+        openLabel,
         finalDense,
         frames,
-        segments,
+        segments: segs,
         warm,
         row,
         gLo: gLo - gPad,
@@ -428,6 +442,8 @@ const playBtn = el("button", undefined, bar);
 playBtn.textContent = "Play";
 const calmBtn = el("button", undefined, bar);
 calmBtn.textContent = "Solve calm corpus";
+const convertBtn = el("button", undefined, bar);
+convertBtn.textContent = "Solve convert corpus (~70 s)";
 const handlesLabel = el("label", "mono check", bar);
 const handlesBox = el("input", undefined, handlesLabel);
 handlesBox.type = "checkbox";
@@ -467,52 +483,64 @@ function canvasIn(parent: HTMLElement, w: number, h: number): CanvasRenderingCon
 
 const viewCtx = canvasIn(
     panel(
-        "geometry: the shape, the fit alone, and what this frame really draws",
-        `The original baked geo polyline (blue), the geometry stage 2's warm start integrates into (faint — the fit alone is <code>not</code> a valid convert; on valley-explicit it leaves the panel entirely), and the geometry this frame's sparse profile integrates into through the live f32 <code>evalForce</code> path (gold). The ring is the bake's exit, the cross the integrated one: the pin closing IS those two markers meeting. The framing spans the bake and the polished result and never moves, so the frames are comparable by eye.`,
+        "geometry: the shape, the opening state, and what this frame really draws",
+        `The original baked geo polyline (blue), the geometry the pipeline's OPENING state integrates into (faint — the fit alone in a baseline mode, the refine loop's two-key opening in convert; neither is a valid convert, and on valley-explicit the fit-alone curve leaves the panel entirely), and the geometry this frame's sparse profile integrates into through the live f32 <code>evalForce</code> path (gold). The ring is the bake's exit, the cross the integrated one: the pin closing IS those two markers meeting. The framing spans the bake and the final result and never moves, so the frames are comparable by eye.`,
     ),
     PANEL_W,
     PANEL_H,
 );
 const forceCtx = canvasIn(
     panel(
-        "force: dense recovered, warm start, and the profile being solved",
-        `The dense recovered F_n the fit chased (blue), stage 2's warm start (faint), and this frame's sparse profile (gold) with its keyframes as diamonds and their bezier handles drawn: <code>green</code> where the two sides are collinear through the key (aligned; filled tips = mirrored), <code>red</code> where they are broken — the ugliness the second check-in could see but not diagnose. The y-range spans every frame, so nothing clips: where the gold curve leaves the diamonds far below it, that is <code>inter-key overshoot</code>. The dense curve's s is the bake's cumulative chord, the profile's is the uniform integration grid; the two frames drift by up to ~1.2 m, expected.`,
+        "force: the target, the opening state, and the profile being solved",
+        `The dense recovered F_n (blue — the target), the opening state (faint), and this frame's sparse profile (gold) with its keyframes drawn as the VOCABULARY they carry: bezier handles <code>green</code> where the two sides are collinear through the key (aligned; filled tips = mirrored) and <code>red</code> where they are broken, a <code>ring</code> on a key the refine loop deliberately broke (a corner), and a <code>hollow</code> diamond with flat stubs where a key carries no explicit handles at all — the FLAT state a named easing is stored as (<code>quantize.ts</code>: a named segment stores nothing, Cubic being the absent-value default). The y-range spans every frame, so nothing clips: where the gold curve leaves the diamonds far below it, that is <code>inter-key overshoot</code>. The dense curve's s is the bake's cumulative chord, the profile's is the uniform integration grid; the two frames drift by up to ~1.2 m, expected.`,
     ),
     PANEL_W,
     PANEL_H,
 );
 const tablePanel = panel(
-    "corpus",
-    `Every scenario solved exact on load; the calm columns fill in on <code>Solve calm corpus</code> (calm costs 5.1× exact's wall time — measured — so it is never in the auto-run). <code>dev warm</code> → <code>dev</code> is what the constrained polish buys over the fit alone; <code>peak</code> vs <code>key peak</code> is what the keyframes hide; <code>maxΔg</code> exact vs calm is the authorability trade. Click a row to flip the panels to it.`,
+    "corpus — the fit→polish baseline",
+    `Every scenario solved exact on load; the calm columns fill in on <code>Solve calm corpus</code> (calm costs 5.1× exact's wall time — measured — so it is never in the auto-run). This is the SPIKE's pipeline, kept as the oracle floor: <code>dev warm</code> → <code>dev</code> is what the constrained polish buys over the fit alone; <code>peak</code> vs <code>key peak</code> is what the keyframes hide; <code>maxΔg</code> exact vs calm is the authorability trade. Click a row to flip the panels to it.`,
 );
 tablePanel.className = "panel wide";
 const table = el("table", undefined, tablePanel);
+const convertPanel = panel(
+    "conversion tier — refine → polish → quantize",
+    `What the real tier does, per scenario. Never auto-run: measured 70 s for the corpus (refine 52 s + quantize 18 s), 0.5 s for circular-arc up to 26 s for double-hump — so a scenario solves when you flip it to <code>convert</code> mode, and the whole corpus on the button. <code>keys</code> is the objective (discrepancy-constrained minimal keys); <code>dev</code> against <code>floor</code> is the constraint that decides every accept; <code>named</code> is how much of the easing vocabulary the profile could be re-projected onto — structurally small, and that is the stage-4 finding, not a defect; <code>outcome</code> separates the answer (<code>floor</code>) from the sanctioned un-authorable one (<code>budget</code>) and from a defect (<code>diverged</code>).`,
+);
+convertPanel.className = "panel wide";
+const convertTable = el("table", undefined, convertPanel);
 
 // ── state ──
 
-const MODES: PolishMode[] = ["exact", "calm"];
-const solves: Record<PolishMode, (Solve | null)[]> = {
+const MODES: LabMode[] = ["exact", "calm", "convert"];
+const solves: Record<LabMode, (Solve | null)[]> = {
     exact: scenarios.map(() => null),
     calm: scenarios.map(() => null),
+    convert: scenarios.map(() => null),
 };
-const attempted: Record<PolishMode, boolean[]> = {
+const attempted: Record<LabMode, boolean[]> = {
     exact: scenarios.map(() => false),
     calm: scenarios.map(() => false),
+    convert: scenarios.map(() => false),
 };
 const errors: string[] = [];
-let mode: PolishMode = "exact";
+let mode: LabMode = "exact";
 let selected = 0;
 let frame = 0;
 let playing = false;
 let ready = false;
-let calmPumping = false;
+let pumping: LabMode | null = null;
 let elapsed = 0;
 
 function current(): Solve | null {
     return solves[mode][selected];
 }
 
+/** the solve drawn as a ghost beside this one. exact and calm are each other's comparison —
+ *  that pairing is what the spike's violence claim is read off — and convert's is the exact
+ *  baseline, the geometric oracle floor it is judged against. */
 function other(): Solve | null {
+    if (mode === "convert") return solves.exact[selected];
     return solves[mode === "exact" ? "calm" : "exact"][selected];
 }
 
@@ -520,6 +548,53 @@ function fmt(x: number, digits = 3): string {
     if (!Number.isFinite(x)) return `${x}`;
     if (x === 0) return "0";
     return Math.abs(x) >= 1e-3 && Math.abs(x) < 1e5 ? x.toFixed(digits) : x.toExponential(1);
+}
+
+/** a FLAT key: no explicit handles on either side, so both resolve from the (absent, hence
+ *  Cubic) tag at Δg = 0. The representation IS the state — `quantize.ts` names a segment by
+ *  removing its two keys' handles, never by storing a tag. */
+function flat(p: ForcePoint): boolean {
+    return p.in === undefined && p.out === undefined;
+}
+
+/** the whole vocabulary reading of one frame: the screen-space handle census
+ *  (`census.ts` — the shared classifier, at the transform the panels draw with) plus the two
+ *  states that census cannot see. `flat` is a subset of the census's `single` (a flat key
+ *  has no second side to break against), and `corners` come from the solve rather than from
+ *  the drawing — a corner is deliberate, and no geometric reading of the handles could tell
+ *  it apart from a defect. */
+interface Vocab extends HandleStats {
+    flat: number;
+    corners: number;
+    named: number;
+    segments: number;
+    keys: number;
+}
+
+const NO_VOCAB: Vocab = {
+    mirror: 0,
+    aligned: 0,
+    broken: 0,
+    single: 0,
+    flat: 0,
+    corners: 0,
+    named: 0,
+    segments: 0,
+    keys: 0,
+};
+
+function vocab(s: Solve, i: number): Vocab {
+    const fr = s.frames[i];
+    const pts = fr.points;
+    if (!pts) return NO_VOCAB;
+    return {
+        ...census(pts, chart(s, other()).scale),
+        flat: pts.filter(flat).length,
+        corners: fr.corners.length,
+        named: namedSegments(pts).length,
+        segments: Math.max(0, pts.length - 1),
+        keys: pts.length,
+    };
 }
 
 // ── panel 1: the geometry overlay ──
@@ -565,7 +640,7 @@ function drawView(): void {
     const live = geometryAt(s, frame);
     stroke(s.bake.posX, s.bake.posY, s.bake.edges, BLUE, [], 2);
     if (live) {
-        stroke(s.warmGeom.posX, s.warmGeom.posY, s.warmGeom.edges, FAINT, [3, 3], 1.5);
+        stroke(s.openGeom.posX, s.openGeom.posY, s.openGeom.edges, FAINT, [3, 3], 1.5);
         stroke(live.posX, live.posY, live.edges, GOLD, [6, 4], 2);
     }
 
@@ -597,9 +672,9 @@ function drawView(): void {
     ctx.fillText("baked geo", 12, 16);
     if (live) {
         ctx.fillStyle = FAINT;
-        ctx.fillText("fit alone", 92, 16);
+        ctx.fillText(s.openLabel, 92, 16);
         ctx.fillStyle = GOLD;
-        ctx.fillText("integrated (f32)", 168, 16);
+        ctx.fillText("integrated (f32)", 210, 16);
     } else {
         ctx.fillStyle = TEXT;
         ctx.fillText("no profile yet — the dense recovery is the input", 92, 16);
@@ -695,19 +770,40 @@ function drawForce(): void {
     ctx.clip();
     line(s.bake.fN, (i) => s.sigma[i], BLUE, [], 1.5);
     if (alt) line(alt.finalDense, (i) => i * alt.out.ds, GHOST, [2, 3], 1.5);
-    if (fr.phase === "polish") line(s.warmDense, uniform, FAINT, [3, 3], 1.5);
+    if (fr.phase === "polish" || fr.phase === "quantize")
+        line(s.openDense, uniform, FAINT, [3, 3], 1.5);
     if (fr.fN) line(fr.fN, uniform, GOLD, [], 2);
 
     if (fr.points) {
+        const pts = fr.points;
+        const corners = new Set(fr.corners);
         if (handlesBox.checked) {
-            for (const p of fr.points) {
+            pts.forEach((p, k) => {
                 const kx = px(p.s);
                 const ky = py(p.g);
+                ctx.lineWidth = 1;
+                if (flat(p)) {
+                    // a FLAT key stores no handles at all, and drawing nothing there would
+                    // read as a key with no vocabulary rather than the one it has. What it
+                    // resolves to is the Cubic tag's derived tangents: span/3 either side at
+                    // Δg = 0 (`profile.segment`), which is exactly these two stubs.
+                    ctx.strokeStyle = GREEN;
+                    for (const reach of [
+                        k > 0 ? -(p.s - pts[k - 1].s) / 3 : 0,
+                        k + 1 < pts.length ? (pts[k + 1].s - p.s) / 3 : 0,
+                    ]) {
+                        if (reach === 0) continue;
+                        ctx.beginPath();
+                        ctx.moveTo(kx, ky);
+                        ctx.lineTo(px(p.s + reach), ky);
+                        ctx.stroke();
+                    }
+                    return;
+                }
                 const [a, b] = tipsOf(p, c);
                 const state = handleState(p, c.scale);
                 ctx.strokeStyle = state === "broken" ? RED : GREEN;
                 ctx.fillStyle = ctx.strokeStyle;
-                ctx.lineWidth = 1;
                 for (const tip of [a, b]) {
                     if (!tip) continue;
                     ctx.beginPath();
@@ -719,10 +815,9 @@ function drawForce(): void {
                     if (state === "mirror") ctx.fill();
                     else ctx.stroke();
                 }
-            }
+            });
         }
-        ctx.fillStyle = GOLD;
-        for (const p of fr.points) {
+        pts.forEach((p, k) => {
             const x = px(p.s);
             const y = py(p.g);
             ctx.beginPath();
@@ -731,28 +826,46 @@ function drawForce(): void {
             ctx.lineTo(x, y + 4);
             ctx.lineTo(x - 4, y);
             ctx.closePath();
-            ctx.fill();
-        }
+            // hollow = no explicit handles: the same fill/stroke language the handle tips
+            // already use for mirrored vs aligned.
+            if (flat(p)) {
+                ctx.strokeStyle = GOLD;
+                ctx.stroke();
+            } else {
+                ctx.fillStyle = GOLD;
+                ctx.fill();
+            }
+            // a corner is a broken key ON PURPOSE — the ring says the red handles beside it
+            // are the loop's decision, not the ugliness the spike's fitted keys showed.
+            if (corners.has(k)) {
+                ctx.strokeStyle = RED;
+                ctx.beginPath();
+                ctx.arc(x, y, 7, 0, 2 * Math.PI);
+                ctx.stroke();
+            }
+        });
     }
     ctx.restore();
 
     ctx.font = "11px 'JetBrains Mono', monospace";
     ctx.fillStyle = BLUE;
-    ctx.fillText("dense recovered", PAD_L, 16);
-    if (fr.phase === "polish") {
+    ctx.fillText("target", PAD_L, 16);
+    if (fr.phase === "polish" || fr.phase === "quantize") {
         ctx.fillStyle = FAINT;
-        ctx.fillText("warm start", PAD_L + 110, 16);
+        ctx.fillText(s.openLabel, PAD_L + 50, 16);
     }
     ctx.fillStyle = GOLD;
-    ctx.fillText(fr.phase === "recover" ? "(no profile)" : fr.phase, PAD_L + 190, 16);
+    ctx.fillText(fr.phase === "recover" ? "(no profile)" : fr.phase, PAD_L + 170, 16);
     if (alt) {
         ctx.fillStyle = GHOST;
-        ctx.fillText(`${alt.mode} final`, PAD_L + 250, 16);
+        ctx.fillText(`${alt.mode} final`, PAD_L + 240, 16);
     }
     ctx.fillStyle = GREEN;
-    ctx.fillText("aligned", PANEL_W - PAD_R - 100, 16);
+    ctx.fillText("aligned", PANEL_W - PAD_R - 148, 16);
     ctx.fillStyle = RED;
-    ctx.fillText("broken", PANEL_W - PAD_R - 46, 16);
+    ctx.fillText("broken", PANEL_W - PAD_R - 94, 16);
+    ctx.fillStyle = TEXT;
+    ctx.fillText("○ flat", PANEL_W - PAD_R - 46, 16);
 }
 
 // ── panel 3: the corpus table ──
@@ -821,13 +934,108 @@ function drawTable(): void {
     }
 }
 
+// ── panel 4: the conversion table ──
+
+const CONVERT_COLUMNS = [
+    "scenario",
+    "keys",
+    "corners",
+    "named",
+    "segments",
+    "dev (m)",
+    "floor (m)",
+    "peak (g)",
+    "maxΔg",
+    "λ",
+    "events",
+    "splits",
+    "prunes",
+    "stalls",
+    "probes",
+    "solves",
+    "outcome",
+    "ms",
+];
+
+function drawConvertTable(): void {
+    convertTable.textContent = "";
+    const head = el("tr", undefined, convertTable);
+    for (const c of CONVERT_COLUMNS) el("th", undefined, head).textContent = c;
+    for (let i = 0; i < scenarios.length; i++) {
+        const s = solves.convert[i];
+        const tr = el("tr", i === selected ? "sel" : undefined, convertTable);
+        tr.style.cursor = "pointer";
+        tr.onclick = (): void => select(scenarios[i].name);
+        const cell = (text: string, color?: string): void => {
+            const td = el("td", undefined, tr);
+            td.textContent = text;
+            if (color) td.style.color = color;
+        };
+        cell(scenarios[i].name);
+        const cv = s?.row.convert;
+        if (!s || !cv) {
+            const failed = attempted.convert[i];
+            for (let k = 1; k < CONVERT_COLUMNS.length; k++)
+                cell(failed ? "—" : "…", failed ? RED : TEXT);
+            continue;
+        }
+        const r = s.row;
+        cell(`${r.keys}`);
+        cell(`${cv.corners}`, cv.corners ? RED : undefined);
+        cell(`${cv.named}`, cv.named ? GREEN : undefined);
+        cell(`${cv.segments}`);
+        cell(fmt(r.dev), r.heldFloor ? undefined : RED);
+        cell(fmt(r.floor));
+        cell(fmt(r.peak, 1));
+        cell(fmt(r.maxDg, 1));
+        cell(fmt(r.lambda, 1));
+        cell(`${r.steps}`);
+        cell(`${cv.splits}`);
+        cell(`${cv.prunes}`);
+        cell(`${cv.stalls}`);
+        cell(`${cv.probes}`);
+        cell(`${cv.solves}`);
+        cell(cv.outcome, cv.outcome === "floor" ? undefined : RED);
+        cell(r.ms.toFixed(0));
+    }
+}
+
 // ── the text lines ──
+
+/** one character per refine decision, so the strip reads as the loop's own trace. */
+const EVENT_GLYPH: Record<RefineEvent["kind"], string> = {
+    init: "○",
+    split: "S",
+    prune: "P",
+    corner: "C",
+    stall: "!",
+    budget: "B",
+    diverged: "X",
+};
 
 function drawPhases(): void {
     phaseBar.textContent = "";
     const s = current();
     if (!s) return;
     for (const seg of s.segments) {
+        // the refine phase is one frame per structural DECISION, and which decisions the
+        // loop made is the thing worth seeing — so it expands into its own chips rather than
+        // collapsing to a count. Every other phase is a run of solver iterations, where the
+        // count is all there is to say.
+        if (seg.phase === "refine") {
+            for (let i = seg.start; i <= seg.end; i++) {
+                const e = s.frames[i].event;
+                if (!e) continue;
+                const chip = el("span", `ev ${e.kind}${i === frame ? " on" : ""}`, phaseBar);
+                chip.textContent = EVENT_GLYPH[e.kind];
+                chip.title = s.frames[i].label;
+                chip.onclick = (): void => {
+                    pause();
+                    setFrame(i);
+                };
+            }
+            continue;
+        }
         const span = el(
             "span",
             frame >= seg.start && frame <= seg.end ? "on" : undefined,
@@ -855,21 +1063,29 @@ function drawLines(): void {
         return;
     }
     const r = s.row;
+    const cv = r.convert;
     headLine.textContent =
         `${name} · ${mode} · ${r.keys} keys / ${r.dense} dense edges (${(r.dense / r.keys).toFixed(1)}×)` +
-        ` · ${r.steps} fit steps · ${r.iters} iters / ${r.outers} outers` +
+        (cv
+            ? ` · refine ${r.steps} events (${cv.splits} split / ${cv.prunes} prune /` +
+              ` ${cv.corners} corner${cv.stalls ? ` / ${cv.stalls} stall` : ""})` +
+              ` · ${cv.named}/${cv.segments} named · ${cv.probes} probes / ${cv.solves} solves`
+            : ` · ${r.steps} fit steps · fit ${fmt(s.fitError, 3)} g`) +
+        ` · ${r.iters} iters / ${r.outers} outers` +
         ` · ${r.converged ? "converged" : "NOT CONVERGED"} · ${r.ms.toFixed(0)} ms` +
-        ` · fit ${fmt(s.fitError, 3)} g` +
-        (mode === "calm"
-            ? ` · λ ${fmt(r.lambda, 1)} · ${r.heldFloor ? "floor held" : "FLOOR MISSED"}`
-            : "");
+        (mode === "exact"
+            ? ""
+            : ` · λ ${fmt(r.lambda, 1)} · dev ${fmt(r.dev)} vs floor ${fmt(r.floor)} m` +
+              ` · ${r.heldFloor ? "floor held" : "FLOOR MISSED"}`) +
+        (cv ? ` · outcome ${cv.outcome}` : "");
 
     const alt = other();
     const brief = (x: Solve): string =>
         `${x.mode}: dev ${fmt(x.row.dev)} m · peak ${fmt(x.row.peak, 1)} g · maxΔg ${fmt(x.row.maxDg, 1)}`;
+    const ghost = mode === "convert" ? "exact" : mode === "exact" ? "calm" : "exact";
     cmpLine.textContent = alt
         ? `${brief(s)}    ‖    ${brief(alt)}`
-        : `${brief(s)}    ‖    ${mode === "exact" ? "calm" : "exact"} not solved — press M`;
+        : `${brief(s)}    ‖    ${ghost} not solved — press M`;
 
     const fr = s.frames[frame];
     const live = geometryAt(s, frame);
@@ -886,11 +1102,19 @@ function drawLines(): void {
         : fr.step
           ? `fit error ${fmt(fr.step.maxError, 3)} g vs tol ${FIT_TOL} g` +
             (frame === s.warm ? " · this frame IS the warm start" : "")
-          : "the observation the fit chases";
-    const hs = fr.points ? census(fr.points, chart(s, other()).scale) : null;
-    const handles = hs
-        ? ` · handles ${hs.mirror} mirrored / ${hs.aligned} aligned / ${hs.broken} broken` +
-          ` / ${hs.single} one-sided`
+          : fr.event
+            ? `probe at λ = 0${frame === s.warm ? " · the settled knot set" : ""}`
+            : fr.points
+              ? "the answer this phase settled on"
+              : "the observation the pipeline chases";
+    const v = fr.points ? vocab(s, frame) : null;
+    // the census counts every key exactly once (`flat` is the subset of `single` that stores
+    // no handles at all), so the four states plus the two the census cannot see are the whole
+    // vocabulary reading of this frame.
+    const handles = v
+        ? ` · handles ${v.mirror} mirrored / ${v.aligned} aligned / ${v.broken} broken` +
+          ` / ${v.single} one-sided (${v.flat} flat) · ${v.corners} corner · ` +
+          `${v.named}/${v.segments} named`
         : "";
     diagLine.textContent = `${fr.label} · ${geo} · ${detail}${handles}`;
     frameLabel.textContent = `frame ${frame + 1}/${s.frames.length}`;
@@ -907,12 +1131,15 @@ function draw(): void {
 function status(): void {
     const done = solves.exact.filter((s) => s !== null).length;
     const calm = solves.calm.filter((s) => s !== null).length;
+    const conv = solves.convert.filter((s) => s !== null).length;
     statusLine.className = errors.length ? "mono err" : "mono";
     statusLine.textContent = errors.length
         ? `solved ${done}/${scenarios.length} exact · ${errors.join(" · ")}`
         : `solved ${done}/${scenarios.length} exact in ${elapsed.toFixed(0)} ms` +
           (ready ? " · corpus complete" : "") +
-          (calm ? ` · ${calm}/${scenarios.length} calm` : "");
+          (calm ? ` · ${calm}/${scenarios.length} calm` : "") +
+          (conv ? ` · ${conv}/${scenarios.length} convert` : "") +
+          (pending.size ? ` · solving ${[...pending].join(", ")}…` : "");
 }
 
 // ── controls ──
@@ -933,6 +1160,7 @@ function reframe(): void {
     pause();
     setFrame(s ? s.frames.length - 1 : 0);
     drawTable();
+    drawConvertTable();
 }
 
 function select(name: string): void {
@@ -940,19 +1168,25 @@ function select(name: string): void {
     if (i < 0) throw new Error(`no scenario named ${name}`);
     selected = i;
     picker.value = name;
-    ensure(i, mode);
+    need(i, mode);
     reframe();
 }
 
-/** flip the panels between the exact baseline and the calm answer, solving the calm side on
- *  demand — the corpus auto-run stays exact (calm is 5.1× its wall time, measured). */
-function setMode(m: PolishMode): void {
+/** flip the panels between the two baseline modes and the conversion tier, solving the new
+ *  side on demand — the corpus auto-run stays exact (calm is 5.1× its wall time and convert
+ *  54× it, both measured). */
+function setMode(m: LabMode): void {
     if (!MODES.includes(m)) throw new Error(`no such mode ${m}`);
     if (m === mode) return;
     mode = m;
-    ensure(selected, m);
+    need(selected, m);
     reframe();
     status();
+}
+
+/** the next mode in the cycle — the `M` key and the mode button. */
+function nextMode(): LabMode {
+    return MODES[(MODES.indexOf(mode) + 1) % MODES.length];
 }
 
 function play(): void {
@@ -990,8 +1224,9 @@ function toggle(): void {
 
 picker.onchange = (): void => select(picker.value);
 playBtn.onclick = toggle;
-modeBtn.onclick = (): void => setMode(mode === "exact" ? "calm" : "exact");
-calmBtn.onclick = (): void => pumpCalm();
+modeBtn.onclick = (): void => setMode(nextMode());
+calmBtn.onclick = (): void => pumpMode("calm");
+convertBtn.onclick = (): void => pumpMode("convert");
 handlesBox.onchange = (): void => draw();
 scrub.oninput = (): void => {
     pause();
@@ -1002,7 +1237,7 @@ window.addEventListener("keydown", (e) => {
     if (tag === "INPUT" || tag === "SELECT") return;
     if (e.key === "ArrowRight") setFrame(frame + 1);
     else if (e.key === "ArrowLeft") setFrame(frame - 1);
-    else if (e.key === "m" || e.key === "M") setMode(mode === "exact" ? "calm" : "exact");
+    else if (e.key === "m" || e.key === "M") setMode(nextMode());
     else if (e.key === "h" || e.key === "H") {
         handlesBox.checked = !handlesBox.checked;
         draw();
@@ -1017,7 +1252,7 @@ window.addEventListener("keydown", (e) => {
 /** solve scenario `i` in mode `m` if it hasn't been. A throw is RECORDED, not swallowed:
  *  the row goes dashed-red and the status line carries the message, so a corpus that stops
  *  solving can't read as a green page. */
-function ensure(i: number, m: PolishMode): void {
+function ensure(i: number, m: LabMode): void {
     if (solves[m][i] || attempted[m][i]) return;
     attempted[m][i] = true;
     try {
@@ -1026,6 +1261,31 @@ function ensure(i: number, m: PolishMode): void {
     } catch (e) {
         errors.push(`${scenarios[i].name} (${m}): ${e instanceof Error ? e.message : String(e)}`);
     }
+}
+
+/** scenarios whose solve is scheduled but hasn't run yet — the status line's "solving…". */
+const pending = new Set<string>();
+
+/** ask for a solve the panels are about to draw. A baseline solve is fast enough to run
+ *  inline (~130 ms), but a convert solve is 0.5–26 s on this corpus and JS has one thread:
+ *  run it inline and the page never paints the "solving…" state it is about to sit in for
+ *  half a minute. So convert is deferred one macrotask, which is the whole difference between
+ *  a blank page and a page that says what it is doing. */
+function need(i: number, m: LabMode): void {
+    const key = `${scenarios[i].name} (${m})`;
+    if (solves[m][i] || attempted[m][i] || pending.has(key)) return;
+    if (m !== "convert") {
+        ensure(i, m);
+        return;
+    }
+    pending.add(key);
+    setTimeout(() => {
+        pending.delete(key);
+        ensure(i, m);
+        if (i === selected && m === mode) reframe();
+        else drawConvertTable();
+        status();
+    }, 0);
 }
 
 function pump(): void {
@@ -1042,22 +1302,26 @@ function pump(): void {
     setTimeout(pump, 0);
 }
 
-/** the calm corpus, on demand: the before/after violence table the verdict reads. Chunked
- *  like the auto-run so a ~6.7 s sweep doesn't lock the page. */
-function pumpCalm(): void {
-    if (calmPumping) return;
-    calmPumping = true;
-    calmBtn.disabled = true;
+/** one corpus sweep on demand, chunked so the page keeps painting between scenarios: the
+ *  calm columns (the before/after violence table the verdict reads, ~6.7 s) or the whole
+ *  conversion tier (~70 s measured — one scenario per macrotask, and double-hump's 26 s is
+ *  one of them). */
+function pumpMode(m: Exclude<LabMode, "exact">): void {
+    if (pumping) return;
+    pumping = m;
+    const btn = m === "calm" ? calmBtn : convertBtn;
+    btn.disabled = true;
     const step = (): void => {
-        const next = attempted.calm.findIndex((a) => !a);
+        const next = attempted[m].findIndex((a) => !a);
         if (next < 0) {
-            calmPumping = false;
-            calmBtn.textContent = "Calm corpus solved";
+            pumping = null;
+            btn.textContent = `${m} corpus solved`;
             status();
             return;
         }
-        ensure(next, "calm");
+        ensure(next, m);
         drawTable();
+        drawConvertTable();
         draw();
         status();
         setTimeout(step, 0);
@@ -1068,13 +1332,16 @@ function pumpCalm(): void {
 picker.value = scenarios[0].name;
 draw();
 drawTable();
+drawConvertTable();
 status();
 setTimeout(pump, 0);
 
 /** the harness hook (the `__kex` pattern, `main.ts`): read-only diagnostics plus the
  *  controls a capture flow drives — flip a scenario, flip a mode, scrub a frame. `ready()`
- *  is the EXACT auto-run's gate (calm is never auto-run); `errors()` must be empty for a
- *  run to mean anything. */
+ *  is the EXACT auto-run's gate (neither calm nor convert is ever auto-run, so a flow that
+ *  wants one asks for it and polls `metrics()`); `errors()` must be empty for a run to mean
+ *  anything. Additive since stage 4b: `mode()` can now answer `"convert"`, `phases()` then
+ *  carries the pipeline's four phases, and `events`/`vocab`/`outcome` are new. */
 (window as unknown as { __fitlab: unknown }).__fitlab = {
     scenarios: (): string[] => scenarios.map((s) => s.name),
     ready: (): boolean => ready,
@@ -1082,13 +1349,14 @@ setTimeout(pump, 0);
     errors: (): string[] => [...errors],
     current: (): string => scenarios[selected].name,
     select,
-    mode: (): PolishMode => mode,
+    mode: (): LabMode => mode,
     setMode,
     frames: (): number => current()?.frames.length ?? 0,
     frame: (): number => frame,
     setFrame,
-    /** the frame index of the warm start — the fit's last step, the story frame where a
-     *  0.03 g fit is still 40 m off. */
+    /** the story frame: the last state before the answering solve. In a baseline mode that
+     *  is the fit's last step, where a 0.03 g fit is still 40 m off; in convert it is the
+     *  refine loop's settled knot set, the last frame the loop itself decided. */
     warmFrame: (): number => current()?.warm ?? 0,
     phases: (): { phase: Phase; start: number; end: number }[] =>
         (current()?.segments ?? []).map((s) => ({ phase: s.phase, start: s.start, end: s.end })),
@@ -1103,15 +1371,52 @@ setTimeout(pump, 0);
             ? census(points, chart(s, other()).scale)
             : { mirror: 0, aligned: 0, broken: 0, single: 0 };
     },
+    /** the whole vocabulary reading of this frame: `handles()` plus the two states a
+     *  screen-space handle census cannot see — how many keys are FLAT (no explicit handles,
+     *  the state a named easing is stored as) and how many are CORNERS (broken on purpose,
+     *  a decision of the refine loop rather than a property of the drawing) — plus how many
+     *  segments the profile actually names. */
+    vocab: (): Vocab => {
+        const s = current();
+        return s ? vocab(s, frame) : NO_VOCAB;
+    },
     /** keyframes on THIS frame — what `handles()` censuses. Not `points().length`, which is
      *  the final polished profile: the two agree only because the polish holds the count
      *  fixed, and a check should not lean on a coincidence from another module. */
     frameKeys: (): number => current()?.frames[frame].points?.length ?? 0,
+    /** the refine loop's decision stream for the current convert solve, each mapped to the
+     *  frame that draws it — empty in a baseline mode, which runs no refine loop. */
+    events: (): {
+        kind: string;
+        at: number;
+        keys: number;
+        corners: number;
+        dev: number;
+        frame: number;
+    }[] =>
+        (current()?.frames ?? []).flatMap((fr, i) =>
+            fr.event
+                ? [
+                      {
+                          kind: fr.event.kind,
+                          at: fr.event.at,
+                          keys: fr.event.knots.length,
+                          corners: fr.event.corners.length,
+                          dev: fr.event.deviation,
+                          frame: i,
+                      },
+                  ]
+                : [],
+        ),
+    /** how the refine loop ended: `"floor"` (the answer), `"budget"` (the sanctioned
+     *  un-authorable outcome), `"diverged"` (a defect). Null in a baseline mode. */
+    outcome: (): string | null => current()?.refined?.outcome ?? null,
     playing: (): boolean => playing,
     play,
     pause,
-    solveCalm: pumpCalm,
-    rows: (m: PolishMode = "exact"): Row[] =>
+    solveCalm: (): void => pumpMode("calm"),
+    solveConvert: (): void => pumpMode("convert"),
+    rows: (m: LabMode = "exact"): Row[] =>
         solves[m].filter((s): s is Solve => s !== null).map((s) => s.row),
     metrics: (name?: string): Row | null =>
         (name === undefined ? current() : solves[mode][scenarios.findIndex((s) => s.name === name)])

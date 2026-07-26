@@ -198,7 +198,7 @@ editor-ui invariant-domain rule).
 The per-file map (what each module owns, its seams and test homes) + the external references:
 `.claude/rules/kex2d-map.md`. Layers: pure substrate + physics atoms (`section.ts`, `forward.ts`,
 `spline.ts`, `bake.ts`, `profile.ts`); kernel atoms, the deferred optimization tier's reference,
-NOT on the live path (`force.ts`, `banded.ts`, `collocate.ts`, `census.ts`, `fit.ts`, `polish.ts`, `refine.ts`, `quantize.ts`); ECS + UI (`track.ts`,
+NOT on the live path (`force.ts`, `banded.ts`, `collocate.ts`, `census.ts`, `fit.ts`, `polish.ts`, `refine.ts`, `quantize.ts`, `playback.ts`); ECS + UI (`track.ts`,
 `cart.ts`, `editor.ts`, `history.ts`, `controls.ts`, `magnet.ts`, `settings.ts`, `manipulator.ts`,
 `radial.ts`, `tangents.ts`, `timeline.ts`, `Timeline.svelte`, `menu.ts` + `Menu.svelte`,
 `App.svelte` / `render.ts` / `view.ts`, `main.ts`).
@@ -344,8 +344,11 @@ reference: `tests/geometry.lab.ts`, `tests/collocate.lab.ts`, `tests/loop.lab.ts
 `tests/attribution.lab.ts` (the conversion tier's attribution sweep — one printed row per
 corpus solve over `polish`'s mode × DOF axes, so flipping one axis attributes a metric change
 to it; violence numbers are ds-dependent and censuses are final-frame only). Visual counterparts
-`geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` (canvas2D, captured by
-the harness).
+`geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` + `fit-lab.html`
+(canvas2D, captured by the harness). `fit-lab.html` is the conversion tier's own page: it plays
+back the pipeline's decisions (`playback.ts`) and is where the tier's output is judged as an
+authoring surface. Its convert corpus is never auto-run — 70 s measured against the exact
+baseline's 1.3 s — so a scenario solves when you flip it to `convert` mode.
 
 The ECS + substrate layers are covered device-free: `tests/section.test.ts` (the substrate),
 `tests/track.test.ts` + `tests/cart.test.ts` (`BakeSystem`, cart on a bare `State` via the

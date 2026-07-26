@@ -100,7 +100,9 @@
                 cursor: pointer;
             }
             /* the pipeline strip: one segment per phase, sized by its frame count, so the
-               scrub bar below it reads as recover → fit → polish at a glance. */
+               scrub bar below it reads as recover → refine → polish → quantize at a glance.
+               The refine phase is the exception — it expands into one chip per structural
+               decision, since WHICH decisions the loop made is the thing worth seeing. */
             .phases {
                 display: flex;
                 gap: 3px;
@@ -128,6 +130,29 @@
                 color: #f0ece8;
                 background: #221d15;
                 border-color: #e0a24a;
+            }
+            /* one refine decision. Colored by what it did: a split grows the mesh (gold, the
+               working register), a prune shrinks it (blue), a corner breaks a key (red), a
+               stall is a rejected trial (faint), and the two terminal kinds are red. */
+            .phases span.ev {
+                flex-grow: 0;
+                min-width: 16px;
+                padding: 2px 3px;
+                text-align: center;
+            }
+            .phases span.split {
+                color: #e0a24a;
+            }
+            .phases span.prune {
+                color: #5aa0d0;
+            }
+            .phases span.corner,
+            .phases span.budget,
+            .phases span.diverged {
+                color: #d06a5a;
+            }
+            .phases span.stall {
+                color: #6f675e;
             }
             .mono {
                 font-family: "JetBrains Mono", monospace;
