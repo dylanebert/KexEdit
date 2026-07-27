@@ -139,48 +139,32 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   reference (`tests/helpers/dense.ts`).
 - `collocate.ts` — the dense-spine solver kernel (LM Gauss-Newton, PHR augmented-Lagrangian band).
   Kept as reference for the deferred optimization tier; the live path does not call it.
+- `fit.ts` — dense recovered force → sparse independent-handle warm start. `fit` supplies the
+  full-free oracle; `fitKnots` also supplies fixed-s g values to a flat probe, whose handles are
+  stripped before solving. Its cumulative variable-chord frame is `arclength(bake.ds)`.
+- `polish.ts` — fixed-knot geometry collocation in two unregularized families. `free` keeps every
+  independent handle as the bit-identical numeric-floor oracle. `flat` carries exactly one g DOF
+  per key and materializes only `{s,g}`, so every segment is default named Cubic by construction.
+  The shipping geometry constraint is `authoringFloor = chordDeficit(spine) + 0.5 m`; no shape
+  price or continuous authorability mode participates.
 - `refine.ts` — the **discrete outer refinement** around `polish`: choose WHERE the keys go
   by solving, reading the residual, and moving the knots there, instead of inheriting the
   warm-start fit's (which places knots against the dense force — the wrong target, since
-  force error integrates twice). Opens at two keys and splits toward the derived authoring
-  floor, then prunes every key a removal counterfactual can spare; the objective is
-  discrepancy-constrained MINIMAL KEYS, parameter-free (the floor is a constraint, not a
-  term). Four laws worth not re-deriving: a candidate is probed at **λ = 0** (the tightest
-  the family reaches — the feasibility question, one solve, and the reason the loop is
-  affordable at all), a split lands at the segment's **equidistribution point** and never its
-  residual peak (peak-splitting puts a knot beside its neighbour, and `fairRows`'s `1/span³`
-  then prices the sliver by the cube of the ratio — measured, it collapsed λ six decades and
-  quadrupled the dense peak), a split is judged in **its own region** rather than on the global
-  max (a global test reads a working split as a stall on 4/10 scenarios and buys corners it
-  does not need), and a **corner** (`polish.Corners`, the one broken-key state) is
-  stall-TRIGGERED but peak-LOCATED and judged GLOBALLY — the stall only says resolution has
-  stopped paying, while where the target's slope breaks is the global residual argmax, and a
-  broken key has to lower that same global reading to be kept. Judging the corner locally over
-  the two segments it joins let it pass by improving a region the stall never implicated
-  (measured: an accepted corner RAISED the global deviation while the stalled site kept
-  stalling); locating it in the stalled segment spends corners in the flat tail and misses a
-  floor that peak-location holds with 6 keys instead of 26. The **prune scan is exhaustive on
-  purpose** — ordering candidates by anything cheaper lets that proxy pick which key dies, and
-  with it every counterfactual evaluated afterwards (measured: a rank swap moved hill-auto
-  between 8 and 9 keys) — but the **winner among holding removals is a declared tiebreak**
-  (most slack, lowest key index on a tie), not the objective: each drops exactly one key, so
-  minimal-keys is indifferent among them. The loop is greedy single-removal descent under that
-  tiebreak; minimal keys is what it descends toward, not a guarantee (measured: inverting the
-  tiebreak moves the corpus 94 → 95 keys). The placement rules are pure module-scope functions
-  over a `Frame` (`residual`/`siteIn`/`splitSite`/`over`/`cornerSite`), unit-tested apart from
-  any solve. Split-while-violated against prune-only-while-held is the hysteresis. A probe is
-  guarded on a **readable** residual profile, not on convergence — an unconverged probe is a
-  waypoint, and the two-key opening probe genuinely fails to converge on 2/10 scenarios that
-  then hold the floor. `RefineResult.outcome` separates the three endings: `"floor"`,
-  `"budget"` (no admissible site left — the sanctioned un-authorable outcome, `heldFloor`
-  false), and `"diverged"` (an unreadable profile — a defect to surface, never an authoring
-  verdict; defensive, never observed firing). Each `RefineEvent` also carries the λ = 0 probe
-  PROFILE of the state it reports — read-only instrumentation the loop never reads back, so a
-  timeline can draw what each decision landed on without re-solving it (`playback.ts`).
+  force error integrates twice). Every warm start is flattened. The loop opens at the two
+  endpoints, splits at residual-equidistribution sites until the floor holds, then exhaustively
+  probes every interior single-key removal and greedily commits the holding candidate with the
+  most slack (lowest key index on a tie). No other structural state exists. Split-while-violated
+  against prune-only-while-held is the hysteresis; the loop is deterministic and parameter-free.
+  A probe is guarded on a **readable** residual profile, not on convergence — an unconverged
+  opening is a waypoint, while any NaN/Inf candidate terminates immediately as `"diverged"` and
+  its actual failed knots/profile are logged. `"budget"` instead means no admissible split site
+  remains, the sanctioned narrow-feature outcome. Each `RefineEvent` carries the flat probe
+  profile of the state it reports, so playback never re-solves a decision.
   **A converted section must carry the solve's own `ds`** (`length/edges`, what `spine` chose so
-  the section spans the bake exactly) — a force section stores its own step, and marching the
-  same profile at the nominal step instead misses the floor by up to 7× (pinned in
-  `refine.test.ts`). Corpus gate ~53 s.
+  the section spans the bake exactly) — a force section stores its own step. Marching
+  loop-explicit's same profile at nominal 0.5 m misses the pinned exit by 0.247 m, while the
+  realized step closes within 3.1e-5 m (`refine.test.ts`). The locked corpus is 80 keys and
+  measures ~46 s.
 - `census.ts` — the **vocabulary census**: which tangent-mode shape (`mirror`/`aligned`/`broken`/
   `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
   authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`
@@ -190,39 +174,15 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   a surface and two are comparable only at the same scale. The scale-free question (are a key's
   two handles one line) is `profile.collinear` — a collinear profile still censuses `broken`
   wherever its handles draw under `ALIGN_PX`. Unit-tested in `census.test.ts`.
-- `quantize.ts` — **easing-tag quantization**: the vocabulary snap over a settled answer. A
-  named easing demands a FLAT tangent (`F′ = 0`) at BOTH of a segment's keys — the ladder is a
-  hold-to-hold transition language — so naming is a CONSTRAINT the profile is re-projected onto,
-  not a rounding of the solved handles (rounding in place holds the floor on 0 of 84 corpus
-  segments, the closest 4.0x past it; re-solving recovers 5). The state is expressed in the representation itself: a key with no explicit
-  handles resolves both sides from the Cubic tag, which lands on the same span/3 reach with
-  Δg = 0, so `polish` carries it as a DOF REMOVAL (`slopeSlots`) — the mirror of a corner, which
-  adds one. A segment is named iff neither bounding side is explicit (`profile.custom`, derived
-  provenance). Three things worth not re-deriving: the tolerance is the authoring FLOOR itself
-  (a snap is admissible iff the re-solved geometry still holds it, so no quantization tolerance
-  exists to tune); only the **Cubic** rung is reachable, because Linear (reach 0) and Quintic
-  (7/15) leave the family `polish.fairRows` is closed-form on and the tier would have to price
-  a roughness it cannot compute — so a named segment stores no tag at all, Cubic being the
-  absent-value default; and recovery is SMALL by nature, 5 of 84 corpus segments on 4 of 10
-  scenarios, because a geo→force profile ramps (the 94 settled key slopes run |m| = 7.3e-3 to
-  84.7 g/m, median 0.29, none near zero) and only a genuine turnover can be named. Minimal keys
-  and named tags compete for one slack budget and `refine`'s prune spends it first (measured: pre-prune states name 10 more segments across four
-  scenarios, at 6 more keys) — trading them would need the exchange rate lock 4 forbids. A named
-  tag is not free either: it costs up to 1.07× the dense peak and 1.27× the seminorm. Corpus
-  gate ~17 s on top of refine's.
 - `playback.ts` — the fit lab's **playback timeline**: the pipeline's decisions turned into
   frames a scrubber walks (`fitlab.ts` draws them; this decides what they are). Not a kernel
   atom — it solves nothing — but it lives with them because what it asserts is a
-  correspondence with what the kernel decided: one frame per `RefineEvent` (the split /
-  prune / corner stream, carrying the λ = 0 probe profile that state actually held), one per
-  accepted LM step, and one ANSWER frame closing each solve phase — snapshots are decimated,
-  so the last surviving step is not the answer and a timeline ending there would draw a curve
-  no table reports. Corners arrive as dense knots and are resolved to KEY indices once, here.
-  The legacy `baseline` timeline (recover → fit → polish) stays beside `pipeline` because the
-  exact fit→polish solve is the oracle floor the tier is compared against. Unit-tested in
-  `playback.test.ts` — the label/corner rules against hand-built events (including the
-  `budget`/`diverged` kinds the corpus never produces), the timeline shape against real
-  solves.
+  correspondence with what the kernel decided: shipping playback is dense recovery followed by
+  exactly one frame and one rendered chip per flat init/split/prune/terminal event, with the final
+  event marked as the answer. The `baseline` timeline stays beside it for the full-free
+  recover→fit→polish oracle. Force plotting preserves the bake's cumulative variable-chord
+  abscissa while solver/frame arrays use their uniform realized step. Unit-tested in
+  `playback.test.ts`; the DOM chip order is captured in the fit-lab harness flow.
 
 **ECS + UI layer (the live app):**
 

@@ -2344,66 +2344,14 @@ test("collocation solver lab", async ({ page, boot }) => {
     }
 });
 
-// The geo→force fit-lab observability page (kex2d-geoforce-spike stage 5). Unlike the other lab
-// pages above, this one is NOT ready on module load: it auto-runs the whole 10-scenario corpus
-// through the solver in the background (`fitlab.ts` `pump`, chunked via `setTimeout(…, 0)` so the
-// page stays responsive), so readiness is `window.__fitlab.ready()` polled, not a panel count or a
-// fixed wait — a count is never bake-readiness's sibling law, one layer up the stack (the ready
-// flag, not a proxy for it). `errors()` empty is this page's `pageerror`: a corpus that stops
-// solving mid-run must not read as a green page (`fitlab.ts` records a throw per scenario rather
-// than swallowing it). `rows().length === 10` is every scenario having attempted AND succeeded (a
-// caught throw leaves a row absent, not present-and-false), and every row's `converged` is the
-// solver actually reaching its exit tolerance — divergence on the corpus is a bug, not an expected
-// mode (the spec's locked decision). The iteration-speed budget: the corpus takes ~1.3s of solve
-// wall time (stage-3 live log), so 10s gives ~8x headroom against a contended worker (the default
-// 4-worker suite shares the host's CPU across parallel pages) — generous enough that only a real
-// stall, not scheduling noise, trips it.
-//
-// Then flip to valley-explicit — the far-shooting spike scenario the stage-3 log calls out (a 38g
-// spike edge fits force to 0.033g yet integrates 39.7m off) — and land on the WARM-START frame:
-// the fit-lab code comment says the collocation spine starts AT the target, so the interesting
-// motion through playback lives in the FORCE graph, not the viewport, and the warm start is the
-// story frame for that gap, before the polish closes it. It is no longer frame 0: stage 4b made
-// the scrubber one phase-segmented timeline over the whole pipeline (recover → fit → polish), so
-// frame 0 is now the dense recovery, before any profile exists, and the warm start is the fit
-// phase's last frame — `warmFrame()`, asked for by name rather than by an index this flow would
-// have to keep in sync with the fitter's step count.
-//
-// Two stage-4b assertions ride along, both of them the check-in's questions made checkable:
-// `phases()` is the pipeline actually being segmented (three phases, contiguous, spanning every
-// frame) rather than a scrubber relabelled; and `handles()` at the warm start accounts for every
-// keyframe, with at least one BROKEN pair — the authorability directive's evidence (a fitted key
-// carries independent per-side tangents, so the solved curve reads ugly even where it is
-// geometrically right). Then flip loop-explicit to calm mode — the scenario where calm mode's
-// claim is largest (maxΔg 141 → 0, peak 50.6 → 29.8 g, stage-3b log) and cheapest to solve
-// (~130ms measured, against ~1.5s for the corpus's slowest calm solve) — for the comparison shot.
-// Calm is never auto-run: the calm corpus costs 5.1× exact's wall time (measured 6.7s vs 1.3s),
-// which would leave the ready() poll below 1.5× headroom instead of ~8×.
-//
-// Everything above is the fit→polish BASELINE, which the conversion tier does not use: `fit.ts`
-// places knots against the dense force, while `refine.ts` opens at TWO keys and places them
-// against the integrated geometry instead. The tier's own leg is appended at the end of this flow
-// (kex2d-geoforce-convert stage 5) rather than given its own page, per the iteration-discipline
-// law — a boot costs 3–5s and this page then re-runs its exact corpus on top.
-//
-// That leg's budget is the new one, and it is a different order from everything above. Measured
-// 2026-07-26 (WSL2, bun, one scenario at a time): the whole convert corpus is 70s — refine 52s +
-// quantize 18s — from 0.5s (circular-arc) to 26s (double-hump), against 1.3s for the ten exact
-// solves. So the corpus is NOT auto-run and cannot be, and this leg buys ONE scenario: `full-loop`,
-// the cheapest whose pipeline exercises every part of the display — the refine loop both SPLITS
-// and PRUNES (init + 6 splits + 1 prune), and the vocabulary snap actually NAMES a segment (1 of
-// 6), which is what puts a flat key on screen. `straight-fillet` is cheaper (0.98s) but names
-// nothing, and the flat-key asserts would then pass vacuously.
-//
-// That solve measures 4.0s in bun and 3.56s in the captured page — `metrics().ms`, the page's own
-// reading, which is the honest per-solve number rather than anything this flow times. The poll
-// gets 30s, ~8x it, the same headroom the exact corpus's poll above is set with; it is a stall
-// tripwire, not a performance assert. The whole flow runs 9.0s at one worker (6.6s of it this leg
-// plus the page's own exact corpus), inside the suite's 45s budget with the other flows parallel.
+// The geo→force fit lab: the flat conversion is the default view and solves on demand;
+// the lighter full-free oracle corpus fills in cooperatively on load. Measured after the
+// flat-only amendment: 22.1 s test / 27.8 s wrapper wall. The config's 60 s per-test ceiling
+// is therefore 2.7× measured capture time: contention headroom with a real stall tripwire.
 test("fit lab", async ({ page, boot }) => {
     await boot("/fit-lab.html");
     const panels = page.locator(".panel");
-    await expect(panels).toHaveCount(4); // geometry, force, corpus table, conversion table
+    await expect(panels).toHaveCount(4);
 
     const ready = () => page.evaluate((): boolean => (window as any).__fitlab.ready());
     const errors = () => page.evaluate((): string[] => (window as any).__fitlab.errors());
@@ -2412,64 +2360,41 @@ test("fit lab", async ({ page, boot }) => {
             (window as any).__fitlab.rows(),
         );
 
-    // THE DEFAULT VIEW IS THE SHIPPING PIPELINE, before anything here touches the page. The
-    // exact baseline is the geometric oracle and a deliberately degenerate authoring surface
-    // (it buys its last decimals with extreme broken handles), so a scenario must never open
-    // in it — asserted first, since every later `setMode` would mask a wrong default.
     expect(await page.evaluate(() => (window as any).__fitlab.mode())).toBe("convert");
-
     await expect.poll(ready, { timeout: 10_000 }).toBe(true);
     expect(await errors()).toEqual([]);
     const solved = await rows();
-    expect(solved.length).toBe(10);
-    for (const r of solved) expect(r.converged, `${r.name} did not converge`).toBe(true);
+    expect(solved).toHaveLength(10);
+    for (const row of solved) expect(row.converged, `${row.name} did not converge`).toBe(true);
 
-    // the baseline legs below are the oracle, reached deliberately — never the default.
+    // The opt-in oracle keeps the legacy fit→polish playback correspondence.
     await page.evaluate(() => (window as any).__fitlab.setMode("exact"));
     await page.evaluate(() => (window as any).__fitlab.select("valley-explicit"));
-    const phases = await page.evaluate((): { phase: string; start: number; end: number }[] =>
+    await page.evaluate(() => (window as any).__fitlab.setMode("exact"));
+    const oraclePhases = await page.evaluate((): { phase: string; start: number; end: number }[] =>
         (window as any).__fitlab.phases(),
     );
-    const frames = await page.evaluate((): number => (window as any).__fitlab.frames());
-    expect(phases.map((p) => p.phase)).toEqual(["recover", "fit", "polish"]);
-    expect(phases[0].start).toBe(0);
-    expect(phases[2].end).toBe(frames - 1);
-    for (let i = 1; i < phases.length; i++) expect(phases[i].start).toBe(phases[i - 1].end + 1);
-
+    const oracleFrames = await page.evaluate((): number => (window as any).__fitlab.frames());
+    expect(oraclePhases.map((phase) => phase.phase)).toEqual(["recover", "fit", "polish"]);
+    expect(oraclePhases[0].start).toBe(0);
+    expect(oraclePhases[2].end).toBe(oracleFrames - 1);
+    for (let i = 1; i < oraclePhases.length; i++)
+        expect(oraclePhases[i].start).toBe(oraclePhases[i - 1].end + 1);
     const warm = await page.evaluate((): number => (window as any).__fitlab.warmFrame());
-    expect(warm).toBe(phases[1].end); // the fit phase's last frame IS the warm start
-    await page.evaluate((f: number) => (window as any).__fitlab.setFrame(f), warm);
+    expect(warm).toBe(oraclePhases[1].end);
+    await page.evaluate((value: number) => (window as any).__fitlab.setFrame(value), warm);
     const handles = await page.evaluate(
         (): { mirror: number; aligned: number; broken: number; single: number } =>
             (window as any).__fitlab.handles(),
     );
-    const keys = await page.evaluate((): number => (window as any).__fitlab.frameKeys());
-    expect(handles.mirror + handles.aligned + handles.broken + handles.single).toBe(keys);
+    const oracleKeys = await page.evaluate((): number => (window as any).__fitlab.frameKeys());
+    expect(handles.mirror + handles.aligned + handles.broken + handles.single).toBe(oracleKeys);
     expect(handles.broken).toBeGreaterThan(0);
-
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "fit-lab.png"), fullPage: true });
 
-    await page.evaluate(() => (window as any).__fitlab.select("loop-explicit"));
-    await page.evaluate(() => (window as any).__fitlab.setMode("calm"));
-    expect(await errors()).toEqual([]);
-    const calm = await page.evaluate((): { name: string; maxDg: number; heldFloor: boolean }[] =>
-        (window as any).__fitlab.rows("calm"),
-    );
-    expect(calm.map((r) => r.name)).toEqual(["loop-explicit"]);
-    expect(calm[0].heldFloor).toBe(true);
-
-    await page.waitForTimeout(SHOT_MS);
-    await page.screenshot({ path: join(OUT, "fit-lab-calm.png"), fullPage: true });
-
-    // ── the conversion tier (stage 5): the real pipeline on the timeline ──
-    // A convert solve is scheduled one macrotask out rather than run inline, so the page paints
-    // its "solving…" state instead of freezing blank — which means readiness here is the ROW
-    // arriving, not the `setMode` call returning.
+    // The shipping timeline is only dense recovery plus the loop's own flat decisions.
     await page.evaluate(() => (window as any).__fitlab.select("full-loop"));
-    await page.evaluate(() => (window as any).__fitlab.setMode("convert"));
-    // a solve that THREW leaves no row, so polling on the row alone would burn the whole
-    // budget and then fail with a timeout instead of the message the page already recorded.
     await expect
         .poll(
             () =>
@@ -2478,51 +2403,44 @@ test("fit lab", async ({ page, boot }) => {
                         (window as any).__fitlab.metrics() !== null ||
                         (window as any).__fitlab.errors().length > 0,
                 ),
-            { timeout: 30_000 },
+            { timeout: 10_000 },
         )
         .toBe(true);
     expect(await errors()).toEqual([]);
-
-    // The refine timeline IS the phase strip now: four phases, contiguous, spanning every frame,
-    // and the refine one made of the loop's own decisions. Asserting the kinds (not just a count)
-    // is what makes this the pipeline rather than a relabelled scrubber — a split GROWS the mesh
-    // and a prune SHRINKS it again, and both have to be on screen for the stage-6 check-in to
-    // judge where the keys came from.
     const convertPhases = await page.evaluate((): { phase: string; start: number; end: number }[] =>
         (window as any).__fitlab.phases(),
     );
     const convertFrames = await page.evaluate((): number => (window as any).__fitlab.frames());
-    expect(convertPhases.map((p) => p.phase)).toEqual(["recover", "refine", "polish", "quantize"]);
+    expect(convertPhases.map((phase) => phase.phase)).toEqual(["recover", "refine"]);
     expect(convertPhases[0].start).toBe(0);
-    expect(convertPhases[3].end).toBe(convertFrames - 1);
-    for (let i = 1; i < convertPhases.length; i++)
-        expect(convertPhases[i].start).toBe(convertPhases[i - 1].end + 1);
+    expect(convertPhases[1].end).toBe(convertFrames - 1);
+    expect(convertPhases[1].start).toBe(convertPhases[0].end + 1);
 
     const events = await page.evaluate((): { kind: string; keys: number; frame: number }[] =>
         (window as any).__fitlab.events(),
     );
-    expect(events[0].kind).toBe("init");
-    expect(events[0].keys).toBe(2); // the loop opens at the profile's two ends, never at a fit
-    expect(events.filter((e) => e.kind === "split").length).toBeGreaterThan(0);
-    expect(events.filter((e) => e.kind === "prune").length).toBeGreaterThan(0);
-    expect(events.filter((e) => e.kind === "diverged").length).toBe(0);
-    // every decision is a frame INSIDE the refine phase, so the strip's chips and the scrubber
-    // address the same timeline.
-    for (const e of events) {
-        expect(e.frame).toBeGreaterThanOrEqual(convertPhases[1].start);
-        expect(e.frame).toBeLessThanOrEqual(convertPhases[1].end);
+    expect(events[0]).toMatchObject({ kind: "init", keys: 2 });
+    expect(events.some((event) => event.kind === "split")).toBe(true);
+    expect(events.some((event) => event.kind === "diverged")).toBe(false);
+    for (const event of events) {
+        expect(event.frame).toBeGreaterThanOrEqual(convertPhases[1].start);
+        expect(event.frame).toBeLessThanOrEqual(convertPhases[1].end);
     }
+    const chips = await page.locator(".phases > span").allTextContents();
+    expect(chips).toHaveLength(events.length + 1);
+    expect(chips[0]).toBe("recover");
+    for (let index = 0; index < events.length; index++)
+        expect(chips[index + 1]).toContain(events[index].kind);
+    expect(chips.at(-1)).toContain("answer");
     expect(await page.evaluate(() => (window as any).__fitlab.outcome())).toBe("floor");
-    // the settled knot set is the loop's last word, the frame before the answering solve.
     expect(await page.evaluate((): number => (window as any).__fitlab.warmFrame())).toBe(
-        convertPhases[1].end,
+        convertFrames - 1,
     );
 
-    // The vocabulary census on the ANSWER frame — the surface stage 6 judges. The aligned family
-    // cannot express a broken key, so `broken` is exactly the corners the loop chose (zero on the
-    // whole corpus at the derived floor, `refine.test.ts`), and `flat` is the named-easing state
-    // counted as itself rather than hidden inside `single`.
-    await page.evaluate((f: number) => (window as any).__fitlab.setFrame(f), convertFrames - 1);
+    await page.evaluate(
+        (value: number) => (window as any).__fitlab.setFrame(value),
+        convertFrames - 1,
+    );
     const vocab = await page.evaluate(
         (): {
             mirror: number;
@@ -2530,30 +2448,21 @@ test("fit lab", async ({ page, boot }) => {
             broken: number;
             single: number;
             flat: number;
-            corners: number;
             named: number;
             segments: number;
             keys: number;
         } => (window as any).__fitlab.vocab(),
     );
-    const convertRow = await page.evaluate((): { keys: number; heldFloor: boolean; ms: number } =>
+    const metrics = await page.evaluate((): { keys: number; heldFloor: boolean; ms: number } =>
         (window as any).__fitlab.metrics(),
     );
     expect(vocab.mirror + vocab.aligned + vocab.broken + vocab.single).toBe(vocab.keys);
-    expect(vocab.keys).toBe(convertRow.keys);
-    expect(vocab.broken).toBe(vocab.corners);
-    expect(vocab.corners).toBe(0); // no corpus scenario needs one at the derived floor
+    expect(vocab.keys).toBe(metrics.keys);
+    expect(vocab.broken).toBe(0);
+    expect(vocab.flat).toBe(vocab.keys);
     expect(vocab.segments).toBe(vocab.keys - 1);
-    // full-loop names 1 of its 6 segments (measured), and naming a segment is expressed by
-    // REMOVING both its keys' handles — so a named segment must show up as at least two flat
-    // keys, the state the panel draws hollow. Without a scenario that names something, every
-    // flat-key assert here would pass on zero.
-    expect(vocab.named).toBeGreaterThan(0);
-    expect(vocab.named).toBeLessThan(vocab.segments);
-    expect(vocab.flat).toBeGreaterThanOrEqual(vocab.named + 1); // n named segments span n+1 keys
-    expect(vocab.flat).toBeLessThanOrEqual(vocab.single);
-    expect(convertRow.heldFloor).toBe(true);
-
+    expect(vocab.named).toBe(vocab.segments);
+    expect(metrics.heldFloor).toBe(true);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "fit-lab-convert.png"), fullPage: true });
 });

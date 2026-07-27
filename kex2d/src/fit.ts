@@ -44,10 +44,9 @@
  *  geometry after integration rather than force element-wise.
  *
  *  no easing tag is stored — every side that drives a piece carries an explicit handle,
- *  so the tag never reaches `segment()`. snapping back onto the named easing ladder is
- *  `quantize.ts`'s business, and it happens after the solve rather than here: a named tag
- *  demands a FLAT tangent at both of a segment's keys, which is a constraint the profile
- *  has to be re-projected onto, not a rounding of a fitted handle. */
+ *  so the tag never reaches `segment()`. This independent-handle fit is the full-free
+ *  oracle's warm start. Shipping conversion instead calls `fitKnots` only for fixed-s
+ *  initial values, strips every handle, and solves directly in the g-only flat family. */
 
 import type { ForcePoint } from "./profile";
 
@@ -343,7 +342,7 @@ export function fit(fN: ArrayLike<number>, ds: ArrayLike<number>, tol: number): 
  *
  * @example
  * const f = fitKnots(bake.fN, bake.ds, [0, 40, bake.fN.length - 1]);
- * const p = polish({ bake, entry, points: f.points, ds, handles: "aligned" });
+ * const p = polish({ bake, entry, points: f.points, ds });
  */
 export function fitKnots(
     fN: ArrayLike<number>,

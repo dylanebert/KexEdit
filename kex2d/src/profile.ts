@@ -115,8 +115,9 @@ export function collinear(a?: Offset, b?: Offset): boolean {
  *  provenance, never a stored flag: the segment is custom iff a bounding side holds an
  *  explicit handle (`a.out` or `b.in`), since either one substitutes for the tag at the
  *  seam. Its complement is a NAMED segment, shaped by `a.ease`'s derived flat tangents
- *  alone. The conversion tier's reading of the Custom row (`quantize.ts`); the editor's own
- *  menu answers it separately over the ECS `ForceTangent` components, which are a different
+ *  alone. The flat conversion family reads this directly when asserting that every emitted
+ *  segment is named; its g-only keys carry no explicit sides.
+ *  The editor menu answers it separately over the ECS `ForceTangent` components, a different
  *  representation of the same law rather than a call into this.
  *
  * @example
