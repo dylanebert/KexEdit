@@ -145,11 +145,6 @@ export interface PolishOpts {
  *  not tuned to the corpus. */
 export const TOL_FEAS = 1e-6;
 
-/** the scale at which a geometry error stops being legible on the authoring surface, m —
- *  half of the fixed 1 m geometry authoring step. This is a conversion-policy threshold,
- *  not the live readout precision or a user-configurable manipulator snap. */
-export const AUTHOR_EPS = 0.5;
-
 /** the chord deficit of a target spine, m: `Σ (ds − |P_{j+1} − P_j|)`.
  *
  *  The geo bake is a polyline with VARIABLE chords (`sampleChain`: 0.214–0.664 m at a 0.5
@@ -162,21 +157,14 @@ export const AUTHOR_EPS = 0.5;
  *  growing with length and curvature — while the deviation it stands in for is a max over
  *  samples, so the two are related empirically, not by derivation: stage 3 measured the
  *  deficit at 9e-5 m (circular-arc) to 5.4e-2 m (valley-explicit) and found it tracked the
- *  achieved deviation within ~4× across three orders of magnitude. That calibration is
- *  what `authoringFloor` leans on, and on the bendiest corpus scenario the term carries
- *  ~52% of the resulting floor — so a shape far outside the corpus's length/curvature range
- *  is where this would first mislead. */
+ *  achieved deviation within ~4× across three orders of magnitude. On the bendiest corpus
+ *  scenario the term carries ~52% of the conversion floor, so a shape far outside the
+ *  corpus's length/curvature range is where this would first mislead. */
 export function chordDeficit(sp: Spine): number {
     let deficit = 0;
     for (let j = 0; j < sp.edges; j++)
         deficit += sp.ds - Math.hypot(sp.x[j + 1] - sp.x[j], sp.y[j + 1] - sp.y[j]);
     return deficit;
-}
-
-/** Conversion geometry floor: structural discretization proxy plus half the fixed default
- *  1 m geometry-authoring step. It deliberately does not read the live user preference. */
-export function authoringFloor(sp: Spine): number {
-    return chordDeficit(sp) + AUTHOR_EPS;
 }
 
 /** how violent a profile is to author: the peak of the dense force it drives (g) and the
@@ -309,8 +297,9 @@ export function forceMatrix(
 /**
  * polish a stage-2 fit until the geometry its dense force integrates into matches the
  * bake, with the exit held exactly. Throws on an input the formulation can't mean
- * anything over: a bad entry, fewer than two keyframes, non-ascending s, a segment side
- * with no explicit handle, a degenerate bake, or a bake the cart cannot reach.
+ * anything over: a bad entry, fewer than two keyframes, non-ascending s, a free-family
+ * key missing or carrying a malformed segment handle, a flat-family key carrying authored
+ * shaping, a malformed schedule, a degenerate bake, or a bake the cart cannot reach.
  *
  * Gravity is deliberately not an option: the production consumer (`section.evalForce` →
  * `forward.step`) hard-codes G, so a profile solved at any other g is one the shipped
@@ -348,6 +337,11 @@ export function polish(opts: PolishOpts): PolishResult {
             if (k < K - 1 && !pts[k].out)
                 throw new Error(`polish: keyframe ${k} has no out handle`);
             if (k > 0 && !pts[k].in) throw new Error(`polish: keyframe ${k} has no in handle`);
+            for (const side of ["in", "out"] as const) {
+                const handle = pts[k][side];
+                if (handle && (!Number.isFinite(handle.ds) || !Number.isFinite(handle.dg)))
+                    throw new Error(`polish: keyframe ${k} ${side} handle is not finite`);
+            }
         }
     else
         for (let k = 0; k < K; k++)
@@ -386,6 +380,23 @@ export function polish(opts: PolishOpts): PolishResult {
     const maxIters = opts.maxIters ?? 60;
     const escalate = opts.escalate ?? 10;
     const rho0 = opts.rho0 ?? 1e3 * h;
+    if (!(tol > 0) || !Number.isFinite(tol))
+        throw new Error(`polish: tol must be a finite number > 0, got ${tol}`);
+    if (!Number.isInteger(maxOuters) || maxOuters < 0)
+        throw new Error(`polish: outers must be a non-negative integer, got ${maxOuters}`);
+    if (!Number.isInteger(maxIters) || maxIters < 0)
+        throw new Error(`polish: maxIters must be a non-negative integer, got ${maxIters}`);
+    if (!(escalate >= 1) || !Number.isFinite(escalate))
+        throw new Error(`polish: escalate must be a finite number >= 1, got ${escalate}`);
+    if (!(rho0 > 0) || !Number.isFinite(rho0) || !Number.isFinite(1e6 * rho0))
+        throw new Error(`polish: rho0 must be a finite positive schedule scale, got ${rho0}`);
+    if (
+        opts.maxSnapshots !== undefined &&
+        (!(opts.maxSnapshots > 0) || !Number.isFinite(opts.maxSnapshots))
+    )
+        throw new Error(
+            `polish: maxSnapshots must be a finite number > 0, got ${opts.maxSnapshots}`,
+        );
     const rhoCap = 1e6 * rho0;
     const maxSnaps = Math.max(1, Math.floor(opts.maxSnapshots ?? 120));
 

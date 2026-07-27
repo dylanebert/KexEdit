@@ -3,8 +3,8 @@ import { V_WARN } from "../src/bake";
 import { evalGeo, type Entry } from "../src/section";
 import { scenarios } from "../src/scenarios";
 
-// the geo→force fit spike's fixed corpus (kex/specs/kex2d-geoforce-spike.md stage 1):
-// every scenario must bake deterministic + finite + feasible (v stays above V_WARN
+// The geo→force conversion corpus: every scenario must bake deterministic + finite +
+// feasible (v stays above V_WARN
 // through the shape), and its recovered F_n is snapshotted so a corpus edit's effect on
 // downstream fitting is visible in the diff, not silent.
 

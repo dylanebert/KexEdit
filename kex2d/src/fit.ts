@@ -1,8 +1,7 @@
 /** dense recovered F_n → a SPARSE force profile in `profile.ts`'s representation
  *  (keyframes + explicit per-side tangents), so the fit is loadable as a force
- *  section. the geo→force spike's sparse-init step (`specs/kex2d-geoforce-spike.md`
- *  stage 2). pure and framework-free, f64 — kernel-atom family (`force.ts`,
- *  `collocate.ts`), NOT on the live path.
+ *  section. the full-free oracle's sparse initialization. pure and framework-free,
+ *  f64 — kernel-atom family (`force.ts`, `collocate.ts`), NOT on the live path.
  *
  *  **this step alone is not a valid convert.** force error integrates twice (force →
  *  heading → position), so a profile that tracks the dense force curve to a fraction

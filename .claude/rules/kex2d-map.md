@@ -129,7 +129,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   warm-started t-march). Opinion-free: the substrate consumes dense F_n, this builds it from
   authored points. Unit-tested in `tests/profile.test.ts`.
 
-**Kernel atoms (future optimization tier's reference — NOT on the live path):**
+**Invoked conversion/optimization atoms (NOT on the live editor path):**
 
 - `force.ts` — the geometry-primal force atoms, f64. `forces64` (parametrization-invariant
   geometry→force: Menger κ + neighbor-chord tangent + raw unclamped v²) + `forceJacobian` (analytic
@@ -138,15 +138,14 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 - `banded.ts` — general symmetric-banded LDLᵀ, cross-validated ≤1e-10 against the dense Cholesky
   reference (`tests/helpers/dense.ts`).
 - `collocate.ts` — the dense-spine solver kernel (LM Gauss-Newton, PHR augmented-Lagrangian band).
-  Kept as reference for the deferred optimization tier; the live path does not call it.
+  Kept as reference for general optimization tools; the live path does not call it.
 - `fit.ts` — dense recovered force → sparse independent-handle warm start. `fit` supplies the
   full-free oracle; `fitKnots` also supplies fixed-s g values to a flat probe, whose handles are
   stripped before solving. Its cumulative variable-chord frame is `arclength(bake.ds)`.
 - `polish.ts` — fixed-knot geometry collocation in two unregularized families. `free` keeps every
   independent handle as the bit-identical numeric-floor oracle. `flat` carries exactly one g DOF
   per key and materializes only `{s,g}`, so every segment is default named Cubic by construction.
-  The shipping geometry constraint is `authoringFloor = chordDeficit(spine) + 0.5 m`; no shape
-  price or continuous authorability mode participates.
+  It owns the solve and structural `chordDeficit` reading, not conversion policy.
 - `refine.ts` — the **discrete outer refinement** around `polish`: choose WHERE the keys go
   by solving, reading the residual, and moving the knots there, instead of inheriting the
   warm-start fit's (which places knots against the dense force — the wrong target, since
@@ -155,6 +154,9 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   probes every interior single-key removal and greedily commits the holding candidate with the
   most slack (lowest key index on a tie). No other structural state exists. Split-while-violated
   against prune-only-while-held is the hysteresis; the loop is deterministic and parameter-free.
+  Its shipping geometry constraint is `chordDeficit(spine) + 0.5·LENGTH_STEP_DEFAULT`; the fixed
+  default, not the live user preference, keeps conversions deterministic. No shape price or
+  continuous authorability mode participates.
   A probe is guarded on a **readable** residual profile, not on convergence — an unconverged
   opening is a waypoint, while any NaN/Inf candidate terminates immediately as `"diverged"` and
   its actual failed knots/profile are logged. `"budget"` instead means no admissible split site
@@ -163,8 +165,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   **A converted section must carry the solve's own `ds`** (`length/edges`, what `spine` chose so
   the section spans the bake exactly) — a force section stores its own step. Marching
   loop-explicit's same profile at nominal 0.5 m misses the pinned exit by 0.247 m, while the
-  realized step closes within 3.1e-5 m (`refine.test.ts`). The locked corpus is 80 keys and
-  measures ~46 s.
+  realized step closes within 3.1e-5 m (`refine.test.ts`). The locked corpus is 80 keys.
 - `census.ts` — the **vocabulary census**: which tangent-mode shape (`mirror`/`aligned`/`broken`/
   `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
   authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`
@@ -375,4 +376,4 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 - **Houdini / Blender modifier stack** — analogue for lossy bake from parametric authoring into
   canonical dense state.
 - **Witkin & Kass 1988, Spacetime Constraints** — parameter-space trajectory optimization with sparse
-  user constraints; a reference for the deferred optimization tier.
+  user constraints; a reference for later general optimization tools.

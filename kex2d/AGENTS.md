@@ -31,12 +31,11 @@ distinct from the gold shape handles.
 
 **A unified solver is NOT the model.** Three dogfood rounds proved that a solver responsible for
 arbitrating authoring intent almost never does what's intended — the author fights it. The
-architecture is two deterministic, legible
-atoms — force→geometry and geometry→force — with authoring layers on top; optimization returns
-later only as a **scoped, invoked tool** over the atoms (the deferred "conversion/optimization
-tier"). The kernel atoms that tier will use — `force.ts`, `banded.ts`, `collocate.ts` + their
-tests + the lab pages — stay in-tree, oracle-gated, as its reference; they are NOT on the live
-path.
+architecture is two deterministic, legible atoms — force→geometry and geometry→force — with
+authoring layers on top. Optimization exists only as a **scoped, invoked tool** over those atoms:
+the authorable geo→force conversion core is landed and lab-gated, while its async, cancellable
+document command is not yet on the live editor path. Reverse force→geo remains separate work. The
+kernel atoms and lab pages stay in-tree and oracle-gated.
 
 **Positions and force keyframes are the two authoring substrates** — both sparse, density
 unbounded; the dense baked chain is always derived, never canonical (dense-vs-sparse is a false
@@ -44,7 +43,7 @@ dichotomy: a dense array is a keyframe list at maximum density). Rate/pitch-spee
 geometry substrate are rejected: rates integrate, so the encoding has global support and
 single-shooting conditioning (measured σ(∂P/∂F) ~ N^1.54 vs N^0.00 for positions), and every
 non-graph tool would pay a fit-through-the-integrator per gesture. Graph editing of geometry is
-served as a derived view or an invoked fit at the optimization tier, never as the store.
+served as a derived view or an invoked fit, never as the store.
 
 ## The section substrate
 
@@ -135,7 +134,7 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
 
 - **Points are keyframes, not constraints**. Filled diamonds, no drop-line, no driving/driven —
   they're authored *input*, not optimization targets (`editor-ui.md`'s constraints-not-keyframes
-  rule governs the deferred optimization tier, not this). The displayed curve is the
+  rule governs invoked optimization tools, not this). The displayed curve is the
   geometry-RECOVERED force (the one-display-path law), so a diamond sits O(ds) off the curve — the
   authored handle vs the recovered display, expected.
 - **Extent is the section's own authored length** (`Section.length`, m — distance is the only
@@ -197,8 +196,9 @@ editor-ui invariant-domain rule).
 
 The per-file map (what each module owns, its seams and test homes) + the external references:
 `.claude/rules/kex2d-map.md`. Layers: pure substrate + physics atoms (`section.ts`, `forward.ts`,
-`spline.ts`, `bake.ts`, `profile.ts`); kernel atoms, the deferred optimization tier's reference,
-NOT on the live path (`force.ts`, `banded.ts`, `collocate.ts`, `census.ts`, `fit.ts`, `polish.ts`, `refine.ts`, `playback.ts`); ECS + UI (`track.ts`,
+`spline.ts`, `bake.ts`, `profile.ts`); invoked conversion/optimization atoms, NOT on the live
+editor path (`force.ts`, `banded.ts`, `collocate.ts`, `census.ts`, `fit.ts`, `polish.ts`,
+`refine.ts`, `playback.ts`); ECS + UI (`track.ts`,
 `cart.ts`, `editor.ts`, `history.ts`, `controls.ts`, `magnet.ts`, `settings.ts`, `manipulator.ts`,
 `radial.ts`, `tangents.ts`, `timeline.ts`, `Timeline.svelte`, `menu.ts` + `Menu.svelte`,
 `App.svelte` / `render.ts` / `view.ts`, `main.ts`).
@@ -244,8 +244,8 @@ offset. Keyframes, not constraints. Snap + interaction conventions: `editor-ui.m
 marker lane (or its viewport polyline span); a force clip's right edge is its extent trim, and a `+`
 tail after the last clip appends (geo/force flyout). **Right-click a clip or span** for
 the context menu: Convert (destructive geo↔force, undoable) + Delete (`Del`). Split and join left the
-editor — deferred to the conversion/optimization tier (the substrate `splitGeo`/`splitForce`/
-`joinNext` + tests stay in-tree as its reference). Boundary anchors draw as viewport diamonds + chart
+editor — reserved for invoked tools (the substrate `splitGeo`/`splitForce`/`joinNext` + tests stay
+in-tree as their reference). Boundary anchors draw as viewport diamonds + chart
 vertical guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo
 via a whole-track snapshot pair (byte-identical).
 
@@ -348,8 +348,8 @@ Visual counterparts
 `geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` + `fit-lab.html`
 (canvas2D, captured by the harness). `fit-lab.html` is the conversion tier's own page: it plays
 back the pipeline's decisions (`playback.ts`) and is where the tier's output is judged as an
-authoring surface. Its convert corpus is never auto-run — the default 10-scenario reference
-measures ~46 s — so only the selected scenario solves when you flip it to `convert` mode.
+authoring surface. Its full conversion corpus stays a focused test, so the page solves only the
+selected conversion scenario.
 
 The ECS + substrate layers are covered device-free: `tests/section.test.ts` (the substrate),
 `tests/track.test.ts` + `tests/cart.test.ts` (`BakeSystem`, cart on a bare `State` via the

@@ -6,9 +6,16 @@
  * Every probe is the same unregularized flat-family collocation solve. */
 
 import { arclength, fitKnots } from "./fit";
-import { authoringFloor, type Bake, polish, type PolishResult, spine } from "./polish";
+import { type Bake, chordDeficit, polish, type PolishResult, type Spine, spine } from "./polish";
 import type { ForcePoint } from "./profile";
 import type { Entry } from "./section";
+import { LENGTH_STEP_DEFAULT } from "./settings";
+
+/** Conversion geometry floor: the discretization proxy plus half the fixed default
+ * geometry-authoring step. The live user preference never participates. */
+export function authoringFloor(target: Spine): number {
+    return chordDeficit(target) + 0.5 * LENGTH_STEP_DEFAULT;
+}
 
 export interface Frame {
     sigma: Float64Array;

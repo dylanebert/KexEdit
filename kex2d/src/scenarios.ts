@@ -1,6 +1,5 @@
-/** evalGeo-ready scenario corpus for the geo→force fit spike
- *  (`specs/kex2d-geoforce-spike.md` stage 1). pure, framework-free — no DOM/Svelte, no
- *  shallot import. each scenario is a section-local node list (node 0 at the local
+/** evalGeo-ready scenario corpus for geo→force conversion. pure, framework-free — no
+ *  DOM/Svelte or shallot import. each scenario is a section-local node list (node 0 at the local
  *  origin, heading 0 — the rigid entry-frame law, `section.ts`) ready to feed
  *  `evalGeo({ x: 0, y: 0, theta: 0, v: v0 }, nodes, ds)`.
  *

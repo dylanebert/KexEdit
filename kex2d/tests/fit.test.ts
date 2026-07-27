@@ -5,8 +5,8 @@ import { scenarios } from "../src/scenarios";
 import { evalGeo } from "../src/section";
 import { G_GRID } from "../src/timeline";
 
-// the geo→force spike's sparse-init step (kex/specs/kex2d-geoforce-spike.md stage 2):
-// dense recovered F_n → sparse keyframes + explicit per-side tangents. the oracle is a
+// The full-free oracle's sparse initialization: dense recovered F_n → sparse keyframes
+// + explicit per-side tangents. the oracle is a
 // round-trip through the PRODUCTION representation — every fit is re-sampled with
 // `profile.sampleForce` / `forceProfile`, never with the fitter's own evaluator, so a
 // convention mismatch (the σ frame, the handle sides, the x-monotonicity clamp) fails

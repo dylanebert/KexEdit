@@ -1,9 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { chordDeficit, type PolishResult, spine } from "../src/polish";
 import { custom, type ForcePoint, forceProfile } from "../src/profile";
-import { type Frame, readable, refine, residual, siteIn, splitSite } from "../src/refine";
+import {
+    authoringFloor,
+    type Frame,
+    readable,
+    refine,
+    residual,
+    siteIn,
+    splitSite,
+} from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
+import { LENGTH_STEP_DEFAULT } from "../src/settings";
 
 const EXPECTED: Record<string, { keys: number; probes: number }> = {
     "circular-arc": { keys: 3, probes: 3 },
@@ -110,9 +119,12 @@ describe("flat split → exhaustive prune", () => {
         }
     });
 
-    test("the floor is chord deficit plus the fixed half-metre authoring quantum", () => {
-        for (const { bake, result, scenario } of CORPUS)
-            expect(result.floor).toBe(chordDeficit(spine(bake, scenario.ds)) + 0.5);
+    test("the floor is chord deficit plus half the fixed default authoring step", () => {
+        for (const { bake, result, scenario } of CORPUS) {
+            const target = spine(bake, scenario.ds);
+            expect(result.floor).toBe(authoringFloor(target));
+            expect(result.floor - chordDeficit(target)).toBeCloseTo(0.5 * LENGTH_STEP_DEFAULT, 12);
+        }
     });
 
     test("realized replay holds the corpus floor; nominal replay has one measured miss", () => {

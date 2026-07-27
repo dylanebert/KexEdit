@@ -118,5 +118,27 @@ describe("polish families", () => {
                 family: "other" as never,
             }),
         ).toThrow(/family must be/);
+
+        const malformed = fitted.points.map((point) => ({
+            ...point,
+            in: point.in && { ...point.in },
+            out: point.out && { ...point.out },
+        }));
+        if (!malformed[0].out) throw new Error("missing fitted out handle");
+        malformed[0].out.dg = Number.NaN;
+        expect(() => polish({ bake, entry, points: malformed, ds: scenario.ds })).toThrow(
+            /keyframe 0 out handle is not finite/,
+        );
+    });
+
+    test("schedule guards refuse values that would poison or bypass the solve", () => {
+        const { bake, entry, fitted, scenario } = solve("circular-arc");
+        const base = { bake, entry, points: fitted.points, ds: scenario.ds };
+        expect(() => polish({ ...base, tol: Number.NaN })).toThrow(/tol must be/);
+        expect(() => polish({ ...base, outers: 1.5 })).toThrow(/outers must be/);
+        expect(() => polish({ ...base, maxIters: -1 })).toThrow(/maxIters must be/);
+        expect(() => polish({ ...base, escalate: 0 })).toThrow(/escalate must be/);
+        expect(() => polish({ ...base, rho0: 0 })).toThrow(/rho0 must be/);
+        expect(() => polish({ ...base, maxSnapshots: Number.NaN })).toThrow(/maxSnapshots must be/);
     });
 });
