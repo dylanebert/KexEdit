@@ -132,7 +132,9 @@ export interface PolishOpts {
      *  weight is `ds`), escalating by `escalate` on a stalled outer, capped at 1e6·ρ₀. */
     rho0?: number;
     escalate?: number;
-    /** playback frame cap (default 120, floor 1); frames past it are decimated by halving. */
+    /** playback frame cap (default 120); frames past it are decimated by halving. **0 records
+     *  none** — the production conversion path, which reads only the answer. Recording is pure
+     *  observation (it reads `z`, never writes it), so the answer is identical either way. */
     maxSnapshots?: number;
     /** Variable family. Defaults to the full-free oracle. */
     family?: PolishFamily;
@@ -392,13 +394,13 @@ export function polish(opts: PolishOpts): PolishResult {
         throw new Error(`polish: rho0 must be a finite positive schedule scale, got ${rho0}`);
     if (
         opts.maxSnapshots !== undefined &&
-        (!(opts.maxSnapshots > 0) || !Number.isFinite(opts.maxSnapshots))
+        (!(opts.maxSnapshots >= 0) || !Number.isFinite(opts.maxSnapshots))
     )
         throw new Error(
-            `polish: maxSnapshots must be a finite number > 0, got ${opts.maxSnapshots}`,
+            `polish: maxSnapshots must be a finite number >= 0, got ${opts.maxSnapshots}`,
         );
     const rhoCap = 1e6 * rho0;
-    const maxSnaps = Math.max(1, Math.floor(opts.maxSnapshots ?? 120));
+    const maxSnaps = Math.floor(opts.maxSnapshots ?? 120);
 
     // the probed profile→force map (`forceMatrix`). `rowDofs` is the ≤4-wide stencil per
     // edge — a dense sample lies in one segment, so its force reads the two bounding keys'
@@ -723,6 +725,7 @@ export function polish(opts: PolishOpts): PolishResult {
         };
     };
     const record = (outer: number, phi: number, mu: number): void => {
+        if (maxSnaps === 0) return;
         if (stepIdx % stride === 0) {
             snapshots.push(frame(outer, phi, mu));
             // decimate at the cap, not past it: the loop stays one frame short so the
@@ -821,7 +824,10 @@ export function polish(opts: PolishOpts): PolishResult {
     // playback must end on the answer. Normally the loop leaves room (it decimates AT the
     // cap, so it exits below it), but at `maxSnapshots` = 1 there is no room — then the
     // final frame REPLACES the last recorded one rather than overflowing the cap.
-    if (snapshots.length === 0 || snapshots[snapshots.length - 1].step !== stepIdx - 1) {
+    if (
+        maxSnaps > 0 &&
+        (snapshots.length === 0 || snapshots[snapshots.length - 1].step !== stepIdx - 1)
+    ) {
         const final = frame(outer, phiOf(z), 0);
         if (snapshots.length >= maxSnaps) snapshots[snapshots.length - 1] = final;
         else snapshots.push(final);

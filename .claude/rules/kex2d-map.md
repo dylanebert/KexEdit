@@ -154,9 +154,12 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   probes every interior single-key removal and greedily commits the holding candidate with the
   most slack (lowest key index on a tie). No other structural state exists. Split-while-violated
   against prune-only-while-held is the hysteresis; the loop is deterministic and parameter-free.
-  Its shipping geometry constraint is `chordDeficit(spine) + 0.5·LENGTH_STEP_DEFAULT`; the fixed
-  default, not the live user preference, keeps conversions deterministic. No shape price or
-  continuous authorability mode participates.
+  Its shipping geometry constraint is `chordDeficit(spine) + 0.5·CONVERT_STEP` — the conversion
+  core's OWN 1 m quantum, deliberately not `settings.ts`'s identically-defaulted manipulator grid:
+  what a document converts to is a frozen contract, so moving a live per-user preference must
+  never move it, and `localStorage` stays out of the worker bundle's graph (`refine.test.ts` pins
+  the constant AND walks the module graph, with `magnet.ts` as its positive control). No shape
+  price or continuous authorability mode participates.
   A probe is guarded on a **readable** residual profile, not on convergence — an unconverged
   opening is a waypoint, while any NaN/Inf candidate terminates immediately as `"diverged"` and
   its actual failed knots/profile are logged. `"budget"` instead means no admissible split site
@@ -170,6 +173,14 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   in `tests/fixtures/convert-golden.json` and compared with `toBe`. That golden is the gate on
   any change that claims to leave conversion output alone (a perf change above all): the human
   check approved these specific outputs, so a one-ulp drift re-opens it.
+  **`ConvertResult` (+ `narrow`) is the boundary payload** — points, realized `ds`, length, edges,
+  keys, knots, outcome, floor, deviation, probes, exactly the golden's shape: plain numbers and
+  `{s,g}`, so it structured-clones, and ~50× smaller than a `RefineResult` (0.36 KB vs 22 KB on
+  double-hump, which carries the spine, the per-sample deviation profile, and the playback
+  events). `playback: false` builds none of that freight — `refine` skips its events and passes
+  `maxSnapshots: 0` to `polish`. Recording is pure observation, so the answer is bit-identical
+  either way (pinned at both layers); it buys the boundary and the garbage, not wall time
+  (measured 0.3% over five scenarios, inside run-to-run noise).
 - `census.ts` — the **vocabulary census**: which tangent-mode shape (`mirror`/`aligned`/`broken`/
   `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
   authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`

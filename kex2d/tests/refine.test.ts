@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { chordDeficit, type PolishResult, spine } from "../src/polish";
 import { custom, type ForcePoint, forceProfile } from "../src/profile";
 import {
     authoringFloor,
+    CONVERT_STEP,
     type Frame,
+    narrow,
     readable,
     refine,
     type RefineOutcome,
@@ -13,7 +17,6 @@ import {
 } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
-import { LENGTH_STEP_DEFAULT } from "../src/settings";
 import golden from "./fixtures/convert-golden.json";
 
 const EXPECTED: Record<string, { keys: number; probes: number }> = {
@@ -102,6 +105,23 @@ function lockedDeviation(item: (typeof CORPUS)[number], ds: number): number {
     return deviation;
 }
 
+/** every `src` module reachable from an entry, over every sibling specifier in the source —
+ *  static, type-only, dynamic, or a `new URL` worker entry alike. Type-only imports count even
+ *  though a bundler erases them: the source dependency is what a later edit turns back into a
+ *  runtime one. */
+function reach(entry: string): Set<string> {
+    const seen = new Set<string>();
+    const queue = [entry];
+    for (let file = queue.pop(); file !== undefined; file = queue.pop()) {
+        if (seen.has(file)) continue;
+        seen.add(file);
+        const source = readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
+        for (const [, name] of source.matchAll(/"\.\/([\w-]+(?:\.\w+)?)"/g))
+            queue.push(name.includes(".") ? name : `${name}.ts`);
+    }
+    return seen;
+}
+
 describe("flat split → exhaustive prune", () => {
     test("all ten scenarios hold the fixed authoring floor through the live f32 path", () => {
         for (const item of CORPUS) {
@@ -121,11 +141,11 @@ describe("flat split → exhaustive prune", () => {
         }
     });
 
-    test("the floor is chord deficit plus half the fixed default authoring step", () => {
+    test("the floor is chord deficit plus half the fixed authoring step", () => {
         for (const { bake, result, scenario } of CORPUS) {
             const target = spine(bake, scenario.ds);
             expect(result.floor).toBe(authoringFloor(target));
-            expect(result.floor - chordDeficit(target)).toBeCloseTo(0.5 * LENGTH_STEP_DEFAULT, 12);
+            expect(result.floor - chordDeficit(target)).toBeCloseTo(0.5 * CONVERT_STEP, 12);
         }
     });
 
@@ -231,6 +251,46 @@ describe("flat split → exhaustive prune", () => {
                 expect(result.final.points[k].s).toBe(want.points[k].s);
                 expect(result.final.points[k].g).toBe(want.points[k].g);
             }
+        }
+    });
+
+    // What a document converts to is a frozen contract, so the conversion quantum is the
+    // core's own constant and `settings.ts` — the localStorage-backed per-user preference
+    // home — must stay out of its module graph, worker bundle included. `magnet.ts` is the
+    // walker's positive control: it DOES read the live preference, so a walker that finds
+    // nothing anywhere would fail there first.
+    test("the conversion core's module graph never reaches the preference home", () => {
+        expect(reach("magnet.ts")).toContain("settings.ts");
+        const core = reach("refine.ts");
+        expect(core).toContain("polish.ts");
+        expect(core).not.toContain("settings.ts");
+    });
+
+    // The production path is the same conversion with the lab's freight unbuilt, so it must
+    // land on the byte-identical answer the rich path froze. Two scenarios, not ten: the
+    // recording seam is one branch in `polish`/`refine` that every probe of every geometry
+    // takes the same way, and the corpus-wide gate above already runs the math.
+    test("the production path narrows to the golden with no freight recorded", () => {
+        for (const name of ["circular-arc", "hill-explicit"]) {
+            const item = CORPUS.find(({ scenario }) => scenario.name === name);
+            if (!item) throw new Error(`missing ${name}`);
+            const quiet = refine({
+                bake: item.bake,
+                entry: item.entry,
+                ds: item.scenario.ds,
+                playback: false,
+            });
+            expect(quiet.events).toEqual([]);
+            expect(quiet.final.snapshots).toEqual([]);
+            // typed as `ConvertResult`, so the fixture and the payload having the same field
+            // set is checked by `tsc`, not just field-by-field at runtime.
+            const want = golden[name as keyof typeof golden];
+            expect(narrow(quiet)).toEqual({ ...want, outcome: want.outcome as RefineOutcome });
+            // the rich path still records — otherwise the assertions above pass on a seam
+            // that stopped doing anything.
+            expect(item.result.events.length).toBeGreaterThan(0);
+            expect(item.result.final.snapshots.length).toBeGreaterThan(0);
+            expect(narrow(item.result)).toEqual(narrow(quiet));
         }
     });
 

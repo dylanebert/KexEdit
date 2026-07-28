@@ -9,12 +9,20 @@ import { arclength, fitKnots } from "./fit";
 import { type Bake, chordDeficit, polish, type PolishResult, type Spine, spine } from "./polish";
 import type { ForcePoint } from "./profile";
 import type { Entry } from "./section";
-import { LENGTH_STEP_DEFAULT } from "./settings";
 
-/** Conversion geometry floor: the discretization proxy plus half the fixed default
- * geometry-authoring step. The live user preference never participates. */
+/** The geometry-authoring step a conversion is judged against (m): a converted section must
+ * reproduce its shape to within half of one, so a re-author on the grid can express the gap.
+ *
+ * Deliberately the conversion core's OWN constant, not `settings.ts`'s manipulator grid, which
+ * happens to default to the same metre. That module is the live per-user preference home, and
+ * what a document converts to is a frozen contract — moving the manipulator's default grid must
+ * never silently move it. It also keeps `localStorage` out of the conversion's module graph
+ * (`refine.test.ts` pins both halves). */
+export const CONVERT_STEP = 1;
+
+/** Conversion geometry floor: the discretization proxy plus half the fixed authoring step. */
 export function authoringFloor(target: Spine): number {
-    return chordDeficit(target) + 0.5 * LENGTH_STEP_DEFAULT;
+    return chordDeficit(target) + 0.5 * CONVERT_STEP;
 }
 
 export interface Frame {
@@ -102,6 +110,11 @@ export interface RefineOpts {
     ds: number;
     /** Test-only override; production uses `chordDeficit + 0.5 m`. */
     floor?: number;
+    /** Record the fit lab's playback freight — a `RefineEvent` per decision and one solver
+     *  frame per probe (default true). A production conversion reads only the answer, so it
+     *  sets this false and both go unbuilt. Recording observes the solve, never steers it: the
+     *  emitted conversion is bit-identical either way (`refine.test.ts`). */
+    playback?: boolean;
     /** Probe seam for deterministic solver-failure coverage. */
     probe?: (points: readonly ForcePoint[], knots: readonly number[]) => PolishResult;
 }
@@ -124,6 +137,53 @@ export interface RefineResult {
     final: PolishResult;
     events: RefineEvent[];
     probes: number;
+}
+
+/** What a conversion hands its caller: the authored force section it produced, plus the
+ * diagnostics that say how it stands. Everything here is plain numbers and `{s,g}` objects, so
+ * it survives a structured clone — this is the payload that crosses the worker boundary, and
+ * the shape `tests/fixtures/convert-golden.json` freezes.
+ *
+ * `RefineResult`'s freight stays behind: the playback events, the solver's spine, the
+ * per-sample deviation profile. A caller that wants those runs `refine` in-process. */
+export interface ConvertResult {
+    /** The section's force keyframes, `{s, g}` only — every segment default Cubic. */
+    points: ForcePoint[];
+    /** The REALIZED edge step, `length/edges` — never the nominal step the caller passed.
+     *  A force section stores its own step, and marching loop-explicit's profile at nominal
+     *  0.5 m misses the pinned exit by 0.247 m (`refine.test.ts`). */
+    ds: number;
+    /** The section's extent (m): the bake's arclength, which the exit is pinned at. */
+    length: number;
+    edges: number;
+    keys: number;
+    /** Dense-sample index per key — where the refinement put them. The placement provenance
+     *  the golden pins; a section loads from `points`. */
+    knots: number[];
+    outcome: RefineOutcome;
+    /** The geometry floor the outcome was judged against (m). */
+    floor: number;
+    /** Worst spine-vs-target gap in the answer (m), `<= floor` on a `"floor"` outcome. */
+    deviation: number;
+    /** Solves spent — the cost reading. */
+    probes: number;
+}
+
+/** The narrow payload of a completed refinement. */
+export function narrow(result: RefineResult): ConvertResult {
+    const { final } = result;
+    return {
+        points: final.points.map(({ s, g }) => ({ s, g })),
+        ds: final.ds,
+        length: final.length,
+        edges: final.edges,
+        keys: final.keys,
+        knots: [...result.knots],
+        outcome: result.outcome,
+        floor: result.floor,
+        deviation: final.deviation,
+        probes: result.probes,
+    };
 }
 
 const flatten = (points: readonly ForcePoint[]): ForcePoint[] =>
@@ -155,6 +215,7 @@ export function refine(opts: RefineOpts): RefineResult {
         ds: target.ds,
         minSpan: 2 * target.ds,
     };
+    const playback = opts.playback ?? true;
     let probes = 0;
     const probe = (knots: readonly number[]): PolishResult => {
         const warm = flatten(fitKnots(bake.fN, bake.ds, knots).points);
@@ -166,7 +227,7 @@ export function refine(opts: RefineOpts): RefineResult {
             points: warm,
             ds: opts.ds,
             family: "flat",
-            maxSnapshots: 1,
+            maxSnapshots: playback ? 1 : 0,
         });
     };
     const held = (answer: PolishResult): boolean =>
@@ -177,6 +238,7 @@ export function refine(opts: RefineOpts): RefineResult {
     let outcome: RefineOutcome = "floor";
     const events: RefineEvent[] = [];
     const log = (kind: RefineEventKind, at: number): void => {
+        if (!playback) return;
         events.push({
             kind,
             knots: [...knots],

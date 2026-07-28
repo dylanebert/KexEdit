@@ -90,6 +90,18 @@ describe("polish families", () => {
         expect(tail?.feasibility).toBe(out.feasibility);
     });
 
+    // recording is pure observation, so the production path (`maxSnapshots: 0`, no frames
+    // built at all) must return the byte-identical answer the recorded run does.
+    test("recording nothing leaves the answer untouched", () => {
+        const { bake, entry, fitted, scenario } = solve("straight-fillet");
+        const base = { bake, entry, points: fitted.points, ds: scenario.ds };
+        const rich = polish(base);
+        const quiet = polish({ ...base, maxSnapshots: 0 });
+        expect(rich.snapshots.length).toBeGreaterThan(0);
+        expect(quiet.snapshots).toEqual([]);
+        expect({ ...quiet, snapshots: rich.snapshots }).toEqual(rich);
+    });
+
     test("family representation guards fail at the boundary", () => {
         const { bake, entry, fitted, scenario } = solve("circular-arc");
         expect(() =>
