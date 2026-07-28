@@ -9,6 +9,7 @@ import {
     createForcePoint,
     createSection,
     createTrack,
+    DS_NOMINAL,
     EXTEND_DIST,
     exitWorld,
     extend,
@@ -25,7 +26,10 @@ import {
     removeTrailingHandle,
     resetTangent,
     restoreAll,
+    restoreSection,
     samples,
+    Section,
+    sectionAt,
     SectionKind,
     sectionForces,
     sectionHandles,
@@ -40,6 +44,7 @@ import {
     setTangent,
     setTrackV0,
     snapshotAll,
+    snapshotSection,
     toGlobal,
     toLocal,
     Track,
@@ -59,7 +64,10 @@ import {
     undo,
 } from "../src/history";
 import { DEFAULT_G, Easing } from "../src/profile";
+import { scenarios } from "../src/scenarios";
+import { evalGeo } from "../src/section";
 import { editTangent, type Node, sampleChain, TangentMode } from "../src/spline";
+import golden from "./fixtures/convert-golden.json";
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
 // computeTime, syncs each geo node's sample index, and records the per-section
@@ -1391,5 +1399,122 @@ describe("force easing + seeding (stage B)", () => {
         redo(h, state);
         expect(forcePointState(state, id)?.s).toBe(14); // position re-applied
         expect(forceTangent(state, id)).toEqual(tan); // handles survived the redo
+    });
+});
+
+// the per-section step (kex2d-geoforce-editor stage 1): `Section.ds` is the step a section
+// bakes at, 0 = the track-nominal `Track.ds`. an invoked geo→force solve writes its realized
+// step (`length/edges`) so the converted profile spans its solve exactly.
+describe("per-section step (Section.ds)", () => {
+    /** a one-force-section track carrying `points` over `length`, baked at `ds` (0 =
+     *  track-nominal). returns its baked exit — the last sample of the chain. */
+    function forceExit(
+        v0: number,
+        length: number,
+        ds: number,
+        points: readonly { s: number; g: number }[],
+    ): { x: number; y: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackV0(eid, v0);
+        const sec = createSection(state, 0, SectionKind.Force, length, ds);
+        for (const p of points) createForcePoint(state, sec, p.s, p.g);
+        state.step(0);
+        const s = samples.get(eid);
+        if (!s) throw new Error("samples missing");
+        const last = Track.count.get(eid) - 1;
+        return { x: s.posX[last], y: s.posY[last] };
+    }
+
+    test("the stored step closes the pinned exit the nominal step misses", () => {
+        // the conversion tier's own oracle, at the document layer: replay a shipped
+        // conversion (the frozen golden for loop-explicit) as an authored force section and
+        // measure where it lands against the geo shape it was solved from. the solve pins the
+        // exit, so the section must march its OWN step — `length/edges` — not the nominal
+        // quantum (`refine.ts`, `refine.test.ts`'s atom-layer pin).
+        const scenario = scenarios.find((s) => s.name === "loop-explicit");
+        if (!scenario) throw new Error("missing loop-explicit scenario");
+        const solved = golden["loop-explicit"];
+        const target = evalGeo(
+            { x: 0, y: 0, theta: 0, v: scenario.v0 },
+            scenario.nodes,
+            scenario.ds,
+        );
+        const pinned = { x: target.posX[target.edges], y: target.posY[target.edges] };
+
+        const realized = forceExit(scenario.v0, solved.length, solved.ds, solved.points);
+        const nominal = forceExit(scenario.v0, solved.length, 0, solved.points);
+        const missRealized = Math.hypot(realized.x - pinned.x, realized.y - pinned.y);
+        const missNominal = Math.hypot(nominal.x - pinned.x, nominal.y - pinned.y);
+
+        // the realized step spans the solve exactly, so the exit closes within the same 1e-3 m
+        // contract `refine.test.ts` holds the atom layer to (measured 1.9e-5 m through the f32
+        // ECS columns).
+        expect(missRealized).toBeLessThan(1e-3);
+        // the nominal step marches `edges · 0.5` where the section is `length` long, so it
+        // stops short by that shortfall (0.240 m here) and cannot close the exit within it.
+        const shortfall = Math.abs(solved.length - solved.edges * DS_NOMINAL);
+        expect(shortfall).toBeGreaterThan(0.2);
+        expect(missNominal).toBeGreaterThan(0.5 * shortfall);
+    });
+
+    test("changing the stored step re-bakes the section at it", () => {
+        // the step is authored input, so it belongs in `bakeHash` — otherwise the gate skips
+        // and the track keeps rendering the previous step's samples.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 40, 0);
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, 40, 1);
+        state.step(0);
+        expect(Track.count.get(eid)).toBe(40 / DS_NOMINAL + 1); // 80 edges at the nominal step
+
+        const secEid = sectionAt(state, sec);
+        if (secEid === null) throw new Error("section missing");
+        Section.ds.set(secEid, 2);
+        state.step(0);
+        expect(Track.count.get(eid)).toBe(40 / 2 + 1); // 20 edges at the stored step
+    });
+
+    test("the stored step round-trips through snapshot/restore", () => {
+        // 0.25 is f32-exact, so the round-trip is byte-identical, not just close.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 40, 0.25);
+        const stepOf = (id: number): number => {
+            const eid = sectionAt(state, id);
+            if (eid === null) throw new Error("section missing");
+            return Section.ds.get(eid);
+        };
+
+        const perSection = snapshotSection(state, sec);
+        const whole = snapshotAll(state);
+
+        Section.ds.set(sectionAt(state, sec) as number, 0); // lose it
+        restoreSection(state, perSection); // the convert-undo unit
+        expect(stepOf(sec)).toBe(0.25);
+
+        Section.ds.set(sectionAt(state, sec) as number, 0);
+        restoreAll(state, whole); // the structural-op unit (respawns the section entity)
+        expect(stepOf(sec)).toBe(0.25);
+    });
+
+    test("a destructive convert resets the step to the nominal sentinel", () => {
+        // a convert resets the section to its kind's default; the step is a solve output, and
+        // the reset section is not one.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 40, 0.25);
+        createForcePoint(state, sec, 0, 1);
+        state.step(0);
+
+        convertSection(state, sec); // → geo
+        const secEid = sectionAt(state, sec);
+        if (secEid === null) throw new Error("section missing");
+        expect(Section.ds.get(secEid)).toBe(0);
     });
 });

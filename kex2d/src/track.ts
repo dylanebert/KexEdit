@@ -39,6 +39,11 @@ export const Track = {
  *  (0 = first), reassigned by the structural ops (append/split/join/delete). `kind`
  *  is the `SectionKind`. `length` is a FORCE section's extent (m) — the distance the
  *  force profile spans; unused (0) for a geo section, whose extent is its node chain.
+ *  `ds` is the section's own baking step (m), **0 = bake at the track-nominal
+ *  `Track.ds`** — the sentinel every hand-authored section carries. An invoked solve
+ *  writes its realized step here (`length/edges`) so the section spans its solve
+ *  exactly; replaying that profile at the nominal quantum misses the pinned exit
+ *  (`refine.ts`, and the ECS pin in `tests/track.test.ts`).
  *  a section's entry anchor is derived (the prior section's exit, or `START` for the
  *  first); it is never stored. */
 export const Section = {
@@ -46,6 +51,7 @@ export const Section = {
     order: sparse(u32),
     kind: sparse(u32),
     length: sparse(f32),
+    ds: sparse(f32),
 };
 
 /** a node on a geo section. `section` is the owning section's stable id. `order`
@@ -256,7 +262,10 @@ export interface SectionInfo {
 export const sectionInfo = new Map<number, SectionInfo>();
 
 export const MAX_SAMPLES = 4096;
-const DS_NOMINAL = 0.5;
+
+/** the track's nominal sampling step (m) — what every section bakes at unless it
+ *  carries its own (`Section.ds`). */
+export const DS_NOMINAL = 0.5;
 
 /** the DEFAULT initial speed (m/s) a fresh track's start anchor gets. it's now
  *  authored per-track (`Track.v0`, set via the START handle's field); this is only
@@ -324,14 +333,15 @@ export function createTrack(ecs: State): number {
 // with a restorable one (the eid-recycling bug one level up).
 let nextSectionId = 0;
 
-/** a section read off the ECS: eid + its stable id, chain order, kind, and force
- *  extent. */
+/** a section read off the ECS: eid + its stable id, chain order, kind, force
+ *  extent, and its own baking step (0 = the track-nominal `Track.ds`). */
 export interface SectionRow {
     eid: number;
     id: number;
     order: number;
     kind: SectionKind;
     length: number;
+    ds: number;
 }
 
 /** every section, sorted by chain order — the sequence the bake threads and the
@@ -345,6 +355,7 @@ export function sections(ecs: State): SectionRow[] {
             order: Section.order.get(eid),
             kind: Section.kind.get(eid) as SectionKind,
             length: Section.length.get(eid),
+            ds: Section.ds.get(eid),
         });
     }
     rows.sort((a, b) => a.order - b.order);
@@ -413,12 +424,15 @@ export function toLocal(spans: SectionSpan[], d: number): { section: number; s: 
 }
 
 /** create a section at `order` with a fresh stable id — the append/seed path.
+ *  `ds` is its baking step, defaulting to the track-nominal sentinel 0 (only an
+ *  invoked solve's output carries its own step).
  *  returns the id (undo/redo, membership, and selection address by id). */
 export function createSection(
     ecs: State,
     order: number,
     kind: SectionKind,
     length: number,
+    ds = 0,
 ): number {
     const eid = ecs.create();
     ecs.add(eid, Section);
@@ -427,6 +441,7 @@ export function createSection(
     Section.order.set(eid, order);
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
+    Section.ds.set(eid, ds);
     return id;
 }
 
@@ -439,6 +454,7 @@ function spawnSection(
     order: number,
     kind: SectionKind,
     length: number,
+    ds: number,
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Section);
@@ -446,6 +462,7 @@ function spawnSection(
     Section.order.set(eid, order);
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
+    Section.ds.set(eid, ds);
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -1027,6 +1044,7 @@ export interface SectionSnapshot {
     order: number;
     kind: SectionKind;
     length: number;
+    ds: number;
     nodes: NodeState[];
     points: { id: number; s: number; g: number; ease: Easing; tangent?: ForceTangent }[];
 }
@@ -1041,6 +1059,7 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
         order: Section.order.get(eid),
         kind: Section.kind.get(eid) as SectionKind,
         length: Section.length.get(eid),
+        ds: Section.ds.get(eid),
         nodes: nodeSnapshot(ecs, sectionId),
         points: sectionForces(ecs, sectionId).map((p) => ({
             id: p.id,
@@ -1064,6 +1083,7 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.order.set(eid, snap.order);
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
+    Section.ds.set(eid, snap.ds);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
 }
@@ -1109,12 +1129,15 @@ function seedForceKeyframes(ecs: State, sectionId: number, length: number, g: nu
 /** destructively flip a section's kind to its opposite, resetting to that kind's
  *  default: geo → force clears the nodes and seeds the two continuation keyframes at
  *  the recovered entry force (a flat continuation over the default extent); force →
- *  geo clears the points for the flat two-node seed. undo (a `snapshotSection` pair)
+ *  geo clears the points for the flat two-node seed. the baking step resets to the
+ *  nominal sentinel with them — a stored step belongs to the solve that produced the
+ *  payload, and this discards that payload. undo (a `snapshotSection` pair)
  *  makes it safe, so there's no confirmation. does not itself record history —
  *  `history.convertSection` wraps it. */
 export function convertSection(ecs: State, sectionId: number): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) return;
+    Section.ds.set(eid, 0);
     const kind = Section.kind.get(eid);
     if (kind === SectionKind.Geo) {
         // recover the entry force from the current (pre-convert, geo) bake before the
@@ -1169,7 +1192,7 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
     for (const e of [...ecs.query([Handle])]) ecs.destroy(e);
     for (const e of [...ecs.query([Force])]) ecs.destroy(e);
     for (const snap of snaps) {
-        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length);
+        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length, snap.ds);
         for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
     }
@@ -1244,7 +1267,7 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
     const frame = headExit(ecs, handles, k);
     const order = Section.order.get(secEid);
     bumpOrders(ecs, order + 1, +1);
-    const bId = createSection(ecs, order + 1, SectionKind.Geo, 0);
+    const bId = createSection(ecs, order + 1, SectionKind.Geo, 0, Section.ds.get(secEid));
     for (let i = k; i <= n; i++) {
         const bl = localize(frame, {
             x: Handle.pos.x.get(handles[i]),
@@ -1260,7 +1283,9 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
 
 /** split a force section at arclength `s` (0 < s < length): the head keeps extent
  *  [0, s] and its points there; a new section takes extent [s, length] with the
- *  remaining points rebased to its entry (a lossless partition). no-op outside
+ *  remaining points rebased to its entry (a lossless partition). **both halves
+ *  inherit the baking step** (as a geo split does): a split partitions the profile at
+ *  its own density, it doesn't re-solve it. no-op outside
  *  the interior. returns the new (tail) section id, or null. */
 export function splitForce(ecs: State, sectionId: number, s: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
@@ -1270,7 +1295,7 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
 
     const order = Section.order.get(secEid);
     bumpOrders(ecs, order + 1, +1);
-    const bId = createSection(ecs, order + 1, SectionKind.Force, len - s);
+    const bId = createSection(ecs, order + 1, SectionKind.Force, len - s, Section.ds.get(secEid));
     for (const p of sectionForces(ecs, sectionId)) {
         if (p.s >= s) {
             Force.section.set(p.eid, bId);
@@ -1284,7 +1309,10 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
 /** join a section with the next one in the chain (same-kind only). geo appends the
  *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
  *  geo split); force concatenates the extents and rebases the neighbor's points. the
- *  neighbor is removed and downstream orders close up. returns true when joined. */
+ *  neighbor is removed and downstream orders close up. **the upstream baking step
+ *  wins** — the joined section spans neither solve any more, so the neighbor's step
+ *  has no claim on it (the head keeps its own; nothing to write). returns true when
+ *  joined. */
 export function joinNext(ecs: State, sectionId: number): boolean {
     const aEid = sectionAt(ecs, sectionId);
     const b = nextSection(ecs, sectionId);
@@ -1350,8 +1378,8 @@ function seed(ecs: State): void {
 
 // ── bake ─────────────────────────────────────────────────────────────────────
 
-/** a geo section's payload: its section-local nodes (node 0 at {0,0,0}) + the shared
- *  nominal spacing. the substrate places them rigidly at the running chain entry. */
+/** a geo section's payload: its section-local nodes (node 0 at {0,0,0}) + the step it
+ *  bakes at. the substrate places them rigidly at the running chain entry. */
 function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
     const nodes: Node[] = sectionHandles(ecs, sectionId).map((eid) => ({
         x: Handle.pos.x.get(eid),
@@ -1362,8 +1390,17 @@ function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
     return { kind: "geo", nodes, ds };
 }
 
+/** the step a section bakes at: its own when set, else the track-nominal `ds` (0 is
+ *  the sentinel every hand-authored section carries). an invoked solve stores its
+ *  realized step, and the profile only spans the section — closing the exit the solve
+ *  pinned — when it's replayed at that step, not at the nominal quantum. */
+function sectionStep(stored: number, nominal: number): number {
+    return stored > 0 ? stored : nominal;
+}
+
 /** a force section's payload: its authored points gathered into a dense per-edge
- *  F_n(σ) profile over the section extent + the shared spacing. */
+ *  F_n(σ) profile over the section extent + the step it bakes at (its own or the
+ *  nominal), which sets both the edge count and the integrator's march. */
 function forcePayload(ecs: State, sectionId: number, length: number, ds: number): SectionSpec {
     const points: ForcePoint[] = sectionForces(ecs, sectionId).map((p) => {
         const tan = readForceTangent(p.eid);
@@ -1379,14 +1416,16 @@ function forcePayload(ecs: State, sectionId: number, length: number, ds: number)
 }
 
 /** input-state hash that gates the bake: the shared ds + initial speed, then every
- *  section in order — its id/order/kind, and its authored payload (a geo section's
- *  node poses, a force section's extent + points). BakeSystem re-bakes on a miss
- *  (anything moved, added, removed, converted, reordered, or the v0 retimed), skips
- *  otherwise. */
+ *  section in order — its id/order/kind, its own baking step when it carries one, and
+ *  its authored payload (a geo section's node poses, a force section's extent +
+ *  points). BakeSystem re-bakes on a miss (anything moved, added, removed, converted,
+ *  reordered, restepped, or the v0 retimed), skips otherwise. the step is written only
+ *  when set, so the nominal sentinel leaves an authored track's hash untouched. */
 function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number): string {
     let h = `ds${ds}v0${v0}`;
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sec.kind}`;
+        if (sec.ds > 0) h += `@${sec.ds}`;
         if (sec.kind === SectionKind.Force) {
             h += `:L${sec.length}`;
             for (const p of sectionForces(ecs, sec.id)) {
@@ -1450,11 +1489,12 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         if (sec.kind === SectionKind.Geo && sectionHandles(ecs, sec.id).length < 2) return;
     }
 
-    const payloads = secs.map((sec) =>
-        sec.kind === SectionKind.Geo
-            ? geoPayload(ecs, sec.id, ds)
-            : forcePayload(ecs, sec.id, sec.length, ds),
-    );
+    const payloads = secs.map((sec) => {
+        const step = sectionStep(sec.ds, ds);
+        return sec.kind === SectionKind.Geo
+            ? geoPayload(ecs, sec.id, step)
+            : forcePayload(ecs, sec.id, sec.length, step);
+    });
     const c = chain(start, payloads, MAX_SAMPLES);
     const count = c.count;
     if (count < 2) return; // fully degenerate first section — keep the prior bake
@@ -1516,7 +1556,7 @@ export const TrackPlugin: Plugin = {
     components: { Track, Section, Handle, Force },
     traits: {
         Track: { defaults: () => ({ count: 0, ds: 0, v0: V0 }) },
-        Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0 }) },
+        Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0, ds: 0 }) },
         Handle: {
             defaults: () => ({
                 section: 0,

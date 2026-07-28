@@ -225,7 +225,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 - `track.ts` — `BakeSystem` walks `sections()` (by `Section.order`) → per-section payload → one
   `chain(startEntry(v0), payloads)` → the `samples`/`bakeOut` SoA + the `sectionInfo` map; skips on a
   `bakeHash` match (over every section, ds + v0). Components: `Track` (`count`, `ds`, `v0`), `Section` (`id` stable,
-  `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent), `Handle` (`section`, per-section
+  `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent, `ds` = its own baking step), `Handle` (`section`, per-section
   `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`).
   `bakeOut`: per-edge `fN`+`ds`, per-sample `t`/`feasible`, `firstInfeasible`, `hash`. `sectionInfo`
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
@@ -241,7 +241,18 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`,
   `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection`, `snapshotSection`/`restoreSection`
   + whole-track `snapshotAll`/`restoreAll`. Initial speed: `trackV0State`/`setTrackV0` (`Track.v0`).
-  `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`.
+  `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`, `DS_NOMINAL`.
+  **The per-section step** (`Section.ds`, resolved by `sectionStep`): a section bakes at its own
+  step, `0` meaning the track-nominal `DS_NOMINAL`. Only an invoked solve writes one — a converted
+  section carries the solve's realized `length/edges` so its profile spans the section exactly, and
+  replaying it at the nominal quantum misses the pinned exit by metres-scale fractions (`refine.ts`;
+  pinned at the document layer in `tests/track.test.ts` against the frozen golden). It's authored
+  input, so it's in `bakeHash` (written only when set, so the sentinel leaves an authored track's
+  hash byte-identical) and in `snapshotSection`/`restoreSection`/`spawnSection`. Three op rules:
+  **a convert resets it** (the destructive reset discards the payload the step belonged to), **a
+  split gives both halves the step** (the partition keeps each half's density; it doesn't re-solve),
+  and **a join takes the upstream's** — the joined section spans neither solve any more, so the
+  neighbor's step has no claim on it. Pinned in `tests/ops.test.ts`.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `loopTime`, and **`trackMapping`**
