@@ -510,6 +510,13 @@ test("geo authoring flow", async ({ page, boot }) => {
         )
         .toEqual(["Delete Del", "Add Enter", "Handles", "Tangents ▸"]); // ▸ = the submenu affix
     await page.keyboard.press("Escape"); // dismiss the menu
+    await expect(page.locator(".nodemenu")).toHaveCount(0);
+    // …and the node it was summoned on survives that press (one rung), so the NEXT Escape is the
+    // one that deselects. A dismissal listener that outlives its own menu swallows this second
+    // press and the node stays selected — the stale-swallow the permanent-listener shape kills.
+    expect(await selectedOrder()).not.toBeNull();
+    await page.keyboard.press("Escape");
+    await expect.poll(selectedOrder).toBeNull();
 
     // ── 5. Interior angle drag==rest (feel round 9): the SAME invariant on an INTERIOR node. its angle
     // knob snaps the chord, but the readout reports the node's (frozen) exit heading — drag AND rest,
@@ -2062,16 +2069,31 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await page.waitForTimeout(SHOT_MS);
     if (strip) await page.screenshot({ path: join(OUT, "section-2-keyframe.png"), clip: strip });
 
-    // ── 3. Right-click the force clip → "Convert to Geo" (real context menu). ──
+    // ── 3. Escape peels EXACTLY ONE rung off the section context menu: the menu goes, the
+    // section it was summoned on stays selected (root ui.md's layered dismissal). Both rungs are
+    // pinned before the press — no other menu mounted above it, the selection it must NOT peel
+    // asserted ON — so a green run can't be peeling a rung this flow never named. ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    if (strip) await page.screenshot({ path: join(OUT, "section-3-menu.png"), clip: strip });
+    await expect(page.locator(".nodemenu")).toHaveCount(0); // nothing above the rung being peeled
+    expect(await selectedSection()).toBe(ids[1]); // the rung below, ON before the press
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".ctxmenu")).toHaveCount(0);
+    await frames(page, 2); // let a stray deselect land before reading — the assert is a retention
+    expect(await selectedSection()).toBe(ids[1]);
+    await page.keyboard.press("Escape"); // the NEXT press peels the selection (no stale swallow)
+    await expect.poll(selectedSection).toBe(null);
+
+    // ── 4. Right-click the force clip → "Convert to Geo" (real context menu). ──
+    await page.locator(".clip").nth(1).click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    if (strip) await page.screenshot({ path: join(OUT, "section-4-menu.png"), clip: strip });
     await page.getByRole("menuitem", { name: "Convert to Geo" }).click();
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,0");
     await page.keyboard.press("Control+z"); // convert is one undo entry
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
 
-    // ── 4. Right-click a clip → Delete (real context menu). ──
+    // ── 5. Right-click a clip → Delete (real context menu). ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await page.getByRole("menuitem", { name: "Delete" }).click();
     await expect.poll(sectionCount).toBe(1);

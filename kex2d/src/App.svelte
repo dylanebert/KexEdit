@@ -504,17 +504,21 @@ function pickModeSet(mode: TangentMode): void {
 // dismiss the node menu on any outside press or Escape (clicks on the menu pass through so
 // its items act first). Escape peels just this menu layer (capture + stop, so controls.ts
 // doesn't also exit tangent edit) — root ui.md's one-layer dismissal.
-$effect(() => {
-    if (nmenu === null) return;
+//
+// the listeners are PERMANENT and gate on the live `editor.nodeMenu`, never on the reactive
+// `nmenu`: `nmenu` derives through the per-RAF `tick`, so a lifetime bound to it outlives the
+// logical close by at least a frame — and a capture-phase swallow that outlives its own layer
+// eats the next Escape (the one meant to deselect the node) from a menu already closed.
+onMount(() => {
     const onDown = (e: PointerEvent): void => {
+        if (editor.nodeMenu === null) return;
         if ((e.target as HTMLElement | null)?.closest(".nodemenu")) return;
         closeNodeMenu();
     };
     const onEsc = (e: KeyboardEvent): void => {
-        if (e.key === "Escape") {
-            e.stopImmediatePropagation();
-            closeNodeMenu();
-        }
+        if (editor.nodeMenu === null || e.key !== "Escape") return;
+        e.stopImmediatePropagation();
+        closeNodeMenu();
     };
     window.addEventListener("pointerdown", onDown, { capture: true });
     window.addEventListener("keydown", onEsc, { capture: true });
@@ -611,21 +615,30 @@ function ctxDeleteSet(): void {
     if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
 }
 // dismiss the menu on any outside press or Escape (clicks on the menu itself pass through
-// so its items can act before it closes).
-$effect(() => {
-    if (ctx === null) return;
+// so its items can act before it closes). Escape peels just this menu layer (capture + stop,
+// so controls.ts doesn't also clear the section selection the menu was summoned on) — root
+// ui.md's one-layer dismissal, the same shape the node and force menus wear.
+//
+// the listeners are PERMANENT and gate on the live `editor.context`, never on the reactive
+// `ctx`: `ctx` derives through the per-RAF `tick`, so a lifetime bound to it outlives the
+// logical close by at least a frame — and a capture-phase swallow that outlives its own layer
+// eats the next Escape (the one meant to deselect the section) from a menu already closed.
+onMount(() => {
     const onDown = (e: PointerEvent): void => {
+        if (editor.context === null) return;
         if ((e.target as HTMLElement | null)?.closest(".ctxmenu")) return;
         closeContext();
     };
     const onEsc = (e: KeyboardEvent): void => {
-        if (e.key === "Escape") closeContext();
+        if (editor.context === null || e.key !== "Escape") return;
+        e.stopImmediatePropagation();
+        closeContext();
     };
     window.addEventListener("pointerdown", onDown, { capture: true });
-    window.addEventListener("keydown", onEsc);
+    window.addEventListener("keydown", onEsc, { capture: true });
     return () => {
         window.removeEventListener("pointerdown", onDown, { capture: true });
-        window.removeEventListener("keydown", onEsc);
+        window.removeEventListener("keydown", onEsc, { capture: true });
     };
 });
 
