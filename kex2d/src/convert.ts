@@ -1,9 +1,9 @@
 /** Async, cancellable geo→force conversion — the façade an invoked tool calls.
  *
- * `refine` is seconds of solving (the corpus worst is ~9 s in bun, ~26 s in a browser), so
- * running it in-process freezes the page. Here the refinement loop keeps running on the caller's
- * thread — it is sub-millisecond, and it is the part that decides anything — while every
- * `polish` probe is handed to a pool of workers.
+ * `refine` is seconds of solving (the corpus worst is ~7 s in bun, and a browser is slower
+ * still), so running it in-process freezes the page. Here the refinement loop keeps running on
+ * the caller's thread — it is sub-millisecond, and it is the part that decides anything — while
+ * every `polish` probe is handed to a pool of workers.
  *
  * **Determinism under concurrency.** The loop (`refine.plan`) asks for probes one at a time and
  * consumes answers strictly in ask order; the pool only ever *prefetches* the asks it has been
@@ -225,9 +225,10 @@ async function drive(
     }
 }
 
-/** The bake as it crosses the boundary: exactly the six arrays a probe reads, projected out of
- *  whatever the caller passed (a `SectionResult` also carries an exit state and node offsets the
- *  solve never touches, and they would clone too). Sent once per worker, not once per probe. */
+/** The bake as it crosses the boundary: exactly the five arrays and the edge count a probe
+ *  reads, projected out of whatever the caller passed (a `SectionResult` also carries an exit
+ *  state and node offsets the solve never touches, and they would clone too). Sent once per
+ *  worker, not once per probe. */
 function pack(bake: RefineBake): RefineBake {
     return {
         posX: bake.posX,

@@ -175,11 +175,13 @@ export interface ConvertResult {
     probes: number;
 }
 
+const carry = (points: readonly ForcePoint[]): ForcePoint[] => points.map(({ s, g }) => ({ s, g }));
+
 /** The narrow payload of a completed refinement. */
 export function narrow(result: RefineResult): ConvertResult {
     const { final } = result;
     return {
-        points: final.points.map(({ s, g }) => ({ s, g })),
+        points: carry(final.points),
         ds: final.ds,
         length: final.length,
         edges: final.edges,
@@ -191,8 +193,6 @@ export function narrow(result: RefineResult): ConvertResult {
         probes: result.probes,
     };
 }
-
-const carry = (points: readonly ForcePoint[]): ForcePoint[] => points.map(({ s, g }) => ({ s, g }));
 
 /** The warm start a probe solves from: the dense recovered force fitted at the fixed knots,
  * flattened to g-only keys (the flat family carries no handles). */

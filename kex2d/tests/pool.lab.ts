@@ -109,10 +109,16 @@ const totals = (rows: Row[]) => ({
 });
 console.table({ corpus: totals(corpus), stress: totals(beyond) });
 
+const named = (name: string): Scenario => {
+    const found = [...scenarios, ...stress].find((candidate) => candidate.name === name);
+    if (!found) throw new Error(`unknown scenario ${name}`);
+    return found;
+};
+
 const cancels = [
-    await cancelMs(scenarios[8]),
-    await cancelMs(stress[0]),
-    await cancelMs(stress[2]),
+    await cancelMs(named("double-hump")),
+    await cancelMs(named("quad-hump")),
+    await cancelMs(named("long-mixed")),
 ];
 console.log(
     `cancel latency ms (workers busy at abort): ${cancels

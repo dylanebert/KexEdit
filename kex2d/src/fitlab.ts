@@ -208,7 +208,9 @@ function scheduleConvert(): void {
             if (cancel !== controller) return;
             cancel = null;
             solving = -1;
-            frame = 0;
+            // a solve the view has moved on from lands silently: resetting the scrubber would
+            // throw away the frame the author is looking at on a different scenario.
+            if (index === selected) frame = 0;
             render();
         });
 }
