@@ -6,6 +6,7 @@ import {
     type Frame,
     readable,
     refine,
+    type RefineOutcome,
     residual,
     siteIn,
     splitSite,
@@ -13,6 +14,7 @@ import {
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import { LENGTH_STEP_DEFAULT } from "../src/settings";
+import golden from "./fixtures/convert-golden.json";
 
 const EXPECTED: Record<string, { keys: number; probes: number }> = {
     "circular-arc": { keys: 3, probes: 3 },
@@ -203,6 +205,33 @@ describe("flat split → exhaustive prune", () => {
         // Measured cold in this file on 2026-07-26: ~40 s. Two times that keeps a
         // contended full-suite run out of the verification loop while retaining a hang bar.
         expect(CORPUS_MS).toBeLessThan(80_000);
+    });
+
+    // The bit-identity gate for every performance change to the conversion core. The
+    // stage-6b human check approved these SPECIFIC outputs as an authoring surface, so a
+    // faster solve that moves a key or a g-value by one ulp has silently re-opened that
+    // verdict. Frozen from the shipping path (`refine` over the corpus) and compared with
+    // `toBe`, never `toBeCloseTo`: an approximate compare would pass exactly the drift
+    // this exists to catch. Proven red by perturbing the LM's initial damping constant.
+    test("every corpus conversion is bit-identical to the frozen dump", () => {
+        expect(Object.keys(golden).sort()).toEqual(CORPUS.map((c) => c.scenario.name).sort());
+        for (const { scenario, result } of CORPUS) {
+            const want = golden[scenario.name as keyof typeof golden];
+            expect(result.knots).toEqual(want.knots);
+            expect(result.outcome).toBe(want.outcome as RefineOutcome);
+            expect(result.floor).toBe(want.floor);
+            expect(result.probes).toBe(want.probes);
+            expect(result.final.keys).toBe(want.keys);
+            expect(result.final.edges).toBe(want.edges);
+            expect(result.final.length).toBe(want.length);
+            expect(result.final.ds).toBe(want.ds);
+            expect(result.final.deviation).toBe(want.deviation);
+            expect(result.final.points).toHaveLength(want.points.length);
+            for (let k = 0; k < want.points.length; k++) {
+                expect(result.final.points[k].s).toBe(want.points[k].s);
+                expect(result.final.points[k].g).toBe(want.points[k].g);
+            }
+        }
     });
 
     test("conversion is deterministic", () => {

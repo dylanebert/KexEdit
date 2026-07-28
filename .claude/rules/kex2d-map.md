@@ -165,7 +165,11 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   **A converted section must carry the solve's own `ds`** (`length/edges`, what `spine` chose so
   the section spans the bake exactly) — a force section stores its own step. Marching
   loop-explicit's same profile at nominal 0.5 m misses the pinned exit by 0.247 m, while the
-  realized step closes within 3.1e-5 m (`refine.test.ts`). The locked corpus is 80 keys.
+  realized step closes within 3.1e-5 m (`refine.test.ts`). The locked corpus is 80 keys, and
+  its exact output — knots, `{s,g}` points, realized `ds`, deviation, probe count — is frozen
+  in `tests/fixtures/convert-golden.json` and compared with `toBe`. That golden is the gate on
+  any change that claims to leave conversion output alone (a perf change above all): the human
+  check approved these specific outputs, so a one-ulp drift re-opens it.
 - `census.ts` — the **vocabulary census**: which tangent-mode shape (`mirror`/`aligned`/`broken`/
   `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
   authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`

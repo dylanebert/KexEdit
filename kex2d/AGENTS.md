@@ -343,7 +343,10 @@ reference: `tests/geometry.lab.ts`, `tests/collocate.lab.ts`, `tests/loop.lab.ts
 `tests/conditioning.lab.ts`, `tests/fvd.lab.ts`, `tests/hill.lab.ts`, and
 `tests/attribution.lab.ts` (the flat conversion tier's explicit authoring-floor sweep:
 0.05/0.10/0.25/0.50 m produce 212/130/100/80 keys; the 0.05 m row holds 9/10 because
-valley-explicit reaches its 75-key observability budget, while the other rows hold 10/10).
+valley-explicit reaches its 75-key observability budget, while the other rows hold 10/10) and
+`tests/perf.lab.ts` (the conversion perf baseline: per-phase probe counts and wall time through
+`refine`'s `probe` seam, over the corpus plus the authoring-scale stress scenarios in
+`tests/helpers/stress.ts` — deliberately not corpus members, so the 80-key lock is untouched).
 Visual counterparts
 `geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` + `fit-lab.html`
 (canvas2D, captured by the harness). `fit-lab.html` is the conversion tier's own page: it plays
