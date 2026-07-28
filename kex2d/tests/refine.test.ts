@@ -264,6 +264,11 @@ describe("flat split → exhaustive prune", () => {
         const core = reach("refine.ts");
         expect(core).toContain("polish.ts");
         expect(core).not.toContain("settings.ts");
+        // the pool's worker is its own bundle entry — the one the "worker bundle included"
+        // clause above is actually about, now that it exists.
+        const worker = reach("convert-worker.ts");
+        expect(worker).toContain("polish.ts");
+        expect(worker).not.toContain("settings.ts");
     });
 
     // The production path is the same conversion with the lab's freight unbuilt, so it must

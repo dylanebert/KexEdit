@@ -33,9 +33,10 @@ distinct from the gold shape handles.
 arbitrating authoring intent almost never does what's intended — the author fights it. The
 architecture is two deterministic, legible atoms — force→geometry and geometry→force — with
 authoring layers on top. Optimization exists only as a **scoped, invoked tool** over those atoms:
-the authorable geo→force conversion core is landed and lab-gated, while its async, cancellable
-document command is not yet on the live editor path. Reverse force→geo remains separate work. The
-kernel atoms and lab pages stay in-tree and oracle-gated.
+the authorable geo→force conversion core is landed and lab-gated, and so is the async, cancellable
+façade an editor command will invoke (`convert.ts` — worker pool, progress, abort), but nothing
+wires it into the document yet. Reverse force→geo remains separate work. The kernel atoms and lab
+pages stay in-tree and oracle-gated.
 
 **Positions and force keyframes are the two authoring substrates** — both sparse, density
 unbounded; the dense baked chain is always derived, never canonical (dense-vs-sparse is a false
@@ -198,7 +199,7 @@ The per-file map (what each module owns, its seams and test homes) + the externa
 `.claude/rules/kex2d-map.md`. Layers: pure substrate + physics atoms (`section.ts`, `forward.ts`,
 `spline.ts`, `bake.ts`, `profile.ts`); invoked conversion/optimization atoms, NOT on the live
 editor path (`force.ts`, `banded.ts`, `collocate.ts`, `census.ts`, `fit.ts`, `polish.ts`,
-`refine.ts`, `playback.ts`); ECS + UI (`track.ts`,
+`refine.ts`, `convert.ts` + `convert-worker.ts`, `playback.ts`); ECS + UI (`track.ts`,
 `cart.ts`, `editor.ts`, `history.ts`, `controls.ts`, `magnet.ts`, `settings.ts`, `manipulator.ts`,
 `radial.ts`, `tangents.ts`, `timeline.ts`, `Timeline.svelte`, `menu.ts` + `Menu.svelte`,
 `App.svelte` / `render.ts` / `view.ts`, `main.ts`).
@@ -346,7 +347,9 @@ reference: `tests/geometry.lab.ts`, `tests/collocate.lab.ts`, `tests/loop.lab.ts
 valley-explicit reaches its 75-key observability budget, while the other rows hold 10/10) and
 `tests/perf.lab.ts` (the conversion perf baseline: per-phase probe counts and wall time through
 `refine`'s `probe` seam, over the corpus plus the authoring-scale stress scenarios in
-`tests/helpers/stress.ts` — deliberately not corpus members, so the 80-key lock is untouched).
+`tests/helpers/stress.ts` — deliberately not corpus members, so the 80-key lock is untouched)
+and `tests/pool.lab.ts` (the same scenarios through the worker pool: sync vs pooled wall time
+and cancel latency, each row checked against the golden).
 Visual counterparts
 `geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` + `fit-lab.html`
 (canvas2D, captured by the harness). `fit-lab.html` is the conversion tier's own page: it plays

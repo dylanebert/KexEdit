@@ -2345,9 +2345,10 @@ test("collocation solver lab", async ({ page, boot }) => {
 });
 
 // The geo→force fit lab: the flat conversion is the default view and solves on demand;
-// the lighter full-free oracle corpus fills in cooperatively on load. Measured after the
-// flat-only amendment: 22.1 s test / 27.8 s wrapper wall. The config's 60 s per-test ceiling
-// is therefore 2.7× measured capture time: contention headroom with a real stall tripwire.
+// the lighter full-free oracle corpus fills in cooperatively on load. The conversion runs
+// through the worker pool (`convert.ts`), so the page answers throughout it — which is also
+// why this flow now measures 5.8 s, down from 22.1 s when the solve blocked the main thread.
+// The config's 60 s per-test ceiling stays: it is a stall tripwire, not a budget to re-tune.
 test("fit lab", async ({ page, boot }) => {
     await boot("/fit-lab.html");
     const panels = page.locator(".panel");
@@ -2395,6 +2396,22 @@ test("fit lab", async ({ page, boot }) => {
 
     // The shipping timeline is only dense recovery plus the loop's own flat decisions.
     await page.evaluate(() => (window as any).__fitlab.select("full-loop"));
+
+    // The solve runs in the conversion worker pool, so the page answers WHILE it solves. This
+    // observes a state a blocking solve cannot produce: probes already counted, no answer yet.
+    // (With the in-thread solve, the first evaluate to return did so after the answer landed —
+    // proven by reverting the lab to `refine`, where this poll times out.)
+    await expect
+        .poll(
+            () =>
+                page.evaluate(() => {
+                    const lab = (window as any).__fitlab;
+                    return lab.progress().probes > 0 && lab.metrics() === null;
+                }),
+            { timeout: 5_000 },
+        )
+        .toBe(true);
+
     await expect
         .poll(
             () =>

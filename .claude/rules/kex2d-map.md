@@ -181,6 +181,26 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `maxSnapshots: 0` to `polish`. Recording is pure observation, so the answer is bit-identical
   either way (pinned at both layers); it buys the boundary and the garbage, not wall time
   (measured 0.3% over five scenarios, inside run-to-run noise).
+  The loop itself is a **coroutine over probes** (`plan`): it yields the solve it needs and
+  resumes on the answer, so ONE loop drives both the in-process `refine` and the pool, and the
+  probe body (`warm` + `solve`) has one home. Each `Ask` carries the rest of its prune round
+  (`ahead`) — the probes the loop is certain to want next, in this order — as a prefetch hint a
+  pool fans out.
+- `convert.ts` — the **async façade**: `convert(bake, entry, ds, {signal, onProgress, workers})`
+  → `Promise<ConvertResult>`, the shape an invoked editor command calls. `plan`'s orchestration
+  (residual analysis, split placement, prune selection — sub-ms) stays on the caller's thread;
+  only `polish` probes cross into a lazily-grown worker pool (`hardwareConcurrency − 1`, floor 1,
+  never more than the live fan-out — the serial split phase uses exactly one). **Determinism
+  under concurrency is by construction**: answers are consumed strictly in ask order, so pool
+  size and completion order are unobservable — never a sort or a tie-break after the fact
+  (`convert.test.ts` pins size 1 ≡ size 8 ≡ the golden, proven red by consuming in completion
+  order). Cancellation is pool termination, not "stop asking" — an in-flight probe is up to a
+  second, and the façade writes nothing, so an abort needs no rollback (measured settle ≪ one
+  probe). Progress reports `{phase, keys, probes}` with no total: the refinement discovers how
+  many probes it needs. `convertPlayback` is the same drive with the lab's freight kept.
+- `convert-worker.ts` — the pool's worker: `refine.solve` per message and nothing else. The bake
+  crosses once at `init`, then each message is a knot set; no refinement state, no policy, no
+  decisions live here.
 - `census.ts` — the **vocabulary census**: which tangent-mode shape (`mirror`/`aligned`/`broken`/
   `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
   authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`

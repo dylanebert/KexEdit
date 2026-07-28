@@ -186,10 +186,34 @@ export function narrow(result: RefineResult): ConvertResult {
     };
 }
 
-const flatten = (points: readonly ForcePoint[]): ForcePoint[] =>
-    points.map(({ s, g }) => ({ s, g }));
-
 const carry = (points: readonly ForcePoint[]): ForcePoint[] => points.map(({ s, g }) => ({ s, g }));
+
+/** The warm start a probe solves from: the dense recovered force fitted at the fixed knots,
+ * flattened to g-only keys (the flat family carries no handles). */
+export function warm(bake: RefineBake, knots: readonly number[]): ForcePoint[] {
+    return carry(fitKnots(bake.fN, bake.ds, knots).points);
+}
+
+/** The one probe body — warm start, then the flat-family collocation solve. Every driver runs
+ * exactly this, in-process or inside a pool worker (`convert-worker.ts`), so a pooled conversion
+ * is the same computation as `refine`'s rather than a lookalike of it. `snapshots` is the
+ * playback freight cap; a production probe passes 0. */
+export function solve(
+    bake: RefineBake,
+    entry: Entry,
+    ds: number,
+    knots: readonly number[],
+    snapshots: number,
+): PolishResult {
+    return polish({
+        bake,
+        entry,
+        points: warm(bake, knots),
+        ds,
+        family: "flat",
+        maxSnapshots: snapshots,
+    });
+}
 
 /** A finite residual profile is the only requirement for another structural decision. */
 export function readable(deviations: ArrayLike<number>): boolean {
@@ -198,8 +222,35 @@ export function readable(deviations: ArrayLike<number>): boolean {
     return true;
 }
 
-export function refine(opts: RefineOpts): RefineResult {
-    const { bake, entry } = opts;
+/** Which stage of the refinement a probe belongs to: the opening two-key solve, a split
+ * candidate, or one removal candidate of a prune round. */
+export type ConvertPhase = "open" | "split" | "prune";
+
+/** One probe the refinement needs next, and the rest of the round behind it.
+ *
+ * The loop is a coroutine over probes — it asks for a solve and resumes on the answer — so ONE
+ * loop drives both the in-process path and the worker pool. `ahead` carries the remaining
+ * candidates of a prune round: the exact probes this loop will ask for next, in this order,
+ * whatever the answers turn out to be, so a pool can start them now. It's a prefetch hint and
+ * never a reordering — answers are consumed strictly in ask order, which is what makes the
+ * conversion invariant to pool size and to completion order. A round that terminates early
+ * (an unreadable candidate) simply leaves its tail unconsumed. The split phase is inherently
+ * serial (each split reads the previous answer's residual profile), so its asks carry no
+ * `ahead`. */
+export interface Ask {
+    phase: ConvertPhase;
+    /** the probe's 1-based ordinal — the running `probes` count this ask brings the loop to. */
+    count: number;
+    knots: number[];
+    ahead: number[][];
+}
+
+/** The refinement itself, as a coroutine: it yields the probe it needs and resumes on that
+ * probe's answer. `refine` is the in-process driver; `convert.ts` is the pooled one. Nothing
+ * here touches a solver — the orchestration (residual analysis, split placement, prune
+ * selection) is sub-millisecond and stays on the caller's thread. */
+export function* plan(opts: RefineOpts): Generator<Ask, RefineResult, PolishResult> {
+    const { bake } = opts;
     const n = bake.fN.length;
     if (bake.ds.length !== n)
         throw new Error(`refine: ${n} forces against ${bake.ds.length} chords`);
@@ -217,24 +268,11 @@ export function refine(opts: RefineOpts): RefineResult {
     };
     const playback = opts.playback ?? true;
     let probes = 0;
-    const probe = (knots: readonly number[]): PolishResult => {
-        const warm = flatten(fitKnots(bake.fN, bake.ds, knots).points);
-        probes++;
-        if (opts.probe) return opts.probe(warm, knots);
-        return polish({
-            bake,
-            entry,
-            points: warm,
-            ds: opts.ds,
-            family: "flat",
-            maxSnapshots: playback ? 1 : 0,
-        });
-    };
     const held = (answer: PolishResult): boolean =>
         readable(answer.deviations) && answer.converged && answer.deviation <= floor;
 
     let knots = [0, n - 1];
-    let answer = probe(knots);
+    let answer = yield { phase: "open", count: ++probes, knots, ahead: [] };
     let outcome: RefineOutcome = "floor";
     const events: RefineEvent[] = [];
     const log = (kind: RefineEventKind, at: number): void => {
@@ -262,7 +300,7 @@ export function refine(opts: RefineOpts): RefineResult {
             break;
         }
         const next = [...knots, site].sort((a, b) => a - b);
-        const trial = probe(next);
+        const trial = yield { phase: "split", count: ++probes, knots: next, ahead: [] };
         if (!readable(trial.deviations)) {
             knots = next;
             answer = trial;
@@ -277,12 +315,22 @@ export function refine(opts: RefineOpts): RefineResult {
 
     if (held(answer))
         prune: for (;;) {
+            // the whole round up front: `knots` is fixed for its duration, so every candidate is
+            // known before the first answer comes back. That is what a pool fans out.
+            const round = knots
+                .slice(1, -1)
+                .map((_, index) => knots.filter((_, at) => at !== index + 1));
             let best = -1;
             let bestAnswer: PolishResult | null = null;
             for (let k = 1; k + 1 < knots.length; k++) {
                 const removed = knots[k];
-                const next = knots.filter((_, index) => index !== k);
-                const trial = probe(next);
+                const next = round[k - 1];
+                const trial = yield {
+                    phase: "prune",
+                    count: ++probes,
+                    knots: next,
+                    ahead: round.slice(k),
+                };
                 if (!readable(trial.deviations)) {
                     knots = next;
                     answer = trial;
@@ -306,4 +354,22 @@ export function refine(opts: RefineOpts): RefineResult {
         }
 
     return { knots, floor, outcome, final: answer, events, probes };
+}
+
+/** Convert in-process: run `plan` against a synchronous probe. Every probe blocks the calling
+ * thread, so this is the labs' and the tests' path — the editor's is `convert.ts`. */
+export function refine(opts: RefineOpts): RefineResult {
+    const { bake, entry, ds } = opts;
+    const snapshots = (opts.playback ?? true) ? 1 : 0;
+    const loop = plan(opts);
+    let step = loop.next();
+    while (!step.done) {
+        const { knots } = step.value;
+        step = loop.next(
+            opts.probe
+                ? opts.probe(warm(bake, knots), knots)
+                : solve(bake, entry, ds, knots, snapshots),
+        );
+    }
+    return step.value;
 }

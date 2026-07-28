@@ -5,6 +5,7 @@
  * the lighter oracle corpus fills in cooperatively on load. */
 
 import { census, type HandleStats } from "./census";
+import { type ConvertProgress, convertPlayback } from "./convert";
 import { arclength, fit } from "./fit";
 import {
     baseline,
@@ -19,7 +20,7 @@ import {
 } from "./playback";
 import { polish, type PolishResult } from "./polish";
 import { custom, forceProfile } from "./profile";
-import { refine, type RefineResult } from "./refine";
+import type { RefineResult } from "./refine";
 import { type Scenario, scenarios } from "./scenarios";
 import { type Entry, evalForce, evalGeo, type SectionResult } from "./section";
 
@@ -62,7 +63,10 @@ let exactDone = false;
 let selected = 0;
 let mode: LabMode = "convert";
 let frame = 0;
-let solving = false;
+/** the scenario index a pooled solve is in flight for, or -1. */
+let solving = -1;
+let cancel: AbortController | null = null;
+let progress: ConvertProgress = { phase: "open", keys: 0, probes: 0 };
 
 const root = document.querySelector<HTMLDivElement>("#lab");
 if (!root) throw new Error("fitlab: missing #lab");
@@ -150,13 +154,16 @@ function solveExact(index: number): ExactSolve {
     };
 }
 
-function solveConvert(index: number): ConvertSolve {
+async function solveConvert(index: number, signal: AbortSignal): Promise<ConvertSolve> {
     const started = performance.now();
     const item = base(scenarios[index]);
-    const refined = refine({
-        bake: item.bake,
-        entry: item.entry,
-        ds: item.scenario.ds,
+    const name = scenarios[index].name;
+    const refined = await convertPlayback(item.bake, item.entry, item.scenario.ds, {
+        signal,
+        onProgress: (at) => {
+            progress = at;
+            status.textContent = `solving ${name}… ${at.phase} · ${at.probes} probes`;
+        },
     });
     return {
         ...item,
@@ -172,21 +179,33 @@ function current(): Solve | null {
     return mode === "exact" ? exact[selected] : converted[selected];
 }
 
+/** Solve the selected scenario through the worker pool. The page keeps rendering and the status
+ *  line keeps counting probes for the whole multi-second solve — flipping the scenario mid-solve
+ *  cancels the stale one rather than queueing behind it. */
 function scheduleConvert(): void {
-    if (converted[selected] || solving) return;
-    solving = true;
-    status.textContent = `solving ${scenarios[selected].name}…`;
-    setTimeout(() => {
-        try {
-            converted[selected] = solveConvert(selected);
-        } catch (error) {
-            failures.push(`${scenarios[selected].name} convert: ${String(error)}`);
-        } finally {
-            solving = false;
+    if (converted[selected] || solving === selected) return;
+    cancel?.abort();
+    const index = selected;
+    const controller = new AbortController();
+    cancel = controller;
+    solving = index;
+    progress = { phase: "open", keys: 0, probes: 0 };
+    status.textContent = `solving ${scenarios[index].name}…`;
+    solveConvert(index, controller.signal)
+        .then((solve) => {
+            converted[index] = solve;
+        })
+        .catch((error) => {
+            if (!controller.signal.aborted)
+                failures.push(`${scenarios[index].name} convert: ${String(error)}`);
+        })
+        .finally(() => {
+            if (cancel !== controller) return;
+            cancel = null;
+            solving = -1;
             frame = 0;
             render();
-        }
-    }, 0);
+        });
 }
 
 function drawPolyline(
@@ -338,9 +357,8 @@ function render(): void {
     modeButton.textContent = `mode: ${mode}`;
     const solve = current();
     if (!solve) {
-        status.textContent = solving
-            ? `solving ${scenarios[selected].name}…`
-            : `${mode} unavailable`;
+        status.textContent =
+            solving === selected ? `solving ${scenarios[selected].name}…` : `${mode} unavailable`;
         phases.replaceChildren();
         label.textContent = "";
         renderTables();
@@ -524,6 +542,10 @@ const hook = {
             keys: points.length,
         };
     },
+    /** the in-flight solve's last progress event. Polled by the capture flow together with
+     *  `metrics()`: probes counted with no answer yet is a state only an off-thread solve can
+     *  show — a blocking one answers the poll after it has already finished. */
+    progress: (): ConvertProgress => progress,
     metrics: (): Metrics | null => {
         const solve = current();
         if (!solve || solve.mode !== "convert") return null;
