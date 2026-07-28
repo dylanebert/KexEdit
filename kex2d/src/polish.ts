@@ -402,23 +402,28 @@ export function polish(opts: PolishOpts): PolishResult {
     const rhoCap = 1e6 * rho0;
     const maxSnaps = Math.floor(opts.maxSnapshots ?? 120);
 
-    // the probed profile→force map (`forceMatrix`). `rowDofs` is the ≤4-wide stencil per
+    // the probed profile→force map (`forceMatrix`). `stencil` is the ≤4-wide dof list per
     // edge — a dense sample lies in one segment, so its force reads the two bounding keys'
     // values and their two facing handles, whichever family those handles come from —
     // and `supp` is its transpose.
     const A = forceMatrix(pts, family, E, h);
-    const rowDofs: number[][] = [];
-    for (let j = 0; j < E; j++) rowDofs.push([]);
+    const stencil: number[][] = [];
+    for (let j = 0; j < E; j++) stencil.push([]);
     const supp: number[][] = [];
     for (let p = 0; p < P; p++) {
         const s: number[] = [];
         for (let j = 0; j < E; j++)
             if (A[p][j] !== 0) {
                 s.push(j);
-                rowDofs[j].push(p);
+                stencil[j].push(p);
             }
         supp.push(s);
     }
+    // the stencil frozen per edge, each dof's coefficient gathered beside its index: the two
+    // hot passes over it (`constrain` per trial, the θ rows per assemble) read both, and
+    // `A[p][j]` is a column-strided load through an array of arrays.
+    const rowDofs = stencil.map((dofs) => Int32Array.from(dofs));
+    const rowA = stencil.map((dofs, j) => Float64Array.from(dofs, (p) => A[p][j]));
 
     const dof0 = readDof(pts, family);
 
@@ -477,8 +482,10 @@ export function polish(opts: PolishOpts): PolishResult {
      *  stayed above the integrator's velocity floor. */
     const constrain = (zz: Float64Array): { feas: number; ok: boolean } => {
         for (let j = 0; j < E; j++) {
+            const dofs = rowDofs[j];
+            const coef = rowA[j];
             let f = 0;
-            for (const p of rowDofs[j]) f += A[p][j] * zz[ns + p];
+            for (let i = 0; i < dofs.length; i++) f += coef[i] * zz[ns + dofs[i]];
             fBuf[j] = f;
         }
         let feas = 0;
@@ -550,19 +557,23 @@ export function polish(opts: PolishOpts): PolishResult {
     const cross: Float64Array[] = [];
     for (let p = 0; p < P; p++) cross.push(new Float64Array(ns));
     // the state rows a DOF column can touch: only the θ-defect rows of its support.
-    const crossRows: number[][] = [];
+    const crossRows: Int32Array[] = [];
     for (let p = 0; p < P; p++) {
         const seen = new Set<number>();
         for (const j of supp[p])
             for (const c of [colY(j), colT(j), colT(j + 1)]) if (c >= 0) seen.add(c);
-        crossRows.push([...seen].sort((a, b) => a - b));
+        crossRows.push(Int32Array.from(seen).sort());
     }
     const pp = new Float64Array(P * P);
     const rhsS = new Float64Array(ns);
     const rhsP = new Float64Array(P);
 
-    const addRow = (cols: number[], jac: number[], w: number, r: number): void => {
-        for (let a = 0; a < cols.length; a++) {
+    // one weighted row of the normal system, staged in `cols`/`jac` at entries `0..len`. The
+    // LM assembles five rows per spine edge on every iteration, so a row allocates nothing.
+    const cols = new Array<number>(8);
+    const jac = new Array<number>(8);
+    const addRow = (len: number, w: number, r: number): void => {
+        for (let a = 0; a < len; a++) {
             const ca = cols[a];
             if (ca < 0) continue;
             if (ca < ns) rhsS[ca] -= w * jac[a] * r;
@@ -587,19 +598,24 @@ export function polish(opts: PolishOpts): PolishResult {
         }
     };
 
-    const cols = new Array<number>(8);
-    const jac = new Array<number>(8);
     const assemble = (zz: Float64Array): { feas: number; grad: number } => {
         for (const d of band) d.fill(0);
-        for (let p = 0; p < P; p++) for (const r of crossRows[p]) cross[p][r] = 0;
+        for (let p = 0; p < P; p++) {
+            const rows = crossRows[p];
+            const col = cross[p];
+            for (let i = 0; i < rows.length; i++) col[rows[i]] = 0;
+        }
         pp.fill(0);
         rhsS.fill(0);
         rhsP.fill(0);
         const { feas } = constrain(zz);
 
         for (let j = 1; j < E; j++) {
-            addRow([colX(j)], [1], h, xAt(zz, j) - sp.x[j]);
-            addRow([colY(j)], [1], h, yAt(zz, j) - sp.y[j]);
+            jac[0] = 1;
+            cols[0] = colX(j);
+            addRow(1, h, xAt(zz, j) - sp.x[j]);
+            cols[0] = colY(j);
+            addRow(1, h, yAt(zz, j) - sp.y[j]);
         }
 
         for (let j = 0; j < E; j++) {
@@ -608,18 +624,20 @@ export function polish(opts: PolishOpts): PolishResult {
             const m = 0.5 * (t0 + t1);
             const sm = Math.sin(m);
             const cm = Math.cos(m);
-            addRow(
-                [colX(j), colT(j), colX(j + 1), colT(j + 1)],
-                [-1, 0.5 * h * sm, 1, 0.5 * h * sm],
-                rho,
-                C[3 * j] + mult[3 * j] / rho,
-            );
-            addRow(
-                [colY(j), colT(j), colY(j + 1), colT(j + 1)],
-                [-1, -0.5 * h * cm, 1, -0.5 * h * cm],
-                rho,
-                C[3 * j + 1] + mult[3 * j + 1] / rho,
-            );
+            cols[0] = colX(j);
+            cols[1] = colT(j);
+            cols[2] = colX(j + 1);
+            cols[3] = colT(j + 1);
+            jac[0] = -1;
+            jac[1] = 0.5 * h * sm;
+            jac[2] = 1;
+            jac[3] = 0.5 * h * sm;
+            addRow(4, rho, C[3 * j] + mult[3 * j] / rho);
+            cols[0] = colY(j);
+            cols[2] = colY(j + 1);
+            jac[1] = -0.5 * h * cm;
+            jac[3] = -0.5 * h * cm;
+            addRow(4, rho, C[3 * j + 1] + mult[3 * j + 1] / rho);
             // C_θ = Λ(θ_{j+1} − θ_j − dθ), dθ = (F − cos θ_j)·g·h/v²:
             //   ∂dθ/∂θ_j = sin θ_j · D,  ∂dθ/∂y_j = dθ·2g/v²  (v² = v₀² − 2g·Δy),
             //   ∂dθ/∂dof_p = D·A[p][j].
@@ -633,16 +651,25 @@ export function polish(opts: PolishOpts): PolishResult {
             jac[w++] = -lam * dth * ((2 * G) / v2);
             cols[w] = colT(j + 1);
             jac[w++] = lam;
-            for (const p of rowDofs[j]) {
-                cols[w] = ns + p;
-                jac[w++] = -lam * D * A[p][j];
+            const dofs = rowDofs[j];
+            const coef = rowA[j];
+            for (let i = 0; i < dofs.length; i++) {
+                cols[w] = ns + dofs[i];
+                jac[w++] = -lam * D * coef[i];
             }
-            addRow(cols.slice(0, w), jac.slice(0, w), rho, C[3 * j + 2] + mult[3 * j + 2] / rho);
+            addRow(w, rho, C[3 * j + 2] + mult[3 * j + 2] / rho);
         }
 
-        addRow([colX(E)], [1], rho, C[3 * E] + mult[3 * E] / rho);
-        addRow([colY(E)], [1], rho, C[3 * E + 1] + mult[3 * E + 1] / rho);
-        addRow(exitCols, exitJac, rho, C[3 * E + 2] + mult[3 * E + 2] / rho);
+        jac[0] = 1;
+        cols[0] = colX(E);
+        addRow(1, rho, C[3 * E] + mult[3 * E] / rho);
+        cols[0] = colY(E);
+        addRow(1, rho, C[3 * E + 1] + mult[3 * E + 1] / rho);
+        for (let i = 0; i < exitCols.length; i++) {
+            cols[i] = exitCols[i];
+            jac[i] = exitJac[i];
+        }
+        addRow(exitCols.length, rho, C[3 * E + 2] + mult[3 * E + 2] / rho);
 
         let grad = 0;
         for (let k = 0; k < ns; k++) grad = Math.max(grad, Math.abs(rhsS[k]));
@@ -668,34 +695,53 @@ export function polish(opts: PolishOpts): PolishResult {
     const tmp = new Float64Array(ns);
     const dsv = new Float64Array(ns);
     const delta = new Float64Array(n);
+    const zt = new Float64Array(n);
+    // the damped band: `damped` stands in for the main diagonal, the subdiagonals are the
+    // assembled band itself. The stores never move, so the view is built once.
+    const work = [damped, ...band.slice(1)];
 
     /** the damped step `(H + μI)δ = rhs`; false when the damped system is not SPD. */
     const step = (mu: number): boolean => {
         for (let k = 0; k < ns; k++) damped[k] = band[0][k] + mu;
-        const work = [damped, ...band.slice(1)];
         bandFactor(work, ns, B, Lb, Db);
         for (let k = 0; k < ns; k++) if (!(Db[k] > 0)) return false;
         for (let p = 0; p < P; p++) bandSolve(Lb, Db, ns, B, cross[p], U[p], scr);
         bandSolve(Lb, Db, ns, B, rhsS, w0, scr);
         for (let i = 0; i < P; i++) {
+            const rows = crossRows[i];
+            const col = cross[i];
             for (let k = 0; k <= i; k++) {
+                const Uk = U[k];
                 let s = pp[i * P + k];
-                for (const r of crossRows[i]) s -= cross[i][r] * U[k][r];
+                for (let t = 0; t < rows.length; t++) {
+                    const r = rows[t];
+                    s -= col[r] * Uk[r];
+                }
                 Sband[i - k][i] = s + (i === k ? mu : 0);
             }
         }
         bandFactor(Sband, P, Sb, Sl, Sd);
         for (let k = 0; k < P; k++) if (!(Sd[k] > 0)) return false;
         for (let i = 0; i < P; i++) {
+            const rows = crossRows[i];
+            const col = cross[i];
             let s = rhsP[i];
-            for (const r of crossRows[i]) s -= cross[i][r] * w0[r];
+            for (let t = 0; t < rows.length; t++) {
+                const r = rows[t];
+                s -= col[r] * w0[r];
+            }
             Sscr[i] = s;
         }
         bandSolve(Sl, Sd, P, Sb, Sscr, dp, Sy);
         tmp.set(rhsS);
         for (let p = 0; p < P; p++) {
             if (dp[p] === 0) continue;
-            for (const r of crossRows[p]) tmp[r] -= cross[p][r] * dp[p];
+            const rows = crossRows[p];
+            const col = cross[p];
+            for (let t = 0; t < rows.length; t++) {
+                const r = rows[t];
+                tmp[r] -= col[r] * dp[p];
+            }
         }
         bandSolve(Lb, Db, ns, B, tmp, dsv, scr);
         delta.set(dsv);
@@ -782,7 +828,7 @@ export function polish(opts: PolishOpts): PolishResult {
                     rd += (k < ns ? rhsS[k] : rhsP[k - ns]) * delta[k];
                     stepNorm = Math.max(stepNorm, Math.abs(delta[k]));
                 }
-                const zt = Float64Array.from(z);
+                zt.set(z);
                 for (let k = 0; k < n; k++) zt[k] += delta[k];
                 const phit = phiOf(zt);
                 const predicted = 0.5 * (mu * dd + rd);
