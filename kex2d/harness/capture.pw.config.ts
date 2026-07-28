@@ -59,7 +59,7 @@ export default defineConfig({
     // A wedge backstop, not a budget: it must clear the whole suite with room to grow, or it silently
     // truncates the run (at 120s it killed the last test and still reported the rest green). The
     // worst case is serial-per-worker: the collected suite × the 60s per-test timeout ÷ the worker
-    // count, so this clears ~28 flows at the default 4 (23 today).
+    // count, so this clears ~28 flows at the default 4 (25 today).
     // `capture.ts`'s spawn ceiling (480s) sits above this one.
     globalTimeout: 420_000,
 

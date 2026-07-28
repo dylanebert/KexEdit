@@ -6,7 +6,9 @@ import { expect, type Page, test as base } from "@playwright/test";
 // pointer and keyboard events, asserts the resulting state through the DEV-only `window.__kex` hook
 // (src/main.ts — read-only for the asserts; it performs an op only where a gesture can't reach the
 // setup), and screenshots what it built. Screenshots land in KEX_OUT (a Windows path when staged;
-// copied back). Each test carries its own header saying what it drives and what it pins.
+// copied back). Each test carries its own header saying what it drives and what it pins. The one
+// exception is the boot-fixture pin below, whose subject is this file's own `pageerror` gate: it
+// drives no surface, reads no `__kex`, and shoots nothing.
 
 // Env knobs, validated not coerced: `capture.ts` forwards values it has already checked, and these
 // guards cover a direct `playwright test` run. This file is staged to the Windows host STANDALONE
@@ -356,6 +358,39 @@ async function marqueeDrag(
     await page.mouse.up();
     if (shift) await page.keyboard.up("Shift");
 }
+
+// The boot fixture's own pin — the one flow here whose subject is the HARNESS, not the app.
+//
+// The `pageerror` gate above works only because the listener is attached in fixture SETUP, before
+// any navigation. Move it after `goto` and a crash during page load lands in nobody's array: every
+// flow screenshots straight past a broken boot and the whole suite stays green. That ordering was
+// proven red once by hand and nothing pinned it after; this is the standing pin.
+//
+// `test.fail` inverts the verdict: the flow is EXPECTED to fail, so the run counts it green only
+// when the fixture's teardown assert fires on a boot-time throw. The throw is injected with
+// `addInitScript`, which the page evaluates before any script of its own on every navigation, so it
+// lands during `goto` — squarely inside the window the mutation opens. Both halves of the gate are
+// pinned, and by the SAME red: drop the listener (or attach it late) and nothing is collected, drop
+// the teardown assert and nothing is failed, and either way the flow PASSES and Playwright reports
+// "Expected to fail, but passed". So does an injection that stopped reaching the page — the pin is
+// mutation-proven in both directions, listener-after-`goto` and injection-removed.
+//
+// The body is two statements because an inverted verdict cannot say WHY it failed: an assert of its
+// own would satisfy `test.fail` just as well as the gate. It boots a LAB page for the same reason —
+// that path skips the fixture's `.dock` wait (see `boot` above), so the app's own health is not
+// part of this pin's failure surface. What remains is `goto` itself, which fails only when the dev
+// server is gone; that takes every other flow red with it, so the run can't come back green on it.
+//
+// It costs the suite one boot and no screenshot. Playwright counts an expected failure under
+// `expected` — the summary's "N passed" — so `capture.ts`'s suite-count oracle reads this flow
+// exactly like any other, and a skip of it still fails the run. Its per-test line prints with the
+// failure mark (`x`) on a GREEN run, which is why the title says so.
+test.fail("boot pageerror gate pin (expected to fail)", async ({ page, boot }) => {
+    await page.addInitScript(() => {
+        throw new Error("boot-fixture pin: injected boot-time throw");
+    });
+    await boot("/geometry-lab.html"); // an uncaught init-script throw doesn't stop the page load
+});
 
 test("geo authoring flow", async ({ page, boot }) => {
     await boot();
