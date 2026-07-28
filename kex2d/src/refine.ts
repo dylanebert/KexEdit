@@ -141,11 +141,17 @@ export interface RefineResult {
 
 /** What a conversion hands its caller: the authored force section it produced, plus the
  * diagnostics that say how it stands. Everything here is plain numbers and `{s,g}` objects, so
- * it survives a structured clone — this is the payload that crosses the worker boundary, and
- * the shape `tests/fixtures/convert-golden.json` freezes.
+ * it survives a structured clone — this is what the façade returns and an editor command
+ * consumes, and the shape `tests/fixtures/convert-golden.json` freezes.
  *
  * `RefineResult`'s freight stays behind: the playback events, the solver's spine, the
- * per-sample deviation profile. A caller that wants those runs `refine` in-process. */
+ * per-sample deviation profile. A caller that wants those runs `refine` in-process, or
+ * `convert.convertPlayback` for the pooled equivalent.
+ *
+ * It is NOT the per-probe worker reply — `narrow` runs on the caller's thread, after the loop is
+ * done. A probe's whole `PolishResult` crosses back, because the loop reads its residual profile
+ * to decide anything and the last one becomes `final`; the clone is noise against a 40–300 ms
+ * solve. */
 export interface ConvertResult {
     /** The section's force keyframes, `{s, g}` only — every segment default Cubic. */
     points: ForcePoint[];

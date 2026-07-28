@@ -61,18 +61,21 @@ async function row(scenario: Scenario, checkGolden: boolean) {
     };
 }
 
-async function cancelMs(scenario: Scenario): Promise<number> {
+/** Abort during a PRUNE round — the fanned-out phase, where the pool is fully busy and a queued
+ *  tail is still waiting. Aborting in the serial split phase would only ever measure one worker. */
+async function cancelMs(scenario: Scenario): Promise<{ ms: number; busy: number }> {
     const { entry, bake, ds } = setup(scenario);
     const controller = new AbortController();
-    let started = 0;
+    let pruning = false;
     const solving = convert(bake, entry, ds, {
         signal: controller.signal,
-        onProgress: () => {
-            if (started === 0) started = performance.now();
+        onProgress: ({ phase }) => {
+            pruning ||= phase === "prune";
         },
     });
     solving.catch(() => {});
-    while (started === 0) await Bun.sleep(2);
+    while (!pruning) await Bun.sleep(2);
+    const busy = liveWorkers();
     const at = performance.now();
     controller.abort();
     await solving.then(
@@ -83,7 +86,7 @@ async function cancelMs(scenario: Scenario): Promise<number> {
     );
     const ms = performance.now() - at;
     if (liveWorkers() !== 0) throw new Error(`${liveWorkers()} workers survived the abort`);
-    return ms;
+    return { ms, busy };
 }
 
 type Row = Awaited<ReturnType<typeof row>>;
@@ -111,4 +114,8 @@ const cancels = [
     await cancelMs(stress[0]),
     await cancelMs(stress[2]),
 ];
-console.log(`cancel latency ms: ${cancels.map((ms) => ms.toFixed(1)).join(" · ")}`);
+console.log(
+    `cancel latency ms (workers busy at abort): ${cancels
+        .map(({ ms, busy }) => `${ms.toFixed(1)} (${busy})`)
+        .join(" · ")}`,
+);

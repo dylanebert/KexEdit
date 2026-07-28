@@ -74,20 +74,26 @@ describe("pooled conversion", () => {
     // second of solving, and waiting it out is the freeze this whole façade exists to remove. So
     // the assert is a latency budget AND an empty pool — the second is what proves the first
     // wasn't just a promise settling ahead of workers that are still burning a core.
-    test("an abort settles promptly and leaves no live workers", async () => {
+    //
+    // The abort waits for the PRUNE phase deliberately. The split phase is serial, so aborting on
+    // the first progress event only ever exercises one busy worker and an empty queue — the easy
+    // case. A prune round is fanned across the pool with more candidates than workers, so the
+    // abort has to tear down several in-flight probes AND reject a queued tail.
+    test("an abort mid-fan-out settles promptly and leaves no live workers", async () => {
         const { scenario, entry, bake } = bakeOf("double-hump");
         const controller = new AbortController();
-        let started = 0;
+        let pruning = false;
         const solving = convert(bake, entry, scenario.ds, {
+            workers: 4,
             signal: controller.signal,
-            onProgress: () => {
-                if (started === 0) started = performance.now();
+            onProgress: ({ phase }) => {
+                pruning ||= phase === "prune";
             },
         });
         solving.catch(() => {});
-        // abort mid-solve, not before it: wait for the pool to actually be working.
-        while (started === 0) await Bun.sleep(5);
-        expect(liveWorkers()).toBeGreaterThan(0);
+        while (!pruning) await Bun.sleep(5);
+        // the whole pool is busy on the round, not just the one worker a split needs.
+        expect(liveWorkers()).toBeGreaterThan(1);
         const at = performance.now();
         controller.abort();
         await expect(solving).rejects.toThrow();
@@ -96,6 +102,18 @@ describe("pooled conversion", () => {
         // a probe on this scenario is 100–450 ms; 50 ms says the abort did not wait for one.
         expect(latency).toBeLessThan(50);
     }, 120_000);
+
+    // An unvalidated size is not a smaller pool but an unbounded one: `Math.floor(NaN)` is NaN and
+    // every `size` comparison against it is false, so the cap disappears.
+    test("workers must be a finite count", async () => {
+        const { scenario, entry, bake } = bakeOf("circular-arc");
+        for (const workers of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1]) {
+            await expect(convert(bake, entry, scenario.ds, { workers })).rejects.toThrow(
+                /finite number >= 1/,
+            );
+            expect(liveWorkers()).toBe(0);
+        }
+    });
 
     test("an abort before the first probe rejects without spawning anything", async () => {
         const { scenario, entry, bake } = bakeOf("circular-arc");

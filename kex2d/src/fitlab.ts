@@ -161,8 +161,13 @@ async function solveConvert(index: number, signal: AbortSignal): Promise<Convert
     const refined = await convertPlayback(item.bake, item.entry, item.scenario.ds, {
         signal,
         onProgress: (at) => {
+            // both readouts belong to whatever the view is showing. A solve the user has
+            // navigated away from keeps running (only a scenario flip cancels it), and must not
+            // narrate over the surface that replaced it.
+            if (index !== selected) return;
             progress = at;
-            status.textContent = `solving ${name}… ${at.phase} · ${at.probes} probes`;
+            if (mode === "convert")
+                status.textContent = `solving ${name}… ${at.phase} · ${at.probes} probes`;
         },
     });
     return {

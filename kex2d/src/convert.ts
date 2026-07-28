@@ -33,9 +33,10 @@ import type { Entry } from "./section";
 const spawn = (): Worker =>
     new Worker(new URL("./convert-worker.ts", import.meta.url), { type: "module" });
 
-/** Every worker this module has spawned and not yet terminated. The cancellation contract is
- *  that an aborted conversion leaves none, which is only checkable if the count is observable —
- *  `tests/convert.test.ts` reads it live mid-solve and again after the abort. */
+/** Every worker this module has spawned and not yet called `terminate()` on — the pool's own
+ *  reference count, not proof of what the OS did with the thread. The cancellation contract is
+ *  that an aborted conversion releases all of them, which is only checkable if the count is
+ *  observable: `tests/convert.test.ts` reads it live mid-solve and again after the abort. */
 const LIVE = new Set<Worker>();
 
 export function liveWorkers(): number {
@@ -54,9 +55,10 @@ export interface ConvertProgress {
 export interface ConvertOpts {
     signal?: AbortSignal;
     onProgress?: (progress: ConvertProgress) => void;
-    /** pool size override. Default is `hardwareConcurrency − 1` (leave the caller's thread a
-     *  core), floor 1; workers spawn on demand, so a conversion never runs more than its own
-     *  fan-out — the serial split phase uses exactly one. */
+    /** pool size override — a finite count >= 1, or it throws. Default is
+     *  `hardwareConcurrency − 1` (leave the caller's thread a core), floor 1; workers spawn on
+     *  demand, so a conversion never runs more than its own fan-out — the serial split phase
+     *  uses exactly one. */
     workers?: number;
 }
 
@@ -72,7 +74,13 @@ interface Pool {
 }
 
 function poolSize(workers: number | undefined): number {
-    if (workers !== undefined) return Math.max(1, Math.floor(workers));
+    if (workers !== undefined) {
+        // `Math.floor(NaN)` is NaN and `owned.size >= NaN` is always false, so an unvalidated
+        // override would quietly uncap the pool instead of failing.
+        if (!(workers >= 1) || !Number.isFinite(workers))
+            throw new Error(`convert: workers must be a finite number >= 1, got ${workers}`);
+        return Math.floor(workers);
+    }
     const cores = typeof navigator === "undefined" ? 0 : navigator.hardwareConcurrency;
     return Math.max(1, (cores || 2) - 1);
 }
@@ -110,8 +118,8 @@ function pool(init: Omit<ConvertInit, "kind">, size: number): Pool {
             else job.reject(new Error(`convert worker: ${event.data.message}`));
             pump();
         };
-        // a worker that dies mid-probe is not reusable: fail its job and retire it, so a pool
-        // with one bad worker degrades to a smaller pool instead of hanging.
+        // a worker that dies mid-probe is not reusable: fail its job and drop it. Its slot is
+        // freed, so the next queued job spawns a replacement rather than waiting on a corpse.
         worker.onerror = (event: ErrorEvent): void => {
             if (finish(worker) !== job) return;
             retire(worker);
