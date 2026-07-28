@@ -20,6 +20,8 @@ AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
   stays inside the 45s budget as it grows.
 - Selective iterations write to a separate `--out` dir; the reference shot set
   (`harness/shots/`, `RUN.json` `reference: true`) comes only from full default-knob runs.
+  A selective run into the default dir merges shots over the set and honestly demotes it to
+  `reference: false` — re-earn the stamp with one full run.
 
 ## Flow-authoring laws
 
@@ -46,9 +48,12 @@ AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
   back within 1px of the cached value. A ring/knob predicate is the exact orbit
   (`|dist − RADIAL_R| < 2`), never a reach radius.
 - **The pageerror gate.** The `boot` fixture attaches `pageerror` *before* navigation and fails
-  every flow on an uncaught page exception at teardown (proven red by injection). Console
-  errors are deliberately uncollected (lab favicon-404 noise). Moving the listener after `goto`
-  silently exempts boot-time crashes — don't.
+  every flow on an uncaught page exception at teardown. Console errors are deliberately
+  uncollected (lab favicon-404 noise). The listener-before-`goto` ordering is enforced by a
+  standing pin: flow 1 of `shot.pw.ts` (`test.fail` + a boot-time `addInitScript` throw) goes
+  red if the listener moves after `goto` or the injection is removed. Its verdict is inverted —
+  a green run prints that flow with the failure mark, and skipping it still fails the run —
+  don't "fix" either.
 - **A multi-flow red is presumptively host-level.** Unrelated flows failing together in one
   full run (observed ~1/18; never reproduced in isolation or ×12 consecutive) is a run-level
   signature on the shared GPU bridge — re-run once before debugging any flow; if it recurs,
@@ -67,6 +72,7 @@ AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
   as a set and may import nothing *outside the staged set*. Shared validators are duplicated
   verbatim, pinned character-identical AND pinned reached by unit tests (hand-written copies
   drifted once); mirrored app constants live in the MIRRORED block, each naming its source.
-- **Growth.** Past ~30 flows, split `shot.pw.ts` into staged flow files + one staged helpers
+- **Growth.** Past ~28 flows (the 420 s `globalTimeout` ceiling at 4 workers — the binding
+  number; 25 today), split `shot.pw.ts` into staged flow files + one staged helpers
   module (`testMatch` glob + `stage.files`) — the single file is habit, not a constraint. The
   `__kex` DEV surface (~15 members on `any`) earns a typed interface at the same moment.

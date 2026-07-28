@@ -320,9 +320,9 @@ via a whole-track snapshot pair (byte-identical).
   singleton through `$derived` of the per-RAF `tick` prop, so an `$effect` gated on such a value
   outlives the real state change by up to a frame. Where the lagging listener *swallows*
   (capture-phase + `stopImmediatePropagation`) or is non-idempotent, that lag is a defect: make
-  the listener permanent (`onMount`) and early-return on the live `editor.*` field — the
-  Timeline force-menu Escape fix is the shape. A lagging listener that only re-calls an
-  idempotent close is tolerable.
+  the listener permanent (`onMount`) and early-return on the live `editor.*` field. All three
+  menus (node, section ctx, Timeline force) wear this shape — it's the dismissal standard a new
+  menu copies. A lagging listener that only re-calls an idempotent close is tolerable.
 
 ## Verify
 
