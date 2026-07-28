@@ -13,6 +13,7 @@
 import type { State } from "@dylanebert/shallot";
 import { collinear, type Easing, segmentSeed } from "./profile";
 import {
+    applyConvert,
     appendSection as appendSectionTrack,
     clearForceTangentSide,
     convertSection as flipSectionKind,
@@ -51,6 +52,7 @@ import {
     setSectionLength,
     snapshotAll,
     snapshotSection,
+    type SolvedForce,
     spawnForce,
     splitForce,
     splitGeo,
@@ -621,6 +623,19 @@ export function convertSection(h: History, ecs: State, section: number): void {
     const pre = selHook?.snapshot(ecs);
     const before = snapshotSection(ecs, section);
     flipSectionKind(ecs, section);
+    const after = snapshotSection(ecs, section);
+    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+}
+
+/** land an invoked geo→force solve on a section as one undoable entry — the same
+ *  `snapshotSection` pair the destructive convert uses, so undo restores the pre-solve geo
+ *  payload byte-identical. the solve is pure and already finished off-thread
+ *  (`geoforce.convertGeo` drives it); this is the single moment it touches the document,
+ *  which is what makes the command atomic without any rollback path. */
+export function solveSection(h: History, ecs: State, section: number, solved: SolvedForce): void {
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotSection(ecs, section);
+    applyConvert(ecs, section, solved);
     const after = snapshotSection(ecs, section);
     record(h, restoreCommand(ecs, before, after, restoreSection), pre);
 }

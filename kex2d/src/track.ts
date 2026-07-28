@@ -1157,6 +1157,39 @@ export function convertSection(ecs: State, sectionId: number): void {
     }
 }
 
+/** an invoked solve's authored output: the keyframes it emitted, and the extent + step they
+ *  were solved for. the conversion tier's `ConvertResult` (`refine.ts`) satisfies this
+ *  structurally, so the document layer reads a solve without depending on the solver — the
+ *  invoked atoms stay off this module's graph. */
+export interface SolvedForce {
+    points: readonly { s: number; g: number }[];
+    length: number;
+    ds: number;
+}
+
+/** land an invoked geo→force solve's output on its section — the conversion's whole document
+ *  write. the shape nodes go, the kind flips, and the section takes the solve's REALIZED
+ *  extent and step (`length/edges`, the march that closes the exit the solve pinned —
+ *  `refine.ts`), then its `{s, g}` keyframes spawn: every one default-Cubic with no handles,
+ *  which is the narrow dialect the conversion emits by construction. nothing else of a solve
+ *  persists — outcome/floor/deviation/probes are the caller's transient readout, never
+ *  document state.
+ *
+ *  distinct from `convertSection`: that one is the destructive *reset* to the kind's default
+ *  (the two continuation keyframes at the default extent, step back to the sentinel); this one
+ *  replaces the section with a solved shape-preserving profile. does not itself record history
+ *  — `history.solveSection` wraps it. */
+export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce): void {
+    const eid = sectionAt(ecs, sectionId);
+    if (eid === null) throw new Error(`applyConvert: no section ${sectionId}`);
+    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    Section.kind.set(eid, SectionKind.Force);
+    Section.length.set(eid, solved.length);
+    Section.ds.set(eid, solved.ds);
+    for (const p of solved.points) createForcePoint(ecs, sectionId, p.s, p.g);
+}
+
 // ── structural ops (append / split / join / delete) ──────────────────────────
 // each mutates the section chain directly; `history` wraps it in a whole-track
 // snapshot pair so undo is byte-identical. geo split/join re-express nodes rigidly
@@ -1223,7 +1256,7 @@ export function appendSection(ecs: State, kind: SectionKind): number {
 
 /** the track's nominal spacing (the bake's `ds`) — read from the Track component so
  *  a re-frame samples at the same density the bake does. */
-function trackDs(ecs: State): number {
+export function trackDs(ecs: State): number {
     for (const t of ecs.query([Track])) return Track.ds.get(t);
     return DS_NOMINAL;
 }
@@ -1378,23 +1411,30 @@ function seed(ecs: State): void {
 
 // ── bake ─────────────────────────────────────────────────────────────────────
 
-/** a geo section's payload: its section-local nodes (node 0 at {0,0,0}) + the step it
- *  bakes at. the substrate places them rigidly at the running chain entry. */
-function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
-    const nodes: Node[] = sectionHandles(ecs, sectionId).map((eid) => ({
+/** a geo section's authored shape as pure `spline.Node`s — section-local, node 0 at
+ *  {0,0,0}, in chain order. the ONE projection from the ECS columns onto the substrate's
+ *  node list: the bake's payload and an invoked solve's input both read it, so what a
+ *  conversion solves is bit-identical to what's displayed. */
+export function geoNodes(ecs: State, sectionId: number): Node[] {
+    return sectionHandles(ecs, sectionId).map((eid) => ({
         x: Handle.pos.x.get(eid),
         y: Handle.pos.y.get(eid),
         theta: Handle.theta.get(eid),
         tangent: readTangent(eid),
     }));
-    return { kind: "geo", nodes, ds };
+}
+
+/** a geo section's payload: its section-local nodes (node 0 at {0,0,0}) + the step it
+ *  bakes at. the substrate places them rigidly at the running chain entry. */
+function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
+    return { kind: "geo", nodes: geoNodes(ecs, sectionId), ds };
 }
 
 /** the step a section bakes at: its own when set, else the track-nominal `ds` (0 is
  *  the sentinel every hand-authored section carries). an invoked solve stores its
  *  realized step, and the profile only spans the section — closing the exit the solve
  *  pinned — when it's replayed at that step, not at the nominal quantum. */
-function sectionStep(stored: number, nominal: number): number {
+export function sectionStep(stored: number, nominal: number): number {
     return stored > 0 ? stored : nominal;
 }
 
@@ -1446,6 +1486,28 @@ function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number): strin
         }
     }
     return h;
+}
+
+/** the bake gate's input reading for the whole authored track, computed from the LIVE authored
+ *  state instead of read off the last bake — so it is the honest answer between ticks too. an
+ *  invoked tool holds it across its solve to notice the document moved underneath. */
+export function authoredHash(ecs: State): string {
+    for (const t of ecs.query([Track])) {
+        return bakeHash(ecs, sections(ecs), Track.ds.get(t), Track.v0.get(t));
+    }
+    return "";
+}
+
+/** whether the current bake IS the current authored state — the liveness anything reading
+ *  `sectionInfo` as truth needs first. a bake that never ran, one invalidated since (the `""`
+ *  sentinel), and one the two-node floor made `bake` early-return from all fail here, and each
+ *  leaves `sectionInfo` describing a shape that is no longer on screen. */
+export function bakeLive(ecs: State): boolean {
+    for (const t of ecs.query([Track])) {
+        const out = bakeOut.get(t);
+        return out !== undefined && out.hash === authoredHash(ecs);
+    }
+    return false;
 }
 
 type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;

@@ -33,10 +33,11 @@ distinct from the gold shape handles.
 arbitrating authoring intent almost never does what's intended — the author fights it. The
 architecture is two deterministic, legible atoms — force→geometry and geometry→force — with
 authoring layers on top. Optimization exists only as a **scoped, invoked tool** over those atoms:
-the authorable geo→force conversion core is landed and lab-gated, and so is the async, cancellable
-façade an editor command will invoke (`convert.ts` — worker pool, progress, abort), but nothing
-wires it into the document yet. Reverse force→geo remains separate work. The kernel atoms and lab
-pages stay in-tree and oracle-gated.
+the authorable geo→force conversion core is landed and lab-gated, so is the async, cancellable
+façade (`convert.ts` — worker pool, progress, abort), and so is the command core that lands a
+solve on the document (`geoforce.ts` — one undo entry, byte-identical undo, guarded against a
+stale or concurrent solve). What's still missing is the UI surface that invokes it. Reverse
+force→geo remains separate work. The kernel atoms and lab pages stay in-tree and oracle-gated.
 
 **Positions and force keyframes are the two authoring substrates** — both sparse, density
 unbounded; the dense baked chain is always derived, never canonical (dense-vs-sparse is a false
@@ -200,9 +201,9 @@ The per-file map (what each module owns, its seams and test homes) + the externa
 `spline.ts`, `bake.ts`, `profile.ts`); invoked conversion/optimization atoms, NOT on the live
 editor path (`force.ts`, `banded.ts`, `collocate.ts`, `census.ts`, `fit.ts`, `polish.ts`,
 `refine.ts`, `convert.ts` + `convert-worker.ts`, `playback.ts`); ECS + UI (`track.ts`,
-`cart.ts`, `editor.ts`, `history.ts`, `controls.ts`, `magnet.ts`, `settings.ts`, `manipulator.ts`,
-`radial.ts`, `tangents.ts`, `timeline.ts`, `Timeline.svelte`, `menu.ts` + `Menu.svelte`,
-`App.svelte` / `render.ts` / `view.ts`, `main.ts`).
+`cart.ts`, `editor.ts`, `history.ts`, `geoforce.ts`, `controls.ts`, `magnet.ts`, `settings.ts`,
+`manipulator.ts`, `radial.ts`, `tangents.ts`, `timeline.ts`, `Timeline.svelte`,
+`menu.ts` + `Menu.svelte`, `App.svelte` / `render.ts` / `view.ts`, `main.ts`).
 
 ## Editing model
 

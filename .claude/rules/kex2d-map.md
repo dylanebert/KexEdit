@@ -231,17 +231,26 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
   `sections`/`sectionAt`/`createSection`. Coordinate lens (section-local `s` ↔ track-global `d`):
   `sectionSpans` (the one offset table) + `toGlobal`/`toLocal` — the single seam every d readout derives from. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
-  `sectionHandles`/`lastHandle`/`handleAt`/`spawnNode`/`nodeSnapshot`/`restoreNodes`/`sameNodes`.
+  `sectionHandles`/`lastHandle`/`handleAt`/`spawnNode`/`nodeSnapshot`/`restoreNodes`/`sameNodes` +
+  `geoNodes` (the ONE projection of a section's ECS columns onto `spline.Node`s — the bake payload
+  and an invoked solve's input both read it, so a conversion solves what's displayed).
   Tangent: `handleTangent`/`setTangent` (read/write the explicit `Tangent`, `undefined` = `Auto`),
   `seedTangent` (the arc-rule vector at a node, for the explicit-summon seed), `resetTangent`
   (clear a node's tangent back to live; the tip re-heads; skips node 0). No append-time stamping —
   the default flow stores no tangents (`exitHeading` still resolves the append/reflect seed against
   an explicit tip's out-vector). Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
-  `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`,
+  `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`, `applyConvert` (land an
+  invoked solve: destroy the nodes, flip the kind, take the solve's realized extent + step, spawn
+  its `{s,g}` keys — all default-Cubic by construction; typed on the structural `SolvedForce`, so
+  the invoked tier stays off this module's graph),
   `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection`, `snapshotSection`/`restoreSection`
   + whole-track `snapshotAll`/`restoreAll`. Initial speed: `trackV0State`/`setTrackV0` (`Track.v0`).
-  `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`, `DS_NOMINAL`.
+  `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`, `DS_NOMINAL`. Bake liveness: `authoredHash`
+  (the gate's reading computed from the LIVE authored state, not read off the last bake) +
+  `bakeLive` (whether the current bake IS that state) — what anything treating `sectionInfo` as
+  truth checks first, since a never-run, invalidated (`hash === ""`), or two-node-floor-skipped
+  bake leaves it describing a shape that is no longer on screen.
   **The per-section step** (`Section.ds`, resolved by `sectionStep`): a section bakes at its own
   step, `0` meaning the track-nominal `DS_NOMINAL`. Only an invoked solve writes one — a converted
   section carries the solve's realized `length/edges` so its profile spans the section exactly, and
@@ -278,10 +287,27 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).
   Node: `extendTrack`/`trimTrack`/`beginMove`. Force: `createForce`/`deleteForce`/`beginForceMove` +
   `beginLength` (the extent drag). Initial speed: `beginV0` (the v0 field gesture). Kind:
-  `convertSection` (per-section, a `snapshotSection` pair).
+  `convertSection` (per-section, a `snapshotSection` pair) + `solveSection` (the same pair for an
+  invoked solve's output — the one entry a geo→force conversion lands as).
   Structural: `appendSection`/`splitSection`/`joinSection`/`removeSection` — each a whole-track
   `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). `history` singleton;
   `createHistory` for tests.
+- `geoforce.ts` — the **invoked geo→force command**, and the only place the conversion tier and
+  the document meet: `convertGeo(history, ecs, sectionId, opts)` drives `convert.ts`'s façade with
+  the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), sectionStep(…), MAX_SAMPLES −
+  startSample)` — the same call `BakeSystem` makes, budget included, so the solve targets exactly
+  what's displayed) and lands the answer through `history.solveSection`. **The document is written
+  once, at resolution**: the façade is pure, so a cancel, a `"diverged"` answer, or a stale one
+  leaves the track byte-identical and no rollback path exists to get wrong. What that shape needs
+  instead is that the document still BE the one the answer describes, so the invoke holds a
+  per-section in-flight lock (a second invoke rejects — two solves would each snapshot the other's
+  output as their "before") and re-reads `authoredHash` before writing (a mid-solve edit rejects as
+  `StaleConvert`, its own type so a UI tells it from a cancel). The caller is modal; the guards are
+  the backstop, not a license to author underneath a running solve. Nothing of `ConvertResult`
+  persists past points / length / realized `ds` — outcome, floor, deviation, probes are transient
+  readout. Device-free tests in `tests/geoforce.test.ts` (apply+undo byte-identity, downstream
+  continuity at the 1e-3 exit bound, and cancel / diverged / stale / re-entrant all leaving the
+  track byte-identical).
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
   teardown. `pickNode` (order-0 anchors are pickable, not draggable) then `pickSection` (nearest
   span); a node body click **selects only** — movement enters through `startManip` (the DOM knob

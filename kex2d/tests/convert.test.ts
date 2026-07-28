@@ -4,6 +4,7 @@ import { narrow, refine, type RefineOutcome } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalGeo } from "../src/section";
 import golden from "./fixtures/convert-golden.json";
+import { divergingPool, dyingPool, withWorker } from "./helpers/pool";
 
 function bakeOf(name: string) {
     const scenario = scenarios.find((candidate) => candidate.name === name);
@@ -124,6 +125,48 @@ describe("pooled conversion", () => {
         ).rejects.toThrow();
         expect(liveWorkers()).toBe(0);
     });
+
+    // A probe that throws inside the worker comes back as a `failed` reply, not a dead worker:
+    // the pool has to turn that into a rejection rather than a hang, and stay usable. A NaN in
+    // the dense force is the honest trigger — the caller-side validation reads the geometry, so
+    // it passes there and blows up in the probe, exactly where a real bad bake would.
+    test("a probe that throws in the worker rejects, and the next conversion still lands the golden", async () => {
+        const { scenario, entry, bake } = bakeOf("circular-arc");
+        const fN = Float64Array.from(bake.fN);
+        fN[3] = Number.NaN;
+        await expect(convert({ ...bake, fN }, entry, scenario.ds)).rejects.toThrow(
+            /convert worker: .*fN\[3\] is NaN/,
+        );
+        expect(liveWorkers()).toBe(0);
+        // the pool is per-conversion, so a failure doesn't poison the module: the next
+        // conversion still lands the golden.
+        expect(await convert(bake, entry, scenario.ds)).toEqual(GOLDEN("circular-arc"));
+    }, 120_000);
+
+    // The other worker failure: one that stops existing mid-probe (an OOM, a host kill). It
+    // reaches the pool as an `error` event with no reply, and the job it was carrying has to
+    // reject rather than wait forever on a corpse.
+    test("a worker that dies mid-probe rejects the conversion and leaves no live workers", async () => {
+        const { scenario, entry, bake } = bakeOf("circular-arc");
+        await withWorker(dyingPool(), async () => {
+            await expect(convert(bake, entry, scenario.ds)).rejects.toThrow(/worker died/);
+        });
+        expect(liveWorkers()).toBe(0);
+    });
+
+    // A prune round is the one place the pool runs ahead of the loop, so it's the one place a
+    // divergence leaves work in flight: the candidate that came back unreadable ends the round,
+    // and the prefetched tail behind it is never consumed. That has to settle as a clean
+    // `"diverged"` answer with an empty pool — not an unhandled rejection or a leaked worker.
+    test("an unreadable prune candidate ends the conversion as diverged", async () => {
+        const { scenario, entry, bake } = bakeOf("straight-fillet");
+        const result = await withWorker(divergingPool(), () =>
+            convert(bake, entry, scenario.ds, { workers: 4 }),
+        );
+        expect(result.outcome).toBe("diverged");
+        expect(result.deviation).toBeNaN();
+        expect(liveWorkers()).toBe(0);
+    }, 120_000);
 
     // The labs read the decisions, not just the answer, so the playback variant carries the same
     // events and per-probe frames the in-process rich path builds — and lands on the same answer.
