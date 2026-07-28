@@ -25,9 +25,9 @@ export interface RunArgs {
 }
 
 export interface RunResult {
+    /** null when the spawn ceiling fired and the child never exited (`args.ts` `verdict` reads it) */
     exitCode: number | null;
     stdout: string;
-    timedOut: boolean;
     /** the Windows staging paths (WSL only, else `null`) — read screenshots back from `.wsl` */
     staged: WindowsPaths | null;
 }
@@ -56,7 +56,6 @@ export function runPlaywright(run: RunArgs): RunResult {
         return {
             exitCode: result.exitCode,
             stdout: decode(result.stdout),
-            timedOut: result.exitCode === null,
             staged: null,
         };
     }
@@ -78,7 +77,6 @@ export function runPlaywright(run: RunArgs): RunResult {
     return {
         exitCode: result.exitCode,
         stdout: decode(result.stdout),
-        timedOut: result.exitCode === null,
         staged,
     };
 }
