@@ -58,8 +58,9 @@ AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
 
 - **The suite-count oracle.** A green suite is evidence only when `--list`-collected equals
   summary-accounted (+ `forbidOnly`); a truncated run fails, never passes with survivors green.
-  Known soft spot: `skipped` counts as accounted, so a stray `test.skip` drops coverage with
-  every gate green.
+  A skip also fails: a would-be reference run with `skipped > 0` exits nonzero, `reference:
+  false` — a stray `test.skip` can't drop coverage silently. `RUN.json` carries per-category
+  `counts` and `failedTitles` (parsed from run stdout in `args.ts`) for flake forensics.
 - **The wipe guard.** `RUN.json` is the shot set's provenance stamp AND its wipe permission
   slip: a full run refuses to wipe any `--out` that isn't absent, empty, or `RUN.json`-bearing.
 - **Standalone staging.** `shot.pw.ts` + `capture.pw.config.ts` are staged to the Windows host
