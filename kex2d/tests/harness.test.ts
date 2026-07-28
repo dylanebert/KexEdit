@@ -4,10 +4,12 @@ import { describe, expect, test } from "bun:test";
 import {
     boolEnv,
     collectedCount,
-    executedCount,
+    failedTitles,
     intEnv,
     parseArgs,
+    runCounts,
     UsageError,
+    verdict,
     wipeable,
 } from "../harness/args";
 import { provisioned, provisionKey } from "../harness/wsl";
@@ -174,10 +176,11 @@ describe("intEnv / boolEnv — the fail-closed knob pass", () => {
     });
 });
 
-describe("collectedCount / executedCount — the suite-count oracle's two sides", () => {
+describe("collectedCount / runCounts — the suite-count oracle's two sides", () => {
     // Both sides parse ANOTHER tool's stdout, so the fixtures are Playwright list-reporter text
     // verbatim in shape. The oracle exists because a truncated run reports the tests it did run as
     // green: without the comparison, a `globalTimeout` that kills the tail reads as a clean gate.
+    const executedCount = (stdout: string): number | null => runCounts(stdout)?.total ?? null;
 
     test("the collected side reads the --list total, singular form included", () => {
         expect(
@@ -262,6 +265,208 @@ describe("collectedCount / executedCount — the suite-count oracle's two sides"
             "  23 passed (17.4s)",
         ].join("\n");
         expect(executedCount(titled)).toBe(23);
+    });
+
+    test("each category is its OWN number, not just a share of the total", () => {
+        // `skipped` is the one the reference gate reads on its own: a stray `test.skip` keeps
+        // collected == accounted, so the total says nothing and only the per-category number
+        // exposes the coverage drop.
+        expect(runCounts("  1 skipped\n  23 passed (17.4s)\n")).toEqual({
+            passed: 23,
+            failed: 0,
+            flaky: 0,
+            skipped: 1,
+            interrupted: 0,
+            didNotRun: 0,
+            total: 24,
+        });
+    });
+
+    test("`did not run` lands in its own field — the truncation category is nameable", () => {
+        const counts = runCounts(
+            "  2 did not run\n  1 flaky\n  1 interrupted\n  19 passed (120s)\n",
+        );
+        expect(counts).toEqual({
+            passed: 19,
+            failed: 0,
+            flaky: 1,
+            skipped: 0,
+            interrupted: 1,
+            didNotRun: 2,
+            total: 23,
+        });
+    });
+});
+
+describe("failedTitles — what a red run leaves behind", () => {
+    // Flake forensics: the reporter output is gone once the run is over, so `RUN.json` carries the
+    // names. Parsed from the list reporter's summary block (a `N failed` line, then one indented
+    // title per failure), because a JSON reporter would mean another artifact staged to and copied
+    // back from the Windows host.
+
+    // Verbatim from a live staged run (a deliberately-red probe flow), tail included: the summary
+    // block is the LAST thing Playwright prints, the title carries the `[project] › ` prefix, and
+    // the box-drawing pad runs to the terminal width.
+    const red = [
+        "  x  1 [chromium] › shot.pw.ts:3097:1 › temporary red probe (8ms)",
+        "",
+        "",
+        "  1) [chromium] › shot.pw.ts:3097:1 › temporary red probe ─────────────────────────────────",
+        "",
+        "    Error: expect(received).toBe(expected) // Object.is equality",
+        "",
+        "    Expected: 2",
+        "    Received: 1",
+        "",
+        "        at C:\\Users\\dylan\\AppData\\Local\\Temp\\kex2d-harness-3014\\shot.pw.ts:3098:15",
+        "",
+        "  1 failed",
+        "    [chromium] › shot.pw.ts:3097:1 › temporary red probe ────────────────────────────────────",
+        "",
+    ].join("\n");
+
+    test("the failed flow's title comes back once, pad stripped", () => {
+        // once: `1) [chromium] › …` heads the error dump above and repeats every failed title
+        // verbatim, so a parse that isn't anchored on the summary block reports each failure twice.
+        expect(failedTitles(red)).toEqual(["[chromium] › shot.pw.ts:3097:1 › temporary red probe"]);
+    });
+
+    test("CRLF is stripped — the bridge hands back powershell's line endings", () => {
+        // the whole stdout arrives from `powershell.exe` through `Bun.spawnSync`, so the real
+        // separator is `\r\n` and every line carries a trailing `\r`. It survives today only
+        // because `\r` sits inside the `[─\s]+$` strip: narrow that to `─+$` and every recorded
+        // title grows an invisible `\r` with all these tests still green.
+        expect(failedTitles(red.replace(/\n/g, "\r\n"))).toEqual([
+            "[chromium] › shot.pw.ts:3097:1 › temporary red probe",
+        ]);
+    });
+
+    test("a green run leaves none", () => {
+        // the bridge's real progress line: ASCII `ok` (the host has no unicode marks) and the
+        // `[chromium] › ` project prefix, which a `›`-hunting parse could mistake for a title.
+        expect(
+            failedTitles(
+                "  ok  1 [chromium] › shot.pw.ts:321:1 › geo flow (12.1s)\n\n  24 passed (17.4s)\n",
+            ),
+        ).toEqual([]);
+        expect(failedTitles("")).toEqual([]);
+    });
+
+    test("the list ends at the next summary category — a flaky title is not a failure", () => {
+        const mixed = [
+            "  2 failed",
+            "    [chromium] › shot.pw.ts:321:1 › geo authoring flow ──────────────",
+            "    [chromium] › shot.pw.ts:521:1 › tangent edit flow ───────────────",
+            "  1 flaky",
+            "    [chromium] › shot.pw.ts:900:1 › force authoring flow ────────────",
+            "  21 passed (30.0s)",
+        ].join("\n");
+        expect(failedTitles(mixed)).toEqual([
+            "[chromium] › shot.pw.ts:321:1 › geo authoring flow",
+            "[chromium] › shot.pw.ts:521:1 › tangent edit flow",
+        ]);
+    });
+
+    test("the block is contiguous — a later line naming a test can't join it", () => {
+        // the summary is the tail of the output, so anything after the block belongs to another
+        // tool. Without the contiguity guard a trailing report line reads as one more failure.
+        const trailing = [
+            "  1 failed",
+            "    [chromium] › shot.pw.ts:321:1 › geo authoring flow ──────────────",
+            "",
+            "Serving HTML report › http://localhost:9323",
+        ].join("\n");
+        expect(failedTitles(trailing)).toEqual([
+            "[chromium] › shot.pw.ts:321:1 › geo authoring flow",
+        ]);
+    });
+});
+
+describe("verdict — the reference stamp and the fail-closed exits", () => {
+    // The gate decision itself, moved out of `capture.ts` into the seam every other harness
+    // predicate is tested in. `reference: true` on a shot set is the claim that this set IS the
+    // whole suite at HEAD, at default knobs, green — so every way that claim can be false has to
+    // be a decision made here, not an inline conjunction nothing exercises.
+    const full = {
+        selective: false,
+        exitCode: 0,
+        collected: 24,
+        counts: runCounts("  24 passed (17.4s)\n"),
+        defaultKnobs: true,
+    };
+
+    test("a green full run at default knobs is the reference set", () => {
+        expect(verdict(full)).toEqual({ reference: true, failure: null });
+    });
+
+    test("a selective run stands but is never the reference set", () => {
+        const sel = verdict({ ...full, selective: true, collected: null });
+        expect(sel.failure).toBeNull();
+        expect(sel.reference).toBe(false);
+    });
+
+    test("non-default knobs make a subset-shaped set: green, but not reference", () => {
+        expect(verdict({ ...full, defaultKnobs: false })).toEqual({
+            reference: false,
+            failure: null,
+        });
+    });
+
+    test("a nonzero exit fails, and the spawn ceiling says so by name", () => {
+        const red = verdict({
+            ...full,
+            exitCode: 1,
+            counts: runCounts("  1 failed\n  23 passed\n"),
+        });
+        expect(red.reference).toBe(false);
+        expect(red.failure).toBe("Playwright exited 1");
+        expect(verdict({ ...full, exitCode: null }).failure).toContain("spawn ceiling");
+    });
+
+    test("a truncated run fails — accounted-for short of collected", () => {
+        // the tail is simply missing from the summary: 21 accounted for, 24 collected. (The other
+        // truncation shape — `2 did not run` alongside the rest — Playwright exits nonzero for.)
+        const cut = verdict({ ...full, counts: runCounts("  21 passed (120s)\n") });
+        expect(cut.reference).toBe(false);
+        expect(cut.failure).toContain("truncated");
+    });
+
+    test("no summary parsed at all fails closed, never passes as a full run", () => {
+        expect(verdict({ ...full, counts: null }).failure).toContain("truncated");
+        expect(verdict({ ...full, collected: null }).failure).toContain("truncated");
+    });
+
+    test("a SKIPPED test fails a full run — the silent coverage drop the oracle can't see", () => {
+        // the whole soft spot: `1 skipped + 23 passed` accounts for all 24, exits 0, and every
+        // other gate reads green while one flow never ran. There is no legitimate `test.skip` in
+        // this suite (display gating exits before Playwright), so it fails like a truncation.
+        const skipped = verdict({
+            ...full,
+            counts: runCounts("  1 skipped\n  23 passed (17.4s)\n"),
+        });
+        expect(skipped.reference).toBe(false);
+        expect(skipped.failure).toContain("skipped");
+    });
+
+    test("a selective run is exempt from the skip gate — it claims no coverage", () => {
+        expect(
+            verdict({
+                ...full,
+                selective: true,
+                collected: null,
+                counts: runCounts("  1 skipped\n"),
+            }).failure,
+        ).toBeNull();
+    });
+
+    test("a failing full run is never stamped reference, whatever the knobs", () => {
+        for (const counts of [
+            runCounts("  1 skipped\n  23 passed\n"),
+            runCounts("  22 passed\n"),
+            null,
+        ])
+            for (const defaultKnobs of [true, false])
+                expect(verdict({ ...full, counts, defaultKnobs }).reference).toBe(false);
     });
 });
 

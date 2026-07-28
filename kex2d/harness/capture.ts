@@ -11,10 +11,12 @@ import { join, resolve } from "node:path";
 import {
     boolEnv,
     collectedCount,
-    executedCount,
+    failedTitles,
     intEnv,
     parseArgs,
+    runCounts,
     UsageError,
+    verdict,
     wipeable,
 } from "./args";
 import { runPlaywright } from "./playwright";
@@ -43,8 +45,10 @@ import { detectDisplay } from "./wsl";
 // `--list` run captures nothing, so it touches neither. Every capturing run — green or red — copies
 // its shots back (a failure's shots are the diagnostic) and writes `RUN.json` beside them recording
 // what produced the set: `reference: true` means a full run at that HEAD, at the default knobs, ran
-// the WHOLE collected suite and exited 0; anything else means the set is a subset, a failure, taken
-// at non-default knobs, or all three.
+// the WHOLE collected suite (nothing skipped) and exited 0; anything else means the set is a subset,
+// a failure, taken at non-default knobs, or all three. Alongside it: the per-category counts, and a
+// red run's failed flow TITLES — the reporter output is gone by the time anyone reads the set, and
+// the set of titles is the signature a host-level flake is diagnosed from (`args.ts`).
 
 const harnessDir = import.meta.dir;
 const projectDir = resolve(harnessDir, "..");
@@ -175,11 +179,18 @@ if (run.staged) {
     if (existsSync(wslShots)) cpSync(wslShots, outDir, { recursive: true });
 }
 
-const executed = selective ? null : executedCount(run.stdout);
-const wholeSuite = selective || (collected !== null && executed === collected);
-// Only the knobs that change what the shot set IS gate the reference flag; the port and the stage
-// dir are provenance (they change where it ran, not what it captured).
-const defaultKnobs = workers === DEFAULT_WORKERS && !headed && shotMs === DEFAULT_SHOT_MS;
+// The gate decision lives in `args.ts` with every other harness predicate, where it is unit-tested:
+// what the run stands or dies on, and whether its shots may be stamped `reference`. Only the knobs
+// that change what the shot set IS reach it; the port and the stage dir are provenance (they change
+// where it ran, not what it captured).
+const counts = runCounts(run.stdout);
+const { reference, failure } = verdict({
+    selective,
+    exitCode: run.exitCode,
+    collected,
+    counts,
+    defaultKnobs: workers === DEFAULT_WORKERS && !headed && shotMs === DEFAULT_SHOT_MS,
+});
 
 const git = (args: string[]): string =>
     new TextDecoder()
@@ -194,8 +205,12 @@ writeFileSync(
             args: testArgs,
             exitCode: run.exitCode,
             env: { workers, headed, shotMs, port, stage: stageName },
-            counts: { collected, executed },
-            reference: !selective && run.exitCode === 0 && wholeSuite && defaultKnobs,
+            // The oracle's two sides (`collected` vs `total`) plus the whole category split — a red
+            // or flaky run's shape is what a post-mortem reads, and `runCounts` already computed it.
+            // A summary that didn't parse leaves the categories absent, never zeroed.
+            counts: { collected, ...counts },
+            failedTitles: failedTitles(run.stdout),
+            reference,
         },
         null,
         2,
@@ -203,16 +218,8 @@ writeFileSync(
 );
 
 cleanup();
-if (run.exitCode !== 0) {
-    console.error(
-        `capture FAILED${run.timedOut ? " (spawn ceiling — Playwright did not exit)" : ""}`,
-    );
-    process.exit(1);
-}
-if (!wholeSuite) {
-    console.error(
-        `capture FAILED: ${executed ?? "no"} of ${collected} collected tests accounted for — the run was truncated`,
-    );
+if (failure !== null) {
+    console.error(`capture FAILED: ${failure}`);
     process.exit(1);
 }
 console.log(`PASS: screenshots → ${outDir}`);

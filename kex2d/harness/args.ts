@@ -110,23 +110,138 @@ export function collectedCount(stdout: string): number | null {
     return total ? Number(total[1]) : null;
 }
 
+/** every category Playwright's summary can print, and the total they account for */
+export interface RunCounts {
+    passed: number;
+    failed: number;
+    flaky: number;
+    skipped: number;
+    interrupted: number;
+    didNotRun: number;
+    /** the suite-count oracle's RIGHT-hand side: every test accounted for, whatever its outcome */
+    total: number;
+}
+
+// Playwright's own word for each category → the field it lands in. The ONE list: the summary
+// pattern below is built from these keys, so a category can never be matched without a field to
+// count it in. Spelled separately, a drift fails OPEN — an unmatched category still reaches `total`
+// (keeping the oracle's two sides equal) while its own count stays 0, which is exactly the silent
+// pass the skip gate exists to close.
+const FIELD = {
+    passed: "passed",
+    failed: "failed",
+    flaky: "flaky",
+    skipped: "skipped",
+    interrupted: "interrupted",
+    "did not run": "didNotRun",
+} as const;
+
+// A summary line — `  22 passed (17.4s)`, `  1 failed`, `  2 did not run`. Anchored at the line's
+// leading indent so only the summary block matches: a per-test progress line
+// (`ok  1 [chromium] › shot.pw.ts:321:1 › geo authoring flow`) and a failure-detail line
+// (`1) [chromium] › …`) both start with something other than a digit after the indent.
+const SUMMARY = new RegExp(String.raw`^\s+(\d+) (${Object.keys(FIELD).join("|")})\b`);
+
 /**
- * The oracle's RIGHT-hand side: every test Playwright ACCOUNTED FOR, summed across its summary
- * lines (`22 passed (17.4s)`, `1 failed`, `2 did not run` — the last is exactly what a
- * `globalTimeout` truncation reports, and the whole reason this count exists). Null when no summary
- * line parsed at all, which fails the comparison closed.
- *
- * Anchored at a line's leading indent so only the summary block counts: a per-test progress line
- * (`✓  1 shot.pw.ts:321:1 › geo authoring flow`) and a failure-detail line (`shot.pw.ts:321:1 › …`)
- * both start with something other than a digit after the indent.
+ * Playwright's summary block, per category. `total` is what the suite-count oracle compares against
+ * `collectedCount` — `did not run` is exactly what a `globalTimeout` truncation reports, and the
+ * whole reason the total exists. `skipped` is read on its own: it keeps the two sides equal while
+ * dropping coverage, so only its own number exposes it. Null when no summary line parsed at all,
+ * which fails every comparison closed.
  */
-export function executedCount(stdout: string): number | null {
-    const re = /^\s+(\d+) (passed|failed|flaky|skipped|interrupted|did not run)\b/gm;
-    let total = 0;
+export function runCounts(stdout: string): RunCounts | null {
+    const counts: RunCounts = {
+        passed: 0,
+        failed: 0,
+        flaky: 0,
+        skipped: 0,
+        interrupted: 0,
+        didNotRun: 0,
+        total: 0,
+    };
     let seen = false;
-    for (const m of stdout.matchAll(re)) {
-        total += Number(m[1]);
+    for (const line of stdout.split("\n")) {
+        const m = SUMMARY.exec(line);
+        if (!m) continue;
+        counts[FIELD[m[2] as keyof typeof FIELD]] += Number(m[1]);
+        counts.total += Number(m[1]);
         seen = true;
     }
-    return seen ? total : null;
+    return seen ? counts : null;
+}
+
+/**
+ * The titles of the flows that failed, off the summary block's own list: a `1 failed` line followed
+ * by one indented `[chromium] › shot.pw.ts:3097:1 › temporary red probe ────` line per failure,
+ * box-drawing pad and all. The reporter output is gone once the run is over, so these names are what
+ * `RUN.json` carries into a flake post-mortem (`kex2d-harness.md`: a multi-flow red is presumptively
+ * host-level — the SET of titles is the signature).
+ *
+ * The block is read as contiguous and only under `failed`: the same titles head the error dumps
+ * above it (`1) [chromium] › …`) and reappear under `flaky`, and either would double-count.
+ */
+export function failedTitles(stdout: string): string[] {
+    const titles: string[] = [];
+    let collecting = false;
+    for (const line of stdout.split("\n")) {
+        const m = SUMMARY.exec(line);
+        if (m) {
+            collecting = m[2] === "failed";
+            continue;
+        }
+        if (!collecting) continue;
+        const title = line.replace(/[─\s]+$/, "").trim();
+        if (title.includes("›")) titles.push(title);
+        else collecting = false;
+    }
+    return titles;
+}
+
+/** what a finished run leaves to judge: its exit, what it collected, what its summary said */
+export interface RunFacts {
+    /** a filtered run — it merges its shots over the set and claims no coverage */
+    selective: boolean;
+    /** Playwright's exit code; null when the spawn ceiling fired and it never exited */
+    exitCode: number | null;
+    /** the `--list` pre-pass total; null on a selective run, which takes no pre-pass */
+    collected: number | null;
+    /** the summary parse (`runCounts`); null when Playwright printed no summary at all */
+    counts: RunCounts | null;
+    /** the knobs that change WHAT the set is are all at their defaults (resolved in `capture.ts`) */
+    defaultKnobs: boolean;
+}
+
+export interface Verdict {
+    /** the shot set IS the whole collected suite at this HEAD, at default knobs, green */
+    reference: boolean;
+    /** why the run must exit nonzero, or null when it stands */
+    failure: string | null;
+}
+
+/**
+ * The gate decision: whether the run stands, and whether its shot set may be stamped `reference`.
+ *
+ * Fail-closed on every way a flow can be MISSING from the set: no exit at all, a bad exit, an
+ * unaccounted-for tail, or a skip. A skipped test fails a full run like a truncation — it leaves
+ * collected == accounted, so the suite-count oracle sees nothing while a flow silently never ran,
+ * and no legitimate `test.skip` exists in this suite (display gating exits before Playwright ever
+ * starts). `flaky` deliberately does not fail: that flow DID run and shot, and the config carries
+ * `retries: 0` so nothing can report flaky today — `RUN.json` records the count either way, which is
+ * where a retries change would show up. Only `reference` follows from the knobs: a run at
+ * non-default workers or settle is a sound run whose shots are simply not the reference set.
+ */
+export function verdict(facts: RunFacts): Verdict {
+    const failure = failureOf(facts);
+    return { reference: !facts.selective && facts.defaultKnobs && failure === null, failure };
+}
+
+function failureOf({ selective, exitCode, collected, counts }: RunFacts): string | null {
+    if (exitCode === null) return "the spawn ceiling fired — Playwright never exited";
+    if (exitCode !== 0) return `Playwright exited ${exitCode}`;
+    if (selective) return null;
+    if (counts === null || collected === null || counts.total !== collected)
+        return `${counts?.total ?? "no"} of ${collected ?? "no"} collected tests accounted for — the run was truncated`;
+    if (counts.skipped > 0)
+        return `${counts.skipped} of ${collected} tests skipped — a full run that skips drops coverage with every gate green`;
+    return null;
 }
