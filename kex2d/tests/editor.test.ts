@@ -307,28 +307,29 @@ test("a notice is raised and dismissed on its own, without touching the gate", (
 // ── what a finished solve says ──
 // the readout mapping, branch by branch. Every exit a solve has lands here, and this text is the
 // author's ONLY report of what happened — a branch that silently reads as another one (a diverged
-// answer announcing "Solved to force" over an unchanged section) is invisible to every other gate.
+// answer announcing "Converted to force" over an unchanged section) is invisible to every other gate.
 
 const answer = { outcome: "floor", keys: 12, deviation: 0.567, floor: 0.571 };
 
-test("a converged solve reads as done, with keys and achieved-vs-floor", () => {
-    expect(solveDone(answer)).toEqual({
+test("a converged convert reads as a short confirmation — the count, nothing else", () => {
+    // it held its budget, so the numbers say only "it worked"; the key count is what the author
+    // now edits. Anything past that is noise the readout doesn't earn.
+    expect(solveDone(answer)).toEqual({ kind: "done", text: "Converted to force · 12 keys" });
+});
+
+test("a budget convert landed too — it reads as done, and names the miss", () => {
+    // "budget" is the sanctioned narrow-feature outcome (refine.ts): the answer IS on the
+    // document, so it must not read as a failure — but it missed, and THAT is when the
+    // achieved-vs-allowed numbers are worth the author's attention.
+    expect(solveDone({ ...answer, outcome: "budget" })).toEqual({
         kind: "done",
-        text: "Solved to force · 12 keys · 0.57 m off · floor 0.57 m",
+        text: "Converted to force · 12 keys · 0.57 m off (0.57 m allowed)",
     });
 });
 
-test("a budget solve landed too — it reads as done, tagged", () => {
-    // "budget" is the sanctioned narrow-feature outcome (refine.ts): the answer IS on the
-    // document, so it must not read as a failure.
-    const n = solveDone({ ...answer, outcome: "budget" });
-    expect(n.kind).toBe("done");
-    expect(n.text).toEndWith("· key budget");
-});
-
-test("a diverged solve reads as a failure — nothing was landed", () => {
+test("a diverged convert reads as a failure — nothing was landed", () => {
     // it RESOLVES like a success (geoforce.ts writes nothing on it), so this branch is the only
-    // thing standing between an unchanged section and a green "Solved to force".
+    // thing standing between an unchanged section and a green "Converted to force".
     expect(solveDone({ ...answer, outcome: "diverged" })).toEqual({
         kind: "error",
         text: "The solve could not fit this shape. Nothing changed.",
@@ -381,24 +382,39 @@ const fitAnswer = {
     forceBudget: 0.5,
 };
 
-test("a converged fit reads as done, with nodes and the dual achieved-vs-floor", () => {
-    expect(fitDone(fitAnswer)).toEqual({
+test("a converged fit reads as a short confirmation — the node count, nothing else", () => {
+    expect(fitDone(fitAnswer)).toEqual({ kind: "done", text: "Converted to geo · 6 nodes" });
+});
+
+test("a budget fit names only the axis that missed", () => {
+    // "budget" is the sanctioned narrow-feature outcome (geofit.ts): the answer IS on the
+    // document, so it must not read as a failure. The geometric budget held here, so printing it
+    // would bury the one reading the author can act on.
+    expect(fitDone({ ...fitAnswer, outcome: "budget", forceError: 0.58 })).toEqual({
         kind: "done",
-        text: "Solved to shape · 6 nodes · 0.31 m / 0.22 g off · floor 0.50 m / 0.50 g",
+        text: "Converted to geo · 6 nodes · 0.58 g off (0.50 g allowed)",
     });
 });
 
-test("a budget fit landed too — it reads as done, tagged", () => {
-    // "budget" is the sanctioned narrow-feature outcome (geofit.ts): the answer IS on the
-    // document, so it must not read as a failure.
-    const n = fitDone({ ...fitAnswer, outcome: "budget" });
-    expect(n.kind).toBe("done");
-    expect(n.text).toEndWith("· node budget");
+test("both axes missing prints both, in geo-then-force order", () => {
+    expect(
+        fitDone({ ...fitAnswer, outcome: "budget", deviation: 0.62, forceError: 0.58 }).text,
+    ).toBe(
+        "Converted to geo · 6 nodes · 0.62 m off (0.50 m allowed) · 0.58 g off (0.50 g allowed)",
+    );
+});
+
+test("a budget fit that held BOTH bounds reports both readings", () => {
+    // it ran out of admissible split sites rather than missing, so there is no single miss to
+    // point at — the fallback keeps the outcome honest instead of reading as a clean hold.
+    expect(fitDone({ ...fitAnswer, outcome: "budget" }).text).toBe(
+        "Converted to geo · 6 nodes · 0.31 m off (0.50 m allowed) · 0.22 g off (0.50 g allowed)",
+    );
 });
 
 test("a diverged fit reads as a failure — nothing was landed", () => {
     // it RESOLVES like a success (forcegeo.ts writes nothing on it), so this branch is the only
-    // thing standing between an unchanged section and a green "Solved to shape".
+    // thing standing between an unchanged section and a green "Converted to geo".
     expect(fitDone({ ...fitAnswer, outcome: "diverged" })).toEqual({
         kind: "error",
         text: "The solve could not fit this shape. Nothing changed.",

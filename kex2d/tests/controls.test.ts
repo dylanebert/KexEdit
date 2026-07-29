@@ -642,7 +642,7 @@ describe("sectionsDeletable — section multi-delete enablement", () => {
 // (geo→force) and `convertForce`'s (force→geo) own guards, which throw, so this is the gate and not
 // a hint. Everything else grays.
 describe("sectionSolvable — invoked-solve enablement", () => {
-    test("one geo section with a live bake enables Solve force (target Geo)", () => {
+    test("one geo section with a live bake enables Convert to force (target Geo)", () => {
         expect(sectionSolvable(1, SectionKind.Geo, true, SectionKind.Geo)).toBe(true);
     });
 
@@ -650,7 +650,7 @@ describe("sectionSolvable — invoked-solve enablement", () => {
         expect(sectionSolvable(1, SectionKind.Geo, false, SectionKind.Geo)).toBe(false);
     });
 
-    test("a force section disqualifies Solve force — there is nothing to solve", () => {
+    test("a force section disqualifies Convert to force — there is nothing to convert", () => {
         expect(sectionSolvable(1, SectionKind.Force, true, SectionKind.Geo)).toBe(false);
     });
 
@@ -659,11 +659,11 @@ describe("sectionSolvable — invoked-solve enablement", () => {
         expect(sectionSolvable(0, null, true, SectionKind.Geo)).toBe(false);
     });
 
-    test("one force section with a live bake enables Solve shape (target Force)", () => {
+    test("one force section with a live bake enables Convert to geo (target Force)", () => {
         expect(sectionSolvable(1, SectionKind.Force, true, SectionKind.Force)).toBe(true);
     });
 
-    test("a geo section disqualifies Solve shape — there is no force curve to fit", () => {
+    test("a geo section disqualifies Convert to geo — there is no force curve to fit", () => {
         expect(sectionSolvable(1, SectionKind.Geo, true, SectionKind.Force)).toBe(false);
     });
 });

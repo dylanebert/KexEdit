@@ -229,7 +229,9 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`).
   `bakeOut`: per-edge `fN`+`ds`, per-sample `t`/`feasible`, `firstInfeasible`, `hash`. `sectionInfo`
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
-  `sections`/`sectionAt`/`createSection`. Coordinate lens (section-local `s` ↔ track-global `d`):
+  `sections`/`sectionAt`/`createSection`, plus the session's per-kind **sticky append length**
+  (`stickyLen`/`setStickyLen`: a force section's extent, a geo section's `extend` chord — module
+  state, updated only from `history.commitLength`/`commitChord`, never by a solve or a convert). Coordinate lens (section-local `s` ↔ track-global `d`):
   `sectionSpans` (the one offset table) + `toGlobal`/`toLocal` — the single seam every d readout derives from. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
   `sectionHandles`/`lastHandle`/`handleAt`/`spawnNode`/`nodeSnapshot`/`restoreNodes`/`sameNodes` +
   `geoNodes` (the ONE projection of a section's ECS columns onto `spline.Node`s — the bake payload
@@ -277,7 +279,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
   fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
-  right-click menus: `context` (section Solve force / Solve shape / Delete) and `nodeMenu` (the
+  right-click menus: `context` (the section's ONE kind-fitted conversion row + Delete) and `nodeMenu` (the
   node context menu — Handles toggle + Tangents submenu — opened on any pickable node, any mode)
   — both `{x, y, …}` or
   null, rendered once at the app root. Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
@@ -484,8 +486,11 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `readoutFit` (`view.ts`) places it: centered-then-clamped horizontally, flipped above the node
   near the bottom so it never lands under the timeline dock. (Earlier tries: a chip AT the drag
   point overlapped the buttons; a fixed top-left line read too far from the action.)
-  It also owns the **invoked solve**: the section menu's `Solve force` row (enabled by
-  `controls.sectionSolvable` — one geo section with a live bake; grayed otherwise, never hidden),
+  It also owns the **invoked convert**: the section menu's ONE conversion row — `Convert to force`
+  on a geo section, `Convert to geo` on a force one, its label, action, and enablement all resolved
+  from the target's kind through the one `controls.sectionSolvable` predicate (that kind, one
+  section, a live bake; grayed otherwise, never hidden — the opposite direction is absent, since a
+  section is only ever one kind),
   the `solve()` drive around `geoforce.convertGeo` (one `AbortController`, progress folded into
   `editor.converting`, `editor.solveDone`/`solveFailed` mapping each exit to the readout — cancel
   says nothing, and a raw thrown message goes to `console.error`, never to the surface), and the

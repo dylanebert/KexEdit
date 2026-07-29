@@ -20,6 +20,7 @@ import {
     beginMoves,
     cancel,
     commit,
+    commitChord,
     extendTrack,
     history,
     removeSection,
@@ -455,9 +456,10 @@ export function sectionsDeletable(selected: number, total: number): boolean {
  *  invoking command's own guards, which *throw* (`convertGeo`'s geo/live checks, `convertForce`'s
  *  force/live twin) — the solve reads the bake's entry frame, so a stale bake would hand it a
  *  shape that isn't on screen, and a set has no single subject to solve. `target` parameterizes
- *  the direction (`SectionKind.Geo` for "Solve force", `SectionKind.Force` for "Solve shape")
- *  rather than a second cloned predicate — the two menu rows share this one enablement, just with
- *  their own target. The row grays out otherwise (never hidden). Pure — device-free, unit-tested. */
+ *  the direction (`SectionKind.Geo` for "Convert to force", `SectionKind.Force` for "Convert to
+ *  geo") rather than a second cloned predicate — the menu's ONE conversion row resolves its target
+ *  from the section's kind and asks this once. The row grays out otherwise (never hidden). Pure —
+ *  device-free, unit-tested. */
 export function sectionSolvable(
     selected: number,
     kind: SectionKind | null,
@@ -1040,10 +1042,15 @@ export function attachControls(
             return;
         }
         if (dragManip === null) return;
+        const axis = dragManip;
         dragManip = null;
         manipArmed = false;
         clearGuides();
-        commit(history); // one drag → one undo entry (a no-move click records nothing)
+        // one drag → one undo entry (a no-move click records nothing). a LENGTH drag also
+        // records its landed chord as the sticky append length, so the next extend opens there.
+        const sel = editor.selection;
+        if (axis === "length" && sel !== null) commitChord(history, ecs, sel);
+        else commit(history);
     };
 
     const cancelDrag = (): void => {
@@ -1160,7 +1167,9 @@ export function attachControls(
             );
             beginMove(ecs, Handle.section.get(eid));
             dragTo(ecs, eid, t.x, t.y);
-            commit(history);
+            // the nudge is the keyboard twin of the manipulator drag, sticky length included.
+            if (axis === "length") commitChord(history, ecs, eid);
+            else commit(history);
             return;
         }
 

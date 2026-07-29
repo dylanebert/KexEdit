@@ -1,6 +1,7 @@
 import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@dylanebert/shallot";
 import { V_FLOOR, V_WARN } from "./bake";
 import type { GeofitBake } from "./geofit";
+import { LENGTH_MIN } from "./magnet";
 import { DEFAULT_G, Easing, type ForcePoint, forceProfile, type Offset } from "./profile";
 import {
     chain,
@@ -301,25 +302,39 @@ const DEFAULT_FORCE_LEN = EXTEND_DIST;
  *  never collapses below what `forceProfile` can sample. */
 export const MIN_FORCE_LEN = 2;
 
-/** the session's sticky append length (m): a freshly APPENDED force section's default
- *  extent, distinct from a destructive convert (which still resets to `DEFAULT_FORCE_LEN`
- *  unconditionally — its shape has no "previous append" to echo). Updated only when an
- *  extent-trim gesture COMMITS (`setStickyLen`, called from `history.commitLength`), never
- *  by a solve landing (a converted section's realized extent is the solve's own answer, not
- *  an authored trim). Session-level module state: not persisted across reloads, not threaded
- *  through undo — undoing an append never rolls it back, so the next append still defaults to
- *  whatever was last committed. Starts at `DEFAULT_FORCE_LEN`. */
-let stickyForceLen = DEFAULT_FORCE_LEN;
+/** the session's sticky append length (m), one per section kind — what a freshly APPENDED
+ *  piece of that kind starts at, echoing the last length the author committed by hand. Each
+ *  kind's length is its own authoring quantum: a **force** section's is its extent (the
+ *  clip's right-edge trim), a **geo** section's is the chord `extend` lays down (the polar
+ *  length manipulator). Updated only when such a gesture COMMITS (`setStickyLen`, from
+ *  `history.commitLength` / `history.commitChord`), never by a solve landing (a converted
+ *  section's realized extent is the solve's own answer, not an authored trim) and never by a
+ *  destructive convert (which resets to the literal defaults — its shape has no "previous
+ *  append" to echo). Session-level module state: not persisted across reloads, not threaded
+ *  through undo, so undoing an append never rolls it back. */
+const stickyAppendLen: Record<SectionKind, number> = {
+    [SectionKind.Geo]: EXTEND_DIST,
+    [SectionKind.Force]: DEFAULT_FORCE_LEN,
+};
 
-/** read the session's current sticky append length. */
-export function stickyLen(): number {
-    return stickyForceLen;
+/** the floor each kind's sticky length clamps to — the same floor its own gesture holds
+ *  (`MIN_FORCE_LEN` for an extent trim, `LENGTH_MIN` for a chord), so a degenerate commit
+ *  can't poison the next append. */
+const STICKY_MIN: Record<SectionKind, number> = {
+    [SectionKind.Geo]: LENGTH_MIN,
+    [SectionKind.Force]: MIN_FORCE_LEN,
+};
+
+/** read the session's current sticky append length for a section kind. */
+export function stickyLen(kind: SectionKind): number {
+    return stickyAppendLen[kind];
 }
 
-/** record a committed extent-trim value as the new sticky append default, floored like any
- *  authored extent (`MIN_FORCE_LEN`) so a degenerate commit can't poison the next append. */
-export function setStickyLen(length: number): void {
-    stickyForceLen = Math.max(MIN_FORCE_LEN, length);
+/** record a committed length gesture as that kind's new sticky append default. A non-finite
+ *  value is ignored (a degenerate frame has no length to remember). */
+export function setStickyLen(kind: SectionKind, length: number): void {
+    if (!Number.isFinite(length)) return;
+    stickyAppendLen[kind] = Math.max(STICKY_MIN[kind], length);
 }
 
 /** allocate an empty track entity + its sample / bake-output buffers, sized once
@@ -783,8 +798,9 @@ export function reheadOnDrag(ecs: State, eid: number): void {
 }
 
 /** lay a new node past a section's end, continuing straight along the last node's
- *  exit heading by `EXTEND_DIST` (in the section-local frame) — the "extend"
- *  gesture. placing it along the heading makes `reflect` return the same heading, so
+ *  exit heading by the session's sticky chord (`stickyLen(Geo)` — the last committed
+ *  length adjust, `EXTEND_DIST` until one lands), in the section-local frame — the
+ *  "extend" gesture. placing it along the heading makes `reflect` return the same heading, so
  *  the new segment opens straight. returns the new node. */
 export function extend(ecs: State, sectionId: number): number {
     const last = lastHandle(ecs, sectionId);
@@ -795,12 +811,8 @@ export function extend(ecs: State, sectionId: number): number {
     const th = exitHeading(last);
     const lx = Handle.pos.x.get(last);
     const ly = Handle.pos.y.get(last);
-    return addNode(
-        ecs,
-        sectionId,
-        lx + Math.cos(th) * EXTEND_DIST,
-        ly + Math.sin(th) * EXTEND_DIST,
-    );
+    const chord = stickyLen(SectionKind.Geo);
+    return addNode(ecs, sectionId, lx + Math.cos(th) * chord, ly + Math.sin(th) * chord);
 }
 
 /** remove the trailing (highest-order) node on a section — never below the two
@@ -1307,23 +1319,24 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
 /** append a new section of `kind` at the end of the chain. geo gets the flat
  *  two-node seed (its entry is the prior exit, so it opens straight along the
  *  running heading); force gets the two continuation keyframes at the recovered
- *  entry force (the prior section's exit-edge force from the current bake), over the
- *  session's sticky append length (`stickyForceLen` — the last committed extent-trim,
- *  `DEFAULT_FORCE_LEN` until one lands). returns the id. */
+ *  entry force (the prior section's exit-edge force from the current bake). Both start at
+ *  the session's sticky append length for their kind (`stickyLen` — the last committed
+ *  extent-trim / length adjust, the literal defaults until one lands). returns the id. */
 export function appendSection(ecs: State, kind: SectionKind): number {
     const secs = sections(ecs);
     const order = secs.length;
-    const id = createSection(ecs, order, kind, kind === SectionKind.Force ? stickyForceLen : 0);
+    const len = stickyLen(kind);
+    const id = createSection(ecs, order, kind, kind === SectionKind.Force ? len : 0);
     if (kind === SectionKind.Geo) {
         addNode(ecs, id, 0, 0);
-        addNode(ecs, id, EXTEND_DIST, 0);
+        addNode(ecs, id, len, 0);
     } else {
         // the new section's entry is the current last section's exit — seed from the
         // force arriving there (its exit edge in the current bake), stamped.
         const prev = secs[secs.length - 1];
         const info = prev ? sectionInfo.get(prev.id) : undefined;
         const gEntry = info ? bakeEntryForce(ecs, info.endSample) : DEFAULT_G;
-        seedForceKeyframes(ecs, id, stickyForceLen, gEntry);
+        seedForceKeyframes(ecs, id, len, gEntry);
     }
     return id;
 }

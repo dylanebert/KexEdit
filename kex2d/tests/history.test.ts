@@ -20,6 +20,7 @@ import {
     beginMoves,
     beginV0,
     commit,
+    commitChord,
     commitLength,
     convertSection,
     createForce,
@@ -431,12 +432,15 @@ test("removeSections refuses (records nothing) when the set is EVERY section —
     expect(h.undo.length).toBe(1); // only the append — the refused delete recorded nothing
 });
 
-// ── sticky appended-section length (kex2d-geoforce-editor stage 5c) ──────────────
-// session-level module state in track.ts, not ECS/undo: a freshly appended force section's
-// default extent echoes the last COMMITTED extent-trim this session, starting at
-// DEFAULT_FORCE_LEN (== EXTEND_DIST). reset before each test — it's process-shared, not
-// per-track — so one test's commit can't leak into the next.
-beforeEach(() => setStickyLen(EXTEND_DIST));
+// ── sticky append length, per section kind ──────────────
+// session-level module state in track.ts, not ECS/undo: a freshly appended piece starts at the
+// last length COMMITTED by hand for its kind — a force section's extent trim, a geo section's
+// chord (the polar length manipulator). Both start at EXTEND_DIST. reset before each test — it's
+// process-shared, not per-track — so one test's commit can't leak into the next.
+beforeEach(() => {
+    setStickyLen(SectionKind.Force, EXTEND_DIST);
+    setStickyLen(SectionKind.Geo, EXTEND_DIST);
+});
 
 test("a fresh append gets EXTEND_DIST (DEFAULT_FORCE_LEN) before anything has committed", () => {
     const { state } = nodes();
@@ -452,7 +456,7 @@ test("a committed extent-trim becomes the next append's default length", () => {
     beginLength(state, force);
     setSectionLength(state, force, 40); // live drag write (repeatable, as a real drag would do)
     commitLength(h, state, force); // the gesture COMMITS — this is the one update site
-    expect(stickyLen()).toBe(40);
+    expect(stickyLen(SectionKind.Force)).toBe(40);
 
     const force2 = appendSection(h, state, SectionKind.Force);
     expect(sections(state).find((s) => s.id === force2)?.length).toBe(40);
@@ -465,12 +469,12 @@ test("undoing the append that used the sticky value doesn't roll the sticky valu
     beginLength(state, force);
     setSectionLength(state, force, 40);
     commitLength(h, state, force);
-    expect(stickyLen()).toBe(40);
+    expect(stickyLen(SectionKind.Force)).toBe(40);
 
     const force2 = appendSection(h, state, SectionKind.Force);
     undo(h, state); // undoes the SECOND append (restoreAll) — the section is gone
     expect(sections(state).some((s) => s.id === force2)).toBe(false);
-    expect(stickyLen()).toBe(40); // module state, untouched by undo
+    expect(stickyLen(SectionKind.Force)).toBe(40); // module state, untouched by undo
 
     const force3 = appendSection(h, state, SectionKind.Force); // still echoes the committed trim
     expect(sections(state).find((s) => s.id === force3)?.length).toBe(40);
@@ -483,15 +487,82 @@ test("a degenerate committed extent floors at MIN_FORCE_LEN, never poisoning the
     beginLength(state, force);
     setSectionLength(state, force, 0); // a drag past the floor — the setter clamps the section…
     commitLength(h, state, force);
-    expect(stickyLen()).toBe(MIN_FORCE_LEN); // …and the committed value carries the clamp through
+    expect(stickyLen(SectionKind.Force)).toBe(MIN_FORCE_LEN); // …and the committed value carries the clamp through
 
     const force2 = appendSection(h, state, SectionKind.Force);
     expect(sections(state).find((s) => s.id === force2)?.length).toBe(MIN_FORCE_LEN);
 
     // the sticky store holds the floor on its own too, not just by inheriting `setSectionLength`'s
     // clamp: it's the value the NEXT append is seeded from, so it can never go sub-floor.
-    setStickyLen(0.1);
-    expect(stickyLen()).toBe(MIN_FORCE_LEN);
+    setStickyLen(SectionKind.Force, 0.1);
+    expect(stickyLen(SectionKind.Force)).toBe(MIN_FORCE_LEN);
+});
+
+// the geo half of the same mechanism: the authored length is a node's CHORD, committed by the
+// polar length manipulator (drag or arrow nudge, both through `commitChord`), and it seeds the
+// next appended segment — `extend`'s reach and a fresh geo section's seed node alike.
+test("a committed length adjust becomes the next appended segment's chord", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const tip = handleAt(state, sec, 1);
+    if (tip === null) throw new Error("no tip");
+    beginMove(state, sec);
+    Handle.pos.set(tip, 30, 0); // the manipulator's live write, landing a 30 m chord
+    commitChord(h, state, tip); // the gesture COMMITS — the one geo update site
+    expect(stickyLen(SectionKind.Geo)).toBe(30);
+
+    const added = extendTrack(h, state, sec);
+    expect(Handle.pos.x.get(added)).toBeCloseTo(60, 6); // 30 m past the 30 m tip, straight on
+});
+
+test("the sticky chord also seeds a freshly appended geo section", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const tip = handleAt(state, sec, 1);
+    if (tip === null) throw new Error("no tip");
+    beginMove(state, sec);
+    Handle.pos.set(tip, 30, 0);
+    commitChord(h, state, tip);
+
+    const geo = appendSection(h, state, SectionKind.Geo);
+    expect(poseOf(state, geo, 1).x).toBeCloseTo(30, 6); // its seed node, not EXTEND_DIST
+});
+
+test("an angle adjust leaves the sticky chord alone — it commits bare", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const tip = handleAt(state, sec, 1);
+    if (tip === null) throw new Error("no tip");
+    beginMove(state, sec);
+    Handle.pos.set(tip, 0, EXTEND_DIST); // same chord, rotated a quarter turn
+    commit(h); // the angle axis commits bare (controls.ts) — nothing to record
+    expect(stickyLen(SectionKind.Geo)).toBe(EXTEND_DIST);
+});
+
+test("node 0 has no chord to remember — commitChord still records the undo entry", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const anchor = handleAt(state, sec, 0);
+    if (anchor === null) throw new Error("no anchor");
+    beginMove(state, sec);
+    Handle.pos.set(anchor, 0, 3);
+    commitChord(h, state, anchor);
+    expect(stickyLen(SectionKind.Geo)).toBe(EXTEND_DIST); // untouched
+    expect(h.undo.length).toBe(1); // but the move is undoable
+});
+
+test("a geo convert resets to the literal seed, never the sticky chord", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const tip = handleAt(state, sec, 1);
+    if (tip === null) throw new Error("no tip");
+    beginMove(state, sec);
+    Handle.pos.set(tip, 30, 0);
+    commitChord(h, state, tip);
+
+    const force = appendSection(h, state, SectionKind.Force);
+    convertSection(h, state, force); // force → geo: the destructive reset, no append to echo
+    expect(poseOf(state, force, 1).x).toBeCloseTo(EXTEND_DIST, 6);
 });
 
 test("a solve landing does NOT update the sticky value", () => {
@@ -506,7 +577,7 @@ test("a solve landing does NOT update the sticky value", () => {
         ds: 0.3,
     });
     expect(sections(state).find((s) => s.id === geo)?.length).toBe(77); // the solve DID land
-    expect(stickyLen()).toBe(EXTEND_DIST); // but the sticky default is untouched
+    expect(stickyLen(SectionKind.Force)).toBe(EXTEND_DIST); // but the sticky default is untouched
 
     const force = appendSection(h, state, SectionKind.Force);
     expect(sections(state).find((s) => s.id === force)?.length).toBe(EXTEND_DIST); // not 77

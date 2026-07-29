@@ -36,8 +36,8 @@ authoring layers on top. Optimization exists only as a **scoped, invoked tool** 
 and both directions are landed end to end: geo→force (lab-gated core, `convert.ts`'s cancellable
 worker-pool façade, `geoforce.ts`) and force→geo (`geofit.ts`'s dual-budget fit — every candidate
 scored on the adaptive bake the DOCUMENT will produce — behind `geofit-async.ts`, landed by
-`forcegeo.ts`). Each lands as one undo entry with byte-identical undo, guarded against a stale or
-concurrent invoke, behind the same modal (Section ops, below). The kernel atoms and lab pages stay
+`forcegeo.ts`). Each lands as one byte-identically undoable entry, guarded against a stale or
+concurrent invoke, behind one modal (Section ops). The kernel atoms and lab pages stay
 in-tree and oracle-gated.
 
 **Positions and force keyframes are the two authoring substrates** — both sparse, density
@@ -86,8 +86,8 @@ not draggable; its world pose IS the entry, and the shape hangs off it in the en
   stamped at append: the default add/extend/drag flow stores **no** tangents. The **last** node's
   heading tracks its predecessor's exit (`headLast`, the reflection `2·chord − prev`), re-deriving
   whenever the tail changes, so a fresh append or drag never goes stale; node 0 and **interior**
-  `Auto` nodes keep a frozen heading (a stable heading beats one that thrashes — dragged far off
-  its chord it bulges, the accepted misshaping). A node turns concrete bezier **only** when
+  `Auto` nodes keep a frozen heading (stable beats thrashing — dragged far off its chord it
+  bulges, the accepted misshaping). A node turns concrete bezier **only** when
   explicitly authored — a handle drag or a mode set (seeded from the live arc-rule vectors via
   `seedTangent`, no jump). Handles are additive; they never change the default feel.
 - **Explicit tangent modes** — the Figma mirroring taxonomy `Mirror` | `Aligned` | `Free`, an
@@ -107,9 +107,9 @@ not draggable; its world pose IS the entry, and the shape hangs off it in the en
   reaches the first section's node 0 (its menu is Handles + Reset only); a geo→geo boundary's
   node 0 is reached by tangent-editing the coincident upstream tip (the stitch).
 - **Recover force.** `forces` (`bake.ts`) reads the sampled positions → per-sample tangent θ (the
-  chord bisector) → v (energy) → `F_n = κ·v²/g + cos θ`, the physical normal force a cart riding
-  the curve feels. This per-sample θ is recovered from the geometry, distinct from the node
-  tangents that shape the curve.
+  chord bisector) → v (energy) → `F_n = κ·v²/g + cos θ`, the normal force a cart riding the curve
+  feels. That per-sample θ is recovered from the geometry, distinct from the node tangents that
+  shape the curve.
 
 The baked force curve is canonical and terminal — the timeline shows exactly what `forces` recovers,
 no smoothing or solve on top. The cart rides the baked geometry directly. Lossy bake
@@ -137,7 +137,7 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
   authored handle vs the recovered display, expected.
 - **Extent is the section's own authored length** (`Section.length`, m — the only authoring
   domain), NOT inherited from the geo shape a convert came from: convert **resets** it to
-  `DEFAULT_FORCE_LEN`; append gets the session's **sticky** length — the last committed
+  `DEFAULT_FORCE_LEN`; append gets its kind's **sticky** length — the last committed
   extent-trim (`track.setStickyLen`; a solve never touches it), `DEFAULT_FORCE_LEN` until one
   commits. Editable via the **force clip's right edge** (`ew-resize`, `setSectionLength`, floored
   at `MIN_FORCE_LEN`, one undo entry via `history.beginLength`). Shortening below a point's s
@@ -209,18 +209,18 @@ context-menu target only**; it never gates authoring (force points are added by 
 nodes dragged in the viewport).
 
 **Geo authoring** (within a geo section) — author the shape in the viewport. Click a node to select
-it; click empty space to deselect. Movement is the two manipulators, never a free body drag; a move
-reshapes exactly the two segments sharing the node.
+it; click empty space to deselect. Movement is the two manipulators, never a free body drag.
 
 - **The manipulators** (the two knobs on the selected node's ring — the polar controls above):
   dragged (pointerdown on the knob captures the pointer, past the `DRAG_PX` dead zone) or
   arrow-nudged (left/right = angle, up/down = length). A **drag** is purely snapped — the
-  configurable grids, Ctrl/Cmd bypasses to continuous. A **nudge** is not on those grids: it steps
-  by a fixed screen-px increment (`NUDGE_PX`, `NUDGE_PX_COARSE` with Shift) converted through the
-  camera zoom, so the keyboard moves by a constant on-screen distance whatever the snap increments
-  are. Both go through `reheadOnDrag` refreshing the last node's heading after the write (node 0 +
+  configurable grids, Ctrl/Cmd bypasses to continuous. A **nudge** steps a fixed screen-px
+  increment instead (`NUDGE_PX`, `NUDGE_PX_COARSE` with Shift) through the camera zoom, so the
+  keyboard moves a constant on-screen distance at any snap setting. Both go through `reheadOnDrag` refreshing the last node's heading after the write (node 0 +
   interior stay frozen). A body drag does nothing but select.
-- **Append / Delete**: append lays a node continuing the last edge by `EXTEND_DIST` — the ring's
+- **Append / Delete**: append lays a node continuing the last edge by the **sticky**
+  chord — the last committed length adjust (`history.commitChord`, `EXTEND_DIST` until one
+  lands; the geo half of the per-kind sticky store) — the ring's
   extend button (slot 0, chain-end only), `Enter`, or the node menu's `Add`; delete removes the
   trailing node — `Del`/`Backspace` or the node menu's `Delete`, never below the two nodes a
   section needs, resetting-then-re-heading the promoted tip (the role-transition law,
@@ -230,7 +230,7 @@ reshapes exactly the two segments sharing the node.
 
 **Force authoring** (on the timeline chart, whole-track) — the chart draws every force section's
 points at once. Double-click over a force section's arc places a point at the authored profile's
-value (insertion never bends the curve; the section is resolved from the cursor arclength, no
+value (insertion never bends the curve; the section resolves from the cursor arclength, no
 selection needed); drag a diamond in both axes (horizontal = s, vertical = g); `Del` removes,
 `Esc` deselects; the popover at the selected diamond types or scrubs its s/g. Points are authored
 section-local (s from the section entry) but drawn at their section's whole-track cumulative
@@ -239,16 +239,15 @@ offset. Keyframes, not constraints. Snap + interaction conventions: `editor-ui.m
 **Section ops** (the multi-section chain) — select a section by clicking its **clip** in the timeline
 marker lane (or its viewport polyline span); a force clip's right edge is its extent trim, and a `+`
 tail after the last clip appends (geo/force flyout). **Right-click a clip or span** for
-the context menu: the two conversion affordances, each live for exactly one section of its own
-kind with a live bake (grayed otherwise, never hidden) — **Solve force** (geo→force,
-`geoforce.ts`) and **Solve shape** (force→geo, `forcegeo.ts`) — behind the same **modal** (live
-`{phase, keys, probes}` geo→force, an indeterminate wait for the fit, which has no phase to
-report; Cancel or Esc, every other input blocked, then a transient outcome readout), and Delete
-(`Del`). Split and join left the
+the context menu: ONE conversion row, label and action fitted to the kind —
+**Convert to force** (`geoforce.ts`) on geo, **Convert to geo** (`forcegeo.ts`) on force; the
+other direction is absent, not dead. It grays (never hides) where the kind fits but the invoke
+can't run (no live bake, a multi-set), behind one **modal** (live `{phase, keys, probes}`
+geo→force, an indeterminate wait for the phase-less fit; Cancel or Esc, every other input
+blocked, then a transient outcome readout), and Delete (`Del`). Split and join left the
 editor — reserved for invoked tools (the substrate `splitGeo`/`splitForce`/`joinNext` + tests stay
-in-tree as their reference). Boundary anchors draw as viewport diamonds + chart
-vertical guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo
-via a whole-track snapshot pair (byte-identical).
+in-tree as their reference). Boundary anchors draw as viewport diamonds + chart guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo via a
+byte-identical whole-track snapshot pair.
 
 ## Hard gotchas
 
@@ -348,19 +347,18 @@ reference: `tests/geometry.lab.ts`, `tests/collocate.lab.ts`, `tests/loop.lab.ts
 `tests/attribution.lab.ts` (the flat conversion tier's authoring-floor sweep — its own header
 carries the readings), `tests/forcegeo.lab.ts` (the force→geo fit's own sweep) and
 `tests/perf.lab.ts` (the conversion perf baseline: probe counts +
-wall time over the corpus plus the stress scenarios in `tests/helpers/stress.ts` — deliberately
-not corpus members, so the 80-key lock is untouched) and `tests/pool.lab.ts` (the same scenarios through the worker pool: sync vs pooled wall time
-and cancel latency, each row checked against the golden).
+wall time over the corpus plus `tests/helpers/stress.ts`'s scenarios — deliberately not corpus
+members, so the 80-key lock is untouched) and `tests/pool.lab.ts` (the same scenarios through the
+worker pool: sync vs pooled wall time and cancel latency, each row checked against the golden).
 Visual counterparts
 `geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` + `fit-lab.html`
 (canvas2D, captured by the harness). `fit-lab.html` is the conversion tier's own page: it plays
 back the pipeline's decisions (`playback.ts`) and is where the tier's output is judged as an
-authoring surface. Its full conversion corpus stays a focused test, so the page solves only the
-selected conversion scenario.
+authoring surface. Its corpus stays a focused test, so the page solves only the selected
+scenario.
 
 The ECS + substrate layers are covered device-free: `tests/section.test.ts` (the substrate),
-`tests/track.test.ts` + `tests/cart.test.ts` (`BakeSystem`, cart on a bare `State` via the
-scheduler). The `tests/setup.ts` enum-shim preload (`bunfig.toml`) lets them import the shallot barrel
+`tests/track.test.ts` + `tests/cart.test.ts` (`BakeSystem`, cart on a bare `State`). The `tests/setup.ts` enum-shim preload (`bunfig.toml`) lets them import the shallot barrel
 with no GPU device; the unit suite is canvas2D + device-free, no real-GPU leg.
 
 `harness/` — Playwright harness (`bun run capture` → `harness/shots/`, gitignored). The geo and

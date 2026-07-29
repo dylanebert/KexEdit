@@ -28,6 +28,7 @@ import {
     forcePointState,
     forceTangent,
     Handle,
+    handleAt,
     handleTangent,
     joinNext,
     type NodeState,
@@ -605,13 +606,35 @@ export function beginLength(ecs: State, id: number): void {
 }
 
 /** commit a `beginLength` extent-trim gesture: coalesce the drag into one undo entry
- *  (`commit`) AND record the landed extent as the session's new sticky append default
- *  (`track.setStickyLen`) — the one call site the sticky value updates from. A solve landing
- *  never calls this (it commits through `solveForce`/`solveGeo`), so a converted section's realized
- *  extent never becomes the next append's default. */
+ *  (`commit`) AND record the landed extent as the session's new sticky append default for
+ *  FORCE sections (`track.setStickyLen`). A solve landing never calls this (it commits
+ *  through `solveForce`/`solveGeo`), so a converted section's realized extent never becomes
+ *  the next append's default. */
 export function commitLength(h: History, ecs: State, id: number): void {
     const st = sectionLengthState(ecs, id);
-    if (st) setStickyLen(st.length);
+    if (st) setStickyLen(SectionKind.Force, st.length);
+    commit(h);
+}
+
+/** commit a geo node's LENGTH adjust — the polar length manipulator's drag or its arrow nudge —
+ *  the geo twin of `commitLength`: one undo entry (`commit`) plus the landed chord recorded as
+ *  the session's sticky append length for geo (`track.setStickyLen`), so the next appended
+ *  segment opens at the length just authored. The chord is read section-local off the two
+ *  nodes (rigid placement makes that the world chord too); a node with no predecessor has no
+ *  chord and just commits. Only the length axis calls this — an angle adjust holds the chord
+ *  fixed, so it has nothing to record. */
+export function commitChord(h: History, ecs: State, eid: number): void {
+    const order = Handle.order.get(eid);
+    const prev = order > 0 ? handleAt(ecs, Handle.section.get(eid), order - 1) : null;
+    if (prev !== null) {
+        setStickyLen(
+            SectionKind.Geo,
+            Math.hypot(
+                Handle.pos.x.get(eid) - Handle.pos.x.get(prev),
+                Handle.pos.y.get(eid) - Handle.pos.y.get(prev),
+            ),
+        );
+    }
     commit(h);
 }
 

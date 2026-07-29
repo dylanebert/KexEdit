@@ -653,7 +653,7 @@ onMount(() => {
     };
 });
 
-// the section context menu (Solve force / Delete), summoned by right-click on a clip or a
+// the section context menu (the conversion row + Delete), summoned by right-click on a clip or a
 // viewport span (both call editor.openContext). rendered once here at the app root so it
 // can float over both the viewport and the dock; positioned at the cursor (screen px).
 // a summoned surface lives only as long as its subject (root ui.md): the menu's visibility
@@ -706,44 +706,43 @@ const canSolveShape = $derived.by((): boolean => {
     void tick;
     return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Force);
 });
-// the context menu as data: one array of MenuItems, rendered by the shared menu language.
-// single-select: Solve force (`canSolve`) then its force→geo twin Solve shape (`canSolveShape`) —
-// exactly one of the two is ever live on a given section, since a section is always one kind —
-// then Delete last. multi-select (Premiere multi-clip): both solve rows gray (a set has no single
-// subject to solve); Delete carries the set-lifted enablement. the destructive Convert row (both
-// single and bulk) was removed (kex2d-geoforce-editor stage 5): redundant with delete + append,
-// and the two Solve rows are now the menu's conversion affordances.
+// the ONE conversion row. A section is always exactly one kind, so only one direction was ever
+// live — two rows spent the menu's space on a row that could never fire. The row's label and its
+// action fit the target's kind (geo → force, force → geo), and it still GRAYS rather than hides
+// when the kind fits but the invoke can't run (no live bake, a multi-set): the affordance stays
+// discoverable, which is what the grayed-never-hidden law is for.
+const convertRow = $derived.by((): MenuItem => {
+    void tick;
+    const toGeo = ctxKind === SectionKind.Force;
+    return {
+        label: toGeo ? "Convert to geo" : "Convert to force",
+        enabled: toGeo ? canSolveShape : canSolve,
+        action: toGeo ? ctxSolveShape : ctxSolve,
+    };
+});
+// the context menu as data: one array of MenuItems, rendered by the shared menu language —
+// the conversion row, then Delete. multi-select (Premiere multi-clip): the conversion row grays
+// (a set has no single subject to convert, `sectionSolvable`'s own `selected === 1`); Delete
+// carries the set-lifted enablement. the destructive Convert row (both single and bulk) was
+// removed (kex2d-geoforce-editor stage 5): redundant with delete + append.
 const ctxItems = $derived.by((): MenuItem[] => {
     if (ctx === null) return [];
-    if (sectionMulti) {
-        return [
-            { label: "Solve force", enabled: false },
-            { label: "Solve shape", enabled: false },
-            {
-                label: "Delete",
-                shortcut: "Del",
-                danger: true,
-                enabled: canDelete,
-                action: ctxDeleteSet,
-            },
-        ];
-    }
+    const del = sectionMulti ? ctxDeleteSet : ctxDelete;
     return [
-        { label: "Solve force", enabled: canSolve, action: ctxSolve },
-        { label: "Solve shape", enabled: canSolveShape, action: ctxSolveShape },
-        { label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: ctxDelete },
+        convertRow,
+        { label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: del },
     ];
 });
-// solve this geo shape into the force section that reproduces it (`geoforce.ts`) — the menu's
-// geo→force conversion affordance. the menu closes first: the solve is modal, and its own surface
-// owns the screen from here.
+// convert this geo shape into the force section that reproduces it (`geoforce.ts`) — the
+// conversion row's geo→force half. the menu closes first: the convert is modal, and its own
+// surface owns the screen from here.
 function ctxSolve(): void {
     if (ctx === null) return;
     const section = ctx.section;
     closeContext();
     void solve(section);
 }
-// the force→geo twin: fit this force section's shape into geo nodes (`forcegeo.ts`).
+// the force→geo half: fit this force section's shape into geo nodes (`forcegeo.ts`).
 function ctxSolveShape(): void {
     if (ctx === null) return;
     const section = ctx.section;
@@ -1047,7 +1046,7 @@ $effect(() => {
         </div>
     {/if}
 
-    <!-- the section context menu (Solve force / Delete): summoned by right-click on a clip or a
+    <!-- the section context menu (the conversion row + Delete): summoned by right-click on a clip or a
          viewport section span; occasional ops, so hidden until summoned. -->
     {#if ctx}
         <div class="ctxmenu menu" use:fitMenu={{ x: ctx.x, y: ctx.y }} role="menu">
@@ -1086,7 +1085,7 @@ $effect(() => {
      swallows the native context menu; keys and focus are handled in the script / by `inert`. the
      counts climb per probe — no bar, because the refinement has no total to divide by. -->
 {#if solving}
-    {@const modalTitle = solveKind === "shape" ? "Solving shape" : "Solving force"}
+    {@const modalTitle = solveKind === "shape" ? "Converting to geo" : "Converting to force"}
     <div class="scrim" role="presentation" oncontextmenu={(e) => e.preventDefault()}>
         <!-- `aria-live="off"`: a probe lands several times a second and hundreds of times at
              stress scale, so announcing each one would be a stream, not information. The dialog's

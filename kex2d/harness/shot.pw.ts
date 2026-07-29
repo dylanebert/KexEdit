@@ -2064,9 +2064,9 @@ test("section clip strip flow", async ({ page, boot }) => {
 // Drive the SECTION MENU + DIRECT-BY-POSITION flow (section-editor stage 2): a mixed
 // geo→force chain → prove empty-chart click deselects → add a force keyframe by cursor
 // position WITHOUT selecting the section → right-click the real context menu, assert its
-// remaining rows (Solve force / Solve shape / Delete — the destructive Convert row was removed,
-// kex2d-geoforce-editor stage 5; the force→geo twin joined in kex2d-forcegeo stage 3) → Delete
-// via the real menu. The whole point is that authoring
+// remaining rows (ONE kind-fitted conversion row + Delete — the destructive Convert row was
+// removed, kex2d-geoforce-editor stage 5; the two direction rows collapsed to one in
+// kex2d-forcegeo stage 4) → Delete via the real menu. The whole point is that authoring
 // and section ops no longer depend on a "current section" selection. Everything is driven
 // through the real DOM.
 test("section menu + keyframe flow", async ({ page, boot }) => {
@@ -2124,18 +2124,19 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape"); // the NEXT press peels the selection (no stale swallow)
     await expect.poll(selectedSection).toBe(null);
 
-    // ── 4. Right-click the force clip: the menu carries exactly Solve force (grayed — a force
-    // clip has no geo shape to solve) + Solve shape (live — its force→geo twin) + Delete, no
-    // Convert row (the real-menu regression guard for its removal). ──
+    // ── 4. Right-click the force clip: the menu carries exactly TWO rows — the one conversion
+    // row, fitted to this section's kind (Convert to geo, live), and Delete. The opposite
+    // direction is absent, not grayed: a section is one kind, so the other row could never fire.
+    // (Also the real-menu regression guard for the destructive Convert row's removal.) ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(3);
+    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(2);
     await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve force" }),
-    ).toBeDisabled();
-    await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve shape" }),
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to geo" }),
     ).toBeEnabled();
+    await expect(
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" }),
+    ).toHaveCount(0);
     if (strip) await page.screenshot({ path: join(OUT, "section-4-menu.png"), clip: strip });
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);
@@ -2147,7 +2148,7 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
 });
 
 // Drive the INVOKED GEO→FORCE SOLVE end to end (kex2d-geoforce-editor stage 3): the section
-// menu's Solve force row → the modal (progress climbing, all other input blocked, Cancel and
+// menu's Convert to force row → the modal (progress climbing, all other input blocked, Cancel and
 // Escape) → the real solve → the document (kind flipped, keyframes landed, the realized step
 // stored) → one undo back to the authored shape, byte-identical.
 //
@@ -2178,24 +2179,30 @@ test("invoked solve flow", async ({ page, boot }) => {
     await frameTimeline(page); // append never pans; frame the chain so `.clip.nth()` resolves
     const appended = await undoDepth(); // the append's own entry — the baseline every assert reads
 
-    // ── 1. The row grays where the solve is impossible, never hides (the bulk-row law): on the
-    // FORCE clip there is no shape to solve. ──
-    await page.locator(".clip").nth(1).click({ button: "right" });
+    // ── 1. The row grays where the convert can't run, never hides (the bulk-row law): a
+    // multi-set has no single subject to convert, so the kind-fitted row is there and dead. ──
+    await page.locator(".clip").nth(0).click();
+    await page
+        .locator(".clip")
+        .nth(1)
+        .click({ modifiers: ["Shift"] }); // a two-section set
+    await page.locator(".clip").nth(0).click({ button: "right" }); // right-click keeps the set
     await expect(page.locator(".ctxmenu")).toBeVisible();
     await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve force" }),
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" }),
     ).toBeDisabled();
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);
+    await page.locator(".clip").nth(0).click(); // back to a single selection
 
     // ── 2. On the geo clip it's live. Invoke it, and the modal comes up. ──
     await page.locator(".clip").nth(0).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve force" });
+    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" });
     await expect(solveRow).toBeEnabled();
     await page.waitForTimeout(SHOT_MS);
     if (strip) await page.screenshot({ path: join(OUT, "solve-1-menu.png"), clip: strip });
-    await clickMenuItem(page, ".ctxmenu", "Solve force");
+    await clickMenuItem(page, ".ctxmenu", "Convert to force");
     await expect(scrim).toBeVisible();
 
     // ── 3. Every other input is blocked while it runs. Del would delete the selected section
@@ -2247,7 +2254,7 @@ test("invoked solve flow", async ({ page, boot }) => {
     // ── 5. Escape is the same control (the modal is the only live surface, so its dismissal
     // rung is the cancel). ──
     await page.locator(".clip").nth(0).click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Solve force");
+    await clickMenuItem(page, ".ctxmenu", "Convert to force");
     await expect(scrim).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(scrim).toHaveCount(0);
@@ -2280,7 +2287,7 @@ test("invoked solve flow", async ({ page, boot }) => {
     });
 
     await page.locator(".clip").nth(0).click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Solve force");
+    await clickMenuItem(page, ".ctxmenu", "Convert to force");
     // the solve is seconds long (the twin hill is ~1.3s of probes in bun, more in a browser under
     // four parallel workers), so this wait is the flow's own budget, not the default 5s.
     await expect.poll(async () => (await kinds()).join(","), { timeout: 120_000 }).toBe("1,1");
@@ -2306,7 +2313,7 @@ test("invoked solve flow", async ({ page, boot }) => {
     // the transient readout: outcome + keys + how far off it landed. Nothing of it is stored.
     const notice = page.locator(".notice");
     await expect(notice).toBeVisible();
-    await expect(notice).toContainText("Solved to force");
+    await expect(notice).toContainText("Converted to force");
     await page.waitForTimeout(SHOT_MS);
     // the whole page: the readout is top-center and the converted curve is in the dock, and this
     // shot's subject is the pair.
@@ -2322,7 +2329,7 @@ test("invoked solve flow", async ({ page, boot }) => {
 });
 
 // Drive the INVOKED FORCE→GEO FIT end to end (kex2d-forcegeo stage 3) — the observation-space
-// twin of "invoked solve flow": the section menu's Solve shape row → the modal (indeterminate —
+// twin of "invoked solve flow": the section menu's Convert to geo row → the modal (indeterminate —
 // `geofit` has no internal phase, so there's no probe count to climb, only the same shared gate —
 // all other input blocked, Cancel and Escape) → the real fit → the document (kind flipped, Auto
 // geo nodes landed) → one undo back to the authored force shape, byte-identical.
@@ -2356,24 +2363,28 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
     await frameTimeline(page); // append never pans; frame the chain so `.clip.nth()` resolves
     const appended = await undoDepth(); // the bump + append's own entries — the baseline every assert reads
 
-    // ── 1. The row grays where the fit is impossible, never hides (the bulk-row law): on the
-    // GEO clip there is no force curve to fit. ──
+    // ── 1. The one conversion row FITS the section's kind: on the GEO clip it reads the other
+    // direction (Convert to force) and this direction's row isn't there at all. The grayed case
+    // (the kind fits, the invoke can't run) is pinned in "invoked solve flow". ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
     await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve shape" }),
-    ).toBeDisabled();
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" }),
+    ).toBeEnabled();
+    await expect(
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to geo" }),
+    ).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);
 
     // ── 2. On the force clip it's live. Invoke it, and the modal comes up. ──
     await page.locator(".clip").nth(0).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve shape" });
+    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to geo" });
     await expect(solveRow).toBeEnabled();
     await page.waitForTimeout(SHOT_MS);
     if (strip) await page.screenshot({ path: join(OUT, "fit-1-menu.png"), clip: strip });
-    await clickMenuItem(page, ".ctxmenu", "Solve shape");
+    await clickMenuItem(page, ".ctxmenu", "Convert to geo");
     await expect(scrim).toBeVisible();
 
     // ── 3. Every other input is blocked while it runs — the same shared gate "invoked solve
@@ -2396,7 +2407,7 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
 
     // ── 5. Escape is the same control (the modal is the only live surface). ──
     await page.locator(".clip").nth(0).click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Solve shape");
+    await clickMenuItem(page, ".ctxmenu", "Convert to geo");
     await expect(scrim).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(scrim).toHaveCount(0);
@@ -2409,7 +2420,7 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
     expect(authoredForces[0]).toBeGreaterThan(2);
 
     await page.locator(".clip").nth(0).click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Solve shape");
+    await clickMenuItem(page, ".ctxmenu", "Convert to geo");
     // the stress seed is ~4 s in bun, more under a real browser's worker — this wait is that
     // budget, not the default 5s.
     await expect.poll(async () => (await kinds()).join(","), { timeout: 30_000 }).toBe("0,0");
@@ -2420,10 +2431,11 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
     expect(await nodeCount()).toBeGreaterThan(1);
     expect((await poses())[0]).toEqual([0, 0, 0]);
 
-    // the transient readout: outcome + node count + how far off it landed, on both budgets.
+    // the transient readout: a short confirmation — what it converted to, and the node count the
+    // author now edits (the budget numbers appear only when a budget was missed).
     const notice = page.locator(".notice");
     await expect(notice).toBeVisible();
-    await expect(notice).toContainText("Solved to shape");
+    await expect(notice).toContainText("Converted to geo");
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "fit-3-done.png") });
 

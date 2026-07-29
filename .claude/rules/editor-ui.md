@@ -268,6 +268,12 @@ bespoke component.
   said, the naming rule's module-scope-is-context). Order by how often a row is reached, not by
   safety or by the order the features were built; `danger` marks the destructive row, so a
   frequently-used delete leads without reading as a trap.
+- **Gray a row whose preconditions fail; omit one its subject rules out.** Graying keeps an
+  applicable-but-blocked row discoverable (no live bake, a multi-set — the bulk-row law above). A
+  row that could never fire on this subject is different: a section is exactly one kind, so the
+  menu carries ONE conversion row whose label and action fit that kind (kex2d `Convert to force` /
+  `Convert to geo`), not one live row beside a permanently dead twin. Two rows for two directions
+  spend the menu's space on a row the subject can never reach.
 - Flyouts fit the viewport on all four edges: flip the preferred side, clamp the rest.
 - **The positioned menu box is never `overflow: hidden`** — that clips an out-of-box flyout from
   paint *and* hit-testing. The rounded-corner row-wash clip lives on an inner rows wrapper;

@@ -252,21 +252,24 @@ export interface SolveOutcome {
     floor: number;
 }
 
-/** metres for the readout. `deviation` and `floor` are sub-metre quantities and the loop stops as
- *  soon as the first drops under the second, so they routinely print equal — that IS the reading
- *  (it landed inside the floor), not a formatting bug. */
+/** metres for the readout. */
 const metres = (v: number): string => `${v.toFixed(2)} m`;
 
-/** the readout for a solve that RESOLVED. `"diverged"` resolved too but landed nothing (the
- *  refinement hit an unreadable probe), so it reads as a failure; `"budget"` is a sanctioned
- *  result that did land, so it reads as done, with its own tail. */
+/** an achieved-vs-allowed miss, the constraint-solver readout (`editor-ui.md`) — printed only
+ *  where a budget was NOT held, which is the one case the numbers tell the author something. */
+const missed = (achieved: string, budget: string): string => `${achieved} off (${budget} allowed)`;
+
+/** the readout for a convert that RESOLVED. A convert that held its budget says so and stops —
+ *  the count is what the author now edits, the rest is noise. `"budget"` landed too (the
+ *  sanctioned narrow-feature outcome), but it missed, so it reports the miss. `"diverged"`
+ *  resolved as well and landed NOTHING (the refinement hit an unreadable probe), so it reads as
+ *  a failure. */
 export function solveDone(r: SolveOutcome): Notice {
     if (r.outcome === "diverged")
         return { kind: "error", text: "The solve could not fit this shape. Nothing changed." };
-    // achieved-vs-demanded, the constraint-solver readout (`editor-ui.md`): how far the force
-    // section's shape lands from the geo one, against the floor the solve holds it to.
-    const text = `Solved to force · ${r.keys} keys · ${metres(r.deviation)} off · floor ${metres(r.floor)}`;
-    return { kind: "done", text: r.outcome === "budget" ? `${text} · key budget` : text };
+    const text = `Converted to force · ${r.keys} keys`;
+    if (r.outcome !== "budget") return { kind: "done", text };
+    return { kind: "done", text: `${text} · ${missed(metres(r.deviation), metres(r.floor))}` };
 }
 
 /** what the readout needs off a force→geo fit's answer (`forcegeo.convertForce`) — the
@@ -287,14 +290,27 @@ export interface FitOutcome {
 
 const gforce = (v: number): string => `${v.toFixed(2)} g`;
 
-/** the readout for a fit that RESOLVED — `solveDone`'s force→geo twin, same three-way branch
- *  (`"diverged"` reads as a failure though it resolved; `"budget"` reads as done, tagged) over the
- *  dual budget instead of the single geometric floor. */
+/** the readout for a fit that RESOLVED — `solveDone`'s force→geo twin, same three-way branch and
+ *  the same standard: a held fit is a short confirmation, a `"budget"` fit names its miss. Dual
+ *  budget, so only the axis (or axes) that actually missed is printed — the held one has nothing
+ *  to say. */
 export function fitDone(r: FitOutcome): Notice {
     if (r.outcome === "diverged")
         return { kind: "error", text: "The solve could not fit this shape. Nothing changed." };
-    const text = `Solved to shape · ${r.nodes} nodes · ${metres(r.deviation)} / ${gforce(r.forceError)} off · floor ${metres(r.geoBudget)} / ${gforce(r.forceBudget)}`;
-    return { kind: "done", text: r.outcome === "budget" ? `${text} · node budget` : text };
+    const text = `Converted to geo · ${r.nodes} nodes`;
+    if (r.outcome !== "budget") return { kind: "done", text };
+    const misses: string[] = [];
+    if (r.deviation > r.geoBudget) misses.push(missed(metres(r.deviation), metres(r.geoBudget)));
+    if (r.forceError > r.forceBudget)
+        misses.push(missed(gforce(r.forceError), gforce(r.forceBudget)));
+    // a `budget` fit with both axes inside their bound ran out of admissible split sites rather
+    // than missing — report both readings, since there's no single miss to point at.
+    if (misses.length === 0)
+        misses.push(
+            missed(metres(r.deviation), metres(r.geoBudget)),
+            missed(gforce(r.forceError), gforce(r.forceBudget)),
+        );
+    return { kind: "done", text: `${text} · ${misses.join(" · ")}` };
 }
 
 /** the readout for a solve that REJECTED, plus the raw detail for the console.
