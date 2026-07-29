@@ -297,17 +297,21 @@ if (import.meta.env.DEV) {
         // any node count can hold, so the fit saturates instead of converging — seconds become
         // tens of seconds and the landed section is one node per dense sample. And the fit's cost
         // climbs superlinearly with section length (the prune probes every interior removal each
-        // round), so a longer section overshoots the window rather than widening it. 400 m
-        // measures ~4 s under bun and lands 6 nodes.
+        // round), so a longer section overshoots the window rather than widening it. The browser
+        // worker runs this fit ~7× slower than bun, so both flow constraints read in browser
+        // time: 1200 m measures ~1.9 s under bun (≈12 s in the worker) and lands 17 nodes —
+        // slow enough for the cancel steps, inside the completion wait's 30 s. (The
+        // absolute-arclength scoring collapsed the old 400 m seed to ~60 ms; a 2000 m retry
+        // overshot the completion wait.)
         seedForceStress: (): void => {
             const id = sec();
             if ((sections(ecs)[0]?.kind ?? SectionKind.Geo) === SectionKind.Geo)
                 convertSection(history, ecs, id);
             for (const p of sectionForces(ecs, id)) destroyForce(ecs, p.id);
-            const len = 400;
-            const waves = 8;
-            const amp = 0.5;
-            setTrackV0(track, 30);
+            const len = 1200;
+            const waves = 24;
+            const amp = 0.8;
+            setTrackV0(track, 35);
             setSectionLength(ecs, id, len);
             createForcePoint(ecs, id, 0, 1);
             for (let k = 1; k <= waves; k++) {

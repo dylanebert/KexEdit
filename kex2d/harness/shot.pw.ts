@@ -2355,7 +2355,7 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
     await page.evaluate(() => (window as any).__kex.seedForceStress());
     await page.evaluate(() => (window as any).__kex.append(0)); // SectionKind.Geo
     await expect.poll(async () => (await kinds()).join(",")).toBe("1,0");
-    // a kind flip is instant (live ECS), but the 400 m profile only reaches `sectionInfo`/the
+    // a kind flip is instant (live ECS), but the 1200 m profile only reaches `sectionInfo`/the
     // fit's own input on the NEXT bake pass — wait on that actually landing (`tTotal` growing
     // past what the tiny default seed could ever reach), not on the kind poll above (a count is
     // never bake-readiness, `kex2d-harness.md`).
@@ -2421,8 +2421,8 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
 
     await page.locator(".clip").nth(0).click({ button: "right" });
     await clickMenuItem(page, ".ctxmenu", "Convert to geo");
-    // the stress seed is ~4 s in bun, more under a real browser's worker — this wait is that
-    // budget, not the default 5s.
+    // the stress seed is ~2 s in bun, ~7× that under the real browser's worker — this wait is
+    // that budget, not the default 5s.
     await expect.poll(async () => (await kinds()).join(","), { timeout: 30_000 }).toBe("0,0");
     await expect(scrim).toHaveCount(0); // the gate closed with the answer
 

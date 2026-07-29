@@ -1,9 +1,11 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import typegpu from "unplugin-typegpu/vite";
 
 export default defineConfig({
     base: "./",
-    plugins: [svelte()],
+    // the linked shallot's TGSL kernels need the build-time transform; exactly one instance may run
+    plugins: [typegpu(), svelte()],
     server: {
         port: 3000,
         fs: {
