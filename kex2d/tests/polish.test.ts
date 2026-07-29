@@ -20,39 +20,9 @@ const solve = (name: string) => {
     };
 };
 
+// behavior checks on cheap scenarios — the fast tier. The corpus-wide full-free bit-identity
+// hash runs at the full tier (`polish.oracle.ts`, `bun run test:full`).
 describe("polish families", () => {
-    test("the full-free oracle is bit-identical to the landed stage-5 oracle", () => {
-        const all = scenarios.map((scenario) => {
-            const { out } = solve(scenario.name);
-            return {
-                name: scenario.name,
-                points: out.points,
-                length: out.length,
-                ds: out.ds,
-                edges: out.edges,
-                keys: out.keys,
-                iters: out.iters,
-                outers: out.outers,
-                converged: out.converged,
-                feasibility: out.feasibility,
-                exit: out.exit,
-                deviation: out.deviation,
-                at: out.at,
-                deviations: out.deviations,
-                rho: out.rho,
-                peakG: out.peakG,
-                maxDg: out.maxDg,
-                spine: out.spine,
-                snapshots: out.snapshots,
-            };
-        });
-        const hash = new Bun.CryptoHasher("sha256");
-        hash.update(JSON.stringify(all));
-        expect(hash.digest("hex")).toBe(
-            "7655378e96c479acd15f27a08d4b714ff7f8598b2b449c1822c722aa8782c803",
-        );
-    }, 30_000);
-
     test("flat is exactly one g variable per key and materializes no shaping", () => {
         const points: ForcePoint[] = [
             { s: 0, g: 1 },

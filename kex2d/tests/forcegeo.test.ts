@@ -1,14 +1,9 @@
 import { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
 import { convertForce, StaleConvert } from "../src/forcegeo";
-import { FORCE_BUDGET, GEO_BUDGET, geofit, type GeofitBake } from "../src/geofit";
+import { FORCE_BUDGET } from "../src/geofit";
 import { liveFitWorkers } from "../src/geofit-async";
 import { createHistory, type History, undo } from "../src/history";
-import { forceProfile } from "../src/profile";
-import { scenarios } from "../src/scenarios";
-import { evalForce, evalGeo } from "../src/section";
-import { sampleChain } from "../src/spline";
-import golden from "./fixtures/convert-golden.json";
 import {
     addNode,
     appendSection,
@@ -17,9 +12,7 @@ import {
     createForcePoint,
     createSection,
     createTrack,
-    DS_NOMINAL,
     Handle,
-    MAX_SAMPLES,
     sectionAt,
     sectionHandles,
     Section,
@@ -32,6 +25,7 @@ import {
     snapshotAll,
 } from "../src/track";
 import { divergingFit, dyingFit, withFitWorker } from "./helpers/fitworker";
+import { drift, type Stations, stations } from "./helpers/stations";
 
 // the invoked force→geo command (kex2d-forcegeo stage 3): the conversion tier fitted off-thread,
 // landed on the document as ONE undo entry — the observation-space twin of `geoforce.test.ts`.
@@ -216,105 +210,9 @@ describe("convertForce", () => {
 // the document never bakes (it did: the reviewer's hard case read 0.45 g reported vs 5.94 g
 // displayed), or scored it on a coordinate the timeline doesn't draw (it did: span-normalized
 // alignment divides out the fitted chain's corner-cutting shortfall, reading 0.48 g against
-// 1.57 g displayed on valley-explicit).
-//
-// the two bakes have DIFFERENT edge counts and edge lengths, so the comparison is aligned on
-// ABSOLUTE ARCLENGTH FROM THE SECTION ENTRY — the timeline's own station axis. Each curve's
-// per-edge force is a value at its LEFT sample's arclength, the convention `bake.forces` computes
-// it under (`fN[i]` from `theta[i]`, `theta[i+1]`, `ds[i]`); attributing it to the edge midpoint
-// instead shifts each curve by its own half-edge, and the two half-edges differ, so a force
-// gradient reads a bias of |dF/ds|·|ds_t − ds_c|/2 that belongs to neither curve. The drift is the
-// max over BOTH curves' stations of the gap to the other curve linearly interpolated there;
-// evaluating at only one curve's stations would step over exactly the extremes the other one
-// carries.
-
-interface Stations {
-    s: number[];
-    g: number[];
-}
-
-/** per-edge force as values at the edge's LEFT sample arclength, measured from the section
- *  entry — `bake.forces`'s own attribution. */
-function stations(fN: ArrayLike<number>, ds: ArrayLike<number>, edges: number): Stations {
-    const s: number[] = [];
-    const g: number[] = [];
-    let at = 0;
-    for (let k = 0; k < edges; k++) {
-        s.push(at);
-        g.push(fN[k]);
-        at += ds[k];
-    }
-    return { s, g };
-}
-
-/** per-sample position as values at the sample's own arclength from the section entry — the
- *  geometric budget's half of the same station axis. */
-function posStations(
-    x: ArrayLike<number>,
-    y: ArrayLike<number>,
-    ds: ArrayLike<number>,
-    edges: number,
-): { s: number[]; x: number[]; y: number[]; total: number } {
-    const s: number[] = [];
-    const px: number[] = [];
-    const py: number[] = [];
-    let at = 0;
-    for (let i = 0; i <= edges; i++) {
-        s.push(at);
-        px.push(x[i]);
-        py.push(y[i]);
-        if (i < edges) at += ds[i];
-    }
-    return { s, x: px, y: py, total: at };
-}
-
-/** linear interpolation of `st` at arclength `at`, held flat beyond either end. */
-function at(st: Stations, s: number): number {
-    if (st.s.length === 0) return Number.NaN;
-    if (s <= st.s[0]) return st.g[0];
-    const last = st.s.length - 1;
-    if (s >= st.s[last]) return st.g[last];
-    let i = 0;
-    while (i + 1 <= last && st.s[i + 1] < s) i++;
-    const u = (s - st.s[i]) / (st.s[i + 1] - st.s[i]);
-    return st.g[i] + u * (st.g[i + 1] - st.g[i]);
-}
-
-/** the arclength-aligned max force gap between two bakes of the same section. symmetric: every
- *  station of either curve is scored against the other. */
-function drift(a: Stations, b: Stations): number {
-    let worst = 0;
-    for (let i = 0; i < a.s.length; i++) worst = Math.max(worst, Math.abs(a.g[i] - at(b, a.s[i])));
-    for (let i = 0; i < b.s.length; i++) worst = Math.max(worst, Math.abs(b.g[i] - at(a, b.s[i])));
-    return worst;
-}
-
-type Positions = ReturnType<typeof posStations>;
-
-/** the arclength-aligned max positional gap between two bakes of the same section, the same
- *  symmetric union-of-stations reading `drift` takes on force. */
-function posDrift(a: Positions, b: Positions): number {
-    const near = (p: Positions, s: number): [number, number] => {
-        const last = p.s.length - 1;
-        if (s <= p.s[0]) return [p.x[0], p.y[0]];
-        if (s >= p.s[last]) return [p.x[last], p.y[last]];
-        let i = 0;
-        while (i + 1 <= last && p.s[i + 1] < s) i++;
-        const u = (s - p.s[i]) / (p.s[i + 1] - p.s[i]);
-        return [p.x[i] + u * (p.x[i + 1] - p.x[i]), p.y[i] + u * (p.y[i + 1] - p.y[i])];
-    };
-    let worst = 0;
-    for (const [p, q] of [
-        [a, b],
-        [b, a],
-    ] as const) {
-        for (let i = 0; i < p.s.length; i++) {
-            const [x, y] = near(q, p.s[i]);
-            worst = Math.max(worst, Math.hypot(p.x[i] - x, p.y[i] - y));
-        }
-    }
-    return worst;
-}
+// 1.57 g displayed on valley-explicit). The station-axis alignment lives in
+// `helpers/stations.ts`; the corpus-wide gate over the same metric is `forcegeo.oracle.ts`
+// (full tier).
 
 /** the section's force stations off the track's live bake — what the timeline draws. */
 function sectionStations(eid: number, id: number): Stations {
@@ -401,147 +299,4 @@ describe("document-layer fidelity", () => {
         expect(result.forceError).toBeGreaterThan(FORCE_BUDGET);
         expect(drift(before, sectionStations(eid, sec))).toBeGreaterThan(FORCE_BUDGET);
     }, 60_000);
-});
-
-// ── the corpus-wide document-metric oracle ───────────────────────────────────
-// the gate. Two hand-picked ECS cases above prove the seam end to end; this drives the WHOLE
-// 10-scenario corpus through the same metric, because a single case can land where the kernel's
-// alignment and the document's coincide (the previous fidelity case did: kernel 0.466 vs
-// document 0.452, so the span-normalization defect was invisible to it while four corpus
-// scenarios were over budget — valley-explicit at 1.57 g against a reported 0.48 g).
-//
-// Device-free by construction: `applyConvertGeo` localizes the fit's world nodes into the
-// section's own entry frame and `BakeSystem` bakes them through `chain`, which for a section at
-// the track start is exactly `evalGeo(entry, nodes, DS_NOMINAL, MAX_SAMPLES)` — the same call,
-// without ten worker spawns. The ECS pins above are what tie that equality to the real path.
-describe("document-layer fidelity: the whole corpus", () => {
-    const Golden = golden as Record<
-        string,
-        { points: { s: number; g: number }[]; length: number; ds: number }
-    >;
-
-    for (const scenario of scenarios) {
-        test(scenario.name, () => {
-            const g = Golden[scenario.name];
-            const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
-            const bake = evalForce(entry, forceProfile(g.points, g.length, g.ds), g.ds);
-            const target: GeofitBake = {
-                x: bake.posX,
-                y: bake.posY,
-                fN: bake.fN,
-                ds: bake.ds,
-                edges: bake.fN.length,
-            };
-
-            const fit = geofit(target, entry.v, {
-                dsNominal: DS_NOMINAL,
-                maxSamples: MAX_SAMPLES,
-            });
-            expect(fit.outcome).toBe("floor");
-            const landed = evalGeo(entry, fit.nodes, DS_NOMINAL, MAX_SAMPLES);
-
-            // both budgets, read the way the document reads them.
-            expect(
-                drift(
-                    stations(target.fN, target.ds, target.edges),
-                    stations(landed.fN, landed.ds, landed.edges),
-                ),
-            ).toBeLessThanOrEqual(FORCE_BUDGET);
-            expect(
-                posDrift(
-                    posStations(target.x, target.y, target.ds, target.edges),
-                    posStations(landed.posX, landed.posY, landed.ds, landed.edges),
-                ),
-            ).toBeLessThanOrEqual(GEO_BUDGET);
-
-            // and the kernel's self-report IS that reading — same metric, same sampling, so the
-            // two are the same number and any future divergence is a regression in the
-            // alignment, not a tolerance to widen.
-            expect(fit.forceError).toBeLessThanOrEqual(FORCE_BUDGET);
-            expect(fit.deviation).toBeLessThanOrEqual(GEO_BUDGET);
-        });
-    }
-});
-
-// the Validation round-trip oracle: a geo scenario → the SHIPPED geo→force convert (the frozen
-// golden, `convert-golden.json`) → this fit → back to the ORIGINAL scenario's own sampled
-// geometry. bit-identical device-free, no ECS/history needed (the pure kernel atoms this command
-// wraps). the point is that the trip closes on the shape it started from, which means actually
-// sampling that shape and comparing against it — a check that never looks at the original
-// geometry measures no round trip at all.
-//
-// the bound is derived from the two directions' own geometric floors, by the triangle
-// inequality:
-//
-//   |fit − original| ≤ |fit − forceBake| + |forceBake − original| ≤ GEO_BUDGET + floor
-//
-// where `floor` is the geo→force direction's OWN shipping constraint for this scenario
-// (`chordDeficit(spine) + 0.5·CONVERT_STEP`, `refine.ts`), read per-scenario off the frozen
-// golden rather than assumed — it is not the same number for every scenario, and it is not
-// `GEO_BUDGET` (that the two happen to sit near 0.5 m is arithmetic, not a derivation).
-//
-// the metric is symmetric nearest-point distance (discrete Hausdorff over the two sample sets).
-// that is the quantity both floors bound: each direction's own reported deviation is a
-// correspondence distance, which is ≥ the nearest-point distance to the same curve, so using the
-// nearest-point metric here keeps the triangle bound conservative rather than mixing two
-// alignments that were never defined against each other.
-function hausdorff(
-    a: { x: ArrayLike<number>; y: ArrayLike<number>; n: number },
-    b: { x: ArrayLike<number>; y: ArrayLike<number>; n: number },
-): number {
-    const oneWay = (p: typeof a, q: typeof b): number => {
-        let worst = 0;
-        for (let i = 0; i < p.n; i++) {
-            let near = Number.POSITIVE_INFINITY;
-            for (let j = 0; j < q.n; j++) {
-                const d = Math.hypot(p.x[i] - q.x[j], p.y[i] - q.y[j]);
-                if (d < near) near = d;
-            }
-            if (near > worst) worst = near;
-        }
-        return worst;
-    };
-    return Math.max(oneWay(a, b), oneWay(b, a));
-}
-
-describe("round-trip: geo scenario → shipped geo→force convert → this fit → the scenario's shape", () => {
-    const Golden = golden as Record<
-        string,
-        { points: { s: number; g: number }[]; length: number; ds: number; floor: number }
-    >;
-    for (const scenario of scenarios) {
-        test(scenario.name, () => {
-            const g = Golden[scenario.name];
-            const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
-
-            // leg 0 — the original shape, the trip's own reference.
-            const origin = evalGeo(entry, scenario.nodes, scenario.ds);
-
-            // leg 1 — the shipped geo→force convert, replayed off its frozen golden.
-            const bake = evalForce(entry, forceProfile(g.points, g.length, g.ds), g.ds);
-            const target: GeofitBake = {
-                x: bake.posX,
-                y: bake.posY,
-                fN: bake.fN,
-                ds: bake.ds,
-                edges: bake.fN.length,
-            };
-
-            // leg 2 — this fit, then the geometry the LANDED section bakes from its nodes (the
-            // fit emits nodes, not samples; the shape only exists once they are sampled).
-            const fit = geofit(target, entry.v);
-            expect(fit.outcome).toBe("floor");
-            const posX = new Float32Array(MAX_SAMPLES);
-            const posY = new Float32Array(MAX_SAMPLES);
-            const dsArr = new Float32Array(MAX_SAMPLES - 1);
-            const landed = sampleChain(fit.nodes, DS_NOMINAL, posX, posY, dsArr, MAX_SAMPLES);
-            expect(landed.valid).toBe(true);
-
-            const drift = hausdorff(
-                { x: origin.posX, y: origin.posY, n: origin.edges + 1 },
-                { x: posX, y: posY, n: landed.edges + 1 },
-            );
-            expect(drift).toBeLessThanOrEqual(g.floor + GEO_BUDGET);
-        });
-    }
 });

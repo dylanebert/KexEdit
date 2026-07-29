@@ -8,6 +8,7 @@
         "build": "vite build",
         "preview": "vite preview",
         "test": "bun test",
+        "test:full": "bun test && bun test ./tests/*.oracle.ts",
         "capture": "bun run harness/capture.ts",
         "harness:deps": "[ -d harness/node_modules/@playwright/test ] || bun install --cwd harness --frozen-lockfile",
         "check": "bun run harness:deps && bun run format && tsc && svelte-check && biome check",
