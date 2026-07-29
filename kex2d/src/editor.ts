@@ -126,9 +126,10 @@ interface EditorState {
     /** which global axis the timeline chart reads (`timeline.Basis`): `Distance` (the
      *  default — metres from the ride start) or `Time` (seconds from it). Pure VIEW state,
      *  the snap magnet's twin: a persistent session preference, picked from the ruler's
-     *  context menu (`T` also toggles), never a history entry and never a storage kind —
-     *  every keyframe stays stored as section-local arclength in either basis, and the chart
-     *  projects at the one `dToU`/`uToD` seam. */
+     *  context menu (no keyboard shortcut — the second feel check-in's call), never a
+     *  history entry and never a storage kind — every keyframe stays stored as
+     *  section-local arclength in either basis, and the chart projects at the one
+     *  `dToU`/`uToD` seam. */
     basis: Basis;
     /** whether a pointer drag is in flight (any gesture routed through `beginDrag`). App
      *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
@@ -429,9 +430,8 @@ export function toggleSnap(): void {
 }
 
 /** set the timeline's basis directly — the ruler menu's Meters/Seconds rows each pick their own
- *  target; `T`'s flip (`Timeline.svelte`'s `flipBasis`) resolves "the other one" and calls this
- *  too, so this is the ONE write path. A free view change: the store is never touched, so there
- *  is nothing to undo. */
+ *  target; this is the ONE write path (no keyboard twin — the second feel check-in's call). A
+ *  free view change: the store is never touched, so there is nothing to undo. */
 export function setBasis(b: Basis): void {
     editor.basis = b;
 }

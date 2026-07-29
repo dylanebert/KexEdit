@@ -285,8 +285,8 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   target subject, the ruler addresses the whole timeline) — all `{x, y, …}` or
   null, rendered once at the app root. Also the rail's one toggle — `snap` (`toggleSnap`/`snapActive`
   — persistent, default on, `S` toggles, Ctrl/Cmd bypasses per-gesture) — and `basis`
-  (`setBasis`, `timeline.Basis`, default `Distance`, picked from the ruler menu or `T` toggles:
-  which global axis the chart reads, pure view state and never a history entry) — and
+  (`setBasis`, `timeline.Basis`, default `Distance`, picked from the ruler menu (no keyboard
+  shortcut): which global axis the chart reads, pure view state and never a history entry) — and
   `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
   viewport-nudge vs timeline-playhead double-fire. `hoverSection` (a stable `Section.id` or null) is
@@ -457,9 +457,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   Premiere/REAPER/Cubase reference: time-display format is the ruler's, not a standing rail
   toggle): flat rows (no `Units ▸` submenu — nothing else lives in this menu), `checked` reading the
   tick-derived `basis` (the seam's own no-bake fallback, so a lit row can't lie about what the
-  chart reads), Seconds grayed with no live bake (`mapping === null`). `applyBasis` lands either
-  row's pick (and `T`'s flip, `flipBasis`'s twin) — a no-op when the target is already active — and
-  re-expresses the visible window in the new basis so the pick stays a free view change. The chart
+  chart reads), Seconds grayed with no live bake (`mapping === null`), no keyboard shortcut (the
+  second feel check-in's call — the switch doesn't warrant one). `applyBasis` lands either row's
+  pick — a no-op when the target is already active — and re-expresses the visible window in the
+  new basis so the pick stays a free view change. The chart
   draws the baked F_n curve over the active basis + **section boundary guides**
   (dashed verticals); the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator**
   minimap pans/zooms. The chart is a **whole-track force-authoring surface**: it draws every force

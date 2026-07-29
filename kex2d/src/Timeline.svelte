@@ -132,7 +132,7 @@ const snapLen = $derived.by((): number => {
     void tick;
     return snapSteps.length;
 });
-// the timeline BASIS — picked from the ruler's context menu (`T` also toggles). `basis` is what
+// the timeline BASIS — picked from the ruler's context menu (no keyboard shortcut). `basis` is what
 // the chart actually READS: with no live bake the seam falls back to distance identity
 // (`dToU`/`uToD`), so time isn't on offer — the ruler menu's Seconds row grays in that state
 // (`rulerMenuItems`) and its `checked` reads THIS value, never the raw session preference, so the
@@ -408,11 +408,11 @@ $effect(() => {
     });
 });
 
-// set the basis (the ruler menu's Meters/Seconds rows, and `T`'s flip) and re-express the view
-// in it: the change is a free VIEW change, so it holds the stretch of ride the author is looking
-// at and only restates its window in the new basis's units (`view.pan`/`pxPerM` are basis-unit
-// quantities). the live `editor.basis` drives the projection here, not the tick-derived `basis`,
-// which lags a frame.
+// set the basis (the ruler menu's Meters/Seconds rows — no keyboard twin, the second feel
+// check-in's call) and re-express the view in it: the change is a free VIEW change, so it holds
+// the stretch of ride the author is looking at and only restates its window in the new basis's
+// units (`view.pan`/`pxPerM` are basis-unit quantities). the live `editor.basis` drives the
+// projection here, not the tick-derived `basis`, which lags a frame.
 let pendingWin: { l: number; r: number } | null = null;
 function applyBasis(target: Basis): void {
     if (editor.dragging) return; // a live gesture holds the document axis still (editor-ui.md)
@@ -425,10 +425,6 @@ function applyBasis(target: Basis): void {
     // on the way out and never come back. Fractions round-trip.
     pendingWin = navWindow(clamped, chartW, uTotal, mFloor);
     setBasis(target);
-}
-// the `T` key's flip — the menu's two explicit picks collapsed to "the other one".
-function flipBasis(): void {
-    applyBasis(editor.basis === Basis.Time ? Basis.Distance : Basis.Time);
 }
 // …and applied on the frame the tick re-derives `basis` in. `view` is live `$state` while `basis`,
 // `mapping`, `uTotal` and `mFloor` are tick-derived, so writing the new scale straight from the
@@ -1505,21 +1501,19 @@ const rmenu = $derived.by((): { x: number; y: number } | null => {
 // metre axis (the same lie the old rail toggle could tell). Seconds GRAYS (never hides) with no
 // live bake — picking it would write a preference the chart can't honor right now
 // (`editor-ui.md`'s "gray a row whose preconditions fail"); Meters has no precondition. Picking
-// the already-checked row is a no-op (`applyBasis`'s equality guard). `T` is both rows'
-// shortcut — it's a flip between exactly two states, so it always resolves to "the other one."
+// the already-checked row is a no-op (`applyBasis`'s equality guard). No keyboard shortcut — the
+// second feel check-in's call: the basis switch doesn't warrant one.
 const rulerMenuItems = $derived.by((): MenuItem[] => {
     if (editor.rulerMenu === null) return [];
     const live = mapping !== null;
     return [
         {
             label: "Meters",
-            shortcut: "T",
             checked: basis === Basis.Distance,
             action: () => applyBasis(Basis.Distance),
         },
         {
             label: "Seconds",
-            shortcut: "T",
             enabled: live,
             checked: basis === Basis.Time,
             action: () => applyBasis(Basis.Time),
@@ -2497,14 +2491,6 @@ onMount(() => {
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
-            return;
-        }
-        // the basis toggle's keyboard twin (the ruler menu's Meters/Seconds; `S` is the magnet's
-        // rail twin). global like `S`, not surface-routed: it changes what the timeline READS,
-        // and the timeline is always on screen. no undo entry — pure view state.
-        if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.metaKey) {
-            e.preventDefault();
-            flipBasis();
             return;
         }
         // frame content (Unity/Blender `F`): frames the whole track (frameAll), the

@@ -1293,16 +1293,16 @@ test("playhead parking flow", async ({ page, boot }) => {
 
 // The TIMELINE BASIS picker (kex2d-time-domain stage 2b): the chart's x-axis reads either global
 // distance or global time, picked from the RULER's own context menu (Meters / Seconds — the
-// Premiere/REAPER/Cubase reference), `T` its keyboard twin. Storage is distance-only, so the
-// basis is a pure view projection at one seam — and that is exactly what this flow pins, in the
-// only place it can be pinned honestly (a real browser, real gestures, the live bake's arc↔time
-// table under them):
+// Premiere/REAPER/Cubase reference). No keyboard shortcut (the second feel check-in's call — the
+// switch doesn't warrant one). Storage is distance-only, so the basis is a pure view projection at
+// one seam — and that is exactly what this flow pins, in the only place it can be pinned honestly
+// (a real browser, real gestures, the live bake's arc↔time table under them):
 //
 //   · the picker writes NOTHING: no keyframe moves, no undo entry, either direction;
 //   · the checked row follows the active basis (Meters checked at rest; picking it — the already-
 //     checked row — is a no-op, both by the menu law and because the toggle carries no history);
-//   · a round trip (ruler menu → Seconds, `T` back) leaves the chart where it was, with the
-//     diamonds provably moved in between — the negative-assert law's positive control;
+//   · a round trip (ruler menu → Seconds, ruler menu → Meters back) leaves the chart where it was,
+//     with the diamonds provably moved in between — the negative-assert law's positive control;
 //   · the honest slide: a keyframe holds its stored arclength while its TIME reading slides under
 //     an upstream speed edit (the semantics the locked decision accepted, the inverse of the
 //     rejected "keyframes hold time");
@@ -1419,13 +1419,15 @@ test("timeline basis flow", async ({ page, boot }) => {
     const strip = dockStrip(page);
     if (strip) await page.screenshot({ path: join(OUT, "basis-time.png"), clip: strip });
 
-    // ── 3. `T` (the keyboard twin) flips it back, and the chart lands where it started: the
-    // toggle carries the visible window across as a fraction of the addressable span, so it is
-    // reversible even when the window reaches into the lead-out (which has no image in time — the
-    // ride's clock stops at its end). Tolerance is that round trip's own fp error plus a box
-    // landing on the 0.5px device grid at deviceScaleFactor 2; a projection defect moves a diamond
-    // by tens of px (the control above measures ~100), not by one. ──
-    await page.keyboard.press("t");
+    // ── 3. The ruler menu's Meters row (pointer-true, the round-trip leg — no keyboard shortcut
+    // exists here, the second feel check-in's call) flips it back, and the chart lands where it
+    // started: the picker carries the visible window across as a fraction of the addressable span,
+    // so it is reversible even when the window reaches into the lead-out (which has no image in
+    // time — the ride's clock stops at its end). Tolerance is that round trip's own fp error plus a
+    // box landing on the 0.5px device grid at deviceScaleFactor 2; a projection defect moves a
+    // diamond by tens of px (the control above measures ~100), not by one. ──
+    await openRulerMenu();
+    await clickMenuItem(page, ".rmenu", "Meters");
     await expect.poll(basis).toBe("distance");
     await expect(posField("Point distance (m)")).toHaveCount(1);
     await frames(page, 2);
@@ -1442,7 +1444,8 @@ test("timeline basis flow", async ({ page, boot }) => {
     // inside magnet reach. The bake re-times under each write, so the landed `s` is asserted, not a
     // grid-exact `u`: the value the drag placed slides the moment the profile it belongs to changes
     // (the same honest slide as 5). ──
-    await page.keyboard.press("t");
+    await openRulerMenu();
+    await clickMenuItem(page, ".rmenu", "Seconds");
     await expect.poll(basis).toBe("time");
     await frames(page, 2);
     const grab = await fhit.nth(crest).boundingBox();
@@ -1507,7 +1510,8 @@ test("timeline basis flow", async ({ page, boot }) => {
     expect(await undoDepth()).toBe(undoGrab); // and nothing on the undo stack
 
     // leave the session on the default basis, so a later flow reading this page starts where the
-    // app boots (the toggle is session state, not per-document).
-    await page.keyboard.press("t");
+    // app boots (the preference is session state, not per-document).
+    await openRulerMenu();
+    await clickMenuItem(page, ".rmenu", "Meters");
     await expect.poll(basis).toBe("distance");
 });
