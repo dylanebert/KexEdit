@@ -59,6 +59,7 @@ import {
     snap,
     snapAxis,
     sToPx,
+    T_GRID,
     ticks,
     timeToArc,
     trimTargets,
@@ -83,13 +84,14 @@ import {
 import { hits, merge, normRect, type Rect } from "./marquee";
 import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls, segmentSeed } from "./profile";
 import { TangentMode } from "./spline";
+import { Domain } from "./section";
 import {
     bakeOut,
     forceEase,
     type ForceTangent,
     forceTangent,
     Handle,
-    MIN_FORCE_LEN,
+    minExtent,
     SectionKind,
     sectionForces,
     sectionHandles,
@@ -99,6 +101,8 @@ import {
     setForcePoint,
     setForceTangent,
     setSectionLength,
+    toGlobal,
+    toLocalIn,
 } from "./track";
 import { DOCK_HEIGHT, DOCK_INSET, resize } from "./view";
 
@@ -161,9 +165,11 @@ const TIP_W = 108; // px; the popover's full width — the handle popover's hori
 const TIP_GAP = 12; // px; the popover's offset from its anchor (the same gap the point popover uses vertically)
 const TIP_VHALF = 28; // px; half the popover height — the vertical clamp for a side-dodged handle popover
 const TIP_H = 2 * TIP_VHALF; // px; the popover's full height — the vertical fit test for the above/below default
-// arrow-nudge steps for the selected force point (AE): s in meters, g in g, Shift coarse.
-// fixed-domain steps (the timeline authors in the invariant distance domain), rounded to
-// the field's displayed precision so a nudge lands clean.
+// arrow-nudge steps for the selected force point (AE): the position step is a delta on the SHARED
+// global-d axis (metres of ride), g is in g, Shift coarse. Each member converts the step through
+// its own section's mapping (`localDelta`), so the time twin is derived rather than declared — the
+// same `/v` derivation `T_GRID` and `DT_NOMINAL` use — and one constant serves both domains.
+// Rounded to the field's displayed precision so a nudge lands clean.
 const NUDGE_S = 0.1;
 const NUDGE_S_COARSE = 1;
 const NUDGE_G = 0.05;
@@ -410,6 +416,34 @@ const spans = $derived.by(() => {
     void tick;
     return eid === null ? [] : sectionSpans(ecs, eid);
 });
+const spanById = $derived(new Map(spans.map((sp) => [sp.id, sp])));
+// the lens, both directions, addressed by a KNOWN section — every chart read of an
+// authored coordinate goes through these two, never `startS + s` (that affine holds only
+// for a Distance section; a Time section's local coordinate is seconds and rides the
+// baked t↔d table). `dOf` places a native local coordinate on the chart's distance axis;
+// `localOf` is its gesture inverse (extrapolating past the section exit, so a trim or a
+// drag can reach past the current bake).
+function dOf(section: number, s: number): number {
+    const sp = spanById.get(section);
+    if (!sp) return s;
+    return toGlobal(spans, section, s) ?? sp.offset + s;
+}
+function localOf(section: number, d: number): number {
+    const sp = spanById.get(section);
+    return sp ? toLocalIn(sp, d) : d;
+}
+// px per NATIVE unit for a section — the scale a keyframe's tangent handles are composed
+// in (`composeTangent` compares the two sides in screen px). Exact for Distance; for Time
+// it linearizes the lens over the whole section (px/m × the section's mean speed), which
+// is the section-scale twin of `DT_NOMINAL`'s `ds = v·dt`. Only the handle COUPLING uses
+// it — every handle position and every drag inverse still goes through `dOf`/`localOf`
+// exactly.
+function pxPerNative(section: number): number {
+    const sp = spanById.get(section);
+    if (!sp || sp.domain !== Domain.Time || !sp.localT) return clamped.pxPerM;
+    const dur = sp.localT[sp.localT.length - 1];
+    return clamped.pxPerM * (dur > 0 ? sp.len / dur : sp.exitV);
+}
 // the interior section boundaries in global distance d — drawn as chart guides. each
 // non-last span's exit (offset + len).
 const bounds = $derived.by((): number[] =>
@@ -425,7 +459,8 @@ interface Clip {
     kind: SectionKind;
     s0: number; // cumulative arclength at the section entry
     s1: number; // cumulative arclength at the section exit
-    len: number; // authored extent (force `Section.length`) — the clamp domain for its points
+    len: number; // authored extent (force `Section.length`) — in the section's NATIVE unit
+    domain: Domain; // Distance (len is metres) or Time (len is seconds)
 }
 const clips = $derived.by((): Clip[] => {
     void tick;
@@ -434,7 +469,14 @@ const clips = $derived.by((): Clip[] => {
     for (const sec of sections(ecs)) {
         const sp = byId.get(sec.id);
         if (!sp) continue;
-        res.push({ id: sec.id, kind: sec.kind, s0: sp.offset, s1: sp.offset + sp.len, len: sec.length });
+        res.push({
+            id: sec.id,
+            kind: sec.kind,
+            s0: sp.offset,
+            s1: sp.offset + sp.len,
+            len: sec.length,
+            domain: sec.domain,
+        });
     }
     return res;
 });
@@ -485,10 +527,12 @@ const tickedSections = $derived(new Set(nodeTicks.map((t) => t.sec)));
 interface ForcePt {
     id: number;
     section: number;
-    s: number; // section-local arclength
+    s: number; // section-local coordinate, in its section's NATIVE unit (metres or seconds)
     g: number;
-    startS: number; // the section's cumulative start (draw at startS + s)
-    len: number; // the section's authored extent (drag/field clamp domain)
+    startS: number; // the section's global-d offset (its entry on the chart axis)
+    len: number; // the section's authored extent, native unit (drag/field clamp domain)
+    domain: Domain; // which unit `s`/`len` are in
+    d: number; // the point's track-global distance — where it DRAWS (`dOf`, through the lens)
 }
 const forcePts = $derived.by((): ForcePt[] => {
     void tick;
@@ -497,7 +541,16 @@ const forcePts = $derived.by((): ForcePt[] => {
     for (const c of clips) {
         if (c.kind !== SectionKind.Force) continue;
         for (const p of sectionForces(ecs, c.id))
-            res.push({ id: p.id, section: c.id, s: p.s, g: p.g, startS: c.s0, len: c.len });
+            res.push({
+                id: p.id,
+                section: c.id,
+                s: p.s,
+                g: p.g,
+                startS: c.s0,
+                len: c.len,
+                domain: c.domain,
+                d: dOf(c.id, p.s),
+            });
     }
     return res;
 });
@@ -549,7 +602,7 @@ const multiForce = $derived(selForceSet.size > 1);
 const markerX = (s: number): number => LEFT_GUT + sToPx(clamped, s);
 // a force point's chart x — its section-local s placed at its section's cumulative
 // offset. points are authored local; the chart draws whole-track cumulative.
-const ptX = (p: ForcePt): number => markerX(p.startS + p.s);
+const ptX = (p: ForcePt): number => markerX(p.d);
 
 // ── snapping (the AE magnet): a snap resolves in chart-local px (the `snap` resolver,
 // timeline.ts), so `snapX`/`snapY` are the guide flashes to draw when an axis latches.
@@ -568,7 +621,7 @@ function sTargets(opts: { exclude?: Set<number>; playhead: boolean; trackEnd: bo
     const out: number[] = [sToPx(v, 0)];
     for (const b of bounds) out.push(sToPx(v, b));
     if (opts.trackEnd) out.push(sToPx(v, sTotal));
-    for (const p of forcePts) if (!opts.exclude?.has(p.id)) out.push(sToPx(v, p.startS + p.s));
+    for (const p of forcePts) if (!opts.exclude?.has(p.id)) out.push(sToPx(v, p.d));
     if (opts.playhead && paused && cartS !== null) out.push(sToPx(v, cartS));
     return out;
 }
@@ -606,9 +659,10 @@ function chartCreate(e: MouseEvent): void {
     }
     const c = clips.find((x) => x.kind === SectionKind.Force && cumS >= x.s0 && cumS <= x.s1);
     if (!c) return; // not over a force section
-    // value = the authored profile at the SNAPPED section-local s (insert-on-curve: the new
-    // point never bends the curve), so both position and value derive from the snapped place.
-    const s = clamp(cumS - c.s0, 0, c.len); // (snapped) cumulative → section-local
+    // value = the authored profile at the SNAPPED section-local coordinate (insert-on-curve:
+    // the new point never bends the curve), so both position and value derive from the snapped
+    // place. the cumulative d → the section's NATIVE local coordinate goes through the lens.
+    const s = clamp(localOf(c.id, cumS), 0, c.len);
     selectForce(createForce(history, ecs, c.id, s, sampleForce(sectionForces(ecs, c.id), s)));
 }
 
@@ -618,18 +672,76 @@ function chartCreate(e: MouseEvent): void {
 // force-keyframe drag: the per-axis gesture-start magnet is the "change just one axis"
 // affordance, so a dominant-axis lock is redundant here (removed 2026-07-23).
 let dragForce: number | null = $state(null); // the ANCHOR point id (snap resolves on it)
-let grabDs = 0; // point s − cursor s, so grabbing off-center doesn't snap
-let dragStartS = 0; // the ANCHOR's section cumulative start (fixed during the drag)
-let dragLen = 0; // the ANCHOR's section extent (the anchor's own s clamp domain)
+let dragSection = 0; // the ANCHOR's section (fixed during the drag — its s rides inside it)
+let dragDomain = Domain.Distance; // that section's domain (picks the s-axis grid quantum)
+let dragD0 = 0; // the ANCHOR's global d at grab — the gesture-start landmark, and the origin
+// every write measures from. the s-axis delta is `localOf(d0 + Δd) − localOf(d0)`, both legs
+// through the SAME display inverse, so a zero-movement grab-and-release resolves to exactly
+// 0 and writes each member's stored coordinate back unchanged (the lens's O(step) gap can
+// never leak into authored state — an absolute re-derivation would bake it in).
+let dragCursorD0 = 0; // the cursor's own global d at grab (so grabbing off-centre doesn't snap)
+let dragLen = 0; // the ANCHOR's section extent (the anchor's own clamp domain, native unit)
 let dragCx = 0; // last cursor, canvas-local px
 let dragCy = 0;
 let dragMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
-let dragS0 = 0; // the grab s / g — each axis's gesture-start landmark (always-on magnet)
-let dragG0 = 0;
-// the dragged SET, captured at gesture start: every selected member's start s/g + its own section
-// extent (the rigid-clamp bounds). single-select is the size-1 case (just the anchor). the whole
-// set moves by ONE shared (Δs, Δg) — relative offsets preserved exactly — resolved on the anchor.
-let dragMembers: { id: number; s0: number; g0: number; len: number }[] = [];
+let dragG0 = 0; // the grab g — the g axis's gesture-start landmark (always-on magnet)
+// the grab cursor's canvas y. the g axis rides the SAME delta-from-grab law as the s axis, but
+// anchored in PIXELS rather than a value: the value axis auto-fits (`yGrow` grows the range
+// mid-drag), so both legs of the delta must be read through the CURRENT scale. the x axis is the
+// mirror image — it only ever pans, so its grab is stored as a `d` value and an edge-pan
+// legitimately carries the point with it.
+let dragCy0 = 0;
+// the dragged SET, captured at gesture start (the multiselect law: every member writes from its
+// gesture-start snapshot, never an accumulated increment). single-select is the size-1 case (just
+// the anchor). The set moves by ONE shared delta on the GLOBAL D AXIS — the one axis every member
+// has in common, since stored coordinates are in per-section native units and a marquee crosses
+// section boundaries freely: a raw native delta would add metres to a co-selected Time keyframe's
+// seconds. So each member freezes its start in both frames — its native `s0`/`len` (what the write
+// lands in) and its `dOff`/`dLen` (the d-interval its own `[0, len]` maps to, what the rigid clamp
+// binds on) — and converts the shared Δd through its OWN section's mapping (`localDelta`).
+interface DragMember {
+    id: number;
+    s0: number; // gesture-start stored coordinate, native unit
+    g0: number;
+    len: number; // its section's extent, native unit
+    section: number;
+    domain: Domain;
+    d0: number; // gesture-start global d
+    dOff: number; // that d measured from its section entry — the clamp frame
+    dLen: number; // its section's d extent
+}
+let dragMembers: DragMember[] = [];
+// one member's native Δs for a shared global Δd. A Distance section's native frame IS the d frame,
+// so the delta passes through identically (a distance-only set behaves exactly as before the
+// domains landed). A Time section maps BOTH legs through the lens on the SAME live table — the
+// mapping has to be live (it derives from the bake, which the drag itself re-runs), and reading
+// both legs from one table is what makes `localDelta(m, 0)` exactly 0: a zero-delta gesture writes
+// every member's stored coordinate back unchanged, so the lens's O(step) gap can never leak into
+// authored state.
+function localDelta(m: DragMember, dd: number): number {
+    if (m.domain !== Domain.Time) return dd;
+    return localOf(m.section, m.d0 + dd) - localOf(m.section, m.d0);
+}
+// freeze one member's gesture-start snapshot in both frames (above).
+function dragMember(fp: ForcePt): DragMember {
+    const time = fp.domain === Domain.Time;
+    const lo = time ? dOf(fp.section, 0) : 0;
+    const dLen = time ? dOf(fp.section, fp.len) - lo : fp.len;
+    return {
+        id: fp.id,
+        s0: fp.s,
+        g0: fp.g,
+        len: fp.len,
+        section: fp.section,
+        domain: fp.domain,
+        d0: fp.d,
+        // an out-of-extent keyframe (reachable by shortening a section under it) is excluded from
+        // `clampDelta`'s binding set by an offset past its own extent — the Time conversion would
+        // otherwise collapse both onto the section exit and freeze the whole block there.
+        dOff: fp.s > fp.len ? dLen + 1 : time ? fp.d - lo : fp.s,
+        dLen,
+    };
+}
 let dragMemberSet: Set<number> = new Set(); // the member ids, so the snap excludes every moving point
 function applyDrag(): void {
     if (dragForce === null) return;
@@ -637,51 +749,72 @@ function applyDrag(): void {
     // so past an edge the point rides it (y follows only as the edge-grow expands).
     const cx = clamp(dragCx, LEFT_GUT, Math.max(LEFT_GUT, w));
     // resolve the ANCHOR through the snap first (grid + landmarks + the gesture-start axis magnet),
-    // exactly as a single drag does — the shared delta then derives from where the anchor lands and
-    // the OTHER members follow it. cursor cumulative s + grab → the anchor's cumulative s, − startS →
-    // local (clamped to the anchor's own [0, len]).
-    let sAnchor = clamp(pxToS(clamped, cx - LEFT_GUT) + grabDs - dragStartS, 0, dragLen);
-    let gAnchor = yToG(clamp(dragCy, TOP, h - BOT_PAD));
+    // exactly as a single drag does — the shared Δd then derives from where the anchor lands and the
+    // OTHER members follow it. The anchor rides the cursor's Δd off its own grab d, bounded by its
+    // section's d-span (the monotone image of its native `[0, len]`, so the same reach as before).
+    const dLo = dOf(dragSection, 0);
+    const dHi = dOf(dragSection, dragLen);
+    const dRaw = clamp(
+        dragD0 + (pxToS(clamped, cx - LEFT_GUT) - dragCursorD0),
+        Math.min(dLo, dHi),
+        Math.max(dLo, dHi),
+    );
+    let dAnchor = dRaw;
+    let gAnchor = dragG0 + (yToG(clamp(dragCy, TOP, h - BOT_PAD)) - yToG(dragCy0));
     snapX = null;
     snapY = null;
     const active = snapActive(dragMod);
     {
-        const cumS = dragStartS + sAnchor;
         const targets = sTargets({ exclude: dragMemberSet, playhead: true, trackEnd: true });
-        const startPx = sToPx(clamped, dragStartS + dragS0); // gesture-start s landmark
-        const r = snapAxis(active, sToPx(clamped, cumS), cumS, targets, S_GRID, (px) =>
-            pxToS(clamped, px), startPx);
-        const local = r.value - dragStartS;
+        const startPx = sToPx(clamped, dragD0); // gesture-start s landmark
+        // the grid quantizes the anchor's OWN native coordinate — metres or seconds, whichever is
+        // its authoring vocabulary — so the resolver runs in native units and the answer maps back.
+        const grid = dragDomain === Domain.Time ? T_GRID : S_GRID;
+        const r = snapAxis(
+            active,
+            sToPx(clamped, dRaw),
+            localOf(dragSection, dRaw),
+            targets,
+            grid,
+            (px) => localOf(dragSection, pxToS(clamped, px)),
+            startPx,
+        );
         if (r.guide !== null) {
+            // the gesture-start magnet resolves to the grab itself, not to a px round-trip of it —
+            // "back where it started" must write a zero delta exactly, not one lens hop off.
+            const cand = r.guide === startPx ? dragD0 : pxToS(clamped, r.guide);
             // a landmark: only latch one the anchor can actually reach in its own section
-            if (local >= 0 && local <= dragLen) {
-                sAnchor = local;
+            if (cand >= dLo && cand <= dHi) {
+                dAnchor = cand;
                 snapX = r.guide;
             }
-        } else {
-            sAnchor = clamp(local, 0, dragLen); // grid (or bypass) — quantized, kept in the section
+        } else if (active) {
+            dAnchor = dOf(dragSection, clamp(r.value, 0, dragLen)); // grid — quantized, kept in the section
         }
     }
     {
         const targets = gTargets(dragMemberSet);
-        const r = snapAxis(active, yOf(gAnchor), gAnchor, targets, G_GRID, (py) => yToG(py), yOf(dragG0));
-        gAnchor = r.value;
+        const startPy = yOf(dragG0); // the gesture-start g landmark
+        const r = snapAxis(active, yOf(gAnchor), gAnchor, targets, G_GRID, (py) => yToG(py), startPy);
+        // as on the s axis, the start magnet means "unchanged" — resolve it to the grab value
+        // itself, not to a px round-trip of it, so a grab-and-return writes exactly nothing.
+        gAnchor = r.guide === startPy ? dragG0 : r.value;
         snapY = r.guide;
     }
-    // the shared delta from the anchor's resolved position, then the RIGID group clamp: Δs shrinks
-    // so every member stays in its own [0, len] (the tightest binds — AE comp-start block). when the
-    // clamp overrides the anchor's own s-snap the block has hit a wall, so drop the guide. g is
-    // unbounded, so its shared delta and guide pass through. the single-member case never clamps
-    // (the anchor already sits in its own bounds), so it stays byte-identical to today.
-    const dsRaw = sAnchor - dragS0;
+    // the shared delta from the anchor's resolved position, then the RIGID group clamp — on the
+    // SHARED axis: Δd shrinks so every member stays inside its own section's d-span (the tightest
+    // binds — AE comp-start block). when the clamp overrides the anchor's own snap the block has hit
+    // a wall, so drop the guide. g is domain-free, so its shared delta and guide pass through. the
+    // single-member case never clamps (the anchor already sits in its own bounds).
+    const ddRaw = dAnchor - dragD0;
     const dg = gAnchor - dragG0;
-    const ds = clampDelta(
-        dragMembers.map((m) => ({ s: m.s0, len: m.len })),
-        dsRaw,
+    const dd = clampDelta(
+        dragMembers.map((m) => ({ s: m.dOff, len: m.dLen })),
+        ddRaw,
     );
-    if (ds !== dsRaw) snapX = null;
+    if (dd !== ddRaw) snapX = null;
     for (const m of dragMembers)
-        setForcePoint(ecs, m.id, clamp(m.s0 + ds, 0, m.len), m.g0 + dg);
+        setForcePoint(ecs, m.id, clamp(m.s0 + localDelta(m, dd), 0, m.len), m.g0 + dg);
 }
 // double-press detection for the diamond summon: a keyframe drag captures the pointer on
 // pointerdown, which retargets the compatibility `dblclick` off the diamond (onto the canvas),
@@ -715,17 +848,21 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     // the drag set: every selected member's start s/g + its own extent (size-1 for a single drag).
     const set = editor.forces.ids;
     const members = set.size > 1 ? forcePts.filter((fp) => set.has(fp.id)) : [p];
-    dragMembers = members.map((fp) => ({ id: fp.id, s0: fp.s, g0: fp.g, len: fp.len }));
+    dragMembers = members.map(dragMember);
     dragMemberSet = new Set(dragMembers.map((m) => m.id));
     const rect = canvas.getBoundingClientRect();
     dragCx = e.clientX - rect.left;
     dragCy = e.clientY - rect.top;
+    dragCy0 = clamp(dragCy, TOP, h - BOT_PAD); // clamped exactly as applyDrag reads it
     dragMod = e.ctrlKey || e.metaKey;
-    dragS0 = p.s; // the anchor's start s/g — each axis's gesture-start magnet
-    dragG0 = p.g;
-    dragStartS = p.startS; // the anchor's section is fixed while its s is dragged inside it
+    dragG0 = p.g; // the anchor's start g — that axis's gesture-start magnet
+    dragD0 = p.d; // the anchor's start d — the s axis's magnet AND the delta origin
+    dragSection = p.section; // the anchor's section is fixed while its coordinate rides inside it
+    dragDomain = p.domain;
     dragLen = p.len;
-    grabDs = p.startS + p.s - chartS(e); // cumulative grab offset (anchor − cursor)
+    // the cursor's grab d, read through the EXACT expression applyDrag uses, so an unmoved
+    // pointer yields a bit-exact zero Δd (grabbing off-centre still tracks the offset).
+    dragCursorD0 = pxToS(clamped, clamp(dragCx, LEFT_GUT, Math.max(LEFT_GUT, w)) - LEFT_GUT);
     beginForceMoves(
         ecs,
         dragMembers.map((m) => m.id),
@@ -889,11 +1026,11 @@ const editHandles = $derived.by((): { pt: ForcePt; handles: FHandle[] } | null =
         // each side is independently explicit-or-derived: a stored offset shows solid, an
         // absent one shows the derived flat ghost (the segment-scoped Custom model).
         const off = tan?.in ?? derivedIn(pt, prev);
-        handles.push({ side: "in", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.in === undefined });
+        handles.push({ side: "in", x: markerX(dOf(pt.section, pt.s + off.ds)), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.in === undefined });
     }
     if (next) {
         const off = tan?.out ?? derivedOut(pt, next);
-        handles.push({ side: "out", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.out === undefined });
+        handles.push({ side: "out", x: markerX(dOf(pt.section, pt.s + off.ds)), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.out === undefined });
     }
     return { pt, handles };
 });
@@ -947,7 +1084,7 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
     const rect = canvas.getBoundingClientRect();
     tanGrabDx = hnd.x - (e.clientX - rect.left);
     tanGrabDy = hnd.y - (e.clientY - rect.top);
-    const rx = hnd.x - markerX(pt.startS + pt.s);
+    const rx = hnd.x - markerX(pt.d);
     const ry = hnd.y - yOf(pt.g);
     const rl = Math.hypot(rx, ry);
     tanRayX = rl > 1e-6 ? rx / rl : 0;
@@ -991,7 +1128,7 @@ function applyTan(cx: number, cy: number): void {
     // gesture-start axis magnet: latch the candidate knob onto the grab ray while it
     // stays within the corridor (the geo tangent-handle `latchAngle`), so a mostly-
     // single-axis drag keeps the other axis at its start — a flat ghost drags flat.
-    const kx = markerX(pt.startS + pt.s);
+    const kx = markerX(pt.d);
     const ky = yOf(pt.g);
     const latch = latchAngle(cx - kx, cy - ky, tanRayX, tanRayY);
     cx = kx + latch.x;
@@ -999,7 +1136,7 @@ function applyTan(cx: number, cy: number): void {
     // the dragged side's raw (Δs, Δg) from the latched cursor, both in OFFSET space (metres
     // and g from the keyframe — the space the readout prints).
     const cumS = pxToS(clamped, clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w)) - LEFT_GUT);
-    let ds = cumS - (pt.startS + pt.s);
+    let ds = localOf(pt.section, cumS) - pt.s;
     let dg = yToG(clamp(cy, TOP, h - BOT_PAD)) - pt.g;
     // Δg grid-quantizes to the force vocabulary (G_GRID), so a snapped handle reads as
     // vocabulary ("+0.5 g"); Ctrl/Cmd frees it to continuous. Δs stays CONTINUOUS (F3d): a
@@ -1023,7 +1160,7 @@ function tangentFor(id: number, side: "in" | "out", ds: number, dg: number): For
     const idx = pts.findIndex((p) => p.id === id);
     const prevS = idx > 0 ? pts[idx - 1].s : null;
     const nextS = idx < pts.length - 1 ? pts[idx + 1].s : null;
-    return composeTangent(side, ds, dg, prevS, pt.s, nextS, forceTangent(ecs, id), clamped.pxPerM, pyPerG);
+    return composeTangent(side, ds, dg, prevS, pt.s, nextS, forceTangent(ecs, id), pxPerNative(pt.section), pyPerG);
 }
 function tanUp(): void {
     if (dragTan === null) return;
@@ -1367,9 +1504,9 @@ function toggleAppend(e: PointerEvent): void {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     appendAnchor = { x: r.left - 3, y: r.bottom + 2 }; // open just below the button, its left edge
 }
-function append(kind: SectionKind): void {
+function append(kind: SectionKind, domain = Domain.Distance): void {
     appendAnchor = null;
-    selectSection(appendSection(history, ecs, kind));
+    selectSection(appendSection(history, ecs, kind, domain));
 }
 // the append flyout as data, one instance of the shared menu language. both choices are
 // always possible (a chain end always accepts a geo or force section), so neither declares
@@ -1377,6 +1514,11 @@ function append(kind: SectionKind): void {
 const appendItems: MenuItem[] = [
     { label: "Geo", aria: "Append geometry section", action: () => append(SectionKind.Geo) },
     { label: "Force", aria: "Append force section", action: () => append(SectionKind.Force) },
+    {
+        label: "Force (time)",
+        aria: "Append time-domain force section",
+        action: () => append(SectionKind.Force, Domain.Time),
+    },
 ];
 // appending never moves the view: the x-axis is a document axis, and the always-framed
 // lead-out (`marginArc`, floored at 50 m) is where a new section lands — visible without
@@ -1486,7 +1628,7 @@ $effect(() => {
 // undo entry per drag.
 let lenId: number | null = $state(null); // the force section being resized, or null
 const draggingLen = $derived(lenId !== null);
-let lenStartS = 0; // the dragged section's cumulative start arclength (fixed during the drag)
+let lenDomain = Domain.Distance; // that section's domain — its extent floor + native unit
 let lenCx = 0; // last length-drag cursor, canvas-local px (drives the per-frame edge-pan)
 let lenX0 = 0; // grab-point cursor px (fixed) — the dead-zone origin `lenArmed` measures from
 let lenArmed = false; // the standard DRAG_PX dead-zone latch (`armDrag`) — gates the sticky-commit
@@ -1510,18 +1652,21 @@ function applyLen(): void {
     snapX = null;
     if (snapActive(lenMod)) {
         const ownS: number[] = [];
-        for (const p of forcePts) if (p.section === lenId) ownS.push(p.startS + p.s);
+        for (const p of forcePts) if (p.section === lenId) ownS.push(p.d);
         const targets = trimTargets(cv, ownS, paused && cartS !== null ? cartS : null);
         const hit = snap(lenCx - LEFT_GUT, targets);
         if (hit !== null) {
             const cand = pxToS(cv, hit);
-            if (cand - lenStartS >= MIN_FORCE_LEN) {
-                cumS = cand; // only latch a target the MIN_FORCE_LEN floor will actually honor
+            if (localOf(lenId, cand) >= minExtent(lenDomain)) {
+                cumS = cand; // only latch a target the extent floor will actually honor
                 snapX = hit;
             }
         }
     }
-    setSectionLength(ecs, lenId, cumS - lenStartS); // cumulative − section start → local extent
+    // the trimmed edge's global d → the section's NATIVE extent through the lens; past the
+    // current baked exit `toLocalIn` extrapolates at the exit speed, so a Time section can be
+    // lengthened into ground the bake hasn't covered yet.
+    setSectionLength(ecs, lenId, localOf(lenId, cumS));
 }
 function lenDown(e: PointerEvent, c: Clip): void {
     if (e.button !== 0) return;
@@ -1532,7 +1677,7 @@ function lenDown(e: PointerEvent, c: Clip): void {
     lenX0 = lenCx;
     lenArmed = false;
     lenMod = e.ctrlKey || e.metaKey;
-    lenStartS = c.s0; // upstream is unchanged by this resize, so the start is fixed
+    lenDomain = c.domain; // its extent floor + native unit; upstream is fixed under the resize
     selectSection(c.id); // grabbing the edge selects the section (one object, two surfaces)
     beginLength(ecs, c.id);
     lenId = c.id;
@@ -1604,12 +1749,16 @@ function fieldEdit(s: number, g: number): void {
     setForcePoint(ecs, p.id, clamp(s, 0, p.len), g);
     commit(history);
 }
-// the field speaks track-global d; convert back to the stored section-local s through
-// the lens (s = d − the section's offset) before writing. fieldEdit clamps into [0, len].
-function onFieldD(e: Event): void {
-    if (!selPoint) return;
-    const d = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    fieldEdit(d - selPoint.startS, selPoint.g);
+// the position field speaks the SECTION'S OWN unit: track-global distance d (m) on a
+// Distance section (the author-facing frame every readout uses), and section-local time
+// t (s) on a Time one, where no global time axis exists to address (the domain lock: t is
+// the section's native coordinate, not a track axis). Either way the write lands as the
+// stored native local coordinate, through the lens for d. fieldEdit clamps into [0, len].
+function onFieldPos(e: Event): void {
+    const p = selPoint;
+    if (!p) return;
+    const v = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
+    fieldEdit(p.domain === Domain.Time ? v : localOf(p.section, v), p.g);
 }
 function onFieldG(e: Event): void {
     if (!selPoint) return;
@@ -2293,18 +2442,34 @@ onMount(() => {
                 // point). single-select rounds the absolute result to the field grid (pre-multiselect
                 // semantics); a multi-set moves by one shared delta under the rigid clamp, offsets
                 // preserved (`nudgeForces`, timeline.ts). Shift coarse; one press = one undo entry.
-                const members = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
+                // The step is a Δd on the shared axis, exactly like a drag, so each member converts
+                // it through its own section's mapping — one press moves a Time keyframe by the time
+                // that ride takes, not by the metres number.
+                const members = forcePts.filter((fp) => editor.forces.ids.has(fp.id)).map(dragMember);
                 if (members.length === 0) return;
                 e.preventDefault();
                 const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
                 const stepG = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
-                const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
+                const dd = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
                 const dg = e.key === "ArrowUp" ? stepG : e.key === "ArrowDown" ? -stepG : 0;
                 beginForceMoves(
                     ecs,
                     members.map((m) => m.id),
                 );
-                for (const w of nudgeForces(members, ds, dg)) setForcePoint(ecs, w.id, w.s, w.g);
+                const writes = nudgeForces(
+                    members.map((m) => ({
+                        id: m.id,
+                        s: m.s0,
+                        g: m.g0,
+                        len: m.len,
+                        dOff: m.dOff,
+                        dLen: m.dLen,
+                        local: (delta: number) => localDelta(m, delta),
+                    })),
+                    dd,
+                    dg,
+                );
+                for (const w of writes) setForcePoint(ecs, w.id, w.s, w.g);
                 commit(history);
             }
         }
@@ -2473,16 +2638,28 @@ onMount(() => {
                                 oncontextmenu={(e) => clipMenu(e, c)}
                                 role="button"
                                 tabindex="-1"
-                                aria-label="{isF ? 'Force' : 'Geo'} section"
+                                aria-label="{isF
+                                    ? c.domain === Domain.Time
+                                        ? 'Force (time)'
+                                        : 'Force'
+                                    : 'Geo'} section"
                             />
                             {#if cw >= 40}
+                                <!-- a TIME section's authored extent is seconds, and the axis
+                                     under it is metres, so its own quantum is unreadable from
+                                     the clip's width: the label carries it. a distance clip's
+                                     extent IS its width, so it stays the bare kind word. -->
                                 <text
                                     class="clip-label"
                                     class:dim={!isF && tickedSections.has(c.id)}
                                     x={(x0 + x1) / 2}
                                     y={RULER_H + GAP_H / 2}
                                 >
-                                    {isF ? "Force" : "Geo"}
+                                    {c.domain === Domain.Time
+                                        ? `Force ${fmt(c.len, 1)}s`
+                                        : isF
+                                          ? "Force"
+                                          : "Geo"}
                                 </text>
                             {/if}
                             {#if isF}
@@ -2685,7 +2862,8 @@ onMount(() => {
                     scrubFreeze?.x ??
                     clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
                 {@const ay = scrubFreeze?.y ?? clamp(yOf(selPoint.g), TOP, h - BOT_PAD)}
-                {@const dText = fmt(selPoint.startS + selPoint.s, 1)}
+                {@const isT = selPoint.domain === Domain.Time}
+                {@const dText = fmt(isT ? selPoint.s : selPoint.d, 1)}
                 {@const gText = fmt(selPoint.g, 2)}
                 <div
                     class="ptip"
@@ -2697,19 +2875,19 @@ onMount(() => {
                         <span
                             class="key"
                             onpointerdown={(e) => scrubStart(e, "s")}
-                            role="presentation">d</span
+                            role="presentation">{isT ? "t" : "d"}</span
                         >
                         <input
                             type="number"
-                            step="1"
-                            min={selPoint.startS}
+                            step={isT ? 0.1 : 1}
+                            min={isT ? 0 : selPoint.startS}
                             value={dText}
-                            onchange={onFieldD}
+                            onchange={onFieldPos}
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, dText)}
-                            aria-label="Point distance (m)"
+                            aria-label={isT ? "Point time (s)" : "Point distance (m)"}
                         />
-                        <span class="unit">m</span>
+                        <span class="unit">{isT ? "s" : "m"}</span>
                     </div>
                     <div class="fld">
                         <span

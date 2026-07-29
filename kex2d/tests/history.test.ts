@@ -27,6 +27,7 @@ import {
     createHistory,
     deleteForces,
     extendTrack,
+    flipDomain,
     redo,
     removeSections,
     resetTangents,
@@ -54,6 +55,7 @@ beforeEach(() => {
 import { stitchNode } from "../src/tangents";
 import {
     addNode,
+    BakeSystem,
     createSection,
     createTrack,
     EXTEND_DIST,
@@ -74,11 +76,13 @@ import {
     setStickyLen,
     setTangent,
     setTrackV0,
+    snapshotSection,
     stickyLen,
     Track,
     V0,
 } from "../src/track";
 import { editTangent, TangentMode } from "../src/spline";
+import { Domain } from "../src/section";
 import { Easing } from "../src/profile";
 
 // track undo/redo, addressed by stable id/order. a fresh device-free State per test
@@ -440,6 +444,7 @@ test("removeSections refuses (records nothing) when the set is EVERY section —
 beforeEach(() => {
     setStickyLen(SectionKind.Force, EXTEND_DIST);
     setStickyLen(SectionKind.Geo, EXTEND_DIST);
+    setStickyLen(SectionKind.Force, EXTEND_DIST / V0, Domain.Time); // DEFAULT_FORCE_DUR
 });
 
 test("a fresh append gets EXTEND_DIST (DEFAULT_FORCE_LEN) before anything has committed", () => {
@@ -478,6 +483,78 @@ test("undoing the append that used the sticky value doesn't roll the sticky valu
 
     const force3 = appendSection(h, state, SectionKind.Force); // still echoes the committed trim
     expect(sections(state).find((s) => s.id === force3)?.length).toBe(40);
+});
+
+// the commitLength DOMAIN wiring (the stage-2 review's latent gap): the extent is stored in
+// the section's native unit, so the commit must land in that domain's OWN sticky slot. Without
+// the domain riding `sectionLengthState` → `commitLength` → `setStickyLen`, a Time trim would
+// write seconds into the metres slot (corrupting the next distance append) and leave the Time
+// slot frozen at its literal default forever.
+test("a Time extent-trim commits into the Time sticky slot, never the metres one", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const timed = appendSection(h, state, SectionKind.Force, Domain.Time);
+    expect(sections(state).find((s) => s.id === timed)?.length).toBeCloseTo(EXTEND_DIST / V0, 10);
+
+    beginLength(state, timed);
+    setSectionLength(state, timed, 3.5); // 3.5 SECONDS
+    commitLength(h, state, timed, true);
+
+    expect(stickyLen(SectionKind.Force, Domain.Time)).toBe(3.5);
+    expect(stickyLen(SectionKind.Force, Domain.Distance)).toBe(EXTEND_DIST); // untouched
+
+    // and the next append of each domain opens at its own slot.
+    const nextTime = appendSection(h, state, SectionKind.Force, Domain.Time);
+    expect(sections(state).find((s) => s.id === nextTime)?.length).toBeCloseTo(3.5, 6);
+    const nextDist = appendSection(h, state, SectionKind.Force);
+    expect(sections(state).find((s) => s.id === nextDist)?.length).toBe(EXTEND_DIST);
+});
+
+test("a Distance extent-trim leaves the Time sticky slot alone (the mirror)", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const force = appendSection(h, state, SectionKind.Force);
+    beginLength(state, force);
+    setSectionLength(state, force, 40);
+    commitLength(h, state, force, true);
+    expect(stickyLen(SectionKind.Force, Domain.Distance)).toBe(40);
+    expect(stickyLen(SectionKind.Force, Domain.Time)).toBeCloseTo(EXTEND_DIST / V0, 10);
+});
+
+// the domain flip is a REMAP wearing the destructive convert's undo shape: one entry, a
+// snapshotSection pair, byte-identical restore.
+test("flipDomain is one undo entry and restores the pre-flip payload byte-identically", () => {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, EXTEND_DIST, 0);
+    const h = createHistory();
+    const force = appendSection(h, state, SectionKind.Force);
+    state.step(0);
+
+    const before = snapshotSection(state, force);
+    const depth = h.undo.length;
+    expect(flipDomain(h, state, eid, force)).toBe(true);
+    expect(h.undo.length).toBe(depth + 1); // exactly one entry
+    expect(snapshotSection(state, force).domain).toBe(Domain.Time);
+
+    undo(h, state);
+    expect(snapshotSection(state, force)).toEqual(before); // byte-identical
+
+    redo(h, state);
+    expect(snapshotSection(state, force).domain).toBe(Domain.Time);
+});
+
+test("flipDomain records nothing when it can't run (no bake, or a geo section)", () => {
+    const { state, eid, sec } = nodes(); // no BakeSystem — nothing to map through
+    const h = createHistory();
+    expect(flipDomain(h, state, eid, sec)).toBe(false); // geo
+    const force = appendSection(h, state, SectionKind.Force);
+    const depth = h.undo.length;
+    expect(flipDomain(h, state, eid, force)).toBe(false); // never baked
+    expect(h.undo.length).toBe(depth);
 });
 
 test("a degenerate committed extent floors at MIN_FORCE_LEN, never poisoning the next append", () => {

@@ -77,6 +77,7 @@ AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
   verbatim, pinned character-identical AND pinned reached by unit tests (hand-written copies
   drifted once); mirrored app constants live in the MIRRORED block, each naming its source.
 - **Growth.** Past ~28 flows (the 420 s `globalTimeout` ceiling at 4 workers — the binding
-  number; 25 today), split `shot.pw.ts` into staged flow files + one staged helpers
+  number; 28 today, at the threshold — the next flow added splits the file), split
+  `shot.pw.ts` into staged flow files + one staged helpers
   module (`testMatch` glob + `stage.files`) — the single file is habit, not a constraint. The
   `__kex` DEV surface (~15 members on `any`) earns a typed interface at the same moment.

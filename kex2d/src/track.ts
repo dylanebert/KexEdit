@@ -242,18 +242,17 @@ export const samples = new Map<number, Samples>();
  *  track / red handle / warning banner UX. `firstInfeasible` is the first
  *  sample below V_WARN, or -1 if the whole chain is feasible. `hash` is the
  *  input state that produced the current bake; a miss triggers a full re-bake. */
-export const bakeOut = new Map<
-    number,
-    {
-        fN: Float32Array;
-        ds: Float32Array;
-        t: Float32Array;
-        tTotal: number;
-        feasible: Uint8Array;
-        firstInfeasible: number;
-        hash: string;
-    }
->();
+export interface BakeOut {
+    fN: Float32Array;
+    ds: Float32Array;
+    t: Float32Array;
+    tTotal: number;
+    feasible: Uint8Array;
+    firstInfeasible: number;
+    hash: string;
+}
+
+export const bakeOut = new Map<number, BakeOut>();
 
 /** per-section realized metadata the flat SoA drops — keyed by stable section id,
  *  written by BakeSystem, read by the drag (localize against `entry`), the render
@@ -463,6 +462,10 @@ export interface SectionSpan {
     offset: number;
     len: number;
     domain: Domain;
+    /** the section's exit speed (m/s) off the current bake — what a coordinate past the
+     *  baked exit extrapolates at (`toLocalIn`, the extent trim's inverse). floored at
+     *  `V_FLOOR`, so it never divides by zero on a stalled section. */
+    exitV: number;
     /** Time only: per-sample cumulative LOCAL time (seconds since the section's entry,
      *  `localT[0] === 0`), non-decreasing — strictly increasing while `ds > 0`, but a
      *  stalled sample (`ds` clamped to 0 by the v floor) freezes `t` too (`bakeOut.t`
@@ -513,31 +516,51 @@ function lerpMonotone(xs: Float32Array, ys: Float32Array, x: number): number {
 export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
     const out = bakeOut.get(eid);
     if (!out) return [];
+    const samp = samples.get(eid);
     const res: SectionSpan[] = [];
     let cum = 0;
     for (const sec of sections(ecs)) {
         const info = sectionInfo.get(sec.id);
         if (!info) continue;
         const offset = cum;
-        let localT: Float32Array | undefined;
-        let localD: Float32Array | undefined;
-        if (sec.domain === Domain.Time) {
-            const nSamp = info.endSample - info.startSample + 1;
-            localT = new Float32Array(nSamp);
-            localD = new Float32Array(nSamp);
-            const t0 = out.t[info.startSample];
-            let d = 0;
-            for (let k = 0; k < nSamp; k++) {
-                const j = info.startSample + k;
-                localT[k] = out.t[j] - t0;
-                localD[k] = d;
-                if (j < info.endSample) d += out.ds[j];
-            }
-        }
+        const tab = sec.domain === Domain.Time ? localTables(out, info) : undefined;
         for (let i = info.startSample; i < info.endSample; i++) cum += out.ds[i];
-        res.push({ id: sec.id, offset, len: cum - offset, domain: sec.domain, localT, localD });
+        res.push({
+            id: sec.id,
+            offset,
+            len: cum - offset,
+            domain: sec.domain,
+            exitV: Math.max(V_FLOOR, samp ? samp.v[info.endSample] : V0),
+            localT: tab?.t,
+            localD: tab?.d,
+        });
     }
     return res;
+}
+
+/** a section's own cumulative local time/distance tables off the current bake, one entry
+ *  per sample in its range (`t[0] = d[0] = 0`, both non-decreasing). the domain-mapping
+ *  handle: read `t → d` to place a time coordinate on the distance axis, `d → t` for the
+ *  inverse. built for a Time section's `SectionSpan` (the lens) and by `flipDomain` in
+ *  either direction (a Distance section carries no span table, but the flip needs one). */
+export interface LocalTables {
+    t: Float32Array;
+    d: Float32Array;
+}
+
+function localTables(out: BakeOut, info: SectionInfo): LocalTables {
+    const nSamp = info.endSample - info.startSample + 1;
+    const t = new Float32Array(nSamp);
+    const d = new Float32Array(nSamp);
+    const t0 = out.t[info.startSample];
+    let dist = 0;
+    for (let k = 0; k < nSamp; k++) {
+        const j = info.startSample + k;
+        t[k] = out.t[j] - t0;
+        d[k] = dist;
+        if (j < info.endSample) dist += out.ds[j];
+    }
+    return { t, d };
 }
 
 /** section-local `(section, s)` → track-global distance. Distance: the affine
@@ -576,6 +599,25 @@ export function toLocal(spans: SectionSpan[], d: number): { section: number; s: 
         return { section: last.id, s: last.localT[last.localT.length - 1] };
     }
     return { section: last.id, s: last.len };
+}
+
+/** the section-local native coordinate at a track-global `d`, resolved WITHIN a NAMED
+ *  section — the gesture inverse of `toGlobal`. A drag or an extent trim already knows
+ *  its subject, so it must NOT re-resolve the section the way `toLocal`'s boundary
+ *  policy would (a `d` at the section entry would hand back the upstream neighbour).
+ *  Past either end the coordinate extrapolates rather than clamping: below the entry
+ *  to 0, past the exit along the section's exit speed for a Time section (linearly for
+ *  a Distance one) — what lets an extent trim lengthen a section past its current baked
+ *  exit. Exact inverse of `toGlobal` inside the baked range.
+ *  @example toLocalIn(span, span.offset + span.len) // → the section's baked duration */
+export function toLocalIn(sp: SectionSpan, d: number): number {
+    const local = d - sp.offset;
+    if (local <= 0) return 0;
+    if (sp.domain !== Domain.Time || !sp.localT || !sp.localD) return local;
+    const n = sp.localT.length;
+    const lastD = sp.localD[n - 1];
+    if (local <= lastD) return lerpMonotone(sp.localD, sp.localT, local);
+    return sp.localT[n - 1] + (local - lastD) / sp.exitV;
 }
 
 /** create a section at `order` with a fresh stable id — the append/seed path.
@@ -1151,25 +1193,102 @@ export function nextForce(ecs: State, id: number): number | null {
 
 // ── force-section extent ──────────────────────────────────────────────────────
 
+/** the shortest extent a force section of `domain` can be trimmed to, in that domain's
+ *  own native unit — `MIN_FORCE_LEN` metres or `MIN_FORCE_DUR` seconds, the same
+ *  couple-of-edges floor at each domain's nominal step. */
+export function minExtent(domain: Domain): number {
+    return domain === Domain.Time ? MIN_FORCE_DUR : MIN_FORCE_LEN;
+}
+
 /** a force section's undoable extent, keyed by stable id — the end-handle drag
- *  gesture snapshots this. */
+ *  gesture snapshots this. `length` is in the section's native unit, so the state
+ *  carries its `domain` too: the commit records the landed extent as that domain's
+ *  sticky append default (`history.commitLength` → `setStickyLen`), and a Time trim
+ *  must never land in the metres slot. */
 export interface SectionLengthState {
     id: number;
     length: number;
+    domain: Domain;
 }
 
 /** snapshot a section's extent by id, or undefined if it's gone. */
 export function sectionLengthState(ecs: State, id: number): SectionLengthState | undefined {
     const eid = sectionAt(ecs, id);
-    return eid === null ? undefined : { id, length: Section.length.get(eid) };
+    return eid === null
+        ? undefined
+        : { id, length: Section.length.get(eid), domain: Section.domain.get(eid) as Domain };
 }
 
-/** set a force section's extent (m), floored at the minimum — the end-handle drag +
- *  gesture restore. re-bakes on the next tick (the extent is in the bake hash). */
+/** set a force section's extent in its OWN native unit (metres or seconds), floored at
+ *  that domain's minimum — the end-handle drag + gesture restore. re-bakes on the next
+ *  tick (the extent is in the bake hash). */
 export function setSectionLength(ecs: State, id: number, length: number): void {
     const eid = sectionAt(ecs, id);
     if (eid === null) return;
-    Section.length.set(eid, Math.max(MIN_FORCE_LEN, length));
+    Section.length.set(eid, Math.max(minExtent(Section.domain.get(eid) as Domain), length));
+}
+
+/** flip a force section between `Distance` and `Time`, REMAPPING its authored payload
+ *  through the live bake instead of resetting it (unlike the geo↔force kind flip, whose
+ *  two payloads have no correspondence): every keyframe coordinate and the extent go
+ *  through the section's own monotone t↔d table, and a SET step (`Section.ds`) scales by
+ *  the extent ratio, which is exactly what keeps its edge count (`round(length/ds)`).
+ *  Values land non-round (10 m → 1.37 s) — accepted; the fields retype them. Past the
+ *  baked exit (a keyframe left outside a shortened extent) the map extrapolates at the
+ *  exit speed, so a re-lengthening restores it. Needs a LIVE bake for the section (that's
+ *  the mapping); returns false without one, on a geo section, or on a degenerate map.
+ *  Records no history — `history.flipDomain` wraps it in a `snapshotSection` pair. */
+export function flipDomain(ecs: State, trackEid: number, sectionId: number): boolean {
+    const eid = sectionAt(ecs, sectionId);
+    if (eid === null || (Section.kind.get(eid) as SectionKind) !== SectionKind.Force) return false;
+    const out = bakeOut.get(trackEid);
+    const info = sectionInfo.get(sectionId);
+    if (!out || !info || info.endSample <= info.startSample) return false;
+    const tab = localTables(out, info);
+    const n = tab.t.length;
+    const samp = samples.get(trackEid);
+    const exitV = Math.max(V_FLOOR, samp ? samp.v[info.endSample] : V0);
+    const target =
+        (Section.domain.get(eid) as Domain) === Domain.Time ? Domain.Distance : Domain.Time;
+    // one direction each way: into Time reads d → t, into Distance reads t → d. past the
+    // table's own end the ride continues at the exit speed (t past the exit costs exitV
+    // metres per second, and vice versa).
+    const map = (v: number): number => {
+        // a coordinate at or before the section entry maps to the entry. This is the floor, not a
+        // clamp of signed input: every `v` reaching here is a NON-NEGATIVE section-local coordinate,
+        // including `s + tangent.ds` for an explicit handle — `profile.composeTangent`'s
+        // x-monotonicity clamp bounds an `in` handle's reach to `-(s - prevS)` and an `out` handle's
+        // to `nextS - s`, so a tangent tip can never cross its own keyframe's neighbours, let alone
+        // the section entry at s = 0. If that clamp is ever relaxed, a signed offset would silently
+        // collapse here instead of mapping.
+        if (v <= 0) return 0;
+        const [xs, ys] = target === Domain.Time ? [tab.d, tab.t] : [tab.t, tab.d];
+        const lastX = xs[n - 1];
+        if (v <= lastX) return lerpMonotone(xs, ys, v);
+        return ys[n - 1] + (target === Domain.Time ? (v - lastX) / exitV : (v - lastX) * exitV);
+    };
+    const oldLen = Section.length.get(eid);
+    const newLen = Math.max(minExtent(target), map(oldLen));
+    if (!Number.isFinite(newLen) || newLen <= 0) return false;
+    const ds = Section.ds.get(eid);
+    // the step's whole job is pinning the edge count, so it rides the extent ratio; the
+    // sentinel 0 (bake at the domain nominal) stays the sentinel.
+    Section.ds.set(eid, ds > 0 && oldLen > 0 ? ds * (newLen / oldLen) : 0);
+    Section.length.set(eid, newLen);
+    Section.domain.set(eid, target);
+    for (const p of sectionForces(ecs, sectionId)) {
+        const s = map(p.s);
+        // an explicit handle's Δs is a coordinate offset, so it remaps as the difference of
+        // its two mapped endpoints — the tip lands where the same point on the curve does.
+        const tan = readForceTangent(p.eid);
+        if (tan) {
+            if (tan.in) tan.in = { ds: map(p.s + tan.in.ds) - s, dg: tan.in.dg };
+            if (tan.out) tan.out = { ds: map(p.s + tan.out.ds) - s, dg: tan.out.dg };
+            writeForceTangent(p.eid, tan);
+        }
+        setForcePoint(ecs, p.id, s, p.g);
+    }
+    return true;
 }
 
 // ── track initial speed (v0) ───────────────────────────────────────────────────
@@ -1795,8 +1914,6 @@ export function bakeLive(ecs: State): boolean {
     }
     return false;
 }
-
-type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
 
 /** per-sample cumulative time `t[i] = Σ_{k<i} ds_k / v̄_k` plus the diagnostic
  *  feasibility flag. v̄ floors at V_FLOOR so energy-depleted regions take

@@ -303,6 +303,13 @@ export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX)
 export const S_GRID = 1;
 export const G_GRID = 0.1;
 
+/** `S_GRID`'s time twin — the placement quantum a keyframe on a TIME-domain force section
+ *  snaps to, in seconds. Derived the way `track.DT_NOMINAL` is: the time a cart at the
+ *  default entry speed `V0` (10 m/s) takes to cover one `S_GRID` metre, so the two domains
+ *  offer the same authoring resolution at the default speed. Fixed, like its twins — the
+ *  timeline grids are constants, only the manipulator quanta are per-user (`settings.ts`). */
+export const T_GRID = 0.1;
+
 /** the resolved snap for one axis of a keyframe drag: the DOMAIN value to write, plus the
  *  guide px to flash (a landmark hit) or `null` (the grid — ambient, no flash). */
 export interface AxisSnap {
@@ -367,16 +374,40 @@ export function clampDelta(members: readonly { s: number; len: number }[], ds: n
     return r === 0 ? 0 : r; // normalize −0 (from a member pinned at s = 0) so `=== 0` holds downstream
 }
 
+/** one selected force keyframe as an arrow-nudge (or multi-drag) member: its gesture-start
+ *  snapshot in BOTH frames. Stored coordinates are in each section's own native unit (metres or
+ *  seconds), so the *shared* quantity of a group move can only live on the global `d` axis — the
+ *  one axis every member has in common. `s`/`len` are the native frame the write lands in;
+ *  `dOff`/`dLen` are the same position and extent measured on `d` from the section entry, the
+ *  frame the rigid group clamp binds on; `local` converts the shared Δd into this member's own
+ *  native Δs. A Distance member's two frames coincide, so its numbers pass through untouched. */
+export interface NudgeMember {
+    id: number;
+    s: number;
+    g: number;
+    len: number;
+    dOff: number;
+    dLen: number;
+    /** this member's native Δs for a shared global-d delta — the identity for a Distance
+     *  section, its own monotone t↔d mapping for a Time one. `local(0)` must be exactly 0, so a
+     *  zero-delta gesture writes every member's stored coordinate back unchanged. */
+    local: (dd: number) => number;
+}
+
 /** the per-member `(s, g)` writes for one arrow-nudge of the selected force set (Timeline.svelte's
- *  keyboard handler). two regimes: a SINGLE selection rounds the ABSOLUTE result to the field grid
- *  (s → 0.1, g → 0.01), re-quantizing an off-grid point onto the grid — the pre-multiselect nudge
- *  semantics, preserved byte-for-byte. a MULTI set moves by ONE shared delta: the nudge step is
- *  already grid-sized, so the rigid clamp is applied LAST (the hard `[0, len]` invariant wins with no
- *  post-clamp rounding — a rounded Δs could exceed the clamp bound and break the offsets), and every
- *  relative offset is preserved exactly. @example nudgeForces([{ id: 1, s: 1.007, g: 2, len: 10 }], 0, 0.05) */
+ *  keyboard handler). `dd` is a delta on the SHARED global-d axis (metres of ride), which each
+ *  member converts through its own `local` — so one keypress moves a Distance keyframe by that
+ *  many metres and a co-selected Time keyframe by the time the same ride takes. Two regimes: a
+ *  SINGLE selection rounds the ABSOLUTE result to the field grid (s → 0.1, g → 0.01), re-quantizing
+ *  an off-grid point onto the grid — the pre-multiselect nudge semantics, preserved byte-for-byte
+ *  for a Distance member. a MULTI set moves by ONE shared delta: the nudge step is already
+ *  grid-sized, so the rigid clamp is applied LAST (the hard `[0, len]` invariant wins with no
+ *  post-clamp rounding — a rounded Δ could exceed the clamp bound and break the offsets), and every
+ *  relative offset is preserved exactly.
+ *  @example nudgeForces([{ id: 1, s: 1.007, g: 2, len: 10, dOff: 1.007, dLen: 10, local: (d) => d }], 0, 0.05) */
 export function nudgeForces(
-    members: readonly { id: number; s: number; g: number; len: number }[],
-    ds: number,
+    members: readonly NudgeMember[],
+    dd: number,
     dg: number,
 ): { id: number; s: number; g: number }[] {
     if (members.length === 1) {
@@ -384,13 +415,17 @@ export function nudgeForces(
         return [
             {
                 id: p.id,
-                s: Math.round(clampN(p.s + ds, 0, p.len) * 10) / 10,
+                s: Math.round(clampN(p.s + p.local(dd), 0, p.len) * 10) / 10,
                 g: Math.round((p.g + dg) * 100) / 100,
             },
         ];
     }
-    const d = clampDelta(members, ds); // the rigid group clamp — LAST, no rounding after it
-    return members.map((m) => ({ id: m.id, s: clampN(m.s + d, 0, m.len), g: m.g + dg }));
+    // the rigid group clamp runs on the shared axis — LAST, no rounding after it
+    const d = clampDelta(
+        members.map((m) => ({ s: m.dOff, len: m.dLen })),
+        dd,
+    );
+    return members.map((m) => ({ id: m.id, s: clampN(m.s + m.local(d), 0, m.len), g: m.g + dg }));
 }
 
 /** resolve a force keyframe's explicit tangent after setting one `side` to the (Δs, Δg) offset —

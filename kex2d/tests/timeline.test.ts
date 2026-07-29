@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { TangentMode } from "../src/spline";
+import { V0 } from "../src/track";
 import {
     arcToTime,
     clampDelta,
@@ -16,6 +17,7 @@ import {
     navWindow,
     niceStep,
     nodeTickPx,
+    type NudgeMember,
     nudgeForces,
     pxToS,
     retargetMode,
@@ -24,6 +26,7 @@ import {
     snapAxis,
     SNAP_PX,
     sToPx,
+    T_GRID,
     ticks,
     timeToArc,
     trimTargets,
@@ -591,6 +594,24 @@ describe("snapAxis — landmark magnet over a domain grid", () => {
         expect(snapAxis(true, -0.04, -0.04, [], G_GRID, id, null).value).toBeCloseTo(0, 10);
     });
 
+    test("T_GRID is the time domain's placement quantum, and landmark-over-grid holds there too", () => {
+        // a TIME-domain force section's keyframe drag feeds the same resolver its own grid.
+        // the quantum is derived, not tuned: one S_GRID metre at the default entry speed V0.
+        expect(T_GRID).toBeCloseTo(S_GRID / V0, 10);
+        // px and seconds differ in scale, so the inverse is a real affine here (100 px per
+        // second) — the landmark radius stays in SCREEN px while the grid quantizes SECONDS.
+        const secs = (px: number): number => px / 100;
+        // raw 123 px = 1.23 s → the nearest tenth, 1.2 s. no landmark in range, no guide.
+        const grid = snapAxis(true, 123, 1.23, [400], T_GRID, secs, null);
+        expect(grid.value).toBeCloseTo(1.2, 10);
+        expect(grid.guide).toBeNull();
+        // a landmark 3 px away owns its radius and wins over the grid — the same
+        // landmark-over-grid merge the metres axis has, unchanged by the domain.
+        const mark = snapAxis(true, 123, 1.23, [126], T_GRID, secs, null);
+        expect(mark.value).toBeCloseTo(1.26, 10);
+        expect(mark.guide).toBe(126);
+    });
+
     test("bypass frees the grid and value landmarks (only the axis pin survives)", () => {
         // a value landmark sits right at rawPx and the value is off-grid, and the start landmark
         // is out of range — so nothing fires and the raw value passes through continuous. this is
@@ -963,21 +984,74 @@ describe("clampDelta — the rigid group Δs clamp (AE comp-start block)", () =>
 describe("nudgeForces — arrow-nudge writes for the selected force set", () => {
     test("single-select rounds the ABSOLUTE result to the field grid (pre-multiselect semantics)", () => {
         // an off-grid s (1.007) nudged right by 0.1 re-quantizes onto the 0.1 grid; g rounds to 0.01.
-        expect(nudgeForces([{ id: 1, s: 1.007, g: 2, len: 10 }], 0.1, 0)).toEqual([
+        expect(nudgeForces([{ ...distMember(1, 1.007, 10), g: 2 }], 0.1, 0)).toEqual([
             { id: 1, s: 1.1, g: 2 }, // 1.007 + 0.1 = 1.107 → round to 0.1 → 1.1
         ]);
-        expect(nudgeForces([{ id: 1, s: 3, g: 1.007, len: 10 }], 0, 0.05)).toEqual([
+        expect(nudgeForces([{ ...distMember(1, 3, 10), g: 1.007 }], 0, 0.05)).toEqual([
             { id: 1, s: 3, g: 1.06 }, // 1.007 + 0.05 = 1.057 → round to 0.01 → 1.06
         ]);
+    });
+
+    // ── the shared delta lives on the GLOBAL D AXIS (the mixed-domain fix) ──
+    // members' stored coordinates are in per-section native units, so a raw native delta would
+    // add metres to a co-selected Time keyframe's seconds. The shared quantity is Δd — the one
+    // axis every member has in common — and each member converts it through its OWN section's
+    // mapping (`local`), while the rigid clamp binds on the d frame (`dOff`/`dLen`).
+
+    /** a Time member on a section cruising at `v` m/s: one authored second is `v` metres of ride. */
+    const timeMember = (
+        id: number,
+        s: number,
+        len: number,
+        dOff: number,
+        dLen: number,
+        v: number,
+    ): NudgeMember => ({
+        id,
+        s,
+        g: 1,
+        len,
+        dOff,
+        dLen,
+        local: (dd) => dd / v,
+    });
+    /** a Distance member: its native frame IS the d frame, so `local` is the identity. */
+    const distMember = (id: number, s: number, len: number): NudgeMember => ({
+        id,
+        s,
+        g: 1,
+        len,
+        dOff: s,
+        dLen: len,
+        local: (dd) => dd,
+    });
+
+    test("mixed domains: each member converts the shared Δd through its OWN mapping", () => {
+        const members = [distMember(1, 2, 40), timeMember(2, 0.5, 3, 10, 60, 20)];
+        const w = nudgeForces(members, 2, 0); // a shared +2 metres of ride
+        expect(w[0].s).toBeCloseTo(4, 10); // metres: +2 outright
+        expect(w[1].s).toBeCloseTo(0.6, 10); // seconds: 2 m at 20 m/s = +0.1 s, NOT +2
+        // and a zero Δd is a byte-identical no-op for every member, whatever its mapping.
+        const z = nudgeForces(members, 0, 0);
+        expect(z[0].s).toBe(members[0].s);
+        expect(z[1].s).toBe(members[1].s);
+    });
+
+    test("mixed domains: the rigid clamp binds on the SHARED axis, not on native units", () => {
+        // the Distance anchor has 8 m of room to its extent; the Time member has 10 m of ride
+        // (0.5 s at 20 m/s). The tightest in D binds the block — reading the Time member's own
+        // `len` (3 s) as if it were metres would bind at 2.5 instead.
+        const members = [distMember(1, 2, 10), timeMember(2, 2.5, 3, 50, 60, 20)];
+        const w = nudgeForces(members, 20, 0);
+        expect(w[0].s).toBeCloseTo(10, 10); // the anchor reached its extent, not past
+        expect(w[1].s).toBeCloseTo(2.9, 10); // 2.5 s + 8 m / 20 m/s
+        expect(w[1].s).toBeLessThanOrEqual(members[1].len); // hard [0, len] invariant holds
     });
 
     test("multi: the clamp binds off the nudge grid — offsets preserved exactly, no member past its extent", () => {
         // B sits 0.05 from its upper bound (a non-grid amount); a +0.1 nudge must move the block by
         // exactly that 0.05 (the rigid clamp, applied LAST) — NOT a rounded 0.1 that clamps B alone.
-        const members = [
-            { id: 1, s: 2, g: 1, len: 10 },
-            { id: 2, s: 9.95, g: 1, len: 10 },
-        ];
+        const members = [distMember(1, 2, 10), distMember(2, 9.95, 10)];
         const w = nudgeForces(members, 0.1, 0);
         expect(w[0].s).toBeCloseTo(2.05, 10); // A rode the clamped 0.05
         expect(w[1].s).toBeCloseTo(10, 10); // B reached its extent, not past

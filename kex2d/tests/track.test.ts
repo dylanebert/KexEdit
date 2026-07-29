@@ -22,7 +22,9 @@ import {
     handleAt,
     handleTangent,
     MAX_SAMPLES,
+    flipDomain,
     MIN_FORCE_LEN,
+    minExtent,
     nextForce,
     reheadOnDrag,
     removeTrailingHandle,
@@ -36,6 +38,7 @@ import {
     sectionForces,
     sectionHandles,
     sectionInfo,
+    sectionLengthState,
     sections,
     sectionSpans,
     seedTangent,
@@ -51,6 +54,7 @@ import {
     stickyLen,
     toGlobal,
     toLocal,
+    toLocalIn,
     Track,
     V0,
 } from "../src/track";
@@ -719,12 +723,7 @@ describe("coordinate lens — Time domain", () => {
         addNode(state, g, EXTEND_DIST, 0);
         const duration = 2; // seconds
         const f = appendSection(state, SectionKind.Force, Domain.Time);
-        // write the extent directly, not through `setSectionLength` — that setter floors
-        // at `MIN_FORCE_LEN` (a DISTANCE-unit constant), the stage-4 commit-path wiring gap
-        // the spec already flags as out of this stage's scope.
-        const fEid = sectionAt(state, f);
-        if (fEid === null) throw new Error("section missing");
-        Section.length.set(fEid, duration);
+        setSectionLength(state, f, duration); // seconds — the setter floors per DOMAIN
         state.step(0);
         return { state, eid, g, f, duration };
     }
@@ -833,6 +832,148 @@ describe("coordinate lens — Time domain", () => {
         expect(back?.section).toBe(f);
         const dAgain = toGlobal(spans, f, back?.s ?? Number.NaN);
         expect(dAgain).toBeCloseTo(dEnd, 6);
+    });
+
+    // ── the named-section inverse + the domain remap (stage 4's gesture seams) ──
+    // `toLocal` resolves WHICH section a global d belongs to; a drag or an extent trim
+    // already knows its subject and needs the coordinate inside THAT section, extrapolating
+    // past its exit. These pin the two directions the UI layer authors through.
+
+    test("toLocalIn resolves inside the named section and matches toLocal in the interior", () => {
+        const { state, eid, g, f } = timeChain();
+        const spans = sectionSpans(state, eid);
+        const gSpan = spans.find((x) => x.id === g);
+        const fSpan = spans.find((x) => x.id === f);
+        if (!gSpan || !fSpan) throw new Error("span missing");
+
+        // the section entry: `toLocal` hands the boundary to the UPSTREAM section (its own
+        // policy); `toLocalIn` stays in the named one and reads 0.
+        expect(toLocal(spans, fSpan.offset)?.section).toBe(g);
+        expect(toLocalIn(fSpan, fSpan.offset)).toBe(0);
+        expect(toLocalIn(fSpan, fSpan.offset - 5)).toBe(0); // before the entry clamps
+
+        // interior: the same value `toLocal` gives, exactly.
+        const mid = fSpan.offset + fSpan.len * 0.4;
+        expect(toLocalIn(fSpan, mid)).toBe(toLocal(spans, mid)?.s ?? Number.NaN);
+
+        // a Distance section is the plain affine, exactly.
+        expect(toLocalIn(gSpan, gSpan.offset + 3)).toBe(3);
+    });
+
+    test("toLocalIn extrapolates past the exit at the section's exit speed", () => {
+        const { state, eid, f, duration } = timeChain();
+        const spans = sectionSpans(state, eid);
+        const sp = spans.find((x) => x.id === f);
+        if (!sp?.localT) throw new Error("time section span missing");
+        const exit = sp.offset + sp.len;
+        const tEnd = sp.localT[sp.localT.length - 1];
+        expect(toLocalIn(sp, exit)).toBeCloseTo(tEnd, 6);
+        expect(tEnd).toBeCloseTo(duration, 1);
+        // level 1g flight: the exit speed is the track's own V0, so one extra second of
+        // authored duration costs exactly V0 metres of trim travel.
+        expect(sp.exitV).toBeCloseTo(V0, 3);
+        expect(toLocalIn(sp, exit + V0)).toBeCloseTo(tEnd + 1, 3);
+        // and `toLocal`'s clamp is the contrast: it never reaches past the baked exit.
+        expect(toLocal(spans, exit + V0)?.s).toBeCloseTo(tEnd, 6);
+    });
+
+    test("setSectionLength floors at the section's OWN domain minimum", () => {
+        const { state, f } = timeChain();
+        const fEid = sectionAt(state, f);
+        if (fEid === null) throw new Error("section missing");
+        // MIN_FORCE_LEN is 2 METRES; on a time section the floor is its time twin
+        // (MIN_FORCE_LEN / V0 = 0.2 s), so a 1 s duration is a legal trim, not a floored one.
+        expect(minExtent(Domain.Time)).toBeCloseTo(MIN_FORCE_LEN / V0, 10);
+        setSectionLength(state, f, 1);
+        expect(Section.length.get(fEid)).toBeCloseTo(1, 6);
+        setSectionLength(state, f, 0.01);
+        expect(Section.length.get(fEid)).toBeCloseTo(minExtent(Domain.Time), 6);
+
+        // the distance twin is untouched: still floored at MIN_FORCE_LEN metres.
+        const { state: s2, sec } = track();
+        convertSection(s2, sec);
+        setSectionLength(s2, sec, 0.5);
+        const secEid = sectionAt(s2, sec);
+        if (secEid === null) throw new Error("section missing");
+        expect(Section.length.get(secEid)).toBe(MIN_FORCE_LEN);
+    });
+
+    test("sectionLengthState carries the section's domain", () => {
+        const { state, g, f } = timeChain();
+        expect(sectionLengthState(state, f)?.domain).toBe(Domain.Time);
+        expect(sectionLengthState(state, g)?.domain).toBe(Domain.Distance);
+    });
+
+    test("flipDomain remaps the payload through the live bake, both directions", () => {
+        const { state, eid, f, duration } = timeChain();
+        const before = sectionForces(state, f).map((p) => p.s);
+        createForcePoint(state, f, duration * 0.5, 1.4); // an interior keyframe to carry across
+        state.step(0);
+        const spans = sectionSpans(state, eid);
+        const sp = spans.find((x) => x.id === f);
+        if (!sp) throw new Error("span missing");
+        const fEid = sectionAt(state, f);
+        if (fEid === null) throw new Error("section missing");
+
+        expect(flipDomain(state, eid, f)).toBe(true);
+        expect(Section.domain.get(fEid)).toBe(Domain.Distance);
+        // the extent is now the section's own baked ARCLENGTH (2 s of level V0 flight ≈ 20 m),
+        // and every keyframe rode the same map: the mid keyframe lands at the mid distance.
+        // (within the domain lock's accepted O(step) gap: the bake's `t` accumulates ds/v̄,
+        // so the table's own end sits a step off the atom's authored `i·Δt` grid — the
+        // remap is exact ON the table, not against the authored duration.)
+        const tol = sp.len * 0.02;
+        expect(Math.abs(Section.length.get(fEid) - sp.len)).toBeLessThan(tol);
+        const after = sectionForces(state, f).map((p) => p.s);
+        expect(after[0]).toBe(0);
+        // every keyframe rode the SAME table the lens draws it through, so each landed
+        // exactly where it was already being drawn (mid-time is NOT mid-distance — the cart
+        // accelerates — which is the whole point of mapping instead of scaling).
+        expect(after[1]).toBe((toGlobal(spans, f, duration * 0.5) ?? Number.NaN) - sp.offset);
+        // the trailing seed sits at the sticky APPEND duration (`DEFAULT_FORCE_DUR`), past the
+        // 2 s extent this chain writes — a legal out-of-extent keyframe. It maps past the baked
+        // exit at the exit speed rather than collapsing onto it, so a re-lengthening still
+        // restores it (the non-destructive-trim contract, carried across the flip).
+        const tLast = sp.localT?.[sp.localT.length - 1] ?? Number.NaN;
+        expect(before[1]).toBeGreaterThan(tLast);
+        expect(after[2]).toBeCloseTo(sp.len + (before[1] - tLast) * sp.exitV, 6);
+
+        // flip back: the payload returns to seconds, within the table's own linear-interp
+        // resolution — the map is monotone and exact on the sample grid.
+        state.step(0);
+        expect(flipDomain(state, eid, f)).toBe(true);
+        expect(Section.domain.get(fEid)).toBe(Domain.Time);
+        expect(Section.length.get(fEid)).toBeCloseTo(duration, 1);
+        const round = sectionForces(state, f).map((p) => p.s);
+        expect(round[1]).toBeCloseTo(duration * 0.5, 1);
+        expect(round[2]).toBeCloseTo(before[1], 1); // the out-of-extent seed came back too
+    });
+
+    test("flipDomain scales a SET step by the extent ratio (its edge count is what it pins)", () => {
+        const { state, eid, f, duration } = timeChain();
+        const fEid = sectionAt(state, f);
+        if (fEid === null) throw new Error("section missing");
+        const step = duration / 40; // a solve-shaped step: 40 edges over the section
+        Section.ds.set(fEid, step);
+        state.step(0);
+        expect(flipDomain(state, eid, f)).toBe(true);
+        const newLen = Section.length.get(fEid);
+        const newStep = Section.ds.get(fEid);
+        expect(Math.round(newLen / newStep)).toBe(40); // the edge count survives exactly
+    });
+
+    test("flipDomain refuses without a live mapping, and on a geo section", () => {
+        const { state, eid, g, f } = timeChain();
+        expect(flipDomain(state, eid, g)).toBe(false); // geo carries no domain
+        expect(flipDomain(state, eid, 9999)).toBe(false); // no such section
+
+        const fresh = new State();
+        fresh.addSystem(BakeSystem);
+        const freshEid = createTrack(fresh);
+        const bare = createSection(fresh, 0, SectionKind.Force, 2, 0, Domain.Time);
+        expect(flipDomain(fresh, freshEid, bare)).toBe(false); // never baked
+        expect(Section.domain.get(sectionAt(fresh, bare) ?? -1)).toBe(Domain.Time);
+        expect(f).toBeGreaterThanOrEqual(0);
     });
 
     test("no-bake: sectionSpans is [] and toGlobal/toLocal are null before the first bake", () => {
