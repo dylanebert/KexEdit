@@ -303,8 +303,8 @@ export function fitDone(r: FitOutcome): Notice {
     if (r.deviation > r.geoBudget) misses.push(missed(metres(r.deviation), metres(r.geoBudget)));
     if (r.forceError > r.forceBudget)
         misses.push(missed(gforce(r.forceError), gforce(r.forceBudget)));
-    // a `budget` fit with both axes inside their bound ran out of admissible split sites rather
-    // than missing — report both readings, since there's no single miss to point at.
+    // defensive: `geofit` only reports `budget` with at least one finite axis over its bound, so
+    // this is reachable only on a NaN reading — report both readings, there's no miss to point at.
     if (misses.length === 0)
         misses.push(
             missed(metres(r.deviation), metres(r.geoBudget)),
