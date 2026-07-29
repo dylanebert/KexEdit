@@ -70,7 +70,7 @@ import {
     yGrow,
     zoomAt,
 } from "./timeline";
-import { DRAG_PX, latchAngle } from "./controls";
+import { armDrag, DRAG_PX, latchAngle } from "./controls";
 import {
     ANGLE_STEP_MAX,
     ANGLE_STEP_MIN,
@@ -1490,6 +1490,8 @@ let lenId: number | null = $state(null); // the force section being resized, or 
 const draggingLen = $derived(lenId !== null);
 let lenStartS = 0; // the dragged section's cumulative start arclength (fixed during the drag)
 let lenCx = 0; // last length-drag cursor, canvas-local px (drives the per-frame edge-pan)
+let lenX0 = 0; // grab-point cursor px (fixed) — the dead-zone origin `lenArmed` measures from
+let lenArmed = false; // the standard DRAG_PX dead-zone latch (`armDrag`) — gates the sticky-commit
 let lenMod = false; // Ctrl/Cmd held (live) during the extent drag — snap bypass
 const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-eye feel constant
 // resolve the held cursor to a section extent through the *current* view (recomputed
@@ -1529,6 +1531,8 @@ function lenDown(e: PointerEvent, c: Clip): void {
     e.stopPropagation();
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
+    lenX0 = lenCx;
+    lenArmed = false;
     lenMod = e.ctrlKey || e.metaKey;
     lenStartS = c.s0; // upstream is unchanged by this resize, so the start is fixed
     selectSection(c.id); // grabbing the edge selects the section (one object, two surfaces)
@@ -1544,18 +1548,23 @@ function lenMove(e: PointerEvent): void {
     if (lenId === null) return;
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
+    lenArmed = armDrag(lenArmed, lenCx - lenX0, 0); // the standard DRAG_PX dead-zone latch
     lenMod = e.ctrlKey || e.metaKey; // live: bypass can be toggled mid-drag
     applyLen();
 }
 function lenUp(): void {
     if (lenId === null) return;
     const id = lenId;
+    const armed = lenArmed;
     lenId = null;
+    lenArmed = false;
     sFrozen = null; // release the in-drag freeze; the zoom never re-fits (no release refit) —
     snapX = null;
-    // commitLength coalesces the drag (one undo entry) AND records the landed extent as the
-    // session's new sticky append default — the one call site that updates it.
-    commitLength(history, ecs, id); // clampView now only re-clamps pan to the live extent, never rescales
+    // commitLength coalesces the drag (one undo entry) AND, when armed, records the landed
+    // extent as the session's new sticky append default — the one call site that updates it. a
+    // sub-DRAG_PX click release (armed=false) still commits (a no-move release records nothing
+    // regardless, per `commit`'s own no-op check) but never stamps the sticky value.
+    commitLength(history, ecs, id, armed); // clampView now only re-clamps pan to the live extent, never rescales
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
     window.removeEventListener("pointercancel", lenUp);
@@ -1563,6 +1572,7 @@ function lenUp(): void {
 function cancelLenDrag(): void {
     if (lenId === null) return;
     lenId = null;
+    lenArmed = false;
     sFrozen = null;
     snapX = null;
     cancel();

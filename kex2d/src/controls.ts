@@ -1043,13 +1043,16 @@ export function attachControls(
         }
         if (dragManip === null) return;
         const axis = dragManip;
+        const armed = manipArmed; // captured before the reset below — the sticky-commit gate
         dragManip = null;
         manipArmed = false;
         clearGuides();
         // one drag → one undo entry (a no-move click records nothing). a LENGTH drag also
-        // records its landed chord as the sticky append length, so the next extend opens there.
+        // records its landed chord as the sticky append length, so the next extend opens there —
+        // but only when the gesture actually armed (cleared the dead-zone latch); a sub-DRAG_PX
+        // click-release must not stamp the sticky value with an unmoved chord.
         const sel = editor.selection;
-        if (axis === "length" && sel !== null) commitChord(history, ecs, sel);
+        if (axis === "length" && sel !== null) commitChord(history, ecs, sel, armed);
         else commit(history);
     };
 
@@ -1167,8 +1170,9 @@ export function attachControls(
             );
             beginMove(ecs, Handle.section.get(eid));
             dragTo(ecs, eid, t.x, t.y);
-            // the nudge is the keyboard twin of the manipulator drag, sticky length included.
-            if (axis === "length") commitChord(history, ecs, eid);
+            // the nudge is the keyboard twin of the manipulator drag, sticky length included —
+            // always armed, since a nudge always moves.
+            if (axis === "length") commitChord(history, ecs, eid, true);
             else commit(history);
             return;
         }
