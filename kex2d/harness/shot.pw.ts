@@ -591,47 +591,82 @@ test("geo authoring flow", async ({ page, boot }) => {
         const dy = p[3][1] - p[2][1];
         return { r: Math.hypot(dx, dy), a: Math.atan2(dy, dx) };
     };
-    // one press, waited into the BAKE before the next one reads it. The nudge resolves its polar
-    // frame from the SAMPLES (`nodeWorld`), which `BakeSystem` rewrites the frame AFTER the authored
-    // write — so two presses inside one frame both step from the same stale geometry and the second
-    // overwrites the first (measured: a right-then-left pair landed a full step short of where it
-    // started, not back at it). The bake-readiness law again, on the WRITE side: an op that resolves
-    // through the bake needs it to have landed, exactly as a pointer aimed at a node does. The step
-    // is defined in screen px (`NUDGE_PX` = 2, converted through the zoom), so the node's own screen
-    // point moving is the honest evidence the write reached the samples.
     const nodeScreen = () =>
         page.evaluate((): { x: number; y: number } | null => (window as any).__kex.nodeAt(3));
-    const nudge = async (key: string): Promise<void> => {
-        const at = await nodeScreen();
-        if (!at) throw new Error("node 3 has no bake point to nudge from");
-        await page.keyboard.press(key);
+    // wait the bake onto its OWN last write — the honest evidence a press's write reached the
+    // samples (`kex2d-harness.md`'s bake-readiness law, read side). Deliberately not inside `nudge`
+    // any more, and not fired between every press: the nudge now resolves its polar geometry from
+    // the AUTHORED `Handle.pos`, not the bake, so back-to-back presses no longer need a settle
+    // between them to land correctly — a caller waits only where it's about to READ (6b proves the
+    // no-wait case directly).
+    const settle = async (before: { x: number; y: number } | null): Promise<void> => {
         await expect
             .poll(async () => {
                 const p = await nodeScreen();
-                return p !== null && Math.hypot(p.x - at.x, p.y - at.y) > 0.5;
+                return (
+                    p !== null &&
+                    before !== null &&
+                    Math.hypot(p.x - before.x, p.y - before.y) > 0.5
+                );
             })
             .toBe(true);
     };
     const c0 = await chord();
     const undo0 = await undoDepth();
-    await nudge("ArrowRight");
+    let at = await nodeScreen();
+    await page.keyboard.press("ArrowRight");
+    await settle(at);
     const cR = await chord();
-    expect(cR.a - c0.a).toBeGreaterThan(5e-3); // right = a positive angle step…
+    const stepA = cR.a - c0.a; // the single-step angle delta, reused by 6b below
+    expect(stepA).toBeGreaterThan(5e-3); // right = a positive angle step…
     expect(Math.abs(cR.r - c0.r)).toBeLessThan(1e-3); // …and the chord length is untouched
     expect(await undoDepth()).toBe(undo0 + 1); // one press = one entry
-    await nudge("ArrowLeft");
+    at = await nodeScreen();
+    await page.keyboard.press("ArrowLeft");
+    await settle(at);
     const cL = await chord();
     expect(cL.a).toBeCloseTo(c0.a, 3); // left is the same axis, the other way — back where it started
     expect(await undoDepth()).toBe(undo0 + 2);
-    await nudge("ArrowUp");
+    at = await nodeScreen();
+    await page.keyboard.press("ArrowUp");
+    await settle(at);
     const cU = await chord();
     expect(cU.r - c0.r).toBeGreaterThan(5e-3); // up = a positive length step…
     expect(Math.abs(cU.a - c0.a)).toBeLessThan(1e-3); // …and the chord angle is untouched
     expect(await undoDepth()).toBe(undo0 + 3);
-    await nudge("ArrowDown");
+    at = await nodeScreen();
+    await page.keyboard.press("ArrowDown");
+    await settle(at);
     const cD = await chord();
     expect(cD.r).toBeCloseTo(c0.r, 3); // down is the same axis, the other way
     expect(await undoDepth()).toBe(undo0 + 4);
+
+    // ── 6b. BACK-TO-BACK NUDGES — the bake-readiness law's WRITE side (`kex2d-harness.md`): the
+    // nudge resolves its polar geometry from the AUTHORED `Handle.pos`, not the bake's node→sample
+    // map, so a fast double-tap — no settle between the two key events, exactly how a quickly
+    // repeated arrow key fires — must accumulate BOTH steps. Before the fix (reading `nodeWorld`,
+    // the bake), the second press read the frame the first press's write hadn't reached yet and
+    // overwrote it, landing one step short of two (measured: a right-then-left pair landed a full
+    // step short of where it started, not back at it). Two ArrowRight presses fired back-to-back
+    // with zero wait between them, then ONE settle before reading: the accumulated angle must be
+    // ~2× the single-step delta measured above, not ~1×. ──
+    const before6b = await nodeScreen();
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight"); // no settle between — the honest fast-repeat case
+    await settle(before6b);
+    const cRR = await chord();
+    expect(cRR.a - cD.a).toBeCloseTo(2 * stepA, 2); // both steps landed, not one
+    expect(Math.abs(cRR.r - cD.r)).toBeLessThan(1e-3); // …and the chord length stayed untouched
+    expect(await undoDepth()).toBe(undo0 + 6); // two presses = two entries regardless
+
+    // restore for the flows below — two ArrowLeft, same back-to-back shape.
+    const before6c = await nodeScreen();
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await settle(before6c);
+    const cRestored = await chord();
+    expect(cRestored.a).toBeCloseTo(cD.a, 3);
+    expect(await undoDepth()).toBe(undo0 + 8);
 
     // ── 7. BLUR CANCELS A LIVE MANIPULATOR DRAG, completely (`editor-ui.md`: "Window blur cancels an
     // in-flight gesture completely — revert the bracketed edit, clear guides and capture. No guide may

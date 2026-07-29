@@ -201,6 +201,18 @@ function nodeWorld(
     return { x: s.posX[i], y: s.posY[i] };
 }
 
+/** a node's AUTHORED section-local position (`Handle.pos`) — the live write target, one frame
+ *  ahead of the bake. the polar nudge resolves its chord/angle geometry from this, not `nodeWorld`:
+ *  the bake's node→sample map rebuilds a frame after a write lands, so a fast double-nudge reading
+ *  `nodeWorld` twice inside one frame both read the same stale sample and the second overwrites the
+ *  first (`kex2d-harness.md`'s bake-readiness law). Sufficient because of rigid entry-frame
+ *  placement (`section.ts`): a section-local chord equals its world chord exactly, and the nudged
+ *  node's own previous node shares the same local frame — so the polar geometry round-trips
+ *  entirely in local coordinates, with no `place`/`localize` needed. */
+function nodeLocal(eid: number): { x: number; y: number } {
+    return { x: Handle.pos.x.get(eid), y: Handle.pos.y.get(eid) };
+}
+
 /** nearest **draggable** node to the screen point, within the pick radius, or null. node 0 of
  *  every section is the entry anchor (pinned) — never draggable, so it's skipped here. it stays
  *  *pickable* (selectable + tangent-editable) through the two paths that reach it without the
@@ -1151,8 +1163,8 @@ export function attachControls(
                 // lives on the keyboard alone (Blender's gizmo-less move; editor-ui.md multi law).
                 let delta = dir * step;
                 if (axis === "angle") {
-                    const p = nodeWorld(s, prevEid);
-                    const n = nodeWorld(s, eid);
+                    const p = nodeLocal(prevEid);
+                    const n = nodeLocal(eid);
                     const r = Math.hypot(n.x - p.x, n.y - p.y);
                     delta = r > 1e-9 ? (dir * step) / r : 0;
                 }
@@ -1163,16 +1175,13 @@ export function attachControls(
                 commit(history);
                 return;
             }
-            const t = polarNudge(
-                nodeWorld(s, prevEid),
-                nodeWorld(s, eid),
-                axis,
-                dir,
-                step,
-                LENGTH_MIN,
-            );
+            const t = polarNudge(nodeLocal(prevEid), nodeLocal(eid), axis, dir, step, LENGTH_MIN);
             beginMove(ecs, Handle.section.get(eid));
-            dragTo(ecs, eid, t.x, t.y);
+            // written straight to the authored local position — no world round trip (`nodeLocal`'s
+            // rigid-placement note): back-to-back presses read each other's write immediately, not
+            // last frame's bake.
+            Handle.pos.set(eid, t.x, t.y);
+            reheadOnDrag(ecs, eid);
             // the nudge is the keyboard twin of the manipulator drag, sticky length included —
             // always armed, since a nudge always moves.
             if (axis === "length") commitChord(history, ecs, eid, true);
