@@ -12,8 +12,10 @@
 
 import type { State } from "@dylanebert/shallot";
 import { collinear, type Easing, segmentSeed } from "./profile";
+import type { Entry as TrackEntry } from "./section";
 import {
     applyConvert,
+    applyConvertGeo,
     appendSection as appendSectionTrack,
     clearForceTangentSide,
     convertSection as flipSectionKind,
@@ -54,6 +56,7 @@ import {
     snapshotAll,
     snapshotSection,
     type SolvedForce,
+    type SolvedGeo,
     spawnForce,
     splitForce,
     splitGeo,
@@ -604,7 +607,7 @@ export function beginLength(ecs: State, id: number): void {
 /** commit a `beginLength` extent-trim gesture: coalesce the drag into one undo entry
  *  (`commit`) AND record the landed extent as the session's new sticky append default
  *  (`track.setStickyLen`) — the one call site the sticky value updates from. A solve landing
- *  never calls this (it commits through `solveSection`), so a converted section's realized
+ *  never calls this (it commits through `solveForce`/`solveGeo`), so a converted section's realized
  *  extent never becomes the next append's default. */
 export function commitLength(h: History, ecs: State, id: number): void {
     const st = sectionLengthState(ecs, id);
@@ -639,17 +642,37 @@ export function convertSection(h: History, ecs: State, section: number): void {
     record(h, restoreCommand(ecs, before, after, restoreSection), pre);
 }
 
-/** land an invoked geo→force solve on a section as one undoable entry — the same
- *  `snapshotSection` pair the destructive convert uses, so undo restores the pre-solve geo
- *  payload byte-identical. the solve is pure and already finished off-thread
- *  (`geoforce.convertGeo` drives it); this is the single moment it touches the document,
- *  which is what makes the command atomic without any rollback path. */
-export function solveSection(h: History, ecs: State, section: number, solved: SolvedForce): void {
+/** land an invoked solve's document write as one undoable entry — the `snapshotSection` pair the
+ *  destructive convert uses, so undo restores the pre-solve payload byte-identical. shared by
+ *  both solve directions (`solveForce`/`solveGeo`): `apply` performs the direction's own write
+ *  (`applyConvert`/`applyConvertGeo`), already computed pure and off-thread by the time either
+ *  caller reaches here — this is the single moment either touches the document, which is what
+ *  makes the command atomic without any rollback path. */
+function landSolve(h: History, ecs: State, section: number, apply: () => void): void {
     const pre = selHook?.snapshot(ecs);
     const before = snapshotSection(ecs, section);
-    applyConvert(ecs, section, solved);
+    apply();
     const after = snapshotSection(ecs, section);
     record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+}
+
+/** land an invoked geo→force solve on a section (`geoforce.convertGeo` drives it) as one
+ *  undoable entry. named direction-explicitly now that a force→geo twin (`solveGeo`) exists. */
+export function solveForce(h: History, ecs: State, section: number, solved: SolvedForce): void {
+    landSolve(h, ecs, section, () => applyConvert(ecs, section, solved));
+}
+
+/** land an invoked force→geo fit on a section (`forcegeo.convertForce` drives it) as one
+ *  undoable entry — the observation-space twin of `solveForce`. `entry` is the section's own
+ *  entry anchor at invoke time, the frame `applyConvertGeo` localizes the fit's nodes against. */
+export function solveGeo(
+    h: History,
+    ecs: State,
+    section: number,
+    solved: SolvedGeo,
+    entry: TrackEntry,
+): void {
+    landSolve(h, ecs, section, () => applyConvertGeo(ecs, section, solved, entry));
 }
 
 // ── structural ops (append / split / join / delete) ──────────────────────────
@@ -726,18 +749,4 @@ export function removeSections(h: History, ecs: State, ids: readonly number[]): 
     const after = snapshotAll(ecs);
     record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return true;
-}
-
-/** flip EVERY section in a SET to its opposite kind as ONE undoable entry (the bulk Convert). there
- *  is no shared "destination" to converge on — `convertSection`'s flip takes no direction parameter,
- *  it just swaps a section's own kind — so a mixed-kind set flips each member independently, exactly
- *  what running the single convert on each member would do; nothing is skipped. no-op on an empty
- *  set. the size-1 case is `convertSection`. */
-export function convertSections(h: History, ecs: State, ids: readonly number[]): void {
-    if (ids.length === 0) return;
-    const pre = selHook?.snapshot(ecs);
-    const before = snapshotAll(ecs);
-    for (const id of ids) flipSectionKind(ecs, id);
-    const after = snapshotAll(ecs);
-    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
 }

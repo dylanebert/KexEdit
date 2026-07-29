@@ -8,6 +8,7 @@ import {
     endConvert,
     enterForceEdit,
     enterTangentEdit,
+    fitDone,
     notify,
     openContext,
     solveDone,
@@ -364,4 +365,42 @@ test("a non-Error rejection still reports something", () => {
     const { notice, detail } = solveFailed("worker died", false);
     expect(notice?.text).toBe("The solve could not finish. Nothing changed.");
     expect(detail).toBe("worker died");
+});
+
+// ── the force→geo fit's readout (`fitDone`) — `solveDone`'s dual-budget twin ──
+// same three-way branch, over the geo (m) + force (g) budget pair instead of the single
+// geometric floor. `solveFailed` is reused as-is (it's direction-neutral, `StaleConvert` matched
+// by name), so only the RESOLVED mapping gets its own tests.
+
+const fitAnswer = {
+    outcome: "floor",
+    nodes: 6,
+    deviation: 0.31,
+    forceError: 0.22,
+    geoBudget: 0.5,
+    forceBudget: 0.5,
+};
+
+test("a converged fit reads as done, with nodes and the dual achieved-vs-floor", () => {
+    expect(fitDone(fitAnswer)).toEqual({
+        kind: "done",
+        text: "Solved to shape · 6 nodes · 0.31 m / 0.22 g off · floor 0.50 m / 0.50 g",
+    });
+});
+
+test("a budget fit landed too — it reads as done, tagged", () => {
+    // "budget" is the sanctioned narrow-feature outcome (geofit.ts): the answer IS on the
+    // document, so it must not read as a failure.
+    const n = fitDone({ ...fitAnswer, outcome: "budget" });
+    expect(n.kind).toBe("done");
+    expect(n.text).toEndWith("· node budget");
+});
+
+test("a diverged fit reads as a failure — nothing was landed", () => {
+    // it RESOLVES like a success (forcegeo.ts writes nothing on it), so this branch is the only
+    // thing standing between an unchanged section and a green "Solved to shape".
+    expect(fitDone({ ...fitAnswer, outcome: "diverged" })).toEqual({
+        kind: "error",
+        text: "The solve could not fit this shape. Nothing changed.",
+    });
 });

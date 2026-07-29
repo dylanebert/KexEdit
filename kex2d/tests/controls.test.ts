@@ -637,25 +637,34 @@ describe("sectionsDeletable — section multi-delete enablement", () => {
     });
 });
 
-// the invoked geo→force solve's enablement (`sectionSolvable`, pure/device-free): the row is live
-// for exactly one geo section with a live bake — `convertGeo`'s own three guards, which throw, so
-// this is the gate and not a hint. Everything else grays.
+// the invoked solve enablement (`sectionSolvable`, pure/device-free), both directions: the row is
+// live for exactly one section of the direction's own target kind with a live bake — `convertGeo`'s
+// (geo→force) and `convertForce`'s (force→geo) own guards, which throw, so this is the gate and not
+// a hint. Everything else grays.
 describe("sectionSolvable — invoked-solve enablement", () => {
-    test("one geo section with a live bake enables", () => {
-        expect(sectionSolvable(1, SectionKind.Geo, true)).toBe(true);
+    test("one geo section with a live bake enables Solve force (target Geo)", () => {
+        expect(sectionSolvable(1, SectionKind.Geo, true, SectionKind.Geo)).toBe(true);
     });
 
     test("a stale bake disqualifies — `sectionInfo` describes a shape that isn't on screen", () => {
-        expect(sectionSolvable(1, SectionKind.Geo, false)).toBe(false);
+        expect(sectionSolvable(1, SectionKind.Geo, false, SectionKind.Geo)).toBe(false);
     });
 
-    test("a force section disqualifies — there is nothing to solve", () => {
-        expect(sectionSolvable(1, SectionKind.Force, true)).toBe(false);
+    test("a force section disqualifies Solve force — there is nothing to solve", () => {
+        expect(sectionSolvable(1, SectionKind.Force, true, SectionKind.Geo)).toBe(false);
     });
 
     test("a multi-set and an empty selection both disqualify (no single subject)", () => {
-        expect(sectionSolvable(2, SectionKind.Geo, true)).toBe(false);
-        expect(sectionSolvable(0, null, true)).toBe(false);
+        expect(sectionSolvable(2, SectionKind.Geo, true, SectionKind.Geo)).toBe(false);
+        expect(sectionSolvable(0, null, true, SectionKind.Geo)).toBe(false);
+    });
+
+    test("one force section with a live bake enables Solve shape (target Force)", () => {
+        expect(sectionSolvable(1, SectionKind.Force, true, SectionKind.Force)).toBe(true);
+    });
+
+    test("a geo section disqualifies Solve shape — there is no force curve to fit", () => {
+        expect(sectionSolvable(1, SectionKind.Geo, true, SectionKind.Force)).toBe(false);
     });
 });
 

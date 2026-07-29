@@ -243,7 +243,12 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`, `applyConvert` (land an
   invoked solve: destroy the nodes, flip the kind, take the solve's realized extent + step, spawn
   its `{s,g}` keys — all default-Cubic by construction; typed on the structural `SolvedForce`, so
-  the invoked tier stays off this module's graph),
+  the invoked tier stays off this module's graph) and its reverse `applyConvertGeo` (land an
+  invoked force→geo fit: destroy both row kinds, flip the kind, `localize` the fit's world nodes
+  into the section's own entry frame with node 0 pinned at `{0,0,0}` exactly, step back to the
+  nominal sentinel; typed on `SolvedGeo`), `forceBake` (a force section's dense bake as `geofit`
+  reads it — `evalForce` at the section's own step, clipped to the sample budget `chain` leaves it,
+  so the fit's input is the displayed prefix),
   `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection`, `snapshotSection`/`restoreSection`
   + whole-track `snapshotAll`/`restoreAll`. Initial speed: `trackV0State`/`setTrackV0` (`Track.v0`).
   `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`, `DS_NOMINAL`. Bake liveness: `authoredHash`
@@ -272,8 +277,9 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
   fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
-  right-click menus: `context` (section Solve force / Delete) and `nodeMenu` (the node context menu —
-  Handles toggle + Tangents submenu — opened on any pickable node, any mode) — both `{x, y, …}` or
+  right-click menus: `context` (section Solve force / Solve shape / Delete) and `nodeMenu` (the
+  node context menu — Handles toggle + Tangents submenu — opened on any pickable node, any mode)
+  — both `{x, y, …}` or
   null, rendered once at the app root. Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
   bypasses per-gesture) and `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
@@ -294,8 +300,11 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).
   Node: `extendTrack`/`trimTrack`/`beginMove`. Force: `createForce`/`deleteForce`/`beginForceMove` +
   `beginLength` (the extent drag). Initial speed: `beginV0` (the v0 field gesture). Kind:
-  `convertSection` (per-section, a `snapshotSection` pair) + `solveSection` (the same pair for an
-  invoked solve's output — the one entry a geo→force conversion lands as).
+  `convertSection` (per-section, a `snapshotSection` pair) + the two invoked-solve landings over
+  one shared `landSolve` (the same pair, the direction supplying its own write): `solveForce`
+  (geo→force, `applyConvert`) and `solveGeo` (force→geo, `applyConvertGeo` — it also takes the
+  section's entry frame, the frame the fit's world-space nodes localize against). Named
+  direction-explicitly: `solveSection` was ambiguous once two directions existed.
   Structural: `appendSection`/`splitSection`/`joinSection`/`removeSection` — each a whole-track
   `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). `history` singleton;
   `createHistory` for tests.
@@ -303,7 +312,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   the document meet: `convertGeo(history, ecs, sectionId, opts)` drives `convert.ts`'s façade with
   the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), sectionStep(…), MAX_SAMPLES −
   startSample)` — the same call `BakeSystem` makes, budget included, so the solve targets exactly
-  what's displayed) and lands the answer through `history.solveSection`. **The document is written
+  what's displayed) and lands the answer through `history.solveForce`. **The document is written
   once, at resolution**: the façade is pure, so a cancel, a `"diverged"` answer, or a stale one
   leaves the track byte-identical and no rollback path exists to get wrong. What that shape needs
   instead is that the document still BE the one the answer describes, so the invoke holds a
@@ -315,6 +324,44 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   readout. Device-free tests in `tests/geoforce.test.ts` (apply+undo byte-identity, downstream
   continuity at the 1e-3 exit bound, and cancel / diverged / stale / re-entrant all leaving the
   track byte-identical).
+- `geofit.ts` — the **force→geo fit kernel**, the observation-space twin of `refine.ts`: a dense
+  force-section bake (`x`/`y`/`fN`/`ds`) + the entry speed + a dual budget → a sparse `Auto` node
+  chain `{x, y, theta}`. Pure and framework-free (no ECS, no editor, no shallot) like `spline.ts`
+  / `bake.ts`. A node is a literal PICK of a dense sample, its heading the target's own
+  `bake.forces`-recovered theta (the unwrapped chord bisector — a wrapped atan2 breaks the arc
+  rule past ±π on a loop), so the chain interpolates the target exactly at every node and the tail
+  node carries the recovered exit heading. Split-then-prune mirroring `refine`'s shape: open at the
+  two endpoints, split at the worst-|ΔfN| site (geometric fallback when it isn't admissible), then
+  greedily drop the interior node leaving the most slack (normalized per budget, lowest index on a
+  tie) — deterministic and parameter-free. **A candidate is scored on its OWN adaptive bake**
+  (`chainCounts` + `sampleAt` + `forces`, exactly `evalGeo`'s path), because that is what the
+  document bakes once the fit lands; scoring at frozen target-matched counts under-reports wherever
+  the per-segment edge-count rule inflates the landed density (measured 0.40 g reported vs 1.19 g
+  displayed). The two bakes have different sample counts, so both budgets are compared
+  **arclength-aligned** in a span coordinate — `span index + fraction of that span's arclength`,
+  anchored at the exact node↔sample correspondences — over the UNION of both curves' stations, so
+  neither side's extremes are stepped over. `GeofitParams` therefore carries the LANDED section's
+  sampling (`dsNominal`, `maxSamples`) alongside the two budgets, and `GeofitResult` carries the
+  resolved budgets back so a readout prints the bound the fit actually ran. Unit + corpus oracle in
+  `tests/geofit.test.ts`; sweep + timing in `tests/forcegeo.lab.ts`.
+- `geofit-async.ts` + `geofit-worker.ts` — the **one-shot async wrapper**: `runGeofit(bake, v0,
+  {signal, params})` spawns a dedicated worker, posts one message, resolves once. `convert.ts`'s
+  façade minus everything `refine`'s multi-probe search needed — no pool, no fan-out, and no
+  progress to report (a fit has no internal phase, so the modal shows an indeterminate wait).
+  Cancellation is `Worker.terminate()`; the façade writes no document state, so an abort needs no
+  rollback. `liveFitWorkers()` makes teardown independently observable.
+- `forcegeo.ts` — the **invoked force→geo command**, `geoforce.ts`'s twin and the only place the
+  fit and the document meet: `convertForce(history, ecs, sectionId, opts)` hands `runGeofit` the
+  bake's own input (`track.forceBake`, budget-clipped the same way `chain` clips it) plus the
+  sampling the LANDED geo section will bake at (the track nominal step, the remaining sample
+  budget), and lands the answer through `history.solveGeo`. Same once-at-resolution shape as the
+  geo→force direction, same guards: a per-section in-flight lock, and an `authoredHash` re-read
+  before the write (a mid-fit edit rejects as `StaleConvert`, named identically so
+  `editor.solveFailed` reads both directions through one check). Nothing of `GeofitResult`
+  persists past the nodes. Device-free tests in `tests/forcegeo.test.ts` — apply+undo
+  byte-identity, downstream continuity, the guard paths, plus the **document-layer fidelity**
+  oracle (the landed section's baked `fN` vs the pre-convert bake, arclength-aligned) and the
+  round trip back to the originating geo scenario's own shape.
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
   teardown. `pickNode` (order-0 anchors are pickable, not draggable) then `pickSection` (nearest
   span); a node body click **selects only** — movement enters through `startManip` (the DOM knob

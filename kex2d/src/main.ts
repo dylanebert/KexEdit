@@ -18,6 +18,8 @@ import { tangentHandles } from "./tangents";
 import {
     addNode,
     bakeOut,
+    createForcePoint,
+    destroyForce,
     forceEase,
     forceTangent,
     Handle,
@@ -30,6 +32,8 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
+    setSectionLength,
+    setTrackV0,
     Track,
     TrackPlugin,
     V0,
@@ -282,6 +286,35 @@ if (import.meta.env.DEV) {
             createForce(history, ecs, id, len * 0.2, 1);
             createForce(history, ecs, id, len * 0.5, 0); // airtime crest
             createForce(history, ecs, id, len * 0.8, 1);
+        },
+        // lay a force profile authored explicitly to make the force→geo FIT (not the geo→force
+        // solve `seedForceBump` targets) take long enough for the capture harness to observe its
+        // modal mid-flight: 8 alternating crests/troughs over 400 m (800 edges) at ±0.5 g — the
+        // fit is one closed-form call, not a search, so widening the window needs an oscillating
+        // profile over many edges (more split rounds, each an O(edges) scan), not a bigger single
+        // hump. Two constraints on how far that can be pushed. It must stay **feasible** (hence
+        // v0 = 30 and the modest amplitude): a profile that stalls the cart has no force fidelity
+        // any node count can hold, so the fit saturates instead of converging — seconds become
+        // tens of seconds and the landed section is one node per dense sample. And the fit's cost
+        // climbs superlinearly with section length (the prune probes every interior removal each
+        // round), so a longer section overshoots the window rather than widening it. 400 m
+        // measures ~4 s under bun and lands 6 nodes.
+        seedForceStress: (): void => {
+            const id = sec();
+            if ((sections(ecs)[0]?.kind ?? SectionKind.Geo) === SectionKind.Geo)
+                convertSection(history, ecs, id);
+            for (const p of sectionForces(ecs, id)) destroyForce(ecs, p.id);
+            const len = 400;
+            const waves = 8;
+            const amp = 0.5;
+            setTrackV0(track, 30);
+            setSectionLength(ecs, id, len);
+            createForcePoint(ecs, id, 0, 1);
+            for (let k = 1; k <= waves; k++) {
+                const g = k % 2 === 0 ? 1 : k % 4 === 1 ? 1 + amp : 1 - amp;
+                createForcePoint(ecs, id, (len / waves) * k, g);
+            }
+            createForcePoint(ecs, id, len, 1);
         },
         // ── multi-section hooks — the ops addressed by chain position ──
         sectionCount: (): number => sections(ecs).length,

@@ -2064,8 +2064,9 @@ test("section clip strip flow", async ({ page, boot }) => {
 // Drive the SECTION MENU + DIRECT-BY-POSITION flow (section-editor stage 2): a mixed
 // geo→force chain → prove empty-chart click deselects → add a force keyframe by cursor
 // position WITHOUT selecting the section → right-click the real context menu, assert its
-// remaining rows (Solve force / Delete — the destructive Convert row was removed,
-// kex2d-geoforce-editor stage 5) → Delete via the real menu. The whole point is that authoring
+// remaining rows (Solve force / Solve shape / Delete — the destructive Convert row was removed,
+// kex2d-geoforce-editor stage 5; the force→geo twin joined in kex2d-forcegeo stage 3) → Delete
+// via the real menu. The whole point is that authoring
 // and section ops no longer depend on a "current section" selection. Everything is driven
 // through the real DOM.
 test("section menu + keyframe flow", async ({ page, boot }) => {
@@ -2124,14 +2125,17 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await expect.poll(selectedSection).toBe(null);
 
     // ── 4. Right-click the force clip: the menu carries exactly Solve force (grayed — a force
-    // clip has no geo shape to solve) + Delete, no Convert row (the real-menu regression guard
-    // for its removal). ──
+    // clip has no geo shape to solve) + Solve shape (live — its force→geo twin) + Delete, no
+    // Convert row (the real-menu regression guard for its removal). ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(2);
+    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(3);
     await expect(
         page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve force" }),
     ).toBeDisabled();
+    await expect(
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve shape" }),
+    ).toBeEnabled();
     if (strip) await page.screenshot({ path: join(OUT, "section-4-menu.png"), clip: strip });
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);
@@ -2314,6 +2318,119 @@ test("invoked solve flow", async ({ page, boot }) => {
     await expect.poll(async () => (await kinds()).join(",")).toBe("0,1");
     expect(await poses()).toEqual(authored);
     expect((await forceCounts())[0]).toBe(0);
+    expect(await undoDepth()).toBe(appended);
+});
+
+// Drive the INVOKED FORCE→GEO FIT end to end (kex2d-forcegeo stage 3) — the observation-space
+// twin of "invoked solve flow": the section menu's Solve shape row → the modal (indeterminate —
+// `geofit` has no internal phase, so there's no probe count to climb, only the same shared gate —
+// all other input blocked, Cancel and Escape) → the real fit → the document (kind flipped, Auto
+// geo nodes landed) → one undo back to the authored force shape, byte-identical.
+test("invoked force→geo fit flow", async ({ page, boot }) => {
+    await boot();
+
+    const kinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
+    const forceCounts = () =>
+        page.evaluate((): number[] => (window as any).__kex.sectionForceCounts());
+    const nodeCount = () => page.evaluate((): number => (window as any).__kex.nodeCount());
+    const poses = () => page.evaluate((): number[][] => (window as any).__kex.poses());
+    const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
+    const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
+    const tTotal = () => page.evaluate((): number => (window as any).__kex.tTotal());
+    const scrim = page.locator(".scrim");
+    const strip = dockStrip(page);
+
+    // an oscillating force profile on section 0 (`seedForceStress` — long enough for the fit to
+    // stay observably in flight, unlike the fast corpus-scale `seedForceBump`), then an appended
+    // geo section — the second section gives the input-block assert below something to bite, and
+    // lets the row-grays-on-a-geo-clip check use the section this flow's own subject ISN'T (the
+    // mirror image of "invoked solve flow"'s force clip).
+    await page.evaluate(() => (window as any).__kex.seedForceStress());
+    await page.evaluate(() => (window as any).__kex.append(0)); // SectionKind.Geo
+    await expect.poll(async () => (await kinds()).join(",")).toBe("1,0");
+    // a kind flip is instant (live ECS), but the 400 m profile only reaches `sectionInfo`/the
+    // fit's own input on the NEXT bake pass — wait on that actually landing (`tTotal` growing
+    // past what the tiny default seed could ever reach), not on the kind poll above (a count is
+    // never bake-readiness, `kex2d-harness.md`).
+    await expect.poll(tTotal).toBeGreaterThan(10);
+    await frameTimeline(page); // append never pans; frame the chain so `.clip.nth()` resolves
+    const appended = await undoDepth(); // the bump + append's own entries — the baseline every assert reads
+
+    // ── 1. The row grays where the fit is impossible, never hides (the bulk-row law): on the
+    // GEO clip there is no force curve to fit. ──
+    await page.locator(".clip").nth(1).click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await expect(
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve shape" }),
+    ).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".ctxmenu")).toHaveCount(0);
+
+    // ── 2. On the force clip it's live. Invoke it, and the modal comes up. ──
+    await page.locator(".clip").nth(0).click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve shape" });
+    await expect(solveRow).toBeEnabled();
+    await page.waitForTimeout(SHOT_MS);
+    if (strip) await page.screenshot({ path: join(OUT, "fit-1-menu.png"), clip: strip });
+    await clickMenuItem(page, ".ctxmenu", "Solve shape");
+    await expect(scrim).toBeVisible();
+
+    // ── 3. Every other input is blocked while it runs — the same shared gate "invoked solve
+    // flow" pins in full; here just enough to prove the gate is live for THIS direction too. ──
+    await page.keyboard.press("Delete"); // would remove the selected section
+    await frames(page, 2);
+    expect(await sectionCount(), "Del reached the editor from behind the modal").toBe(2);
+    await page.keyboard.press("Control+z"); // would undo the append
+    await frames(page, 2);
+    expect(await undoDepth(), "Ctrl+Z reached the editor from behind the modal").toBe(appended);
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "fit-2-modal.png") });
+
+    // ── 4. The Cancel button closes it, writing nothing. ──
+    await page.locator(".convert .cancel").click();
+    await expect(scrim).toHaveCount(0);
+    expect((await kinds()).join(",")).toBe("1,0");
+    expect(await undoDepth()).toBe(appended);
+    await expect(page.locator(".notice")).toHaveCount(0);
+
+    // ── 5. Escape is the same control (the modal is the only live surface). ──
+    await page.locator(".clip").nth(0).click({ button: "right" });
+    await clickMenuItem(page, ".ctxmenu", "Solve shape");
+    await expect(scrim).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(scrim).toHaveCount(0);
+    expect((await kinds()).join(",")).toBe("1,0");
+    expect(await undoDepth()).toBe(appended);
+
+    // ── 6. Now let one run to completion. The authored shape is recorded first — undo has to put
+    // every one of these keyframes back. ──
+    const authoredForces = await forceCounts();
+    expect(authoredForces[0]).toBeGreaterThan(2);
+
+    await page.locator(".clip").nth(0).click({ button: "right" });
+    await clickMenuItem(page, ".ctxmenu", "Solve shape");
+    // the stress seed is ~4 s in bun, more under a real browser's worker — this wait is that
+    // budget, not the default 5s.
+    await expect.poll(async () => (await kinds()).join(","), { timeout: 30_000 }).toBe("0,0");
+    await expect(scrim).toHaveCount(0); // the gate closed with the answer
+
+    // ── 7. What landed: section 0 is geo, carrying the fit's Auto node chain, node 0 pinned at
+    // the local origin exactly (the rigid-placement law). ──
+    expect(await nodeCount()).toBeGreaterThan(1);
+    expect((await poses())[0]).toEqual([0, 0, 0]);
+
+    // the transient readout: outcome + node count + how far off it landed, on both budgets.
+    const notice = page.locator(".notice");
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText("Solved to shape");
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "fit-3-done.png") });
+
+    // ── 8. One undo, and the force shape is back — every authored keyframe, not just the kind. ──
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await kinds()).join(",")).toBe("1,0");
+    expect((await forceCounts())[0]).toBe(authoredForces[0]);
     expect(await undoDepth()).toBe(appended);
 });
 

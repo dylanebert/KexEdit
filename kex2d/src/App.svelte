@@ -21,6 +21,7 @@ import {
     endConvert,
     enterTangentEdit,
     exitTangentEdit,
+    fitDone,
     notify,
     select,
     selectSection,
@@ -28,6 +29,7 @@ import {
     solveDone,
     solveFailed,
 } from "./editor";
+import { convertForce } from "./forcegeo";
 import { convertGeo } from "./geoforce";
 import {
     beginMove,
@@ -153,6 +155,12 @@ function raise(n: { kind: "done" | "error"; text: string }): void {
     noticeTimer = setTimeout(dismissNotice, NOTICE_MS);
 }
 
+// which direction is currently running — null when the gate is closed. drives the modal's title
+// and progress text: the force→geo fit reports no phase/keys/probes (`geofit` has no internal
+// progress hook, per the spec — the modal shows an indeterminate wait instead), so the two
+// directions can't share the same derived text off `editor.converting` alone.
+let solveKind = $state<"force" | "shape" | null>(null);
+
 // run the solve on a section, modal for its duration. the document is written once, inside
 // `convertGeo`, at resolution — so every path out of here (cancel, diverged, a worker failure, an
 // answer that expired) leaves the track exactly as it was and only the readout differs.
@@ -160,6 +168,7 @@ async function solve(section: number): Promise<void> {
     if (editor.converting !== null) return; // one at a time (the gate's own reentrancy guard)
     const controller = new AbortController();
     solveAbort = controller;
+    solveKind = "force";
     beginConvert();
     try {
         raise(solveDone(await convertGeo(history, ecs, section, {
@@ -172,6 +181,43 @@ async function solve(section: number): Promise<void> {
         if (notice !== null) raise(notice);
     } finally {
         solveAbort = null;
+        solveKind = null;
+        endConvert();
+    }
+}
+
+// the force→geo fit's own invocation — the reverse direction, `forcegeo.convertForce` behind the
+// SAME modal gate (`editor.converting`/`beginConvert`/`endConvert` are direction-neutral). the fit
+// is a single closed-form call with no internal phase (unlike `convertGeo`'s multi-probe search),
+// so there is no `onProgress` to wire — the modal's indeterminate text (`solveText`) is sanctioned
+// for exactly this case (`kex2d-forcegeo` stage 3).
+async function solveShape(section: number): Promise<void> {
+    if (editor.converting !== null) return;
+    const controller = new AbortController();
+    solveAbort = controller;
+    solveKind = "shape";
+    beginConvert();
+    try {
+        const result = await convertForce(history, ecs, section, { signal: controller.signal });
+        raise(
+            fitDone({
+                outcome: result.outcome,
+                nodes: result.nodes.length,
+                deviation: result.deviation,
+                forceError: result.forceError,
+                // the budgets the fit ACTUALLY ran against, off its own answer — never
+                // re-imported constants, which would print a bound the fit may not have used.
+                geoBudget: result.geoBudget,
+                forceBudget: result.forceBudget,
+            }),
+        );
+    } catch (e) {
+        const { notice, detail } = solveFailed(e, controller.signal.aborted);
+        if (detail !== null) console.error(detail);
+        if (notice !== null) raise(notice);
+    } finally {
+        solveAbort = null;
+        solveKind = null;
         endConvert();
     }
 }
@@ -646,25 +692,33 @@ const canDelete = $derived.by((): boolean => {
     void tick;
     return sectionsDeletable(editor.sections.ids.size, sections(ecs).length);
 });
-// whether the invoked solve is available on this selection (`sectionSolvable`, controls.ts): one
-// geo section with a live bake. `convertGeo` THROWS on each of those, so this enablement is the
-// gate, not a hint — and it grays rather than hides (the bulk-row law), so the row is discoverable
-// on a force section and on a multi-set alike.
+// whether the invoked geo→force solve is available on this selection (`sectionSolvable`,
+// controls.ts, target `Geo`): one geo section with a live bake. `convertGeo` THROWS on each of
+// those, so this enablement is the gate, not a hint — and it grays rather than hides (the
+// bulk-row law), so the row is discoverable on a force section and on a multi-set alike.
 const canSolve = $derived.by((): boolean => {
     void tick;
-    return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs));
+    return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Geo);
+});
+// the force→geo twin (target `Force`): one force section with a live bake. `convertForce` throws
+// on each of those the same way `convertGeo` does.
+const canSolveShape = $derived.by((): boolean => {
+    void tick;
+    return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Force);
 });
 // the context menu as data: one array of MenuItems, rendered by the shared menu language.
-// single-select: Solve force is the invoked geo→force tool (`canSolve`), Delete last.
-// multi-select (Premiere multi-clip): Solve force grays (a set has no single subject to solve);
-// Delete carries the set-lifted enablement. the destructive Convert row (both single and bulk)
-// was removed (kex2d-geoforce-editor stage 5): redundant with delete + append, and Solve force
-// is now the menu's one conversion affordance.
+// single-select: Solve force (`canSolve`) then its force→geo twin Solve shape (`canSolveShape`) —
+// exactly one of the two is ever live on a given section, since a section is always one kind —
+// then Delete last. multi-select (Premiere multi-clip): both solve rows gray (a set has no single
+// subject to solve); Delete carries the set-lifted enablement. the destructive Convert row (both
+// single and bulk) was removed (kex2d-geoforce-editor stage 5): redundant with delete + append,
+// and the two Solve rows are now the menu's conversion affordances.
 const ctxItems = $derived.by((): MenuItem[] => {
     if (ctx === null) return [];
     if (sectionMulti) {
         return [
             { label: "Solve force", enabled: false },
+            { label: "Solve shape", enabled: false },
             {
                 label: "Delete",
                 shortcut: "Del",
@@ -676,17 +730,25 @@ const ctxItems = $derived.by((): MenuItem[] => {
     }
     return [
         { label: "Solve force", enabled: canSolve, action: ctxSolve },
+        { label: "Solve shape", enabled: canSolveShape, action: ctxSolveShape },
         { label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: ctxDelete },
     ];
 });
 // solve this geo shape into the force section that reproduces it (`geoforce.ts`) — the menu's
-// one conversion affordance. the menu closes first: the solve is modal, and its own surface owns
-// the screen from here.
+// geo→force conversion affordance. the menu closes first: the solve is modal, and its own surface
+// owns the screen from here.
 function ctxSolve(): void {
     if (ctx === null) return;
     const section = ctx.section;
     closeContext();
     void solve(section);
+}
+// the force→geo twin: fit this force section's shape into geo nodes (`forcegeo.ts`).
+function ctxSolveShape(): void {
+    if (ctx === null) return;
+    const section = ctx.section;
+    closeContext();
+    void solveShape(section);
 }
 function ctxDelete(): void {
     if (ctx === null) return;
@@ -736,9 +798,13 @@ const solving = $derived.by((): boolean => {
 const solveText = $derived.by((): string => {
     void tick;
     const c = editor.converting;
+    if (c === null) return "";
+    // the force→geo fit has no phase/probe count to report (`geofit-async.ts`'s note — a fit is
+    // one closed-form call, not a search) — an indeterminate wait, sanctioned by the spec.
+    if (solveKind === "shape") return "Fitting…";
     // no total — the refinement discovers how many probes it needs, so a denominator would be
     // invented (convert.ts). the counts climbing IS the liveness signal.
-    return c === null ? "" : `${c.phase} · ${c.keys} keys · ${c.probes} probes`;
+    return `${c.phase} · ${c.keys} keys · ${c.probes} probes`;
 });
 // the transient readout, the same way: its text, and whether it's the failure register.
 const noticeText = $derived.by((): string => {
@@ -1020,6 +1086,7 @@ $effect(() => {
      swallows the native context menu; keys and focus are handled in the script / by `inert`. the
      counts climb per probe — no bar, because the refinement has no total to divide by. -->
 {#if solving}
+    {@const modalTitle = solveKind === "shape" ? "Solving shape" : "Solving force"}
     <div class="scrim" role="presentation" oncontextmenu={(e) => e.preventDefault()}>
         <!-- `aria-live="off"`: a probe lands several times a second and hundreds of times at
              stress scale, so announcing each one would be a stream, not information. The dialog's
@@ -1028,11 +1095,11 @@ $effect(() => {
             class="convert"
             role="dialog"
             aria-modal="true"
-            aria-label="Solving force"
+            aria-label={modalTitle}
             tabindex="-1"
             bind:this={dialogEl}
         >
-            <div class="title">Solving force</div>
+            <div class="title">{modalTitle}</div>
             <div class="stat" aria-live="off">{solveText}</div>
             <button type="button" class="cancel" title="Cancel (Esc)" onclick={cancelSolve}>
                 Cancel

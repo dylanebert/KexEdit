@@ -1,9 +1,11 @@
 import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@dylanebert/shallot";
 import { V_FLOOR, V_WARN } from "./bake";
+import type { GeofitBake } from "./geofit";
 import { DEFAULT_G, Easing, type ForcePoint, forceProfile, type Offset } from "./profile";
 import {
     chain,
     type Entry,
+    evalForce,
     evalGeo,
     localize,
     place,
@@ -1199,7 +1201,7 @@ export interface SolvedForce {
  *  distinct from `convertSection`: that one is the destructive *reset* to the kind's default
  *  (the two continuation keyframes at the default extent, step back to the sentinel); this one
  *  replaces the section with a solved shape-preserving profile. does not itself record history
- *  — `history.solveSection` wraps it. */
+ *  — `history.solveForce` wraps it. */
 export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`applyConvert: no section ${sectionId}`);
@@ -1209,6 +1211,56 @@ export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce)
     Section.length.set(eid, solved.length);
     Section.ds.set(eid, solved.ds);
     for (const p of solved.points) createForcePoint(ecs, sectionId, p.s, p.g);
+}
+
+/** an invoked force→geo fit's authored output: the sparse Auto node chain `geofit` emitted, in
+ *  the bake's own (world) frame — the observation-space twin of `SolvedForce`. `geofit.GeofitResult`
+ *  satisfies this structurally (its `deviation`/`forceError`/`outcome` are the caller's transient
+ *  readout, never document state), so the document layer reads a fit without depending on the
+ *  solver — the invoked atoms stay off this module's graph. */
+export interface SolvedGeo {
+    nodes: readonly { x: number; y: number; theta: number }[];
+}
+
+/** land an invoked force→geo fit's output on its section — the reverse of `applyConvert`. the
+ *  force points go, the kind flips, and the fit's nodes localize into the section's own frame
+ *  (`localize`, the exact inverse of the rigid `place` the bake applies) — `entry` is the
+ *  section's own entry anchor at invoke time, the exact frame `geofit`'s target bake was placed
+ *  in (`forceBake`/`evalForce`), so `place∘localize` telescopes and the shape is preserved.
+ *  node 0 is pinned at the local origin with heading 0 EXACTLY (the rigid-placement law every
+ *  geo section carries, `addNode`'s own invariant) rather than trusting `localize`'s numeric
+ *  residual there — the fit's own node 0 sits at the bake's first sample, which is `entry`
+ *  itself, but its recovered heading is a geometry-derived tangent, not necessarily bit-identical
+ *  to `entry.theta` (the same source-vs-centered gap `section.ts` documents), and a stray local
+ *  theta on node 0 would reopen an O(ds) heading kink at the join `place` is meant to close
+ *  exactly. every emitted node is Auto (no explicit tangent) — the locked output dialect. the
+ *  step resets to the nominal sentinel (the standing convert rule: geo bakes adaptively, there is
+ *  no realized-`ds` carry in this direction). does not itself record history — `history.solveGeo`
+ *  wraps it. */
+export function applyConvertGeo(
+    ecs: State,
+    sectionId: number,
+    solved: SolvedGeo,
+    entry: Entry,
+): void {
+    const eid = sectionAt(ecs, sectionId);
+    if (eid === null) throw new Error(`applyConvertGeo: no section ${sectionId}`);
+    // both row kinds go, mirroring `applyConvert`: a force section carries no nodes, so the
+    // handle sweep is defensive parity, not a live path — and the template is what a reader
+    // checks this against.
+    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    Section.kind.set(eid, SectionKind.Geo);
+    Section.length.set(eid, 0);
+    Section.ds.set(eid, 0);
+    solved.nodes.forEach((n, i) => {
+        if (i === 0) {
+            spawnNode(ecs, sectionId, 0, 0, 0, 0);
+        } else {
+            const local = localize(entry, n);
+            spawnNode(ecs, sectionId, i, local.x, local.y, local.theta);
+        }
+    });
 }
 
 // ── structural ops (append / split / join / delete) ──────────────────────────
@@ -1460,10 +1512,9 @@ export function sectionStep(stored: number, nominal: number): number {
     return stored > 0 ? stored : nominal;
 }
 
-/** a force section's payload: its authored points gathered into a dense per-edge
- *  F_n(σ) profile over the section extent + the step it bakes at (its own or the
- *  nominal), which sets both the edge count and the integrator's march. */
-function forcePayload(ecs: State, sectionId: number, length: number, ds: number): SectionSpec {
+/** a force section's authored points gathered into the dense per-edge F_n(σ) profile over its
+ *  extent — the one place a section's keyframes become the substrate's input. */
+function forceDense(ecs: State, sectionId: number, length: number, ds: number): Float32Array {
     const points: ForcePoint[] = sectionForces(ecs, sectionId).map((p) => {
         const tan = readForceTangent(p.eid);
         return {
@@ -1474,7 +1525,35 @@ function forcePayload(ecs: State, sectionId: number, length: number, ds: number)
             out: tan?.out,
         };
     });
-    return { kind: "force", fN: forceProfile(points, length, ds), ds };
+    return forceProfile(points, length, ds);
+}
+
+/** a force section's payload: its dense profile + the step it bakes at (its own or the
+ *  nominal), which sets both the edge count and the integrator's march. */
+function forcePayload(ecs: State, sectionId: number, length: number, ds: number): SectionSpec {
+    return { kind: "force", fN: forceDense(ecs, sectionId, length, ds), ds };
+}
+
+/** a force section's dense bake, as `geofit` reads it: its own recovered positions + display
+ *  force per edge, re-evaluated fresh (`evalForce`) — the same call `BakeSystem`'s
+ *  `forcePayload` threads through `chain`, so the fit targets exactly the shape on screen (the
+ *  `evalGeo` precedent an invoked geo→force solve's input reads, `geoforce.ts`), **truncation
+ *  included**: a force section's own extent/step can ask for more edges than the flat SoA has
+ *  left at its place in the chain, and `chain` silently drops the overflow (the writes land past
+ *  the buffer end), so what's on screen is the prefix. clipping the dense profile to the same
+ *  budget is what makes the fit's input that prefix rather than a longer shape nothing draws. */
+export function forceBake(ecs: State, sectionId: number): GeofitBake {
+    const eid = sectionAt(ecs, sectionId);
+    if (eid === null) throw new Error(`forceBake: no section ${sectionId}`);
+    const info = sectionInfo.get(sectionId);
+    if (!info) throw new Error(`forceBake: no bake for section ${sectionId}`);
+    if (Section.kind.get(eid) !== SectionKind.Force)
+        throw new Error(`forceBake: section ${sectionId} is not force`);
+    const step = sectionStep(Section.ds.get(eid), trackDs(ecs));
+    const dense = forceDense(ecs, sectionId, Section.length.get(eid), step);
+    const avail = Math.max(1, MAX_SAMPLES - 1 - info.startSample);
+    const r = evalForce(info.entry, dense.length > avail ? dense.subarray(0, avail) : dense, step);
+    return { x: r.posX, y: r.posY, fN: r.fN, ds: r.ds, edges: r.edges };
 }
 
 /** input-state hash that gates the bake: the shared ds + initial speed, then every

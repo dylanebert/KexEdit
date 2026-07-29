@@ -450,17 +450,21 @@ export function sectionsDeletable(selected: number, total: number): boolean {
     return selected > 0 && selected < total;
 }
 
-/** whether the invoked geo→force solve is available on a section selection: exactly ONE section,
- *  geo, and a bake that IS the authored state. All three are `convertGeo`'s own guards, which
- *  *throw* — the solve reads the bake's entry frame and sample budget, so a stale bake would hand
- *  it a shape that isn't on screen, and a set has no single subject to solve. The row grays out
- *  otherwise (never hidden). Pure — device-free, unit-tested. */
+/** whether an invoked solve is available on a section selection: exactly ONE section of the
+ *  direction's own `target` kind, and a bake that IS the authored state. All three are the
+ *  invoking command's own guards, which *throw* (`convertGeo`'s geo/live checks, `convertForce`'s
+ *  force/live twin) — the solve reads the bake's entry frame, so a stale bake would hand it a
+ *  shape that isn't on screen, and a set has no single subject to solve. `target` parameterizes
+ *  the direction (`SectionKind.Geo` for "Solve force", `SectionKind.Force` for "Solve shape")
+ *  rather than a second cloned predicate — the two menu rows share this one enablement, just with
+ *  their own target. The row grays out otherwise (never hidden). Pure — device-free, unit-tested. */
 export function sectionSolvable(
     selected: number,
     kind: SectionKind | null,
     live: boolean,
+    target: SectionKind,
 ): boolean {
-    return selected === 1 && kind === SectionKind.Geo && live;
+    return selected === 1 && kind === target && live;
 }
 
 /** wrap a degree value into (−180, 180]. */

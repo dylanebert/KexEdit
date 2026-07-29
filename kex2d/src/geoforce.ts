@@ -18,7 +18,7 @@
 
 import type { State } from "@dylanebert/shallot";
 import { convert, type ConvertOpts } from "./convert";
-import { type History, solveSection } from "./history";
+import { type History, solveForce } from "./history";
 import type { ConvertResult } from "./refine";
 import { evalGeo } from "./section";
 import {
@@ -104,7 +104,7 @@ export async function convertGeo(
         if (live === null || Section.kind.get(live) !== SectionKind.Geo)
             throw new StaleConvert(sectionId);
         if (authoredHash(ecs) !== authored) throw new StaleConvert(sectionId);
-        if (result.outcome !== "diverged") solveSection(h, ecs, sectionId, result);
+        if (result.outcome !== "diverged") solveForce(h, ecs, sectionId, result);
         return result;
     } finally {
         converting.delete(sectionId);

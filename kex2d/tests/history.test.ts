@@ -22,7 +22,6 @@ import {
     commit,
     commitLength,
     convertSection,
-    convertSections,
     createForce,
     createHistory,
     deleteForces,
@@ -34,7 +33,7 @@ import {
     setForcesEase,
     setSelectionHook,
     setTangentModes,
-    solveSection,
+    solveForce,
     trimSuffix,
     trimTrack,
     undo,
@@ -432,23 +431,6 @@ test("removeSections refuses (records nothing) when the set is EVERY section —
     expect(h.undo.length).toBe(1); // only the append — the refused delete recorded nothing
 });
 
-test("convertSections: flips EVERY section in a SET in ONE entry, regardless of its own kind (no shared destination)", () => {
-    clearSelection();
-    const { state, sec: a } = nodes(); // geo
-    const h = createHistory();
-    const b = appendSection(h, state, SectionKind.Force); // a mixed-kind chain: geo, force
-    expect(sections(state).map((s) => s.kind)).toEqual([SectionKind.Geo, SectionKind.Force]);
-
-    convertSections(h, state, [a, b]);
-    // each section flipped its OWN kind independently — convert has no direction parameter to
-    // converge on, so a mixed set stays mixed (just swapped), never collapsing to one kind.
-    expect(sections(state).map((s) => s.kind)).toEqual([SectionKind.Force, SectionKind.Geo]);
-    expect(h.undo.length).toBe(2); // the append + ONE bulk convert
-
-    undo(h, state);
-    expect(sections(state).map((s) => s.kind)).toEqual([SectionKind.Geo, SectionKind.Force]);
-});
-
 // ── sticky appended-section length (kex2d-geoforce-editor stage 5c) ──────────────
 // session-level module state in track.ts, not ECS/undo: a freshly appended force section's
 // default extent echoes the last COMMITTED extent-trim this session, starting at
@@ -515,7 +497,7 @@ test("a degenerate committed extent floors at MIN_FORCE_LEN, never poisoning the
 test("a solve landing does NOT update the sticky value", () => {
     const { state, sec: geo } = nodes();
     const h = createHistory();
-    solveSection(h, state, geo, {
+    solveForce(h, state, geo, {
         points: [
             { s: 0, g: 1 },
             { s: 77, g: 1 },

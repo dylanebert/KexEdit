@@ -269,6 +269,34 @@ export function solveDone(r: SolveOutcome): Notice {
     return { kind: "done", text: r.outcome === "budget" ? `${text} · key budget` : text };
 }
 
+/** what the readout needs off a force→geo fit's answer (`forcegeo.convertForce`) — the
+ *  observation-space twin of `SolveOutcome`. dual budget: the fit holds BOTH a geometric
+ *  deviation (m) and a recovered-force error (g) to their own bound (`geofit.ts`'s locked
+ *  criterion), so the readout reports both, unlike the single-axis geo→force floor. structural,
+ *  like `SolveOutcome` — `geofit.GeofitResult` satisfies it, but this module never imports the
+ *  conversion tier for one check. */
+export interface FitOutcome {
+    /** `"floor"` | `"budget"` | `"diverged"` (`geofit.GeofitOutcome`). */
+    outcome: string;
+    nodes: number;
+    deviation: number;
+    forceError: number;
+    geoBudget: number;
+    forceBudget: number;
+}
+
+const gforce = (v: number): string => `${v.toFixed(2)} g`;
+
+/** the readout for a fit that RESOLVED — `solveDone`'s force→geo twin, same three-way branch
+ *  (`"diverged"` reads as a failure though it resolved; `"budget"` reads as done, tagged) over the
+ *  dual budget instead of the single geometric floor. */
+export function fitDone(r: FitOutcome): Notice {
+    if (r.outcome === "diverged")
+        return { kind: "error", text: "The solve could not fit this shape. Nothing changed." };
+    const text = `Solved to shape · ${r.nodes} nodes · ${metres(r.deviation)} / ${gforce(r.forceError)} off · floor ${metres(r.geoBudget)} / ${gforce(r.forceBudget)}`;
+    return { kind: "done", text: r.outcome === "budget" ? `${text} · node budget` : text };
+}
+
 /** the readout for a solve that REJECTED, plus the raw detail for the console.
  *
  * One plain sentence per class, never the thrown message: those name sections by id and functions

@@ -32,12 +32,13 @@ distinct from the gold shape handles.
 **A unified solver is NOT the model.** Three dogfood rounds proved that a solver responsible for
 arbitrating authoring intent almost never does what's intended — the author fights it. The
 architecture is two deterministic, legible atoms — force→geometry and geometry→force — with
-authoring layers on top. Optimization exists only as a **scoped, invoked tool** over those atoms:
-the authorable geo→force conversion core is landed and lab-gated, so is the async, cancellable
-façade (`convert.ts` — worker pool, progress, abort), the command core that lands a solve on the
-document (`geoforce.ts` — one undo entry, byte-identical undo, guarded against a stale or
-concurrent solve), and the modal surface that invokes it (Section ops, below). Reverse force→geo
-remains separate work. The kernel atoms and lab pages stay in-tree and oracle-gated.
+authoring layers on top. Optimization exists only as a **scoped, invoked tool** over those atoms,
+and both directions are landed end to end: geo→force (lab-gated core, `convert.ts`'s cancellable
+worker-pool façade, `geoforce.ts`) and force→geo (`geofit.ts`'s dual-budget fit — every candidate
+scored on the adaptive bake the DOCUMENT will produce — behind `geofit-async.ts`, landed by
+`forcegeo.ts`). Each lands as one undo entry with byte-identical undo, guarded against a stale or
+concurrent invoke, behind the same modal (Section ops, below). The kernel atoms and lab pages stay
+in-tree and oracle-gated.
 
 **Positions and force keyframes are the two authoring substrates** — both sparse, density
 unbounded; the dense baked chain is always derived, never canonical (dense-vs-sparse is a false
@@ -238,10 +239,12 @@ offset. Keyframes, not constraints. Snap + interaction conventions: `editor-ui.m
 **Section ops** (the multi-section chain) — select a section by clicking its **clip** in the timeline
 marker lane (or its viewport polyline span); a force clip's right edge is its extent trim, and a `+`
 tail after the last clip appends (geo/force flyout). **Right-click a clip or span** for
-the context menu: **Solve force** (the menu's one conversion affordance — the invoked
-geo→force solve, `geoforce.ts` behind a **modal** — live `{phase, keys, probes}`, Cancel or Esc,
-every other input blocked, then a transient outcome readout; live only on a single geo section with
-a live bake, grayed otherwise), and Delete (`Del`). Split and join left the
+the context menu: the two conversion affordances, each live for exactly one section of its own
+kind with a live bake (grayed otherwise, never hidden) — **Solve force** (geo→force,
+`geoforce.ts`) and **Solve shape** (force→geo, `forcegeo.ts`) — behind the same **modal** (live
+`{phase, keys, probes}` geo→force, an indeterminate wait for the fit, which has no phase to
+report; Cancel or Esc, every other input blocked, then a transient outcome readout), and Delete
+(`Del`). Split and join left the
 editor — reserved for invoked tools (the substrate `splitGeo`/`splitForce`/`joinNext` + tests stay
 in-tree as their reference). Boundary anchors draw as viewport diamonds + chart
 vertical guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo
@@ -342,13 +345,11 @@ oracle, not self-consistency.
 Investigation labs (run explicitly, not part of `bun test`) — the kernel-atom / future-tier
 reference: `tests/geometry.lab.ts`, `tests/collocate.lab.ts`, `tests/loop.lab.ts`,
 `tests/conditioning.lab.ts`, `tests/fvd.lab.ts`, `tests/hill.lab.ts`, and
-`tests/attribution.lab.ts` (the flat conversion tier's explicit authoring-floor sweep:
-0.05/0.10/0.25/0.50 m produce 212/130/100/80 keys; the 0.05 m row holds 9/10 because
-valley-explicit reaches its 75-key observability budget, while the other rows hold 10/10) and
-`tests/perf.lab.ts` (the conversion perf baseline: per-phase probe counts and wall time through
-`refine`'s `probe` seam, over the corpus plus the authoring-scale stress scenarios in
-`tests/helpers/stress.ts` — deliberately not corpus members, so the 80-key lock is untouched)
-and `tests/pool.lab.ts` (the same scenarios through the worker pool: sync vs pooled wall time
+`tests/attribution.lab.ts` (the flat conversion tier's authoring-floor sweep — its own header
+carries the readings), `tests/forcegeo.lab.ts` (the force→geo fit's own sweep) and
+`tests/perf.lab.ts` (the conversion perf baseline: probe counts +
+wall time over the corpus plus the stress scenarios in `tests/helpers/stress.ts` — deliberately
+not corpus members, so the 80-key lock is untouched) and `tests/pool.lab.ts` (the same scenarios through the worker pool: sync vs pooled wall time
 and cancel latency, each row checked against the golden).
 Visual counterparts
 `geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` + `fit-lab.html`
