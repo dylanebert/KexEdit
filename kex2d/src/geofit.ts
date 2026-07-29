@@ -226,6 +226,13 @@ function lerp(arr: ArrayLike<number>, i: number, u: number): number {
     return u === 0 ? arr[i] : arr[i] + u * (arr[i + 1] - arr[i]);
 }
 
+/** the chain a knot set picks: each node is a literal pick of a dense sample (position + the
+ *  target's own recovered theta). the same construction feeds `evaluate`'s scoring bake and the
+ *  emitted answer, so what was scored is what lands. */
+function toNodes(bake: GeofitBake, theta: Float32Array, knots: readonly number[]): GeofitNode[] {
+    return knots.map((i) => ({ x: bake.x[i], y: bake.y[i], theta: theta[i] }));
+}
+
 const UNUSABLE: Candidate = {
     usable: false,
     deviation: Number.POSITIVE_INFINITY,
@@ -258,7 +265,7 @@ function evaluate(
     sc: Scratch,
 ): Candidate {
     const { edges } = bake;
-    const nodes: SplineNode[] = knots.map((i) => ({ x: bake.x[i], y: bake.y[i], theta: theta[i] }));
+    const nodes: SplineNode[] = toNodes(bake, theta, knots);
 
     const { counts, valid, truncated } = chainCounts(nodes, dsNominal, maxSamples);
     if (!valid || truncated || counts.length !== nodes.length - 1) return UNUSABLE;
@@ -397,10 +404,6 @@ function insertSorted(knots: readonly number[], site: number): number[] {
     const next = [...knots, site];
     next.sort((a, b) => a - b);
     return next;
-}
-
-function toNodes(bake: GeofitBake, theta: Float32Array, knots: readonly number[]): GeofitNode[] {
-    return knots.map((i) => ({ x: bake.x[i], y: bake.y[i], theta: theta[i] }));
 }
 
 export function geofit(bake: GeofitBake, v0: number, params: GeofitParams = {}): GeofitResult {
