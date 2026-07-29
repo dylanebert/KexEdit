@@ -1,6 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { arcToTime, type Mapping, timeToArc } from "./timeline";
-import { bakeOut, samples, sectionSpans, toGlobal, toLocal, Track } from "./track";
+import { bakeOut, samples, sectionSpans, toLocal, Track } from "./track";
 
 /** a content-anchored park position: the section (stable id) the parked playhead is
  *  glued to, and its `offset` within that section — section-local, in the section's
@@ -97,16 +97,12 @@ export function resolvePark(ecs: State, eid: number, cumS: number): Park | null 
 /** the parked anchor's cumulative arclength on the current bake: its section's live
  *  span, with the offset clamped into it (a trim/convert may have shortened the section
  *  under a fixed offset — so this is the lens's `toGlobal` plus the park's own reach
- *  clamp, in the section's NATIVE unit: `park.offset` is what `toLocal` returned, so a
- *  Time section's is seconds and its clamp bound is the baked time extent, never the
- *  meters `len`). null when the anchor section is gone (a delete / undo-of-append) —
- *  the caller re-resolves from the last cumulative s (`parkS`). */
+ *  clamp). null when the anchor section is gone (a delete / undo-of-append) — the caller
+ *  re-resolves from the last cumulative s (`parkS`). */
 export function parkArc(ecs: State, eid: number, park: Park): number | null {
-    const spans = sectionSpans(ecs, eid);
-    const sp = spans.find((x) => x.id === park.section);
+    const sp = sectionSpans(ecs, eid).find((x) => x.id === park.section);
     if (!sp) return null;
-    const extent = sp.localT ? sp.localT[sp.localT.length - 1] : sp.len;
-    return toGlobal(spans, park.section, Math.min(park.offset, extent));
+    return sp.offset + Math.min(park.offset, sp.len);
 }
 
 /** derive the parked cart time from its anchor through the current bake and record the

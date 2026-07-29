@@ -12,14 +12,13 @@
 
 import type { State } from "@dylanebert/shallot";
 import { collinear, type Easing, segmentSeed } from "./profile";
-import { Domain, type Entry as TrackEntry } from "./section";
+import type { Entry as TrackEntry } from "./section";
 import {
     applyConvert,
     applyConvertGeo,
     appendSection as appendSectionTrack,
     clearForceTangentSide,
     convertSection as flipSectionKind,
-    flipDomain as remapDomain,
     createForcePoint,
     deleteSection as deleteSectionTrack,
     destroyForce,
@@ -608,9 +607,7 @@ export function beginLength(ecs: State, id: number): void {
 
 /** commit a `beginLength` extent-trim gesture: coalesce the drag into one undo entry
  *  (`commit`) AND, when `armed` (the gesture cleared its dead-zone latch), record the landed
- *  extent as the session's new sticky append default for FORCE sections of THAT DOMAIN
- *  (`track.setStickyLen`) — the extent is in the section's native unit, so a Time trim lands in
- *  the seconds slot and never touches the metres one.
+ *  extent as the session's new sticky append default for FORCE sections (`track.setStickyLen`).
  *  `armed=false` (a no-move release under the latch) commits bare — a click-vs-drag release
  *  must not overwrite the sticky value with the section's UNCHANGED extent. A solve landing
  *  never calls this (it commits through `solveForce`/`solveGeo`), so a converted section's
@@ -618,7 +615,7 @@ export function beginLength(ecs: State, id: number): void {
 export function commitLength(h: History, ecs: State, id: number, armed: boolean): void {
     if (armed) {
         const st = sectionLengthState(ecs, id);
-        if (st) setStickyLen(SectionKind.Force, st.length, st.domain);
+        if (st) setStickyLen(SectionKind.Force, st.length);
     }
     commit(h);
 }
@@ -676,21 +673,6 @@ export function convertSection(h: History, ecs: State, section: number): void {
     record(h, restoreCommand(ecs, before, after, restoreSection), pre);
 }
 
-/** flip a force section between the Distance and Time domains as one undoable entry. Unlike the
- *  kind convert this is a REMAP, not a reset — the payload rides the live bake's own t↔d mapping
- *  (`track.flipDomain`) — but it wears the same `snapshotSection` pair, so undo restores the
- *  pre-flip coordinates byte-identical. Returns false (recording nothing) when the flip can't
- *  run: a geo section, or no live bake to map through. */
-export function flipDomain(h: History, ecs: State, trackEid: number, section: number): boolean {
-    if (sectionAt(ecs, section) === null) return false;
-    const pre = selHook?.snapshot(ecs);
-    const before = snapshotSection(ecs, section);
-    if (!remapDomain(ecs, trackEid, section)) return false;
-    const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
-    return true;
-}
-
 /** land an invoked solve's document write as one undoable entry — the `snapshotSection` pair the
  *  destructive convert uses, so undo restores the pre-solve payload byte-identical. shared by
  *  both solve directions (`solveForce`/`solveGeo`): `apply` performs the direction's own write
@@ -729,17 +711,12 @@ export function solveGeo(
 // nodes/points across them, so a per-section restore can't capture it; the pair
 // respawns every section's stored f32 verbatim, so undo/redo is byte-identical.
 
-/** append a new section of `kind` (and, for force, `domain`) at the chain end, recording
- *  one undoable entry. returns the new section id. */
-export function appendSection(
-    h: History,
-    ecs: State,
-    kind: SectionKind,
-    domain: Domain = Domain.Distance,
-): number {
+/** append a new section of `kind` at the chain end, recording one undoable entry.
+ *  returns the new section id. */
+export function appendSection(h: History, ecs: State, kind: SectionKind): number {
     const pre = selHook?.snapshot(ecs);
     const before = snapshotAll(ecs);
-    const id = appendSectionTrack(ecs, kind, domain);
+    const id = appendSectionTrack(ecs, kind);
     const after = snapshotAll(ecs);
     record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return id;

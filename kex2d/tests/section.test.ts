@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { replay } from "../src/bake";
 import {
     chain,
-    Domain,
     type Entry,
     evalForce,
     evalGeo,
@@ -12,7 +11,6 @@ import {
 } from "../src/section";
 import type { Node } from "../src/spline";
 import { withThetas } from "./helpers/chain";
-import { rk4Time } from "./oracles/rk4";
 
 // the section substrate (kex2d/AGENTS.md, the section substrate): entry → sampled points
 // → exit, chained by anchor propagation. the two atoms wrap the oracle-gated
@@ -154,127 +152,6 @@ describe("evalForce", () => {
     });
 });
 
-describe("evalForce — time domain", () => {
-    test("distance-domain callers are untouched (default Domain.Distance, no 4th arg)", () => {
-        // the domain param must default to Distance so every existing call site
-        // (3 positional args, this file's own prior tests included) stays on the
-        // exact prior code path — no drive-by refactor of the distance branch.
-        const entry: Entry = { x: 3, y: 1, theta: 0.2, v: 12 };
-        const ds = 0.5;
-        const fN = Float32Array.from({ length: 20 }, (_, i) => 1 + 0.3 * Math.sin(i / 4));
-        const withDefault = evalForce(entry, fN, ds);
-        const withExplicit = evalForce(entry, fN, ds, Domain.Distance);
-        for (let i = 0; i <= 20; i++) {
-            expect(withDefault.posX[i]).toBe(withExplicit.posX[i]);
-            expect(withDefault.posY[i]).toBe(withExplicit.posY[i]);
-        }
-    });
-
-    test("positions match the time-parameterized RK4 oracle, gap shrinking with Δt", () => {
-        // rk4Time is an independent scheme in the SAME parameterization as the new
-        // path (time), so it's the strongest oracle for it — mirrors the
-        // collocate.test.ts "forward64 and rk4 agree" shape: gap at two step
-        // sizes, an absolute cap, and a ratio proving the gap actually shrinks
-        // with the step (derived from the scheme, not tuned).
-        const entry: Entry = { x: 2, y: -1, theta: 0.15, v: 14 };
-        const authored = (t: number): number => 1 + 0.3 * Math.sin(t * 2);
-        const duration = 2; // seconds
-
-        const gap = (dt: number): number => {
-            const edges = Math.round(duration / dt);
-            const fN = Float32Array.from({ length: edges }, (_, i) => authored(i * dt));
-            const r = evalForce(entry, fN, dt, Domain.Time);
-            const ref = rk4Time(entry.x, entry.y, entry.theta, entry.v, edges + 1, dt, authored);
-            const last = ref[edges];
-            return Math.hypot(r.posX[edges] - last[0], r.posY[edges] - last[1]);
-        };
-
-        const g0 = gap(0.02);
-        const g1 = gap(0.01);
-        expect(g0).toBeLessThan(0.5); // coarse absolute cap over a 2 s / ~28 m run
-        expect(g0 / g1).toBeGreaterThan(1.8); // shrinks with Δt (at least first order)
-    });
-
-    test("constant force: time domain converges to the distance domain's swept exit", () => {
-        // for a force authored as a constant (domain-agnostic: the same number
-        // regardless of whether it's indexed by σ or by t), both domains
-        // discretize the identical continuous arclength ODE, so they must
-        // converge to the SAME exit — but only over the SAME physical
-        // trajectory. duration and length aren't freely interchangeable via the
-        // entry speed alone: v drifts with height (energy), so `duration =
-        // length / v_entry` does NOT correspond to `length` meters once the
-        // climb bends v away from v_entry (measured: fixing both independently
-        // left an O(1) gap that never shrank — the wrong equivalence). the
-        // right correspondence is the trajectory's OWN elapsed time, so a fine
-        // distance-domain reference supplies it (midpoint-v quadrature over its
-        // own realized ds/v — the same energy-conservation form the atom
-        // itself uses), and time domain runs that exact duration.
-        const entry: Entry = { x: 0, y: 0, theta: 0, v: 12 };
-        const F = 1.2;
-        const length = 20; // meters
-
-        const dsFine = 0.01;
-        const edgesFine = Math.round(length / dsFine);
-        const fNFine = new Float32Array(edgesFine).fill(F);
-        const refFine = evalForce(entry, fNFine, dsFine);
-        let duration = 0;
-        for (let i = 0; i < refFine.edges; i++) {
-            const vMid = 0.5 * (refFine.v[i] + refFine.v[i + 1]);
-            duration += refFine.ds[i] / vMid;
-        }
-
-        const gap = (ds: number): number => {
-            const edges = Math.round(length / ds);
-            const fND = new Float32Array(edges).fill(F);
-            const rD = evalForce(entry, fND, ds);
-
-            const dt = duration / edges;
-            const fNT = new Float32Array(edges).fill(F);
-            const rT = evalForce(entry, fNT, dt, Domain.Time);
-
-            return Math.hypot(rD.exit.x - rT.exit.x, rD.exit.y - rT.exit.y);
-        };
-
-        const g0 = gap(0.5);
-        const g1 = gap(0.25);
-        expect(g0).toBeLessThan(0.2); // coarse absolute cap over a 20 m run
-        expect(g0 / g1).toBeGreaterThan(1.8); // shrinks with the step (at least O(step))
-    });
-
-    test("O(Δt) convergence: halving Δt roughly halves the gap to a fine-Δt reference", () => {
-        // self-convergence, independent of the RK4 oracle: a much finer time
-        // step stands in for the continuum limit, and the gap from a coarser
-        // step to it should shrink at the scheme's own order as Δt halves
-        // (mirrors the "recovered display force converges as O(ds)" distance
-        // test's shape — halving, not quartering, since this measures the
-        // exit position of the SAME semi-implicit step rule applied on the
-        // time grid, whose F_n resampling — piecewise-constant per Δt — caps
-        // the observable order at first, same as the distance path's σ
-        // resampling).
-        const entry: Entry = { x: 0, y: 0, theta: 0.1, v: 15 };
-        const authored = (t: number): number => 1 + 0.4 * Math.sin(t * 1.5);
-        const duration = 3;
-
-        const fine = 0.001;
-        const edgesFine = Math.round(duration / fine);
-        const fNFine = Float32Array.from({ length: edgesFine }, (_, i) => authored(i * fine));
-        const ref = evalForce(entry, fNFine, fine, Domain.Time);
-        const refExit = { x: ref.exit.x, y: ref.exit.y };
-
-        const gap = (dt: number): number => {
-            const edges = Math.round(duration / dt);
-            const fN = Float32Array.from({ length: edges }, (_, i) => authored(i * dt));
-            const r = evalForce(entry, fN, dt, Domain.Time);
-            return Math.hypot(r.exit.x - refExit.x, r.exit.y - refExit.y);
-        };
-
-        const coarse = gap(0.04);
-        const finer = gap(0.02);
-        expect(finer).toBeLessThan(coarse); // it shrinks
-        expect(finer).toBeLessThan(0.65 * coarse); // ~halving → O(Δt)
-    });
-});
-
 describe("chain", () => {
     test("threads exit → entry with C0/C1 continuity and contiguous ranges", () => {
         const geo: Node[] = withThetas([
@@ -350,27 +227,5 @@ describe("chain", () => {
         const last = c.count - 1;
         const expected = Math.sqrt(Math.max(0, V0 * V0 - 2 * G * c.posY[last]));
         expect(c.v[last]).toBeCloseTo(expected, 3);
-    });
-
-    test("threads a force section's domain to evalForce (a time section's ds means Δt)", () => {
-        // an omitted `domain` (the geo/distance-force sections above) must stay
-        // on the Distance branch; a `domain: Domain.Time` section's `ds` field
-        // is consumed as Δt, so its per-edge ds is the variable v·Δt, not a
-        // fixed step — chain must pass the field through, not silently drop it.
-        const dt = 0.02;
-        const edges = 40;
-        const fN = new Float32Array(edges).fill(1.2);
-        const sections: Section[] = [{ kind: "force", fN, ds: dt, domain: Domain.Time }];
-        const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections);
-
-        const direct = evalForce({ x: 0, y: 0, theta: 0, v: V0 }, fN, dt, Domain.Time);
-        for (let i = 0; i <= edges; i++) {
-            expect(c.posX[i]).toBe(direct.posX[i]);
-            expect(c.posY[i]).toBe(direct.posY[i]);
-        }
-        // the time path's per-edge ds is v·Δt, not the fixed Δt — distinguishing
-        // it from a distance section threaded the same way.
-        expect(c.ds[0]).toBeCloseTo(V0 * dt, 5);
-        expect(c.ds[0]).not.toBeCloseTo(dt, 3);
     });
 });

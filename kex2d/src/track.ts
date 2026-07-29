@@ -5,7 +5,6 @@ import { LENGTH_MIN } from "./magnet";
 import { DEFAULT_G, Easing, type ForcePoint, forceProfile, type Offset } from "./profile";
 import {
     chain,
-    Domain,
     type Entry,
     evalForce,
     evalGeo,
@@ -41,20 +40,13 @@ export const Track = {
  *  node/point membership address (eids recycle across a delete→undo; ids never do
  *  — the `Handle.order` convention). `order` is its position along the chain
  *  (0 = first), reassigned by the structural ops (append/split/join/delete). `kind`
- *  is the `SectionKind`. `length` is a FORCE section's extent — the domain's own
- *  quantum the force profile spans; unused (0) for a geo section, whose extent is
- *  its node chain. `ds` is the section's own baking step, **0 = bake at the
- *  track-nominal quantum** — the sentinel every hand-authored section carries. An
- *  invoked solve writes its realized step here (`length/edges`) so the section spans
- *  its solve exactly; replaying that profile at the nominal quantum misses the
- *  pinned exit (`refine.ts`, and the ECS pin in `tests/track.test.ts`).
- *  `domain` is the section's `Domain` (`section.ts`) — **FORCE sections only**;
- *  meaningless (always `Distance`) on a geo section. **Native-units law:** `length`
- *  and `ds` are stored in the section's OWN native unit — meters for a `Distance`
- *  section, seconds for a `Time` one. Nothing here ever converts: the field names
- *  stay `length`/`s`/`ds` (a rename buys nothing — the unit rides the section, not
- *  the name), and the ONE place a domain's coordinate becomes the author-facing
- *  track-global `d` is the lens (`sectionSpans` + `toGlobal`/`toLocal`).
+ *  is the `SectionKind`. `length` is a FORCE section's extent (m) — the distance the
+ *  force profile spans; unused (0) for a geo section, whose extent is its node chain.
+ *  `ds` is the section's own baking step (m), **0 = bake at the track-nominal
+ *  `Track.ds`** — the sentinel every hand-authored section carries. An invoked solve
+ *  writes its realized step here (`length/edges`) so the section spans its solve
+ *  exactly; replaying that profile at the nominal quantum misses the pinned exit
+ *  (`refine.ts`, and the ECS pin in `tests/track.test.ts`).
  *  a section's entry anchor is derived (the prior section's exit, or `START` for the
  *  first); it is never stored. */
 export const Section = {
@@ -63,7 +55,6 @@ export const Section = {
     kind: sparse(u32),
     length: sparse(f32),
     ds: sparse(f32),
-    domain: sparse(u32),
 };
 
 /** a node on a geo section. `section` is the owning section's stable id. `order`
@@ -126,10 +117,8 @@ function writeTangent(eid: number, tan: Tangent | undefined): void {
 
 /** an authored force keyframe on a FORCE section. `section` is the owning section's
  *  stable id; `id` is the point's stable identity (undo/redo address, eid-recycle
- *  safe); `s` its position from the section entry, in the OWNING section's native
- *  unit (meters for a `Distance` section, seconds for `Time` — `Section.domain`'s
- *  native-units law); `g` the demanded normal force (g). the timeline places, drags,
- *  and deletes these; the bake gathers
+ *  safe); `s` its arclength (m) measured from the section entry; `g` the demanded
+ *  normal force (g). the timeline places, drags, and deletes these; the bake gathers
  *  each section's points (sorted by s) into a dense profile (`profile.forceProfile`).
  *  `ease` is the keyframe's `Easing` tag (the convenient middle layer) — it governs
  *  the *following* segment's derived flat tangents (default `Easing.Cubic`, the "no
@@ -242,17 +231,18 @@ export const samples = new Map<number, Samples>();
  *  track / red handle / warning banner UX. `firstInfeasible` is the first
  *  sample below V_WARN, or -1 if the whole chain is feasible. `hash` is the
  *  input state that produced the current bake; a miss triggers a full re-bake. */
-export interface BakeOut {
-    fN: Float32Array;
-    ds: Float32Array;
-    t: Float32Array;
-    tTotal: number;
-    feasible: Uint8Array;
-    firstInfeasible: number;
-    hash: string;
-}
-
-export const bakeOut = new Map<number, BakeOut>();
+export const bakeOut = new Map<
+    number,
+    {
+        fN: Float32Array;
+        ds: Float32Array;
+        t: Float32Array;
+        tTotal: number;
+        feasible: Uint8Array;
+        firstInfeasible: number;
+        hash: string;
+    }
+>();
 
 /** per-section realized metadata the flat SoA drops — keyed by stable section id,
  *  written by BakeSystem, read by the drag (localize against `entry`), the render
@@ -290,13 +280,6 @@ export const V0 = 10;
  *  is never zero/negative (which would make a level track take infinite time). */
 const MIN_V0 = 0.1;
 
-/** the nominal sampling step (s) a TIME-domain section bakes at when it carries no
- *  step of its own — `Section.ds`'s sentinel-0 contract, generalized to the native
- *  unit. derived, not tuned: `ds = v·dt`, so at the default entry speed `V0` a time
- *  section samples at the same spatial density a distance section does at
- *  `DS_NOMINAL` (`dt = ds/v`). */
-export const DT_NOMINAL = DS_NOMINAL / V0;
-
 /** how far `extend` lays the next node past the chain end, along the last edge's
  *  direction. it's a starting point you then drag, not a fixed length. */
 export const EXTEND_DIST = 24;
@@ -315,63 +298,43 @@ function startEntry(v0: number): Entry {
  *  geo and a fresh force section start the same size; the end handle then resizes it. */
 const DEFAULT_FORCE_LEN = EXTEND_DIST;
 
-/** the extent (s) a fresh TIME-domain force section gets — `DEFAULT_FORCE_LEN`'s
- *  time twin, derived the same way `DT_NOMINAL` is: the distance a `V0`-speed cart
- *  covers over `DEFAULT_FORCE_LEN` meters, expressed as the time it takes
- *  (`DEFAULT_FORCE_LEN / V0`), so a fresh time append spans the same edge count at
- *  `DT_NOMINAL` that a fresh distance append spans at `DS_NOMINAL`. */
-const DEFAULT_FORCE_DUR = DEFAULT_FORCE_LEN / V0;
-
 /** the shortest a force section can be dragged — a couple of edges, so the profile
  *  never collapses below what `forceProfile` can sample. */
 export const MIN_FORCE_LEN = 2;
 
-/** `MIN_FORCE_LEN`'s time twin — the same couple-of-edges floor at `DT_NOMINAL`
- *  instead of `DS_NOMINAL`, which reduces to the identical `/V0` scaling. */
-const MIN_FORCE_DUR = MIN_FORCE_LEN / V0;
-
-/** the session's sticky append length, one per section kind × `Domain` — what a freshly
- *  APPENDED piece of that kind (and, for force, that domain) starts at, echoing the last
- *  length the author committed by hand, in ITS OWN native unit. Each kind's length is its
- *  own authoring quantum: a **force** section's is its extent (the clip's right-edge trim),
- *  a **geo** section's is the chord `extend` lays down (the polar length manipulator) — geo
- *  carries no domain, so only its `Distance` slot is ever read or written. Slots are separate per
- *  domain so a time append never inherits a meters sticky (or vice versa): each starts at
- *  its own literal default (`DEFAULT_FORCE_LEN` / `DEFAULT_FORCE_DUR`) until a commit in
- *  THAT domain lands. Updated only when such a gesture COMMITS (`setStickyLen`, from
+/** the session's sticky append length (m), one per section kind — what a freshly APPENDED
+ *  piece of that kind starts at, echoing the last length the author committed by hand. Each
+ *  kind's length is its own authoring quantum: a **force** section's is its extent (the
+ *  clip's right-edge trim), a **geo** section's is the chord `extend` lays down (the polar
+ *  length manipulator). Updated only when such a gesture COMMITS (`setStickyLen`, from
  *  `history.commitLength` / `history.commitChord`), never by a solve landing (a converted
  *  section's realized extent is the solve's own answer, not an authored trim) and never by a
  *  destructive convert (which resets to the literal defaults — its shape has no "previous
  *  append" to echo). Session-level module state: not persisted across reloads, not threaded
  *  through undo, so undoing an append never rolls it back. */
-const stickyAppendLen: Record<SectionKind, Record<Domain, number>> = {
-    [SectionKind.Geo]: { [Domain.Distance]: EXTEND_DIST, [Domain.Time]: EXTEND_DIST },
-    [SectionKind.Force]: { [Domain.Distance]: DEFAULT_FORCE_LEN, [Domain.Time]: DEFAULT_FORCE_DUR },
+const stickyAppendLen: Record<SectionKind, number> = {
+    [SectionKind.Geo]: EXTEND_DIST,
+    [SectionKind.Force]: DEFAULT_FORCE_LEN,
 };
 
-/** the floor each kind × domain's sticky length clamps to — the same floor its own gesture
- *  holds (`MIN_FORCE_LEN`/`MIN_FORCE_DUR` for an extent trim, `LENGTH_MIN` for a chord), so a
- *  degenerate commit can't poison the next append. */
-const STICKY_MIN: Record<SectionKind, Record<Domain, number>> = {
-    [SectionKind.Geo]: { [Domain.Distance]: LENGTH_MIN, [Domain.Time]: LENGTH_MIN },
-    [SectionKind.Force]: { [Domain.Distance]: MIN_FORCE_LEN, [Domain.Time]: MIN_FORCE_DUR },
+/** the floor each kind's sticky length clamps to — the same floor its own gesture holds
+ *  (`MIN_FORCE_LEN` for an extent trim, `LENGTH_MIN` for a chord), so a degenerate commit
+ *  can't poison the next append. */
+const STICKY_MIN: Record<SectionKind, number> = {
+    [SectionKind.Geo]: LENGTH_MIN,
+    [SectionKind.Force]: MIN_FORCE_LEN,
 };
 
-/** read the session's current sticky append length for a section kind + domain (default
- *  `Distance`, so a geo caller — which never carries one — reads its one slot unchanged). */
-export function stickyLen(kind: SectionKind, domain: Domain = Domain.Distance): number {
-    return stickyAppendLen[kind][domain];
+/** read the session's current sticky append length for a section kind. */
+export function stickyLen(kind: SectionKind): number {
+    return stickyAppendLen[kind];
 }
 
-/** record a committed length gesture as that kind + domain's new sticky append default. A
- *  non-finite value is ignored (a degenerate frame has no length to remember). */
-export function setStickyLen(
-    kind: SectionKind,
-    length: number,
-    domain: Domain = Domain.Distance,
-): void {
+/** record a committed length gesture as that kind's new sticky append default. A non-finite
+ *  value is ignored (a degenerate frame has no length to remember). */
+export function setStickyLen(kind: SectionKind, length: number): void {
     if (!Number.isFinite(length)) return;
-    stickyAppendLen[kind][domain] = Math.max(STICKY_MIN[kind][domain], length);
+    stickyAppendLen[kind] = Math.max(STICKY_MIN[kind], length);
 }
 
 /** allocate an empty track entity + its sample / bake-output buffers, sized once
@@ -409,9 +372,7 @@ export function createTrack(ecs: State): number {
 let nextSectionId = 0;
 
 /** a section read off the ECS: eid + its stable id, chain order, kind, force
- *  extent, its own baking step (0 = the track-nominal quantum), and its `Domain`
- *  (force sections only; always `Distance` on a geo section). `length`/`ds` are in
- *  the section's own native unit (`Section`'s native-units law). */
+ *  extent, and its own baking step (0 = the track-nominal `Track.ds`). */
 export interface SectionRow {
     eid: number;
     id: number;
@@ -419,7 +380,6 @@ export interface SectionRow {
     kind: SectionKind;
     length: number;
     ds: number;
-    domain: Domain;
 }
 
 /** every section, sorted by chain order — the sequence the bake threads and the
@@ -434,7 +394,6 @@ export function sections(ecs: State): SectionRow[] {
             kind: Section.kind.get(eid) as SectionKind,
             length: Section.length.get(eid),
             ds: Section.ds.get(eid),
-            domain: Section.domain.get(eid) as Domain,
         });
     }
     rows.sort((a, b) => a.order - b.order);
@@ -451,179 +410,60 @@ export function sectionAt(ecs: State, id: number): number | null {
 
 /** a section's place on the global distance axis: its stable id, its `offset` (the
  *  track-global distance `d` at its entry = the cumulative baked arclength of every
- *  upstream section), and its `len` — its own baked extent ON THE d AXIS (arclength,
- *  regardless of domain: a Time section's samples still land at real distances, just
- *  non-uniformly spaced). the section occupies the d-interval `[offset, offset + len]`.
- *  a **Time** section additionally carries the sample-range mapping handle
- *  (`localT`/`localD`) `toGlobal`/`toLocal` interpolate over; a **Distance** section
- *  carries neither (its lens stays the plain affine path, so its bytes are untouched). */
+ *  upstream section), and its `len` (its own baked arclength). the section occupies the
+ *  d-interval `[offset, offset + len]`. */
 export interface SectionSpan {
     id: number;
     offset: number;
     len: number;
-    domain: Domain;
-    /** the section's exit speed (m/s) off the current bake — what a coordinate past the
-     *  baked exit extrapolates at (`toLocalIn`, the extent trim's inverse). floored at
-     *  `V_FLOOR`, so it never divides by zero on a stalled section. */
-    exitV: number;
-    /** Time only: per-sample cumulative LOCAL time (seconds since the section's entry,
-     *  `localT[0] === 0`), non-decreasing — strictly increasing while `ds > 0`, but a
-     *  stalled sample (`ds` clamped to 0 by the v floor) freezes `t` too (`bakeOut.t`
-     *  accumulates `ds/v̄`, so a zero `ds` contributes zero elapsed time — the domain
-     *  lock's O(step) consistency note). the lens's x-axis for `toGlobal`. */
-    localT?: Float32Array;
-    /** Time only: per-sample cumulative LOCAL distance (meters since the section's
-     *  entry, `localD[0] === 0`, `localD[last] === len`) — same sample indexing as
-     *  `localT`, so the two arrays are one monotone table read in either direction. */
-    localD?: Float32Array;
-}
-
-/** piecewise-linear monotone lookup: `y` at query `x` over a strictly-nondecreasing
- *  `xs`/parallel `ys` table, clamped past either end (the out-of-range policy every
- *  lens read shares). exact on the sample grid; linear between — the same fidelity the
- *  table itself carries (a straight edge between two baked samples). a run of
- *  equal-`x` samples (the stalled/v-floor degenerate case) resolves to the LAST tied
- *  index — safe because a stall freezes both tables in lockstep, so every tied index
- *  carries the same `y`; accepted, not reconciled, per the domain lock's O(step) note. */
-function lerpMonotone(xs: Float32Array, ys: Float32Array, x: number): number {
-    const n = xs.length;
-    if (x <= xs[0]) return ys[0];
-    if (x >= xs[n - 1]) return ys[n - 1];
-    let lo = 0;
-    let hi = n - 1;
-    while (hi - lo > 1) {
-        const mid = (lo + hi) >> 1;
-        if (xs[mid] <= x) lo = mid;
-        else hi = mid;
-    }
-    const span = xs[hi] - xs[lo];
-    if (span <= 0) return ys[lo];
-    return ys[lo] + ((x - xs[lo]) / span) * (ys[hi] - ys[lo]);
 }
 
 /** the coordinate lens — the ONE seam between the author-facing track-global distance
- *  `d` (meters, the timeline ruler) and the section-local coordinate `s` the substrate
- *  stores in ITS OWN native unit (arclength for a Distance section, time for a Time
- *  one — `Section`'s native-units law). `sectionSpans` is its table (one accumulating
- *  pass over the baked ds, plus each Time section's own cumulative t/d sample table),
- *  and `toGlobal`/`toLocal` read it: the affine `d = offset + s` for Distance (byte-
- *  identical to the pre-domain lens), monotone interpolation of the baked cumulative
- *  t/d arrays for Time (exact on the sample grid — `ds > 0` by the v floor makes the
- *  table invertible). every d readout — timeline clips/boundaries, force-point
- *  placement, cart park — derives here; nothing walks the cumulative ds itself.
- *  sections are contiguous (each shares its entry sample with the prior exit), so one
- *  pass suffices. */
+ *  `d` (meters, the timeline ruler) and the section-local arclength `s` the substrate
+ *  stores. `sectionSpans` is its table (one accumulating pass over the baked ds), and
+ *  `toGlobal`/`toLocal` are the affine `d = offset + s` and its inverse. every d readout
+ *  — timeline clips/boundaries, force-point placement, cart park — derives here; nothing
+ *  walks the cumulative ds itself. sections are contiguous (each shares its entry sample
+ *  with the prior exit), so one pass suffices. */
 export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
     const out = bakeOut.get(eid);
     if (!out) return [];
-    const samp = samples.get(eid);
     const res: SectionSpan[] = [];
     let cum = 0;
     for (const sec of sections(ecs)) {
         const info = sectionInfo.get(sec.id);
         if (!info) continue;
         const offset = cum;
-        const tab = sec.domain === Domain.Time ? localTables(out, info) : undefined;
         for (let i = info.startSample; i < info.endSample; i++) cum += out.ds[i];
-        res.push({
-            id: sec.id,
-            offset,
-            len: cum - offset,
-            domain: sec.domain,
-            exitV: Math.max(V_FLOOR, samp ? samp.v[info.endSample] : V0),
-            localT: tab?.t,
-            localD: tab?.d,
-        });
+        res.push({ id: sec.id, offset, len: cum - offset });
     }
     return res;
 }
 
-/** a section's own cumulative local time/distance tables off the current bake, one entry
- *  per sample in its range (`t[0] = d[0] = 0`, both non-decreasing). the domain-mapping
- *  handle: read `t → d` to place a time coordinate on the distance axis, `d → t` for the
- *  inverse. built for a Time section's `SectionSpan` (the lens) and by `flipDomain` in
- *  either direction (a Distance section carries no span table, but the flip needs one). */
-export interface LocalTables {
-    t: Float32Array;
-    d: Float32Array;
-}
-
-function localTables(out: BakeOut, info: SectionInfo): LocalTables {
-    const nSamp = info.endSample - info.startSample + 1;
-    const t = new Float32Array(nSamp);
-    const d = new Float32Array(nSamp);
-    const t0 = out.t[info.startSample];
-    let dist = 0;
-    for (let k = 0; k < nSamp; k++) {
-        const j = info.startSample + k;
-        t[k] = out.t[j] - t0;
-        d[k] = dist;
-        if (j < info.endSample) dist += out.ds[j];
-    }
-    return { t, d };
-}
-
-/** section-local `(section, s)` → track-global distance. Distance: the affine
- *  `d = offset + s`. Time: `s` is the section-local time coordinate, mapped to its
- *  local distance through the baked `localT → localD` table, then offset. null when
- *  the section isn't on the current bake. */
+/** section-local `(section, s)` → track-global distance `d = offset + s`. null when the
+ *  section isn't on the current bake. */
 export function toGlobal(spans: SectionSpan[], section: number, s: number): number | null {
     const sp = spans.find((x) => x.id === section);
-    if (!sp) return null;
-    if (sp.domain === Domain.Time && sp.localT && sp.localD) {
-        return sp.offset + lerpMonotone(sp.localT, sp.localD, s);
-    }
-    return sp.offset + s;
+    return sp ? sp.offset + s : null;
 }
 
-/** track-global distance `d` → the section-local address `(section, s)` — `s` in the
- *  section's OWN native unit (arclength for Distance, time for Time, via the inverse
- *  `localD → localT` table). boundary policy: a `d` on a shared section boundary
- *  resolves to the UPSTREAM (earlier) section — the first span whose exit reaches `d`
- *  wins (left/upstream-inclusive spans), matching the clip strip's boundary guides and
- *  the cart's park resolution. out-of-range `d` resolves to the nearest end of the
- *  track. null when there's no bake. */
+/** track-global distance `d` → the section-local address `(section, s)`. boundary policy:
+ *  a `d` on a shared section boundary resolves to the UPSTREAM (earlier) section — the
+ *  first span whose exit reaches `d` wins (left/upstream-inclusive spans), matching the
+ *  clip strip's boundary guides and the cart's park resolution. out-of-range `d` resolves
+ *  to the nearest end of the track. null when there's no bake. */
 export function toLocal(spans: SectionSpan[], d: number): { section: number; s: number } | null {
     if (spans.length === 0) return null;
     for (const sp of spans) {
-        if (d <= sp.offset + sp.len) {
-            const localD = Math.max(0, d - sp.offset);
-            if (sp.domain === Domain.Time && sp.localT && sp.localD) {
-                return { section: sp.id, s: lerpMonotone(sp.localD, sp.localT, localD) };
-            }
-            return { section: sp.id, s: localD };
-        }
+        if (d <= sp.offset + sp.len) return { section: sp.id, s: Math.max(0, d - sp.offset) };
     }
     const last = spans[spans.length - 1];
-    if (last.domain === Domain.Time && last.localT) {
-        return { section: last.id, s: last.localT[last.localT.length - 1] };
-    }
     return { section: last.id, s: last.len };
-}
-
-/** the section-local native coordinate at a track-global `d`, resolved WITHIN a NAMED
- *  section — the gesture inverse of `toGlobal`. A drag or an extent trim already knows
- *  its subject, so it must NOT re-resolve the section the way `toLocal`'s boundary
- *  policy would (a `d` at the section entry would hand back the upstream neighbour).
- *  Past either end the coordinate extrapolates rather than clamping: below the entry
- *  to 0, past the exit along the section's exit speed for a Time section (linearly for
- *  a Distance one) — what lets an extent trim lengthen a section past its current baked
- *  exit. Exact inverse of `toGlobal` inside the baked range.
- *  @example toLocalIn(span, span.offset + span.len) // → the section's baked duration */
-export function toLocalIn(sp: SectionSpan, d: number): number {
-    const local = d - sp.offset;
-    if (local <= 0) return 0;
-    if (sp.domain !== Domain.Time || !sp.localT || !sp.localD) return local;
-    const n = sp.localT.length;
-    const lastD = sp.localD[n - 1];
-    if (local <= lastD) return lerpMonotone(sp.localD, sp.localT, local);
-    return sp.localT[n - 1] + (local - lastD) / sp.exitV;
 }
 
 /** create a section at `order` with a fresh stable id — the append/seed path.
  *  `ds` is its baking step, defaulting to the track-nominal sentinel 0 (only an
- *  invoked solve's output carries its own step). `domain` defaults to `Distance`
- *  (every existing caller stays byte-identical); a geo section's domain is ignored.
+ *  invoked solve's output carries its own step).
  *  returns the id (undo/redo, membership, and selection address by id). */
 export function createSection(
     ecs: State,
@@ -631,7 +471,6 @@ export function createSection(
     kind: SectionKind,
     length: number,
     ds = 0,
-    domain: Domain = Domain.Distance,
 ): number {
     const eid = ecs.create();
     ecs.add(eid, Section);
@@ -641,13 +480,12 @@ export function createSection(
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
     Section.ds.set(eid, ds);
-    Section.domain.set(eid, domain);
     return id;
 }
 
-/** re-create a section at an *exact* id / order / kind / length / domain — undo of
- *  a delete, redo of a create, or a snapshot restore. no id allocation, so it
- *  round-trips byte-identical. its nodes/points are respawned separately. */
+/** re-create a section at an *exact* id / order / kind / length — undo of a delete,
+ *  redo of a create, or a snapshot restore. no id allocation, so it round-trips
+ *  byte-identical. its nodes/points are respawned separately. */
 function spawnSection(
     ecs: State,
     id: number,
@@ -655,7 +493,6 @@ function spawnSection(
     kind: SectionKind,
     length: number,
     ds: number,
-    domain: Domain = Domain.Distance,
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Section);
@@ -664,7 +501,6 @@ function spawnSection(
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
     Section.ds.set(eid, ds);
-    Section.domain.set(eid, domain);
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -1193,102 +1029,25 @@ export function nextForce(ecs: State, id: number): number | null {
 
 // ── force-section extent ──────────────────────────────────────────────────────
 
-/** the shortest extent a force section of `domain` can be trimmed to, in that domain's
- *  own native unit — `MIN_FORCE_LEN` metres or `MIN_FORCE_DUR` seconds, the same
- *  couple-of-edges floor at each domain's nominal step. */
-export function minExtent(domain: Domain): number {
-    return domain === Domain.Time ? MIN_FORCE_DUR : MIN_FORCE_LEN;
-}
-
 /** a force section's undoable extent, keyed by stable id — the end-handle drag
- *  gesture snapshots this. `length` is in the section's native unit, so the state
- *  carries its `domain` too: the commit records the landed extent as that domain's
- *  sticky append default (`history.commitLength` → `setStickyLen`), and a Time trim
- *  must never land in the metres slot. */
+ *  gesture snapshots this. */
 export interface SectionLengthState {
     id: number;
     length: number;
-    domain: Domain;
 }
 
 /** snapshot a section's extent by id, or undefined if it's gone. */
 export function sectionLengthState(ecs: State, id: number): SectionLengthState | undefined {
     const eid = sectionAt(ecs, id);
-    return eid === null
-        ? undefined
-        : { id, length: Section.length.get(eid), domain: Section.domain.get(eid) as Domain };
+    return eid === null ? undefined : { id, length: Section.length.get(eid) };
 }
 
-/** set a force section's extent in its OWN native unit (metres or seconds), floored at
- *  that domain's minimum — the end-handle drag + gesture restore. re-bakes on the next
- *  tick (the extent is in the bake hash). */
+/** set a force section's extent (m), floored at the minimum — the end-handle drag +
+ *  gesture restore. re-bakes on the next tick (the extent is in the bake hash). */
 export function setSectionLength(ecs: State, id: number, length: number): void {
     const eid = sectionAt(ecs, id);
     if (eid === null) return;
-    Section.length.set(eid, Math.max(minExtent(Section.domain.get(eid) as Domain), length));
-}
-
-/** flip a force section between `Distance` and `Time`, REMAPPING its authored payload
- *  through the live bake instead of resetting it (unlike the geo↔force kind flip, whose
- *  two payloads have no correspondence): every keyframe coordinate and the extent go
- *  through the section's own monotone t↔d table, and a SET step (`Section.ds`) scales by
- *  the extent ratio, which is exactly what keeps its edge count (`round(length/ds)`).
- *  Values land non-round (10 m → 1.37 s) — accepted; the fields retype them. Past the
- *  baked exit (a keyframe left outside a shortened extent) the map extrapolates at the
- *  exit speed, so a re-lengthening restores it. Needs a LIVE bake for the section (that's
- *  the mapping); returns false without one, on a geo section, or on a degenerate map.
- *  Records no history — `history.flipDomain` wraps it in a `snapshotSection` pair. */
-export function flipDomain(ecs: State, trackEid: number, sectionId: number): boolean {
-    const eid = sectionAt(ecs, sectionId);
-    if (eid === null || (Section.kind.get(eid) as SectionKind) !== SectionKind.Force) return false;
-    const out = bakeOut.get(trackEid);
-    const info = sectionInfo.get(sectionId);
-    if (!out || !info || info.endSample <= info.startSample) return false;
-    const tab = localTables(out, info);
-    const n = tab.t.length;
-    const samp = samples.get(trackEid);
-    const exitV = Math.max(V_FLOOR, samp ? samp.v[info.endSample] : V0);
-    const target =
-        (Section.domain.get(eid) as Domain) === Domain.Time ? Domain.Distance : Domain.Time;
-    // one direction each way: into Time reads d → t, into Distance reads t → d. past the
-    // table's own end the ride continues at the exit speed (t past the exit costs exitV
-    // metres per second, and vice versa).
-    const map = (v: number): number => {
-        // a coordinate at or before the section entry maps to the entry. This is the floor, not a
-        // clamp of signed input: every `v` reaching here is a NON-NEGATIVE section-local coordinate,
-        // including `s + tangent.ds` for an explicit handle — `profile.composeTangent`'s
-        // x-monotonicity clamp bounds an `in` handle's reach to `-(s - prevS)` and an `out` handle's
-        // to `nextS - s`, so a tangent tip can never cross its own keyframe's neighbours, let alone
-        // the section entry at s = 0. If that clamp is ever relaxed, a signed offset would silently
-        // collapse here instead of mapping.
-        if (v <= 0) return 0;
-        const [xs, ys] = target === Domain.Time ? [tab.d, tab.t] : [tab.t, tab.d];
-        const lastX = xs[n - 1];
-        if (v <= lastX) return lerpMonotone(xs, ys, v);
-        return ys[n - 1] + (target === Domain.Time ? (v - lastX) / exitV : (v - lastX) * exitV);
-    };
-    const oldLen = Section.length.get(eid);
-    const newLen = Math.max(minExtent(target), map(oldLen));
-    if (!Number.isFinite(newLen) || newLen <= 0) return false;
-    const ds = Section.ds.get(eid);
-    // the step's whole job is pinning the edge count, so it rides the extent ratio; the
-    // sentinel 0 (bake at the domain nominal) stays the sentinel.
-    Section.ds.set(eid, ds > 0 && oldLen > 0 ? ds * (newLen / oldLen) : 0);
-    Section.length.set(eid, newLen);
-    Section.domain.set(eid, target);
-    for (const p of sectionForces(ecs, sectionId)) {
-        const s = map(p.s);
-        // an explicit handle's Δs is a coordinate offset, so it remaps as the difference of
-        // its two mapped endpoints — the tip lands where the same point on the curve does.
-        const tan = readForceTangent(p.eid);
-        if (tan) {
-            if (tan.in) tan.in = { ds: map(p.s + tan.in.ds) - s, dg: tan.in.dg };
-            if (tan.out) tan.out = { ds: map(p.s + tan.out.ds) - s, dg: tan.out.dg };
-            writeForceTangent(p.eid, tan);
-        }
-        setForcePoint(ecs, p.id, s, p.g);
-    }
-    return true;
+    Section.length.set(eid, Math.max(MIN_FORCE_LEN, length));
 }
 
 // ── track initial speed (v0) ───────────────────────────────────────────────────
@@ -1321,7 +1080,6 @@ export interface SectionSnapshot {
     kind: SectionKind;
     length: number;
     ds: number;
-    domain: Domain;
     nodes: NodeState[];
     points: { id: number; s: number; g: number; ease: Easing; tangent?: ForceTangent }[];
 }
@@ -1337,7 +1095,6 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
         kind: Section.kind.get(eid) as SectionKind,
         length: Section.length.get(eid),
         ds: Section.ds.get(eid),
-        domain: Section.domain.get(eid) as Domain,
         nodes: nodeSnapshot(ecs, sectionId),
         points: sectionForces(ecs, sectionId).map((p) => ({
             id: p.id,
@@ -1351,7 +1108,7 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
 
 /** clear a section's payload and rebuild it verbatim from a snapshot — restores a
  *  convert (either direction) or a structural op byte-identical. the Section entity
- *  is assumed to exist (its order/kind/length/domain are rewritten); nodes respawn by
+ *  is assumed to exist (its order/kind/length are rewritten); nodes respawn by
  *  order, points by id, so eids recycle but identities don't. */
 export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     const eid = sectionAt(ecs, snap.id);
@@ -1362,7 +1119,6 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
     Section.ds.set(eid, snap.ds);
-    Section.domain.set(eid, snap.domain);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
 }
@@ -1417,7 +1173,6 @@ export function convertSection(ecs: State, sectionId: number): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) return;
     Section.ds.set(eid, 0);
-    Section.domain.set(eid, Domain.Distance); // the reset kind's default domain
     const kind = Section.kind.get(eid);
     if (kind === SectionKind.Geo) {
         // recover the entry force from the current (pre-convert, geo) bake before the
@@ -1458,9 +1213,7 @@ export interface SolvedForce {
  *  distinct from `convertSection`: that one is the destructive *reset* to the kind's default
  *  (the two continuation keyframes at the default extent, step back to the sentinel); this one
  *  replaces the section with a solved shape-preserving profile. does not itself record history
- *  — `history.solveForce` wraps it. **solves stay distance-domain** (the conversion kernel
- *  works in arclength, `refine.ts`) — a solved section always lands `Distance`; a domain flip
- *  afterwards remaps it (the locked decision). */
+ *  — `history.solveForce` wraps it. */
 export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`applyConvert: no section ${sectionId}`);
@@ -1469,7 +1222,6 @@ export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce)
     Section.kind.set(eid, SectionKind.Force);
     Section.length.set(eid, solved.length);
     Section.ds.set(eid, solved.ds);
-    Section.domain.set(eid, Domain.Distance);
     for (const p of solved.points) createForcePoint(ecs, sectionId, p.s, p.g);
 }
 
@@ -1513,7 +1265,6 @@ export function applyConvertGeo(
     Section.kind.set(eid, SectionKind.Geo);
     Section.length.set(eid, 0);
     Section.ds.set(eid, 0);
-    Section.domain.set(eid, Domain.Distance); // meaningless on a geo section; reset for hygiene
     solved.nodes.forEach((n, i) => {
         if (i === 0) {
             spawnNode(ecs, sectionId, 0, 0, 0, 0);
@@ -1559,7 +1310,7 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
     for (const e of [...ecs.query([Handle])]) ecs.destroy(e);
     for (const e of [...ecs.query([Force])]) ecs.destroy(e);
     for (const snap of snaps) {
-        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length, snap.ds, snap.domain);
+        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length, snap.ds);
         for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
     }
@@ -1567,22 +1318,15 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
 
 /** append a new section of `kind` at the end of the chain. geo gets the flat
  *  two-node seed (its entry is the prior exit, so it opens straight along the
- *  running heading); force gets the two continuation keyframes — at `(0, F_entry)`
- *  and `(duration, F_entry)` in the section's OWN native unit — at the recovered
- *  entry force (the prior section's exit-edge force from the current bake). Both
- *  start at the session's sticky append length for their kind + `domain` (default
- *  `Distance`, ignored for geo) — `stickyLen`, the last committed extent-trim /
- *  length adjust in THAT domain, the literal default until one lands. returns the
- *  id. */
-export function appendSection(
-    ecs: State,
-    kind: SectionKind,
-    domain: Domain = Domain.Distance,
-): number {
+ *  running heading); force gets the two continuation keyframes at the recovered
+ *  entry force (the prior section's exit-edge force from the current bake). Both start at
+ *  the session's sticky append length for their kind (`stickyLen` — the last committed
+ *  extent-trim / length adjust, the literal defaults until one lands). returns the id. */
+export function appendSection(ecs: State, kind: SectionKind): number {
     const secs = sections(ecs);
     const order = secs.length;
-    const len = stickyLen(kind, domain);
-    const id = createSection(ecs, order, kind, kind === SectionKind.Force ? len : 0, 0, domain);
+    const len = stickyLen(kind);
+    const id = createSection(ecs, order, kind, kind === SectionKind.Force ? len : 0);
     if (kind === SectionKind.Geo) {
         addNode(ecs, id, 0, 0);
         addNode(ecs, id, len, 0);
@@ -1657,13 +1401,12 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
     return bId;
 }
 
-/** split a force section at `s` (0 < s < length, in the section's own native unit): the
- *  head keeps extent [0, s] and its points there; a new section takes extent [s, length]
- *  with the remaining points rebased to its entry (a lossless partition). **both halves
+/** split a force section at arclength `s` (0 < s < length): the head keeps extent
+ *  [0, s] and its points there; a new section takes extent [s, length] with the
+ *  remaining points rebased to its entry (a lossless partition). **both halves
  *  inherit the baking step** (as a geo split does): a split partitions the profile at
- *  its own density, it doesn't re-solve it — **and the domain**, unchanged: a split of a
- *  time section yields two time sections, sharing the one native axis it's already on.
- *  no-op outside the interior. returns the new (tail) section id, or null. */
+ *  its own density, it doesn't re-solve it. no-op outside
+ *  the interior. returns the new (tail) section id, or null. */
 export function splitForce(ecs: State, sectionId: number, s: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null || Section.kind.get(secEid) !== SectionKind.Force) return null;
@@ -1672,14 +1415,7 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
 
     const order = Section.order.get(secEid);
     bumpOrders(ecs, order + 1, +1);
-    const bId = createSection(
-        ecs,
-        order + 1,
-        SectionKind.Force,
-        len - s,
-        Section.ds.get(secEid),
-        Section.domain.get(secEid) as Domain,
-    );
+    const bId = createSection(ecs, order + 1, SectionKind.Force, len - s, Section.ds.get(secEid));
     for (const p of sectionForces(ecs, sectionId)) {
         if (p.s >= s) {
             Force.section.set(p.eid, bId);
@@ -1690,9 +1426,7 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     return bId;
 }
 
-/** join a section with the next one in the chain (same-kind only, and for force,
- *  same-domain: a time and a distance section share no coherent extent axis to
- *  concatenate). geo appends the
+/** join a section with the next one in the chain (same-kind only). geo appends the
  *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
  *  geo split); force concatenates the extents and rebases the neighbor's points. the
  *  neighbor is removed and downstream orders close up. **the upstream baking step
@@ -1705,8 +1439,6 @@ export function joinNext(ecs: State, sectionId: number): boolean {
     if (aEid === null || b === null) return false;
     const aKind = Section.kind.get(aEid) as SectionKind;
     if (aKind !== b.kind) return false;
-    if (aKind === SectionKind.Force && (Section.domain.get(aEid) as Domain) !== b.domain)
-        return false;
 
     if (aKind === SectionKind.Geo) {
         const aHandles = sectionHandles(ecs, sectionId);
@@ -1785,21 +1517,12 @@ function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
     return { kind: "geo", nodes: geoNodes(ecs, sectionId), ds };
 }
 
-/** the step a section bakes at: its own when set, else the given nominal (0 is the
- *  sentinel every hand-authored section carries). an invoked solve stores its
+/** the step a section bakes at: its own when set, else the track-nominal `ds` (0 is
+ *  the sentinel every hand-authored section carries). an invoked solve stores its
  *  realized step, and the profile only spans the section — closing the exit the solve
  *  pinned — when it's replayed at that step, not at the nominal quantum. */
 export function sectionStep(stored: number, nominal: number): number {
     return stored > 0 ? stored : nominal;
-}
-
-/** the nominal step a FORCE section's sentinel-0 `ds` resolves to, in its OWN native
- *  unit: the track-nominal `trackDs` for `Distance`, `DT_NOMINAL` for `Time` — a time
- *  section's nominal is never the track's meters quantum (`trackDs` is a distance
- *  scalar, not a step in seconds). geo has no domain, so its callers pass `trackDs`
- *  straight through without this. */
-function forceNominal(domain: Domain, trackDs: number): number {
-    return domain === Domain.Time ? DT_NOMINAL : trackDs;
 }
 
 /** a force section's authored points gathered into the dense per-edge F_n(σ) profile over its
@@ -1819,15 +1542,9 @@ function forceDense(ecs: State, sectionId: number, length: number, ds: number): 
 }
 
 /** a force section's payload: its dense profile + the step it bakes at (its own or the
- *  nominal) and its `domain` — the step rule `evalForce` (`section.ts`) consults. */
-function forcePayload(
-    ecs: State,
-    sectionId: number,
-    length: number,
-    ds: number,
-    domain: Domain,
-): SectionSpec {
-    return { kind: "force", fN: forceDense(ecs, sectionId, length, ds), ds, domain };
+ *  nominal), which sets both the edge count and the integrator's march. */
+function forcePayload(ecs: State, sectionId: number, length: number, ds: number): SectionSpec {
+    return { kind: "force", fN: forceDense(ecs, sectionId, length, ds), ds };
 }
 
 /** a force section's dense bake, as `geofit` reads it: its own recovered positions + display
@@ -1845,32 +1562,24 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     if (!info) throw new Error(`forceBake: no bake for section ${sectionId}`);
     if (Section.kind.get(eid) !== SectionKind.Force)
         throw new Error(`forceBake: section ${sectionId} is not force`);
-    const domain = Section.domain.get(eid) as Domain;
-    const step = sectionStep(Section.ds.get(eid), forceNominal(domain, trackDs(ecs)));
+    const step = sectionStep(Section.ds.get(eid), trackDs(ecs));
     const dense = forceDense(ecs, sectionId, Section.length.get(eid), step);
     const avail = Math.max(1, MAX_SAMPLES - 1 - info.startSample);
-    const r = evalForce(
-        info.entry,
-        dense.length > avail ? dense.subarray(0, avail) : dense,
-        step,
-        domain,
-    );
+    const r = evalForce(info.entry, dense.length > avail ? dense.subarray(0, avail) : dense, step);
     return { x: r.posX, y: r.posY, fN: r.fN, ds: r.ds, edges: r.edges };
 }
 
 /** input-state hash that gates the bake: the shared ds + initial speed, then every
- *  section in order — its id/order/kind, its own baking step when it carries one, its
- *  `domain` when it's not the default `Distance`, and its authored payload (a geo
- *  section's node poses, a force section's extent + points). BakeSystem re-bakes on a
- *  miss (anything moved, added, removed, converted, reordered, restepped, re-domained,
- *  or the v0 retimed), skips otherwise. the step and the domain are each written only
- *  when set, so every existing (`Distance`) track's hash stays byte-identical. */
+ *  section in order — its id/order/kind, its own baking step when it carries one, and
+ *  its authored payload (a geo section's node poses, a force section's extent +
+ *  points). BakeSystem re-bakes on a miss (anything moved, added, removed, converted,
+ *  reordered, restepped, or the v0 retimed), skips otherwise. the step is written only
+ *  when set, so the nominal sentinel leaves an authored track's hash untouched. */
 function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number): string {
     let h = `ds${ds}v0${v0}`;
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sec.kind}`;
         if (sec.ds > 0) h += `@${sec.ds}`;
-        if (sec.domain !== Domain.Distance) h += `^${sec.domain}`;
         if (sec.kind === SectionKind.Force) {
             h += `:L${sec.length}`;
             for (const p of sectionForces(ecs, sec.id)) {
@@ -1915,6 +1624,8 @@ export function bakeLive(ecs: State): boolean {
     return false;
 }
 
+type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
+
 /** per-sample cumulative time `t[i] = Σ_{k<i} ds_k / v̄_k` plus the diagnostic
  *  feasibility flag. v̄ floors at V_FLOOR so energy-depleted regions take
  *  long-but-finite time; `feasible[i] = |v[i]| ≥ V_WARN` drives the red-track UX
@@ -1955,11 +1666,10 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     }
 
     const payloads = secs.map((sec) => {
-        if (sec.kind === SectionKind.Geo) {
-            return geoPayload(ecs, sec.id, sectionStep(sec.ds, ds));
-        }
-        const step = sectionStep(sec.ds, forceNominal(sec.domain, ds));
-        return forcePayload(ecs, sec.id, sec.length, step, sec.domain);
+        const step = sectionStep(sec.ds, ds);
+        return sec.kind === SectionKind.Geo
+            ? geoPayload(ecs, sec.id, step)
+            : forcePayload(ecs, sec.id, sec.length, step);
     });
     const c = chain(start, payloads, MAX_SAMPLES);
     const count = c.count;
@@ -2022,7 +1732,7 @@ export const TrackPlugin: Plugin = {
     components: { Track, Section, Handle, Force },
     traits: {
         Track: { defaults: () => ({ count: 0, ds: 0, v0: V0 }) },
-        Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0, ds: 0, domain: 0 }) },
+        Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0, ds: 0 }) },
         Handle: {
             defaults: () => ({
                 section: 0,

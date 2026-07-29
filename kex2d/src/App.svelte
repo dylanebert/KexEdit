@@ -36,7 +36,6 @@ import {
     beginV0,
     commit,
     extendTrack,
-    flipDomain,
     history,
     removeSection,
     removeSections,
@@ -49,7 +48,6 @@ import {
 import Menu from "./Menu.svelte";
 import { fitMenu, type MenuItem } from "./menu";
 import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "./radial";
-import { Domain } from "./section";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { stitchNode } from "./tangents";
 import Timeline from "./Timeline.svelte";
@@ -722,47 +720,19 @@ const convertRow = $derived.by((): MenuItem => {
         action: toGeo ? ctxSolveShape : ctxSolve,
     };
 });
-// the DOMAIN flip row — a force section only (a geo section has no domain, so the row is
-// OMITTED there rather than grayed: the subject rules it out, the way the opposite conversion
-// direction is absent). Its label fits the current domain, one row for the one reachable
-// direction (the conversion row's shape). It grays when the kind fits but the flip can't run
-// (no live bake to map through, a multi-set) — `sectionSolvable`'s own predicate, target
-// Force. Unlike the kind convert this is a REMAP: the profile lands on the other axis, not
-// reset, so it needs no confirm beyond byte-identical undo.
-const domainRow = $derived.by((): MenuItem => {
-    void tick;
-    const toTime = ctxDomain !== Domain.Time;
-    return {
-        label: toTime ? "To time" : "To distance",
-        enabled: canSolveShape,
-        action: ctxFlipDomain,
-    };
-});
-const ctxDomain = $derived.by((): Domain | null => {
-    void tick;
-    if (ctx === null) return null;
-    return sections(ecs).find((x) => x.id === ctx.section)?.domain ?? null;
-});
 // the context menu as data: one array of MenuItems, rendered by the shared menu language —
-// the conversion row, the domain row (force only), then Delete. multi-select (Premiere
-// multi-clip): both invoked rows gray (a set has no single subject, `sectionSolvable`'s own
-// `selected === 1`); Delete carries the set-lifted enablement.
+// the conversion row, then Delete. multi-select (Premiere multi-clip): the conversion row grays
+// (a set has no single subject to convert, `sectionSolvable`'s own `selected === 1`); Delete
+// carries the set-lifted enablement. the destructive Convert row (both single and bulk) was
+// removed (kex2d-geoforce-editor stage 5): redundant with delete + append.
 const ctxItems = $derived.by((): MenuItem[] => {
     if (ctx === null) return [];
     const del = sectionMulti ? ctxDeleteSet : ctxDelete;
     return [
         convertRow,
-        ...(ctxKind === SectionKind.Force ? [domainRow] : []),
         { label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: del },
     ];
 });
-// flip the section's authoring domain, remapping its payload through the live bake — one undo
-// entry (`history.flipDomain`). the menu closes on the write like the delete row does.
-function ctxFlipDomain(): void {
-    if (ctx === null || trackEid === null) return;
-    flipDomain(history, ecs, trackEid, ctx.section);
-    closeContext();
-}
 // convert this geo shape into the force section that reproduces it (`geoforce.ts`) — the
 // conversion row's geo→force half. the menu closes first: the convert is modal, and its own
 // surface owns the screen from here.

@@ -6,8 +6,6 @@ import { cartArc, cartState, CartPlugin } from "./cart";
 import { editor, select, selectionHook } from "./editor";
 import {
     appendSection,
-    beginV0,
-    commit,
     convertSection,
     createForce,
     history,
@@ -15,7 +13,6 @@ import {
     setSelectionHook,
 } from "./history";
 import { RenderPlugin } from "./render";
-import type { Domain } from "./section";
 import { loadSnapSteps } from "./settings";
 import { tangentHandles } from "./tangents";
 import {
@@ -35,10 +32,8 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
-    sectionSpans,
     setSectionLength,
     setTrackV0,
-    toGlobal,
     Track,
     TrackPlugin,
     V0,
@@ -379,35 +374,7 @@ if (import.meta.env.DEV) {
         // real ruler scrub, drags a keyframe, and asserts this held under the re-time.
         cartArc: (): number | null => cartArc(track),
         parked: (): boolean => cartState.get(track)?.held ?? false,
-        append: (kind: number, domain = 0): number =>
-            appendSection(history, ecs, kind as SectionKind, domain as Domain),
-        // author the track's initial speed as SETUP for a flow whose subject is downstream
-        // (the time-domain flow's "an upstream edit re-times the ride"). a real authoring
-        // gesture, just invoked without the START popover's pointer path — that surface has
-        // its own pointer-true flow (`v0 authoring flow`).
-        setV0: (v: number): void => {
-            beginV0(track);
-            setTrackV0(track, v);
-            commit(history);
-        },
-        // the per-section authoring domain (`Section.domain`) — 0 Distance, 1 Time. the
-        // time-domain flow asserts an append lands Time and the menu's flip row remaps it.
-        sectionDomains: (): number[] => sections(ecs).map((x) => x.domain),
-        // a section's force keyframes with BOTH coordinates: the stored native `s` (metres or
-        // seconds, whichever the section's domain says) and the `d` it DRAWS at, resolved
-        // through the live lens. the time-domain flow's whole assertion is that an upstream v0
-        // edit moves `d` while `s` holds — two columns of one read, so they can't drift apart.
-        forcePointsAt: (i: number): { id: number; s: number; g: number; d: number }[] => {
-            const sec = sections(ecs)[i];
-            if (!sec) return [];
-            const spans = sectionSpans(ecs, track);
-            return sectionForces(ecs, sec.id).map((p) => ({
-                id: p.id,
-                s: p.s,
-                g: p.g,
-                d: toGlobal(spans, sec.id, p.s) ?? Number.NaN,
-            }));
-        },
+        append: (kind: number): number => appendSection(history, ecs, kind as SectionKind),
         deleteAt: (i: number): boolean => {
             const s = sections(ecs)[i];
             return s ? removeSection(history, ecs, s.id) : false;
