@@ -195,12 +195,16 @@ async function nodePoint(page: Page, order: number): Promise<{ x: number; y: num
 // shot` captured a feasible 6.0s spiral instead of the insufficient-velocity tail it exists to
 // show — caught by the shot flipping between otherwise-identical runs). Wait out the flat bake
 // first so the ride time MOVING is the hill's own bake landing.
-async function seedHill(page: Page): Promise<void> {
+//
+// `hook` picks WHICH seed: the default single hill, or `seedTwinHill` — two of them back to back,
+// the shape the invoked-solve flow converts (one hill solves in ~0.1s, under a single frame of
+// modal). Same bake wait either way.
+async function seedHill(page: Page, hook = "seedHill"): Promise<void> {
     const tTotal = (): Promise<number> =>
         page.evaluate((): number => (window as any).__kex.tTotal());
     await expect.poll(tTotal).toBeGreaterThan(0); // the flat seed's bake, before the poke
     const flat = await tTotal();
-    await page.evaluate(() => (window as any).__kex.seedHill());
+    await page.evaluate((h: string) => (window as any).__kex[h](), hook);
     await expect.poll(tTotal).not.toBe(flat); // …and now the hill's
 }
 
@@ -436,7 +440,7 @@ test("geo authoring flow", async ({ page, boot }) => {
     // singleton — not a projected DOM value.
     await page.keyboard.press("f");
 
-    const canvas = page.locator("#app > canvas");
+    const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
     const selectedOrder = () =>
@@ -722,7 +726,7 @@ test("tangent edit flow", async ({ page, boot }) => {
     await expect.poll(nodeCount).toBe(7);
     await page.keyboard.press("f");
 
-    const canvas = page.locator("#app > canvas");
+    const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
 
@@ -881,7 +885,7 @@ test("start handle edit flow", async ({ page, boot }) => {
     await expect.poll(tTotal).toBeGreaterThan(0);
     await page.keyboard.press("f");
 
-    const canvas = page.locator("#app > canvas");
+    const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
 
@@ -1925,7 +1929,7 @@ test("multi-section flow", async ({ page, boot }) => {
         return cls.map((c) => c.split(/\s+/).includes("wash"));
     };
 
-    const canvas = page.locator("#app > canvas");
+    const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
 
@@ -2134,6 +2138,169 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await expect.poll(sectionCount).toBe(1);
 });
 
+// Drive the INVOKED GEO→FORCE SOLVE end to end (kex2d-geoforce-editor stage 3): the section
+// menu's Solve force row → the modal (progress climbing, all other input blocked, Cancel and
+// Escape) → the real solve → the document (kind flipped, keyframes landed, the realized step
+// stored) → one undo back to the authored shape, byte-identical.
+//
+// This is the ONE gate that proves the WORKER BUNDLING ships. `convert.ts` spawns its pool with
+// `new Worker(new URL("./convert-worker.ts", import.meta.url))` — the exact shape the bundler
+// rewrites — and bun's test runner resolves that specifier itself, so a build that ships a
+// broken or dev-only worker URL is green everywhere except here.
+test("invoked solve flow", async ({ page, boot }) => {
+    await boot();
+
+    const kinds = () => page.evaluate((): number[] => (window as any).__kex.sectionKinds());
+    const forceCounts = () =>
+        page.evaluate((): number[] => (window as any).__kex.sectionForceCounts());
+    const steps = () => page.evaluate((): number[] => (window as any).__kex.sectionSteps());
+    const lengths = () => page.evaluate((): number[] => (window as any).__kex.sectionLengths());
+    const poses = () => page.evaluate((): number[][] => (window as any).__kex.poses());
+    const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
+    const sectionCount = () => page.evaluate((): number => (window as any).__kex.sectionCount());
+    const scrim = page.locator(".scrim");
+    const strip = dockStrip(page);
+
+    // the twin hill, plus a force section behind it. the second section is what gives the
+    // input-block assert below something to bite: Delete on a LONE section is a no-op whether or
+    // not the modal blocks it, so the gate would pass vacuously on a one-section chain.
+    await seedHill(page, "seedTwinHill");
+    await page.evaluate(() => (window as any).__kex.append(1)); // SectionKind.Force
+    await expect.poll(async () => (await kinds()).join(",")).toBe("0,1");
+    await frameTimeline(page); // append never pans; frame the chain so `.clip.nth()` resolves
+    const appended = await undoDepth(); // the append's own entry — the baseline every assert reads
+
+    // ── 1. The row grays where the solve is impossible, never hides (the bulk-row law): on the
+    // FORCE clip there is no shape to solve. ──
+    await page.locator(".clip").nth(1).click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await expect(
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve force" }),
+    ).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".ctxmenu")).toHaveCount(0);
+
+    // ── 2. On the geo clip it's live. Invoke it, and the modal comes up. ──
+    await page.locator(".clip").nth(0).click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve force" });
+    await expect(solveRow).toBeEnabled();
+    await page.waitForTimeout(SHOT_MS);
+    if (strip) await page.screenshot({ path: join(OUT, "solve-1-menu.png"), clip: strip });
+    await clickMenuItem(page, ".ctxmenu", "Solve force");
+    await expect(scrim).toBeVisible();
+
+    // ── 3. Every other input is blocked while it runs. Del would delete the selected section
+    // (the right-click selected it) and Ctrl+Z would undo the append — both real ops on this exact
+    // state (proven: pressed with no modal up, they do exactly that), so the assert fails the moment
+    // the gate stops swallowing. Read after EACH press: the two are inverses, so a pair read only at
+    // the end passes on a gate that swallowed NEITHER. ──
+    await page.keyboard.press("Delete"); // would remove the selected section
+    await frames(page, 2); // let a leaked op land before reading — the assert is a retention
+    expect(await sectionCount(), "Del reached the editor from behind the modal").toBe(2);
+    await page.keyboard.press("Control+z"); // would undo the append
+    await frames(page, 2);
+    expect(await undoDepth(), "Ctrl+Z reached the editor from behind the modal").toBe(appended);
+    expect((await kinds()).join(",")).toBe("0,1");
+    // …and the OTHER input class the key swallow can't reach: a background control taking focus,
+    // where an Enter/Space becomes a real `click` no keydown handler ever sees. `inert` on the
+    // content is what closes it, so probe exactly that — a focus() the browser must refuse.
+    const probe = await page.evaluate((): string => {
+        const btn = document.querySelector<HTMLElement>(".dock button");
+        if (!btn) return "no background button to probe";
+        btn.focus();
+        return document.activeElement === btn ? "focused" : "refused";
+    });
+    expect(probe, "a background control took focus from behind the modal").toBe("refused");
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "solve-2-modal.png") });
+
+    // ── 4. The Cancel button closes it, writing nothing: the façade is pure, so a cancelled
+    // solve leaves the document exactly as authored and says nothing (the author asked for it). ──
+    await page.locator(".convert .cancel").click();
+    await expect(scrim).toHaveCount(0);
+    expect((await kinds()).join(",")).toBe("0,1");
+    expect((await forceCounts())[0]).toBe(0);
+    expect(await undoDepth()).toBe(appended);
+    await expect(page.locator(".notice")).toHaveCount(0);
+
+    // ── 5. Escape is the same control (the modal is the only live surface, so its dismissal
+    // rung is the cancel). ──
+    await page.locator(".clip").nth(0).click({ button: "right" });
+    await clickMenuItem(page, ".ctxmenu", "Solve force");
+    await expect(scrim).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(scrim).toHaveCount(0);
+    expect((await kinds()).join(",")).toBe("0,1");
+    expect(await undoDepth()).toBe(appended);
+
+    // ── 6. Now let one run to completion. The authored shape is recorded first — undo has to
+    // put every one of these stored f32 back. ──
+    const authored = await poses();
+    expect(authored.length).toBeGreaterThan(2);
+
+    // sample the modal's live progress per FRAME, from the page itself: the solve resolves on its
+    // own schedule, so a poll from the test side could only ever catch it by luck. The sampler
+    // records how many frames the surface was up for and every distinct reading it showed — a
+    // modal that never rendered, or one whose counts never moved, both come back empty.
+    await page.evaluate(() => {
+        const w = window as any;
+        w.__solve = { frames: 0, stats: [] as string[] };
+        const step = (): void => {
+            const el = document.querySelector(".convert .stat");
+            if (el) {
+                const text = (el.textContent ?? "").trim();
+                w.__solve.frames++;
+                if (text !== w.__solve.stats[w.__solve.stats.length - 1])
+                    w.__solve.stats.push(text);
+            }
+            requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+    });
+
+    await page.locator(".clip").nth(0).click({ button: "right" });
+    await clickMenuItem(page, ".ctxmenu", "Solve force");
+    // the solve is seconds long (the twin hill is ~1.3s of probes in bun, more in a browser under
+    // four parallel workers), so this wait is the flow's own budget, not the default 5s.
+    await expect.poll(async () => (await kinds()).join(","), { timeout: 120_000 }).toBe("1,1");
+
+    const log = await page.evaluate(
+        (): { frames: number; stats: string[] } => (window as any).__solve,
+    );
+    expect(log.frames, "the progress surface was never on screen").toBeGreaterThan(0);
+    expect(log.stats.length, `progress never moved: ${JSON.stringify(log.stats)}`).toBeGreaterThan(
+        1,
+    );
+    expect(log.stats[log.stats.length - 1]).toMatch(/probes$/);
+    await expect(scrim).toHaveCount(0); // the gate closed with the answer
+
+    // ── 7. What landed: the section is force, carrying the solve's keyframes, its realized
+    // extent, and its realized step (`Section.ds`, 0 = the track-nominal sentinel — only an
+    // invoked solve ever writes one). One undo entry, on top of the append's. ──
+    expect((await forceCounts())[0]).toBeGreaterThan(1);
+    expect((await lengths())[0]).toBeGreaterThan(0);
+    expect((await steps())[0]).toBeGreaterThan(0);
+    expect(await undoDepth()).toBe(appended + 1);
+
+    // the transient readout: outcome + keys + how far off it landed. Nothing of it is stored.
+    const notice = page.locator(".notice");
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText("Solved to force");
+    await page.waitForTimeout(SHOT_MS);
+    // the whole page: the readout is top-center and the converted curve is in the dock, and this
+    // shot's subject is the pair.
+    await page.screenshot({ path: join(OUT, "solve-3-done.png") });
+
+    // ── 8. One undo, and the geo shape is back byte-identical — every stored node coordinate
+    // and heading, not just the kind. ──
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await kinds()).join(",")).toBe("0,1");
+    expect(await poses()).toEqual(authored);
+    expect((await forceCounts())[0]).toBe(0);
+    expect(await undoDepth()).toBe(appended);
+});
+
 // Drive the CONTENT-ANCHORED PLAYHEAD PARKING flow (section-editor stage 3, fork 4): a
 // mixed geo→force chain with a force keyframe → park the playhead over the force section
 // via a REAL ruler scrub → drag the keyframe's g so the bake re-times → assert the parked
@@ -2223,7 +2390,7 @@ test("v0 authoring flow", async ({ page, boot }) => {
 
     // ── 1. Click the START anchor → its v0 popover appears. The framing (DOCK_RESERVE) is the
     // camera's, not the canvas center — so the click follows it. ──
-    const canvas = page.locator("#app > canvas");
+    const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
     await page.mouse.click(cb.x + cb.width / 2, cb.y + (cb.height - DOCK_RESERVE) / 2);
@@ -2571,7 +2738,7 @@ test("viewport kind color shot", async ({ page, boot }) => {
 
     // zoom the viewport in on the chain start (a real wheel zoom-at-cursor, over the
     // canvas — the default framing already centers the track's origin there).
-    const canvas = page.locator("#app > canvas");
+    const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
     const cx = cb.x + cb.width / 2;
@@ -2652,7 +2819,7 @@ test("viewport infeasible shot", async ({ page, boot }) => {
     await expect.poll(tTotal).toBeGreaterThan(0);
 
     // ── 1. Author the launch speed through the REAL START popover: 16 m/s. ──
-    const canvas = page.locator("#app > canvas");
+    const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
     const cx = cb.x + cb.width / 2;
@@ -2772,7 +2939,7 @@ test("viewport multiselect flow", async ({ page, boot }) => {
     await expect.poll(nodeCount).toBe(7);
     await page.keyboard.press("f"); // hover defaults to the viewport
 
-    const canvas = page.locator("#app > canvas");
+    const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
 

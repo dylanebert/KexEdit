@@ -281,7 +281,13 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   the viewport's own hover read — written per pointermove by `controls.pickSection`, drawn one
   kind-color rung up by the track overlay, cleared on pointer leave and for the whole of any gesture
   (`beginDrag`, the one suppression point); viewport-local, never synced with the clip strip's CSS
-  hover. Plain singleton, read by Svelte via the per-RAF tick.
+  hover. The invoked-solve gate lives here too: `converting` (`{section, phase, keys, probes}` or
+  null — while it's set the modal is up and every other input is blocked) with
+  `beginConvert`/`convertProgress`/`endConvert`, and `notice` (the transient outcome text) with
+  `notify`/`dismissNotice`. `convertProgress` DROPS a report that lands after the gate closed — a
+  cancelled solve's in-flight probe would otherwise raise the modal back with no cancel path left.
+  The gate is pure state; the `AbortController` and the await live with the surface that opened it
+  (`App.svelte`). Plain singleton, read by Svelte via the per-RAF tick.
 - `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
   `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).
@@ -425,10 +431,24 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `readoutFit` (`view.ts`) places it: centered-then-clamped horizontally, flipped above the node
   near the bottom so it never lands under the timeline dock. (Earlier tries: a chip AT the drag
   point overlapped the buttons; a fixed top-left line read too far from the action.)
+  It also owns the **invoked solve**: the section menu's `Solve force` row (enabled by
+  `controls.sectionSolvable` — one geo section with a live bake; grayed otherwise, never hidden),
+  the `solve()` drive around `geoforce.convertGeo` (one `AbortController`, progress folded into
+  `editor.converting`, `editor.solveDone`/`solveFailed` mapping each exit to the readout — cancel
+  says nothing, and a raw thrown message goes to `console.error`, never to the surface), and the
+  **modal** it renders. Blocking input takes two mechanisms: **`inert`** on the whole app content
+  (`.content`, `display: contents`, so it adds no box) — pointer, focus, and activation at once, so
+  no background control can be tabbed to and Enter'd into a real `click` — plus a permanent
+  capture-phase key swallow gated on the live `editor.converting`, for the WINDOW-level listeners
+  (`controls.ts`/`Timeline`) that `inert` doesn't reach (Escape alone acts: it cancels). The
+  `.scrim` is the modal's own surface and suppresses the native context menu; the dialog takes
+  focus on mount, so `aria-modal` is honest. The infeasibility banner and the transient readout are
+  anchored **independently** top-center, the readout on a reserved second row, so neither moves the
+  other in either direction.
 - `main.ts` — boots `run({ defaults: false })` + mounts App, and wires the editor's `SelectionHook`
   into `history` (the one place the two meet). The DEV-only `__kex` hook exposes geo state
   (`nodeCount`/`undoDepth`/`tTotal`/`poses`/`selectEnd`/`selectNode`/`selectedOrder`/`nodeAt`/
-  `startAt`/`seedHill`/`nudge`), tangent state (`tangent`/`mode`/`inX`/`inY`/`outX`/`outY`/
+  `startAt`/`seedHill`/`seedTwinHill`/`nudge`), tangent state (`tangent`/`mode`/`inX`/`inY`/`outX`/`outY`/
   `tangentHandles`/`editing`), force state (`kind`/`forceCount`/`forces`/`convert`/`placeForce`/
   `seedForceBump`), the multi-section ops (`sectionCount`/`sectionKinds`/`append`/`deleteAt`/
   `convertAt`), and the read-only VIEW observables a behavior with no honest DOM assert needs —

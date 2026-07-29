@@ -7,7 +7,7 @@ Roller coaster editor using Force Vector Design (FVD).
 - `packages/core/` — Rust crate. Physics simulation, node graph, binary format (.kex). Only runtime dep: `approx`
 - `plugins/blender/` — Blender 4.2+ addon. `kexedit/` is the addon package (name required by Blender). Flat: ffi.py, types.py, coords.py (no bpy), operators.py, panels.py, properties.py, curve.py, fcurve.py (bpy). Loads core via handle-based FFI (`kex_load` → `kex_build` → `kex_output_read_*`). Python-side `.kex` serializer in `ffi.py` mirrors the format in `packages/core/src/persistence/`
 - `app/` — placeholder for the Shallot-based web editor (not yet implemented)
-- `kex2d/` — 2D coaster prototype (Shallot + Svelte + canvas2D). Sections-of-atoms track model: a chain of geo (author shape → recover force) and force (author F_n → integrate geometry) sections joined by anchor propagation, with structural ops (append/split/join/delete/convert). The authorable geo→force conversion core is landed, with its async cancellable façade and the command core that lands a solve on the document (`kex2d/src/geoforce.ts`); the UI surface that invokes it, and the reverse force→geo fit, remain separate work. Parallel to `app/`. Model + code map: `kex2d/AGENTS.md`
+- `kex2d/` — 2D coaster prototype (Shallot + Svelte + canvas2D). Sections-of-atoms track model: a chain of geo (author shape → recover force) and force (author F_n → integrate geometry) sections joined by anchor propagation, with structural ops (append/split/join/delete/convert) and the invoked geo→force solve landed end to end (`kex2d/src/geoforce.ts` behind a section-menu row + modal); the reverse force→geo fit remains separate work. Parallel to `app/`. Model + code map: `kex2d/AGENTS.md`
 
 ## Rules
 

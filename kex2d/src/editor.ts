@@ -131,6 +131,33 @@ interface EditorState {
      *  defaults to the viewport, so keys route there before the pointer visits the dock;
      *  the dock's enter/leave is the only thing that flips it (the rest is the viewport). */
     hover: Surface;
+    /** the geo→force solve in flight, or null — the MODAL GATE. while it's set the progress
+     *  surface is up and every other editor input is blocked (App's capture-phase swallow + the
+     *  scrim), because the solve's answer is only valid against the shape it was handed. */
+    converting: Converting | null;
+    /** the transient readout of the last solve, or null — the completion outcome or the failure,
+     *  auto-dismissed. it lives here and nowhere else: nothing of a solve past points / length /
+     *  realized `ds` is ever stored on the document. */
+    notice: Notice | null;
+}
+
+/** a solve in flight: the façade's own progress, rewritten per report. */
+export interface Converting {
+    /** the refinement's phase, verbatim from the façade (`"open"` | `"split"` | `"prune"`). a
+     *  plain string so the conversion tier stays off this module's graph. */
+    phase: string;
+    /** keys in the probe just answered. */
+    keys: number;
+    /** probes finished so far. There is deliberately no total — the refinement discovers how many
+     *  it needs as it goes. */
+    probes: number;
+}
+
+/** a transient outcome (root ui.md): the solve's completion readout, or the error surface for a
+ *  diverged / failed / expired one. Text, because it is display and nothing else. */
+export interface Notice {
+    kind: "done" | "error";
+    text: string;
 }
 
 export const editor: EditorState = {
@@ -166,7 +193,110 @@ export const editor: EditorState = {
     dragging: false,
     hoverSection: null,
     hover: "viewport",
+    converting: null,
+    notice: null,
 };
+
+// ── the invoked-solve gate ────────────────────────────────────────────────────────
+// one geo→force solve at a time, modal for its whole duration (`geoforce.ts`: the answer
+// describes the shape the solve was handed, so the document must not move under it). the gate is
+// pure state — the AbortController and the await live with the surface that opened it.
+
+/** open the gate: the modal mounts, all other input is blocked, and the previous solve's readout
+ *  clears. The subject isn't held here — one solve runs at a time and the surface that opened it
+ *  owns the section id, so a copy would only be a second truth to keep in sync. */
+export function beginConvert(): void {
+    editor.converting = { phase: "open", keys: 0, probes: 0 };
+    editor.notice = null;
+}
+
+/** fold a façade progress report into the live gate. A report landing after the gate closed — a
+ *  cancelled solve's in-flight probe — is dropped, or it would raise the modal back over an editor
+ *  that is no longer converting. */
+export function convertProgress(p: { phase: string; keys: number; probes: number }): void {
+    const c = editor.converting;
+    if (c === null) return;
+    c.phase = p.phase;
+    c.keys = p.keys;
+    c.probes = p.probes;
+}
+
+/** close the gate — resolution, cancel, or failure alike. Input is live again. */
+export function endConvert(): void {
+    editor.converting = null;
+}
+
+/** raise the transient readout (the completion outcome, or a failure). */
+export function notify(kind: "done" | "error", text: string): void {
+    editor.notice = { kind, text };
+}
+
+/** clear the transient readout (its auto-dismiss, or a new solve starting). */
+export function dismissNotice(): void {
+    editor.notice = null;
+}
+
+// ── what a finished solve says ────────────────────────────────────────────────────
+// the two pure mappings from a solve's exit onto the readout, kept out of the component so every
+// branch is unit-testable (`tests/editor.test.ts`) — the same move as `controls.sectionSolvable`.
+// They are the ONLY place a solve's outcome becomes words: nothing of a `ConvertResult` past
+// points / length / realized `ds` is ever stored, so this text is where it ends.
+
+/** what the readout needs off a solve's answer — structural, so the conversion tier stays off this
+ *  module's graph (the `SolvedForce` precedent, `track.ts`). */
+export interface SolveOutcome {
+    /** `"floor"` | `"budget"` | `"diverged"` (`refine.ts`'s `RefineOutcome`). */
+    outcome: string;
+    keys: number;
+    deviation: number;
+    floor: number;
+}
+
+/** metres for the readout. `deviation` and `floor` are sub-metre quantities and the loop stops as
+ *  soon as the first drops under the second, so they routinely print equal — that IS the reading
+ *  (it landed inside the floor), not a formatting bug. */
+const metres = (v: number): string => `${v.toFixed(2)} m`;
+
+/** the readout for a solve that RESOLVED. `"diverged"` resolved too but landed nothing (the
+ *  refinement hit an unreadable probe), so it reads as a failure; `"budget"` is a sanctioned
+ *  result that did land, so it reads as done, with its own tail. */
+export function solveDone(r: SolveOutcome): Notice {
+    if (r.outcome === "diverged")
+        return { kind: "error", text: "The solve could not fit this shape. Nothing changed." };
+    // achieved-vs-demanded, the constraint-solver readout (`editor-ui.md`): how far the force
+    // section's shape lands from the geo one, against the floor the solve holds it to.
+    const text = `Solved to force · ${r.keys} keys · ${metres(r.deviation)} off · floor ${metres(r.floor)}`;
+    return { kind: "done", text: r.outcome === "budget" ? `${text} · key budget` : text };
+}
+
+/** the readout for a solve that REJECTED, plus the raw detail for the console.
+ *
+ * One plain sentence per class, never the thrown message: those name sections by id and functions
+ * by name (`convertGeo: section 3 has no live bake`), which tells an author nothing and leaks
+ * internals into the UI. The detail goes to `console.error` instead, where it's for us.
+ * A cancel says nothing at all — the author asked for it, and nothing was written to undo. */
+export function solveFailed(
+    e: unknown,
+    cancelled: boolean,
+): { notice: Notice | null; detail: string | null } {
+    const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    if (cancelled) return { notice: null, detail: null };
+    // `StaleConvert` by NAME, not `instanceof`: importing the class would pull the conversion tier
+    // (and its worker) onto this module's graph for one check. `geoforce.ts` sets `name` in its
+    // constructor, and `tests/editor.test.ts` pins this against the real class.
+    if (e instanceof Error && e.name === "StaleConvert")
+        return {
+            notice: {
+                kind: "error",
+                text: "The track changed while the solve ran. Nothing changed.",
+            },
+            detail,
+        };
+    return {
+        notice: { kind: "error", text: "The solve could not finish. Nothing changed." },
+        detail,
+    };
+}
 
 // ── drag gesture substrate ──
 // every pointer drag routes through `beginDrag`. it (1) takes pointer capture — for event

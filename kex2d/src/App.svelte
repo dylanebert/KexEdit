@@ -5,21 +5,30 @@ import {
     attachControls,
     manipKnobs,
     nodeMembers,
+    sectionSolvable,
     sectionsDeletable,
     selectedMetrics,
     suffixRun,
 } from "./controls";
 import {
+    beginConvert,
     beginDrag,
     closeContext,
     closeNodeMenu,
+    convertProgress,
+    dismissNotice,
     editor,
+    endConvert,
     enterTangentEdit,
     exitTangentEdit,
+    notify,
     select,
     selectSection,
     selectStart,
+    solveDone,
+    solveFailed,
 } from "./editor";
+import { convertGeo } from "./geoforce";
 import {
     beginMove,
     beginV0,
@@ -43,6 +52,7 @@ import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { stitchNode } from "./tangents";
 import Timeline from "./Timeline.svelte";
 import {
+    bakeLive,
     bakeOut,
     exitWorld,
     Handle,
@@ -96,6 +106,77 @@ onMount(() => {
         cancelAnimationFrame(raf);
     };
 });
+
+// ── the invoked geo→force solve ────────────────────────────────────────────────────
+// the section menu's solve row runs `convertGeo` (geoforce.ts) behind a MODAL: the answer is only
+// valid against the shape the solve was handed, so for its whole duration the progress surface is
+// the only live control. blocking is two mechanisms, and it takes both:
+//
+// 1. `inert` on the whole app content while the gate is open (the markup below). That is the
+//    STRUCTURAL half — pointer, focus, and activation in one attribute: nothing behind the scrim
+//    can be tabbed to, so no background button can take an Enter/Space that turns into a real
+//    `click` no key handler ever sees. A scrim alone only stops the pointer.
+// 2. this capture-phase key swallow, for the WINDOW-level listeners (controls.ts, Timeline), which
+//    `inert` doesn't touch — they're bound to `window`, not to any inert element. Escape is the
+//    one key that acts: it cancels, exactly like the Cancel button.
+//
+// the listener is PERMANENT and gates on the live `editor.converting` — the dismissal standard
+// every menu here wears (AGENTS.md: a tick-derived lifetime outlives the state change by a frame,
+// and a capture-phase swallow that outlives its own layer eats the next key). it's registered
+// before the two menu Escape handlers below, so the gate wins the key while it's up.
+let solveAbort: AbortController | null = null;
+onMount(() => {
+    const onKey = (e: KeyboardEvent): void => {
+        if (editor.converting === null) return;
+        // stop the app's own handlers, never the browser's: `preventDefault` here would take the
+        // page's reload/find keys hostage for the length of a solve, which a modal has no business
+        // doing. Nothing in this app scrolls on a key, so there is no default worth cancelling.
+        e.stopImmediatePropagation();
+        if (e.key === "Escape") cancelSolve();
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+});
+
+// cancel the live solve — the Cancel button, Escape, and nothing else. `convertGeo` rejects with
+// this reason, and the façade terminates its pool; the document was never written, so a cancel
+// closes the modal and says nothing (the author asked for it).
+function cancelSolve(): void {
+    solveAbort?.abort(new Error("cancelled"));
+}
+
+// the readout's auto-dismiss (root ui.md: a transient outcome is a toast). re-raised per solve, so
+// a new solve's readout replaces the previous one's remaining time instead of stacking.
+const NOTICE_MS = 6000;
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+function raise(n: { kind: "done" | "error"; text: string }): void {
+    notify(n.kind, n.text);
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(dismissNotice, NOTICE_MS);
+}
+
+// run the solve on a section, modal for its duration. the document is written once, inside
+// `convertGeo`, at resolution — so every path out of here (cancel, diverged, a worker failure, an
+// answer that expired) leaves the track exactly as it was and only the readout differs.
+async function solve(section: number): Promise<void> {
+    if (editor.converting !== null) return; // one at a time (the gate's own reentrancy guard)
+    const controller = new AbortController();
+    solveAbort = controller;
+    beginConvert();
+    try {
+        raise(solveDone(await convertGeo(history, ecs, section, {
+            signal: controller.signal,
+            onProgress: convertProgress,
+        })));
+    } catch (e) {
+        const { notice, detail } = solveFailed(e, controller.signal.aborted);
+        if (detail !== null) console.error(detail); // the internals go here, never to the readout
+        if (notice !== null) raise(notice);
+    } finally {
+        solveAbort = null;
+        endConvert();
+    }
+}
 
 // whether the node selection is a multi-set. the CANVAS shows NO contextual controls over one
 // (editor-ui.md multi law, user-locked after three feel rounds): the whole node-action ring — both
@@ -570,16 +651,27 @@ const canDelete = $derived.by((): boolean => {
     void tick;
     return sectionsDeletable(editor.sections.ids.size, sections(ecs).length);
 });
+// whether the invoked solve is available on this selection (`sectionSolvable`, controls.ts): one
+// geo section with a live bake. `convertGeo` THROWS on each of those, so this enablement is the
+// gate, not a hint — and it grays rather than hides (the bulk-row law), so the row is discoverable
+// on a force section and on a multi-set alike.
+const canSolve = $derived.by((): boolean => {
+    void tick;
+    return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs));
+});
 // the context menu as data: one array of MenuItems, rendered by the shared menu language.
-// single-select: Convert names the destination kind (today's row). multi-select (Premiere
-// multi-clip): Convert flips EVERY selected section's own kind — there's no shared destination to
-// converge on (`convertSection` has no direction parameter, it just swaps a section's own kind), so
-// the row reads generic; Delete carries the set-lifted enablement.
+// single-select: Convert names the destination kind (today's row), Solve force is the invoked
+// geo→force tool beside it (`canSolve`), Delete last. multi-select (Premiere multi-clip): Convert
+// flips EVERY selected section's own kind — there's no shared destination to converge on
+// (`convertSection` has no direction parameter, it just swaps a section's own kind), so the row
+// reads generic; Solve force grays (a set has no single subject to solve); Delete carries the
+// set-lifted enablement.
 const ctxItems = $derived.by((): MenuItem[] => {
     if (ctx === null) return [];
     if (sectionMulti) {
         return [
             { label: "Convert", action: ctxConvertSet },
+            { label: "Solve force", enabled: false },
             {
                 label: "Delete",
                 shortcut: "Del",
@@ -591,6 +683,7 @@ const ctxItems = $derived.by((): MenuItem[] => {
     }
     return [
         { label: `Convert to ${ctxTarget}`, action: ctxConvert },
+        { label: "Solve force", enabled: canSolve, action: ctxSolve },
         { label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: ctxDelete },
     ];
 });
@@ -598,6 +691,16 @@ function ctxConvert(): void {
     if (ctx === null) return;
     convertSection(history, ecs, ctx.section); // destructive, undoable
     closeContext();
+}
+// the ADDITIVE row beside it: solve this geo shape into the force section that reproduces it
+// (`geoforce.ts`). the destructive Convert above is untouched — it stays the "reset to this kind's
+// default" affordance, and this is the invoked tool. the menu closes first: the solve is modal, and
+// its own surface owns the screen from here.
+function ctxSolve(): void {
+    if (ctx === null) return;
+    const section = ctx.section;
+    closeContext();
+    void solve(section);
 }
 function ctxDelete(): void {
     if (ctx === null) return;
@@ -640,6 +743,38 @@ onMount(() => {
         window.removeEventListener("pointerdown", onDown, { capture: true });
         window.removeEventListener("keydown", onEsc, { capture: true });
     };
+});
+
+// the modal's projected state, read through the per-RAF tick like the rest of `editor`. TWO
+// PRIMITIVES, not the object: `editor.converting` is mutated in place per progress report, so a
+// derived handing back that same reference compares `===` equal and the surface would never update.
+// A string re-renders exactly when the text changes.
+const solving = $derived.by((): boolean => {
+    void tick;
+    return editor.converting !== null;
+});
+const solveText = $derived.by((): string => {
+    void tick;
+    const c = editor.converting;
+    // no total — the refinement discovers how many probes it needs, so a denominator would be
+    // invented (convert.ts). the counts climbing IS the liveness signal.
+    return c === null ? "" : `${c.phase} · ${c.keys} keys · ${c.probes} probes`;
+});
+// the transient readout, the same way: its text, and whether it's the failure register.
+const noticeText = $derived.by((): string => {
+    void tick;
+    return editor.notice?.text ?? "";
+});
+const noticeBad = $derived.by((): boolean => {
+    void tick;
+    return editor.notice?.kind === "error";
+});
+// focus the dialog when it mounts, so `aria-modal` is honest and the first Tab lands inside it
+// (the content is `inert`, so Cancel is the only thing left to reach). the element ref is what
+// says it's mounted; nothing else writes focus while the gate is open.
+let dialogEl = $state<HTMLDivElement | undefined>(undefined);
+$effect(() => {
+    dialogEl?.focus();
 });
 
 // the track START anchor (initial-speed handle): selectable in the viewport, it summons
@@ -721,171 +856,212 @@ $effect(() => {
 });
 </script>
 
-<canvas bind:this={canvas}></canvas>
+<!-- everything the modal blocks lives in here. `display: contents` so it adds no box and the
+     layout is exactly as if the wrapper weren't there; `inert` while a solve runs takes pointer,
+     focus, and activation from the whole subtree at once (the scrim below is its sibling, so it
+     stays live). -->
+<div class="content" inert={solving}>
+    <!-- the shaping viewport. `.viewport` is its stable hook: the harness drives it by class, not
+         by depth under `#app`, so wrapping it (the inert content) can't silently unhook it. -->
+    <canvas class="viewport" bind:this={canvas}></canvas>
 
-<!-- the snap readout: the selected node's live metrics — its authored world exit heading (°) + the
-     chord to the previous node (m), uniformly for a tip and an interior alike; a live drag feeds the
-     same two through the gesture's own source (the Blender modal-transform readout). shown whenever a
-     node is selected, centered below it, offset clear of the node-action ring's buttons by construction.
-     rendered off-screen for one measure pass until `readoutFit` places it from the measured box. -->
-{#if readoutAnchor}
-    <div
-        class="snap-readout"
-        bind:this={readoutEl}
-        style={readoutXY
-            ? `left: ${readoutXY.x}px; top: ${readoutXY.y}px;`
-            : "left: -9999px; top: -9999px;"}
-    >
-        {snapText}
-    </div>
-{/if}
+    <!-- the snap readout: the selected node's live metrics — its authored world exit heading (°) + the
+         chord to the previous node (m), uniformly for a tip and an interior alike; a live drag feeds the
+         same two through the gesture's own source (the Blender modal-transform readout). shown whenever a
+         node is selected, centered below it, offset clear of the node-action ring's buttons by construction.
+         rendered off-screen for one measure pass until `readoutFit` places it from the measured box. -->
+    {#if readoutAnchor}
+        <div
+            class="snap-readout"
+            bind:this={readoutEl}
+            style={readoutXY
+                ? `left: ${readoutXY.x}px; top: ${readoutXY.y}px;`
+                : "left: -9999px; top: -9999px;"}
+        >
+            {snapText}
+        </div>
+    {/if}
 
-{#if infeasible}
-    <div class="warning" role="alert">
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path
-                d="M8 1 L15 14 L1 14 Z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.4"
-                stroke-linejoin="round"
-            />
-            <path
-                d="M8 6 L8 10 M8 11.8 L8 12.3"
-                stroke="currentColor"
-                stroke-width="1.4"
-                stroke-linecap="round"
-            />
-        </svg>
-        <span>Insufficient velocity</span>
-    </div>
-{/if}
+    <!-- the two status surfaces, top-center: the standing infeasibility banner, and BELOW IT the
+         transient readout a finished solve raises. each is anchored on its own (the readout's row is
+         reserved, held whether or not the banner is up), so neither one appearing or clearing moves
+         the other in either direction. -->
+    {#if infeasible}
+        <div class="warning" role="alert">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                    d="M8 1 L15 14 L1 14 Z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linejoin="round"
+                />
+                <path
+                    d="M8 6 L8 10 M8 11.8 L8 12.3"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                />
+            </svg>
+            <span>Insufficient velocity</span>
+        </div>
+    {/if}
+    {#if noticeText}
+        <div class="notice" class:bad={noticeBad} role="status">{noticeText}</div>
+    {/if}
 
-<!-- the extend (add-node) button on the ring's front slot (feel round 12): a real `.rbtn` at the
-     selected chain end, along the heading where the next piece lays. a click appends (Enter's twin);
-     delete stays off the ring (Del key + node menu). -->
-{#if extendBtn}
-    <button
-        type="button"
-        class="rbtn extend"
-        title="Add node (Enter)"
-        aria-label="Add node"
-        style="left: {extendBtn.x}px; top: {extendBtn.y}px;"
-        onclick={onExtend}
-    >
-        <!-- add node: a segment stub laying a new node (the filled dot) at the growing end. -->
-        <svg viewBox="0 0 14 14" aria-hidden="true">
-            <path
-                d="M2.5 11.5 L8.4 5.6"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-            />
-            <circle cx="10.3" cy="3.7" r="2.7" fill="currentColor" />
-        </svg>
-    </button>
-{/if}
+    <!-- the extend (add-node) button on the ring's front slot (feel round 12): a real `.rbtn` at the
+         selected chain end, along the heading where the next piece lays. a click appends (Enter's twin);
+         delete stays off the ring (Del key + node menu). -->
+    {#if extendBtn}
+        <button
+            type="button"
+            class="rbtn extend"
+            title="Add node (Enter)"
+            aria-label="Add node"
+            style="left: {extendBtn.x}px; top: {extendBtn.y}px;"
+            onclick={onExtend}
+        >
+            <!-- add node: a segment stub laying a new node (the filled dot) at the growing end. -->
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+                <path
+                    d="M2.5 11.5 L8.4 5.6"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                />
+                <circle cx="10.3" cy="3.7" r="2.7" fill="currentColor" />
+            </svg>
+        </button>
+    {/if}
 
-<!-- the two polar manipulator knobs — real `.rbtn` buttons on the node-action ring flanking the
-     extend button (measure at −60°, pitch at +60°). a press enters the drag gesture (onManip →
-     startManip), not a click. positioned absolutely at the shared-ring screen points, so
-     hover/active/cursor come for free. -->
-{#if manip}
-    <button
-        type="button"
-        class="rbtn manip manip-length"
-        title="Length"
-        aria-label="Length"
-        style="left: {manip.length.x}px; top: {manip.length.y}px;"
-        onpointerdown={(e) => onManip(e, "length")}
-    >
-        <!-- length: a ruler (bar + edge ticks) — drag to set the chord length to the previous node. -->
-        <svg viewBox="0 0 14 14" aria-hidden="true">
-            <rect
-                x="1.5"
-                y="4.4"
-                width="11"
-                height="5.2"
-                rx="0.6"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.4"
-            />
-            <path
-                d="M4.3 4.4 L4.3 6.6 M7 4.4 L7 6.6 M9.7 4.4 L9.7 6.6"
-                stroke="currentColor"
-                stroke-width="1.4"
-                stroke-linecap="round"
-            />
-        </svg>
-    </button>
-    <button
-        type="button"
-        class="rbtn manip manip-angle"
-        title="Pitch"
-        aria-label="Pitch"
-        style="left: {manip.angle.x}px; top: {manip.angle.y}px;"
-        onpointerdown={(e) => onManip(e, "angle")}
-    >
-        <!-- angle/pitch: a double-headed vertical arrow (↕) — drag to rotate the node about the previous. -->
-        <svg viewBox="0 0 14 14" aria-hidden="true">
-            <path
-                d="M7 1.6 L7 12.4 M4.3 4.3 L7 1.6 L9.7 4.3 M4.3 9.7 L7 12.4 L9.7 9.7"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.4"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-            />
-        </svg>
-    </button>
-{/if}
+    <!-- the two polar manipulator knobs — real `.rbtn` buttons on the node-action ring flanking the
+         extend button (measure at −60°, pitch at +60°). a press enters the drag gesture (onManip →
+         startManip), not a click. positioned absolutely at the shared-ring screen points, so
+         hover/active/cursor come for free. -->
+    {#if manip}
+        <button
+            type="button"
+            class="rbtn manip manip-length"
+            title="Length"
+            aria-label="Length"
+            style="left: {manip.length.x}px; top: {manip.length.y}px;"
+            onpointerdown={(e) => onManip(e, "length")}
+        >
+            <!-- length: a ruler (bar + edge ticks) — drag to set the chord length to the previous node. -->
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+                <rect
+                    x="1.5"
+                    y="4.4"
+                    width="11"
+                    height="5.2"
+                    rx="0.6"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                />
+                <path
+                    d="M4.3 4.4 L4.3 6.6 M7 4.4 L7 6.6 M9.7 4.4 L9.7 6.6"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <button
+            type="button"
+            class="rbtn manip manip-angle"
+            title="Pitch"
+            aria-label="Pitch"
+            style="left: {manip.angle.x}px; top: {manip.angle.y}px;"
+            onpointerdown={(e) => onManip(e, "angle")}
+        >
+            <!-- angle/pitch: a double-headed vertical arrow (↕) — drag to rotate the node about the previous. -->
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+                <path
+                    d="M7 1.6 L7 12.4 M4.3 4.3 L7 1.6 L9.7 4.3 M4.3 9.7 L7 12.4 L9.7 9.7"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                />
+            </svg>
+        </button>
+    {/if}
 
-<!-- the node context menu (Handles toggle + a Tangents ▸ submenu): summoned by right-click on
-     any pickable node, an instance of the shared menu language (Menu.svelte) placed at the cursor
-     by `fitMenu` — its top-left at the point (never covering the invoker), flipping up/left to
-     stay in the viewport near an edge — the same look + placement as the section context menu. -->
-{#if nmenu}
-    <div class="nodemenu menu" use:fitMenu={{ x: nmenu.x, y: nmenu.y }} role="menu" aria-label="Node">
-        <Menu items={nodeItems} onclose={closeNodeMenu} />
-    </div>
-{/if}
+    <!-- the node context menu (Handles toggle + a Tangents ▸ submenu): summoned by right-click on
+         any pickable node, an instance of the shared menu language (Menu.svelte) placed at the cursor
+         by `fitMenu` — its top-left at the point (never covering the invoker), flipping up/left to
+         stay in the viewport near an edge — the same look + placement as the section context menu. -->
+    {#if nmenu}
+        <div class="nodemenu menu" use:fitMenu={{ x: nmenu.x, y: nmenu.y }} role="menu" aria-label="Node">
+            <Menu items={nodeItems} onclose={closeNodeMenu} />
+        </div>
+    {/if}
 
-<!-- the section context menu (Convert / Delete): summoned by right-click on a clip or a
-     viewport section span; occasional destructive ops, so hidden until summoned. Convert
-     is a single contextual item naming the target kind (a section is one of two kinds, so
-     the flip is unambiguous) — one click, no submenu. -->
-{#if ctx}
-    <div class="ctxmenu menu" use:fitMenu={{ x: ctx.x, y: ctx.y }} role="menu">
-        <Menu items={ctxItems} onclose={closeContext} />
-    </div>
-{/if}
+    <!-- the section context menu (Convert / Delete): summoned by right-click on a clip or a
+         viewport section span; occasional destructive ops, so hidden until summoned. Convert
+         is a single contextual item naming the target kind (a section is one of two kinds, so
+         the flip is unambiguous) — one click, no submenu. -->
+    {#if ctx}
+        <div class="ctxmenu menu" use:fitMenu={{ x: ctx.x, y: ctx.y }} role="menu">
+            <Menu items={ctxItems} onclose={closeContext} />
+        </div>
+    {/if}
 
-<!-- the track START anchor's initial-speed field: a popover summoned AT the diamond (on
-     the object). one row — the v₀ label doubles as a scrub handle, the input types it;
-     each edit is one undo entry. -->
-{#if startSel && startPos}
-    {@const vText = v0.toFixed(1)}
-    <div class="vtip" style="left: {startPos.x}px; top: {startPos.y}px">
-        <div class="fld">
-            <span class="key" onpointerdown={v0ScrubStart} role="presentation">v₀</span>
-            <input
-                type="number"
-                step="0.5"
-                min="0"
-                value={vText}
-                onchange={onV0Field}
-                onfocus={(e) => e.currentTarget.select()}
-                onkeydown={(e) => v0Keydown(e, vText)}
-                aria-label="Initial speed (m/s)"
-            />
-            <span class="unit">m/s</span>
+    <!-- the track START anchor's initial-speed field: a popover summoned AT the diamond (on
+         the object). one row — the v₀ label doubles as a scrub handle, the input types it;
+         each edit is one undo entry. -->
+    {#if startSel && startPos}
+        {@const vText = v0.toFixed(1)}
+        <div class="vtip" style="left: {startPos.x}px; top: {startPos.y}px">
+            <div class="fld">
+                <span class="key" onpointerdown={v0ScrubStart} role="presentation">v₀</span>
+                <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    value={vText}
+                    onchange={onV0Field}
+                    onfocus={(e) => e.currentTarget.select()}
+                    onkeydown={(e) => v0Keydown(e, vText)}
+                    aria-label="Initial speed (m/s)"
+                />
+                <span class="unit">m/s</span>
+            </div>
+        </div>
+    {/if}
+
+    <Timeline {ecs} eid={trackEid} {tick} />
+</div>
+
+<!-- the conversion modal, OUTSIDE the inert wrapper: up for the whole solve, and the only live
+     control while it is. the scrim takes every pointer (it covers the canvas AND the dock) and
+     swallows the native context menu; keys and focus are handled in the script / by `inert`. the
+     counts climb per probe — no bar, because the refinement has no total to divide by. -->
+{#if solving}
+    <div class="scrim" role="presentation" oncontextmenu={(e) => e.preventDefault()}>
+        <!-- `aria-live="off"`: a probe lands several times a second and hundreds of times at
+             stress scale, so announcing each one would be a stream, not information. The dialog's
+             own label carries the state. -->
+        <div
+            class="convert"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Solving force"
+            tabindex="-1"
+            bind:this={dialogEl}
+        >
+            <div class="title">Solving force</div>
+            <div class="stat" aria-live="off">{solveText}</div>
+            <button type="button" class="cancel" title="Cancel (Esc)" onclick={cancelSolve}>
+                Cancel
+            </button>
         </div>
     </div>
 {/if}
-
-<Timeline {ecs} eid={trackEid} {tick} />
 
 <style>
     :root,
@@ -909,6 +1085,13 @@ $effect(() => {
         --guide: #9aa0a6; /* snap-guide neutral gray (timeline + viewport); mirrors colors.ts COLOR_GUIDE_RAY */
         --border: rgba(255, 255, 255, 0.08);
         --shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+    }
+
+    /* the modal's inert subject. `display: contents` generates no box, so it is neither a
+       containing block nor a layout participant — every child positions exactly as it did before
+       the wrapper existed. */
+    .content {
+        display: contents;
     }
 
     canvas {
@@ -949,11 +1132,16 @@ $effect(() => {
         white-space: nowrap;
         pointer-events: none;
     }
+    /* the two status surfaces are anchored INDEPENDENTLY, top-center: the banner on the first row,
+       the transient readout on a reserved second row (`NOTICE_TOP` = the banner's own height plus
+       the gap). Stacking them in one flow column would have made the banner appearing shove a
+       readout mid-sentence — status shifts nothing beside it, in either direction (root ui.md). */
     .warning {
         position: absolute;
         top: 16px;
         left: 50%;
         transform: translateX(-50%);
+        z-index: 4;
         display: inline-flex;
         align-items: center;
         gap: 8px;
@@ -973,6 +1161,98 @@ $effect(() => {
         width: 14px;
         height: 14px;
         color: #e26d5c;
+    }
+    /* the transient solve readout (root ui.md's transient outcome): the same opaque chrome as the
+       rest, auto-dismissed, on its own reserved row under the banner. It carries a SENTENCE on a
+       failure, so it wraps inside a bounded width rather than running off both viewport edges —
+       and a wrapped pill reads broken, hence the plain radius. `.bad` is the failure register,
+       the one semantic color, matching the banner. */
+    .notice {
+        position: absolute;
+        top: 57px; /* 16px inset + the banner's 27px box + an 8px gap and + 6px vertical padding */
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 4;
+        max-width: min(520px, 80vw);
+        padding: 6px 12px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: var(--shadow);
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 12px;
+        text-align: center;
+        color: var(--fg);
+        user-select: none;
+        pointer-events: none;
+        animation: fade-in 120ms ease;
+    }
+    .notice.bad {
+        border-color: rgba(226, 109, 92, 0.5);
+        color: #f0bdb1;
+    }
+    /* the shared entrance for the surfaces that just appear (readout, scrim) — no travel, so it
+       reads as arriving rather than sliding. */
+    @keyframes fade-in {
+        from {
+            opacity: 0;
+        }
+    }
+
+    /* the conversion modal. the scrim is the pointer half of the input block (the key half is the
+       capture-phase swallow in the script): it covers the canvas and the dock, so nothing under it
+       is reachable while a solve runs. */
+    .scrim {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.45);
+        animation: fade-in 120ms ease;
+    }
+    .convert {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        min-width: 240px;
+        padding: 16px 20px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: var(--shadow);
+        font-family: "Outfit", system-ui, sans-serif;
+        user-select: none;
+    }
+    .convert .title {
+        font-size: 12px;
+        color: var(--fg);
+    }
+    /* the live counts: monospace + tabular figures so a climbing probe count doesn't jitter the
+       row's width. */
+    .convert .stat {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+    }
+    .convert .cancel {
+        all: unset;
+        box-sizing: border-box;
+        padding: 5px 14px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font-size: 11px;
+        color: var(--muted);
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+    }
+    .convert .cancel:hover {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+        color: var(--fg);
     }
 
     /* the round `.rbtn` button — the dark shell every ring affordance wears (the two manipulator

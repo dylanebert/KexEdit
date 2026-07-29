@@ -450,6 +450,19 @@ export function sectionsDeletable(selected: number, total: number): boolean {
     return selected > 0 && selected < total;
 }
 
+/** whether the invoked geo→force solve is available on a section selection: exactly ONE section,
+ *  geo, and a bake that IS the authored state. All three are `convertGeo`'s own guards, which
+ *  *throw* — the solve reads the bake's entry frame and sample budget, so a stale bake would hand
+ *  it a shape that isn't on screen, and a set has no single subject to solve. The row grays out
+ *  otherwise (never hidden). Pure — device-free, unit-tested. */
+export function sectionSolvable(
+    selected: number,
+    kind: SectionKind | null,
+    live: boolean,
+): boolean {
+    return selected === 1 && kind === SectionKind.Geo && live;
+}
+
 /** wrap a degree value into (−180, 180]. */
 export function normDeg(d: number): number {
     const w = ((((d + 180) % 360) + 360) % 360) - 180;

@@ -34,10 +34,10 @@ arbitrating authoring intent almost never does what's intended — the author fi
 architecture is two deterministic, legible atoms — force→geometry and geometry→force — with
 authoring layers on top. Optimization exists only as a **scoped, invoked tool** over those atoms:
 the authorable geo→force conversion core is landed and lab-gated, so is the async, cancellable
-façade (`convert.ts` — worker pool, progress, abort), and so is the command core that lands a
-solve on the document (`geoforce.ts` — one undo entry, byte-identical undo, guarded against a
-stale or concurrent solve). What's still missing is the UI surface that invokes it. Reverse
-force→geo remains separate work. The kernel atoms and lab pages stay in-tree and oracle-gated.
+façade (`convert.ts` — worker pool, progress, abort), the command core that lands a solve on the
+document (`geoforce.ts` — one undo entry, byte-identical undo, guarded against a stale or
+concurrent solve), and the modal surface that invokes it (Section ops, below). Reverse force→geo
+remains separate work. The kernel atoms and lab pages stay in-tree and oracle-gated.
 
 **Positions and force keyframes are the two authoring substrates** — both sparse, density
 unbounded; the dense baked chain is always derived, never canonical (dense-vs-sparse is a false
@@ -53,21 +53,16 @@ served as a derived view or an invoked fit, never as the store.
 an **entry** anchor (a full state point `{x, y, θ, v}`) and produces sampled points; its last
 point IS the next section's entry. `evalGeo` (geometry → force), `evalForce` (force → geometry),
 `chain` (thread sections into one flat SoA, sharing boundary points). Two design laws carried from
-the original core (both pinned in `tests/section.test.ts`):
-
-- **The force curve is ALWAYS geometry-recovered, even for a force section** — a force section
-  integrates the authored F_n, then re-recovers the display force from the swept geometry, so
-  there is ONE display path regardless of section kind. The recovered force sits O(ds) off the
-  authored input — a derived gap, not a bug — and `evalForce`'s exit uses the recovered state too.
-- **Rigid entry-frame placement** — geo nodes are stored **section-local** (node 0 pinned at
-  `{0,0,0}` = the section entry); the substrate `place()`s them rigidly at the entry frame, so an
-  upstream edit translates+rotates the downstream shape rigidly — C1 join guaranteed, shaping
-  preserved. Only the drag converts world→local (`localize`, the exact inverse of `place`).
+the original core govern it — **the force curve is ALWAYS geometry-recovered**, even for a force
+section (one display path regardless of kind), and **rigid entry-frame placement** (geo nodes are
+stored section-local, node 0 pinned at the entry, so an upstream edit carries the downstream shape
+rigidly). Both are pinned in `tests/section.test.ts`.
 
 `track.BakeSystem` threads every section through ONE `chain(START, payloads)` call → the flat
 `samples`/`bakeOut` SoA + the per-section `sectionInfo` map; cart/render/timeline are kind- and
-count-agnostic. f32 throughout — these atoms ARE the realized-track display path. Full substrate
-detail + the physics (integrator, force recovery, constants): `.claude/rules/kex2d-map.md`.
+count-agnostic. f32 throughout — these atoms ARE the realized-track display path. Both laws in
+full, the substrate detail, and the physics (integrator, force recovery, constants):
+`.claude/rules/kex2d-map.md`.
 
 ## Model (geo authoring)
 
@@ -196,14 +191,11 @@ editor-ui invariant-domain rule).
 
 ## Code map
 
-The per-file map (what each module owns, its seams and test homes) + the external references:
-`.claude/rules/kex2d-map.md`. Layers: pure substrate + physics atoms (`section.ts`, `forward.ts`,
-`spline.ts`, `bake.ts`, `profile.ts`); invoked conversion/optimization atoms, NOT on the live
-editor path (`force.ts`, `banded.ts`, `collocate.ts`, `census.ts`, `fit.ts`, `polish.ts`,
-`refine.ts`, `convert.ts` + `convert-worker.ts`, `playback.ts`); ECS + UI (`track.ts`,
-`cart.ts`, `editor.ts`, `history.ts`, `geoforce.ts`, `controls.ts`, `magnet.ts`, `settings.ts`,
-`manipulator.ts`, `radial.ts`, `tangents.ts`, `timeline.ts`, `Timeline.svelte`,
-`menu.ts` + `Menu.svelte`, `App.svelte` / `render.ts` / `view.ts`, `main.ts`).
+The per-file map — what each module owns, its seams and test homes, module by module — plus the
+external references: `.claude/rules/kex2d-map.md`. It groups `src/` in three layers: the pure
+substrate + physics atoms (`section.ts` and friends), the invoked conversion/optimization atoms,
+NOT on the live editor path (`convert.ts`, `refine.ts`, `polish.ts` …), and the ECS + UI layer that
+IS the app (`track.ts`, `history.ts`, `geoforce.ts`, `App.svelte`/`Timeline.svelte` …).
 
 ## Editing model
 
@@ -245,7 +237,10 @@ offset. Keyframes, not constraints. Snap + interaction conventions: `editor-ui.m
 **Section ops** (the multi-section chain) — select a section by clicking its **clip** in the timeline
 marker lane (or its viewport polyline span); a force clip's right edge is its extent trim, and a `+`
 tail after the last clip appends (geo/force flyout). **Right-click a clip or span** for
-the context menu: Convert (destructive geo↔force, undoable) + Delete (`Del`). Split and join left the
+the context menu: Convert (destructive geo↔force, undoable), **Solve force** (the invoked
+geo→force solve, `geoforce.ts` behind a **modal** — live `{phase, keys, probes}`, Cancel or Esc,
+every other input blocked, then a transient outcome readout; live only on a single geo section with
+a live bake, grayed otherwise; name provisional), and Delete (`Del`). Split and join left the
 editor — reserved for invoked tools (the substrate `splitGeo`/`splitForce`/`joinNext` + tests stay
 in-tree as their reference). Boundary anchors draw as viewport diamonds + chart
 vertical guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo
@@ -323,7 +318,11 @@ via a whole-track snapshot pair (byte-identical).
   (capture-phase + `stopImmediatePropagation`) or is non-idempotent, that lag is a defect: make
   the listener permanent (`onMount`) and early-return on the live `editor.*` field. All three
   menus (node, section ctx, Timeline force) wear this shape — it's the dismissal standard a new
-  menu copies. A lagging listener that only re-calls an idempotent close is tolerable.
+  menu copies, and the solve modal's key gate (`editor.converting`) is the fourth instance. A
+  lagging listener that only re-calls an idempotent close is tolerable. Its twin on the read side:
+  a tick-derived read must hand back PRIMITIVES, never a mutated object — the modal's progress is
+  rewritten in place, so a `$derived` returning that same reference compares `===` equal and the
+  surface never updates.
 
 ## Verify
 

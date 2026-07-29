@@ -1,10 +1,17 @@
 import { beforeEach, expect, test } from "bun:test";
 import {
+    beginConvert,
     closeContext,
+    convertProgress,
+    dismissNotice,
     editor,
+    endConvert,
     enterForceEdit,
     enterTangentEdit,
+    notify,
     openContext,
+    solveDone,
+    solveFailed,
     type Selection,
     select,
     selectForce,
@@ -15,6 +22,7 @@ import {
     setMember,
     toggleMember,
 } from "../src/editor";
+import { StaleConvert } from "../src/geoforce";
 
 // the selection substrate: a per-kind set + active member, single-select the size-1 case. these are
 // pure editor-state tests — the select* APIs touch no ECS (only the SelectionHook does; its
@@ -254,4 +262,106 @@ test("openContext outside the set replace-selects just the target (today's singl
     openContext(10, 20, 9); // right-click a section NOT in the set
     expect([...editor.sections.ids]).toEqual([9]); // replaced, not kept
     expect(editor.sections.active).toBe(9);
+});
+
+// ── the invoked-solve gate (kex2d-geoforce-editor stage 3) ──
+// the modal's state, device-free: what opens it, what a progress report may write, and what a
+// report arriving after it closed may NOT write.
+
+test("beginConvert opens the gate zeroed and clears the previous readout", () => {
+    notify("done", "an earlier solve");
+    beginConvert();
+    expect(editor.converting).toEqual({ phase: "open", keys: 0, probes: 0 });
+    expect(editor.notice).toBeNull(); // a new solve's modal never carries the last one's result
+    endConvert();
+    expect(editor.converting).toBeNull();
+});
+
+test("convertProgress folds a report into the live gate", () => {
+    beginConvert();
+    convertProgress({ phase: "split", keys: 9, probes: 4 });
+    expect(editor.converting).toEqual({ phase: "split", keys: 9, probes: 4 });
+    convertProgress({ phase: "prune", keys: 12, probes: 30 });
+    expect(editor.converting).toEqual({ phase: "prune", keys: 12, probes: 30 });
+    endConvert();
+});
+
+test("a progress report landing after the gate closed is dropped", () => {
+    // a cancelled solve's in-flight probe still reports; writing it would raise the modal back
+    // over an editor that is no longer converting, with no cancel path left to close it.
+    beginConvert();
+    endConvert();
+    convertProgress({ phase: "prune", keys: 12, probes: 30 });
+    expect(editor.converting).toBeNull();
+});
+
+test("a notice is raised and dismissed on its own, without touching the gate", () => {
+    notify("error", "The solve diverged.");
+    expect(editor.notice).toEqual({ kind: "error", text: "The solve diverged." });
+    expect(editor.converting).toBeNull();
+    dismissNotice();
+    expect(editor.notice).toBeNull();
+});
+
+// ── what a finished solve says ──
+// the readout mapping, branch by branch. Every exit a solve has lands here, and this text is the
+// author's ONLY report of what happened — a branch that silently reads as another one (a diverged
+// answer announcing "Solved to force" over an unchanged section) is invisible to every other gate.
+
+const answer = { outcome: "floor", keys: 12, deviation: 0.567, floor: 0.571 };
+
+test("a converged solve reads as done, with keys and achieved-vs-floor", () => {
+    expect(solveDone(answer)).toEqual({
+        kind: "done",
+        text: "Solved to force · 12 keys · 0.57 m off · floor 0.57 m",
+    });
+});
+
+test("a budget solve landed too — it reads as done, tagged", () => {
+    // "budget" is the sanctioned narrow-feature outcome (refine.ts): the answer IS on the
+    // document, so it must not read as a failure.
+    const n = solveDone({ ...answer, outcome: "budget" });
+    expect(n.kind).toBe("done");
+    expect(n.text).toEndWith("· key budget");
+});
+
+test("a diverged solve reads as a failure — nothing was landed", () => {
+    // it RESOLVES like a success (geoforce.ts writes nothing on it), so this branch is the only
+    // thing standing between an unchanged section and a green "Solved to force".
+    expect(solveDone({ ...answer, outcome: "diverged" })).toEqual({
+        kind: "error",
+        text: "The solve could not fit this shape. Nothing changed.",
+    });
+});
+
+test("a cancel says nothing at all and logs nothing", () => {
+    expect(solveFailed(new Error("cancelled"), true)).toEqual({ notice: null, detail: null });
+});
+
+test("a stale answer reads as its own plain sentence, with the internals kept for the console", () => {
+    // pinned against the REAL class: the mapping matches it by `name` (importing it would pull the
+    // conversion tier onto editor.ts's graph), so this is what keeps the two in step.
+    const { notice, detail } = solveFailed(new StaleConvert(3), false);
+    expect(notice).toEqual({
+        kind: "error",
+        text: "The track changed while the solve ran. Nothing changed.",
+    });
+    expect(detail).toContain("section 3 changed during the solve"); // the raw message, for us
+});
+
+test("any other failure reads as one sentence, never the thrown message", () => {
+    const { notice, detail } = solveFailed(
+        new Error("convertGeo: section 3 has no live bake"),
+        false,
+    );
+    expect(notice?.kind).toBe("error");
+    expect(notice?.text).toBe("The solve could not finish. Nothing changed.");
+    expect(notice?.text).not.toContain("convertGeo"); // no internals on the readout
+    expect(detail).toContain("convertGeo: section 3 has no live bake");
+});
+
+test("a non-Error rejection still reports something", () => {
+    const { notice, detail } = solveFailed("worker died", false);
+    expect(notice?.text).toBe("The solve could not finish. Nothing changed.");
+    expect(detail).toBe("worker died");
 });

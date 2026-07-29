@@ -198,6 +198,25 @@ if (import.meta.env.DEV) {
             ])
                 addNode(ecs, id, x * s, y * s);
         },
+        // lay TWO of those hills back to back — the shape the invoked-solve flow converts. the
+        // single hill above solves in ~0.1 s, which is under one frame of modal: this one is a
+        // second-scale solve, so the progress surface is really on screen and really climbing.
+        seedTwinHill: (): void => {
+            const id = sec();
+            for (const eid of sectionHandles(ecs, id)) ecs.destroy(eid);
+            const s = (V0 / 22) ** 2;
+            const hill = [
+                [0, 0],
+                [20, 0],
+                [38, 7],
+                [56, 11],
+                [74, 7],
+                [92, 0],
+                [112, 0],
+            ];
+            for (const [x, y] of [...hill, ...hill.slice(1).map(([x, y]) => [x + 112, y])])
+                addNode(ecs, id, x * s, y * s);
+        },
         // ── force-authoring hooks (stage C) ──
         kind: (): number => sections(ecs)[0]?.kind ?? SectionKind.Geo,
         forceCount: (): number => sectionForces(ecs, sec()).length,
@@ -271,6 +290,10 @@ if (import.meta.env.DEV) {
         // context-menu affordances and asserts the resulting state here. ──
         sectionIds: (): number[] => sections(ecs).map((x) => x.id),
         sectionLengths: (): number[] => sections(ecs).map((x) => x.length),
+        // the per-section baking step (`Section.ds`, 0 = the track-nominal sentinel) — only an
+        // invoked solve writes one, so the solve flow asserts the realized step landed with the
+        // rest of the answer.
+        sectionSteps: (): number[] => sections(ecs).map((x) => x.ds),
         sectionForceCounts: (): number[] =>
             sections(ecs).map((x) => sectionForces(ecs, x.id).length),
         selectedSection: (): number | null => editor.section,
