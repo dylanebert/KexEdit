@@ -640,6 +640,45 @@ describe("snapAxis — landmark magnet over a domain grid", () => {
         expect(r.value).toBe(10); // half(20)
         expect(r.guide).toBe(20); // the guide stays in px
     });
+
+    // kex2d-geoforce-editor stage 5b: a realistic pool exactly like applyDrag's `sTargets`/
+    // `gTargets` composition — a section boundary (incl. the origin), another keyframe, the
+    // parked playhead, and (on the g-axis) the 1g baseline — every value-landmark kind at once,
+    // all within reach of the raw px. Under the bypass NONE may fire; only a start landmark that
+    // is itself in range does.
+    test("bypass disables every value-landmark kind at once — none fire, continuous passthrough", () => {
+        const raw = 15; // off the S_GRID quantum
+        const boundary0 = 15.5; // "section boundary" — within SNAP_PX
+        const otherKeyframe = 14.4; // "another keyframe" — within SNAP_PX
+        const playhead = 15.9; // "the parked playhead" — within SNAP_PX
+        const pool = [boundary0, otherKeyframe, playhead];
+        const startFarAway = 60; // the gesture-start magnet, deliberately out of reach
+        const r = snapAxis(false, raw, raw, pool, S_GRID, id, startFarAway);
+        expect(r.value).toBe(raw); // no landmark, no grid quantization
+        expect(r.guide).toBeNull();
+    });
+
+    test("bypass keeps only the in-reach start magnet even with every other landmark kind competing", () => {
+        const startVal = 15; // the gesture-start s/g — the one magnet that survives Ctrl/Cmd
+        const raw = startVal + 3; // within SNAP_PX of the start, off the grid
+        const boundary0 = raw - 1; // "section boundary" — also within SNAP_PX of raw
+        const otherKeyframe = raw + 1; // "another keyframe" — closer to raw than the start
+        const playhead = raw + 0.5; // "the parked playhead"
+        const pool = [boundary0, otherKeyframe, playhead];
+        const r = snapAxis(false, raw, raw, pool, S_GRID, id, startVal);
+        expect(r.value).toBe(startVal); // the start magnet wins — it's the only candidate at all
+        expect(r.guide).toBe(startVal);
+    });
+
+    test("active mode: the grid is disabled the instant a value landmark of ANY kind is in reach", () => {
+        // the 1g baseline reads through gTargets as a plain numeric landmark like any other —
+        // snapAxis treats every value landmark uniformly, so a landmark planted at the baseline's
+        // px proves the same path the "other keyframe"/"playhead"/"boundary" cases above cover.
+        const baseline = 0; // stand-in for the baseline's resolved px
+        const r = snapAxis(true, baseline + 2, baseline + 2, [baseline], G_GRID, id, null);
+        expect(r.value).toBe(baseline); // the landmark wins over the G_GRID round
+        expect(r.guide).toBe(baseline);
+    });
 });
 
 describe("composeTangent — force-handle write resolver", () => {
