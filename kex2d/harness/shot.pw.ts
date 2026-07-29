@@ -2196,7 +2196,7 @@ test("invoked solve flow", async ({ page, boot }) => {
 
     // ── 3. Every other input is blocked while it runs. Del would delete the selected section
     // (the right-click selected it) and Ctrl+Z would undo the append — both real ops on this exact
-    // state (proven: pressed with no modal up, they do exactly that), so the assert fails the moment
+    // state (both proven below with the modal down: Del in step 4, Ctrl+Z throughout), so it fails the moment
     // the gate stops swallowing. Read after EACH press: the two are inverses, so a pair read only at
     // the end passes on a gate that swallowed NEITHER. ──
     await page.keyboard.press("Delete"); // would remove the selected section
@@ -2227,6 +2227,18 @@ test("invoked solve flow", async ({ page, boot }) => {
     expect((await forceCounts())[0]).toBe(0);
     expect(await undoDepth()).toBe(appended);
     await expect(page.locator(".notice")).toHaveCount(0);
+
+    // …and now the Del leg of step 3 earns its bite: that assert is a RETENTION, vacuous unless
+    // the same press on the same state really does delete with the modal down. Press it here,
+    // watch the section go, then put it back — the selection the right-click made is still the
+    // geo section, so this is the identical op the gate swallowed. ──
+    await page.keyboard.press("Delete");
+    await expect.poll(sectionCount, { message: "Del does nothing with the modal down" }).toBe(1);
+    await page.keyboard.press("Control+z");
+    await expect.poll(sectionCount).toBe(2);
+    await expect.poll(async () => (await kinds()).join(",")).toBe("0,1");
+    expect(await undoDepth()).toBe(appended);
+    await frames(page, 2); // a respawning restore — let the bake catch up before the next gesture
 
     // ── 5. Escape is the same control (the modal is the only live surface, so its dismissal
     // rung is the cancel). ──

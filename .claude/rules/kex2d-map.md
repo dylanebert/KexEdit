@@ -272,7 +272,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
   fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
-  right-click menus: `context` (section Convert/Delete) and `nodeMenu` (the node context menu —
+  right-click menus: `context` (section Solve force / Delete) and `nodeMenu` (the node context menu —
   Handles toggle + Tangents submenu — opened on any pickable node, any mode) — both `{x, y, …}` or
   null, rendered once at the app root. Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
   bypasses per-gesture) and `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
@@ -281,10 +281,11 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   the viewport's own hover read — written per pointermove by `controls.pickSection`, drawn one
   kind-color rung up by the track overlay, cleared on pointer leave and for the whole of any gesture
   (`beginDrag`, the one suppression point); viewport-local, never synced with the clip strip's CSS
-  hover. The invoked-solve gate lives here too: `converting` (`{section, phase, keys, probes}` or
+  hover. The invoked-solve gate lives here too: `converting` (`{phase, keys, probes}` or
   null — while it's set the modal is up and every other input is blocked) with
   `beginConvert`/`convertProgress`/`endConvert`, and `notice` (the transient outcome text) with
-  `notify`/`dismissNotice`. `convertProgress` DROPS a report that lands after the gate closed — a
+  `notify`/`dismissNotice`. It carries no `section` id: the surface that opened the modal owns
+  that, and a copy here would be a second truth. `convertProgress` DROPS a report that lands after the gate closed — a
   cancelled solve's in-flight probe would otherwise raise the modal back with no cancel path left.
   The gate is pure state; the `AbortController` and the await live with the surface that opened it
   (`App.svelte`). Plain singleton, read by Svelte via the per-RAF tick.

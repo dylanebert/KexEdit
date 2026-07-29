@@ -150,7 +150,7 @@ setters, each wrapped in a `history` gesture. That is the purity contract, and i
 future authoring agent drives — the same one the capture harness pokes through `__kex`.
 
 **The authored components (the one source of truth):** `Track` (`count`, `ds`, `v0`), `Section`
-(`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local
+(`id`, `order`, `kind`, `length`, `ds`), `Handle` (geo node: `section`, `order`, section-local
 `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`). Everything else is
 derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never
 authored); `editor.ts` holds selection + context-menu state; the Svelte `$state` (view pan/zoom,
@@ -241,7 +241,7 @@ tail after the last clip appends (geo/force flyout). **Right-click a clip or spa
 the context menu: **Solve force** (the menu's one conversion affordance — the invoked
 geo→force solve, `geoforce.ts` behind a **modal** — live `{phase, keys, probes}`, Cancel or Esc,
 every other input blocked, then a transient outcome readout; live only on a single geo section with
-a live bake, grayed otherwise; name provisional), and Delete (`Del`). Split and join left the
+a live bake, grayed otherwise), and Delete (`Del`). Split and join left the
 editor — reserved for invoked tools (the substrate `splitGeo`/`splitForce`/`joinNext` + tests stay
 in-tree as their reference). Boundary anchors draw as viewport diamonds + chart
 vertical guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo

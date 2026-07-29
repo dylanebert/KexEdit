@@ -61,6 +61,7 @@ import {
     Handle,
     handleAt,
     handleTangent,
+    MIN_FORCE_LEN,
     reheadOnDrag,
     resetTangent,
     SectionKind,
@@ -491,6 +492,24 @@ test("undoing the append that used the sticky value doesn't roll the sticky valu
 
     const force3 = appendSection(h, state, SectionKind.Force); // still echoes the committed trim
     expect(sections(state).find((s) => s.id === force3)?.length).toBe(40);
+});
+
+test("a degenerate committed extent floors at MIN_FORCE_LEN, never poisoning the next append", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const force = appendSection(h, state, SectionKind.Force);
+    beginLength(state, force);
+    setSectionLength(state, force, 0); // a drag past the floor — the setter clamps the section…
+    commitLength(h, state, force);
+    expect(stickyLen()).toBe(MIN_FORCE_LEN); // …and the committed value carries the clamp through
+
+    const force2 = appendSection(h, state, SectionKind.Force);
+    expect(sections(state).find((s) => s.id === force2)?.length).toBe(MIN_FORCE_LEN);
+
+    // the sticky store holds the floor on its own too, not just by inheriting `setSectionLength`'s
+    // clamp: it's the value the NEXT append is seeded from, so it can never go sub-floor.
+    setStickyLen(0.1);
+    expect(stickyLen()).toBe(MIN_FORCE_LEN);
 });
 
 test("a solve landing does NOT update the sticky value", () => {
