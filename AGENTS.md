@@ -55,6 +55,6 @@ Set `KEXEDIT_DEV_INSTALL=path1[:path2]` to also rsync the addon dir to a Blender
 cd packages/core && cargo test
 cd packages/core && cargo clippy
 cd plugins/blender && uvx pytest tests/ -v
-cd kex2d && bun check && bun test
+cd kex2d && bun check && bun test   # fast tier (~8s); bun run test:full before commit/PR (~45s)
 cd kex2d && bun run capture   # Playwright UI screenshots → harness/shots/ (display-gated)
 ```

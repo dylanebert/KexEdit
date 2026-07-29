@@ -329,13 +329,12 @@ byte-identical whole-track snapshot pair.
 ## Verify
 
 ```bash
-cd kex2d && bun check && bun test
+cd kex2d && bun check && bun test   # fast tier (~8s); bun run test:full before commit/PR (~45s)
 cd kex2d && bun run capture   # UI screenshots → harness/shots/ (display-gated)
 ```
 
-**Toolchain pin:** `typescript` is held at 6.0.3 and `svelte-check` at 4.7.3 because svelte-check
-crashes on TypeScript 7 — the native (Go) port doesn't yet expose the `ts.sys` JS API svelte-check
-relies on. Revisit the pin when svelte-check ships TS7 support.
+**Toolchain pin:** `typescript` 6.0.3 + `svelte-check` 4.7.3 — svelte-check crashes on TypeScript 7
+(the native Go port lacks the `ts.sys` API it needs). Revisit when it ships TS7 support.
 
 f64 mirror for tests: `tests/helpers/forward64.ts`. Independent physics check: `tests/oracles/rk4.ts`
 (time-parameterized RK4 — a different scheme + parameterization). Physics is gated against the
