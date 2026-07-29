@@ -40,8 +40,8 @@ test("tool rail shot", async ({ page, boot }) => {
     await boot();
 
     const rail = page.locator(".tool-rail");
-    // `.rail-snap` names the MAGNET, not the rail: the rail carries a second tool (the basis
-    // toggle) and a `.rail-tool` locator would be a strict-mode violation.
+    // `.rail-snap` names the MAGNET specifically (the rail is magnet-only — the basis picker
+    // moved to the ruler's own context menu, kex2d-time-domain stage 2b).
     const snap = rail.locator(".rail-snap");
     await expect(rail).toBeVisible();
     // default-on: the magnet toggle reads pressed and lit.
@@ -1291,15 +1291,18 @@ test("playhead parking flow", async ({ page, boot }) => {
     if (strip) await page.screenshot({ path: join(OUT, "park-2-held.png"), clip: strip });
 });
 
-// The TIMELINE BASIS toggle (kex2d-time-domain stage 2): the chart's x-axis reads either global
-// distance or global time, flipped on the rail's second tool. Storage is distance-only, so the
+// The TIMELINE BASIS picker (kex2d-time-domain stage 2b): the chart's x-axis reads either global
+// distance or global time, picked from the RULER's own context menu (Meters / Seconds — the
+// Premiere/REAPER/Cubase reference), `T` its keyboard twin. Storage is distance-only, so the
 // basis is a pure view projection at one seam — and that is exactly what this flow pins, in the
 // only place it can be pinned honestly (a real browser, real gestures, the live bake's arc↔time
 // table under them):
 //
-//   · the toggle writes NOTHING: no keyframe moves, no undo entry, either direction;
-//   · a round trip (rail click out, `T` back) leaves the chart where it was, with the diamonds
-//     provably moved in between — the negative-assert law's positive control;
+//   · the picker writes NOTHING: no keyframe moves, no undo entry, either direction;
+//   · the checked row follows the active basis (Meters checked at rest; picking it — the already-
+//     checked row — is a no-op, both by the menu law and because the toggle carries no history);
+//   · a round trip (ruler menu → Seconds, `T` back) leaves the chart where it was, with the
+//     diamonds provably moved in between — the negative-assert law's positive control;
 //   · the honest slide: a keyframe holds its stored arclength while its TIME reading slides under
 //     an upstream speed edit (the semantics the locked decision accepted, the inverse of the
 //     rejected "keyframes hold time");
@@ -1316,6 +1319,8 @@ test("timeline basis flow", async ({ page, boot }) => {
     const basis = () => kexCall(page, "basis");
     const undoDepth = () => kexCall(page, "undoDepth");
     const tTotal = () => kexCall(page, "tTotal");
+    const rulerZone = page.locator(".rulerzone");
+    const openRulerMenu = () => rulerZone.click({ button: "right", position: { x: 40, y: 10 } });
 
     // a force section with real keyframes: two continuation seeds + the three airtime-bump points.
     await kexCall(page, "seedForceBump");
@@ -1332,8 +1337,6 @@ test("timeline basis flow", async ({ page, boot }) => {
     await expect.poll(tTotal).not.toBe(tSeed);
     await frameTimeline(page); // the whole section on-screen, for exact diamond boxes
 
-    const rail = page.locator(".tool-rail");
-    const tool = rail.locator('[aria-label="Timeline basis"]');
     const posField = (label: string) => page.locator(`.ptip input[aria-label="${label}"]`);
     const fhit = page.locator(".fhit");
     const centers = async (): Promise<number[]> => {
@@ -1346,25 +1349,51 @@ test("timeline basis flow", async ({ page, boot }) => {
         return out;
     };
 
-    // ── 1. Distance is the default: the tool reads unpressed, and the chart is in metres. ──
+    // ── 1. Distance is the default: the ruler menu's Meters row reads checked, Seconds not. Since
+    // a live bake exists here (the seeded points baked above), Seconds is enabled, not grayed — the
+    // no-bake gray case has no honest repro in THIS flow (it needs an unbaked track, `tool rail
+    // shot`'s territory). Picking the already-checked row (Meters) is a no-op — the menu law and,
+    // since the toggle is view state, unwritten to the undo stack either way. ──
     expect(await basis()).toBe("distance");
-    await expect(tool).toHaveAttribute("aria-pressed", "false");
     const xDist = await centers();
     const store = await forces();
     const undo0 = await undoDepth();
+    await openRulerMenu();
+    // the right-click that opened this menu also FOCUSED the ruler (`.rulerzone`'s `tabindex="0"`,
+    // for arrow-key scrub) — the pointer-focus-border fix's own repro: a click/right-click focus
+    // must draw no outline (only a keyboard-driven Tab focus rings the playhead grip instead).
+    expect(await rulerZone.evaluate((el) => getComputedStyle(el).outlineStyle)).toBe("none");
+    const metersRow = page.locator(".rmenu").getByRole("menuitem", { name: "Meters" });
+    const secondsRow = page.locator(".rmenu").getByRole("menuitem", { name: "Seconds" });
+    await expect(metersRow).toHaveClass(/checked/);
+    await expect(secondsRow).not.toHaveClass(/checked/);
+    await expect(secondsRow).toBeEnabled();
+    await clickMenuItem(page, ".rmenu", "Meters"); // the checked row — a no-op
+    await expect(page.locator(".rmenu")).toHaveCount(0); // a leaf action dismisses the menu regardless
+    expect(await basis()).toBe("distance");
+    expect(await undoDepth()).toBe(undo0);
 
-    // ── 2. The rail tool flips it to time. The toggle is a VIEW change: the store is untouched
-    // and the undo stack doesn't grow (every other control on this dock records an entry, so this
-    // is the invariant a next author would break). ──
-    await tool.click();
+    // ── 2. The ruler menu's Seconds row, pointer-true (`clickMenuItem` — real hover isn't needed
+    // for a top-level row, but the coordinate click + elementFromPoint reachability assert is the
+    // same regression net every menu flow wears). The picker is a VIEW change: the store is
+    // untouched and the undo stack doesn't grow (every other control on this dock records an
+    // entry, so this is the invariant a next author would break). ──
+    await openRulerMenu();
+    await clickMenuItem(page, ".rmenu", "Seconds");
     await expect.poll(basis).toBe("time");
-    await expect(tool).toHaveAttribute("aria-pressed", "true");
     // the flip's re-frame lands on the frame the tick re-derives the basis in (writing the new
     // scale from the handler would paint one frame of old coordinates against it), so the chart's
     // boxes are honest only after a projected frame.
     await frames(page, 2);
     expect(await forces()).toEqual(store);
     expect(await undoDepth()).toBe(undo0);
+
+    // the checked row follows the active basis: reopen and assert it flipped.
+    await openRulerMenu();
+    await expect(secondsRow).toHaveClass(/checked/);
+    await expect(metersRow).not.toHaveClass(/checked/);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".rmenu")).toHaveCount(0);
 
     // the projection really moved the chart — the positive control the round-trip assert in 3
     // needs, or "the diamonds came back" would pass vacuously against a chart that never left.
@@ -1398,7 +1427,6 @@ test("timeline basis flow", async ({ page, boot }) => {
     // by tens of px (the control above measures ~100), not by one. ──
     await page.keyboard.press("t");
     await expect.poll(basis).toBe("distance");
-    await expect(tool).toHaveAttribute("aria-pressed", "false");
     await expect(posField("Point distance (m)")).toHaveCount(1);
     await frames(page, 2);
     const xBack = await centers();

@@ -113,16 +113,22 @@ interface EditorState {
      *  position + the target point's stable id, or null when closed. the force analogue of
      *  `nodeMenu`, the same shared menu language. */
     forceMenu: { x: number; y: number; id: number } | null;
+    /** the ruler context menu (Meters / Seconds — the timeline basis picker): screen position,
+     *  or null when closed. summoned by right-clicking the ruler scrub zone (the Premiere/
+     *  REAPER/Cubase reference: time-display format lives on the ruler's own context menu), the
+     *  same shared menu language as `context`/`nodeMenu`/`forceMenu`. No target id — it has one
+     *  subject, the timeline itself. */
+    rulerMenu: { x: number; y: number } | null;
     /** the snapping magnet toggle (AE model): a persistent editor preference, default
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
     snap: boolean;
     /** which global axis the timeline chart reads (`timeline.Basis`): `Distance` (the
      *  default — metres from the ride start) or `Time` (seconds from it). Pure VIEW state,
-     *  the snap magnet's twin: a persistent session toggle on the timeline's tool rail
-     *  (`T` toggles), never a history entry and never a storage kind — every keyframe stays
-     *  stored as section-local arclength in either basis, and the chart projects at the one
-     *  `dToU`/`uToD` seam. */
+     *  the snap magnet's twin: a persistent session preference, picked from the ruler's
+     *  context menu (`T` also toggles), never a history entry and never a storage kind —
+     *  every keyframe stays stored as section-local arclength in either basis, and the chart
+     *  projects at the one `dToU`/`uToD` seam. */
     basis: Basis;
     /** whether a pointer drag is in flight (any gesture routed through `beginDrag`). App
      *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
@@ -197,6 +203,7 @@ export const editor: EditorState = {
     context: null,
     nodeMenu: null,
     forceMenu: null,
+    rulerMenu: null,
     snap: true,
     basis: Basis.Distance,
     dragging: false,
@@ -421,10 +428,12 @@ export function toggleSnap(): void {
     editor.snap = !editor.snap;
 }
 
-/** flip the timeline's basis between distance and time (the `T` key / the rail's second tool).
- *  A free view change: the store is never touched, so there is nothing to undo. */
-export function toggleBasis(): void {
-    editor.basis = editor.basis === Basis.Time ? Basis.Distance : Basis.Time;
+/** set the timeline's basis directly — the ruler menu's Meters/Seconds rows each pick their own
+ *  target; `T`'s flip (`Timeline.svelte`'s `flipBasis`) resolves "the other one" and calls this
+ *  too, so this is the ONE write path. A free view change: the store is never touched, so there
+ *  is nothing to undo. */
+export function setBasis(b: Basis): void {
+    editor.basis = b;
 }
 
 /** whether snapping is active for a gesture, given whether the Ctrl/Cmd bypass modifier
@@ -652,6 +661,17 @@ export function openForceMenu(x: number, y: number, id: number): void {
 /** close the force keyframe context menu. */
 export function closeForceMenu(): void {
     editor.forceMenu = null;
+}
+
+/** open the ruler context menu at a screen point (Meters / Seconds, the timeline basis picker).
+ *  No target subject to select — the ruler addresses the whole timeline, not a track element. */
+export function openRulerMenu(x: number, y: number): void {
+    editor.rulerMenu = { x, y };
+}
+
+/** close the ruler context menu. */
+export function closeRulerMenu(): void {
+    editor.rulerMenu = null;
 }
 
 // ── history selection hook ────────────────────────────────────────────────────────

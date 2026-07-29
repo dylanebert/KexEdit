@@ -279,13 +279,15 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
   fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
-  right-click menus: `context` (the section's ONE kind-fitted conversion row + Delete) and `nodeMenu` (the
-  node context menu — Handles toggle + Tangents submenu — opened on any pickable node, any mode)
-  — both `{x, y, …}` or
-  null, rendered once at the app root. Also the two rail toggles — `snap` (`toggleSnap`/`snapActive`
-  — persistent, default on, `S` toggles, Ctrl/Cmd bypasses per-gesture) and `basis`
-  (`toggleBasis`, `timeline.Basis`, default `Distance`, `T` toggles: which global axis the chart
-  reads, pure view state and never a history entry) — and `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
+  right-click menus: `context` (the section's ONE kind-fitted conversion row + Delete), `nodeMenu` (the
+  node context menu — Handles toggle + Tangents submenu — opened on any pickable node, any mode),
+  and `rulerMenu` (the ruler's Meters/Seconds basis picker, `openRulerMenu`/`closeRulerMenu` — no
+  target subject, the ruler addresses the whole timeline) — all `{x, y, …}` or
+  null, rendered once at the app root. Also the rail's one toggle — `snap` (`toggleSnap`/`snapActive`
+  — persistent, default on, `S` toggles, Ctrl/Cmd bypasses per-gesture) — and `basis`
+  (`setBasis`, `timeline.Basis`, default `Distance`, picked from the ruler menu or `T` toggles:
+  which global axis the chart reads, pure view state and never a history entry) — and
+  `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
   viewport-nudge vs timeline-playhead double-fire. `hoverSection` (a stable `Section.id` or null) is
   the viewport's own hover read — written per pointermove by `controls.pickSection`, drawn one
@@ -443,16 +445,21 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `nodeArc` partial-`ds` sums, the selected node's highlighted, `pointer-events: none` — entry
   and exit nodes are excluded, they coincide with the clip edges) and **washes** when it owns the
   selected node (the cross-surface context read; a ticked clip's label fades so the two don't
-  collide). A node's arclength is derived, so a tick displays and never drags. The **tool rail** (`.tool-rail`) is the two global toggles' home — an icon-only vertical
+  collide). A node's arclength is derived, so a tick displays and never drags. The **tool rail** (`.tool-rail`) is the snap magnet's home — a magnet-only icon-only vertical
   strip on the dock's left edge (the Premiere tool-strip precedent), anatomy of the one earned dock,
-  bounded to persistent global authoring toggles with a keyboard twin: the snap magnet
-  (`.rail-snap`, `toggleSnap`, `S`) and the timeline basis (`flipBasis` over `toggleBasis`, `T`,
-  which re-expresses the visible window in the new basis so the toggle stays a free view change).
+  bounded to persistent global authoring toggles with a keyboard twin: `.rail-snap`/`toggleSnap`/`S`.
   **Right-clicking the magnet** summons its increments popover (`.snap-pop`) — the two
   manipulator quanta (angle °, length m) as fields in the shared idiom, written straight to
   `settings.ts` (no history entry: a per-user preference, not track state); its click-away exemption
-  names the invoker (`.rail-snap`), never the rail, so the second tool can't dismiss-block it. It's inside the dock's
-  DOM, so it's the timeline surface for `editor.hover`. The chart
+  names the invoker (`.rail-snap`), never the rail. It's inside the dock's
+  DOM, so it's the timeline surface for `editor.hover`. **The timeline basis (Meters/Seconds) lives
+  on the RULER's own context menu** (`rulerCtx` → `openRulerMenu`, right-clicking `.rulerzone` — the
+  Premiere/REAPER/Cubase reference: time-display format is the ruler's, not a standing rail
+  toggle): flat rows (no `Units ▸` submenu — nothing else lives in this menu), `checked` reading the
+  tick-derived `basis` (the seam's own no-bake fallback, so a lit row can't lie about what the
+  chart reads), Seconds grayed with no live bake (`mapping === null`). `applyBasis` lands either
+  row's pick (and `T`'s flip, `flipBasis`'s twin) — a no-op when the target is already active — and
+  re-expresses the visible window in the new basis so the pick stays a free view change. The chart
   draws the baked F_n curve over the active basis + **section boundary guides**
   (dashed verticals); the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator**
   minimap pans/zooms. The chart is a **whole-track force-authoring surface**: it draws every force

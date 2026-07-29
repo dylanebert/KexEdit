@@ -9,18 +9,20 @@ import {
     activateForce,
     beginDrag,
     closeForceMenu,
+    closeRulerMenu,
     editor,
     endDrag as endDragGesture,
     enterForceEdit,
     exitForceEdit,
     openContext,
     openForceMenu,
+    openRulerMenu,
     selectForce,
     selectForceHandle,
     selectForces,
     selectSection,
+    setBasis,
     snapActive,
-    toggleBasis,
     toggleSnap,
 } from "./editor";
 import {
@@ -130,17 +132,13 @@ const snapLen = $derived.by((): number => {
     void tick;
     return snapSteps.length;
 });
-// the timeline BASIS — the rail's second tool (`T`). Two reads, deliberately different:
-// `basisOn` is what the TOGGLE holds (the tool's lit state, a persistent session preference), and
-// `basis` is what the chart actually READS. They part company with no live bake: the seam falls
-// back to distance identity there (`dToU`/`uToD`), so time isn't on offer, and a lit toggle over a
-// metre axis labelled seconds is the one lie this surface could tell. Both go through the per-RAF
-// tick like the magnet, so both lag a frame — which is why the flip's own re-frame is deferred to
-// the same frame (`flipBasis`) instead of writing `view` live.
-const basisOn = $derived.by((): boolean => {
-    void tick;
-    return editor.basis === Basis.Time;
-});
+// the timeline BASIS — picked from the ruler's context menu (`T` also toggles). `basis` is what
+// the chart actually READS: with no live bake the seam falls back to distance identity
+// (`dToU`/`uToD`), so time isn't on offer — the ruler menu's Seconds row grays in that state
+// (`rulerMenuItems`) and its `checked` reads THIS value, never the raw session preference, so the
+// menu can't show a lit Seconds row over a metre axis. Tick-derived like the magnet, so it lags a
+// frame — which is why the flip's own re-frame is deferred to the same frame (`applyBasis`)
+// instead of writing `view` live.
 const basis = $derived.by((): Basis => {
     void tick;
     return mapping === null ? Basis.Distance : editor.basis;
@@ -410,13 +408,15 @@ $effect(() => {
     });
 });
 
-// flip the basis (the rail's second tool / `T`) and re-express the view in it: the toggle is a
-// free VIEW change, so it holds the stretch of ride the author is looking at and only restates
-// its window in the new basis's units (`view.pan`/`pxPerM` are basis-unit quantities). the live
-// `editor.basis` drives the projection here, not the tick-derived `basis`, which lags a frame.
+// set the basis (the ruler menu's Meters/Seconds rows, and `T`'s flip) and re-express the view
+// in it: the change is a free VIEW change, so it holds the stretch of ride the author is looking
+// at and only restates its window in the new basis's units (`view.pan`/`pxPerM` are basis-unit
+// quantities). the live `editor.basis` drives the projection here, not the tick-derived `basis`,
+// which lags a frame.
 let pendingWin: { l: number; r: number } | null = null;
-function flipBasis(): void {
+function applyBasis(target: Basis): void {
     if (editor.dragging) return; // a live gesture holds the document axis still (editor-ui.md)
+    if (editor.basis === target) return; // already there — the menu's "picking the checked row is a no-op" law
     // the window is carried as FRACTIONS of the addressable span — `navWindow`'s own
     // representation, the one already used to place the navigator bracket. Carrying its two RIDE
     // positions instead is the wrong move and not reversible: the lead-out past the track end has
@@ -424,7 +424,11 @@ function flipBasis(): void {
     // beyond it maps to the same `tTotal`), so a window reaching into the lead-out would collapse
     // on the way out and never come back. Fractions round-trip.
     pendingWin = navWindow(clamped, chartW, uTotal, mFloor);
-    toggleBasis();
+    setBasis(target);
+}
+// the `T` key's flip — the menu's two explicit picks collapsed to "the other one".
+function flipBasis(): void {
+    applyBasis(editor.basis === Basis.Time ? Basis.Distance : Basis.Time);
 }
 // …and applied on the frame the tick re-derives `basis` in. `view` is live `$state` while `basis`,
 // `mapping`, `uTotal` and `mFloor` are tick-derived, so writing the new scale straight from the
@@ -1484,6 +1488,66 @@ onMount(() => {
     };
 });
 
+// ── the ruler context menu (Meters / Seconds — the timeline basis picker), summoned by
+// right-clicking the ruler scrub zone (`rulerCtx`). visibility reads through the tick, like
+// every other editor-state surface (`editor.rulerMenu` is replaced wholesale on open/close, never
+// mutated in place, so this simple derived is safe — the `converting` progress object's in-place
+// rewrite is the case that ISN'T).
+const rmenu = $derived.by((): { x: number; y: number } | null => {
+    void tick;
+    return editor.rulerMenu;
+});
+// flat rows, not a `Units ▸` submenu: the menu has nothing else in it, so nesting would spend a
+// click opening a submenu with no sibling rows to justify it (`editor-ui.md`'s terse-rows law —
+// a menu that's only ever one submenu should just be its rows). `checked` reads `basis` (the
+// tick-derived value the chart actually READS, already falling back to Distance with no live
+// bake), never the raw session preference — so the menu can't show a lit Seconds row over a
+// metre axis (the same lie the old rail toggle could tell). Seconds GRAYS (never hides) with no
+// live bake — picking it would write a preference the chart can't honor right now
+// (`editor-ui.md`'s "gray a row whose preconditions fail"); Meters has no precondition. Picking
+// the already-checked row is a no-op (`applyBasis`'s equality guard). `T` is both rows'
+// shortcut — it's a flip between exactly two states, so it always resolves to "the other one."
+const rulerMenuItems = $derived.by((): MenuItem[] => {
+    if (editor.rulerMenu === null) return [];
+    const live = mapping !== null;
+    return [
+        {
+            label: "Meters",
+            shortcut: "T",
+            checked: basis === Basis.Distance,
+            action: () => applyBasis(Basis.Distance),
+        },
+        {
+            label: "Seconds",
+            shortcut: "T",
+            enabled: live,
+            checked: basis === Basis.Time,
+            action: () => applyBasis(Basis.Time),
+        },
+    ];
+});
+// dismissal mirrors the force menu's exactly: permanent listeners gated on the live
+// `editor.rulerMenu`, never the tick-lagging `rmenu` (`kex2d/AGENTS.md`'s tick-derived-read
+// gotcha — the standard every menu here wears).
+onMount(() => {
+    const onDown = (e: PointerEvent): void => {
+        if (editor.rulerMenu === null) return;
+        if ((e.target as HTMLElement | null)?.closest(".rmenu")) return;
+        closeRulerMenu();
+    };
+    const onEsc = (e: KeyboardEvent): void => {
+        if (editor.rulerMenu === null || e.key !== "Escape") return;
+        e.stopImmediatePropagation();
+        closeRulerMenu();
+    };
+    window.addEventListener("pointerdown", onDown, { capture: true });
+    window.addEventListener("keydown", onEsc, { capture: true });
+    return () => {
+        window.removeEventListener("pointerdown", onDown, { capture: true });
+        window.removeEventListener("keydown", onEsc, { capture: true });
+    };
+});
+
 // select a section by clicking its clip (the same `editor.sections` set the viewport span
 // selects — one object, two surfaces). pointerdown so it feels immediate. shift-click toggles
 // membership (Premiere multi-clip); no clip marquee (the marker lane's own boundary — a chart
@@ -1622,9 +1686,9 @@ $effect(() => {
     if (!snapPop) return;
     const close = (ev: PointerEvent): void => {
         const t = ev.target as HTMLElement | null;
-        // the exemption names the INVOKER (`.rail-snap`), never the rail: a class-wide
-        // `.rail-tool` exemption stopped being right the moment the rail grew a second tool —
-        // pressing the basis toggle would leave the magnet's popover standing.
+        // the exemption names the INVOKER (`.rail-snap`), never the rail — a class-wide
+        // `.rail-tool` exemption would silently break if a second rail tool ever arrives
+        // (editor-ui.md's snapping law).
         if (t?.closest(".snap-pop") || t?.closest(".rail-snap")) return;
         snapPop = null;
     };
@@ -2296,6 +2360,15 @@ function startScrub(e: PointerEvent): void {
     window.addEventListener("pointercancel", endScrub); // mirror release on cancel (no leaked listeners)
 }
 
+// right-click the ruler → the basis menu (Meters / Seconds) at the cursor — the Premiere/REAPER/
+// Cubase reference: time-display format lives on the ruler's own context menu, not a standing
+// rail toggle. no target selection (the ruler addresses the whole timeline, not a track element).
+function rulerCtx(e: MouseEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    openRulerMenu(e.clientX, e.clientY);
+}
+
 function togglePlay(): void {
     if (eid === null) return;
     const st = cartState.get(eid);
@@ -2426,9 +2499,9 @@ onMount(() => {
             togglePlay();
             return;
         }
-        // the basis toggle's keyboard twin (the rail tool's; `S` is the magnet's). global like
-        // `S`, not surface-routed: it changes what the timeline READS, and the timeline is always
-        // on screen. no undo entry — pure view state.
+        // the basis toggle's keyboard twin (the ruler menu's Meters/Seconds; `S` is the magnet's
+        // rail twin). global like `S`, not surface-routed: it changes what the timeline READS,
+        // and the timeline is always on screen. no undo entry — pure view state.
         if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.metaKey) {
             e.preventDefault();
             flipBasis();
@@ -2555,13 +2628,15 @@ onMount(() => {
     onpointerleave={() => (editor.hover = "viewport")}
 >
     <!-- the tool rail: a thin icon-only strip on the dock's LEFT edge (the Premiere vertical
-         tool-strip precedent) — anatomy of the one earned dock, not a second docked region. it
-         holds only persistent global authoring toggles with a keyboard twin: the snap magnet
-         (lit when on / default, dimmed when off; `S` also toggles, Ctrl/Cmd bypasses per-gesture)
-         and the timeline basis (lit while the chart reads time; `T` toggles). it sits inside the
-         dock's DOM, so it counts as the timeline surface for
-         `editor.hover` (the aside's enter/leave already fired). right-click summons the magnet's
-         own increments popover (below) — the setting lives on the control it governs. -->
+         tool-strip precedent) — anatomy of the one earned dock, not a second docked region.
+         magnet-only: the snap toggle (lit when on / default, dimmed when off; `S` also toggles,
+         Ctrl/Cmd bypasses per-gesture) is the one persistent global authoring toggle with a
+         keyboard twin the rail holds. it sits inside the dock's DOM, so it counts as the timeline
+         surface for `editor.hover` (the aside's enter/leave already fired). right-click summons
+         the magnet's own increments popover (below) — the setting lives on the control it
+         governs. The timeline basis (Meters/Seconds) lives on the RULER's own context menu, not
+         here (the Premiere/REAPER/Cubase reference: time-display format is the ruler's, not a
+         standing rail toggle). -->
     <div class="tool-rail" aria-label="Timeline tools">
         <button
             class="rail-tool rail-snap"
@@ -2582,36 +2657,6 @@ onMount(() => {
                 />
                 <rect x="4" y="2" width="2.5" height="2.2" fill="var(--danger)" />
                 <rect x="9.5" y="2" width="2.5" height="2.2" fill="var(--geo)" />
-            </svg>
-        </button>
-        <!-- the timeline basis: quiet = distance (the default), lit = time. one identity glyph
-             (a clock) with the state on the lit/aria-pressed channel, the magnet's shape. `T`
-             toggles; it writes no history entry (a view change, not an edit). -->
-        <button
-            class="rail-tool"
-            class:on={basisOn}
-            type="button"
-            onclick={flipBasis}
-            title="Timeline basis (T)"
-            aria-label="Timeline basis"
-            aria-pressed={basisOn}
-        >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-                <circle
-                    cx="8"
-                    cy="8"
-                    r="5.5"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.4"
-                />
-                <path
-                    d="M8 4.6 L8 8 L10.6 9.4"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.4"
-                    stroke-linecap="round"
-                />
             </svg>
         </button>
     </div>
@@ -2661,6 +2706,7 @@ onMount(() => {
                     height={TOP}
                     onpointerdown={startScrub}
                     onkeydown={stepKey}
+                    oncontextmenu={rulerCtx}
                     role="slider"
                     tabindex="0"
                     aria-label="Scrub playhead"
@@ -3083,6 +3129,14 @@ onMount(() => {
     </div>
 {/if}
 
+<!-- the ruler context menu (Meters / Seconds — the timeline basis), summoned by right-clicking
+     the ruler scrub zone: the same shared menu language, at the cursor. -->
+{#if rmenu}
+    <div class="rmenu menu" use:fitMenu={{ x: rmenu.x, y: rmenu.y }} role="menu" aria-label="Timeline basis">
+        <Menu items={rulerMenuItems} onclose={closeRulerMenu} />
+    </div>
+{/if}
+
 <!-- the append flyout: the `+`-button's two-choice geo/force menu, root-mounted (out of the
      dock's overflow clip) and viewport-fitted by `fitMenu`, anchored just below the button. -->
 {#if appendAnchor}
@@ -3346,6 +3400,7 @@ onMount(() => {
     :global([data-dragging]) .fhit,
     :global([data-dragging]) .thit,
     :global([data-dragging]) .fmenu,
+    :global([data-dragging]) .rmenu,
     :global([data-dragging]) .nav-window,
     :global([data-dragging]) .ptip,
     :global([data-dragging]) .snap-pop,
@@ -3465,8 +3520,14 @@ onMount(() => {
         cursor: default;
     }
     /* keyboard focus rings the playhead grip, not a full-width box on the ruler
-       (mirrors the player slider's thumb focus ring) */
-    .rulerzone:focus-visible {
+       (mirrors the player slider's thumb focus ring). Reset on plain `:focus`, not
+       `:focus-visible`: a pointer-triggered focus (a click, a right-click) matches
+       `:focus` but NOT `:focus-visible` in Chromium, so a rule scoped to
+       `:focus-visible` alone never fires for it — the UA default ring (`outline:
+       auto`) then shows regardless, which is the border a right-click was drawing.
+       Resetting on `:focus` covers both triggers; the grip ring stays gated on
+       `:focus-visible` so only keyboard-driven focus lights it. */
+    .rulerzone:focus {
         outline: none;
     }
     .rulerzone:focus-visible ~ .grip {
@@ -3708,6 +3769,15 @@ onMount(() => {
         position: fixed;
         z-index: 10;
         min-width: 132px;
+        animation: tip-in 120ms ease;
+    }
+
+    /* the ruler context menu (Meters / Seconds): the same instance, narrower — two flat rows,
+       no submenu marker to leave room for. */
+    .rmenu {
+        position: fixed;
+        z-index: 10;
+        min-width: 104px;
         animation: tip-in 120ms ease;
     }
 
