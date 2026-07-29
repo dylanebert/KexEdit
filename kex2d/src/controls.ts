@@ -1020,8 +1020,7 @@ export function attachControls(
     // raises through `beginDrag` (editor.ts), so it can't go stale as gestures are added, and it
     // reads the live field (not a tick projection, which would lag a frame). The event is still
     // swallowed: dropping preventDefault would hand a ctrl+wheel to the browser's own page zoom
-    // mid-drag. `F` (`frameViewport`, the key handler below) is the OTHER path that still moves the
-    // camera mid-gesture — the same rule, not yet closed.
+    // mid-drag. `F` (`frameViewport`, the key handler below) guards on the same flag.
     const onWheel = (e: WheelEvent): void => {
         e.preventDefault();
         if (editor.dragging) return;
