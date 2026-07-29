@@ -790,7 +790,6 @@ function marqueeDown(e: PointerEvent): void {
     window.addEventListener("pointerup", marqueeUp);
     window.addEventListener("pointercancel", marqueeCancel);
     window.addEventListener("keydown", marqueeEsc, { capture: true });
-    window.addEventListener("blur", marqueeCancel);
 }
 function marqueeMove(e: PointerEvent): void {
     if (!marqueeStart) return;
@@ -845,7 +844,6 @@ function marqueeCancel(): void {
     window.removeEventListener("pointerup", marqueeUp);
     window.removeEventListener("pointercancel", marqueeCancel);
     window.removeEventListener("keydown", marqueeEsc, { capture: true });
-    window.removeEventListener("blur", marqueeCancel);
     // release the drag flag + capture (a mid-gesture Esc/blur has no pointerup). guarded: an
     // un-armed press holds no capture, so ending here would clear some other gesture's flag.
     if (captured) endDragGesture();
@@ -2123,6 +2121,22 @@ function stepKey(e: KeyboardEvent): void {
     st.t = clamp((cartSec ?? 0) + d, 0, tTotal);
     parkFromTime(ecs, eid); // anchor the stepped time to the content under it
 }
+// tear down every in-flight Timeline gesture — the unmount cleanup set, factored so a window
+// blur (below) can run the exact same teardown. a blur mid-gesture never delivers the
+// pointerup/pointercancel that would end a drag (the `controls.ts` `onBlur` mirror), so without
+// this a keyframe/handle/extent/marquee drag resumes stale on refocus and `editor.dragging` (the
+// one live-gesture flag) sticks, eating wheel zoom and hover until the next completed drag.
+function cancelAll(): void {
+    endScrub(); // drop any in-flight ruler scrub
+    sliderUp(); // and any in-flight player-slider drag
+    panUp(); // and any in-flight middle-drag pan
+    navUp(); // and any in-flight navigator drag
+    cancelForceDrag(); // and any in-flight force-point drag
+    marqueeCancel(); // and any in-flight chart marquee (its listeners live on window)
+    cancelTanDrag(); // and any in-flight handle drag
+    cancelLenDrag(); // and any in-flight extent drag
+    endDragGesture(); // clear the drag flag (no release event tore it down)
+}
 onMount(() => {
     // a no-op while a gesture is live — the viewport's rule, on this surface (`controls.ts`
     // `onWheel` carries the why: one rule, `editor.dragging` as the one live-gesture flag, the
@@ -2238,6 +2252,7 @@ onMount(() => {
     };
     host.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKey);
+    window.addEventListener("blur", cancelAll);
     // DEV-only harness reads: the displayed value-axis (g) range and the document axis's stored
     // view. Both are component-local view state — never authored, so they're off the main.ts
     // `__kex` authoring surface; the timeline augments the hook here. The edge-pan flow reads
@@ -2255,6 +2270,7 @@ onMount(() => {
     return () => {
         host.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKey);
+        window.removeEventListener("blur", cancelAll);
         if (import.meta.env.DEV) {
             const k = (window as unknown as { __kex?: Record<string, unknown> }).__kex;
             if (k) {
@@ -2262,15 +2278,7 @@ onMount(() => {
                 delete k.xView;
             }
         }
-        endScrub(); // drop any in-flight scrub listeners if we unmount mid-drag
-        sliderUp(); // and any in-flight player-slider drag
-        panUp(); // and any in-flight middle-drag pan
-        navUp(); // and any in-flight navigator drag
-        cancelForceDrag(); // and any in-flight force-point drag
-        marqueeCancel(); // and any in-flight chart marquee (its listeners live on window)
-        cancelTanDrag(); // and any in-flight handle drag
-        cancelLenDrag(); // and any in-flight extent drag
-        endDragGesture(); // clear the drag flag if we tore down mid-drag (no release event)
+        cancelAll(); // drop any in-flight gesture if we unmount mid-drag
     };
 });
 </script>

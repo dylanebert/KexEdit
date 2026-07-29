@@ -3499,4 +3499,43 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
     await page.keyboard.press("f");
     await expect.poll(async () => (await xView())[1]).toBeLessThan(zoomed[1]);
+
+    // ── 6. WINDOW BLUR TEARS DOWN A LIVE KEYFRAME DRAG (kex2d-gesture-residue stage 3) — the
+    // unmount cancel set (`endScrub`/`sliderUp`/`panUp`/`navUp`/`cancelForceDrag`/`marqueeCancel`/
+    // `cancelTanDrag`/`cancelLenDrag`/`endDragGesture`) is now factored into `cancelAll` and also
+    // runs on a window blur (`Timeline.svelte`, mirroring `controls.ts`'s `onBlur`). A blur
+    // mid-drag delivers no pointerup, so without the listener the gesture SURVIVES the focus
+    // loss: the point stays moved, `editor.dragging` sticks (eating wheel zoom — the same flag 5
+    // above rides — until the next completed drag elsewhere), and no history entry ever closes
+    // the bracketed edit. The crest (index 2) is the vehicle — a plain keyframe drag, not the
+    // marquee driving 5/5b. The mid-drag read is the positive control (the RED-RIG TRAP: a
+    // revert-to-X assert is a false negative if the point never left X) — it proves the point
+    // actually displaced before the blur is trusted to have reverted it. Mutation: an
+    // empty/missing blur listener → the point stays moved, `data-dragging` stays 1, the idle
+    // wheel after stays a no-op, and undo depth is unchanged either way (nothing here commits) →
+    // red on the position and dragging-flag assertions. ──
+    const undoDepth = () => page.evaluate((): number => (window as any).__kex.undoDepth());
+    const preForce = (await forces())[2];
+    const preUndo = await undoDepth();
+    await page.mouse.move(b2.cx, b2.cy);
+    await page.mouse.down();
+    await page.mouse.move(b2.cx + 40, b2.cy - 30, { steps: 8 }); // well past DRAG_PX
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(1); // the gesture IS live
+    const midForce = (await forces())[2];
+    // positive control: the drag actually moved the point before trusting the revert below
+    expect(Math.hypot(midForce.s - preForce.s, midForce.g - preForce.g)).toBeGreaterThan(0.1);
+
+    await page.evaluate(() => window.dispatchEvent(new Event("blur"))); // button still "held"
+
+    const revertedForce = (await forces())[2];
+    expect(revertedForce.s).toBeCloseTo(preForce.s, 5); // (a) reverted to the pre-drag s/g
+    expect(revertedForce.g).toBeCloseTo(preForce.g, 5);
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0); // (b) the flag cleared
+    expect(await undoDepth()).toBe(preUndo); // (c) the torn-down gesture committed nothing
+
+    const restXView = await xView();
+    await page.mouse.wheel(0, -600); // (b) wheel zoom writes xView again
+    await expect.poll(async () => (await xView())[1]).toBeGreaterThan(restXView[1]);
+    await page.mouse.up(); // release cleanly — a torn-down gesture commits nothing on pointerup
+    expect(await undoDepth()).toBe(preUndo);
 });
