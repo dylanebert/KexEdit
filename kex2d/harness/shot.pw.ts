@@ -1028,10 +1028,10 @@ test("tool rail shot", async ({ page, boot }) => {
 });
 
 // Drive the FORCE-AUTHORING flow: a geo track →
-// convert to force via the real mode toggle (resets to an empty 1g profile) → author
-// an airtime bump by force points → convert back to geo (resets to the flat seed) →
-// undo, which restores the force track with its points byte-identical. The mode toggle
-// and undo run through the real UI; point placement uses the __kex hook for precision.
+// convert to force via the __kex hook (seeding setup — the destructive Convert menu row was
+// removed, kex2d-geoforce-editor stage 5; `convertSection` and this hook onto it stay) → author
+// an airtime bump by force points and the real menu/handle gestures → convert back to geo via
+// the same hook → undo, which restores the force track with its points byte-identical.
 test("force authoring flow", async ({ page, boot }) => {
     await boot();
 
@@ -1051,13 +1051,12 @@ test("force authoring flow", async ({ page, boot }) => {
     expect(await kind()).toBe(0); // TrackKind.Geo
     const tGeo = await tTotal(); // the hill's own bake — the convert's shot waits for this to MOVE
 
-    // ── 1. Convert to force via the real section context menu (right-click the clip →
-    // "Convert to Force") → stage B seeds two continuation keyframes at the recovered entry
+    // ── 1. Convert to force via the __kex hook (setup — the row that drove this through the
+    // real menu was removed) → stage B seeds two continuation keyframes at the recovered entry
     // force, not an empty profile. this is the FIRST (and only) section, so its entry sample
     // is 0 — no upstream edge — and the seed falls back to DEFAULT_G (1g): assert the seed
     // CONTRACT itself (two keys at (0, F_entry) and (length, F_entry)), not just the count. ──
-    await page.locator(".clip").first().click({ button: "right" });
-    await page.getByRole("menuitem", { name: "Convert to Force" }).click();
+    await page.evaluate(() => (window as any).__kex.convert());
     await expect.poll(kind).toBe(1); // TrackKind.Force
     await expect.poll(nodeCount).toBe(0);
     await expect.poll(forceCount).toBe(2); // the two seeds (stage B), not an empty profile
@@ -1192,10 +1191,9 @@ test("force authoring flow", async ({ page, boot }) => {
     await page.keyboard.press("Control+z"); // revert so the flow resumes from the derived seed
     await expect.poll(async () => (await forceTangents())[0] === null).toBe(true);
 
-    // ── 3. Convert back to geo (context menu again) → destructive reset to the flat
-    // two-node seed. ──
-    await page.locator(".clip").first().click({ button: "right" });
-    await page.getByRole("menuitem", { name: "Convert to Geo" }).click();
+    // ── 3. Convert back to geo via the __kex hook (setup, per step 1) → destructive reset to
+    // the flat two-node seed. ──
+    await page.evaluate(() => (window as any).__kex.convert());
     await expect.poll(kind).toBe(0);
     await expect.poll(nodeCount).toBe(2); // the flat seed
     expect(await forceCount()).toBe(0);
@@ -2065,9 +2063,11 @@ test("section clip strip flow", async ({ page, boot }) => {
 
 // Drive the SECTION MENU + DIRECT-BY-POSITION flow (section-editor stage 2): a mixed
 // geo→force chain → prove empty-chart click deselects → add a force keyframe by cursor
-// position WITHOUT selecting the section → right-click Convert and Delete via the real
-// context menu. The whole point is that authoring and section ops no longer depend on a
-// "current section" selection. Everything is driven through the real DOM.
+// position WITHOUT selecting the section → right-click the real context menu, assert its
+// remaining rows (Solve force / Delete — the destructive Convert row was removed,
+// kex2d-geoforce-editor stage 5) → Delete via the real menu. The whole point is that authoring
+// and section ops no longer depend on a "current section" selection. Everything is driven
+// through the real DOM.
 test("section menu + keyframe flow", async ({ page, boot }) => {
     await boot();
 
@@ -2123,14 +2123,18 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape"); // the NEXT press peels the selection (no stale swallow)
     await expect.poll(selectedSection).toBe(null);
 
-    // ── 4. Right-click the force clip → "Convert to Geo" (real context menu). ──
+    // ── 4. Right-click the force clip: the menu carries exactly Solve force (grayed — a force
+    // clip has no geo shape to solve) + Delete, no Convert row (the real-menu regression guard
+    // for its removal). ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
+    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(2);
+    await expect(
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Solve force" }),
+    ).toBeDisabled();
     if (strip) await page.screenshot({ path: join(OUT, "section-4-menu.png"), clip: strip });
-    await page.getByRole("menuitem", { name: "Convert to Geo" }).click();
-    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,0");
-    await page.keyboard.press("Control+z"); // convert is one undo entry
-    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".ctxmenu")).toHaveCount(0);
 
     // ── 5. Right-click a clip → Delete (real context menu). ──
     await page.locator(".clip").nth(1).click({ button: "right" });

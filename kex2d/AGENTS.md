@@ -237,7 +237,7 @@ offset. Keyframes, not constraints. Snap + interaction conventions: `editor-ui.m
 **Section ops** (the multi-section chain) — select a section by clicking its **clip** in the timeline
 marker lane (or its viewport polyline span); a force clip's right edge is its extent trim, and a `+`
 tail after the last clip appends (geo/force flyout). **Right-click a clip or span** for
-the context menu: Convert (destructive geo↔force, undoable), **Solve force** (the invoked
+the context menu: **Solve force** (the menu's one conversion affordance — the invoked
 geo→force solve, `geoforce.ts` behind a **modal** — live `{phase, keys, probes}`, Cancel or Esc,
 every other input blocked, then a transient outcome readout; live only on a single geo section with
 a live bake, grayed otherwise; name provisional), and Delete (`Del`). Split and join left the

@@ -33,8 +33,6 @@ import {
     beginMove,
     beginV0,
     commit,
-    convertSection,
-    convertSections,
     extendTrack,
     history,
     removeSection,
@@ -609,7 +607,7 @@ onMount(() => {
     };
 });
 
-// the section context menu (Convert / Delete), summoned by right-click on a clip or a
+// the section context menu (Solve force / Delete), summoned by right-click on a clip or a
 // viewport span (both call editor.openContext). rendered once here at the app root so it
 // can float over both the viewport and the dock; positioned at the cursor (screen px).
 // a summoned surface lives only as long as its subject (root ui.md): the menu's visibility
@@ -632,11 +630,8 @@ const ctxKind = $derived.by((): SectionKind | null => {
     if (ctx === null) return null;
     return sections(ecs).find((s) => s.id === ctx.section)?.kind ?? null;
 });
-// the kind the convert flips TO — the label names the destination, not the toggle. single-subject
-// (a mixed-kind SET has no shared destination, so the bulk row below is unlabeled).
-const ctxTarget = $derived(ctxKind === SectionKind.Force ? "Geo" : "Force");
 // whether the section selection is a multi-set — a right-click keeps the set (`openContext`
-// promotes the target to active), so Delete + Convert act on the whole set. single-select is the
+// promotes the target to active), so Delete acts on the whole set. single-select is the
 // size-1 case (today's menu).
 const sectionMulti = $derived.by((): boolean => {
     void tick;
@@ -660,17 +655,15 @@ const canSolve = $derived.by((): boolean => {
     return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs));
 });
 // the context menu as data: one array of MenuItems, rendered by the shared menu language.
-// single-select: Convert names the destination kind (today's row), Solve force is the invoked
-// geo→force tool beside it (`canSolve`), Delete last. multi-select (Premiere multi-clip): Convert
-// flips EVERY selected section's own kind — there's no shared destination to converge on
-// (`convertSection` has no direction parameter, it just swaps a section's own kind), so the row
-// reads generic; Solve force grays (a set has no single subject to solve); Delete carries the
-// set-lifted enablement.
+// single-select: Solve force is the invoked geo→force tool (`canSolve`), Delete last.
+// multi-select (Premiere multi-clip): Solve force grays (a set has no single subject to solve);
+// Delete carries the set-lifted enablement. the destructive Convert row (both single and bulk)
+// was removed (kex2d-geoforce-editor stage 5): redundant with delete + append, and Solve force
+// is now the menu's one conversion affordance.
 const ctxItems = $derived.by((): MenuItem[] => {
     if (ctx === null) return [];
     if (sectionMulti) {
         return [
-            { label: "Convert", action: ctxConvertSet },
             { label: "Solve force", enabled: false },
             {
                 label: "Delete",
@@ -682,20 +675,13 @@ const ctxItems = $derived.by((): MenuItem[] => {
         ];
     }
     return [
-        { label: `Convert to ${ctxTarget}`, action: ctxConvert },
         { label: "Solve force", enabled: canSolve, action: ctxSolve },
         { label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: ctxDelete },
     ];
 });
-function ctxConvert(): void {
-    if (ctx === null) return;
-    convertSection(history, ecs, ctx.section); // destructive, undoable
-    closeContext();
-}
-// the ADDITIVE row beside it: solve this geo shape into the force section that reproduces it
-// (`geoforce.ts`). the destructive Convert above is untouched — it stays the "reset to this kind's
-// default" affordance, and this is the invoked tool. the menu closes first: the solve is modal, and
-// its own surface owns the screen from here.
+// solve this geo shape into the force section that reproduces it (`geoforce.ts`) — the menu's
+// one conversion affordance. the menu closes first: the solve is modal, and its own surface owns
+// the screen from here.
 function ctxSolve(): void {
     if (ctx === null) return;
     const section = ctx.section;
@@ -707,12 +693,6 @@ function ctxDelete(): void {
     // no explicit close: removing the section makes `ctx` derive null, so the menu dismisses
     // by subject existence (one mechanism) and the $effect clears the stale target id.
     if (removeSection(history, ecs, ctx.section)) selectSection(null);
-}
-// the bulk context-menu actions over the whole section set (one undo entry each) — the
-// `doDeleteSet`/`doResetSet` analogue for sections.
-function ctxConvertSet(): void {
-    convertSections(history, ecs, [...editor.sections.ids]);
-    closeContext();
 }
 function ctxDeleteSet(): void {
     if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
@@ -1001,10 +981,8 @@ $effect(() => {
         </div>
     {/if}
 
-    <!-- the section context menu (Convert / Delete): summoned by right-click on a clip or a
-         viewport section span; occasional destructive ops, so hidden until summoned. Convert
-         is a single contextual item naming the target kind (a section is one of two kinds, so
-         the flip is unambiguous) — one click, no submenu. -->
+    <!-- the section context menu (Solve force / Delete): summoned by right-click on a clip or a
+         viewport section span; occasional ops, so hidden until summoned. -->
     {#if ctx}
         <div class="ctxmenu menu" use:fitMenu={{ x: ctx.x, y: ctx.y }} role="menu">
             <Menu items={ctxItems} onclose={closeContext} />
