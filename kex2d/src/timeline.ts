@@ -1,13 +1,16 @@
 /** pure transform + tick math for the force-curve timeline. no Svelte, no DOM,
  *  no solve state — just the arclength↔pixel affine, the 1-2-5 tick generator, and
- *  the pan/zoom clamp. the chart's x-axis is distance (meters): s is the domain the
- *  solver holds fixed, so targets are authored, dragged, and displayed directly in
- *  it. ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom,
+ *  the pan/zoom clamp. the chart's x-axis is a **basis** (`Basis`): global distance
+ *  `d` (meters, the storage-adjacent axis every keyframe/section-boundary/clip
+ *  landmark is authored in) or, toggled, global time `t` — `dToU`/`uToD` are the
+ *  one seam between them, and everything below (`View`, `sToPx`/`pxToS`, `ticks`,
+ *  `snap`) reads the resulting basis coordinate `u` with no further branching.
+ *  ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom,
  *  _renderTicks, findGoodStep). */
 
 import type { Offset } from "./profile";
 import { TangentMode } from "./spline";
-import type { ForceTangent } from "./track";
+import { type ForceTangent, V0 } from "./track";
 
 const clampN = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 
@@ -303,6 +306,14 @@ export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX)
 export const S_GRID = 1;
 export const G_GRID = 0.1;
 
+/** `S_GRID`'s time-basis twin — the placement quantum a keyframe drag snaps to on the
+ *  chart's u-axis while the timeline reads in `Basis.Time`, in seconds. Derived, not
+ *  tuned: the time a cart at the default entry speed `V0` (10 m/s) takes to cover one
+ *  `S_GRID` metre, so both bases offer the same authoring resolution at the default
+ *  speed. Fixed like its twins — timeline grids are constants, only the manipulator
+ *  quanta are per-user (`settings.ts`). */
+export const T_GRID = S_GRID / V0;
+
 /** the resolved snap for one axis of a keyframe drag: the DOMAIN value to write, plus the
  *  guide px to flash (a landmark hit) or `null` (the grid — ambient, no flash). */
 export interface AxisSnap {
@@ -546,22 +557,72 @@ function interpMono(xs: Float64Array, ys: Float64Array, n: number, v: number): n
     return ys[lo] + f * (ys[hi] - ys[lo]);
 }
 
-/** track time (s) → arclength (m) along the current bake. */
+/** track time (s) → arclength (m) along the current bake. a run of equal-arc samples
+ *  (the stalled/v-floor degenerate case) resolves to the LAST tied index — `interpMono`'s
+ *  `span <= 0` branch — safe because a stall freezes both tables in lockstep, so every
+ *  tied index carries the same time. */
 export const timeToArc = (m: Mapping, time: number): number => interpMono(m.t, m.arc, m.n, time);
 
-/** arclength (m) → track time (s) along the current bake. */
+/** arclength (m) → track time (s) along the current bake. same tie handling, mirrored. */
 export const arcToTime = (m: Mapping, s: number): number => interpMono(m.arc, m.t, m.n, s);
 
-/** the labeled major ticks visible in [0, width], on the 1-2-5 grid. */
-export function ticks(v: View, width: number): Tick[] {
+/** the timeline's basis: which global axis the chart's u-coordinate reads (`dToU`/`uToD`,
+ *  below), and every downstream view/tick/snap op through it. `Distance` is today's only
+ *  axis (u = d, identity); `Time` projects through the live bake's arc↔time `Mapping`. Pure
+ *  view state, toggled on the timeline's tool rail — never a storage kind (`Force.s` stays
+ *  section-local arclength in either basis; the Locked decision's rejected "keyframes hold
+ *  time" alternative). */
+export enum Basis {
+    Distance = 1,
+    Time = 2,
+}
+
+/** project global distance `d` (m, the lens's output axis) to the chart's basis coordinate
+ *  `u`. identity in `Distance` basis; the live bake's arc→time table in `Time` basis. No
+ *  live bake (`mapping === null`) falls back to `Distance` regardless of the requested
+ *  basis — the seam's one branch beyond the constant picks (`S_GRID`/`T_GRID`, the readout
+ *  suffix), per the Locked decision. A non-null mapping is `n >= 2` by construction —
+ *  `cart.trackMapping` is the only producer and returns null below that floor. */
+export function dToU(mapping: Mapping | null, basis: Basis, d: number): number {
+    return basis === Basis.Time && mapping ? arcToTime(mapping, d) : d;
+}
+
+/** invert `dToU`: the chart's basis coordinate `u` back to global distance `d`. same
+ *  no-bake fallback. */
+export function uToD(mapping: Mapping | null, basis: Basis, u: number): number {
+    return basis === Basis.Time && mapping ? timeToArc(mapping, u) : u;
+}
+
+/** the delta-from-grab projection (the carried lesson from the reverted per-section-domain
+ *  build): a gesture's Δu — screen-derived, resolved off the LIVE mapping at call time, never
+ *  a frozen reference — applied to a member whose grab value was global distance `d0`.
+ *  Computes `uToD(dToU(d0) + du) − uToD(dToU(d0))`, never `uToD(du)` alone, so a zero-delta
+ *  gesture (`du === 0`) subtracts one value from itself: bit-exact zero even mid-drag, across
+ *  a re-bake that moves the mapping table under the gesture. */
+export function deltaU(mapping: Mapping | null, basis: Basis, d0: number, du: number): number {
+    const u0 = dToU(mapping, basis, d0);
+    return uToD(mapping, basis, u0 + du) - uToD(mapping, basis, u0);
+}
+
+function fmtTime(t: number, step: number): string {
+    const decimals = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+    return `${t.toFixed(decimals)}s`;
+}
+
+/** the labeled major ticks visible in [0, width], on the 1-2-5 grid. `v`'s axis is
+ *  whatever `basis` the caller reads the chart in (the u-axis) — ticks never re-derives
+ *  the projection, it only picks the unit suffix (the readout-suffix branch the Locked
+ *  decision sanctions). */
+export function ticks(v: View, width: number, basis: Basis = Basis.Distance): Tick[] {
     if (!(v.pxPerM > 0) || width <= 0) return [];
     const step = niceStep(TARGET_TICK_PX / v.pxPerM);
     const from = pxToS(v, 0);
     const to = pxToS(v, width);
+    const fmt = basis === Basis.Time ? fmtTime : fmtDist;
     const out: Tick[] = [];
     for (let s = Math.floor(from / step) * step; s <= to + step * 0.5; s += step) {
         const sv = Math.abs(s) < step * 1e-6 ? 0 : s; // snap fp drift to a clean 0
-        out.push({ s: sv, px: sToPx(v, sv), label: fmtDist(sv, step) });
+        out.push({ s: sv, px: sToPx(v, sv), label: fmt(sv, step) });
     }
     return out;
 }

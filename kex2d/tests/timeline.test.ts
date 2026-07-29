@@ -2,10 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { TangentMode } from "../src/spline";
 import {
     arcToTime,
+    Basis,
     clampDelta,
     clampView,
     composeTangent,
     creationTargets,
+    deltaU,
+    dToU,
     fmt,
     frameAll,
     G_GRID,
@@ -24,9 +27,11 @@ import {
     snapAxis,
     SNAP_PX,
     sToPx,
+    T_GRID,
     ticks,
     timeToArc,
     trimTargets,
+    uToD,
     type View,
     xGrow,
     yEase,
@@ -35,6 +40,7 @@ import {
     yGrow,
     zoomAt,
 } from "../src/timeline";
+import { V0 } from "../src/track";
 
 describe("timeToArc / arcToTime — display mapping", () => {
     // a non-uniform monotone table (arc accelerates while time is even): the
@@ -983,5 +989,139 @@ describe("nudgeForces — arrow-nudge writes for the selected force set", () => 
         expect(w[1].s).toBeCloseTo(10, 10); // B reached its extent, not past
         expect(w[1].s).toBeLessThanOrEqual(members[1].len); // hard [0, len] invariant holds
         expect(w[1].s - w[0].s).toBeCloseTo(members[1].s - members[0].s, 10); // offset preserved
+    });
+});
+
+describe("dToU / uToD — timeline basis projection", () => {
+    // the same non-uniform monotone table as the timeToArc/arcToTime suite above (speed
+    // varies, so equal arcs don't cover equal times).
+    const m: Mapping = {
+        arc: Float64Array.from([0, 1, 3, 6, 10]),
+        t: Float64Array.from([0, 0.5, 1, 2, 4]),
+        n: 5,
+    };
+    // a stalled/v-floor bake: arc plateaus (2, 2, 2) while time keeps advancing.
+    const stalled: Mapping = {
+        arc: Float64Array.from([0, 2, 2, 2, 5]),
+        t: Float64Array.from([0, 1, 2, 3, 5]),
+        n: 5,
+    };
+
+    test("Distance basis is the identity, mapping or not", () => {
+        for (const mapping of [m, null]) {
+            for (const d of [0, 2.5, 7, 10]) {
+                expect(dToU(mapping, Basis.Distance, d)).toBe(d);
+                expect(uToD(mapping, Basis.Distance, d)).toBe(d);
+            }
+        }
+    });
+
+    test("Time basis roundtrips at the sample knots", () => {
+        for (let i = 0; i < m.n; i++) {
+            expect(dToU(m, Basis.Time, m.arc[i])).toBeCloseTo(m.t[i], 9);
+            expect(uToD(m, Basis.Time, m.t[i])).toBeCloseTo(m.arc[i], 9);
+        }
+    });
+
+    test("Time basis projects through the live arc↔time table between knots", () => {
+        expect(dToU(m, Basis.Time, 4.5)).toBeCloseTo(1.5, 9);
+        expect(uToD(m, Basis.Time, 1.5)).toBeCloseTo(4.5, 9);
+    });
+
+    test("no-bake fallback: a null mapping reads Distance (identity) even when Time is requested", () => {
+        for (const d of [0, 3, 42]) {
+            expect(dToU(null, Basis.Time, d)).toBe(d);
+            expect(uToD(null, Basis.Time, d)).toBe(d);
+        }
+    });
+
+    test("a stall plateau resolves to the last tied index — deterministic, not a divide-by-zero", () => {
+        // arc=2 is a whole plateau of tied samples (t=1,2,3); the tie resolves to the LAST
+        // tied index (t=3) — matching `interpMono`'s `span <= 0` branch, and its inverse
+        // (t=3 read back through uToD) resolves to that same representative arc=2.
+        expect(dToU(stalled, Basis.Time, 2)).toBe(3);
+        expect(uToD(stalled, Basis.Time, 3)).toBe(2);
+        // a distance query approaching the tied arc value from either side stays on the
+        // plateau's own time span — the tie never leaks into a neighboring segment.
+        expect(dToU(stalled, Basis.Time, 1.999999)).toBeCloseTo(1, 4);
+        expect(dToU(stalled, Basis.Time, 2.000001)).toBeGreaterThanOrEqual(3);
+    });
+});
+
+describe("deltaU — delta-from-grab projection through the live mapping", () => {
+    const m: Mapping = {
+        arc: Float64Array.from([0, 1, 3, 6, 10]),
+        t: Float64Array.from([0, 0.5, 1, 2, 4]),
+        n: 5,
+    };
+
+    test("zero-delta is bit-exact zero, both bases, with or without a live bake", () => {
+        for (const basis of [Basis.Distance, Basis.Time]) {
+            for (const mapping of [m, null]) {
+                for (const d0 of [0, 2.5, 7]) {
+                    expect(deltaU(mapping, basis, d0, 0)).toBe(0);
+                }
+            }
+        }
+    });
+
+    test("Distance basis: delta passes through unchanged (identity, no projection error)", () => {
+        for (const d0 of [0, 2.5, 7]) {
+            for (const du of [-3, 0.1, 5]) {
+                expect(deltaU(null, Basis.Distance, d0, du)).toBeCloseTo(du, 12);
+                expect(deltaU(m, Basis.Distance, d0, du)).toBeCloseTo(du, 12);
+            }
+        }
+    });
+
+    test("Time basis: matches the direct dToU/uToD chain, not a shortcut through uToD(du) alone", () => {
+        const d0 = 3; // dToU(m, Time, 3) = arcToTime(m, 3) = 1
+        const du = 0.5;
+        const u0 = dToU(m, Basis.Time, d0);
+        expect(deltaU(m, Basis.Time, d0, du)).toBeCloseTo(
+            uToD(m, Basis.Time, u0 + du) - uToD(m, Basis.Time, u0),
+            12,
+        );
+        // and NOT the naive (wrong) shortcut `uToD(du)`, which ignores the grab origin.
+        expect(deltaU(m, Basis.Time, d0, du)).not.toBeCloseTo(uToD(m, Basis.Time, du), 6);
+    });
+
+    test("Time basis stays bit-exact zero across a re-bake that moves the table mid-drag", () => {
+        // the carried lesson: a live mapping re-solves under the gesture (a different Mapping
+        // instance each call), so the zero-delta guarantee must hold per-call, not just once.
+        const m2: Mapping = {
+            arc: Float64Array.from([0, 1, 4, 8, 10]),
+            t: Float64Array.from([0, 0.4, 1.1, 2.3, 4]),
+            n: 5,
+        };
+        expect(deltaU(m, Basis.Time, 3, 0)).toBe(0);
+        expect(deltaU(m2, Basis.Time, 3, 0)).toBe(0);
+    });
+});
+
+describe("T_GRID — time-basis snap quantum", () => {
+    test("derived as S_GRID / V0, not a separately-tuned constant", () => {
+        expect(T_GRID).toBeCloseTo(S_GRID / V0, 12);
+    });
+});
+
+describe("ticks — basis-aware readout suffix, same grid either way", () => {
+    const v: View = { pan: 0, pxPerM: 100 };
+
+    test("Distance basis (default) prints the meter suffix", () => {
+        const t = ticks(v, 1000);
+        expect(t.length).toBeGreaterThan(0);
+        for (const tick of t) expect(tick.label.endsWith("m")).toBe(true);
+    });
+
+    test("Time basis prints the second suffix, same tick positions", () => {
+        const dist = ticks(v, 1000, Basis.Distance);
+        const time = ticks(v, 1000, Basis.Time);
+        expect(time.length).toBe(dist.length);
+        for (let i = 0; i < time.length; i++) {
+            expect(time[i].label.endsWith("s")).toBe(true);
+            expect(time[i].px).toBeCloseTo(dist[i].px, 9); // the suffix is the ONLY branch
+            expect(time[i].s).toBeCloseTo(dist[i].s, 9);
+        }
     });
 });
