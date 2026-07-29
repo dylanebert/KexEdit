@@ -33,10 +33,14 @@ AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
   components synchronously, but the bake's node→sample map rebuilds on the *next* frame —
   `nodeCount` and `tTotal > 0` are satisfied pre-bake, so a gesture placed on that evidence
   reads the previous track. Wait on bake output actually changing (e.g. `nodePoint` off the
-  track origin). It binds the WRITE side too: an op that *resolves* through the bake needs the
-  same wait between consecutive invocations, not only before a pointer lands — two arrow-nudges
-  inside one frame both read the same stale `nodeWorld` frame and the second overwrites the first
-  (measured: a right-then-left pair landed a step short of where it started).
+  track origin). Reads only: app ops resolve their geometry from authored state, never the bake,
+  so a flow never needs a settle *between* invocations — a wait papering over a bake-read is a
+  workaround for an app defect, not a law.
+- **A negative assert needs a positive control.** A "no-op" or "revert" check against a state
+  already equal to its target passes vacuously — an unguarded mid-gesture `F` against the
+  boot-time frame, a revert assert on an undisplaced drag. First prove the rig detects change
+  (displace the camera off its fit target, assert the drag moved the point), then assert the
+  guard/revert.
 - **Pin both layers before a layered dismissal.** Escape peels exactly one rung (menu → sub-mode →
   selection), so a flow that presses it must first wait the rung above OFF (`.nodemenu` count 0 — a
   menu still mounted swallows the key in capture phase) and assert the rung it means to peel is

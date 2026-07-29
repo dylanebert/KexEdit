@@ -312,8 +312,8 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   both axes clamp the cursor to the chart during a keyframe drag. Camera / document-axis
   navigation is a no-op while any gesture is live — a mid-gesture view change corrupts
   screen-space grabs — guarded on the *one* live-gesture flag (kex2d `editor.dragging`) so the
-  rule can't go stale as gestures are added. Wheel is closed; `F` is a known open hole
-  (roadmap). The 3D `app/` viewport faces the identical hazard.
+  rule can't go stale as gestures are added. Wheel and `F` are both closed. The 3D `app/`
+  viewport faces the identical hazard.
 - **Arrow cursor over keyframes** (AE/Unity/Blender); grab hands mean pannable surfaces. Hover
   affordance is the marker's fill change, not the cursor.
 - **Numeric fields are summoned at the object.** A selected keyframe's fields float in a popover
