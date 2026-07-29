@@ -1105,7 +1105,10 @@ export function attachControls(
         // frame content (Unity/Blender `F`): fit the selection, or the whole track when
         // nothing is selected — but only while the pointer is over the viewport (the
         // hovered-surface router), so `F` frames the viewport OR the timeline, never both.
-        // guard Ctrl/Cmd+F (the browser find reflex) and mid-drag.
+        // guard Ctrl/Cmd+F (the browser find reflex) and mid-gesture, on `editor.dragging`,
+        // the ONE live-gesture flag every gesture raises through `beginDrag` (same guard as
+        // `onWheel`, above) — not the old per-flag `dragManip`/`panning` check, which missed
+        // tangent, marquee, and other-surface gestures.
         if (
             (e.key === "f" || e.key === "F") &&
             !e.ctrlKey &&
@@ -1113,7 +1116,7 @@ export function attachControls(
             editor.hover === "viewport"
         ) {
             e.preventDefault();
-            if (dragManip === null && !panning) frameViewport(ecs, canvas);
+            if (!editor.dragging) frameViewport(ecs, canvas);
             return;
         }
 

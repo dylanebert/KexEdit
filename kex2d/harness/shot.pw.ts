@@ -3257,6 +3257,42 @@ test("viewport multiselect flow", async ({ page, boot }) => {
     await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
     await page.mouse.wheel(0, -600);
     await expect.poll(async () => (await cam())[0]).toBeGreaterThan(held[0]);
+
+    // ── 6b. `F` IS ALSO A NO-OP DURING A LIVE GESTURE (kex2d-gesture-residue stage 2, the
+    // wheel guard's open twin — the onWheel comment above names it). Both guard on the SAME
+    // `editor.dragging` flag. A fresh marquee is the vehicle (it authors nothing, same as 6);
+    // the idle wheel just above left the camera zoomed PAST its whole-track `F`-frame target
+    // (an earlier `f` press at boot, line 3085, already established that fit as the baseline),
+    // so a real reframe under this section is detectable — pinning the guard against a camera
+    // already equal to its own no-op target proves nothing (the false-negative this flow's
+    // wheel case avoids by using a relative zoom instead). The idle `F` after release is the
+    // positive control: it MUST reframe back toward the whole-track fit (zoom decreases), so a
+    // guard that merely eats the key outright can't pass the pair. Mutation: drop the
+    // `editor.dragging` guard in `controls.ts`'s `F` handler → the held camera reframes under
+    // the marquee → red. ──
+    await page.keyboard.press("Escape"); // clear the selection the first marquee committed on
+    // release — a selected node's summoned ring sits in this rect's start corner, and a
+    // pointerdown there grabs a manipulator knob instead of arming a fresh marquee.
+    const zoomed = await cam();
+    await locate(); // the idle zoom above moved every node's screen point — re-locate through
+    // the bake-ready reader before building the new rect, the kex2d-harness law (never drive a
+    // pointer through a box cached across a camera change).
+    const xLo23z = mid(pt[1].x, pt[2].x);
+    const xHi23z = mid(pt[3].x, pt[4].x);
+    const yAllZ = Object.values(pt).map((p) => p.y);
+    const yLoZ = Math.min(...yAllZ) - 80;
+    const yHiZ = Math.max(...yAllZ) + 80;
+    await page.mouse.move(cb.x + xLo23z, cb.y + yLoZ);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + xHi23z, cb.y + yHiZ, { steps: 6 }); // past DRAG_PX → a real marquee
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(1); // the gesture IS live
+    await page.keyboard.press("f");
+    await frames(page, 2);
+    expect(await cam()).toEqual(zoomed);
+    await page.mouse.up();
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
+    await page.keyboard.press("f");
+    await expect.poll(async () => (await cam())[0]).toBeLessThan(zoomed[0]);
 });
 
 // Drive the TIMELINE MULTISELECT flow (kex2d-multiselect stage 6): seed an airtime force bump →
@@ -3438,4 +3474,29 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
     await page.mouse.wheel(0, -600);
     await expect.poll(async () => (await xView())[1]).toBeGreaterThan(rest[1]);
+
+    // ── 5b. `F` IS ALSO A NO-OP DURING A LIVE GESTURE (kex2d-gesture-residue stage 2) — the
+    // timeline half; the viewport half rides the viewport multiselect flow, and both surfaces
+    // guard on the SAME `editor.dragging` flag. `Timeline.svelte`'s `F` handler carried no
+    // guard at all before this stage (unlike its `onWheel` twin, above). A fresh marquee is the
+    // vehicle (it authors nothing, same as 5); the idle wheel just above left `pxPerM` PAST the
+    // whole-section `F`-frame target established at `frameTimeline` (line 3315), so a real
+    // reframe under this section is detectable — pinning the guard against a view already equal
+    // to its own no-op target proves nothing (the false-negative section 5's wheel case avoids
+    // by using a relative zoom instead). The idle `F` after release is the positive control: it
+    // MUST reframe back toward the section fit (pxPerM decreases), so a guard that merely eats
+    // the key outright can't pass the pair. Mutation: drop the `editor.dragging` guard in
+    // `Timeline.svelte`'s `F` handler → the held view reframes under the marquee → red. ──
+    const zoomed = await xView();
+    await page.mouse.move(xLo, chartTop);
+    await page.mouse.down();
+    await page.mouse.move(xHi, chartBot, { steps: 6 }); // past the dead zone → the marquee arms
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(1); // the gesture IS live
+    await page.keyboard.press("f");
+    await frames(page, 2);
+    expect(await xView()).toEqual(zoomed);
+    await page.mouse.up();
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
+    await page.keyboard.press("f");
+    await expect.poll(async () => (await xView())[1]).toBeLessThan(zoomed[1]);
 });

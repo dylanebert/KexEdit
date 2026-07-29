@@ -2167,11 +2167,15 @@ onMount(() => {
         // frame content (Unity/Blender `F`): frames the whole track (frameAll), the
         // x-mirror of the viewport's F — but only when the pointer is over the timeline
         // (the hovered-surface router), so `F` frames one surface, not both at once. guard
-        // Ctrl/Cmd+F (browser find).
+        // Ctrl/Cmd+F (browser find) and mid-gesture, on `editor.dragging`, the ONE
+        // live-gesture flag every gesture raises through `beginDrag` (same guard as
+        // `onWheel`, above) — a mid-gesture reframe would move the document axis under a
+        // live keyframe drag, extent trim, handle drag, or chart marquee.
         if (
             (e.key === "f" || e.key === "F") &&
             !e.ctrlKey &&
             !e.metaKey &&
+            !editor.dragging &&
             editor.hover === "timeline"
         ) {
             if (chartW > 0 && sTotal > 0) {
