@@ -214,29 +214,58 @@ describe("convertForce", () => {
 // own bake before and after the convert, which is independently captured truth — the fit could
 // hold its internal budget perfectly and still blow the displayed one if it scored a sampling
 // the document never bakes (it did: the reviewer's hard case read 0.45 g reported vs 5.94 g
-// displayed). the two bakes have DIFFERENT edge counts and edge lengths, so the comparison is
-// arclength-aligned: each curve's per-edge force is a value at that edge's arclength MIDPOINT
-// (measured from the section entry, the one station both curves share exactly), and the drift is
-// the max over BOTH curves' stations of the gap to the other curve linearly interpolated there.
+// displayed), or scored it on a coordinate the timeline doesn't draw (it did: span-normalized
+// alignment divides out the fitted chain's corner-cutting shortfall, reading 0.48 g against
+// 1.57 g displayed on valley-explicit).
+//
+// the two bakes have DIFFERENT edge counts and edge lengths, so the comparison is aligned on
+// ABSOLUTE ARCLENGTH FROM THE SECTION ENTRY — the timeline's own station axis. Each curve's
+// per-edge force is a value at its LEFT sample's arclength, the convention `bake.forces` computes
+// it under (`fN[i]` from `theta[i]`, `theta[i+1]`, `ds[i]`); attributing it to the edge midpoint
+// instead shifts each curve by its own half-edge, and the two half-edges differ, so a force
+// gradient reads a bias of |dF/ds|·|ds_t − ds_c|/2 that belongs to neither curve. The drift is the
+// max over BOTH curves' stations of the gap to the other curve linearly interpolated there;
 // evaluating at only one curve's stations would step over exactly the extremes the other one
-// carries — which is the under-reporting being guarded against.
+// carries.
 
 interface Stations {
     s: number[];
     g: number[];
 }
 
-/** per-edge force as values at edge-midpoint arclength, measured from the section entry. */
+/** per-edge force as values at the edge's LEFT sample arclength, measured from the section
+ *  entry — `bake.forces`'s own attribution. */
 function stations(fN: ArrayLike<number>, ds: ArrayLike<number>, edges: number): Stations {
     const s: number[] = [];
     const g: number[] = [];
     let at = 0;
     for (let k = 0; k < edges; k++) {
-        s.push(at + ds[k] / 2);
+        s.push(at);
         g.push(fN[k]);
         at += ds[k];
     }
     return { s, g };
+}
+
+/** per-sample position as values at the sample's own arclength from the section entry — the
+ *  geometric budget's half of the same station axis. */
+function posStations(
+    x: ArrayLike<number>,
+    y: ArrayLike<number>,
+    ds: ArrayLike<number>,
+    edges: number,
+): { s: number[]; x: number[]; y: number[]; total: number } {
+    const s: number[] = [];
+    const px: number[] = [];
+    const py: number[] = [];
+    let at = 0;
+    for (let i = 0; i <= edges; i++) {
+        s.push(at);
+        px.push(x[i]);
+        py.push(y[i]);
+        if (i < edges) at += ds[i];
+    }
+    return { s, x: px, y: py, total: at };
 }
 
 /** linear interpolation of `st` at arclength `at`, held flat beyond either end. */
@@ -260,6 +289,33 @@ function drift(a: Stations, b: Stations): number {
     return worst;
 }
 
+type Positions = ReturnType<typeof posStations>;
+
+/** the arclength-aligned max positional gap between two bakes of the same section, the same
+ *  symmetric union-of-stations reading `drift` takes on force. */
+function posDrift(a: Positions, b: Positions): number {
+    const near = (p: Positions, s: number): [number, number] => {
+        const last = p.s.length - 1;
+        if (s <= p.s[0]) return [p.x[0], p.y[0]];
+        if (s >= p.s[last]) return [p.x[last], p.y[last]];
+        let i = 0;
+        while (i + 1 <= last && p.s[i + 1] < s) i++;
+        const u = (s - p.s[i]) / (p.s[i + 1] - p.s[i]);
+        return [p.x[i] + u * (p.x[i + 1] - p.x[i]), p.y[i] + u * (p.y[i + 1] - p.y[i])];
+    };
+    let worst = 0;
+    for (const [p, q] of [
+        [a, b],
+        [b, a],
+    ] as const) {
+        for (let i = 0; i < p.s.length; i++) {
+            const [x, y] = near(q, p.s[i]);
+            worst = Math.max(worst, Math.hypot(p.x[i] - x, p.y[i] - y));
+        }
+    }
+    return worst;
+}
+
 /** the section's force stations off the track's live bake — what the timeline draws. */
 function sectionStations(eid: number, id: number): Stations {
     const out = bakeOut.get(eid);
@@ -277,12 +333,18 @@ function sectionStations(eid: number, id: number): Stations {
 describe("document-layer fidelity", () => {
     test("the landed geo section's baked force holds the budget against the pre-convert bake", async () => {
         // the hard case's shape: an upstream geo hill hands the force section a curved, rising,
-        // non-axis-aligned entry frame, and the force section then sweeps 2.2 g → −0.6 g over a
+        // non-axis-aligned entry frame, and the force section then sweeps 2.2 g → 0.4 g over a
         // long extent at a modest entry speed. the fitted chain's own adaptive re-bake lands
-        // DENSER than the 180-edge target (186 edges), and those extra edges are exactly the
-        // ones a frozen target-matched scan never looks at: the kernel read 0.40 g while the
-        // document displayed 1.19 g. red before the adaptive scoring landed, green after
-        // (0.45 g displayed, 0.47 g reported — the two now agree, which is the actual fix).
+        // DENSER than the 180-edge target (183 edges), and those extra edges are exactly the
+        // ones a frozen target-matched scan never looks at: that scoring read 0.40 g while the
+        // document displayed 1.19 g.
+        //
+        // the sweep was 2.2 g → −0.6 g while the kernel aligned on a span-normalized
+        // coordinate, where it reported `"floor"` at 0.45 g. On absolute arclength the same
+        // input saturates honestly at `"budget"` / 0.58 g — the pure-Auto C1 dialect cannot hold
+        // 0.5 g through that gradient, and the old reading was the corner-cutting shortfall
+        // being divided out. 0.4 g keeps every property this case is here for (curved entry
+        // frame, long extent, denser-than-target re-bake) on a shape the dialect does hold.
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
@@ -293,7 +355,7 @@ describe("document-layer fidelity", () => {
         addNode(state, hill, 20, 4);
         const sec = createSection(state, 1, SectionKind.Force, 90);
         createForcePoint(state, sec, 0, 2.2);
-        createForcePoint(state, sec, 90, -0.6);
+        createForcePoint(state, sec, 90, 0.4);
         state.step(0);
 
         const before = sectionStations(eid, sec);
@@ -333,13 +395,72 @@ describe("document-layer fidelity", () => {
         expect(result.outcome).toBe("budget");
         state.step(0);
 
-        // and what it reports is what the document shows, within the interpolation the two
-        // samplings' station mismatch leaves (the point of the fix is that the two agree).
+        // and the DOCUMENT agrees the budget is blown — the honest positive assertion. (an
+        // earlier version bounded |drift − forceError| by a tuned `1`, which held only because
+        // the alignment defect happened to sit under it on this one input.)
         expect(result.forceError).toBeGreaterThan(FORCE_BUDGET);
-        expect(Math.abs(drift(before, sectionStations(eid, sec)) - result.forceError)).toBeLessThan(
-            1,
-        );
+        expect(drift(before, sectionStations(eid, sec))).toBeGreaterThan(FORCE_BUDGET);
     }, 60_000);
+});
+
+// ── the corpus-wide document-metric oracle ───────────────────────────────────
+// the gate. Two hand-picked ECS cases above prove the seam end to end; this drives the WHOLE
+// 10-scenario corpus through the same metric, because a single case can land where the kernel's
+// alignment and the document's coincide (the previous fidelity case did: kernel 0.466 vs
+// document 0.452, so the span-normalization defect was invisible to it while four corpus
+// scenarios were over budget — valley-explicit at 1.57 g against a reported 0.48 g).
+//
+// Device-free by construction: `applyConvertGeo` localizes the fit's world nodes into the
+// section's own entry frame and `BakeSystem` bakes them through `chain`, which for a section at
+// the track start is exactly `evalGeo(entry, nodes, DS_NOMINAL, MAX_SAMPLES)` — the same call,
+// without ten worker spawns. The ECS pins above are what tie that equality to the real path.
+describe("document-layer fidelity: the whole corpus", () => {
+    const Golden = golden as Record<
+        string,
+        { points: { s: number; g: number }[]; length: number; ds: number }
+    >;
+
+    for (const scenario of scenarios) {
+        test(scenario.name, () => {
+            const g = Golden[scenario.name];
+            const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
+            const bake = evalForce(entry, forceProfile(g.points, g.length, g.ds), g.ds);
+            const target: GeofitBake = {
+                x: bake.posX,
+                y: bake.posY,
+                fN: bake.fN,
+                ds: bake.ds,
+                edges: bake.fN.length,
+            };
+
+            const fit = geofit(target, entry.v, {
+                dsNominal: DS_NOMINAL,
+                maxSamples: MAX_SAMPLES,
+            });
+            expect(fit.outcome).toBe("floor");
+            const landed = evalGeo(entry, fit.nodes, DS_NOMINAL, MAX_SAMPLES);
+
+            // both budgets, read the way the document reads them.
+            expect(
+                drift(
+                    stations(target.fN, target.ds, target.edges),
+                    stations(landed.fN, landed.ds, landed.edges),
+                ),
+            ).toBeLessThanOrEqual(FORCE_BUDGET);
+            expect(
+                posDrift(
+                    posStations(target.x, target.y, target.ds, target.edges),
+                    posStations(landed.posX, landed.posY, landed.ds, landed.edges),
+                ),
+            ).toBeLessThanOrEqual(GEO_BUDGET);
+
+            // and the kernel's self-report IS that reading — same metric, same sampling, so the
+            // two are the same number and any future divergence is a regression in the
+            // alignment, not a tolerance to widen.
+            expect(fit.forceError).toBeLessThanOrEqual(FORCE_BUDGET);
+            expect(fit.deviation).toBeLessThanOrEqual(GEO_BUDGET);
+        });
+    }
 });
 
 // the Validation round-trip oracle: a geo scenario → the SHIPPED geo→force convert (the frozen

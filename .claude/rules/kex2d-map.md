@@ -338,12 +338,17 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   document bakes once the fit lands; scoring at frozen target-matched counts under-reports wherever
   the per-segment edge-count rule inflates the landed density (measured 0.40 g reported vs 1.19 g
   displayed). The two bakes have different sample counts, so both budgets are compared
-  **arclength-aligned** in a span coordinate — `span index + fraction of that span's arclength`,
-  anchored at the exact node↔sample correspondences — over the UNION of both curves' stations, so
-  neither side's extremes are stepped over. `GeofitParams` therefore carries the LANDED section's
+  on **absolute arclength from the section entry** — the timeline's own station axis — over the
+  UNION of both curves' stations, so neither side's extremes are stepped over, with each per-edge
+  `fN` read at its LEFT sample (`bake.forces`'s own attribution). Normalizing each node-to-node
+  span by its own length is the refuted alternative: the fitted chain cuts corners and runs
+  systematically short, and per-span normalization divides that shortfall out (measured 0.48 g
+  reported vs 1.57 g displayed on valley-explicit, 4/10 corpus scenarios over budget).
+  `GeofitParams` therefore carries the LANDED section's
   sampling (`dsNominal`, `maxSamples`) alongside the two budgets, and `GeofitResult` carries the
   resolved budgets back so a readout prints the bound the fit actually ran. Unit + corpus oracle in
-  `tests/geofit.test.ts`; sweep + timing in `tests/forcegeo.lab.ts`.
+  `tests/geofit.test.ts`, the corpus-wide document-metric gate in `tests/forcegeo.test.ts`; sweep
+  + timing in `tests/forcegeo.lab.ts`.
 - `geofit-async.ts` + `geofit-worker.ts` — the **one-shot async wrapper**: `runGeofit(bake, v0,
   {signal, params})` spawns a dedicated worker, posts one message, resolves once. `convert.ts`'s
   façade minus everything `refine`'s multi-probe search needed — no pool, no fan-out, and no

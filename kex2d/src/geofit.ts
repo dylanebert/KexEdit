@@ -21,8 +21,15 @@
  *  reads held while the timeline shows it blown (measured 0.40 g reported vs
  *  1.19 g displayed on an upstream-curved-hill + long force section, and a
  *  claimed `"floor"` at 0.39 g on one whose display read 6.06 g). The two
- *  bakes have different sample counts, so both budgets are compared
- *  **arclength-aligned** (`spanCoord`, below) rather than by index.
+ *  bakes have different sample counts, so both budgets are compared on
+ *  **absolute arclength from the section entry** — the timeline's own station
+ *  axis, and the metric the document-layer fidelity oracle
+ *  (`tests/forcegeo.test.ts`) reads. Normalizing each span by its own length
+ *  was tried and is wrong: the fitted Hermite chain cuts corners, so it runs
+ *  systematically short (~0.5 m over 100 m), and a per-span normalization
+ *  divides that shortfall out — at a steep force gradient the drift IS the
+ *  error (measured 0.48 g reported vs 1.57 g displayed on valley-explicit,
+ *  4/10 corpus scenarios over budget).
  *
  *  split-then-prune, mirroring `refine.ts`'s shape: open at the two
  *  endpoints, split at the worst-|ΔfN| sample a split can use — not a node,
@@ -131,14 +138,11 @@ interface Scratch {
     cTheta: Float32Array;
     cV: Float32Array;
     cFN: Float32Array;
-    /** the candidate's cumulative arclength + span coordinate, and its edge-midpoint stations. */
+    /** the candidate's per-sample cumulative arclength from the entry — the station axis both
+     *  budgets are compared on. */
     cumC: Float64Array;
-    tauC: Float64Array;
-    midC: Float64Array;
-    /** the target's, the same three. `cumT` is knot-independent, so it is filled once. */
+    /** the target's, same axis. Knot-independent, so it is filled once. */
     cumT: Float64Array;
-    tauT: Float64Array;
-    midT: Float64Array;
     /** per-TARGET-sample deviation / force error. every measurement — including the ones taken at
      *  the candidate's own stations — is attributed to the target sample(s) bordering it, because
      *  a split site is a target sample index. */
@@ -158,11 +162,7 @@ function scratchFor(edges: number, maxSamples: number): Scratch {
         cV: new Float32Array(maxSamples),
         cFN: new Float32Array(maxSamples - 1),
         cumC: new Float64Array(maxSamples),
-        tauC: new Float64Array(maxSamples),
-        midC: new Float64Array(maxSamples - 1),
         cumT: new Float64Array(edges + 1),
-        tauT: new Float64Array(edges + 1),
-        midT: new Float64Array(edges),
         devArr: new Float64Array(edges + 1),
         errArr: new Float64Array(edges + 1),
         frac: { u: 0 },
@@ -199,27 +199,6 @@ function arclength(ds: ArrayLike<number>, edges: number, cum: Float64Array): voi
     for (let i = 0; i < edges; i++) cum[i + 1] = cum[i] + ds[i];
 }
 
-/**
- * the alignment coordinate the two bakes are compared in: `span index + fraction of that span's
- * own arclength`, a span running node to node.
- *
- * derived, not tuned. the two curves have different sample counts and different total
- * arclengths, so index matching is meaningless and absolute arclength drifts apart down the
- * section. what the fit *does* know exactly is the node correspondence — every node is a literal
- * pick of a target sample, so candidate node k and target sample `knots[k]` are the SAME point
- * to f32. anchoring the map there makes it exact at every node and bounds any mismatch inside one
- * span, where the only correspondence available is fraction-of-arclength. the result is monotone
- * increasing on both curves, so the whole comparison is one merge walk.
- */
-function spanCoord(cum: Float64Array, anchors: readonly number[], tau: Float64Array): void {
-    for (let k = 0; k + 1 < anchors.length; k++) {
-        const a = anchors[k];
-        const b = anchors[k + 1];
-        const len = cum[b] - cum[a];
-        for (let i = a; i <= b; i++) tau[i] = len > 0 ? k + (cum[i] - cum[a]) / len : k;
-    }
-}
-
 /** the interval of the sorted `tau` (length `n`) holding query `q`, scanned forward from
  *  `from` — queries arrive sorted, so a whole pass is one walk. the fraction into that interval
  *  lands in `frac.u`, clamped, so a query past either end reads as the end value. */
@@ -247,13 +226,6 @@ function lerp(arr: ArrayLike<number>, i: number, u: number): number {
     return u === 0 ? arr[i] : arr[i] + u * (arr[i + 1] - arr[i]);
 }
 
-/** per-edge values as stations at the edge's arclength midpoint, in the span coordinate. an edge
- *  never straddles a node (nodes land on sample boundaries on both curves), so the midpoint is
- *  the plain average of the edge's two sample coordinates. */
-function midCoord(tau: Float64Array, edges: number, mid: Float64Array): void {
-    for (let k = 0; k < edges; k++) mid[k] = (tau[k] + tau[k + 1]) / 2;
-}
-
 const UNUSABLE: Candidate = {
     usable: false,
     deviation: Number.POSITIVE_INFINITY,
@@ -262,14 +234,17 @@ const UNUSABLE: Candidate = {
 
 /**
  * bake the chain a knot set picks the way the DOCUMENT will (`chainCounts` adaptive counts →
- * `sampleAt` → `forces`, exactly `evalGeo`'s path), then score it against the target
- * arclength-aligned.
+ * `sampleAt` → `forces`, exactly `evalGeo`'s path), then score it against the target on absolute
+ * arclength from the entry.
  *
  * both budgets are measured over the UNION of the two curves' stations: each curve's own
- * stations, with the other linearly interpolated at the matching span coordinate. one-sided
- * scoring steps over whatever the other curve carries between its neighbours — and the candidate
- * is the denser side exactly where the edge-count rule inflates it, which is where the displayed
- * error lives.
+ * stations, with the other linearly interpolated at the same arclength. one-sided scoring steps
+ * over whatever the other curve carries between its neighbours — and the candidate is the denser
+ * side exactly where the edge-count rule inflates it, which is where the displayed error lives.
+ *
+ * A per-sample deviation reads at the sample's own arclength; a per-edge `fN` reads at its LEFT
+ * sample's arclength, the convention `bake.forces` computes it under (`fN[i]` is built from
+ * `theta[i]`, `theta[i+1]`, `ds[i]`, and is what the timeline draws at station i).
  *
  * Writes the residual profile into `sc.devArr` / `sc.errArr` (see `Scratch`).
  */
@@ -291,15 +266,11 @@ function evaluate(
     for (const m of counts) cEdges += m;
     if (cEdges < 1) return UNUSABLE;
 
-    const { cx, cy, cds, cFN, tauT, tauC, midT, midC, devArr, errArr, frac } = sc;
-    const { offsets } = sampleAt(nodes, counts, cx, cy, cds);
+    const { cx, cy, cds, cFN, cumT, cumC, devArr, errArr, frac } = sc;
+    sampleAt(nodes, counts, cx, cy, cds);
     forces(cx, cy, sc.cTheta, sc.cV, cFN, cds, 0, cEdges, v0);
 
-    spanCoord(sc.cumT, knots, tauT);
-    arclength(cds, cEdges, sc.cumC);
-    spanCoord(sc.cumC, offsets, tauC);
-    midCoord(tauT, edges, midT);
-    midCoord(tauC, cEdges, midC);
+    arclength(cds, cEdges, cumC);
 
     devArr.fill(0, 0, edges + 1);
     errArr.fill(0, 0, edges + 1);
@@ -307,14 +278,14 @@ function evaluate(
     // pass 1 — at the target's own stations, the candidate interpolated there.
     let cursor = 0;
     for (let i = 0; i <= edges; i++) {
-        const j = bracket(tauC, cEdges + 1, tauT[i], cursor, frac);
+        const j = bracket(cumC, cEdges + 1, cumT[i], cursor, frac);
         cursor = j;
         const d = Math.hypot(bake.x[i] - lerp(cx, j, frac.u), bake.y[i] - lerp(cy, j, frac.u));
         if (d > devArr[i]) devArr[i] = d;
     }
     cursor = 0;
     for (let k = 0; k < edges; k++) {
-        const j = bracket(midC, cEdges, midT[k], cursor, frac);
+        const j = bracket(cumC, cEdges, cumT[k], cursor, frac);
         cursor = j;
         const e = Math.abs(bake.fN[k] - lerp(cFN, j, frac.u));
         if (e > errArr[k]) errArr[k] = e;
@@ -325,7 +296,7 @@ function evaluate(
     // is attributed to the target samples bracketing it.
     cursor = 0;
     for (let j = 0; j <= cEdges; j++) {
-        const i = bracket(tauT, edges + 1, tauC[j], cursor, frac);
+        const i = bracket(cumT, edges + 1, cumC[j], cursor, frac);
         cursor = i;
         const d = Math.hypot(cx[j] - lerp(bake.x, i, frac.u), cy[j] - lerp(bake.y, i, frac.u));
         if (d > devArr[i]) devArr[i] = d;
@@ -334,13 +305,14 @@ function evaluate(
     }
     cursor = 0;
     for (let j = 0; j < cEdges; j++) {
-        const i = bracket(midT, edges, midC[j], cursor, frac);
+        const i = bracket(cumT, edges, cumC[j], cursor, frac);
         cursor = i;
         const e = Math.abs(cFN[j] - lerp(bake.fN, i, frac.u));
-        // a query between two edge midpoints sits around sample i+1; the three bordering
-        // samples carry it, so a split can land on either side of the site.
-        const last = Math.min(i + 2, edges);
-        for (let t = i; t <= last; t++) if (e > errArr[t]) errArr[t] = e;
+        // the two target force stations bracketing the query carry it, so a split can land on
+        // either side of the site.
+        const nxt = Math.min(i + 1, edges);
+        if (e > errArr[i]) errArr[i] = e;
+        if (e > errArr[nxt]) errArr[nxt] = e;
     }
 
     let deviation = 0;
@@ -373,6 +345,11 @@ function widestMid(knots: readonly number[]): number {
  * profile of the MOST RECENT `evaluate` (`Scratch`), which is `c`'s — the split loop calls this
  * between one evaluate and the next.
  *
+ * **The criterion follows the budget that is actually violated.** A candidate over only the
+ * geometric budget carries a force profile that is everywhere inside its bound, so ranking those
+ * values picks a site by whatever float noise separates them — the deviation profile is the one
+ * carrying signal there, and it is what the geometric search below reads.
+ *
  * **The force criterion skips a knot AND its two neighbours**, the lock's "already a node or
  * adjacent" exclusion. It is load-bearing under the adaptive scoring: the worst |ΔfN| routinely
  * sits at a C1 node join (the dialect's accepted ringing, and the join is where the candidate's
@@ -387,19 +364,21 @@ function widestMid(knots: readonly number[]): number {
  * fidelity (the spec's criterion sweep). The geometric fallback keeps the wider admissibility
  * (any interior sample), so saturation still terminates.
  */
-function splitSite(knots: readonly number[], c: Candidate, sc: Scratch): number {
+function splitSite(knots: readonly number[], c: Candidate, sc: Scratch, force: number): number {
     if (!c.usable) return widestMid(knots);
-    let worst = -1;
-    let worstErr = -Infinity;
-    for (let k = 0; k + 1 < knots.length; k++) {
-        for (let i = knots[k] + 2; i < knots[k + 1] - 1; i++) {
-            if (sc.errArr[i] > worstErr) {
-                worstErr = sc.errArr[i];
-                worst = i;
+    if (c.forceError > force) {
+        let worst = -1;
+        let worstErr = -Infinity;
+        for (let k = 0; k + 1 < knots.length; k++) {
+            for (let i = knots[k] + 2; i < knots[k + 1] - 1; i++) {
+                if (sc.errArr[i] > worstErr) {
+                    worstErr = sc.errArr[i];
+                    worst = i;
+                }
             }
         }
+        if (worst >= 0) return worst;
     }
-    if (worst >= 0) return worst;
 
     let best = -1;
     let bestDev = -Infinity;
@@ -455,7 +434,7 @@ export function geofit(bake: GeofitBake, v0: number, params: GeofitParams = {}):
             outcome = "diverged";
             break;
         }
-        const site = splitSite(knots, cur, sc);
+        const site = splitSite(knots, cur, sc, force);
         if (site < 0) {
             outcome = cur.usable ? "budget" : "diverged";
             break;
