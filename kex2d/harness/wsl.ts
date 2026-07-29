@@ -1,4 +1,12 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    cpSync,
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 // WSL bridge: kex2d runs under WSL, but the shallot runtime needs WebGPU, which lives on the
@@ -62,6 +70,23 @@ export interface Stage {
     files: string[];
     /** dirs (relative to the stage) wiped every run, so a run never reads the previous run's output */
     clean?: string[];
+    /**
+     * files in the stage ROOT matching this are deleted unless `files` still lists them. The stage
+     * dir is persistent (its `node_modules` is the whole point), so a staged file outlives the
+     * checkout that put it there — and a config collecting tests by GLOB then runs a flow file this
+     * repo deleted. Earned live: a `shot.pw.ts` left from before the flows were split ran a whole
+     * suite of removed features beside the current one.
+     */
+    stale?: RegExp;
+}
+
+/** which stage-root entries to delete: everything matching `stale` that `files` no longer lists.
+ *  Pure, so the pruning rule is unit-testable (`tests/harness.test.ts`) rather than a side effect
+ *  observable only on a Windows host. */
+export function stalePrune(present: string[], files: string[], stale?: RegExp): string[] {
+    if (!stale) return [];
+    const keep = new Set(files);
+    return present.filter((name) => stale.test(name) && !keep.has(name));
 }
 
 /** marker file holding the dependency key the stage's `node_modules` was provisioned for */
@@ -162,6 +187,8 @@ export function stageOnWindows(srcDir: string, stage: Stage): WindowsPaths {
     mkdirSync(paths.wsl, { recursive: true });
     for (const dir of stage.clean ?? [])
         rmSync(join(paths.wsl, dir), { recursive: true, force: true });
+    for (const name of stalePrune(readdirSync(paths.wsl), stage.files, stage.stale))
+        rmSync(join(paths.wsl, name), { force: true });
     for (const file of stage.files) {
         const dest = join(paths.wsl, file);
         mkdirSync(dirname(dest), { recursive: true });

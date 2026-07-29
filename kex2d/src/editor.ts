@@ -8,6 +8,7 @@
  *  over its target. */
 
 import type { State } from "@dylanebert/shallot";
+import { Basis } from "./timeline";
 import { forceAt, Handle, handleAt, sectionAt } from "./track";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
@@ -116,6 +117,13 @@ interface EditorState {
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
     snap: boolean;
+    /** which global axis the timeline chart reads (`timeline.Basis`): `Distance` (the
+     *  default — metres from the ride start) or `Time` (seconds from it). Pure VIEW state,
+     *  the snap magnet's twin: a persistent session toggle on the timeline's tool rail
+     *  (`T` toggles), never a history entry and never a storage kind — every keyframe stays
+     *  stored as section-local arclength in either basis, and the chart projects at the one
+     *  `dToU`/`uToD` seam. */
+    basis: Basis;
     /** whether a pointer drag is in flight (any gesture routed through `beginDrag`). App
      *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
      *  on the chrome under the cursor. ephemeral, read via the per-RAF tick. */
@@ -190,6 +198,7 @@ export const editor: EditorState = {
     nodeMenu: null,
     forceMenu: null,
     snap: true,
+    basis: Basis.Distance,
     dragging: false,
     hoverSection: null,
     hover: "viewport",
@@ -410,6 +419,12 @@ export function endDrag(): void {
 /** flip the snapping magnet (the `S` key). */
 export function toggleSnap(): void {
     editor.snap = !editor.snap;
+}
+
+/** flip the timeline's basis between distance and time (the `T` key / the rail's second tool).
+ *  A free view change: the store is never touched, so there is nothing to undo. */
+export function toggleBasis(): void {
+    editor.basis = editor.basis === Basis.Time ? Basis.Distance : Basis.Time;
 }
 
 /** whether snapping is active for a gesture, given whether the Ctrl/Cmd bypass modifier

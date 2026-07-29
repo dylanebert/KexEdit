@@ -185,11 +185,12 @@ not authoring.
 
 The one seam between them is the affine lens in `track.ts` (`sectionSpans` + `toGlobal`/`toLocal`):
 a section's global `offset` is the cumulative baked arclength of every upstream section, `d = offset
-+ s`, and `toLocal` inverts a global `d` back to `(section, local s)` (a shared boundary resolves to
-the **upstream** section — left/exit-inclusive, matching the clip strip and cart park). Every d
-readout derives here — nothing re-walks the baked `ds`. Store `s`; show and accept `d`; convert only
-at the lens. `t`/time is NOT this axis (it's derived, `t = ∫ ds/v`, and stretches under solves — the
-editor-ui invariant-domain rule).
++ s`, and `toLocal` inverts a global `d` back to `(section, local s)` (a shared boundary resolves
+**upstream** — left/exit-inclusive). Every d
+readout derives here — nothing re-walks the baked `ds`. Store `s`; show and accept the active
+**basis**; convert at the lens, then at the timeline's d↔t seam (`timeline.Basis`: the chart reads
+global distance or global time, a view toggle). Time is never a storage unit: derived, it slides
+under any upstream edit.
 
 ## Code map
 
@@ -373,7 +374,7 @@ worktree type-checks without a manual step. **Never fix a missing `@playwright/t
 `bun install`**: that replaces the `node_modules/@dylanebert/shallot` dev symlink with npm shallot
 and the app stops mounting. Its code IS under the project `tsconfig` + `biome`; the pure pieces
 (`args.ts`'s CLI/env validators + the `--out` wipe guard, `wsl.ts`'s provisioning key) are
-unit-tested in `tests/harness.test.ts`. `capture.pw.config.ts` + `shot.pw.ts` are **staged to the
-Windows host standalone** (`wsl.ts`) and may import nothing outside the staged set (the
-standalone-staging law — mirrored constants + verbatim-pinned validators — plus flow-authoring +
-verifier-integrity conventions: `.claude/rules/kex2d-harness.md`).
+unit-tested in `tests/harness.test.ts`. `capture.pw.config.ts` + `flow.ts` + every `*.pw.ts` flow
+are **staged to the Windows host standalone** (`wsl.ts`), importing nothing outside the staged set
+(mirrored constants + verbatim-pinned validators, plus flow-authoring/verifier-integrity
+conventions: `.claude/rules/kex2d-harness.md`).

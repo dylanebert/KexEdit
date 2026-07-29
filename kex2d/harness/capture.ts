@@ -54,7 +54,7 @@ const harnessDir = import.meta.dir;
 const projectDir = resolve(harnessDir, "..");
 
 // The knob defaults. Forwarded explicitly, so the staged run, the RUN.json record, and the reference
-// gate all read one resolved value. `capture.pw.config.ts` (workers, headed) and `shot.pw.ts`
+// gate all read one resolved value. `capture.pw.config.ts` (workers, headed) and `flow.ts`
 // (settle) carry the same literals as their own fallback, for a direct `playwright test` run.
 const DEFAULT_PORT = 3014;
 const DEFAULT_WORKERS = 4;
@@ -117,12 +117,24 @@ const launch = (args: string[]): ReturnType<typeof runPlaywright> =>
         args,
         stage: {
             name: stageName,
-            files: ["package.json", "bun.lock", "capture.pw.config.ts", "shot.pw.ts"],
+            files: [
+                "package.json",
+                "bun.lock",
+                "capture.pw.config.ts",
+                "flow.ts",
+                "geo.pw.ts",
+                "force.pw.ts",
+                "section.pw.ts",
+                "lab.pw.ts",
+            ],
             clean: ["shots", "test-results"],
+            // the config collects by glob, so a flow file this repo deleted must not survive in the
+            // persistent stage and run beside the current set (`stalePrune`, wsl.ts).
+            stale: /\.pw\.ts$/,
         },
         // The staged host run is a fresh powershell environment, so a knob only reaches the run if
         // it is passed here by name: `capture.pw.config.ts` reads KEX_WORKERS + KEX_HEADED,
-        // `shot.pw.ts` reads KEX_PORT + KEX_OUT + KEX_SHOT_MS.
+        // `flow.ts` reads KEX_PORT + KEX_OUT + KEX_SHOT_MS.
         env: (staged) => ({
             KEX_PORT: String(port),
             KEX_OUT: staged ? `${staged.win}\\shots` : outDir,

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
@@ -12,7 +12,7 @@ import {
     verdict,
     wipeable,
 } from "../harness/args";
-import { provisioned, provisionKey } from "../harness/wsl";
+import { provisioned, provisionKey, stalePrune } from "../harness/wsl";
 
 // The capture orchestrator's pure decision layer. Everything here decides something the gate's
 // honesty rests on: whether a run merges or WIPES the shot set, whether the host reinstalls, and
@@ -471,7 +471,7 @@ describe("verdict — the reference stamp and the fail-closed exits", () => {
 });
 
 describe("the staged host files mirror the knob guards verbatim", () => {
-    // `capture.pw.config.ts` and `shot.pw.ts` are staged to the Windows host STANDALONE (`wsl.ts`),
+    // `capture.pw.config.ts` and `flow.ts` are staged to the Windows host STANDALONE (`wsl.ts`),
     // so they can import nothing and carry their own copy of the guards. Hand-written copies had
     // already drifted — no upper bound on either host-side knob, `KEX_PORT` read raw, and a comment
     // claiming a blank-guard that wasn't there — so the copies are pinned character-identical to
@@ -486,20 +486,20 @@ describe("the staged host files mirror the knob guards verbatim", () => {
     };
     const args = read("args.ts");
     const config = read("capture.pw.config.ts");
-    const shot = read("shot.pw.ts");
+    const flow = read("flow.ts");
     const capture = read("capture.ts");
 
     test("the copies are character-identical to args.ts", () => {
         expect(fn(config, "intEnv")).toBe(fn(args, "intEnv"));
         expect(fn(config, "boolEnv")).toBe(fn(args, "boolEnv"));
-        expect(fn(shot, "intEnv")).toBe(fn(args, "intEnv"));
+        expect(fn(flow, "intEnv")).toBe(fn(args, "intEnv"));
     });
 
     test("every knob is read through a guard, at the same range on both sides", () => {
         expect(config).toContain('intEnv(process.env, "KEX_WORKERS", 4, 1, 64)');
         expect(config).toContain('boolEnv(process.env, "KEX_HEADED")');
-        expect(shot).toContain('intEnv(process.env, "KEX_PORT", 3014, 1024, 65_535)');
-        expect(shot).toContain('intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000)');
+        expect(flow).toContain('intEnv(process.env, "KEX_PORT", 3014, 1024, 65_535)');
+        expect(flow).toContain('intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000)');
         expect(capture).toContain('intEnv(process.env, "KEX_PORT", DEFAULT_PORT, 1024, 65_535)');
         expect(capture).toContain('intEnv(process.env, "KEX_WORKERS", DEFAULT_WORKERS, 1, 64)');
         expect(capture).toContain('intEnv(process.env, "KEX_SHOT_MS", DEFAULT_SHOT_MS, 0, 60_000)');
@@ -510,6 +510,34 @@ describe("the staged host files mirror the knob guards verbatim", () => {
         expect(capture).toContain("const DEFAULT_PORT = 3014;");
         expect(capture).toContain("const DEFAULT_WORKERS = 4;");
         expect(capture).toContain("const DEFAULT_SHOT_MS = 300;");
+    });
+});
+
+describe("every staged flow file is in capture.ts's stage.files list", () => {
+    // The split (`kex2d-harness.md` "Growth") turned staging from "the one file" into a file
+    // LIST — `capture.ts`'s `stage.files` — and a list can silently drop an entry a glob never
+    // would. This walks the harness dir for the real staged set (`flow.ts` + every `*.pw.ts` flow
+    // file) and pins that each one is named in `stage.files`, so a new flow file landing without
+    // its own staging line fails HERE, not as a truncated run on the Windows host. Proven red by
+    // hand: dropping `lab.pw.ts` from the list below and re-running failed this test, as the rule
+    // that introduced the split requires (`coding.md`: a check is evidence only if seen failing).
+    const harnessDir = join(import.meta.dir, "..", "harness");
+    const capture = readFileSync(join(harnessDir, "capture.ts"), "utf8");
+    const start = capture.indexOf("files: [");
+    const end = capture.indexOf("]", start);
+    if (start < 0 || end < 0) throw new Error("no stage.files list found in capture.ts");
+    const staged = new Set([...capture.slice(start, end).matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+    const real = readdirSync(harnessDir).filter(
+        (name) => name === "flow.ts" || name.endsWith(".pw.ts"),
+    );
+
+    test("the real staged set is non-empty (a broken glob can't pass vacuously)", () => {
+        expect(real.length).toBeGreaterThan(0);
+    });
+
+    test("every real flow.ts / *.pw.ts file is named in stage.files", () => {
+        for (const name of real)
+            expect(staged.has(name), `${name} missing from stage.files`).toBe(true);
     });
 });
 
@@ -578,5 +606,41 @@ describe("provisionKey / provisioned — when the host reinstalls", () => {
         // verified) already rules a torn install out; this half catches a node_modules deleted
         // from under a valid marker — a hand-cleaned stage dir, or the host's TEMP swept.
         expect(provisioned(`${k}\n`, k, false)).toBe(false);
+    });
+});
+
+describe("stalePrune — a deleted flow file must not outlive the checkout in the stage", () => {
+    // The stage dir is persistent (its `node_modules` is the point) and the config collects tests
+    // by GLOB, so a staged `*.pw.ts` the repo no longer has keeps running there. Observed live: a
+    // pre-split `shot.pw.ts` ran a whole suite of REMOVED features beside the current 28 flows and
+    // the run reported a mix of passes and failures for code that isn't in the tree.
+    const files = ["package.json", "bun.lock", "capture.pw.config.ts", "flow.ts", "geo.pw.ts"];
+    const stale = /\.pw\.ts$/;
+
+    test("deletes a staged flow file the current set no longer lists", () => {
+        expect(stalePrune(["flow.ts", "geo.pw.ts", "shot.pw.ts"], files, stale)).toEqual([
+            "shot.pw.ts",
+        ]);
+    });
+
+    test("keeps every file the stage still stages, and everything the pattern doesn't name", () => {
+        expect(
+            stalePrune(
+                [
+                    "package.json",
+                    "bun.lock",
+                    "flow.ts",
+                    "geo.pw.ts",
+                    ".provisioned",
+                    "node_modules",
+                ],
+                files,
+                stale,
+            ),
+        ).toEqual([]);
+    });
+
+    test("no pattern means no pruning — the opt-in stays opt-in", () => {
+        expect(stalePrune(["shot.pw.ts"], files, undefined)).toEqual([]);
     });
 });

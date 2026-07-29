@@ -39,26 +39,19 @@ const TARGET_TICK_PX = 80;
 export const sToPx = (v: View, s: number): number => s * v.pxPerM - v.pan;
 export const pxToS = (v: View, px: number): number => (px + v.pan) / v.pxPerM;
 
-/** a geo node's clip-local x (chart-local px, pre-`LEFT_GUT`) for the timeline's read-
- *  only node ticks: the section's own span offset (`SectionSpan.offset`,
- *  `sectionSpans`) plus the arclength between the section's entry sample
- *  (`sectionInfo.startSample`) and the node's own landing sample (`Handle.sample`) —
- *  the partial sum of `bakeOut.ds` (the whole-track per-edge array) over that
- *  stretch. A node's timeline position is DERIVED from geometry, never authored
- *  there (dragging it on this axis is the rejected inverse problem — fit-through-
- *  the-bake per gesture), so this is a pure forward projection, no inverse. A
- *  degenerate range (`sample <= startSample`, a zero-length edge in `ds`) sums to 0
- *  — the loop just doesn't advance, never throws. */
-export function nodeTickPx(
-    v: View,
-    spanOffset: number,
-    ds: Float32Array,
-    startSample: number,
-    sample: number,
-): number {
+/** the arclength (m) between a section's entry sample (`sectionInfo.startSample`) and a geo
+ *  node's own landing sample (`Handle.sample`): the partial sum of `bakeOut.ds` (the
+ *  whole-track per-edge array) over that stretch. Added to the section's span offset
+ *  (`SectionSpan.offset`) it gives the node's global distance `d`, which the caller then
+ *  projects to the chart through the basis seam — a node's timeline position is DERIVED from
+ *  geometry, never authored there (dragging it on this axis is the rejected inverse problem,
+ *  fit-through-the-bake per gesture), so this is a pure forward sum, no inverse. A degenerate
+ *  range (`sample <= startSample`, a zero-length edge in `ds`) sums to 0: the loop just
+ *  doesn't advance, never throws. */
+export function nodeArc(ds: Float32Array, startSample: number, sample: number): number {
     let arc = 0;
     for (let i = startSample; i < sample; i++) arc += ds[i];
-    return sToPx(v, spanOffset + arc);
+    return arc;
 }
 
 /** the axis padding (meters) past the track end — the ONE definition, shared by `clampView`'s
@@ -67,8 +60,11 @@ export function nodeTickPx(
  *  proportional fraction takes over so the framed lead-out stays the same visible slice on long
  *  tracks. it's a permanent part of the addressable span (`sTotal + marginArc`), always pannable
  *  and always framed — not a min-window fallback. one-sided: the launch is s=0, so there's no
- *  lead-*in* (no negative distance on the ruler). */
-export const marginArc = (sTotal: number): number => Math.max(0.12 * sTotal, MARGIN_M);
+ *  lead-*in* (no negative distance on the ruler). the floor is the one DIMENSIONAL constant on
+ *  this axis, so it's the caller's to supply in the active basis (`marginFloor`); everything
+ *  else here reads the basis coordinate and needs no unit. */
+export const marginArc = (sTotal: number, floor = MARGIN_M): number =>
+    Math.max(0.12 * sTotal, floor);
 
 /** clamp a view to the track extent — a PAN clamp, not a zoom clamp. the x-axis is a
  *  document axis (the spatial address of every clip and keyframe), not an auto-fit value
@@ -78,8 +74,8 @@ export const marginArc = (sTotal: number): number => Math.max(0.12 * sTotal, MAR
  *  no negative distance — the After Effects / NLE convention) and the margin is a
  *  right-side lead-out. a shrunk track just leaves empty ruler on the right; when the
  *  track fits the view the pan range collapses to 0 → left-aligned. */
-export function clampView(v: View, width: number, sTotal: number): View {
-    const m = marginArc(sTotal);
+export function clampView(v: View, width: number, sTotal: number, floor = MARGIN_M): View {
+    const m = marginArc(sTotal, floor);
     const pxPerM = Math.min(MAX_PX_PER_M, v.pxPerM);
     const panMax = Math.max(0, (sTotal + m) * pxPerM - width);
     const pan = Math.min(panMax, Math.max(0, v.pan));
@@ -95,6 +91,7 @@ export function zoomAt(
     factor: number,
     width: number,
     sTotal: number,
+    floor = MARGIN_M,
 ): View {
     const sAnchor = pxToS(v, anchorPx);
     // floor at min(current, fit): a below-fit view (after a content shrink) can zoom-out
@@ -102,9 +99,9 @@ export function zoomAt(
     // zoom-in. above fit, the floor is the fit scale. `fit` is `fitScale` — the PADDED
     // framing scale (`frameAll`'s), so a zoom-out returns to exactly the initial/`F` framing,
     // padding included (the padded span `sTotal + marginArc` stays reachable on the way out).
-    const floor = Math.min(v.pxPerM, fitScale(width, sTotal));
-    const pxPerM = Math.min(MAX_PX_PER_M, Math.max(floor, v.pxPerM * factor));
-    return clampView({ pan: sAnchor * pxPerM - anchorPx, pxPerM }, width, sTotal);
+    const lo = Math.min(v.pxPerM, fitScale(width, sTotal, floor));
+    const pxPerM = Math.min(MAX_PX_PER_M, Math.max(lo, v.pxPerM * factor));
+    return clampView({ pan: sAnchor * pxPerM - anchorPx, pxPerM }, width, sTotal, floor);
 }
 
 /** the fit scale (px per meter) the padded framing uses: fit the whole addressable span
@@ -112,8 +109,8 @@ export function zoomAt(
  *  (`frameAll`) and the explicit-navigation zoom-out floor (`zoomAt`), so a zoom-out returns
  *  to exactly the framing it started at — the padding is a permanent part of the span, always
  *  framed. */
-const fitScale = (width: number, sTotal: number): number =>
-    width > 0 ? width / (sTotal + marginArc(sTotal)) : 1;
+const fitScale = (width: number, sTotal: number, floor = MARGIN_M): number =>
+    width > 0 ? width / (sTotal + marginArc(sTotal, floor)) : 1;
 
 /** the view that frames the whole addressable span `[0, sTotal + marginArc]` (fit scale,
  *  left-anchored at s=0). the padding past the track end is always part of the span, so a
@@ -121,15 +118,20 @@ const fitScale = (width: number, sTotal: number): number =>
  *  snap, the UX is consistent at every length. the one explicit-navigation path that sets
  *  zoom to fit — used for the initial frame and the F frame-content key, never a content edit
  *  (those pan only). */
-export const frameAll = (width: number, sTotal: number): View => ({
+export const frameAll = (width: number, sTotal: number, floor = MARGIN_M): View => ({
     pan: 0,
-    pxPerM: Math.min(MAX_PX_PER_M, fitScale(width, sTotal)),
+    pxPerM: Math.min(MAX_PX_PER_M, fitScale(width, sTotal, floor)),
 });
 
 /** the navigator window: the visible span [0, width] expressed as `{l, r}` fractions
  *  of the full track + lead-out (the viewport bracket over the overview). */
-export function navWindow(v: View, width: number, sTotal: number): { l: number; r: number } {
-    const total = sTotal + marginArc(sTotal);
+export function navWindow(
+    v: View,
+    width: number,
+    sTotal: number,
+    floor = MARGIN_M,
+): { l: number; r: number } {
+    const total = sTotal + marginArc(sTotal, floor);
     const frac = (s: number): number => Math.min(1, Math.max(0, s / total));
     return { l: frac(pxToS(v, 0)), r: frac(pxToS(v, width)) };
 }
@@ -144,18 +146,24 @@ export function navDragView(
     mode: "pan" | "l" | "r",
     curS: number,
     grabS: number,
+    floor = MARGIN_M,
 ): View {
     const lo = pxToS(v, 0);
     const hi = pxToS(v, width);
     const minSpan = width / MAX_PX_PER_M; // the zoom-in ceiling, as a meter-span floor
     if (mode === "pan")
-        return clampView({ pan: (curS - grabS) * v.pxPerM, pxPerM: v.pxPerM }, width, sTotal);
+        return clampView(
+            { pan: (curS - grabS) * v.pxPerM, pxPerM: v.pxPerM },
+            width,
+            sTotal,
+            floor,
+        );
     if (mode === "l") {
         const pps = width / (hi - Math.min(curS, hi - minSpan)); // anchor the right edge
-        return clampView({ pan: hi * pps - width, pxPerM: pps }, width, sTotal);
+        return clampView({ pan: hi * pps - width, pxPerM: pps }, width, sTotal, floor);
     }
     const pps = width / (Math.max(curS, lo + minSpan) - lo); // anchor the left edge
-    return clampView({ pan: lo * pps, pxPerM: pps }, width, sTotal);
+    return clampView({ pan: lo * pps, pxPerM: pps }, width, sTotal, floor);
 }
 
 /** nearest 1-2-5×10ⁿ to `x` — the nice-number tick step. breakpoints are the
@@ -603,6 +611,30 @@ export function deltaU(mapping: Mapping | null, basis: Basis, d0: number, du: nu
     const u0 = dToU(mapping, basis, d0);
     return uToD(mapping, basis, u0 + du) - uToD(mapping, basis, u0);
 }
+
+/** `deltaU`'s gesture form: the global distance `d` a live gesture addresses, from the pair it
+ *  captured at pointerdown (`d0`, the grabbed subject's own global distance; `u0`, the cursor's
+ *  basis coordinate) and the cursor's current `u`. `Distance` basis is the bare cumulative-grab
+ *  offset every drag on this axis already used (`u + (d0 − u0)`, so the distance path's
+ *  arithmetic is unchanged); `Time` basis routes the screen-derived Δu through `deltaU` against
+ *  the LIVE mapping, so `u === u0` returns `d0` bit-exactly — the zero-delta no-op — even across
+ *  a re-bake that moves the table mid-drag. @example grabD(null, Basis.Distance, 12, 10, 11) // → 13 */
+export function grabD(
+    mapping: Mapping | null,
+    basis: Basis,
+    d0: number,
+    u0: number,
+    u: number,
+): number {
+    if (basis === Basis.Time && mapping) return d0 + deltaU(mapping, basis, d0, u - u0);
+    return u + (d0 - u0);
+}
+
+/** the lead-out floor (`marginArc`'s one dimensional constant) in the active basis: `MARGIN_M`
+ *  metres, or its time twin at the default entry speed (`MARGIN_M / V0`, `T_GRID`'s derivation),
+ *  so a short ride frames the same substantial lead-out to build into in either basis. */
+export const marginFloor = (basis: Basis): number =>
+    basis === Basis.Time ? MARGIN_M / V0 : MARGIN_M;
 
 function fmtTime(t: number, step: number): string {
     const decimals = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;

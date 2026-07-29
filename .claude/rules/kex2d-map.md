@@ -282,8 +282,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   right-click menus: `context` (the section's ONE kind-fitted conversion row + Delete) and `nodeMenu` (the
   node context menu — Handles toggle + Tangents submenu — opened on any pickable node, any mode)
   — both `{x, y, …}` or
-  null, rendered once at the app root. Also the `snap` magnet toggle (`toggleSnap`/`snapActive` — persistent, default on, `S` toggles, Ctrl/Cmd
-  bypasses per-gesture) and `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
+  null, rendered once at the app root. Also the two rail toggles — `snap` (`toggleSnap`/`snapActive`
+  — persistent, default on, `S` toggles, Ctrl/Cmd bypasses per-gesture) and `basis`
+  (`toggleBasis`, `timeline.Basis`, default `Distance`, `T` toggles: which global axis the chart
+  reads, pure view state and never a history entry) — and `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
   viewport-nudge vs timeline-playhead double-fire. `hoverSection` (a stable `Section.id` or null) is
   the viewport's own hover read — written per pointermove by `controls.pickSection`, drawn one
@@ -416,9 +418,17 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   shows only for a side that drives a segment (no out-handle at a chain end, no handle on node 0) —
   one home for the section-frame convention so render and controls can't drift apart.
 - `timeline.ts` — pure transform + tick math for the force-curve timeline (no Svelte/DOM/track
-  state). The chart's x-axis is **distance** (meters). `View`, `sToPx`/`pxToS`, `zoomAt`, `clampView`,
-  `frameAll`, `niceStep`, `ticks`, the navigator math (`navWindow`/`navDragView`/`marginArc`), and
-  `Mapping` + `timeToArc`/`arcToTime` (the arc↔time table `cart.trackMapping` builds). `yFit`/`YFit`
+  state). The chart's x-axis is a **basis** (`Basis`: global distance `d` in meters, or global time
+  `t` in seconds), and `dToU`/`uToD` are the ONE seam between them — identity in `Distance`, the live
+  bake's arc↔time table in `Time`, identity again with no live bake. `deltaU` and its gesture form
+  `grabD` are the delta-from-grab projection every drag resolves through (bit-exact zero delta, so a
+  returned gesture records no undo entry); `T_GRID` (= `S_GRID / V0`) and `marginFloor` are the two
+  basis-picked constants (the snap quantum, the lead-out floor), and `ticks` picks the unit suffix.
+  Everything else reads the resulting basis coordinate `u` with no further branching: `View`,
+  `sToPx`/`pxToS`, `zoomAt`, `clampView`, `frameAll`, `niceStep`, `ticks`, the navigator math
+  (`navWindow`/`navDragView`/`marginArc`, each taking the basis's margin floor), `nodeArc` (a geo
+  node tick's partial-`ds` arclength, projected by the caller), and `Mapping` +
+  `timeToArc`/`arcToTime` (the arc↔time table `cart.trackMapping` builds). `yFit`/`YFit`
   (auto-fit g-range) + the edge-scroll grow-to-follow: `yGrow` (value drag) and `xGrow` (pan). `snap`
   is the timeline's own axis-aligned resolver for a force-keyframe drag (`Timeline.svelte`); the 2D
   viewport's node/tangent drag has its own polar resolver (`magnet.ts`) — `niceStep` (the 1-2-5 grid
@@ -430,17 +440,20 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   lane (one clip per section, kind-colored/labeled; click selects `editor.section`; a `+` tail flyout
   appends geo/force; a force clip's right edge is its **extent trim**; right-click a clip opens the
   context menu). A geo clip also carries **read-only interior-node ticks** (small circles via pure
-  `nodeTickPx` partial-`ds` sums, the selected node's highlighted, `pointer-events: none` — entry
+  `nodeArc` partial-`ds` sums, the selected node's highlighted, `pointer-events: none` — entry
   and exit nodes are excluded, they coincide with the clip edges) and **washes** when it owns the
   selected node (the cross-surface context read; a ticked clip's label fades so the two don't
-  collide). A node's arclength is derived, so a tick displays and never drags. The **tool rail** (`.tool-rail`) is the snap magnet toggle's home — an icon-only vertical
+  collide). A node's arclength is derived, so a tick displays and never drags. The **tool rail** (`.tool-rail`) is the two global toggles' home — an icon-only vertical
   strip on the dock's left edge (the Premiere tool-strip precedent), anatomy of the one earned dock,
-  bounded to persistent global authoring toggles with a keyboard twin (`toggleSnap`, `S`; today just
-  the magnet). **Right-clicking the magnet** summons its increments popover (`.snap-pop`) — the two
+  bounded to persistent global authoring toggles with a keyboard twin: the snap magnet
+  (`.rail-snap`, `toggleSnap`, `S`) and the timeline basis (`flipBasis` over `toggleBasis`, `T`,
+  which re-expresses the visible window in the new basis so the toggle stays a free view change).
+  **Right-clicking the magnet** summons its increments popover (`.snap-pop`) — the two
   manipulator quanta (angle °, length m) as fields in the shared idiom, written straight to
-  `settings.ts` (no history entry: a per-user preference, not track state). It's inside the dock's
+  `settings.ts` (no history entry: a per-user preference, not track state); its click-away exemption
+  names the invoker (`.rail-snap`), never the rail, so the second tool can't dismiss-block it. It's inside the dock's
   DOM, so it's the timeline surface for `editor.hover`. The chart
-  draws the baked F_n curve over arclength + **section boundary guides**
+  draws the baked F_n curve over the active basis + **section boundary guides**
   (dashed verticals); the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator**
   minimap pans/zooms. The chart is a **whole-track force-authoring surface**: it draws every force
   section's points (`forcePts`), and a double-click over a force section's arc adds a point there —

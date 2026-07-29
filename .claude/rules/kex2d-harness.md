@@ -54,7 +54,7 @@ AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
 - **The pageerror gate.** The `boot` fixture attaches `pageerror` *before* navigation and fails
   every flow on an uncaught page exception at teardown. Console errors are deliberately
   uncollected (lab favicon-404 noise). The listener-before-`goto` ordering is enforced by a
-  standing pin: flow 1 of `shot.pw.ts` (`test.fail` + a boot-time `addInitScript` throw) goes
+  standing pin: flow 1 of `geo.pw.ts` (`test.fail` + a boot-time `addInitScript` throw) goes
   red if the listener moves after `goto` or the injection is removed. Its verdict is inverted —
   a green run prints that flow with the failure mark, and skipping it still fails the run —
   don't "fix" either.
@@ -72,11 +72,33 @@ AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
   `counts` and `failedTitles` (parsed from run stdout in `args.ts`) for flake forensics.
 - **The wipe guard.** `RUN.json` is the shot set's provenance stamp AND its wipe permission
   slip: a full run refuses to wipe any `--out` that isn't absent, empty, or `RUN.json`-bearing.
-- **Standalone staging.** `shot.pw.ts` + `capture.pw.config.ts` are staged to the Windows host
-  as a set and may import nothing *outside the staged set*. Shared validators are duplicated
-  verbatim, pinned character-identical AND pinned reached by unit tests (hand-written copies
-  drifted once); mirrored app constants live in the MIRRORED block, each naming its source.
-- **Growth.** Past ~28 flows (the 420 s `globalTimeout` ceiling at 4 workers — the binding
-  number; 25 today), split `shot.pw.ts` into staged flow files + one staged helpers
-  module (`testMatch` glob + `stage.files`) — the single file is habit, not a constraint. The
-  `__kex` DEV surface (~15 members on `any`) earns a typed interface at the same moment.
+- **Standalone staging.** `flow.ts` + every `*.pw.ts` flow file (`geo.pw.ts`, `force.pw.ts`,
+  `section.pw.ts`, `lab.pw.ts`) + `capture.pw.config.ts` are staged to the Windows host as a set
+  and may import nothing *outside the staged set*. Shared validators are duplicated verbatim,
+  pinned character-identical AND pinned reached by unit tests (hand-written copies drifted once);
+  mirrored app constants live in the MIRRORED block, each naming its source. Staging is a file
+  LIST now, not a glob (`capture.ts`'s `stage.files`), so `tests/harness.test.ts` walks the
+  harness dir for the real staged set and pins every entry is named there — a new flow file
+  landing unstaged fails that pin instead of silently missing from the Windows-side run.
+- **A deleted flow file must not outlive the checkout.** The Windows stage dir is PERSISTENT (its
+  `node_modules` is the point) and the config now collects by glob, so a staged `*.pw.ts` the repo
+  no longer has keeps running there: the split's first full capture ran the pre-split `shot.pw.ts`
+  beside the current set and reported a suite of REMOVED features, half green. `stage.stale`
+  (`wsl.ts`) prunes any stage-root file matching it that `stage.files` no longer lists, and the
+  pruning rule is a pure, unit-tested function (`stalePrune`) rather than a Windows-only side
+  effect. A glob-collected suite needs both halves: the staging-list pin above (a new file reaches
+  the host) and this one (an old file leaves it).
+- **Growth landed.** Past ~28 flows (the 420 s `globalTimeout` ceiling at 4 workers — the binding
+  number), the single `shot.pw.ts` split into `flow.ts` (the one staged helpers module: the
+  MIRRORED guards/constants, the boot fixture, every shared pointer-true helper) plus four staged
+  flow files grouped by area — `geo.pw.ts` (geo authoring + viewport, the boot-pin included),
+  `force.pw.ts` (force authoring + the timeline), `section.pw.ts` (the section chain + invoked
+  solves), `lab.pw.ts` (the atom-page labs). `capture.pw.config.ts`'s `testMatch` is the `*.pw.ts`
+  glob; `capture.ts`'s `stage.files` names each file explicitly (a list, not a glob, so the
+  staging-list pin above is what keeps a future flow file honest). The `__kex` DEV surface got a
+  typed `Kex` interface in `flow.ts` (a hand-written mirror of `src/main.ts`'s hook object +
+  Timeline.svelte's `gRange`/`xView` augmentation, covering the members the flows actually call)
+  and one typed accessor, `kexCall(page, method, ...args)`, that every flow calls through instead
+  of an ad-hoc `(window as any).__kex.foo()` cast — the one exception is a batched in-page read
+  (several `__kex` calls inside one `page.evaluate`, to save round trips), which stays a typed
+  inline cast since `kexCall` is one accessor per round trip.

@@ -11,14 +11,16 @@ import {
     dToU,
     fmt,
     frameAll,
+    grabD,
     G_GRID,
     type Mapping,
     marginArc,
+    marginFloor,
     MAX_PX_PER_M,
     navDragView,
     navWindow,
     niceStep,
-    nodeTickPx,
+    nodeArc,
     nudgeForces,
     pxToS,
     retargetMode,
@@ -91,21 +93,20 @@ describe("sToPx / pxToS — affine roundtrip", () => {
     });
 });
 
-describe("nodeTickPx — read-only geo node tick position", () => {
+describe("nodeArc — read-only geo node tick arclength", () => {
     // a 4-edge section, entry at sample 10, a uniform 2m/edge chord — the
     // partial-sum-of-ds shape a real bake produces for an evenly-spaced segment.
-    const v: View = { pan: 0, pxPerM: 10 };
     const ds = Float32Array.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2]); // edges 10..13
     const startSample = 10;
 
-    test("sums ds from the section entry to the node's landing sample, offset by the span", () => {
-        // node at sample 12 (2 edges in: 2+2=4m local arc) inside a section whose own
-        // span starts at global d=50 → 54m, projected through the view.
-        expect(nodeTickPx(v, 50, ds, startSample, 12)).toBeCloseTo(sToPx(v, 54), 9);
+    test("sums ds from the section entry to the node's landing sample", () => {
+        // node at sample 12 — 2 edges in, 2+2 = 4 m of local arc. the caller adds the
+        // section's own span offset and projects the sum through the basis seam.
+        expect(nodeArc(ds, startSample, 12)).toBeCloseTo(4, 9);
     });
 
     test("a node landing on the entry sample (order 0) sums to zero — sits at the span offset", () => {
-        expect(nodeTickPx(v, 50, ds, startSample, startSample)).toBeCloseTo(sToPx(v, 50), 9);
+        expect(nodeArc(ds, startSample, startSample)).toBe(0);
     });
 
     test("single-segment section: no interior node exists, but the degenerate 2-sample span still resolves at its two ends", () => {
@@ -113,17 +114,16 @@ describe("nodeTickPx — read-only geo node tick position", () => {
         // interior order to tick — the caller skips it — but the math itself must not
         // blow up on the narrowest possible range.
         const oneEdge = Float32Array.from([3]);
-        expect(nodeTickPx(v, 0, oneEdge, 0, 0)).toBeCloseTo(sToPx(v, 0), 9);
-        expect(nodeTickPx(v, 0, oneEdge, 0, 1)).toBeCloseTo(sToPx(v, 3), 9);
+        expect(nodeArc(oneEdge, 0, 0)).toBe(0);
+        expect(nodeArc(oneEdge, 0, 1)).toBeCloseTo(3, 9);
     });
 
     test("degenerate ds (zero-length / near-coincident edges) contribute nothing to the sum", () => {
-        const degenerate = Float32Array.from([0, 0, 0]);
-        expect(nodeTickPx(v, 20, degenerate, 0, 3)).toBeCloseTo(sToPx(v, 20), 9);
+        expect(nodeArc(Float32Array.from([0, 0, 0]), 0, 3)).toBe(0);
     });
 
     test("an empty range (sample <= startSample) never reads past the array — sums to zero", () => {
-        expect(nodeTickPx(v, 5, ds, startSample, startSample - 1)).toBeCloseTo(sToPx(v, 5), 9);
+        expect(nodeArc(ds, startSample, startSample - 1)).toBe(0);
     });
 });
 
@@ -1123,5 +1123,87 @@ describe("ticks — basis-aware readout suffix, same grid either way", () => {
             expect(time[i].px).toBeCloseTo(dist[i].px, 9); // the suffix is the ONLY branch
             expect(time[i].s).toBeCloseTo(dist[i].s, 9);
         }
+    });
+});
+
+describe("grabD — the gesture form of the delta-from-grab projection", () => {
+    const m: Mapping = {
+        arc: Float64Array.from([0, 1, 3, 6, 10]),
+        t: Float64Array.from([0, 0.5, 1, 2, 4]),
+        n: 5,
+    };
+
+    test("a returned gesture writes the grabbed distance back BIT-EXACTLY, both bases", () => {
+        // the load-bearing property: a drag that comes back to its grab px must resolve to the
+        // exact d it started from, or a zero-delta gesture records an undo entry.
+        for (const basis of [Basis.Distance, Basis.Time]) {
+            for (const mapping of [m, null]) {
+                for (const [d0, u0] of [
+                    [3, 1],
+                    [2.5, 0.75],
+                    [0, 0],
+                ]) {
+                    expect(grabD(mapping, basis, d0, u0, u0)).toBe(d0);
+                }
+            }
+        }
+    });
+
+    test("Distance basis: the bare cumulative grab offset (the pre-basis drag arithmetic)", () => {
+        // the offset form the keyframe drag already used — `cursor + (anchor − grab)`, so an
+        // off-center grab never jumps and the distance path is arithmetically unchanged.
+        for (const mapping of [m, null]) {
+            expect(grabD(mapping, Basis.Distance, 12, 10, 11)).toBe(11 + (12 - 10));
+            expect(grabD(mapping, Basis.Distance, 12, 10, 9.5)).toBe(9.5 + (12 - 10));
+        }
+    });
+
+    test("Time basis: the cursor's Δu becomes the mapping's own Δd about the grabbed subject", () => {
+        const d0 = 3; // arcToTime(m, 3) = 1
+        const u0 = dToU(m, Basis.Time, d0);
+        const du = 0.5;
+        expect(grabD(m, Basis.Time, d0, u0, u0 + du)).toBeCloseTo(
+            d0 + deltaU(m, Basis.Time, d0, du),
+            12,
+        );
+        // the grab offset is honoured: a cursor grabbed off the subject keeps its lead.
+        expect(grabD(m, Basis.Time, d0, u0 + 0.25, u0 + 0.25)).toBe(d0);
+    });
+
+    test("no live bake falls back to the distance form even when Time is asked for", () => {
+        expect(grabD(null, Basis.Time, 12, 10, 11)).toBe(11 + (12 - 10));
+    });
+});
+
+describe("marginFloor — the lead-out floor in the active basis", () => {
+    test("Distance basis is the 50 m absolute lead-out; Time basis is its twin at V0", () => {
+        expect(marginFloor(Basis.Distance)).toBe(marginArc(0)); // the floor dominates at total 0
+        expect(marginFloor(Basis.Time)).toBeCloseTo(marginFloor(Basis.Distance) / V0, 12);
+    });
+
+    test("a short ride frames the same PROPORTION of lead-out in either basis", () => {
+        // 100 m at V0 is 10 s: both are floor-dominated, and the floor is the same ride length,
+        // so the framed window covers the same stretch of track either way.
+        const span = (total: number, basis: Basis): number =>
+            total + marginArc(total, marginFloor(basis));
+        expect(span(10, Basis.Time) / 10).toBeCloseTo(span(100, Basis.Distance) / 100, 9);
+    });
+
+    test("the floor is the ONLY dimensional input: the proportional branch is unit-free", () => {
+        // past the floor's reach the 12% fraction takes over and the basis stops mattering.
+        expect(marginArc(1000, marginFloor(Basis.Distance))).toBeCloseTo(120, 9);
+        expect(marginArc(1000, marginFloor(Basis.Time))).toBeCloseTo(120, 9);
+    });
+
+    test("threaded through every view op: the lead-out a frame includes follows the floor", () => {
+        const w = 500;
+        const fitD = frameAll(w, 10, marginFloor(Basis.Distance)); // 10 + 50 m of span
+        const fitT = frameAll(w, 10, marginFloor(Basis.Time)); // 10 + 5 s of span
+        expect(pxToS(fitD, w)).toBeCloseTo(60, 6);
+        expect(pxToS(fitT, w)).toBeCloseTo(15, 6);
+        // and the pan clamp agrees with the frame it produced (the right edge is reachable, no more)
+        expect(
+            clampView({ pan: 1e6, pxPerM: fitT.pxPerM }, w, 10, marginFloor(Basis.Time)).pan,
+        ).toBeCloseTo(0, 6);
     });
 });

@@ -56,7 +56,7 @@ loadSnapSteps();
 // DEV-only harness inspection hook: the capture flow's geo-authoring assertions read
 // node/undo/track state through this and drive the real UI (extend, drag, undo).
 // Never ships — kex2d is a `defaults:false` prototype with no production build path.
-// See harness/shot.pw.ts.
+// See harness/flow.ts (the `Kex` mirror of this hook) and the `*.pw.ts` flows beside it.
 if (import.meta.env.DEV) {
     let track = -1;
     for (const eid of ecs.query([Track])) {
@@ -90,6 +90,10 @@ if (import.meta.env.DEV) {
         }),
         // the authored initial speed — the flow drives the real v0 popover and asserts it.
         v0: (): number => Track.v0.get(track),
+        // author it directly, as test SETUP: the time-basis flow needs an upstream re-timing edit
+        // (a speed change slides every keyframe's t while its stored s holds), and the popover
+        // itself is already driven pointer-true by the v0 flow.
+        setV0: (v: number): void => setTrackV0(track, v),
         // section-local pose signature — the flow asserts an undo reverts geometry.
         poses: (): number[][] =>
             sectionHandles(ecs, sec()).map((eid) => [
