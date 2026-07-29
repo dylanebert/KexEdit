@@ -50,6 +50,7 @@ import {
     setForceEase as writeForceEase,
     setForceTangent,
     setSectionLength,
+    setStickyLen,
     snapshotAll,
     snapshotSection,
     type SolvedForce,
@@ -598,6 +599,17 @@ export function beginLength(ecs: State, id: number): void {
         (st: SectionLengthState) => setSectionLength(ecs, st.id, st.length),
         (a: SectionLengthState, b: SectionLengthState) => a.length === b.length,
     );
+}
+
+/** commit a `beginLength` extent-trim gesture: coalesce the drag into one undo entry
+ *  (`commit`) AND record the landed extent as the session's new sticky append default
+ *  (`track.setStickyLen`) — the one call site the sticky value updates from. A solve landing
+ *  never calls this (it commits through `solveSection`), so a converted section's realized
+ *  extent never becomes the next append's default. */
+export function commitLength(h: History, ecs: State, id: number): void {
+    const st = sectionLengthState(ecs, id);
+    if (st) setStickyLen(st.length);
+    commit(h);
 }
 
 // ── track initial speed (v0) ───────────────────────────────────────────────────

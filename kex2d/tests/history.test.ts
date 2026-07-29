@@ -15,10 +15,12 @@ import {
     appendSection,
     beginForceMove,
     beginForceMoves,
+    beginLength,
     beginMove,
     beginMoves,
     beginV0,
     commit,
+    commitLength,
     convertSection,
     convertSections,
     createForce,
@@ -32,6 +34,7 @@ import {
     setForcesEase,
     setSelectionHook,
     setTangentModes,
+    solveSection,
     trimSuffix,
     trimTrack,
     undo,
@@ -66,8 +69,11 @@ import {
     sections,
     seedTangent,
     setForcePoint,
+    setSectionLength,
+    setStickyLen,
     setTangent,
     setTrackV0,
+    stickyLen,
     Track,
     V0,
 } from "../src/track";
@@ -440,6 +446,69 @@ test("convertSections: flips EVERY section in a SET in ONE entry, regardless of 
 
     undo(h, state);
     expect(sections(state).map((s) => s.kind)).toEqual([SectionKind.Geo, SectionKind.Force]);
+});
+
+// ── sticky appended-section length (kex2d-geoforce-editor stage 5c) ──────────────
+// session-level module state in track.ts, not ECS/undo: a freshly appended force section's
+// default extent echoes the last COMMITTED extent-trim this session, starting at
+// DEFAULT_FORCE_LEN (== EXTEND_DIST). reset before each test — it's process-shared, not
+// per-track — so one test's commit can't leak into the next.
+beforeEach(() => setStickyLen(EXTEND_DIST));
+
+test("a fresh append gets EXTEND_DIST (DEFAULT_FORCE_LEN) before anything has committed", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const force = appendSection(h, state, SectionKind.Force);
+    expect(sections(state).find((s) => s.id === force)?.length).toBe(EXTEND_DIST);
+});
+
+test("a committed extent-trim becomes the next append's default length", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const force = appendSection(h, state, SectionKind.Force); // length EXTEND_DIST (24)
+    beginLength(state, force);
+    setSectionLength(state, force, 40); // live drag write (repeatable, as a real drag would do)
+    commitLength(h, state, force); // the gesture COMMITS — this is the one update site
+    expect(stickyLen()).toBe(40);
+
+    const force2 = appendSection(h, state, SectionKind.Force);
+    expect(sections(state).find((s) => s.id === force2)?.length).toBe(40);
+});
+
+test("undoing the append that used the sticky value doesn't roll the sticky value back", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    const force = appendSection(h, state, SectionKind.Force);
+    beginLength(state, force);
+    setSectionLength(state, force, 40);
+    commitLength(h, state, force);
+    expect(stickyLen()).toBe(40);
+
+    const force2 = appendSection(h, state, SectionKind.Force);
+    undo(h, state); // undoes the SECOND append (restoreAll) — the section is gone
+    expect(sections(state).some((s) => s.id === force2)).toBe(false);
+    expect(stickyLen()).toBe(40); // module state, untouched by undo
+
+    const force3 = appendSection(h, state, SectionKind.Force); // still echoes the committed trim
+    expect(sections(state).find((s) => s.id === force3)?.length).toBe(40);
+});
+
+test("a solve landing does NOT update the sticky value", () => {
+    const { state, sec: geo } = nodes();
+    const h = createHistory();
+    solveSection(h, state, geo, {
+        points: [
+            { s: 0, g: 1 },
+            { s: 77, g: 1 },
+        ],
+        length: 77,
+        ds: 0.3,
+    });
+    expect(sections(state).find((s) => s.id === geo)?.length).toBe(77); // the solve DID land
+    expect(stickyLen()).toBe(EXTEND_DIST); // but the sticky default is untouched
+
+    const force = appendSection(h, state, SectionKind.Force);
+    expect(sections(state).find((s) => s.id === force)?.length).toBe(EXTEND_DIST); // not 77
 });
 
 // ── track initial speed (v0) — a per-track scalar on the same gesture substrate ──

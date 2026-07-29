@@ -30,6 +30,7 @@ import {
     beginLength,
     cancel,
     commit,
+    commitLength,
     createForce,
     deleteForces,
     history,
@@ -1548,10 +1549,13 @@ function lenMove(e: PointerEvent): void {
 }
 function lenUp(): void {
     if (lenId === null) return;
+    const id = lenId;
     lenId = null;
     sFrozen = null; // release the in-drag freeze; the zoom never re-fits (no release refit) —
     snapX = null;
-    commit(history); // clampView now only re-clamps pan to the live extent, never rescales
+    // commitLength coalesces the drag (one undo entry) AND records the landed extent as the
+    // session's new sticky append default — the one call site that updates it.
+    commitLength(history, ecs, id); // clampView now only re-clamps pan to the live extent, never rescales
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
     window.removeEventListener("pointercancel", lenUp);

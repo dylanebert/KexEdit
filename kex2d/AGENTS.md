@@ -134,12 +134,13 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
   rule governs invoked optimization tools, not this). The displayed curve is the
   geometry-RECOVERED force (the one-display-path law), so a diamond sits O(ds) off the curve — the
   authored handle vs the recovered display, expected.
-- **Extent is the section's own authored length** (`Section.length`, m — distance is the only
-  authoring domain), NOT inherited from the geo shape a convert came from: a convert (or an append)
-  **resets** it to `DEFAULT_FORCE_LEN`. It's then editable — the **force clip's right edge** in the
-  timeline marker lane (`ew-resize`) resizes the profile (`setSectionLength`, floored at
-  `MIN_FORCE_LEN`, one undo entry via `history.beginLength`). Shortening below a point's s just
-  stops sampling there (non-destructive — the point persists, re-lengthening restores it).
+- **Extent is the section's own authored length** (`Section.length`, m — the only authoring
+  domain), NOT inherited from the geo shape a convert came from: convert **resets** it to
+  `DEFAULT_FORCE_LEN`; append gets the session's **sticky** length — the last committed
+  extent-trim (`track.setStickyLen`; a solve never touches it), `DEFAULT_FORCE_LEN` until one
+  commits. Editable via the **force clip's right edge** (`ew-resize`, `setSectionLength`, floored
+  at `MIN_FORCE_LEN`, one undo entry via `history.beginLength`). Shortening below a point's s
+  just stops sampling there (non-destructive — the point persists, re-lengthening restores it).
 
 ## Authoring API — the substrate is the agent surface
 
@@ -273,9 +274,8 @@ via a whole-track snapshot pair (byte-identical).
   restores the 1g fallback.
 - **The track start is a fixed-position `startEntry` anchor at the origin** (initial speed
   `Track.v0`, default `V0`; authored via the selectable START diamond's popover), not a node — a
-  geo→force convert carries no geo start position (the convert is destructive; position is cosmetic). The force
-  **extent resets** to `DEFAULT_FORCE_LEN` on convert/append (not inherited from the geo arclength),
-  then editable via the end handle.
+  geo→force convert carries no geo start position (destructive; position is cosmetic). Force
+  extent's convert-vs-append default: Model (force authoring), above.
 - **The bake uses `forces`, not `invertRange`.** `invertRange` is the *exact* reflection inverse of
   the forward integrator (`θ_{i+1} = 2·m_i − θ_i`). It carries a leapfrog "computational mode": a
   marginally-stable ±(−1)^i tangent oscillation. On positions the integrator itself produced it

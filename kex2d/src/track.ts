@@ -299,6 +299,27 @@ const DEFAULT_FORCE_LEN = EXTEND_DIST;
  *  never collapses below what `forceProfile` can sample. */
 export const MIN_FORCE_LEN = 2;
 
+/** the session's sticky append length (m): a freshly APPENDED force section's default
+ *  extent, distinct from a destructive convert (which still resets to `DEFAULT_FORCE_LEN`
+ *  unconditionally — its shape has no "previous append" to echo). Updated only when an
+ *  extent-trim gesture COMMITS (`setStickyLen`, called from `history.commitLength`), never
+ *  by a solve landing (a converted section's realized extent is the solve's own answer, not
+ *  an authored trim). Session-level module state: not persisted across reloads, not threaded
+ *  through undo — undoing an append never rolls it back, so the next append still defaults to
+ *  whatever was last committed. Starts at `DEFAULT_FORCE_LEN`. */
+let stickyForceLen = DEFAULT_FORCE_LEN;
+
+/** read the session's current sticky append length. */
+export function stickyLen(): number {
+    return stickyForceLen;
+}
+
+/** record a committed extent-trim value as the new sticky append default, floored like any
+ *  authored extent (`MIN_FORCE_LEN`) so a degenerate commit can't poison the next append. */
+export function setStickyLen(length: number): void {
+    stickyForceLen = Math.max(MIN_FORCE_LEN, length);
+}
+
 /** allocate an empty track entity + its sample / bake-output buffers, sized once
  *  to MAX_SAMPLES. no sections — callers (the demo seed, tests) add their own.
  *  returns the track eid. */
@@ -1235,11 +1256,12 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
  *  two-node seed (its entry is the prior exit, so it opens straight along the
  *  running heading); force gets the two continuation keyframes at the recovered
  *  entry force (the prior section's exit-edge force from the current bake), over the
- *  default extent. returns the id. */
+ *  session's sticky append length (`stickyForceLen` — the last committed extent-trim,
+ *  `DEFAULT_FORCE_LEN` until one lands). returns the id. */
 export function appendSection(ecs: State, kind: SectionKind): number {
     const secs = sections(ecs);
     const order = secs.length;
-    const id = createSection(ecs, order, kind, kind === SectionKind.Force ? DEFAULT_FORCE_LEN : 0);
+    const id = createSection(ecs, order, kind, kind === SectionKind.Force ? stickyForceLen : 0);
     if (kind === SectionKind.Geo) {
         addNode(ecs, id, 0, 0);
         addNode(ecs, id, EXTEND_DIST, 0);
@@ -1249,7 +1271,7 @@ export function appendSection(ecs: State, kind: SectionKind): number {
         const prev = secs[secs.length - 1];
         const info = prev ? sectionInfo.get(prev.id) : undefined;
         const gEntry = info ? bakeEntryForce(ecs, info.endSample) : DEFAULT_G;
-        seedForceKeyframes(ecs, id, DEFAULT_FORCE_LEN, gEntry);
+        seedForceKeyframes(ecs, id, stickyForceLen, gEntry);
     }
     return id;
 }
