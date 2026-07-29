@@ -452,21 +452,64 @@ export function sectionAt(ecs: State, id: number): number | null {
 
 /** a section's place on the global distance axis: its stable id, its `offset` (the
  *  track-global distance `d` at its entry = the cumulative baked arclength of every
- *  upstream section), and its `len` (its own baked arclength). the section occupies the
- *  d-interval `[offset, offset + len]`. */
+ *  upstream section), and its `len` — its own baked extent ON THE d AXIS (arclength,
+ *  regardless of domain: a Time section's samples still land at real distances, just
+ *  non-uniformly spaced). the section occupies the d-interval `[offset, offset + len]`.
+ *  a **Time** section additionally carries the sample-range mapping handle
+ *  (`localT`/`localD`) `toGlobal`/`toLocal` interpolate over; a **Distance** section
+ *  carries neither (its lens stays the plain affine path, so its bytes are untouched). */
 export interface SectionSpan {
     id: number;
     offset: number;
     len: number;
+    domain: Domain;
+    /** Time only: per-sample cumulative LOCAL time (seconds since the section's entry,
+     *  `localT[0] === 0`), non-decreasing — strictly increasing while `ds > 0`, but a
+     *  stalled sample (`ds` clamped to 0 by the v floor) freezes `t` too (`bakeOut.t`
+     *  accumulates `ds/v̄`, so a zero `ds` contributes zero elapsed time — the domain
+     *  lock's O(step) consistency note). the lens's x-axis for `toGlobal`. */
+    localT?: Float32Array;
+    /** Time only: per-sample cumulative LOCAL distance (meters since the section's
+     *  entry, `localD[0] === 0`, `localD[last] === len`) — same sample indexing as
+     *  `localT`, so the two arrays are one monotone table read in either direction. */
+    localD?: Float32Array;
+}
+
+/** piecewise-linear monotone lookup: `y` at query `x` over a strictly-nondecreasing
+ *  `xs`/parallel `ys` table, clamped past either end (the out-of-range policy every
+ *  lens read shares). exact on the sample grid; linear between — the same fidelity the
+ *  table itself carries (a straight edge between two baked samples). a run of
+ *  equal-`x` samples (the stalled/v-floor degenerate case) resolves to the LAST tied
+ *  index — safe because a stall freezes both tables in lockstep, so every tied index
+ *  carries the same `y`; accepted, not reconciled, per the domain lock's O(step) note. */
+function lerpMonotone(xs: Float32Array, ys: Float32Array, x: number): number {
+    const n = xs.length;
+    if (x <= xs[0]) return ys[0];
+    if (x >= xs[n - 1]) return ys[n - 1];
+    let lo = 0;
+    let hi = n - 1;
+    while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (xs[mid] <= x) lo = mid;
+        else hi = mid;
+    }
+    const span = xs[hi] - xs[lo];
+    if (span <= 0) return ys[lo];
+    return ys[lo] + ((x - xs[lo]) / span) * (ys[hi] - ys[lo]);
 }
 
 /** the coordinate lens — the ONE seam between the author-facing track-global distance
- *  `d` (meters, the timeline ruler) and the section-local arclength `s` the substrate
- *  stores. `sectionSpans` is its table (one accumulating pass over the baked ds), and
- *  `toGlobal`/`toLocal` are the affine `d = offset + s` and its inverse. every d readout
- *  — timeline clips/boundaries, force-point placement, cart park — derives here; nothing
- *  walks the cumulative ds itself. sections are contiguous (each shares its entry sample
- *  with the prior exit), so one pass suffices. */
+ *  `d` (meters, the timeline ruler) and the section-local coordinate `s` the substrate
+ *  stores in ITS OWN native unit (arclength for a Distance section, time for a Time
+ *  one — `Section`'s native-units law). `sectionSpans` is its table (one accumulating
+ *  pass over the baked ds, plus each Time section's own cumulative t/d sample table),
+ *  and `toGlobal`/`toLocal` read it: the affine `d = offset + s` for Distance (byte-
+ *  identical to the pre-domain lens), monotone interpolation of the baked cumulative
+ *  t/d arrays for Time (exact on the sample grid — `ds > 0` by the v floor makes the
+ *  table invertible). every d readout — timeline clips/boundaries, force-point
+ *  placement, cart park — derives here; nothing walks the cumulative ds itself.
+ *  sections are contiguous (each shares its entry sample with the prior exit), so one
+ *  pass suffices. */
 export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
     const out = bakeOut.get(eid);
     if (!out) return [];
@@ -476,30 +519,62 @@ export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
         const info = sectionInfo.get(sec.id);
         if (!info) continue;
         const offset = cum;
+        let localT: Float32Array | undefined;
+        let localD: Float32Array | undefined;
+        if (sec.domain === Domain.Time) {
+            const nSamp = info.endSample - info.startSample + 1;
+            localT = new Float32Array(nSamp);
+            localD = new Float32Array(nSamp);
+            const t0 = out.t[info.startSample];
+            let d = 0;
+            for (let k = 0; k < nSamp; k++) {
+                const j = info.startSample + k;
+                localT[k] = out.t[j] - t0;
+                localD[k] = d;
+                if (j < info.endSample) d += out.ds[j];
+            }
+        }
         for (let i = info.startSample; i < info.endSample; i++) cum += out.ds[i];
-        res.push({ id: sec.id, offset, len: cum - offset });
+        res.push({ id: sec.id, offset, len: cum - offset, domain: sec.domain, localT, localD });
     }
     return res;
 }
 
-/** section-local `(section, s)` → track-global distance `d = offset + s`. null when the
- *  section isn't on the current bake. */
+/** section-local `(section, s)` → track-global distance. Distance: the affine
+ *  `d = offset + s`. Time: `s` is the section-local time coordinate, mapped to its
+ *  local distance through the baked `localT → localD` table, then offset. null when
+ *  the section isn't on the current bake. */
 export function toGlobal(spans: SectionSpan[], section: number, s: number): number | null {
     const sp = spans.find((x) => x.id === section);
-    return sp ? sp.offset + s : null;
+    if (!sp) return null;
+    if (sp.domain === Domain.Time && sp.localT && sp.localD) {
+        return sp.offset + lerpMonotone(sp.localT, sp.localD, s);
+    }
+    return sp.offset + s;
 }
 
-/** track-global distance `d` → the section-local address `(section, s)`. boundary policy:
- *  a `d` on a shared section boundary resolves to the UPSTREAM (earlier) section — the
- *  first span whose exit reaches `d` wins (left/upstream-inclusive spans), matching the
- *  clip strip's boundary guides and the cart's park resolution. out-of-range `d` resolves
- *  to the nearest end of the track. null when there's no bake. */
+/** track-global distance `d` → the section-local address `(section, s)` — `s` in the
+ *  section's OWN native unit (arclength for Distance, time for Time, via the inverse
+ *  `localD → localT` table). boundary policy: a `d` on a shared section boundary
+ *  resolves to the UPSTREAM (earlier) section — the first span whose exit reaches `d`
+ *  wins (left/upstream-inclusive spans), matching the clip strip's boundary guides and
+ *  the cart's park resolution. out-of-range `d` resolves to the nearest end of the
+ *  track. null when there's no bake. */
 export function toLocal(spans: SectionSpan[], d: number): { section: number; s: number } | null {
     if (spans.length === 0) return null;
     for (const sp of spans) {
-        if (d <= sp.offset + sp.len) return { section: sp.id, s: Math.max(0, d - sp.offset) };
+        if (d <= sp.offset + sp.len) {
+            const localD = Math.max(0, d - sp.offset);
+            if (sp.domain === Domain.Time && sp.localT && sp.localD) {
+                return { section: sp.id, s: lerpMonotone(sp.localD, sp.localT, localD) };
+            }
+            return { section: sp.id, s: localD };
+        }
     }
     const last = spans[spans.length - 1];
+    if (last.domain === Domain.Time && last.localT) {
+        return { section: last.id, s: last.localT[last.localT.length - 1] };
+    }
     return { section: last.id, s: last.len };
 }
 

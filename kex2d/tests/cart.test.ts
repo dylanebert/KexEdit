@@ -7,8 +7,11 @@ import {
     CartSystem,
     forceCurve,
     loopTime,
+    parkArc,
     parkAtArc,
+    resolvePark,
 } from "../src/cart";
+import { Domain } from "../src/section";
 import {
     addNode,
     appendSection,
@@ -21,6 +24,7 @@ import {
     deleteSection,
     SectionKind,
     sections,
+    sectionSpans,
     setSectionLength,
 } from "../src/track";
 
@@ -169,6 +173,26 @@ test("a parked offset clamps into the section when it shortens", () => {
     setSectionLength(state, sec, 20); // shorten under the parked offset
     state.step(0);
     expect(cartArc(eid)).toBeCloseTo(20, 1); // clamped to the new extent, not 30
+});
+
+test("a park round-trips through a Time-domain section via the lens", () => {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 32, 0);
+    appendSection(state, SectionKind.Force, Domain.Time);
+    state.step(0);
+
+    const spans = sectionSpans(state, eid);
+    expect(spans.length).toBe(2);
+    const time = spans[1];
+    const d = time.offset + time.len / 2;
+    const park = resolvePark(state, eid, d); // offset in the section's native SECONDS
+    if (!park) throw new Error("park unresolved");
+    expect(park.section).toBe(time.id);
+    expect(parkArc(state, eid, park)).toBeCloseTo(d, 3);
 });
 
 test("a parked anchor re-resolves onto the chain when its section is deleted", () => {

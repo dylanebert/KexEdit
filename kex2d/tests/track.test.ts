@@ -702,6 +702,152 @@ describe("coordinate lens (s ↔ d)", () => {
     });
 });
 
+// stage 3 (kex2d-time-domain): the lens generalizes to a Time-domain section — its local
+// `s` is a TIME coordinate, mapped to `d` through the baked cumulative t/d sample table
+// (`sectionSpans`' localT/localD) rather than the affine path. Distance sections must stay
+// byte-identical (covered above, untouched by this describe).
+describe("coordinate lens — Time domain", () => {
+    /** geo (flat) → force (time). the force section's entry force seeds continuing 1g
+     *  level flight, so it neither climbs nor dives — ds/dt stays uniform and positive
+     *  throughout, the well-behaved case the roundtrip/boundary tests exercise. */
+    function timeChain(): { state: State; eid: number; g: number; f: number; duration: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const g = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, g, 0, 0);
+        addNode(state, g, EXTEND_DIST, 0);
+        const duration = 2; // seconds
+        const f = appendSection(state, SectionKind.Force, Domain.Time);
+        // write the extent directly, not through `setSectionLength` — that setter floors
+        // at `MIN_FORCE_LEN` (a DISTANCE-unit constant), the stage-4 commit-path wiring gap
+        // the spec already flags as out of this stage's scope.
+        const fEid = sectionAt(state, f);
+        if (fEid === null) throw new Error("section missing");
+        Section.length.set(fEid, duration);
+        state.step(0);
+        return { state, eid, g, f, duration };
+    }
+
+    test("toGlobal ∘ toLocal is identity for an interior time-section address", () => {
+        const { state, eid, f } = timeChain();
+        const spans = sectionSpans(state, eid);
+        const sp = spans.find((x) => x.id === f);
+        if (!sp) throw new Error("time section span missing");
+        expect(sp.domain).toBe(Domain.Time);
+        expect(sp.localT).toBeDefined();
+        expect(sp.localD).toBeDefined();
+
+        const s = 0.7; // an interior local TIME coordinate (seconds), not a shared boundary
+        const d = toGlobal(spans, f, s);
+        if (d === null) throw new Error("toGlobal null for a live section");
+        const back = toLocal(spans, d);
+        expect(back?.section).toBe(f);
+        expect(back?.s).toBeCloseTo(s, 2); // piecewise-linear table, sample-grid resolution
+    });
+
+    test("a Distance section keeps the affine path byte-identical alongside a Time section", () => {
+        const { state, eid, g, f } = timeChain();
+        const spans = sectionSpans(state, eid);
+        const gSpan = spans.find((x) => x.id === g);
+        const fSpan = spans.find((x) => x.id === f);
+        if (!gSpan || !fSpan) throw new Error("span missing");
+        expect(gSpan.domain).toBe(Domain.Distance);
+        expect(gSpan.localT).toBeUndefined();
+        expect(gSpan.localD).toBeUndefined();
+        // the affine path: d = offset + s, exactly (no interpolation table involved).
+        const s = gSpan.len * 0.4;
+        expect(toGlobal(spans, g, s)).toBe(gSpan.offset + s);
+    });
+
+    test("boundary addresses resolve upstream-inclusive across a distance→time boundary", () => {
+        const { state, eid, g, f } = timeChain();
+        const spans = sectionSpans(state, eid);
+        const gSpan = spans.find((x) => x.id === g);
+        const fSpan = spans.find((x) => x.id === f);
+        if (!gSpan || !fSpan) throw new Error("span missing");
+
+        const boundary = gSpan.offset + gSpan.len;
+        expect(boundary).toBeCloseTo(fSpan.offset, 6);
+        // the shared boundary belongs to the UPSTREAM (geo, distance) section's exit —
+        // same policy as the all-distance chain, now proven across a domain change.
+        expect(toLocal(spans, boundary)).toEqual({ section: g, s: gSpan.len });
+
+        // the track's tail end resolves to the time section's own local time extent
+        // (its s is a TIME coordinate, not a distance), clamped past it too.
+        const end = fSpan.offset + fSpan.len;
+        const atEnd = toLocal(spans, end);
+        expect(atEnd?.section).toBe(f);
+        const localT = fSpan.localT;
+        if (!localT) throw new Error("localT missing");
+        expect(atEnd?.s).toBeCloseTo(localT[localT.length - 1], 6);
+        const pastEnd = toLocal(spans, end + 100);
+        expect(pastEnd).toEqual(atEnd);
+    });
+
+    test("degenerate: a stalled time section (v driven to the floor) doesn't break the lens", () => {
+        // a modest entry v (3 m/s) under a constant 1.2g curving force doesn't clear the
+        // climb: the ODE's own energy balance runs the cart out of speed partway through
+        // — a clean numerical stall (evalForce's `v = sqrt(max(vSq, 0))` clamps to exactly
+        // 0), the accepted degenerate case the domain lock documents (no new clamp; the
+        // existing infeasibility diagnostics carry the signal). Once `ds_i = v_i·Δt` hits
+        // 0 it's a fixed point (zero ds ⇒ zero height change ⇒ v stays 0), so both `ds`
+        // AND the bake's recovered `t` (accumulated as `ds/v̄`, per the domain lock's
+        // O(step) consistency note — a display quantity, not the atom's own dt grid)
+        // freeze together from that sample on: the section's realized extent AND its
+        // local-time table both tie out, never resume.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackV0(eid, 3);
+        const f = createSection(state, 0, SectionKind.Force, 4, 0, Domain.Time); // 4 s duration
+        createForcePoint(state, f, 0, 1.2); // one keyframe → flat 1.2g throughout
+        state.step(0);
+
+        const spans = sectionSpans(state, eid);
+        const sp = spans.find((x) => x.id === f);
+        const localT = sp?.localT;
+        const localD = sp?.localD;
+        if (!sp || !localT || !localD) throw new Error("time section span missing");
+
+        // both tables are non-decreasing (ties, never a reversal), finite throughout, and
+        // freeze in lockstep (a ds-tie is a t-tie, and vice versa) once the stall hits.
+        for (let k = 1; k < localT.length; k++) {
+            expect(localT[k]).toBeGreaterThanOrEqual(localT[k - 1]);
+            expect(localD[k]).toBeGreaterThanOrEqual(localD[k - 1]);
+            expect(Number.isFinite(localT[k])).toBe(true);
+            expect(Number.isFinite(localD[k])).toBe(true);
+            expect(localD[k] === localD[k - 1]).toBe(localT[k] === localT[k - 1]);
+        }
+        // the stall is real: distance and time both stop advancing well before the
+        // section's authored 4 s duration and its `DT_NOMINAL`-density edge budget.
+        const dTies = Array.from(localD).filter((d, k) => k > 0 && d === localD[k - 1]).length;
+        expect(dTies).toBeGreaterThan(0);
+        expect(localT[localT.length - 1]).toBeLessThan(4);
+
+        // the lens stays well-defined at the tie plateau: toGlobal ∘ toLocal is idempotent
+        // (not necessarily identity — the tie is a many-to-one address, resolved to the
+        // first t that reaches it) at the section's final, frozen d.
+        const dEnd = sp.offset + sp.len;
+        const back = toLocal(spans, dEnd);
+        expect(back?.section).toBe(f);
+        const dAgain = toGlobal(spans, f, back?.s ?? Number.NaN);
+        expect(dAgain).toBeCloseTo(dEnd, 6);
+    });
+
+    test("no-bake: sectionSpans is [] and toGlobal/toLocal are null before the first bake", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const f = createSection(state, 0, SectionKind.Force, 2, 0, Domain.Time);
+        // no state.step(0): sectionInfo never populated for this track.
+        const spans = sectionSpans(state, eid);
+        expect(spans).toEqual([]);
+        expect(toGlobal(spans, f, 0.5)).toBeNull();
+        expect(toLocal(spans, 5)).toBeNull();
+    });
+});
+
 describe("explicit tangents (substrate)", () => {
     test("an explicit tangent survives a whole-track snapshot round-trip and shapes the bake", () => {
         const { state, eid, sec } = track();
