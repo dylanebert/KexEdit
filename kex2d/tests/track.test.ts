@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
     addNode,
@@ -10,6 +10,7 @@ import {
     createSection,
     createTrack,
     DS_NOMINAL,
+    DT_NOMINAL,
     EXTEND_DIST,
     exitWorld,
     extend,
@@ -21,6 +22,7 @@ import {
     handleAt,
     handleTangent,
     MAX_SAMPLES,
+    MIN_FORCE_LEN,
     nextForce,
     reheadOnDrag,
     removeTrailingHandle,
@@ -41,13 +43,16 @@ import {
     setForcePoint,
     setForceTangent,
     setSectionLength,
+    setStickyLen,
     setTangent,
     setTrackV0,
     snapshotAll,
     snapshotSection,
+    stickyLen,
     toGlobal,
     toLocal,
     Track,
+    V0,
 } from "../src/track";
 import {
     appendSection as appendSectionCmd,
@@ -65,7 +70,7 @@ import {
 } from "../src/history";
 import { DEFAULT_G, Easing } from "../src/profile";
 import { scenarios } from "../src/scenarios";
-import { evalGeo } from "../src/section";
+import { Domain, evalGeo } from "../src/section";
 import { editTangent, type Node, sampleChain, TangentMode } from "../src/spline";
 import golden from "./fixtures/convert-golden.json";
 
@@ -1516,5 +1521,173 @@ describe("per-section step (Section.ds)", () => {
         const secEid = sectionAt(state, sec);
         if (secEid === null) throw new Error("section missing");
         expect(Section.ds.get(secEid)).toBe(0);
+    });
+});
+
+// stage 2 (kex2d-time-domain): `Section.domain` — a force section's per-section duration
+// type (`Domain.Distance` | `Domain.Time`, `section.ts`). the document layer stores it,
+// carries it through every snapshot/restore/spawn path, folds it into the bake hash only
+// when set (so every existing Distance track stays byte-identical), and gives `evalForce`
+// its domain-tagged payload. the lens (stage 3) and the UI (stage 4) aren't touched here.
+describe("domain (document layer, stage 2)", () => {
+    test("Section.domain defaults to Distance for every existing call site", () => {
+        // the flat geo seed and a bare createSection/appendSection call with no domain arg —
+        // every pre-stage-2 caller — must read back Distance, not merely "falsy".
+        const { state, sec } = track();
+        expect(sections(state).find((s) => s.id === sec)?.domain).toBe(Domain.Distance);
+
+        const bare = createSection(state, 1, SectionKind.Force, 10);
+        expect(sections(state).find((s) => s.id === bare)?.domain).toBe(Domain.Distance);
+
+        const appended = appendSection(state, SectionKind.Force);
+        expect(sections(state).find((s) => s.id === appended)?.domain).toBe(Domain.Distance);
+    });
+
+    test("createSection/appendSection accept an explicit domain", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const timed = createSection(state, 0, SectionKind.Force, 3, 0, Domain.Time);
+        expect(sections(state).find((s) => s.id === timed)?.domain).toBe(Domain.Time);
+
+        const { state: s2 } = track();
+        const appended = appendSection(s2, SectionKind.Force, Domain.Time);
+        expect(sections(s2).find((s) => s.id === appended)?.domain).toBe(Domain.Time);
+    });
+
+    test("domain round-trips through snapshotSection/restoreSection (the convert-undo unit)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 3, 0, Domain.Time);
+        createForcePoint(state, sec, 0, 1);
+
+        const snap = snapshotSection(state, sec);
+        expect(snap.domain).toBe(Domain.Time);
+
+        const secEid = sectionAt(state, sec);
+        if (secEid === null) throw new Error("section missing");
+        Section.domain.set(secEid, Domain.Distance); // lose it
+        restoreSection(state, snap);
+        expect(sections(state).find((s) => s.id === sec)?.domain).toBe(Domain.Time);
+    });
+
+    test("domain round-trips through snapshotAll/restoreAll (the structural-op unit)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        createSection(state, 0, SectionKind.Force, 3, 0, Domain.Time);
+
+        const whole = snapshotAll(state);
+        expect(whole[0].domain).toBe(Domain.Time);
+        restoreAll(state, whole); // respawns via the private spawnSection — the only caller
+        expect(sections(state)[0].domain).toBe(Domain.Time);
+    });
+
+    test("a Time-domain section bakes through the time atom: ds_i = v·Δt at the derived nominal", () => {
+        // a flat 1g profile over a level track holds v == the entry speed for the whole
+        // section (no elevation change), so every edge's realized ds is exactly v·DT_NOMINAL
+        // — the document-layer wiring of `evalForce`'s time step rule (stage 1), not a rework.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const duration = 2; // seconds
+        const sec = createSection(state, 0, SectionKind.Force, duration, 0, Domain.Time);
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, duration, 1); // flat 1g
+        state.step(0);
+
+        const out = bakeOut.get(eid);
+        const count = Track.count.get(eid);
+        if (!out) throw new Error("bakeOut missing");
+
+        const expectedDs = V0 * DT_NOMINAL; // == DS_NOMINAL exactly, by DT_NOMINAL's own derivation
+        expect(expectedDs).toBeCloseTo(DS_NOMINAL, 10);
+        for (let i = 0; i < count - 1; i++) expect(out.ds[i]).toBeCloseTo(expectedDs, 5);
+        // edges = round(duration / Δt), Δt = DT_NOMINAL (the sentinel-0 nominal).
+        expect(count - 1).toBe(Math.round(duration / DT_NOMINAL));
+    });
+
+    test("DT_NOMINAL is derived from DS_NOMINAL/V0, not a tuned constant", () => {
+        expect(DT_NOMINAL).toBeCloseTo(DS_NOMINAL / V0, 12);
+    });
+
+    test("a non-default domain enters the bake hash; the Distance sentinel leaves it untouched", () => {
+        const { state, eid, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force, domain resets to Distance
+        state.step(0);
+        const distanceHash = bakeOut.get(eid)?.hash;
+
+        const secEid = sectionAt(state, sec);
+        if (secEid === null) throw new Error("section missing");
+        Section.domain.set(secEid, Domain.Time);
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).not.toBe(distanceHash); // domain miss → re-baked
+
+        Section.domain.set(secEid, Domain.Distance); // back to the sentinel
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).toBe(distanceHash); // byte-identical to the Distance bake
+    });
+
+    // the pinned literal in "the default flat track bakes to the pinned hash" (tangent model
+    // describe block, above) is this stage's byte-identity gate: it was captured from the
+    // pre-stage-2 substrate and still matches verbatim post-diff — every hand-authored,
+    // Distance-domain track's `bakeHash` is untouched by the new `domain` field.
+
+    describe("sticky append length, per domain", () => {
+        // module-level state in track.ts, shared across the whole test run (not ECS/undo) —
+        // reset before each test here, mirroring `history.test.ts`'s convention, so no test
+        // (in this file or another) can leak a committed value into the next.
+        beforeEach(() => {
+            setStickyLen(SectionKind.Force, EXTEND_DIST, Domain.Distance);
+            setStickyLen(SectionKind.Force, EXTEND_DIST / V0, Domain.Time);
+        });
+
+        test("Distance and Time hold separate slots — a commit in one never inherits into the other", () => {
+            setStickyLen(SectionKind.Force, 40, Domain.Distance);
+            expect(stickyLen(SectionKind.Force, Domain.Distance)).toBe(40);
+            expect(stickyLen(SectionKind.Force, Domain.Time)).toBeCloseTo(EXTEND_DIST / V0, 10); // untouched
+
+            setStickyLen(SectionKind.Force, 3, Domain.Time);
+            expect(stickyLen(SectionKind.Force, Domain.Time)).toBe(3);
+            expect(stickyLen(SectionKind.Force, Domain.Distance)).toBe(40); // untouched
+        });
+
+        test("a Time append never inherits a Distance sticky, and starts at its own literal default", () => {
+            setStickyLen(SectionKind.Force, 99, Domain.Distance); // a large committed distance trim
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            const id = appendSection(state, SectionKind.Force, Domain.Time);
+            // the fresh time section's extent is the Time slot's literal default, not the 99 m
+            // distance commit that would leak through a single shared sticky.
+            expect(sections(state).find((s) => s.id === id)?.length).toBeCloseTo(
+                EXTEND_DIST / V0,
+                10,
+            );
+        });
+
+        test("a committed Time extent becomes the next Time append's default; Distance stays put", () => {
+            setStickyLen(SectionKind.Force, 5, Domain.Time); // a committed time-domain trim
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            const timed = appendSection(state, SectionKind.Force, Domain.Time);
+            expect(sections(state).find((s) => s.id === timed)?.length).toBe(5);
+
+            const distanceDefault = stickyLen(SectionKind.Force, Domain.Distance);
+            const distance = appendSection(state, SectionKind.Force, Domain.Distance);
+            expect(sections(state).find((s) => s.id === distance)?.length).toBe(distanceDefault);
+        });
+
+        test("a degenerate Time commit floors at MIN_FORCE_LEN/V0, never poisoning the next append", () => {
+            setStickyLen(SectionKind.Force, 0.0001, Domain.Time); // below the time floor
+            expect(stickyLen(SectionKind.Force, Domain.Time)).toBeCloseTo(MIN_FORCE_LEN / V0, 10);
+            // the Distance slot's own floor is untouched by a Time-side commit.
+            expect(stickyLen(SectionKind.Force, Domain.Distance)).toBeGreaterThanOrEqual(
+                MIN_FORCE_LEN,
+            );
+        });
     });
 });

@@ -36,6 +36,7 @@ import {
     splitGeo,
     Track,
 } from "../src/track";
+import { Domain } from "../src/section";
 import { editTangent, TangentMode } from "../src/spline";
 
 // the multi-section structural ops: append / split / join / delete over the section
@@ -378,6 +379,46 @@ describe("per-section step through split / join", () => {
         const dropped = twoForce(0, 0.25);
         expect(joinNext(dropped.state, dropped.a)).toBe(true);
         expect(sections(dropped.state).map((s) => s.ds)).toEqual([0]);
+    });
+});
+
+// stage 2 (kex2d-time-domain): `Section.domain` through the structural ops. a split
+// partitions a section without re-solving it — domain unchanged, mirroring the step rule
+// above; a join requires the SAME domain (mixing arclength and time offsets on one
+// concatenated extent has no coherent meaning), a new refusal beside the existing kind check.
+describe("domain through split / join", () => {
+    test("a force split gives the tail the SAME domain (a split of a time section stays time)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 4, 0, Domain.Time);
+        createForcePoint(state, a, 1, 1);
+        createForcePoint(state, a, 3, 2);
+
+        const b = splitForce(state, a, 2);
+        expect(b).not.toBeNull();
+        expect(sections(state).map((s) => s.domain)).toEqual([Domain.Time, Domain.Time]);
+    });
+
+    test("join refuses across domains, even when both sides are force", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20, 0, Domain.Distance);
+        createSection(state, 1, SectionKind.Force, 20, 0, Domain.Time);
+        expect(joinNext(state, a)).toBe(false); // same kind, mismatched domain
+        expect(sections(state).length).toBe(2); // untouched
+    });
+
+    test("join succeeds when both sides share a domain (the same-domain case still works)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20, 0, Domain.Time);
+        createSection(state, 1, SectionKind.Force, 20, 0, Domain.Time);
+        expect(joinNext(state, a)).toBe(true);
+        expect(sections(state).length).toBe(1);
+        expect(sections(state)[0].domain).toBe(Domain.Time);
     });
 });
 
