@@ -36,7 +36,7 @@ export function posStations(
     y: ArrayLike<number>,
     ds: ArrayLike<number>,
     edges: number,
-): { s: number[]; x: number[]; y: number[]; total: number } {
+): { s: number[]; x: number[]; y: number[] } {
     const s: number[] = [];
     const px: number[] = [];
     const py: number[] = [];
@@ -47,7 +47,7 @@ export function posStations(
         py.push(y[i]);
         if (i < edges) at += ds[i];
     }
-    return { s, x: px, y: py, total: at };
+    return { s, x: px, y: py };
 }
 
 /** linear interpolation of `st` at arclength `at`, held flat beyond either end. */
