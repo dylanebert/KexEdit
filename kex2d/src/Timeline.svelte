@@ -1439,30 +1439,30 @@ function onSnapLen(e: Event): void {
 // accumulator clamps to the setting's own range, so a slide held past either end banks no distance
 // to undo on the way back.
 const SCRUB_DEG = 0.25; // ° per px
+// the snap-length preference's own scrub rate — NOT `SCRUB_S` (the keyframe/handle arclength
+// rate below): borrowing that constant tied a preference field's feel to an unrelated track-
+// authoring rate. Value kept identical to the prior (borrowed) behavior.
+const SCRUB_LEN = 0.05; // m per px
 function snapScrub(e: PointerEvent, axis: "angle" | "length"): void {
-    if (e.button !== 0) return; // a right-press here would open the native menu with the drag open
-    e.preventDefault();
-    const label = e.currentTarget as HTMLElement;
-    beginDrag(label, e.pointerId);
-    // seed from the settings themselves, not the tick-derived display (which lags a frame)
-    let acc = axis === "angle" ? (snapSteps.angle * 180) / Math.PI : snapSteps.length;
-    const move = (ev: PointerEvent): void => {
-        if (axis === "angle") {
-            acc = clamp(acc + ev.movementX * SCRUB_DEG, ANGLE_MIN_DEG, ANGLE_MAX_DEG);
-            setSnapAngle(((Math.round(acc * 100) / 100) * Math.PI) / 180);
-        } else {
-            acc = clamp(acc + ev.movementX * SCRUB_S, LENGTH_STEP_MIN, LENGTH_STEP_MAX);
-            setSnapLength(Math.round(acc * 100) / 100);
-        }
-    };
-    const up = (): void => {
-        label.removeEventListener("pointermove", move);
-        label.removeEventListener("pointerup", up);
-        label.removeEventListener("pointercancel", up);
-    };
-    label.addEventListener("pointermove", move);
-    label.addEventListener("pointerup", up);
-    label.addEventListener("pointercancel", up); // a cancelled pointer still ends the gesture
+    if (axis === "angle") {
+        labelScrub(e, {
+            seed: (snapSteps.angle * 180) / Math.PI, // settings themselves, not the tick display (lags a frame)
+            rate: SCRUB_DEG,
+            lo: ANGLE_MIN_DEG,
+            hi: ANGLE_MAX_DEG,
+            round: 100,
+            write: (v) => setSnapAngle((v * Math.PI) / 180),
+        });
+    } else {
+        labelScrub(e, {
+            seed: snapSteps.length,
+            rate: SCRUB_LEN,
+            lo: LENGTH_STEP_MIN,
+            hi: LENGTH_STEP_MAX,
+            round: 100,
+            write: setSnapLength,
+        });
+    }
 }
 // click-away closes it; a press on the popover or on the rail button itself is kept (the button
 // toggles it, and a field press must not dismiss the surface it's in).
@@ -1646,33 +1646,56 @@ const SCRUB_G = 0.01; // g per px
 // put; it re-anchors to the point on release). also holds the popover visible if
 // the scrub carries the diamond out of view.
 let scrubFreeze: { x: number; y: number; mode?: TipMode } | null = $state(null);
-function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
-    const p = selPoint;
-    if (p === null) return;
+interface ScrubOpts {
+    seed: number; // the starting accumulator, read from the live value (not the tick display)
+    rate: number; // value units per px of horizontal movement
+    lo: number; // clamp bounds, applied to the accumulator every move — [-Infinity, Infinity]
+    hi: number; // for an unbounded axis (g, Δg)
+    round: number; // the displayed-precision multiplier (10 = one decimal, 100 = two)
+    write: (v: number) => void; // the rounded value's write — may itself be a no-op (handleScrub's
+    // tangentFor can return null on a degenerate composeTangent input)
+    freeze?: { x: number; y: number; mode?: TipMode }; // the popover's frozen anchor, when this
+    // scrub drives one (absent for a preference scrub, which anchors nothing)
+    begin?: () => void; // the history-gesture opener; its presence is also the commit-on-release
+    // switch (a preference scrub passes neither — it's not track state)
+}
+// the active label-scrub's teardown, so `cancelAll` (window blur) can close a scrub whose
+// move/up/pointercancel listeners live on the LABEL, not window — a blur mid-scrub delivers
+// neither event, so without this hook the closure survives: a second scrub on the same label
+// then attaches a SECOND listener set (double-accumulating movementX), and the stale up() still
+// fires on the next pointerup, committing a spurious extra history entry. Mirrors
+// `cancelForceDrag`/`cancelTanDrag`/`cancelLenDrag`'s own cancel-path shape.
+let scrubCancel: (() => void) | null = null;
+// the one label-scrub body: guard, `beginDrag`, the movementX accumulator, and move/up/
+// pointercancel wiring — the three call sites below (`scrubStart`/`handleScrub`/`snapScrub`)
+// differ only in seed/rate/clamp/round/write plus the two optional hooks.
+function labelScrub(e: PointerEvent, opts: ScrubOpts): void {
+    if (e.button !== 0) return; // right-press opens the context menu; a scrub must not open too
     e.preventDefault();
     const label = e.currentTarget as HTMLElement;
     beginDrag(label, e.pointerId);
-    scrubFreeze = {
-        x: clamp(ptX(p), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
-        y: clamp(yOf(p.g), TOP, h - BOT_PAD),
-    };
-    beginForceMove(ecs, p.id);
-    let acc = axis === "s" ? p.s : p.g;
+    if (opts.freeze !== undefined) scrubFreeze = opts.freeze;
+    opts.begin?.();
+    let acc = opts.seed;
     const move = (ev: PointerEvent): void => {
-        if (axis === "s") {
-            acc = clamp(acc + ev.movementX * SCRUB_S, 0, p.len);
-            setForcePoint(ecs, p.id, Math.round(acc * 10) / 10, p.g);
-        } else {
-            acc += ev.movementX * SCRUB_G;
-            setForcePoint(ecs, p.id, p.s, Math.round(acc * 100) / 100);
-        }
+        acc = clamp(acc + ev.movementX * opts.rate, opts.lo, opts.hi);
+        opts.write(Math.round(acc * opts.round) / opts.round);
     };
-    const up = (): void => {
+    const detach = (): void => {
         label.removeEventListener("pointermove", move);
         label.removeEventListener("pointerup", up);
         label.removeEventListener("pointercancel", up);
-        scrubFreeze = null; // re-anchor to the point
-        commit(history);
+        scrubCancel = null;
+        if (opts.freeze !== undefined) scrubFreeze = null; // re-anchor to the live subject
+    };
+    const up = (): void => {
+        detach();
+        if (opts.begin) commit(history);
+    };
+    // registered so `cancelAll` can close this scrub from outside the closure (a window blur).
+    scrubCancel = (): void => {
+        detach();
+        if (opts.begin) cancel(); // interrupted mid-scrub: revert to the pre-gesture value
     };
     label.addEventListener("pointermove", move);
     label.addEventListener("pointerup", up);
@@ -1680,23 +1703,52 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
     // swallow the next edit (one gesture at a time).
     label.addEventListener("pointercancel", up);
 }
+function cancelLabelScrub(): void {
+    scrubCancel?.();
+}
+function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
+    const p = selPoint;
+    if (p === null) return;
+    const freeze = {
+        x: clamp(ptX(p), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
+        y: clamp(yOf(p.g), TOP, h - BOT_PAD),
+    };
+    if (axis === "s") {
+        labelScrub(e, {
+            seed: p.s,
+            rate: SCRUB_S,
+            lo: 0,
+            hi: p.len,
+            round: 10,
+            write: (v) => setForcePoint(ecs, p.id, v, p.g),
+            freeze,
+            begin: () => beginForceMove(ecs, p.id),
+        });
+    } else {
+        labelScrub(e, {
+            seed: p.g,
+            rate: SCRUB_G,
+            lo: -Infinity,
+            hi: Infinity,
+            round: 100,
+            write: (v) => setForcePoint(ecs, p.id, p.s, v),
+            freeze,
+            begin: () => beginForceMove(ecs, p.id),
+        });
+    }
+}
 // handle field scrub — the same shallot-inspector affordance as the keyframe d/F fields, on the
 // tangent (Δs, Δg) inputs. slides the offset; the write goes through the shared tangent path
 // (composeTangent — x-monotonicity clamp + Aligned coupling), one history entry. Δs clamps to its
-// monotonicity span on the accumulator (the keyframe-s scrub clamps to [0, len] the same way); Δg
-// is unbounded. the popover anchor FREEZES at gesture start — the knob rides a Δs/Δg scrub, but
-// the control stays put (a surface never moves under its own gesture).
+// monotonicity span (the keyframe-s scrub clamps to [0, len] the same way); Δg is unbounded.
 function handleScrub(e: PointerEvent, axis: "s" | "g"): void {
     const sh = selHandle;
     if (sh === null) return;
-    e.preventDefault();
-    const label = e.currentTarget as HTMLElement;
-    beginDrag(label, e.pointerId);
-    // freeze the popover's placement at gesture start — the knob rides a Δs/Δg scrub, but the
+    // the popover anchor FREEZES at gesture start — the knob rides a Δs/Δg scrub, but the
     // control stays put (a surface never moves under its own gesture). the mode freezes too, so a
     // scrub that carries the knob toward an edge never re-dodges mid-gesture.
     const tip = handleTip(sh.x, sh.y, yOf(sh.pt.g), sh.side, w, h);
-    scrubFreeze = { x: tip.x, y: tip.y, mode: tip.mode };
+    const freeze = { x: tip.x, y: tip.y, mode: tip.mode };
     const id = sh.pt.id;
     const side = sh.side;
     // the x-monotonicity span for Δs, fixed for the gesture (neighbour s don't move) — mirrors
@@ -1707,31 +1759,37 @@ function handleScrub(e: PointerEvent, axis: "s" | "g"): void {
     const next = idx < pts.length - 1 ? pts[idx + 1] : null;
     const dsLo = side === "out" ? 0 : prev ? -(sh.pt.s - prev.s) : 0;
     const dsHi = side === "out" ? (next ? next.s - sh.pt.s : 0) : 0;
-    beginForceTangent(ecs, id);
-    let ds = sh.ds;
-    let dg = sh.dg;
-    const move = (ev: PointerEvent): void => {
-        if (axis === "s") {
-            ds = clamp(ds + ev.movementX * SCRUB_S, dsLo, dsHi);
-            const tan = tangentFor(id, side, Math.round(ds * 10) / 10, dg);
-            if (tan) setForceTangent(ecs, id, tan);
-        } else {
-            dg += ev.movementX * SCRUB_G;
-            const tan = tangentFor(id, side, ds, Math.round(dg * 100) / 100);
-            if (tan) setForceTangent(ecs, id, tan);
-        }
-    };
-    const up = (): void => {
-        label.removeEventListener("pointermove", move);
-        label.removeEventListener("pointerup", up);
-        label.removeEventListener("pointercancel", up);
-        scrubFreeze = null; // re-anchor to the knob
-        commit(history);
-    };
-    label.addEventListener("pointermove", move);
-    label.addEventListener("pointerup", up);
-    // a cancelled pointer must still close the gesture (one gesture at a time).
-    label.addEventListener("pointercancel", up);
+    if (axis === "s") {
+        const dg = sh.dg; // fixed for this gesture — only ds moves
+        labelScrub(e, {
+            seed: sh.ds,
+            rate: SCRUB_S,
+            lo: dsLo,
+            hi: dsHi,
+            round: 10,
+            write: (v) => {
+                const tan = tangentFor(id, side, v, dg);
+                if (tan) setForceTangent(ecs, id, tan);
+            },
+            freeze,
+            begin: () => beginForceTangent(ecs, id),
+        });
+    } else {
+        const ds = sh.ds; // fixed for this gesture — only dg moves
+        labelScrub(e, {
+            seed: sh.dg,
+            rate: SCRUB_G,
+            lo: -Infinity,
+            hi: Infinity,
+            round: 100,
+            write: (v) => {
+                const tan = tangentFor(id, side, ds, v);
+                if (tan) setForceTangent(ecs, id, tan);
+            },
+            freeze,
+            begin: () => beginForceTangent(ecs, id),
+        });
+    }
 }
 // field keys: Enter commits (blur fires change); Escape reverts the edit and blurs
 // without committing (the standard numeric-field escape). the window handler skips
@@ -2135,6 +2193,7 @@ function cancelAll(): void {
     marqueeCancel(); // and any in-flight chart marquee (its listeners live on window)
     cancelTanDrag(); // and any in-flight handle drag
     cancelLenDrag(); // and any in-flight extent drag
+    cancelLabelScrub(); // and any in-flight label scrub (its listeners live on the label, not window)
     endDragGesture(); // clear the drag flag (no release event tore it down)
 }
 onMount(() => {

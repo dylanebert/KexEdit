@@ -1136,7 +1136,48 @@ test("force authoring flow", async ({ page, boot }) => {
     const created = after6.find((p) => !before6.some((b) => Math.abs(b.s - p.s) < 1e-6));
     if (!created) throw new Error("the newly inserted point wasn't found by s-diff");
     expect(created.g).toBeCloseTo(1, 5); // resolved on the profile, not at the cursor
-    await page.keyboard.press("Control+z");
+
+    // ── 2b″. The `scrubStart` label-scrub button guard (kex2d-gesture-residue stage 5): the
+    // shared `labelScrub` helper's `e.button !== 0` check is new for `scrubStart` — before this
+    // stage only `snapScrub` carried it, so a right-press on this keyframe's "F" (g) label opened
+    // a drag alongside the browser's native context menu underneath it. RED-RIG TRAP: the
+    // left-press-drag just below is the positive control — it proves this rig can detect both a
+    // real g write and a real gesture opening (`#app[data-dragging]`) — so the right-press check
+    // that follows can't pass vacuously. Scrubs the g (not s) label so the created point stays
+    // identifiable by its unmoved s. ──
+    const gKey = page.locator(".ptip .fld").nth(1).locator(".key");
+    const gKeyBox = await gKey.boundingBox();
+    if (!gKeyBox) throw new Error("point g scrub handle not laid out");
+    const findByS = async (s: number): Promise<number | undefined> =>
+        (await forces()).find((p) => Math.abs(p.s - s) < 1e-6)?.g;
+    const beforeLeftG = await findByS(created.s);
+    if (beforeLeftG === undefined) throw new Error("created point not found for the scrub guard");
+    await page.mouse.move(gKeyBox.x + gKeyBox.width / 2, gKeyBox.y + gKeyBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(gKeyBox.x + gKeyBox.width / 2 + 40, gKeyBox.y + gKeyBox.height / 2, {
+        steps: 10,
+    });
+    await page.mouse.up();
+    await expect.poll(() => findByS(created.s)).not.toBe(beforeLeftG); // positive control: it moves
+    const afterLeftG = await findByS(created.s);
+
+    // the guard itself: a right-press-drag on the SAME label must write nothing and open no
+    // gesture — checked mid-drag, not only after release.
+    await page.mouse.move(gKeyBox.x + gKeyBox.width / 2, gKeyBox.y + gKeyBox.height / 2);
+    await page.mouse.down({ button: "right" });
+    await frames(page, 2);
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0); // no gesture opened
+    await page.mouse.move(gKeyBox.x + gKeyBox.width / 2 + 40, gKeyBox.y + gKeyBox.height / 2, {
+        steps: 10,
+    });
+    await frames(page, 2);
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0); // still none, under movement
+    await page.mouse.up({ button: "right" });
+    expect(await findByS(created.s)).toBe(afterLeftG); // no write
+
+    await page.keyboard.press("Control+z"); // undo the positive-control scrub
+    await expect.poll(() => findByS(created.s)).toBeCloseTo(created.g, 5);
+    await page.keyboard.press("Control+z"); // undo the point creation itself
     await expect.poll(forceCount).toBe(5);
 
     // ── 2b′. A Ctrl/Cmd drag frees the VALUE but never the per-axis gesture-start magnet (the
@@ -1435,6 +1476,30 @@ test("force easing menu flow", async ({ page, boot }) => {
     await page.mouse.up();
     await expect.poll(async () => (await forceTangents())[1]?.outDg ?? 0).not.toBe(beforeScrubDg);
     expect(await undoDepth()).toBe(beforeScrubUndo + 1); // the whole scrub → one entry
+
+    // ── 4c′. The label-scrub button guard (kex2d-gesture-residue stage 5, the shared
+    // `labelScrub` helper): only `snapScrub` carried an `e.button !== 0` check before this
+    // stage — `scrubStart`/`handleScrub` had none, so a right-press on this exact label opened
+    // a drag (writing Δg) underneath the browser's native context menu. RED-RIG TRAP: the
+    // left-press-drag just above is the positive control — it already proved this rig can
+    // detect both a real Δg write and a real gesture opening (`#app[data-dragging]`), so this
+    // negative check can't pass vacuously. A right-press-drag on the SAME label must write
+    // nothing (Δg unchanged, no undo entry) and open no gesture at all — checked mid-drag, not
+    // only after release, so a guard that merely un-did the write couldn't sneak by. ──
+    const beforeGuardDg = (await forceTangents())[1]?.outDg ?? 0;
+    const beforeGuardUndo = await undoDepth();
+    await page.mouse.move(dgKeyBox.x + dgKeyBox.width / 2, dgKeyBox.y + dgKeyBox.height / 2);
+    await page.mouse.down({ button: "right" });
+    await frames(page, 2);
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0); // no gesture opened
+    await page.mouse.move(dgKeyBox.x + dgKeyBox.width / 2 + 40, dgKeyBox.y + dgKeyBox.height / 2, {
+        steps: 10,
+    });
+    await frames(page, 2);
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0); // still none, under movement
+    await page.mouse.up({ button: "right" });
+    expect((await forceTangents())[1]?.outDg ?? 0).toBe(beforeGuardDg); // no write
+    expect(await undoDepth()).toBe(beforeGuardUndo); // no commit
 
     // ── 4b. Ctrl/Cmd frees the Δg grid (Δs is already continuous by default, F3d — the modifier's
     // remaining job is the Δg quantum). Reset step 4's handle to derived, re-enter, and drag the OUT
@@ -3573,4 +3638,52 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     await expect.poll(async () => (await xView())[1]).toBeGreaterThan(restXView[1]);
     await page.mouse.up(); // release cleanly — a torn-down gesture commits nothing on pointerup
     expect(await undoDepth()).toBe(preUndo);
+
+    // ── 7. WINDOW BLUR ALSO TEARS DOWN A LIVE LABEL SCRUB (adversarial-review finding on
+    // kex2d-gesture-residue stage 5): `labelScrub`'s move/up/pointercancel listeners live on the
+    // LABEL element, not window, so `cancelAll`'s blur path needs its OWN hook into them
+    // (`cancelLabelScrub`) — the generic `endDragGesture()` call (step 6's mechanism) only clears
+    // the drag FLAG, it doesn't reach a listener set attached to a different element. The crest's
+    // still-selected popover (unaffected by step 6's revert) is the vehicle: grab its "F" (g)
+    // label. RED-RIG TRAP: the mid-scrub read is the positive control, proving the scrub actually
+    // wrote before the revert below is trusted. Mutation: `cancelAll` with no `cancelLabelScrub`
+    // hook → the point stays at its mid-scrub g and undo depth is unchanged either way (nothing
+    // here commits without the hook) → red on the reverted-value assertion. ──
+    const gLabel = page.locator(".ptip .fld").nth(1).locator(".key");
+    const gLabelBox = await gLabel.boundingBox();
+    if (!gLabelBox) throw new Error("crest g scrub handle not laid out for the blur-cancel check");
+    const preScrubForce = (await forces())[2];
+    const preScrubUndo = await undoDepth();
+    await page.mouse.move(gLabelBox.x + gLabelBox.width / 2, gLabelBox.y + gLabelBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+        gLabelBox.x + gLabelBox.width / 2 + 40,
+        gLabelBox.y + gLabelBox.height / 2,
+        { steps: 8 },
+    );
+    const midScrubForce = (await forces())[2];
+    expect(Math.abs(midScrubForce.g - preScrubForce.g)).toBeGreaterThan(0.1); // positive control
+
+    await page.evaluate(() => window.dispatchEvent(new Event("blur"))); // button still "held"
+
+    const revertedScrubForce = (await forces())[2];
+    expect(revertedScrubForce.g).toBeCloseTo(preScrubForce.g, 5); // reverted to the pre-scrub g
+    expect(await undoDepth()).toBe(preScrubUndo); // the torn-down scrub committed nothing
+    await page.mouse.up(); // release cleanly — the label's listeners are already detached
+    expect(await undoDepth()).toBe(preScrubUndo);
+
+    // a FRESH scrub on the SAME label proves the stale listener set is actually gone (the
+    // double-fire symptom otherwise): exactly one new commit, and the write lands near one
+    // scrub's worth of movementX, not double.
+    await page.mouse.move(gLabelBox.x + gLabelBox.width / 2, gLabelBox.y + gLabelBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+        gLabelBox.x + gLabelBox.width / 2 + 40,
+        gLabelBox.y + gLabelBox.height / 2,
+        { steps: 8 },
+    );
+    await page.mouse.up();
+    const afterFreshScrub = (await forces())[2];
+    expect(Math.abs(afterFreshScrub.g - preScrubForce.g)).toBeLessThan(0.6); // one scrub, not two
+    expect(await undoDepth()).toBe(preScrubUndo + 1); // exactly one new entry
 });
