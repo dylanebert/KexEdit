@@ -700,11 +700,24 @@ const canSolve = $derived.by((): boolean => {
     void tick;
     return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Geo);
 });
-// the force→geo twin (target `Force`): one force section with a live bake. `convertForce` throws
-// on each of those the same way `convertGeo` does.
+// the force→geo twin (target `Force`): one force section with a live bake, dense enough for the
+// fit to hold its modal budget (`sectionSolvable`'s `edges` guard, `controls.MAX_FIT_EDGES`) — a
+// section's own bake edge count, cheap off `sectionInfo` (no fit invoked to check).
+const ctxEdges = $derived.by((): number => {
+    void tick;
+    if (ctx === null) return 0;
+    const info = sectionInfo.get(ctx.section);
+    return info ? info.endSample - info.startSample : 0;
+});
 const canSolveShape = $derived.by((): boolean => {
     void tick;
-    return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Force);
+    return sectionSolvable(
+        editor.sections.ids.size,
+        ctxKind,
+        bakeLive(ecs),
+        SectionKind.Force,
+        ctxEdges,
+    );
 });
 // the ONE conversion row. A section is always exactly one kind, so only one direction was ever
 // live — two rows spent the menu's space on a row that could never fire. The row's label and its

@@ -11,6 +11,7 @@ import {
     latchAngle,
     LATCH_PX,
     manipKnobs,
+    MAX_FIT_EDGES,
     nodeFrame,
     nodeMetrics,
     normDeg,
@@ -665,6 +666,28 @@ describe("sectionSolvable — invoked-solve enablement", () => {
 
     test("a geo section disqualifies Convert to geo — there is no force curve to fit", () => {
         expect(sectionSolvable(1, SectionKind.Geo, true, SectionKind.Force)).toBe(false);
+    });
+
+    // the force→geo direction's own density guard (`MAX_FIT_EDGES`): a dense-enough bake refuses
+    // at invoke rather than risk running past the modal's designed budget — the row grays, never
+    // hides, exactly like the other disqualifiers above. `edges` defaults to 0, so every call
+    // above (and every geo→force call, target `Geo`) is unaffected by this guard.
+    test("edges at the ceiling still enables Convert to geo", () => {
+        expect(sectionSolvable(1, SectionKind.Force, true, SectionKind.Force, MAX_FIT_EDGES)).toBe(
+            true,
+        );
+    });
+
+    test("one edge past the ceiling disqualifies Convert to geo", () => {
+        expect(
+            sectionSolvable(1, SectionKind.Force, true, SectionKind.Force, MAX_FIT_EDGES + 1),
+        ).toBe(false);
+    });
+
+    test("edges is inert on the geo→force direction (target Geo) — that input is small authored nodes, not bake edges", () => {
+        expect(
+            sectionSolvable(1, SectionKind.Geo, true, SectionKind.Geo, MAX_FIT_EDGES + 1000),
+        ).toBe(true);
     });
 });
 
