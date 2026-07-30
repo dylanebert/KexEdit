@@ -1,0 +1,213 @@
+/** The track-global domain conversion, as an editor command — the ONE place a force section's
+ * stored numbers change unit.
+ *
+ * `Track.domain` says what unit every force keyframe's `s` and every force section's extent are
+ * stored in (meters of section-local arclength, or seconds of section-local time). The ruler-menu
+ * basis pick is therefore not a view change: it is a **document conversion op**, one history entry
+ * that flips the domain and rewrites the whole store through the live bake's arc↔time table. That
+ * is what makes time-basis editing time-CONSTRAINED — a keyframe's stored t is its position by
+ * construction, so no edit anywhere can slide it.
+ *
+ * **The table is the conversion.** `cart.trackMapping` is the per-sample arclength↔time table over
+ * the display bake; `track.sectionInfo` gives each section its sample range in it. A section's own
+ * window of that table — entry/exit distance and time, plus its first and last interval's speed —
+ * is everything a conversion needs: an interior position interpolates the table, and one past the
+ * section's baked span extrapolates at THAT section's own boundary speed. Nothing here re-derives
+ * the physics.
+ *
+ * **Per-section windows, not one track-wide clamp.** A keyframe can sit past its own section's span
+ * (a trimmed extent keeps its keyframes; a truncated chain bakes a prefix) while other sections
+ * continue downstream. Converting it against the track's end would run it through the downstream
+ * sections' speeds — a different ride. It extrapolates on its own section's exit speed instead, and
+ * the same speed serves both directions, so the extrapolated branch round-trips exactly as an
+ * interior one does.
+ *
+ * **No live bake, no conversion.** The table only exists for a bake that IS the authored state
+ * (`track.bakeLive`), so the op rejects and writes nothing otherwise — the invoking surface grays
+ * the row on the same reading.
+ *
+ * **The document is touched once.** The conversion is a pure transform of the whole-track snapshot;
+ * `history.landDomain` applies the result in a single `restoreAll` and records the entry. So a
+ * conversion that throws part-way writes nothing, and there is no partial state to roll back.
+ *
+ * Solves stay distance-internal (`refine.ts` / `geofit.ts` work in arclength), so an invoked
+ * conversion's realized step (`Section.ds`) belongs to the distance march. A domain flip releases it
+ * back to the sentinel: under a time march the profile no longer spans the same arclength, so the
+ * solve's exit-pinning claim — the only reason the step is stored — no longer holds (the same
+ * reasoning that makes a join take the upstream step). */
+
+import type { State } from "@dylanebert/shallot";
+import { V_FLOOR } from "./bake";
+import { trackMapping } from "./cart";
+import { type History, landDomain } from "./history";
+import { Domain } from "./section";
+import { arcToTime, type Mapping, timeToArc } from "./timeline";
+import {
+    bakeLive,
+    type ForceTangent,
+    minForceExtent,
+    SectionKind,
+    sectionInfo,
+    type SectionSnapshot,
+    snapshotAll,
+    trackDomain,
+    trackEntity,
+} from "./track";
+
+/** one section's window on the arc↔time table: where it starts and ends on each axis, and the
+ *  speed its first and last baked interval carry — the boundary speeds a past-span position
+ *  extrapolates on. Read straight off the table at the section's own sample indices, so the
+ *  entry/exit values are exact stations rather than interpolations. */
+interface Window {
+    entryD: number;
+    exitD: number;
+    entryT: number;
+    exitT: number;
+    entryV: number;
+    exitV: number;
+}
+
+/** the speed (`dArc/dt`) the table carries over interval `i`.
+ *
+ *  This is the interval's own v̄, which `track.computeTime` already floors at `V_FLOOR` wherever it
+ *  DERIVES the time — so the `max` here resolves exactly one case: a frozen cart, where `ds` is
+ *  EXACTLY 0 (a stalled time-domain march, `ds_i = v_i·Δt` with `v_i == 0`). Resolving it at the
+ *  same `V_FLOOR` both directions agree on is what keeps positions past a stall distinct — a bare 0
+ *  slope collapses every one of them onto the stall point. */
+function slopeOf(m: Mapping, i: number): number {
+    const dt = m.t[i + 1] - m.t[i];
+    return Math.max(dt > 0 ? (m.arc[i + 1] - m.arc[i]) / dt : 0, V_FLOOR);
+}
+
+/** the interval bracketing global distance `d`. Searched over the whole table, not the owning
+ *  section's slice: speed is continuous across a section boundary by construction (C0/C1 join), so
+ *  a boundary value's own interval and its neighbour's agree to within the bake's noise. What must
+ *  be the section's own is the BOUNDARY speed a past-span position extrapolates on, and `Window`
+ *  reads those by sample index rather than by search. */
+function intervalAt(m: Mapping, d: number): number {
+    let lo = 0;
+    let hi = m.n - 1;
+    while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (m.arc[mid] <= d) lo = mid;
+        else hi = mid;
+    }
+    return Math.min(lo, m.n - 2);
+}
+
+/** a force section's window, or null when it isn't on the current bake. */
+function windowOf(m: Mapping, sectionId: number): Window | null {
+    const info = sectionInfo.get(sectionId);
+    if (!info) return null;
+    const start = info.startSample;
+    const end = Math.min(info.endSample, m.n - 1);
+    if (end <= start) return null; // no baked edge — nothing to convert through
+    return {
+        entryD: m.arc[start],
+        exitD: m.arc[end],
+        entryT: m.t[start],
+        exitT: m.t[end],
+        entryV: slopeOf(m, start),
+        exitV: slopeOf(m, end - 1),
+    };
+}
+
+/** a converted position plus the local slope there — the pair a keyframe, an extent, and a handle
+ *  Δ all read. Both directions share the window's boundary speeds, so their past-span branches are
+ *  exact inverses of each other. */
+interface Converted {
+    value: number;
+    slope: number;
+}
+
+/** section-local arclength → section-local time. */
+function toTime(m: Mapping, w: Window, s: number): Converted {
+    const d = w.entryD + s;
+    if (d > w.exitD) return { value: w.exitT - w.entryT + (d - w.exitD) / w.exitV, slope: w.exitV };
+    if (d < w.entryD) return { value: (d - w.entryD) / w.entryV, slope: w.entryV };
+    return {
+        value: arcToTime(m, d) - w.entryT,
+        slope: slopeOf(m, intervalAt(m, d)),
+    };
+}
+
+/** section-local time → section-local arclength, `toTime`'s inverse. */
+function toDist(m: Mapping, w: Window, t: number): Converted {
+    const dur = w.exitT - w.entryT;
+    if (t > dur) return { value: w.exitD - w.entryD + (t - dur) * w.exitV, slope: w.exitV };
+    if (t < 0) return { value: t * w.entryV, slope: w.entryV };
+    const d = timeToArc(m, w.entryT + t);
+    return { value: d - w.entryD, slope: slopeOf(m, intervalAt(m, d)) };
+}
+
+/** scale an explicit handle pair's Δs; Δg and the mode are unit-relative and pass through. */
+function scaleHandles(tan: ForceTangent | undefined, scale: number): ForceTangent | undefined {
+    if (!tan) return undefined;
+    const out: ForceTangent = { mode: tan.mode };
+    if (tan.in) out.in = { ds: tan.in.ds * scale, dg: tan.in.dg };
+    if (tan.out) out.out = { ds: tan.out.ds * scale, dg: tan.out.dg };
+    return out;
+}
+
+/** flip the track-global domain and convert the whole force store into the target unit, as ONE
+ * undoable entry: every force keyframe's position, every force section's extent, and every explicit
+ * easing handle's Δs (scaled by the local slope `dt/ds = 1/v` at its keyframe). A converted section
+ * releases its solved step back to the nominal sentinel. Geo sections pass through untouched — they
+ * are position-authored in either domain.
+ *
+ * Returns false, having written nothing and recorded nothing, when the target domain is already
+ * active (the ruler menu's active row is a no-op) or when there is no live bake to convert through.
+ * Otherwise returns true.
+ *
+ * A round trip (Meters → Seconds → Meters) is **never** bit-identical, and how close it lands is a
+ * property of the ride, not of this op. The conversion itself is an exact inverse — both directions
+ * interpolate the same piecewise-linear table — but flipping re-bakes each force section under the
+ * other march (`Δt = DT_NOMINAL` where the distance bake used `Δs = DS_NOMINAL`), so the flip back
+ * converts through a table that moved. The drift is exactly the two marches' disagreement at equal
+ * time: sub-quantum on a gentle ride (measured 0.12 m over a 40 m dive-and-recover section), but
+ * tens of percent on a ride whose θ/v system is sensitive — a sustained multi-g pull. A stall is
+ * lossier still, and by construction: the cart doesn't move, so every keyframe inside a stalled
+ * stretch converts to the SAME arclength. Undo is the byte-identical way back, and the only one.
+ *
+ * @example convertDomain(history, ecs, Domain.Time) // → true, one undo entry
+ */
+export function convertDomain(h: History, ecs: State, target: Domain): boolean {
+    if (trackDomain(ecs) === target) return false;
+    if (!bakeLive(ecs)) return false;
+    const trackEid = trackEntity(ecs);
+    if (trackEid === null) return false;
+    const m = trackMapping(trackEid);
+    if (!m) return false;
+
+    // resolve every force section's window BEFORE converting anything: a section missing from the
+    // bake rejects the whole op rather than passing through in the wrong unit.
+    const snaps = snapshotAll(ecs);
+    const windows = new Map<number, Window>();
+    for (const snap of snaps) {
+        if (snap.kind !== SectionKind.Force) continue;
+        const w = windowOf(m, snap.id);
+        if (!w) return false;
+        windows.set(snap.id, w);
+    }
+
+    const at = target === Domain.Time ? toTime : toDist;
+    const floor = minForceExtent(target);
+    const converted: SectionSnapshot[] = snaps.map((snap) => {
+        const w = windows.get(snap.id);
+        if (!w) return snap;
+        return {
+            ...snap,
+            length: Math.max(floor, at(m, w, snap.length).value),
+            ds: 0, // the solved step belonged to the distance march
+            points: snap.points.map((p) => {
+                const { value, slope } = at(m, w, p.s);
+                // an explicit handle's Δs rides the axis: dt/ds = 1/v to time, ds/dt = v back.
+                const scale = target === Domain.Time ? 1 / slope : slope;
+                return { ...p, s: value, tangent: scaleHandles(p.tangent, scale) };
+            }),
+        };
+    });
+
+    landDomain(h, ecs, target, converted);
+    return true;
+}

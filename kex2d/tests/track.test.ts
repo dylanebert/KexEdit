@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
     addNode,
@@ -10,6 +10,7 @@ import {
     createSection,
     createTrack,
     DS_NOMINAL,
+    DT_NOMINAL,
     EXTEND_DIST,
     exitWorld,
     extend,
@@ -21,6 +22,8 @@ import {
     handleAt,
     handleTangent,
     MAX_SAMPLES,
+    MIN_FORCE_LEN,
+    minForceExtent,
     nextForce,
     reheadOnDrag,
     removeTrailingHandle,
@@ -41,13 +44,18 @@ import {
     setForcePoint,
     setForceTangent,
     setSectionLength,
+    setStickyLen,
     setTangent,
+    setTrackDomain,
     setTrackV0,
     snapshotAll,
     snapshotSection,
+    stickyLen,
     toGlobal,
     toLocal,
     Track,
+    trackDomain,
+    V0,
 } from "../src/track";
 import {
     appendSection as appendSectionCmd,
@@ -65,7 +73,8 @@ import {
 } from "../src/history";
 import { DEFAULT_G, Easing } from "../src/profile";
 import { scenarios } from "../src/scenarios";
-import { evalGeo } from "../src/section";
+import { LENGTH_MIN } from "../src/magnet";
+import { Domain, evalGeo } from "../src/section";
 import { editTangent, type Node, sampleChain, TangentMode } from "../src/spline";
 import golden from "./fixtures/convert-golden.json";
 
@@ -1518,3 +1527,177 @@ describe("per-section step (Section.ds)", () => {
         expect(Section.ds.get(secEid)).toBe(0);
     });
 });
+
+// `Track.domain` (kex2d-time-domain stage 3) — the TRACK-GLOBAL unit every force section's
+// keyframes and extent are stored in. The document layer holds it: authored on `Track`, in the
+// bake hash only when it isn't the default `Distance` (so every existing track's hash is
+// byte-identical), threaded to `evalForce`'s step rule, and paired with a per-domain sticky
+// append length. The conversion op itself is `tests/domain.test.ts`.
+describe("Track.domain (document layer)", () => {
+    test("defaults to Distance — every pre-stage-3 call site reads a unit, not merely falsy", () => {
+        const { state } = track();
+        expect(trackDomain(state)).toBe(Domain.Distance);
+    });
+
+    test("DT_NOMINAL and the extent floor are DERIVED from their distance twins, not tuned", () => {
+        expect(DT_NOMINAL).toBeCloseTo(DS_NOMINAL / V0, 12);
+        expect(minForceExtent(Domain.Distance)).toBe(MIN_FORCE_LEN);
+        expect(minForceExtent(Domain.Time)).toBeCloseTo(MIN_FORCE_LEN / V0, 12);
+    });
+
+    test("a non-default domain enters the bake hash; the Distance sentinel leaves it untouched", () => {
+        const { state, eid, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force
+        state.step(0);
+        const distanceHash = bakeOut.get(eid)?.hash;
+
+        setTrackDomain(state, Domain.Time);
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).not.toBe(distanceHash); // a domain miss re-bakes
+
+        setTrackDomain(state, Domain.Distance);
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).toBe(distanceHash); // byte-identical to the Distance bake
+    });
+
+    // the pinned literal in "the default flat track bakes to the pinned hash" (above) is this
+    // stage's byte-identity gate: it was captured pre-stage-3 and still matches verbatim, so no
+    // hand-authored Distance-domain track's `bakeHash` moved.
+
+    test("a Time-domain force section marches ds = v·Δt at the derived nominal", () => {
+        // a flat 1g profile over a level track holds v at the entry speed for the whole section
+        // (no elevation change), so every realized edge is exactly v·DT_NOMINAL — the document
+        // wiring of `evalForce`'s time step rule, not a rework of it.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        const duration = 2; // seconds
+        const sec = createSection(state, 0, SectionKind.Force, duration);
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, duration, 1);
+        state.step(0);
+
+        const out = bakeOut.get(eid);
+        const count = Track.count.get(eid);
+        if (!out) throw new Error("bakeOut missing");
+        const expected = V0 * DT_NOMINAL; // == DS_NOMINAL, by DT_NOMINAL's own derivation
+        expect(expected).toBeCloseTo(DS_NOMINAL, 10);
+        for (let i = 0; i < count - 1; i++) expect(out.ds[i]).toBeCloseTo(expected, 5);
+        expect(count - 1).toBe(Math.round(duration / DT_NOMINAL)); // edges = round(dur / Δt)
+    });
+
+    test("the extent trim floors in the ACTIVE domain's unit", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 40);
+        setSectionLength(state, sec, 0.1);
+        expect(extentOf(state, sec)).toBe(MIN_FORCE_LEN);
+
+        setTrackDomain(state, Domain.Time);
+        setSectionLength(state, sec, 0.5); // 0.5 s is well above the time floor, below the m one
+        expect(extentOf(state, sec)).toBe(0.5);
+        setSectionLength(state, sec, 0.01);
+        expect(extentOf(state, sec)).toBeCloseTo(MIN_FORCE_LEN / V0, 6);
+    });
+
+    test("a destructive convert resets to the ACTIVE domain's default extent", () => {
+        // the reset extent is a literal default, and in Time it must be the seconds twin: stamping
+        // the 24 m meters constant on a Time-domain track makes a 24-SECOND, 480-edge section.
+        const { state, sec } = track();
+        state.step(0);
+        setTrackDomain(state, Domain.Time);
+        convertSection(state, sec); // geo → force
+        expect(extentOf(state, sec)).toBeCloseTo(EXTEND_DIST / V0, 10);
+        // and the seed keyframes land at that extent, not at the meters one.
+        const seeds = sectionForces(state, sec).map((p) => p.s);
+        expect(seeds[0]).toBe(0);
+        expect(seeds[1]).toBeCloseTo(EXTEND_DIST / V0, 6);
+
+        // the Distance path is unchanged.
+        const { state: d, sec: dsec } = track();
+        d.step(0);
+        convertSection(d, dsec);
+        expect(extentOf(d, dsec)).toBe(EXTEND_DIST);
+    });
+
+    describe("sticky append length, per domain", () => {
+        // module-level state in track.ts, shared across the whole run (not ECS, not undo) —
+        // reset before each test here, mirroring `history.test.ts`'s convention, so no test in
+        // this file or another can leak a committed value into the next.
+        beforeEach(() => {
+            setStickyLen(SectionKind.Force, EXTEND_DIST, Domain.Distance);
+            setStickyLen(SectionKind.Force, EXTEND_DIST / V0, Domain.Time);
+            setStickyLen(SectionKind.Geo, EXTEND_DIST);
+        });
+
+        test("Distance and Time hold separate slots — neither commit leaks into the other", () => {
+            setStickyLen(SectionKind.Force, 40, Domain.Distance);
+            expect(stickyLen(SectionKind.Force, Domain.Distance)).toBe(40);
+            expect(stickyLen(SectionKind.Force, Domain.Time)).toBeCloseTo(EXTEND_DIST / V0, 10);
+
+            setStickyLen(SectionKind.Force, 3, Domain.Time);
+            expect(stickyLen(SectionKind.Force, Domain.Time)).toBe(3);
+            expect(stickyLen(SectionKind.Force, Domain.Distance)).toBe(40); // untouched
+        });
+
+        test("a Time append never inherits a Distance sticky; it starts at its own default", () => {
+            setStickyLen(SectionKind.Force, 99, Domain.Distance); // a large committed metres trim
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            setTrackDomain(state, Domain.Time);
+            const id = appendSection(state, SectionKind.Force);
+            // the Time slot's literal default, not the 99 m a single shared sticky would leak.
+            expect(extentOf(state, id)).toBeCloseTo(EXTEND_DIST / V0, 10);
+        });
+
+        test("a committed Time extent becomes the next Time append's default", () => {
+            setStickyLen(SectionKind.Force, 5, Domain.Time);
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            setTrackDomain(state, Domain.Time);
+            expect(extentOf(state, appendSection(state, SectionKind.Force))).toBe(5);
+
+            setTrackDomain(state, Domain.Distance);
+            const want = stickyLen(SectionKind.Force, Domain.Distance);
+            expect(extentOf(state, appendSection(state, SectionKind.Force))).toBe(want);
+        });
+
+        test("a degenerate Time commit floors at MIN_FORCE_LEN/V0, not the metres floor", () => {
+            setStickyLen(SectionKind.Force, 0.0001, Domain.Time);
+            expect(stickyLen(SectionKind.Force, Domain.Time)).toBeCloseTo(MIN_FORCE_LEN / V0, 10);
+            expect(stickyLen(SectionKind.Force, Domain.Distance)).toBeGreaterThanOrEqual(
+                MIN_FORCE_LEN,
+            );
+        });
+
+        test("a degenerate geo commit floors at LENGTH_MIN, its own gesture's floor", () => {
+            setStickyLen(SectionKind.Geo, 0.001);
+            expect(stickyLen(SectionKind.Geo)).toBe(LENGTH_MIN);
+            setStickyLen(SectionKind.Geo, EXTEND_DIST); // module state: don't leak past the file
+        });
+
+        test("a geo append reads its one Distance slot in either domain", () => {
+            setStickyLen(SectionKind.Geo, 17);
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            setTrackDomain(state, Domain.Time);
+            const id = appendSection(state, SectionKind.Geo);
+            const nodes = sectionHandles(state, id);
+            expect(Handle.pos.x.get(nodes[1])).toBeCloseTo(17, 6);
+            setStickyLen(SectionKind.Geo, EXTEND_DIST); // module state: don't leak past the file
+        });
+    });
+});
+
+/** a section's stored extent by id. */
+function extentOf(state: State, id: number): number {
+    const eid = sectionAt(state, id);
+    if (eid === null) throw new Error("section missing");
+    return Section.length.get(eid);
+}

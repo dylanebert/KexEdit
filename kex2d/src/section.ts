@@ -28,14 +28,14 @@ import { type Node, sampleChain, type Tangent } from "./spline";
 /** default sample-buffer ceiling — mirrors `track.MAX_SAMPLES`. */
 const MAX = 4096;
 
-/** a force section's per-section-local coordinate: **distance** (keyframes at
- *  arclength s, extent in meters — today's only kind) or **time** (keyframes
- *  at time t, extent in seconds; the swept geometry is emergent). the domain
- *  is a *step rule* on the atom (`evalForce`), never a rework — everything
- *  downstream (chain, force recovery, the flat SoA) already consumes per-edge
- *  variable `ds`, so no other code learns about time. stored on
- *  `Section.domain` (the ECS layer); `Distance` is the default so every
- *  existing caller and track stays byte-identical. */
+/** the unit a force section's section-local coordinate is authored in: **distance**
+ *  (keyframes at arclength s, extent in meters) or **time** (keyframes at time t,
+ *  extent in seconds; the swept geometry is emergent). the domain is a *step rule*
+ *  on the atom (`evalForce`), never a rework — everything downstream (chain, force
+ *  recovery, the flat SoA) already consumes per-edge variable `ds`, so no other code
+ *  learns about time. it is one TRACK-GLOBAL fact, stored on `Track.domain` (the ECS
+ *  layer) and converted at one seam (`domain.convertDomain`); `Distance` is the
+ *  default so every existing caller and track stays byte-identical. */
 export enum Domain {
     Distance = 0,
     Time = 1,
@@ -76,8 +76,9 @@ export interface SectionResult {
 }
 
 /** a section's authored payload. geo carries local nodes (node 0 at the local
- *  origin, heading 0) + nominal spacing; force carries a per-edge F_n
- *  profile (g) + its edge step (m). */
+ *  origin, heading 0) + nominal spacing (m); force carries a per-edge F_n
+ *  profile (g) + its edge step in its `domain`'s own unit (m for `Distance`, s
+ *  for `Time`). */
 export type Section =
     | { kind: "geo"; nodes: readonly Node[]; ds: number }
     | { kind: "force"; fN: ArrayLike<number>; ds: number; domain?: Domain };

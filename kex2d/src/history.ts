@@ -12,10 +12,11 @@
 
 import type { State } from "@dylanebert/shallot";
 import { collinear, type Easing, segmentSeed } from "./profile";
-import type { Entry as TrackEntry } from "./section";
+import type { Domain, Entry as TrackEntry } from "./section";
 import {
     applyConvert,
     applyConvertGeo,
+    applyDomain,
     appendSection as appendSectionTrack,
     clearForceTangentSide,
     convertSection as flipSectionKind,
@@ -46,6 +47,7 @@ import {
     SectionKind,
     sectionAt,
     sections,
+    type SectionSnapshot,
     seedTangent,
     setTangent,
     type SectionLengthState,
@@ -61,6 +63,8 @@ import {
     spawnForce,
     splitForce,
     splitGeo,
+    setTrackDomain,
+    trackDomain,
     type TrackV0State,
     trackV0State,
     setTrackV0,
@@ -607,7 +611,8 @@ export function beginLength(ecs: State, id: number): void {
 
 /** commit a `beginLength` extent-trim gesture: coalesce the drag into one undo entry
  *  (`commit`) AND, when `armed` (the gesture cleared its dead-zone latch), record the landed
- *  extent as the session's new sticky append default for FORCE sections (`track.setStickyLen`).
+ *  extent as the session's new sticky append default for FORCE sections in the track's ACTIVE
+ *  domain (`track.setStickyLen` — a meters trim never becomes a seconds default, or vice versa).
  *  `armed=false` (a no-move release under the latch) commits bare — a click-vs-drag release
  *  must not overwrite the sticky value with the section's UNCHANGED extent. A solve landing
  *  never calls this (it commits through `solveForce`/`solveGeo`), so a converted section's
@@ -615,7 +620,7 @@ export function beginLength(ecs: State, id: number): void {
 export function commitLength(h: History, ecs: State, id: number, armed: boolean): void {
     if (armed) {
         const st = sectionLengthState(ecs, id);
-        if (st) setStickyLen(SectionKind.Force, st.length);
+        if (st) setStickyLen(SectionKind.Force, st.length, trackDomain(ecs));
     }
     commit(h);
 }
@@ -704,6 +709,33 @@ export function solveGeo(
     entry: TrackEntry,
 ): void {
     landSolve(h, ecs, section, () => applyConvertGeo(ecs, section, solved, entry));
+}
+
+// ── track domain conversion ────────────────────────────────────────────────────
+
+/** land a domain conversion as one undoable entry: the `Track.domain` flip paired with the whole
+ *  converted store, so undo restores the unit and the numbers TOGETHER (either alone would
+ *  re-interpret every keyframe in the wrong unit). `domain.convertDomain` computes `after` purely
+ *  and calls this; **the document is touched exactly once, here** — so a conversion that throws
+ *  while computing writes nothing, and there is no partial state to roll back (the `landSolve`
+ *  shape).
+ *
+ *  The do-path writes in place (`applyDomain` — the changed columns, by stable id) so a live
+ *  selection's eid survives the flip. Undo/redo replays the whole-track `restoreAll` pair, which
+ *  destroys and respawns every node and keyframe; the eid allocator recycles LIFO, so that pair is
+ *  why the selection snapshot rides along — without it a held selection would come back naming a
+ *  DIFFERENT entity. */
+export function landDomain(h: History, ecs: State, target: Domain, after: SectionSnapshot[]): void {
+    const pre = selHook?.snapshot(ecs);
+    const source = trackDomain(ecs);
+    const before = snapshotAll(ecs);
+    setTrackDomain(ecs, target);
+    applyDomain(ecs, after);
+    const restore = (domain: Domain, snaps: SectionSnapshot[]): void => {
+        setTrackDomain(ecs, domain);
+        restoreAll(ecs, snaps);
+    };
+    record(h, { apply: () => restore(target, after), reverse: () => restore(source, before) }, pre);
 }
 
 // ── structural ops (append / split / join / delete) ──────────────────────────

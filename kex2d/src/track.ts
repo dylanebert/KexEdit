@@ -5,6 +5,7 @@ import { LENGTH_MIN } from "./magnet";
 import { DEFAULT_G, Easing, type ForcePoint, forceProfile, type Offset } from "./profile";
 import {
     chain,
+    Domain,
     type Entry,
     evalForce,
     evalGeo,
@@ -29,21 +30,33 @@ export enum SectionKind {
  *  one value shared by every section (per-edge actual ds lives in `bakeOut.ds`).
  *  `v0` is the authored initial speed (m/s) at the track start (the START handle's
  *  field; default `V0`, in the bake hash). the per-section kind + extent live on
- *  `Section`, not here. */
+ *  `Section`, not here.
+ *
+ *  `domain` is the track-global `Domain` (`section.ts`) — the unit EVERY force
+ *  section's keyframes and extent are stored in: meters of section-local arclength
+ *  (`Distance`, the default) or seconds of section-local time (`Time`). It is
+ *  authored state, in the bake hash, and one track-global fact — not per-section
+ *  (rejected at feel: no per-section flip row). Nothing converts implicitly: the
+ *  stored numbers ARE the active domain's unit, and the ONE place they change unit
+ *  is the ruler-menu pick, a document conversion op (`domain.convertDomain`). Geo
+ *  sections are position-authored in either domain; only `evalForce`'s step rule and
+ *  the force-section extent/keyframe axis read this. */
 export const Track = {
     count: sparse(u32),
     ds: sparse(f32),
     v0: sparse(f32),
+    domain: sparse(u32),
 };
 
 /** one section in the track's chain. `id` is the stable identity undo/redo and
  *  node/point membership address (eids recycle across a delete→undo; ids never do
  *  — the `Handle.order` convention). `order` is its position along the chain
  *  (0 = first), reassigned by the structural ops (append/split/join/delete). `kind`
- *  is the `SectionKind`. `length` is a FORCE section's extent (m) — the distance the
- *  force profile spans; unused (0) for a geo section, whose extent is its node chain.
- *  `ds` is the section's own baking step (m), **0 = bake at the track-nominal
- *  `Track.ds`** — the sentinel every hand-authored section carries. An invoked solve
+ *  is the `SectionKind`. `length` is a FORCE section's extent — the span the force
+ *  profile covers, in the TRACK-GLOBAL domain's own unit (`Track.domain`: meters of
+ *  arclength, or seconds); unused (0) for a geo section, whose extent is its node chain.
+ *  `ds` is the section's own baking step (in that same domain unit), **0 = bake at the
+ *  domain's nominal quantum** — the sentinel every hand-authored section carries. An invoked solve
  *  writes its realized step here (`length/edges`) so the section spans its solve
  *  exactly; replaying that profile at the nominal quantum misses the pinned exit
  *  (`refine.ts`, and the ECS pin in `tests/track.test.ts`).
@@ -117,7 +130,9 @@ function writeTangent(eid: number, tan: Tangent | undefined): void {
 
 /** an authored force keyframe on a FORCE section. `section` is the owning section's
  *  stable id; `id` is the point's stable identity (undo/redo address, eid-recycle
- *  safe); `s` its arclength (m) measured from the section entry; `g` the demanded
+ *  safe); `s` its position measured from the section entry, in the TRACK-GLOBAL
+ *  domain's unit (`Track.domain`: meters of arclength, or seconds of time — the field
+ *  name stays `s`, since the unit rides the track, not the name); `g` the demanded
  *  normal force (g). the timeline places, drags, and deletes these; the bake gathers
  *  each section's points (sorted by s) into a dense profile (`profile.forceProfile`).
  *  `ease` is the keyframe's `Easing` tag (the convenient middle layer) — it governs
@@ -280,6 +295,19 @@ export const V0 = 10;
  *  is never zero/negative (which would make a level track take infinite time). */
 const MIN_V0 = 0.1;
 
+/** the nominal sampling step (s) a force section bakes at in the `Time` domain when it
+ *  carries no step of its own — `Section.ds`'s sentinel-0 contract in the domain's own
+ *  unit. derived, not tuned: `ds = v·dt`, so at the DEFAULT entry speed `V0` a time
+ *  section samples at the same spatial density a distance section does at `DS_NOMINAL`
+ *  (`dt = ds/v`).
+ *
+ *  it is deliberately derived from the `V0` **constant**, not from the track's authored
+ *  `Track.v0`, matching `DS_NOMINAL`'s own constancy: an authored-v0-dependent quantum
+ *  would make a section's edge count move whenever v0 is scrubbed. Accepted cost: a time
+ *  section's realized SPATIAL density scales with the ride's actual speed, so a fast
+ *  stretch samples coarser than `DS_NOMINAL` and a slow one finer. */
+export const DT_NOMINAL = DS_NOMINAL / V0;
+
 /** how far `extend` lays the next node past the chain end, along the last edge's
  *  direction. it's a starting point you then drag, not a fixed length. */
 export const EXTEND_DIST = 24;
@@ -298,43 +326,71 @@ function startEntry(v0: number): Entry {
  *  geo and a fresh force section start the same size; the end handle then resizes it. */
 const DEFAULT_FORCE_LEN = EXTEND_DIST;
 
+/** the extent (s) a fresh force section gets in the `Time` domain — `DEFAULT_FORCE_LEN`'s
+ *  time twin, derived the same way `DT_NOMINAL` is: the time a `V0`-speed cart takes to
+ *  cover `DEFAULT_FORCE_LEN` meters, so a fresh time append spans the same edge count at
+ *  `DT_NOMINAL` that a fresh distance append spans at `DS_NOMINAL`. */
+const DEFAULT_FORCE_DUR = DEFAULT_FORCE_LEN / V0;
+
+/** the extent a fresh force section gets in `domain` — what a destructive geo→force convert
+ *  resets to (an append takes the domain's sticky instead). */
+function defaultForceExtent(domain: Domain): number {
+    return domain === Domain.Time ? DEFAULT_FORCE_DUR : DEFAULT_FORCE_LEN;
+}
+
 /** the shortest a force section can be dragged — a couple of edges, so the profile
  *  never collapses below what `forceProfile` can sample. */
 export const MIN_FORCE_LEN = 2;
 
-/** the session's sticky append length (m), one per section kind — what a freshly APPENDED
- *  piece of that kind starts at, echoing the last length the author committed by hand. Each
- *  kind's length is its own authoring quantum: a **force** section's is its extent (the
- *  clip's right-edge trim), a **geo** section's is the chord `extend` lays down (the polar
- *  length manipulator). Updated only when such a gesture COMMITS (`setStickyLen`, from
- *  `history.commitLength` / `history.commitChord`), never by a solve landing (a converted
- *  section's realized extent is the solve's own answer, not an authored trim) and never by a
- *  destructive convert (which resets to the literal defaults — its shape has no "previous
- *  append" to echo). Session-level module state: not persisted across reloads, not threaded
- *  through undo, so undoing an append never rolls it back. */
-const stickyAppendLen: Record<SectionKind, number> = {
-    [SectionKind.Geo]: EXTEND_DIST,
-    [SectionKind.Force]: DEFAULT_FORCE_LEN,
-};
+/** `MIN_FORCE_LEN`'s time twin — the same couple-of-edges floor at `DT_NOMINAL` instead of
+ *  `DS_NOMINAL`, which reduces to the identical `/V0` scaling. */
+const MIN_FORCE_DUR = MIN_FORCE_LEN / V0;
 
-/** the floor each kind's sticky length clamps to — the same floor its own gesture holds
- *  (`MIN_FORCE_LEN` for an extent trim, `LENGTH_MIN` for a chord), so a degenerate commit
- *  can't poison the next append. */
-const STICKY_MIN: Record<SectionKind, number> = {
-    [SectionKind.Geo]: LENGTH_MIN,
-    [SectionKind.Force]: MIN_FORCE_LEN,
-};
-
-/** read the session's current sticky append length for a section kind. */
-export function stickyLen(kind: SectionKind): number {
-    return stickyAppendLen[kind];
+/** the shortest a force section's extent can be, in a given domain's own unit. */
+export function minForceExtent(domain: Domain): number {
+    return domain === Domain.Time ? MIN_FORCE_DUR : MIN_FORCE_LEN;
 }
 
-/** record a committed length gesture as that kind's new sticky append default. A non-finite
- *  value is ignored (a degenerate frame has no length to remember). */
-export function setStickyLen(kind: SectionKind, length: number): void {
+/** the session's sticky append length — what a freshly APPENDED piece starts at, echoing the
+ *  last length the author committed by hand. Each kind's length is its own authoring quantum:
+ *  a **force** section's is its extent (the clip's right-edge trim), a **geo** section's is the
+ *  chord `extend` lays down (the polar length manipulator). Updated only when such a gesture
+ *  COMMITS (`setStickyLen`, from `history.commitLength` / `history.commitChord`), never by a
+ *  solve landing (a converted section's realized extent is the solve's own answer, not an
+ *  authored trim) and never by a destructive convert (which resets to the literal defaults —
+ *  its shape has no "previous append" to echo). Session-level module state: not persisted
+ *  across reloads, not threaded through undo, so undoing an append never rolls it back.
+ *
+ *  **Geo carries no domain** (it is position-authored in either), so it is one scalar in
+ *  meters; force holds one slot per `Domain`, in that domain's own unit, so a time append never
+ *  inherits a meters sticky or vice versa — each starts at its own literal default
+ *  (`DEFAULT_FORCE_LEN` / `DEFAULT_FORCE_DUR`) until a commit in THAT domain lands. A domain
+ *  flip never rewrites them: the sticky is a session memory of a gesture, not document state
+ *  the conversion op owns. */
+let stickyGeoChord = EXTEND_DIST;
+const stickyForceExtent: Record<Domain, number> = {
+    [Domain.Distance]: DEFAULT_FORCE_LEN,
+    [Domain.Time]: DEFAULT_FORCE_DUR,
+};
+
+/** read the session's current sticky append length for a section kind — force in `domain`'s own
+ *  unit, geo in meters (its `domain` argument is ignored, it has none). */
+export function stickyLen(kind: SectionKind, domain: Domain = Domain.Distance): number {
+    return kind === SectionKind.Geo ? stickyGeoChord : stickyForceExtent[domain];
+}
+
+/** record a committed length gesture as that kind's (and, for force, that domain's) new sticky
+ *  append default, clamped to the floor its own gesture holds — `LENGTH_MIN` for a geo chord,
+ *  `minForceExtent` for an extent trim — so a degenerate commit can't poison the next append. A
+ *  non-finite value is ignored (a degenerate frame has no length to remember). */
+export function setStickyLen(
+    kind: SectionKind,
+    length: number,
+    domain: Domain = Domain.Distance,
+): void {
     if (!Number.isFinite(length)) return;
-    stickyAppendLen[kind] = Math.max(STICKY_MIN[kind], length);
+    if (kind === SectionKind.Geo) stickyGeoChord = Math.max(LENGTH_MIN, length);
+    else stickyForceExtent[domain] = Math.max(minForceExtent(domain), length);
 }
 
 /** allocate an empty track entity + its sample / bake-output buffers, sized once
@@ -346,6 +402,7 @@ export function createTrack(ecs: State): number {
     Track.count.set(trackEid, 0);
     Track.ds.set(trackEid, DS_NOMINAL);
     Track.v0.set(trackEid, V0);
+    Track.domain.set(trackEid, Domain.Distance);
     samples.set(trackEid, {
         posX: new Float32Array(MAX_SAMPLES),
         posY: new Float32Array(MAX_SAMPLES),
@@ -1042,12 +1099,13 @@ export function sectionLengthState(ecs: State, id: number): SectionLengthState |
     return eid === null ? undefined : { id, length: Section.length.get(eid) };
 }
 
-/** set a force section's extent (m), floored at the minimum — the end-handle drag +
- *  gesture restore. re-bakes on the next tick (the extent is in the bake hash). */
+/** set a force section's extent, in the track's active domain unit, floored at that
+ *  domain's minimum (`minForceExtent`) — the end-handle drag + gesture restore. re-bakes on
+ *  the next tick (the extent is in the bake hash). */
 export function setSectionLength(ecs: State, id: number, length: number): void {
     const eid = sectionAt(ecs, id);
     if (eid === null) return;
-    Section.length.set(eid, Math.max(MIN_FORCE_LEN, length));
+    Section.length.set(eid, Math.max(minForceExtent(trackDomain(ecs)), length));
 }
 
 // ── track initial speed (v0) ───────────────────────────────────────────────────
@@ -1067,6 +1125,33 @@ export function trackV0State(trackEid: number): TrackV0State {
  *  gesture restore. re-bakes on the next tick (v0 is in the bake hash). */
 export function setTrackV0(trackEid: number, v0: number): void {
     Track.v0.set(trackEid, Math.max(MIN_V0, v0));
+}
+
+// ── track domain ───────────────────────────────────────────────────────────────
+
+/** the track entity, or null on an empty world — the one resolver every track-scalar read uses,
+ *  so `trackDs` / `trackDomain` / a caller needing the eid can't disagree about WHICH track
+ *  (there is one; a second would be a chain, not a track). */
+export function trackEntity(ecs: State): number | null {
+    for (const t of ecs.query([Track])) return t;
+    return null;
+}
+
+/** the track-global domain every force section's keyframes and extent are stored in
+ *  (`Track.domain`). `Distance` for a track with no `Track` entity, so a bare read is never a
+ *  surprise unit. */
+export function trackDomain(ecs: State): Domain {
+    const t = trackEntity(ecs);
+    return t === null ? Domain.Distance : (Track.domain.get(t) as Domain);
+}
+
+/** write the track-global domain. **The stored numbers are NOT converted here** — this is the
+ *  raw column write; flipping the domain without converting the store re-interprets every
+ *  keyframe in the new unit. The one sanctioned caller is `history.landDomain`, which pairs it
+ *  with the converted document and the undo entry. */
+export function setTrackDomain(ecs: State, domain: Domain): void {
+    const t = trackEntity(ecs);
+    if (t !== null) Track.domain.set(t, domain);
 }
 
 // ── per-section kind + conversion ─────────────────────────────────────────────
@@ -1121,6 +1206,29 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.ds.set(eid, snap.ds);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
+}
+
+/** write a domain conversion's converted force store in place: each force section's extent and
+ *  step, and each keyframe's position and explicit handles, addressed by stable id. Deliberately
+ *  narrow — **no entity is created or destroyed**, so a live selection (which addresses a geo node
+ *  by eid) survives a domain flip, and geo payloads are never touched. Everything a conversion
+ *  leaves alone (`g`, the easing tag, orders, identities) is simply not written. Its input is
+ *  already fully computed, so the write cannot fail part-way; `history.landDomain` is the one
+ *  caller, and undo/redo goes back through the whole-track `restoreAll` pair instead. */
+export function applyDomain(ecs: State, snaps: readonly SectionSnapshot[]): void {
+    for (const snap of snaps) {
+        if (snap.kind !== SectionKind.Force) continue;
+        const eid = sectionAt(ecs, snap.id);
+        if (eid === null) continue;
+        Section.length.set(eid, snap.length);
+        Section.ds.set(eid, snap.ds);
+        for (const p of snap.points) {
+            const pointEid = forceAt(ecs, p.id);
+            if (pointEid === null) continue;
+            Force.s.set(pointEid, p.s);
+            writeForceTangent(pointEid, p.tangent);
+        }
+    }
 }
 
 /** force the next `BakeSystem` pass to bake, whatever the authored state hashes to.
@@ -1181,8 +1289,11 @@ export function convertSection(ecs: State, sectionId: number): void {
         const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
         for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
         Section.kind.set(eid, SectionKind.Force);
-        Section.length.set(eid, DEFAULT_FORCE_LEN); // reset to the default extent, not inherited
-        seedForceKeyframes(ecs, sectionId, DEFAULT_FORCE_LEN, gEntry);
+        // the default extent in the TRACK's active domain — a literal meters constant would be
+        // a 24-second, 480-edge section on a Time-domain track.
+        const extent = defaultForceExtent(trackDomain(ecs));
+        Section.length.set(eid, extent); // reset to the default extent, not inherited
+        seedForceKeyframes(ecs, sectionId, extent, gEntry);
     } else {
         for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
         Section.kind.set(eid, SectionKind.Geo);
@@ -1318,14 +1429,16 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
 
 /** append a new section of `kind` at the end of the chain. geo gets the flat
  *  two-node seed (its entry is the prior exit, so it opens straight along the
- *  running heading); force gets the two continuation keyframes at the recovered
+ *  running heading); force gets the two continuation keyframes — at `(0, F_entry)` and
+ *  `(extent, F_entry)` in the track's active domain unit — at the recovered
  *  entry force (the prior section's exit-edge force from the current bake). Both start at
  *  the session's sticky append length for their kind (`stickyLen` — the last committed
- *  extent-trim / length adjust, the literal defaults until one lands). returns the id. */
+ *  extent-trim / length adjust in THAT domain, the literal defaults until one lands; geo
+ *  reads its one `Distance` slot, being position-authored in either domain). returns the id. */
 export function appendSection(ecs: State, kind: SectionKind): number {
     const secs = sections(ecs);
     const order = secs.length;
-    const len = stickyLen(kind);
+    const len = kind === SectionKind.Force ? stickyLen(kind, trackDomain(ecs)) : stickyLen(kind);
     const id = createSection(ecs, order, kind, kind === SectionKind.Force ? len : 0);
     if (kind === SectionKind.Geo) {
         addNode(ecs, id, 0, 0);
@@ -1344,8 +1457,8 @@ export function appendSection(ecs: State, kind: SectionKind): number {
 /** the track's nominal spacing (the bake's `ds`) — read from the Track component so
  *  a re-frame samples at the same density the bake does. */
 export function trackDs(ecs: State): number {
-    for (const t of ecs.query([Track])) return Track.ds.get(t);
-    return DS_NOMINAL;
+    const t = trackEntity(ecs);
+    return t === null ? DS_NOMINAL : Track.ds.get(t);
 }
 
 /** the recovered exit state of a geo section's head chain `[0..k]`, in the section's
@@ -1525,6 +1638,15 @@ export function sectionStep(stored: number, nominal: number): number {
     return stored > 0 ? stored : nominal;
 }
 
+/** the nominal step a force section's sentinel-0 `ds` resolves to, in the track's active
+ *  domain unit: the track-nominal `trackDs` for `Distance`, `DT_NOMINAL` for `Time` — a time
+ *  march's nominal is never the track's meters quantum (`trackDs` is a distance scalar, not a
+ *  step in seconds). geo is position-authored in either domain, so its callers pass `trackDs`
+ *  straight through without this. */
+function forceNominal(domain: Domain, trackDs: number): number {
+    return domain === Domain.Time ? DT_NOMINAL : trackDs;
+}
+
 /** a force section's authored points gathered into the dense per-edge F_n(σ) profile over its
  *  extent — the one place a section's keyframes become the substrate's input. */
 function forceDense(ecs: State, sectionId: number, length: number, ds: number): Float32Array {
@@ -1542,9 +1664,16 @@ function forceDense(ecs: State, sectionId: number, length: number, ds: number): 
 }
 
 /** a force section's payload: its dense profile + the step it bakes at (its own or the
- *  nominal), which sets both the edge count and the integrator's march. */
-function forcePayload(ecs: State, sectionId: number, length: number, ds: number): SectionSpec {
-    return { kind: "force", fN: forceDense(ecs, sectionId, length, ds), ds };
+ *  nominal), which sets both the edge count and the integrator's march, and the track's
+ *  `domain` — the step rule `evalForce` (`section.ts`) consults. */
+function forcePayload(
+    ecs: State,
+    sectionId: number,
+    length: number,
+    ds: number,
+    domain: Domain,
+): SectionSpec {
+    return { kind: "force", fN: forceDense(ecs, sectionId, length, ds), ds, domain };
 }
 
 /** a force section's dense bake, as `geofit` reads it: its own recovered positions + display
@@ -1562,10 +1691,16 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     if (!info) throw new Error(`forceBake: no bake for section ${sectionId}`);
     if (Section.kind.get(eid) !== SectionKind.Force)
         throw new Error(`forceBake: section ${sectionId} is not force`);
-    const step = sectionStep(Section.ds.get(eid), trackDs(ecs));
+    const domain = trackDomain(ecs);
+    const step = sectionStep(Section.ds.get(eid), forceNominal(domain, trackDs(ecs)));
     const dense = forceDense(ecs, sectionId, Section.length.get(eid), step);
     const avail = Math.max(1, MAX_SAMPLES - 1 - info.startSample);
-    const r = evalForce(info.entry, dense.length > avail ? dense.subarray(0, avail) : dense, step);
+    const r = evalForce(
+        info.entry,
+        dense.length > avail ? dense.subarray(0, avail) : dense,
+        step,
+        domain,
+    );
     return { x: r.posX, y: r.posY, fN: r.fN, ds: r.ds, edges: r.edges };
 }
 
@@ -1573,10 +1708,12 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
  *  section in order — its id/order/kind, its own baking step when it carries one, and
  *  its authored payload (a geo section's node poses, a force section's extent +
  *  points). BakeSystem re-bakes on a miss (anything moved, added, removed, converted,
- *  reordered, restepped, or the v0 retimed), skips otherwise. the step is written only
- *  when set, so the nominal sentinel leaves an authored track's hash untouched. */
-function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number): string {
+ *  reordered, restepped, re-domained, or the v0 retimed), skips otherwise. the step is
+ *  written only when set, and the track `domain` only when it isn't the default `Distance`,
+ *  so every existing authored track's hash stays byte-identical. */
+function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number, domain: Domain): string {
     let h = `ds${ds}v0${v0}`;
+    if (domain !== Domain.Distance) h += `^${domain}`;
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sec.kind}`;
         if (sec.ds > 0) h += `@${sec.ds}`;
@@ -1607,7 +1744,13 @@ function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number): strin
  *  invoked tool holds it across its solve to notice the document moved underneath. */
 export function authoredHash(ecs: State): string {
     for (const t of ecs.query([Track])) {
-        return bakeHash(ecs, sections(ecs), Track.ds.get(t), Track.v0.get(t));
+        return bakeHash(
+            ecs,
+            sections(ecs),
+            Track.ds.get(t),
+            Track.v0.get(t),
+            Track.domain.get(t) as Domain,
+        );
     }
     return "";
 }
@@ -1626,19 +1769,32 @@ export function bakeLive(ecs: State): boolean {
 
 type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
 
-/** per-sample cumulative time `t[i] = Σ_{k<i} ds_k / v̄_k` plus the diagnostic
- *  feasibility flag. v̄ floors at V_FLOOR so energy-depleted regions take
- *  long-but-finite time; `feasible[i] = |v[i]| ≥ V_WARN` drives the red-track UX
- *  (warning threshold above the numerical floor). */
-function computeTime(s: Samples, out: BakeOut, count: number): void {
+/** per-sample cumulative time plus the diagnostic feasibility flag.
+ *
+ *  **A section that MARCHED in time owns its own time.** `marched[i]` is the Δt an edge was
+ *  integrated with (a `Time`-domain force section: its step); 0 means the edge has no marched
+ *  time and its duration is derived instead, `ds_i / v̄_i` with v̄ floored at `V_FLOOR` so
+ *  energy-depleted regions take long-but-finite time — the geo and `Distance`-domain path, and
+ *  the original behaviour byte-for-byte. Deriving a marched edge's time would be a SECOND truth
+ *  that diverges without bound at a stall (`ds → 0` and `v̄ → V_FLOOR` disagree wildly with the
+ *  Δt actually integrated), and a `Time`-domain keyframe's stored `t` IS accumulated march time
+ *  by construction — so the table, `evalForce`'s sampling, and the conversion op must all read
+ *  the march.
+ *
+ *  `feasible[i] = |v[i]| ≥ V_WARN` drives the red-track UX (warning threshold above the
+ *  numerical floor). */
+function computeTime(s: Samples, out: BakeOut, count: number, marched: Float64Array): void {
     out.t[0] = 0;
     out.feasible[0] = Math.abs(s.v[0]) >= V_WARN ? 1 : 0;
     let firstBad = out.feasible[0] === 0 ? 0 : -1;
     for (let i = 0; i < count - 1; i++) {
-        const vA = Math.max(Math.abs(s.v[i]), V_FLOOR);
-        const vB = Math.max(Math.abs(s.v[i + 1]), V_FLOOR);
-        const vAvg = 0.5 * (vA + vB);
-        out.t[i + 1] = out.t[i] + out.ds[i] / vAvg;
+        let dt = marched[i];
+        if (!(dt > 0)) {
+            const vA = Math.max(Math.abs(s.v[i]), V_FLOOR);
+            const vB = Math.max(Math.abs(s.v[i + 1]), V_FLOOR);
+            dt = out.ds[i] / (0.5 * (vA + vB));
+        }
+        out.t[i + 1] = out.t[i] + dt;
         const f = Math.abs(s.v[i + 1]) >= V_WARN ? 1 : 0;
         out.feasible[i + 1] = f;
         if (firstBad < 0 && f === 0) firstBad = i + 1;
@@ -1657,6 +1813,7 @@ function computeTime(s: Samples, out: BakeOut, count: number): void {
 function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: SectionRow[]): void {
     const ds = Track.ds.get(trackEid);
     const v0 = Track.v0.get(trackEid);
+    const domain = Track.domain.get(trackEid) as Domain;
     const start = startEntry(v0);
 
     // a geo section needs ≥2 nodes to bake; if any is short, keep the prior bake
@@ -1665,21 +1822,29 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         if (sec.kind === SectionKind.Geo && sectionHandles(ecs, sec.id).length < 2) return;
     }
 
-    const payloads = secs.map((sec) => {
-        const step = sectionStep(sec.ds, ds);
-        return sec.kind === SectionKind.Geo
-            ? geoPayload(ecs, sec.id, step)
-            : forcePayload(ecs, sec.id, sec.length, step);
+    // per section: its payload, and the Δt its edges MARCH with (0 = derive the time from ds/v̄
+    // — geo, and every Distance-domain force section). `computeTime` reads the latter.
+    const marchedStep = new Float64Array(secs.length);
+    const payloads = secs.map((sec, k) => {
+        if (sec.kind === SectionKind.Geo) return geoPayload(ecs, sec.id, sectionStep(sec.ds, ds));
+        const step = sectionStep(sec.ds, forceNominal(domain, ds));
+        if (domain === Domain.Time) marchedStep[k] = step;
+        return forcePayload(ecs, sec.id, sec.length, step, domain);
     });
     const c = chain(start, payloads, MAX_SAMPLES);
     const count = c.count;
     if (count < 2) return; // fully degenerate first section — keep the prior bake
 
     let truncatedAny = false;
+    const marched = new Float64Array(Math.max(1, count - 1));
     for (let k = 0; k < secs.length; k++) {
         const r = c.results[k];
         const range = c.ranges[k];
         const entry = k === 0 ? start : c.exits[k - 1];
+        if (marchedStep[k] > 0) {
+            for (let i = range.start; i < Math.min(range.end, count - 1); i++)
+                marched[i] = marchedStep[k];
+        }
 
         if (secs[k].kind === SectionKind.Geo) {
             const hs = sectionHandles(ecs, secs[k].id);
@@ -1707,9 +1872,9 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     s.v.set(c.v.subarray(0, count));
     out.fN.set(c.fN.subarray(0, count - 1));
     out.ds.set(c.ds.subarray(0, count - 1));
-    out.hash = bakeHash(ecs, secs, ds, v0);
+    out.hash = bakeHash(ecs, secs, ds, v0, domain);
     Track.count.set(trackEid, count);
-    computeTime(s, out, count);
+    computeTime(s, out, count, marched);
 }
 
 export const BakeSystem: System = {
@@ -1720,7 +1885,13 @@ export const BakeSystem: System = {
             if (!s || !out) continue;
             const secs = sections(ecs);
             if (secs.length === 0) continue;
-            const hash = bakeHash(ecs, secs, Track.ds.get(trackEid), Track.v0.get(trackEid));
+            const hash = bakeHash(
+                ecs,
+                secs,
+                Track.ds.get(trackEid),
+                Track.v0.get(trackEid),
+                Track.domain.get(trackEid) as Domain,
+            );
             if (hash === out.hash) continue; // nothing changed — reuse the bake
             bake(ecs, trackEid, s, out, secs);
         }
@@ -1731,7 +1902,7 @@ export const TrackPlugin: Plugin = {
     name: "Track",
     components: { Track, Section, Handle, Force },
     traits: {
-        Track: { defaults: () => ({ count: 0, ds: 0, v0: V0 }) },
+        Track: { defaults: () => ({ count: 0, ds: 0, v0: V0, domain: Domain.Distance }) },
         Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0, ds: 0 }) },
         Handle: {
             defaults: () => ({
