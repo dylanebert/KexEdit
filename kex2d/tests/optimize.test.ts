@@ -314,6 +314,96 @@ describe("solveOptimize — stage-3 refusal taxonomy + continuation (kex2d-optim
         expect(r.deltaG).toEqual(new Array(flattened.length).fill(0));
     });
 
+    test("a near-stall but SMOOTH draft solves (the stall certificate must not over-fire)", () => {
+        // The stall certificate's over-fire boundary, pinned from the smooth side (adversarial
+        // pass on e6e9dfe, finding 1 + finding 3): the same climb at entry v = 10 dips to
+        // vMin 2.77 m/s — deep in slow territory — but never touches the vSafe floor, so its
+        // exit map is smooth (one-sided θ derivatives same-signed, ratio ≤ 0.18) and the solve
+        // lands in 2 iterations. The removed draft-read (vMin) and the removed closed-form
+        // θ-row cap (G·L/V_WARN², which assumed v ≥ V_WARN on every edge) were both blind to
+        // this distinction's real line: the CLAMP, not slow speed, is what destroys the map.
+        const climb: ForcePoint[] = [
+            { s: 0, g: 1 },
+            { s: 10, g: 2.2 },
+            { s: 20, g: 0.4 },
+            { s: 30, g: 1 },
+            { s: 40, g: 1 },
+        ];
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 10 };
+        const stamp = computeExit(entry, climb, 40, DS);
+        const edited = climb.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.05 : p.g }));
+        const r = solveOptimize({
+            entry,
+            points: edited,
+            locked: new Set(),
+            length: 40,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("solved");
+    });
+
+    test("a floor-touching draft with a smooth solution branch still SOLVES (no draft-property refusal)", () => {
+        // RED FIRST (the pin on finding 1's fix): gentle hill +2 g at key 1 drives the march
+        // onto the vSafe floor (vMin = 0.00) — the removed vMin-on-draft certificate refused it
+        // at 0 iters — yet its exit Jacobian is sign-consistent and the solve navigates off the
+        // cliff to the smooth solution near the feasible baseline, replaying within the derived
+        // floor. Seen failing (`unreachable/stall`) with the vMin read temporarily restored;
+        // solves under the Jacobian-consistency read. THE case proving the draft's vMin is not
+        // the honest boundary in either direction.
+        const { points, length } = corpus()[0];
+        const stamp = computeExit(ENTRY, points, length, DS);
+        const edited = points.map((p, i) => ({ ...p, g: i === 1 ? p.g + 2 : p.g }));
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: edited,
+            locked: new Set(),
+            length,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("solved");
+        const floor = derivedTol(stamp, length, DS);
+        const back = computeExit(ENTRY, r.points, length, DS);
+        expect(Math.abs(back.x - stamp.x)).toBeLessThan(floor.pos);
+        expect(Math.abs(back.y - stamp.y)).toBeLessThan(floor.pos);
+        expect(Math.abs(back.theta - stamp.theta)).toBeLessThan(floor.angle);
+    });
+
+    test("a floor-grazing draft certifies unreachable/stall by the Jacobian read, at invoke", () => {
+        // The v = 8 climb's unedited baseline kisses the vSafe floor at exactly one sample
+        // (index 29 of 81; v recovers the next sample). The adversarial pass conjectured a tiny
+        // edit must stay solvable (the reverting solution is adjacent) — MEASURED FALSE: with
+        // every certificate bypassed, +0.01/+0.05/+0.2 g all diverge (residual 1.4–3.8 m, 200-
+        // iteration budget), because a floor-touched step kicks dθ by ~±10⁴ rad and the exit
+        // map across it has genuinely opposite-signed one-sided derivatives (k0: fwd −8.1e2 vs
+        // bwd +6.4e4) — the reverting solution sits ON that cliff, unreachable by any
+        // derivative-based method. The honest fix is the certificate's DERIVATION: it now reads
+        // the Jacobian's sign consistency (fires here), never the draft's vMin (review removed
+        // that draft-property read).
+        const climb: ForcePoint[] = [
+            { s: 0, g: 1 },
+            { s: 10, g: 2.2 },
+            { s: 20, g: 0.4 },
+            { s: 30, g: 1 },
+            { s: 40, g: 1 },
+        ];
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 8 };
+        const stamp = computeExit(entry, climb, 40, DS);
+        const edited = climb.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.05 : p.g }));
+        const r = solveOptimize({
+            entry,
+            points: edited,
+            locked: new Set(),
+            length: 40,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("unreachable");
+        expect(r.reason).toBe("stall");
+        expect(r.iters).toBe(0);
+    });
+
     test("a near-straight draft with a small in-mode edit still solves (the certificate must not over-fire)", () => {
         // measured σmin/σmax ≈ 5e-5 at a ±0.01 g wiggle (lab §4) — above the 2^-16 FD-noise
         // certification line, so this goes to the solver, which handles it (probe: solved,

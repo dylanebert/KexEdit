@@ -281,19 +281,45 @@ function condRatio(sc: Scenario, points: ForcePoint[], free: number[]): number {
     return Math.sqrt(Math.min(...eigs) / Math.max(...eigs));
 }
 
-/** max |∂θ_exit/∂g_k| over the free keys (rad per g), central FD — the θ-row reading the
- *  post-stall chaotic-regime certificate is derived from. The bound a V_WARN-feasible march
- *  cannot exceed: every edge contributes ≤ basis·G·ds/v², so the whole row is ≤ G·L/V_WARN²
- *  (basis ≤ 1, v ≥ V_WARN = 1 m/s). A row past that certifies sub-V_WARN speeds with leverage —
- *  the vSafe-floor regime whose ∂θ/∂g the debug trace measured as enormous. */
-function thetaRowMax(sc: Scenario, points: ForcePoint[], free: number[]): number {
-    let m = 0;
+/** the stall certificate's own reading (`optimize.ts`): per free key, the θ row's two one-sided
+ *  differences (weighted ×L), their sign opposition above the FD noise floor (the certificate),
+ *  the |fwd−bwd|/|central| ratio (informational), and the measured row against the per-key
+ *  march-derived direct-channel cap Σ basis·G·ds/vSafe² — kept as the REFUTATION record for the
+ *  reviewer-preferred cap route: the feedback channel legitimately exceeds the direct cap on
+ *  HEALTHY drafts (gentle hill 1.05×, big swing 1.24×, hill×10 base 8.5×), so a cap-exceedance
+ *  certificate over-fires on smooth solvable cases and is rejected. */
+function stallRead(
+    sc: Scenario,
+    points: ForcePoint[],
+    free: number[],
+): { fires: boolean; maxRatio: number; maxCapRatio: number } {
+    const L = sc.length;
+    const base = exitAt(sc, points);
+    const dense0 = forceProfile(points, L, DS);
+    const entry = sc.entry ?? ENTRY;
+    const march = evalForce(entry, dense0, DS, undefined);
+    const scale = Math.max(Math.abs(base.x), Math.abs(base.y), L);
+    const noise = (F32_EPS * scale) / JAC_H;
+    let fires = false;
+    let maxRatio = 0;
+    let maxCapRatio = 0;
     for (const k of free) {
         const eP = exitAt(sc, withBump(points, k, JAC_H));
         const eM = exitAt(sc, withBump(points, k, -JAC_H));
-        m = Math.max(m, Math.abs((eP.theta - eM.theta) / (2 * JAC_H)));
+        const cen = (L * (eP.theta - eM.theta)) / (2 * JAC_H);
+        const fwd = (L * (eP.theta - base.theta)) / JAC_H;
+        const bwd = (L * (base.theta - eM.theta)) / JAC_H;
+        if (fwd * bwd < 0 && Math.min(Math.abs(fwd), Math.abs(bwd)) > noise) fires = true;
+        maxRatio = Math.max(maxRatio, Math.abs(fwd - bwd) / Math.max(Math.abs(cen), noise));
+        const bump = forceProfile(withBump(points, k, 1), L, DS);
+        let cap = 0;
+        for (let e = 0; e < dense0.length; e++) {
+            const vs = Math.max(Math.abs(march.v[e]), 0.01);
+            cap += (Math.abs(bump[e] - dense0[e]) * 9.80665 * DS) / (vs * vs);
+        }
+        maxCapRatio = Math.max(maxCapRatio, Math.abs(cen) / (L * cap));
     }
-    return m;
+    return { fires, maxRatio, maxCapRatio };
 }
 
 console.log("\n── 4. conditioning σmin/σmax (threshold candidate: ε^(2/3) = 2^-16 ≈ 1.5e-5) ──");
@@ -363,27 +389,43 @@ console.log("\n── 4. conditioning σmin/σmax (threshold candidate: ε^(2/3)
         );
     }
 
-    console.log("\n── 4b. θ-row max |∂θ/∂g| (rad/g) vs the V_WARN bound G·L/V_WARN² ──");
-    for (const sc of corpus()) {
-        const bound = (9.8 * sc.length) / 1;
-        const row = thetaRowMax(sc, sc.points, [...sc.points.keys()]);
-        const vMin = minSpeed(sc, sc.points);
-        console.log(
-            `${sc.name} (vMin ${vMin.toFixed(2)}): ${row.toExponential(2)} vs bound ${bound.toExponential(2)}`,
-        );
-    }
-    for (const v of [12, 10, 8, 7, 6.5, 6]) {
-        const sc: Scenario = {
-            name: `climb v0=${v}`,
-            length: 40,
+    console.log(
+        "\n── 4b. stall certificate: θ-row one-sided sign opposition (fires only on floor-touching; a floor-touching draft may still read consistent and solve — hill +2g) ──",
+    );
+    console.log(
+        "cols: fires (the certificate) | disRatio |fwd−bwd|/|cen| | row/marchCap (refuted route)",
+    );
+    const stallCases: { name: string; sc: Scenario; points: ForcePoint[] }[] = [];
+    for (const sc of corpus()) stallCases.push({ name: sc.name, sc, points: sc.points });
+    const hillPts = corpus()[0].points;
+    stallCases.push({
+        name: "hill +3g key1 (curvature stress, smooth)",
+        sc: corpus()[0],
+        points: withBump(hillPts, 1, 3),
+    });
+    stallCases.push({
+        name: "hill +2g key1 (floor-touching, SOLVES)",
+        sc: corpus()[0],
+        points: withBump(hillPts, 1, 2),
+    });
+    for (const v of [10, 8, 7, 6]) {
+        stallCases.push({
+            name: `climb v0=${v}${v === 10 ? " (smooth near-stall)" : v === 8 ? " (graze: 1 floor sample)" : " (deep stall)"}`,
+            sc: { name: "climb", length: 40, points: climb, entry: { x: 0, y: 0, theta: 0, v } },
             points: climb,
-            entry: { x: 0, y: 0, theta: 0, v },
-        };
-        const bound = (9.8 * sc.length) / 1;
-        const row = thetaRowMax(sc, climb, [...climb.keys()]);
-        const vMin = minSpeed(sc, climb);
+        });
+    }
+    const hill10sc = corpus()[3];
+    stallCases.push({
+        name: "hill10 key3 +0.2 (localized stall the old L-cap missed)",
+        sc: hill10sc,
+        points: withBump(hill10sc.points, 3, 0.2),
+    });
+    for (const c of stallCases) {
+        const r = stallRead(c.sc, c.points, [...c.points.keys()]);
+        const vMin = minSpeed(c.sc, c.points);
         console.log(
-            `climb v0=${v} (vMin ${vMin.toFixed(3)}): ${row.toExponential(2)} vs bound ${bound.toExponential(2)}`,
+            `${c.name} (vMin ${vMin.toFixed(2)}): fires=${r.fires} disRatio=${r.maxRatio.toFixed(2)} row/marchCap=${r.maxCapRatio.toFixed(2)}`,
         );
     }
 }

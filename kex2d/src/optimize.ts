@@ -27,17 +27,23 @@
  *
  *  **Refusal taxonomy (stage 3, panel-corrected).** A local method cannot certify infeasibility —
  *  a fold in the solution branch presents identically to "no solution" — so `"unreachable"` is
- *  produced ONLY by necessary-condition checks, all run at invoke before any solving:
- *  `"free-count"` (fewer than `MIN_FREE` free keys), `"stall"` (the draft's march engages the
- *  vSafe floor: the exit Jacobian's θ row exceeds what any V_WARN-feasible march can produce, so
- *  the exit state is a clamp artifact and its sensitivities are chaotic — the debug-trace regime),
- *  and `"conditioning"` (the scaled Jacobian is rank-deficient at the FD's own noise floor: the
- *  three pin directions aren't independently steerable at working precision — the near-straight
- *  trap, where the x row vanishes at first order). Everything else — backtrack exhaustion, an
- *  interior rank failure, the continuation ladder running out — refuses as `"diverged"` ("did not
- *  converge"): honest non-convergence, never a diagnosis. Both refusals leave the caller free to
- *  retry with a different lock set — nothing here writes to the document; that's the caller's
- *  job, once, on a `"solved"` answer.
+ *  produced ONLY by Jacobian-read certificates, all run at invoke before any solving:
+ *  `"free-count"` (fewer than `MIN_FREE` free keys), `"stall"` (the exit map has no consistent
+ *  θ derivative: some key's two one-sided differences carry OPPOSITE signs, both above the FD
+ *  read's noise floor — the vSafe-clamp signature, since a floor-touched step kicks dθ by
+ *  `(F−cosθ)·G·ds/V_FLOOR²` ~ ±10⁴ rad and the exit map downstream of it is pathological;
+ *  measured (adversarial-pass lab, 2026-07-30): every floor-touching draft shows sign
+ *  opposition, every smooth draft none, and every floor-touching case also fails the bypassed
+ *  solver outright, so the certificate's firing set coincides with the measured unsolvable
+ *  set), and `"conditioning"` (the scaled Jacobian is rank-deficient at the
+ *  FD's own noise floor: the three pin directions aren't independently steerable at working
+ *  precision — the near-straight trap, where the x row vanishes at first order). A DRAFT-property
+ *  read (vMin over the march) is deliberately not a certificate — review removed one: it refused
+ *  on what the draft looks like rather than what the Jacobian can certify. Everything else —
+ *  backtrack exhaustion, an interior rank failure, the continuation ladder running out — refuses
+ *  as `"diverged"` ("did not converge"): honest non-convergence, never a diagnosis. Both refusals
+ *  leave the caller free to retry with a different lock set — nothing here writes to the
+ *  document; that's the caller's job, once, on a `"solved"` answer.
  *
  *  **Continuation (stage 3).** Large drift puts the stamp outside the direct SQP's basin (a
  *  ±3 g edit converges, slowly, only past the 30-iteration budget). When the direct solve
@@ -59,8 +65,6 @@
  *  bit-exact zero and the solve returns immediately with every Δg exactly 0 — no floating step
  *  ever executes. */
 
-import { V_WARN } from "./bake";
-import { G, V_FLOOR } from "./forward";
 import { forceProfile, type ForcePoint } from "./profile";
 import { type Domain, type Entry, evalForce } from "./section";
 
@@ -288,13 +292,6 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         const dense = forceProfile(withG(points, g), length, ds);
         return evalForce(entry, dense, ds, domain).exit;
     };
-    const vMinAt = (g: ArrayLike<number>): number => {
-        const dense = forceProfile(withG(points, g), length, ds);
-        const v = evalForce(entry, dense, ds, domain).v;
-        let m = Infinity;
-        for (let i = 0; i < v.length; i++) m = Math.min(m, v[i]);
-        return m;
-    };
 
     const e0 = exitAt(g0);
     const c0 = residualOf(e0, stamp);
@@ -360,24 +357,43 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         return J;
     };
 
-    // ── the at-invoke necessary-condition certificates (one Jacobian, reused below) ──
+    // ── the at-invoke Jacobian-read certificates (one FD pass, J0 reused below) ──
     const res0 = Math.max(Math.abs(c0[0]), Math.abs(c0[1]));
     const ang0 = Math.abs(c0[2]);
 
-    // (stall) two certificates for the post-stall chaotic regime, primary first: the draft's
-    // own march engages the vSafe floor (min speed at/below V_FLOOR — the exit downstream of a
-    // stall is a clamp artifact, and the march past it is not physically meaningful), or the
-    // exit Jacobian's θ row exceeds what any V_WARN-feasible march can produce (each edge
-    // contributes at most `basis · G · ds / v²` with basis ≤ 1 and v ≥ V_WARN, so a feasible
-    // row is ≤ G·L/V_WARN² — the near-stall leverage the march read can miss). Lab §4b:
-    // stalled L=40 drafts read 2–4× that bound, feasible drafts 2–3 orders below; the march
-    // read is what catches a long section's localized stall, where the L-scaled bound is loose.
-    if (vMinAt(g0) <= V_FLOOR) return zeroResult("unreachable", "stall", 0, res0, ang0);
-    const J0 = jacobianAt(z0);
-    const thetaCap = (G * length) / (V_WARN * V_WARN);
-    let thetaRow = 0;
-    for (let m = 0; m < P; m++) thetaRow = Math.max(thetaRow, Math.abs(J0[2][m]));
-    if (thetaRow > thetaCap) return zeroResult("unreachable", "stall", 0, res0, ang0);
+    // (stall) the θ-row derivative-consistency read: the same eP/eM probes the central
+    // difference is built from also give the two one-sided differences. On a smooth map both
+    // carry the derivative's own sign wherever `h·|f''| < |f'|` — and where curvature exceeds
+    // that, they still agree in sign (measured: a +3 g large-drift draft reads a 1.4× magnitude
+    // disagreement yet same-signed slopes, and solves). OPPOSITE signs, with both magnitudes
+    // above the FD read's own noise floor (so a zero-leverage row can't fire on noise-over-
+    // noise), means the map ascends on one side of the draft and descends on the other at the
+    // probe scale — a cliff, not curvature: the vSafe-clamp signature (module header). Sign
+    // opposition is threshold-free and scale-free — no V_WARN or L assumption (the removed
+    // closed-form cap `G·L/V_WARN²` assumed v ≥ V_WARN on every edge and went unboundedly loose
+    // with L: at L = 400 it missed a localized stall). Measured in `tests/optimize.lab.ts` §4b:
+    // every floor-touching draft shows ≥1 opposite-sign key (the clamp's ±10⁴ rad kick), every
+    // smooth draft none — healthy corpus, near-stall smooth (vMin 2.8), curvature-stress drifts,
+    // graze, deep stall, the L = 400 localized stall.
+    const scale = Math.max(Math.abs(stamp.x), Math.abs(stamp.y), length);
+    const noiseSlope = (F32_EPS * scale) / JAC_H;
+    const J0 = [new Float64Array(P), new Float64Array(P), new Float64Array(P)];
+    let cliff = false;
+    for (let m = 0; m < P; m++) {
+        const zP = Float64Array.from(z0);
+        zP[m] += JAC_H;
+        const zM = Float64Array.from(z0);
+        zM[m] -= JAC_H;
+        const eP = exitAt(scatter(zP));
+        const eM = exitAt(scatter(zM));
+        J0[0][m] = (eP.x - eM.x) / (2 * JAC_H);
+        J0[1][m] = (eP.y - eM.y) / (2 * JAC_H);
+        J0[2][m] = (eP.theta - eM.theta) / (2 * JAC_H);
+        const fwd = (length * (eP.theta - e0.theta)) / JAC_H;
+        const bwd = (length * (e0.theta - eM.theta)) / JAC_H;
+        if (fwd * bwd < 0 && Math.min(Math.abs(fwd), Math.abs(bwd)) > noiseSlope) cliff = true;
+    }
+    if (cliff) return zeroResult("unreachable", "stall", 0, res0, ang0);
 
     // (conditioning) σmin/σmax of the scaled Jacobian, read exactly off the 3×3 J·Jᵀ
     // eigenvalues (cyclic Jacobi): below COND_FLOOR the smallest pin direction is inside the

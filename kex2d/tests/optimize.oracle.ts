@@ -67,6 +67,15 @@ function vMin(sc: Scenario, points: ForcePoint[]): number {
 }
 
 describe("optimize corpus: every single-key ±0.2 g edit resolves honestly", () => {
+    // Every outcome is cross-checked against evidence INDEPENDENT of the kernel's own gates
+    // (adversarial pass on e6e9dfe: never assert the implementation's gate against itself):
+    // a smooth edit (the test's own march reading, not the kernel's) must solve, and a solved
+    // answer must replay to the stamp within the derived floor; a stall certificate may fire
+    // only where the march physically touches the vSafe floor — the certificate reads Jacobian
+    // sign consistency, never v, so this cross-check would catch a smooth-side over-fire. A
+    // floor-touching draft may go either way (measured: gentle hill +2 g touches the floor yet
+    // solves onto the smooth solution branch), but it must never burn the budget silently:
+    // certify at 0 iters or land within the floor.
     for (const sc of corpus()) {
         test(sc.name, () => {
             const stamp = computeExit(sc.entry, sc.points, sc.length, DS);
@@ -86,18 +95,21 @@ describe("optimize corpus: every single-key ±0.2 g edit resolves honestly", () 
                         stamp,
                     });
                     const where = `${sc.name} key ${k} ${sign > 0 ? "+" : "−"}0.2`;
-                    if (vMin(sc, edited) <= V_FLOOR) {
-                        // a stalling edit must certify at invoke, never grind the budget
-                        expect(`${where}: ${r.outcome}/${r.reason}`).toBe(
-                            `${where}: unreachable/stall`,
-                        );
-                        expect(r.iters).toBe(0);
-                    } else {
-                        expect(`${where}: ${r.outcome}`).toBe(`${where}: solved`);
+                    const smooth = vMin(sc, edited) > V_FLOOR;
+                    if (smooth) expect(`${where}: ${r.outcome}`).toBe(`${where}: solved`);
+                    if (r.outcome === "solved") {
                         const back = computeExit(sc.entry, r.points, sc.length, DS);
                         expect(Math.abs(back.x - stamp.x)).toBeLessThan(floor.pos);
                         expect(Math.abs(back.y - stamp.y)).toBeLessThan(floor.pos);
                         expect(Math.abs(back.theta - stamp.theta)).toBeLessThan(floor.angle);
+                    } else {
+                        // the only sanctioned refusal here: the stall certificate, at invoke,
+                        // on a draft whose march the test independently reads as floor-touching
+                        expect(`${where}: ${r.outcome}/${r.reason}`).toBe(
+                            `${where}: unreachable/stall`,
+                        );
+                        expect(r.iters).toBe(0);
+                        expect(smooth).toBe(false);
                     }
                     // refusal shape: a reason exists iff the outcome is unreachable
                     expect(r.reason !== undefined).toBe(r.outcome === "unreachable");
@@ -108,9 +120,12 @@ describe("optimize corpus: every single-key ±0.2 g edit resolves honestly", () 
 });
 
 describe("optimize corpus: the continuation ladder holds the measured drift ramp", () => {
-    // lab §5b post-change: every feasible ramp drift through +6 g solves (gentle hill's +2 g
-    // stalls the march — non-monotone in the drift, the +3 g draft loops fast enough to keep
-    // its speed — and must certify, not grind).
+    // The continuation's held claim: every ramp drift through +6 g resolves without grinding —
+    // a smooth draft must SOLVE, and any refusal must be the invoke-time stall certificate on a
+    // draft the test independently reads as floor-touching (the drift is non-monotone in
+    // feasibility: gentle hill's +2 g touches the floor — and MEASURABLY still solves onto the
+    // smooth solution branch — while +3 g keeps its speed through a loop). Same evidence
+    // grounding as the sweep above; a solved outcome always replays within the derived floor.
     for (const sc of corpus().slice(0, 2)) {
         test(sc.name, () => {
             const stamp = computeExit(sc.entry, sc.points, sc.length, DS);
@@ -128,15 +143,18 @@ describe("optimize corpus: the continuation ladder holds the measured drift ramp
                     ds: DS,
                     stamp,
                 });
-                if (vMin(sc, edited) <= V_FLOOR) {
+                const smooth = vMin(sc, edited) > V_FLOOR;
+                if (smooth) expect(`+${dg}g: ${r.outcome}`).toBe(`+${dg}g: solved`);
+                if (r.outcome === "solved") {
+                    const back = computeExit(sc.entry, r.points, sc.length, DS);
+                    expect(Math.abs(back.x - stamp.x)).toBeLessThan(floor.pos);
+                    expect(Math.abs(back.y - stamp.y)).toBeLessThan(floor.pos);
+                    expect(Math.abs(back.theta - stamp.theta)).toBeLessThan(floor.angle);
+                } else {
                     expect(`+${dg}g: ${r.outcome}/${r.reason}`).toBe(`+${dg}g: unreachable/stall`);
-                    continue;
+                    expect(r.iters).toBe(0);
+                    expect(smooth).toBe(false);
                 }
-                expect(`+${dg}g: ${r.outcome}`).toBe(`+${dg}g: solved`);
-                const back = computeExit(sc.entry, r.points, sc.length, DS);
-                expect(Math.abs(back.x - stamp.x)).toBeLessThan(floor.pos);
-                expect(Math.abs(back.y - stamp.y)).toBeLessThan(floor.pos);
-                expect(Math.abs(back.theta - stamp.theta)).toBeLessThan(floor.angle);
             }
         });
     }
