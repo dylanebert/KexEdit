@@ -287,7 +287,8 @@ export function solveDone(r: SolveOutcome): Notice {
  *  like `SolveOutcome` — `geofit.GeofitResult` satisfies it, but this module never imports the
  *  conversion tier for one check. */
 export interface FitOutcome {
-    /** `"floor"` | `"budget"` | `"diverged"` (`geofit.GeofitOutcome`). */
+    /** `"floor"` | `"budget"` | `"diverged"` (`geofit.GeofitOutcome`) | `"dense"`
+     *  (`forcegeo.ConvertForceOutcome`'s own addition — a `"budget"` answer too big to author). */
     outcome: string;
     nodes: number;
     deviation: number;
@@ -301,10 +302,17 @@ const gforce = (v: number): string => `${v.toFixed(2)} g`;
 /** the readout for a fit that RESOLVED — `solveDone`'s force→geo twin, same three-way branch and
  *  the same standard: a held fit is a short confirmation, a `"budget"` fit names its miss. Dual
  *  budget, so only the axis (or axes) that actually missed is printed — the held one has nothing
- *  to say. */
+ *  to say. `"dense"` reads like `"diverged"` (nothing landed) rather than like `"budget"` (which
+ *  DID land) — a node count over the authoring ceiling is its own failure, not a miss to report
+ *  against a budget that was in fact held. */
 export function fitDone(r: FitOutcome): Notice {
     if (r.outcome === "diverged")
         return { kind: "error", text: "The solve could not fit this shape. Nothing changed." };
+    if (r.outcome === "dense")
+        return {
+            kind: "error",
+            text: `The fit needs ${r.nodes} nodes — too many to author. Nothing changed.`,
+        };
     const text = `Converted to geo · ${r.nodes} nodes`;
     if (r.outcome !== "budget") return { kind: "done", text };
     const misses: string[] = [];

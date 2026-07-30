@@ -64,3 +64,18 @@ export function divergingFit(): WorkerCtor {
         }
     };
 }
+
+/** Answer with the REAL fit, but stamp its outcome `"budget"` and its node count to `count` — the
+ *  landing-density guard's (`forcegeo.MAX_LANDED_NODES`) two boundary readings, without needing a
+ *  bake that actually drives the kernel to that exact size. The stamped nodes are dummies
+ *  (`{x:0,y:0,theta:0}`); what's under test is `convertForce`'s node-COUNT check, not the shape. */
+export function budgetFit(count: number): WorkerCtor {
+    return class extends Fake {
+        protected run(request: GeofitRequest): void {
+            const result = geofit(request.bake, request.v0, request.params);
+            result.outcome = "budget";
+            result.nodes = Array.from({ length: count }, () => ({ x: 0, y: 0, theta: 0 }));
+            this.reply({ kind: "done", result });
+        }
+    };
+}

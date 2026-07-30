@@ -1,6 +1,6 @@
 import { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
-import { convertForce, StaleConvert } from "../src/forcegeo";
+import { convertForce, MAX_LANDED_NODES, StaleConvert } from "../src/forcegeo";
 import { FORCE_BUDGET } from "../src/geofit";
 import { liveFitWorkers } from "../src/geofit-async";
 import { createHistory, type History, undo } from "../src/history";
@@ -27,7 +27,7 @@ import {
     snapshotAll,
     trackDomain,
 } from "../src/track";
-import { divergingFit, dyingFit, withFitWorker } from "./helpers/fitworker";
+import { budgetFit, divergingFit, dyingFit, withFitWorker } from "./helpers/fitworker";
 import { drift, type Stations, stations } from "./helpers/stations";
 
 // the invoked force→geo command (kex2d-forcegeo stage 3): the conversion tier fitted off-thread,
@@ -144,6 +144,41 @@ describe("convertForce", () => {
         const result = await withFitWorker(divergingFit(), () => convertForce(h, state, sec));
         expect(result.outcome).toBe("diverged");
 
+        state.step(0);
+        expect(docState(state, eid)).toEqual(before);
+        expect(h.undo).toHaveLength(0);
+    }, 60_000);
+
+    test("a budget outcome at the landing ceiling lands", async () => {
+        // the guard is `> MAX_LANDED_NODES`, so exactly the ceiling still lands — a chain this
+        // size is still the codebase's own worked authoring scale (`MAX_LANDED_NODES`'s
+        // derivation), not the pathology the guard exists to refuse.
+        const { state, sec } = humpForceTrack();
+        const h = createHistory();
+
+        const result = await withFitWorker(budgetFit(MAX_LANDED_NODES), () =>
+            convertForce(h, state, sec),
+        );
+
+        expect(result.outcome).toBe("budget");
+        expect(result.nodes).toHaveLength(MAX_LANDED_NODES);
+        const secEid = sectionAt(state, sec);
+        if (secEid === null) throw new Error("section missing");
+        expect(Section.kind.get(secEid)).toBe(SectionKind.Geo);
+        expect(sectionHandles(state, sec)).toHaveLength(MAX_LANDED_NODES);
+        expect(h.undo).toHaveLength(1);
+    }, 60_000);
+
+    test("a budget outcome over the landing ceiling refuses as dense, writing nothing", async () => {
+        const { state, eid, sec } = humpForceTrack();
+        const h = createHistory();
+        const before = docState(state, eid);
+
+        const result = await withFitWorker(budgetFit(MAX_LANDED_NODES + 1), () =>
+            convertForce(h, state, sec),
+        );
+
+        expect(result.outcome).toBe("dense");
         state.step(0);
         expect(docState(state, eid)).toEqual(before);
         expect(h.undo).toHaveLength(0);

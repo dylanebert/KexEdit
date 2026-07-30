@@ -26,7 +26,7 @@
 
 import type { State } from "@dylanebert/shallot";
 import { type GeofitOpts, runGeofit } from "./geofit-async";
-import type { GeofitResult } from "./geofit";
+import type { GeofitOutcome, GeofitResult } from "./geofit";
 import { type History, solveGeo } from "./history";
 import {
     authoredHash,
@@ -57,11 +57,41 @@ export class StaleConvert extends Error {
  *  so `convertForce` (force-only) and `convertGeo` (geo-only) can never race the same id. */
 const converting = new Set<number>();
 
+/** the landing-side density guard, `MAX_FIT_EDGES`'s (`controls.ts`) twin on the OUTPUT: a
+ *  `"budget"` fit still resolves and still emits a node chain, but a chain past this size stops
+ *  being a document a person hand-edits (drags, tangent-edits, right-clicks node by node) —
+ *  authoring scale, not wall time, so it's derived from what this codebase has actually needed to
+ *  hand-author, never a wall-clock measurement. `tests/attribution.lab.ts`'s authoring-floor
+ *  sweep is that evidence: at its tightest tested resolution (0.05 m half-step) the densest
+ *  single scenario in the 10-scenario corpus (valley-explicit) needs 75 force keys to hold its
+ *  own floor, and the full corpus combined — every demanding section this codebase has ever
+ *  needed, all at once — needs 212. A landed geo node here is the observation-space mirror of one
+ *  of those force keys (the same split-then-prune shape as `refine.ts`'s, just the reverse
+ *  direction's own kernel, `geofit.ts`'s doc comment), so 212 carries over directly, unrounded:
+ *  the densest this codebase has ever actually authored, combined, and still two orders of
+ *  magnitude under the thousand-plus chains a stalled split (`round` reaching `edges` inside
+ *  `geofit`, up to `MAX_FIT_EDGES` = 2400 input edges) can otherwise produce. */
+export const MAX_LANDED_NODES = 212;
+
+/** `convertForce`'s own outcome vocabulary: `geofit.GeofitOutcome` plus `"dense"` — a `"budget"`
+ *  answer whose node count exceeds {@link MAX_LANDED_NODES}, caught here (not in `geofit.ts`,
+ *  which has no opinion on authoring scale) and resolved the same way `"diverged"` already does:
+ *  the answer is returned for the caller to read, but nothing lands. */
+export type ConvertForceOutcome = GeofitOutcome | "dense";
+
+/** `GeofitResult` with `convertForce`'s own widened outcome. */
+export interface ConvertForceResult extends Omit<GeofitResult, "outcome"> {
+    outcome: ConvertForceOutcome;
+}
+
 /** Fit a force section into the geo section that reproduces its shape, and land it.
  *
- * Resolves with the fit's `GeofitResult` — the emitted nodes are already in the document, and
- * the rest (outcome, deviation, forceError) is the caller's transient readout, never stored. A
- * `"diverged"` answer resolves too, but writes nothing: the caller surfaces it.
+ * Resolves with the fit's answer ({@link ConvertForceResult}) — the emitted nodes are already in
+ * the document, and the rest (outcome, deviation, forceError) is the caller's transient readout,
+ * never stored. A `"diverged"` answer resolves too, but writes nothing: the caller surfaces it.
+ * So does a `"budget"` answer whose node count exceeds {@link MAX_LANDED_NODES} — resolved with
+ * its outcome rewritten to `"dense"`, same nothing-lands shape, since the chain the fit would
+ * emit is not an authoring surface.
  *
  * Rejects, having written nothing, when: the section is missing, isn't force, or has no live bake
  * (the enablement the invoking surface should already be gating on); a fit is already running on
@@ -81,7 +111,7 @@ export async function convertForce(
     ecs: State,
     sectionId: number,
     opts: GeofitOpts = {},
-): Promise<GeofitResult> {
+): Promise<ConvertForceResult> {
     if (converting.has(sectionId))
         throw new Error(`convertForce: section ${sectionId} is already converting`);
     const eid = sectionAt(ecs, sectionId);
@@ -111,8 +141,11 @@ export async function convertForce(
         if (live === null || Section.kind.get(live) !== SectionKind.Force)
             throw new StaleConvert(sectionId);
         if (authoredHash(ecs) !== authored) throw new StaleConvert(sectionId);
-        if (result.outcome !== "diverged") solveGeo(h, ecs, sectionId, result, entry);
-        return result;
+        // a `"budget"` answer past the authoring ceiling is not landable — same nothing-lands
+        // shape as `"diverged"`, but its own outcome so the readout tells the two apart.
+        const dense = result.outcome !== "diverged" && result.nodes.length > MAX_LANDED_NODES;
+        if (result.outcome !== "diverged" && !dense) solveGeo(h, ecs, sectionId, result, entry);
+        return dense ? { ...result, outcome: "dense" } : result;
     } finally {
         converting.delete(sectionId);
     }
