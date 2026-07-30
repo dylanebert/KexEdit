@@ -350,10 +350,10 @@ Earned by the kex2d force-target dogfoods (2026-07-05); applies to any authored-
 invoked-solve surface, 2D or 3D.
 
 - **Author in the solver's invariant domain.** The axis a constraint is placed on must be one the
-  solver holds fixed. A *derived* display domain (kex2d: time, `t = Σ ds/v`) stretches under the
-  tool's own operations, so anchors authored there slide around during solves and unrelated edits.
-  Display the derived domain as a secondary read-only view if it's wanted, never as the authoring
-  axis.
+  solver holds fixed. A derived display domain stretches under the tool's own operations
+  (kex2d's time axis over a Distance-domain store was the worked failure — the honest-slide
+  rejection); authoring on an axis requires the store to hold that axis's unit fixed (the
+  track-global domain conversion is how kex2d earns it).
 - **Constraints are not keyframes.** An optimization target gets the constraint idiom, not the
   keyframe diamond: a distinct (hollow/ring) glyph, the residual made visible (a dotted drop-line
   from demand to achieved), and the CAD-sketcher **driving vs driven** states — activation is a

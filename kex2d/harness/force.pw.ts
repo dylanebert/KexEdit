@@ -1088,7 +1088,7 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     // it is deliberately not asserted). The idle wheel after release is the positive control (and
     // is what proves the mid-gesture tick reached this surface). Mutation: drop the `editor.dragging`
     // early-return in `Timeline.svelte` `onWheel` → the held view zooms → red (proven against that
-    // build: `[pan, pxPerM]` [0, 16.20] → [638.12, 45.83] under the held marquee). ──
+    // build: `[pan, pxPerU]` [0, 16.20] → [638.12, 45.83] under the held marquee). ──
     const xView = () => kexCall(page, "xView");
     const rest = await xView();
     await page.mouse.move(xLo, chartTop);
@@ -1107,12 +1107,12 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     // timeline half; the viewport half rides the viewport multiselect flow, and both surfaces
     // guard on the SAME `editor.dragging` flag. `Timeline.svelte`'s `F` handler carried no
     // guard at all before this stage (unlike its `onWheel` twin, above). A fresh marquee is the
-    // vehicle (it authors nothing, same as 5); the idle wheel just above left `pxPerM` PAST the
+    // vehicle (it authors nothing, same as 5); the idle wheel just above left `pxPerU` PAST the
     // whole-section `F`-frame target established at `frameTimeline` (line 3315), so a real
     // reframe under this section is detectable — pinning the guard against a view already equal
     // to its own no-op target proves nothing (the false-negative section 5's wheel case avoids
     // by using a relative zoom instead). The idle `F` after release is the positive control: it
-    // MUST reframe back toward the section fit (pxPerM decreases), so a guard that merely eats
+    // MUST reframe back toward the section fit (pxPerU decreases), so a guard that merely eats
     // the key outright can't pass the pair. Mutation: drop the `editor.dragging` guard in
     // `Timeline.svelte`'s `F` handler → the held view reframes under the marquee → red. ──
     const zoomed = await xView();

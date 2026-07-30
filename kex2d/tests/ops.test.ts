@@ -32,10 +32,12 @@ import {
     sections,
     seedTangent,
     setTangent,
+    setTrackDomain,
     splitForce,
     splitGeo,
     Track,
 } from "../src/track";
+import { Domain } from "../src/section";
 import { editTangent, TangentMode } from "../src/spline";
 
 // the multi-section structural ops: append / split / join / delete over the section
@@ -201,6 +203,36 @@ describe("split", () => {
         // extents split at 20.
         expect(sections(state).find((s) => s.id === a)?.length).toBe(20);
         expect(sections(state).find((s) => s.id === b)?.length).toBe(20);
+    });
+
+    test("splitting a force section in a Time-domain track is a lossless partition in the store's unit (seconds)", () => {
+        // splitForce/joinNext partition whatever unit `Track.domain` holds — the docstrings
+        // used to say "arclength s", which is false once the store is seconds. This pins
+        // the split as a lossless partition in the store's own unit, then joins back.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 10, 1);
+        createForcePoint(state, a, 30, 2);
+
+        const b = splitForce(state, a, 20);
+        expect(b).not.toBeNull();
+        if (b === null) return;
+
+        // keyframe positions re-home exactly: the s=10 point stays in A, the s=30 point
+        // moves to B rebased to 10 — in seconds, same as the arclength case.
+        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10]);
+        expect(sectionForces(state, b).map((p) => p.s)).toEqual([10]);
+        // extents split at 20 (seconds).
+        expect(sections(state).find((s) => s.id === a)?.length).toBe(20);
+        expect(sections(state).find((s) => s.id === b)?.length).toBe(20);
+
+        // join restores the pre-split partition exactly.
+        expect(joinNext(state, a)).toBe(true);
+        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10, 30]);
+        expect(sections(state).find((s) => s.id === a)?.length).toBe(40);
     });
 });
 

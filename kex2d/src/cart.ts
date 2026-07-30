@@ -3,10 +3,12 @@ import { arcToTime, type Mapping, timeToArc } from "./timeline";
 import { bakeOut, samples, sectionSpans, toLocal, Track } from "./track";
 
 /** a content-anchored park position: the section (stable id) the parked playhead is
- *  glued to, and its `offset` within that section — section-local, in the section's
- *  authored denominator (today always arclength m; a future time-domain section parks
- *  in local seconds with the same shape). the parked cart is derived from this through
- *  the live bake, so an edit re-times the ride but the playhead holds its track feature. */
+ *  glued to, and its `offset` within that section — section-local arclength (m). the
+ *  park stays arclength-anchored regardless of `Track.domain`: it's a geometric feature
+ *  of the ride (where on the curve the cart sits), projected onto the chart's own axis
+ *  through `dToU` like any other arclength-authored subject — not a per-section-domain
+ *  quantity. the parked cart is derived from this through the live bake, so an edit
+ *  re-times the ride but the playhead holds its track feature. */
 export interface Park {
     section: number;
     offset: number;

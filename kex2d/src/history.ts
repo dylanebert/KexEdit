@@ -572,18 +572,18 @@ export function materializeCustom(h: History, ecs: State, id: number): void {
  *  the pair jump-consistent with `composeTangent`'s per-drag coupling. keyframe-scoped (the mode is
  *  a per-keyframe property); records nothing when the tangent is unchanged (picking the current
  *  mode). the menu only offers this on a keyframe that already holds explicit handles, so a derived
- *  keyframe (no mode to edit) never reaches it. `pxPerM`/`pyPerG` are the live chart axis scales. */
+ *  keyframe (no mode to edit) never reaches it. `pxPerU`/`pyPerG` are the live chart axis scales. */
 export function setForceTangentMode(
     h: History,
     ecs: State,
     id: number,
     mode: TangentMode,
-    pxPerM: number,
+    pxPerU: number,
     pyPerG: number,
 ): void {
     beginForceTangent(ecs, id);
     const cur = forceTangent(ecs, id);
-    if (cur) setForceTangent(ecs, id, retargetMode(cur, mode, pxPerM, pyPerG));
+    if (cur) setForceTangent(ecs, id, retargetMode(cur, mode, pxPerU, pyPerG));
     commit(h);
 }
 

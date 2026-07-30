@@ -60,11 +60,11 @@ import {
     navWindow,
     nodeArc,
     nudgeForces,
-    pxToS,
+    pxToU,
     S_GRID,
     snap,
     snapAxis,
-    sToPx,
+    uToPx,
     T_GRID,
     ticks,
     timeToArc,
@@ -210,7 +210,7 @@ let w = $state(0);
 let h = $state(0);
 // the user's view intent; `clamped` re-fits it to the live width/track length, so a
 // resize or a track edit never writes back into `view` (which would loop the effect).
-let view: View = $state({ pan: 0, pxPerM: 10 });
+let view: View = $state({ pan: 0, pxPerU: 10 });
 let framed = false;
 // while the section-end handle drags, the chart's addressable span FREEZES at its
 // high-water mark (in axis units) so the pan clamp never shifts the view under the cursor
@@ -424,7 +424,7 @@ function pickDomain(target: Domain): void {
     convertDomain(history, ecs, target); // rejects (writing nothing) on the active row and with
     // nothing convertible — the same reading the row is grayed on
 }
-// …and the view follows the DOMAIN, not the pick: `view.pan`/`pxPerM` are axis-unit quantities, so
+// …and the view follows the DOMAIN, not the pick: `view.pan`/`pxPerU` are axis-unit quantities, so
 // whenever the unit changes the window is re-expressed to hold the same stretch of ride — the ruler
 // reads as re-labelled rather than jumped. Watching the domain (rather than re-framing inside
 // `pickDomain`) is what makes an UNDO and a redo of the conversion land the same way, which is the
@@ -451,8 +451,8 @@ $effect(() => {
         if (editor.dragging) return;
         if (lastDomain !== null && lastDomain !== domain && winFrac !== null) {
             const span = uTotal + marginArc(uTotal, mFloor);
-            const pxPerM = chartW / Math.max(1e-6, (winFrac.r - winFrac.l) * span);
-            view = clampView({ pan: winFrac.l * span * pxPerM, pxPerM }, chartW, uTotal, mFloor);
+            const pxPerU = chartW / Math.max(1e-6, (winFrac.r - winFrac.l) * span);
+            view = clampView({ pan: winFrac.l * span * pxPerU, pxPerU }, chartW, uTotal, mFloor);
         }
         lastDomain = domain;
         // off the freshly-written `view` (the `clamped` derived is a frame behind inside untrack).
@@ -483,7 +483,7 @@ const yToG = (py: number): number => {
     return yView.lo + (1 - (py - TOP) / inner) * (yView.hi - yView.lo);
 };
 // px-per-g magnitude for the g-axis (y grows downward, so a +Δg is −Δpy) — the vertical
-// counterpart of `clamped.pxPerM` (px per metre on s). the tangent-handle geometry maps
+// counterpart of `clamped.pxPerU` (px per metre on s). the tangent-handle geometry maps
 // (Δs, Δg) handle offsets through both scales.
 const pyPerG = $derived.by((): number => {
     const inner = Math.max(1, h - BOT_PAD - TOP);
@@ -607,6 +607,8 @@ const forcePts = $derived.by((): ForcePt[] => {
         if (c.kind !== SectionKind.Force) continue;
         for (const p of sectionForces(ecs, c.id)) {
             const u = toGlobalU(spans, c.id, p.s);
+            // unreachable today (`clips` is built from the same `spans`), but a stale span
+            // dropping a point for one frame beats painting it at NaN.
             if (u === null) continue;
             res.push({ id: p.id, section: c.id, s: p.s, g: p.g, u, startU: c.u0, len: c.len });
         }
@@ -667,8 +669,8 @@ const multiForce = $derived.by((): boolean => {
 
 // the axis pair: a coordinate on the chart's own axis ↔ its canvas x. Every native subject (a
 // force keyframe, a handle, an extent, a boundary) goes straight through these.
-const uPx = (u: number): number => LEFT_GUT + sToPx(clamped, u);
-const uAtPx = (px: number): number => pxToS(clamped, px - LEFT_GUT);
+const uPx = (u: number): number => LEFT_GUT + uToPx(clamped, u);
+const uAtPx = (px: number): number => pxToU(clamped, px - LEFT_GUT);
 // the PROJECTED pair, for an arclength-authored subject (the recovered curve, a geo node tick,
 // the cart's park): global distance `d` → canvas x, and back.
 const markerX = (d: number): number => uPx(uOf(d));
@@ -690,12 +692,12 @@ let snapY: number | null = $state(null); // an active g-axis snap: horizontal gu
 // moving edge (the track end) is a target.
 function sTargets(opts: { exclude?: Set<number>; playhead: boolean; trackEnd: boolean }): number[] {
     const v = clamped;
-    const out: number[] = [sToPx(v, 0)];
-    for (const b of bounds) out.push(sToPx(v, b));
-    if (opts.trackEnd) out.push(sToPx(v, uTotal));
-    for (const p of forcePts) if (!opts.exclude?.has(p.id)) out.push(sToPx(v, p.u));
+    const out: number[] = [uToPx(v, 0)];
+    for (const b of bounds) out.push(uToPx(v, b));
+    if (opts.trackEnd) out.push(uToPx(v, uTotal));
+    for (const p of forcePts) if (!opts.exclude?.has(p.id)) out.push(uToPx(v, p.u));
     // the cart rides in arclength, so the playhead is the one landmark here that projects.
-    if (opts.playhead && paused && cartS !== null) out.push(sToPx(v, uOf(cartS)));
+    if (opts.playhead && paused && cartS !== null) out.push(uToPx(v, uOf(cartS)));
     return out;
 }
 // the g-axis snap targets in chart py (the vertical magnet): content landmarks only
@@ -720,7 +722,7 @@ function chartU(e: MouseEvent): number {
 }
 
 // double-click the chart drops a force point at that s, in whatever force section the
-// cursor is over (resolved by arclength — no section pre-selection), ON the authored
+// cursor is over (resolved on the chart's native axis — no section pre-selection), ON the authored
 // profile (g = the profile's value there — the DAW/AE envelope-insertion identity: a
 // new point never bends the curve, and drags from a known start). over a geo section
 // (or empty), it's a no-op.
@@ -738,8 +740,8 @@ function chartCreate(e: MouseEvent): void {
             uTotal,
             paused && cartS !== null ? uOf(cartS) : null,
         );
-        const hit = snap(sToPx(clamped, u), targets);
-        if (hit !== null) u = clamp(pxToS(clamped, hit), 0, uTotal);
+        const hit = snap(uToPx(clamped, u), targets);
+        if (hit !== null) u = clamp(pxToU(clamped, hit), 0, uTotal);
     }
     const c = clips.find((x) => x.kind === SectionKind.Force && u >= x.u0 && u <= x.u1);
     if (!c) return; // not over a force section
@@ -792,9 +794,9 @@ function applyDrag(): void {
         // is already in the store's unit: `− startU` is the whole write path.
         const uAnchor = dragStartU + sAnchor;
         const targets = sTargets({ exclude: dragMemberSet, playhead: true, trackEnd: true });
-        const startPx = sToPx(clamped, dragStartU + dragS0); // gesture-start landmark
-        const r = snapAxis(active, sToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
-            pxToS(clamped, px), startPx);
+        const startPx = uToPx(clamped, dragStartU + dragS0); // gesture-start landmark
+        const r = snapAxis(active, uToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
+            pxToU(clamped, px), startPx);
         if (r.guide !== null) {
             // the gesture-start magnet resolves to the GRAB VALUE, never a px round-trip: the
             // round-trip drops the last ulp, so a gesture returned to its start has to land on
@@ -1182,7 +1184,7 @@ function tangentFor(id: number, side: "in" | "out", ds: number, dg: number): For
     // a handle's Δs is stored in the same unit as the keyframe's own s (the domain conversion
     // scales it with the axis), so the Aligned/Mirror coupling's screen-collinearity test reads it
     // through the axis scale itself — no per-keyframe linearization.
-    return composeTangent(side, ds, dg, prevS, pt.s, nextS, forceTangent(ecs, id), clamped.pxPerM, pyPerG);
+    return composeTangent(side, ds, dg, prevS, pt.s, nextS, forceTangent(ecs, id), clamped.pxPerU, pyPerG);
 }
 function tanUp(): void {
     if (dragTan === null) return;
@@ -1414,7 +1416,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
 // set the addressed keyframe's tangent mode as one undo entry (the geo `pickMode` analogue),
 // reconciling the handle pair in chart pixels so it stays jump-consistent with the drag coupling.
 function pickForceMode(id: number, mode: TangentMode): void {
-    setForceTangentMode(history, ecs, id, mode, clamped.pxPerM, pyPerG);
+    setForceTangentMode(history, ecs, id, mode, clamped.pxPerU, pyPerG);
 }
 // choose Custom on the addressed segment (this keyframe → the next): step into handle edit on
 // this keyframe and materialize the segment's two bounding sides — this keyframe's out and the
@@ -1724,7 +1726,7 @@ const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-e
 function applyLen(): void {
     if (lenId === null) return;
     const cv = clampView(view, chartW, uFrozen ?? uTotal, mFloor);
-    let cumU = pxToS(cv, lenCx - LEFT_GUT);
+    let cumU = pxToU(cv, lenCx - LEFT_GUT);
     snapX = null;
     if (snapActive(lenMod)) {
         const ownU: number[] = [];
@@ -1732,7 +1734,7 @@ function applyLen(): void {
         const targets = trimTargets(cv, ownU, paused && cartS !== null ? uOf(cartS) : null);
         const hit = snap(lenCx - LEFT_GUT, targets);
         if (hit !== null) {
-            const cand = pxToS(cv, hit);
+            const cand = pxToU(cv, hit);
             if (cand - lenStartU >= minForceExtent(domain)) {
                 cumU = cand; // only latch a target the extent floor will actually honor
                 snapX = hit;
@@ -2066,7 +2068,7 @@ function panDown(e: PointerEvent): void {
 function panMove(e: PointerEvent): void {
     if (!panning) return; // drag content right → reveal earlier distance → pan decreases
     view = clampView(
-        { pan: pan0 - (e.clientX - panX0), pxPerM: clamped.pxPerM },
+        { pan: pan0 - (e.clientX - panX0), pxPerU: clamped.pxPerU },
         chartW,
         uTotal,
         mFloor,
@@ -2099,7 +2101,7 @@ function navDown(e: PointerEvent, mode: "pan" | "l" | "r"): void {
     if (eid === null || sTotal <= 0) return;
     e.preventDefault();
     e.stopPropagation(); // an edge press must not also start a window pan
-    navDrag = { mode, grab: navSAt(e.clientX) - pxToS(clamped, 0) };
+    navDrag = { mode, grab: navSAt(e.clientX) - pxToU(clamped, 0) };
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", navMove);
     window.addEventListener("pointerup", navUp);
@@ -2321,8 +2323,8 @@ function scrubTo(e: PointerEvent): void {
     // its own indicator so no extra guide flashes. Ctrl/Cmd bypasses for a fine scrub.
     let s = clamp(dAtPx(e.clientX - rect.left), 0, sTotal);
     if (snapActive(e.ctrlKey || e.metaKey)) {
-        const hit = snap(sToPx(clamped, uOf(s)), sTargets({ playhead: false, trackEnd: true }));
-        if (hit !== null) s = clamp(dOf(pxToS(clamped, hit)), 0, sTotal);
+        const hit = snap(uToPx(clamped, uOf(s)), sTargets({ playhead: false, trackEnd: true }));
+        if (hit !== null) s = clamp(dOf(pxToU(clamped, hit)), 0, sTotal);
     }
     parkAtArc(ecs, eid, s);
 }
@@ -2460,7 +2462,7 @@ onMount(() => {
         if (panH) {
             const dx = e.shiftKey ? e.deltaY : e.deltaX;
             view = clampView(
-                { pan: clamped.pan + dx, pxPerM: clamped.pxPerM },
+                { pan: clamped.pan + dx, pxPerU: clamped.pxPerU },
                 chartW,
                 uTotal,
                 mFloor,
@@ -2582,7 +2584,7 @@ onMount(() => {
         const k = (window as unknown as { __kex?: Record<string, unknown> }).__kex;
         if (k) {
             k.gRange = (): [number, number] => [yView.lo, yView.hi];
-            k.xView = (): [number, number] => [view.pan, view.pxPerM];
+            k.xView = (): [number, number] => [view.pan, view.pxPerU];
             // the domain the chart READS (`Track.domain`, tick-derived so a flow polls it), and
             // every keyframe's coordinate on that axis — paired with the stored `s` the flow
             // asserts held, since the time-constrained assertion is exactly "every other

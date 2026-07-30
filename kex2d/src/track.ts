@@ -1458,7 +1458,7 @@ export function applyConvertGeo(
 // each mutates the section chain directly; `history` wraps it in a whole-track
 // snapshot pair so undo is byte-identical. geo split/join re-express nodes rigidly
 // in the boundary frame (`place`/`localize`, exact to f32 round-off); force
-// split/join partition + rebase points by arclength (lossless).
+// split/join partition + rebase points in the track domain's unit (lossless).
 
 /** shift every section at or past `threshold` order by `delta` — makes room to
  *  insert (delta +1) or closes a gap after a remove (delta −1). */
@@ -1582,7 +1582,8 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
     return bId;
 }
 
-/** split a force section at arclength `s` (0 < s < length): the head keeps extent
+/** split a force section at `s` (0 < s < length), in the track domain's unit
+ *  (meters of arclength, or seconds of section-local time): the head keeps extent
  *  [0, s] and its points there; a new section takes extent [s, length] with the
  *  remaining points rebased to its entry (a lossless partition). **both halves
  *  inherit the baking step** (as a geo split does): a split partitions the profile at

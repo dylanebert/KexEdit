@@ -10,7 +10,7 @@
  *  (the recovered force curve, a geo node tick, the cart's park) — identity on distance, the live
  *  bake's arc↔time table on time. `T_GRID` and `marginFloor` are the two axis-picked constants
  *  (snap quantum, lead-out floor) and `ticks` picks the unit suffix; everything else below
- *  (`View`, `sToPx`/`pxToS`, `zoomAt`, `snap`) reads `u` with no further branching.
+ *  (`View`, `uToPx`/`pxToU`, `zoomAt`, `snap`) reads `u` with no further branching.
  *
  *  ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom, _renderTicks,
  *  findGoodStep). */
@@ -22,11 +22,12 @@ import { type ForceTangent, V0 } from "./track";
 
 const clampN = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 
-/** view-state: a single affine over the distance axis. `pan` is the content pixel at
- *  the left edge (scroll-like); `pxPerM` is the horizontal scale (px per meter). */
+/** view-state: a single affine over the chart's axis `u` (distance or time, per
+ *  `Track.domain`). `pan` is the content pixel at the left edge (scroll-like);
+ *  `pxPerU` is the horizontal scale (px per axis unit). */
 export interface View {
     pan: number;
-    pxPerM: number;
+    pxPerU: number;
 }
 
 export interface Tick {
@@ -39,13 +40,13 @@ export interface Tick {
  *  short track always frames zoomed out a bit with real empty ruler to build into (the feel
  *  call, 2026-07-21). also the degenerate guard: an empty track's span never collapses. */
 const MARGIN_M = 50;
-/** zoom-in ceiling — a pixel-per-meter cap so the axis can't blow up. */
-export const MAX_PX_PER_M = 4000;
+/** zoom-in ceiling — a px-per-axis-unit cap so the scale can't blow up. */
+export const MAX_PX_PER_U = 4000;
 /** target spacing between labeled major ticks, in px. */
 const TARGET_TICK_PX = 80;
 
-export const sToPx = (v: View, s: number): number => s * v.pxPerM - v.pan;
-export const pxToS = (v: View, px: number): number => (px + v.pan) / v.pxPerM;
+export const uToPx = (v: View, s: number): number => s * v.pxPerU - v.pan;
+export const pxToU = (v: View, px: number): number => (px + v.pan) / v.pxPerU;
 
 /** the arclength (m) between a section's entry sample (`sectionInfo.startSample`) and a geo
  *  node's own landing sample (`Handle.sample`): the partial sum of `bakeOut.ds` (the
@@ -71,23 +72,22 @@ export function nodeArc(ds: Float32Array, startSample: number, sample: number): 
  *  lead-*in* (no negative distance on the ruler). the floor is the one DIMENSIONAL constant on
  *  this axis, so it's the caller's to supply in the active domain (`marginFloor`); everything
  *  else here reads the axis coordinate and needs no unit. */
-export const marginArc = (sTotal: number, floor = MARGIN_M): number =>
-    Math.max(0.12 * sTotal, floor);
+export const marginArc = (sTotal: number, floor: number): number => Math.max(0.12 * sTotal, floor);
 
 /** clamp a view to the track extent — a PAN clamp, not a zoom clamp. the x-axis is a
  *  document axis (the spatial address of every clip and keyframe), not an auto-fit value
- *  axis, so a content edit that shrinks the track NEVER rescales the ruler: `pxPerM` is
- *  only capped at `MAX_PX_PER_M` (no min-scale floor — zoom changes only by explicit
+ *  axis, so a content edit that shrinks the track NEVER rescales the ruler: `pxPerU` is
+ *  only capped at `MAX_PX_PER_U` (no min-scale floor — zoom changes only by explicit
  *  navigation). the left edge anchors at s=0 (a ride starts at launch, so the ruler shows
  *  no negative distance — the After Effects / NLE convention) and the margin is a
  *  right-side lead-out. a shrunk track just leaves empty ruler on the right; when the
  *  track fits the view the pan range collapses to 0 → left-aligned. */
-export function clampView(v: View, width: number, sTotal: number, floor = MARGIN_M): View {
+export function clampView(v: View, width: number, sTotal: number, floor: number): View {
     const m = marginArc(sTotal, floor);
-    const pxPerM = Math.min(MAX_PX_PER_M, v.pxPerM);
-    const panMax = Math.max(0, (sTotal + m) * pxPerM - width);
+    const pxPerU = Math.min(MAX_PX_PER_U, v.pxPerU);
+    const panMax = Math.max(0, (sTotal + m) * pxPerU - width);
     const pan = Math.min(panMax, Math.max(0, v.pan));
-    return { pan, pxPerM };
+    return { pan, pxPerU };
 }
 
 /** geometric zoom by `factor` anchored at `anchorPx`: the meter under the cursor
@@ -99,25 +99,25 @@ export function zoomAt(
     factor: number,
     width: number,
     sTotal: number,
-    floor = MARGIN_M,
+    floor: number,
 ): View {
-    const sAnchor = pxToS(v, anchorPx);
+    const sAnchor = pxToU(v, anchorPx);
     // floor at min(current, fit): a below-fit view (after a content shrink) can zoom-out
     // no further but is NEVER pushed UP to the fit — a zoom-out tick must not read as a
     // zoom-in. above fit, the floor is the fit scale. `fit` is `fitScale` — the PADDED
     // framing scale (`frameAll`'s), so a zoom-out returns to exactly the initial/`F` framing,
     // padding included (the padded span `sTotal + marginArc` stays reachable on the way out).
-    const lo = Math.min(v.pxPerM, fitScale(width, sTotal, floor));
-    const pxPerM = Math.min(MAX_PX_PER_M, Math.max(lo, v.pxPerM * factor));
-    return clampView({ pan: sAnchor * pxPerM - anchorPx, pxPerM }, width, sTotal, floor);
+    const lo = Math.min(v.pxPerU, fitScale(width, sTotal, floor));
+    const pxPerU = Math.min(MAX_PX_PER_U, Math.max(lo, v.pxPerU * factor));
+    return clampView({ pan: sAnchor * pxPerU - anchorPx, pxPerU }, width, sTotal, floor);
 }
 
-/** the fit scale (px per meter) the padded framing uses: fit the whole addressable span
+/** the fit scale (px per axis unit) the padded framing uses: fit the whole addressable span
  *  `sTotal + marginArc` across the width. the ONE source for both the initial/`F` frame
  *  (`frameAll`) and the explicit-navigation zoom-out floor (`zoomAt`), so a zoom-out returns
  *  to exactly the framing it started at — the padding is a permanent part of the span, always
  *  framed. */
-const fitScale = (width: number, sTotal: number, floor = MARGIN_M): number =>
+const fitScale = (width: number, sTotal: number, floor: number): number =>
     width > 0 ? width / (sTotal + marginArc(sTotal, floor)) : 1;
 
 /** the view that frames the whole addressable span `[0, sTotal + marginArc]` (fit scale,
@@ -126,9 +126,9 @@ const fitScale = (width: number, sTotal: number, floor = MARGIN_M): number =>
  *  snap, the UX is consistent at every length. the one explicit-navigation path that sets
  *  zoom to fit — used for the initial frame and the F frame-content key, never a content edit
  *  (those pan only). */
-export const frameAll = (width: number, sTotal: number, floor = MARGIN_M): View => ({
+export const frameAll = (width: number, sTotal: number, floor: number): View => ({
     pan: 0,
-    pxPerM: Math.min(MAX_PX_PER_M, fitScale(width, sTotal, floor)),
+    pxPerU: Math.min(MAX_PX_PER_U, fitScale(width, sTotal, floor)),
 });
 
 /** the navigator window: the visible span [0, width] expressed as `{l, r}` fractions
@@ -137,11 +137,11 @@ export function navWindow(
     v: View,
     width: number,
     sTotal: number,
-    floor = MARGIN_M,
+    floor: number,
 ): { l: number; r: number } {
     const total = sTotal + marginArc(sTotal, floor);
     const frac = (s: number): number => Math.min(1, Math.max(0, s / total));
-    return { l: frac(pxToS(v, 0)), r: frac(pxToS(v, width)) };
+    return { l: frac(pxToU(v, 0)), r: frac(pxToU(v, width)) };
 }
 
 /** apply a navigator drag and return the clamped view. `pan` slides the window (`grab`
@@ -154,24 +154,24 @@ export function navDragView(
     mode: "pan" | "l" | "r",
     curS: number,
     grabS: number,
-    floor = MARGIN_M,
+    floor: number,
 ): View {
-    const lo = pxToS(v, 0);
-    const hi = pxToS(v, width);
-    const minSpan = width / MAX_PX_PER_M; // the zoom-in ceiling, as a meter-span floor
+    const lo = pxToU(v, 0);
+    const hi = pxToU(v, width);
+    const minSpan = width / MAX_PX_PER_U; // the zoom-in ceiling, as a meter-span floor
     if (mode === "pan")
         return clampView(
-            { pan: (curS - grabS) * v.pxPerM, pxPerM: v.pxPerM },
+            { pan: (curS - grabS) * v.pxPerU, pxPerU: v.pxPerU },
             width,
             sTotal,
             floor,
         );
     if (mode === "l") {
         const pps = width / (hi - Math.min(curS, hi - minSpan)); // anchor the right edge
-        return clampView({ pan: hi * pps - width, pxPerM: pps }, width, sTotal, floor);
+        return clampView({ pan: hi * pps - width, pxPerU: pps }, width, sTotal, floor);
     }
     const pps = width / (Math.max(curS, lo + minSpan) - lo); // anchor the left edge
-    return clampView({ pan: lo * pps, pxPerM: pps }, width, sTotal, floor);
+    return clampView({ pan: lo * pps, pxPerU: pps }, width, sTotal, floor);
 }
 
 /** nearest 1-2-5×10ⁿ to `x` — the nice-number tick step. breakpoints are the
@@ -276,16 +276,16 @@ export function yGrow(
 
 /** edge-scroll pan-to-follow for a horizontal drag (the x-analogue of `yGrow`): pan
  *  the view to follow a cursor dragged PAST the chart — left of `left` or right of
- *  `right` — by an amount proportional to the overshoot (× `rate`). `pxPerM` is
+ *  `right` — by an amount proportional to the overshoot (× `rate`). `pxPerU` is
  *  untouched (no zoom under the drag). a cursor inside the chart returns the view
  *  UNCHANGED by identity (so the caller skips). the left pan floors at 0 — the ruler
  *  never shows negative distance (the launch is s=0). per-frame application keeps it
  *  scrolling while the cursor is held beyond the edge. */
 export function xGrow(v: View, cx: number, left: number, right: number, rate: number): View {
-    if (cx > right) return { pan: v.pan + (cx - right) * rate, pxPerM: v.pxPerM };
+    if (cx > right) return { pan: v.pan + (cx - right) * rate, pxPerU: v.pxPerU };
     if (cx < left) {
         const pan = Math.max(0, v.pan - (left - cx) * rate);
-        return pan === v.pan ? v : { pan, pxPerM: v.pxPerM };
+        return pan === v.pan ? v : { pan, pxPerU: v.pxPerU };
     }
     return v; // cursor within the chart — unchanged (same reference → caller skips)
 }
@@ -431,8 +431,8 @@ export function nudgeForces(
  *  because the chart's s and g axes have different scales), keeping its own length; a Mirror keyframe
  *  additionally matches the dragged side's length (Blender aligned/mirrored handles). a `Free`
  *  keyframe never couples, and a materialization that would customize the absent neighbour is not one
- *  the coupling reaches (it fires only when both sides are already explicit). `pxPerM` is the s-axis
- *  scale (px per metre), `pyPerG` the force-axis scale (px per g). */
+ *  the coupling reaches (it fires only when both sides are already explicit). `pxPerU` is the
+ *  chart's own axis scale (px per axis unit), `pyPerG` the force-axis scale (px per g). */
 export function composeTangent(
     side: "in" | "out",
     ds: number,
@@ -441,7 +441,7 @@ export function composeTangent(
     s: number,
     nextS: number | null,
     existing: ForceTangent | undefined,
-    pxPerM: number,
+    pxPerU: number,
     pyPerG: number,
 ): ForceTangent {
     if (side === "out") ds = clampN(ds, 0, nextS !== null ? nextS - s : 0);
@@ -453,7 +453,7 @@ export function composeTangent(
     else inn = { ds, dg };
     if ((mode === TangentMode.Aligned || mode === TangentMode.Mirror) && inn && out) {
         const drag = side === "out" ? out : inn;
-        const px = drag.ds * pxPerM;
+        const px = drag.ds * pxPerU;
         const py = -drag.dg * pyPerG;
         const len = Math.hypot(px, py);
         if (len > 1e-6) {
@@ -462,10 +462,10 @@ export function composeTangent(
             const olen =
                 mode === TangentMode.Mirror
                     ? len
-                    : Math.hypot(other.ds * pxPerM, other.dg * pyPerG);
+                    : Math.hypot(other.ds * pxPerU, other.dg * pyPerG);
             const nx = (-px / len) * olen;
             const ny = (-py / len) * olen;
-            const noff: Offset = { ds: nx / pxPerM, dg: -ny / pyPerG };
+            const noff: Offset = { ds: nx / pxPerU, dg: -ny / pyPerG };
             if (side === "out") inn = noff;
             else out = noff;
         }
@@ -483,12 +483,12 @@ export function composeTangent(
 export function retargetMode(
     tan: ForceTangent,
     mode: TangentMode,
-    pxPerM: number,
+    pxPerU: number,
     pyPerG: number,
 ): ForceTangent {
     if (mode === TangentMode.Free || !tan.in || !tan.out) return { ...tan, mode };
-    const inPx = { x: tan.in.ds * pxPerM, y: -tan.in.dg * pyPerG };
-    const outPx = { x: tan.out.ds * pxPerM, y: -tan.out.dg * pyPerG };
+    const inPx = { x: tan.in.ds * pxPerU, y: -tan.in.dg * pyPerG };
+    const outPx = { x: tan.out.ds * pxPerU, y: -tan.out.dg * pyPerG };
     const outLen = Math.hypot(outPx.x, outPx.y);
     const inLen = Math.hypot(inPx.x, inPx.y);
     // the forward (departure) direction: the OUT handle when it has length, else IN back-projected.
@@ -507,8 +507,8 @@ export function retargetMode(
     const outLenNew = mode === TangentMode.Mirror ? survivorLen : outLen;
     const inLenNew = mode === TangentMode.Mirror ? survivorLen : inLen;
     // out reaches forward, in reaches backward (anti-parallel through the keyframe).
-    const out: Offset = { ds: (fx * outLenNew) / pxPerM, dg: (fy * outLenNew) / -pyPerG };
-    const inn: Offset = { ds: (-fx * inLenNew) / pxPerM, dg: (-fy * inLenNew) / -pyPerG };
+    const out: Offset = { ds: (fx * outLenNew) / pxPerU, dg: (fy * outLenNew) / -pyPerG };
+    const inn: Offset = { ds: (-fx * inLenNew) / pxPerU, dg: (-fy * inLenNew) / -pyPerG };
     return { mode, in: inn, out };
 }
 
@@ -521,8 +521,8 @@ export function retargetMode(
  *  (self-snap). Projected through the view `v` so the pull is a fixed screen distance. */
 export function trimTargets(v: View, ownS: Iterable<number>, playheadS: number | null): number[] {
     const out: number[] = [];
-    for (const s of ownS) out.push(sToPx(v, s));
-    if (playheadS !== null) out.push(sToPx(v, playheadS));
+    for (const s of ownS) out.push(uToPx(v, s));
+    if (playheadS !== null) out.push(uToPx(v, playheadS));
     return out;
 }
 
@@ -537,10 +537,10 @@ export function creationTargets(
     sTotal: number,
     playheadS: number | null,
 ): number[] {
-    const out = [sToPx(v, 0)];
-    for (const b of bounds) out.push(sToPx(v, b));
-    out.push(sToPx(v, sTotal));
-    if (playheadS !== null) out.push(sToPx(v, playheadS));
+    const out = [uToPx(v, 0)];
+    for (const b of bounds) out.push(uToPx(v, b));
+    out.push(uToPx(v, sTotal));
+    if (playheadS !== null) out.push(uToPx(v, playheadS));
     return out;
 }
 
@@ -618,15 +618,15 @@ function fmtTime(t: number, step: number): string {
  *  the projection, it only picks the unit suffix (the readout-suffix branch the Locked
  *  decision sanctions). */
 export function ticks(v: View, width: number, domain: Domain = Domain.Distance): Tick[] {
-    if (!(v.pxPerM > 0) || width <= 0) return [];
-    const step = niceStep(TARGET_TICK_PX / v.pxPerM);
-    const from = pxToS(v, 0);
-    const to = pxToS(v, width);
+    if (!(v.pxPerU > 0) || width <= 0) return [];
+    const step = niceStep(TARGET_TICK_PX / v.pxPerU);
+    const from = pxToU(v, 0);
+    const to = pxToU(v, width);
     const fmt = domain === Domain.Time ? fmtTime : fmtDist;
     const out: Tick[] = [];
     for (let s = Math.floor(from / step) * step; s <= to + step * 0.5; s += step) {
         const sv = Math.abs(s) < step * 1e-6 ? 0 : s; // snap fp drift to a clean 0
-        out.push({ s: sv, px: sToPx(v, sv), label: fmt(sv, step) });
+        out.push({ s: sv, px: uToPx(v, sv), label: fmt(sv, step) });
     }
     return out;
 }

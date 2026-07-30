@@ -332,5 +332,6 @@ export function chain(entry0: Entry, sections: readonly Section[], maxSamples = 
         entry = r.exit;
     }
 
-    return { posX, posY, theta, v, fN, ds, count: off + 1, ranges, exits, results };
+    const count = Math.min(off + 1, maxSamples);
+    return { posX, posY, theta, v, fN, ds, count, ranges, exits, results };
 }

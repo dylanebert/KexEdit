@@ -127,7 +127,7 @@ function oklchToHex(l: number, c: number, h: number): string {
  *  with no bake info yet (mid-bake / just-created). The shared substrate behind every
  *  kind-colored surface — the viewport polyline (render.ts), the timeline chart curve
  *  and navigator minimap (Timeline.svelte) — each walks these segments and does its
- *  own projection (screen xs/ys, chart `sToPx`/`yOf`, the nav's own mapping) and any
+ *  own projection (screen xs/ys, chart `uToPx`/`yOf`, the nav's own mapping) and any
  *  surface-specific overlay (the viewport's infeasible/selection passes); this
  *  function is the one place that loops sections and resolves kind → color. */
 export interface KindSegment {

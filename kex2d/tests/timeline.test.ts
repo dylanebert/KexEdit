@@ -14,19 +14,19 @@ import {
     type Mapping,
     marginArc,
     marginFloor,
-    MAX_PX_PER_M,
+    MAX_PX_PER_U,
     navDragView,
     navWindow,
     niceStep,
     nodeArc,
     nudgeForces,
-    pxToS,
+    pxToU,
     retargetMode,
     S_GRID,
     snap,
     snapAxis,
     SNAP_PX,
-    sToPx,
+    uToPx,
     T_GRID,
     ticks,
     timeToArc,
@@ -41,6 +41,10 @@ import {
     zoomAt,
 } from "../src/timeline";
 import { V0 } from "../src/track";
+
+// the distance-domain lead-out floor — most of these tests exercise the pure math over a
+// generic axis unit, so they pass this in wherever `floor` used to default to `MARGIN_M`.
+const M = marginFloor(Domain.Distance);
 
 describe("timeToArc / arcToTime — display mapping", () => {
     // a non-uniform monotone table (arc accelerates while time is even): the
@@ -69,23 +73,23 @@ describe("timeToArc / arcToTime — display mapping", () => {
     });
 });
 
-describe("sToPx / pxToS — affine roundtrip", () => {
+describe("uToPx / pxToU — affine roundtrip", () => {
     const views: View[] = [
-        { pan: 0, pxPerM: 100 },
-        { pan: 250, pxPerM: 37.5 },
-        { pan: -80, pxPerM: 1000 },
+        { pan: 0, pxPerU: 100 },
+        { pan: 250, pxPerU: 37.5 },
+        { pan: -80, pxPerU: 1000 },
     ];
-    test("pxToS ∘ sToPx is identity", () => {
+    test("pxToU ∘ uToPx is identity", () => {
         for (const v of views) {
             for (const t of [0, 0.5, 3.2, 12.75]) {
-                expect(pxToS(v, sToPx(v, t))).toBeCloseTo(t, 9);
+                expect(pxToU(v, uToPx(v, t))).toBeCloseTo(t, 9);
             }
         }
     });
-    test("sToPx ∘ pxToS is identity", () => {
+    test("uToPx ∘ pxToU is identity", () => {
         for (const v of views) {
             for (const px of [0, 17, 480, 1000]) {
-                expect(sToPx(v, pxToS(v, px))).toBeCloseTo(px, 9);
+                expect(uToPx(v, pxToU(v, px))).toBeCloseTo(px, 9);
             }
         }
     });
@@ -176,11 +180,11 @@ describe("marginArc — lead-out", () => {
     // the floor is a SIGNIFICANT absolute lead-out (feel check 2026-07-21): a short track
     // always frames zoomed out a bit, with real empty ruler to build into on the right.
     test("short tracks get the full absolute floor", () => {
-        expect(marginArc(10)).toBe(50);
-        expect(marginArc(0)).toBe(50);
+        expect(marginArc(10, M)).toBe(50);
+        expect(marginArc(0, M)).toBe(50);
     });
     test("long tracks keep the proportional lead-out past the floor", () => {
-        expect(marginArc(1000)).toBeCloseTo(120, 9);
+        expect(marginArc(1000, M)).toBeCloseTo(120, 9);
     });
 });
 
@@ -188,54 +192,54 @@ describe("clampView — pan clamp, no forced zoom", () => {
     const W = 1000;
     const T = 10;
     // the x-axis is a DOCUMENT axis: clampView clamps pan but NEVER forces a zoom. it used
-    // to floor pxPerM at the whole-track fit; that made a content edit rescale the ruler.
+    // to floor pxPerU at the whole-track fit; that made a content edit rescale the ruler.
     test("a zoomed-OUT view is left as-is (no min-scale floor)", () => {
-        const fit = W / (T + marginArc(T)); // the padded fit scale, for reference
-        expect(clampView({ pan: 0, pxPerM: fit / 2 }, W, T).pxPerM).toBeCloseTo(fit / 2, 9);
-        expect(clampView({ pan: 0, pxPerM: 1 }, W, T).pxPerM).toBe(1);
+        const fit = W / (T + marginArc(T, M)); // the padded fit scale, for reference
+        expect(clampView({ pan: 0, pxPerU: fit / 2 }, W, T, M).pxPerU).toBeCloseTo(fit / 2, 9);
+        expect(clampView({ pan: 0, pxPerU: 1 }, W, T, M).pxPerU).toBe(1);
     });
-    test("zoom-in is still capped at MAX_PX_PER_M", () => {
-        expect(clampView({ pan: 0, pxPerM: MAX_PX_PER_M * 3 }, W, T).pxPerM).toBe(MAX_PX_PER_M);
+    test("zoom-in is still capped at MAX_PX_PER_U", () => {
+        expect(clampView({ pan: 0, pxPerU: MAX_PX_PER_U * 3 }, W, T, M).pxPerU).toBe(MAX_PX_PER_U);
     });
-    test("shrinking the track leaves pxPerM and the visible window unchanged", () => {
+    test("shrinking the track leaves pxPerU and the visible window unchanged", () => {
         // the no-rescale-on-shrink law: a content edit that shortens the track (here 20m →
         // 8m, while still overflowing the zoomed-in view) never rescales the ruler and never
         // repans the window — the author keeps looking at exactly the same [2, 7]m.
-        const v: View = { pan: 400, pxPerM: 200 }; // shows [2, 7]m
-        const long = clampView(v, W, 20);
-        const short = clampView(v, W, 8);
-        expect(short.pxPerM).toBe(long.pxPerM); // no rescale
-        expect(pxToS(short, 0)).toBeCloseTo(pxToS(long, 0), 9); // window held
-        expect(pxToS(short, W)).toBeCloseTo(pxToS(long, W), 9);
+        const v: View = { pan: 400, pxPerU: 200 }; // shows [2, 7]m
+        const long = clampView(v, W, 20, M);
+        const short = clampView(v, W, 8, M);
+        expect(short.pxPerU).toBe(long.pxPerU); // no rescale
+        expect(pxToU(short, 0)).toBeCloseTo(pxToU(long, 0), 9); // window held
+        expect(pxToU(short, W)).toBeCloseTo(pxToU(long, W), 9);
     });
     test("frameAll frames [0, sTotal+padding] exactly, left anchored (any length)", () => {
         const Tlong = 200;
-        const m = marginArc(Tlong);
-        const v = frameAll(W, Tlong);
-        expect(pxToS(v, 0)).toBeCloseTo(0, 6); // no negative distance before launch
-        expect(pxToS(v, W)).toBeCloseTo(Tlong + m, 6);
+        const m = marginArc(Tlong, M);
+        const v = frameAll(W, Tlong, M);
+        expect(pxToU(v, 0)).toBeCloseTo(0, 6); // no negative distance before launch
+        expect(pxToU(v, W)).toBeCloseTo(Tlong + m, 6);
     });
     test("frameAll frames a short track at sTotal+padding, not a floor span", () => {
         // the always-padded axis: the addressable span is ALWAYS sTotal + padding (the same
         // proportional lead-out at every length), so a short track frames [0, sTotal+padding]
         // — a tiny window, not the old arbitrary min-span floor snap.
         const Tshort = 4;
-        const m = marginArc(Tshort); // the same padding definition, floored at MARGIN_M
-        const v = frameAll(W, Tshort);
-        expect(v.pxPerM).toBeCloseTo(W / (Tshort + m), 9);
+        const m = marginArc(Tshort, M); // the same padding definition, floored at MARGIN_M
+        const v = frameAll(W, Tshort, M);
+        expect(v.pxPerU).toBeCloseTo(W / (Tshort + m), 9);
         expect(v.pan).toBe(0); // left-anchored at the launch
-        expect(pxToS(v, 0)).toBeCloseTo(0, 6);
-        expect(pxToS(v, W)).toBeCloseTo(Tshort + m, 6); // the window spans exactly the padded track
+        expect(pxToU(v, 0)).toBeCloseTo(0, 6);
+        expect(pxToU(v, W)).toBeCloseTo(Tshort + m, 6); // the window spans exactly the padded track
     });
     test("pan never reveals distance before the launch (s=0) or past the lead-out", () => {
-        const m = marginArc(T);
-        const zoomed: View = { pan: 1e6, pxPerM: 400 }; // pan way past the right edge
-        const c = clampView(zoomed, W, T);
-        expect(pxToS(c, 0)).toBeGreaterThanOrEqual(-1e-6); // left can't cross 0
-        expect(pxToS(c, W)).toBeLessThanOrEqual(T + m + 1e-6);
+        const m = marginArc(T, M);
+        const zoomed: View = { pan: 1e6, pxPerU: 400 }; // pan way past the right edge
+        const c = clampView(zoomed, W, T, M);
+        expect(pxToU(c, 0)).toBeGreaterThanOrEqual(-1e-6); // left can't cross 0
+        expect(pxToU(c, W)).toBeLessThanOrEqual(T + m + 1e-6);
         // panning hard left holds at s=0, not negative
-        const left = clampView({ pan: -1e6, pxPerM: 400 }, W, T);
-        expect(pxToS(left, 0)).toBeCloseTo(0, 6);
+        const left = clampView({ pan: -1e6, pxPerU: 400 }, W, T, M);
+        expect(pxToU(left, 0)).toBeCloseTo(0, 6);
     });
 });
 
@@ -247,21 +251,21 @@ describe("zoomAt — cursor-anchored", () => {
         // doesn't left-anchor it (which would drift the cursor); the anchor-hold is the
         // property under test, independent of the framing.
         const Tlong = 200;
-        const v = frameAll(W, Tlong); // fitted, content fills the width
+        const v = frameAll(W, Tlong, M); // fitted, content fills the width
         const anchor = W / 2;
-        const before = pxToS(v, anchor);
-        const z = zoomAt(v, anchor, 2, W, Tlong);
-        expect(z.pxPerM).toBeGreaterThan(v.pxPerM);
-        expect(pxToS(z, anchor)).toBeCloseTo(before, 6);
+        const before = pxToU(v, anchor);
+        const z = zoomAt(v, anchor, 2, W, Tlong, M);
+        expect(z.pxPerU).toBeGreaterThan(v.pxPerU);
+        expect(pxToU(z, anchor)).toBeCloseTo(before, 6);
     });
     test("zoom-out from a zoomed-in view returns toward the fit", () => {
         // frameAll frames the padded span [0, sTotal+padding] and a zoom-out floors right back
         // to that scale — for any track length now that the axis is always padded.
         const Tlong = 200;
-        const fitted = frameAll(W, Tlong);
-        const inView = zoomAt(fitted, W / 2, 4, W, Tlong);
-        const out = zoomAt(inView, W / 2, 0.001, W, Tlong); // clamps to the fit scale
-        expect(out.pxPerM).toBeCloseTo(fitted.pxPerM, 6);
+        const fitted = frameAll(W, Tlong, M);
+        const inView = zoomAt(fitted, W / 2, 4, W, Tlong, M);
+        const out = zoomAt(inView, W / 2, 0.001, W, Tlong, M); // clamps to the fit scale
+        expect(out.pxPerU).toBeCloseTo(fitted.pxPerU, 6);
     });
     test("zoom-out from a below-fit view stays put (never snaps UP to the fit)", () => {
         // after a content shrink the view can sit BELOW the padded framing fit. a wheel
@@ -269,25 +273,25 @@ describe("zoomAt — cursor-anchored", () => {
         // inversion bug: a zoom-OUT tick pushing the scale IN. the floor is min(current,
         // fit), so a zoom-out below fit is a no-op instead. `fit` is the padded framing
         // scale (frameAll's), the same floor a zoom-out returns to.
-        const fit = frameAll(W, T).pxPerM; // the padded fit scale
-        const belowFit: View = { pan: 0, pxPerM: fit / 2 };
-        const out = zoomAt(belowFit, W / 2, 0.5, W, T); // zoom OUT further
-        expect(out.pxPerM).toBeCloseTo(belowFit.pxPerM, 9); // held, not snapped up
-        expect(out.pxPerM).toBeLessThan(fit); // stays below fit
+        const fit = frameAll(W, T, M).pxPerU; // the padded fit scale
+        const belowFit: View = { pan: 0, pxPerU: fit / 2 };
+        const out = zoomAt(belowFit, W / 2, 0.5, W, T, M); // zoom OUT further
+        expect(out.pxPerU).toBeCloseTo(belowFit.pxPerU, 9); // held, not snapped up
+        expect(out.pxPerU).toBeLessThan(fit); // stays below fit
     });
     test("zoom-out returns to the padded initial framing on a short track", () => {
         // the zoom floor incorporates the padding: zoom in on a short track, then zoom back
         // out — the floor is the padded framing scale, so the visible span returns to exactly
         // sTotal + padding (the initial frame), not the tighter bare-content extent.
         const Tshort = 8;
-        const padded = Tshort + marginArc(Tshort);
-        const framed = frameAll(W, Tshort);
-        const zoomedIn = zoomAt(framed, W / 2, 4, W, Tshort);
-        expect(zoomedIn.pxPerM).toBeGreaterThan(framed.pxPerM);
-        const out = zoomAt(zoomedIn, W / 2, 0.001, W, Tshort); // floor
-        expect(out.pxPerM).toBeCloseTo(framed.pxPerM, 6);
+        const padded = Tshort + marginArc(Tshort, M);
+        const framed = frameAll(W, Tshort, M);
+        const zoomedIn = zoomAt(framed, W / 2, 4, W, Tshort, M);
+        expect(zoomedIn.pxPerU).toBeGreaterThan(framed.pxPerU);
+        const out = zoomAt(zoomedIn, W / 2, 0.001, W, Tshort, M); // floor
+        expect(out.pxPerU).toBeCloseTo(framed.pxPerU, 6);
         // the padded window is reachable again — the visible span is the padded frame.
-        expect(pxToS(out, W) - pxToS(out, 0)).toBeCloseTo(padded, 4);
+        expect(pxToU(out, W) - pxToU(out, 0)).toBeCloseTo(padded, 4);
     });
 });
 
@@ -295,15 +299,15 @@ describe("navWindow — overview bracket fractions", () => {
     const W = 1000;
     const T = 10; // total = T + margin = 60
     test("the fitted view fills the whole bar", () => {
-        const fitted = frameAll(W, T);
-        const win = navWindow(fitted, W, T);
+        const fitted = frameAll(W, T, M);
+        const win = navWindow(fitted, W, T, M);
         expect(win.l).toBeCloseTo(0, 6);
         expect(win.r).toBeCloseTo(1, 6);
     });
     test("a zoomed-in view is a sub-span", () => {
-        const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerM: W / 3 }, W, T); // shows [2,5]m
-        const win = navWindow(zoomed, W, T);
-        const total = T + marginArc(T);
+        const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerU: W / 3 }, W, T, M); // shows [2,5]m
+        const win = navWindow(zoomed, W, T, M);
+        const total = T + marginArc(T, M);
         expect(win.l).toBeCloseTo(2 / total, 6);
         expect(win.r).toBeCloseTo(5 / total, 6);
     });
@@ -312,34 +316,34 @@ describe("navWindow — overview bracket fractions", () => {
 describe("navDragView — overview drag", () => {
     const W = 1000;
     const T = 10;
-    const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerM: W / 3 }, W, T); // shows [2,5]m
+    const zoomed: View = clampView({ pan: 2 * (W / 3), pxPerU: W / 3 }, W, T, M); // shows [2,5]m
     test("pan slides the window and preserves the span", () => {
-        const lo = pxToS(zoomed, 0);
-        const out = navDragView(zoomed, W, T, "pan", lo + 1, 0); // grab=0 → newLo = cur
-        expect(pxToS(out, 0)).toBeCloseTo(3, 6);
-        expect(pxToS(out, W)).toBeCloseTo(6, 6);
-        expect(out.pxPerM).toBeCloseTo(zoomed.pxPerM, 6); // zoom unchanged
+        const lo = pxToU(zoomed, 0);
+        const out = navDragView(zoomed, W, T, "pan", lo + 1, 0, M); // grab=0 → newLo = cur
+        expect(pxToU(out, 0)).toBeCloseTo(3, 6);
+        expect(pxToU(out, W)).toBeCloseTo(6, 6);
+        expect(out.pxPerU).toBeCloseTo(zoomed.pxPerU, 6); // zoom unchanged
     });
     test("left-edge drag anchors the right edge (a zoom)", () => {
-        const out = navDragView(zoomed, W, T, "l", 1, 0); // pull left edge to 1m
-        expect(pxToS(out, 0)).toBeCloseTo(1, 6);
-        expect(pxToS(out, W)).toBeCloseTo(5, 6); // right edge held
+        const out = navDragView(zoomed, W, T, "l", 1, 0, M); // pull left edge to 1m
+        expect(pxToU(out, 0)).toBeCloseTo(1, 6);
+        expect(pxToU(out, W)).toBeCloseTo(5, 6); // right edge held
     });
     test("right-edge drag anchors the left edge (a zoom)", () => {
-        const out = navDragView(zoomed, W, T, "r", 8, 0); // push right edge to 8m
-        expect(pxToS(out, 0)).toBeCloseTo(2, 6); // left edge held
-        expect(pxToS(out, W)).toBeCloseTo(8, 6);
+        const out = navDragView(zoomed, W, T, "r", 8, 0, M); // push right edge to 8m
+        expect(pxToU(out, 0)).toBeCloseTo(2, 6); // left edge held
+        expect(pxToU(out, W)).toBeCloseTo(8, 6);
     });
     test("an edge can't cross the opposite one — span floors at the zoom ceiling", () => {
-        const out = navDragView(zoomed, W, T, "r", 2, 0); // collapse right onto left (2m)
-        expect(pxToS(out, W)).toBeGreaterThan(pxToS(out, 0)); // never inverts
-        expect(out.pxPerM).toBeCloseTo(MAX_PX_PER_M, 6); // capped at max zoom-in
+        const out = navDragView(zoomed, W, T, "r", 2, 0, M); // collapse right onto left (2m)
+        expect(pxToU(out, W)).toBeGreaterThan(pxToU(out, 0)); // never inverts
+        expect(out.pxPerU).toBeCloseTo(MAX_PX_PER_U, 6); // capped at max zoom-in
     });
 });
 
 describe("ticks — visible 1-2-5 grid", () => {
     test("ticks are step-spaced and cover the viewport", () => {
-        const v: View = { pan: 0, pxPerM: 100 }; // 10m of track in 1000px → step ~ 1m
+        const v: View = { pan: 0, pxPerU: 100 }; // 10m of track in 1000px → step ~ 1m
         const t = ticks(v, 1000);
         expect(t.length).toBeGreaterThan(2);
         const dpx = t[1].px - t[0].px;
@@ -351,8 +355,8 @@ describe("ticks — visible 1-2-5 grid", () => {
         expect(t[t.length - 1].px).toBeGreaterThanOrEqual(1000 - dpx);
     });
     test("empty when degenerate", () => {
-        expect(ticks({ pan: 0, pxPerM: 0 }, 1000)).toHaveLength(0);
-        expect(ticks({ pan: 0, pxPerM: 100 }, 0)).toHaveLength(0);
+        expect(ticks({ pan: 0, pxPerU: 0 }, 1000)).toHaveLength(0);
+        expect(ticks({ pan: 0, pxPerU: 100 }, 0)).toHaveLength(0);
     });
 });
 
@@ -495,7 +499,7 @@ describe("xGrow — horizontal edge-scroll pan-to-follow", () => {
     const Left = 44;
     const Right = 800;
     const Rate = 0.4;
-    const view: View = { pan: 120, pxPerM: 10 };
+    const view: View = { pan: 120, pxPerU: 10 };
 
     test("a cursor anywhere inside the chart leaves the view unchanged (grab is stable)", () => {
         expect(xGrow(view, (Left + Right) / 2, Left, Right, Rate)).toBe(view);
@@ -506,7 +510,7 @@ describe("xGrow — horizontal edge-scroll pan-to-follow", () => {
     test("dragging past the right edge pans right (reveals more distance), zoom fixed", () => {
         const g = xGrow(view, Right + 30, Left, Right, Rate);
         expect(g.pan).toBeCloseTo(view.pan + 30 * Rate, 6);
-        expect(g.pxPerM).toBe(view.pxPerM); // no zoom under the drag
+        expect(g.pxPerU).toBe(view.pxPerU); // no zoom under the drag
     });
 
     test("further past the edge pans faster (speed ∝ overshoot)", () => {
@@ -516,12 +520,12 @@ describe("xGrow — horizontal edge-scroll pan-to-follow", () => {
     });
 
     test("dragging past the left edge pans left but floors at pan 0 (no negative distance)", () => {
-        const g = xGrow({ pan: 8, pxPerM: 10 }, Left - 40, Left, Right, Rate);
+        const g = xGrow({ pan: 8, pxPerU: 10 }, Left - 40, Left, Right, Rate);
         expect(g.pan).toBe(0); // 8 − 40·0.4 < 0 → clamped to 0
         // already at 0 → unchanged by identity
-        expect(xGrow({ pan: 0, pxPerM: 10 }, Left - 40, Left, Right, Rate)).toEqual({
+        expect(xGrow({ pan: 0, pxPerU: 10 }, Left - 40, Left, Right, Rate)).toEqual({
             pan: 0,
-            pxPerM: 10,
+            pxPerU: 10,
         });
     });
 });
@@ -725,7 +729,7 @@ describe("composeTangent — force-handle write resolver", () => {
             const t = composeTangent("out", 2, 1, 0, 5, 10, existing, Pxm, Pyg);
             expect(t.out).toEqual({ ds: 2, dg: 1 });
             if (!t.in) throw new Error("aligned coupling must keep the in side present");
-            // screen-space vectors: (Δs·pxPerM, −Δg·pyPerG). Aligned ⟹ the two are anti-parallel
+            // screen-space vectors: (Δs·pxPerU, −Δg·pyPerG). Aligned ⟹ the two are anti-parallel
             // (cross ≈ 0, dot < 0), and the coupled side keeps its ORIGINAL screen length (20 px).
             const outPx = { x: t.out!.ds * Pxm, y: -t.out!.dg * Pyg };
             const inPx = { x: t.in.ds * Pxm, y: -t.in.dg * Pyg };
@@ -850,21 +854,21 @@ describe("retargetMode — the Tangents ▸ mode-switch reconcile (chart pixels)
 describe("trimTargets — extent-trim landmark set", () => {
     // the feel-check-in verdict: the extent trim snaps to content landmarks only — the
     // section's own force points and the parked playhead — never to ruler ticks. the set
-    // membership IS the behavior; the projection is `sToPx` (tested above).
-    const v: View = { pan: 0, pxPerM: 10 }; // 10px per meter, no pan
+    // membership IS the behavior; the projection is `uToPx` (tested above).
+    const v: View = { pan: 0, pxPerU: 10 }; // 10px per meter, no pan
 
     test("own force points and the playhead, each projected to px", () => {
         const out = trimTargets(v, [4, 12], 8);
-        expect(out).toEqual([sToPx(v, 4), sToPx(v, 12), sToPx(v, 8)]);
+        expect(out).toEqual([uToPx(v, 4), uToPx(v, 12), uToPx(v, 8)]);
     });
     test("only own points when the playhead is absent (playing / unset)", () => {
         // no ruler tick sneaks in even at a wide zoom-out where ticks would be dense:
         // the set is exactly the section's own points, nothing else.
-        const out = trimTargets({ pan: 0, pxPerM: 0.5 }, [4, 12], null);
+        const out = trimTargets({ pan: 0, pxPerU: 0.5 }, [4, 12], null);
         expect(out).toHaveLength(2);
         expect(out).toEqual([
-            sToPx({ pan: 0, pxPerM: 0.5 }, 4),
-            sToPx({ pan: 0, pxPerM: 0.5 }, 12),
+            uToPx({ pan: 0, pxPerU: 0.5 }, 4),
+            uToPx({ pan: 0, pxPerU: 0.5 }, 12),
         ]);
     });
     test("no own points and no playhead yields an empty set (nothing to snap to)", () => {
@@ -876,27 +880,27 @@ describe("creationTargets — keyframe-creation landmark set", () => {
     // the verdict: double-click creation snaps through the drag resolver, but its target set
     // is the drag s-set MINUS force points (occupied s is degenerate) — origin, interior
     // boundaries, track end, and the parked playhead. no force point can enter (not a param).
-    const v: View = { pan: 0, pxPerM: 10 };
+    const v: View = { pan: 0, pxPerU: 10 };
 
     test("origin, interior boundaries, track end, and the parked playhead", () => {
         expect(creationTargets(v, [10, 20], 30, 15)).toEqual([
-            sToPx(v, 0),
-            sToPx(v, 10),
-            sToPx(v, 20),
-            sToPx(v, 30),
-            sToPx(v, 15),
+            uToPx(v, 0),
+            uToPx(v, 10),
+            uToPx(v, 20),
+            uToPx(v, 30),
+            uToPx(v, 15),
         ]);
     });
     test("drops the playhead while playing / unset", () => {
         expect(creationTargets(v, [10, 20], 30, null)).toEqual([
-            sToPx(v, 0),
-            sToPx(v, 10),
-            sToPx(v, 20),
-            sToPx(v, 30),
+            uToPx(v, 0),
+            uToPx(v, 10),
+            uToPx(v, 20),
+            uToPx(v, 30),
         ]);
     });
     test("origin + track end even with no interior boundaries (a single section)", () => {
-        expect(creationTargets(v, [], 24, null)).toEqual([sToPx(v, 0), sToPx(v, 24)]);
+        expect(creationTargets(v, [], 24, null)).toEqual([uToPx(v, 0), uToPx(v, 24)]);
     });
 });
 
@@ -1053,7 +1057,7 @@ describe("T_GRID — the time domain's snap quantum", () => {
 });
 
 describe("ticks — domain-aware readout suffix, same grid either way", () => {
-    const v: View = { pan: 0, pxPerM: 100 };
+    const v: View = { pan: 0, pxPerU: 100 };
 
     test("the Distance domain (default) prints the meter suffix", () => {
         const t = ticks(v, 1000);
@@ -1075,7 +1079,7 @@ describe("ticks — domain-aware readout suffix, same grid either way", () => {
 
 describe("marginFloor — the lead-out floor in the active domain", () => {
     test("Distance is the 50 m absolute lead-out; Time is its twin at V0", () => {
-        expect(marginFloor(Domain.Distance)).toBe(marginArc(0)); // the floor dominates at total 0
+        expect(marginFloor(Domain.Distance)).toBe(marginArc(0, M)); // the floor dominates at total 0
         expect(marginFloor(Domain.Time)).toBeCloseTo(marginFloor(Domain.Distance) / V0, 12);
     });
 
@@ -1096,11 +1100,11 @@ describe("marginFloor — the lead-out floor in the active domain", () => {
         const w = 500;
         const fitD = frameAll(w, 10, marginFloor(Domain.Distance)); // 10 + 50 m of span
         const fitT = frameAll(w, 10, marginFloor(Domain.Time)); // 10 + 5 s of span
-        expect(pxToS(fitD, w)).toBeCloseTo(60, 6);
-        expect(pxToS(fitT, w)).toBeCloseTo(15, 6);
+        expect(pxToU(fitD, w)).toBeCloseTo(60, 6);
+        expect(pxToU(fitT, w)).toBeCloseTo(15, 6);
         // and the pan clamp agrees with the frame it produced (the right edge is reachable, no more)
         expect(
-            clampView({ pan: 1e6, pxPerM: fitT.pxPerM }, w, 10, marginFloor(Domain.Time)).pan,
+            clampView({ pan: 1e6, pxPerU: fitT.pxPerU }, w, 10, marginFloor(Domain.Time)).pan,
         ).toBeCloseTo(0, 6);
     });
 });
