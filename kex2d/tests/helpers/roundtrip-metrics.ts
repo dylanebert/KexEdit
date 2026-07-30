@@ -1,10 +1,9 @@
 /** The round-trip yardstick's metric primitives (spec `kex/specs/kex2d-roundtrip.md`, stage 2),
- *  factored out so `roundtrip.lab.ts` (the C1-baseline yardstick) and any sibling lab measuring
- *  a different dialect read the SAME metric — a dialect comparison is only honest if both sides
- *  are scored by one definition. Pure, framework-free; no behavior here changed when it moved
- *  out of `roundtrip.lab.ts` (a straight extraction, re-verified by that lab's own reproduction
- *  assert). See `roundtrip.lab.ts`'s header for the metrics' definitions and why the FINAL
- *  round-tripped geo bake is what they're measured over. */
+ *  factored out so the follow-on provenance round-trip unit can read the SAME metric definitions
+ *  `roundtrip.lab.ts` measures against. Pure, framework-free; no behavior here changed when it
+ *  moved out of `roundtrip.lab.ts` (a straight extraction, re-verified by that lab's own
+ *  reproduction assert). See `roundtrip.lab.ts`'s header for the metrics' definitions and why the
+ *  FINAL round-tripped geo bake is what they're measured over. */
 
 import type { GeofitBake } from "../../src/geofit";
 import type { SectionResult } from "../../src/section";

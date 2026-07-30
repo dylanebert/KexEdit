@@ -420,3 +420,12 @@ test("a diverged fit reads as a failure — nothing was landed", () => {
         text: "The solve could not fit this shape. Nothing changed.",
     });
 });
+
+test("a dense fit reads as a failure and names the node count — a held budget isn't a miss", () => {
+    // forcegeo.ts rewrites an over-`MAX_LANDED_NODES` answer's outcome to "dense" even though the
+    // fit itself held its budget — nothing lands, so this must read like "diverged", not "budget".
+    expect(fitDone({ ...fitAnswer, outcome: "dense", nodes: 240 })).toEqual({
+        kind: "error",
+        text: "The fit needs 240 nodes — too many to author. Nothing changed.",
+    });
+});
