@@ -621,10 +621,17 @@ $effect(() => {
     if (editor.force !== null && selPoint === null) selectForce(null);
 });
 // whether the selection is a multi-set — a right-click keeps the set, so Delete + Easing act on it,
-// while the single-subject rows (Custom) gray out. The typed-field popover is NOT one of those: it
-// addresses the ACTIVE member, like every other active-anchored surface, and shows on a multi-set
-// exactly as on a single selection (editor-ui.md multi law).
-const multiForce = $derived(selForceSet.size > 1);
+// while the single-subject rows (Custom) gray out. The typed-field popover is single-keyframe
+// context too, and hides on a multi-set exactly as the viewport ring does (editor-ui.md multi law):
+// standard multi-select shows no single-keyframe context. Read `tick` directly (not through
+// `selForceSet`): `editor.forces.ids` is mutated IN PLACE (`rebuild`/`toggleMember`/`setMember`
+// never reassign the Set), so a derived layered on top of `selForceSet`'s reference never sees a
+// changed value to invalidate on — only a derived reading the mutable size straight off `tick`
+// re-evaluates every frame.
+const multiForce = $derived.by((): boolean => {
+    void tick;
+    return editor.forces.ids.size > 1;
+});
 
 // the ONE draw projection: a global distance `d` → its canvas x, through the basis seam.
 const markerX = (d: number): number => LEFT_GUT + sToPx(clamped, uOf(d));
@@ -2944,10 +2951,9 @@ onMount(() => {
              (on the object, not a docked row). it follows a live drag as the value
              readout, pointer-inert so it never fights the drag; flips below the point
              near the chart top; clamps inside the chart horizontally. On a MULTI set it
-             shows for the ACTIVE (last-selected) point exactly as for a single selection —
-             the active member is what every single-subject surface addresses (editor-ui.md
-             multi law; the timeline keeps its popover, the canvas hides its ring). -->
-        {:else if selPoint}
+             shows NO single-keyframe context, same as the viewport ring (editor-ui.md
+             multi law) — standard multi-select carries no single-subject popover. -->
+        {:else if selPoint && !multiForce}
             {@const mx = ptX(selPoint)}
             {#if scrubFreeze !== null || (mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R)}
                 {@const ax =
@@ -3557,9 +3563,10 @@ onMount(() => {
         stroke: var(--fg);
         stroke-width: 1.4;
     }
-    /* the ACTIVE member of a multi-selection — the single subject the popover/readout and the
-       single-subject menu rows bind to (Blender's active-object model). a brighter ring over the
-       shared selected fill so which diamond the fields edit reads at a glance. */
+    /* the ACTIVE member of a multi-selection — the single subject the single-selection popover
+       (single selection only; the popover hides on a multi-set) and the single-subject menu rows
+       bind to (Blender's active-object model). a brighter ring over the shared selected fill so
+       which diamond is active reads at a glance. */
     .fpt.active .fmarker {
         stroke: #fff;
         stroke-width: 1.8;

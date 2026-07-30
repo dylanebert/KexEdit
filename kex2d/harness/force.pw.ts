@@ -991,17 +991,10 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     const active1 = await forceSelActive();
     expect(active1).not.toBeNull();
     expect(await forceSelIds()).toContain(active1); // the active member is always a set member
-    // stage 8 (user-locked, reverting stage 7's guard): the typed-field popover DOES open over a
-    // multi-set, addressing the ACTIVE (last-selected) member exactly as on a single selection —
-    // the active member is what every single-subject surface anchors to. Its two fields must read
-    // that member's own values (index 3, the s=0.8·len shoulder asserted `active` above), not some
-    // other member's. Mutation: re-add a `!multiForce` guard → count 0 → red.
-    await expect(page.locator(".ptip")).toHaveCount(1);
-    const activePt = (await forces())[3]; // one section, so its local s IS the global d
-    const tipD = await page.locator('.ptip input[aria-label="Point distance (m)"]').inputValue();
-    const tipG = await page.locator('.ptip input[aria-label="Point force (g)"]').inputValue();
-    expect(Number(tipD)).toBeCloseTo(activePt.s, 1);
-    expect(Number(tipG)).toBeCloseTo(activePt.g, 2);
+    // kex2d-time-domain stage 1 (second rescope): the typed-field popover shows NO single-keyframe
+    // context on a multi-set, same as the viewport ring — standard multi-select carries no
+    // single-subject popover. Mutation: drop the `!multiForce` guard → count 1 → red.
+    await expect(page.locator(".ptip")).toHaveCount(0);
     await page.waitForTimeout(SHOT_MS);
     const strip = dockStrip(page);
     if (strip)
@@ -1173,16 +1166,33 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     await page.mouse.up(); // release cleanly — a torn-down gesture commits nothing on pointerup
     expect(await undoDepth()).toBe(preUndo);
 
+    // kex2d-time-domain stage 1 (second rescope): the multi-set popover is retired, and the
+    // selection here is still the 3-member set from 5/5b (a plain click/drag on a member keeps the
+    // set — the multiselect law's promote-vs-replace rule), so no `.ptip` is showing. Esc clears
+    // the whole set as one dismissal rung, then a plain click SINGLE-selects the crest (re-located:
+    // the intervening zooms in 5/5b shifted its screen position) so its popover opens for step 7's
+    // label scrub.
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
+    // re-fit the whole section (5/5b's zoom + reframe left the view somewhere else) so the
+    // ORIGINAL diamond index mapping (`fhitCenter`, established at the top of the test) is valid
+    // again before re-locating the crest.
+    await frameTimeline(page);
+    await expect(fhit).toHaveCount(5);
+    const b2now = await fhitCenter(2);
+    await page.mouse.click(b2now.cx, b2now.cy);
+    await expect(page.locator(".ptip")).toHaveCount(1);
+
     // ── 7. WINDOW BLUR ALSO TEARS DOWN A LIVE LABEL SCRUB (adversarial-review finding on
     // kex2d-gesture-residue stage 5): `labelScrub`'s move/up/pointercancel listeners live on the
     // LABEL element, not window, so `cancelAll`'s blur path needs its OWN hook into them
     // (`cancelLabelScrub`) — the generic `endDragGesture()` call (step 6's mechanism) only clears
     // the drag FLAG, it doesn't reach a listener set attached to a different element. The crest's
-    // still-selected popover (unaffected by step 6's revert) is the vehicle: grab its "F" (g)
-    // label. RED-RIG TRAP: the mid-scrub read is the positive control, proving the scrub actually
-    // wrote before the revert below is trusted. Mutation: `cancelAll` with no `cancelLabelScrub`
-    // hook → the point stays at its mid-scrub g and undo depth is unchanged either way (nothing
-    // here commits without the hook) → red on the reverted-value assertion. ──
+    // now-single-selected popover is the vehicle: grab its "F" (g) label. RED-RIG TRAP: the
+    // mid-scrub read is the positive control, proving the scrub actually wrote before the revert
+    // below is trusted. Mutation: `cancelAll` with no `cancelLabelScrub` hook → the point stays at
+    // its mid-scrub g and undo depth is unchanged either way (nothing here commits without the
+    // hook) → red on the reverted-value assertion. ──
     const gLabel = page.locator(".ptip .fld").nth(1).locator(".key");
     const gLabelBox = await gLabel.boundingBox();
     if (!gLabelBox) throw new Error("crest g scrub handle not laid out for the blur-cancel check");

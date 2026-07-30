@@ -182,12 +182,13 @@ shape:
   Removing the active promotes the **last-inserted survivor**. Scalar accessors read the active.
 - **Promote vs replace**: a click, grab, or right-click on a set member keeps the set and promotes
   the member to active; on a non-member it replace-selects. One rule across menus and drag anchors.
-- **Multi context UI** (settled by hand across three feel rounds): the viewport shows **no
+- **Multi context UI** (settled by hand across four feel rounds): the viewport shows **no
   contextual controls** on a multi-set — ring, knobs, and readout all hide; single-select context on
-  a multi selection is invalid. The timeline keeps the active point's popover exactly as
-  single-select. No shared-delta readout, no count chip, no Mixed sentinel — AE shows nothing extra
-  for a multi-keyframe selection; the members' highlight with the active set apart is the multi
-  feedback.
+  a multi selection is invalid. The timeline's typed-field popover is single-keyframe context too,
+  so it hides on a multi-set exactly as the viewport ring does — standard multi-select shows no
+  single-keyframe context, on any surface. No shared-delta readout, no count chip, no Mixed
+  sentinel — AE shows nothing extra for a multi-keyframe selection; the members' highlight with the
+  active set apart is the multi feedback.
 - **Inapplicable bulk rows gray, never hide** (`MenuItem.enabled`); enablement is a pure,
   unit-tested predicate. Esc clears the whole set as one dismissal rung, not N.
 - **Multi-drag = one shared delta, offsets preserved exactly** (universal, all keyframe editors).
