@@ -14,6 +14,7 @@ import {
     EXTEND_DIST,
     exitWorld,
     extend,
+    forceBake,
     forceEase,
     forcePointState,
     type ForceTangent,
@@ -746,6 +747,57 @@ describe("the sample budget", () => {
         const info = sectionInfo.get(tail);
         if (!info) throw new Error("no bake for the tail section");
         expect(info.startSample).toBeGreaterThanOrEqual(MAX_SAMPLES);
+    });
+
+    // `forceBake` re-runs `evalForce` for the fit — geofit's own input, not the chain's — so the
+    // same overflow has to reach IT too: a section that isn't fully off the buffer, but whose own
+    // extent/step asks for more edges than the few samples left before `MAX_SAMPLES`, must clip
+    // its dense profile to that remainder rather than handing the fit a longer shape nothing draws
+    // (`forceBake`'s own why-comment, track.ts).
+    test("forceBake clips the dense profile to the section's remaining sample budget", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+
+        // section 0 eats nearly the whole buffer, leaving section 1 a narrow remainder.
+        const n1 = MAX_SAMPLES - 50;
+        const head = createSection(state, 0, SectionKind.Force, n1 * DS_NOMINAL);
+        createForcePoint(state, head, 0, 2);
+        createForcePoint(state, head, n1 * DS_NOMINAL, 0.5);
+
+        // section 1 asks for far more edges (100) than the ~49 samples left in the buffer.
+        const tailLen = 100 * DS_NOMINAL;
+        const tail = createSection(state, 1, SectionKind.Force, tailLen);
+        createForcePoint(state, tail, 0, 1.5);
+        createForcePoint(state, tail, tailLen, 0.3);
+        state.step(0);
+
+        const info = sectionInfo.get(tail);
+        if (!info) throw new Error("no bake for the tail section");
+        const avail = Math.max(1, MAX_SAMPLES - 1 - info.startSample);
+        expect(avail).toBeGreaterThan(0);
+        expect(avail).toBeLessThan(100); // the request really does overrun the remaining budget
+
+        const r = forceBake(state, tail);
+        expect(r.edges).toBe(avail); // clipped to the remainder, not the requested 100
+
+        const s = samples.get(eid);
+        const out = bakeOut.get(eid);
+        if (!s || !out) throw new Error("no bake");
+        // positions are pure forward integration — causal, so a clipped re-eval matches the
+        // published prefix exactly at every sample `chain` actually wrote.
+        for (let k = 0; k <= avail; k++) {
+            expect(r.x[k]).toBe(s.posX[info.startSample + k]);
+            expect(r.y[k]).toBe(s.posY[info.startSample + k]);
+        }
+        // fN/ds match too, except the very last edge: `forces()` extrapolates the bisector at a
+        // free end, and clipping the input makes that edge a free end where the full unclipped
+        // bake (which keeps going past the buffer internally) would not — a real boundary effect,
+        // not test noise.
+        for (let k = 0; k < avail - 1; k++) {
+            expect(r.fN[k]).toBe(out.fN[info.startSample + k]);
+            expect(r.ds[k]).toBe(out.ds[info.startSample + k]);
+        }
     });
 });
 
