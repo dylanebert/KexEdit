@@ -1,10 +1,12 @@
 import { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
 import { convertForce, MAX_LANDED_NODES, StaleConvert } from "../src/forcegeo";
+import { convertGeo } from "../src/geoforce";
 import { FORCE_BUDGET } from "../src/geofit";
 import { liveFitWorkers } from "../src/geofit-async";
 import { createHistory, type History, undo } from "../src/history";
 import { Domain } from "../src/section";
+import { TangentMode } from "../src/spline";
 import {
     addNode,
     appendSection,
@@ -14,6 +16,7 @@ import {
     createSection,
     createTrack,
     Handle,
+    handleTangent,
     sectionAt,
     sectionHandles,
     Section,
@@ -21,7 +24,9 @@ import {
     type SectionSnapshot,
     sectionForces,
     sectionInfo,
+    seedTangent,
     setForcePoint,
+    setTangent,
     setTrackDomain,
     setTrackV0,
     snapshotAll,
@@ -46,6 +51,22 @@ function humpForceTrack(): { state: State; eid: number; sec: number } {
     createForcePoint(state, sec, 0, 1);
     createForcePoint(state, sec, 20, 1.4);
     createForcePoint(state, sec, 40, 1);
+    state.step(0);
+    return { state, eid, sec };
+}
+
+/** a track carrying one hand-authored hill (the shape kex2d-provenance's symptom is named
+ *  against — an untouched geo→force→geo trip gaining nodes), baked. */
+function hillTrack(): { state: State; eid: number; sec: number } {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    setTrackV0(eid, 18);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 10, 2);
+    addNode(state, sec, 20, 4);
+    addNode(state, sec, 30, 2);
     state.step(0);
     return { state, eid, sec };
 }
@@ -285,6 +306,158 @@ describe("convertForce", () => {
         await expect(convertForce(createHistory(), state, geo)).rejects.toThrow(/not force/);
         await expect(convertForce(createHistory(), state, sec + 999)).rejects.toThrow(/no section/);
     });
+});
+
+// ── provenance short-circuit (kex2d-provenance stage 2) ──────────────────────
+// `history.solveForce` stamps a section's pre-solve payload (stage 1); `convertForce` consults it
+// here BEFORE spawning the worker. An untouched geo→force→geo trip lands the stamp verbatim
+// instead of re-fitting — exactness, not a budget, so any edit the token or entry covers falls
+// straight through to the fit unchanged.
+
+describe("provenance short-circuit", () => {
+    test("an untouched trip restores the geo section content-hash-identical, hill seed included", async () => {
+        const { state, eid, sec } = hillTrack();
+        const h = createHistory();
+        const before = docState(state, eid);
+
+        const forceResult = await convertGeo(h, state, sec);
+        expect(forceResult.outcome).not.toBe("diverged");
+        state.step(0);
+
+        const geoResult = await convertForce(h, state, sec);
+        expect(geoResult.outcome).toBe("restored");
+        state.step(0);
+
+        expect(docState(state, eid)).toEqual(before);
+    }, 60_000);
+
+    test("an untouched trip restores across the corpus", async () => {
+        // a second, differently-shaped scenario (not just the named hill symptom) — the
+        // exactness claim isn't a property of one hand-picked shape.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackV0(eid, 22);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 15, -3);
+        addNode(state, sec, 30, 0);
+        addNode(state, sec, 45, 4);
+        state.step(0);
+        const h = createHistory();
+        const before = docState(state, eid);
+
+        await convertGeo(h, state, sec);
+        state.step(0);
+        const result = await convertForce(h, state, sec);
+        expect(result.outcome).toBe("restored");
+        state.step(0);
+
+        expect(docState(state, eid)).toEqual(before);
+    }, 60_000);
+
+    test("a force-section edit after the solve falls through to the fit", async () => {
+        const { state, sec } = hillTrack();
+        const h = createHistory();
+
+        await convertGeo(h, state, sec);
+        state.step(0);
+        const pts = sectionForces(state, sec);
+        setForcePoint(state, pts[0].id, pts[0].s, pts[0].g + 0.3); // an edit to the landed section
+        state.step(0);
+
+        const result = await convertForce(h, state, sec);
+        expect(result.outcome).not.toBe("restored");
+    }, 60_000);
+
+    test("an upstream edit that moves the section's entry falls through to the fit", async () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackV0(eid, 18);
+        const upstream = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, upstream, 0, 0);
+        addNode(state, upstream, 15, 0);
+        const sec = createSection(state, 1, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 10, 2);
+        addNode(state, sec, 20, 4);
+        state.step(0);
+        const h = createHistory();
+
+        await convertGeo(h, state, sec);
+        state.step(0);
+
+        // move the upstream tip — the force section's entry (its stamp anchor) shifts under it.
+        const handles = sectionHandles(state, upstream);
+        Handle.pos.y.set(handles[handles.length - 1], 6);
+        state.step(0);
+
+        const result = await convertForce(h, state, sec);
+        expect(result.outcome).not.toBe("restored");
+    }, 60_000);
+
+    test("undo after a restore returns the force section byte-identically", async () => {
+        const { state, eid, sec } = hillTrack();
+        const h = createHistory();
+
+        await convertGeo(h, state, sec);
+        state.step(0);
+        const forceState = docState(state, eid); // the landed force section, pre-restore
+
+        const result = await convertForce(h, state, sec);
+        expect(result.outcome).toBe("restored");
+        state.step(0);
+
+        undo(h, state);
+        state.step(0);
+        expect(docState(state, eid)).toEqual(forceState);
+    }, 60_000);
+
+    test("re-entrancy and stale-convert guards are unchanged by the short-circuit", async () => {
+        // the guard fires on the plain reentrancy check before the short-circuit is ever
+        // consulted, whether or not the section carries a valid stamp — a running fit still
+        // refuses a second invoke, and an edit mid-fit still rejects as stale (both already
+        // pinned above for a section with NO provenance; this pins the same guards hold for one
+        // that DOES, once its stamp is invalidated so the call actually reaches the fit).
+        const { state, sec } = hillTrack();
+        const h = createHistory();
+
+        await convertGeo(h, state, sec);
+        state.step(0);
+        const pts = sectionForces(state, sec);
+        setForcePoint(state, pts[0].id, pts[0].s, pts[0].g + 0.3); // invalidate the stamp
+        state.step(0);
+
+        const first = convertForce(h, state, sec);
+        await expect(convertForce(h, state, sec)).rejects.toThrow(/already converting/);
+        const result = await first;
+        expect(result.outcome).not.toBe("restored");
+        state.step(0);
+    }, 60_000);
+
+    test("an explicit tangent survives the restore — the fit path emits Auto-only", async () => {
+        const { state, eid, sec } = hillTrack();
+        const tan = seedTangent(state, sec, 1, TangentMode.Mirror);
+        if (!tan) throw new Error("no tangent seed");
+        setTangent(state, sec, 1, tan);
+        state.step(0);
+        // the AUTHORED (post-write, f32-quantized) tangent, not the raw seed — `setTangent`
+        // writes the seed's double-precision components into f32 storage, so comparing against
+        // the seed itself would fail on the write's own rounding, unrelated to the restore.
+        const authoredTan = handleTangent(state, sec, 1);
+        const before = docState(state, eid);
+        const h = createHistory();
+
+        await convertGeo(h, state, sec);
+        state.step(0);
+        const result = await convertForce(h, state, sec);
+        expect(result.outcome).toBe("restored");
+        state.step(0);
+
+        expect(docState(state, eid)).toEqual(before);
+        expect(handleTangent(state, sec, 1)).toEqual(authoredTan);
+    }, 60_000);
 });
 
 // ── the document-layer fidelity oracle ───────────────────────────────────────

@@ -722,6 +722,29 @@ export function solveGeo(
     landSolve(h, ecs, section, () => applyConvertGeo(ecs, section, solved, entry), false);
 }
 
+/** land a section's stamped provenance verbatim as one undoable entry — the reverse convert's
+ *  own short-circuit (kex2d-provenance stage 2), `landSolve`'s twin without a solve: `payload` IS
+ *  the exact pre-solve `SectionSnapshot` a forward solve already captured (`stampProvenance`'s
+ *  own second consumer, `track.ts`), so there is nothing to compute, only to restore
+ *  (`restoreSection` is both the do-path and, via `restoreCommand`, the undo). `order` is read
+ *  live rather than taken off the payload — the payload's own order is a stale reading from the
+ *  forward landing, and the token+entry check that gates this call deliberately doesn't cover
+ *  chain position (`sectionToken`'s own contract: reorder isn't content). No `stamp` argument:
+ *  a restore isn't itself a new solve landing, so the sidecar is left as-is for the next real
+ *  solve to overwrite. */
+export function restoreProvenance(
+    h: History,
+    ecs: State,
+    section: number,
+    payload: SectionSnapshot,
+): void {
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotSection(ecs, section);
+    restoreSection(ecs, { ...payload, order: before.order });
+    const after = snapshotSection(ecs, section);
+    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+}
+
 // ── track domain conversion ────────────────────────────────────────────────────
 
 /** land a domain conversion as one undoable entry: the `Track.domain` flip paired with the whole

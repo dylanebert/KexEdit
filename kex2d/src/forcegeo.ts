@@ -26,17 +26,23 @@
 
 import type { State } from "@dylanebert/shallot";
 import { type GeofitOpts, runGeofit } from "./geofit-async";
-import type { GeofitOutcome, GeofitResult } from "./geofit";
-import { type History, solveGeo } from "./history";
+import type { GeofitNode, GeofitOutcome, GeofitResult } from "./geofit";
+import { type History, restoreProvenance, solveGeo } from "./history";
+import type { Entry } from "./section";
+import { place } from "./section";
 import {
     authoredHash,
     bakeLive,
     forceBake,
     MAX_SAMPLES,
+    readProvenance,
     sectionAt,
     sectionInfo,
+    sectionToken,
     Section,
     SectionKind,
+    sections,
+    trackDomain,
     trackDs,
 } from "./track";
 
@@ -76,22 +82,73 @@ export const MAX_LANDED_NODES = 212;
 /** `convertForce`'s own outcome vocabulary: `geofit.GeofitOutcome` plus `"dense"` — a `"budget"`
  *  answer whose node count exceeds {@link MAX_LANDED_NODES}, caught here (not in `geofit.ts`,
  *  which has no opinion on authoring scale) and resolved the same way `"diverged"` already does:
- *  the answer is returned for the caller to read, but nothing lands. */
-export type ConvertForceOutcome = GeofitOutcome | "dense";
+ *  the answer is returned for the caller to read, but nothing lands — and `"restored"`
+ *  (kex2d-provenance stage 2): the section's stamped provenance verified exact against the live
+ *  document, so its pre-solve payload landed VERBATIM instead of running the fit at all. */
+export type ConvertForceOutcome = GeofitOutcome | "dense" | "restored";
 
 /** `GeofitResult` with `convertForce`'s own widened outcome. */
 export interface ConvertForceResult extends Omit<GeofitResult, "outcome"> {
     outcome: ConvertForceOutcome;
 }
 
+/** the short-circuit itself (kex2d-provenance stage 2): a section's stamped provenance
+ *  (`track.readProvenance`), certified against the LIVE document by two comparisons —
+ *  `sectionToken` recomputed fresh over the live section (kind + length + ds + rows + domain,
+ *  the same reading the stamp took) and the live entry anchor (`sectionInfo.entry`), both
+ *  f32-exact. Either miss returns `undefined` (no restore — the caller falls through to the fit);
+ *  a hit lands the stamp's own pre-solve payload verbatim (`history.restoreProvenance`) and
+ *  returns the caller's result, so nothing downstream in `convertForce` ever runs. The returned
+ *  `nodes` are the landed payload's own poses, placed into world space through the same `entry`
+ *  the restore just re-confirmed — a readout (`fitDone`) reads `nodes.length`, never the fit's
+ *  own `GeofitResult` shape, since none ran. */
+function tryRestore(
+    h: History,
+    ecs: State,
+    sectionId: number,
+    entry: Entry,
+): ConvertForceResult | undefined {
+    const prov = readProvenance(sectionId);
+    if (!prov) return undefined;
+    const row = sections(ecs).find((s) => s.id === sectionId);
+    if (!row) return undefined;
+    const token = sectionToken(ecs, row, trackDomain(ecs));
+    if (token !== prov.token) return undefined;
+    if (
+        entry.x !== prov.entry.x ||
+        entry.y !== prov.entry.y ||
+        entry.theta !== prov.entry.theta ||
+        entry.v !== prov.entry.v
+    )
+        return undefined;
+
+    restoreProvenance(h, ecs, sectionId, prov.payload);
+    const nodes: GeofitNode[] = prov.payload.nodes.map((n) =>
+        place(entry, { x: n.x, y: n.y, theta: n.theta }),
+    );
+    return {
+        nodes,
+        deviation: 0,
+        forceError: 0,
+        outcome: "restored",
+        geoBudget: 0,
+        forceBudget: 0,
+    };
+}
+
 /** Fit a force section into the geo section that reproduces its shape, and land it.
  *
- * Resolves with the fit's answer ({@link ConvertForceResult}) — the emitted nodes are already in
- * the document, and the rest (outcome, deviation, forceError) is the caller's transient readout,
- * never stored. A `"diverged"` answer resolves too, but writes nothing: the caller surfaces it.
- * So does a `"budget"` answer whose node count exceeds {@link MAX_LANDED_NODES} — resolved with
- * its outcome rewritten to `"dense"`, same nothing-lands shape, since the chain the fit would
- * emit is not an authoring surface.
+ * **Before any of that runs**, an untouched section short-circuits (kex2d-provenance stage 2,
+ * {@link tryRestore}): if this section's own forward solve stamped it and nothing the stamp
+ * covers has moved since, its exact pre-solve payload lands verbatim, no worker, no fit — the
+ * outcome reads `"restored"`.
+ *
+ * Otherwise resolves with the fit's answer ({@link ConvertForceResult}) — the emitted nodes are
+ * already in the document, and the rest (outcome, deviation, forceError) is the caller's
+ * transient readout, never stored. A `"diverged"` answer resolves too, but writes nothing: the
+ * caller surfaces it. So does a `"budget"` answer whose node count exceeds
+ * {@link MAX_LANDED_NODES} — resolved with its outcome rewritten to `"dense"`, same nothing-lands
+ * shape, since the chain the fit would emit is not an authoring surface.
  *
  * Rejects, having written nothing, when: the section is missing, isn't force, or has no live bake
  * (the enablement the invoking surface should already be gating on); a fit is already running on
@@ -123,6 +180,13 @@ export async function convertForce(
     const info = sectionInfo.get(sectionId);
     if (!info || !bakeLive(ecs))
         throw new Error(`convertForce: section ${sectionId} has no live bake`);
+
+    // kex2d-provenance stage 2: the short-circuit. Exactness, not a budget — two comparisons
+    // against the section's own stamp (`history.solveForce`'s landing), so this runs inline
+    // before the worker spawns, no modal wait. A miss on EITHER falls straight through to the
+    // fit below, untouched: the kernel/fit seam never sees provenance.
+    const restored = tryRestore(h, ecs, sectionId, info.entry);
+    if (restored) return restored;
 
     const bake = forceBake(ecs, sectionId);
     const entry = info.entry;

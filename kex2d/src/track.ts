@@ -1696,6 +1696,7 @@ export function joinNext(ecs: State, sectionId: number): boolean {
         Section.length.set(aEid, aLen + b.length);
     }
     ecs.destroy(b.eid);
+    provenance.delete(b.id);
     bumpOrders(ecs, b.order + 1, -1);
     return true;
 }
@@ -1712,6 +1713,7 @@ export function deleteSection(ecs: State, sectionId: number): boolean {
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
     ecs.destroy(secEid);
+    provenance.delete(sectionId);
     bumpOrders(ecs, order + 1, -1);
     return true;
 }
@@ -1867,13 +1869,15 @@ function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
     return h;
 }
 
-/** a section's content-hash TOKEN (kex2d-provenance stage 1): `sectionContentHash` plus
- *  `Track.domain` — a ruler pick (`domain.convertDomain`) converts a force section's stored
- *  numbers without touching a geo section's own rows, so the domain must ride along or a
- *  payload stamped in the old unit could restore verbatim into a converted store (the one
- *  silent-corruption path). A domain flip invalidates every stamp — correct, since the
- *  conversion itself is lossy, so there is no unit to certify "unchanged" against. */
-function sectionToken(ecs: State, sec: SectionRow, domain: Domain): string {
+/** a section's content-hash TOKEN (kex2d-provenance): `sectionContentHash` plus `Track.domain` —
+ *  a ruler pick (`domain.convertDomain`) converts a force section's stored numbers without
+ *  touching a geo section's own rows, so the domain must ride along or a payload stamped in the
+ *  old unit could restore verbatim into a converted store (the one silent-corruption path). A
+ *  domain flip invalidates every stamp — correct, since the conversion itself is lossy, so there
+ *  is no unit to certify "unchanged" against. Exported (stage 1 kept it private): a reverse-invoke
+ *  (`forcegeo.convertForce`/stage 3's `geoforce.convertGeo`) recomputes it fresh off the LIVE
+ *  section and compares to the stamp — the same reading, computed twice, never duplicated. */
+export function sectionToken(ecs: State, sec: SectionRow, domain: Domain): string {
     let h = sectionContentHash(ecs, sec);
     if (domain !== Domain.Distance) h += `^${domain}`;
     return h;

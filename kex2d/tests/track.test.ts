@@ -3,6 +3,8 @@ import { State } from "@dylanebert/shallot";
 import {
     addNode,
     appendSection,
+    deleteSection,
+    joinNext,
     authoredHash,
     BakeSystem,
     bakeOut,
@@ -1271,6 +1273,24 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
             points: [],
         });
         expect(readProvenance(sec)).toBeUndefined();
+    });
+
+    test("destroying a section evicts its stamp (deleteSection and joinNext)", () => {
+        const { state } = track();
+        const second = appendSection(state, SectionKind.Geo);
+        if (second === null) throw new Error("append failed");
+        state.step(0);
+        stampProvenance(state, second, snapshotSection(state, second));
+        expect(readProvenance(second)).toBeDefined();
+        expect(deleteSection(state, second)).toBe(true);
+        expect(readProvenance(second)).toBeUndefined();
+
+        const third = appendSection(state, SectionKind.Geo);
+        if (third === null) throw new Error("append failed");
+        state.step(0);
+        stampProvenance(state, third, snapshotSection(state, third));
+        expect(joinNext(state, sections(state)[0].id)).toBe(true);
+        expect(readProvenance(third)).toBeUndefined();
     });
 });
 
