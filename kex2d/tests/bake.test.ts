@@ -240,6 +240,62 @@ describe("forces — smooth physical normal force", () => {
         forces(fwd.posX, fwd.posY, b.theta, b.v, b.fN, dsArr, 0, N - 1, 12);
         for (let i = 1; i < N - 2; i++) expect(b.fN[i]).toBeCloseTo(0, 3);
     });
+
+    test("a stalled run of zero-length edges carries θ and recovers F_n = cos θ", () => {
+        // the Time-domain march makes `ds_i = v_i·Δt` EXACTLY 0 at a stall
+        // (`section.evalForce`), so the recovery meets a chordless edge: `atan2(0, 0)`
+        // reads 0 (snapping the whole sweep) and κ·v²/g divides by zero. Physically the
+        // cart is stationary — it traverses no arc, so there is no centripetal demand and
+        // its normal force is the gravity-normal term alone, at the heading it stopped
+        // with (the last real chord's angle, carried across the frozen edges).
+        const K = 6; // edges before the stall
+        const N = 14;
+        const a0 = 0.4;
+        const da = 0.22; // a climbing turn, so the stall heading is far from 0
+        const b = makeBuf(N);
+        let x = 0;
+        let y = 0;
+        for (let i = 1; i <= K; i++) {
+            x += Math.cos(a0 + i * da);
+            y += Math.sin(a0 + i * da);
+            b.posX[i] = x;
+            b.posY[i] = y;
+        }
+        for (let i = K + 1; i < N; i++) {
+            b.posX[i] = b.posX[K]; // frozen: the same f32 value, so every chord is exactly 0
+            b.posY[i] = b.posY[K];
+        }
+        const dsArr = new Float32Array(N - 1);
+        for (let i = 0; i < N - 1; i++) {
+            dsArr[i] = Math.hypot(b.posX[i + 1] - b.posX[i], b.posY[i + 1] - b.posY[i]);
+        }
+        for (let i = K; i < N - 1; i++) expect(dsArr[i]).toBe(0); // the plateau is exact
+
+        forces(b.posX, b.posY, b.theta, b.v, b.fN, dsArr, 0, N - 1, V0);
+
+        for (let i = 0; i < N - 1; i++) expect(Number.isFinite(b.fN[i])).toBe(true);
+        // θ holds the last real chord angle from the stall sample on — never snapped to 0.
+        expect(b.theta[K]).toBeCloseTo(a0 + K * da, 5);
+        for (let i = K; i < N; i++) expect(b.theta[i]).toBe(b.theta[K]);
+        // and each frozen edge reads the stationary cart's own normal force.
+        for (let i = K; i < N - 1; i++) {
+            expect(b.fN[i]).toBe(Math.fround(Math.cos(b.theta[i])));
+        }
+    });
+
+    test("a chain with no chord at all recovers the entry heading, not 0", () => {
+        // every edge frozen (a force section marched entirely after the ride stalled): the
+        // geometry carries no chord to recover from, so θ is the entry heading the caller
+        // passes — collapsing it to 0 would rigidly re-frame every downstream section.
+        const N = 5;
+        const theta0 = 1.99;
+        const b = makeBuf(N); // every sample at the origin
+        const dsArr = new Float32Array(N - 1); // all exactly 0
+        forces(b.posX, b.posY, b.theta, b.v, b.fN, dsArr, 0, N - 1, V0, theta0);
+        const th = Math.fround(theta0);
+        for (let i = 0; i < N; i++) expect(b.theta[i]).toBe(th);
+        for (let i = 0; i < N - 1; i++) expect(b.fN[i]).toBe(Math.fround(Math.cos(th)));
+    });
 });
 
 describe("spline round-trip", () => {

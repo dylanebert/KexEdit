@@ -1791,6 +1791,49 @@ describe("Track.domain (document layer)", () => {
         expect(count - 1).toBe(Math.round(duration / DT_NOMINAL)); // edges = round(dur / Δt)
     });
 
+    test("a stalled Time-domain section bakes finite force and seeds finite keyframes", () => {
+        // the ordinary authoring state that found this: one 6 s section at a sustained 1.2 g from
+        // the default v0 drains the energy and stalls, and a Time march's stalled edges are
+        // EXACTLY zero-length by design. The recovery must resolve a chordless edge as the
+        // stationary cart it is (F_n = cos θ at the carried heading) — dividing by a zero chord
+        // put −Infinity/NaN into `bakeOut.fN`, which the chart's y-fit read as its axis floor and
+        // `bakeEntryForce` stamped into a fresh section's authored keyframes.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        const sec = createSection(state, 0, SectionKind.Force, 6);
+        createForcePoint(state, sec, 0, 1.2); // one point holds its value: sustained 1.2 g
+        state.step(0);
+
+        const out = bakeOut.get(eid);
+        const s = samples.get(eid);
+        if (!out || !s) throw new Error("no bake");
+        const count = Track.count.get(eid);
+        expect(out.firstInfeasible).toBeGreaterThanOrEqual(0); // the stall is really there
+        let stall = -1;
+        for (let i = 0; i < count - 1; i++) {
+            if (out.ds[i] === 0) {
+                stall = i;
+                break;
+            }
+        }
+        expect(stall).toBeGreaterThan(0); // and it really does freeze the march
+
+        for (let i = 0; i < count - 1; i++) expect(Number.isFinite(out.fN[i])).toBe(true);
+        // θ across the plateau holds the heading the cart stopped with (measured ≈ 1.99 rad on
+        // this profile), never the `atan2(0, 0)` collapse to 0.
+        expect(Math.abs(s.theta[stall])).toBeGreaterThan(1);
+        for (let i = stall; i < count; i++) expect(s.theta[i]).toBe(s.theta[stall]);
+
+        // and a section appended onto that stalled exit seeds authored keyframes from
+        // `bakeEntryForce` — non-finite g would enter authored state.
+        const next = appendSection(state, SectionKind.Force);
+        const seeded = sectionForces(state, next);
+        expect(seeded.length).toBeGreaterThan(0);
+        for (const p of seeded) expect(Number.isFinite(p.g)).toBe(true);
+    });
+
     test("the extent trim floors in the ACTIVE domain's unit", () => {
         const state = new State();
         state.addSystem(BakeSystem);

@@ -170,7 +170,7 @@ export function evalGeo(
     const theta = new Float32Array(edges + 1);
     const v = new Float32Array(edges + 1);
     const fN = new Float32Array(edges);
-    forces(posX, posY, theta, v, fN, dsArr, 0, edges, entry.v);
+    forces(posX, posY, theta, v, fN, dsArr, 0, edges, entry.v, entry.theta);
     return {
         posX: posX.slice(0, edges + 1),
         posY: posY.slice(0, edges + 1),
@@ -206,8 +206,11 @@ export function evalGeo(
  * fixed point: samples pile on one place and the section's realized arclength
  * collapses. Accepted, no new clamp: the plateau is exact by design, which is
  * what lets `domain.ts` resolve it at one agreed slope in both directions.
- * Note a zero-length edge has no chord and so no recovered `F_n` — the
- * recovery below divides by `dsArr[i]`.
+ * A zero-length edge has no chord, so the recovery below resolves it as the
+ * stationary cart it is — the previous chord angle carried across (a frozen
+ * cart's orientation doesn't change) and `F_n = cos θ`, gravity's track-normal
+ * term with no centripetal demand (`bake.forces`). The entry heading is passed
+ * for the case where a whole section marches frozen and no chord exists at all.
  */
 export function evalForce(
     entry: Entry,
@@ -239,7 +242,7 @@ export function evalForce(
     }
 
     const outF = new Float32Array(edges);
-    forces(posX, posY, theta, v, outF, dsArr, 0, edges, entry.v);
+    forces(posX, posY, theta, v, outF, dsArr, 0, edges, entry.v, entry.theta);
     return {
         posX,
         posY,

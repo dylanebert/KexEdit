@@ -36,6 +36,15 @@ function wrap(a: number): number {
  * physical force is smooth, so the bake recovers θ from the geometry directly
  * (the tangent bisector has no such mode) instead of via the reflection.
  *
+ * a **degenerate** (zero-length) edge has no chord, so the geometry defines
+ * neither its angle nor a curvature: it carries the running chord angle across
+ * and its `F_n` is the stationary cart's own normal force, `cos θ` (the cart
+ * traverses no arc, so there is no centripetal demand — the κ·v²/g term is
+ * absent, not divided by zero). A chain with no chord ANYWHERE recovers
+ * `theta0`, the entry heading. Only a Time-domain force march produces these:
+ * `ds_i = v_i·Δt` is exactly 0 at a stall (`section.evalForce`), where the cart
+ * is frozen and its orientation therefore doesn't change.
+ *
  * writes theta[offset..offset+M], v[offset..offset+M], fN[offset..offset+M−1]
  * given posX/posY[offset..offset+M] already laid out and a per-edge `dsArr`.
  */
@@ -49,14 +58,33 @@ export function forces(
     offset: number,
     M: number,
     v0: number,
+    theta0 = 0,
     g: number = G,
     vMin: number = V_FLOOR,
 ): void {
-    const edge = (k: number): number =>
-        Math.atan2(
-            posY[offset + k + 1] - posY[offset + k],
-            posX[offset + k + 1] - posX[offset + k],
-        );
+    /** edge `k`'s chord angle, or NaN where it has no chord. */
+    const chord = (k: number): number => {
+        const dx = posX[offset + k + 1] - posX[offset + k];
+        const dy = posY[offset + k + 1] - posY[offset + k];
+        return dx === 0 && dy === 0 ? Number.NaN : Math.atan2(dy, dx);
+    };
+    /** the continuous sweep advanced over edge `k`: a chordless edge holds it. */
+    const edge = (running: number, k: number): number => {
+        const a = chord(k);
+        return Number.isNaN(a) ? running : running + wrap(a - running);
+    };
+
+    // the sweep's seed: the first edge that HAS a chord, so a leading degenerate
+    // run carries that angle back rather than reading atan2(0, 0) as 0. with no
+    // chord at all the entry heading is the only heading there is.
+    let seed = theta0;
+    for (let k = 0; k < M; k++) {
+        const a = chord(k);
+        if (!Number.isNaN(a)) {
+            seed = a;
+            break;
+        }
+    }
 
     // per-sample tangent θ: the bisector of the chord angles either side of the
     // sample, over a *continuous* (unwrapped) chord-angle sweep so θ stays
@@ -65,16 +93,16 @@ export function forces(
     // neighbor, so extrapolate the bisector trend (exact for constant
     // curvature, second-order otherwise).
     if (M === 1) {
-        theta[offset] = edge(0);
-        theta[offset + 1] = edge(0);
+        theta[offset] = seed;
+        theta[offset + 1] = seed;
     } else {
-        let prev = edge(0); // running continuous chord angle, cont[k−1]
-        let cur = prev + wrap(edge(1) - prev); // cont[k]
+        let prev = edge(seed, 0); // running continuous chord angle, cont[k−1]
+        let cur = edge(prev, 1); // cont[k]
         theta[offset] = prev - 0.5 * (cur - prev); // extrapolate the start tangent
         theta[offset + 1] = 0.5 * (prev + cur);
         for (let k = 2; k < M; k++) {
             prev = cur;
-            cur = prev + wrap(edge(k) - prev);
+            cur = edge(prev, k);
             theta[offset + k] = 0.5 * (prev + cur);
         }
         theta[offset + M] = cur + 0.5 * (cur - prev); // extrapolate the end tangent
@@ -90,9 +118,15 @@ export function forces(
 
     for (let k = 0; k < M; k++) {
         const i = offset + k;
+        const ds = dsArr[i];
+        if (!(ds > 0)) {
+            // chordless: a stationary cart, so gravity's track-normal term alone.
+            fN[i] = Math.cos(theta[i]);
+            continue;
+        }
         const vSafe = Math.max(Math.abs(v[i]), vMin);
         // θ is continuous, so the per-edge turn is the bare difference.
-        fN[i] = ((theta[i + 1] - theta[i]) * vSafe * vSafe) / (g * dsArr[i]) + Math.cos(theta[i]);
+        fN[i] = ((theta[i + 1] - theta[i]) * vSafe * vSafe) / (g * ds) + Math.cos(theta[i]);
     }
 }
 

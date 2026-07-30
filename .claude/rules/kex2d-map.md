@@ -85,6 +85,11 @@ Velocity uses the energy-delta (squared) form to avoid catastrophic cancellation
 - `θ_i = ½(m_{i−1} + m_i)` — the curve's local tangent; free ends extrapolate the bisector trend
 - `v_i² = v_0² − 2g·(y_i − y_0)` — energy conservation; `v_i = sqrt(max(0, v_i²))`
 - `F_n[i] = (θ_{i+1} − θ_i)·vSafe_i² / (g·Δs) + cos(θ_i)` = κ·v²/g + cos θ
+- **a degenerate (Δs == 0) edge is the stationary cart**: it has no chord, so it carries `m_{i−1}`
+  across (a frozen cart's orientation doesn't change) and its `F_n` is `cos(θ_i)` — no arc is
+  traversed, so there is no centripetal term to divide by a zero chord. A chain with no chord at
+  all recovers the caller's entry heading (`theta0`). Only a Time-domain march reaches this
+  (`ds_i = v_i·Δt` is exactly 0 at a stall), and the branch keeps the Distance path bit-identical
 
 `invertRange` (`θ_{i+1} = 2·m_i − θ_i`) is the integrator's exact reflection inverse — round-trip
 validation only, NOT the bake (`kex2d/AGENTS.md` Hard gotchas).
