@@ -4,7 +4,7 @@ import { convertForce, MAX_LANDED_NODES, StaleConvert } from "../src/forcegeo";
 import { convertGeo } from "../src/geoforce";
 import { FORCE_BUDGET } from "../src/geofit";
 import { liveFitWorkers } from "../src/geofit-async";
-import { createHistory, type History, undo } from "../src/history";
+import { createHistory, type History, splitSection, undo } from "../src/history";
 import { Domain } from "../src/section";
 import { TangentMode } from "../src/spline";
 import {
@@ -30,7 +30,9 @@ import {
     setTrackDomain,
     setTrackV0,
     snapshotAll,
+    Track,
     trackDomain,
+    trackDs,
 } from "../src/track";
 import { budgetFit, divergingFit, dyingFit, withFitWorker } from "./helpers/fitworker";
 import { drift, type Stations, stations } from "./helpers/stations";
@@ -395,6 +397,90 @@ describe("provenance short-circuit", () => {
 
         const result = await convertForce(h, state, sec);
         expect(result.outcome).not.toBe("restored");
+    }, 60_000);
+
+    test("a Track.domain flip after the solve falls through to the fit", async () => {
+        const { state, sec } = hillTrack();
+        const h = createHistory();
+
+        await convertGeo(h, state, sec);
+        state.step(0);
+
+        setTrackDomain(state, Domain.Time);
+        state.step(0);
+        // the domain flip alone changes what a force section's own content hashes to (it folds
+        // `Track.domain` in), so the token no longer matches the stamp taken in `Distance`.
+        const result = await convertForce(h, state, sec);
+        expect(result.outcome).not.toBe("restored");
+    }, 60_000);
+
+    test("a global Track.ds change: first-section restore survives it (ds-invariant entry), a downstream section falls through via its shifted entry", async () => {
+        // the token deliberately excludes the track-global `Track.ds` (`track.ts` `Provenance`'s
+        // doc): the first section's entry is the fixed `START` anchor, untouched by the nominal
+        // spacing, so a global ds change between the stamp and the reverse-invoke still certifies
+        // and restores — benign, since the restore lands the stamp's own pre-trip rows verbatim,
+        // which don't depend on ds at all. Do NOT "fix" this by folding `Track.ds` into the token
+        // — that would only convert this benign restore into a fit. A DOWNSTREAM section's entry
+        // is the upstream section's bake-dependent exit, so the same ds change genuinely
+        // re-discretizes it and the entry-anchor check correctly falls through — no special-casing
+        // needed, `entryExact` alone does the job.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackV0(eid, 18);
+        const first = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, first, 0, 0);
+        addNode(state, first, 10, 2);
+        addNode(state, first, 20, 4);
+        const second = createSection(state, 1, SectionKind.Geo, 0);
+        addNode(state, second, 0, 0);
+        addNode(state, second, 8, -1);
+        addNode(state, second, 16, -2);
+        state.step(0);
+        const h = createHistory();
+
+        await convertGeo(h, state, first);
+        state.step(0);
+        await convertGeo(h, state, second);
+        state.step(0);
+
+        Track.ds.set(eid, trackDs(state) * 2);
+        state.step(0);
+
+        const firstResult = await convertForce(h, state, first);
+        expect(firstResult.outcome).toBe("restored");
+        state.step(0);
+
+        const secondResult = await convertForce(h, state, second);
+        expect(secondResult.outcome).not.toBe("restored");
+    }, 60_000);
+
+    test("splitSection's residue resolves correctly with zero invalidation code — both halves fall through to the fit", async () => {
+        // the spec's claim: a split/join's residue resolves correctly with zero invalidation
+        // code. The head keeps its stamped id but its own content shrinks (fewer rows, a shorter
+        // length) — a token miss; the tail is a freshly minted section id that was never stamped
+        // — no provenance to consult at all. Both land on the fit, not because anything reached in
+        // to invalidate the stamp, but because the certification the consult already runs (token +
+        // entry) can't help failing on its own.
+        const { state, sec } = hillTrack();
+        const h = createHistory();
+
+        await convertGeo(h, state, sec);
+        state.step(0);
+        const secEid = sectionAt(state, sec);
+        if (secEid === null) throw new Error("section missing");
+        const mid = Section.length.get(secEid) / 2;
+
+        const tail = splitSection(h, state, sec, mid);
+        if (tail === null) throw new Error("split produced nothing");
+        state.step(0);
+
+        const headResult = await convertForce(h, state, sec);
+        expect(headResult.outcome).not.toBe("restored");
+        state.step(0);
+
+        const tailResult = await convertForce(h, state, tail);
+        expect(tailResult.outcome).not.toBe("restored");
     }, 60_000);
 
     test("undo after a restore returns the force section byte-identically", async () => {

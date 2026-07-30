@@ -33,16 +33,13 @@ import { place } from "./section";
 import {
     authoredHash,
     bakeLive,
+    consultProvenance,
     forceBake,
     MAX_SAMPLES,
-    readProvenance,
     sectionAt,
     sectionInfo,
-    sectionToken,
     Section,
     SectionKind,
-    sections,
-    trackDomain,
     trackDs,
 } from "./track";
 
@@ -92,38 +89,26 @@ export interface ConvertForceResult extends Omit<GeofitResult, "outcome"> {
     outcome: ConvertForceOutcome;
 }
 
-/** the short-circuit itself (kex2d-provenance stage 2): a section's stamped provenance
- *  (`track.readProvenance`), certified against the LIVE document by two comparisons —
- *  `sectionToken` recomputed fresh over the live section (kind + length + ds + rows + domain,
- *  the same reading the stamp took) and the live entry anchor (`sectionInfo.entry`), both
- *  f32-exact. Either miss returns `undefined` (no restore — the caller falls through to the fit);
- *  a hit lands the stamp's own pre-solve payload verbatim (`history.restoreProvenance`) and
- *  returns the caller's result, so nothing downstream in `convertForce` ever runs. The returned
- *  `nodes` are the landed payload's own poses, placed into world space through the same `entry`
- *  the restore just re-confirmed — a readout (`fitDone`) reads `nodes.length`, never the fit's
- *  own `GeofitResult` shape, since none ran. */
+/** the short-circuit itself (kex2d-provenance stage 2): `track.consultProvenance` runs the
+ *  certification core (readProvenance → live row → a fresh `sectionToken` compare → `entryExact`
+ *  against the live entry anchor, both f32-exact) — shared with `geoforce.tryRestore`, the other
+ *  direction. A miss returns `undefined` (no restore — the caller falls through to the fit); a hit
+ *  lands the stamp's own pre-solve payload verbatim (`history.restoreProvenance`) and returns the
+ *  caller's result, so nothing downstream in `convertForce` ever runs. The returned `nodes` are the
+ *  landed payload's own poses, placed into world space through the same `entry` the consult just
+ *  re-confirmed — a readout (`fitDone`) reads `nodes.length`, never the fit's own `GeofitResult`
+ *  shape, since none ran. */
 function tryRestore(
     h: History,
     ecs: State,
     sectionId: number,
     entry: Entry,
 ): ConvertForceResult | undefined {
-    const prov = readProvenance(sectionId);
-    if (!prov) return undefined;
-    const row = sections(ecs).find((s) => s.id === sectionId);
-    if (!row) return undefined;
-    const token = sectionToken(ecs, row, trackDomain(ecs));
-    if (token !== prov.token) return undefined;
-    if (
-        entry.x !== prov.entry.x ||
-        entry.y !== prov.entry.y ||
-        entry.theta !== prov.entry.theta ||
-        entry.v !== prov.entry.v
-    )
-        return undefined;
+    const payload = consultProvenance(ecs, sectionId, entry);
+    if (!payload) return undefined;
 
-    restoreProvenance(h, ecs, sectionId, prov.payload);
-    const nodes: GeofitNode[] = prov.payload.nodes.map((n) =>
+    restoreProvenance(h, ecs, sectionId, payload);
+    const nodes: GeofitNode[] = payload.nodes.map((n) =>
         place(entry, { x: n.x, y: n.y, theta: n.theta }),
     );
     return {

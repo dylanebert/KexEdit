@@ -1274,8 +1274,19 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
 // ── provenance sidecar (kex2d-provenance) ──────────────────────────────────────
 
 /** one section's stamped provenance: `payload` is the pre-solve snapshot a same-session reverse
- *  convert restores verbatim (stage 2/3, not yet consulted here); `token` and `entry` are what
- *  certify a later reverse-invoke that nothing the bake reads has changed since the stamp. */
+ *  convert restores verbatim (stage 2/3, not yet consulted here); `token` and `entry` are the two
+ *  checks a later reverse-invoke certifies exactness against.
+ *
+ *  **The honest claim is "bake-identity is sufficient, not necessary" — never "nothing the bake
+ *  reads has changed."** The token deliberately excludes the track-global `Track.ds`: a first
+ *  section's entry anchor is ds-invariant (it's `START`, untouched by the nominal spacing), so a
+ *  global ds change between the stamp and the reverse-invoke still passes both checks — benign,
+ *  because the restore lands `payload`'s own pre-trip rows VERBATIM, and those rows don't depend
+ *  on ds at all. An untouched section's live bake being bit-identical to the stamp is the
+ *  sufficient case this unit was built for, but it isn't what certification actually tests; a
+ *  benign ds change can pass too, and the restore is still authored-exact either way. Don't "fix"
+ *  this by folding `Track.ds` into the token — that would only convert benign restores into fits
+ *  (kex2d-provenance close-out). */
 export interface Provenance {
     payload: SectionSnapshot;
     token: string;
@@ -1874,13 +1885,45 @@ function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
  *  touching a geo section's own rows, so the domain must ride along or a payload stamped in the
  *  old unit could restore verbatim into a converted store (the one silent-corruption path). A
  *  domain flip invalidates every stamp — correct, since the conversion itself is lossy, so there
- *  is no unit to certify "unchanged" against. Exported (stage 1 kept it private): a reverse-invoke
+ *  is no unit to certify "unchanged" against. Deliberately excludes the track-global `Track.ds`
+ *  (`Provenance`'s doc has the why — a ds change is benign, not a certification gap). Exported
+ *  (stage 1 kept it private): a reverse-invoke
  *  (`forcegeo.convertForce`/stage 3's `geoforce.convertGeo`) recomputes it fresh off the LIVE
  *  section and compares to the stamp — the same reading, computed twice, never duplicated. */
 export function sectionToken(ecs: State, sec: SectionRow, domain: Domain): string {
     let h = sectionContentHash(ecs, sec);
     if (domain !== Domain.Distance) h += `^${domain}`;
     return h;
+}
+
+/** f32-exact entry-anchor equality — the provenance consult's other half (`sectionToken` is the
+ *  content half), shared by `forcegeo.tryRestore`/`geoforce.tryRestore` so the four-field
+ *  comparison has one home. `!==` on either side fails closed on NaN (self-inequal), which is the
+ *  wanted behavior: an entry that failed to reproduce never certifies a restore. */
+export function entryExact(a: Entry, b: Entry): boolean {
+    return a.x === b.x && a.y === b.y && a.theta === b.theta && a.v === b.v;
+}
+
+/** the provenance consult's certification core (kex2d-provenance close-out) — the validity block
+ *  `forcegeo.tryRestore`/`geoforce.tryRestore` each ran inline: `readProvenance` → the live section
+ *  row → a fresh `sectionToken` compare → `entryExact` against the live entry, in ONE place. Each
+ *  direction keeps only its own restore call + result shaping (building a `GeofitNode[]` vs a
+ *  `ForcePoint[]` from the payload is direction-specific, so it stays with the caller). Returns the
+ *  stamped payload only when both checks pass; a miss on either — no stamp, a since-edited section,
+ *  a moved upstream — returns `undefined` and the caller falls through to the fit/solve. A future
+ *  validity input lands here once, both directions. */
+export function consultProvenance(
+    ecs: State,
+    sectionId: number,
+    entry: Entry,
+): SectionSnapshot | undefined {
+    const prov = readProvenance(sectionId);
+    if (!prov) return undefined;
+    const row = sections(ecs).find((s) => s.id === sectionId);
+    if (!row) return undefined;
+    if (sectionToken(ecs, row, trackDomain(ecs)) !== prov.token) return undefined;
+    if (!entryExact(entry, prov.entry)) return undefined;
+    return prov.payload;
 }
 
 /** the bake gate's input reading for the whole authored track, computed from the LIVE authored

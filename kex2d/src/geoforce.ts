@@ -32,17 +32,14 @@ import { evalGeo } from "./section";
 import {
     authoredHash,
     bakeLive,
+    consultProvenance,
     geoNodes,
     MAX_SAMPLES,
-    readProvenance,
     Section,
     sectionAt,
     sectionInfo,
     SectionKind,
-    sections,
     sectionStep,
-    sectionToken,
-    trackDomain,
     trackDs,
 } from "./track";
 
@@ -57,44 +54,33 @@ export interface ConvertGeoResult extends Omit<ConvertResult, "outcome"> {
     outcome: ConvertGeoOutcome;
 }
 
-/** the short-circuit itself (kex2d-provenance stage 3), `forcegeo.ts`'s `tryRestore` mirrored
- *  the other direction: a section's stamped provenance (`track.readProvenance`) — here the
- *  pre-fit FORCE payload a force→geo landing (`history.solveGeo`) stamped — certified against
- *  the LIVE document by the same two comparisons (`sectionToken` recomputed fresh over the live
- *  section, and the live entry anchor, both f32-exact). Either miss returns `undefined` (no
- *  restore — the caller falls through to the conversion tier); a hit lands the stamp's own
- *  pre-fit payload verbatim (`history.restoreProvenance`) and returns the caller's result, so the
- *  worker pool (`convert.ts`) never spawns.
+/** the short-circuit itself (kex2d-provenance stage 3), `forcegeo.ts`'s `tryRestore` mirrored the
+ *  other direction: `track.consultProvenance` runs the certification core (readProvenance → live
+ *  row → a fresh `sectionToken` compare → `entryExact` against the live entry anchor, both
+ *  f32-exact) over the pre-fit FORCE payload a force→geo landing (`history.solveGeo`) stamped —
+ *  shared with `forcegeo.tryRestore`. A miss returns `undefined` (no restore — the caller falls
+ *  through to the conversion tier); a hit lands the stamp's own pre-fit payload verbatim
+ *  (`history.restoreProvenance`) and returns the caller's result, so the worker pool
+ *  (`convert.ts`) never spawns.
  *
  *  **Domain seam**: the payload is a `snapshotSection` taken straight off the live ECS columns
  *  at the force→geo landing, already in whatever unit `Track.domain` was in at that moment — NOT
  *  the conversion tier's distance-internal output that the normal landing passes through
- *  `domain.convertSolve` before it reaches the document. `sectionToken` folds `Track.domain`
- *  into the stamp, so a restore only ever fires with the domain unchanged since the stamp — the
- *  payload's unit and the live store's unit already agree, and running it through
- *  `convertSolve` a second time would convert an already-native value. */
+ *  `domain.convertSolve` before it reaches the document. `sectionToken` (inside the consult)
+ *  folds `Track.domain` into the stamp, so a restore only ever fires with the domain unchanged
+ *  since the stamp — the payload's unit and the live store's unit already agree, and running it
+ *  through `convertSolve` a second time would convert an already-native value. */
 function tryRestore(
     h: History,
     ecs: State,
     sectionId: number,
     entry: Entry,
 ): ConvertGeoResult | undefined {
-    const prov = readProvenance(sectionId);
-    if (!prov) return undefined;
-    const row = sections(ecs).find((s) => s.id === sectionId);
-    if (!row) return undefined;
-    const token = sectionToken(ecs, row, trackDomain(ecs));
-    if (token !== prov.token) return undefined;
-    if (
-        entry.x !== prov.entry.x ||
-        entry.y !== prov.entry.y ||
-        entry.theta !== prov.entry.theta ||
-        entry.v !== prov.entry.v
-    )
-        return undefined;
+    const payload = consultProvenance(ecs, sectionId, entry);
+    if (!payload) return undefined;
 
-    restoreProvenance(h, ecs, sectionId, prov.payload);
-    const points: ForcePoint[] = prov.payload.points.map((p) => ({
+    restoreProvenance(h, ecs, sectionId, payload);
+    const points: ForcePoint[] = payload.points.map((p) => ({
         s: p.s,
         g: p.g,
         ease: p.ease,
@@ -103,8 +89,8 @@ function tryRestore(
     }));
     return {
         points,
-        ds: prov.payload.ds,
-        length: prov.payload.length,
+        ds: payload.ds,
+        length: payload.length,
         edges: 0,
         keys: points.length,
         knots: [],
