@@ -348,8 +348,11 @@ reference: `tests/geometry.lab.ts`, `tests/collocate.lab.ts`, `tests/loop.lab.ts
 carries the readings), `tests/forcegeo.lab.ts` (the force→geo fit's own sweep) and
 `tests/perf.lab.ts` (the conversion perf baseline: probe counts +
 wall time over the corpus plus `tests/helpers/stress.ts`'s scenarios — deliberately not corpus
-members, so the 80-key lock is untouched) and `tests/pool.lab.ts` (the same scenarios through the
-worker pool: sync vs pooled wall time and cancel latency, each row checked against the golden).
+members, so the 80-key lock is untouched), `tests/pool.lab.ts` (the same scenarios through the
+worker pool: sync vs pooled wall time and cancel latency, each row checked against the golden), and
+`tests/roundtrip.lab.ts` (the geo→force→geo yardstick: node inflation, force flip-density, max
+force divergence per corpus scenario — its baseline reproduces the 2026-07-29 check-in's hand
+readings, so the metric is what any dialect change is judged against).
 Visual counterparts
 `geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` + `fit-lab.html`
 (canvas2D, captured by the harness). `fit-lab.html` is the conversion tier's own page: it plays
