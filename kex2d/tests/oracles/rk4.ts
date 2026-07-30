@@ -93,3 +93,81 @@ export function rk4(
 
     return out;
 }
+
+/**
+ * RK4 oracle of the same cart-on-track ODE as `rk4`, landed on the **time**
+ * grid `t = i·Δt` instead of the arclength grid `rk4` lands on — the exact
+ * oracle for `section.evalForce`'s `Domain.Time` path. `F_n` is queried at
+ * elapsed time directly (`t_i = i·Δt`, the source-σ convention's time twin),
+ * so unlike `rk4` no extra state variable is needed to track the query
+ * argument: time already IS the ODE's independent variable, so the query at
+ * any RK4 sub-stage is just the elapsed time plus that sub-stage's own time
+ * offset (`sigma` needed its own `dσ/dt = v` integration; elapsed time does
+ * not). Caller must keep v strictly positive — no v_min clamp; throws via
+ * `maxSubsteps` if the regime breaks.
+ */
+export function rk4Time(
+    x0: number,
+    y0: number,
+    theta0: number,
+    v0: number,
+    N: number,
+    dt: number,
+    fN: (t: number) => number,
+    g: number = G,
+    options: RK4Options = {},
+): SampleState[] {
+    const subDt = options.dt ?? 1e-4;
+    const maxSubsteps = options.maxSubsteps ?? 10_000_000;
+
+    const out: SampleState[] = new Array(N);
+    out[0] = [x0, y0, theta0, v0];
+
+    let x = x0;
+    let y = y0;
+    let theta = theta0;
+    let v = v0;
+    let elapsed = 0;
+    let next = 1;
+
+    const deriv = (th: number, vv: number, t: number) => {
+        const c = Math.cos(th);
+        const s = Math.sin(th);
+        return [vv * c, vv * s, ((fN(t) - c) * g) / vv, -g * s] as const;
+    };
+
+    const rk4Step = (h: number): void => {
+        const k1 = deriv(theta, v, elapsed);
+        const k2 = deriv(theta + 0.5 * h * k1[2], v + 0.5 * h * k1[3], elapsed + 0.5 * h);
+        const k3 = deriv(theta + 0.5 * h * k2[2], v + 0.5 * h * k2[3], elapsed + 0.5 * h);
+        const k4 = deriv(theta + h * k3[2], v + h * k3[3], elapsed + h);
+
+        x += (h / 6) * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]);
+        y += (h / 6) * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]);
+        theta += (h / 6) * (k1[2] + 2 * k2[2] + 2 * k3[2] + k4[2]);
+        v += (h / 6) * (k1[3] + 2 * k2[3] + 2 * k3[3] + k4[3]);
+        elapsed += h;
+    };
+
+    for (let step = 0; step < maxSubsteps && next < N; step++) {
+        const target = next * dt;
+        const remaining = target - elapsed;
+        if (remaining > 0 && remaining <= subDt) {
+            rk4Step(remaining);
+            elapsed = target;
+            out[next] = [x, y, theta, v];
+            next++;
+        } else {
+            rk4Step(subDt);
+        }
+    }
+
+    if (next < N) {
+        throw new Error(
+            `rk4Time did not reach sample ${next}/${N} after ${maxSubsteps} substeps ` +
+                `(t=${elapsed}, v=${v}).`,
+        );
+    }
+
+    return out;
+}

@@ -22,11 +22,24 @@
  *  (`bake.forces`), not the f64 solver atoms (`force.ts`). */
 
 import { forces } from "./bake";
-import { integrate } from "./forward";
+import { integrate, step } from "./forward";
 import { type Node, sampleChain, type Tangent } from "./spline";
 
 /** default sample-buffer ceiling — mirrors `track.MAX_SAMPLES`. */
 const MAX = 4096;
+
+/** a force section's per-section-local coordinate: **distance** (keyframes at
+ *  arclength s, extent in meters — today's only kind) or **time** (keyframes
+ *  at time t, extent in seconds; the swept geometry is emergent). the domain
+ *  is a *step rule* on the atom (`evalForce`), never a rework — everything
+ *  downstream (chain, force recovery, the flat SoA) already consumes per-edge
+ *  variable `ds`, so no other code learns about time. stored on
+ *  `Section.domain` (the ECS layer); `Distance` is the default so every
+ *  existing caller and track stays byte-identical. */
+export enum Domain {
+    Distance = 0,
+    Time = 1,
+}
 
 /** a full track state point: the anchor a section starts from and the exit it
  *  produces (its last sample). `v` is speed (m/s); the force recovery derives
@@ -67,7 +80,7 @@ export interface SectionResult {
  *  profile (g) + its edge step (m). */
 export type Section =
     | { kind: "geo"; nodes: readonly Node[]; ds: number }
-    | { kind: "force"; fN: ArrayLike<number>; ds: number };
+    | { kind: "force"; fN: ArrayLike<number>; ds: number; domain?: Domain };
 
 /** rotate a tangent's in/out vectors by the rotation `(c, s) = (cos φ, sin φ)`.
  *  an explicit tangent is stored in the node's local frame, so re-expressing the node
@@ -177,10 +190,26 @@ export function evalGeo(
  * into the swept geometry, then RE-recover the display force from that geometry
  * (one display path). the recovered force overwrites the integrator's
  * `theta`/`v`, so the exit and the chart match a geo section's recovery exactly.
- * every forward step advances exactly `ds` along its mid-angle, so the per-edge
- * chord is `ds` (the recovery's `dsArr`).
+ *
+ * `domain` is a step rule, not a rework: **Distance** (default, byte-identical
+ * to the original path) steps `Δs = ds` and samples `fN` at the source
+ * convention `σ_i = i·ds`, so every forward step advances exactly `ds` along
+ * its mid-angle (the per-edge chord IS `ds`, the recovery's `dsArr`).
+ * **Time** steps `Δt = ds` and samples `fN` at `t_i = i·Δt` (the same source
+ * convention, time's twin); each edge advances `ds_i = v_i·Δt` along
+ * arclength — a *variable* per-edge chord, read off the live integrator `v`
+ * before it is overwritten by the recovery below (`forces` already accepts a
+ * non-uniform `dsArr`, the geo path's own shape). A stalled `v_i` (at
+ * `V_FLOOR`) gives near-zero `ds_i` — samples pile spatially, the section's
+ * realized arclength collapses; accepted, no new clamp — the existing
+ * infeasibility diagnostics carry the signal.
  */
-export function evalForce(entry: Entry, fN: ArrayLike<number>, ds: number): SectionResult {
+export function evalForce(
+    entry: Entry,
+    fN: ArrayLike<number>,
+    ds: number,
+    domain: Domain = Domain.Distance,
+): SectionResult {
     const edges = fN.length;
     const n = edges + 1;
     const posX = new Float32Array(n);
@@ -191,9 +220,19 @@ export function evalForce(entry: Entry, fN: ArrayLike<number>, ds: number): Sect
     posY[0] = entry.y;
     theta[0] = entry.theta;
     v[0] = entry.v;
-    integrate(posX, posY, theta, v, n, ds, (sigma) => fN[Math.round(sigma / ds)]);
 
-    const dsArr = new Float32Array(edges).fill(ds);
+    const dsArr = new Float32Array(edges);
+    if (domain === Domain.Time) {
+        for (let i = 0; i < edges; i++) {
+            const dsi = v[i] * ds; // ds_i = v_i · Δt
+            dsArr[i] = dsi;
+            step(posX, posY, theta, v, i, i + 1, fN[i], dsi);
+        }
+    } else {
+        integrate(posX, posY, theta, v, n, ds, (sigma) => fN[Math.round(sigma / ds)]);
+        dsArr.fill(ds);
+    }
+
     const outF = new Float32Array(edges);
     forces(posX, posY, theta, v, outF, dsArr, 0, edges, entry.v);
     return {
@@ -263,7 +302,7 @@ export function chain(entry0: Entry, sections: readonly Section[], maxSamples = 
         const r =
             sec.kind === "geo"
                 ? evalGeo(entry, sec.nodes, sec.ds, maxSamples - off)
-                : evalForce(entry, sec.fN, sec.ds);
+                : evalForce(entry, sec.fN, sec.ds, sec.domain);
         const start = off;
         // copy points 1..edges; point 0 duplicates the shared boundary already
         // written by the prior section (or the seed), so leave it — it carries the
