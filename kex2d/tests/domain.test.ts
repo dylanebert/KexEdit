@@ -3,7 +3,7 @@ import { editor, select, selectionHook } from "../src/editor";
 import { State } from "@dylanebert/shallot";
 import { V_FLOOR } from "../src/bake";
 import { trackMapping } from "../src/cart";
-import { convertDomain, convertSolve } from "../src/domain";
+import { convertDomain, convertible, convertSolve, pickable } from "../src/domain";
 import { createHistory, redo, setSelectionHook, undo } from "../src/history";
 import { Domain } from "../src/section";
 import { TangentMode } from "../src/spline";
@@ -20,6 +20,7 @@ import {
     forceTangent,
     Handle,
     handleAt,
+    MAX_SAMPLES,
     MIN_FORCE_LEN,
     minForceExtent,
     samples,
@@ -40,12 +41,13 @@ import {
 
 // `domain.convertDomain` — the track-global domain conversion op. `Track.domain` says what
 // unit every force keyframe's `s` and every force section's extent are stored in, so the
-// ruler-menu basis pick is a DOCUMENT conversion: one history entry that flips the domain and
+// ruler-menu pick is a DOCUMENT conversion: one history entry that flips the domain and
 // rewrites the store through the live bake's arc↔time table.
 //
 // The tests below are device-free (canvas2D + a bare `State`) and split by what they pin:
 //
-//   1. the guards — no live bake, the already-active domain;
+//   1. the guards — no live bake, the already-active domain, a section off the bake — plus
+//      `convertible` and `pickable`, the ruler menu's row-enablement rule over the same reading;
 //   2. the forward conversion, against the bake's OWN arc↔time table rebuilt independently in
 //      this file (`table`/`interp`), so a bug in `domain.ts`'s helpers can't hide behind them;
 //   3. the round trip, bounded by a DERIVED tolerance (see `describe("round trip")`);
@@ -167,6 +169,95 @@ describe("guards", () => {
         expect(convertDomain(h, state, Domain.Distance)).toBe(false);
         expect(h.undo.length).toBe(0);
         expect(kfs(state, sec)).toEqual([0, 40]);
+    });
+
+    // `convertible` is the row-enablement reading: the ruler menu grays its inactive row on
+    // exactly what `convertDomain` rejects on, so a blocked pick shows as blocked instead of
+    // clicking through to a silent no-op. Each case below pins the two answers together.
+    test("convertible reads true exactly when the conversion can run", () => {
+        const { state } = forceTrack(40, [
+            [0, 1],
+            [40, 1],
+        ]);
+        const h = createHistory();
+        expect(convertible(state)).toBe(true);
+        expect(convertDomain(h, state, Domain.Time)).toBe(true);
+    });
+
+    test("convertible is false with no bake and with a stale one", () => {
+        const fresh = new State();
+        fresh.addSystem(BakeSystem);
+        createTrack(fresh);
+        const sec = createSection(fresh, 0, SectionKind.Force, 40);
+        createForcePoint(fresh, sec, 0, 1);
+        createForcePoint(fresh, sec, 40, 1);
+        expect(convertible(fresh)).toBe(false); // never stepped
+
+        const { state, sec: sec2 } = forceTrack(40, [
+            [0, 1],
+            [40, 1],
+        ]);
+        expect(convertible(state)).toBe(true);
+        createForcePoint(state, sec2, 20, 1.2); // authored past the last bake
+        expect(convertible(state)).toBe(false);
+    });
+
+    // `pickable` is the ruler menu's ONE enablement rule over that reading: the ACTIVE row always
+    // (its pick is a no-op by the menu law), a CONVERTING row only when the conversion can run.
+    // The row that must gray is the one the author would otherwise click into a silent no-op.
+    test("pickable: the active row is always enabled, the converting row follows convertible", () => {
+        const { state, sec } = forceTrack(40, [
+            [0, 1],
+            [40, 1],
+        ]);
+        const h = createHistory();
+        // live bake, Distance active: both rows offer something real.
+        expect(pickable(state, Domain.Distance)).toBe(true);
+        expect(pickable(state, Domain.Time)).toBe(true);
+
+        // flip to Time and re-bake: now Meters is the converting row and Seconds the no-op.
+        expect(convertDomain(h, state, Domain.Time)).toBe(true);
+        state.step(0);
+        expect(pickable(state, Domain.Time)).toBe(true);
+        expect(pickable(state, Domain.Distance)).toBe(true);
+
+        // an edit past the last bake leaves nothing to convert THROUGH — the converting row grays
+        // while the active one stays lit, in both directions.
+        createForcePoint(state, sec, 1, 1.1);
+        expect(convertible(state)).toBe(false);
+        expect(pickable(state, Domain.Time)).toBe(true); // the active row: still a no-op
+        expect(pickable(state, Domain.Distance)).toBe(false); // …and the pick is blocked
+        state.step(0);
+        expect(pickable(state, Domain.Distance)).toBe(true); // the re-bake unblocks it
+    });
+
+    test("a force section past the sample cap blocks the whole conversion", () => {
+        // the flat SoA is capped at `MAX_SAMPLES`, and a chain that overruns it reports its
+        // would-be count anyway, so a section placed past the cap carries a sample range that was
+        // never written — the arc↔time table reads NaN there. Converting through it would write
+        // NaN into every one of that section's keyframes, so the op rejects the WHOLE track (a
+        // partial conversion would leave metres and seconds side by side in one store) and the
+        // menu row grays on the same reading.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const long = createSection(state, 0, SectionKind.Force, MAX_SAMPLES * DS_NOMINAL * 2);
+        createForcePoint(state, long, 0, 1);
+        const tail = createSection(state, 1, SectionKind.Force, 40);
+        createForcePoint(state, tail, 0, 1);
+        createForcePoint(state, tail, 40, 1);
+        state.step(0);
+        const info = sectionInfo.get(tail);
+        if (!info) throw new Error("no bake for the tail section");
+        expect(info.startSample).toBeGreaterThan(MAX_SAMPLES); // it really is off the buffer
+        expect(Track.count.get(eid)).toBe(MAX_SAMPLES); // …which the published count stops at
+
+        const h = createHistory();
+        expect(convertible(state)).toBe(false);
+        expect(convertDomain(h, state, Domain.Time)).toBe(false);
+        expect(trackDomain(state)).toBe(Domain.Distance);
+        expect(kfs(state, tail)).toEqual([0, 40]);
+        expect(h.undo.length).toBe(0);
     });
 });
 

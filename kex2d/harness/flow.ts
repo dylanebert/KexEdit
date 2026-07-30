@@ -83,6 +83,11 @@ export const CHART_BOT_PAD = 8; // BOT_PAD — Timeline.svelte
 export const DOCK_RESERVE = 256;
 export const FORCE_LEN = 24; // MIRRORS src/track.ts DEFAULT_FORCE_LEN (= EXTEND_DIST) — a force
 // section's extent on convert/append, so mid-extent is FORCE_LEN / 2.
+// The whole-track sample budget, in metres of the nominal step — MIRRORS src/track.ts MAX_SAMPLES
+// (4096) × DS_NOMINAL (0.5 m). A force section longer than this runs off the end of the flat SoA,
+// which is the one PERSISTENT state the domain conversion cannot run on (its arc↔time window reads
+// samples that were never written), so it is how a flow reaches the grayed ruler row.
+export const SAMPLE_BUDGET_M = 2048;
 export const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R — the knob orbit (see `knobCenter` below)
 export const TIP_REACH = 68; // TIP_H (56) + TIP_GAP (12) — Timeline.svelte, the vertical room a popover needs
 export const GROW_LO = -3; // Timeline.svelte GROW_CAP[0] = BAND[0] (−2) − GROW_HEADROOM (1) — the growth floor
@@ -102,12 +107,12 @@ export const SNAP_DEG_MAX = "180";
 // here but not cross-validated against `main.ts`'s literal by any test.
 export interface Kex {
     append(kind: number): number;
-    basis(): string;
     cam(): [number, number, number];
     cartArc(): number | null;
     convert(): void;
     convertAt(i: number): void;
     deleteAt(i: number): boolean;
+    domain(): string;
     editing(): boolean;
     forceCount(): number;
     forceEases(): number[];
@@ -148,6 +153,7 @@ export interface Kex {
     seedTwinHill(): void;
     selectEnd(): void;
     selectedOrder(): number | null;
+    setLen(i: number, len: number): void;
     setV0(v: number): void;
     selectedSection(): number | null;
     startAt(): { x: number; y: number } | null;

@@ -288,13 +288,11 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
   right-click menus: `context` (the section's ONE kind-fitted conversion row + Delete), `nodeMenu` (the
   node context menu — Handles toggle + Tangents submenu — opened on any pickable node, any mode),
-  and `rulerMenu` (the ruler's Meters/Seconds basis picker, `openRulerMenu`/`closeRulerMenu` — no
-  target subject, the ruler addresses the whole timeline) — all `{x, y, …}` or
+  and `rulerMenu` (the ruler's Meters/Seconds domain picker, `openRulerMenu`/`closeRulerMenu` — no
+  target subject, the ruler addresses the whole timeline; a row's pick is a document conversion op,
+  so no basis view-state lives here — the chart reads `Track.domain`) — all `{x, y, …}` or
   null, rendered once at the app root. Also the rail's one toggle — `snap` (`toggleSnap`/`snapActive`
-  — persistent, default on, `S` toggles, Ctrl/Cmd bypasses per-gesture) — and `basis`
-  (`setBasis`, a `section.Domain`, default `Distance`, picked from the ruler menu (no keyboard
-  shortcut): which global axis the chart reads — a transitional view copy of `Track.domain`, which
-  is the real answer now that the force store carries the unit) — and
+  — persistent, default on, `S` toggles, Ctrl/Cmd bypasses per-gesture) — and
   `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
   viewport-nudge vs timeline-playhead double-fire. `hoverSection` (a stable `Section.id` or null) is
@@ -332,7 +330,11 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   extrapolates on THAT section's exit speed. The two boundaries return their exact stations rather
   than interpolating: `interpMono` resolves a tie to the last tied index, and a stall plateau
   reaching past a section's exit sample would otherwise absorb the whole downstream stall.
-  No live bake, no conversion (it rejects and the invoking row grays on the same reading). A round
+  `convertible(ecs)` is that precondition as a predicate — a live bake, a table, and every force
+  section on it (a section past the `MAX_SAMPLES` cap reads NaN stations, so it rejects) — and
+  `pickable(ecs, target)` wraps it as the ruler menu's ONE row-enablement rule (the active row
+  always, a converting row only when it can run), so a blocked pick can't click through to a silent
+  no-op or a NaN store. A round
   trip is NOT bit-identical — sub-quantum on a gentle ride, tens of percent on a sensitive one, and
   a stall collapses distinct times onto one arclength by construction; undo is the only way back.
   `convertSolve(ecs, sectionId, solved)` is the landing seam for the same math: invoked solves stay
@@ -448,14 +450,13 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   one home for the section-frame convention so render and controls can't drift apart.
 - `timeline.ts` — pure transform + tick math for the force-curve timeline (no Svelte/DOM/track
   state). The chart's x-axis is a coordinate `u` on one of two global axes (distance `d` in meters,
-  or march time `t` in seconds), picked by a `section.Domain` — the same type `Track.domain` carries,
-  so the chart's axis and the force store's unit are one fact (there is no separate `Basis` enum).
-  `dToU`/`uToD` are the ONE seam between the axes — identity on distance, the live bake's arc↔time
-  table on time, identity again with no live bake — and they are the **projection** path, for values
-  authored in arclength (a geo node tick, the cart's park); a store already in the chart's unit
-  reaches it through the lens's affine instead (`track.toGlobalU`). `deltaU` and its gesture form
-  `grabD` are the delta-from-grab projection every drag on a projected subject resolves through
-  (bit-exact zero delta, so a returned gesture records no undo entry); `T_GRID` (= `S_GRID / V0`)
+  or march time `t` in seconds), and which one is `Track.domain` itself — the chart's axis and the
+  force store's unit are one fact (there is no `Basis` enum and no view copy). So the force store
+  needs no projection at all: it reaches the chart through the lens's affine (`track.toGlobalU`) and
+  every gesture on it resolves in its own unit. `dToU`/`uToD` are the ONE seam for the other kind of
+  subject — a quantity authored in ARCLENGTH shown on a time axis (the recovered force curve, a geo
+  node tick, the cart's park): identity on distance, the live bake's arc↔time table on time,
+  identity again with no live bake. `T_GRID` (= `S_GRID / V0`)
   and `marginFloor` are the two axis-picked constants (the snap quantum, the lead-out floor), and
   `ticks` picks the unit suffix.
   Everything else reads the resulting coordinate `u` with no further branching: `View`,
@@ -484,16 +485,21 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   manipulator quanta (angle °, length m) as fields in the shared idiom, written straight to
   `settings.ts` (no history entry: a per-user preference, not track state); its click-away exemption
   names the invoker (`.rail-snap`), never the rail. It's inside the dock's
-  DOM, so it's the timeline surface for `editor.hover`. **The timeline basis (Meters/Seconds) lives
-  on the RULER's own context menu** (`rulerCtx` → `openRulerMenu`, right-clicking `.rulerzone` — the
-  Premiere/REAPER/Cubase reference: time-display format is the ruler's, not a standing rail
-  toggle): flat rows (no `Units ▸` submenu — nothing else lives in this menu), `checked` reading the
-  tick-derived `basis` (the seam's own no-bake fallback, so a lit row can't lie about what the
-  chart reads), Seconds grayed with no live bake (`mapping === null`), no keyboard shortcut (the
-  second feel check-in's call — the switch doesn't warrant one). `applyBasis` lands either row's
-  pick — a no-op when the target is already active — and re-expresses the visible window in the
-  new basis so the pick stays a free view change. The chart
-  draws the baked F_n curve over the active basis + **section boundary guides**
+  DOM, so it's the timeline surface for `editor.hover`. **The track domain (Meters/Seconds) is
+  picked on the RULER's own context menu** (`rulerCtx` → `openRulerMenu`, right-clicking
+  `.rulerzone` — the Premiere/REAPER/Cubase reference: time-display format is the ruler's, not a
+  standing rail toggle): flat rows (no `Units ▸` submenu — nothing else lives in this menu),
+  `checked` reading `Track.domain` (the store's own unit, so a lit row can't lie about what the
+  chart reads), the INACTIVE row grayed by `domain.pickable`, no keyboard shortcut (the second
+  feel check-in's call). `pickDomain` lands a row: `convertDomain` converts the store as one
+  undoable entry, and the visible window carries across as a fraction of the addressable span so
+  the ruler reads as re-labelled rather than jumped. Every FORCE path on the chart is native to that
+  axis — keyframe placement (`track.toGlobalU`), the drag (delta-from-grab in the store's own unit,
+  so a returned gesture writes bit-exact zero), the extent trim (a duration trim in the `Time`
+  domain), the popover fields and the label scrub, the `GRID` quantum (`S_GRID` / `T_GRID`) — while
+  arclength-authored subjects (the curve, geo node ticks, the cart's park) project through
+  `dToU`/`uToD`. The chart
+  draws the baked F_n curve + **section boundary guides**
   (dashed verticals); the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator**
   minimap pans/zooms. The chart is a **whole-track force-authoring surface**: it draws every force
   section's points (`forcePts`), and a double-click over a force section's arc adds a point there —

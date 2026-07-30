@@ -518,7 +518,11 @@ export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
         const info = sectionInfo.get(sec.id);
         if (!info) continue;
         const offset = cum;
-        for (let i = info.startSample; i < info.endSample; i++) cum += out.ds[i];
+        // clamped to the PUBLISHED buffer, like the time reads below: a section placed past the
+        // sample budget has a range pointing at edges that were never written, and summing those
+        // would put NaN into every span downstream of it. Its extent reads 0 there — which is what
+        // it has on the bake — so the strip and the guides describe the baked prefix honestly.
+        for (let i = info.startSample; i < Math.min(info.endSample, last); i++) cum += out.ds[i];
         const entryU = time ? out.t[Math.min(info.startSample, last)] : offset;
         const exitU = time ? out.t[Math.min(info.endSample, last)] : cum;
         res.push({ id: sec.id, offset, len: cum - offset, entryU, lenU: exitU - entryU });
@@ -1896,7 +1900,15 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         return forcePayload(ecs, sec.id, sec.length, step, domain);
     });
     const c = chain(start, payloads, MAX_SAMPLES);
-    const count = c.count;
+    // `chain` keeps counting edges past the sample budget (a force section's own extent/step can ask
+    // for more than the flat SoA has left at its place in the chain, and those writes land past the
+    // buffer end and are dropped), so its count is a would-be count. What the SoA HAS is the budget,
+    // and publishing more than that hands every consumer — the arc↔time table, `forceCurve`,
+    // `sectionSpans`, the cart — indices that were never written: they read `undefined` and NaN
+    // propagates into the chart's own axis total, unmounting the timeline. So the count is the truth
+    // of the buffer. A section placed entirely past the budget still carries a `sectionInfo` range
+    // out there, which is what `domain.windowOf` rejects a conversion on.
+    const count = Math.min(c.count, MAX_SAMPLES);
     if (count < 2) return; // fully degenerate first section — keep the prior bake
 
     let truncatedAny = false;

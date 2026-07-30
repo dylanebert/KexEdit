@@ -3,9 +3,9 @@
  *
  * `Track.domain` says what unit every force keyframe's `s` and every force section's extent are
  * stored in (meters of section-local arclength, or seconds of section-local time). The ruler-menu
- * basis pick is therefore not a view change: it is a **document conversion op**, one history entry
+ * pick is therefore not a view change: it is a **document conversion op**, one history entry
  * that flips the domain and rewrites the whole store through the live bake's arc↔time table. That
- * is what makes time-basis editing time-CONSTRAINED — a keyframe's stored t is its position by
+ * is what makes editing in the time domain time-CONSTRAINED — a keyframe's stored t is its position by
  * construction, so no edit anywhere can slide it.
  *
  * **The table is the conversion.** `cart.trackMapping` is the per-sample arclength↔time table over
@@ -48,6 +48,7 @@ import {
     minForceExtent,
     SectionKind,
     sectionInfo,
+    sections,
     type SectionSnapshot,
     type SolvedForce,
     snapshotAll,
@@ -96,14 +97,20 @@ function intervalAt(m: Mapping, d: number): number {
     return Math.min(lo, m.n - 2);
 }
 
-/** a force section's window, or null when it isn't on the current bake. */
+/** a force section's window, or null when it isn't on the current bake.
+ *
+ *  The finiteness check is not a formality: the flat SoA is capped at `MAX_SAMPLES`, and a chain
+ *  that overruns it still reports its would-be sample count, so a section placed past the cap gets
+ *  a `sectionInfo` range addressing samples that were never written — the table reads NaN there.
+ *  Rejecting on that is what keeps a NaN out of the store (it would poison every keyframe in the
+ *  section); the ruler menu grays the row on the same reading. */
 function windowOf(m: Mapping, sectionId: number): Window | null {
     const info = sectionInfo.get(sectionId);
     if (!info) return null;
     const start = info.startSample;
     const end = Math.min(info.endSample, m.n - 1);
     if (end <= start) return null; // no baked edge — nothing to convert through
-    return {
+    const w = {
         entryD: m.arc[start],
         exitD: m.arc[end],
         entryT: m.t[start],
@@ -111,6 +118,7 @@ function windowOf(m: Mapping, sectionId: number): Window | null {
         entryV: slopeOf(m, start),
         exitV: slopeOf(m, end - 1),
     };
+    return Object.values(w).every(Number.isFinite) ? w : null;
 }
 
 /** a converted position plus the local slope there — the pair a keyframe, an extent, and a handle
@@ -165,6 +173,51 @@ function scaleHandles(tan: ForceTangent | undefined, scale: number): ForceTangen
     return out;
 }
 
+/** the live table plus every force section's window on it, or null when the store cannot be
+ *  converted right now: no live bake, no table, or a force section that isn't on the bake (a
+ *  trimmed chain, a `MAX_SAMPLES` truncation). Resolving every window BEFORE anything converts is
+ *  what makes the op atomic — a section missing from the bake rejects the whole conversion rather
+ *  than passing through in the wrong unit — and it is the same reading the ruler menu grays its
+ *  inactive row on, so the menu can never offer a pick that would silently no-op. */
+function resolve(ecs: State): { m: Mapping; windows: Map<number, Window> } | null {
+    if (!bakeLive(ecs)) return null;
+    const trackEid = trackEntity(ecs);
+    if (trackEid === null) return null;
+    const m = trackMapping(trackEid);
+    if (!m) return null;
+    const windows = new Map<number, Window>();
+    for (const sec of sections(ecs)) {
+        if (sec.kind !== SectionKind.Force) continue;
+        const w = windowOf(m, sec.id);
+        if (!w) return null;
+        windows.set(sec.id, w);
+    }
+    return { m, windows };
+}
+
+/** whether `convertDomain` can run at all: a live bake, a table, and every force section on it.
+ *
+ * @example if (!convertible(ecs)) return; // nothing to convert through
+ */
+export function convertible(ecs: State): boolean {
+    return resolve(ecs) !== null;
+}
+
+/** whether the ruler menu's row for `target` is enabled — the ONE enablement rule, pure and
+ *  unit-tested (`editor-ui.md`: enablement is a predicate, not a per-menu special case).
+ *
+ *  The ACTIVE row is always enabled: picking it is a no-op by the menu law, and graying the row
+ *  that says what the chart already reads would read as a fault. Every other row is the one that
+ *  would CONVERT, so it's enabled exactly when the conversion can run and grays otherwise
+ *  (`editor-ui.md`'s "gray a row whose preconditions fail") — an unbaked or truncated track shows
+ *  the pick as blocked instead of offering a row that writes nothing.
+ *
+ * @example { label: "Seconds", enabled: pickable(ecs, Domain.Time) }
+ */
+export function pickable(ecs: State, target: Domain): boolean {
+    return trackDomain(ecs) === target || convertible(ecs);
+}
+
 /** flip the track-global domain and convert the whole force store into the target unit, as ONE
  * undoable entry: every force keyframe's position, every force section's extent, and every explicit
  * easing handle's Δs (scaled by the local slope `dt/ds = 1/v` at its keyframe). A converted section
@@ -172,8 +225,8 @@ function scaleHandles(tan: ForceTangent | undefined, scale: number): ForceTangen
  * are position-authored in either domain.
  *
  * Returns false, having written nothing and recorded nothing, when the target domain is already
- * active (the ruler menu's active row is a no-op) or when there is no live bake to convert through.
- * Otherwise returns true.
+ * active (the ruler menu's active row is a no-op) or when `convertible` reads false. Otherwise
+ * returns true.
  *
  * A round trip (Meters → Seconds → Meters) is **never** bit-identical, and how close it lands is a
  * property of the ride, not of this op. The conversion itself is an exact inverse — both directions
@@ -189,23 +242,10 @@ function scaleHandles(tan: ForceTangent | undefined, scale: number): ForceTangen
  */
 export function convertDomain(h: History, ecs: State, target: Domain): boolean {
     if (trackDomain(ecs) === target) return false;
-    if (!bakeLive(ecs)) return false;
-    const trackEid = trackEntity(ecs);
-    if (trackEid === null) return false;
-    const m = trackMapping(trackEid);
-    if (!m) return false;
-
-    // resolve every force section's window BEFORE converting anything: a section missing from the
-    // bake rejects the whole op rather than passing through in the wrong unit.
+    const res = resolve(ecs);
+    if (!res) return false;
+    const { m, windows } = res;
     const snaps = snapshotAll(ecs);
-    const windows = new Map<number, Window>();
-    for (const snap of snaps) {
-        if (snap.kind !== SectionKind.Force) continue;
-        const w = windowOf(m, snap.id);
-        if (!w) return false;
-        windows.set(snap.id, w);
-    }
-
     const at = target === Domain.Time ? toTime : toDist;
     const floor = minForceExtent(target);
     const converted: SectionSnapshot[] = snaps.map((snap) => {

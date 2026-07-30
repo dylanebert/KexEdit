@@ -90,9 +90,10 @@ if (import.meta.env.DEV) {
         }),
         // the authored initial speed — the flow drives the real v0 popover and asserts it.
         v0: (): number => Track.v0.get(track),
-        // author it directly, as test SETUP: the time-basis flow needs an upstream re-timing edit
-        // (a speed change slides every keyframe's t while its stored s holds), and the popover
-        // itself is already driven pointer-true by the v0 flow.
+        // author it directly, as test SETUP: the domain flow needs the ride off the default speed
+        // (at exactly `V0` metres and seconds are proportional by one constant, so the two units
+        // are indistinguishable), and the popover itself is already driven pointer-true by the v0
+        // flow.
         setV0: (v: number): void => setTrackV0(track, v),
         // section-local pose signature — the flow asserts an undo reverts geometry.
         poses: (): number[][] =>
@@ -331,6 +332,14 @@ if (import.meta.env.DEV) {
         // context-menu affordances and asserts the resulting state here. ──
         sectionIds: (): number[] => sections(ecs).map((x) => x.id),
         sectionLengths: (): number[] => sections(ecs).map((x) => x.length),
+        // author a section's extent directly, as test SETUP (the real trim is a pointer drag on the
+        // clip's right edge, already driven pointer-true by the clip-strip flow): the domain flow
+        // needs a track the conversion CANNOT run on, and a force section run off the end of the
+        // flat SoA is the one persistent such state.
+        setLen: (i: number, len: number): void => {
+            const s = sections(ecs)[i];
+            if (s) setSectionLength(ecs, s.id, len);
+        },
         // the per-section baking step (`Section.ds`, 0 = the track-nominal sentinel) — only an
         // invoked solve writes one, so the solve flow asserts the realized step landed with the
         // rest of the answer.

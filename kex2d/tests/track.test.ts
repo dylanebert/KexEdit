@@ -716,6 +716,42 @@ describe("coordinate lens (s ↔ d)", () => {
 // `Time` makes it global march time, read straight off `bakeOut.t` — the force store's own clock,
 // so the map is an exact affine with no table in the path. What still projects through a table is
 // the other direction: a distance-authored geo quantity drawn on a time chart (`timeline.dToU`).
+describe("the sample budget", () => {
+    test("a section past the budget leaves the published SoA finite, its own range outside it", () => {
+        // `chain` keeps counting edges past the buffer (its overflow writes are dropped), so
+        // `BakeSystem` publishes the BUDGET as the count. Publishing the would-be count instead
+        // handed every consumer indices that were never written: the arc↔time table, `forceCurve`,
+        // and the chart's own axis total all read `undefined` and went NaN, which unmounted the
+        // whole timeline. The section left outside keeps its `sectionInfo` range out there, which
+        // is what a domain conversion rejects on (`tests/domain.test.ts`).
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const long = createSection(state, 0, SectionKind.Force, MAX_SAMPLES * DS_NOMINAL * 2);
+        createForcePoint(state, long, 0, 1);
+        const tail = createSection(state, 1, SectionKind.Force, 40);
+        createForcePoint(state, tail, 0, 1);
+        state.step(0);
+
+        expect(Track.count.get(eid)).toBe(MAX_SAMPLES);
+        const out = bakeOut.get(eid);
+        const s = samples.get(eid);
+        if (!out || !s) throw new Error("no bake");
+        for (let i = 0; i < MAX_SAMPLES; i++) {
+            expect(Number.isFinite(s.posX[i])).toBe(true);
+            expect(Number.isFinite(out.t[i])).toBe(true);
+        }
+        expect(Number.isFinite(out.tTotal)).toBe(true);
+        // the spans stay finite too — the lens is what the chart's axis total derives from.
+        for (const sp of sectionSpans(state, eid))
+            expect(Number.isFinite(sp.entryU + sp.lenU + sp.offset + sp.len)).toBe(true);
+        // …and the tail section really is off the buffer, not merely short.
+        const info = sectionInfo.get(tail);
+        if (!info) throw new Error("no bake for the tail section");
+        expect(info.startSample).toBeGreaterThanOrEqual(MAX_SAMPLES);
+    });
+});
+
 describe("coordinate lens — the native axis", () => {
     /** geo (flat) then a force section, on a track in `domain`. In `Time` the force section's
      *  extent is a DURATION (its sticky default, `DEFAULT_FORCE_LEN / V0`) and its interior

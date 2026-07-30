@@ -23,6 +23,7 @@ import {
     SNAP_LEN,
     SNAP_DEG_MIN,
     SNAP_DEG_MAX,
+    SAMPLE_BUDGET_M,
     frames,
 } from "./flow";
 
@@ -40,8 +41,8 @@ test("tool rail shot", async ({ page, boot }) => {
     await boot();
 
     const rail = page.locator(".tool-rail");
-    // `.rail-snap` names the MAGNET specifically (the rail is magnet-only — the basis picker
-    // moved to the ruler's own context menu, kex2d-time-domain stage 2b).
+    // `.rail-snap` names the MAGNET specifically (the rail is magnet-only — the domain picker
+    // lives on the ruler's own context menu, kex2d-time-domain).
     const snap = rail.locator(".rail-snap");
     await expect(rail).toBeVisible();
     // default-on: the magnet toggle reads pressed and lit.
@@ -1301,32 +1302,40 @@ test("playhead parking flow", async ({ page, boot }) => {
     if (strip) await page.screenshot({ path: join(OUT, "park-2-held.png"), clip: strip });
 });
 
-// The TIMELINE BASIS picker (kex2d-time-domain stage 2b): the chart's x-axis reads either global
-// distance or global time, picked from the RULER's own context menu (Meters / Seconds — the
-// Premiere/REAPER/Cubase reference). No keyboard shortcut (the second feel check-in's call — the
-// switch doesn't warrant one). Storage is distance-only, so the basis is a pure view projection at
-// one seam — and that is exactly what this flow pins, in the only place it can be pinned honestly
-// (a real browser, real gestures, the live bake's arc↔time table under them):
+// The TRACK DOMAIN picker (kex2d-time-domain stage 5): every force keyframe's position and every
+// force section's extent are stored in the unit of `Track.domain`, and the ruler's own context menu
+// (Meters / Seconds — the Premiere/REAPER/Cubase reference) is where it's picked. No keyboard
+// shortcut (the second feel check-in's call). The pick is a DOCUMENT CONVERSION, not a view change,
+// and that is what this flow pins in the only place it can be pinned honestly (a real browser, real
+// gestures, the live bake's arc↔time table under them):
 //
-//   · the picker writes NOTHING: no keyframe moves, no undo entry, either direction;
-//   · the checked row follows the active basis (Meters checked at rest; picking it — the already-
-//     checked row — is a no-op, both by the menu law and because the toggle carries no history);
-//   · a round trip (ruler menu → Seconds, ruler menu → Meters back) leaves the chart where it was,
-//     with the diamonds provably moved in between — the negative-assert law's positive control;
-//   · the honest slide: a keyframe holds its stored arclength while its TIME reading slides under
-//     an upstream speed edit (the semantics the locked decision accepted, the inverse of the
-//     rejected "keyframes hold time");
-//   · a drag in time basis quantizes on the time quantum `T_GRID`, not on metres;
+//   · the checked row follows `Track.domain`, and picking it is a no-op — no entry, no write;
+//   · picking the other row converts the whole store in ONE undo entry: the keyframes' stored
+//     numbers become seconds and every diamond moves (the positive control for what follows);
+//   · TIME-CONSTRAINED editing, the whole point of the domain: in Seconds, editing one keyframe
+//     leaves every other keyframe's stored t AND its drawn x exactly where they were — the store
+//     is the time reading, so no edit anywhere can slide it (the inverse of the rejected
+//     projection-only "honest slide", which slid every keyframe on any upstream re-timing);
+//   · undo is the way back, byte-identically — for the edit and for the conversion itself. A
+//     Meters → Seconds → Meters round trip is NOT bit-identical (the two marches disagree; see
+//     `domain.ts`), so it is deliberately not asserted here; the unit suite bounds the drift.
 //   · a gesture returned to its grab pixel is a byte-identical no-op that records no undo entry —
-//     the carried lesson from the reverted build, and the reason the drag resolves
-//     delta-from-grab against the live table instead of re-reading an absolute projection.
-test("timeline basis flow", async ({ page, boot }) => {
+//     the carried lesson, and now exact by construction: the store and the axis are one unit, so
+//     the drag is plain arithmetic with no projection to lose an ulp in. Pinned IN SECONDS, the
+//     domain whose exactness is new;
+//   · undo is refused mid-gesture and the document axis holds still: a live drag owns the open
+//     history gesture, and a domain entry popped underneath it would flip the store's unit under a
+//     grab resolved in the other one (`editor-ui.md`: no document-axis navigation while a gesture
+//     is live);
+//   · the converting row GRAYS where the conversion can't run — reached honestly by running a force
+//     section off the end of the flat SoA, the one persistent such state.
+test("timeline domain flow", async ({ page, boot }) => {
     await boot();
 
     const forces = () => kexCall(page, "forces");
     const forceU = () => kexCall(page, "forceU");
     const forceCount = () => kexCall(page, "forceCount");
-    const basis = () => kexCall(page, "basis");
+    const domain = () => kexCall(page, "domain");
     const undoDepth = () => kexCall(page, "undoDepth");
     const tTotal = () => kexCall(page, "tTotal");
     const rulerZone = page.locator(".rulerzone");
@@ -1337,11 +1346,11 @@ test("timeline basis flow", async ({ page, boot }) => {
     await expect.poll(forceCount).toBe(5);
     await expect.poll(tTotal).toBeGreaterThan(0);
 
-    // Author the entry speed off the default FIRST, because at exactly `V0` the two bases are
-    // proportional and this flow could not tell them apart: the time quantum and the time lead-out
-    // floor are both derived at `V0` (`T_GRID`, `marginFloor`), so a ride cruising at `V0` maps
-    // distance to time by one constant and every fraction of the span — every diamond's position —
-    // comes out identical. 25 m/s makes the projection visibly its own thing.
+    // Author the entry speed off the default FIRST, because at exactly `V0` the two units are
+    // proportional by one constant and this flow could not tell them apart: the time quantum and
+    // the time lead-out floor are both derived at `V0` (`T_GRID`, `marginFloor`), so a ride
+    // cruising at `V0` puts every diamond at the identical fraction of the span. 25 m/s makes the
+    // conversion visibly its own thing.
     const tSeed = await tTotal();
     await kexCall(page, "setV0", 25);
     await expect.poll(tTotal).not.toBe(tSeed);
@@ -1359,14 +1368,14 @@ test("timeline basis flow", async ({ page, boot }) => {
         return out;
     };
 
-    // ── 1. Distance is the default: the ruler menu's Meters row reads checked, Seconds not. Since
-    // a live bake exists here (the seeded points baked above), Seconds is enabled, not grayed — the
-    // no-bake gray case has no honest repro in THIS flow (it needs an unbaked track, `tool rail
-    // shot`'s territory). Picking the already-checked row (Meters) is a no-op — the menu law and,
-    // since the toggle is view state, unwritten to the undo stack either way. ──
-    expect(await basis()).toBe("distance");
+    // ── 1. Distance is the default: Meters reads checked, Seconds not. A live bake exists here
+    // (the seeded points baked above), so Seconds is ENABLED — the gray case is a track the
+    // conversion can't run on (no live bake, a section off the bake), unit-covered in
+    // `domain.test.ts` against the same `convertible` reading this row grays on. Picking the
+    // already-checked row is a no-op: nothing written, nothing recorded. ──
+    expect(await domain()).toBe("distance");
     const xDist = await centers();
-    const store = await forces();
+    const metres = await forces();
     const undo0 = await undoDepth();
     await openRulerMenu();
     // the right-click that opened this menu also FOCUSED the ruler (`.rulerzone`'s `tabindex="0"`,
@@ -1380,39 +1389,40 @@ test("timeline basis flow", async ({ page, boot }) => {
     await expect(secondsRow).toBeEnabled();
     await clickMenuItem(page, ".rmenu", "Meters"); // the checked row — a no-op
     await expect(page.locator(".rmenu")).toHaveCount(0); // a leaf action dismisses the menu regardless
-    expect(await basis()).toBe("distance");
+    expect(await domain()).toBe("distance");
+    expect(await forces()).toEqual(metres);
     expect(await undoDepth()).toBe(undo0);
 
-    // ── 2. The ruler menu's Seconds row, pointer-true (`clickMenuItem` — real hover isn't needed
-    // for a top-level row, but the coordinate click + elementFromPoint reachability assert is the
-    // same regression net every menu flow wears). The picker is a VIEW change: the store is
-    // untouched and the undo stack doesn't grow (every other control on this dock records an
-    // entry, so this is the invariant a next author would break). ──
+    // ── 2. The Seconds row, pointer-true (`clickMenuItem` — real hover isn't needed for a
+    // top-level row, but the coordinate click + elementFromPoint reachability assert is the same
+    // regression net every menu flow wears). It CONVERTS: one undo entry, and the store now holds
+    // seconds — smaller numbers than the metres it held at 25 m/s. ──
     await openRulerMenu();
     await clickMenuItem(page, ".rmenu", "Seconds");
-    await expect.poll(basis).toBe("time");
-    // the flip's re-frame lands on the frame the tick re-derives the basis in (writing the new
+    await expect.poll(domain).toBe("time");
+    // the pick's re-frame lands on the frame the tick re-derives the domain in (writing the new
     // scale from the handler would paint one frame of old coordinates against it), so the chart's
     // boxes are honest only after a projected frame.
     await frames(page, 2);
-    expect(await forces()).toEqual(store);
-    expect(await undoDepth()).toBe(undo0);
-
-    // the checked row follows the active basis: reopen and assert it flipped.
+    const seconds = await forces();
+    expect(await undoDepth()).toBe(undo0 + 1); // ONE entry for the whole conversion
+    // the checked row FOLLOWS the store's unit: reopen and assert it flipped (a hardcoded
+    // `checked` would sail through the pre-flip assert above).
     await openRulerMenu();
     await expect(secondsRow).toHaveClass(/checked/);
     await expect(metersRow).not.toHaveClass(/checked/);
     await page.keyboard.press("Escape");
     await expect(page.locator(".rmenu")).toHaveCount(0);
-
-    // the projection really moved the chart — the positive control the round-trip assert in 3
-    // needs, or "the diamonds came back" would pass vacuously against a chart that never left.
-    // (measured ~100px at this speed; the bar is only that it exceeds the round-trip tolerance.)
+    for (let i = 1; i < 5; i++) expect(seconds[i].s).toBeLessThan(metres[i].s);
+    for (let i = 0; i < 5; i++) expect(seconds[i].g).toBe(metres[i].g); // g is unit-free
+    // the conversion really moved the chart — the positive control the "nothing else moved"
+    // asserts below need, or they would pass vacuously against a chart that never changed.
+    // (measured ~100px at this speed; the bar is only that it dwarfs a one-box rounding.)
     const xTime = await centers();
     expect(Math.max(...xTime.map((x, i) => Math.abs(x - xDist[i])))).toBeGreaterThan(20);
 
-    // the selected keyframe's popover reads the ACTIVE basis: `t` seconds, not `d` metres, and the
-    // value it prints is the seam's own projection of that keyframe (`forceU`).
+    // the selected keyframe's popover reads the store's own unit: `t` seconds, not `d` metres, and
+    // the value it prints is the lens's affine for that keyframe (`forceU`).
     const crest = 2; // the airtime crest, s = 0.5·len — the interior keyframe this flow drives
     const c2 = await fhit.nth(crest).boundingBox();
     if (!c2) throw new Error("the crest diamond is not laid out");
@@ -1423,41 +1433,20 @@ test("timeline basis flow", async ({ page, boot }) => {
     await expect(page.locator(".ptip .fld").first().locator(".unit")).toHaveText("s");
     const shownT = Number(await posField("Point time (s)").inputValue());
     const uCrest = (await forceU())[crest].u;
-    expect(shownT).toBeCloseTo(uCrest, 1); // the field prints what the seam projects
-    expect(uCrest).toBeLessThan(store[crest].s); // 25 m/s: seconds are a smaller number than metres
+    expect(shownT).toBeCloseTo(uCrest, 1); // the field prints the keyframe's own global t
+    expect(uCrest).toBeCloseTo(seconds[crest].s, 6); // one section from the start: u = 0 + t
     await page.waitForTimeout(SHOT_MS);
     const strip = dockStrip(page);
-    if (strip) await page.screenshot({ path: join(OUT, "basis-time.png"), clip: strip });
+    if (strip) await page.screenshot({ path: join(OUT, "domain-time.png"), clip: strip });
 
-    // ── 3. The ruler menu's Meters row (pointer-true, the round-trip leg — no keyboard shortcut
-    // exists here, the second feel check-in's call) flips it back, and the chart lands where it
-    // started: the picker carries the visible window across as a fraction of the addressable span,
-    // so it is reversible even when the window reaches into the lead-out (which has no image in
-    // time — the ride's clock stops at its end). Tolerance is that round trip's own fp error plus a
-    // box landing on the 0.5px device grid at deviceScaleFactor 2; a projection defect moves a
-    // diamond by tens of px (the control above measures ~100), not by one. ──
-    await openRulerMenu();
-    await clickMenuItem(page, ".rmenu", "Meters");
-    await expect.poll(basis).toBe("distance");
-    await expect(posField("Point distance (m)")).toHaveCount(1);
-    await frames(page, 2);
-    const xBack = await centers();
-    for (let i = 0; i < 5; i++) expect(xBack[i]).toBeCloseTo(xDist[i], 0);
-    expect(await forces()).toEqual(store);
-    expect(await undoDepth()).toBe(undo0);
-
-    // ── 4. Author IN time basis: drag the crest right. The write lands through the seam (px → u →
-    // d → the section-local lens), and the placement quantizes on the TIME quantum `T_GRID`
-    // (0.1 s), the basis's own vocabulary — which at ~25 m/s is ~2.5 m of arclength, so the landed
-    // Δs is something the 1 m distance grid could not have produced. The drag itself is ~0.08 s of
-    // cursor travel: past the gesture-start magnet (SNAP_PX = 8), and with no neighbouring keyframe
-    // inside magnet reach. The bake re-times under each write, so the landed `s` is asserted, not a
-    // grid-exact `u`: the value the drag placed slides the moment the profile it belongs to changes
-    // (the same honest slide as 5). ──
-    await openRulerMenu();
-    await clickMenuItem(page, ".rmenu", "Seconds");
-    await expect.poll(basis).toBe("time");
-    await frames(page, 2);
+    // ── 3. TIME-CONSTRAINED editing. Drag the crest right: its own t moves (by more than one time
+    // quantum, so this is a real placement on the `T_GRID` vocabulary and not a metre grid), and
+    // every OTHER keyframe holds — stored t byte-identical AND drawn x within half a device pixel.
+    // Under the projection-only basis this same edit re-timed the whole ride and slid all four of
+    // them; here the store IS the time reading, so nothing can slide it. The section's duration is
+    // authored, so the geometry underneath changes while the clock does not. ──
+    await page.keyboard.press("Escape"); // drop the popover: it floats over the neighbour diamonds
+    await expect(page.locator(".ptip")).toHaveCount(0);
     const grab = await fhit.nth(crest).boundingBox();
     if (!grab) throw new Error("the crest diamond is not laid out for the drag");
     const gx = grab.x + grab.width / 2;
@@ -1466,44 +1455,32 @@ test("timeline basis flow", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(gx + 18, gy, { steps: 6 });
     await page.mouse.up();
-    await expect.poll(async () => (await forces())[crest].s).toBeGreaterThan(store[crest].s);
-    const moved = (await forces())[crest].s - store[crest].s;
-    expect(moved).toBeGreaterThan(1.6); // ≥ one time quantum, not the 1 m distance grid
-    expect(moved).toBeLessThan(4); // …and not more than one, re-bake drift included
+    await expect.poll(async () => (await forces())[crest].s).toBeGreaterThan(seconds[crest].s);
+    const edited = await forces();
+    const moved = edited[crest].s - seconds[crest].s;
+    expect(moved).toBeGreaterThan(0.1); // ≥ one time quantum (`T_GRID` = 0.1 s)
+    await frames(page, 2);
+    const xEdited = await centers();
+    for (let i = 0; i < 5; i++) {
+        if (i === crest) continue;
+        expect(edited[i].s).toBe(seconds[i].s); // the stored time of every other keyframe
+        expect(edited[i].g).toBe(seconds[i].g);
+        expect(xEdited[i]).toBeCloseTo(xTime[i], 0); // …and where it draws
+    }
 
-    // ── 5. The honest slide (the locked decision's accepted semantics): a keyframe holds its
-    // stored DISTANCE, so an upstream speed edit re-times the ride under it — every stored `s`
-    // identical, every time reading strictly smaller at a higher entry speed. This is the
-    // assertion that separates this design from the rejected "keyframes hold time". ──
-    const sBefore = (await forces()).map((p) => p.s);
-    const uBefore = (await forceU()).map((p) => p.u);
-    const tRide = await tTotal();
-    await kexCall(page, "setV0", 40);
-    await expect.poll(tTotal).not.toBe(tRide); // the re-bake landed before anything is read
-    expect((await forces()).map((p) => p.s)).toEqual(sBefore); // the store never moved
-    const uAfter = (await forceU()).map((p) => p.u);
-    expect(uAfter[0]).toBeCloseTo(0, 9); // the launch is t = 0 in every bake
-    for (let i = 1; i < uAfter.length; i++) expect(uAfter[i]).toBeLessThan(uBefore[i]);
-
-    // ── 6. A gesture returned to its grab pixel is a byte-identical no-op with NO undo entry (the
-    // carried lesson): the drag resolves delta-from-grab against the LIVE mapping, and the
-    // gesture-start magnet resolves to the grabbed value rather than a pixel round-trip, so zero
-    // delta writes zero — bit-exactly, on both axes. An absolute re-projection here is off by an
-    // ulp, which is enough to record a phantom entry on a track the author never edited. The
-    // mid-gesture displacement is the positive control: it proves this rig can see a write at all. ──
-    //
-    // It addresses the FIRST SHOULDER, not the crest 4 drove: a second press on the same diamond
-    // inside `FDBL_MS` is the handle-edit summon, not a drag, so re-grabbing the crest here would
-    // race the flow's own round-trip time to decide whether a drag opens at all.
+    // ── 4. A gesture returned to its grab pixel is a byte-identical no-op with NO undo entry (the
+    // carried lesson) — asserted HERE, in Seconds, because that is the domain whose exactness is
+    // new: the drag resolves delta-from-grab in the store's own unit and the gesture-start magnet
+    // resolves to the grabbed value rather than a pixel round-trip, so zero delta writes zero
+    // bit-exactly on both axes with no projection in the path. The mid-gesture displacement is the
+    // positive control: it proves this rig can see a write at all. It addresses the FIRST SHOULDER,
+    // not the crest 3 drove: a second press on the same diamond inside `FDBL_MS` is the handle-edit
+    // summon, not a drag, so re-grabbing the crest here would race the flow's own round-trip time
+    // to decide whether a drag opens at all. No re-framing — the view must stay where 3 left it, so
+    // 5's post-undo pixel comparison against `xDist` stays meaningful. ──
     const shoulder = 1; // s = 0.2·len
-    // clear the selection first (its popover floats AT the crest, and at this speed the diamonds
-    // sit close enough together that the box would cover the neighbour this grab addresses), then
-    // re-frame: the speed edit shrank the ride's clock without moving the view, since the x-axis is
-    // a document axis and a content edit never rescales it.
-    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape"); // the crest's popover floats over its neighbour
     await expect(page.locator(".ptip")).toHaveCount(0);
-    await frameTimeline(page);
-    const beforeGrab = await forces();
     const undoGrab = await undoDepth();
     const back = await fhit.nth(shoulder).boundingBox();
     if (!back) throw new Error("the shoulder diamond is not laid out for the zero-delta grab");
@@ -1513,15 +1490,75 @@ test("timeline basis flow", async ({ page, boot }) => {
     await page.mouse.down();
     await expect(page.locator("#app[data-dragging]")).toHaveCount(1); // the grab really opened
     await page.mouse.move(bx + 40, by - 30, { steps: 6 }); // really move it (both axes)
-    await expect.poll(async () => (await forces())[shoulder].s).not.toBe(beforeGrab[shoulder].s);
+    await expect.poll(async () => (await forces())[shoulder].s).not.toBe(edited[shoulder].s);
     await page.mouse.move(bx, by, { steps: 6 }); // …and return to the exact grab pixel
     await page.mouse.up();
-    expect(await forces()).toEqual(beforeGrab); // byte-identical, both axes
+    expect(await forces()).toEqual(edited); // byte-identical, both axes
     expect(await undoDepth()).toBe(undoGrab); // and nothing on the undo stack
 
-    // leave the session on the default basis, so a later flow reading this page starts where the
-    // app boots (the preference is session state, not per-document).
+    // ── 5. Undo is REFUSED mid-gesture, and the document axis holds still under it. A live drag
+    // owns the open history gesture (one at a time), so popping an entry underneath it would leave
+    // the drag's own commit landing on top of an unrelated state — and a `Track.domain` entry would
+    // flip the store's unit under a grab resolved in the other one, rescaling the axis mid-gesture
+    // (`editor-ui.md`: no document-axis navigation while a gesture is live). The press is a no-op:
+    // the domain holds, the view holds, and the gesture then commits normally on release. ──
+    // the SECOND shoulder, not the one 4 just grabbed: a second press on the same diamond inside
+    // `FDBL_MS` is the handle-edit summon, not a drag (4's own note), and a summon opens no gesture
+    // at all — which is exactly how this pin first went red.
+    const other = 3; // s = 0.8·len
+    const far = await fhit.nth(other).boundingBox();
+    if (!far) throw new Error("the second shoulder is not laid out for the mid-drag undo");
+    const fx = far.x + far.width / 2;
+    const fy = far.y + far.height / 2;
+    const viewMid = await kexCall(page, "xView");
+    await page.mouse.move(fx, fy);
+    await page.mouse.down();
+    await page.mouse.move(fx + 40, fy, { steps: 6 }); // past DRAG_PX — a live gesture
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(1);
+    await page.keyboard.press("Control+z");
+    await frames(page, 2); // give a re-frame a chance to land, if the guard were missing
+    expect(await domain()).toBe("time"); // the conversion entry was NOT popped
+    expect(await kexCall(page, "xView")).toEqual(viewMid); // …and the axis never rescaled
+    await page.mouse.move(fx, fy, { steps: 6 }); // back to the grab pixel: still a no-op gesture
+    await page.mouse.up();
+    expect(await forces()).toEqual(edited);
+    expect(await undoDepth()).toBe(undoGrab);
+
+    // ── 6. Undo is the way back, byte-identically — first over the edit, then over the conversion
+    // itself, which restores the metre store AND the domain in one entry. (A Meters → Seconds →
+    // Meters round trip is deliberately NOT asserted: it is not bit-identical, by the locked
+    // decision, and how close it lands is a property of the ride.) ──
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await forces())[crest].s).toBe(seconds[crest].s);
+    expect(await forces()).toEqual(seconds); // the whole store, byte-identical
+    expect(await domain()).toBe("time");
+    await page.keyboard.press("Control+z");
+    await expect.poll(domain).toBe("distance");
+    expect(await forces()).toEqual(metres); // …and the metres came back exactly
+    expect(await undoDepth()).toBe(undo0);
+    await frames(page, 2);
+    const xBack = await centers();
+    for (let i = 0; i < 5; i++) expect(xBack[i]).toBeCloseTo(xDist[i], 0);
+    await expect(posField("Point distance (m)")).toHaveCount(0); // nothing selected after the undos
+
+    // ── 7. The CONVERTING row grays where the conversion can't run (`editor-ui.md`: gray a row
+    // whose preconditions fail — never hide it, and never leave it clickable into a silent no-op).
+    // Reached honestly: stretch this force section past the whole-track sample budget, then append a
+    // second one — the appended section starts beyond the end of the flat SoA, so its arc↔time
+    // window addresses samples that were never written. That is the one PERSISTENT state
+    // `domain.convertible` reads false on (a stale bake is repaired on the next frame), and the
+    // conversion must reject the WHOLE track rather than convert the section it CAN see. The enabled
+    // assert in 1 is this one's positive control: the same row, the same locator. ──
+    await kexCall(page, "setLen", 0, SAMPLE_BUDGET_M * 1.5);
+    expect((await kexCall(page, "sectionLengths"))[0]).toBe(SAMPLE_BUDGET_M * 1.5);
+    await kexCall(page, "append", 1); // SectionKind.Force — off the buffer at this offset
+    await expect.poll(async () => (await kexCall(page, "sectionKinds")).length).toBe(2);
     await openRulerMenu();
-    await clickMenuItem(page, ".rmenu", "Meters");
-    await expect.poll(basis).toBe("distance");
+    await expect(secondsRow).toBeDisabled(); // the pick that would convert
+    await expect(metersRow).toBeEnabled(); // …while the active row stays lit (its pick is a no-op)
+    await expect(metersRow).toHaveClass(/checked/);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".rmenu")).toHaveCount(0);
+    expect(await domain()).toBe("distance");
+    expect(await forces()).toEqual(metres); // …and the store this flow drove is untouched
 });

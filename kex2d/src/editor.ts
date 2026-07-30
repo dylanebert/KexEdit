@@ -8,7 +8,6 @@
  *  over its target. */
 
 import type { State } from "@dylanebert/shallot";
-import { Domain } from "./section";
 import { forceAt, Handle, handleAt, sectionAt } from "./track";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
@@ -113,22 +112,17 @@ interface EditorState {
      *  position + the target point's stable id, or null when closed. the force analogue of
      *  `nodeMenu`, the same shared menu language. */
     forceMenu: { x: number; y: number; id: number } | null;
-    /** the ruler context menu (Meters / Seconds — the timeline basis picker): screen position,
+    /** the ruler context menu (Meters / Seconds — the track domain picker): screen position,
      *  or null when closed. summoned by right-clicking the ruler scrub zone (the Premiere/
      *  REAPER/Cubase reference: time-display format lives on the ruler's own context menu), the
      *  same shared menu language as `context`/`nodeMenu`/`forceMenu`. No target id — it has one
-     *  subject, the timeline itself. */
+     *  subject, the timeline itself. A row's pick is a document conversion op
+     *  (`domain.convertDomain`), not a view write, so no basis state lives here. */
     rulerMenu: { x: number; y: number } | null;
     /** the snapping magnet toggle (AE model): a persistent editor preference, default
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
     snap: boolean;
-    /** which global axis the timeline chart reads: `Distance` (metres from the ride start) or
-     *  `Time` (seconds from it). **Transitional** — the chart's axis IS `Track.domain` now that
-     *  the force store carries the unit, so this view copy is what stage 5 of the time-domain
-     *  work deletes in favour of the document read. Picked from the ruler's context menu (no
-     *  keyboard shortcut — the second feel check-in's call). */
-    basis: Domain;
     /** whether a pointer drag is in flight (any gesture routed through `beginDrag`). App
      *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
      *  on the chrome under the cursor. ephemeral, read via the per-RAF tick. */
@@ -204,7 +198,6 @@ export const editor: EditorState = {
     forceMenu: null,
     rulerMenu: null,
     snap: true,
-    basis: Domain.Distance,
     dragging: false,
     hoverSection: null,
     hover: "viewport",
@@ -425,13 +418,6 @@ export function endDrag(): void {
 /** flip the snapping magnet (the `S` key). */
 export function toggleSnap(): void {
     editor.snap = !editor.snap;
-}
-
-/** set the timeline's basis directly — the ruler menu's Meters/Seconds rows each pick their own
- *  target; this is the ONE write path (no keyboard twin — the second feel check-in's call). A
- *  free view change: the store is never touched, so there is nothing to undo. */
-export function setBasis(b: Domain): void {
-    editor.basis = b;
 }
 
 /** whether snapping is active for a gesture, given whether the Ctrl/Cmd bypass modifier
@@ -661,7 +647,7 @@ export function closeForceMenu(): void {
     editor.forceMenu = null;
 }
 
-/** open the ruler context menu at a screen point (Meters / Seconds, the timeline basis picker).
+/** open the ruler context menu at a screen point (Meters / Seconds, the track domain picker).
  *  No target subject to select — the ruler addresses the whole timeline, not a track element. */
 export function openRulerMenu(x: number, y: number): void {
     editor.rulerMenu = { x, y };

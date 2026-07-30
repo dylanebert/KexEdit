@@ -147,14 +147,14 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
 
 Authored state — everything that *defines* the track — lives in ECS components in `track.ts`, and
 only there. The UI reads it through the per-RAF tick and writes it only through the `track.ts`
-setters, each wrapped in a `history` gesture. That is the purity contract, and it is the surface a
+setters, each wrapped in a `history` gesture. That's the purity contract, and it's the surface a
 future authoring agent drives — the same one the capture harness pokes through `__kex`.
 
-**The authored components (the one source of truth):** `Track` (`count`, `ds`, `v0`), `Section`
+**The authored components (the one source of truth):** `Track` (`count`, `ds`, `v0`, `domain`), `Section`
 (`id`, `order`, `kind`, `length`, `ds`), `Handle` (geo node: `section`, `order`, section-local
 `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`). Everything else is
 derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never
-authored); `editor.ts` holds selection + context-menu state; the Svelte `$state` (view pan/zoom,
+authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom,
 drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
 
 **Write only through the setters, only inside a history gesture.** `history` is one undo/redo stack
@@ -190,8 +190,8 @@ upstream, `entryU` its baked entry time, `global = entry + local`, inverted back
 re-walks the baked `ds`. Geo is position-authored in either domain, so it projects for display
 through the timeline's d↔t seam (`dToU`/`uToD`, on a `section.Domain`). **The domain pick is not a
 view change**: it's a document conversion op (`domain.convertDomain`) — one entry converting every
-keyframe, extent, and handle through the live bake's arc↔time table, which makes time-basis editing
-time-CONSTRAINED. A round trip is not bit-identical; undo is the only way back. Invoked
+keyframe, extent, and handle through the live bake's arc↔time table, which makes time-domain editing
+time-CONSTRAINED. A round trip isn't bit-identical; undo is the only way back. Invoked
 solves stay distance-internal and convert at their landing (`domain.convertSolve`).
 
 ## Code map

@@ -21,7 +21,6 @@ import {
     selectForceHandle,
     selectForces,
     selectSection,
-    setBasis,
     snapActive,
     toggleSnap,
 } from "./editor";
@@ -43,6 +42,7 @@ import {
     setForceTangentMode,
     undo,
 } from "./history";
+import { convertDomain, pickable } from "./domain";
 import { Domain } from "./section";
 import {
     clampDelta,
@@ -53,7 +53,6 @@ import {
     fmt,
     frameAll,
     G_GRID,
-    grabD,
     type Mapping,
     marginArc,
     marginFloor,
@@ -98,7 +97,7 @@ import {
     type ForceTangent,
     forceTangent,
     Handle,
-    MIN_FORCE_LEN,
+    minForceExtent,
     SectionKind,
     sectionForces,
     sectionHandles,
@@ -108,6 +107,8 @@ import {
     setForcePoint,
     setForceTangent,
     setSectionLength,
+    toGlobalU,
+    trackDomain,
     V0,
 } from "./track";
 import { DOCK_HEIGHT, DOCK_INSET, resize } from "./view";
@@ -132,21 +133,24 @@ const snapLen = $derived.by((): number => {
     void tick;
     return snapSteps.length;
 });
-// the timeline BASIS — picked from the ruler's context menu (no keyboard shortcut). `basis` is what
-// the chart actually READS: with no live bake the seam falls back to distance identity
-// (`dToU`/`uToD`), so time isn't on offer — the ruler menu's Seconds row grays in that state
-// (`rulerMenuItems`) and its `checked` reads THIS value, never the raw session preference, so the
-// menu can't show a lit Seconds row over a metre axis. Tick-derived like the magnet, so it lags a
-// frame — which is why the flip's own re-frame is deferred to the same frame (`applyBasis`)
+// the chart's axis IS the track's own domain (`Track.domain`) — the unit the force store is
+// written in, so there is no view copy to disagree with it and no fallback: whatever unit the
+// keyframes hold is the unit the chart must read. Tick-derived, so it lags the document by a frame
+// — which is why the pick's own re-frame is deferred to the frame this re-derives in (`pickDomain`)
 // instead of writing `view` live.
-const basis = $derived.by((): Domain => {
+//
+// The pick flips it (`domain.convertDomain`), converting the store in the same entry, and the bake
+// re-runs on the same frame (`Track.domain` is in `bakeHash`), so a frame drawing the new unit
+// against the pre-flip time table is coherent either way: that table is the one the conversion
+// itself ran through, so every converted keyframe, extent, and section entry agrees with it.
+const domain = $derived.by((): Domain => {
     void tick;
-    return mapping === null ? Domain.Distance : editor.basis;
+    return trackDomain(ecs);
 });
-const timeBasis = $derived(basis === Domain.Time);
-// the position field's key + unit follow the basis (the readout suffix the ruler's ticks wear too).
-const posLabel = $derived(timeBasis ? "t" : "d");
-const posUnit = $derived(timeBasis ? "s" : "m");
+const timeDomain = $derived(domain === Domain.Time);
+// the position field's key + unit follow the domain (the readout suffix the ruler's ticks wear too).
+const posLabel = $derived(timeDomain ? "t" : "d");
+const posUnit = $derived(timeDomain ? "s" : "m");
 
 // the timeline shows the baked F_n force curve the realized track produces, plus
 // scrub + zoom/pan navigation. it's also the force-authoring surface: over any force
@@ -186,10 +190,12 @@ const TIP_W = 108; // px; the popover's full width — the handle popover's hori
 const TIP_GAP = 12; // px; the popover's offset from its anchor (the same gap the point popover uses vertically)
 const TIP_VHALF = 28; // px; half the popover height — the vertical clamp for a side-dodged handle popover
 const TIP_H = 2 * TIP_VHALF; // px; the popover's full height — the vertical fit test for the above/below default
-// arrow-nudge steps for the selected force point (AE): s in meters, g in g, Shift coarse.
-// fixed-domain steps in the STORED domain, in either basis: the nudge is a step of the authored
-// quantum (`Force.s` is arclength however the chart reads), rounded to the field's displayed
-// precision so it lands clean. The basis moves what the field prints, not what a nudge steps.
+// arrow-nudge steps for the selected force point (AE): position in the track domain's unit
+// (metres or seconds — `Force.s` is whatever the store holds), g in g, Shift coarse. The position
+// steps are the same NUMBERS in either domain, deliberately: a nudge steps the popover field's own
+// displayed precision (one decimal, `fmt(…, 1)`), which is what makes every press visible in the
+// readout, and 10× that with Shift. So a fine step is 0.1 m of arclength or 0.1 s — the latter is
+// exactly one `T_GRID` placement quantum, the former a tenth of `S_GRID`'s.
 const NUDGE_S = 0.1;
 const NUDGE_S_COARSE = 1;
 const NUDGE_G = 0.05;
@@ -207,7 +213,7 @@ let h = $state(0);
 let view: View = $state({ pan: 0, pxPerM: 10 });
 let framed = false;
 // while the section-end handle drags, the chart's addressable span FREEZES at its
-// high-water mark (in basis units) so the pan clamp never shifts the view under the cursor
+// high-water mark (in axis units) so the pan clamp never shifts the view under the cursor
 // during a shorten (the same "nothing moves under its own gesture" law as the keyframe y-fit
 // freeze). captured at drag start, cleared on release. the x-scale never re-fits — that
 // is clampView's job now, not the freeze's.
@@ -272,34 +278,35 @@ const tTotal = $derived.by((): number => {
     if (eid === null) return 0;
     return bakeOut.get(eid)?.tTotal ?? 0;
 });
-// the cart↔chart projection AND the basis seam's table: the cart rides in time, and
-// `Domain.Time` reads the chart's x on that same clock.
+// the cart↔chart projection AND the arclength→time table: the cart rides in time, and a
+// `Domain.Time` chart reads its x on that same clock.
 const mapping = $derived.by((): Mapping | null => {
     void tick;
     return eid === null ? null : trackMapping(eid);
 });
 
-// ── the basis seam (timeline.ts `dToU`/`uToD`) ──
-// the chart's internal x is the axis coordinate u: global distance d in `Domain.Distance`
-// (identity) or global time t in `Domain.Time`, projected through the live
-// bake's arc↔time table. Every draw path projects d → u here (`markerX`) and every read/write
-// path inverts u → d here (`dAtPx` for an absolute placement, `grabD` for a grabbed subject);
-// nothing downstream branches on the basis again, bar the sanctioned constant picks (the `GRID`
-// quantum, the `mFloor` lead-out, the unit suffix). With no live bake the pair is identity, so
-// the toggle still works and the chart reads distance.
-const uOf = (d: number): number => dToU(mapping, basis, d);
-const dOf = (u: number): number => uToD(mapping, basis, u);
-// the addressable span's end and the lead-out floor, both in basis units.
+// ── the axis, and the ONE projection into it (timeline.ts `dToU`/`uToD`) ──
+// the chart's x is the coordinate `u` on the track's own axis: global distance d in
+// `Domain.Distance`, global march time t in `Domain.Time`. The force store is written on THAT
+// axis, so every force path — placement, drag, extent, field — is native here and reads `u`
+// directly through the lens's affine (`track.toGlobalU`, `entryU + s`), with no projection at all.
+// What projects is the other kind of subject: a quantity authored in ARCLENGTH shown on a time
+// axis — the recovered force curve, a geo section's node ticks, the cart's park (`uOf`/`dOf`,
+// identity in the distance domain). Nothing downstream branches on the domain again, bar the
+// sanctioned constant picks (the `GRID` quantum, the `mFloor` lead-out, the unit suffix).
+const uOf = (d: number): number => dToU(mapping, domain, d);
+const dOf = (u: number): number => uToD(mapping, domain, u);
+// the addressable span's end and the lead-out floor, both in axis units.
 const uTotal = $derived(uOf(sTotal));
-const mFloor = $derived(marginFloor(basis));
+const mFloor = $derived(marginFloor(domain));
 // the x-axis placement quantum for a keyframe drag: metres of arclength, or seconds (`T_GRID`,
 // derived from `S_GRID` at the default entry speed).
-const GRID = $derived(timeBasis ? T_GRID : S_GRID);
-// the chart insets past the left g-gutter; the basis affine lives in [LEFT_GUT, w], so every
+const GRID = $derived(timeDomain ? T_GRID : S_GRID);
+// the chart insets past the left g-gutter; the axis affine lives in [LEFT_GUT, w], so every
 // timeline.ts call takes `chartW` and screen-X adds/subtracts LEFT_GUT.
 const chartW = $derived(Math.max(0, w - LEFT_GUT));
 const clamped = $derived(clampView(view, chartW, uFrozen ?? uTotal, mFloor));
-const tickList = $derived(ticks(clamped, chartW, basis));
+const tickList = $derived(ticks(clamped, chartW, domain));
 // the cart's time on the baked track's clock (the player transport's readout).
 const cartSec = $derived.by((): number | null => {
     void tick;
@@ -313,7 +320,7 @@ const cartS = $derived.by((): number | null => {
 });
 const playPx = $derived.by((): number | null => {
     if (cartS === null) return null;
-    const x = markerX(cartS); // the cart's arclength, through the basis seam
+    const x = markerX(cartS); // the cart's arclength, projected
     return x < LEFT_GUT || x > w ? null : x;
 });
 const paused = $derived.by((): boolean => {
@@ -408,39 +415,49 @@ $effect(() => {
     });
 });
 
-// set the basis (the ruler menu's Meters/Seconds rows — no keyboard twin, the second feel
-// check-in's call) and re-express the view in it: the change is a free VIEW change, so it holds
-// the stretch of ride the author is looking at and only restates its window in the new basis's
-// units (`view.pan`/`pxPerM` are basis-unit quantities). the live `editor.basis` drives the
-// projection here, not the tick-derived `basis`, which lags a frame.
-let pendingWin: { l: number; r: number } | null = null;
-function applyBasis(target: Domain): void {
+// pick the track domain (the ruler menu's Meters/Seconds rows — no keyboard twin, the second feel
+// check-in's call). This is a DOCUMENT conversion, not a view change: `convertDomain` converts every
+// force keyframe, extent, and handle Δs into the target unit as one undoable entry, and a round trip
+// is not bit-identical — undo is the way back.
+function pickDomain(target: Domain): void {
     if (editor.dragging) return; // a live gesture holds the document axis still (editor-ui.md)
-    if (editor.basis === target) return; // already there — the menu's "picking the checked row is a no-op" law
-    // the window is carried as FRACTIONS of the addressable span — `navWindow`'s own
-    // representation, the one already used to place the navigator bracket. Carrying its two RIDE
-    // positions instead is the wrong move and not reversible: the lead-out past the track end has
-    // no image under the projection (the ride's clock stops at its last sample, so every distance
-    // beyond it maps to the same `tTotal`), so a window reaching into the lead-out would collapse
-    // on the way out and never come back. Fractions round-trip.
-    pendingWin = navWindow(clamped, chartW, uTotal, mFloor);
-    setBasis(target);
+    convertDomain(history, ecs, target); // rejects (writing nothing) on the active row and with
+    // nothing convertible — the same reading the row is grayed on
 }
-// …and applied on the frame the tick re-derives `basis` in. `view` is live `$state` while `basis`,
-// `mapping`, `uTotal` and `mFloor` are tick-derived, so writing the new scale straight from the
-// handler would leave the two disagreeing for one frame and the chart would paint old-basis
-// coordinates against a new-basis scale — a visible jump on every toggle. Deferring costs one
-// frame and lands the whole flip at once.
+// …and the view follows the DOMAIN, not the pick: `view.pan`/`pxPerM` are axis-unit quantities, so
+// whenever the unit changes the window is re-expressed to hold the same stretch of ride — the ruler
+// reads as re-labelled rather than jumped. Watching the domain (rather than re-framing inside
+// `pickDomain`) is what makes an UNDO and a redo of the conversion land the same way, which is the
+// only way back per the locked decision; and it lands on the frame the tick re-derives the domain
+// in, so the chart never paints old-unit coordinates against a new-unit scale.
+//
+// The window is carried as FRACTIONS of the addressable span — `navWindow`'s own representation,
+// the one already placing the navigator bracket — recomputed every frame the domain holds, so the
+// frame it changes still has the pre-change reading. Carrying two RIDE positions instead is the
+// wrong move and not reversible: the lead-out past the track end has no image under the projection
+// (the ride's clock stops at its last sample, so every distance beyond it maps to the same
+// `tTotal`), so a window reaching into the lead-out would collapse and never come back.
+let winFrac: { l: number; r: number } | null = null;
+let lastDomain: Domain | null = null;
 $effect(() => {
     void tick;
     untrack(() => {
-        const win = pendingWin;
-        if (win === null) return;
-        pendingWin = null;
         if (chartW <= 0 || sTotal <= 0) return; // nothing framed yet — the initial frame will run
-        const span = uTotal + marginArc(uTotal, mFloor);
-        const pxPerM = chartW / Math.max(1e-6, (win.r - win.l) * span);
-        view = clampView({ pan: win.l * span * pxPerM, pxPerM }, chartW, uTotal, mFloor);
+        // a live gesture holds the document axis still (editor-ui.md): rescaling it under a drag
+        // would corrupt the screen-space grab the gesture resolves against. Returning here freezes
+        // the BOOKKEEPING too, not just the write — `lastDomain` and `winFrac` keep their
+        // pre-gesture readings, so a domain change that lands mid-gesture is deferred to the frame
+        // after release rather than dropped.
+        if (editor.dragging) return;
+        if (lastDomain !== null && lastDomain !== domain && winFrac !== null) {
+            const span = uTotal + marginArc(uTotal, mFloor);
+            const pxPerM = chartW / Math.max(1e-6, (winFrac.r - winFrac.l) * span);
+            view = clampView({ pan: winFrac.l * span * pxPerM, pxPerM }, chartW, uTotal, mFloor);
+        }
+        lastDomain = domain;
+        // off the freshly-written `view` (the `clamped` derived is a frame behind inside untrack).
+        const v = clampView(view, chartW, uFrozen ?? uTotal, mFloor);
+        winFrac = navWindow(v, chartW, uTotal, mFloor);
     });
 });
 
@@ -478,22 +495,22 @@ const pyPerG = $derived.by((): number => {
 // and no driving/driven. the chart is a WHOLE-TRACK view: it draws every force section's
 // points at once, and authoring is by cursor position — a double-click over a force
 // section's arc adds a point there (no section pre-selection). all edits route through
-// `history`. force points are authored section-local (s from the section entry); the
-// chart x-axis is whole-track cumulative arclength, so a point draws at its section's
-// cumulative offset (`startS`) + its local s.
+// `history`. force points are authored section-local (s from the section entry, in the track
+// domain's unit), and the chart's x-axis is that same unit whole-track, so a point draws at its
+// section's entry + its local s — the lens's affine (`track.toGlobalU`), never a projection.
 //
-// the coordinate lens's span table (track.ts): each section's global-d offset + baked
-// arclength. the ONE source for every cumulative-d readout on the chart — boundaries,
-// clips, and force-point placement all derive from it, none re-walks the baked ds.
+// the coordinate lens's span table (track.ts): each section's entry + extent on BOTH axes —
+// arclength (the geometry readouts) and the track's native unit (the force store's own). the ONE
+// source for every global readout on the chart — boundaries, clips, and force-keyframe placement
+// all derive from it, none re-walks the baked ds.
 const spans = $derived.by(() => {
     void tick;
     return eid === null ? [] : sectionSpans(ecs, eid);
 });
-// the interior section boundaries in global distance d — drawn as chart guides. each
-// non-last span's exit (offset + len).
-const bounds = $derived.by((): number[] =>
-    spans.slice(0, -1).map((sp) => sp.offset + sp.len),
-);
+// the interior section boundaries on the chart's own axis — drawn as chart guides, and the
+// landmarks every s-axis snap resolves against. each non-last span's native exit
+// (`entryU + lenU`), so a boundary needs no projection in either domain.
+const bounds = $derived.by((): number[] => spans.slice(0, -1).map((sp) => sp.entryU + sp.lenU));
 // ── section clip strip (the marker lane): one clip per section over its cumulative
 // arclength span, kind-colored + labeled, selecting `editor.section` — the SAME
 // selection as the viewport span (one object, two surfaces). clip edges align with the
@@ -502,9 +519,12 @@ const bounds = $derived.by((): number[] =>
 interface Clip {
     id: number;
     kind: SectionKind;
-    s0: number; // cumulative arclength at the section entry
+    s0: number; // cumulative arclength at the section entry (the geometry axis — node ticks, curve)
     s1: number; // cumulative arclength at the section exit
-    len: number; // authored extent (force `Section.length`) — the clamp domain for its points
+    u0: number; // the section entry on the CHART's axis (`entryU`) — where its clip and its
+    u1: number; // keyframes are placed, and its exit (`entryU + lenU`)
+    len: number; // authored extent (force `Section.length`, in the track domain's unit) — the
+    // clamp domain for its keyframes and the subject of the extent trim
 }
 const clips = $derived.by((): Clip[] => {
     void tick;
@@ -513,15 +533,23 @@ const clips = $derived.by((): Clip[] => {
     for (const sec of sections(ecs)) {
         const sp = byId.get(sec.id);
         if (!sp) continue;
-        res.push({ id: sec.id, kind: sec.kind, s0: sp.offset, s1: sp.offset + sp.len, len: sec.length });
+        res.push({
+            id: sec.id,
+            kind: sec.kind,
+            s0: sp.offset,
+            s1: sp.offset + sp.len,
+            u0: sp.entryU,
+            u1: sp.entryU + sp.lenU,
+            len: sec.length,
+        });
     }
     return res;
 });
 // ── geo node ticks (read-only, kex2d-geo-ux stage 2): a small circle in the marker
 // lane per INTERIOR node of a geo section, positioned via the section's own span
 // offset (`Clip.s0`) plus the partial-sum arclength from `bakeOut.ds` up to the
-// node's landing sample (`nodeArc`, timeline.ts), projected through the basis seam like
-// every other chart landmark. Display + selection-highlight
+// node's landing sample (`nodeArc`, timeline.ts), projected onto the chart's axis like
+// every other arclength-authored landmark. Display + selection-highlight
 // only — no hit-testing, no drag: a node's timeline position is DERIVED from
 // geometry, and dragging it on this axis is the rejected inverse problem (spec
 // `kex2d-geo-ux.md`'s locked decision). Node 0 (the entry) and the section's last
@@ -530,7 +558,7 @@ const clips = $derived.by((): Clip[] => {
 // orphan node past `bakedNodes` (a truncated bake, stale `.sample`) is excluded too.
 interface NodeTick {
     eid: number;
-    x: number; // canvas px (the basis-projected `markerX`)
+    x: number; // canvas px (the projected `markerX`)
     sel: boolean;
     sec: number; // owning section id — the clips whose label fades when it carries ticks
 }
@@ -559,16 +587,17 @@ const nodeTicks = $derived.by((): NodeTick[] => {
 // ticks (content, drawn over it) read cleanly instead of colliding with the centered text
 // (stage-2 label/tick note): once a section is shaped, its ticks carry its identity.
 const tickedSections = $derived(new Set(nodeTicks.map((t) => t.sec)));
-// every force section's points, flattened across the whole track — each carries its
-// section's cumulative start (`startS`) and authored extent (`len`) so the chart draws,
+// every force section's points, flattened across the whole track — each carries its global axis
+// coordinate, its section's entry (`startU`), and the authored extent (`len`) so the chart draws,
 // picks, and clamps it without a per-section "active" selection.
 interface ForcePt {
     id: number;
     section: number;
-    s: number; // section-local arclength
+    s: number; // section-local position, in the track domain's unit (metres or seconds)
     g: number;
-    startS: number; // the section's cumulative start (draw at startS + s)
-    len: number; // the section's authored extent (drag/field clamp domain)
+    u: number; // its global coordinate on the chart's axis — the lens's own affine
+    startU: number; // the section's entry on that axis (the base the drag/field arithmetic uses)
+    len: number; // the section's authored extent (drag/field clamp domain), same unit as `s`
 }
 const forcePts = $derived.by((): ForcePt[] => {
     void tick;
@@ -576,8 +605,11 @@ const forcePts = $derived.by((): ForcePt[] => {
     const res: ForcePt[] = [];
     for (const c of clips) {
         if (c.kind !== SectionKind.Force) continue;
-        for (const p of sectionForces(ecs, c.id))
-            res.push({ id: p.id, section: c.id, s: p.s, g: p.g, startS: c.s0, len: c.len });
+        for (const p of sectionForces(ecs, c.id)) {
+            const u = toGlobalU(spans, c.id, p.s);
+            if (u === null) continue;
+            res.push({ id: p.id, section: c.id, s: p.s, g: p.g, u, startU: c.u0, len: c.len });
+        }
     }
     return res;
 });
@@ -633,26 +665,16 @@ const multiForce = $derived.by((): boolean => {
     return editor.forces.ids.size > 1;
 });
 
-// the ONE draw projection: a global distance `d` → its canvas x, through the basis seam.
-const markerX = (d: number): number => LEFT_GUT + sToPx(clamped, uOf(d));
-// the read twin: a canvas-local px back to a global distance. For an ABSOLUTE placement (an
-// insertion, a scrub, a trim candidate) — a grabbed subject resolves through `grabD` instead,
-// delta-from-grab, so its zero-delta case is exact.
-const dAtPx = (px: number): number => dOf(pxToS(clamped, px - LEFT_GUT));
-// a force point's chart x — its section-local s placed at its section's cumulative
-// offset. points are authored local; the chart draws whole-track cumulative.
-const ptX = (p: ForcePt): number => markerX(p.startS + p.s);
-// px per METRE at a global distance `d` — the scale the tangent-handle geometry needs, since a
-// handle's stored offsets are metres and g while the axis may read seconds. `Distance` basis IS
-// the axis scale, exactly; `Time` basis linearizes the projection over one grid step around `d`,
-// which is what the coupling's screen-collinearity test needs locally.
-const pxPerMAt = (d: number): number => {
-    if (!timeBasis || mapping === null) return clamped.pxPerM;
-    const lo = Math.max(0, d - S_GRID);
-    const hi = d + S_GRID;
-    const du = uOf(hi) - uOf(lo);
-    return du > 1e-9 ? (clamped.pxPerM * du) / (hi - lo) : clamped.pxPerM;
-};
+// the axis pair: a coordinate on the chart's own axis ↔ its canvas x. Every native subject (a
+// force keyframe, a handle, an extent, a boundary) goes straight through these.
+const uPx = (u: number): number => LEFT_GUT + sToPx(clamped, u);
+const uAtPx = (px: number): number => pxToS(clamped, px - LEFT_GUT);
+// the PROJECTED pair, for an arclength-authored subject (the recovered curve, a geo node tick,
+// the cart's park): global distance `d` → canvas x, and back.
+const markerX = (d: number): number => uPx(uOf(d));
+const dAtPx = (px: number): number => dOf(uAtPx(px));
+// a force keyframe's chart x — its global axis coordinate, straight off the lens's affine.
+const ptX = (p: ForcePt): number => uPx(p.u);
 
 // ── snapping (the AE magnet): a snap resolves in chart-local px (the `snap` resolver,
 // timeline.ts), so `snapX`/`snapY` are the guide flashes to draw when an axis latches.
@@ -668,11 +690,11 @@ let snapY: number | null = $state(null); // an active g-axis snap: horizontal gu
 // moving edge (the track end) is a target.
 function sTargets(opts: { exclude?: Set<number>; playhead: boolean; trackEnd: boolean }): number[] {
     const v = clamped;
-    const out: number[] = [sToPx(v, uOf(0))];
-    for (const b of bounds) out.push(sToPx(v, uOf(b)));
-    if (opts.trackEnd) out.push(sToPx(v, uOf(sTotal)));
-    for (const p of forcePts)
-        if (!opts.exclude?.has(p.id)) out.push(sToPx(v, uOf(p.startS + p.s)));
+    const out: number[] = [sToPx(v, 0)];
+    for (const b of bounds) out.push(sToPx(v, b));
+    if (opts.trackEnd) out.push(sToPx(v, uTotal));
+    for (const p of forcePts) if (!opts.exclude?.has(p.id)) out.push(sToPx(v, p.u));
+    // the cart rides in arclength, so the playhead is the one landmark here that projects.
     if (opts.playhead && paused && cartS !== null) out.push(sToPx(v, uOf(cartS)));
     return out;
 }
@@ -690,11 +712,11 @@ function chartS(e: MouseEvent): number {
     const rect = canvas.getBoundingClientRect();
     return clamp(dAtPx(e.clientX - rect.left), 0, sTotal);
 }
-// the pointer's BASIS coordinate (clamped to the addressable span) — a gesture's grab origin,
-// paired with the grabbed subject's own global distance by `grabD`.
+// the pointer's AXIS coordinate (clamped to the addressable span) — where every native gesture
+// reads the cursor: a grab origin, an insertion, a trim candidate.
 function chartU(e: MouseEvent): number {
     const rect = canvas.getBoundingClientRect();
-    return clamp(pxToS(clamped, e.clientX - rect.left - LEFT_GUT), 0, uTotal);
+    return clamp(uAtPx(e.clientX - rect.left), 0, uTotal);
 }
 
 // double-click the chart drops a force point at that s, in whatever force section the
@@ -703,29 +725,27 @@ function chartU(e: MouseEvent): number {
 // new point never bends the curve, and drags from a known start). over a geo section
 // (or empty), it's a no-op.
 function chartCreate(e: MouseEvent): void {
-    let cumS = chartS(e);
+    let u = chartU(e);
     // snap the placement through the same landmark resolver the drags use (toggle, Ctrl/Cmd
     // bypass, and SNAP_PX all apply) — the AE insert-at-CTI idiom — before resolving the value.
     // creation targets exclude force points (an occupied s is degenerate) but keep boundaries,
     // origin, track end, and the parked playhead. no guide flash: a double-click has no gesture
     // to clear one, and the resolver's guide is a drag-lifetime affordance.
     if (snapActive(e.ctrlKey || e.metaKey)) {
-        // the landmarks are content (global distances), so they project through the seam like
-        // every other draw; the resolved px inverts back to a distance for the write.
         const targets = creationTargets(
             clamped,
-            bounds.map(uOf),
-            uOf(sTotal),
+            bounds,
+            uTotal,
             paused && cartS !== null ? uOf(cartS) : null,
         );
-        const hit = snap(sToPx(clamped, uOf(cumS)), targets);
-        if (hit !== null) cumS = clamp(dOf(pxToS(clamped, hit)), 0, sTotal);
+        const hit = snap(sToPx(clamped, u), targets);
+        if (hit !== null) u = clamp(pxToS(clamped, hit), 0, uTotal);
     }
-    const c = clips.find((x) => x.kind === SectionKind.Force && cumS >= x.s0 && cumS <= x.s1);
+    const c = clips.find((x) => x.kind === SectionKind.Force && u >= x.u0 && u <= x.u1);
     if (!c) return; // not over a force section
     // value = the authored profile at the SNAPPED section-local s (insert-on-curve: the new
     // point never bends the curve), so both position and value derive from the snapped place.
-    const s = clamp(cumS - c.s0, 0, c.len); // (snapped) cumulative → section-local
+    const s = clamp(u - c.u0, 0, c.len); // (snapped) global → section-local, both native
     selectForce(createForce(history, ecs, c.id, s, sampleForce(sectionForces(ecs, c.id), s)));
 }
 
@@ -735,13 +755,12 @@ function chartCreate(e: MouseEvent): void {
 // force-keyframe drag: the per-axis gesture-start magnet is the "change just one axis"
 // affordance, so a dominant-axis lock is redundant here (removed 2026-07-23).
 let dragForce: number | null = $state(null); // the ANCHOR point id (snap resolves on it)
-// the grab pair `grabD` resolves every frame against: the ANCHOR's own global distance and the
-// cursor's basis coordinate, both captured at pointerdown. In distance basis their difference IS
-// the old cumulative grab offset (so grabbing off-center still doesn't jump); in time basis the
-// pair is what makes the delta exact through the live mapping.
-let dragD0 = 0;
+// the cursor's axis coordinate at pointerdown — the origin the anchor's position is measured
+// DELTA-FROM (`s = s0 + (u − u0)`), so grabbing a diamond off-centre doesn't jump it and a gesture
+// returned to its grab pixel writes its start value back bit-exactly. The store is on this same
+// axis, so the arithmetic is exact: there is no projection to lose an ulp in.
 let dragU0 = 0;
-let dragStartS = 0; // the ANCHOR's section cumulative start (fixed during the drag)
+let dragStartU = 0; // the ANCHOR's section entry on the axis (fixed during the drag)
 let dragLen = 0; // the ANCHOR's section extent (the anchor's own s clamp domain)
 let dragCx = 0; // last cursor, canvas-local px
 let dragCy = 0;
@@ -760,40 +779,36 @@ function applyDrag(): void {
     const cx = clamp(dragCx, LEFT_GUT, Math.max(LEFT_GUT, w));
     // resolve the ANCHOR through the snap first (grid + landmarks + the gesture-start axis magnet),
     // exactly as a single drag does — the shared delta then derives from where the anchor lands and
-    // the OTHER members follow it. the cursor's basis coordinate resolves DELTA-FROM-GRAB off the
-    // live mapping (`grabD`) to the anchor's cumulative distance, − startS → local (clamped to the
-    // anchor's own [0, len]).
-    let sAnchor = clamp(
-        grabD(mapping, basis, dragD0, dragU0, pxToS(clamped, cx - LEFT_GUT)) - dragStartS,
-        0,
-        dragLen,
-    );
+    // the OTHER members follow it. the cursor's axis delta from the grab origin IS the anchor's
+    // delta (one axis, one unit), clamped to the anchor's own [0, len].
+    let sAnchor = clamp(dragS0 + (uAtPx(cx) - dragU0), 0, dragLen);
     let gAnchor = yToG(clamp(dragCy, TOP, h - BOT_PAD));
     snapX = null;
     snapY = null;
     const active = snapActive(dragMod);
     {
-        // the candidate and every landmark resolve in BASIS units (so the grid quantum is the
-        // basis's own — `GRID`), and the winner inverts back to a distance for the write.
-        const uAnchor = uOf(dragStartS + sAnchor);
+        // the candidate and every landmark resolve on the chart's axis, so the grid quantum is the
+        // domain's own (`GRID` — metres of arclength, or `T_GRID` seconds), and the winning value
+        // is already in the store's unit: `− startU` is the whole write path.
+        const uAnchor = dragStartU + sAnchor;
         const targets = sTargets({ exclude: dragMemberSet, playhead: true, trackEnd: true });
-        const startPx = sToPx(clamped, uOf(dragStartS + dragS0)); // gesture-start landmark
+        const startPx = sToPx(clamped, dragStartU + dragS0); // gesture-start landmark
         const r = snapAxis(active, sToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
             pxToS(clamped, px), startPx);
         if (r.guide !== null) {
             // the gesture-start magnet resolves to the GRAB VALUE, never a px round-trip: the
-            // round-trip drops the last ulp (and the projection isn't affine in time basis), so a
-            // gesture returned to its start has to land on exactly the s it began at — else a
-            // zero-delta drag writes a difference and records an undo entry.
-            const local = r.guide === startPx ? dragS0 : dOf(r.value) - dragStartS;
+            // round-trip drops the last ulp, so a gesture returned to its start has to land on
+            // exactly the s it began at — else a zero-delta drag writes a difference and records
+            // an undo entry.
+            const local = r.guide === startPx ? dragS0 : r.value - dragStartU;
             // a landmark: only latch one the anchor can actually reach in its own section
             if (local >= 0 && local <= dragLen) {
                 sAnchor = local;
                 snapX = r.guide;
             }
         } else {
-            // grid (or bypass) — quantized in the active basis, kept in the section
-            sAnchor = clamp(dOf(r.value) - dragStartS, 0, dragLen);
+            // grid (or bypass) — quantized in the active domain, kept in the section
+            sAnchor = clamp(r.value - dragStartU, 0, dragLen);
         }
     }
     {
@@ -861,10 +876,13 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     dragMod = e.ctrlKey || e.metaKey;
     dragS0 = p.s; // the anchor's start s/g — each axis's gesture-start magnet
     dragG0 = p.g;
-    dragStartS = p.startS; // the anchor's section is fixed while its s is dragged inside it
+    dragStartU = p.startU; // the anchor's section is fixed while its s is dragged inside it
     dragLen = p.len;
-    dragD0 = p.startS + p.s; // the anchor's own global distance
-    dragU0 = chartU(e); // the cursor's basis coordinate — the grab origin `grabD` measures from
+    // the grab origin: the cursor's axis coordinate read through the SAME chart clamp `applyDrag`
+    // resolves against, so returning to the grab pixel subtracts one value from itself exactly —
+    // a diamond sitting past the addressable span (its fat hit zone reaches `FHIT_R` outside the
+    // chart) would otherwise start the gesture with a phantom delta.
+    dragU0 = uAtPx(clamp(dragCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
     beginForceMoves(
         ecs,
         dragMembers.map((m) => m.id),
@@ -1028,11 +1046,11 @@ const editHandles = $derived.by((): { pt: ForcePt; handles: FHandle[] } | null =
         // each side is independently explicit-or-derived: a stored offset shows solid, an
         // absent one shows the derived flat ghost (the segment-scoped Custom model).
         const off = tan?.in ?? derivedIn(pt, prev);
-        handles.push({ side: "in", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.in === undefined });
+        handles.push({ side: "in", x: uPx(pt.u + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.in === undefined });
     }
     if (next) {
         const off = tan?.out ?? derivedOut(pt, next);
-        handles.push({ side: "out", x: markerX(pt.startS + pt.s + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.out === undefined });
+        handles.push({ side: "out", x: uPx(pt.u + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.out === undefined });
     }
     return { pt, handles };
 });
@@ -1086,7 +1104,7 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
     const rect = canvas.getBoundingClientRect();
     tanGrabDx = hnd.x - (e.clientX - rect.left);
     tanGrabDy = hnd.y - (e.clientY - rect.top);
-    const rx = hnd.x - markerX(pt.startS + pt.s);
+    const rx = hnd.x - uPx(pt.u);
     const ry = hnd.y - yOf(pt.g);
     const rl = Math.hypot(rx, ry);
     tanRayX = rl > 1e-6 ? rx / rl : 0;
@@ -1130,19 +1148,18 @@ function applyTan(cx: number, cy: number): void {
     // gesture-start axis magnet: latch the candidate knob onto the grab ray while it
     // stays within the corridor (the geo tangent-handle `latchAngle`), so a mostly-
     // single-axis drag keeps the other axis at its start — a flat ghost drags flat.
-    const kx = markerX(pt.startS + pt.s);
+    const kx = uPx(pt.u);
     const ky = yOf(pt.g);
     const latch = latchAngle(cx - kx, cy - ky, tanRayX, tanRayY);
     cx = kx + latch.x;
     cy = ky + latch.y;
-    // the dragged side's raw (Δs, Δg) from the latched cursor, both in OFFSET space (metres
-    // and g from the keyframe — the space the readout prints).
-    const cumD = dAtPx(clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w)));
-    let ds = cumD - (pt.startS + pt.s);
+    // the dragged side's raw (Δs, Δg) from the latched cursor, both in OFFSET space (the store's
+    // own position unit and g from the keyframe — the space the readout prints).
+    let ds = uAtPx(clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w))) - pt.u;
     let dg = yToG(clamp(cy, TOP, h - BOT_PAD)) - pt.g;
     // Δg grid-quantizes to the force vocabulary (G_GRID), so a snapped handle reads as
     // vocabulary ("+0.5 g"); Ctrl/Cmd frees it to continuous. Δs stays CONTINUOUS (F3d): a
-    // keyframe's s is a placement on the arclength (vocabulary), but a handle's Δs is curvature
+    // keyframe's s is a placement on the axis (vocabulary), but a handle's Δs is curvature
     // shaping — inherently continuous — so it is never quantized. the gesture-start axis magnet
     // already fired above (latchAngle) on both axes; this is the grid path of the shared
     // `snapAxis` resolver (empty targets, no value landmark) — magnet, THEN the Δg grid, then
@@ -1162,19 +1179,10 @@ function tangentFor(id: number, side: "in" | "out", ds: number, dg: number): For
     const idx = pts.findIndex((p) => p.id === id);
     const prevS = idx > 0 ? pts[idx - 1].s : null;
     const nextS = idx < pts.length - 1 ? pts[idx + 1].s : null;
-    // the METRE scale at the keyframe (`pxPerMAt`), not the axis scale: a handle's offsets are
-    // metres and g in either basis, and the Aligned/Mirror coupling compares them in chart px.
-    return composeTangent(
-        side,
-        ds,
-        dg,
-        prevS,
-        pt.s,
-        nextS,
-        forceTangent(ecs, id),
-        pxPerMAt(pt.startS + pt.s),
-        pyPerG,
-    );
+    // a handle's Δs is stored in the same unit as the keyframe's own s (the domain conversion
+    // scales it with the axis), so the Aligned/Mirror coupling's screen-collinearity test reads it
+    // through the axis scale itself — no per-keyframe linearization.
+    return composeTangent(side, ds, dg, prevS, pt.s, nextS, forceTangent(ecs, id), clamped.pxPerM, pyPerG);
 }
 function tanUp(): void {
     if (dragTan === null) return;
@@ -1231,15 +1239,18 @@ function curveGAt(cumS: number): number {
 function chartCtx(e: MouseEvent): void {
     e.preventDefault();
     e.stopPropagation();
-    const cumS = chartS(e);
-    const c = clips.find((x) => x.kind === SectionKind.Force && cumS >= x.s0 && cumS <= x.s1);
+    const u = chartU(e);
+    const c = clips.find((x) => x.kind === SectionKind.Force && u >= x.u0 && u <= x.u1);
     if (!c) return;
+    // the curve is drawn per baked sample over ARCLENGTH, so its y is read at the cursor's
+    // arclength (the projected read), while the keyframe below is addressed natively.
+    const cumS = chartS(e);
     // the click must land within the force-point grab radius (FHIT_R — the same fat pick
     // zone a diamond carries) of the curve span vertically; a click out in empty chart space
     // addresses no keyframe (a diamond hit is handled by forceCtx, on the marker's own rect).
     if (Math.abs(e.clientY - canvas.getBoundingClientRect().top - yOf(curveGAt(cumS))) > FHIT_R)
         return;
-    const localS = cumS - c.s0;
+    const localS = u - c.u0;
     let lead: number | null = null;
     for (const p of sectionForces(ecs, c.id)) {
         if (p.s <= localS + 1e-6) lead = p.id;
@@ -1403,15 +1414,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
 // set the addressed keyframe's tangent mode as one undo entry (the geo `pickMode` analogue),
 // reconciling the handle pair in chart pixels so it stays jump-consistent with the drag coupling.
 function pickForceMode(id: number, mode: TangentMode): void {
-    const pt = forcePts.find((p) => p.id === id);
-    setForceTangentMode(
-        history,
-        ecs,
-        id,
-        mode,
-        pxPerMAt(pt ? pt.startS + pt.s : 0),
-        pyPerG,
-    );
+    setForceTangentMode(history, ecs, id, mode, clamped.pxPerM, pyPerG);
 }
 // choose Custom on the addressed segment (this keyframe → the next): step into handle edit on
 // this keyframe and materialize the segment's two bounding sides — this keyframe's out and the
@@ -1491,7 +1494,7 @@ onMount(() => {
     };
 });
 
-// ── the ruler context menu (Meters / Seconds — the timeline basis picker), summoned by
+// ── the ruler context menu (Meters / Seconds — the track domain picker), summoned by
 // right-clicking the ruler scrub zone (`rulerCtx`). visibility reads through the tick, like
 // every other editor-state surface (`editor.rulerMenu` is replaced wholesale on open/close, never
 // mutated in place, so this simple derived is safe — the `converting` progress object's in-place
@@ -1502,30 +1505,21 @@ const rmenu = $derived.by((): { x: number; y: number } | null => {
 });
 // flat rows, not a `Units ▸` submenu: the menu has nothing else in it, so nesting would spend a
 // click opening a submenu with no sibling rows to justify it (`editor-ui.md`'s terse-rows law —
-// a menu that's only ever one submenu should just be its rows). `checked` reads `basis` (the
-// tick-derived value the chart actually READS, already falling back to Distance with no live
-// bake), never the raw session preference — so the menu can't show a lit Seconds row over a
-// metre axis (the same lie the old rail toggle could tell). Seconds GRAYS (never hides) with no
-// live bake — picking it would write a preference the chart can't honor right now
-// (`editor-ui.md`'s "gray a row whose preconditions fail"); Meters has no precondition. Picking
-// the already-checked row is a no-op (`applyBasis`'s equality guard). No keyboard shortcut — the
-// second feel check-in's call: the basis switch doesn't warrant one.
+// a menu that's only ever one submenu should just be its rows). `checked` reads `Track.domain`,
+// the store's own unit, so a lit row can't lie about what the chart reads, and `enabled` is the
+// pure `domain.pickable` predicate — the active row always (picking it is a no-op), a converting
+// row only when the conversion can actually run, grayed otherwise. No keyboard shortcut — the
+// second feel check-in's call: the pick doesn't warrant one, and it is an undoable document op now.
 const rulerMenuItems = $derived.by((): MenuItem[] => {
+    void tick;
     if (editor.rulerMenu === null) return [];
-    const live = mapping !== null;
-    return [
-        {
-            label: "Meters",
-            checked: basis === Domain.Distance,
-            action: () => applyBasis(Domain.Distance),
-        },
-        {
-            label: "Seconds",
-            enabled: live,
-            checked: basis === Domain.Time,
-            action: () => applyBasis(Domain.Time),
-        },
-    ];
+    const row = (label: string, target: Domain): MenuItem => ({
+        label,
+        enabled: pickable(ecs, target),
+        checked: domain === target,
+        action: () => pickDomain(target),
+    });
+    return [row("Meters", Domain.Distance), row("Seconds", Domain.Time)];
 });
 // dismissal mirrors the force menu's exactly: permanent listeners gated on the live
 // `editor.rulerMenu`, never the tick-lagging `rmenu` (`kex2d/AGENTS.md`'s tick-derived-read
@@ -1706,9 +1700,7 @@ $effect(() => {
 // undo entry per drag.
 let lenId: number | null = $state(null); // the force section being resized, or null
 const draggingLen = $derived(lenId !== null);
-let lenStartS = 0; // the dragged section's cumulative start arclength (fixed during the drag)
-let lenU0 = 0; // the grab's basis coordinate and the distance it addressed — the pair the
-let lenD0 = 0; // trimmed edge resolves delta-from-grab against (`grabD`)
+let lenStartU = 0; // the dragged section's entry on the chart's axis (fixed during the drag)
 let lenCx = 0; // last length-drag cursor, canvas-local px (drives the per-frame edge-pan)
 let lenX0 = 0; // grab-point cursor px (fixed) — the dead-zone origin `lenArmed` measures from
 let lenArmed = false; // the standard DRAG_PX dead-zone latch (`armDrag`) — gates the sticky-commit
@@ -1722,32 +1714,32 @@ const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-e
 // idiom, only while parked). ruler ticks are excluded — the zoom-dependent 1-2-5 raster
 // is display, not content. section boundaries are excluded too — the dragged section's
 // own exit and every downstream boundary MOVE with the resize (self-snap), and upstream
-// boundaries are unreachable (they'd floor the length). the reach guard (length
-// ≥ MIN_FORCE_LEN) skips a snap the floor won't honor, so no guide flashes on an edge
+// boundaries are unreachable (they'd floor the length). the reach guard (the domain's own
+// `minForceExtent` floor) skips a snap the floor won't honor, so no guide flashes on an edge
 // that can't get there — matching applyDrag's reach guard.
+//
+// The extent is the section's authored length in the track domain's unit, so in `Domain.Time`
+// this same gesture trims a DURATION: the edge reads the chart's axis directly, with no
+// projection between the cursor and the write.
 function applyLen(): void {
     if (lenId === null) return;
     const cv = clampView(view, chartW, uFrozen ?? uTotal, mFloor);
-    // the trimmed edge resolves DELTA-FROM-GRAB (`grabD`) like the keyframe drag, not as a
-    // projected absolute read, so no d↔t projection gap enters the written extent. the grab
-    // origin is the pointer's px inside the trim strip (not the section's authored edge), so a
-    // returned gesture re-writes that px's own value — pre-existing trim behavior, unchanged.
-    let cumD = grabD(mapping, basis, lenD0, lenU0, pxToS(cv, lenCx - LEFT_GUT));
+    let cumU = pxToS(cv, lenCx - LEFT_GUT);
     snapX = null;
     if (snapActive(lenMod)) {
-        const ownS: number[] = [];
-        for (const p of forcePts) if (p.section === lenId) ownS.push(uOf(p.startS + p.s));
-        const targets = trimTargets(cv, ownS, paused && cartS !== null ? uOf(cartS) : null);
+        const ownU: number[] = [];
+        for (const p of forcePts) if (p.section === lenId) ownU.push(p.u);
+        const targets = trimTargets(cv, ownU, paused && cartS !== null ? uOf(cartS) : null);
         const hit = snap(lenCx - LEFT_GUT, targets);
         if (hit !== null) {
-            const cand = dOf(pxToS(cv, hit));
-            if (cand - lenStartS >= MIN_FORCE_LEN) {
-                cumD = cand; // only latch a target the MIN_FORCE_LEN floor will actually honor
+            const cand = pxToS(cv, hit);
+            if (cand - lenStartU >= minForceExtent(domain)) {
+                cumU = cand; // only latch a target the extent floor will actually honor
                 snapX = hit;
             }
         }
     }
-    setSectionLength(ecs, lenId, cumD - lenStartS); // cumulative − section start → local extent
+    setSectionLength(ecs, lenId, cumU - lenStartU); // global edge − section entry → its extent
 }
 function lenDown(e: PointerEvent, c: Clip): void {
     if (e.button !== 0) return;
@@ -1758,9 +1750,7 @@ function lenDown(e: PointerEvent, c: Clip): void {
     lenX0 = lenCx;
     lenArmed = false;
     lenMod = e.ctrlKey || e.metaKey;
-    lenStartS = c.s0; // upstream is unchanged by this resize, so the start is fixed
-    lenU0 = pxToS(clamped, lenCx - LEFT_GUT); // the grab origin, in basis units
-    lenD0 = dOf(lenU0); // and the distance it addresses — the pair `grabD` resolves against
+    lenStartU = c.u0; // upstream is unchanged by this resize, so the entry is fixed
     selectSection(c.id); // grabbing the edge selects the section (one object, two surfaces)
     beginLength(ecs, c.id);
     lenId = c.id;
@@ -1832,13 +1822,13 @@ function fieldEdit(s: number, g: number): void {
     setForcePoint(ecs, p.id, clamp(s, 0, p.len), g);
     commit(history);
 }
-// the position field speaks the ACTIVE BASIS (track-global d, or t while the timeline reads
-// time — label and unit follow, `posLabel`/`posUnit`); it inverts through the seam and then the
-// lens (s = d − the section's offset) before writing. fieldEdit clamps into [0, len].
+// the position field speaks the track's own domain (global d, or global t — label and unit follow,
+// `posLabel`/`posUnit`), the same unit the store holds, so the write is the lens's affine inverted:
+// s = u − the section's entry. fieldEdit clamps into [0, len].
 function onFieldPos(e: Event): void {
     if (!selPoint) return;
     const u = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    fieldEdit(dOf(u) - selPoint.startS, selPoint.g);
+    fieldEdit(u - selPoint.startU, selPoint.g);
 }
 function onFieldG(e: Event): void {
     if (!selPoint) return;
@@ -1869,8 +1859,8 @@ function onHandleG(e: Event): void {
 // horizontally to revise its value — one history gesture per scrub, rounded to the
 // field's displayed precision so the number never shows scrub jitter.
 const SCRUB_S = 0.05; // m per px
-// `SCRUB_S`'s time-basis twin (s per px), derived at the default entry speed exactly like
-// `T_GRID`, so the position scrub covers the same ground per px in either basis.
+// `SCRUB_S`'s time twin (s per px), derived at the default entry speed exactly like
+// `T_GRID`, so the position scrub covers the same ground per px in either domain.
 const SCRUB_T = SCRUB_S / V0;
 const SCRUB_G = 0.01; // g per px
 // while a label scrubs, the popover's anchor FREEZES at its gesture-start position —
@@ -1946,16 +1936,16 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
         y: clamp(yOf(p.g), TOP, h - BOT_PAD),
     };
     if (axis === "s") {
-        // the position scrub slides the value the field DISPLAYS — the active basis, so its rate
-        // and its rounding are that basis's own (`SCRUB_T` is `SCRUB_S`'s time twin at the default
-        // entry speed) — and inverts through the seam + the lens for the write.
+        // the position scrub slides the value the field DISPLAYS — the active domain, so its rate
+        // and its rounding are that domain's own (`SCRUB_T` is `SCRUB_S`'s time twin at the default
+        // entry speed) — and inverts through the lens's affine for the write.
         labelScrub(e, {
-            seed: uOf(p.startS + p.s),
-            rate: timeBasis ? SCRUB_T : SCRUB_S,
-            lo: uOf(p.startS),
-            hi: uOf(p.startS + p.len),
+            seed: p.u,
+            rate: timeDomain ? SCRUB_T : SCRUB_S,
+            lo: p.startU,
+            hi: p.startU + p.len,
             round: 10,
-            write: (v) => setForcePoint(ecs, p.id, clamp(dOf(v) - p.startS, 0, p.len), p.g),
+            write: (v) => setForcePoint(ecs, p.id, clamp(v - p.startU, 0, p.len), p.g),
             freeze,
             begin: () => beginForceMove(ecs, p.id),
         });
@@ -2216,10 +2206,10 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // section boundaries: a vertical guide at each interior boundary's cumulative
-    // arclength — the chart counterpart of the viewport's boundary anchor diamonds.
+    // section boundaries: a vertical guide at each interior boundary — the chart counterpart of
+    // the viewport's boundary anchor diamonds. On the chart's own axis, like the clip edges.
     for (const bs of bounds) {
-        const x = markerX(bs);
+        const x = uPx(bs);
         if (x < LEFT_GUT - 1 || x > w + 1) continue;
         ctx.strokeStyle = "rgba(154, 160, 166, 0.45)";
         ctx.lineWidth = 1;
@@ -2361,7 +2351,7 @@ function startScrub(e: PointerEvent): void {
     window.addEventListener("pointercancel", endScrub); // mirror release on cancel (no leaked listeners)
 }
 
-// right-click the ruler → the basis menu (Meters / Seconds) at the cursor — the Premiere/REAPER/
+// right-click the ruler → the domain menu (Meters / Seconds) at the cursor — the Premiere/REAPER/
 // Cubase reference: time-display format lives on the ruler's own context menu, not a standing
 // rail toggle. no target selection (the ruler addresses the whole timeline, not a track element).
 function rulerCtx(e: MouseEvent): void {
@@ -2484,6 +2474,12 @@ onMount(() => {
         const t = e.target as HTMLElement | null;
         if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
         if (e.ctrlKey || e.metaKey) {
+            // …but never MID-GESTURE (`editor.dragging`, the one live-gesture flag — the same guard
+            // `onWheel` and `F` wear). A live drag owns the open history gesture (one at a time), so
+            // an undo underneath it would pop an unrelated entry and then have the drag's own commit
+            // land on top; worse, a `Track.domain` entry would flip the store's unit under a grab
+            // resolved in the other one. The gesture ends first — release or Escape — then undo.
+            if (editor.dragging) return;
             const k = e.key.toLowerCase();
             if (k === "z") {
                 e.preventDefault();
@@ -2587,13 +2583,13 @@ onMount(() => {
         if (k) {
             k.gRange = (): [number, number] => [yView.lo, yView.hi];
             k.xView = (): [number, number] => [view.pan, view.pxPerM];
-            // the basis the chart READS (the effective one, so it reports the no-bake fallback
-            // honestly), and every keyframe's coordinate IN it — paired with the stored s the flow
-            // asserts held, since the honest-slide assertion is exactly "s the same, u different"
-            // across an upstream speed edit. Tick-derived, so a flow polls it.
-            k.basis = (): string => (basis === Domain.Time ? "time" : "distance");
+            // the domain the chart READS (`Track.domain`, tick-derived so a flow polls it), and
+            // every keyframe's coordinate on that axis — paired with the stored `s` the flow
+            // asserts held, since the time-constrained assertion is exactly "every other
+            // keyframe's stored t AND its drawn position unchanged" across an edit.
+            k.domain = (): string => (domain === Domain.Time ? "time" : "distance");
             k.forceU = (): { id: number; s: number; u: number }[] =>
-                forcePts.map((p) => ({ id: p.id, s: p.s, u: uOf(p.startS + p.s) }));
+                forcePts.map((p) => ({ id: p.id, s: p.s, u: p.u }));
         }
     }
     return () => {
@@ -2605,7 +2601,7 @@ onMount(() => {
             if (k) {
                 delete k.gRange;
                 delete k.xView;
-                delete k.basis;
+                delete k.domain;
                 delete k.forceU;
             }
         }
@@ -2627,7 +2623,7 @@ onMount(() => {
          keyboard twin the rail holds. it sits inside the dock's DOM, so it counts as the timeline
          surface for `editor.hover` (the aside's enter/leave already fired). right-click summons
          the magnet's own increments popover (below) — the setting lives on the control it
-         governs. The timeline basis (Meters/Seconds) lives on the RULER's own context menu, not
+         governs. The track domain (Meters/Seconds) is picked on the RULER's own context menu, not
          here (the Premiere/REAPER/Cubase reference: time-display format is the ruler's, not a
          standing rail toggle). -->
     <div class="tool-rail" aria-label="Timeline tools">
@@ -2731,8 +2727,8 @@ onMount(() => {
             {#if eid !== null && sTotal > 0}
                 <g class="clips" clip-path="url(#laneclip)">
                     {#each clips as c (c.id)}
-                        {@const x0 = markerX(c.s0)}
-                        {@const x1 = markerX(c.s1)}
+                        {@const x0 = uPx(c.u0)}
+                        {@const x1 = uPx(c.u1)}
                         {@const cw = x1 - x0}
                         {#if x1 >= LEFT_GUT && x0 <= w}
                             {@const isF = c.kind === SectionKind.Force}
@@ -2960,7 +2956,7 @@ onMount(() => {
                     scrubFreeze?.x ??
                     clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
                 {@const ay = scrubFreeze?.y ?? clamp(yOf(selPoint.g), TOP, h - BOT_PAD)}
-                {@const dText = fmt(uOf(selPoint.startS + selPoint.s), 1)}
+                {@const dText = fmt(selPoint.u, 1)}
                 {@const gText = fmt(selPoint.g, 2)}
                 <div
                     class="ptip"
@@ -2976,13 +2972,13 @@ onMount(() => {
                         >
                         <input
                             type="number"
-                            step={timeBasis ? 0.1 : 1}
-                            min={uOf(selPoint.startS)}
+                            step={timeDomain ? 0.1 : 1}
+                            min={selPoint.startU}
                             value={dText}
                             onchange={onFieldPos}
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, dText)}
-                            aria-label={timeBasis ? "Point time (s)" : "Point distance (m)"}
+                            aria-label={timeDomain ? "Point time (s)" : "Point distance (m)"}
                         />
                         <span class="unit">{posUnit}</span>
                     </div>
@@ -3121,10 +3117,10 @@ onMount(() => {
     </div>
 {/if}
 
-<!-- the ruler context menu (Meters / Seconds — the timeline basis), summoned by right-clicking
+<!-- the ruler context menu (Meters / Seconds — the track domain), summoned by right-clicking
      the ruler scrub zone: the same shared menu language, at the cursor. -->
 {#if rmenu}
-    <div class="rmenu menu" use:fitMenu={{ x: rmenu.x, y: rmenu.y }} role="menu" aria-label="Timeline basis">
+    <div class="rmenu menu" use:fitMenu={{ x: rmenu.x, y: rmenu.y }} role="menu" aria-label="Track domain">
         <Menu items={rulerMenuItems} onclose={closeRulerMenu} />
     </div>
 {/if}
@@ -3214,7 +3210,7 @@ onMount(() => {
     /* the tool rail: a thin icon-only strip on the dock's left edge (the Premiere vertical
        tool-strip precedent). same opaque surface as the dock (its background carries through);
        a right border in the dock's own token demarcates it from the content (one language).
-       a column, so the basis toggle stacks under the magnet. */
+       a column, so a second rail tool would stack under the magnet. */
     .tool-rail {
         flex: none;
         display: flex;

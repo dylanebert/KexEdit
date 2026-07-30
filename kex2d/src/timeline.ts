@@ -3,18 +3,14 @@
  *  the pan/zoom clamp.
  *
  *  The chart's x-axis is a coordinate `u`, one of two global axes: distance `d` (meters) or
- *  march time `t` (seconds). `dToU`/`uToD` are the ONE seam between them — identity on
- *  distance, the live bake's arc↔time table on time — and `deltaU`/`grabD` are the
- *  delta-from-grab form every gesture on a projected subject resolves through, so a
- *  zero-delta gesture writes bit-exact zero. `T_GRID` and `marginFloor` are the two
- *  axis-picked constants (snap quantum, lead-out floor) and `ticks` picks the unit suffix;
- *  everything else below (`View`, `sToPx`/`pxToS`, `zoomAt`, `snap`) reads `u` with no
- *  further branching.
- *
- *  Which axis is a `section.Domain`, the same type `Track.domain` carries — the force store's
- *  own unit. A store already in the chart's unit needs no projection at all: it reaches the
- *  chart through the lens's affine (`track.toGlobalU`). `Timeline.svelte` still drives this
- *  seam from `editor.basis` and places keyframes through the projected path.
+ *  march time `t` (seconds). Which one is `Track.domain`, the unit the force store itself is
+ *  written in — so the store needs no projection at all: it reaches the chart through the lens's
+ *  affine (`track.toGlobalU`), and a gesture on it resolves in the store's own unit. `dToU`/`uToD`
+ *  are the ONE seam for the other kind of subject, one authored in ARCLENGTH shown on a time axis
+ *  (the recovered force curve, a geo node tick, the cart's park) — identity on distance, the live
+ *  bake's arc↔time table on time. `T_GRID` and `marginFloor` are the two axis-picked constants
+ *  (snap quantum, lead-out floor) and `ticks` picks the unit suffix; everything else below
+ *  (`View`, `sToPx`/`pxToS`, `zoomAt`, `snap`) reads `u` with no further branching.
  *
  *  ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom, _renderTicks,
  *  findGoodStep). */
@@ -55,7 +51,7 @@ export const pxToS = (v: View, px: number): number => (px + v.pan) / v.pxPerM;
  *  node's own landing sample (`Handle.sample`): the partial sum of `bakeOut.ds` (the
  *  whole-track per-edge array) over that stretch. Added to the section's span offset
  *  (`SectionSpan.offset`) it gives the node's global distance `d`, which the caller then
- *  projects to the chart through the basis seam — a node's timeline position is DERIVED from
+ *  projects onto the chart's axis (`dToU`) — a node's timeline position is DERIVED from
  *  geometry, never authored there (dragging it on this axis is the rejected inverse problem,
  *  fit-through-the-bake per gesture), so this is a pure forward sum, no inverse. A degenerate
  *  range (`sample <= startSample`, a zero-length edge in `ds`) sums to 0: the loop just
@@ -73,8 +69,8 @@ export function nodeArc(ds: Float32Array, startSample: number, sample: number): 
  *  tracks. it's a permanent part of the addressable span (`sTotal + marginArc`), always pannable
  *  and always framed — not a min-window fallback. one-sided: the launch is s=0, so there's no
  *  lead-*in* (no negative distance on the ruler). the floor is the one DIMENSIONAL constant on
- *  this axis, so it's the caller's to supply in the active basis (`marginFloor`); everything
- *  else here reads the basis coordinate and needs no unit. */
+ *  this axis, so it's the caller's to supply in the active domain (`marginFloor`); everything
+ *  else here reads the axis coordinate and needs no unit. */
 export const marginArc = (sTotal: number, floor = MARGIN_M): number =>
     Math.max(0.12 * sTotal, floor);
 
@@ -326,10 +322,10 @@ export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX)
 export const S_GRID = 1;
 export const G_GRID = 0.1;
 
-/** `S_GRID`'s time-basis twin — the placement quantum a keyframe drag snaps to on the
+/** `S_GRID`'s time twin — the placement quantum a keyframe drag snaps to on the
  *  chart's u-axis while the track reads in `Domain.Time`, in seconds. Derived, not
  *  tuned: the time a cart at the default entry speed `V0` (10 m/s) takes to cover one
- *  `S_GRID` metre, so both bases offer the same authoring resolution at the default
+ *  `S_GRID` metre, so both domains offer the same authoring resolution at the default
  *  speed. Fixed like its twins — timeline grids are constants, only the manipulator
  *  quanta are per-user (`settings.ts`). */
 export const T_GRID = S_GRID / V0;
@@ -594,9 +590,8 @@ export const arcToTime = (m: Mapping, s: number): number => interpMono(m.arc, m.
  *  `cart.trackMapping` is the only producer and returns null below that floor.
  *
  *  This is the **projected** side of the chart's axis, for anything whose value is an arclength:
- *  a geo node tick, the cart's parked arclength, and today every force keyframe (the chart still
- *  reads the store as metres and projects). A store already in the chart's unit does not need a
- *  table at all — `track.toGlobalU` is the affine that carries it. */
+ *  the recovered force curve, a geo node tick, the cart's parked arclength. The force store is in
+ *  the chart's own unit, so it never comes through here — `track.toGlobalU` is its affine. */
 export function dToU(mapping: Mapping | null, domain: Domain, d: number): number {
     return domain === Domain.Time && mapping ? arcToTime(mapping, d) : d;
 }
@@ -605,37 +600,6 @@ export function dToU(mapping: Mapping | null, domain: Domain, d: number): number
  *  fallback. */
 export function uToD(mapping: Mapping | null, domain: Domain, u: number): number {
     return domain === Domain.Time && mapping ? timeToArc(mapping, u) : u;
-}
-
-/** the delta-from-grab projection (the carried lesson from the reverted per-section-domain
- *  build): a gesture's Δu — screen-derived, resolved off the LIVE mapping at call time, never
- *  a frozen reference — applied to a member whose grab value was global distance `d0`.
- *  Computes `uToD(dToU(d0) + du) − uToD(dToU(d0))`, never `uToD(du)` alone, so a zero-delta
- *  gesture (`du === 0`) subtracts one value from itself: bit-exact zero even mid-drag, across
- *  a re-bake that moves the mapping table under the gesture. */
-export function deltaU(mapping: Mapping | null, domain: Domain, d0: number, du: number): number {
-    const u0 = dToU(mapping, domain, d0);
-    return uToD(mapping, domain, u0 + du) - uToD(mapping, domain, u0);
-}
-
-/** `deltaU`'s gesture form: the global distance `d` a live gesture addresses, from the pair it
- *  captured at pointerdown (`d0`, the grabbed subject's own global distance; `u0`, the cursor's
- *  chart coordinate) and the cursor's current `u`. `Distance` is the bare cumulative-grab
- *  offset every drag on this axis already used (`u + (d0 − u0)`, so the distance path's
- *  arithmetic is unchanged); `Time` routes the screen-derived Δu through `deltaU` against
- *  the LIVE mapping, so `u === u0` returns `d0` bit-exactly — the zero-delta no-op — even across
- *  a re-bake that moves the table mid-drag. What needs it is a **projected** subject; a gesture
- *  addressing a store already in the chart's unit resolves through the lens instead
- *  (`track.toLocalU`). @example grabD(null, Domain.Distance, 12, 10, 11) // → 13 */
-export function grabD(
-    mapping: Mapping | null,
-    domain: Domain,
-    d0: number,
-    u0: number,
-    u: number,
-): number {
-    if (domain === Domain.Time && mapping) return d0 + deltaU(mapping, domain, d0, u - u0);
-    return u + (d0 - u0);
 }
 
 /** the lead-out floor (`marginArc`'s one dimensional constant) on the active chart axis:
