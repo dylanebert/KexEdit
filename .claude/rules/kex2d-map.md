@@ -281,6 +281,22 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   split gives both halves the step** (the partition keeps each half's density; it doesn't re-solve),
   and **a join takes the upstream's** — the joined section spans neither solve any more, so the
   neighbor's step has no claim on it. Pinned in `tests/ops.test.ts`.
+  **The provenance sidecar** (an untouched conversion round trip is the identity — restore, never
+  re-fit): a module-level `Map<sectionId, {payload, token, entry}>`, deliberately NOT in
+  `bakeHash`/`authoredHash`, snapshots, or serialization — a droppable cache of previously authored
+  state (dropping it degrades to today's always-fit). `stampProvenance` (called by both
+  `history.landSolve` landings; payload = the landing's own pre-solve `snapshotSection`) /
+  `readProvenance` / `consultProvenance` — the ONE certification core both invoked converts call: a
+  fresh `sectionToken` must equal the stamp's, and the live `sectionInfo.entry` must match
+  **bit-exact** on all four fields (`entryExact`, plain `!==`, NaN fails closed). `sectionToken` =
+  `sectionContentHash` (kind + own ds + rows, NOT `order` — factored out of `bakeHash`, which folds
+  `order` back in itself) + `Track.domain` (a ruler pick converts a force store without touching
+  rows — the one silent-corruption path). Global `Track.ds` is deliberately excluded: a first
+  section's entry is ds-invariant, so it restores across a global ds change — benign, the restore
+  returns authored-exact rows; don't fold ds in (it only converts benign restores into fits).
+  Destroy paths (`deleteSection`/`joinNext`) evict; ids never recycle, so a stale entry can't
+  alias; a future document-load path must wipe the map (nothing else clears it). A restore never
+  re-stamps. `convertSection` (the destructive flip) neither stamps nor consults.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `loopTime`, and **`trackMapping`**
@@ -321,7 +337,11 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   one shared `landSolve` (the same pair, the direction supplying its own write): `solveForce`
   (geo→force, `applyConvert`) and `solveGeo` (force→geo, `applyConvertGeo` — it also takes the
   section's entry frame, the frame the fit's world-space nodes localize against). Named
-  direction-explicitly: `solveSection` was ambiguous once two directions existed.
+  direction-explicitly: `solveSection` was ambiguous once two directions existed. Both landings
+  stamp the provenance sidecar (`landSolve`'s `stamp` flag, the pre-solve `before` snapshot as
+  payload); `restoreProvenance` is `landSolve`'s twin without a solve — lands a stamped payload
+  verbatim (current `order` kept, no re-stamp) as one undoable entry, the `"restored"` outcome's
+  write path for both directions' `tryRestore`.
   Structural: `appendSection`/`splitSection`/`joinSection`/`removeSection` — each a whole-track
   `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). `history` singleton;
   `createHistory` for tests.
@@ -361,9 +381,13 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `StaleConvert`, its own type so a UI tells it from a cancel). The caller is modal; the guards are
   the backstop, not a license to author underneath a running solve. Nothing of `ConvertResult`
   persists past points / length / realized `ds` — outcome, floor, deviation, probes are transient
-  readout. Device-free tests in `tests/geoforce.test.ts` (apply+undo byte-identity, downstream
-  continuity at the 1e-3 exit bound, and cancel / diverged / stale / re-entrant all leaving the
-  track byte-identical).
+  readout. `tryRestore` runs the provenance short-circuit inline before the façade ever spawns
+  (`track.consultProvenance` → `history.restoreProvenance`, a `"restored"` outcome on
+  `ConvertGeoResult`); a verbatim restore is already in the track domain's unit, so it never
+  crosses `domain.convertSolve` — safe by construction, the token folds `Track.domain`.
+  Device-free tests in `tests/geoforce.test.ts` (apply+undo byte-identity, downstream
+  continuity at the 1e-3 exit bound, cancel / diverged / stale / re-entrant all leaving the
+  track byte-identical, and the reverse-direction provenance suite).
 - `geofit.ts` — the **force→geo fit kernel**, the observation-space twin of `refine.ts`: a dense
   force-section bake (`x`/`y`/`fN`/`ds`) + the entry speed + a dual budget → a sparse `Auto` node
   chain `{x, y, theta}`. Pure and framework-free (no ECS, no editor, no shallot) like `spline.ts`
@@ -406,10 +430,17 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   persists past the nodes. A `budget` outcome denser than `MAX_LANDED_NODES` = 212 resolves as the
   refusing `dense` outcome (transient readout, document untouched) — the landing-side runaway
   refusal; derivation on the constant (authoring scale via `attribution.lab.ts`'s floor sweep,
-  never wall time). Device-free tests in `tests/forcegeo.test.ts` — apply+undo
+  never wall time). `tryRestore` runs the provenance short-circuit inline before the worker spawns
+  (`track.consultProvenance` → `history.restoreProvenance`, a `"restored"` outcome on
+  `ConvertForceResult`) — the only path that brings explicit tangents back, since the fit emits
+  Auto-only by locked dialect. Device-free tests in `tests/forcegeo.test.ts` — apply+undo
   byte-identity, downstream continuity, the guard paths, plus the **document-layer fidelity**
   oracle (the landed section's baked `fN` vs the pre-convert bake, arclength-aligned) and the
-  round trip back to the originating geo scenario's own shape.
+  round trip back to the originating geo scenario's own shape. The untouched-trip identity is
+  swept universally at the document layer: `tests/roundtrip.oracle.ts` (full tier — 10-scenario
+  corpus + hill seed, both directions, every trip must land `"restored"`) over
+  `tests/helpers/roundtrip-doc.ts`, with the fast-tier hill sentinel `tests/roundtrip.test.ts`;
+  `tests/roundtrip.lab.ts` stays the kernel-seam yardstick and never sees provenance.
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
   teardown. `pickNode` (order-0 anchors are pickable, not draggable) then `pickSection` (nearest
   span); a node body click **selects only** — movement enters through `startManip` (the DOM knob
@@ -584,6 +615,23 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   canvas-drawn incline ray is up, plus the two readout labels) — all driven by the capture harness;
   never ships. Screen-space affordances are driven
   pointer-true through the real DOM (`.rbtn`, `.manip-length`, `.manip-angle`), not through hooks.
+
+## Labs
+
+Run explicitly, never part of `bun test` (index in `kex2d/AGENTS.md` Verify). The annotated ones:
+
+- `tests/attribution.lab.ts` — the flat conversion tier's authoring-floor sweep; its own header
+  carries the readings.
+- `tests/forcegeo.lab.ts` — the force→geo fit's own sweep + timing.
+- `tests/perf.lab.ts` — the conversion perf baseline: probe counts + wall time over the corpus
+  plus `tests/helpers/stress.ts`'s scenarios — deliberately not corpus members, so the 80-key
+  lock is untouched.
+- `tests/pool.lab.ts` — the stress scenarios through the worker pool: sync vs pooled wall time
+  and cancel latency, each row checked against the golden.
+- `tests/roundtrip.lab.ts` — the geo→force→geo KERNEL-seam yardstick: node inflation, force
+  flip-density, max force divergence per corpus scenario; its baseline reproduces the 2026-07-29
+  check-in's hand readings, so the metric is what any dialect change is judged against. It never
+  sees provenance (the document-layer identity sweep is `tests/roundtrip.oracle.ts`, above).
 
 ## References
 
