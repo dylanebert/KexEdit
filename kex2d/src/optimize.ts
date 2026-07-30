@@ -64,9 +64,21 @@ export const TOL_POS = 1e-4;
 export const TOL_ANGLE = 1e-4;
 
 const MAX_ITERS = 30;
-/** central-difference step for the exit Jacobian (g units) — small relative to any authored
- *  force value, large enough that f32 bake noise in `evalForce` doesn't swamp the difference. */
-const JAC_H = 1e-4;
+/** central-difference step for the exit Jacobian, in g units — the cube root of the forward
+ *  map's own fractional accuracy, times the argument's curvature scale (Numerical Recipes §5.7).
+ *  `evalForce` is f32 (`section.ts`'s display-path law), so its fractional accuracy is the f32
+ *  unit roundoff `2^-24`; a force ordinate is an O(1 g) quantity and the exit varies smoothly
+ *  over that scale, so the curvature scale is 1 g. Hence `h = cbrt(2^-24) · 1 g = 2^-8`.
+ *
+ *  A step below this is NOT "more accurate": the central difference's error is
+ *  `h²·|f'''|/6 + ε/h`, so shrinking `h` amplifies the f32 quantization of the exit by `1/2h`
+ *  until it swamps the derivative. Measured on the gentle-hill corpus scenario (exit x ≈ 39.8 m,
+ *  where 2^-24·x ≈ 2.4e-6 — unit-roundoff scaling, not the bit-level ulp) against a
+ *  Richardson-extrapolated reference: the ∂x/∂g row is ~10% off at `h = 1e-4` and ~50% off at
+ *  `h = 1e-5`, against ~1e-3 here. That noise is what stalls the SQP
+ *  loop — it converges to ~1e-3 and then random-walks above `TOL_POS` until `MAX_ITERS`, which
+ *  a modest single-key edit reaches (a ±0.2 g tweak refused on 6 of 30 corpus cases). */
+const JAC_H = 2 ** -8;
 
 export type OptimizeOutcome = "solved" | "unreachable" | "diverged";
 

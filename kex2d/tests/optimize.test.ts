@@ -2,7 +2,14 @@ import { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
 import { beginOptimize, editor, endOptimize, toggleLockedSet } from "../src/editor";
 import { createHistory, undo } from "../src/history";
-import { computeExit, MIN_FREE, type OptimizeOpts, solveOptimize } from "../src/optimize";
+import {
+    computeExit,
+    MIN_FREE,
+    type OptimizeOpts,
+    solveOptimize,
+    TOL_ANGLE,
+    TOL_POS,
+} from "../src/optimize";
 import { enterOptimize, runOptimizeSection, StaleOptimize } from "../src/optimizeMode";
 import { Easing, type ForcePoint } from "../src/profile";
 import type { Entry } from "../src/section";
@@ -186,6 +193,44 @@ describe("solveOptimize — actually restores the stamped exit", () => {
         // the solve redistributes the CORRECTION across the other free keys, not this one.
         expect(r.points[0].g).toBe(edited[0].g);
     });
+
+    // RED FIRST (the live-dogfood failure: "the solve did not converge, nothing changed" on
+    // basic edits). With `JAC_H = 1e-4` the central difference amplified the f32 exit's
+    // quantization by 1/2h — the ∂x/∂g row measured 10% off a Richardson reference at that step
+    // — so the SQP loop converged to ~1e-3 and then random-walked above `TOL_POS` until
+    // `MAX_ITERS`. This sweep failed on 6 of its 30 cases (`"diverged"` at residual 2e-4…2e-3),
+    // and the ones that DID pass took 6–28 iterations rather than the 2–4 a sound Jacobian
+    // needs. Deriving `JAC_H` from the forward map's own f32 accuracy is what fixes it.
+    //
+    // The assert is at the layer the author sees: re-integrate the SOLVED points through the
+    // production integrator (`computeExit`, the same call the stamp came from) and demand the
+    // replayed exit meet the kernel's own declared floor — not merely the residual the solve
+    // reports about itself.
+    for (const { name, points, length } of corpus()) {
+        test(`${name}: a modest single-key tweak converges and restores the stamp, every key`, () => {
+            const stamp = computeExit(ENTRY, points, length, DS);
+            for (let k = 0; k < points.length; k++) {
+                for (const sign of [1, -1]) {
+                    const edited = points.map((p) => ({ ...p }));
+                    edited[k].g += sign * 0.2; // a small ordinate tweak — the dogfood gesture
+                    const r = solveOptimize({
+                        entry: ENTRY,
+                        points: edited,
+                        locked: new Set(),
+                        length,
+                        ds: DS,
+                        stamp,
+                    });
+                    const where = `key ${k} ${sign > 0 ? "+" : "−"}0.2 g`;
+                    expect(`${where}: ${r.outcome}`).toBe(`${where}: solved`);
+                    const back = computeExit(ENTRY, r.points, length, DS);
+                    expect(Math.abs(back.x - stamp.x)).toBeLessThan(TOL_POS);
+                    expect(Math.abs(back.y - stamp.y)).toBeLessThan(TOL_POS);
+                    expect(Math.abs(back.theta - stamp.theta)).toBeLessThan(TOL_ANGLE);
+                }
+            }
+        });
+    }
 });
 
 // ── the document seam (optimizeMode.ts / editor.ts) ───────────────────────────────
