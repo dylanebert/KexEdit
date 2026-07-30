@@ -134,8 +134,22 @@ describe("polish flat-family easing (stage-3 spike)", () => {
             { s: 20, g: 2 },
         ];
         const dof = readDof(points, "flat");
-        expect(applyDof(points, "flat", dof)).toEqual(points);
-        expect(applyDof(points, "flat", dof, undefined)).toEqual(points);
+        const withArg = applyDof(points, "flat", dof);
+        const withUndefined = applyDof(points, "flat", dof, undefined);
+        expect(withArg).toEqual(points);
+        expect(withUndefined).toEqual(points);
+        // `toEqual` treats a stray `ease: undefined` key as equal to a missing key — exactly
+        // the regression this test exists to catch — so key presence is asserted directly.
+        for (const pt of [...withArg, ...withUndefined]) expect("ease" in pt).toBe(false);
+
+        const edges = 10;
+        const ds = 0.5;
+        const withArgMatrix = forceMatrix(points, "flat", edges, ds);
+        const withUndefinedMatrix = forceMatrix(points, "flat", edges, ds, undefined);
+        expect(withArgMatrix).toEqual(withUndefinedMatrix);
+        for (let p = 0; p < withArgMatrix.length; p++)
+            for (let j = 0; j < edges; j++)
+                expect(withArgMatrix[p][j]).toBe(withUndefinedMatrix[p][j]);
     });
 
     test("a set easing stamps the tag on every emitted flat point and only there", () => {
