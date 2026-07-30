@@ -710,12 +710,9 @@ describe("coordinate lens (s ↔ d)", () => {
     });
 });
 
-// the lens's NATIVE side (kex2d-time-domain stage 4): `Track.domain` says what unit the force
-// store carries, and `entryU`/`lenU` + `toGlobalU`/`toLocalU` address it. `Distance` makes the
-// native axis the arclength axis (the same numbers, so every existing path is byte-identical);
-// `Time` makes it global march time, read straight off `bakeOut.t` — the force store's own clock,
-// so the map is an exact affine with no table in the path. What still projects through a table is
-// the other direction: a distance-authored geo quantity drawn on a time chart (`timeline.dToU`).
+// what `BakeSystem` publishes when a chain overruns the flat SoA: the budget, never the would-be
+// count — every consumer of the published count (the arc↔time table, `forceCurve`, the lens) reads
+// indices that were never written otherwise.
 describe("the sample budget", () => {
     test("a section past the budget leaves the published SoA finite, its own range outside it", () => {
         // `chain` keeps counting edges past the buffer (its overflow writes are dropped), so
@@ -752,6 +749,12 @@ describe("the sample budget", () => {
     });
 });
 
+// the lens's NATIVE side (kex2d-time-domain stage 4): `Track.domain` says what unit the force
+// store carries, and `entryU`/`lenU` + `toGlobalU`/`toLocalU` address it. `Distance` makes the
+// native axis the arclength axis (the same numbers, so every existing path is byte-identical);
+// `Time` makes it global march time, read straight off `bakeOut.t` — the force store's own clock,
+// so the map is an exact affine with no table in the path. What still projects through a table is
+// the other direction: a distance-authored geo quantity drawn on a time chart (`timeline.dToU`).
 describe("coordinate lens — the native axis", () => {
     /** geo (flat) then a force section, on a track in `domain`. In `Time` the force section's
      *  extent is a DURATION (its sticky default, `DEFAULT_FORCE_LEN / V0`) and its interior

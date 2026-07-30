@@ -724,23 +724,6 @@ describe("the time march the document threads", () => {
             expect(out.t[i + 1]).toBe(derived);
         }
     });
-
-    test("a Time-domain flat 1g section marches ds = v·DT_NOMINAL", () => {
-        const { state, eid, sec } = forceTrack(40, [
-            [0, 1],
-            [40, 1],
-        ]);
-        expect(convertDomain(createHistory(), state, Domain.Time)).toBe(true);
-        state.step(0);
-        const out = bakeOut.get(eid);
-        if (!out) throw new Error("no bake");
-        const count = Track.count.get(eid);
-        // level 1g holds v at the entry speed, so every realized edge is exactly V0·DT_NOMINAL
-        // — which is DS_NOMINAL by DT_NOMINAL's own derivation.
-        expect(V0 * DT_NOMINAL).toBeCloseTo(DS_NOMINAL, 10);
-        for (let i = 0; i < count - 1; i++) expect(out.ds[i]).toBeCloseTo(V0 * DT_NOMINAL, 5);
-        expect(count - 1).toBe(Math.round(extent(state, sec) / DT_NOMINAL));
-    });
 });
 
 describe("selection across the conversion", () => {

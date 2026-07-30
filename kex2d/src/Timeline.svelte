@@ -2956,7 +2956,7 @@ onMount(() => {
                     scrubFreeze?.x ??
                     clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
                 {@const ay = scrubFreeze?.y ?? clamp(yOf(selPoint.g), TOP, h - BOT_PAD)}
-                {@const dText = fmt(selPoint.u, 1)}
+                {@const posText = fmt(selPoint.u, 1)}
                 {@const gText = fmt(selPoint.g, 2)}
                 <div
                     class="ptip"
@@ -2974,10 +2974,10 @@ onMount(() => {
                             type="number"
                             step={timeDomain ? 0.1 : 1}
                             min={selPoint.startU}
-                            value={dText}
+                            value={posText}
                             onchange={onFieldPos}
                             onfocus={(e) => e.currentTarget.select()}
-                            onkeydown={(e) => fieldKeydown(e, dText)}
+                            onkeydown={(e) => fieldKeydown(e, posText)}
                             aria-label={timeDomain ? "Point time (s)" : "Point distance (m)"}
                         />
                         <span class="unit">{posUnit}</span>

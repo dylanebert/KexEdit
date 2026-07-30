@@ -1779,8 +1779,9 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
  *  reordered, restepped, re-domained, or the v0 retimed), skips otherwise. the step is
  *  written only when set, and the track `domain` only when it isn't the default `Distance`,
  *  so every existing authored track's hash stays byte-identical. */
-function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number, domain: Domain): string {
-    let h = `ds${ds}v0${v0}`;
+function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
+    const domain = Track.domain.get(trackEid) as Domain;
+    let h = `ds${Track.ds.get(trackEid)}v0${Track.v0.get(trackEid)}`;
     if (domain !== Domain.Distance) h += `^${domain}`;
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sec.kind}`;
@@ -1811,16 +1812,8 @@ function bakeHash(ecs: State, secs: SectionRow[], ds: number, v0: number, domain
  *  state instead of read off the last bake — so it is the honest answer between ticks too. an
  *  invoked tool holds it across its solve to notice the document moved underneath. */
 export function authoredHash(ecs: State): string {
-    for (const t of ecs.query([Track])) {
-        return bakeHash(
-            ecs,
-            sections(ecs),
-            Track.ds.get(t),
-            Track.v0.get(t),
-            Track.domain.get(t) as Domain,
-        );
-    }
-    return "";
+    const t = trackEntity(ecs);
+    return t === null ? "" : bakeHash(ecs, t, sections(ecs));
 }
 
 /** whether the current bake IS the current authored state — the liveness anything reading
@@ -1828,11 +1821,10 @@ export function authoredHash(ecs: State): string {
  *  sentinel), and one the two-node floor made `bake` early-return from all fail here, and each
  *  leaves `sectionInfo` describing a shape that is no longer on screen. */
 export function bakeLive(ecs: State): boolean {
-    for (const t of ecs.query([Track])) {
-        const out = bakeOut.get(t);
-        return out !== undefined && out.hash === authoredHash(ecs);
-    }
-    return false;
+    const t = trackEntity(ecs);
+    if (t === null) return false;
+    const out = bakeOut.get(t);
+    return out !== undefined && out.hash === authoredHash(ecs);
 }
 
 type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
@@ -1948,7 +1940,7 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     s.v.set(c.v.subarray(0, count));
     out.fN.set(c.fN.subarray(0, count - 1));
     out.ds.set(c.ds.subarray(0, count - 1));
-    out.hash = bakeHash(ecs, secs, ds, v0, domain);
+    out.hash = bakeHash(ecs, trackEid, secs);
     Track.count.set(trackEid, count);
     computeTime(s, out, count, marched);
 }
@@ -1961,14 +1953,7 @@ export const BakeSystem: System = {
             if (!s || !out) continue;
             const secs = sections(ecs);
             if (secs.length === 0) continue;
-            const hash = bakeHash(
-                ecs,
-                secs,
-                Track.ds.get(trackEid),
-                Track.v0.get(trackEid),
-                Track.domain.get(trackEid) as Domain,
-            );
-            if (hash === out.hash) continue; // nothing changed — reuse the bake
+            if (bakeHash(ecs, trackEid, secs) === out.hash) continue; // nothing changed — reuse
             bake(ecs, trackEid, s, out, secs);
         }
     },

@@ -200,10 +200,14 @@ export function evalGeo(
  * convention, time's twin); each edge advances `ds_i = v_i·Δt` along
  * arclength — a *variable* per-edge chord, read off the live integrator `v`
  * before it is overwritten by the recovery below (`forces` already accepts a
- * non-uniform `dsArr`, the geo path's own shape). A stalled `v_i` (at
- * `V_FLOOR`) gives near-zero `ds_i` — samples pile spatially, the section's
- * realized arclength collapses; accepted, no new clamp — the existing
- * infeasibility diagnostics carry the signal.
+ * non-uniform `dsArr`, the geo path's own shape). A stalled `v_i` is EXACTLY 0
+ * — the energy form is `sqrt(max(v², 0))`, and `V_FLOOR` floors only the dθ
+ * denominator inside `step` — so `ds_i` is exactly 0 and the frozen cart is a
+ * fixed point: samples pile on one place and the section's realized arclength
+ * collapses. Accepted, no new clamp: the plateau is exact by design, which is
+ * what lets `domain.ts` resolve it at one agreed slope in both directions.
+ * Note a zero-length edge has no chord and so no recovered `F_n` — the
+ * recovery below divides by `dsArr[i]`.
  */
 export function evalForce(
     entry: Entry,
