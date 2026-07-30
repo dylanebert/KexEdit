@@ -685,9 +685,10 @@ export function convertSection(h: History, ecs: State, section: number): void {
  *  (`applyConvert`/`applyConvertGeo`), already computed pure and off-thread by the time either
  *  caller reaches here — this is the single moment either touches the document, which is what
  *  makes the command atomic without any rollback path. `stamp` (kex2d-provenance) reuses `before`
- *  — the pre-solve payload already captured here — as the provenance sidecar's payload; today only
- *  `solveForce` passes it (the geo→force landing), so a same-session reverse convert has something
- *  to consult once stage 2 lands. */
+ *  — the pre-solve payload already captured here — as the provenance sidecar's payload; both
+ *  directions pass it (`solveForce`'s geo→force landing, `solveGeo`'s force→geo landing), so
+ *  either reverse convert has something to consult (`forcegeo.convertForce`'s
+ *  `tryRestore`/`geoforce.convertGeo`'s own twin). */
 function landSolve(
     h: History,
     ecs: State,
@@ -711,7 +712,9 @@ export function solveForce(h: History, ecs: State, section: number, solved: Solv
 
 /** land an invoked force→geo fit on a section (`forcegeo.convertForce` drives it) as one
  *  undoable entry — the observation-space twin of `solveForce`. `entry` is the section's own
- *  entry anchor at invoke time, the frame `applyConvertGeo` localizes the fit's nodes against. */
+ *  entry anchor at invoke time, the frame `applyConvertGeo` localizes the fit's nodes against.
+ *  Stamps (kex2d-provenance stage 3): `before` is the pre-fit FORCE section, the payload a
+ *  same-session geo→force convert restores verbatim once its own token + entry match. */
 export function solveGeo(
     h: History,
     ecs: State,
@@ -719,7 +722,7 @@ export function solveGeo(
     solved: SolvedGeo,
     entry: TrackEntry,
 ): void {
-    landSolve(h, ecs, section, () => applyConvertGeo(ecs, section, solved, entry), false);
+    landSolve(h, ecs, section, () => applyConvertGeo(ecs, section, solved, entry), true);
 }
 
 /** land a section's stamped provenance verbatim as one undoable entry — the reverse convert's

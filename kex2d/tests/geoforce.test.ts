@@ -1,16 +1,21 @@
 import { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
 import { liveWorkers } from "../src/convert";
+import { convertForce } from "../src/forcegeo";
 import { convertGeo, StaleConvert } from "../src/geoforce";
 import { createHistory, type History, undo } from "../src/history";
+import { Easing } from "../src/profile";
 import { Domain } from "../src/section";
+import { TangentMode } from "../src/spline";
 import {
     addNode,
     appendSection,
     BakeSystem,
     bakeOut,
+    createForcePoint,
     createSection,
     createTrack,
+    forceTangent,
     Handle,
     handleAt,
     Section,
@@ -20,6 +25,8 @@ import {
     sectionInfo,
     SectionKind,
     type SectionSnapshot,
+    setForceEase,
+    setForceTangent,
     setTrackDomain,
     setTrackV0,
     snapshotAll,
@@ -43,6 +50,24 @@ function humpTrack(): { state: State; eid: number; sec: number } {
     addNode(state, sec, 0, 0);
     addNode(state, sec, 12, 4);
     addNode(state, sec, 24, 0);
+    state.step(0);
+    return { state, eid, sec };
+}
+
+/** a track carrying one hand-authored force hill — an easing tag AND an explicit handle, so a
+ *  restore that dropped either would be caught — baked. kex2d-provenance stage 3's own oracle
+ *  for the reverse trip (force→geo→force), the twin of `forcegeo.test.ts`'s `hillTrack`. */
+function hillForceTrack(): { state: State; eid: number; sec: number } {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    setTrackV0(eid, 18);
+    const sec = createSection(state, 0, SectionKind.Force, 40);
+    const a = createForcePoint(state, sec, 0, 1);
+    const b = createForcePoint(state, sec, 20, 1.4);
+    createForcePoint(state, sec, 40, 1);
+    setForceEase(state, b, Easing.Linear);
+    setForceTangent(state, a, { mode: TangentMode.Free, out: { ds: 5, dg: 0.1 } });
     state.step(0);
     return { state, eid, sec };
 }
@@ -242,4 +267,140 @@ describe("convertGeo", () => {
         await expect(convertGeo(createHistory(), state, force)).rejects.toThrow(/not geo/);
         await expect(convertGeo(createHistory(), state, sec + 999)).rejects.toThrow(/no section/);
     });
+});
+
+// ── provenance short-circuit, reverse direction (kex2d-provenance stage 3) ────────────────────
+// `history.solveGeo` stamps a section's pre-fit FORCE payload (the force→geo landing,
+// `forcegeo.convertForce`); `convertGeo` consults it here BEFORE spawning the worker pool. An
+// untouched force→geo→force trip lands the stamp verbatim instead of re-converting — exactness,
+// not a budget, so any edit the token or entry covers falls straight through to the solve
+// unchanged. Mirrors `forcegeo.test.ts`'s "provenance short-circuit" describe (stage 2), the
+// other direction.
+
+describe("provenance short-circuit (reverse)", () => {
+    test("an untouched trip restores the force section content-hash-identical, easing + explicit handle + extent + step included", async () => {
+        const { state, eid, sec } = hillForceTrack();
+        const h = createHistory();
+        const before = docState(state, eid);
+
+        const geoResult = await convertForce(h, state, sec);
+        expect(geoResult.outcome).not.toBe("diverged");
+        state.step(0);
+
+        const forceResult = await convertGeo(h, state, sec);
+        expect(forceResult.outcome).toBe("restored");
+        state.step(0);
+
+        expect(docState(state, eid)).toEqual(before);
+    }, 60_000);
+
+    test("a geo-node edit after the fit falls through to the solve", async () => {
+        const { state, sec } = hillForceTrack();
+        const h = createHistory();
+
+        await convertForce(h, state, sec);
+        state.step(0);
+        const tip = handleAt(state, sec, 1);
+        if (tip === null) throw new Error("no node");
+        Handle.pos.set(tip, Handle.pos.x.get(tip) + 1, Handle.pos.y.get(tip)); // an edit to the landed section
+
+        state.step(0);
+        const result = await convertGeo(h, state, sec);
+        expect(result.outcome).not.toBe("restored");
+    }, 60_000);
+
+    test("an upstream edit that moves the section's entry falls through to the solve", async () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackV0(eid, 18);
+        const upstream = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, upstream, 0, 0);
+        addNode(state, upstream, 15, 0);
+        const sec = createSection(state, 1, SectionKind.Force, 40);
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, 20, 1.4);
+        createForcePoint(state, sec, 40, 1);
+        state.step(0);
+        const h = createHistory();
+
+        await convertForce(h, state, sec);
+        state.step(0);
+
+        // move the upstream tip — the force section's entry (its stamp anchor) shifts under it.
+        const handles = sectionHandles(state, upstream);
+        Handle.pos.y.set(handles[handles.length - 1], 6);
+        state.step(0);
+
+        const result = await convertGeo(h, state, sec);
+        expect(result.outcome).not.toBe("restored");
+    }, 60_000);
+
+    test("a Track.domain flip after the fit falls through to the solve", async () => {
+        const { state, sec } = hillForceTrack();
+        const h = createHistory();
+
+        await convertForce(h, state, sec);
+        state.step(0);
+
+        setTrackDomain(state, Domain.Time);
+        state.step(0);
+        // the domain flip alone changes what a geo section's own content hashes to (it folds
+        // `Track.domain` in), so the token no longer matches the stamp taken in `Distance`.
+        const result = await convertGeo(h, state, sec);
+        expect(result.outcome).not.toBe("restored");
+    }, 60_000);
+
+    test("undo after a restore returns the geo section byte-identically", async () => {
+        const { state, eid, sec } = hillForceTrack();
+        const h = createHistory();
+
+        await convertForce(h, state, sec);
+        state.step(0);
+        const geoState = docState(state, eid); // the landed geo section, pre-restore
+
+        const result = await convertGeo(h, state, sec);
+        expect(result.outcome).toBe("restored");
+        state.step(0);
+
+        undo(h, state);
+        state.step(0);
+        expect(docState(state, eid)).toEqual(geoState);
+    }, 60_000);
+
+    test("re-entrancy and stale-convert guards are unchanged by the short-circuit", async () => {
+        // mirrors `forcegeo.test.ts`'s equivalent pin: the reentrancy guard fires before the
+        // short-circuit is ever consulted, whether or not the section carries a valid stamp.
+        const { state, sec } = hillForceTrack();
+        const h = createHistory();
+
+        await convertForce(h, state, sec);
+        state.step(0);
+        const tip = handleAt(state, sec, 1);
+        if (tip === null) throw new Error("no node");
+        Handle.pos.set(tip, Handle.pos.x.get(tip) + 1, Handle.pos.y.get(tip)); // invalidate the stamp
+        state.step(0);
+
+        const first = convertGeo(h, state, sec);
+        await expect(convertGeo(h, state, sec)).rejects.toThrow(/already converting/);
+        const result = await first;
+        expect(result.outcome).not.toBe("restored");
+        state.step(0);
+    }, 60_000);
+
+    test("the restored force keyframe's explicit handle survives — the solve path emits derived-only", async () => {
+        const { state, sec } = hillForceTrack();
+        const pts = sectionForces(state, sec);
+        const authoredTangent = forceTangent(state, pts[0].id);
+        const h = createHistory();
+
+        await convertForce(h, state, sec);
+        state.step(0);
+        const result = await convertGeo(h, state, sec);
+        expect(result.outcome).toBe("restored");
+        state.step(0);
+
+        const restoredPts = sectionForces(state, sec);
+        expect(forceTangent(state, restoredPts[0].id)).toEqual(authoredTangent);
+    }, 60_000);
 });
