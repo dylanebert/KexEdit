@@ -54,6 +54,8 @@ beforeEach(() => {
 import { stitchNode } from "../src/tangents";
 import {
     addNode,
+    authoredHash,
+    BakeSystem,
     createSection,
     createTrack,
     EXTEND_DIST,
@@ -62,11 +64,13 @@ import {
     handleAt,
     handleTangent,
     MIN_FORCE_LEN,
+    readProvenance,
     reheadOnDrag,
     resetTangent,
     SectionKind,
     sectionForces,
     sectionHandles,
+    sectionInfo,
     sections,
     seedTangent,
     setForcePoint,
@@ -74,6 +78,8 @@ import {
     setStickyLen,
     setTangent,
     setTrackV0,
+    snapshotSection,
+    stampProvenance,
     stickyLen,
     Track,
     V0,
@@ -90,6 +96,16 @@ function nodes(): { state: State; eid: number; sec: number } {
     const sec = createSection(state, 0, SectionKind.Geo, 0);
     addNode(state, sec, 0, 0);
     addNode(state, sec, EXTEND_DIST, 0);
+    return { state, eid, sec };
+}
+
+// kex2d-provenance stage 1: a solve landing stamps provenance off `sectionInfo.entry`, which only
+// exists once `BakeSystem` has run — unlike the bare `nodes()` seed above (history mutates the ECS
+// directly and never bakes on its own), a stamp test needs one real bake first.
+function bakedNodes(): { state: State; eid: number; sec: number } {
+    const { state, eid, sec } = nodes();
+    state.addSystem(BakeSystem);
+    state.step(0);
     return { state, eid, sec };
 }
 
@@ -581,6 +597,104 @@ test("a solve landing does NOT update the sticky value", () => {
 
     const force = appendSection(h, state, SectionKind.Force);
     expect(sections(state).find((s) => s.id === force)?.length).toBe(EXTEND_DIST); // not 77
+});
+
+// kex2d-provenance stage 1: `solveForce` stamps provenance off the pre-solve snapshot it already
+// captures — a same-session reverse convert (stage 2/3) will consult it, not landed here.
+test("solveForce stamps provenance: payload is the pre-solve section, token matches the landed state", () => {
+    const { state, sec: geo } = bakedNodes();
+    const h = createHistory();
+    const before = snapshotSection(state, geo);
+
+    solveForce(h, state, geo, {
+        points: [
+            { s: 0, g: 1 },
+            { s: 77, g: 1 },
+        ],
+        length: 77,
+        ds: 0.3,
+    });
+
+    const prov = readProvenance(geo);
+    expect(prov).toBeDefined();
+    expect(prov?.payload).toEqual(before); // the pre-solve geo section, not the landed force one
+    expect(prov?.entry).toEqual(sectionInfo.get(geo)?.entry);
+
+    // token matches the LANDED state: re-baking with no further edit and re-stamping (a second
+    // solve landing would do this) reproduces the same token — the honest re-hash of what's live.
+    state.step(0);
+    const after = snapshotSection(state, geo);
+    stampProvenance(state, geo, after);
+    expect(readProvenance(geo)?.token).toBe(prov?.token);
+});
+
+test("a section edit after a solve landing breaks its stamped token", () => {
+    const { state, sec: geo } = bakedNodes();
+    const h = createHistory();
+    solveForce(h, state, geo, {
+        points: [
+            { s: 0, g: 1 },
+            { s: 77, g: 1 },
+        ],
+        length: 77,
+        ds: 0.3,
+    });
+    const stamped = readProvenance(geo)?.token;
+
+    setSectionLength(state, geo, 40); // an edit to the landed section's own content
+    state.step(0);
+    stampProvenance(state, geo, snapshotSection(state, geo));
+    expect(readProvenance(geo)?.token).not.toBe(stamped);
+});
+
+test("a Track.domain flip after a solve landing breaks its stamped token", () => {
+    const { state, eid, sec: geo } = bakedNodes();
+    const h = createHistory();
+    solveForce(h, state, geo, {
+        points: [
+            { s: 0, g: 1 },
+            { s: 77, g: 1 },
+        ],
+        length: 77,
+        ds: 0.3,
+    });
+    const stamped = readProvenance(geo)?.token;
+
+    Track.domain.set(eid, 1); // Domain.Time — raw write, same as domain.ts's own
+    state.step(0);
+    stampProvenance(state, geo, snapshotSection(state, geo));
+    expect(readProvenance(geo)?.token).not.toBe(stamped);
+});
+
+test("solveForce's stamp never changes authoredHash — no-churn", () => {
+    const { state, sec: geo } = bakedNodes();
+    const h = createHistory();
+    solveForce(h, state, geo, {
+        points: [
+            { s: 0, g: 1 },
+            { s: 77, g: 1 },
+        ],
+        length: 77,
+        ds: 0.3,
+    });
+    const withStamp = authoredHash(state);
+
+    // an identical solve on a fresh, un-stamped track lands the same document — proves the stamp
+    // recorded alongside it contributed nothing to the hash.
+    const fresh = bakedNodes();
+    const h2 = createHistory();
+    solveForce(h2, fresh.state, fresh.sec, {
+        points: [
+            { s: 0, g: 1 },
+            { s: 77, g: 1 },
+        ],
+        length: 77,
+        ds: 0.3,
+    });
+    // section/point ids are per-run allocator artifacts (`nextSectionId`/`nextForceId`), not
+    // authored content — normalize them out before comparing, same as the bake-hash pin above.
+    const norm = (s: string) => s.replace(/\|S\d+:/g, "|S:").replace(/,\d+=/g, ",p=");
+    expect(norm(authoredHash(fresh.state))).toBe(norm(withStamp));
 });
 
 // the sticky-commit gate (kex2d-gesture-residue stage 1): a gesture that lands its live writes

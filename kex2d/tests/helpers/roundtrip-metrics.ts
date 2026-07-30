@@ -53,7 +53,13 @@ export function sampleAt(cum: Float64Array, fN: ArrayLike<number>, s: number): n
 }
 
 /** max |Δf_N| over the original curve's own stations, clipped to the span both curves
- *  cover (a fit's realized length can fall short of the original by sub-quantum slack). */
+ *  cover (a fit's realized length can fall short of the original by sub-quantum slack).
+ *  Deliberately one-sided (the original's stations, never the round-tripped curve's own, and
+ *  never symmetrized with `tests/helpers/stations.ts`'s drift metric): its job is reproducing the
+ *  2026-07-29 hand check-in's numbers exactly, not scoring acceptance — `kex2d-provenance`
+ *  considered and rejected a budget-based restore acceptance built on a metric like this one
+ *  (Goodhart caution, `specs/kex2d-provenance.md`), so there is still no production consumer that
+ *  would need it symmetric or two-sided. */
 export function maxDivergence(orig: SectionResult, round: SectionResult): number {
     const origCum = stations(orig.ds);
     const roundCum = stations(round.ds);

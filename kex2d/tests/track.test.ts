@@ -3,6 +3,7 @@ import { State } from "@dylanebert/shallot";
 import {
     addNode,
     appendSection,
+    authoredHash,
     BakeSystem,
     bakeOut,
     convertSection,
@@ -29,6 +30,7 @@ import {
     reheadOnDrag,
     removeTrailingHandle,
     resetTangent,
+    readProvenance,
     restoreAll,
     restoreSection,
     samples,
@@ -51,6 +53,7 @@ import {
     setTrackV0,
     snapshotAll,
     snapshotSection,
+    stampProvenance,
     stickyLen,
     toGlobal,
     toGlobalU,
@@ -1190,6 +1193,84 @@ describe("tangent model (feel round 2)", () => {
         state.step(0);
         const hash = (bakeOut.get(eid)?.hash ?? "").replace(/\|S\d+:/g, "|S:"); // drop the allocator id
         expect(hash).toBe("ds0.5v010|S:0:0,0:0:0,24:0:0");
+    });
+});
+
+// kex2d-provenance stage 1: the sidecar map + `stampProvenance`/`readProvenance`, and the
+// `bakeHash`-factored content hash they share as the token. Stage 1 stamps nothing on its own
+// (that's `history.solveForce`, `history.test.ts`) — this pins the store's own contract: stamp,
+// read, invalidate on an edit or a domain flip, and never touch `bakeHash`/`authoredHash`.
+describe("provenance sidecar (kex2d-provenance stage 1)", () => {
+    test("a stamp round-trips: readProvenance returns the payload, token, and entry stamped", () => {
+        const { state, sec } = track();
+        state.step(0);
+        const payload = snapshotSection(state, sec);
+        stampProvenance(state, sec, payload);
+        const got = readProvenance(sec);
+        expect(got).toBeDefined();
+        expect(got?.payload).toEqual(payload);
+        expect(got?.token).toBe(readProvenance(sec)?.token); // deterministic re-read
+        expect(got?.entry).toEqual(sectionInfo.get(sec)?.entry);
+    });
+
+    test("editing the section's own rows breaks the stamped token", () => {
+        const { state, sec } = track();
+        state.step(0);
+        stampProvenance(state, sec, snapshotSection(state, sec));
+        const stamped = readProvenance(sec)?.token;
+
+        const tip = handleAt(state, sec, 1);
+        if (tip === null) throw new Error("no tip");
+        Handle.pos.x.set(tip, Handle.pos.x.get(tip) + 1);
+        state.step(0);
+
+        // re-stamping now reads the EDITED content — proves the earlier token no longer matches
+        // what a live re-hash of the section produces (the reverse-invoke's own check, stage 2/3).
+        stampProvenance(state, sec, snapshotSection(state, sec));
+        expect(readProvenance(sec)?.token).not.toBe(stamped);
+    });
+
+    test("a Track.domain flip breaks the stamped token", () => {
+        const { state, sec } = track();
+        state.step(0);
+        stampProvenance(state, sec, snapshotSection(state, sec));
+        const stamped = readProvenance(sec)?.token;
+
+        setTrackDomain(state, Domain.Time);
+        state.step(0);
+        stampProvenance(state, sec, snapshotSection(state, sec));
+        expect(readProvenance(sec)?.token).not.toBe(stamped);
+    });
+
+    test("stamping never touches bakeHash/authoredHash — no-churn", () => {
+        const { state, eid, sec } = track();
+        state.step(0);
+        const before = bakeOut.get(eid)?.hash;
+        const beforeAuthored = authoredHash(state);
+
+        stampProvenance(state, sec, snapshotSection(state, sec));
+
+        expect(bakeOut.get(eid)?.hash).toBe(before);
+        expect(authoredHash(state)).toBe(beforeAuthored);
+        state.step(0); // the gate must still SKIP — stamping alone never forces a re-bake
+        expect(bakeOut.get(eid)?.hash).toBe(before);
+    });
+
+    test("an un-baked section (no sectionInfo entry) leaves stampProvenance a no-op", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Geo, 0); // no nodes, no bake ever ran
+        stampProvenance(state, sec, {
+            id: sec,
+            order: 0,
+            kind: SectionKind.Geo,
+            length: 0,
+            ds: 0,
+            nodes: [],
+            points: [],
+        });
+        expect(readProvenance(sec)).toBeUndefined();
     });
 });
 

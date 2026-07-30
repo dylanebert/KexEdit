@@ -1271,6 +1271,53 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
 }
 
+// ── provenance sidecar (kex2d-provenance) ──────────────────────────────────────
+
+/** one section's stamped provenance: `payload` is the pre-solve snapshot a same-session reverse
+ *  convert restores verbatim (stage 2/3, not yet consulted here); `token` and `entry` are what
+ *  certify a later reverse-invoke that nothing the bake reads has changed since the stamp. */
+export interface Provenance {
+    payload: SectionSnapshot;
+    token: string;
+    entry: Entry;
+}
+
+/** module-level cache, keyed by stable section id — a droppable cache of previously authored
+ *  state with a validity condition, not document truth. Deliberately NOT `bakeHash`/`authoredHash`
+ *  (stamping must not invalidate the live bake or trip `StaleConvert`'s re-read), NOT
+ *  `SectionSnapshot`/undo, NOT serialized: dropping it just degrades to today's always-fit
+ *  behavior (locked decision, `specs/kex2d-provenance.md`). */
+const provenance = new Map<number, Provenance>();
+
+/** stamp a section's provenance at an invoked solve's landing. `payload` is the caller's own
+ *  pre-solve `snapshotSection` (the same one `history.landSolve` already captures as the undo
+ *  "before" — this is its second consumer, not a new capture); the token is computed over the
+ *  LANDED (post-solve) section's own content (`sectionToken` — kind + length + ds + rows, NOT
+ *  `order`, plus `Track.domain`) and the entry is the section's own entry anchor at landing
+ *  (`sectionInfo.entry`, f32-exact reproduction on an unchanged upstream). No-ops when the section
+ *  hasn't baked yet (no `sectionInfo` entry to read an anchor from, or no live `Section` row) —
+ *  there is nothing yet to certify a later reverse-invoke against. */
+export function stampProvenance(ecs: State, sectionId: number, payload: SectionSnapshot): void {
+    const info = sectionInfo.get(sectionId);
+    if (info === undefined) return;
+    const row = sections(ecs).find((s) => s.id === sectionId);
+    if (row === undefined) return;
+    const trackEid = trackEntity(ecs);
+    const domain = trackEid === null ? Domain.Distance : (Track.domain.get(trackEid) as Domain);
+    provenance.set(sectionId, {
+        payload,
+        token: sectionToken(ecs, row, domain),
+        entry: { x: info.entry.x, y: info.entry.y, theta: info.entry.theta, v: info.entry.v },
+    });
+}
+
+/** read a section's stamped provenance, or `undefined` if none was ever landed. A bare lookup —
+ *  validity (token + entry match against the live state) is the reverse-invoke's own job
+ *  (stage 2/3), not this read. */
+export function readProvenance(sectionId: number): Provenance | undefined {
+    return provenance.get(sectionId);
+}
+
 /** write a domain conversion's converted force store in place: each force section's extent and
  *  step, and each keyframe's position and explicit handles, addressed by stable id. Deliberately
  *  narrow — **no entity is created or destroyed**, so a live selection (which addresses a geo node
@@ -1773,6 +1820,36 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     return { x: r.posX, y: r.posY, fN: r.fN, ds: r.ds, edges: r.edges };
 }
 
+/** one section's OWN content — kind, its own baking step, and its authored payload (a geo
+ *  section's node poses, a force section's extent + points). Deliberately excludes `order`:
+ *  chain position isn't content, so a reorder (a split/join, a reindex) doesn't change it.
+ *  Factored out of `bakeHash`'s per-section loop so the bake gate and the provenance token
+ *  (`sectionToken`, below) read this ONE reading of "has this section's own content changed" —
+ *  `bakeHash` folds `order` back in itself, since a reorder still has to force a re-bake. */
+function sectionContentHash(ecs: State, sec: SectionRow): string {
+    let h = `${sec.kind}`;
+    if (sec.ds > 0) h += `@${sec.ds}`;
+    if (sec.kind === SectionKind.Force) {
+        h += `:L${sec.length}`;
+        for (const p of sectionForces(ecs, sec.id)) {
+            h += `,${p.id}=${p.s}:${p.g}:${Force.ease.get(p.eid)}`;
+            const mode = Force.tmode.get(p.eid);
+            if (mode !== 0) {
+                h += `~${mode}:${Force.tin.x.get(p.eid)}:${Force.tin.y.get(p.eid)}:${Force.tout.x.get(p.eid)}:${Force.tout.y.get(p.eid)}`;
+            }
+        }
+    } else {
+        for (const eid of sectionHandles(ecs, sec.id)) {
+            h += `,${Handle.pos.x.get(eid)}:${Handle.pos.y.get(eid)}:${Handle.theta.get(eid)}`;
+            const mode = Handle.tmode.get(eid);
+            if (mode !== TANGENT_AUTO) {
+                h += `~${mode}:${Handle.tin.x.get(eid)}:${Handle.tin.y.get(eid)}:${Handle.tout.x.get(eid)}:${Handle.tout.y.get(eid)}`;
+            }
+        }
+    }
+    return h;
+}
+
 /** input-state hash that gates the bake: the shared ds + initial speed, then every
  *  section in order — its id/order/kind, its own baking step when it carries one, and
  *  its authored payload (a geo section's node poses, a force section's extent +
@@ -1785,27 +1862,20 @@ function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
     let h = `ds${Track.ds.get(trackEid)}v0${Track.v0.get(trackEid)}`;
     if (domain !== Domain.Distance) h += `^${domain}`;
     for (const sec of secs) {
-        h += `|S${sec.id}:${sec.order}:${sec.kind}`;
-        if (sec.ds > 0) h += `@${sec.ds}`;
-        if (sec.kind === SectionKind.Force) {
-            h += `:L${sec.length}`;
-            for (const p of sectionForces(ecs, sec.id)) {
-                h += `,${p.id}=${p.s}:${p.g}:${Force.ease.get(p.eid)}`;
-                const mode = Force.tmode.get(p.eid);
-                if (mode !== 0) {
-                    h += `~${mode}:${Force.tin.x.get(p.eid)}:${Force.tin.y.get(p.eid)}:${Force.tout.x.get(p.eid)}:${Force.tout.y.get(p.eid)}`;
-                }
-            }
-        } else {
-            for (const eid of sectionHandles(ecs, sec.id)) {
-                h += `,${Handle.pos.x.get(eid)}:${Handle.pos.y.get(eid)}:${Handle.theta.get(eid)}`;
-                const mode = Handle.tmode.get(eid);
-                if (mode !== TANGENT_AUTO) {
-                    h += `~${mode}:${Handle.tin.x.get(eid)}:${Handle.tin.y.get(eid)}:${Handle.tout.x.get(eid)}:${Handle.tout.y.get(eid)}`;
-                }
-            }
-        }
+        h += `|S${sec.id}:${sec.order}:${sectionContentHash(ecs, sec)}`;
     }
+    return h;
+}
+
+/** a section's content-hash TOKEN (kex2d-provenance stage 1): `sectionContentHash` plus
+ *  `Track.domain` — a ruler pick (`domain.convertDomain`) converts a force section's stored
+ *  numbers without touching a geo section's own rows, so the domain must ride along or a
+ *  payload stamped in the old unit could restore verbatim into a converted store (the one
+ *  silent-corruption path). A domain flip invalidates every stamp — correct, since the
+ *  conversion itself is lossy, so there is no unit to certify "unchanged" against. */
+function sectionToken(ecs: State, sec: SectionRow, domain: Domain): string {
+    let h = sectionContentHash(ecs, sec);
+    if (domain !== Domain.Distance) h += `^${domain}`;
     return h;
 }
 

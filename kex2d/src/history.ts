@@ -58,6 +58,7 @@ import {
     setStickyLen,
     snapshotAll,
     snapshotSection,
+    stampProvenance,
     type SolvedForce,
     type SolvedGeo,
     spawnForce,
@@ -683,19 +684,29 @@ export function convertSection(h: History, ecs: State, section: number): void {
  *  both solve directions (`solveForce`/`solveGeo`): `apply` performs the direction's own write
  *  (`applyConvert`/`applyConvertGeo`), already computed pure and off-thread by the time either
  *  caller reaches here — this is the single moment either touches the document, which is what
- *  makes the command atomic without any rollback path. */
-function landSolve(h: History, ecs: State, section: number, apply: () => void): void {
+ *  makes the command atomic without any rollback path. `stamp` (kex2d-provenance) reuses `before`
+ *  — the pre-solve payload already captured here — as the provenance sidecar's payload; today only
+ *  `solveForce` passes it (the geo→force landing), so a same-session reverse convert has something
+ *  to consult once stage 2 lands. */
+function landSolve(
+    h: History,
+    ecs: State,
+    section: number,
+    apply: () => void,
+    stamp: boolean,
+): void {
     const pre = selHook?.snapshot(ecs);
     const before = snapshotSection(ecs, section);
     apply();
     const after = snapshotSection(ecs, section);
+    if (stamp) stampProvenance(ecs, section, before);
     record(h, restoreCommand(ecs, before, after, restoreSection), pre);
 }
 
 /** land an invoked geo→force solve on a section (`geoforce.convertGeo` drives it) as one
  *  undoable entry. named direction-explicitly now that a force→geo twin (`solveGeo`) exists. */
 export function solveForce(h: History, ecs: State, section: number, solved: SolvedForce): void {
-    landSolve(h, ecs, section, () => applyConvert(ecs, section, solved));
+    landSolve(h, ecs, section, () => applyConvert(ecs, section, solved), true);
 }
 
 /** land an invoked force→geo fit on a section (`forcegeo.convertForce` drives it) as one
@@ -708,7 +719,7 @@ export function solveGeo(
     solved: SolvedGeo,
     entry: TrackEntry,
 ): void {
-    landSolve(h, ecs, section, () => applyConvertGeo(ecs, section, solved, entry));
+    landSolve(h, ecs, section, () => applyConvertGeo(ecs, section, solved, entry), false);
 }
 
 // ── track domain conversion ────────────────────────────────────────────────────
