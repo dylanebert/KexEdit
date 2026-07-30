@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fit } from "../src/fit";
 import { applyDof, forceMatrix, polish, readDof, spine } from "../src/polish";
-import { type ForcePoint, sampleForce } from "../src/profile";
+import { Easing, type ForcePoint, sampleForce } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { evalGeo } from "../src/section";
 
@@ -124,3 +124,91 @@ describe("polish families", () => {
         expect(() => polish({ ...base, maxSnapshots: Number.NaN })).toThrow(/maxSnapshots must be/);
     });
 });
+
+// stage-3 spike (`kex/specs/kex2d-roundtrip.md`): the flat family's selectable segment basis.
+describe("polish flat-family easing (stage-3 spike)", () => {
+    test("unset easing leaves applyDof/forceMatrix byte-identical to before the option existed", () => {
+        const points: ForcePoint[] = [
+            { s: 0, g: 1 },
+            { s: 10, g: -1 },
+            { s: 20, g: 2 },
+        ];
+        const dof = readDof(points, "flat");
+        expect(applyDof(points, "flat", dof)).toEqual(points);
+        expect(applyDof(points, "flat", dof, undefined)).toEqual(points);
+    });
+
+    test("a set easing stamps the tag on every emitted flat point and only there", () => {
+        const points: ForcePoint[] = [
+            { s: 0, g: 1 },
+            { s: 10, g: -1 },
+            { s: 20, g: 2 },
+        ];
+        const dof = readDof(points, "flat");
+        const out = applyDof(points, "flat", dof, Easing.Quintic);
+        expect(out.map((p) => p.ease)).toEqual([Easing.Quintic, Easing.Quintic, Easing.Quintic]);
+        expect(out.map(({ s, g }) => ({ s, g }))).toEqual(points.map(({ s, g }) => ({ s, g })));
+        // the free family carries its own explicit handles — easing never applies there.
+        const free = fittedFree();
+        expect(
+            applyDof(free, "free", readDof(free, "free"), Easing.Quintic).map((p) => p.ease),
+        ).toEqual(free.map(() => undefined));
+    });
+
+    test("Quintic changes the flat force map from the default Cubic basis", () => {
+        const points: ForcePoint[] = [
+            { s: 0, g: 1 },
+            { s: 10, g: -1 },
+        ];
+        const edges = 20;
+        const ds = 0.5;
+        const cubic = forceMatrix(points, "flat", edges, ds);
+        const quintic = forceMatrix(points, "flat", edges, ds, Easing.Quintic);
+        // the two bases only diverge inside the transition, never at the two shared endpoints.
+        expect(cubic[0][0]).toBeCloseTo(quintic[0][0], 10);
+        let diverged = false;
+        for (let j = 1; j < edges - 1; j++)
+            if (Math.abs(cubic[0][j] - quintic[0][j]) > 1e-9) diverged = true;
+        expect(diverged).toBe(true);
+    });
+
+    test("Quintic solves a real scenario to the same feasibility contract as Cubic", () => {
+        const { bake, entry, fitted, scenario } = solve("straight-fillet");
+        const flatPoints = fitted.points.map(({ s, g }) => ({ s, g }));
+        const base = { bake, entry, points: flatPoints, ds: scenario.ds, family: "flat" as const };
+        const cubic = polish(base);
+        const quintic = polish({ ...base, easing: Easing.Quintic });
+        expect(cubic.converged).toBe(true);
+        expect(quintic.converged).toBe(true);
+        expect(quintic.points.every((p) => p.ease === Easing.Quintic)).toBe(true);
+        expect(cubic.points.every((p) => p.ease === undefined)).toBe(true);
+        // same key placement, different basis: the deviation profiles are not the same answer.
+        expect(quintic.deviation).not.toBeCloseTo(cubic.deviation, 6);
+    });
+
+    test("easing only applies to the flat family, and only to a real Easing tag", () => {
+        const { bake, entry, fitted, scenario } = solve("circular-arc");
+        expect(() =>
+            polish({ bake, entry, points: fitted.points, ds: scenario.ds, easing: Easing.Quintic }),
+        ).toThrow(/easing only applies to the flat family/);
+        const flatPoints = fitted.points.map(({ s, g }) => ({ s, g }));
+        expect(() =>
+            polish({
+                bake,
+                entry,
+                points: flatPoints,
+                ds: scenario.ds,
+                family: "flat",
+                easing: 99 as Easing,
+            }),
+        ).toThrow(/easing must be a valid Easing tag/);
+    });
+});
+
+function fittedFree(): ForcePoint[] {
+    const scenario = scenarios.find((candidate) => candidate.name === "circular-arc");
+    if (!scenario) throw new Error("missing scenario circular-arc");
+    const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
+    const bake = evalGeo(entry, scenario.nodes, scenario.ds);
+    return fit(bake.fN, bake.ds, 0.05).points;
+}

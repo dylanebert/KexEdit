@@ -37,11 +37,12 @@
 //
 // Run: bun tests/roundtrip.lab.ts
 
-import { type GeofitBake, geofit } from "../src/geofit";
+import { geofit } from "../src/geofit";
 import { forceProfile } from "../src/profile";
 import { narrow, refine } from "../src/refine";
 import { type Scenario, scenarios } from "../src/scenarios";
-import { evalForce, evalGeo, type SectionResult } from "../src/section";
+import { evalForce, evalGeo } from "../src/section";
+import { bakeOf, flipDensity, maxDivergence } from "./helpers/roundtrip-metrics";
 
 interface Row {
     scenario: string;
@@ -53,69 +54,6 @@ interface Row {
     flipRatio: number;
     maxDivergence: number;
     fitOutcome: string;
-}
-
-/** sign flips in the discrete second difference of a per-edge force curve, per edge — a
- *  curvature-discontinuity rate, so scenarios of different length are comparable. */
-function flipDensity(fN: ArrayLike<number>): number {
-    const n = fN.length;
-    if (n < 3) return 0;
-    let flips = 0;
-    let prevSign = 0;
-    for (let i = 1; i < n - 1; i++) {
-        const d2 = fN[i + 1] - 2 * fN[i] + fN[i - 1];
-        const sign = Math.sign(d2);
-        if (sign !== 0) {
-            if (prevSign !== 0 && sign !== prevSign) flips++;
-            prevSign = sign;
-        }
-    }
-    return flips / n;
-}
-
-/** cumulative arclength of each edge's LEFT sample (`cum[i]` = station of `fN[i]`) —
- *  `geofit.ts`'s own per-edge attribution. */
-function stations(ds: ArrayLike<number>): Float64Array {
-    const cum = new Float64Array(ds.length);
-    let acc = 0;
-    for (let i = 0; i < ds.length; i++) {
-        cum[i] = acc;
-        acc += ds[i];
-    }
-    return cum;
-}
-
-/** `fN` at an arbitrary station, piecewise-constant over the left-sample attribution above
- *  (the edge whose station is nearest without exceeding `s`; clamps at the ends). */
-function sampleAt(cum: Float64Array, fN: ArrayLike<number>, s: number): number {
-    if (s <= cum[0]) return fN[0];
-    let lo = 0;
-    let hi = cum.length - 1;
-    while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if (cum[mid] <= s) lo = mid;
-        else hi = mid - 1;
-    }
-    return fN[lo];
-}
-
-/** max |Δf_N| over the original curve's own stations, clipped to the span both curves
- *  cover (a fit's realized length can fall short of the original by sub-quantum slack). */
-function maxDivergence(orig: SectionResult, round: SectionResult): number {
-    const origCum = stations(orig.ds);
-    const roundCum = stations(round.ds);
-    const span = Math.min(origCum[origCum.length - 1], roundCum[roundCum.length - 1]);
-    let worst = 0;
-    for (let i = 0; i < origCum.length; i++) {
-        if (origCum[i] > span) break;
-        const d = Math.abs(orig.fN[i] - sampleAt(roundCum, round.fN, origCum[i]));
-        if (d > worst) worst = d;
-    }
-    return worst;
-}
-
-function bakeOf(bake: SectionResult): GeofitBake {
-    return { x: bake.posX, y: bake.posY, fN: bake.fN, ds: bake.ds, edges: bake.edges };
 }
 
 function measure(scenario: Scenario): Row {
