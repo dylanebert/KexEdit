@@ -7,7 +7,7 @@
 
 import { arclength, fitKnots } from "./fit";
 import { type Bake, chordDeficit, polish, type PolishResult, type Spine, spine } from "./polish";
-import type { Easing, ForcePoint } from "./profile";
+import type { ForcePoint } from "./profile";
 import type { Entry } from "./section";
 
 /** The geometry-authoring step a conversion is judged against (m): a converted section must
@@ -117,11 +117,6 @@ export interface RefineOpts {
     playback?: boolean;
     /** Probe seam for deterministic solver-failure coverage. */
     probe?: (points: readonly ForcePoint[], knots: readonly number[]) => PolishResult;
-    /** Stage-3 spike (`kex/specs/kex2d-roundtrip.md`): forwarded to every `polish` probe's
-     *  own `easing` option — unset (default) is the shipping Cubic basis, byte-identical to
-     *  before this option existed. Not read by `narrow`'s frozen `{s,g}`-only contract; a
-     *  caller that wants the emitted `ease` tag reads `RefineResult.final.points` directly. */
-    easing?: Easing;
 }
 
 export type RefineEventKind = "init" | "split" | "prune" | "budget" | "diverged";
@@ -215,7 +210,6 @@ export function solve(
     ds: number,
     knots: readonly number[],
     snapshots: number,
-    easing?: Easing,
 ): PolishResult {
     return polish({
         bake,
@@ -224,7 +218,6 @@ export function solve(
         ds,
         family: "flat",
         maxSnapshots: snapshots,
-        easing,
     });
 }
 
@@ -381,7 +374,7 @@ export function refine(opts: RefineOpts): RefineResult {
         step = loop.next(
             opts.probe
                 ? opts.probe(warm(bake, knots), knots)
-                : solve(bake, entry, ds, knots, snapshots, opts.easing),
+                : solve(bake, entry, ds, knots, snapshots),
         );
     }
     return step.value;

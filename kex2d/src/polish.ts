@@ -12,7 +12,7 @@
 
 import { bandFactor, bandSolve, bandStore } from "./banded";
 import { V_FLOOR } from "./forward";
-import { Easing, type ForcePoint, forceProfile, type Offset, sampleForce } from "./profile";
+import { type ForcePoint, forceProfile, type Offset, sampleForce } from "./profile";
 import type { Entry } from "./section";
 
 const G = 9.80665;
@@ -138,14 +138,6 @@ export interface PolishOpts {
     maxSnapshots?: number;
     /** Variable family. Defaults to the full-free oracle. */
     family?: PolishFamily;
-    /** Stage-3 spike (`kex/specs/kex2d-roundtrip.md`): the flat family's segment basis.
-     *  Unset (default) is the shipping behavior — every emitted flat segment default Cubic,
-     *  byte-identical to before this option existed. `Easing.Quintic` swaps every flat
-     *  segment's derived tangent to the G2-at-every-join basis, both in the solve's own
-     *  force matrix (`forceMatrix`) and in the emitted points' own `ease` tag, so a
-     *  downstream `forceProfile` reproduces exactly what the solve targeted. `flat` only —
-     *  `free` keys already carry their own explicit handles. */
-    easing?: Easing;
 }
 
 /** feasibility default, position-equivalent m. The live f32 `evalForce` path rounds each
@@ -239,14 +231,12 @@ export function spine(bake: Bake, dsNominal: number): Spine {
     return { edges, ds, length, x, y, theta };
 }
 
-function shell(points: readonly ForcePoint[], family: PolishFamily, easing?: Easing): ForcePoint[] {
+function shell(points: readonly ForcePoint[], family: PolishFamily): ForcePoint[] {
     return points.map((point) => {
         const out: ForcePoint = { s: point.s, g: 0 };
         if (family === "free") {
             if (point.in) out.in = { ds: point.in.ds, dg: 0 };
             if (point.out) out.out = { ds: point.out.ds, dg: 0 };
-        } else if (easing !== undefined) {
-            out.ease = easing;
         }
         return out;
     });
@@ -269,7 +259,6 @@ export function applyDof(
     points: readonly ForcePoint[],
     family: PolishFamily,
     dof: ArrayLike<number>,
-    easing?: Easing,
 ): ForcePoint[] {
     const keys = points.length;
     const need = family === "flat" ? keys : 3 * keys - 2;
@@ -277,7 +266,7 @@ export function applyDof(
         throw new Error(
             `applyDof: ${family} over ${keys} keys takes ${need} dof, got ${dof.length}`,
         );
-    const out = shell(points, family, easing);
+    const out = shell(points, family);
     for (let k = 0; k < keys; k++) out[k].g = dof[k];
     if (family === "free") {
         for (let k = 0; k + 1 < keys; k++) (out[k].out as Offset).dg = dof[keys + k];
@@ -292,14 +281,13 @@ export function forceMatrix(
     family: PolishFamily,
     edges: number,
     ds: number,
-    easing?: Easing,
 ): Float64Array[] {
     const count = family === "flat" ? points.length : 3 * points.length - 2;
     const unit = new Float64Array(count);
     const matrix: Float64Array[] = [];
     for (let p = 0; p < count; p++) {
         unit[p] = 1;
-        const probe = applyDof(points, family, unit, easing);
+        const probe = applyDof(points, family, unit);
         unit[p] = 0;
         const column = new Float64Array(edges);
         for (let j = 0; j < edges; j++) column[j] = sampleForce(probe, j * ds);
@@ -361,16 +349,6 @@ export function polish(opts: PolishOpts): PolishResult {
         for (let k = 0; k < K; k++)
             if (pts[k].ease !== undefined || pts[k].in !== undefined || pts[k].out !== undefined)
                 throw new Error(`polish: flat keyframe ${k} carries authored shaping`);
-    if (
-        opts.easing !== undefined &&
-        opts.easing !== Easing.Linear &&
-        opts.easing !== Easing.Cubic &&
-        opts.easing !== Easing.Quintic
-    )
-        throw new Error(`polish: easing must be a valid Easing tag, got ${opts.easing}`);
-    if (opts.easing !== undefined && family !== "flat")
-        throw new Error("polish: easing only applies to the flat family");
-    const easing = opts.easing;
     const sp = spine(bake, opts.ds);
     const E = sp.edges;
     const h = sp.ds;
@@ -428,7 +406,7 @@ export function polish(opts: PolishOpts): PolishResult {
     // edge — a dense sample lies in one segment, so its force reads the two bounding keys'
     // values and their two facing handles, whichever family those handles come from —
     // and `supp` is its transpose.
-    const A = forceMatrix(pts, family, E, h, easing);
+    const A = forceMatrix(pts, family, E, h);
     const stencil: number[][] = [];
     for (let j = 0; j < E; j++) stencil.push([]);
     const supp: number[][] = [];
@@ -810,7 +788,7 @@ export function polish(opts: PolishOpts): PolishResult {
 
     /** the current DOF as a profile in `profile.ts`'s representation. */
     function profile(): ForcePoint[] {
-        return applyDof(pts, family, z.subarray(ns), easing);
+        return applyDof(pts, family, z.subarray(ns));
     }
 
     // ---- PHR augmented Lagrangian: LM inners, multiplier update + stall escalation ----
