@@ -403,7 +403,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   geo→force direction, same guards: a per-section in-flight lock, and an `authoredHash` re-read
   before the write (a mid-fit edit rejects as `StaleConvert`, named identically so
   `editor.solveFailed` reads both directions through one check). Nothing of `GeofitResult`
-  persists past the nodes. Device-free tests in `tests/forcegeo.test.ts` — apply+undo
+  persists past the nodes. A `budget` outcome denser than `MAX_LANDED_NODES` = 212 resolves as the
+  refusing `dense` outcome (transient readout, document untouched) — the landing-side runaway
+  refusal; derivation on the constant (authoring scale via `attribution.lab.ts`'s floor sweep,
+  never wall time). Device-free tests in `tests/forcegeo.test.ts` — apply+undo
   byte-identity, downstream continuity, the guard paths, plus the **document-layer fidelity**
   oracle (the landed section's baked `fN` vs the pre-convert bake, arclength-aligned) and the
   round trip back to the originating geo scenario's own shape.
@@ -553,7 +556,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   It also owns the **invoked convert**: the section menu's ONE conversion row — `Convert to force`
   on a geo section, `Convert to geo` on a force one, its label, action, and enablement all resolved
   from the target's kind through the one `controls.sectionSolvable` predicate (that kind, one
-  section, a live bake; grayed otherwise, never hidden — the opposite direction is absent, since a
+  section, a live bake, and — force→geo only — a bake within `MAX_FIT_EDGES` = 2400 edges, the
+  invoke-side runaway refusal; derivation on the constant in `controls.ts`: the largest edge count
+  actually measured inside the modal's 30 s completion budget, never extrapolated. Grayed
+  otherwise, never hidden — the opposite direction is absent, since a
   section is only ever one kind),
   the `solve()` drive around `geoforce.convertGeo` (one `AbortController`, progress folded into
   `editor.converting`, `editor.solveDone`/`solveFailed` mapping each exit to the readout — cancel
