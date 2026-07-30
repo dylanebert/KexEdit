@@ -49,6 +49,7 @@ import {
     SectionKind,
     sectionInfo,
     type SectionSnapshot,
+    type SolvedForce,
     snapshotAll,
     trackDomain,
     trackEntity,
@@ -120,22 +121,37 @@ interface Converted {
     slope: number;
 }
 
-/** section-local arclength → section-local time. */
+/** section-local arclength → section-local time.
+ *
+ *  The two boundaries return the window's own stations instead of interpolating to them. That is
+ *  not a shortcut: `interpMono` resolves a tie to the LAST tied index, so a position landing
+ *  exactly on the exit would read through a stall plateau that reaches past the section's exit
+ *  sample (a frozen cart is a fixed point, so the section downstream is frozen too) and absorb
+ *  that whole stall into this section's duration. The boundary slopes match the past-span
+ *  branches for the same reason — a frozen interval's own slope is the `V_FLOOR` resolution,
+ *  which is the entry/exit speed the window already carries. */
 function toTime(m: Mapping, w: Window, s: number): Converted {
     const d = w.entryD + s;
     if (d > w.exitD) return { value: w.exitT - w.entryT + (d - w.exitD) / w.exitV, slope: w.exitV };
     if (d < w.entryD) return { value: (d - w.entryD) / w.entryV, slope: w.entryV };
+    if (d === w.exitD) return { value: w.exitT - w.entryT, slope: w.exitV };
+    if (d === w.entryD) return { value: 0, slope: w.entryV };
     return {
         value: arcToTime(m, d) - w.entryT,
         slope: slopeOf(m, intervalAt(m, d)),
     };
 }
 
-/** section-local time → section-local arclength, `toTime`'s inverse. */
+/** section-local time → section-local arclength, `toTime`'s inverse — stations included, so the
+ *  two are exact inverses at both boundaries. The time axis carries no plateau of its own (a
+ *  derived `dt = ds/v̄` vanishes only where `ds` does, so a t-tie is an arc-tie), so here the
+ *  station return is the structural guarantee rather than a fix for absorption. */
 function toDist(m: Mapping, w: Window, t: number): Converted {
     const dur = w.exitT - w.entryT;
     if (t > dur) return { value: w.exitD - w.entryD + (t - dur) * w.exitV, slope: w.exitV };
     if (t < 0) return { value: t * w.entryV, slope: w.entryV };
+    if (t === dur) return { value: w.exitD - w.entryD, slope: w.exitV };
+    if (t === 0) return { value: 0, slope: w.entryV };
     const d = timeToArc(m, w.entryT + t);
     return { value: d - w.entryD, slope: slopeOf(m, intervalAt(m, d)) };
 }
@@ -210,4 +226,41 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
 
     landDomain(h, ecs, target, converted);
     return true;
+}
+
+/** convert an invoked solve's distance-internal output into the track's active domain — the
+ * landing seam `geoforce.convertGeo` passes its answer through, the same conversion the ruler
+ * pick applies to the whole store.
+ *
+ * Solves run in meters (`refine.ts` / `geofit.ts` work in arclength, and their goldens are frozen
+ * there), so a landing into a `Time`-domain track would otherwise write meters into a seconds
+ * store. It converts through the section's OWN window on the live table — the section is still
+ * the geo shape the solve reproduced, so its arc↔time window IS the ride the answer describes —
+ * and releases the realized step to the sentinel for the same reason a flip does: the step pins
+ * the solve's exit under the distance march, a claim a time march no longer carries.
+ *
+ * A `Distance`-domain track gets `solved` back by identity, with no bake required — the landing
+ * path there is byte-identical to before this seam existed. Returns null, having computed
+ * nothing, when there is no live table or the section isn't on it; the caller drops the answer
+ * rather than landing it in the wrong unit.
+ *
+ * @example const landed = convertSolve(ecs, sectionId, result) ?? throwStale()
+ */
+export function convertSolve(
+    ecs: State,
+    sectionId: number,
+    solved: SolvedForce,
+): SolvedForce | null {
+    if (trackDomain(ecs) !== Domain.Time) return solved;
+    const trackEid = trackEntity(ecs);
+    if (trackEid === null) return null;
+    const m = trackMapping(trackEid);
+    if (!m) return null;
+    const w = windowOf(m, sectionId);
+    if (!w) return null;
+    return {
+        points: solved.points.map((p) => ({ s: toTime(m, w, p.s).value, g: p.g })),
+        length: Math.max(minForceExtent(Domain.Time), toTime(m, w, solved.length).value),
+        ds: 0,
+    };
 }

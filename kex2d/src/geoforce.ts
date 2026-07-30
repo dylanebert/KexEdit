@@ -14,10 +14,16 @@
  * **The input is the bake's own call.** `evalGeo(entry, geoNodes, step, budget)` with the
  * section's live entry frame, the step it bakes at, and the sample budget left at its place in
  * the chain — the same four arguments `BakeSystem`'s `geoPayload` threads through `chain`, so
- * the solve targets exactly the shape on screen, truncation included. */
+ * the solve targets exactly the shape on screen, truncation included.
+ *
+ * **The solve stays distance-internal; the landing converts.** The conversion tier works in
+ * meters (its goldens are frozen there), so on a `Time`-domain track the answer passes through
+ * `domain.convertSolve` on its way into the document — inside the one landing entry, through the
+ * same table the ruler pick converts the whole store through. */
 
 import type { State } from "@dylanebert/shallot";
 import { convert, type ConvertOpts } from "./convert";
+import { convertSolve } from "./domain";
 import { type History, solveForce } from "./history";
 import type { ConvertResult } from "./refine";
 import { evalGeo } from "./section";
@@ -104,7 +110,18 @@ export async function convertGeo(
         if (live === null || Section.kind.get(live) !== SectionKind.Geo)
             throw new StaleConvert(sectionId);
         if (authoredHash(ecs) !== authored) throw new StaleConvert(sectionId);
-        if (result.outcome !== "diverged") solveForce(h, ecs, sectionId, result);
+        if (result.outcome !== "diverged") {
+            // the solve is distance-internal; a Time-domain track stores seconds, so the answer
+            // converts through the section's own window on the live table before it lands
+            // (`domain.convertSolve` — the same seam the ruler pick applies to the whole store).
+            const landed = convertSolve(ecs, sectionId, result);
+            // defense in depth, not a live path: the `bakeLive` gate above and the `authoredHash`
+            // re-read just now already guarantee the table and this section's window exist, so
+            // this branch has never been observed. It stays because the alternative to throwing
+            // is landing metres into a seconds store.
+            if (!landed) throw new StaleConvert(sectionId);
+            solveForce(h, ecs, sectionId, landed);
+        }
         return result;
     } finally {
         converting.delete(sectionId);

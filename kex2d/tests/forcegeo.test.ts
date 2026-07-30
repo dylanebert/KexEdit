@@ -4,6 +4,7 @@ import { convertForce, StaleConvert } from "../src/forcegeo";
 import { FORCE_BUDGET } from "../src/geofit";
 import { liveFitWorkers } from "../src/geofit-async";
 import { createHistory, type History, undo } from "../src/history";
+import { Domain } from "../src/section";
 import {
     addNode,
     appendSection,
@@ -21,8 +22,10 @@ import {
     sectionForces,
     sectionInfo,
     setForcePoint,
+    setTrackDomain,
     setTrackV0,
     snapshotAll,
+    trackDomain,
 } from "../src/track";
 import { divergingFit, dyingFit, withFitWorker } from "./helpers/fitworker";
 import { drift, type Stations, stations } from "./helpers/stations";
@@ -175,6 +178,52 @@ describe("convertForce", () => {
         state.step(0);
         expect(docState(state, eid)).toEqual(edited); // the edit stands, the answer is dropped
         expect(h.undo).toHaveLength(0);
+    }, 60_000);
+
+    test("a Time-domain force section fits and lands symmetrically", async () => {
+        // the geo→force direction converts its answer at the landing (`domain.convertSolve`);
+        // this direction needs no conversion — a fit emits world POSITIONS, and geo is
+        // position-authored in either domain. What must hold anyway is that the fit reads a
+        // time-marched section correctly (`track.forceBake` threads the domain into `evalForce`)
+        // and lands as one byte-identically undoable entry, with the store's seconds restored.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        setTrackV0(eid, 18);
+        // `humpForceTrack`'s profile in the time domain: the same hump over the duration a
+        // ~18 m/s cart takes to cover its 40 m.
+        const sec = createSection(state, 0, SectionKind.Force, 40 / 18);
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, 20 / 18, 1.4);
+        createForcePoint(state, sec, 40 / 18, 1);
+        const down = appendSection(state, SectionKind.Geo);
+        state.step(0);
+        const before = docState(state, eid);
+        const forceExit = { ...(sectionInfo.get(down)?.entry ?? { x: Number.NaN, y: Number.NaN }) };
+        const h = createHistory();
+
+        const result = await convertAndBake(h, state, sec);
+
+        const secEid = sectionAt(state, sec);
+        if (secEid === null) throw new Error("section missing");
+        expect(Section.kind.get(secEid)).toBe(SectionKind.Geo);
+        expect(Section.length.get(secEid)).toBe(0); // the seconds extent is gone with the store
+        expect(Section.ds.get(secEid)).toBe(0);
+        expect(sectionForces(state, sec)).toHaveLength(0);
+        expect(sectionHandles(state, sec)).toHaveLength(result.nodes.length);
+        // the shape the time march produced is what landed — same exit, the geoforce bound.
+        const geoExit = sectionInfo.get(down)?.entry;
+        if (!geoExit) throw new Error("downstream section lost its bake");
+        expect(Math.hypot(geoExit.x - forceExit.x, geoExit.y - forceExit.y)).toBeLessThan(1e-3);
+
+        // one entry, and undo brings the seconds store back byte-identical (`docState`'s
+        // whole-track snapshot carries every `Force.s`, so the units come back with it).
+        expect(h.undo).toHaveLength(1);
+        undo(h, state);
+        state.step(0);
+        expect(docState(state, eid)).toEqual(before);
+        expect(trackDomain(state)).toBe(Domain.Time);
     }, 60_000);
 
     test("a second invoke while one is running is refused", async () => {

@@ -465,26 +465,53 @@ export function sectionAt(ecs: State, id: number): number | null {
     return null;
 }
 
-/** a section's place on the global distance axis: its stable id, its `offset` (the
- *  track-global distance `d` at its entry = the cumulative baked arclength of every
- *  upstream section), and its `len` (its own baked arclength). the section occupies the
- *  d-interval `[offset, offset + len]`. */
+/** a section's place on the two global axes the editor addresses along.
+ *
+ *  `offset`/`len` are the **arclength** axis: the track-global distance `d` at the section's
+ *  entry (the cumulative baked arclength of every upstream section) and its own baked
+ *  arclength, so it occupies the d-interval `[offset, offset + len]`. Geometry lives here — a
+ *  geo node's landing, the cart's park, the viewport.
+ *
+ *  `entryU`/`lenU` are the **native** axis: the same two readings in the unit the track's
+ *  `Track.domain` stores force keyframes and extents in — identical numbers in `Distance`, and
+ *  the baked march time at the entry/exit samples in `Time`. The force store is addressed here,
+ *  and the timeline chart reads it. */
 export interface SectionSpan {
     id: number;
     offset: number;
     len: number;
+    entryU: number;
+    lenU: number;
 }
 
-/** the coordinate lens — the ONE seam between the author-facing track-global distance
- *  `d` (meters, the timeline ruler) and the section-local arclength `s` the substrate
- *  stores. `sectionSpans` is its table (one accumulating pass over the baked ds), and
- *  `toGlobal`/`toLocal` are the affine `d = offset + s` and its inverse. every d readout
- *  — timeline clips/boundaries, force-point placement, cart park — derives here; nothing
- *  walks the cumulative ds itself. sections are contiguous (each shares its entry sample
- *  with the prior exit), so one pass suffices. */
+/** one section's `(entry, extent)` on one of the two axes — the pair the affine and its inverse
+ *  resolve over, so the boundary policy has a single home whichever axis is being read. */
+type Axis = (sp: SectionSpan) => { entry: number; extent: number };
+
+const arcAxis: Axis = (sp) => ({ entry: sp.offset, extent: sp.len });
+const nativeAxis: Axis = (sp) => ({ entry: sp.entryU, extent: sp.lenU });
+
+/** the coordinate lens — the ONE seam between the author-facing track-global coordinate and the
+ *  section-local one the substrate stores. `sectionSpans` is its table (one accumulating pass
+ *  over the baked ds, plus each section's entry/exit reading off the baked time table), and
+ *  `toGlobal`/`toLocal` (arclength) and `toGlobalU`/`toLocalU` (the track's native unit) are the
+ *  affine `global = entry + local` and its inverse over it. every readout — timeline
+ *  clips/boundaries, force-keyframe placement, cart park — derives here; nothing walks the
+ *  cumulative ds itself. sections are contiguous (each shares its entry sample with the prior
+ *  exit), so one pass suffices.
+ *
+ *  **The native axis reads the store's own clock, never an interpolation.** A `Time`-domain force
+ *  keyframe's stored `t` is accumulated march time by construction, and `bakeOut.t` carries that
+ *  same march, so a section's entry time is a table READ (`t[startSample]`) and the keyframe's
+ *  global time is the sum `entryU + t` — exact as arithmetic, and off the sampled clock only by
+ *  `bakeOut.t`'s own f32 accumulation (~n·2^-24·t over the section's n steps). What projects
+ *  through a table is the other axis — a distance-authored quantity displayed on a time chart
+ *  (`timeline.dToU`, the geo path). */
 export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
     const out = bakeOut.get(eid);
     if (!out) return [];
+    const time = (Track.domain.get(eid) as Domain) === Domain.Time;
+    const last = Math.max(0, Track.count.get(eid) - 1);
     const res: SectionSpan[] = [];
     let cum = 0;
     for (const sec of sections(ecs)) {
@@ -492,30 +519,62 @@ export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
         if (!info) continue;
         const offset = cum;
         for (let i = info.startSample; i < info.endSample; i++) cum += out.ds[i];
-        res.push({ id: sec.id, offset, len: cum - offset });
+        const entryU = time ? out.t[Math.min(info.startSample, last)] : offset;
+        const exitU = time ? out.t[Math.min(info.endSample, last)] : cum;
+        res.push({ id: sec.id, offset, len: cum - offset, entryU, lenU: exitU - entryU });
     }
     return res;
 }
 
-/** section-local `(section, s)` → track-global distance `d = offset + s`. null when the
- *  section isn't on the current bake. */
-export function toGlobal(spans: SectionSpan[], section: number, s: number): number | null {
+function toGlobalOn(axis: Axis, spans: SectionSpan[], section: number, s: number): number | null {
     const sp = spans.find((x) => x.id === section);
-    return sp ? sp.offset + s : null;
+    return sp ? axis(sp).entry + s : null;
 }
 
-/** track-global distance `d` → the section-local address `(section, s)`. boundary policy:
- *  a `d` on a shared section boundary resolves to the UPSTREAM (earlier) section — the
- *  first span whose exit reaches `d` wins (left/upstream-inclusive spans), matching the
- *  clip strip's boundary guides and the cart's park resolution. out-of-range `d` resolves
- *  to the nearest end of the track. null when there's no bake. */
-export function toLocal(spans: SectionSpan[], d: number): { section: number; s: number } | null {
+function toLocalOn(
+    axis: Axis,
+    spans: SectionSpan[],
+    x: number,
+): { section: number; s: number } | null {
     if (spans.length === 0) return null;
     for (const sp of spans) {
-        if (d <= sp.offset + sp.len) return { section: sp.id, s: Math.max(0, d - sp.offset) };
+        const { entry, extent } = axis(sp);
+        if (x <= entry + extent) return { section: sp.id, s: Math.max(0, x - entry) };
     }
-    const last = spans[spans.length - 1];
-    return { section: last.id, s: last.len };
+    const last = axis(spans[spans.length - 1]);
+    return { section: spans[spans.length - 1].id, s: last.extent };
+}
+
+/** section-local arclength `(section, s)` → track-global distance `d = offset + s`. null when the
+ *  section isn't on the current bake. */
+export function toGlobal(spans: SectionSpan[], section: number, s: number): number | null {
+    return toGlobalOn(arcAxis, spans, section, s);
+}
+
+/** track-global distance `d` → the section-local arclength address `(section, s)`. boundary
+ *  policy: a `d` on a shared section boundary resolves to the UPSTREAM (earlier) section — the
+ *  first span whose exit reaches `d` wins (left/upstream-inclusive spans), matching the clip
+ *  strip's boundary guides and the cart's park resolution. out-of-range `d` resolves to the
+ *  nearest end of the track. null when there's no bake. */
+export function toLocal(spans: SectionSpan[], d: number): { section: number; s: number } | null {
+    return toLocalOn(arcAxis, spans, d);
+}
+
+/** a force keyframe's stored section-local `s` → the track's native global coordinate `u`
+ *  (`entryU + s`): global distance in the `Distance` domain, global march time in `Time`. The
+ *  force store's own axis, so the map is an exact affine either way — no table interpolation.
+ *  null when the section isn't on the current bake. */
+export function toGlobalU(spans: SectionSpan[], section: number, s: number): number | null {
+    return toGlobalOn(nativeAxis, spans, section, s);
+}
+
+/** `toGlobalU`'s inverse: a native global `u` → the section it lands in plus its native local
+ *  coordinate, under `toLocal`'s boundary policy (upstream-inclusive, clamped at both ends).
+ *  A **force** section's `s` is its store's own unit, so a keyframe write goes straight through.
+ *  A geo section resolves too — but geo is position-authored, so only the returned `section`
+ *  means anything there; its stored nodes live on the arclength axis (`toLocal`). */
+export function toLocalU(spans: SectionSpan[], u: number): { section: number; s: number } | null {
+    return toLocalOn(nativeAxis, spans, u);
 }
 
 /** create a section at `order` with a fresh stable id — the append/seed path.
@@ -1306,7 +1365,12 @@ export function convertSection(ecs: State, sectionId: number): void {
 /** an invoked solve's authored output: the keyframes it emitted, and the extent + step they
  *  were solved for. the conversion tier's `ConvertResult` (`refine.ts`) satisfies this
  *  structurally, so the document layer reads a solve without depending on the solver — the
- *  invoked atoms stay off this module's graph. */
+ *  invoked atoms stay off this module's graph.
+ *
+ *  **In the track's active domain unit**, like every other authored number here. Solves run
+ *  distance-internal, so the landing seam converts before it reaches `applyConvert`
+ *  (`domain.convertSolve`, driven by `geoforce.convertGeo`) — this module can't do it itself
+ *  without importing the conversion, which reads back through it. */
 export interface SolvedForce {
     points: readonly { s: number; g: number }[];
     length: number;

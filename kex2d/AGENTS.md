@@ -135,13 +135,13 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
   rule governs invoked optimization tools, not this). The displayed curve is the
   geometry-RECOVERED force (the one-display-path law), so a diamond sits O(ds) off the curve — the
   authored handle vs the recovered display, expected.
-- **Extent is the section's own authored length** (`Section.length`, m — the only authoring
-  domain), NOT inherited from the geo shape a convert came from: convert **resets** it to
-  `DEFAULT_FORCE_LEN`; append gets its kind's **sticky** length — the last committed
-  extent-trim (`track.setStickyLen`; a solve never touches it), `DEFAULT_FORCE_LEN` until one
-  commits. Editable via the **force clip's right edge** (`ew-resize`, `setSectionLength`, floored
-  at `MIN_FORCE_LEN`, one undo entry via `history.beginLength`). Shortening below a point's s
-  just stops sampling there (non-destructive — the point persists, re-lengthening restores it).
+- **Extent is the section's own authored length** (`Section.length`, in the track domain's unit —
+  meters or seconds), NOT inherited from the geo shape a convert came from: convert **resets** it to
+  the domain's default; append gets its kind's (and domain's) **sticky** length — the last committed
+  extent-trim (`track.setStickyLen`; a solve never touches it). Editable via the **force clip's
+  right edge** (`ew-resize`, `setSectionLength`, floored at `minForceExtent`, one undo entry via
+  `history.beginLength`). Shortening below a point's s just stops sampling there (non-destructive —
+  re-lengthening restores it).
 
 ## Authoring API — the substrate is the agent surface
 
@@ -174,23 +174,25 @@ not authoring.
 
 **Two coordinate frames, one lens.** Position-along-track has two names for two jobs:
 
-- **`s` — section-local arclength** (meters from the section entry). The *storage and kernel*
-  frame: `Force.s`, geo `Handle` locals, and every `ds`-integral read `s`. Keyframes are addressed
-  relative to their owning section, so they **ride with it** — an upstream edit (a length change, a
-  convert) re-times the ride and shifts everything downstream, but never rewrites a downstream
-  section's stored `s`. This is the sections-of-atoms self-containment invariant.
-- **`d` — track-global distance** (meters from the track start, the timeline ruler's axis). The
-  *author-facing* frame: the force-point field, every position readout, and the agent contract
-  address in `d`. A single section spans the d-interval `[offset, offset + len]`.
+- **`s` — section-local** (from the section entry), in the unit of the track-global domain
+  (`Track.domain`: meters of arclength, or seconds of time). The *storage and kernel* frame:
+  `Force.s`, force extents, geo `Handle` locals. Keyframes are addressed relative to their owning
+  section, so they **ride with it** — an upstream edit re-times the ride and shifts everything
+  downstream, but never rewrites a downstream section's stored `s`: the sections-of-atoms
+  self-containment invariant.
+- **track-global** (from the track start, the ruler's axis): distance `d` in meters, or time `t` in
+  seconds — every position readout and the agent contract address.
 
-The one seam between them is the affine lens in `track.ts` (`sectionSpans` + `toGlobal`/`toLocal`):
-a section's global `offset` is the cumulative baked arclength of every upstream section, `d = offset
-+ s`, and `toLocal` inverts a global `d` back to `(section, local s)` (a shared boundary resolves
-**upstream** — left/exit-inclusive). Every d
-readout derives here — nothing re-walks the baked `ds`. Store `s`; show and accept the active
-**basis**; convert at the lens, then at the timeline's d↔t seam (`timeline.Basis`: the chart reads
-global distance or global time, a view toggle). Time is never a storage unit: derived, it slides
-under any upstream edit.
+The seam is the lens in `track.ts` (`sectionSpans` + `toGlobal`/`toLocal` on arclength,
+`toGlobalU`/`toLocalU` on the domain's axis): a section's `offset` is the cumulative baked arclength
+upstream, `entryU` its baked entry time, `global = entry + local`, inverted back to
+`(section, local)` (a shared boundary resolves **upstream**). Every readout derives here — nothing
+re-walks the baked `ds`. Geo is position-authored in either domain, so it projects for display
+through the timeline's d↔t seam (`dToU`/`uToD`, on a `section.Domain`). **The domain pick is not a
+view change**: it's a document conversion op (`domain.convertDomain`) — one entry converting every
+keyframe, extent, and handle through the live bake's arc↔time table, which makes time-basis editing
+time-CONSTRAINED. A round trip is not bit-identical; undo is the only way back. Invoked
+solves stay distance-internal and convert at their landing (`domain.convertSolve`).
 
 ## Code map
 
@@ -313,8 +315,6 @@ byte-identical whole-track snapshot pair.
   state, which is exactly this section's placement — C0/C1 by construction. Don't double-write it.
 - **Forward clamps are non-differentiable.** `vSafe` / `sqrt` kink at the boundary. The floor is
   tiny, so coasting past an infeasible region behaves like "cart paused at peak then continued."
-- **Quaternion DOF (when 3D lands).** Unit-norm constraint. Use the log-map (axis-angle delta) as the
-  local update variable, matching `sim/curvature.rs::angular_delta_from`.
 - **Tick-derived `editor.*` reads lag a frame.** Svelte components read the plain `editor`
   singleton through `$derived` of the per-RAF `tick` prop, so an `$effect` gated on such a value
   outlives the real state change by up to a frame. Where the lagging listener *swallows*

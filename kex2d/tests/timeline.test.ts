@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { TangentMode } from "../src/spline";
+import { Domain } from "../src/section";
 import {
     arcToTime,
-    Basis,
     clampDelta,
     clampView,
     composeTangent,
@@ -1010,28 +1010,28 @@ describe("dToU / uToD — timeline basis projection", () => {
     test("Distance basis is the identity, mapping or not", () => {
         for (const mapping of [m, null]) {
             for (const d of [0, 2.5, 7, 10]) {
-                expect(dToU(mapping, Basis.Distance, d)).toBe(d);
-                expect(uToD(mapping, Basis.Distance, d)).toBe(d);
+                expect(dToU(mapping, Domain.Distance, d)).toBe(d);
+                expect(uToD(mapping, Domain.Distance, d)).toBe(d);
             }
         }
     });
 
     test("Time basis roundtrips at the sample knots", () => {
         for (let i = 0; i < m.n; i++) {
-            expect(dToU(m, Basis.Time, m.arc[i])).toBeCloseTo(m.t[i], 9);
-            expect(uToD(m, Basis.Time, m.t[i])).toBeCloseTo(m.arc[i], 9);
+            expect(dToU(m, Domain.Time, m.arc[i])).toBeCloseTo(m.t[i], 9);
+            expect(uToD(m, Domain.Time, m.t[i])).toBeCloseTo(m.arc[i], 9);
         }
     });
 
     test("Time basis projects through the live arc↔time table between knots", () => {
-        expect(dToU(m, Basis.Time, 4.5)).toBeCloseTo(1.5, 9);
-        expect(uToD(m, Basis.Time, 1.5)).toBeCloseTo(4.5, 9);
+        expect(dToU(m, Domain.Time, 4.5)).toBeCloseTo(1.5, 9);
+        expect(uToD(m, Domain.Time, 1.5)).toBeCloseTo(4.5, 9);
     });
 
     test("no-bake fallback: a null mapping reads Distance (identity) even when Time is requested", () => {
         for (const d of [0, 3, 42]) {
-            expect(dToU(null, Basis.Time, d)).toBe(d);
-            expect(uToD(null, Basis.Time, d)).toBe(d);
+            expect(dToU(null, Domain.Time, d)).toBe(d);
+            expect(uToD(null, Domain.Time, d)).toBe(d);
         }
     });
 
@@ -1039,12 +1039,12 @@ describe("dToU / uToD — timeline basis projection", () => {
         // arc=2 is a whole plateau of tied samples (t=1,2,3); the tie resolves to the LAST
         // tied index (t=3) — matching `interpMono`'s `span <= 0` branch, and its inverse
         // (t=3 read back through uToD) resolves to that same representative arc=2.
-        expect(dToU(stalled, Basis.Time, 2)).toBe(3);
-        expect(uToD(stalled, Basis.Time, 3)).toBe(2);
+        expect(dToU(stalled, Domain.Time, 2)).toBe(3);
+        expect(uToD(stalled, Domain.Time, 3)).toBe(2);
         // a distance query approaching the tied arc value from either side stays on the
         // plateau's own time span — the tie never leaks into a neighboring segment.
-        expect(dToU(stalled, Basis.Time, 1.999999)).toBeCloseTo(1, 4);
-        expect(dToU(stalled, Basis.Time, 2.000001)).toBeGreaterThanOrEqual(3);
+        expect(dToU(stalled, Domain.Time, 1.999999)).toBeCloseTo(1, 4);
+        expect(dToU(stalled, Domain.Time, 2.000001)).toBeGreaterThanOrEqual(3);
     });
 });
 
@@ -1056,7 +1056,7 @@ describe("deltaU — delta-from-grab projection through the live mapping", () =>
     };
 
     test("zero-delta is bit-exact zero, both bases, with or without a live bake", () => {
-        for (const basis of [Basis.Distance, Basis.Time]) {
+        for (const basis of [Domain.Distance, Domain.Time]) {
             for (const mapping of [m, null]) {
                 for (const d0 of [0, 2.5, 7]) {
                     expect(deltaU(mapping, basis, d0, 0)).toBe(0);
@@ -1068,8 +1068,8 @@ describe("deltaU — delta-from-grab projection through the live mapping", () =>
     test("Distance basis: delta passes through unchanged (identity, no projection error)", () => {
         for (const d0 of [0, 2.5, 7]) {
             for (const du of [-3, 0.1, 5]) {
-                expect(deltaU(null, Basis.Distance, d0, du)).toBeCloseTo(du, 12);
-                expect(deltaU(m, Basis.Distance, d0, du)).toBeCloseTo(du, 12);
+                expect(deltaU(null, Domain.Distance, d0, du)).toBeCloseTo(du, 12);
+                expect(deltaU(m, Domain.Distance, d0, du)).toBeCloseTo(du, 12);
             }
         }
     });
@@ -1077,13 +1077,13 @@ describe("deltaU — delta-from-grab projection through the live mapping", () =>
     test("Time basis: matches the direct dToU/uToD chain, not a shortcut through uToD(du) alone", () => {
         const d0 = 3; // dToU(m, Time, 3) = arcToTime(m, 3) = 1
         const du = 0.5;
-        const u0 = dToU(m, Basis.Time, d0);
-        expect(deltaU(m, Basis.Time, d0, du)).toBeCloseTo(
-            uToD(m, Basis.Time, u0 + du) - uToD(m, Basis.Time, u0),
+        const u0 = dToU(m, Domain.Time, d0);
+        expect(deltaU(m, Domain.Time, d0, du)).toBeCloseTo(
+            uToD(m, Domain.Time, u0 + du) - uToD(m, Domain.Time, u0),
             12,
         );
         // and NOT the naive (wrong) shortcut `uToD(du)`, which ignores the grab origin.
-        expect(deltaU(m, Basis.Time, d0, du)).not.toBeCloseTo(uToD(m, Basis.Time, du), 6);
+        expect(deltaU(m, Domain.Time, d0, du)).not.toBeCloseTo(uToD(m, Domain.Time, du), 6);
     });
 
     test("Time basis stays bit-exact zero across a re-bake that moves the table mid-drag", () => {
@@ -1094,8 +1094,8 @@ describe("deltaU — delta-from-grab projection through the live mapping", () =>
             t: Float64Array.from([0, 0.4, 1.1, 2.3, 4]),
             n: 5,
         };
-        expect(deltaU(m, Basis.Time, 3, 0)).toBe(0);
-        expect(deltaU(m2, Basis.Time, 3, 0)).toBe(0);
+        expect(deltaU(m, Domain.Time, 3, 0)).toBe(0);
+        expect(deltaU(m2, Domain.Time, 3, 0)).toBe(0);
     });
 });
 
@@ -1115,8 +1115,8 @@ describe("ticks — basis-aware readout suffix, same grid either way", () => {
     });
 
     test("Time basis prints the second suffix, same tick positions", () => {
-        const dist = ticks(v, 1000, Basis.Distance);
-        const time = ticks(v, 1000, Basis.Time);
+        const dist = ticks(v, 1000, Domain.Distance);
+        const time = ticks(v, 1000, Domain.Time);
         expect(time.length).toBe(dist.length);
         for (let i = 0; i < time.length; i++) {
             expect(time[i].label.endsWith("s")).toBe(true);
@@ -1136,7 +1136,7 @@ describe("grabD — the gesture form of the delta-from-grab projection", () => {
     test("a returned gesture writes the grabbed distance back BIT-EXACTLY, both bases", () => {
         // the load-bearing property: a drag that comes back to its grab px must resolve to the
         // exact d it started from, or a zero-delta gesture records an undo entry.
-        for (const basis of [Basis.Distance, Basis.Time]) {
+        for (const basis of [Domain.Distance, Domain.Time]) {
             for (const mapping of [m, null]) {
                 for (const [d0, u0] of [
                     [3, 1],
@@ -1153,57 +1153,57 @@ describe("grabD — the gesture form of the delta-from-grab projection", () => {
         // the offset form the keyframe drag already used — `cursor + (anchor − grab)`, so an
         // off-center grab never jumps and the distance path is arithmetically unchanged.
         for (const mapping of [m, null]) {
-            expect(grabD(mapping, Basis.Distance, 12, 10, 11)).toBe(11 + (12 - 10));
-            expect(grabD(mapping, Basis.Distance, 12, 10, 9.5)).toBe(9.5 + (12 - 10));
+            expect(grabD(mapping, Domain.Distance, 12, 10, 11)).toBe(11 + (12 - 10));
+            expect(grabD(mapping, Domain.Distance, 12, 10, 9.5)).toBe(9.5 + (12 - 10));
         }
     });
 
     test("Time basis: the cursor's Δu becomes the mapping's own Δd about the grabbed subject", () => {
         const d0 = 3; // arcToTime(m, 3) = 1
-        const u0 = dToU(m, Basis.Time, d0);
+        const u0 = dToU(m, Domain.Time, d0);
         const du = 0.5;
-        expect(grabD(m, Basis.Time, d0, u0, u0 + du)).toBeCloseTo(
-            d0 + deltaU(m, Basis.Time, d0, du),
+        expect(grabD(m, Domain.Time, d0, u0, u0 + du)).toBeCloseTo(
+            d0 + deltaU(m, Domain.Time, d0, du),
             12,
         );
         // the grab offset is honoured: a cursor grabbed off the subject keeps its lead.
-        expect(grabD(m, Basis.Time, d0, u0 + 0.25, u0 + 0.25)).toBe(d0);
+        expect(grabD(m, Domain.Time, d0, u0 + 0.25, u0 + 0.25)).toBe(d0);
     });
 
     test("no live bake falls back to the distance form even when Time is asked for", () => {
-        expect(grabD(null, Basis.Time, 12, 10, 11)).toBe(11 + (12 - 10));
+        expect(grabD(null, Domain.Time, 12, 10, 11)).toBe(11 + (12 - 10));
     });
 });
 
 describe("marginFloor — the lead-out floor in the active basis", () => {
     test("Distance basis is the 50 m absolute lead-out; Time basis is its twin at V0", () => {
-        expect(marginFloor(Basis.Distance)).toBe(marginArc(0)); // the floor dominates at total 0
-        expect(marginFloor(Basis.Time)).toBeCloseTo(marginFloor(Basis.Distance) / V0, 12);
+        expect(marginFloor(Domain.Distance)).toBe(marginArc(0)); // the floor dominates at total 0
+        expect(marginFloor(Domain.Time)).toBeCloseTo(marginFloor(Domain.Distance) / V0, 12);
     });
 
     test("a short ride frames the same PROPORTION of lead-out in either basis", () => {
         // 100 m at V0 is 10 s: both are floor-dominated, and the floor is the same ride length,
         // so the framed window covers the same stretch of track either way.
-        const span = (total: number, basis: Basis): number =>
+        const span = (total: number, basis: Domain): number =>
             total + marginArc(total, marginFloor(basis));
-        expect(span(10, Basis.Time) / 10).toBeCloseTo(span(100, Basis.Distance) / 100, 9);
+        expect(span(10, Domain.Time) / 10).toBeCloseTo(span(100, Domain.Distance) / 100, 9);
     });
 
     test("the floor is the ONLY dimensional input: the proportional branch is unit-free", () => {
         // past the floor's reach the 12% fraction takes over and the basis stops mattering.
-        expect(marginArc(1000, marginFloor(Basis.Distance))).toBeCloseTo(120, 9);
-        expect(marginArc(1000, marginFloor(Basis.Time))).toBeCloseTo(120, 9);
+        expect(marginArc(1000, marginFloor(Domain.Distance))).toBeCloseTo(120, 9);
+        expect(marginArc(1000, marginFloor(Domain.Time))).toBeCloseTo(120, 9);
     });
 
     test("threaded through every view op: the lead-out a frame includes follows the floor", () => {
         const w = 500;
-        const fitD = frameAll(w, 10, marginFloor(Basis.Distance)); // 10 + 50 m of span
-        const fitT = frameAll(w, 10, marginFloor(Basis.Time)); // 10 + 5 s of span
+        const fitD = frameAll(w, 10, marginFloor(Domain.Distance)); // 10 + 50 m of span
+        const fitT = frameAll(w, 10, marginFloor(Domain.Time)); // 10 + 5 s of span
         expect(pxToS(fitD, w)).toBeCloseTo(60, 6);
         expect(pxToS(fitT, w)).toBeCloseTo(15, 6);
         // and the pan clamp agrees with the frame it produced (the right edge is reachable, no more)
         expect(
-            clampView({ pan: 1e6, pxPerM: fitT.pxPerM }, w, 10, marginFloor(Basis.Time)).pan,
+            clampView({ pan: 1e6, pxPerM: fitT.pxPerM }, w, 10, marginFloor(Domain.Time)).pan,
         ).toBeCloseTo(0, 6);
     });
 });

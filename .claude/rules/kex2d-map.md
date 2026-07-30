@@ -224,15 +224,21 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 
 - `track.ts` — `BakeSystem` walks `sections()` (by `Section.order`) → per-section payload → one
   `chain(startEntry(v0), payloads)` → the `samples`/`bakeOut` SoA + the `sectionInfo` map; skips on a
-  `bakeHash` match (over every section, ds + v0). Components: `Track` (`count`, `ds`, `v0`), `Section` (`id` stable,
+  `bakeHash` match (over every section, ds + v0 + the track domain). Components: `Track` (`count`, `ds`,
+  `v0`, `domain`), `Section` (`id` stable,
   `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent, `ds` = its own baking step), `Handle` (`section`, per-section
   `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`).
   `bakeOut`: per-edge `fN`+`ds`, per-sample `t`/`feasible`, `firstInfeasible`, `hash`. `sectionInfo`
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
   `sections`/`sectionAt`/`createSection`, plus the session's per-kind **sticky append length**
   (`stickyLen`/`setStickyLen`: a force section's extent, a geo section's `extend` chord — module
-  state, updated only from `history.commitLength`/`commitChord`, never by a solve or a convert). Coordinate lens (section-local `s` ↔ track-global `d`):
-  `sectionSpans` (the one offset table) + `toGlobal`/`toLocal` — the single seam every d readout derives from. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
+  state, updated only from `history.commitLength`/`commitChord`, never by a solve or a convert). Coordinate lens (section-local `s` ↔ the track-global axes):
+  `sectionSpans` (the one span table — each section's arclength `offset`/`len` plus its native
+  `entryU`/`lenU`, the latter read off the baked `t` table in the `Time` domain) + `toGlobal`/`toLocal`
+  on arclength and `toGlobalU`/`toLocalU` on the domain's own axis — the single seam every global
+  readout derives from. The force store is addressed on the native axis (`Force.s` and
+  `Section.length` are in `Track.domain`'s unit, converted only at `domain.convertDomain` and at a
+  solve's landing, `domain.convertSolve`); geometry stays on arclength. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
   `sectionHandles`/`lastHandle`/`handleAt`/`spawnNode`/`nodeSnapshot`/`restoreNodes`/`sameNodes` +
   `geoNodes` (the ONE projection of a section's ECS columns onto `spline.Node`s — the bake payload
   and an invoked solve's input both read it, so a conversion solves what's displayed).
@@ -243,9 +249,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   an explicit tip's out-vector). Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
   `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`, `applyConvert` (land an
-  invoked solve: destroy the nodes, flip the kind, take the solve's realized extent + step, spawn
-  its `{s,g}` keys — all default-Cubic by construction; typed on the structural `SolvedForce`, so
-  the invoked tier stays off this module's graph) and its reverse `applyConvertGeo` (land an
+  invoked solve: destroy the nodes, flip the kind, take the answer's extent + step, spawn its
+  `{s,g}` keys — all default-Cubic by construction; typed on the structural `SolvedForce`, so the
+  invoked tier stays off this module's graph. Its numbers arrive in the TRACK DOMAIN's unit, so a
+  distance-internal solve is converted first, above this module, at `domain.convertSolve`) and its reverse `applyConvertGeo` (land an
   invoked force→geo fit: destroy both row kinds, flip the kind, `localize` the fit's world nodes
   into the section's own entry frame with node 0 pinned at `{0,0,0}` exactly, step back to the
   nominal sentinel; typed on `SolvedGeo`), `forceBake` (a force section's dense bake as `geofit`
@@ -285,8 +292,9 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   target subject, the ruler addresses the whole timeline) — all `{x, y, …}` or
   null, rendered once at the app root. Also the rail's one toggle — `snap` (`toggleSnap`/`snapActive`
   — persistent, default on, `S` toggles, Ctrl/Cmd bypasses per-gesture) — and `basis`
-  (`setBasis`, `timeline.Basis`, default `Distance`, picked from the ruler menu (no keyboard
-  shortcut): which global axis the chart reads, pure view state and never a history entry) — and
+  (`setBasis`, a `section.Domain`, default `Distance`, picked from the ruler menu (no keyboard
+  shortcut): which global axis the chart reads — a transitional view copy of `Track.domain`, which
+  is the real answer now that the force store carries the unit) — and
   `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
   viewport-nudge vs timeline-playhead double-fire. `hoverSection` (a stable `Section.id` or null) is
@@ -314,6 +322,25 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   Structural: `appendSection`/`splitSection`/`joinSection`/`removeSection` — each a whole-track
   `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). `history` singleton;
   `createHistory` for tests.
+- `domain.ts` — the **track-global domain conversion**, and the ONE place a force section's stored
+  numbers change unit. `convertDomain(history, ecs, target)` is the ruler pick as a document op: a
+  pure transform of the whole-track snapshot (every keyframe's position, every extent, every explicit
+  handle's Δs scaled by the local `dt/ds`) landed by `history.landDomain` as one entry, so a
+  conversion that throws part-way writes nothing. The table IS the conversion — `cart.trackMapping`
+  windowed per section by `track.sectionInfo` (`entryD`/`exitD`/`entryT`/`exitT` + the boundary
+  speeds), so an interior position interpolates and one past the section's own baked span
+  extrapolates on THAT section's exit speed. The two boundaries return their exact stations rather
+  than interpolating: `interpMono` resolves a tie to the last tied index, and a stall plateau
+  reaching past a section's exit sample would otherwise absorb the whole downstream stall.
+  No live bake, no conversion (it rejects and the invoking row grays on the same reading). A round
+  trip is NOT bit-identical — sub-quantum on a gentle ride, tens of percent on a sensitive one, and
+  a stall collapses distinct times onto one arclength by construction; undo is the only way back.
+  `convertSolve(ecs, sectionId, solved)` is the landing seam for the same math: invoked solves stay
+  distance-internal (their goldens are frozen in meters), so `geoforce.convertGeo` passes its answer
+  through it inside the landing entry, releasing the realized step to the sentinel the way a flip
+  does. Device-free tests in `tests/domain.test.ts` (guards, the forward conversion against an
+  independently rebuilt table, the derived round-trip bound, undo byte-identity, the plateau and
+  past-span degeneracies, the window boundaries).
 - `geoforce.ts` — the **invoked geo→force command**, and the only place the conversion tier and
   the document meet: `convertGeo(history, ecs, sectionId, opts)` drives `convert.ts`'s façade with
   the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), sectionStep(…), MAX_SAMPLES −
@@ -420,15 +447,20 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   shows only for a side that drives a segment (no out-handle at a chain end, no handle on node 0) —
   one home for the section-frame convention so render and controls can't drift apart.
 - `timeline.ts` — pure transform + tick math for the force-curve timeline (no Svelte/DOM/track
-  state). The chart's x-axis is a **basis** (`Basis`: global distance `d` in meters, or global time
-  `t` in seconds), and `dToU`/`uToD` are the ONE seam between them — identity in `Distance`, the live
-  bake's arc↔time table in `Time`, identity again with no live bake. `deltaU` and its gesture form
-  `grabD` are the delta-from-grab projection every drag resolves through (bit-exact zero delta, so a
-  returned gesture records no undo entry); `T_GRID` (= `S_GRID / V0`) and `marginFloor` are the two
-  basis-picked constants (the snap quantum, the lead-out floor), and `ticks` picks the unit suffix.
-  Everything else reads the resulting basis coordinate `u` with no further branching: `View`,
+  state). The chart's x-axis is a coordinate `u` on one of two global axes (distance `d` in meters,
+  or march time `t` in seconds), picked by a `section.Domain` — the same type `Track.domain` carries,
+  so the chart's axis and the force store's unit are one fact (there is no separate `Basis` enum).
+  `dToU`/`uToD` are the ONE seam between the axes — identity on distance, the live bake's arc↔time
+  table on time, identity again with no live bake — and they are the **projection** path, for values
+  authored in arclength (a geo node tick, the cart's park); a store already in the chart's unit
+  reaches it through the lens's affine instead (`track.toGlobalU`). `deltaU` and its gesture form
+  `grabD` are the delta-from-grab projection every drag on a projected subject resolves through
+  (bit-exact zero delta, so a returned gesture records no undo entry); `T_GRID` (= `S_GRID / V0`)
+  and `marginFloor` are the two axis-picked constants (the snap quantum, the lead-out floor), and
+  `ticks` picks the unit suffix.
+  Everything else reads the resulting coordinate `u` with no further branching: `View`,
   `sToPx`/`pxToS`, `zoomAt`, `clampView`, `frameAll`, `niceStep`, `ticks`, the navigator math
-  (`navWindow`/`navDragView`/`marginArc`, each taking the basis's margin floor), `nodeArc` (a geo
+  (`navWindow`/`navDragView`/`marginArc`, each taking the axis's margin floor), `nodeArc` (a geo
   node tick's partial-`ds` arclength, projected by the caller), and `Mapping` +
   `timeToArc`/`arcToTime` (the arc↔time table `cart.trackMapping` builds). `yFit`/`YFit`
   (auto-fit g-range) + the edge-scroll grow-to-follow: `yGrow` (value drag) and `xGrow` (pan). `snap`

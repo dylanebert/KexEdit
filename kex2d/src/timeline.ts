@@ -1,14 +1,26 @@
 /** pure transform + tick math for the force-curve timeline. no Svelte, no DOM,
- *  no solve state — just the arclength↔pixel affine, the 1-2-5 tick generator, and
- *  the pan/zoom clamp. the chart's x-axis is a **basis** (`Basis`): global distance
- *  `d` (meters, the storage-adjacent axis every keyframe/section-boundary/clip
- *  landmark is authored in) or, toggled, global time `t` — `dToU`/`uToD` are the
- *  one seam between them, and everything below (`View`, `sToPx`/`pxToS`, `ticks`,
- *  `snap`) reads the resulting basis coordinate `u` with no further branching.
- *  ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom,
- *  _renderTicks, findGoodStep). */
+ *  no solve state — just the coordinate↔pixel affine, the 1-2-5 tick generator, and
+ *  the pan/zoom clamp.
+ *
+ *  The chart's x-axis is a coordinate `u`, one of two global axes: distance `d` (meters) or
+ *  march time `t` (seconds). `dToU`/`uToD` are the ONE seam between them — identity on
+ *  distance, the live bake's arc↔time table on time — and `deltaU`/`grabD` are the
+ *  delta-from-grab form every gesture on a projected subject resolves through, so a
+ *  zero-delta gesture writes bit-exact zero. `T_GRID` and `marginFloor` are the two
+ *  axis-picked constants (snap quantum, lead-out floor) and `ticks` picks the unit suffix;
+ *  everything else below (`View`, `sToPx`/`pxToS`, `zoomAt`, `snap`) reads `u` with no
+ *  further branching.
+ *
+ *  Which axis is a `section.Domain`, the same type `Track.domain` carries — the force store's
+ *  own unit. A store already in the chart's unit needs no projection at all: it reaches the
+ *  chart through the lens's affine (`track.toGlobalU`). `Timeline.svelte` still drives this
+ *  seam from `editor.basis` and places keyframes through the projected path.
+ *
+ *  ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom, _renderTicks,
+ *  findGoodStep). */
 
 import type { Offset } from "./profile";
+import { Domain } from "./section";
 import { TangentMode } from "./spline";
 import { type ForceTangent, V0 } from "./track";
 
@@ -315,7 +327,7 @@ export const S_GRID = 1;
 export const G_GRID = 0.1;
 
 /** `S_GRID`'s time-basis twin — the placement quantum a keyframe drag snaps to on the
- *  chart's u-axis while the timeline reads in `Basis.Time`, in seconds. Derived, not
+ *  chart's u-axis while the track reads in `Domain.Time`, in seconds. Derived, not
  *  tuned: the time a cart at the default entry speed `V0` (10 m/s) takes to cover one
  *  `S_GRID` metre, so both bases offer the same authoring resolution at the default
  *  speed. Fixed like its twins — timeline grids are constants, only the manipulator
@@ -574,31 +586,25 @@ export const timeToArc = (m: Mapping, time: number): number => interpMono(m.t, m
 /** arclength (m) → track time (s) along the current bake. same tie handling, mirrored. */
 export const arcToTime = (m: Mapping, s: number): number => interpMono(m.arc, m.t, m.n, s);
 
-/** the timeline's basis: which global axis the chart's u-coordinate reads (`dToU`/`uToD`,
- *  below), and every downstream view/tick/snap op through it. `Distance` is today's only
- *  axis (u = d, identity); `Time` projects through the live bake's arc↔time `Mapping`. Pure
- *  view state, toggled on the timeline's tool rail — never a storage kind (`Force.s` stays
- *  section-local arclength in either basis; the Locked decision's rejected "keyframes hold
- *  time" alternative). */
-export enum Basis {
-    Distance = 1,
-    Time = 2,
+/** project global distance `d` (m, the arclength axis) to the chart's coordinate `u` under the
+ *  track's `Domain`. identity in `Distance` (the chart IS the distance axis); the live bake's
+ *  arc→time table in `Time`. No live bake (`mapping === null`) falls back to distance regardless
+ *  of the domain — the seam's one branch beyond the constant picks (`S_GRID`/`T_GRID`, the
+ *  readout suffix), per the Locked decision. A non-null mapping is `n >= 2` by construction —
+ *  `cart.trackMapping` is the only producer and returns null below that floor.
+ *
+ *  This is the **projected** side of the chart's axis, for anything whose value is an arclength:
+ *  a geo node tick, the cart's parked arclength, and today every force keyframe (the chart still
+ *  reads the store as metres and projects). A store already in the chart's unit does not need a
+ *  table at all — `track.toGlobalU` is the affine that carries it. */
+export function dToU(mapping: Mapping | null, domain: Domain, d: number): number {
+    return domain === Domain.Time && mapping ? arcToTime(mapping, d) : d;
 }
 
-/** project global distance `d` (m, the lens's output axis) to the chart's basis coordinate
- *  `u`. identity in `Distance` basis; the live bake's arc→time table in `Time` basis. No
- *  live bake (`mapping === null`) falls back to `Distance` regardless of the requested
- *  basis — the seam's one branch beyond the constant picks (`S_GRID`/`T_GRID`, the readout
- *  suffix), per the Locked decision. A non-null mapping is `n >= 2` by construction —
- *  `cart.trackMapping` is the only producer and returns null below that floor. */
-export function dToU(mapping: Mapping | null, basis: Basis, d: number): number {
-    return basis === Basis.Time && mapping ? arcToTime(mapping, d) : d;
-}
-
-/** invert `dToU`: the chart's basis coordinate `u` back to global distance `d`. same
- *  no-bake fallback. */
-export function uToD(mapping: Mapping | null, basis: Basis, u: number): number {
-    return basis === Basis.Time && mapping ? timeToArc(mapping, u) : u;
+/** invert `dToU`: the chart's coordinate `u` back to global distance `d`. same no-bake
+ *  fallback. */
+export function uToD(mapping: Mapping | null, domain: Domain, u: number): number {
+    return domain === Domain.Time && mapping ? timeToArc(mapping, u) : u;
 }
 
 /** the delta-from-grab projection (the carried lesson from the reverted per-section-domain
@@ -607,34 +613,36 @@ export function uToD(mapping: Mapping | null, basis: Basis, u: number): number {
  *  Computes `uToD(dToU(d0) + du) − uToD(dToU(d0))`, never `uToD(du)` alone, so a zero-delta
  *  gesture (`du === 0`) subtracts one value from itself: bit-exact zero even mid-drag, across
  *  a re-bake that moves the mapping table under the gesture. */
-export function deltaU(mapping: Mapping | null, basis: Basis, d0: number, du: number): number {
-    const u0 = dToU(mapping, basis, d0);
-    return uToD(mapping, basis, u0 + du) - uToD(mapping, basis, u0);
+export function deltaU(mapping: Mapping | null, domain: Domain, d0: number, du: number): number {
+    const u0 = dToU(mapping, domain, d0);
+    return uToD(mapping, domain, u0 + du) - uToD(mapping, domain, u0);
 }
 
 /** `deltaU`'s gesture form: the global distance `d` a live gesture addresses, from the pair it
  *  captured at pointerdown (`d0`, the grabbed subject's own global distance; `u0`, the cursor's
- *  basis coordinate) and the cursor's current `u`. `Distance` basis is the bare cumulative-grab
+ *  chart coordinate) and the cursor's current `u`. `Distance` is the bare cumulative-grab
  *  offset every drag on this axis already used (`u + (d0 − u0)`, so the distance path's
- *  arithmetic is unchanged); `Time` basis routes the screen-derived Δu through `deltaU` against
+ *  arithmetic is unchanged); `Time` routes the screen-derived Δu through `deltaU` against
  *  the LIVE mapping, so `u === u0` returns `d0` bit-exactly — the zero-delta no-op — even across
- *  a re-bake that moves the table mid-drag. @example grabD(null, Basis.Distance, 12, 10, 11) // → 13 */
+ *  a re-bake that moves the table mid-drag. What needs it is a **projected** subject; a gesture
+ *  addressing a store already in the chart's unit resolves through the lens instead
+ *  (`track.toLocalU`). @example grabD(null, Domain.Distance, 12, 10, 11) // → 13 */
 export function grabD(
     mapping: Mapping | null,
-    basis: Basis,
+    domain: Domain,
     d0: number,
     u0: number,
     u: number,
 ): number {
-    if (basis === Basis.Time && mapping) return d0 + deltaU(mapping, basis, d0, u - u0);
+    if (domain === Domain.Time && mapping) return d0 + deltaU(mapping, domain, d0, u - u0);
     return u + (d0 - u0);
 }
 
-/** the lead-out floor (`marginArc`'s one dimensional constant) in the active basis: `MARGIN_M`
- *  metres, or its time twin at the default entry speed (`MARGIN_M / V0`, `T_GRID`'s derivation),
- *  so a short ride frames the same substantial lead-out to build into in either basis. */
-export const marginFloor = (basis: Basis): number =>
-    basis === Basis.Time ? MARGIN_M / V0 : MARGIN_M;
+/** the lead-out floor (`marginArc`'s one dimensional constant) on the active chart axis:
+ *  `MARGIN_M` metres, or its time twin at the default entry speed (`MARGIN_M / V0`, `T_GRID`'s
+ *  derivation), so a short ride frames the same substantial lead-out to build into either way. */
+export const marginFloor = (domain: Domain): number =>
+    domain === Domain.Time ? MARGIN_M / V0 : MARGIN_M;
 
 function fmtTime(t: number, step: number): string {
     const decimals = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
@@ -642,15 +650,15 @@ function fmtTime(t: number, step: number): string {
 }
 
 /** the labeled major ticks visible in [0, width], on the 1-2-5 grid. `v`'s axis is
- *  whatever `basis` the caller reads the chart in (the u-axis) — ticks never re-derives
+ *  whatever `domain` the caller reads the chart in (the u-axis) — ticks never re-derives
  *  the projection, it only picks the unit suffix (the readout-suffix branch the Locked
  *  decision sanctions). */
-export function ticks(v: View, width: number, basis: Basis = Basis.Distance): Tick[] {
+export function ticks(v: View, width: number, domain: Domain = Domain.Distance): Tick[] {
     if (!(v.pxPerM > 0) || width <= 0) return [];
     const step = niceStep(TARGET_TICK_PX / v.pxPerM);
     const from = pxToS(v, 0);
     const to = pxToS(v, width);
-    const fmt = basis === Basis.Time ? fmtTime : fmtDist;
+    const fmt = domain === Domain.Time ? fmtTime : fmtDist;
     const out: Tick[] = [];
     for (let s = Math.floor(from / step) * step; s <= to + step * 0.5; s += step) {
         const sv = Math.abs(s) < step * 1e-6 ? 0 : s; // snap fp drift to a clean 0

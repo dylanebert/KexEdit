@@ -52,7 +52,9 @@ import {
     snapshotSection,
     stickyLen,
     toGlobal,
+    toGlobalU,
     toLocal,
+    toLocalU,
     Track,
     trackDomain,
     V0,
@@ -71,11 +73,13 @@ import {
     trimTrack as trimTrackCmd,
     undo,
 } from "../src/history";
+import { trackMapping } from "../src/cart";
 import { DEFAULT_G, Easing } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { LENGTH_MIN } from "../src/magnet";
 import { Domain, evalGeo } from "../src/section";
 import { editTangent, type Node, sampleChain, TangentMode } from "../src/spline";
+import { dToU } from "../src/timeline";
 import golden from "./fixtures/convert-golden.json";
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
@@ -703,6 +707,166 @@ describe("coordinate lens (s ↔ d)", () => {
         expect(offAfter - offBefore).toBeCloseTo(10, 1);
         if (dBefore === null || dAfter === null) throw new Error("toGlobal null");
         expect(dAfter - dBefore).toBeCloseTo(offAfter - offBefore, 10);
+    });
+});
+
+// the lens's NATIVE side (kex2d-time-domain stage 4): `Track.domain` says what unit the force
+// store carries, and `entryU`/`lenU` + `toGlobalU`/`toLocalU` address it. `Distance` makes the
+// native axis the arclength axis (the same numbers, so every existing path is byte-identical);
+// `Time` makes it global march time, read straight off `bakeOut.t` — the force store's own clock,
+// so the map is an exact affine with no table in the path. What still projects through a table is
+// the other direction: a distance-authored geo quantity drawn on a time chart (`timeline.dToU`).
+describe("coordinate lens — the native axis", () => {
+    /** geo (flat) then a force section, on a track in `domain`. In `Time` the force section's
+     *  extent is a DURATION (its sticky default, `DEFAULT_FORCE_LEN / V0`) and its interior
+     *  keyframe is authored in seconds — the store the conversion op leaves behind. */
+    function nativeChain(domain: Domain): {
+        state: State;
+        eid: number;
+        g: number;
+        f: number;
+        kf: number;
+    } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackDomain(state, domain);
+        const g = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, g, 0, 0);
+        addNode(state, g, EXTEND_DIST, 0);
+        const f = appendSection(state, SectionKind.Force);
+        // an interior keyframe, in the section's own unit: 1 s into a 2.4 s section, or 10 m
+        // into a 24 m one. both land strictly inside, so no boundary tie is involved.
+        const kf = domain === Domain.Time ? 1 : 10;
+        createForcePoint(state, f, kf, 1.2);
+        state.step(0);
+        return { state, eid, g, f, kf };
+    }
+
+    /** the section's baked sample range on the current bake. */
+    function range(id: number): { start: number; end: number } {
+        const info = sectionInfo.get(id);
+        if (!info) throw new Error(`no bake for section ${id}`);
+        return { start: info.startSample, end: info.endSample };
+    }
+
+    test("Distance: the native axis IS the arclength axis, number for number", () => {
+        const { state, eid, g, f } = nativeChain(Domain.Distance);
+        const spans = sectionSpans(state, eid);
+        expect(spans.map((sp) => sp.id)).toEqual([g, f]);
+        for (const sp of spans) {
+            // not "close to": the same two f64 values, so every pre-domain path that reads
+            // `offset`/`len` and every new one that reads `entryU`/`lenU` agree bit for bit.
+            expect(sp.entryU).toBe(sp.offset);
+            expect(sp.lenU).toBe(sp.len);
+            const s = sp.len * 0.4;
+            expect(toGlobalU(spans, sp.id, s)).toBe(toGlobal(spans, sp.id, s));
+            const u = sp.offset + s;
+            expect(toLocalU(spans, u)).toEqual(toLocal(spans, u));
+        }
+    });
+
+    test("Time: a section's native entry is the baked march time at its entry sample", () => {
+        const { state, eid, g, f } = nativeChain(Domain.Time);
+        const out = bakeOut.get(eid);
+        if (!out) throw new Error("no bake");
+        const spans = sectionSpans(state, eid);
+        expect(spans.map((sp) => sp.id)).toEqual([g, f]);
+        for (const sp of spans) {
+            const { start, end } = range(sp.id);
+            // a table READ, not a derivation: `bakeOut.t` carries the march itself for a
+            // Time-domain force section (`track.computeTime`), which is the clock the stored
+            // keyframes are on.
+            expect(sp.entryU).toBe(out.t[start]);
+            expect(sp.lenU).toBe(out.t[end] - out.t[start]);
+        }
+        // the track opens at t = 0 and the sections tile the clock, in order.
+        expect(spans[0].entryU).toBe(0);
+        expect(spans[1].entryU).toBe(spans[0].entryU + spans[0].lenU);
+        // …and the arclength axis is still meters underneath, unchanged by the domain.
+        expect(spans[0].len).toBeGreaterThan(EXTEND_DIST - 1);
+    });
+
+    test("Time: a force keyframe's global time is entry time + stored t, exactly", () => {
+        const { state, eid, f, kf } = nativeChain(Domain.Time);
+        const spans = sectionSpans(state, eid);
+        const sp = spans.find((x) => x.id === f);
+        if (!sp) throw new Error("force span missing");
+        // the affine, not an interpolation: `toBe`, so swapping the native read for a table
+        // lookup (the projected path) fails here even where the two nearly agree.
+        expect(toGlobalU(spans, f, kf)).toBe(sp.entryU + kf);
+        const u = toGlobalU(spans, f, kf);
+        if (u === null) throw new Error("toGlobalU null for a live section");
+        const back = toLocalU(spans, u);
+        expect(back?.section).toBe(f);
+        expect(back?.s).toBeCloseTo(kf, 12); // f64 entry±entry noise only
+    });
+
+    test("Time: the native extent is the section's authored DURATION", () => {
+        const { state, eid, f } = nativeChain(Domain.Time);
+        const spans = sectionSpans(state, eid);
+        const sp = spans.find((x) => x.id === f);
+        const authored = sections(state).find((r) => r.id === f)?.length ?? Number.NaN;
+        if (!sp) throw new Error("force span missing");
+        // the extent is seconds, realized exactly bar the accumulation: `edges =
+        // round(length / DT_NOMINAL)` = 48 steps summed in the f32 `bakeOut.t`, so the bound is
+        // 48 · 2^-24 · 2.4 s ≈ 7e-6 s — not a quantization gap (the duration is a whole number of
+        // steps here), which is why one `DT_NOMINAL` would be a hundredfold too loose to pin it.
+        expect(Math.abs(sp.lenU - authored)).toBeLessThan(1e-5);
+        // and it is emphatically NOT the meters the same section would span.
+        expect(sp.len).toBeGreaterThan(5 * sp.lenU);
+    });
+
+    test("Time: a geo section's arclength projects onto the same clock through the d↔u seam", () => {
+        // geo stays position-authored in either domain, so its chart position is a PROJECTION:
+        // global distance → global time through the bake's arc↔time table. That table and the
+        // lens's native read must agree, or a geo clip and a force keyframe would draw on
+        // different clocks.
+        const { state, eid } = nativeChain(Domain.Time);
+        const m = trackMapping(eid);
+        if (!m) throw new Error("no mapping");
+        const spans = sectionSpans(state, eid);
+        // every span's entry AND exit, so the check lands at the shared boundary and the track
+        // end as well as the origin — the origin alone (d = 0 → u = 0) holds under any
+        // implementation, so it can't carry the claim by itself.
+        const stations = spans.flatMap((sp) => [
+            { d: sp.offset, u: sp.entryU },
+            { d: sp.offset + sp.len, u: sp.entryU + sp.lenU },
+        ]);
+        expect(stations.filter((st) => st.d > 0 && st.u > 0).length).toBeGreaterThanOrEqual(3);
+        for (const st of stations) {
+            // tolerance derivation: the two tables accumulate arclength differently — the lens
+            // sums the f32 per-edge `bakeOut.ds`, `trackMapping` re-hypots the f32 positions in
+            // f64 — so they disagree by ~1e-7 relative per edge over ~100 edges of ~60 m, i.e.
+            // ≲1e-4 m, which at dt/ds = 1/v ≈ 0.1 s/m is ≲1e-5 s. 1e-4 s is 10× that.
+            expect(dToU(m, Domain.Time, st.d)).toBeCloseTo(st.u, 4);
+        }
+    });
+
+    test("Time: the boundary policy holds on the native axis", () => {
+        const { state, eid, g, f } = nativeChain(Domain.Time);
+        const spans = sectionSpans(state, eid);
+        expect(toLocalU(spans, 0)).toEqual({ section: g, s: 0 });
+        // the shared boundary belongs to the UPSTREAM section's exit — the same
+        // left/upstream-inclusive rule the distance axis uses, now on the clock.
+        const boundary = spans[0].entryU + spans[0].lenU;
+        expect(toLocalU(spans, boundary)).toEqual({ section: g, s: spans[0].lenU });
+        const end = spans[1].entryU + spans[1].lenU;
+        expect(toLocalU(spans, end)).toEqual({ section: f, s: spans[1].lenU });
+        expect(toLocalU(spans, end + 100)).toEqual({ section: f, s: spans[1].lenU });
+        expect(toLocalU(spans, -50)).toEqual({ section: g, s: 0 });
+    });
+
+    test("no bake: the native pair is null, like its distance twin", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        const f = createSection(state, 0, SectionKind.Force, 2);
+        const spans = sectionSpans(state, eid); // no state.step: nothing baked
+        expect(spans).toEqual([]);
+        expect(toGlobalU(spans, f, 0.5)).toBeNull();
+        expect(toLocalU(spans, 1)).toBeNull();
     });
 });
 

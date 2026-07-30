@@ -3,11 +3,12 @@ import { editor, select, selectionHook } from "../src/editor";
 import { State } from "@dylanebert/shallot";
 import { V_FLOOR } from "../src/bake";
 import { trackMapping } from "../src/cart";
-import { convertDomain } from "../src/domain";
+import { convertDomain, convertSolve } from "../src/domain";
 import { createHistory, redo, setSelectionHook, undo } from "../src/history";
 import { Domain } from "../src/section";
 import { TangentMode } from "../src/spline";
 import {
+    appendSection,
     BakeSystem,
     bakeOut,
     createForcePoint,
@@ -20,6 +21,7 @@ import {
     Handle,
     handleAt,
     MIN_FORCE_LEN,
+    minForceExtent,
     samples,
     Section,
     sectionAt,
@@ -28,6 +30,8 @@ import {
     sectionInfo,
     sections,
     setForceTangent,
+    setTrackDomain,
+    setTrackV0,
     Track,
     trackDomain,
     V0,
@@ -687,5 +691,178 @@ describe("selection across the conversion", () => {
             select(null);
             setSelectionHook(null);
         }
+    });
+});
+
+// `domain.convertSolve` — the landing seam. Invoked solves stay distance-internal (their goldens
+// are frozen in meters), so an answer landing on a `Time`-domain track converts through the
+// section's own window on the live table, exactly as the ruler pick converts the whole store.
+// The document-level pins (one entry, undo byte-identity, seconds actually stored) live with each
+// direction's command: `geoforce.test.ts` / `forcegeo.test.ts`.
+describe("solve landings", () => {
+    /** the meters-domain answer shape a geo→force solve emits over `len`. */
+    const solved = (len: number, pts: readonly [number, number][]) => ({
+        points: pts.map(([s, g]) => ({ s, g })),
+        length: len,
+        ds: len / 40,
+    });
+
+    /** a Time-domain track carrying one geo hump — the state a geo→force solve lands into. */
+    function timeGeoTrack(): { state: State; eid: number; sec: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        setTrackV0(eid, 18); // the hump's own entry speed — at the default V0 it stalls on the climb
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 12, 4);
+        addNode(state, sec, 24, 0);
+        state.step(0);
+        return { state, eid, sec };
+    }
+
+    test("a Distance track gets the answer back by identity — no bake needed", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 24, 0);
+        // deliberately never stepped: the distance path must not reach for a table at all, so
+        // the landing is byte-identical to the pre-domain one.
+        const answer = solved(24, [
+            [0, 1],
+            [24, 1],
+        ]);
+        expect(convertSolve(state, sec, answer)).toBe(answer);
+    });
+
+    test("a Time track converts positions, extent, and releases the realized step", () => {
+        const { state, eid, sec } = timeGeoTrack();
+        const tab = table(eid);
+        const answer = solved(24, [
+            [0, 1],
+            [8, 1.4],
+            [24, 0.9],
+        ]);
+
+        const landed = convertSolve(state, sec, answer);
+        if (!landed) throw new Error("convertSolve rejected a live track");
+        // each position is the bake's own arc→time reading at that arclength, checked against
+        // the independently rebuilt table (not through `domain.ts`'s own helpers).
+        for (let i = 0; i < answer.points.length; i++) {
+            expect(landed.points[i].s).toBeCloseTo(interp(tab.arc, tab.t, answer.points[i].s), 9);
+            expect(landed.points[i].g).toBe(answer.points[i].g); // g is unit-relative
+        }
+        expect(landed.length).toBeCloseTo(interp(tab.arc, tab.t, 24), 9);
+        // seconds, not meters — the whole point of the seam.
+        expect(landed.length).toBeLessThan(answer.length / 5);
+        // the realized step pinned the exit under the DISTANCE march; a time march no longer
+        // spans that arclength, so the claim lapses to the nominal sentinel (the flip's rule).
+        expect(landed.ds).toBe(0);
+    });
+
+    test("a Time track floors a collapsed extent at the domain's own minimum", () => {
+        const { state, sec } = timeGeoTrack();
+        const landed = convertSolve(state, sec, solved(0, [[0, 1]]));
+        if (!landed) throw new Error("convertSolve rejected a live track");
+        expect(landed.length).toBe(minForceExtent(Domain.Time));
+    });
+
+    test("a Time track with no table rejects rather than landing meters", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 24, 0);
+        // never baked: no arc↔time table, so there is no honest unit for the answer.
+        expect(convertSolve(state, sec, solved(24, [[0, 1]]))).toBeNull();
+    });
+
+    test("a Time track rejects an answer for a section that isn't on the bake", () => {
+        const { state } = timeGeoTrack();
+        expect(convertSolve(state, 9999, solved(24, [[0, 1]]))).toBeNull();
+    });
+});
+
+// The window's two boundaries are exact STATIONS on the arc↔time table (`entryD`/`exitD` and
+// `entryT`/`exitT`, read by sample index), and a position landing exactly on one must resolve to
+// its station rather than interpolate to it. `interpMono` resolves a tie to the LAST tied index,
+// so a stall plateau reaching forward past a section's exit sample would otherwise absorb the
+// whole downstream stall into that section's converted duration.
+describe("window boundaries", () => {
+    /** a Time-domain track whose FIRST force section stalls before its own exit, followed by a
+     *  second force section that stays stalled (a frozen cart is a fixed point: `ds = v·Δt` with
+     *  `v == 0`). So the arc plateau starts inside section A and reaches past its exit sample —
+     *  and A is first in the chain, so its `entryD`/`entryT` are exactly 0 and a length of
+     *  `exitD` lands bit-exactly on the boundary. */
+    function stalledPair(): { state: State; eid: number; a: number; b: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        const a = createSection(state, 0, SectionKind.Force, 6); // 6 s at a sustained 1.2 g
+        createForcePoint(state, a, 0, 1.2);
+        const b = appendSection(state, SectionKind.Force);
+        state.step(0);
+        return { state, eid, a, b };
+    }
+
+    /** section `id`'s exit station on the independently rebuilt table, under the same clamp
+     *  `domain.windowOf` applies (`min(endSample, n − 1)`). */
+    function exitStation(eid: number, id: number): { d: number; t: number } {
+        const tab = table(eid);
+        const info = sectionInfo.get(id);
+        if (!info) throw new Error(`no bake for section ${id}`);
+        const end = Math.min(info.endSample, tab.arc.length - 1);
+        return { d: tab.arc[end], t: tab.t[end] };
+    }
+
+    test("a landing extent exactly at the exit takes the exit's own time, not the stall past it", () => {
+        const { state, eid, a, b } = stalledPair();
+        const outB = bakeOut.get(eid);
+        if (!outB) throw new Error("no bake");
+        // the plateau really does reach past A's exit: B's first edge is frozen too.
+        const infoB = sectionInfo.get(b);
+        if (!infoB) throw new Error("no bake for B");
+        expect(outB.ds[infoB.startSample]).toBe(0);
+
+        const exit = exitStation(eid, a);
+        expect(exit.d).toBeGreaterThan(0);
+        // A is the first section, so `entryD` is exactly 0 and this length lands bit-exactly on
+        // the exit station — the one address where the tie rule decides the answer.
+        const landed = convertSolve(state, a, {
+            points: [{ s: exit.d, g: 1 }],
+            length: exit.d,
+            ds: 0.5,
+        });
+        if (!landed) throw new Error("convertSolve rejected a live track");
+        expect(landed.length).toBe(exit.t);
+        expect(landed.points[0].s).toBe(exit.t);
+        // and the absorbed answer is a genuinely different number — the downstream section's
+        // whole frozen duration, which is what makes this worth pinning.
+        const absorbed = exitStation(eid, b).t;
+        expect(absorbed).toBeGreaterThan(exit.t + 1);
+    });
+
+    test("the inverse direction returns its stations exactly too", () => {
+        // The mirror of the above, on the SECOND section so the two tables have to cancel a
+        // nonzero offset rather than agreeing trivially at the track origin. It is a symmetry
+        // guard, not a regression: the time axis carries no plateau of its own (a derived
+        // `dt = ds/v̄` vanishes only where `ds` does, so a t-tie is an arc-tie), so `timeToArc`
+        // has no stall to absorb — the branch is verified by mutation instead.
+        const { state, eid, b } = stalledPair();
+        const info = sectionInfo.get(b);
+        if (!info) throw new Error("no bake for B");
+        expect(table(eid).arc[info.startSample]).toBeGreaterThan(0); // a real offset to cancel
+        const seed = sectionForces(state, b)[0];
+        expect(seed.s).toBe(0); // B's entry keyframe sits exactly on its own station
+
+        expect(convertDomain(createHistory(), state, Domain.Distance)).toBe(true);
+        const back = sectionForces(state, b).find((p) => p.id === seed.id);
+        expect(back?.s).toBe(0);
     });
 });

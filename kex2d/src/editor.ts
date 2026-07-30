@@ -8,7 +8,7 @@
  *  over its target. */
 
 import type { State } from "@dylanebert/shallot";
-import { Basis } from "./timeline";
+import { Domain } from "./section";
 import { forceAt, Handle, handleAt, sectionAt } from "./track";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
@@ -123,14 +123,12 @@ interface EditorState {
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
     snap: boolean;
-    /** which global axis the timeline chart reads (`timeline.Basis`): `Distance` (the
-     *  default — metres from the ride start) or `Time` (seconds from it). Pure VIEW state,
-     *  the snap magnet's twin: a persistent session preference, picked from the ruler's
-     *  context menu (no keyboard shortcut — the second feel check-in's call), never a
-     *  history entry and never a storage kind — every keyframe stays stored as
-     *  section-local arclength in either basis, and the chart projects at the one
-     *  `dToU`/`uToD` seam. */
-    basis: Basis;
+    /** which global axis the timeline chart reads: `Distance` (metres from the ride start) or
+     *  `Time` (seconds from it). **Transitional** — the chart's axis IS `Track.domain` now that
+     *  the force store carries the unit, so this view copy is what stage 5 of the time-domain
+     *  work deletes in favour of the document read. Picked from the ruler's context menu (no
+     *  keyboard shortcut — the second feel check-in's call). */
+    basis: Domain;
     /** whether a pointer drag is in flight (any gesture routed through `beginDrag`). App
      *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
      *  on the chrome under the cursor. ephemeral, read via the per-RAF tick. */
@@ -206,7 +204,7 @@ export const editor: EditorState = {
     forceMenu: null,
     rulerMenu: null,
     snap: true,
-    basis: Basis.Distance,
+    basis: Domain.Distance,
     dragging: false,
     hoverSection: null,
     hover: "viewport",
@@ -432,7 +430,7 @@ export function toggleSnap(): void {
 /** set the timeline's basis directly — the ruler menu's Meters/Seconds rows each pick their own
  *  target; this is the ONE write path (no keyboard twin — the second feel check-in's call). A
  *  free view change: the store is never touched, so there is nothing to undo. */
-export function setBasis(b: Basis): void {
+export function setBasis(b: Domain): void {
     editor.basis = b;
 }
 

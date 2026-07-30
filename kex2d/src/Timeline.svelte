@@ -43,8 +43,8 @@ import {
     setForceTangentMode,
     undo,
 } from "./history";
+import { Domain } from "./section";
 import {
-    Basis,
     clampDelta,
     clampView,
     composeTangent,
@@ -139,11 +139,11 @@ const snapLen = $derived.by((): number => {
 // menu can't show a lit Seconds row over a metre axis. Tick-derived like the magnet, so it lags a
 // frame — which is why the flip's own re-frame is deferred to the same frame (`applyBasis`)
 // instead of writing `view` live.
-const basis = $derived.by((): Basis => {
+const basis = $derived.by((): Domain => {
     void tick;
-    return mapping === null ? Basis.Distance : editor.basis;
+    return mapping === null ? Domain.Distance : editor.basis;
 });
-const timeBasis = $derived(basis === Basis.Time);
+const timeBasis = $derived(basis === Domain.Time);
 // the position field's key + unit follow the basis (the readout suffix the ruler's ticks wear too).
 const posLabel = $derived(timeBasis ? "t" : "d");
 const posUnit = $derived(timeBasis ? "s" : "m");
@@ -273,15 +273,15 @@ const tTotal = $derived.by((): number => {
     return bakeOut.get(eid)?.tTotal ?? 0;
 });
 // the cart↔chart projection AND the basis seam's table: the cart rides in time, and
-// `Basis.Time` reads the chart's x on that same clock.
+// `Domain.Time` reads the chart's x on that same clock.
 const mapping = $derived.by((): Mapping | null => {
     void tick;
     return eid === null ? null : trackMapping(eid);
 });
 
 // ── the basis seam (timeline.ts `dToU`/`uToD`) ──
-// the chart's internal x is the BASIS coordinate u: global distance d in `Basis.Distance`
-// (identity — today's only axis) or global time t in `Basis.Time`, projected through the live
+// the chart's internal x is the axis coordinate u: global distance d in `Domain.Distance`
+// (identity) or global time t in `Domain.Time`, projected through the live
 // bake's arc↔time table. Every draw path projects d → u here (`markerX`) and every read/write
 // path inverts u → d here (`dAtPx` for an absolute placement, `grabD` for a grabbed subject);
 // nothing downstream branches on the basis again, bar the sanctioned constant picks (the `GRID`
@@ -414,7 +414,7 @@ $effect(() => {
 // units (`view.pan`/`pxPerM` are basis-unit quantities). the live `editor.basis` drives the
 // projection here, not the tick-derived `basis`, which lags a frame.
 let pendingWin: { l: number; r: number } | null = null;
-function applyBasis(target: Basis): void {
+function applyBasis(target: Domain): void {
     if (editor.dragging) return; // a live gesture holds the document axis still (editor-ui.md)
     if (editor.basis === target) return; // already there — the menu's "picking the checked row is a no-op" law
     // the window is carried as FRACTIONS of the addressable span — `navWindow`'s own
@@ -1516,14 +1516,14 @@ const rulerMenuItems = $derived.by((): MenuItem[] => {
     return [
         {
             label: "Meters",
-            checked: basis === Basis.Distance,
-            action: () => applyBasis(Basis.Distance),
+            checked: basis === Domain.Distance,
+            action: () => applyBasis(Domain.Distance),
         },
         {
             label: "Seconds",
             enabled: live,
-            checked: basis === Basis.Time,
-            action: () => applyBasis(Basis.Time),
+            checked: basis === Domain.Time,
+            action: () => applyBasis(Domain.Time),
         },
     ];
 });
@@ -2591,7 +2591,7 @@ onMount(() => {
             // honestly), and every keyframe's coordinate IN it — paired with the stored s the flow
             // asserts held, since the honest-slide assertion is exactly "s the same, u different"
             // across an upstream speed edit. Tick-derived, so a flow polls it.
-            k.basis = (): string => (basis === Basis.Time ? "time" : "distance");
+            k.basis = (): string => (basis === Domain.Time ? "time" : "distance");
             k.forceU = (): { id: number; s: number; u: number }[] =>
                 forcePts.map((p) => ({ id: p.id, s: p.s, u: uOf(p.startS + p.s) }));
         }
