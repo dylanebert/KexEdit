@@ -22,6 +22,7 @@ import {
     selectForces,
     selectSection,
     snapActive,
+    toggleLockedSet,
     toggleSnap,
 } from "./editor";
 import {
@@ -642,6 +643,12 @@ const selForce = $derived.by((): number | null => {
 const selForceSet = $derived.by((): Set<number> => {
     void tick;
     return editor.forces.ids;
+});
+// locked force-keyframe ids for the live optimize session (kex2d-optimize-mode stage 1) — read
+// through the tick like `selForceSet`, so the diamond's locked ring stays live across a toggle.
+const lockedSet = $derived.by((): Set<number> => {
+    void tick;
+    return editor.locked;
 });
 const selPoint = $derived.by((): ForcePt | null => {
     if (selForce === null) return null;
@@ -2567,6 +2574,16 @@ onMount(() => {
                 );
                 for (const w of nudgeForces(members, ds, dg)) setForcePoint(ecs, w.id, w.s, w.g);
                 commit(history);
+            } else if (
+                (e.key === "l" || e.key === "L") &&
+                editor.optimizing !== null &&
+                editor.forces.ids.size > 0
+            ) {
+                // the basic lock/free toggle (`kex2d-optimize-mode` stage 1): only meaningful
+                // inside a live optimize session, over the selected force keyframe set — the
+                // existing multiselect grammar is the lock gesture's own selection surface.
+                e.preventDefault();
+                toggleLockedSet([...editor.forces.ids]);
             }
         }
     };
@@ -2853,6 +2870,13 @@ onMount(() => {
                                 class="fmarker"
                                 points="{mx},{my - FMARKER_R} {mx + FMARKER_R},{my} {mx},{my + FMARKER_R} {mx - FMARKER_R},{my}"
                             />
+                            {#if editor.optimizing?.section === p.section && lockedSet.has(p.id)}
+                                <!-- the locked ring (kex2d-optimize-mode stage 1): minimal chrome, one
+                                     extra ring around a locked keyframe's diamond — no new glyph
+                                     meaning invented, `editor-ui.md`'s constraint vocabulary is stage
+                                     4's job; this is the smallest mark that reads as "won't move". -->
+                                <circle class="flock" cx={mx} cy={my} r={FMARKER_R + 3} />
+                            {/if}
                         </g>
                     {/if}
                 {/each}
@@ -3568,6 +3592,15 @@ onMount(() => {
     .fpt.active .fmarker {
         stroke: #fff;
         stroke-width: 1.8;
+    }
+    /* the optimize-mode lock ring (kex2d-optimize-mode stage 1) — a neutral ring, never the
+       accent or a kind color (both already mean something else), so "locked" reads as its own
+       fact rather than borrowing selection's or kind's register. */
+    .flock {
+        fill: none;
+        stroke: #9aa0a6;
+        stroke-width: 1.4;
+        pointer-events: none;
     }
 
     /* the summoned tangent handles on the edited force keyframe (the force analogue of the

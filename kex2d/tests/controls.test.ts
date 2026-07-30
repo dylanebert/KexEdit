@@ -16,6 +16,7 @@ import {
     nodeMetrics,
     normDeg,
     polarNudge,
+    sectionDeleteAllowed,
     sectionSolvable,
     sectionsDeletable,
     selectedMetrics,
@@ -635,6 +636,26 @@ describe("sectionsDeletable — section multi-delete enablement", () => {
 
     test("an empty set disqualifies", () => {
         expect(sectionsDeletable(0, 3)).toBe(false);
+    });
+});
+
+// section-delete is blocked entirely while a live optimize session is open (kex2d-optimize-mode
+// stage 1 — the adversarial pass's blocker: right-click a force section → Optimize forces →
+// Delete used to destroy the section out from under the mode, stranding `editor.optimizing` on a
+// dead id with no menu left to reach Exit from). `attachControls`'s window keydown handler has no
+// DOM-free unit-test seam, so the guard is extracted as this predicate and tested directly.
+describe("sectionDeleteAllowed — optimize mode blocks section delete", () => {
+    test("no live session: delete is allowed", () => {
+        expect(sectionDeleteAllowed(null)).toBe(true);
+    });
+
+    test("a live session on ANY section blocks delete, not just its own", () => {
+        const session = {
+            section: 7,
+            stamp: { x: 0, y: 0, theta: 0 },
+            ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+        };
+        expect(sectionDeleteAllowed(session)).toBe(false);
     });
 });
 

@@ -53,6 +53,7 @@ import {
     type SectionLengthState,
     sectionLengthState,
     setForceEase as writeForceEase,
+    setForcePoint,
     setForceTangent,
     setSectionLength,
     setStickyLen,
@@ -723,6 +724,29 @@ export function solveGeo(
     entry: TrackEntry,
 ): void {
     landSolve(h, ecs, section, () => applyConvertGeo(ecs, section, solved, entry), true);
+}
+
+/** land an invoked optimize-mode solve (`optimizeMode.ts` drives it) on a section as one
+ *  undoable entry — the mode's own landing, sibling to `solveForce`/`solveGeo` but narrower: the
+ *  kernel (`optimize.ts`) only ever rewrites free keys' `g`, so `writes` carries just those pairs
+ *  (locked keys, `s`, easing, handles, length, and structure are the same values already there).
+ *  The whole-section snapshot pair still brackets it (so undo restores byte-identical even though
+ *  only a few `g` columns actually moved), but there is no provenance stamp: this isn't a kind
+ *  conversion, so there is nothing for a reverse convert to consult. */
+export function solveOptimize(
+    h: History,
+    ecs: State,
+    section: number,
+    writes: readonly { id: number; g: number }[],
+): void {
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotSection(ecs, section);
+    for (const w of writes) {
+        const st = forcePointState(ecs, w.id);
+        if (st) setForcePoint(ecs, w.id, st.s, w.g);
+    }
+    const after = snapshotSection(ecs, section);
+    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
 }
 
 /** land a section's stamped provenance verbatim as one undoable entry — the reverse convert's

@@ -7,6 +7,7 @@ import {
     exitTangentEdit,
     openContext,
     openNodeMenu,
+    type OptimizeSession,
     select,
     selectNodes,
     selectSection,
@@ -461,6 +462,18 @@ export function suffixRun(
  *  pure — device-free, unit-tested; the bulk row grays out otherwise (never hidden). */
 export function sectionsDeletable(selected: number, total: number): boolean {
     return selected > 0 && selected < total;
+}
+
+/** whether Delete/Backspace on a whole-section selection may run right now — false while ANY
+ *  optimize session is open (`editor.optimizing`, `kex2d-optimize-mode` stage 1), not just on the
+ *  session's own section: convert/delete/join aren't available inside the mode (the locked
+ *  decision's consent-boundary law). Deleting the session's own section would strand
+ *  `editor.optimizing` on a dead id with no menu left to reach Exit from — the section context
+ *  menu's Solve/Exit rows are the mode's only exit, and they live on that section's OWN menu.
+ *  Extracted as its own predicate (mirrors `sectionsDeletable`/`sectionSolvable` above) since
+ *  `attachControls`'s window keydown handler has no DOM-free unit-test seam otherwise. */
+export function sectionDeleteAllowed(optimizing: OptimizeSession | null): boolean {
+    return optimizing === null;
 }
 
 /** the force→geo fit's own invoke ceiling (dense bake edges): the largest input the modal's
@@ -1245,9 +1258,15 @@ export function attachControls(
 
         // a whole section (or section SET) selected: delete it (Del; also the context-menu action).
         // a multi-set deletes as ONE entry, guarded at the last-section floor (`removeSections`); the
-        // size-1 case is `removeSection`.
+        // size-1 case is `removeSection`. Guarded on `editor.optimizing`: convert/delete/join aren't
+        // available inside optimize mode (the locked decision's consent-boundary law) — deleting the
+        // section under a live session would strand `editor.optimizing` on a dead id (the mode's own
+        // Exit lives only on that section's own context menu, so nothing could ever reach it again).
         if (editor.section !== null) {
-            if (e.key === "Delete" || e.key === "Backspace") {
+            if (
+                (e.key === "Delete" || e.key === "Backspace") &&
+                sectionDeleteAllowed(editor.optimizing)
+            ) {
                 e.preventDefault();
                 if (editor.sections.ids.size > 1) {
                     if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);

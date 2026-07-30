@@ -5,6 +5,7 @@ import {
     attachControls,
     manipKnobs,
     nodeMembers,
+    sectionDeleteAllowed,
     sectionSolvable,
     sectionsDeletable,
     selectedMetrics,
@@ -13,12 +14,16 @@ import {
 import {
     beginConvert,
     beginDrag,
+    beginOptimize,
+    beginOptimizeSolve,
     closeContext,
     closeNodeMenu,
     convertProgress,
     dismissNotice,
     editor,
     endConvert,
+    endOptimize,
+    endOptimizeSolve,
     enterTangentEdit,
     exitTangentEdit,
     fitDone,
@@ -31,6 +36,8 @@ import {
 } from "./editor";
 import { convertForce } from "./forcegeo";
 import { convertGeo } from "./geoforce";
+import { enterOptimize, runOptimizeSection } from "./optimizeMode";
+import type { OptimizeResult } from "./optimize";
 import {
     beginMove,
     beginV0,
@@ -138,6 +145,41 @@ onMount(() => {
     return () => window.removeEventListener("keydown", onKey, { capture: true });
 });
 
+// the optimize solve's OWN blocking gate (`editor.optimizeSolving`) — same shape as the
+// conversion gate above, kept separate: the two invoked tools never overlap in scope, so one
+// shared boolean would only couple two independent modal surfaces for no reason.
+onMount(() => {
+    const onKey = (e: KeyboardEvent): void => {
+        if (!editor.optimizeSolving) return;
+        e.stopImmediatePropagation();
+        if (e.key === "Escape") cancelOptimizeSolve();
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+});
+
+// optimize mode's OWN permanent listener — the `editor.converting` key-swallow precedent
+// extended to "mode open" (`editor.optimizing !== null`), not just mid-solve: Escape is the
+// mode's own dismissal rung (Exit), and Delete/Backspace on a section selection is swallowed
+// here too — defense in depth alongside `controls.ts`'s own guard, since convert/delete/join
+// aren't available inside the mode (the locked decision's consent-boundary law). Gated on the
+// live field, not a tick-derived read (the dismissal standard every menu here wears).
+onMount(() => {
+    const onKey = (e: KeyboardEvent): void => {
+        if (editor.optimizing === null) return;
+        if (e.key === "Escape") {
+            e.stopImmediatePropagation();
+            endOptimize();
+            return;
+        }
+        if ((e.key === "Delete" || e.key === "Backspace") && editor.section !== null) {
+            e.stopImmediatePropagation();
+        }
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+});
+
 // cancel the live solve — the Cancel button, Escape, and nothing else. `convertGeo` rejects with
 // this reason, and the façade terminates its pool; the document was never written, so a cancel
 // closes the modal and says nothing (the author asked for it).
@@ -220,6 +262,67 @@ async function solveShape(section: number): Promise<void> {
         solveKind = null;
         endConvert();
     }
+}
+
+// ── optimize mode (kex2d-optimize-mode stage 1) ───────────────────────────────────
+// entering/exiting the mode is a read (`enterOptimize`/`endOptimize`) — no history entry; only a
+// landed Solve authors anything. The solve gets its OWN blocking gate (`editor.optimizeSolving`),
+// separate from the kind-conversion `editor.converting`: the two invoked tools never overlap in
+// scope, but sharing one boolean would couple two independent modal surfaces.
+let optimizeAbort: AbortController | null = null;
+
+function ctxOptimizeEnter(): void {
+    if (ctx === null) return;
+    const section = ctx.section;
+    closeContext();
+    const session = enterOptimize(ecs, section);
+    if (session) beginOptimize(session);
+}
+
+function ctxOptimizeExit(): void {
+    closeContext();
+    endOptimize();
+}
+
+/** a rudimentary per-key Δg ledger (stage 1's own minimal readout — the constraint-solver
+ *  residual, not the finished glyph/badge polish stage 4 adds): how many free keys moved and by
+ *  how much at most. */
+function ledgerText(r: OptimizeResult): string {
+    const moved = r.deltaG.filter((d) => d !== 0);
+    if (moved.length === 0) return "no change";
+    const max = Math.max(...moved.map(Math.abs));
+    return `${moved.length} key${moved.length === 1 ? "" : "s"} moved · max Δg ${max.toFixed(2)} g`;
+}
+
+async function ctxOptimizeSolve(): Promise<void> {
+    const session = editor.optimizing;
+    if (session === null || editor.optimizeSolving) return;
+    closeContext();
+    const controller = new AbortController();
+    optimizeAbort = controller;
+    beginOptimizeSolve();
+    try {
+        const result = await runOptimizeSection(history, ecs, session, editor.locked, {
+            signal: controller.signal,
+        });
+        if (result.outcome === "solved") raise({ kind: "done", text: `Restored the exit · ${ledgerText(result)}` });
+        else if (result.outcome === "unreachable")
+            raise({ kind: "error", text: "Fewer than 3 free keys — nothing to solve." });
+        else raise({ kind: "error", text: "The solve did not converge. Nothing changed." });
+    } catch (e) {
+        if (!controller.signal.aborted) {
+            const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
+            console.error(detail);
+            raise({ kind: "error", text: "The solve could not finish. Nothing changed." });
+        }
+    } finally {
+        optimizeAbort = null;
+        endOptimizeSolve();
+    }
+}
+
+function cancelOptimizeSolve(): void {
+    optimizeAbort?.abort(new Error("cancelled"));
 }
 
 // whether the node selection is a multi-set. the CANVAS shows NO contextual controls over one
@@ -690,7 +793,10 @@ const sectionMulti = $derived.by((): boolean => {
 // defense in depth. the single-section case (`selected` = 1) reduces to today's `total > 1`.
 const canDelete = $derived.by((): boolean => {
     void tick;
-    return sectionsDeletable(editor.sections.ids.size, sections(ecs).length);
+    return (
+        sectionsDeletable(editor.sections.ids.size, sections(ecs).length) &&
+        sectionDeleteAllowed(editor.optimizing)
+    );
 });
 // whether the invoked geo→force solve is available on this selection (`sectionSolvable`,
 // controls.ts, target `Geo`): one geo section with a live bake. `convertGeo` THROWS on each of
@@ -739,12 +845,30 @@ const convertRow = $derived.by((): MenuItem => {
 // carries the set-lifted enablement. the destructive Convert row (both single and bulk) was
 // removed (kex2d-geoforce-editor stage 5): redundant with delete + append.
 const ctxItems = $derived.by((): MenuItem[] => {
+    void tick;
     if (ctx === null) return [];
+    // inside a live optimize session on THIS section: the mode's own minimal chrome replaces
+    // the normal menu entirely — convert/delete/join aren't available inside the mode (the
+    // locked decision's consent-boundary law).
+    if (editor.optimizing !== null && editor.optimizing.section === ctx.section) {
+        return [
+            { label: "Solve", action: ctxOptimizeSolve, enabled: !editor.optimizeSolving },
+            { label: "Exit", action: ctxOptimizeExit },
+        ];
+    }
     const del = sectionMulti ? ctxDeleteSet : ctxDelete;
-    return [
-        convertRow,
-        { label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: del },
-    ];
+    const items: MenuItem[] = [convertRow];
+    // the mode's entry row — a force section only, and only when no other optimize session is
+    // already open (one mode at a time, mirroring the conversion tier's per-section lock).
+    if (ctxKind === SectionKind.Force && !sectionMulti) {
+        items.push({
+            label: "Optimize forces",
+            enabled: canSolveShape && editor.optimizing === null,
+            action: ctxOptimizeEnter,
+        });
+    }
+    items.push({ label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: del });
+    return items;
 });
 // convert this geo shape into the force section that reproduces it (`geoforce.ts`) — the
 // conversion row's geo→force half. the menu closes first: the convert is modal, and its own
@@ -763,12 +887,13 @@ function ctxSolveShape(): void {
     void solveShape(section);
 }
 function ctxDelete(): void {
-    if (ctx === null) return;
+    if (ctx === null || !sectionDeleteAllowed(editor.optimizing)) return;
     // no explicit close: removing the section makes `ctx` derive null, so the menu dismisses
     // by subject existence (one mechanism) and the $effect clears the stale target id.
     if (removeSection(history, ecs, ctx.section)) selectSection(null);
 }
 function ctxDeleteSet(): void {
+    if (!sectionDeleteAllowed(editor.optimizing)) return;
     if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
 }
 // dismiss the menu on any outside press or Escape (clicks on the menu itself pass through
@@ -806,6 +931,13 @@ onMount(() => {
 const solving = $derived.by((): boolean => {
     void tick;
     return editor.converting !== null;
+});
+// the optimize solve's own blocking gate, read the same tick-derived way — kept as its own
+// primitive so `.content`'s `inert` and the capture-phase key swallow above never fight over
+// which gate is live (the two invoked tools never overlap in scope).
+const optimizeBusy = $derived.by((): boolean => {
+    void tick;
+    return editor.optimizeSolving;
 });
 const solveText = $derived.by((): string => {
     void tick;
@@ -918,7 +1050,7 @@ $effect(() => {
      layout is exactly as if the wrapper weren't there; `inert` while a solve runs takes pointer,
      focus, and activation from the whole subtree at once (the scrim below is its sibling, so it
      stays live). -->
-<div class="content" inert={solving}>
+<div class="content" inert={solving || optimizeBusy}>
     <!-- the shaping viewport. `.viewport` is its stable hook: the harness drives it by class, not
          by depth under `#app`, so wrapping it (the inert content) can't silently unhook it. -->
     <canvas class="viewport" bind:this={canvas}></canvas>
@@ -1114,6 +1246,20 @@ $effect(() => {
             <div class="title">{modalTitle}</div>
             <div class="stat" aria-live="off">{solveText}</div>
             <button type="button" class="cancel" title="Cancel (Esc)" onclick={cancelSolve}>
+                Cancel
+            </button>
+        </div>
+    </div>
+{/if}
+
+<!-- the optimize solve's own minimal modal — an indeterminate wait (the kernel has no phase to
+     report, `geofit-async.ts`'s precedent) + Cancel, the mode's OWN blocking gate. -->
+{#if optimizeBusy}
+    <div class="scrim" role="presentation" oncontextmenu={(e) => e.preventDefault()}>
+        <div class="convert" role="dialog" aria-modal="true" aria-label="Solving" tabindex="-1">
+            <div class="title">Solving</div>
+            <div class="stat" aria-live="off">Restoring the exit…</div>
+            <button type="button" class="cancel" title="Cancel (Esc)" onclick={cancelOptimizeSolve}>
                 Cancel
             </button>
         </div>

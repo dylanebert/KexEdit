@@ -118,6 +118,29 @@ const TrackDrawSystem: System = {
         if (!ctx) return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
 
+        // optimize mode's whole-shape ghost (kex2d-optimize-mode stage 1): the mode-entry
+        // geometry, frozen at `beginOptimize` and never re-derived — a faint dashed reference
+        // so the author sees how far the current draft has drifted from where the mode's stamp
+        // was taken. Drawn first (underneath the live track); the ghost never picks or hovers.
+        if (editor.optimizing) {
+            const { x: gx, y: gy } = editor.optimizing.ghost;
+            if (gx.length >= 2) {
+                ctx.save();
+                ctx.strokeStyle = "rgba(240, 236, 232, 0.25)";
+                ctx.lineWidth = 2;
+                ctx.setLineDash([6, 4]);
+                ctx.beginPath();
+                for (let i = 0; i < gx.length; i++) {
+                    const px = ox + gx[i] * sx;
+                    const py = oy + gy[i] * sy;
+                    if (i === 0) ctx.moveTo(px, py);
+                    else ctx.lineTo(px, py);
+                }
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
         for (const trackEid of ecs.query([Track])) {
             const count = Track.count.get(trackEid);
             const s = samples.get(trackEid);

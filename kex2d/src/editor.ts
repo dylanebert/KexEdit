@@ -146,6 +146,43 @@ interface EditorState {
      *  auto-dismissed. it lives here and nowhere else: nothing of a solve past points / length /
      *  realized `ds` is ever stored on the document. */
     notice: Notice | null;
+    /** the optimize-mode session in flight on a force section, or null — the mode-scoped stamp +
+     *  entry-frame ghost (`kex2d-optimize-mode` stage 1: `optimize.ts`'s masked solve). Entering
+     *  the mode stamps the section's CURRENT exit as the pin and freezes a ghost of the CURRENT
+     *  shape; both live and die with this field — there is no persistent pin. Solving never clears
+     *  it (a solve is invoked repeatedly in-mode); only `endOptimize` (the Exit row) does. */
+    optimizing: OptimizeSession | null;
+    /** locked force-keyframe ids for the live optimize session — mode-scoped (discarded on
+     *  `endOptimize`, per the stage-1 slice; persistence-across-solves is stage 4). All keys are
+     *  free by default (the locked decision's "all-free, locking is the gesture" law); a key not
+     *  in this set is a free DOF the solve may move. Meaningless outside a session, but not reset
+     *  automatically on entry ordering — `beginOptimize` clears it explicitly. */
+    locked: Set<number>;
+    /** whether an invoked optimize solve is running — the mode's OWN blocking gate, separate from
+     *  `converting` (a geo↔force kind conversion): the two invoked tools never overlap in scope
+     *  (a converting section can't be mid-optimize, since entering optimize mode requires an
+     *  already-force, already-baked section) but share nothing else, so a shared boolean would
+     *  couple two independent modal surfaces. */
+    optimizeSolving: boolean;
+}
+
+/** the mode-entry stamp + ghost the optimize kernel (`optimize.ts`) and its editor command
+ *  (`optimizeMode.ts`) read/write against — structural, so this module never imports either (the
+ *  `SolveOutcome`/`Converting` precedent). `stamp` is the pin (frozen at mode entry — it lives and
+ *  dies with the session, the mode-scoped-stamp law); `ghost` is the mode-entry shape's dense
+ *  positions, for the whole-shape ghost overlay — also frozen, never re-derived.
+ *
+ *  **Everything else about the section is read live, every solve.** There is no cached entry
+ *  frame/length/ds/domain here: `optimizeMode.runOptimizeSection` re-reads the section's CURRENT
+ *  baking parameters at each invoke (`sectionSpec`), same as any other invoked command. Upstream
+ *  authoring stays live while the mode is open — nothing freezes it — so a section's entry frame
+ *  CAN drift out from under an open session (an upstream edit, still permitted): a `Solve` then
+ *  steers the CURRENT entry toward the stamp taken at a possibly-different one. Whether that's
+ *  felt as useful or surprising is a stage-2 checkpoint question, not resolved here. */
+export interface OptimizeSession {
+    section: number;
+    stamp: { x: number; y: number; theta: number };
+    ghost: { x: Float32Array; y: Float32Array };
 }
 
 /** a solve in flight: the façade's own progress, rewritten per report. */
@@ -203,7 +240,65 @@ export const editor: EditorState = {
     hover: "viewport",
     converting: null,
     notice: null,
+    optimizing: null,
+    locked: new Set(),
+    optimizeSolving: false,
 };
+
+// ── optimize mode (kex2d-optimize-mode stage 1) ───────────────────────────────────
+// mode-scoped: entering stamps the exit and freezes a ghost, both die on `endOptimize`. locking is
+// a set of force-keyframe ids, all-free by default (the locked decision's consent-boundary law) —
+// discarded on exit, per the stage-1 slice (persistence across solves is stage 4).
+
+/** enter optimize mode on a force section: stamp its current exit, freeze the mode-entry ghost,
+ *  clear any stale lock set from a prior session. does not itself touch history — entering the
+ *  mode authors nothing (a `Solve` inside it does, landed separately). */
+export function beginOptimize(session: OptimizeSession): void {
+    editor.optimizing = session;
+    editor.locked = new Set();
+    editor.notice = null;
+}
+
+/** exit optimize mode (the Exit row / Esc): drop the stamp, the ghost, and every lock. a solve
+ *  already landed stays landed (undo is the way back, same as any other authored edit) — only the
+ *  session's own ephemeral state clears. */
+export function endOptimize(): void {
+    editor.optimizing = null;
+    editor.locked.clear();
+    editor.optimizeSolving = false;
+}
+
+/** toggle a single force keyframe's lock — the basic lock/free gesture. a no-op outside a live
+ *  session (nothing to lock against). */
+export function toggleLocked(id: number): void {
+    if (editor.optimizing === null) return;
+    if (editor.locked.has(id)) editor.locked.delete(id);
+    else editor.locked.add(id);
+}
+
+/** toggle a SET of force keyframes' lock as one gesture (the multiselect bulk form, mirroring the
+ *  bulk force ops elsewhere): if every member is already locked, unlock them all; otherwise lock
+ *  every member (the "select some free keys among locked ones" case locks the rest, matching the
+ *  bulk-toggle convention the easing/tangent-mode rows already use — act on the whole set, not
+ *  per-member). a no-op outside a live session. */
+export function toggleLockedSet(ids: readonly number[]): void {
+    if (editor.optimizing === null || ids.length === 0) return;
+    const allLocked = ids.every((id) => editor.locked.has(id));
+    for (const id of ids) {
+        if (allLocked) editor.locked.delete(id);
+        else editor.locked.add(id);
+    }
+}
+
+/** open the optimize solve's own blocking gate — a solve is in flight, no other editor input. */
+export function beginOptimizeSolve(): void {
+    editor.optimizeSolving = true;
+}
+
+/** close the optimize solve's blocking gate — resolution, cancel, or failure alike. */
+export function endOptimizeSolve(): void {
+    editor.optimizeSolving = false;
+}
 
 // ── the invoked-solve gate ────────────────────────────────────────────────────────
 // one geo→force solve at a time, modal for its whole duration (`geoforce.ts`: the answer
