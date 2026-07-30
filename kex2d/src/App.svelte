@@ -287,6 +287,14 @@ function ctxOptimizeExit(): void {
 /** a rudimentary per-key Δg ledger (stage 1's own minimal readout — the constraint-solver
  *  residual, not the finished glyph/badge polish stage 4 adds): how many free keys moved and by
  *  how much at most. */
+// the refusal taxonomy's labels — one line per certifying check (`optimize.UnreachableReason`).
+function unreachableText(reason: OptimizeResult["reason"]): string {
+    if (reason === "stall") return "The draft stalls before the exit. Nothing changed.";
+    if (reason === "conditioning")
+        return "The free keys can't steer the exit from here. Nothing changed.";
+    return "Fewer than 3 free keys — nothing to solve.";
+}
+
 function ledgerText(r: OptimizeResult): string {
     const moved = r.deltaG.filter((d) => d !== 0);
     if (moved.length === 0) return "no change";
@@ -307,7 +315,7 @@ async function ctxOptimizeSolve(): Promise<void> {
         });
         if (result.outcome === "solved") raise({ kind: "done", text: `Restored the exit · ${ledgerText(result)}` });
         else if (result.outcome === "unreachable")
-            raise({ kind: "error", text: "Fewer than 3 free keys — nothing to solve." });
+            raise({ kind: "error", text: unreachableText(result.reason) });
         else raise({ kind: "error", text: "The solve did not converge. Nothing changed." });
     } catch (e) {
         if (!controller.signal.aborted) {

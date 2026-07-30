@@ -1,4 +1,5 @@
-const G = 9.80665;
+/** standard gravity (m/s²) — the one value every force↔geometry conversion shares. */
+export const G = 9.80665;
 
 /**
  * numerical velocity floor: `step` clamps `vSafe = max(|v|, V_FLOOR)` so the

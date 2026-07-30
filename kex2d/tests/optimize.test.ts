@@ -4,12 +4,12 @@ import { beginOptimize, editor, endOptimize, toggleLockedSet } from "../src/edit
 import { createHistory, undo } from "../src/history";
 import {
     computeExit,
+    derivedTol,
     MIN_FREE,
     type OptimizeOpts,
     solveOptimize,
-    TOL_ANGLE,
-    TOL_POS,
 } from "../src/optimize";
+import optimizeGolden from "./fixtures/optimize-golden.json";
 import { enterOptimize, runOptimizeSection, StaleOptimize } from "../src/optimizeMode";
 import { Easing, type ForcePoint } from "../src/profile";
 import type { Entry } from "../src/section";
@@ -179,7 +179,7 @@ describe("solveOptimize — refusal", () => {
 });
 
 describe("solveOptimize — actually restores the stamped exit", () => {
-    test("a genuine drift converges within the provisional floor", () => {
+    test("a genuine drift converges within the derived floor", () => {
         const { points, length } = corpus()[0];
         const stamp = computeExit(ENTRY, points, length, DS);
         const edited = points.map((p) => ({ ...p }));
@@ -223,14 +223,232 @@ describe("solveOptimize — actually restores the stamped exit", () => {
                     });
                     const where = `key ${k} ${sign > 0 ? "+" : "−"}0.2 g`;
                     expect(`${where}: ${r.outcome}`).toBe(`${where}: solved`);
+                    // the floor-tolerance assert (Validation): replay the SOLVED points through
+                    // the production integrator and demand the exit meet the DERIVED floor —
+                    // the two mechanisms' own disagreement (f32 replay noise over the section's
+                    // step count), never an absolute number.
+                    const floor = derivedTol(stamp, length, DS);
                     const back = computeExit(ENTRY, r.points, length, DS);
-                    expect(Math.abs(back.x - stamp.x)).toBeLessThan(TOL_POS);
-                    expect(Math.abs(back.y - stamp.y)).toBeLessThan(TOL_POS);
-                    expect(Math.abs(back.theta - stamp.theta)).toBeLessThan(TOL_ANGLE);
+                    expect(Math.abs(back.x - stamp.x)).toBeLessThan(floor.pos);
+                    expect(Math.abs(back.y - stamp.y)).toBeLessThan(floor.pos);
+                    expect(Math.abs(back.theta - stamp.theta)).toBeLessThan(floor.angle);
                 }
             }
         });
     }
+});
+
+describe("solveOptimize — stage-3 refusal taxonomy + continuation (kex2d-optimize-mode)", () => {
+    // RED FIRST (all four, observed 2026-07-30 against the stage-1 kernel before any stage-3
+    // change, via a scratch probe over the same inputs):
+    //   large drift  → `"diverged"` iters=30 (converges at 51 with maxIters=200 — slow, not a
+    //                  fold; the continuation ladder is what brings it inside the budget)
+    //   stalled draft → `"diverged"` iters=30 res=1.12 (the vSafe-floor chaotic regime burned
+    //                  the whole budget; the θ-row certificate refuses it at invoke)
+    //   flattened    → `"diverged"` iters=0 (the interior A3 Cholesky failed — rank-deficient,
+    //                  but reported as non-convergence; the at-invoke conditioning check is what
+    //                  certifies it as `"unreachable"`)
+    //   hill×10 drift → `"diverged"` res=18 m (large drift at scale; continuation)
+
+    test("large drift solves through the continuation ladder (was: diverged at MAX_ITERS)", () => {
+        const { points, length } = corpus()[0];
+        const stamp = computeExit(ENTRY, points, length, DS);
+        const edited = points.map((p, i) => ({ ...p, g: i === 1 ? p.g + 3 : p.g }));
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: edited,
+            locked: new Set(),
+            length,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("solved");
+    });
+
+    test("a stalled draft (vSafe floor active) refuses as unreachable at invoke, reason stall", () => {
+        // entry v = 8 m/s under a +2.2 g climb stalls the march (vMin hits 0); the exit Jacobian's
+        // θ row measured ~8e2 rad/g against the G·L/V_WARN² feasible bound of ~3.9e2 (lab §4b).
+        const climb: ForcePoint[] = [
+            { s: 0, g: 1 },
+            { s: 10, g: 2.2 },
+            { s: 20, g: 0.4 },
+            { s: 30, g: 1 },
+            { s: 40, g: 1 },
+        ];
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 8 };
+        const stamp = computeExit(entry, climb, 40, DS);
+        const edited = climb.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.2 : p.g }));
+        const r = solveOptimize({
+            entry,
+            points: edited,
+            locked: new Set(),
+            length: 40,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("unreachable");
+        expect(r.reason).toBe("stall");
+        expect(r.iters).toBe(0); // certified at invoke, no budget burned
+        expect(r.points).toEqual(edited);
+        expect(r.deltaG).toEqual(new Array(edited.length).fill(0));
+    });
+
+    test("a rank-deficient draft (flattened in-mode) refuses as unreachable, reason conditioning", () => {
+        // the author enters the mode on the gentle hill, then flattens every key to 1 g: the
+        // draft is exactly straight, its exit-Jacobian x row vanishes at first order (σmin/σmax
+        // measured 0.0 in lab §4), and the stamped x is unreachable along the remaining rows.
+        const { points, length } = corpus()[0];
+        const stamp = computeExit(ENTRY, points, length, DS);
+        const flattened = points.map((p) => ({ ...p, g: 1 }));
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: flattened,
+            locked: new Set(),
+            length,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("unreachable");
+        expect(r.reason).toBe("conditioning");
+        expect(r.points).toEqual(flattened);
+        expect(r.deltaG).toEqual(new Array(flattened.length).fill(0));
+    });
+
+    test("a near-straight draft with a small in-mode edit still solves (the certificate must not over-fire)", () => {
+        // measured σmin/σmax ≈ 5e-5 at a ±0.01 g wiggle (lab §4) — above the 2^-16 FD-noise
+        // certification line, so this goes to the solver, which handles it (probe: solved,
+        // res 7e-6). Guards the conditioning threshold's derivation from creeping upward.
+        const flat: ForcePoint[] = [0, 10, 20, 30, 40].map((s) => ({ s, g: 1 }));
+        const stamp = computeExit(ENTRY, flat, 40, DS);
+        const edited = flat.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.05 : p.g }));
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: edited,
+            locked: new Set(),
+            length: 40,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("solved");
+    });
+
+    test("hill×10 (exit ≈ 400 m): a modest drift solves under the relative floor (was: fixed 1e-4 refused)", () => {
+        // at this scale the derived floor (~2e-3) sits far ABOVE the stage-1 fixed 1e-4
+        // (≈0.4σ of the replay noise over 800 steps), which refused honest solves — the
+        // relative-floor law's own worked case (lab §3).
+        const hill10: ForcePoint[] = [0, 100, 200, 300, 400].map((s, i) => ({
+            s,
+            g: [1, 1.5, 1, 0.8, 1][i],
+        }));
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 40 };
+        const stamp = computeExit(entry, hill10, 400, DS);
+        const edited = hill10.map((p, i) => ({ ...p, g: i === 3 ? p.g - 0.2 : p.g }));
+        const r = solveOptimize({
+            entry,
+            points: edited,
+            locked: new Set(),
+            length: 400,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("solved");
+        const floor = derivedTol(stamp, 400, DS);
+        const back = computeExit(entry, r.points, 400, DS);
+        expect(Math.abs(back.x - stamp.x)).toBeLessThan(floor.pos);
+        expect(Math.abs(back.y - stamp.y)).toBeLessThan(floor.pos);
+        expect(Math.abs(back.theta - stamp.theta)).toBeLessThan(floor.angle);
+    });
+
+    test("hill×10: an edit that stalls the march refuses as unreachable/stall, not diverged", () => {
+        // +0.2 g over a 100 m span extends the climb until v hits the floor (vMin = 0.00) —
+        // the long-section localized stall the march certificate catches where the L-scaled
+        // θ-row bound (G·L/V_WARN² ≈ 3.9e3 at L = 400) is too loose to see it.
+        const hill10: ForcePoint[] = [0, 100, 200, 300, 400].map((s, i) => ({
+            s,
+            g: [1, 1.5, 1, 0.8, 1][i],
+        }));
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 40 };
+        const stamp = computeExit(entry, hill10, 400, DS);
+        const edited = hill10.map((p, i) => ({ ...p, g: i === 3 ? p.g + 0.2 : p.g }));
+        const r = solveOptimize({
+            entry,
+            points: edited,
+            locked: new Set(),
+            length: 400,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("unreachable");
+        expect(r.reason).toBe("stall");
+        expect(r.iters).toBe(0);
+    });
+
+    test("free-count refusal carries its reason", () => {
+        const { points, length } = corpus()[0];
+        const r = solveOptimize(opts(points, length, new Set([0, 1, 2, 3])));
+        expect(r.outcome).toBe("unreachable");
+        expect(r.reason).toBe("free-count");
+    });
+
+    test("a diverged result never reads worse than the drift it started from", () => {
+        // the honest-backtrack law: with the t < 1e-3 acceptance removed, every accepted step
+        // strictly improves the scaled residual, and a refused solve reports its best-known
+        // reading — so "diverged" can never hand the caller a diagnosis worse than doing nothing.
+        const { points, length } = corpus()[1];
+        const stamp = computeExit(ENTRY, points, length, DS);
+        const edited = points.map((p, i) => ({ ...p, g: i === 1 ? p.g + 8 : p.g }));
+        const e0 = computeExit(ENTRY, edited, length, DS);
+        const init = Math.max(Math.abs(e0.x - stamp.x), Math.abs(e0.y - stamp.y));
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: edited,
+            locked: new Set(),
+            length,
+            ds: DS,
+            stamp,
+        });
+        if (r.outcome !== "solved") expect(r.residual).toBeLessThanOrEqual(init);
+    });
+});
+
+describe("solveOptimize — golden fixture (bit identity)", () => {
+    // the frozen contract on any change claiming to leave the solve alone (a perf change above
+    // all): the gentle-hill lock-and-solve case's exact output, compared with `toBe` — a one-ulp
+    // drift re-opens the human check (`convert-golden.json`'s precedent). Trip-by-design PROVEN:
+    // run with `JAC_H` mutated one octave (2^-9) the test fails (deltaG diverges from the 8th
+    // decimal). NOT tripped by a tolerance mutation — this case's converging iterate already
+    // sits below a 1σ floor, so the floor law is pinned by the hill×10 relative-floor test
+    // below, not by this fixture.
+    test("gentle hill, key 2 +0.6 g, key 0 locked — output bit-identical to the fixture", () => {
+        const hill: ForcePoint[] = [
+            { s: 0, g: 1 },
+            { s: 10, g: 1.5 },
+            { s: 20, g: 1 },
+            { s: 30, g: 0.8 },
+            { s: 40, g: 1 },
+        ];
+        const stamp = computeExit(ENTRY, hill, 40, DS);
+        expect(stamp.x).toBe(optimizeGolden.stamp.x);
+        expect(stamp.y).toBe(optimizeGolden.stamp.y);
+        expect(stamp.theta).toBe(optimizeGolden.stamp.theta);
+        const edited = hill.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.6 : p.g }));
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: edited,
+            locked: new Set([0]),
+            length: 40,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe(optimizeGolden.outcome as "solved");
+        expect(r.iters).toBe(optimizeGolden.iters);
+        expect(r.residual).toBe(optimizeGolden.residual);
+        expect(r.angleResidual).toBe(optimizeGolden.angleResidual);
+        for (let k = 0; k < r.points.length; k++) {
+            expect(r.points[k].g).toBe(optimizeGolden.g[k]);
+            expect(r.deltaG[k]).toBe(optimizeGolden.deltaG[k]);
+        }
+    });
 });
 
 // ── the document seam (optimizeMode.ts / editor.ts) ───────────────────────────────
