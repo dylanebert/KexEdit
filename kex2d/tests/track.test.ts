@@ -10,6 +10,7 @@ import {
     createForcePoint,
     createSection,
     createTrack,
+    setBakeFreeze,
     deleteSection,
     DS_NOMINAL,
     DT_NOMINAL,
@@ -2100,3 +2101,42 @@ function extentOf(state: State, id: number): number {
     if (eid === null) throw new Error("section missing");
     return Section.length.get(eid);
 }
+
+// ── the downstream freeze at the sample budget (kex2d-optimize-mode stage 7, review finding D) ──
+// reachable only on a track ALREADY past MAX_SAMPLES (the truncation-degraded regime): when the
+// live part consumes the whole budget, the frozen downstream part can't bake at all — and its
+// PRIOR-bake sectionInfo must not stand (stale info lies; an empty past-buffer range degrades
+// honestly, like any over-budget section).
+test("freeze with no downstream budget publishes empty ranges, never stale prior-bake info", () => {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    // a force section long enough to consume the whole sample budget on its own (edges =
+    // length/ds = 2200/0.5 = 4400 > MAX_SAMPLES = 4096), plus a downstream section.
+    const secA = createSection(state, 0, SectionKind.Force, 2200);
+    createForcePoint(state, secA, 0, 1);
+    createForcePoint(state, secA, 2200, 1);
+    const secB = createSection(state, 1, SectionKind.Force, 30);
+    createForcePoint(state, secB, 0, 1);
+    createForcePoint(state, secB, 30, 1);
+    state.step(0);
+    const stale = sectionInfo.get(secB);
+    if (!stale) throw new Error("no pre-freeze info");
+    expect(stale.startSample).toBeGreaterThan(MAX_SAMPLES); // the would-be past-budget range
+
+    const entry = sectionInfo.get(secA)?.entry ?? { x: 0, y: 0, theta: 0, v: 10 };
+    setBakeFreeze({ section: secA, entry: { ...entry } });
+    const rows = sectionForces(state, secA);
+    setForcePoint(state, rows[0].id, rows[0].s, rows[0].g + 0.2); // any in-mode edit → rebake
+    state.step(0);
+
+    // seen failing on 9f3dc41: the frozen bake skipped part B entirely and secB kept the
+    // PRE-FREEZE values above. post-fix it reads as an empty range at the buffer end.
+    const info = sectionInfo.get(secB);
+    if (!info) throw new Error("no post-freeze info");
+    const count = Track.count.get(eid);
+    expect(info.startSample).toBe(count);
+    expect(info.endSample).toBe(count);
+    expect(info.bakedNodes).toBe(0);
+    setBakeFreeze(null);
+});

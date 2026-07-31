@@ -8,6 +8,7 @@ import {
     forceCurve,
     loopTime,
     parkAtArc,
+    trackMapping,
 } from "../src/cart";
 import {
     addNode,
@@ -19,9 +20,15 @@ import {
     createSection,
     createTrack,
     deleteSection,
+    samples,
     SectionKind,
+    sectionForces,
+    sectionInfo,
     sections,
+    setBakeFreeze,
+    setForcePoint,
     setSectionLength,
+    Track,
 } from "../src/track";
 
 // cartPose rides the baked track; forceCurve reads the baked force per-sample over
@@ -194,4 +201,59 @@ test("a parked anchor re-resolves onto the chain when its section is deleted", (
     expect(st.park?.section).toBe(sec2); // re-resolved onto the survivor
     expect(cartArc(eid)).not.toBeNull();
     expect(cartArc(eid)).toBeCloseTo(16, 0); // ~same track place (sec2 now spans from 0)
+});
+
+// ── trackMapping under the downstream freeze (kex2d-optimize-mode stage 7, review finding C) ──
+// the freeze's seam is a zero-length gap EDGE over a real position jump, and every arclength
+// consumer must use the bake's own per-edge ds (gap contributes zero) — `forceCurve` and
+// `sectionSpans` already do; the mapping re-derived arc from raw chord distance and diverged
+// from the chart axis by the residual-gap length for every downstream park.
+test("trackMapping arclength follows the bake's ds convention across a frozen gap", () => {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    const secA = createSection(state, 0, SectionKind.Force, 40);
+    createForcePoint(state, secA, 0, 1);
+    createForcePoint(state, secA, 20, 1.4);
+    createForcePoint(state, secA, 40, 1);
+    const secB = createSection(state, 1, SectionKind.Force, 30);
+    createForcePoint(state, secB, 0, 1);
+    createForcePoint(state, secB, 30, 1);
+    state.step(0);
+
+    // freeze downstream at its current entry (what mode entry does), then move A's crest so
+    // the live exit wanders off the frozen entry — the gap opens.
+    const frozen = sectionInfo.get(secB)?.entry;
+    if (!frozen) throw new Error("no downstream entry");
+    setBakeFreeze({ section: secA, entry: { ...frozen } });
+    const crest = sectionForces(state, secA)[1];
+    setForcePoint(state, crest.id, crest.s, crest.g + 0.5);
+    state.step(0);
+
+    const out = bakeOut.get(eid);
+    const s = samples.get(eid);
+    const m = trackMapping(eid);
+    const n = Track.count.get(eid);
+    if (!out || !s || !m) throw new Error("no bake");
+    const infoA = sectionInfo.get(secA);
+    const infoB = sectionInfo.get(secB);
+    if (!infoA || !infoB) throw new Error("no info");
+
+    // positive control: the gap is real — a nonzero position jump across the seam…
+    const gap = Math.hypot(
+        s.posX[infoB.startSample] - s.posX[infoA.endSample],
+        s.posY[infoB.startSample] - s.posY[infoA.endSample],
+    );
+    expect(gap).toBeGreaterThan(0.01);
+    // …that the bake's own edge carries as ZERO arclength.
+    expect(out.ds[infoA.endSample]).toBe(0);
+
+    // the mapping must agree with the chart's own axis (prefix sums of out.ds) at every sample —
+    // seen failing on 9f3dc41 by exactly `gap` at every downstream sample (the chord re-derive).
+    let acc = 0;
+    for (let i = 1; i < n; i++) {
+        acc += out.ds[i - 1];
+        expect(Math.abs(m.arc[i] - acc)).toBeLessThan(1e-9);
+    }
+    setBakeFreeze(null);
 });

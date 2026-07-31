@@ -66,8 +66,11 @@ function table(eid: number): { arc: number[]; t: number[] } {
     if (!s || !out) throw new Error("no bake");
     const n = Track.count.get(eid);
     const arc = [0];
-    for (let i = 1; i < n; i++)
-        arc.push(arc[i - 1] + Math.hypot(s.posX[i] - s.posX[i - 1], s.posY[i] - s.posY[i - 1]));
+    // the bake's own per-edge ds is the arclength CONVENTION (stage-7 review finding C: the
+    // freeze's gap edge is zero-length over a real position jump, so a chord re-derive diverges
+    // from the chart axis). the independence this helper supplies is the window/interp logic,
+    // not the axis source — both sides must speak the one ds axis.
+    for (let i = 1; i < n; i++) arc.push(arc[i - 1] + out.ds[i - 1]);
     const t: number[] = [];
     for (let i = 0; i < n; i++) t.push(out.t[i]);
     return { arc, t };

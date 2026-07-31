@@ -247,9 +247,19 @@ export async function runOptimizeSection(
     };
 
     const authored = authoredHash(ecs);
+    // the lock ledger, frozen AT INVOKE (review finding B): `locked` is by-reference (the live
+    // `editor.locked`), and `endOptimize` clears that Set IN PLACE — a capture after the await
+    // would read whatever a mid-flight close (or any other in-place mutation) left behind.
+    const relock = new Set(locked);
     solving.add(sectionId);
     try {
         const result = await runOptimize(kernelOpts, opts);
+        // the mode may have closed — or closed and REOPENED as a new session — while the solve
+        // was in flight (review finding A): the sandbox contract's no-trace guarantee is a
+        // MODULE invariant, so a result may only land while the very session that invoked it is
+        // still the open one. `authoredHash` below can't catch this (Exit restores the draft
+        // byte-identically, so the hash matches); session identity is the check.
+        if (editor.optimizing !== session) throw new StaleOptimize(sectionId);
         const live = sectionAt(ecs, sectionId);
         if (live === null || Section.kind.get(live) !== SectionKind.Force)
             throw new StaleOptimize(sectionId);
@@ -269,8 +279,8 @@ export async function runOptimizeSection(
             // the landing reopens the mode with the experiment resumed (draft, locks, in-mode
             // undo/redo all intact), redoing it re-lands and closes. cloned at capture AND at
             // restore (`restoreSandbox` copies), so repeated undo/redo cycles and further edits
-            // in a reopened session can never mutate the entry's frozen state.
-            const relock = new Set(locked);
+            // in a reopened session can never mutate the entry's frozen state. `relock` was
+            // frozen at invoke, above (finding B).
             const sb = sandbox();
             const frozenU = sb ? [...sb.undo] : [];
             const frozenR = sb ? [...sb.redo] : [];

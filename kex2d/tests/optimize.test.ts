@@ -593,7 +593,11 @@ describe("runOptimizeSection — the document seam", () => {
 
     test("a solve lands atomically and undo restores the section byte-identical", async () => {
         const { state, sec } = forceTrack();
-        const session = enterOptimize(state, sec);
+        // the mode must actually be OPEN: a landing is only valid for the open session (the
+        // review-A invariant), so the bare enterOptimize-without-beginOptimize calling shape
+        // this test once used is now rejected by design.
+        if (!enterOptimizeMode(state, sec)) throw new Error("no session");
+        const session = editor.optimizing;
         if (!session) throw new Error("no session");
 
         // the author bumps an interior key, locking the first and last (the endpoints stay
@@ -633,7 +637,8 @@ describe("runOptimizeSection — the document seam", () => {
         // still keeps every write out). idempotence holds trivially: the mode closed, so there
         // is no second press. seen failing (doc hash diff) with the write filter removed.
         const { state, eid, sec } = forceTrack();
-        const session = enterOptimize(state, sec);
+        if (!enterOptimizeMode(state, sec)) throw new Error("no session");
+        const session = editor.optimizing;
         if (!session) throw new Error("no session");
         const before = docState(state, eid);
 
@@ -939,6 +944,89 @@ describe("the sandbox (kex2d-optimize-mode stage 7)", () => {
         expect(editor.optimizing).not.toBeNull(); // did NOT re-land over the new edit
         state.step(0);
         expect(docState(state, eid)).not.toEqual(beforeFork); // the new edit survived
+        exitOptimizeMode(state);
+    });
+
+    test("a Solve resolving AFTER the mode closed writes nothing — the no-trace guarantee is a module invariant", async () => {
+        // RED FIRST on 9f3dc41 (review finding A): the only post-await staleness check was
+        // `authoredHash`, which detects a changed draft, not a closed mode — a late-resolving
+        // Solve landed one outer entry after the user exited expecting no trace. The UI paths
+        // that make this hard to reach (inert content, Escape ordering) are accidents, not
+        // invariants; the module must enforce it. This is the reviewer's exact probe.
+        const { state, eid, sec } = forceTrack();
+        const h = createHistory();
+        enterOptimizeMode(state, sec);
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        const before = docState(state, eid);
+
+        const run = runOptimizeSection(h, state, session, editor.locked);
+        exitOptimizeMode(state); // synchronous close while the solve is in flight
+
+        let threw: unknown;
+        try {
+            await run;
+        } catch (e) {
+            threw = e;
+        }
+        expect(threw).toBeInstanceOf(StaleOptimize);
+        state.step(0);
+        expect(docState(state, eid)).toEqual(before); // byte-identical
+        expect(h.undo).toHaveLength(0); // the exit's no-trace contract survived the late resolve
+        expect(editor.optimizing).toBeNull();
+    });
+
+    test("a re-entered session mid-flight is a DIFFERENT session — the stale solve still discards", async () => {
+        // the identity check is per-session, not per-mode-openness: exit + re-enter while the
+        // old solve is in flight must not let the old result land into the new session.
+        const { state, eid, sec } = forceTrack();
+        const h = createHistory();
+        enterOptimizeMode(state, sec);
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        const run = runOptimizeSection(h, state, session, editor.locked);
+        exitOptimizeMode(state);
+        state.step(0);
+        expect(enterOptimizeMode(state, sec)).toBe(true); // a NEW session, same section
+        const before = docState(state, eid);
+
+        let threw: unknown;
+        try {
+            await run;
+        } catch (e) {
+            threw = e;
+        }
+        expect(threw).toBeInstanceOf(StaleOptimize);
+        state.step(0);
+        expect(docState(state, eid)).toEqual(before);
+        expect(h.undo).toHaveLength(0);
+        expect(editor.optimizing).not.toBeNull(); // the new session is untouched
+        exitOptimizeMode(state);
+    });
+
+    test("the lock ledger freezes AT INVOKE — an in-place clear mid-flight can't empty it", async () => {
+        // RED FIRST on 9f3dc41 (review finding B): `relock` was built from the live
+        // `editor.locked` AFTER the await, and `endOptimize` clears that Set in place — so any
+        // mid-flight clear emptied the landing's ledger and an undo-reopen lost the locks.
+        const { state, sec } = forceTrack();
+        const h = createHistory();
+        enterOptimizeMode(state, sec);
+        bump(h, state, sec);
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        const rows = sectionForces(state, sec);
+        editor.locked.add(rows[0].id);
+
+        const run = runOptimizeSection(h, state, session, editor.locked);
+        editor.locked.clear(); // the in-place mutation `endOptimize` performs, mid-flight
+        const result = await run;
+        expect(result.outcome).toBe("solved");
+        state.step(0);
+
+        undoRouted(h, state); // reopen — the ledger must be the one frozen at Solve-press time
+        expect(editor.optimizing).not.toBeNull();
+        expect(editor.locked.size).toBe(1);
+        expect(editor.locked.has(rows[0].id)).toBe(true);
         exitOptimizeMode(state);
     });
 

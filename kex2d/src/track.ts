@@ -2072,6 +2072,21 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
                 count: Math.min(cB.count, budget),
                 offset: countA,
             });
+        } else {
+            // downstream has no budget at all — reachable only on a track ALREADY past
+            // MAX_SAMPLES (the truncation-degraded regime the unfrozen bake warns about).
+            // publish empty past-buffer ranges rather than leaving PRIOR-bake info standing:
+            // stale info lies, an empty range degrades honestly (consumers reject it like any
+            // past-budget section). `fz.entry` is exact for the first downstream section and
+            // the best available stand-in for later ones — nothing baked to say otherwise.
+            for (let k = split; k < secs.length; k++) {
+                sectionInfo.set(secs[k].id, {
+                    entry: fz.entry,
+                    startSample: countA,
+                    endSample: countA,
+                    bakedNodes: 0,
+                });
+            }
         }
     }
     const count = parts.reduce((n, p) => n + p.count, 0);

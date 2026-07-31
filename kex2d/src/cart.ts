@@ -227,8 +227,11 @@ export function trackMapping(trackEid: number): Mapping | null {
     const n = Track.count.get(trackEid);
     if (n < 2) return null;
     const arc = new Float64Array(n);
-    for (let i = 1; i < n; i++)
-        arc[i] = arc[i - 1] + Math.hypot(s.posX[i] - s.posX[i - 1], s.posY[i] - s.posY[i - 1]);
+    // the bake's OWN per-edge ds, never a chord re-derive: the two agree to f32 rounding on a
+    // normal chain, but the downstream freeze's seam is a zero-length gap EDGE over a real
+    // position jump (track.ts, stage 7) — a chord walk would offset every downstream park from
+    // the chart's own axis (`forceCurve`/`sectionSpans` both sum `out.ds`) by the residual gap.
+    for (let i = 1; i < n; i++) arc[i] = arc[i - 1] + out.ds[i - 1];
     const t = new Float64Array(n);
     for (let i = 0; i < n; i++) t[i] = out.t[i];
     return { arc, t, n };
