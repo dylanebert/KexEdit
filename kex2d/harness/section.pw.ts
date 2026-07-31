@@ -945,8 +945,11 @@ test("optimize mode flow", async ({ page, boot }) => {
     expect(await sandboxDepth()).toBe(3); // the popover edit is a sandbox entry
     const flattened = sorted(await forces());
     await solveBtn.click();
-    await expect(reason).toBeVisible({ timeout: 30_000 });
-    await expect(reason).toContainText("can't steer");
+    // the refusal rides the app's shared transient notice, top-center, in the error register
+    // (stage-7 fourth check-in) — the panel carries no refusal line.
+    await expect(page.locator(".notice.bad")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".notice.bad")).toContainText("can't steer the exit.");
+    await expect(reason).toHaveCount(0); // the panel line is the starved reason only, and Solve is armed
     expect(await optimizing()).toBe(true); // a refusal is not an exit
     expect(sorted(await forces())).toEqual(flattened); // …and writes nothing
     expect(await undoDepth()).toBe(base); // …anywhere
@@ -968,7 +971,9 @@ test("optimize mode flow", async ({ page, boot }) => {
     await solveBtn.click();
     await expect.poll(optimizing, { timeout: 30_000 }).toBe(false); // Solve confirms AND closes
     await expect(panel).toHaveCount(0);
-    await expect(page.locator(".notice")).toHaveCount(0); // no stats toast — the animation IS the feedback
+    // no stats toast — the animation IS the feedback. leg 4's refusal notice may still be
+    // auto-dismissing, so the pin is register-shaped: no non-error (done-register) notice.
+    await expect(page.locator(".notice:not(.bad)")).toHaveCount(0);
     expect(await undoDepth()).toBe(base + 1); // the WHOLE experiment is ONE outer entry
     await expect.poll(landing).toBe(true); // the paced landing raised — the feedback
 

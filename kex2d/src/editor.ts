@@ -535,20 +535,20 @@ export function fitDone(r: FitOutcome): Notice {
     return { kind: "done", text: `${text} · ${misses.join(" · ")}` };
 }
 
-/** the in-mode readout for a solve that REFUSED (a refusal stays in the mode with the draft
- *  untouched, so its text lives on the mode panel, not the toast). one plain sentence per
- *  refusal class — `reason` is the certifying check on an `"unreachable"` answer
+/** the readout for a solve that REFUSED — raised on the shared transient notice (the app's one
+ *  status surface, stage-7 fourth check-in: the panel keeps only Solve/Exit + the starved
+ *  reason). one TERSE sentence per refusal class — no "Nothing changed" padding, the sandbox
+ *  guarantees it — with the taxonomy's two labels (unreachable variants vs did-not-converge)
+ *  kept distinguishable. `reason` is the certifying check on an `"unreachable"` answer
  *  (`optimize.UnreachableReason`, read structurally). there is deliberately no landed-solve
- *  readout: the paced landing animation is the feedback (stage-5 feel verdict — the Δg/stats
- *  toast was noise). */
+ *  readout: the paced landing animation is the feedback. */
 export function optimizeRefused(outcome: string, reason?: string): string {
     if (outcome === "unreachable") {
-        if (reason === "stall") return "The draft stalls before the exit. Nothing changed.";
-        if (reason === "conditioning")
-            return "The free keys can't steer the exit from here. Nothing changed.";
-        return "Fewer than 3 free keys — nothing to solve.";
+        if (reason === "stall") return "The draft stalls before the exit.";
+        if (reason === "conditioning") return "The free keys can't steer the exit.";
+        return "Fewer than 3 free keys.";
     }
-    return "The solve did not converge. Nothing changed.";
+    return "Failed to converge.";
 }
 
 /** the readout for a solve that REJECTED, plus the raw detail for the console.

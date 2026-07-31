@@ -307,15 +307,12 @@ async function solveShape(section: number): Promise<void> {
 // `editor.converting`: the two invoked tools never overlap in scope, but sharing one boolean
 // would couple two independent modal surfaces.
 let optimizeAbort: AbortController | null = null;
-// the mode panel's refusal line — a refusal (or a worker failure) that kept the mode open.
-// mode-scoped: cleared on entry, on each Solve press, and on exit.
-let optReadout = $state<string | null>(null);
 
 function ctxOptimizeEnter(): void {
     if (ctx === null) return;
     const section = ctx.section;
     closeContext();
-    if (enterOptimizeMode(ecs, section)) optReadout = null;
+    enterOptimizeMode(ecs, section);
 }
 
 // Exit/Esc: discard the sandbox — every in-mode edit reverts, the outer history is untouched
@@ -323,7 +320,6 @@ function ctxOptimizeEnter(): void {
 // the Solve that restores the stamped exit.
 function optimizeExit(): void {
     exitOptimizeMode(ecs);
-    optReadout = null;
 }
 
 function ctxOptimizeExit(): void {
@@ -334,7 +330,6 @@ function ctxOptimizeExit(): void {
 async function optimizeSolve(): Promise<void> {
     const session = editor.optimizing;
     if (session === null || editor.optimizeSolving) return;
-    optReadout = null;
     // the pre-solve draft, id-aligned with the answer (`sectionForces` order — the same read
     // `runOptimizeSection` scatters back onto): the paced landing animates from these values.
     const preRows = sectionForces(ecs, session.section);
@@ -359,13 +354,15 @@ async function optimizeSolve(): Promise<void> {
             landingTimer = setTimeout(skipLanding, LANDING_MS);
         } else {
             // a refusal stays in the mode with the draft untouched — refusal is not an exit.
-            optReadout = optimizeRefused(result.outcome, result.reason);
+            // its readout rides the app's ONE status surface, the transient notice (stage-7
+            // fourth check-in: the panel keeps only the actions).
+            raise({ kind: "error", text: optimizeRefused(result.outcome, result.reason) });
         }
     } catch (e) {
         if (!controller.signal.aborted) {
             const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
             console.error(detail);
-            optReadout = "The solve could not finish. Nothing changed.";
+            raise({ kind: "error", text: "The solve could not finish." });
         }
     } finally {
         optimizeAbort = null;
@@ -428,12 +425,11 @@ const optSolvable = $derived.by((): boolean => {
     for (const r of rows) if (editor.locked.has(r.id)) locked++;
     return rows.length - locked >= MIN_FREE;
 });
-// the docked panel's refusal/starved line (tick-derived primitive): the refusal readout while
-// one stands, else the starved reason only while Solve is disabled — one line, one register.
+// the docked panel's one conditional line (tick-derived primitive): the starved reason, shown
+// subtly only while Solve is disabled — refusals ride the shared transient notice instead.
 const optReason = $derived.by((): string | null => {
     void tick;
     if (!optOpen) return null;
-    if (optReadout !== null) return optReadout;
     if (!optSolvable) return `Needs ${MIN_FREE} free keys`;
     return null;
 });
@@ -1391,7 +1387,7 @@ $effect(() => {
                 Exit
             </button>
             {#if optReason}
-                <span class="reason" class:bad={optReadout !== null} role="status">{optReason}</span>
+                <span class="reason" role="status">{optReason}</span>
             {/if}
         </div>
     {/if}
@@ -1620,9 +1616,6 @@ $effect(() => {
     }
     .optpanel .reason {
         color: var(--muted);
-    }
-    .optpanel .reason.bad {
-        color: #f0bdb1;
     }
     /* the shared entrance for the surfaces that just appear (readout, scrim) — no travel, so it
        reads as arriving rather than sliding. */

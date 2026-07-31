@@ -480,15 +480,13 @@ test("lockLabel: toggle semantics — all-locked offers Unlock, anything else Lo
     expect(lockLabel(session, 7, [1, 2], new Set([1, 2]))).toBe("Unlock"); // all locked
 });
 
-test("optimizeRefused: one plain sentence per refusal class", () => {
-    expect(optimizeRefused("unreachable", "stall")).toBe(
-        "The draft stalls before the exit. Nothing changed.",
-    );
+test("optimizeRefused: one TERSE sentence per refusal class, taxonomy distinguishable", () => {
+    // stage-7 fourth check-in: no "Nothing changed" padding (the sandbox guarantees it); the
+    // three unreachable certificates stay distinct from did-not-converge.
+    expect(optimizeRefused("unreachable", "stall")).toBe("The draft stalls before the exit.");
     expect(optimizeRefused("unreachable", "conditioning")).toBe(
-        "The free keys can't steer the exit from here. Nothing changed.",
+        "The free keys can't steer the exit.",
     );
-    expect(optimizeRefused("unreachable", "free-count")).toBe(
-        "Fewer than 3 free keys — nothing to solve.",
-    );
-    expect(optimizeRefused("diverged")).toBe("The solve did not converge. Nothing changed.");
+    expect(optimizeRefused("unreachable", "free-count")).toBe("Fewer than 3 free keys.");
+    expect(optimizeRefused("diverged")).toBe("Failed to converge.");
 });
