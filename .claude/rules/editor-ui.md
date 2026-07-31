@@ -275,7 +275,12 @@ bespoke component.
   menu carries ONE conversion row whose ACTION fits that kind (kex2d `Convert` — the subject's
   kind implies the direction, so the label stays the verb alone), not one live row beside a
   permanently dead twin. Two rows for two directions spend the menu's space on a row the subject
-  can never reach.
+  can never reach. **Mode-scoped state refines the same split**: a row whose subject state
+  doesn't EXIST outside a mode is hidden outside it, not grayed — kex2d's keyframe Lock/Unlock
+  row appears only inside optimize mode (lock is mode-scoped; there is nothing to lock in normal
+  editing), while the in-mode `Convert` row grays (convert exists, the mode temporarily bars
+  it). Gray = "blocked action you know from elsewhere"; hidden = "state that isn't a thing
+  here".
 - Flyouts fit the viewport on all four edges: flip the preferred side, clamp the rest.
 - **The positioned menu box is never `overflow: hidden`** — that clips an out-of-box flyout from
   paint *and* hit-testing. The rounded-corner row-wash clip lives on an inner rows wrapper;
@@ -364,6 +369,34 @@ invoked-solve surface, 2D or 3D.
   If internal state (a frozen grid, a linearization) goes stale as the solution moves, iterate it
   *inside* the invocation. A demand still unmet after convergence displays as stable infeasibility
   (achieved-vs-demanded), never as "press again for more effect".
+
+## Sandbox-mode UX
+
+Earned by kex2d's optimize mode (three feel iterations, 2026-07-30 — a transactional bracket and
+a continuous-history model were both built and superseded by hand); applies to any mode whose
+point is an experiment the user confirms or abandons — an invoked-solve workspace, a preview
+edit, a what-if.
+
+- **The mode's state is temporary: nothing applies until the confirming action.** In-mode edits
+  live in the mode's own history stack (a sandbox), not the document's. In-mode undo/redo walk
+  that stack alone; pre-mode history is unreachable from inside; **undo at the sandbox's start
+  exits the mode** — the undo key never "runs out" into unrelated document history.
+- **Dismissal discards without trace.** Exit/Esc reverts every in-mode edit and leaves the outer
+  undo AND redo stacks byte-identical to before entry — a user who backs out was never there.
+- **The confirming action lands ONE outer entry carrying the whole experiment.** Undoing that
+  entry reopens the mode with the experiment resumed (draft, mode settings, and the in-mode
+  undo/redo stacks all restored); redoing it re-lands and closes. The entry is the mode's single
+  footprint in document history.
+- **The mode is a consent boundary — an editing lockdown.** Only the mode's subject is editable
+  while it's open; everything else grays (or hides, per the menus law's mode-scoped clause). The
+  lockdown is also what makes the mode's cached readings (a stamped target, a frozen seed)
+  stable without re-derivation.
+- **Derived state downstream of the subject freezes at mode entry** rather than live-updating
+  through transient in-mode states that can never survive: the gap that opens between the
+  subject and its frozen downstream IS the residual, the same truth a drop-line shows. Any close
+  (confirm or discard) repropagates.
+- **A refusal is not an exit.** A confirming action that can't complete reports tersely on the
+  app's shared status surface and stays in the mode with the draft untouched.
 
 ## Surface and motion
 

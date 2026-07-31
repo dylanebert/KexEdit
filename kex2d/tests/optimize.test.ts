@@ -28,7 +28,7 @@ import {
     undoRouted,
 } from "../src/optimizeMode";
 import { Easing, type ForcePoint } from "../src/profile";
-import type { Entry } from "../src/section";
+import { Domain, type Entry } from "../src/section";
 import {
     BakeSystem,
     bakeOut,
@@ -124,6 +124,62 @@ describe("solveOptimize — zero-drift identity", () => {
             expect(r.points).toEqual(points);
         });
     }
+});
+
+describe("solveOptimize — Time-domain coverage (kex2d-optimize-mode close, item 5)", () => {
+    // the kernel takes `domain` and the stall certificate interacts with the Time march
+    // (`ds_i = v_i·Δt` can be genuinely 0), but no committed case ran it — the invariant floor's
+    // two anchors on a Time-domain profile: seconds for s/length, a Δt step for ds.
+    const timePoints: ForcePoint[] = [
+        { s: 0, g: 1 },
+        { s: 1, g: 1.4 },
+        { s: 2, g: 1 },
+        { s: 3, g: 0.9 },
+        { s: 4, g: 1 },
+    ];
+    const TLen = 4;
+    const Dt = 0.02;
+
+    function timeOpts(points: ForcePoint[], locked: ReadonlySet<number>): OptimizeOpts {
+        const stamp = computeExit(ENTRY, points, TLen, Dt, Domain.Time);
+        return { entry: ENTRY, points, locked, length: TLen, ds: Dt, domain: Domain.Time, stamp };
+    }
+
+    test("zero-drift identity holds on a Time-domain draft", () => {
+        const r = solveOptimize(timeOpts(timePoints, new Set()));
+        expect(r.outcome).toBe("solved");
+        expect(r.iters).toBe(0);
+        expect(r.deltaG).toEqual(new Array(timePoints.length).fill(0));
+        expect(r.points).toEqual(timePoints);
+    });
+
+    test("masking invariants hold on a Time-domain solve (locked g / every s byte-identical)", () => {
+        const locked = new Set([0, 4]); // pin the endpoints, perturb an interior free key
+        const perturbed = timePoints.map((p) => ({ ...p }));
+        perturbed[1].g += 0.3;
+        // the stamp comes from the ORIGINAL draft, so the perturbed one carries real drift to
+        // correct (stamping the perturbed draft's own exit is zero drift by construction).
+        const stamp = computeExit(ENTRY, timePoints, TLen, Dt, Domain.Time);
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: perturbed,
+            locked,
+            length: TLen,
+            ds: Dt,
+            domain: Domain.Time,
+            stamp,
+        });
+        expect(r.outcome).toBe("solved");
+        for (let k = 0; k < perturbed.length; k++) {
+            expect(r.points[k].s).toBe(perturbed[k].s); // s never moves — seconds included
+            if (locked.has(k)) {
+                expect(r.points[k].g).toBe(perturbed[k].g);
+                expect(r.deltaG[k]).toBe(0);
+            }
+        }
+        // and the solve really restored the stamped exit on the Time march (not a no-op).
+        expect(r.deltaG.some((d) => d !== 0)).toBe(true);
+    });
 });
 
 describe("solveOptimize — masking invariants (property test)", () => {
@@ -284,8 +340,12 @@ describe("solveOptimize — stage-3 refusal taxonomy + continuation (kex2d-optim
     });
 
     test("a stalled draft (vSafe floor active) refuses as unreachable at invoke, reason stall", () => {
-        // entry v = 8 m/s under a +2.2 g climb stalls the march (vMin hits 0); the exit Jacobian's
-        // θ row measured ~8e2 rad/g against the G·L/V_WARN² feasible bound of ~3.9e2 (lab §4b).
+        // entry v = 8 m/s under a +2.2 g climb stalls the march (vMin hits 0). the certificate is
+        // the θ-row ONE-SIDED SIGN OPPOSITION read off the invoke's own FD pass (a smooth map's
+        // one-sided slopes stay same-signed; the vSafe-clamp cliff flips them) — measured to
+        // separate every floor-touching corpus draft from every smooth one, threshold-free
+        // (conditioning lab, stage-3 rebuild; the old closed-form G·L/V_WARN² bound was removed
+        // as unboundedly loose).
         const climb: ForcePoint[] = [
             { s: 0, g: 1 },
             { s: 10, g: 2.2 },
@@ -1031,6 +1091,58 @@ describe("the sandbox (kex2d-optimize-mode stage 7)", () => {
         expect(editor.locked.size).toBe(1);
         expect(editor.locked.has(rows[0].id)).toBe(true);
         exitOptimizeMode(state);
+    });
+
+    test("the sandbox is EXEMPT from MAX_UNDO eviction: Exit stays byte-identical past 256 in-mode edits", () => {
+        // RED FIRST on 333aaa7 (architectural pass, item 1): `record` applied the shift-past-256
+        // eviction to the redirect target too, so the 257th in-mode entry (every arrow-nudge is
+        // one) evicted the FIRST — and Exit, which discards by replaying reverses, left that
+        // edit applied with no trace. The stage-4 eviction hazard resurfacing (that fix died
+        // with the bracket): the sandbox is bounded by the mode's lifetime, so it grows instead.
+        // seen failing here on the byte-compare with the crest stuck at edit 1's value.
+        const { state, eid, sec } = forceTrack();
+        const h = createHistory();
+        const preEntry = docState(state, eid);
+        enterOptimizeMode(state, sec);
+        const rows = sectionForces(state, sec);
+        for (let i = 0; i < 257; i++) {
+            beginForceMove(state, rows[2].id);
+            setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.1 + (i % 2) * 0.1);
+            commit(h);
+        }
+        expect(sandbox()?.undo).toHaveLength(257); // nothing evicted — the sandbox grew
+        exitOptimizeMode(state);
+        state.step(0);
+        expect(editor.optimizing).toBeNull();
+        expect(docState(state, eid)).toEqual(preEntry); // every one of the 257 reversed
+        expect(h.undo).toHaveLength(0);
+    });
+
+    test("the frozen Solve entry carries ALL sandbox entries past 256 — undo-reopen loses none", async () => {
+        // the same hazard's other face: the landing froze the (already-evicted) stacks, so an
+        // undo-reopen resumed an experiment missing its earliest edit. seen failing on the
+        // depth pin (256) before the eviction exemption.
+        const { state, eid, sec } = forceTrack();
+        const h = createHistory();
+        const preEntry = docState(state, eid);
+        enterOptimizeMode(state, sec);
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        const rows = sectionForces(state, sec);
+        for (let i = 0; i < 257; i++) {
+            beginForceMove(state, rows[2].id);
+            setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.1 + (i % 2) * 0.1);
+            commit(h);
+        }
+        state.step(0);
+        expect((await runOptimizeSection(h, state, session, editor.locked)).outcome).toBe("solved");
+        state.step(0);
+        undoRouted(h, state); // reopen — the resumed experiment must hold all 257
+        expect(sandbox()?.undo).toHaveLength(257);
+        exitOptimizeMode(state); // …and the discard walks every one back to pre-entry
+        state.step(0);
+        expect(docState(state, eid)).toEqual(preEntry);
+        expect(h.undo).toHaveLength(0);
     });
 
     test("Exit skips a live paced landing (history navigation never eases toward erased values)", () => {

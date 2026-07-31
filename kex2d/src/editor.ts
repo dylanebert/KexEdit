@@ -9,6 +9,7 @@
 
 import type { State } from "@dylanebert/shallot";
 import { createHistory, type History, redirectHistory } from "./history";
+import type { OptimizeOutcome, UnreachableReason } from "./optimize";
 import { forceAt, Handle, handleAt, sectionAt, setBakeFreeze } from "./track";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
@@ -185,11 +186,11 @@ interface EditorState {
  *
  *  **Everything else about the section is read live, every solve.** There is no cached entry
  *  frame/length/ds/domain here: `optimizeMode.runOptimizeSection` re-reads the section's CURRENT
- *  baking parameters at each invoke (`sectionSpec`), same as any other invoked command. Upstream
- *  authoring stays live while the mode is open — nothing freezes it — so a section's entry frame
- *  CAN drift out from under an open session (an upstream edit, still permitted): a `Solve` then
- *  steers the CURRENT entry toward the stamp taken at a possibly-different one. Whether that's
- *  felt as useful or surprising is a stage-2 checkpoint question, not resolved here. */
+ *  baking parameters at each invoke (`sectionSpec`) — the invoked-command convention, so the
+ *  solve always targets exactly what's on screen. The entry frame is STABLE in-mode by the
+ *  editing lockdown (only the optimizing section is editable — no upstream edits, no v0), so the
+ *  live re-read and the stamp describe the same entry for the mode's whole life; the re-read is
+ *  convention, not drift-handling. */
 export interface OptimizeSession {
     section: number;
     stamp: { x: number; y: number; theta: number };
@@ -540,10 +541,12 @@ export function fitDone(r: FitOutcome): Notice {
  *  status surface, stage-7 fourth check-in: the panel keeps only Solve/Exit + the starved
  *  reason). one TERSE sentence per refusal class — no "Nothing changed" padding, the sandbox
  *  guarantees it — with the taxonomy's two labels (unreachable variants vs did-not-converge)
- *  kept distinguishable. `reason` is the certifying check on an `"unreachable"` answer
- *  (`optimize.UnreachableReason`, read structurally). there is deliberately no landed-solve
- *  readout: the paced landing animation is the feedback. */
-export function optimizeRefused(outcome: string, reason?: string): string {
+ *  kept distinguishable. `reason` is the certifying check on an `"unreachable"` answer. typed on
+ *  the kernel's own exported unions — a TYPE-ONLY import is erased at compile, so the solver
+ *  tier still never joins this module's runtime graph (the structural-read rule guards the
+ *  graph, not the types). there is deliberately no landed-solve readout: the paced landing
+ *  animation is the feedback. */
+export function optimizeRefused(outcome: OptimizeOutcome, reason?: UnreachableReason): string {
     if (outcome === "unreachable") {
         if (reason === "stall") return "The draft stalls before the exit.";
         if (reason === "conditioning") return "The free keys can't steer the exit.";

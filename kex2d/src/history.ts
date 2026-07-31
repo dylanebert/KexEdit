@@ -153,8 +153,22 @@ export function record(h: History, cmd: Command, pre?: unknown): void {
     const t = redirect ?? h;
     if (t === redirect) resumed = false; // a new in-mode edit forks off the re-land offer
     t.undo.push({ cmd, pre });
-    if (t.undo.length > MAX_UNDO) t.undo.shift();
+    // the redirect target (a sandbox) is EXEMPT from eviction: its Exit discards by replaying
+    // reverses and its landing freezes the stacks whole, so evicting an entry silently breaks
+    // both byte-identity guarantees (the stage-4 eviction hazard, resurfaced by the close
+    // review). a sandbox is bounded by its mode's lifetime — it grows, then dies with the mode.
+    if (t !== redirect && t.undo.length > MAX_UNDO) t.undo.shift();
     t.redo.length = 0; // a new edit invalidates the redo branch
+}
+
+/** push an already-applied command onto `h` DIRECTLY, bypassing any live redirect — the landing
+ *  seam: a Solve's outcome entry belongs to the outer history even though a sandbox is (or was
+ *  just) the redirect target. structural, so the guarantee doesn't hang on call ordering between
+ *  the mode close and the record (the close-review's template hazard). */
+export function recordOuter(h: History, cmd: Command, pre?: unknown): void {
+    h.undo.push({ cmd, pre });
+    if (h.undo.length > MAX_UNDO) h.undo.shift();
+    h.redo.length = 0;
 }
 
 export function undo(h: History, ecs: State): void {
@@ -783,7 +797,10 @@ export function solveOptimize(
     }
     mode.exit();
     const after = snapshotSection(ecs, section);
-    record(
+    // recordOuter, structurally: the landing is the ONE outer entry a mode ever produces, and
+    // it must land outer even if a redirect were still (or again) live — never by the accident
+    // of `mode.exit()` having run first.
+    recordOuter(
         h,
         {
             apply: () => {

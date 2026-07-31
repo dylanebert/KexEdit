@@ -252,6 +252,27 @@ editor — reserved for invoked tools (the substrate `splitGeo`/`splitForce`/`jo
 in-tree as their reference). Boundary anchors draw as viewport diamonds + chart guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo via a
 byte-identical whole-track snapshot pair.
 
+**Optimize mode** (endpoint-preserving force edits) — entered from a force section's context menu
+(`Optimize`): the section's current exit `(x, y, θ)` is **stamped** as the pin, the author retunes
+force keyframes with the normal idiom (add keys, drag, trim length — slack is authored, never
+inferred), and an invoked **Solve** adjusts only un-locked keys' `g` to restore the stamp — s,
+length, structure, easing, and locked keys land byte-identical. All keys are free by default;
+**`Q`** toggles lock on the selected set (the keyframe menu's mode-only Lock/Unlock row is the
+mouse path), locked keys wear the driven (dashed/faded) styling. The mode is a **sandbox**: the
+optimize state is temporary — every in-mode edit records into the mode's own history (nothing
+touches the outer stacks), in-mode undo/redo walk that sandbox alone, undo at its start acts as
+Exit, and Exit/Esc discards it without trace. A landed Solve is **one outer undo entry carrying
+the whole experiment** — undoing it reopens the mode with draft, locks, and in-mode undo/redo
+restored; redoing it re-lands and closes. A refusal (terse notice, top-center) stays in-mode with
+the draft untouched. While the mode is open the track is under an **editing lockdown** (only the
+optimizing section is editable — no section add/remove, convert, domain switch, v0, or
+other-section edits) and **downstream sections freeze** at their mode-entry placement: the
+boundary gap that opens while editing IS the residual (the drop-line's truth), and any close
+repropagates. Five modules: `optimize.ts` (the masked exit-restore kernel), `optimizeMode.ts` (the
+document seam), `optimize-async.ts`/`optimize-worker.ts` (the one-shot worker façade), the
+sandbox + record-redirect seam (`editor.ts`/`history.ts`), and the downstream freeze
+(`track.setBakeFreeze`). Detail per module: `.claude/rules/kex2d-map.md`.
+
 ## Hard gotchas
 
 - **Input is wired in `onMount`, not a system.** `attachControls(canvas, ecs)` binds the
@@ -315,6 +336,17 @@ byte-identical whole-track snapshot pair.
   state, which is exactly this section's placement — C0/C1 by construction. Don't double-write it.
 - **Forward clamps are non-differentiable.** `vSafe` / `sqrt` kink at the boundary. The floor is
   tiny, so coasting past an infeasible region behaves like "cart paused at peak then continued."
+- **While optimize mode is open, every `history.record` redirects into the mode's sandbox** —
+  by design (the sandbox contract: nothing applies to the outer stacks until Solve). The ONE
+  outer write, the Solve landing, goes through `history.recordOuter`; don't "simplify" it back to
+  `record`, and don't rely on call ordering to land outer. The sandbox is also **exempt from
+  `MAX_UNDO` eviction** — Exit discards by replaying every entry's reverse and the landing
+  freezes the stacks whole, so evicting one silently breaks both byte-identity guarantees; it's
+  bounded by the mode's lifetime instead.
+- **A Solve result may only land while its own session is still open.** `runOptimizeSection`
+  checks `editor.optimizing === session` after the await and discards as `StaleOptimize`
+  otherwise — the no-trace guarantee is this module invariant, not the UI's inert/Escape paths.
+  Same family: the lock ledger is frozen at invoke (`endOptimize` clears the live Set in place).
 - **Tick-derived `editor.*` reads lag a frame.** Svelte components read the plain `editor`
   singleton through `$derived` of the per-RAF `tick` prop, so an `$effect` gated on such a value
   outlives the real state change by up to a frame. Where the lagging listener *swallows*

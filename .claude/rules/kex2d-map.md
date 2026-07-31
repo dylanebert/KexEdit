@@ -94,6 +94,21 @@ Velocity uses the energy-delta (squared) form to avoid catastrophic cancellation
 `invertRange` (`θ_{i+1} = 2·m_i − θ_i`) is the integrator's exact reflection inverse — round-trip
 validation only, NOT the bake (`kex2d/AGENTS.md` Hard gotchas).
 
+**The clamp-gradient law** (optimize-mode stage-3 conditioning lab): the forward clamps
+(`vSafe`, `sqrt`) make the exit map non-differentiable at a stall, and the cliff is
+**derivative-inaccessible** — no draft-property read (a vMin march scan, a closed-form
+`G·L/V_WARN²` bound) can certify it; both were tried and removed as unsound. The one honest
+stall certificate is the **θ-row one-sided sign opposition** read off the invoke's own FD pass
+(a smooth map's one-sided slopes stay same-signed; the clamp cliff flips them), measured to
+separate every floor-touching corpus draft from every smooth one, threshold-free.
+
+**The ds-convention law**: anything needing arclength sums the bake's own per-edge `out.ds`,
+never re-derives from chord distance. The two agree to f32 rounding on a normal chain, but the
+optimize mode's downstream freeze publishes a **zero-length gap edge over a real position jump**
+(the residual made visible), so a chord walk diverges from the chart axis by the whole gap.
+`forceCurve`, `sectionSpans`, and `cart.trackMapping` all speak `out.ds`; so must any new
+consumer (and `tests/domain.test.ts`'s independent-table oracle).
+
 Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasibility threshold) in
 `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` = 4096 in `track.ts`; `V0` = 10
 (the DEFAULT initial speed — now authored per-track as `Track.v0`) in `track.ts`.
@@ -206,6 +221,24 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 - `convert-worker.ts` — the pool's worker: `refine.solve` per message and nothing else. The bake
   crosses once at `init`, then each message is a knot set; no refinement state, no policy, no
   decisions live here.
+- `optimize.ts` — optimize mode's **masked exit-restore kernel**, f64: a small constrained
+  Gauss-Newton (dense KKT, damped backtrack with SOC retry + restoration fallback, adaptive
+  re-anchored continuation for large drift) whose only DOF are the FREE keys' g-ordinates — s,
+  length, structure, easing, and locked keys are invariant by construction. Objective = exact
+  Gram-matrix L2 force-curve deviation from the current draft (the dense response is globally
+  affine in g under frozen s). Residual/Jacobian evaluations run the production integrator
+  (`section.evalForce`); exit Jacobian is central FD at `JAC_H = 2^-8` (derived — 1e-4 sat below
+  the f32 integrator's noise floor and stalled every real solve). Refusals: `"unreachable"` only
+  from three Jacobian-read certificates at invoke (free-count < `MIN_FREE` = 3;
+  σmin/σmax below the FD's own relative accuracy; the θ-row sign-opposition stall certificate —
+  the clamp-gradient law above), everything else `"did not converge"`; convergence floor is
+  relative (`3·ε_f32·√N·scale`, the f32 replay floor), never absolute. `computeExit` is the
+  stamp's own computation. Invariant floor + refusal taxonomy + trip-proven golden in
+  `tests/optimize.test.ts` / `tests/optimize.oracle.ts`.
+- `optimize-async.ts` + `optimize-worker.ts` — the one-shot worker façade, `geofit-async.ts`'s
+  twin: `runOptimize(opts, {signal})` spawns a dedicated worker, posts once, resolves once;
+  cancellation is `Worker.terminate()`, the façade writes nothing, `liveOptimizeWorkers()` makes
+  teardown observable.
 - `census.ts` — the **vocabulary census**: which tangent-mode shape (`mirror`/`aligned`/`broken`/
   `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
   authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`
@@ -297,6 +330,17 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   Destroy paths (`deleteSection`/`joinNext`) evict; ids never recycle, so a stale entry can't
   alias; a future document-load path must wipe the map (nothing else clears it). A restore never
   re-stamps. `convertSection` (the destructive flip) neither stamps nor consults.
+  **The downstream freeze** (`setBakeFreeze`, optimize mode): while set, `bake()` runs TWO chains
+  — start..the optimizing section live, downstream seeded at the FROZEN entry (the session's
+  recovered exit), so downstream holds its mode-entry placement while the live exit wanders.
+  Downstream payloads can't change in-mode (the lockdown), so the frozen part re-bakes
+  byte-identical with no snapshot. The seam is a zero-length GAP edge over a real position jump
+  (`ds = 0`, prior edge's force carried; no section range covers it, so the kind stroke never
+  bridges the gap — the ds-convention law above). A freeze toggle forces one bake through the
+  hash gate (`freezeInvalid` — mode open/close is editor state, not authored state); budget-less
+  downstream (a track already past `MAX_SAMPLES`) publishes empty past-buffer ranges rather than
+  stale prior-bake info. Tested in `tests/track.test.ts` + the mode-level freeze suite in
+  `tests/optimize.test.ts`.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `loopTime`, and **`trackMapping`**
@@ -330,7 +374,13 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   that, and a copy here would be a second truth. `convertProgress` DROPS a report that lands after the gate closed — a
   cancelled solve's in-flight probe would otherwise raise the modal back with no cancel path left.
   The gate is pure state; the `AbortController` and the await live with the surface that opened it
-  (`App.svelte`). Plain singleton, read by Svelte via the per-RAF tick.
+  (`App.svelte`). Optimize-mode state lives here too: `optimizing` (the session — stamp, ghost,
+  downstream-freeze seed), `locked`, `optimizeSolving` (the mode's own blocking gate), `landing`
+  (the paced-landing display override, cosmetic only), and the SANDBOX — `beginOptimize`/
+  `endOptimize` are the only open/close choke points (every path goes through them), creating/
+  discarding the sandbox history, setting/clearing `history.redirectHistory` and
+  `track.setBakeFreeze`; `sandbox()`/`restoreSandbox` are the landing's capture/restore seam.
+  Plain singleton, read by Svelte via the per-RAF tick.
 - `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
   `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).
@@ -346,8 +396,15 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   verbatim (current `order` kept, no re-stamp) as one undoable entry, the `"restored"` outcome's
   write path for both directions' `tryRestore`.
   Structural: `appendSection`/`splitSection`/`joinSection`/`removeSection` — each a whole-track
-  `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). `history` singleton;
-  `createHistory` for tests.
+  `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). Optimize-mode
+  seams: `redirectHistory` (while set, EVERY `record` lands in the sandbox — structural
+  containment, and the redirect target is exempt from `MAX_UNDO` eviction: Exit replays and the
+  landing freezes whole stacks, so eviction would silently break byte-identity), `recordOuter`
+  (the redirect bypass the Solve landing uses), `resumedLanding`/`markResumedLanding` (the
+  reopened session's redo-at-end re-land offer, cleared by a forking record), and `solveOptimize`
+  (the landing: free-key g writes + the mode transition in one outer entry whose reverse restores
+  the draft AND reopens the mode via injected enter/exit closures — this module still never
+  imports editor). `history` singleton; `createHistory` for tests.
 - `domain.ts` — the **track-global domain conversion**, and the ONE place a force section's stored
   numbers change unit. `convertDomain(history, ecs, target)` is the ruler pick as a document op: a
   pure transform of the whole-track snapshot (every keyframe's position, every extent, every explicit
@@ -444,6 +501,21 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   corpus + hill seed, both directions, every trip must land `"restored"`) over
   `tests/helpers/roundtrip-doc.ts`, with the fast-tier hill sentinel `tests/roundtrip.test.ts`;
   `tests/roundtrip.lab.ts` stays the kernel-seam yardstick and never sees provenance.
+- `optimizeMode.ts` — the **optimize-mode document seam** (`geoforce.ts`'s sibling), and the
+  sandbox's routing layer. `enterOptimize` stamps the section's current exit + freezes the ghost
+  and the downstream-freeze seed in ONE `evalForce` call (the same computation the solve's own
+  residual reads); `enterOptimizeMode` opens the mode (which opens the sandbox — outer history
+  untouched). `runOptimizeSection` re-reads the section's live baking parameters per invoke,
+  freezes the lock ledger AT INVOKE, translates stable keyframe ids to kernel indices, and lands
+  a `"solved"` answer through `history.solveOptimize` as the ONE outer entry (always — a
+  zero-drift Solve still closes the mode, and the transition must sit on the stack). Guards:
+  per-section in-flight lock, post-await SESSION IDENTITY (`editor.optimizing === session` — a
+  late-resolving Solve after Exit discards as `StaleOptimize`; the no-trace guarantee is a module
+  invariant), then `authoredHash`. `undoRouted`/`redoRouted` are the editor-level undo/redo: the
+  sandbox while a mode is open (undo at its start = Exit; a redo at a RESUMED sandbox's end falls
+  through to the outer re-land, offer cleared by a forking edit), the outer history otherwise.
+  `exitOptimizeMode` discards: replay every sandbox reverse, close. Sandbox/boundary tests in
+  `tests/optimize.test.ts` (mutation-proven guards).
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
   teardown. `pickNode` (order-0 anchors are pickable, not draggable) then `pickSection` (nearest
   span); a node body click **selects only** — movement enters through `startManip` (the DOM knob
@@ -631,6 +703,12 @@ Run explicitly, never part of `bun test` (index in `kex2d/AGENTS.md` Verify). Th
   lock is untouched.
 - `tests/pool.lab.ts` — the stress scenarios through the worker pool: sync vs pooled wall time
   and cancel latency, each row checked against the golden.
+- `tests/optimize.lab.ts` — the optimize solver's conditioning + norm lab (cost re-baseline,
+  the f32 replay floor the relative TOL derives from, attainable tolerance, scaled-Jacobian
+  conditioning on the pre-named suspects, uniform-vs-Gram distribution) — the evidence base for
+  the refusal certificates and the derived floor.
+- `tests/conditioning.lab.ts` — the older single-shoot anchoring probe (endpoint-Jacobian growth
+  vs track length), kept as the conditioning reference the optimize lab extends.
 - `tests/roundtrip.lab.ts` — the geo→force→geo KERNEL-seam yardstick: node inflation, force
   flip-density, max force divergence per corpus scenario; its baseline reproduces the 2026-07-29
   check-in's hand readings, so the metric is what any dialect change is judged against. It never
