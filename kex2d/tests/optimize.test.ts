@@ -1,6 +1,6 @@
 import { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
-import { beginOptimize, editor, endOptimize, toggleLockedSet } from "../src/editor";
+import { beginLanding, beginOptimize, editor, endOptimize, toggleLockedSet } from "../src/editor";
 import { beginForceMove, commit, createHistory, redo, undo } from "../src/history";
 import {
     computeExit,
@@ -839,6 +839,103 @@ describe("continuous history (kex2d-optimize-mode stage 5)", () => {
         state.step(0);
         expect(docState(state, eid)).toEqual(landed);
         expect(editor.optimizing).toBeNull(); // the replayed landing re-closes the mode
+    });
+
+    test("Exit after undo-walking back into a PRIOR session rewinds THAT session (stale mark)", async () => {
+        // RED FIRST on 32e2d53 (adversarial finding 1): the rewind mark was one module-level
+        // `entryCmd`, overwritten by every `enterOptimizeMode` — but a prior session can REOPEN
+        // via plain undo through its landed-Solve entry without touching the mark. Exit then saw
+        // the (later) mark absent from the undo stack, took it for MAX_UNDO eviction, and closed
+        // the chrome in place, leaving every in-mode edit applied — this test failed its
+        // `preEntry` compare (the crest stayed at +0.6) before the mark was made to travel with
+        // the session (the entry command re-marks on apply; the landing's enter re-marks on undo).
+        const { state, eid, sec } = forceTrack();
+        const preEntry = docState(state, eid);
+        const h = createHistory();
+
+        // session 1: enter, edit, Solve lands and closes.
+        enterOptimizeMode(h, state, sec);
+        bump(h, state, sec);
+        const s1 = editor.optimizing;
+        if (!s1) throw new Error("no session");
+        const r1 = await runOptimizeSection(h, state, s1, editor.locked);
+        expect(r1.outcome).toBe("solved");
+        expect(editor.optimizing).toBeNull();
+        state.step(0); // rebake the landing (the app does this per frame) so re-entry sees a live bake
+
+        // session 2 on the SAME section: enter, edit — the module mark now names session 2.
+        expect(enterOptimizeMode(h, state, sec)).toBe(true);
+        bump(h, state, sec);
+
+        // undo-walk back through session 2's edit + entry, then through session 1's landing —
+        // session 1 REOPENS without any enterOptimizeMode call.
+        undo(h, state); // session 2's edit
+        undo(h, state); // session 2's entry — mode closes
+        expect(editor.optimizing).toBeNull();
+        undo(h, state); // session 1's landing — session 1 reopens
+        expect(editor.optimizing).not.toBeNull();
+        expect(editor.optimizing?.stamp).toBe(s1.stamp);
+
+        // Exit must rewind SESSION 1 (its edit + its entry), landing on the pre-entry draft.
+        exitOptimizeMode(h, state);
+        state.step(0);
+        expect(editor.optimizing).toBeNull();
+        expect(docState(state, eid)).toEqual(preEntry);
+        expect(h.undo).toHaveLength(0);
+    });
+
+    test("stale mark, two-section variant: undo reopens section A's session, Exit rewinds it", async () => {
+        // the same repro across sections: session on A solves, session on B edits, the undo-walk
+        // reopens A — Exit must rewind A's session, not fall back to a close-in-place.
+        const { state, eid, sec } = forceTrack();
+        const secB = createSection(state, 1, SectionKind.Force, 30);
+        createForcePoint(state, secB, 0, 1);
+        createForcePoint(state, secB, 10, 1.3);
+        createForcePoint(state, secB, 20, 1);
+        createForcePoint(state, secB, 30, 1);
+        state.step(0);
+        const preEntry = docState(state, eid);
+        const h = createHistory();
+
+        enterOptimizeMode(h, state, sec); // session A
+        bump(h, state, sec);
+        const sA = editor.optimizing;
+        if (!sA) throw new Error("no session A");
+        const rA = await runOptimizeSection(h, state, sA, editor.locked);
+        expect(rA.outcome).toBe("solved");
+        state.step(0); // rebake the landing so B's entry sees a live bake
+
+        expect(enterOptimizeMode(h, state, secB)).toBe(true); // session B — the mark moves to B
+        const rowsB = sectionForces(state, secB);
+        beginForceMove(state, rowsB[1].id);
+        setForcePoint(state, rowsB[1].id, rowsB[1].s, rowsB[1].g + 0.4);
+        commit(h);
+        state.step(0);
+
+        undo(h, state); // B's edit
+        undo(h, state); // B's entry — closed
+        undo(h, state); // A's landing — session A reopens
+        expect(editor.optimizing?.section).toBe(sec);
+
+        exitOptimizeMode(h, state); // must rewind A's edit + entry
+        state.step(0);
+        expect(editor.optimizing).toBeNull();
+        expect(docState(state, eid)).toEqual(preEntry);
+        expect(h.undo).toHaveLength(0);
+    });
+
+    test("Exit skips a live paced landing (undo/redo must never ease toward erased values)", () => {
+        // RED FIRST on 32e2d53 (adversarial finding 2, the exit route): history navigation left
+        // `editor.landing` running, so the frozen `moves` kept easing diamonds toward values the
+        // rewind had just erased. every undo/redo route now clears it first (Timeline's
+        // Ctrl+Z/Y does the same; the capture flow pins that route).
+        const { state, sec } = forceTrack();
+        const h = createHistory();
+        enterOptimizeMode(h, state, sec);
+        beginLanding([{ id: 1, from: 0, to: 1 }]);
+        expect(editor.landing).not.toBeNull();
+        exitOptimizeMode(h, state);
+        expect(editor.landing).toBeNull();
     });
 
     test("a refusal stays in the mode: draft + history untouched, locks intact", async () => {

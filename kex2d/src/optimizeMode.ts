@@ -17,8 +17,8 @@
  *  decision: in-mode edits are intent, so solving toward mode-entry would fight them. */
 
 import type { State } from "@dylanebert/shallot";
-import { beginOptimize, editor, endOptimize, type OptimizeSession } from "./editor";
-import { type History, record, solveOptimize as landOptimize, undo } from "./history";
+import { beginOptimize, editor, endOptimize, type OptimizeSession, skipLanding } from "./editor";
+import { type Command, type History, record, solveOptimize as landOptimize, undo } from "./history";
 import type { OptimizeOpts, OptimizeResult } from "./optimize";
 import { type OptimizeRunOpts, runOptimize } from "./optimize-async";
 import { Domain, type Entry, evalForce } from "./section";
@@ -103,10 +103,17 @@ export function enterOptimize(ecs: State, sectionId: number): OptimizeSession | 
     };
 }
 
-// the live mode's entry command — the mark `exitOptimizeMode` rewinds to. one mode at a time,
-// so a module variable suffices; identity against the stack tells whether the mark still exists
-// (MAX_UNDO can evict it under 256+ in-mode edits, the one degraded case).
-let entryCmd: { apply(): void; reverse(): void } | null = null;
+// the OPEN mode's entry command — the mark `exitOptimizeMode` rewinds to. one mode is open at a
+// time, so a module variable suffices — but the mark must name the session that is ACTUALLY open,
+// and undo/redo can reopen a PRIOR session (walking back through its landed-Solve entry) after a
+// later `enterOptimizeMode` overwrote this. So every path INTO a session re-marks it: a fresh
+// entry and a redo of one both run the entry command's `apply` (which marks itself), and undoing
+// a landing re-marks through the landing's own `enter` closure (`runOptimizeSection` captures the
+// mark at solve time). With that invariant, a mark absent from the undo stack genuinely means
+// MAX_UNDO eviction (256+ in-mode edits), the one degraded case — the stale-mark conflation was
+// adversarial finding 1 on 32e2d53: Exit took a later session's mark for an evicted one and
+// closed in place, leaving every in-mode edit applied.
+let entryCmd: Command | null = null;
 
 /** Enter optimize mode on a force section AS AN UNDOABLE ACTION (continuous history): stamps the
  *  exit + ghost ({@link enterOptimize}), opens the mode, and records the entry — undoing it exits
@@ -120,12 +127,15 @@ export function enterOptimizeMode(h: History, ecs: State, sectionId: number): bo
     if (editor.optimizing !== null) return false; // one mode at a time (the row grays too)
     const session = enterOptimize(ecs, sectionId);
     if (!session) return false;
-    beginOptimize(session);
-    entryCmd = {
-        apply: () => beginOptimize(session),
+    const cmd: Command = {
+        apply: () => {
+            beginOptimize(session);
+            entryCmd = cmd; // self-marking: redo into this session restores its own mark
+        },
         reverse: () => endOptimize(),
     };
-    record(h, entryCmd);
+    cmd.apply();
+    record(h, cmd);
     return true;
 }
 
@@ -136,6 +146,7 @@ export function enterOptimizeMode(h: History, ecs: State, sectionId: number): bo
  *  longer exists, so the mode closes in place rather than draining unrelated history. */
 export function exitOptimizeMode(h: History, ecs: State): void {
     if (editor.optimizing === null) return;
+    skipLanding(); // history navigation must never leave a landing easing toward erased values
     const marked = entryCmd !== null && h.undo.some((e) => e.cmd === entryCmd);
     if (marked) {
         while (editor.optimizing !== null && h.undo.length > 0) undo(h, ecs);
@@ -227,12 +238,17 @@ export async function runOptimizeSection(
             // (continuous history). idempotence holds trivially now: a landed Solve closed the
             // mode, so there is no second press. `relock` restores the lock set when undo walks
             // back INTO the mode through this entry; cloned per enter, since `endOptimize`
-            // clears the live set in place.
+            // clears the live set in place. `mark` is the open session's own entry command —
+            // undoing this landing re-enters THAT session, so it must also restore that
+            // session's rewind mark (a later session's entry would otherwise have left the
+            // module mark stale — adversarial finding 1).
             const relock = new Set(locked);
+            const mark = entryCmd;
             landOptimize(h, ecs, sectionId, writes, {
                 enter: () => {
                     beginOptimize(session);
                     editor.locked = new Set(relock);
+                    entryCmd = mark;
                 },
                 exit: () => endOptimize(),
             });

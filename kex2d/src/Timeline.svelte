@@ -16,6 +16,7 @@ import {
     exitForceEdit,
     landingG,
     openContext,
+    skipLanding,
     openForceMenu,
     openRulerMenu,
     selectForce,
@@ -2562,10 +2563,15 @@ onMount(() => {
             const k = e.key.toLowerCase();
             if (k === "z") {
                 e.preventDefault();
+                // history navigation invalidates a live paced landing FIRST — its frozen moves
+                // would otherwise keep easing diamonds toward values the undo just erased
+                // (adversarial finding 2; the same skip pointerdown/Esc and Exit apply).
+                skipLanding();
                 if (e.shiftKey) redo(history, ecs);
                 else undo(history, ecs);
             } else if (k === "y") {
                 e.preventDefault();
+                skipLanding();
                 redo(history, ecs);
             }
             return;

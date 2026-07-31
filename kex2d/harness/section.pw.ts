@@ -925,19 +925,17 @@ test("optimize mode flow", async ({ page, boot }) => {
     await solveBtn.click();
     await expect.poll(optimizing, { timeout: 30_000 }).toBe(false); // Solve confirms AND closes
     await expect(panel).toHaveCount(0);
-    await expect.poll(landing).toBe(true); // the paced landing raised…
-    await expect.poll(landing).toBe(false); // …and settles closed (expiry)
     await expect(page.locator(".notice")).toHaveCount(0); // no stats toast — the animation IS the feedback
     // continuous history: entry + create + delete + flatten(undone, redo cleared) + 2 nudges +
     // the landing = 6 entries above the lock-leg re-entry baseline of lockBase.
     expect(await undoDepth()).toBe(lockBase + 5);
-    await page.waitForTimeout(SHOT_MS);
-    await page.screenshot({ path: join(OUT, "optimize-4-landed.png") });
+    await expect.poll(landing).toBe(true); // the paced landing raised — the feedback
 
-    // ── 6. The undo-walk back out: the first undo re-ENTERS the mode through the landing entry
-    // (the edited-but-unsolved draft, locks restored); walking on exits at the entry mark with
-    // the pre-mode draft byte-identical. ──
+    // ── 6. Undo DURING the landing invalidates it (adversarial finding 2: the frozen moves must
+    // never keep easing toward values the undo erased), and the first undo re-ENTERS the mode
+    // through the landing entry; walking on exits at the entry mark, pre-mode draft byte-identical. ──
     await page.keyboard.press("Control+z");
+    await expect.poll(landing).toBe(false); // invalidated by the undo route, not left to expire
     await expect.poll(optimizing).toBe(true); // undo re-enters the mode
     await page.keyboard.press("Control+z"); // nudge 2
     await page.keyboard.press("Control+z"); // nudge 1
@@ -950,4 +948,12 @@ test("optimize mode flow", async ({ page, boot }) => {
         .poll(async () => JSON.stringify(sorted(await forces())))
         .toBe(JSON.stringify(preMode));
     expect(await undoDepth()).toBe(lockBase - 1); // back below the re-entry mark
+
+    // ── 7. Redo replays the whole process forward — entry, edits, landing — and the replayed
+    // landing re-closes the mode. The landed screenshot is taken here, at the settled state. ──
+    for (let i = 0; i < 6; i++) await page.keyboard.press("Control+Shift+z");
+    await expect.poll(optimizing).toBe(false); // the replayed landing re-closed the mode
+    expect(await undoDepth()).toBe(lockBase + 5);
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "optimize-4-landed.png") });
 });
