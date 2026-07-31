@@ -128,10 +128,18 @@ export const history = createHistory();
 export function record(h: History, cmd: Command, pre?: unknown): void {
     h.undo.push({ cmd, pre });
     if (h.undo.length > MAX_UNDO) {
-        h.undo.shift();
-        // the session floor indexes into the stack, so a capped-out shift slides it too (the
-        // shifted-away entry leaves the transaction's reach, same as it leaves plain undo's).
-        if (h.session && h.session.floor > 0) h.session.floor--;
+        // an open session's bracket must never lose reversibility (its revert invariant is
+        // absolute, not "under MAX_UNDO edits"): eviction may take only entries strictly BELOW
+        // the floor — pre-session history, which leaves the transaction's reach the same way it
+        // leaves plain undo's, sliding the floor with it. at floor 0 nothing is evictable, so
+        // the buffer grows past MAX_UNDO for the session's lifetime; `trim` restores the cap
+        // when the bracket closes (commit or cancel alike).
+        if (h.session) {
+            if (h.session.floor > 0) {
+                h.undo.shift();
+                h.session.floor--;
+            }
+        } else h.undo.shift();
     }
     h.redo.length = 0; // a new edit invalidates the redo branch
     // …including a pre-session one: once an in-session edit lands, every redo entry that can
@@ -171,9 +179,18 @@ export function redo(h: History, ecs: State): void {
 // everything recorded in-session into ONE entry (the session's outcome), `cancelSession` reverts
 // it all byte-identically (each entry's own reverse IS a snapshot restore) and discards it.
 
-/** open a transactional session at the current stack depth. one at a time (a second begin
- *  replaces the bracket — the caller's mode gate already prevents overlap). */
+/** restore the MAX_UNDO cap after a session bracket closes — eviction was suspended for
+ *  at-or-above-floor entries while it was open (`record`), so the buffer may have grown. */
+function trim(h: History): void {
+    while (h.undo.length > MAX_UNDO) h.undo.shift();
+}
+
+/** open a transactional session at the current stack depth. strictly one at a time: a second
+ *  begin over a live bracket THROWS — silently replacing it would merge two transactions'
+ *  entries under the newer floor, and the one legitimate call site (mode entry) is gated on no
+ *  session being open, so a double begin is always a programming error worth failing loud. */
 export function beginSession(h: History): void {
+    if (h.session) throw new Error("beginSession: a session is already open");
     h.session = { floor: h.undo.length, redoBase: h.redo.length };
 }
 
@@ -187,7 +204,10 @@ export function commitSession(h: History): void {
     h.session = undefined;
     h.redo.length = Math.min(h.redo.length, s.redoBase);
     const n = h.undo.length - s.floor;
-    if (n <= 1) return;
+    if (n <= 1) {
+        trim(h);
+        return;
+    }
     const entries = h.undo.splice(s.floor, n);
     // the collapsed entry's pre-selection is the FIRST captured one — the selection from before
     // the session's first selection-affecting command (gesture entries carry none).
@@ -203,6 +223,7 @@ export function commitSession(h: History): void {
         },
         pre,
     });
+    trim(h);
 }
 
 /** close the session by reverting every entry recorded above its floor, byte-identically, and
@@ -221,6 +242,7 @@ export function cancelSession(h: History, ecs: State): void {
         if (entry.pre !== undefined) selHook?.restore(ecs, entry.pre);
     }
     h.redo.length = Math.min(h.redo.length, s.redoBase);
+    trim(h);
 }
 
 // ── gesture lifecycle: a drag (or a live inline edit) writes the canonical data

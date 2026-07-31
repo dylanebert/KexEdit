@@ -5,7 +5,7 @@ import {
     attachControls,
     manipKnobs,
     nodeMembers,
-    sectionDeleteAllowed,
+    sectionOpsAllowed,
     sectionSolvable,
     sectionsDeletable,
     selectedMetrics,
@@ -239,6 +239,7 @@ let solveKind = $state<"force" | "shape" | null>(null);
 // answer that expired) leaves the track exactly as it was and only the readout differs.
 async function solve(section: number): Promise<void> {
     if (editor.converting !== null) return; // one at a time (the gate's own reentrancy guard)
+    if (!sectionOpsAllowed(editor.optimizing)) return; // consent boundary — the row grays too
     const controller = new AbortController();
     solveAbort = controller;
     solveKind = "force";
@@ -266,6 +267,7 @@ async function solve(section: number): Promise<void> {
 // for exactly this case (`kex2d-forcegeo` stage 3).
 async function solveShape(section: number): Promise<void> {
     if (editor.converting !== null) return;
+    if (!sectionOpsAllowed(editor.optimizing)) return; // consent boundary — the row grays too
     const controller = new AbortController();
     solveAbort = controller;
     solveKind = "shape";
@@ -899,16 +901,21 @@ const canDelete = $derived.by((): boolean => {
     void tick;
     return (
         sectionsDeletable(editor.sections.ids.size, sections(ecs).length) &&
-        sectionDeleteAllowed(editor.optimizing)
+        sectionOpsAllowed(editor.optimizing)
     );
 });
 // whether the invoked geo→force solve is available on this selection (`sectionSolvable`,
 // controls.ts, target `Geo`): one geo section with a live bake. `convertGeo` THROWS on each of
 // those, so this enablement is the gate, not a hint — and it grays rather than hides (the
 // bulk-row law), so the row is discoverable on a force section and on a multi-set alike.
+// `sectionOpsAllowed` is the consent boundary: NO section converts while an optimize session is
+// open (a convert would land a track rewrite inside the session bracket).
 const canSolve = $derived.by((): boolean => {
     void tick;
-    return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Geo);
+    return (
+        sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Geo) &&
+        sectionOpsAllowed(editor.optimizing)
+    );
 });
 // the force→geo twin (target `Force`): one force section with a live bake, dense enough for the
 // fit to hold its modal budget (`sectionSolvable`'s `edges` guard, `controls.MAX_FIT_EDGES`) — a
@@ -921,12 +928,14 @@ const ctxEdges = $derived.by((): number => {
 });
 const canSolveShape = $derived.by((): boolean => {
     void tick;
-    return sectionSolvable(
-        editor.sections.ids.size,
-        ctxKind,
-        bakeLive(ecs),
-        SectionKind.Force,
-        ctxEdges,
+    return (
+        sectionSolvable(
+            editor.sections.ids.size,
+            ctxKind,
+            bakeLive(ecs),
+            SectionKind.Force,
+            ctxEdges,
+        ) && sectionOpsAllowed(editor.optimizing)
     );
 });
 // optimize-mode entry: one force section with a live bake. deliberately NOT `canSolveShape` —
@@ -1006,13 +1015,13 @@ function ctxSolveShape(): void {
     void solveShape(section);
 }
 function ctxDelete(): void {
-    if (ctx === null || !sectionDeleteAllowed(editor.optimizing)) return;
+    if (ctx === null || !sectionOpsAllowed(editor.optimizing)) return;
     // no explicit close: removing the section makes `ctx` derive null, so the menu dismisses
     // by subject existence (one mechanism) and the $effect clears the stale target id.
     if (removeSection(history, ecs, ctx.section)) selectSection(null);
 }
 function ctxDeleteSet(): void {
-    if (!sectionDeleteAllowed(editor.optimizing)) return;
+    if (!sectionOpsAllowed(editor.optimizing)) return;
     if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
 }
 // dismiss the menu on any outside press or Escape (clicks on the menu itself pass through

@@ -749,9 +749,13 @@ test("optimize mode flow", async ({ page, boot }) => {
     const strip = dockStrip(page);
     const sorted = (rows: { s: number; g: number }[]) => [...rows].sort((a, b) => a.s - b.s);
 
-    // the bump profile on the boot section: 2 flat seeds + 3 authored keys (crest at index 2).
+    // the bump profile on the boot section: 2 flat seeds + 3 authored keys (crest at index 2) —
+    // plus an appended geo section, the consent-boundary leg's subject (an OTHER section whose
+    // Convert must gray while the mode is open).
     await kexCall(page, "seedForceBump");
     await expect.poll(forceCount).toBe(5);
+    await kexCall(page, "append", 0); // SectionKind.Geo
+    await expect.poll(() => kexCall(page, "sectionCount")).toBe(2);
     await frameTimeline(page);
     const preMode = sorted(await forces()); // the pre-mode draft every revert assert reads
     const base = await undoDepth();
@@ -768,6 +772,26 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect(badge).toHaveText("5 free");
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-1-mode.png") });
+
+    // ── 1b. The consent boundary holds track-wide while the mode is open: another section's
+    // Convert row grays (the row stays discoverable — the gray-never-hide law), and the ruler's
+    // domain picker grays both rows (a domain switch is a lossy track-wide rewrite that would
+    // land inside the session bracket). Delete's gate is stage 1; these are its stage-4 twins. ──
+    await page.locator(".clip").nth(1).click({ button: "right" }); // the appended GEO clip
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await expect(
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" }),
+    ).toBeDisabled();
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Delete" })).toBeDisabled();
+    await page.keyboard.press("Escape"); // peels the menu (the mode stays — layered dismissal)
+    await expect(page.locator(".ctxmenu")).toHaveCount(0);
+    await page.locator(".rulerzone").click({ button: "right" });
+    await expect(page.locator(".rmenu")).toBeVisible();
+    await expect(page.locator(".rmenu").getByRole("menuitem", { name: "Meters" })).toBeDisabled();
+    await expect(page.locator(".rmenu").getByRole("menuitem", { name: "Seconds" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".rmenu")).toHaveCount(0);
+    expect(await optimizing()).toBe(true); // both menus peeled without touching the mode
 
     // ── 2. An in-mode edit (arrow-nudge the crest), then the layered Esc rungs and the
     // byte-identical Exit revert. positive control first: the edit must be seen to land. ──

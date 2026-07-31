@@ -464,15 +464,19 @@ export function sectionsDeletable(selected: number, total: number): boolean {
     return selected > 0 && selected < total;
 }
 
-/** whether Delete/Backspace on a whole-section selection may run right now — false while ANY
- *  optimize session is open (`editor.optimizing`, `kex2d-optimize-mode` stage 1), not just on the
- *  session's own section: convert/delete/join aren't available inside the mode (the locked
- *  decision's consent-boundary law). Deleting the session's own section would strand
- *  `editor.optimizing` on a dead id with no menu left to reach Exit from — the section context
- *  menu's Solve/Exit rows are the mode's only exit, and they live on that section's OWN menu.
- *  Extracted as its own predicate (mirrors `sectionsDeletable`/`sectionSolvable` above) since
- *  `attachControls`'s window keydown handler has no DOM-free unit-test seam otherwise. */
-export function sectionDeleteAllowed(optimizing: OptimizeSession | null): boolean {
+/** the consent boundary's one predicate: whether the section-structure surface — Delete on a
+ *  whole-section selection, either Convert direction on ANY section, and the ruler's domain
+ *  switch — may run right now. False while ANY optimize session is open (`editor.optimizing`),
+ *  not just on the session's own section: convert/delete/join aren't available inside the mode
+ *  (the locked decision's consent-boundary law). Deleting the session's own section would strand
+ *  `editor.optimizing` on a dead id; a convert or a domain switch would land a track rewrite
+ *  INSIDE the session bracket — an upstream convert silently rebases what the stamp means, and a
+ *  domain switch is a lossy whole-track rewrite, so a later Solve would squash either into the
+ *  Optimize's single undo entry. Extracted as its own predicate (mirrors `sectionsDeletable`/
+ *  `sectionSolvable` above) since the window keydown handlers and `pickDomain` have no DOM-free
+ *  unit-test seam otherwise; every caller pairs the grayed affordance with this same guard at
+ *  the action layer. */
+export function sectionOpsAllowed(optimizing: OptimizeSession | null): boolean {
     return optimizing === null;
 }
 
@@ -1265,7 +1269,7 @@ export function attachControls(
         if (editor.section !== null) {
             if (
                 (e.key === "Delete" || e.key === "Backspace") &&
-                sectionDeleteAllowed(editor.optimizing)
+                sectionOpsAllowed(editor.optimizing)
             ) {
                 e.preventDefault();
                 if (editor.sections.ids.size > 1) {

@@ -79,7 +79,7 @@ import {
     yGrow,
     zoomAt,
 } from "./timeline";
-import { armDrag, DRAG_PX, latchAngle } from "./controls";
+import { armDrag, DRAG_PX, latchAngle, sectionOpsAllowed } from "./controls";
 import {
     ANGLE_STEP_MAX,
     ANGLE_STEP_MIN,
@@ -422,6 +422,10 @@ $effect(() => {
 // is not bit-identical — undo is the way back.
 function pickDomain(target: Domain): void {
     if (editor.dragging) return; // a live gesture holds the document axis still (editor-ui.md)
+    // the consent boundary (kex2d-optimize-mode): a domain switch is a lossy track-wide rewrite,
+    // so it can't land inside an open optimize session's bracket — the rows gray on the same
+    // predicate; this is the action-layer half of the pair (delete's belt-and-suspenders shape).
+    if (!sectionOpsAllowed(editor.optimizing)) return;
     convertDomain(history, ecs, target); // rejects (writing nothing) on the active row and with
     // nothing convertible — the same reading the row is grayed on
 }
@@ -1531,9 +1535,12 @@ const rmenu = $derived.by((): { x: number; y: number } | null => {
 const rulerMenuItems = $derived.by((): MenuItem[] => {
     void tick;
     if (editor.rulerMenu === null) return [];
+    // `sectionOpsAllowed`: the consent boundary grays BOTH rows (the active one included — its
+    // pick is a no-op, but a lit-enabled row over a blocked surface would misread as available)
+    // while an optimize session is open.
     const row = (label: string, target: Domain): MenuItem => ({
         label,
-        enabled: pickable(ecs, target),
+        enabled: pickable(ecs, target) && sectionOpsAllowed(editor.optimizing),
         checked: domain === target,
         action: () => pickDomain(target),
     });

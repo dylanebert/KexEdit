@@ -16,7 +16,7 @@ import {
     nodeMetrics,
     normDeg,
     polarNudge,
-    sectionDeleteAllowed,
+    sectionOpsAllowed,
     sectionSolvable,
     sectionsDeletable,
     selectedMetrics,
@@ -639,23 +639,26 @@ describe("sectionsDeletable — section multi-delete enablement", () => {
     });
 });
 
-// section-delete is blocked entirely while a live optimize session is open (kex2d-optimize-mode
-// stage 1 — the adversarial pass's blocker: right-click a force section → Optimize forces →
-// Delete used to destroy the section out from under the mode, stranding `editor.optimizing` on a
-// dead id with no menu left to reach Exit from). `attachControls`'s window keydown handler has no
-// DOM-free unit-test seam, so the guard is extracted as this predicate and tested directly.
-describe("sectionDeleteAllowed — optimize mode blocks section delete", () => {
-    test("no live session: delete is allowed", () => {
-        expect(sectionDeleteAllowed(null)).toBe(true);
+// the section-structure surface — delete, EITHER convert direction, and the ruler's domain
+// switch — is blocked entirely while a live optimize session is open (kex2d-optimize-mode: the
+// consent-boundary law; delete was stage 1's blocker, convert + domain stage 4's adversarial
+// finding 2 — both were reachable in-mode and would have landed a track rewrite inside the
+// session bracket, seen red in the capture flow's disabled-row asserts before the guard wired
+// in). The window keydown handlers and `pickDomain` have no DOM-free unit-test seam, so the
+// guard is extracted as this one predicate and tested directly; every surface pairs the grayed
+// affordance with the same guard at the action layer.
+describe("sectionOpsAllowed — optimize mode blocks delete, convert, and the domain switch", () => {
+    test("no live session: the structure surface is allowed", () => {
+        expect(sectionOpsAllowed(null)).toBe(true);
     });
 
-    test("a live session on ANY section blocks delete, not just its own", () => {
+    test("a live session on ANY section blocks the whole surface, not just its own section", () => {
         const session = {
             section: 7,
             stamp: { x: 0, y: 0, theta: 0 },
             ghost: { x: new Float32Array(0), y: new Float32Array(0) },
         };
-        expect(sectionDeleteAllowed(session)).toBe(false);
+        expect(sectionOpsAllowed(session)).toBe(false);
     });
 });
 
