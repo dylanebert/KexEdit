@@ -41,11 +41,10 @@ import {
     deleteForces,
     history,
     materializeCustom,
-    redo,
     setForcesEase,
     setForceTangentMode,
-    undo,
 } from "./history";
+import { redoRouted, undoRouted } from "./optimizeMode";
 import { convertDomain, pickable } from "./domain";
 import { Domain } from "./section";
 import {
@@ -2585,12 +2584,14 @@ onMount(() => {
                 // would otherwise keep easing diamonds toward values the undo just erased
                 // (adversarial finding 2; the same skip pointerdown/Esc and Exit apply).
                 skipLanding();
-                if (e.shiftKey) redo(history, ecs);
-                else undo(history, ecs);
+                // routed (stage 7): the SANDBOX while an optimize mode is open — in-mode
+                // undo/redo never reach the outer stacks, and undo at the sandbox's start exits.
+                if (e.shiftKey) redoRouted(history, ecs);
+                else undoRouted(history, ecs);
             } else if (k === "y") {
                 e.preventDefault();
                 skipLanding();
-                redo(history, ecs);
+                redoRouted(history, ecs);
             }
             return;
         }

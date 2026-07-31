@@ -3,7 +3,7 @@ import { ProfilePlugin } from "@dylanebert/shallot/extras";
 import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { cartArc, cartState, CartPlugin } from "./cart";
-import { editor, select, selectionHook } from "./editor";
+import { editor, sandbox, select, selectionHook } from "./editor";
 import {
     appendSection,
     convertSection,
@@ -244,6 +244,18 @@ if (import.meta.env.DEV) {
         // gesture's effect; the popup's badge/buttons are driven and read pointer-true by DOM.
         optimizing: (): boolean => editor.optimizing !== null,
         lockedCount: (): number => editor.locked.size,
+        // the sandbox's undo depth, or null with no mode open — the optimize flow asserts
+        // in-mode edits land HERE while the outer depth stands still (the sandbox contract).
+        sandboxDepth: (): number | null => sandbox()?.undo.length ?? null,
+        // every section's baked entry (order-sorted) — the downstream-freeze assert reads the
+        // section AFTER the optimizing one and pins it byte-stable across an in-mode edit.
+        entries: (): { x: number; y: number; theta: number; v: number }[] =>
+            sections(ecs).map((s) => {
+                const e = sectionInfo.get(s.id)?.entry;
+                return e
+                    ? { x: e.x, y: e.y, theta: e.theta, v: e.v }
+                    : { x: 0, y: 0, theta: 0, v: 0 };
+            }),
         // whether the paced landing animation is running — the optimize flow asserts a landed
         // Solve raises it (the feedback) and that it settles closed.
         landing: (): boolean => editor.landing !== null,

@@ -318,7 +318,7 @@ const answer = { outcome: "floor", keys: 12, deviation: 0.567, floor: 0.571 };
 test("a converged convert reads as a short confirmation — the count, nothing else", () => {
     // it held its budget, so the numbers say only "it worked"; the key count is what the author
     // now edits. Anything past that is noise the readout doesn't earn.
-    expect(solveDone(answer)).toEqual({ kind: "done", text: "Converted to force · 12 keys" });
+    expect(solveDone(answer)).toEqual({ kind: "done", text: "Converted to force" });
 });
 
 test("a budget convert landed too — it reads as done, and names the miss", () => {
@@ -327,7 +327,7 @@ test("a budget convert landed too — it reads as done, and names the miss", () 
     // achieved-vs-allowed numbers are worth the author's attention.
     expect(solveDone({ ...answer, outcome: "budget" })).toEqual({
         kind: "done",
-        text: "Converted to force · 12 keys · 0.57 m off (0.57 m allowed)",
+        text: "Converted to force · 0.57 m off (0.57 m allowed)",
     });
 });
 
@@ -387,7 +387,7 @@ const fitAnswer = {
 };
 
 test("a converged fit reads as a short confirmation — the node count, nothing else", () => {
-    expect(fitDone(fitAnswer)).toEqual({ kind: "done", text: "Converted to geo · 6 nodes" });
+    expect(fitDone(fitAnswer)).toEqual({ kind: "done", text: "Converted to geo" });
 });
 
 test("a budget fit names only the axis that missed", () => {
@@ -396,23 +396,21 @@ test("a budget fit names only the axis that missed", () => {
     // would bury the one reading the author can act on.
     expect(fitDone({ ...fitAnswer, outcome: "budget", forceError: 0.58 })).toEqual({
         kind: "done",
-        text: "Converted to geo · 6 nodes · 0.58 g off (0.50 g allowed)",
+        text: "Converted to geo · 0.58 g off (0.50 g allowed)",
     });
 });
 
 test("both axes missing prints both, in geo-then-force order", () => {
     expect(
         fitDone({ ...fitAnswer, outcome: "budget", deviation: 0.62, forceError: 0.58 }).text,
-    ).toBe(
-        "Converted to geo · 6 nodes · 0.62 m off (0.50 m allowed) · 0.58 g off (0.50 g allowed)",
-    );
+    ).toBe("Converted to geo · 0.62 m off (0.50 m allowed) · 0.58 g off (0.50 g allowed)");
 });
 
 test("a budget fit that held BOTH bounds reports both readings", () => {
     // it ran out of admissible split sites rather than missing, so there is no single miss to
     // point at — the fallback keeps the outcome honest instead of reading as a clean hold.
     expect(fitDone({ ...fitAnswer, outcome: "budget" }).text).toBe(
-        "Converted to geo · 6 nodes · 0.31 m off (0.50 m allowed) · 0.22 g off (0.50 g allowed)",
+        "Converted to geo · 0.31 m off (0.50 m allowed) · 0.22 g off (0.50 g allowed)",
     );
 });
 
@@ -463,6 +461,7 @@ test("lockLabel: hidden outside the mode, on other sections, and on an empty set
         section: 7,
         stamp: { x: 0, y: 0, theta: 0 },
         ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+        freeze: { x: 0, y: 0, theta: 0, v: 10 },
     };
     expect(lockLabel(null, 7, [1, 2], new Set())).toBeNull(); // no mode → no row
     expect(lockLabel(session, 3, [1, 2], new Set())).toBeNull(); // another section → no row
@@ -474,6 +473,7 @@ test("lockLabel: toggle semantics — all-locked offers Unlock, anything else Lo
         section: 7,
         stamp: { x: 0, y: 0, theta: 0 },
         ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+        freeze: { x: 0, y: 0, theta: 0, v: 10 },
     };
     expect(lockLabel(session, 7, [1, 2], new Set())).toBe("Lock"); // none locked
     expect(lockLabel(session, 7, [1, 2], new Set([1]))).toBe("Lock"); // mixed → lock the rest

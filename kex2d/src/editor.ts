@@ -8,7 +8,8 @@
  *  over its target. */
 
 import type { State } from "@dylanebert/shallot";
-import { forceAt, Handle, handleAt, sectionAt } from "./track";
+import { createHistory, type History, redirectHistory } from "./history";
+import { forceAt, Handle, handleAt, sectionAt, setBakeFreeze } from "./track";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
  *  (the Blender/Unity hovered-surface model). */
@@ -192,6 +193,12 @@ export interface OptimizeSession {
     section: number;
     stamp: { x: number; y: number; theta: number };
     ghost: { x: Float32Array; y: Float32Array };
+    /** the section's full recovered exit at mode entry — the downstream freeze's chain seed
+     *  (`track.setBakeFreeze`): while the mode is open, sections after this one bake from HERE,
+     *  not the live exit (stage 7 — downstream holds its mode-entry placement; the boundary gap
+     *  is the residual made visible). frozen with the stamp, so a reopened session (undo of the
+     *  landed Solve) freezes identically. */
+    freeze: { x: number; y: number; theta: number; v: number };
 }
 
 /** a solve in flight: the façade's own progress, rewritten per report. */
@@ -294,28 +301,58 @@ export const editor: EditorState = {
     landing: null,
 };
 
-// ── optimize mode (kex2d-optimize-mode stage 1) ───────────────────────────────────
-// mode-scoped: entering stamps the exit and freezes a ghost, both die on `endOptimize`. locking is
-// a set of force-keyframe ids, all-free by default (the locked decision's consent-boundary law) —
-// discarded on exit, per the stage-1 slice (persistence across solves is stage 4).
+// ── optimize mode (kex2d-optimize-mode stage 7: the sandbox) ──────────────────────
+// mode-scoped: entering stamps the exit, freezes a ghost + the downstream chain, and opens the
+// SANDBOX — a second History every in-mode recording lands in (`history.redirectHistory`), so the
+// optimize state is temporary and the outer stacks are untouched until a Solve lands. locking is
+// a set of force-keyframe ids, all-free by default (the locked decision's consent-boundary law).
+// `beginOptimize`/`endOptimize` are the ONLY open/close choke points — every path (fresh entry,
+// Exit/Esc, the landed Solve, undo/redo of the landing) goes through them, so the sandbox, the
+// redirect, and the downstream freeze can never leak past the mode.
+
+let sandboxH: History | null = null;
+
+/** the live sandbox history, or null when no mode is open — in-mode undo/redo operate on THIS
+ *  stack only (`optimizeMode.undoRouted`/`redoRouted`); the outer stacks are unreachable from
+ *  inside (the sandbox contract). */
+export function sandbox(): History | null {
+    return sandboxH;
+}
+
+/** swap the live sandbox's stacks for captured ones — the landed Solve's undo path: the outer
+ *  entry carries the sandbox frozen at solve time, and undoing it reopens the mode with the
+ *  experiment resumed (edits present, in-mode undo/redo intact). copies both ways, so repeated
+ *  undo/redo cycles can't mutate the entry's frozen arrays. a no-op with no mode open. */
+export function restoreSandbox(undoE: History["undo"], redoE: History["redo"]): void {
+    if (sandboxH === null) return;
+    sandboxH.undo = [...undoE];
+    sandboxH.redo = [...redoE];
+}
 
 /** enter optimize mode on a force section: stamp its current exit, freeze the mode-entry ghost,
- *  clear any stale lock set from a prior session. does not itself touch history — entering the
- *  mode authors nothing (a `Solve` inside it does, landed separately). */
+ *  open a fresh sandbox (all in-mode recordings land there — nothing applies to the outer
+ *  history until Solve), freeze the downstream chain at the session's recovered exit, and clear
+ *  any stale lock set from a prior session. */
 export function beginOptimize(session: OptimizeSession): void {
     editor.optimizing = session;
     editor.locked = new Set();
     editor.notice = null;
+    sandboxH = createHistory();
+    redirectHistory(sandboxH);
+    setBakeFreeze({ section: session.section, entry: session.freeze });
 }
 
-/** close optimize mode: drop the stamp, the ghost, and every lock. this clears only the mode's
- *  own ephemeral state — the document semantics are continuous history (`optimizeMode.ts`): mode
- *  entry, in-mode edits, and the landed Solve are all normal undo entries, and the entry/landing
- *  commands call this (and `beginOptimize`) as undo/redo walk across the mode boundary. */
+/** close optimize mode: drop the stamp, the ghost, every lock, the sandbox, and the downstream
+ *  freeze (the next bake repropagates downstream from the live exit). the document-level close
+ *  semantics live with the callers (`optimizeMode.ts`): Exit reverts the sandbox first; the
+ *  landed Solve captures it into the outer entry. */
 export function endOptimize(): void {
     editor.optimizing = null;
     editor.locked.clear();
     editor.optimizeSolving = false;
+    sandboxH = null;
+    redirectHistory(null);
+    setBakeFreeze(null);
 }
 
 /** toggle a single force keyframe's lock — the basic lock/free gesture. a no-op outside a live
@@ -442,7 +479,8 @@ const missed = (achieved: string, budget: string): string => `${achieved} off ($
 export function solveDone(r: SolveOutcome): Notice {
     if (r.outcome === "diverged")
         return { kind: "error", text: "The solve could not fit this shape. Nothing changed." };
-    const text = `Converted to force · ${r.keys} keys`;
+    // no key count (stage-7 feel: the count told the author nothing — the curve is on screen).
+    const text = "Converted to force";
     if (r.outcome !== "budget") return { kind: "done", text };
     return { kind: "done", text: `${text} · ${missed(metres(r.deviation), metres(r.floor))}` };
 }
@@ -480,7 +518,8 @@ export function fitDone(r: FitOutcome): Notice {
             kind: "error",
             text: `The fit needs ${r.nodes} nodes — too many to author. Nothing changed.`,
         };
-    const text = `Converted to geo · ${r.nodes} nodes`;
+    // node count dropped with the force twin's key count (stage 7 — one convention).
+    const text = "Converted to geo";
     if (r.outcome !== "budget") return { kind: "done", text };
     const misses: string[] = [];
     if (r.deviation > r.geoBudget) misses.push(missed(metres(r.deviation), metres(r.geoBudget)));

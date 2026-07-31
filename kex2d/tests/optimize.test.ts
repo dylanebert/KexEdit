@@ -1,6 +1,13 @@
 import { State } from "@dylanebert/shallot";
-import { describe, expect, test } from "bun:test";
-import { beginLanding, beginOptimize, editor, endOptimize, toggleLockedSet } from "../src/editor";
+import { beforeEach, describe, expect, test } from "bun:test";
+import {
+    beginLanding,
+    beginOptimize,
+    editor,
+    endOptimize,
+    sandbox,
+    toggleLockedSet,
+} from "../src/editor";
 import { beginForceMove, commit, createHistory, redo, undo } from "../src/history";
 import {
     computeExit,
@@ -14,8 +21,10 @@ import {
     enterOptimize,
     enterOptimizeMode,
     exitOptimizeMode,
+    redoRouted,
     runOptimizeSection,
     StaleOptimize,
+    undoRouted,
 } from "../src/optimizeMode";
 import { Easing, type ForcePoint } from "../src/profile";
 import type { Entry } from "../src/section";
@@ -25,7 +34,9 @@ import {
     createForcePoint,
     createSection,
     createTrack,
+    samples,
     sectionForces,
+    sectionInfo,
     type SectionSnapshot,
     setForcePoint,
     setTrackV0,
@@ -710,18 +721,26 @@ describe("editor.ts — optimize mode + lock toggling", () => {
     });
 });
 
-describe("continuous history (kex2d-optimize-mode stage 5)", () => {
-    // the stage-5 model over the real document + history substrate, orchestrated exactly the way
-    // App.svelte does: enter = `enterOptimizeMode` (an undoable action), in-mode edits are normal
-    // entries, a landed Solve is a normal entry that also closes the mode, Exit/Esc =
-    // `exitOptimizeMode` (rewind to the entry mark, everything redoable). each pin here names
-    // behavior the stage-4 bracket got WRONG (floored/watermarked/squashed) — the suite was run
-    // against the bracket mentally and each of these is a case its guards would have failed —
-    // plus mutation probes: `mode.enter` dropped from `solveOptimize`'s reverse fails the
-    // undo-walk re-entry pins; `exitOptimizeMode` reduced to a bare `endOptimize` fails the
-    // rewind + redoable pins.
+describe("the sandbox (kex2d-optimize-mode stage 7)", () => {
+    // the sandbox contract over the real document + history substrate, orchestrated exactly the
+    // way the app does: enter = `enterOptimizeMode` (opens the sandbox — nothing lands outer),
+    // in-mode edits record into the sandbox (the `redirectHistory` seam — call sites still pass
+    // the OUTER history, which is the point), undo/redo route through
+    // `undoRouted`/`redoRouted`, Exit = `exitOptimizeMode` (discard, no trace), a landed Solve =
+    // ONE outer entry carrying the frozen experiment. red-first evidence is by mutation probes
+    // (the API changed shape, so the stage-6 build can't run these): each load-bearing guard —
+    // the record redirect, the exit revert loop, undo-at-start-exits, the landing's sandbox
+    // restore, the resumed re-land fall-through — was broken in turn and its pins seen failing
+    // for that reason (readings in the working log).
 
-    // one in-mode edit through the normal idiom (the drag gesture's bracket).
+    // failure isolation: a test that dies mid-mode must not strand the NEXT test's entry
+    // (enterOptimizeMode refuses while a mode is open, cascading unrelated failures).
+    beforeEach(() => {
+        if (editor.optimizing !== null) endOptimize();
+    });
+
+    // one in-mode edit through the normal idiom (the drag gesture's bracket). deliberately
+    // passed the OUTER history — the redirect must route it into the sandbox.
     function bump(h: ReturnType<typeof createHistory>, state: State, sec: number): void {
         const rows = sectionForces(state, sec);
         beginForceMove(state, rows[2].id);
@@ -730,218 +749,214 @@ describe("continuous history (kex2d-optimize-mode stage 5)", () => {
         state.step(0);
     }
 
-    test("mode entry is an undoable action: undo exits, redo re-enters with the stamp", () => {
+    test("entering touches outer history not at all; in-mode edits land in the SANDBOX", () => {
         const { state, sec } = forceTrack();
         const h = createHistory();
-        expect(enterOptimizeMode(h, state, sec)).toBe(true);
-        expect(editor.optimizing).not.toBeNull();
-        const stamp = editor.optimizing?.stamp;
-        expect(h.undo).toHaveLength(1); // the entry action itself
+        bump(h, state, sec); // pre-mode: a normal outer entry
+        expect(h.undo).toHaveLength(1);
 
-        undo(h, state);
-        expect(editor.optimizing).toBeNull(); // undoing past the entry exits the mode
-        redo(h, state);
-        expect(editor.optimizing).not.toBeNull(); // redoing re-enters…
-        expect(editor.optimizing?.stamp).toBe(stamp); // …with the SAME stamp (the entry carries it)
-        endOptimize();
+        expect(enterOptimizeMode(state, sec)).toBe(true);
+        expect(h.undo).toHaveLength(1); // entry records NOTHING outer
+        expect(sandbox()).not.toBeNull();
+        expect(sandbox()?.undo).toHaveLength(0);
+
+        bump(h, state, sec); // called with the OUTER history — the redirect routes it
+        expect(h.undo).toHaveLength(1); // outer untouched
+        expect(sandbox()?.undo).toHaveLength(1); // the sandbox took it
+        exitOptimizeMode(state);
     });
 
-    test("undo/redo cross the mode boundary in both directions (the bracket floored this)", () => {
+    test("in-mode undo/redo operate over the sandbox only; undo at the start EXITS; pre-mode stays applied", () => {
         const { state, eid, sec } = forceTrack();
-        const preEntry = docState(state, eid);
         const h = createHistory();
-        enterOptimizeMode(h, state, sec);
-        bump(h, state, sec);
-        const edited = docState(state, eid);
-        expect(edited).not.toEqual(preEntry); // the rig detects the edit
+        bump(h, state, sec); // pre-mode edit (crest +0.6)
+        const preEntry = docState(state, eid);
 
-        undo(h, state); // the in-mode edit reverts, mode stays open
+        enterOptimizeMode(state, sec);
+        bump(h, state, sec); // in-mode edit (crest +1.2 now)
+        const edited = docState(state, eid);
+        expect(edited).not.toEqual(preEntry);
+
+        undoRouted(h, state); // reverts the in-mode edit — sandbox scope, mode stays open
         state.step(0);
         expect(docState(state, eid)).toEqual(preEntry);
         expect(editor.optimizing).not.toBeNull();
-        undo(h, state); // …and the next undo crosses the boundary out
-        expect(editor.optimizing).toBeNull();
+        expect(h.undo).toHaveLength(1); // the pre-mode edit was NOT popped (unreachable inside)
 
-        redo(h, state); // redo crosses back IN (the watermark forbade this)
-        expect(editor.optimizing).not.toBeNull();
-        redo(h, state); // …and replays the in-mode edit
+        redoRouted(h, state); // the in-mode edit replays — sandbox scope
         state.step(0);
         expect(docState(state, eid)).toEqual(edited);
-        expect(editor.optimizing).not.toBeNull();
-        exitOptimizeMode(h, state);
-    });
+        undoRouted(h, state); // back off again
 
-    test("Exit rewinds to the entry mark and leaves — everything stays redoable", () => {
-        const { state, eid, sec } = forceTrack();
-        const preEntry = docState(state, eid);
-        const h = createHistory();
-        enterOptimizeMode(h, state, sec);
-        bump(h, state, sec);
-        bump(h, state, sec);
-        const edited = docState(state, eid);
-
-        exitOptimizeMode(h, state);
+        undoRouted(h, state); // at the sandbox's start: acts as EXIT
         state.step(0);
         expect(editor.optimizing).toBeNull();
-        expect(docState(state, eid)).toEqual(preEntry); // rewound to the pre-entry draft
-        expect(h.undo).toHaveLength(0);
-        expect(h.redo).toHaveLength(3); // entry + both edits — NOT destroyed (the bracket discarded them)
+        expect(docState(state, eid)).toEqual(preEntry); // the pre-mode edit still applied
+        expect(h.undo).toHaveLength(1);
+        expect(h.redo).toHaveLength(0); // …and no trace on the outer redo
 
-        redo(h, state); // re-enter the mode
-        expect(editor.optimizing).not.toBeNull();
-        redo(h, state);
-        redo(h, state);
+        undoRouted(h, state); // mode closed — the outer path works again
         state.step(0);
-        expect(docState(state, eid)).toEqual(edited); // the whole process replays
-        expect(editor.optimizing).not.toBeNull();
-        exitOptimizeMode(h, state);
+        expect(docState(state, eid)).not.toEqual(preEntry); // the pre-mode edit undone now
     });
 
-    test("solve-then-undo-walk: landing → edited draft (in-mode, locks back) → pre-entry (out)", async () => {
+    test("Exit discards without trace: outer undo AND redo byte-identical, pre-mode redo survives", () => {
         const { state, eid, sec } = forceTrack();
-        const preEntry = docState(state, eid);
         const h = createHistory();
-        enterOptimizeMode(h, state, sec);
         bump(h, state, sec);
-        const edited = docState(state, eid);
+        undo(h, state); // → a live pre-mode redo branch
+        state.step(0);
+        expect(h.redo).toHaveLength(1);
+        const preEntry = docState(state, eid);
+
+        enterOptimizeMode(state, sec);
+        expect(h.redo).toHaveLength(1); // entry does NOT clear the outer redo (no outer record)
+        bump(h, state, sec);
+        bump(h, state, sec);
+        exitOptimizeMode(state);
+        state.step(0);
+
+        expect(editor.optimizing).toBeNull();
+        expect(docState(state, eid)).toEqual(preEntry); // every in-mode edit reverted
+        expect(h.undo).toHaveLength(0);
+        expect(h.redo).toHaveLength(1); // the pre-mode redo branch survived untouched
+        redo(h, state); // …and still replays
+        state.step(0);
+        expect(docState(state, eid)).not.toEqual(preEntry);
+    });
+
+    test("Solve = ONE outer entry; undo REOPENS with the experiment resumed; redo re-lands and closes", async () => {
+        const { state, eid, sec } = forceTrack();
+        const h = createHistory();
+        const preEntry = docState(state, eid);
+
+        enterOptimizeMode(state, sec);
+        bump(h, state, sec); // edit 1
+        bump(h, state, sec); // edit 2
+        undoRouted(h, state); // edit 2 undone in-mode — it sits on the SANDBOX redo
+        state.step(0);
+        const draft = docState(state, eid); // edit 1 applied, edit 2 undone
         const rows = sectionForces(state, sec);
-        editor.locked = new Set([rows[0].id, rows[4].id]);
+        editor.locked = new Set([rows[0].id]);
 
         const session = editor.optimizing;
         if (!session) throw new Error("no session");
         const result = await runOptimizeSection(h, state, session, editor.locked);
         expect(result.outcome).toBe("solved");
-        expect(editor.optimizing).toBeNull(); // Solve confirmed AND closed the mode
+        expect(editor.optimizing).toBeNull(); // Solve confirmed AND closed
         state.step(0);
         const landed = docState(state, eid);
-        expect(landed).not.toEqual(edited); // the landing really was a change
-        expect(h.undo).toHaveLength(3); // entry + edit + landing — normal entries, no squash
+        expect(h.undo).toHaveLength(1); // ONE outer entry — the whole experiment
+        expect(sandbox()).toBeNull();
 
-        undo(h, state); // undo the landing: back to the edited-but-unsolved draft, IN the mode
+        undoRouted(h, state); // undo the landing: the experiment RESUMES
         state.step(0);
-        expect(docState(state, eid)).toEqual(edited);
         expect(editor.optimizing).not.toBeNull();
-        expect(editor.locked.size).toBe(2); // the lock set rides the landing entry back in
+        expect(docState(state, eid)).toEqual(draft); // the edited-but-unsolved draft
+        expect(editor.locked.size).toBe(1); // locks restored
+        expect(sandbox()?.undo).toHaveLength(1); // edit 1 undoable again…
+        expect(sandbox()?.redo).toHaveLength(1); // …and edit 2 still REDOABLE (full resume)
 
-        undo(h, state); // undo the edit: still in the mode
+        redoRouted(h, state); // redo inside the resumed experiment replays edit 2 (sandbox scope)
         state.step(0);
-        expect(docState(state, eid)).toEqual(preEntry);
-        expect(editor.optimizing).not.toBeNull();
+        expect(docState(state, eid)).not.toEqual(draft);
+        expect(editor.optimizing).not.toBeNull(); // still in the mode — that was a sandbox redo
+        undoRouted(h, state); // back off edit 2 → the sandbox redo holds it again
 
-        undo(h, state); // undo the entry: out of the mode, pre-entry draft
+        // now AT the resumed sandbox's end with nothing left on its redo? no — edit 2 is on the
+        // sandbox redo, so redo routes there first; walk the contract's own case instead: the
+        // plain undo-then-redo cycle.
+        redoRouted(h, state); // edit 2 back (sandbox)
+        expect(sandbox()?.redo).toHaveLength(0);
+        redoRouted(h, state); // at the sandbox's END, resumed → falls through: RE-LANDS + closes
+        state.step(0);
         expect(editor.optimizing).toBeNull();
-        state.step(0);
-        expect(docState(state, eid)).toEqual(preEntry);
+        expect(docState(state, eid)).toEqual(landed);
+        expect(h.undo).toHaveLength(1);
 
-        redo(h, state);
-        redo(h, state);
-        redo(h, state); // the whole process replays forward, landing included
+        // reopen again: the frozen redo still carries edit 2, so redo walks the SANDBOX first
+        // and only falls through to the re-land at the true end of the resumed experiment.
+        undoRouted(h, state); // reopen
+        expect(editor.optimizing).not.toBeNull();
+        expect(sandbox()?.redo).toHaveLength(1); // edit 2, frozen at solve time
+        redoRouted(h, state); // edit 2 (sandbox)
+        expect(editor.optimizing).not.toBeNull();
+        redoRouted(h, state); // the end → re-land
+        state.step(0);
+        expect(editor.optimizing).toBeNull();
+        expect(docState(state, eid)).toEqual(landed);
+
+        // walking a resumed experiment all the way out exits at its start with no outer trace
+        // beyond the landing sitting on the outer redo.
+        undoRouted(h, state); // reopen again (sandbox undo: [edit 1], redo: [edit 2])
+        undoRouted(h, state); // edit 1 off
+        expect(editor.optimizing).not.toBeNull();
+        undoRouted(h, state); // at the start → exits
+        state.step(0);
+        expect(editor.optimizing).toBeNull();
+        expect(docState(state, eid)).toEqual(preEntry);
+        expect(h.undo).toHaveLength(0);
+        redoRouted(h, state); // outer redo still holds the landing → re-lands from pre-entry
         state.step(0);
         expect(docState(state, eid)).toEqual(landed);
-        expect(editor.optimizing).toBeNull(); // the replayed landing re-closes the mode
     });
 
-    test("Exit after undo-walking back into a PRIOR session rewinds THAT session (stale mark)", async () => {
-        // RED FIRST on 32e2d53 (adversarial finding 1): the rewind mark was one module-level
-        // `entryCmd`, overwritten by every `enterOptimizeMode` — but a prior session can REOPEN
-        // via plain undo through its landed-Solve entry without touching the mark. Exit then saw
-        // the (later) mark absent from the undo stack, took it for MAX_UNDO eviction, and closed
-        // the chrome in place, leaving every in-mode edit applied — this test failed its
-        // `preEntry` compare (the crest stayed at +0.6) before the mark was made to travel with
-        // the session (the entry command re-marks on apply; the landing's enter re-marks on undo).
+    test("the straight cycle: Solve, Ctrl+Z (reopen), Ctrl+Shift+Z (re-land) — no in-mode undos", async () => {
         const { state, eid, sec } = forceTrack();
-        const preEntry = docState(state, eid);
         const h = createHistory();
-
-        // session 1: enter, edit, Solve lands and closes.
-        enterOptimizeMode(h, state, sec);
+        enterOptimizeMode(state, sec);
         bump(h, state, sec);
-        const s1 = editor.optimizing;
-        if (!s1) throw new Error("no session");
-        const r1 = await runOptimizeSection(h, state, s1, editor.locked);
-        expect(r1.outcome).toBe("solved");
-        expect(editor.optimizing).toBeNull();
-        state.step(0); // rebake the landing (the app does this per frame) so re-entry sees a live bake
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        expect((await runOptimizeSection(h, state, session, editor.locked)).outcome).toBe("solved");
+        state.step(0);
+        const landed = docState(state, eid);
 
-        // session 2 on the SAME section: enter, edit — the module mark now names session 2.
-        expect(enterOptimizeMode(h, state, sec)).toBe(true);
-        bump(h, state, sec);
-
-        // undo-walk back through session 2's edit + entry, then through session 1's landing —
-        // session 1 REOPENS without any enterOptimizeMode call.
-        undo(h, state); // session 2's edit
-        undo(h, state); // session 2's entry — mode closes
-        expect(editor.optimizing).toBeNull();
-        undo(h, state); // session 1's landing — session 1 reopens
+        undoRouted(h, state); // reopen — frozen sandbox redo is EMPTY here
         expect(editor.optimizing).not.toBeNull();
-        expect(editor.optimizing?.stamp).toBe(s1.stamp);
-
-        // Exit must rewind SESSION 1 (its edit + its entry), landing on the pre-entry draft.
-        exitOptimizeMode(h, state);
+        expect(sandbox()?.redo).toHaveLength(0);
+        redoRouted(h, state); // → falls through to the outer redo: re-lands and closes
         state.step(0);
         expect(editor.optimizing).toBeNull();
-        expect(docState(state, eid)).toEqual(preEntry);
-        expect(h.undo).toHaveLength(0);
+        expect(docState(state, eid)).toEqual(landed);
     });
 
-    test("stale mark, two-section variant: undo reopens section A's session, Exit rewinds it", async () => {
-        // the same repro across sections: session on A solves, session on B edits, the undo-walk
-        // reopens A — Exit must rewind A's session, not fall back to a close-in-place.
+    test("a NEW edit in a resumed experiment forks: redo stays in the sandbox, no accidental re-land", async () => {
         const { state, eid, sec } = forceTrack();
-        const secB = createSection(state, 1, SectionKind.Force, 30);
-        createForcePoint(state, secB, 0, 1);
-        createForcePoint(state, secB, 10, 1.3);
-        createForcePoint(state, secB, 20, 1);
-        createForcePoint(state, secB, 30, 1);
-        state.step(0);
-        const preEntry = docState(state, eid);
         const h = createHistory();
-
-        enterOptimizeMode(h, state, sec); // session A
+        enterOptimizeMode(state, sec);
         bump(h, state, sec);
-        const sA = editor.optimizing;
-        if (!sA) throw new Error("no session A");
-        const rA = await runOptimizeSection(h, state, sA, editor.locked);
-        expect(rA.outcome).toBe("solved");
-        state.step(0); // rebake the landing so B's entry sees a live bake
-
-        expect(enterOptimizeMode(h, state, secB)).toBe(true); // session B — the mark moves to B
-        const rowsB = sectionForces(state, secB);
-        beginForceMove(state, rowsB[1].id);
-        setForcePoint(state, rowsB[1].id, rowsB[1].s, rowsB[1].g + 0.4);
-        commit(h);
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        expect((await runOptimizeSection(h, state, session, editor.locked)).outcome).toBe("solved");
         state.step(0);
 
-        undo(h, state); // B's edit
-        undo(h, state); // B's entry — closed
-        undo(h, state); // A's landing — session A reopens
-        expect(editor.optimizing?.section).toBe(sec);
-
-        exitOptimizeMode(h, state); // must rewind A's edit + entry
+        undoRouted(h, state); // resume the experiment
+        expect(editor.optimizing).not.toBeNull();
+        const beforeFork = docState(state, eid);
+        bump(h, state, sec); // a NEW in-mode edit — the fork
+        redoRouted(h, state); // sandbox redo is empty AND the re-land offer is cleared → no-op
+        expect(editor.optimizing).not.toBeNull(); // did NOT re-land over the new edit
         state.step(0);
-        expect(editor.optimizing).toBeNull();
-        expect(docState(state, eid)).toEqual(preEntry);
-        expect(h.undo).toHaveLength(0);
+        expect(docState(state, eid)).not.toEqual(beforeFork); // the new edit survived
+        exitOptimizeMode(state);
     });
 
-    test("Exit skips a live paced landing (undo/redo must never ease toward erased values)", () => {
-        // RED FIRST on 32e2d53 (adversarial finding 2, the exit route): history navigation left
-        // `editor.landing` running, so the frozen `moves` kept easing diamonds toward values the
-        // rewind had just erased. every undo/redo route now clears it first (Timeline's
-        // Ctrl+Z/Y does the same; the capture flow pins that route).
+    test("Exit skips a live paced landing (history navigation never eases toward erased values)", () => {
+        // carried from stage 5's adversarial finding 2 (the exit route): the discard must clear
+        // a running landing or its frozen moves keep easing diamonds toward erased values.
         const { state, sec } = forceTrack();
-        const h = createHistory();
-        enterOptimizeMode(h, state, sec);
+        enterOptimizeMode(state, sec);
         beginLanding([{ id: 1, from: 0, to: 1 }]);
         expect(editor.landing).not.toBeNull();
-        exitOptimizeMode(h, state);
+        exitOptimizeMode(state);
         expect(editor.landing).toBeNull();
     });
 
-    test("a refusal stays in the mode: draft + history untouched, locks intact", async () => {
+    test("a refusal stays in the mode: draft + histories untouched, locks intact", async () => {
         const { state, eid, sec } = forceTrack();
         const h = createHistory();
-        enterOptimizeMode(h, state, sec);
+        enterOptimizeMode(state, sec);
         const session = editor.optimizing;
         if (!session) throw new Error("no session");
 
@@ -950,18 +965,114 @@ describe("continuous history (kex2d-optimize-mode stage 5)", () => {
         const locked = new Set(rows.slice(0, rows.length - 2).map((r) => r.id));
         for (const id of locked) editor.locked.add(id);
         const before = docState(state, eid);
-        const depth = h.undo.length;
+        const sbDepth = sandbox()?.undo.length ?? -1;
 
         const result = await runOptimizeSection(h, state, session, editor.locked);
         expect(result.outcome).toBe("unreachable");
         expect(result.reason).toBe("free-count");
         state.step(0);
         expect(docState(state, eid)).toEqual(before); // byte-identical, still in-mode
-        expect(h.undo).toHaveLength(depth); // refusal records nothing
+        expect(h.undo).toHaveLength(0); // refusal records nothing outer…
+        expect(sandbox()?.undo.length).toBe(sbDepth); // …nor in the sandbox
         expect(editor.optimizing).not.toBeNull();
-        // lock persistence across solves in-mode: a refusal clears nothing.
-        expect(editor.locked.size).toBe(locked.size);
-        exitOptimizeMode(h, state);
+        expect(editor.locked.size).toBe(locked.size); // lock persistence across solves in-mode
+        exitOptimizeMode(state);
         expect(editor.locked.size).toBe(0); // …and exit discards the locks
+    });
+});
+
+describe("the downstream freeze (kex2d-optimize-mode stage 7)", () => {
+    // two force sections; the mode on the FIRST freezes the second's placement at its
+    // mode-entry state — no live repropagation of the wandering exit — and any close unfreezes.
+
+    beforeEach(() => {
+        if (editor.optimizing !== null) endOptimize();
+    });
+
+    function twoSections(): { state: State; eid: number; sec: number; secB: number } {
+        const { state, eid, sec } = forceTrack();
+        const secB = createSection(state, 1, SectionKind.Force, 30);
+        createForcePoint(state, secB, 0, 1);
+        createForcePoint(state, secB, 10, 1.3);
+        createForcePoint(state, secB, 20, 1);
+        createForcePoint(state, secB, 30, 1);
+        state.step(0);
+        return { state, eid, sec, secB };
+    }
+
+    function bump(h: ReturnType<typeof createHistory>, state: State, sec: number): void {
+        const rows = sectionForces(state, sec);
+        beginForceMove(state, rows[2].id);
+        setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.6);
+        commit(h);
+        state.step(0);
+    }
+
+    test("downstream holds its mode-entry state across an in-mode edit; Exit repropagates", () => {
+        const { state, eid, sec, secB } = twoSections();
+        const h = createHistory();
+        const entryB0 = { ...(sectionInfo.get(secB)?.entry ?? { x: 0, y: 0, theta: 0, v: 0 }) };
+
+        enterOptimizeMode(state, sec);
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        bump(h, state, sec); // the optimizing section's exit wanders…
+        const infoA = sectionInfo.get(sec);
+        const infoB = sectionInfo.get(secB);
+        const s = samples.get(eid);
+        if (!infoA || !infoB || !s) throw new Error("no bake");
+
+        // …but downstream holds its mode-entry entry BIT-IDENTICAL (the freeze).
+        expect(infoB.entry.x).toBe(entryB0.x);
+        expect(infoB.entry.y).toBe(entryB0.y);
+        expect(infoB.entry.theta).toBe(entryB0.theta);
+        expect(infoB.entry.v).toBe(entryB0.v);
+        // the frozen bake does NOT share the boundary sample — the seam is the visible gap:
+        // downstream starts at its own sample, placed at the FROZEN entry (= the stamp), while
+        // the live exit sits elsewhere.
+        expect(infoB.startSample).toBe(infoA.endSample + 1);
+        expect(s.posX[infoB.startSample]).toBeCloseTo(session.stamp.x, 4);
+        expect(s.posY[infoB.startSample]).toBeCloseTo(session.stamp.y, 4);
+        // positive control: the live exit really moved off the stamp (the gap is real).
+        const gapX = Math.abs(s.posX[infoA.endSample] - session.stamp.x);
+        const gapY = Math.abs(s.posY[infoA.endSample] - session.stamp.y);
+        expect(gapX + gapY).toBeGreaterThan(0.01);
+
+        exitOptimizeMode(state);
+        state.step(0);
+        // unfrozen: the chain shares the boundary sample again and downstream re-propagates —
+        // the draft was restored, so downstream is back at its pre-entry placement.
+        const infoA2 = sectionInfo.get(sec);
+        const infoB2 = sectionInfo.get(secB);
+        if (!infoA2 || !infoB2) throw new Error("no bake after exit");
+        expect(infoB2.startSample).toBe(infoA2.endSample);
+        expect(infoB2.entry.x).toBe(entryB0.x);
+        expect(infoB2.entry.y).toBe(entryB0.y);
+    });
+
+    test("a landed Solve unfreezes with downstream where it was (the stamp restored)", async () => {
+        const { state, sec, secB } = twoSections();
+        const h = createHistory();
+        const entryB0 = { ...(sectionInfo.get(secB)?.entry ?? { x: 0, y: 0, theta: 0, v: 0 }) };
+
+        enterOptimizeMode(state, sec);
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        bump(h, state, sec);
+        const result = await runOptimizeSection(h, state, session, editor.locked);
+        expect(result.outcome).toBe("solved");
+        state.step(0);
+
+        const infoA = sectionInfo.get(sec);
+        const infoB = sectionInfo.get(secB);
+        if (!infoA || !infoB) throw new Error("no bake after solve");
+        expect(infoB.startSample).toBe(infoA.endSample); // unfrozen — shared boundary again
+        // downstream lands where it was: the solved exit restored the stamp, so the entry is
+        // back within the solve's own floor of its mode-entry value (the mechanisms' own
+        // disagreement, not a tuned number — the solver suite pins the floor itself; here the
+        // claim is placement-scale identity, asserted at display precision).
+        expect(infoB.entry.x).toBeCloseTo(entryB0.x, 3);
+        expect(infoB.entry.y).toBeCloseTo(entryB0.y, 3);
+        expect(infoB.entry.theta).toBeCloseTo(entryB0.theta, 3);
     });
 });

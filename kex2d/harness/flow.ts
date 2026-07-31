@@ -134,9 +134,11 @@ export interface Kex {
     gRange(): [number, number];
     guides(): { ray: boolean; angle: string | null; length: string | null };
     infeasibleSpan(): { first: number; count: number; section: number | null; head: number };
+    entries(): { x: number; y: number; theta: number; v: number }[];
     kind(): number;
     landing(): boolean;
     lockedCount(): number;
+    sandboxDepth(): number | null;
     nodeAt(order: number): { x: number; y: number } | null;
     nodeCount(): number;
     nodeSelOrders(): number[];

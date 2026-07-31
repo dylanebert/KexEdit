@@ -658,6 +658,7 @@ describe("sectionOpsAllowed — optimize mode blocks delete, convert, and the do
             section: 7,
             stamp: { x: 0, y: 0, theta: 0 },
             ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+            freeze: { x: 0, y: 0, theta: 0, v: 10 },
         };
         expect(sectionOpsAllowed(session)).toBe(false);
     });
@@ -671,6 +672,7 @@ describe("sectionEditable — the in-mode editing lockdown", () => {
         section: 7,
         stamp: { x: 0, y: 0, theta: 0 },
         ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+        freeze: { x: 0, y: 0, theta: 0, v: 10 },
     };
 
     test("no live session: everything is editable", () => {

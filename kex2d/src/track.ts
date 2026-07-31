@@ -1366,6 +1366,28 @@ function invalidateBake(ecs: State): void {
     }
 }
 
+// ── the downstream freeze (kex2d-optimize-mode stage 7, the sandbox contract) ─────────
+// while an optimize mode is open, sections AFTER the optimizing one hold their mode-entry
+// placement: the bake splits into two chains, the second seeded with the frozen entry (the
+// optimizing section's recovered exit at mode entry) instead of the live exit. downstream
+// payloads can't change in-mode (the editing lockdown), so the frozen part re-bakes
+// byte-identical every pass — no snapshot needed, just the entry. the seam between the two
+// parts is a GAP, not an edge: the live exit and the frozen entry are two distinct samples
+// (the visible residual, the drop-line's truth), and no section's range covers the edge
+// between them, so the kind-color stroke never bridges it. module state like `stickyLen`
+// (a mode is ephemeral editor state, not authored track state — it stays out of `bakeHash`);
+// `freezeInvalid` forces one bake on any toggle, since the toggle itself changes how the
+// bake is computed while the authored hash stands still.
+let bakeFreeze: { section: number; entry: Entry } | null = null;
+let freezeInvalid = false;
+
+/** set (or clear, null) the downstream freeze — called by the optimize mode's open/close
+ *  (`editor.beginOptimize`/`endOptimize`), never by authoring code. */
+export function setBakeFreeze(f: { section: number; entry: Entry } | null): void {
+    bakeFreeze = f;
+    freezeInvalid = true;
+}
+
 /** the recovered force (g) arriving at a boundary sample from the current bake — the
  *  edge leading into `entrySample` (`fN[entrySample − 1]`). `DEFAULT_G` at the track
  *  start (sample 0) or with no bake. seeds a fresh force section so it continues the
@@ -2009,7 +2031,14 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         if (domain === Domain.Time) marchedStep[k] = step;
         return forcePayload(ecs, sec.id, sec.length, step, domain);
     });
-    const c = chain(start, payloads, MAX_SAMPLES);
+    // the downstream freeze (stage 7): with a live freeze on a non-terminal section, the chain
+    // runs in TWO parts — start..optimizing live, downstream seeded at the FROZEN entry — so
+    // downstream holds its mode-entry placement while the optimizing exit wanders. one part
+    // (today's whole-chain bake, byte-identical) everywhere else.
+    const fz = bakeFreeze;
+    const fzIdx = fz === null ? -1 : secs.findIndex((sec) => sec.id === fz.section);
+    const split = fzIdx >= 0 && fzIdx < secs.length - 1 ? fzIdx + 1 : -1;
+
     // `chain` keeps counting edges past the sample budget (a force section's own extent/step can ask
     // for more than the flat SoA has left at its place in the chain, and those writes land past the
     // buffer end and are dropped), so its count is a would-be count. What the SoA HAS is the budget,
@@ -2018,33 +2047,64 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     // propagates into the chart's own axis total, unmounting the timeline. So the count is the truth
     // of the buffer. A section placed entirely past the budget still carries a `sectionInfo` range
     // out there, which is what `domain.windowOf` rejects a conversion on.
-    const count = Math.min(c.count, MAX_SAMPLES);
+    interface Part {
+        at: number; // first section index this part bakes
+        entry: Entry; // the part's seed (the live start, or the frozen downstream entry)
+        c: ReturnType<typeof chain>;
+        count: number;
+        offset: number; // where the part's samples land in the merged SoA
+    }
+    const parts: Part[] = [];
+    if (split < 0) {
+        const c = chain(start, payloads, MAX_SAMPLES);
+        parts.push({ at: 0, entry: start, c, count: Math.min(c.count, MAX_SAMPLES), offset: 0 });
+    } else if (fz !== null) {
+        const cA = chain(start, payloads.slice(0, split), MAX_SAMPLES);
+        const countA = Math.min(cA.count, MAX_SAMPLES);
+        parts.push({ at: 0, entry: start, c: cA, count: countA, offset: 0 });
+        const budget = MAX_SAMPLES - countA;
+        if (budget >= 2) {
+            const cB = chain(fz.entry, payloads.slice(split), budget);
+            parts.push({
+                at: split,
+                entry: fz.entry,
+                c: cB,
+                count: Math.min(cB.count, budget),
+                offset: countA,
+            });
+        }
+    }
+    const count = parts.reduce((n, p) => n + p.count, 0);
     if (count < 2) return; // fully degenerate first section — keep the prior bake
 
     let truncatedAny = false;
     const marched = new Float64Array(Math.max(1, count - 1));
-    for (let k = 0; k < secs.length; k++) {
-        const r = c.results[k];
-        const range = c.ranges[k];
-        const entry = k === 0 ? start : c.exits[k - 1];
-        if (marchedStep[k] > 0) {
-            for (let i = range.start; i < Math.min(range.end, count - 1); i++)
-                marched[i] = marchedStep[k];
-        }
-
-        if (secs[k].kind === SectionKind.Geo) {
-            const hs = sectionHandles(ecs, secs[k].id);
-            for (let n = 0; n < r.offsets.length; n++) {
-                Handle.sample.set(hs[n], range.start + r.offsets[n]);
+    for (const p of parts) {
+        for (let k = 0; k < p.c.results.length; k++) {
+            const sk = p.at + k; // the section's global index
+            const r = p.c.results[k];
+            const range = p.c.ranges[k];
+            const entry = k === 0 ? p.entry : p.c.exits[k - 1];
+            if (marchedStep[sk] > 0) {
+                const lo = range.start + p.offset;
+                const hi = Math.min(range.end + p.offset, p.offset + p.count - 1, count - 1);
+                for (let i = lo; i < hi; i++) marched[i] = marchedStep[sk];
             }
+
+            if (secs[sk].kind === SectionKind.Geo) {
+                const hs = sectionHandles(ecs, secs[sk].id);
+                for (let n = 0; n < r.offsets.length; n++) {
+                    Handle.sample.set(hs[n], range.start + r.offsets[n] + p.offset);
+                }
+            }
+            sectionInfo.set(secs[sk].id, {
+                entry,
+                startSample: range.start + p.offset,
+                endSample: range.end + p.offset,
+                bakedNodes: r.offsets.length,
+            });
+            if (r.truncated) truncatedAny = true;
         }
-        sectionInfo.set(secs[k].id, {
-            entry,
-            startSample: range.start,
-            endSample: range.end,
-            bakedNodes: r.offsets.length,
-        });
-        if (r.truncated) truncatedAny = true;
     }
     if (truncatedAny) {
         console.warn(
@@ -2052,12 +2112,23 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         );
     }
 
-    s.posX.set(c.posX.subarray(0, count));
-    s.posY.set(c.posY.subarray(0, count));
-    s.theta.set(c.theta.subarray(0, count));
-    s.v.set(c.v.subarray(0, count));
-    out.fN.set(c.fN.subarray(0, count - 1));
-    out.ds.set(c.ds.subarray(0, count - 1));
+    for (const p of parts) {
+        s.posX.set(p.c.posX.subarray(0, p.count), p.offset);
+        s.posY.set(p.c.posY.subarray(0, p.count), p.offset);
+        s.theta.set(p.c.theta.subarray(0, p.count), p.offset);
+        s.v.set(p.c.v.subarray(0, p.count), p.offset);
+        out.fN.set(p.c.fN.subarray(0, Math.max(0, p.count - 1)), p.offset);
+        out.ds.set(p.c.ds.subarray(0, Math.max(0, p.count - 1)), p.offset);
+    }
+    if (parts.length === 2) {
+        // the SEAM between the parts is a gap, not an edge: zero length (the Time-domain stall
+        // edge's own degenerate-ds handling absorbs it) with the prior edge's force carried so
+        // the chart shows no invented spike. no section's range covers this edge index, so the
+        // kind-color stroke never draws a bridge across the gap.
+        const gi = parts[0].count - 1;
+        out.ds[gi] = 0;
+        out.fN[gi] = gi > 0 ? out.fN[gi - 1] : DEFAULT_G;
+    }
     out.hash = bakeHash(ecs, trackEid, secs);
     Track.count.set(trackEid, count);
     computeTime(s, out, count, marched);
@@ -2071,7 +2142,11 @@ export const BakeSystem: System = {
             if (!s || !out) continue;
             const secs = sections(ecs);
             if (secs.length === 0) continue;
-            if (bakeHash(ecs, trackEid, secs) === out.hash) continue; // nothing changed — reuse
+            // a freeze toggle changes how the bake is COMPUTED while the authored hash stands
+            // still (mode open/close is editor state, not authored state), so it forces one pass
+            // through the gate.
+            if (!freezeInvalid && bakeHash(ecs, trackEid, secs) === out.hash) continue;
+            freezeInvalid = false;
             bake(ecs, trackEid, s, out, secs);
         }
     },

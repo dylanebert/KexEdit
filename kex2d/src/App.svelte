@@ -297,15 +297,15 @@ async function solveShape(section: number): Promise<void> {
     }
 }
 
-// ── optimize mode (kex2d-optimize-mode stage 5: continuous history) ───────────────
-// mode entry is an undoable action (`enterOptimizeMode`), every in-mode edit a normal entry,
-// and a landed Solve a normal entry that also closes the mode — undo/redo cross the boundary
-// in both directions. Exit/Esc rewinds to the entry mark and leaves (`exitOptimizeMode`), so
-// the rewound edits stay redoable. A refusal is neither: it stays in the mode, draft
-// untouched, its readout on the docked panel. The solve keeps its OWN blocking gate
-// (`editor.optimizeSolving`), separate from the kind-conversion `editor.converting`: the two
-// invoked tools never overlap in scope, but sharing one boolean would couple two independent
-// modal surfaces.
+// ── optimize mode (kex2d-optimize-mode stage 7: the sandbox) ──────────────────────
+// the optimize state is temporary: entering opens a sandbox history (nothing applies to the
+// outer stacks), Exit/Esc discards it without trace, and a landed Solve is ONE outer entry
+// carrying the experiment (undoing it reopens the mode with the sandbox restored). In-mode
+// undo/redo route to the sandbox (`undoRouted`/`redoRouted`, wired in Timeline). A refusal is
+// neither: it stays in the mode, draft untouched, its readout on the docked panel. The solve
+// keeps its OWN blocking gate (`editor.optimizeSolving`), separate from the kind-conversion
+// `editor.converting`: the two invoked tools never overlap in scope, but sharing one boolean
+// would couple two independent modal surfaces.
 let optimizeAbort: AbortController | null = null;
 // the mode panel's refusal line — a refusal (or a worker failure) that kept the mode open.
 // mode-scoped: cleared on entry, on each Solve press, and on exit.
@@ -315,14 +315,14 @@ function ctxOptimizeEnter(): void {
     if (ctx === null) return;
     const section = ctx.section;
     closeContext();
-    if (enterOptimizeMode(history, ecs, section)) optReadout = null;
+    if (enterOptimizeMode(ecs, section)) optReadout = null;
 }
 
-// Exit/Esc: rewind history to the mode-entry mark and leave the mode — the rewound edits sit
-// on the redo stack, so nothing is destroyed. dismissal is safe by default; the one committing
-// gesture is the Solve that restores the stamped exit.
+// Exit/Esc: discard the sandbox — every in-mode edit reverts, the outer history is untouched
+// (no trace, redo branch included). dismissal is safe by default; the one committing gesture is
+// the Solve that restores the stamped exit.
 function optimizeExit(): void {
-    exitOptimizeMode(history, ecs);
+    exitOptimizeMode(ecs);
     optReadout = null;
 }
 
@@ -968,7 +968,10 @@ const convertRow = $derived.by((): MenuItem => {
     void tick;
     const toGeo = ctxKind === SectionKind.Force;
     return {
-        label: toGeo ? "Convert to geo" : "Convert to force",
+        // `Convert`, no destination noun (stage 7, menus law): the section's kind implies the
+        // direction — force converts to geo, geo to force — and the row is summoned ON the
+        // section, so the label carries the verb alone.
+        label: "Convert",
         enabled: toGeo ? canSolveShape : canSolve,
         action: toGeo ? ctxSolveShape : ctxSolve,
     };

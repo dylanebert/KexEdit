@@ -123,10 +123,38 @@ export const history = createHistory();
 
 /** push an already-applied command (the do-path mutated live data first), with the pre-command
  *  selection snapshot (`undefined` for a gesture, which leaves the selection alone). */
+// ── the sandbox redirect (kex2d-optimize-mode stage 7) ────────────────────────────
+// while an optimize mode is open, EVERY recording lands in the mode's sandbox history instead of
+// the outer stack — structural containment (belt-and-suspenders with the editing lockdown: an
+// edit that slipped a guard still can't touch outer history). the editor sets it on mode open
+// and clears it on close (`beginOptimize`/`endOptimize`); the one outer record while a mode is
+// open — the Solve landing — runs after the close, so it lands outer by ordering.
+let redirect: History | null = null;
+export function redirectHistory(h: History | null): void {
+    redirect = h;
+    resumed = false;
+}
+
+// whether the open sandbox was RESUMED by undoing a landed Solve (the landing's own `enter`
+// closure marks it): a redo at the sandbox's end then falls through to the outer redo — the
+// re-land — so Ctrl+Shift+Z right after the reopening Ctrl+Z does what the sandbox contract
+// promises ("redo re-lands and closes"). a NEW in-mode edit forks the experiment and clears the
+// offer (`record`, the same edit-invalidates-redo law); in-mode undo/redo of the restored
+// entries keep it, so walking the resumed experiment and returning to its end still re-lands.
+let resumed = false;
+export function markResumedLanding(): void {
+    resumed = true;
+}
+export function resumedLanding(): boolean {
+    return resumed;
+}
+
 export function record(h: History, cmd: Command, pre?: unknown): void {
-    h.undo.push({ cmd, pre });
-    if (h.undo.length > MAX_UNDO) h.undo.shift();
-    h.redo.length = 0; // a new edit invalidates the redo branch
+    const t = redirect ?? h;
+    if (t === redirect) resumed = false; // a new in-mode edit forks off the re-land offer
+    t.undo.push({ cmd, pre });
+    if (t.undo.length > MAX_UNDO) t.undo.shift();
+    t.redo.length = 0; // a new edit invalidates the redo branch
 }
 
 export function undo(h: History, ecs: State): void {

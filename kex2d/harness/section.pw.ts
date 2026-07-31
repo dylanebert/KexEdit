@@ -271,23 +271,17 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape"); // the NEXT press peels the selection (no stale swallow)
     await expect.poll(selectedSection).toBe(null);
 
-    // ── 4. Right-click the force clip: the menu carries exactly THREE rows — the one conversion
-    // row, fitted to this section's kind (Convert to geo, live), the force-only Optimize entry
-    // (kex2d-optimize-mode stage 4), and Delete. The opposite conversion direction is absent,
-    // not grayed: a section is one kind, so the other row could never fire. (Also the real-menu
-    // regression guard for the destructive Convert row's removal.) ──
+    // ── 4. Right-click the force clip: the menu carries exactly THREE rows — ONE `Convert` row
+    // (stage 7 naming: the section's kind implies the direction, so the label is the verb
+    // alone), the force-only Optimize entry, and Delete. (Also the real-menu regression guard
+    // for the destructive Convert row's removal.) ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
     await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(3);
-    await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to geo" }),
-    ).toBeEnabled();
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" })).toBeEnabled();
     await expect(
         page.locator(".ctxmenu").getByRole("menuitem", { name: "Optimize" }),
     ).toBeEnabled();
-    await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" }),
-    ).toHaveCount(0);
     if (strip) await page.screenshot({ path: join(OUT, "section-4-menu.png"), clip: strip });
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);
@@ -339,7 +333,7 @@ test("invoked solve flow", async ({ page, boot }) => {
     await page.locator(".clip").nth(0).click({ button: "right" }); // right-click keeps the set
     await expect(page.locator(".ctxmenu")).toBeVisible();
     await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" }),
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" }),
     ).toBeDisabled();
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);
@@ -348,11 +342,11 @@ test("invoked solve flow", async ({ page, boot }) => {
     // ── 2. On the geo clip it's live. Invoke it, and the modal comes up. ──
     await page.locator(".clip").nth(0).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" });
+    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" });
     await expect(solveRow).toBeEnabled();
     await page.waitForTimeout(SHOT_MS);
     if (strip) await page.screenshot({ path: join(OUT, "solve-1-menu.png"), clip: strip });
-    await clickMenuItem(page, ".ctxmenu", "Convert to force");
+    await clickMenuItem(page, ".ctxmenu", "Convert");
     await expect(scrim).toBeVisible();
 
     // ── 3. Every other input is blocked while it runs. Del would delete the selected section
@@ -404,7 +398,7 @@ test("invoked solve flow", async ({ page, boot }) => {
     // ── 5. Escape is the same control (the modal is the only live surface, so its dismissal
     // rung is the cancel). ──
     await page.locator(".clip").nth(0).click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Convert to force");
+    await clickMenuItem(page, ".ctxmenu", "Convert");
     await expect(scrim).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(scrim).toHaveCount(0);
@@ -433,7 +427,7 @@ test("invoked solve flow", async ({ page, boot }) => {
     });
 
     await page.locator(".clip").nth(0).click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Convert to force");
+    await clickMenuItem(page, ".ctxmenu", "Convert");
     // the solve is seconds long (the twin hill is ~1.3s of probes in bun, more in a browser under
     // four parallel workers), so this wait is the flow's own budget, not the default 5s.
     await expect.poll(async () => (await kinds()).join(","), { timeout: 120_000 }).toBe("1,1");
@@ -502,28 +496,26 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
     await frameTimeline(page); // append never pans; frame the chain so `.clip.nth()` resolves
     const appended = await undoDepth(); // the bump + append's own entries — the baseline every assert reads
 
-    // ── 1. The one conversion row FITS the section's kind: on the GEO clip it reads the other
-    // direction (Convert to force) and this direction's row isn't there at all. The grayed case
-    // (the kind fits, the invoke can't run) is pinned in "invoked solve flow". ──
+    // ── 1. ONE `Convert` row on either kind (stage 7 naming — the kind implies the direction;
+    // the action behind it is this kind's own). The grayed case (the kind fits, the invoke
+    // can't run) is pinned in "invoked solve flow". ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" }),
-    ).toBeEnabled();
-    await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to geo" }),
-    ).toHaveCount(0);
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" })).toHaveCount(
+        1,
+    );
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" })).toBeEnabled();
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);
 
     // ── 2. On the force clip it's live. Invoke it, and the modal comes up. ──
     await page.locator(".clip").nth(0).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to geo" });
+    const solveRow = page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" });
     await expect(solveRow).toBeEnabled();
     await page.waitForTimeout(SHOT_MS);
     if (strip) await page.screenshot({ path: join(OUT, "fit-1-menu.png"), clip: strip });
-    await clickMenuItem(page, ".ctxmenu", "Convert to geo");
+    await clickMenuItem(page, ".ctxmenu", "Convert");
     await expect(scrim).toBeVisible();
 
     // ── 3. Every other input is blocked while it runs — the same shared gate "invoked solve
@@ -546,7 +538,7 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
 
     // ── 5. Escape is the same control (the modal is the only live surface). ──
     await page.locator(".clip").nth(0).click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Convert to geo");
+    await clickMenuItem(page, ".ctxmenu", "Convert");
     await expect(scrim).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(scrim).toHaveCount(0);
@@ -559,7 +551,7 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
     expect(authoredForces[0]).toBeGreaterThan(2);
 
     await page.locator(".clip").nth(0).click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Convert to geo");
+    await clickMenuItem(page, ".ctxmenu", "Convert");
     // the stress seed is ~2 s in bun, ~7× that under the real browser's worker — this wait is
     // that budget, not the default 5s.
     await expect.poll(async () => (await kinds()).join(","), { timeout: 30_000 }).toBe("0,0");
@@ -717,19 +709,18 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     if (strip) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip });
 });
 
-// Drive OPTIMIZE MODE end to end (kex2d-optimize-mode stage 5) — continuous history over the
-// real UI: the section menu's Optimize row → the DOCKED panel above the player (Solve / Exit,
-// no headroom badge) + the striped clip → the editing lockdown (append + other-section rows
-// gray) → undo/redo CROSSING the mode boundary in both directions → Exit as the rewind (edits
-// stay redoable) → lock gating (L over the multiselect grammar; Solve starves below 3 free with
-// the reason shown only then) → a REFUSED solve through the real gate (stays in-mode, draft
-// untouched, reason on the panel) → a landed solve (a normal entry that closes the mode; the
-// paced landing runs, NO stats toast) → the full undo-walk back out to the pre-mode draft.
+// Drive OPTIMIZE MODE end to end (kex2d-optimize-mode stage 7) — the SANDBOX over the real UI:
+// entering opens a sandbox (outer history untouched), in-mode edits + undo/redo live in it,
+// undo at its start exits, Exit/Esc discards without trace, downstream sections FREEZE at their
+// mode-entry placement, a landed Solve is ONE outer entry whose undo reopens the resumed
+// experiment and whose redo re-lands.
 test("optimize mode flow", async ({ page, boot }) => {
     await boot();
 
     const forces = () => kexCall(page, "forces");
     const undoDepth = () => kexCall(page, "undoDepth");
+    const sandboxDepth = () => kexCall(page, "sandboxDepth");
+    const entries = () => kexCall(page, "entries");
     const optimizing = () => kexCall(page, "optimizing");
     const landing = () => kexCall(page, "landing");
     const lockedCount = () => kexCall(page, "lockedCount");
@@ -742,15 +733,15 @@ test("optimize mode flow", async ({ page, boot }) => {
     const sorted = (rows: { s: number; g: number }[]) => [...rows].sort((a, b) => a.s - b.s);
 
     // the bump profile on the boot section: 2 flat seeds + 3 authored keys (crest at index 2) —
-    // plus an appended geo section, the consent-boundary leg's subject (an OTHER section whose
-    // rows must gray while the mode is open).
+    // plus an appended geo section: the lockdown leg's subject AND the downstream-freeze subject.
     await kexCall(page, "seedForceBump");
     await expect.poll(forceCount).toBe(5);
     await kexCall(page, "append", 0); // SectionKind.Geo
     await expect.poll(() => kexCall(page, "sectionCount")).toBe(2);
     await frameTimeline(page);
-    const preMode = sorted(await forces()); // the pre-mode draft every rewind assert reads
+    const preMode = sorted(await forces()); // the pre-mode draft every discard assert reads
     const base = await undoDepth();
+    const entryB0 = (await entries())[1]; // the DOWNSTREAM section's baked entry, pre-mode
 
     // ── 0b. The keyframe menu carries NO Lock row outside the mode (hidden, not grayed —
     // lock is mode-scoped state and doesn't exist in normal editing). ──
@@ -766,30 +757,31 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape"); // clear the selection the right-click made
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
 
-    // ── 1. Enter through the section menu's Optimize row (terse verb — menus law): the docked
-    // panel above the player is the mode signal, and the section's clip wears the stripes. entry
-    // itself is an undoable action, so the depth grows by one. ──
+    // ── 1. Enter through the section menu's Optimize row: the docked panel + the striped clip
+    // are the mode signal — and the OUTER history is untouched (the sandbox contract: entering
+    // records nothing; a fresh, empty sandbox opens instead). ──
     await page.locator(".clip").first().click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
     await expect(
         page.locator(".ctxmenu").getByRole("menuitem", { name: "Optimize" }),
     ).toBeEnabled();
     await clickMenuItem(page, ".ctxmenu", "Optimize");
-    await expect(panel).toBeVisible(); // the docked panel IS the mode signal
+    await expect(panel).toBeVisible();
     await expect.poll(optimizing).toBe(true);
-    await expect(page.locator(".clip-stripes")).toHaveCount(1); // the striped timeline identity
-    expect(await undoDepth()).toBe(base + 1); // mode entry is a history entry
+    await expect(page.locator(".clip-stripes")).toHaveCount(1);
+    expect(await undoDepth()).toBe(base); // NOTHING landed outer
+    expect(await sandboxDepth()).toBe(0); // …the sandbox opened empty
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-1-mode.png") });
 
     // ── 1b. The editing lockdown holds track-wide while the mode is open: another section's
-    // Convert/Delete rows gray (discoverable — the gray-never-hide law), the ruler's domain
-    // picker grays both rows, and the append tail grays (no section add in-mode). ──
+    // Convert/Delete rows gray, the ruler's domain picker grays both rows, the append tail
+    // grays. ──
     await expect(page.locator(".clip-add")).toBeDisabled();
     await page.locator(".clip").nth(1).click({ button: "right" }); // the appended GEO clip
     await expect(page.locator(".ctxmenu")).toBeVisible();
     await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" }),
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" }),
     ).toBeDisabled();
     await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Delete" })).toBeDisabled();
     await page.keyboard.press("Escape"); // peels the menu (the mode stays — layered dismissal)
@@ -802,46 +794,76 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect(page.locator(".rmenu")).toHaveCount(0);
     expect(await optimizing()).toBe(true); // both menus peeled without touching the mode
 
-    // ── 2. An in-mode edit (arrow-nudge the crest) is a NORMAL history entry, and undo/redo
-    // cross the mode boundary in both directions; Esc = Exit = the rewind to the entry mark,
-    // with everything redoable. positive control first: the edit must be seen to land. ──
+    // ── 2. An in-mode edit lands in the SANDBOX (outer untouched), downstream FREEZES at its
+    // mode-entry placement, in-mode undo/redo walk the sandbox, undo at its start EXITS, and
+    // nothing is redoable after — no trace. ──
     const crestHit = await page.locator(".fhit").nth(2).boundingBox();
     if (!crestHit) throw new Error("crest hit target not laid out");
     await page.mouse.click(crestHit.x + crestHit.width / 2, crestHit.y + crestHit.height / 2);
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
-    await page.keyboard.press("ArrowUp"); // one press = one undo entry (NUDGE_G)
+    await page.keyboard.press("ArrowUp"); // one press = one sandbox entry (NUDGE_G)
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
-    expect(await undoDepth()).toBe(base + 2); // entry + the nudge, both normal entries
+    expect(await undoDepth()).toBe(base); // the OUTER stack stood still
+    expect(await sandboxDepth()).toBe(1); // the sandbox took the edit
+    // the downstream freeze: the edit moved the optimizing exit, but the next section's baked
+    // entry is BYTE-STABLE at its mode-entry value (no live repropagation — the gap is the
+    // residual made visible).
+    const entryB1 = (await entries())[1];
+    expect(entryB1.x).toBe(entryB0.x);
+    expect(entryB1.y).toBe(entryB0.y);
+    expect(entryB1.theta).toBe(entryB0.theta);
+    expect(entryB1.v).toBe(entryB0.v);
 
-    // Esc peels one rung at a time: selection first (mode stays), then the Exit rewind.
-    await page.keyboard.press("Escape");
-    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
-    expect(await optimizing()).toBe(true); // still in the mode — Esc took the inner rung
-    await expect(panel).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect.poll(optimizing).toBe(false); // the outermost rung: Exit = the rewind
-    await expect(panel).toHaveCount(0); // the panel dies with the mode
-    expect(sorted(await forces())).toEqual(preMode); // rewound to the entry mark
+    await page.keyboard.press("Control+z"); // in-mode undo: the sandbox, not the outer stack
+    await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
+    expect(await optimizing()).toBe(true); // still in the mode
     expect(await undoDepth()).toBe(base);
-    // the rewind destroyed nothing: redo re-enters the mode and replays the edit…
-    await page.keyboard.press("Control+Shift+z");
-    await expect.poll(optimizing).toBe(true);
-    await page.keyboard.press("Control+Shift+z");
+    await page.keyboard.press("Control+Shift+z"); // in-mode redo replays it
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
     expect(await optimizing()).toBe(true);
-    // …and plain undo crosses back OUT through the boundary (the old bracket floored this).
-    await page.keyboard.press("Control+z"); // the edit
-    await page.keyboard.press("Control+z"); // the entry — exits the mode
+    await page.keyboard.press("Control+z"); // back off again
+    await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
+    await page.keyboard.press("Control+z"); // at the sandbox's start → acts as EXIT
+    await expect.poll(optimizing).toBe(false);
+    await expect(panel).toHaveCount(0);
+    expect(sorted(await forces())).toEqual(preMode);
+    expect(await undoDepth()).toBe(base);
+    await page.keyboard.press("Control+Shift+z"); // no trace: nothing to redo
     await expect.poll(optimizing).toBe(false);
     expect(sorted(await forces())).toEqual(preMode);
+    // unfrozen on close: downstream repropagates — the draft was restored, so it lands where
+    // it started.
+    const entryB2 = (await entries())[1];
+    expect(entryB2.x).toBe(entryB0.x);
+    expect(entryB2.y).toBe(entryB0.y);
 
-    // ── 3. Lock gating (pure counting): lock 3 of 5 → 2 free, Solve starves and the reason
-    // shows (only then — no standing count); an in-mode-added key defaults FREE and re-arms it;
-    // delete + unlock restore the baseline. ──
+    // the Esc path is the same discard: re-enter, edit, Esc peels selection, Esc discards.
     await page.locator(".clip").first().click({ button: "right" });
     await clickMenuItem(page, ".ctxmenu", "Optimize");
     await expect(panel).toBeVisible();
-    const lockBase = await undoDepth(); // the re-entry landed one entry on a cleared redo branch
+    // a DIFFERENT diamond than leg 2's crest: a second left press on the same diamond within
+    // FDBL_MS is the double-press handle-edit summon BY DESIGN, and the flow's own pace can
+    // land two same-diamond clicks under that window (root-caused live: the summon added an
+    // extra Esc rung and the discard assert read one rung early).
+    const shoulder = await page.locator(".fhit").nth(1).boundingBox();
+    if (!shoulder) throw new Error("shoulder not laid out");
+    await page.mouse.click(shoulder.x + shoulder.width / 2, shoulder.y + shoulder.height / 2);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(async () => sorted(await forces())[1].g).not.toBe(preMode[1].g);
+    await page.keyboard.press("Escape"); // peels the selection first
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
+    expect(await optimizing()).toBe(true);
+    await page.keyboard.press("Escape"); // the outermost rung: Exit = discard
+    await expect.poll(optimizing).toBe(false);
+    expect(sorted(await forces())).toEqual(preMode);
+    expect(await undoDepth()).toBe(base);
+
+    // ── 3. Lock gating (pure counting): lock 3 of 5 → 2 free, Solve starves and the reason
+    // shows; an in-mode-added key defaults FREE and re-arms it; delete + unlock restore. ──
+    await page.locator(".clip").first().click({ button: "right" });
+    await clickMenuItem(page, ".ctxmenu", "Optimize");
+    await expect(panel).toBeVisible();
     const hit = async (i: number) => {
         const b = await page.locator(".fhit").nth(i).boundingBox();
         if (!b) throw new Error(`diamond ${i} not laid out`);
@@ -859,25 +881,27 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.keyboard.press("q"); // the lock gesture (Q — one hand mouses, the other locks)
     await expect.poll(lockedCount).toBe(3);
     await expect(solveBtn).toBeDisabled(); // starved below MIN_FREE — pure counting
-    await expect(reason).toHaveText("Needs 3 free keys"); // the reason, subtle, only while disabled
+    await expect(reason).toHaveText("Needs 3 free keys");
     await page.waitForTimeout(SHOT_MS);
     if (strip) await page.screenshot({ path: join(OUT, "optimize-2-locked.png"), clip: strip });
 
-    // an in-mode-added key is free by construction: Solve re-arms and the reason clears.
+    // an in-mode-added key is free by construction: Solve re-arms and the reason clears —
+    // and the create lands in the SANDBOX.
     const body = page.locator(".dock .body");
     const bodyBox = await body.boundingBox();
     const clipBox = await page.locator(".clip").first().boundingBox();
     if (!bodyBox || !clipBox) throw new Error("timeline not laid out");
     await page.mouse.dblclick(clipBox.x + clipBox.width * 0.08, bodyBox.y + bodyBox.height * 0.5);
     await expect.poll(forceCount).toBe(6);
-    expect(await undoDepth()).toBe(lockBase + 1); // the create is a normal entry
+    expect(await sandboxDepth()).toBe(1); // the create is a sandbox entry
+    expect(await undoDepth()).toBe(base); // …not an outer one
     await expect(solveBtn).toBeEnabled();
     await expect(reason).toHaveCount(0);
     await page.keyboard.press("Delete"); // the create selected it; Del removes it again
     await expect.poll(forceCount).toBe(5);
-    expect(await undoDepth()).toBe(lockBase + 2); // so is the delete
+    expect(await sandboxDepth()).toBe(2);
     await expect(solveBtn).toBeDisabled();
-    // unlock: the same three members, L on an all-locked set unlocks it.
+    // unlock: the same three members, Q on an all-locked set unlocks it.
     const q1 = await hit(1);
     await page.mouse.click(q1.x, q1.y);
     await page.keyboard.down("Shift");
@@ -890,10 +914,9 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect.poll(lockedCount).toBe(0);
     await expect(solveBtn).toBeEnabled();
 
-    // the menu path to the same toggle (mode-only row, the mouse twin of Q): the row
-    // reads the selection's state — Lock on a free key, Unlock once it's locked. clear the
-    // 3-member set first so the right-click replace-selects one subject (a member click would
-    // PROMOTE and the row would act on all three).
+    // the menu path to the same toggle (mode-only row, the mouse twin of Q): the row reads the
+    // selection's state — Lock on a free key, Unlock once it's locked. clear the 3-member set
+    // first so the right-click replace-selects one subject.
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
     const m1 = await hit(1);
@@ -907,10 +930,10 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect.poll(lockedCount).toBe(0);
 
     // ── 4. A REFUSED solve through the real gate: flatten the crest to 1 g via the popover
-    // (the draft goes exactly straight — the rank-deficient conditioning certificate), Solve →
-    // the refusal stays in-mode with the draft untouched and its reason on the panel. ──
-    await page.keyboard.press("Escape"); // clear the 3-member set first — a click on a set
-    await expect.poll(async () => (await forceSelIds()).length).toBe(0); // member would PROMOTE, not replace, and a multi-set shows no popover
+    // (the draft goes exactly straight — the conditioning certificate), Solve → the refusal
+    // stays in-mode with the draft untouched and its reason on the panel. ──
+    await page.keyboard.press("Escape"); // clear the selection — a member click would PROMOTE
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
     const crest2 = await hit(2);
     await page.mouse.click(crest2.x, crest2.y);
     await expect(page.locator(".ptip")).toBeVisible();
@@ -919,61 +942,59 @@ test("optimize mode flow", async ({ page, boot }) => {
     await gField.fill("1");
     await gField.press("Enter");
     await expect.poll(async () => sorted(await forces())[2].g).toBe(1);
-    expect(await undoDepth()).toBe(lockBase + 3); // the popover edit records
+    expect(await sandboxDepth()).toBe(3); // the popover edit is a sandbox entry
     const flattened = sorted(await forces());
     await solveBtn.click();
     await expect(reason).toBeVisible({ timeout: 30_000 });
     await expect(reason).toContainText("can't steer");
     expect(await optimizing()).toBe(true); // a refusal is not an exit
     expect(sorted(await forces())).toEqual(flattened); // …and writes nothing
+    expect(await undoDepth()).toBe(base); // …anywhere
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-3-refusal.png") });
 
-    // ── 5. A landed solve: undo the flatten (in-mode undo stays live), make a real edit, Solve
-    // → a normal entry that closes the mode. the PACED LANDING is the feedback — it runs, then
-    // settles; there is NO stats toast. ──
+    // ── 5. A landed solve: undo the flatten (in-mode), make a real edit, Solve → ONE outer
+    // entry, the mode closes, the PACED LANDING is the feedback (no stats toast). ──
     await page.keyboard.press("Control+z");
     await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
-    expect(await undoDepth()).toBe(lockBase + 2); // in-mode undo pops it (redo clears on the next edit)
+    expect(await sandboxDepth()).toBe(2); // in-mode undo popped it (redo clears on the next edit)
     const crest3 = await hit(2);
     await page.mouse.click(crest3.x, crest3.y);
     await page.keyboard.press("ArrowUp");
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
-    expect(await undoDepth()).toBe(lockBase + 3); // one press = one entry
+    expect(await sandboxDepth()).toBe(3); // one press = one sandbox entry
     await page.keyboard.press("ArrowUp");
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
     await solveBtn.click();
     await expect.poll(optimizing, { timeout: 30_000 }).toBe(false); // Solve confirms AND closes
     await expect(panel).toHaveCount(0);
     await expect(page.locator(".notice")).toHaveCount(0); // no stats toast — the animation IS the feedback
-    // continuous history: entry + create + delete + flatten(undone, redo cleared) + 2 nudges +
-    // the landing = 6 entries above the lock-leg re-entry baseline of lockBase.
-    expect(await undoDepth()).toBe(lockBase + 5);
+    expect(await undoDepth()).toBe(base + 1); // the WHOLE experiment is ONE outer entry
     await expect.poll(landing).toBe(true); // the paced landing raised — the feedback
 
-    // ── 6. Undo DURING the landing invalidates it (adversarial finding 2: the frozen moves must
-    // never keep easing toward values the undo erased), and the first undo re-ENTERS the mode
-    // through the landing entry; walking on exits at the entry mark, pre-mode draft byte-identical. ──
+    // ── 6. Undo DURING the landing invalidates it AND reopens the mode with the experiment
+    // RESUMED (sandbox restored: create, delete, flatten-undone, 2 nudges → 4 entries); walking
+    // the sandbox out exits at its start with the pre-mode draft; redo then RE-LANDS. ──
     await page.keyboard.press("Control+z");
     await expect.poll(landing).toBe(false); // invalidated by the undo route, not left to expire
-    await expect.poll(optimizing).toBe(true); // undo re-enters the mode
+    await expect.poll(optimizing).toBe(true); // the experiment resumed
+    expect(await sandboxDepth()).toBe(4); // create, delete, nudge 1, nudge 2 — all undoable again
+    expect(await undoDepth()).toBe(base); // the landing sits on the outer REDO
     await page.keyboard.press("Control+z"); // nudge 2
     await page.keyboard.press("Control+z"); // nudge 1
     await page.keyboard.press("Control+z"); // the deleted key returns
     await page.keyboard.press("Control+z"); // the created key leaves
-    await expect.poll(optimizing).toBe(true); // still inside the mode
-    await page.keyboard.press("Control+z"); // the entry — exits the mode
+    await expect.poll(sandboxDepth).toBe(0);
+    expect(await optimizing()).toBe(true); // still inside the mode
+    await page.keyboard.press("Control+z"); // at the sandbox's start → exits
     await expect.poll(optimizing).toBe(false);
     await expect
         .poll(async () => JSON.stringify(sorted(await forces())))
         .toBe(JSON.stringify(preMode));
-    expect(await undoDepth()).toBe(lockBase - 1); // back below the re-entry mark
-
-    // ── 7. Redo replays the whole process forward — entry, edits, landing — and the replayed
-    // landing re-closes the mode. The landed screenshot is taken here, at the settled state. ──
-    for (let i = 0; i < 6; i++) await page.keyboard.press("Control+Shift+z");
-    await expect.poll(optimizing).toBe(false); // the replayed landing re-closed the mode
-    expect(await undoDepth()).toBe(lockBase + 5);
+    expect(await undoDepth()).toBe(base);
+    await page.keyboard.press("Control+Shift+z"); // the outer redo holds the landing → RE-LANDS
+    await expect.poll(optimizing).toBe(false);
+    await expect.poll(undoDepth).toBe(base + 1);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-4-landed.png") });
 });

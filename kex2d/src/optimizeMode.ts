@@ -3,22 +3,40 @@
  *  conversions: this module hands the kernel the document's own live state and lands its answer
  *  back as one undo entry. Nothing here decides anything about the solve.
  *
- *  **The mode is continuous history** (the stage-5 rewrite, superseding the stage-4 bracket).
- *  Mode entry is itself an undoable action ({@link enterOptimizeMode} — the entry command carries
- *  the stamp), every in-mode edit is a normal history entry, and a landed `Solve` is a normal
- *  entry that also closes the mode (`history.solveOptimize`'s mode closures). Undo/redo run
- *  through the whole process: undoing past the entry exits the mode, redoing back in re-enters it
- *  with the mode state restored. {@link exitOptimizeMode} (Exit/Esc) is history navigation — it
- *  rewinds to the entry mark and leaves, so the rewound edits stay redoable; nothing is
- *  destroyed. A cancelled or `"diverged"` solve still writes nothing (the façade is pure).
+ *  **The mode is a SANDBOX** (feel iteration 3, superseding both the stage-4 bracket and the
+ *  stage-5 continuous-history walk). The optimize state is temporary: every in-mode recording
+ *  lands in the mode's own sandbox history (`editor.sandbox()`, wired structurally through
+ *  `history.redirectHistory`), so nothing applies to the outer stacks until Solve. In-mode
+ *  undo/redo ({@link undoRouted}/{@link redoRouted}) operate over the sandbox only — pre-mode
+ *  history is unreachable from inside, and undo at the sandbox's start EXITS the mode (acts as
+ *  Exit). {@link exitOptimizeMode} (Exit/Esc) reverts the sandbox and discards it — no trace in
+ *  outer history, redo branch included. A landed Solve is ONE outer entry that carries the
+ *  sandbox frozen at solve time: undoing it reopens the mode with the experiment resumed (draft,
+ *  locks, and in-mode undo/redo all restored), redoing it re-lands and closes. A cancelled or
+ *  `"diverged"` solve still writes nothing (the façade is pure).
  *
  *  **The target is always the CURRENT draft.** Every `Solve` invocation reads the section's live
  *  keyframes fresh — never the mode-entry snapshot the ghost was taken from — per the locked
  *  decision: in-mode edits are intent, so solving toward mode-entry would fight them. */
 
 import type { State } from "@dylanebert/shallot";
-import { beginOptimize, editor, endOptimize, type OptimizeSession, skipLanding } from "./editor";
-import { type Command, type History, record, solveOptimize as landOptimize, undo } from "./history";
+import {
+    beginOptimize,
+    editor,
+    endOptimize,
+    type OptimizeSession,
+    restoreSandbox,
+    sandbox,
+    skipLanding,
+} from "./editor";
+import {
+    type History,
+    markResumedLanding,
+    redo,
+    resumedLanding,
+    solveOptimize as landOptimize,
+    undo,
+} from "./history";
 import type { OptimizeOpts, OptimizeResult } from "./optimize";
 import { type OptimizeRunOpts, runOptimize } from "./optimize-async";
 import { Domain, type Entry, evalForce } from "./section";
@@ -93,65 +111,75 @@ export function enterOptimize(ecs: State, sectionId: number): OptimizeSession | 
     const { points } = sectionPoints(ecs, sectionId);
     const dense = forceProfile(points, spec.length, spec.ds);
     const r = evalForce(spec.entry, dense, spec.ds, spec.domain);
-    // the session carries only the stamp + ghost (both frozen at mode entry); the section's
-    // baking parameters are NOT cached here — `runOptimizeSection` re-reads them live off
-    // `sectionSpec` at every invoke, same as any other invoked command (`editor.OptimizeSession`).
+    // the session carries only the stamp + ghost + the downstream freeze seed (all frozen at
+    // mode entry); the section's baking parameters are NOT cached here — `runOptimizeSection`
+    // re-reads them live off `sectionSpec` at every invoke, same as any other invoked command
+    // (`editor.OptimizeSession`).
     return {
         section: sectionId,
         stamp: { x: r.exit.x, y: r.exit.y, theta: r.exit.theta },
         ghost: { x: r.posX, y: r.posY },
+        freeze: { x: r.exit.x, y: r.exit.y, theta: r.exit.theta, v: r.exit.v },
     };
 }
 
-// the OPEN mode's entry command — the mark `exitOptimizeMode` rewinds to. one mode is open at a
-// time, so a module variable suffices — but the mark must name the session that is ACTUALLY open,
-// and undo/redo can reopen a PRIOR session (walking back through its landed-Solve entry) after a
-// later `enterOptimizeMode` overwrote this. So every path INTO a session re-marks it: a fresh
-// entry and a redo of one both run the entry command's `apply` (which marks itself), and undoing
-// a landing re-marks through the landing's own `enter` closure (`runOptimizeSection` captures the
-// mark at solve time). With that invariant, a mark absent from the undo stack genuinely means
-// MAX_UNDO eviction (256+ in-mode edits), the one degraded case — the stale-mark conflation was
-// adversarial finding 1 on 32e2d53: Exit took a later session's mark for an evicted one and
-// closed in place, leaving every in-mode edit applied.
-let entryCmd: Command | null = null;
-
-/** Enter optimize mode on a force section AS AN UNDOABLE ACTION (continuous history): stamps the
- *  exit + ghost ({@link enterOptimize}), opens the mode, and records the entry — undoing it exits
- *  the mode, redoing it re-enters with the same stamp. Returns false (recording nothing) when the
- *  section isn't a live force section.
+/** Enter optimize mode on a force section: stamps the exit + ghost + freeze seed
+ *  ({@link enterOptimize}) and opens the mode — which opens the SANDBOX (`editor.beginOptimize`:
+ *  a fresh in-mode history, the record redirect, the downstream freeze). Entering touches the
+ *  outer history not at all: the optimize state is temporary until Solve lands. Returns false
+ *  when the section isn't a live force section (or a mode is already open).
  *
  * @example
- * if (enterOptimizeMode(history, ecs, sectionId)) { ... in the mode ... }
+ * if (enterOptimizeMode(ecs, sectionId)) { ... in the mode ... }
  */
-export function enterOptimizeMode(h: History, ecs: State, sectionId: number): boolean {
+export function enterOptimizeMode(ecs: State, sectionId: number): boolean {
     if (editor.optimizing !== null) return false; // one mode at a time (the row grays too)
     const session = enterOptimize(ecs, sectionId);
     if (!session) return false;
-    const cmd: Command = {
-        apply: () => {
-            beginOptimize(session);
-            entryCmd = cmd; // self-marking: redo into this session restores its own mark
-        },
-        reverse: () => endOptimize(),
-    };
-    cmd.apply();
-    record(h, cmd);
+    beginOptimize(session);
     return true;
 }
 
-/** Exit/Esc: rewind history to the mode's entry mark and leave the mode — pure history
- *  navigation, so every rewound step (the entry included) lands on the redo stack and stays
- *  redoable. The loop's sentinel is the mode state itself: undoing the entry command closes the
- *  mode. When the entry mark was evicted (MAX_UNDO under 256+ in-mode edits) a full rewind no
- *  longer exists, so the mode closes in place rather than draining unrelated history. */
-export function exitOptimizeMode(h: History, ecs: State): void {
+/** Exit/Esc: DISCARD the sandbox — revert every in-mode edit (each entry's own reverse is a
+ *  snapshot restore) and close the mode, leaving no trace in the outer history: outer undo AND
+ *  redo are byte-identical to before entry. Nothing is destroyed that was ever committed —
+ *  everything discarded was sandbox state. */
+export function exitOptimizeMode(ecs: State): void {
     if (editor.optimizing === null) return;
-    skipLanding(); // history navigation must never leave a landing easing toward erased values
-    const marked = entryCmd !== null && h.undo.some((e) => e.cmd === entryCmd);
-    if (marked) {
-        while (editor.optimizing !== null && h.undo.length > 0) undo(h, ecs);
+    skipLanding(); // never leave a landing easing toward values the discard erases
+    const sb = sandbox();
+    if (sb) while (sb.undo.length > 0) undo(sb, ecs);
+    endOptimize();
+}
+
+/** the editor-level undo: routed to the SANDBOX while an optimize mode is open (in-mode undo
+ *  operates over in-mode edits only — pre-mode history is unreachable from inside), where an
+ *  undo at the sandbox's start EXITS the mode (acts as Exit — the sandbox contract); the outer
+ *  history otherwise. */
+export function undoRouted(h: History, ecs: State): void {
+    const sb = sandbox();
+    if (sb !== null) {
+        if (sb.undo.length === 0) exitOptimizeMode(ecs);
+        else undo(sb, ecs);
+        return;
     }
-    endOptimize(); // a no-op after a marked rewind; the honest close when the mark was evicted
+    undo(h, ecs);
+}
+
+/** the editor-level redo, `undoRouted`'s twin: the sandbox while a mode is open — with ONE
+ *  fall-through: in a session RESUMED by undoing a landed Solve, a redo at the sandbox's end
+ *  pops the outer redo instead, which IS that landing — it re-lands and closes (the sandbox
+ *  contract's "redo re-lands"). the fall-through exists only while `resumedLanding` holds (a
+ *  new in-mode edit forks and clears it), so pre-mode redo stays unreachable from inside a
+ *  fresh session. */
+export function redoRouted(h: History, ecs: State): void {
+    const sb = sandbox();
+    if (sb !== null) {
+        if (sb.redo.length === 0 && resumedLanding() && h.redo.length > 0) redo(h, ecs);
+        else redo(sb, ecs);
+        return;
+    }
+    redo(h, ecs);
 }
 
 /** the document moved while the solve was running — mirrors `geoforce.ts`'s own class (`name`,
@@ -234,21 +262,24 @@ export async function runOptimizeSection(
                 .map((id, k) => ({ id, g: result.points[k].g }))
                 .filter((_, k) => result.deltaG[k] !== 0);
             // the landing ALWAYS records — even a zero-drift Solve closes the mode, and that
-            // transition must be an entry or undo/redo couldn't reproduce the mode state
-            // (continuous history). idempotence holds trivially now: a landed Solve closed the
-            // mode, so there is no second press. `relock` restores the lock set when undo walks
-            // back INTO the mode through this entry; cloned per enter, since `endOptimize`
-            // clears the live set in place. `mark` is the open session's own entry command —
-            // undoing this landing re-enters THAT session, so it must also restore that
-            // session's rewind mark (a later session's entry would otherwise have left the
-            // module mark stale — adversarial finding 1).
+            // transition must be an entry or undo/redo couldn't reproduce the mode state.
+            // idempotence holds trivially: a landed Solve closed the mode, so there is no second
+            // press. the entry carries the whole EXPERIMENT frozen at solve time (the sandbox
+            // contract): `relock` the lock set, `frozenU`/`frozenR` the sandbox stacks — undoing
+            // the landing reopens the mode with the experiment resumed (draft, locks, in-mode
+            // undo/redo all intact), redoing it re-lands and closes. cloned at capture AND at
+            // restore (`restoreSandbox` copies), so repeated undo/redo cycles and further edits
+            // in a reopened session can never mutate the entry's frozen state.
             const relock = new Set(locked);
-            const mark = entryCmd;
+            const sb = sandbox();
+            const frozenU = sb ? [...sb.undo] : [];
+            const frozenR = sb ? [...sb.redo] : [];
             landOptimize(h, ecs, sectionId, writes, {
                 enter: () => {
                     beginOptimize(session);
                     editor.locked = new Set(relock);
-                    entryCmd = mark;
+                    restoreSandbox(frozenU, frozenR);
+                    markResumedLanding(); // redo at the resumed sandbox's end re-lands (contract)
                 },
                 exit: () => endOptimize(),
             });

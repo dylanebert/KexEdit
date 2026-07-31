@@ -242,9 +242,9 @@ offset. Keyframes, not constraints. Snap + interaction conventions: `editor-ui.m
 **Section ops** (the multi-section chain) — select a section by clicking its **clip** in the timeline
 marker lane (or its viewport polyline span); a force clip's right edge is its extent trim, and a `+`
 tail after the last clip appends (geo/force flyout). **Right-click a clip or span** for
-the context menu: ONE conversion row, label and action fitted to the kind —
-**Convert to force** (`geoforce.ts`) on geo, **Convert to geo** (`forcegeo.ts`) on force; the
-other direction is absent, not dead. It grays (never hides) where the kind fits but the invoke
+the context menu: ONE conversion row, labeled **`Convert`** (the section's kind implies the
+direction — menus law), its action fitted to the kind: `geoforce.ts` on geo, `forcegeo.ts` on
+force. It grays (never hides) where the kind fits but the invoke
 can't run (no live bake, a multi-set), behind one **modal** (title + an indeterminate spinner —
 in-flight narration was feel-cut; Cancel or Esc, every other input blocked, then a transient
 outcome readout), and Delete (`Del`). Split and join left the

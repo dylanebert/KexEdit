@@ -587,8 +587,8 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `readoutFit` (`view.ts`) places it: centered-then-clamped horizontally, flipped above the node
   near the bottom so it never lands under the timeline dock. (Earlier tries: a chip AT the drag
   point overlapped the buttons; a fixed top-left line read too far from the action.)
-  It also owns the **invoked convert**: the section menu's ONE conversion row — `Convert to force`
-  on a geo section, `Convert to geo` on a force one, its label, action, and enablement all resolved
+  It also owns the **invoked convert**: the section menu's ONE conversion row — labeled `Convert`
+  (the kind implies the direction), its action and enablement resolved
   from the target's kind through the one `controls.sectionSolvable` predicate (that kind, one
   section, a live bake, and — force→geo only — a bake within `MAX_FIT_EDGES` = 2400 edges, the
   invoke-side runaway refusal; derivation on the constant in `controls.ts`: the largest edge count
