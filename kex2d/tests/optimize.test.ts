@@ -1,15 +1,7 @@
 import { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
 import { beginOptimize, editor, endOptimize, toggleLockedSet } from "../src/editor";
-import {
-    beginForceMove,
-    beginSession,
-    cancelSession,
-    commit,
-    commitSession,
-    createHistory,
-    undo,
-} from "../src/history";
+import { beginForceMove, commit, createHistory, redo, undo } from "../src/history";
 import {
     computeExit,
     derivedTol,
@@ -18,7 +10,13 @@ import {
     solveOptimize,
 } from "../src/optimize";
 import optimizeGolden from "./fixtures/optimize-golden.json";
-import { enterOptimize, runOptimizeSection, StaleOptimize } from "../src/optimizeMode";
+import {
+    enterOptimize,
+    enterOptimizeMode,
+    exitOptimizeMode,
+    runOptimizeSection,
+    StaleOptimize,
+} from "../src/optimizeMode";
 import { Easing, type ForcePoint } from "../src/profile";
 import type { Entry } from "../src/section";
 import {
@@ -609,19 +607,20 @@ describe("runOptimizeSection — the document seam", () => {
         state.step(0);
         // undo restores the PRE-SOLVE state, i.e. the author's edited-but-unsolved draft —
         // which itself differs from `before` (the interior key's bump is real authored state
-        // from BEFORE the solve ran, never rolled back by undoing the solve alone).
+        // from BEFORE the solve ran, never rolled back by undoing the solve alone). the landing
+        // entry also carries the mode transition, so this undo RE-ENTERS the mode.
         const rowsAfterUndo = sectionForces(state, sec);
         expect(rowsAfterUndo.find((r) => r.s === rows[2].s)?.g).toBe(rows[2].g + 0.6);
+        expect(editor.optimizing).not.toBeNull();
+        endOptimize();
     });
 
-    test("Solve on an already-restored draft is a no-op: no undo entry, document byte-identical", async () => {
-        // RED FIRST: before the kernel's `deltaG !== 0` filter gated the landing, the zero-drift
-        // short-circuit still resolved `"solved"` with every write equal to what was already
-        // there, and `runOptimizeSection` landed it anyway — `snapshotSection` before/after
-        // compared equal, but a command still pushed (an identity `restoreSection` pair), so
-        // `h.undo` grew by one and a second Ctrl+Z would visibly do nothing (editor-ui.md's
-        // constraint-solver idempotence law: a second press on an already-satisfied solve must
-        // write nothing, not a no-op write). This failed on `expect(h.undo).toHaveLength(0)`.
+    test("Solve on an already-restored draft writes nothing, but still lands the mode close", async () => {
+        // stage-5 rewrite of the old "no undo entry" idempotence pin: under continuous history a
+        // landed Solve IS the mode close, so even a zero-drift solve records exactly one entry —
+        // the transition — while the document stays byte-identical (the `deltaG !== 0` filter
+        // still keeps every write out). idempotence holds trivially: the mode closed, so there
+        // is no second press. seen failing (doc hash diff) with the write filter removed.
         const { state, eid, sec } = forceTrack();
         const session = enterOptimize(state, sec);
         if (!session) throw new Error("no session");
@@ -634,7 +633,12 @@ describe("runOptimizeSection — the document seam", () => {
 
         state.step(0);
         expect(docState(state, eid)).toEqual(before);
-        expect(h.undo).toHaveLength(0);
+        expect(h.undo).toHaveLength(1); // the mode-close transition, nothing else
+        undo(h, state);
+        state.step(0);
+        expect(docState(state, eid)).toEqual(before); // undoing it changes no document byte
+        expect(editor.optimizing).not.toBeNull(); // …but re-enters the mode
+        endOptimize();
     });
 
     test("a cancelled solve leaves the track byte-identical", async () => {
@@ -706,90 +710,161 @@ describe("editor.ts — optimize mode + lock toggling", () => {
     });
 });
 
-describe("the transactional session (kex2d-optimize-mode stage 4)", () => {
-    // the mode's two exits over the real document + history substrate, orchestrated exactly the
-    // way App.svelte pairs them: enter = enterOptimize + beginSession; Exit = cancelSession +
-    // endOptimize; a landed Solve = commitSession + endOptimize. the session-bracket mechanics
-    // themselves are pinned in tests/history.test.ts (each guard seen failing under mutation);
-    // these pin the mode-level contract on a real force section.
+describe("continuous history (kex2d-optimize-mode stage 5)", () => {
+    // the stage-5 model over the real document + history substrate, orchestrated exactly the way
+    // App.svelte does: enter = `enterOptimizeMode` (an undoable action), in-mode edits are normal
+    // entries, a landed Solve is a normal entry that also closes the mode, Exit/Esc =
+    // `exitOptimizeMode` (rewind to the entry mark, everything redoable). each pin here names
+    // behavior the stage-4 bracket got WRONG (floored/watermarked/squashed) — the suite was run
+    // against the bracket mentally and each of these is a case its guards would have failed —
+    // plus mutation probes: `mode.enter` dropped from `solveOptimize`'s reverse fails the
+    // undo-walk re-entry pins; `exitOptimizeMode` reduced to a bare `endOptimize` fails the
+    // rewind + redoable pins.
 
-    test("Exit reverts the in-mode edits to the mode-entry draft byte-identically", () => {
-        const { state, eid, sec } = forceTrack();
-        const entryDraft = docState(state, eid);
-        const session = enterOptimize(state, sec);
-        if (!session) throw new Error("no session");
-        const h = createHistory();
-        beginSession(h);
-
-        // an in-mode edit through the normal idiom (the drag gesture's bracket).
+    // one in-mode edit through the normal idiom (the drag gesture's bracket).
+    function bump(h: ReturnType<typeof createHistory>, state: State, sec: number): void {
         const rows = sectionForces(state, sec);
         beginForceMove(state, rows[2].id);
         setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.6);
         commit(h);
         state.step(0);
-        expect(docState(state, eid)).not.toEqual(entryDraft); // the rig detects the edit
+    }
 
-        cancelSession(h, state);
+    test("mode entry is an undoable action: undo exits, redo re-enters with the stamp", () => {
+        const { state, sec } = forceTrack();
+        const h = createHistory();
+        expect(enterOptimizeMode(h, state, sec)).toBe(true);
+        expect(editor.optimizing).not.toBeNull();
+        const stamp = editor.optimizing?.stamp;
+        expect(h.undo).toHaveLength(1); // the entry action itself
+
+        undo(h, state);
+        expect(editor.optimizing).toBeNull(); // undoing past the entry exits the mode
+        redo(h, state);
+        expect(editor.optimizing).not.toBeNull(); // redoing re-enters…
+        expect(editor.optimizing?.stamp).toBe(stamp); // …with the SAME stamp (the entry carries it)
         endOptimize();
-        state.step(0);
-        expect(docState(state, eid)).toEqual(entryDraft); // byte-identical revert
-        expect(h.undo).toHaveLength(0); // the session left no trace
     });
 
-    test("a landed Solve collapses the session (edits + landing) to ONE undo entry", async () => {
+    test("undo/redo cross the mode boundary in both directions (the bracket floored this)", () => {
         const { state, eid, sec } = forceTrack();
-        const entryDraft = docState(state, eid);
-        const session = enterOptimize(state, sec);
-        if (!session) throw new Error("no session");
+        const preEntry = docState(state, eid);
         const h = createHistory();
-        beginSession(h);
+        enterOptimizeMode(h, state, sec);
+        bump(h, state, sec);
+        const edited = docState(state, eid);
+        expect(edited).not.toEqual(preEntry); // the rig detects the edit
 
-        const rows = sectionForces(state, sec);
-        beginForceMove(state, rows[2].id);
-        setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.6);
-        commit(h);
+        undo(h, state); // the in-mode edit reverts, mode stays open
         state.step(0);
+        expect(docState(state, eid)).toEqual(preEntry);
+        expect(editor.optimizing).not.toBeNull();
+        undo(h, state); // …and the next undo crosses the boundary out
+        expect(editor.optimizing).toBeNull();
 
-        const result = await runOptimizeSection(h, state, session, new Set());
+        redo(h, state); // redo crosses back IN (the watermark forbade this)
+        expect(editor.optimizing).not.toBeNull();
+        redo(h, state); // …and replays the in-mode edit
+        state.step(0);
+        expect(docState(state, eid)).toEqual(edited);
+        expect(editor.optimizing).not.toBeNull();
+        exitOptimizeMode(h, state);
+    });
+
+    test("Exit rewinds to the entry mark and leaves — everything stays redoable", () => {
+        const { state, eid, sec } = forceTrack();
+        const preEntry = docState(state, eid);
+        const h = createHistory();
+        enterOptimizeMode(h, state, sec);
+        bump(h, state, sec);
+        bump(h, state, sec);
+        const edited = docState(state, eid);
+
+        exitOptimizeMode(h, state);
+        state.step(0);
+        expect(editor.optimizing).toBeNull();
+        expect(docState(state, eid)).toEqual(preEntry); // rewound to the pre-entry draft
+        expect(h.undo).toHaveLength(0);
+        expect(h.redo).toHaveLength(3); // entry + both edits — NOT destroyed (the bracket discarded them)
+
+        redo(h, state); // re-enter the mode
+        expect(editor.optimizing).not.toBeNull();
+        redo(h, state);
+        redo(h, state);
+        state.step(0);
+        expect(docState(state, eid)).toEqual(edited); // the whole process replays
+        expect(editor.optimizing).not.toBeNull();
+        exitOptimizeMode(h, state);
+    });
+
+    test("solve-then-undo-walk: landing → edited draft (in-mode, locks back) → pre-entry (out)", async () => {
+        const { state, eid, sec } = forceTrack();
+        const preEntry = docState(state, eid);
+        const h = createHistory();
+        enterOptimizeMode(h, state, sec);
+        bump(h, state, sec);
+        const edited = docState(state, eid);
+        const rows = sectionForces(state, sec);
+        editor.locked = new Set([rows[0].id, rows[4].id]);
+
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        const result = await runOptimizeSection(h, state, session, editor.locked);
         expect(result.outcome).toBe("solved");
-        commitSession(h);
-        endOptimize();
+        expect(editor.optimizing).toBeNull(); // Solve confirmed AND closed the mode
         state.step(0);
         const landed = docState(state, eid);
+        expect(landed).not.toEqual(edited); // the landing really was a change
+        expect(h.undo).toHaveLength(3); // entry + edit + landing — normal entries, no squash
 
-        expect(h.undo).toHaveLength(1); // the whole session is one entry
-        undo(h, state);
+        undo(h, state); // undo the landing: back to the edited-but-unsolved draft, IN the mode
         state.step(0);
-        // one undo restores the MODE-ENTRY draft (not the edited-but-unsolved intermediate) —
-        // the session's outcome is atomic from the outside.
-        expect(docState(state, eid)).toEqual(entryDraft);
-        expect(landed).not.toEqual(entryDraft); // …and the landing really was a change
+        expect(docState(state, eid)).toEqual(edited);
+        expect(editor.optimizing).not.toBeNull();
+        expect(editor.locked.size).toBe(2); // the lock set rides the landing entry back in
+
+        undo(h, state); // undo the edit: still in the mode
+        state.step(0);
+        expect(docState(state, eid)).toEqual(preEntry);
+        expect(editor.optimizing).not.toBeNull();
+
+        undo(h, state); // undo the entry: out of the mode, pre-entry draft
+        expect(editor.optimizing).toBeNull();
+        state.step(0);
+        expect(docState(state, eid)).toEqual(preEntry);
+
+        redo(h, state);
+        redo(h, state);
+        redo(h, state); // the whole process replays forward, landing included
+        state.step(0);
+        expect(docState(state, eid)).toEqual(landed);
+        expect(editor.optimizing).toBeNull(); // the replayed landing re-closes the mode
     });
 
-    test("a refusal stays in-session: draft untouched, no entry, locks intact", async () => {
+    test("a refusal stays in the mode: draft + history untouched, locks intact", async () => {
         const { state, eid, sec } = forceTrack();
-        const session = enterOptimize(state, sec);
-        if (!session) throw new Error("no session");
-        beginOptimize(session);
         const h = createHistory();
-        beginSession(h);
+        enterOptimizeMode(h, state, sec);
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
 
         // starve the free set below MIN_FREE — the counting certificate refuses at invoke.
         const rows = sectionForces(state, sec);
         const locked = new Set(rows.slice(0, rows.length - 2).map((r) => r.id));
         for (const id of locked) editor.locked.add(id);
         const before = docState(state, eid);
+        const depth = h.undo.length;
 
         const result = await runOptimizeSection(h, state, session, editor.locked);
         expect(result.outcome).toBe("unreachable");
         expect(result.reason).toBe("free-count");
         state.step(0);
         expect(docState(state, eid)).toEqual(before); // byte-identical, still in-mode
-        expect(h.undo).toHaveLength(0);
+        expect(h.undo).toHaveLength(depth); // refusal records nothing
+        expect(editor.optimizing).not.toBeNull();
         // lock persistence across solves in-mode: a refusal clears nothing.
         expect(editor.locked.size).toBe(locked.size);
-        cancelSession(h, state);
-        endOptimize();
+        exitOptimizeMode(h, state);
         expect(editor.locked.size).toBe(0); // …and exit discards the locks
     });
 });

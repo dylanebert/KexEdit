@@ -244,6 +244,9 @@ if (import.meta.env.DEV) {
         // gesture's effect; the popup's badge/buttons are driven and read pointer-true by DOM.
         optimizing: (): boolean => editor.optimizing !== null,
         lockedCount: (): number => editor.locked.size,
+        // whether the paced landing animation is running — the optimize flow asserts a landed
+        // Solve raises it (the feedback) and that it settles closed.
+        landing: (): boolean => editor.landing !== null,
         // which handle is selected within handle-edit ("in"/"out"/null) — the flow asserts a
         // click on a knob selects it (swapping the readout to the handle).
         forceHandleSel: (): string | null => editor.forceHandle,

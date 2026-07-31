@@ -26,6 +26,11 @@ export const DOCK_INSET = 16;
  *  world origin ABOVE this band, not at the canvas center — the dock would otherwise cover
  *  the track's launch. also the floor the drag snap readout keeps clear of (`readoutFit`). */
 export const DOCK_RESERVE = DOCK_HEIGHT + DOCK_INSET;
+/** the media player's geometry above the dock — like `DOCK_HEIGHT`/`DOCK_INSET`, the single
+ *  source `Timeline.svelte` styles the player from, shared so a surface docking ABOVE the
+ *  player (the optimize-mode panel, App.svelte) derives its anchor instead of mirroring. */
+export const PLAYER_GAP = 32;
+export const PLAYER_H = 36;
 /** zoom limits (px per world meter). the affine viewport is an infinite canvas — pan is
  *  unclamped — but the scale is bounded so the track can't blow up or vanish. */
 export const MIN_ZOOM = 0.05;

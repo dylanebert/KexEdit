@@ -165,6 +165,8 @@ interface EditorState {
      *  already-force, already-baked section) but share nothing else, so a shared boolean would
      *  couple two independent modal surfaces. */
     optimizeSolving: boolean;
+    /** the live paced-landing display, or null — see {@link Landing}. cosmetic only. */
+    landing: Landing | null;
 }
 
 /** the mode-entry stamp + ghost the optimize kernel (`optimize.ts`) and its editor command
@@ -203,9 +205,44 @@ export interface Converting {
 export interface Notice {
     kind: "done" | "error";
     text: string;
-    /** optional detail lines under the headline — the optimize landing's per-key Δg ledger.
-     *  display only, like `text`. */
-    rows?: string[];
+}
+
+/** the paced landing (kex2d-optimize-mode stage 5): a landed Solve's keyframes animate
+ *  continuously from their pre-solve to their solved `g` over {@link LANDING_MS} so the solve
+ *  reads as a process. COSMETIC ONLY — the document landed atomically before this state exists;
+ *  it only offsets where the timeline DRAWS the moved diamonds while it runs. Esc or any
+ *  pointerdown skips to the end state (`skipLanding`); expiry is equivalent to skipping. */
+export interface Landing {
+    /** `performance.now()` at the landing. */
+    start: number;
+    /** the moved keys only: each id's pre-solve and solved g. */
+    moves: readonly { id: number; from: number; to: number }[];
+}
+
+/** the paced landing's duration (ms) — deliberate pacing, not latency (the solve itself is
+ *  milliseconds; this is the feedback). */
+export const LANDING_MS = 500;
+
+/** open the paced landing display. a solve that moved nothing shows nothing. */
+export function beginLanding(moves: readonly { id: number; from: number; to: number }[]): void {
+    editor.landing = moves.length > 0 ? { start: performance.now(), moves } : null;
+}
+
+/** skip (or expire) the landing: the display snaps to the document's own values. */
+export function skipLanding(): void {
+    editor.landing = null;
+}
+
+/** the displayed g for a keyframe under the live landing, or null when the landing doesn't
+ *  cover it (or has expired) — the one cosmetic display override. cubic ease-out, so the
+ *  motion decelerates into the solved value. */
+export function landingG(landing: Landing, id: number, now: number): number | null {
+    const t = (now - landing.start) / LANDING_MS;
+    if (t >= 1) return null;
+    const m = landing.moves.find((mv) => mv.id === id);
+    if (!m) return null;
+    const k = t <= 0 ? 0 : 1 - (1 - t) ** 3;
+    return m.from + (m.to - m.from) * k;
 }
 
 export const editor: EditorState = {
@@ -247,6 +284,7 @@ export const editor: EditorState = {
     optimizing: null,
     locked: new Set(),
     optimizeSolving: false,
+    landing: null,
 };
 
 // ── optimize mode (kex2d-optimize-mode stage 1) ───────────────────────────────────
@@ -264,9 +302,9 @@ export function beginOptimize(session: OptimizeSession): void {
 }
 
 /** close optimize mode: drop the stamp, the ghost, and every lock. this clears only the mode's
- *  own ephemeral state — the transactional document semantics (Solve collapses the session to
- *  one undo entry; Exit/Esc reverts it byte-identically) live in `history`'s session bracket
- *  (`commitSession`/`cancelSession`), which the invoking surface pairs with this call. */
+ *  own ephemeral state — the document semantics are continuous history (`optimizeMode.ts`): mode
+ *  entry, in-mode edits, and the landed Solve are all normal undo entries, and the entry/landing
+ *  commands call this (and `beginOptimize`) as undo/redo walk across the mode boundary. */
 export function endOptimize(): void {
     editor.optimizing = null;
     editor.locked.clear();
@@ -335,8 +373,8 @@ export function endConvert(): void {
 }
 
 /** raise the transient readout (the completion outcome, or a failure). */
-export function notify(kind: "done" | "error", text: string, rows?: string[]): void {
-    editor.notice = { kind, text, rows };
+export function notify(kind: "done" | "error", text: string): void {
+    editor.notice = { kind, text };
 }
 
 /** clear the transient readout (its auto-dismiss, or a new solve starting). */
@@ -429,43 +467,12 @@ export function fitDone(r: FitOutcome): Notice {
     return { kind: "done", text: `${text} · ${misses.join(" · ")}` };
 }
 
-/** what the optimize-mode landing readout needs off a solve's answer — one row per key, in key
- *  order: its `s` (in the track domain's unit) and the Δg the solve applied. structural, like
- *  `SolveOutcome` — built by the caller off `OptimizeResult`, this module never imports the
- *  solver tier. */
-export interface OptimizeMove {
-    s: number;
-    dg: number;
-}
-
-/** how many ledger rows the landing notice prints before folding the rest into a count — a
- *  toast is a readout, not a table. */
-const LEDGER_ROWS = 6;
-
-/** the readout for an optimize solve that LANDED (Solve confirmed and closed the mode): the
- *  headline plus the per-key Δg ledger — one row per moved key (unmoved keys have nothing to
- *  say), capped at {@link LEDGER_ROWS} with the remainder counted. `unit` is the track domain's
- *  own axis unit ("m" | "s"), so a row addresses the key the way the ruler does. a solve that
- *  moved nothing (the zero-drift no-op) confirms without a ledger. */
-export function optimizeDone(moves: readonly OptimizeMove[], unit: string): Notice {
-    const moved = moves.filter((m) => m.dg !== 0);
-    if (moved.length === 0) return { kind: "done", text: "Exit already restored · no change" };
-    const max = Math.max(...moved.map((m) => Math.abs(m.dg)));
-    const text = `Restored the exit · ${moved.length} key${moved.length === 1 ? "" : "s"} moved · max Δg ${max.toFixed(2)} g`;
-    const rows = moved
-        .slice(0, LEDGER_ROWS)
-        .map(
-            (m) =>
-                `${m.s.toFixed(1)} ${unit} · ${m.dg >= 0 ? "+" : "−"}${Math.abs(m.dg).toFixed(2)} g`,
-        );
-    if (moved.length > LEDGER_ROWS) rows.push(`+${moved.length - LEDGER_ROWS} more`);
-    return { kind: "done", text, rows };
-}
-
 /** the in-mode readout for a solve that REFUSED (a refusal stays in the mode with the draft
- *  untouched, so its text lives on the mode popup, not the toast). one plain sentence per
+ *  untouched, so its text lives on the mode panel, not the toast). one plain sentence per
  *  refusal class — `reason` is the certifying check on an `"unreachable"` answer
- *  (`optimize.UnreachableReason`, read structurally). */
+ *  (`optimize.UnreachableReason`, read structurally). there is deliberately no landed-solve
+ *  readout: the paced landing animation is the feedback (stage-5 feel verdict — the Δg/stats
+ *  toast was noise). */
 export function optimizeRefused(outcome: string, reason?: string): string {
     if (outcome === "unreachable") {
         if (reason === "stall") return "The draft stalls before the exit. Nothing changed.";

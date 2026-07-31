@@ -110,8 +110,6 @@ interface Entry {
 export interface History {
     undo: Entry[];
     redo: Entry[];
-    /** the open transactional session (optimize mode), or absent — see {@link beginSession}. */
-    session?: { floor: number; redoBase: number };
 }
 
 const MAX_UNDO = 256;
@@ -127,31 +125,11 @@ export const history = createHistory();
  *  selection snapshot (`undefined` for a gesture, which leaves the selection alone). */
 export function record(h: History, cmd: Command, pre?: unknown): void {
     h.undo.push({ cmd, pre });
-    if (h.undo.length > MAX_UNDO) {
-        // an open session's bracket must never lose reversibility (its revert invariant is
-        // absolute, not "under MAX_UNDO edits"): eviction may take only entries strictly BELOW
-        // the floor — pre-session history, which leaves the transaction's reach the same way it
-        // leaves plain undo's, sliding the floor with it. at floor 0 nothing is evictable, so
-        // the buffer grows past MAX_UNDO for the session's lifetime; `trim` restores the cap
-        // when the bracket closes (commit or cancel alike).
-        if (h.session) {
-            if (h.session.floor > 0) {
-                h.undo.shift();
-                h.session.floor--;
-            }
-        } else h.undo.shift();
-    }
+    if (h.undo.length > MAX_UNDO) h.undo.shift();
     h.redo.length = 0; // a new edit invalidates the redo branch
-    // …including a pre-session one: once an in-session edit lands, every redo entry that can
-    // ever exist while the session stays open is an in-session entry (pushed by in-session
-    // undo), so the session's redo watermark drops to the emptied stack.
-    if (h.session) h.session.redoBase = 0;
 }
 
 export function undo(h: History, ecs: State): void {
-    // an open session floors undo at its entry depth: pre-session history is out of the
-    // transaction's reach in both directions (its twin is `redo`'s watermark guard).
-    if (h.session && h.undo.length <= h.session.floor) return;
     const entry = h.undo.pop();
     if (!entry) return;
     entry.post = selHook?.snapshot(ecs); // the settled after-command selection (for redo)
@@ -161,88 +139,11 @@ export function undo(h: History, ecs: State): void {
 }
 
 export function redo(h: History, ecs: State): void {
-    // the session's redo watermark: entries at or below `redoBase` are pre-session, out of the
-    // transaction's reach (the floor guard's twin) — only in-session entries replay in-session.
-    if (h.session && h.redo.length <= h.session.redoBase) return;
     const entry = h.redo.pop();
     if (!entry) return;
     entry.cmd.apply();
     if (entry.post !== undefined) selHook?.restore(ecs, entry.post);
     h.undo.push(entry);
-}
-
-// ── session lifecycle: a transactional bracket over the stack ─────────────────────
-// optimize mode's exits (kex2d-optimize-mode: "Solve is the confirmation"). while a session is
-// open, in-session edits record and undo/redo normally but the stack floors at the entry depth —
-// pre-session history is unreachable in both directions, so the bracket's boundary can't be
-// crossed mid-transaction. exactly one of the two closers runs: `commitSession` collapses
-// everything recorded in-session into ONE entry (the session's outcome), `cancelSession` reverts
-// it all byte-identically (each entry's own reverse IS a snapshot restore) and discards it.
-
-/** restore the MAX_UNDO cap after a session bracket closes — eviction was suspended for
- *  at-or-above-floor entries while it was open (`record`), so the buffer may have grown. */
-function trim(h: History): void {
-    while (h.undo.length > MAX_UNDO) h.undo.shift();
-}
-
-/** open a transactional session at the current stack depth. strictly one at a time: a second
- *  begin over a live bracket THROWS — silently replacing it would merge two transactions'
- *  entries under the newer floor, and the one legitimate call site (mode entry) is gated on no
- *  session being open, so a double begin is always a programming error worth failing loud. */
-export function beginSession(h: History): void {
-    if (h.session) throw new Error("beginSession: a session is already open");
-    h.session = { floor: h.undo.length, redoBase: h.redo.length };
-}
-
-/** close the session by collapsing every entry recorded above its floor into ONE undo entry
- *  (apply in order / reverse in reverse order — byte-identical by construction, since each
- *  member is its own snapshot pair). zero entries collapse to nothing (an untouched session
- *  leaves no trace); one entry stays as it is. in-session redo residue is discarded. */
-export function commitSession(h: History): void {
-    const s = h.session;
-    if (!s) return;
-    h.session = undefined;
-    h.redo.length = Math.min(h.redo.length, s.redoBase);
-    const n = h.undo.length - s.floor;
-    if (n <= 1) {
-        trim(h);
-        return;
-    }
-    const entries = h.undo.splice(s.floor, n);
-    // the collapsed entry's pre-selection is the FIRST captured one — the selection from before
-    // the session's first selection-affecting command (gesture entries carry none).
-    const pre = entries.find((e) => e.pre !== undefined)?.pre;
-    h.undo.push({
-        cmd: {
-            apply: () => {
-                for (const e of entries) e.cmd.apply();
-            },
-            reverse: () => {
-                for (let i = entries.length - 1; i >= 0; i--) entries[i].cmd.reverse();
-            },
-        },
-        pre,
-    });
-    trim(h);
-}
-
-/** close the session by reverting every entry recorded above its floor, byte-identically, and
- *  discarding them — the transactional Exit/Esc. entries the author already undid in-session
- *  sit on the redo stack (already reverted); they're discarded down to the session's watermark,
- *  so a pre-session redo branch survives an untouched session and an in-session branch never
- *  escapes the bracket. */
-export function cancelSession(h: History, ecs: State): void {
-    const s = h.session;
-    if (!s) return;
-    h.session = undefined;
-    while (h.undo.length > s.floor) {
-        const entry = h.undo.pop();
-        if (!entry) break;
-        entry.cmd.reverse();
-        if (entry.pre !== undefined) selHook?.restore(ecs, entry.pre);
-    }
-    h.redo.length = Math.min(h.redo.length, s.redoBase);
-    trim(h);
 }
 
 // ── gesture lifecycle: a drag (or a live inline edit) writes the canonical data
@@ -829,14 +730,22 @@ export function solveGeo(
  *  undoable entry — the mode's own landing, sibling to `solveForce`/`solveGeo` but narrower: the
  *  kernel (`optimize.ts`) only ever rewrites free keys' `g`, so `writes` carries just those pairs
  *  (locked keys, `s`, easing, handles, length, and structure are the same values already there).
- *  The whole-section snapshot pair still brackets it (so undo restores byte-identical even though
- *  only a few `g` columns actually moved), but there is no provenance stamp: this isn't a kind
- *  conversion, so there is nothing for a reverse convert to consult. */
+ *  The whole-section snapshot pair still brackets it, and there is no provenance stamp: this
+ *  isn't a kind conversion, so there is nothing for a reverse convert to consult.
+ *
+ *  **The landing IS the mode close** (continuous history, the stage-5 rewrite): Solve confirms
+ *  and closes the mode, so the entry carries the mode transition alongside the write — redo
+ *  re-closes (`mode.exit`), undo re-ENTERS the mode with its state restored (`mode.enter`). The
+ *  closures are injected (this module never imports editor — the SelectionHook precedent), and
+ *  the entry lands even when `writes` is empty: a zero-drift Solve still closes the mode, and
+ *  that transition must sit on the stack or undo/redo would walk through mode states it can't
+ *  reproduce. */
 export function solveOptimize(
     h: History,
     ecs: State,
     section: number,
     writes: readonly { id: number; g: number }[],
+    mode: { enter(): void; exit(): void },
 ): void {
     const pre = selHook?.snapshot(ecs);
     const before = snapshotSection(ecs, section);
@@ -844,8 +753,22 @@ export function solveOptimize(
         const st = forcePointState(ecs, w.id);
         if (st) setForcePoint(ecs, w.id, st.s, w.g);
     }
+    mode.exit();
     const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+    record(
+        h,
+        {
+            apply: () => {
+                restoreSection(ecs, after);
+                mode.exit();
+            },
+            reverse: () => {
+                restoreSection(ecs, before);
+                mode.enter();
+            },
+        },
+        pre,
+    );
 }
 
 /** land a section's stamped provenance verbatim as one undoable entry — the reverse convert's

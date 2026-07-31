@@ -14,7 +14,7 @@ import {
 import {
     beginConvert,
     beginDrag,
-    beginOptimize,
+    beginLanding,
     beginOptimizeSolve,
     closeContext,
     closeNodeMenu,
@@ -22,32 +22,28 @@ import {
     dismissNotice,
     editor,
     endConvert,
-    endOptimize,
     endOptimizeSolve,
     enterTangentEdit,
     exitTangentEdit,
     fitDone,
+    LANDING_MS,
     notify,
-    optimizeDone,
     optimizeRefused,
     select,
     selectSection,
     selectStart,
+    skipLanding,
     solveDone,
     solveFailed,
 } from "./editor";
 import { convertForce } from "./forcegeo";
 import { convertGeo } from "./geoforce";
 import { MIN_FREE } from "./optimize";
-import { enterOptimize, runOptimizeSection } from "./optimizeMode";
-import { Domain } from "./section";
+import { enterOptimizeMode, exitOptimizeMode, runOptimizeSection } from "./optimizeMode";
 import {
     beginMove,
-    beginSession,
     beginV0,
-    cancelSession,
     commit,
-    commitSession,
     extendTrack,
     history,
     removeSection,
@@ -82,12 +78,15 @@ import {
     setTangent,
     setTrackV0,
     Track,
-    trackDomain,
 } from "./track";
 import {
     attachCanvas2D,
+    DOCK_HEIGHT,
+    DOCK_INSET,
     DOCK_RESERVE,
     dragReadout,
+    PLAYER_GAP,
+    PLAYER_H,
     readoutFit,
     snapGuides,
     viewTransform,
@@ -222,8 +221,8 @@ function cancelSolve(): void {
 // a new solve's readout replaces the previous one's remaining time instead of stacking.
 const NOTICE_MS = 6000;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
-function raise(n: { kind: "done" | "error"; text: string; rows?: string[] }): void {
-    notify(n.kind, n.text, n.rows);
+function raise(n: { kind: "done" | "error"; text: string }): void {
+    notify(n.kind, n.text);
     clearTimeout(noticeTimer);
     noticeTimer = setTimeout(dismissNotice, NOTICE_MS);
 }
@@ -297,42 +296,32 @@ async function solveShape(section: number): Promise<void> {
     }
 }
 
-// ── optimize mode (kex2d-optimize-mode stage 4: the transactional session) ────────
-// the mode is a supervised experiment on the section, with exactly two exits (the locked
-// decision): a LANDED Solve is the confirmation — it collapses everything the session recorded
-// into ONE undo entry (`commitSession`) and closes the mode — and Exit/Esc reverts to the
-// mode-entry draft byte-identically (`cancelSession`) and discards it. A refusal is neither:
-// it stays in the mode, draft untouched, its readout on the mode popup. Entering is a read
-// (`enterOptimize` stamps, `beginSession` brackets the stack) — no history entry of its own.
-// The solve keeps its OWN blocking gate (`editor.optimizeSolving`), separate from the
-// kind-conversion `editor.converting`: the two invoked tools never overlap in scope, but
-// sharing one boolean would couple two independent modal surfaces.
+// ── optimize mode (kex2d-optimize-mode stage 5: continuous history) ───────────────
+// mode entry is an undoable action (`enterOptimizeMode`), every in-mode edit a normal entry,
+// and a landed Solve a normal entry that also closes the mode — undo/redo cross the boundary
+// in both directions. Exit/Esc rewinds to the entry mark and leaves (`exitOptimizeMode`), so
+// the rewound edits stay redoable. A refusal is neither: it stays in the mode, draft
+// untouched, its readout on the docked panel. The solve keeps its OWN blocking gate
+// (`editor.optimizeSolving`), separate from the kind-conversion `editor.converting`: the two
+// invoked tools never overlap in scope, but sharing one boolean would couple two independent
+// modal surfaces.
 let optimizeAbort: AbortController | null = null;
-// the mode popup's outcome line — a refusal (or a worker failure) that kept the mode open.
+// the mode panel's refusal line — a refusal (or a worker failure) that kept the mode open.
 // mode-scoped: cleared on entry, on each Solve press, and on exit.
 let optReadout = $state<string | null>(null);
-
-function optimizeEnter(section: number): void {
-    const session = enterOptimize(ecs, section);
-    if (!session) return;
-    beginOptimize(session);
-    beginSession(history);
-    optReadout = null;
-}
 
 function ctxOptimizeEnter(): void {
     if (ctx === null) return;
     const section = ctx.section;
     closeContext();
-    optimizeEnter(section);
+    if (enterOptimizeMode(history, ecs, section)) optReadout = null;
 }
 
-// Exit/Esc: revert the whole session byte-identically (every in-session entry's own reverse is
-// a snapshot restore) and close the mode. dismissal is safe by default — the one committing
+// Exit/Esc: rewind history to the mode-entry mark and leave the mode — the rewound edits sit
+// on the redo stack, so nothing is destroyed. dismissal is safe by default; the one committing
 // gesture is the Solve that restores the stamped exit.
 function optimizeExit(): void {
-    cancelSession(history, ecs);
-    endOptimize();
+    exitOptimizeMode(history, ecs);
     optReadout = null;
 }
 
@@ -345,6 +334,9 @@ async function optimizeSolve(): Promise<void> {
     const session = editor.optimizing;
     if (session === null || editor.optimizeSolving) return;
     optReadout = null;
+    // the pre-solve draft, id-aligned with the answer (`sectionForces` order — the same read
+    // `runOptimizeSection` scatters back onto): the paced landing animates from these values.
+    const preRows = sectionForces(ecs, session.section);
     const controller = new AbortController();
     optimizeAbort = controller;
     beginOptimizeSolve();
@@ -353,15 +345,17 @@ async function optimizeSolve(): Promise<void> {
             signal: controller.signal,
         });
         if (result.outcome === "solved") {
-            // solving IS the apply: the landed outcome (in-session edits + the solve's write)
-            // collapses to one undo entry and the mode closes. the per-key Δg ledger rides the
-            // landing toast — the popup dismisses with the mode, so the toast is the readout
-            // that survives the close.
-            const unit = trackDomain(ecs) === Domain.Time ? "s" : "m";
-            const moves = result.points.map((p, k) => ({ s: p.s, dg: result.deltaG[k] }));
-            commitSession(history);
-            endOptimize();
-            raise(optimizeDone(moves, unit));
+            // the landing already closed the mode as one undo entry (`runOptimizeSection`).
+            // the feedback is the PACED LANDING (stage-5 feel verdict — no stats toast): the
+            // moved diamonds animate from their draft to their solved g over LANDING_MS,
+            // cosmetic only, skipped by Esc or any pointerdown.
+            beginLanding(
+                preRows
+                    .map((r, k) => ({ id: r.id, from: r.g, to: result.points[k].g }))
+                    .filter((m) => m.from !== m.to),
+            );
+            clearTimeout(landingTimer);
+            landingTimer = setTimeout(skipLanding, LANDING_MS);
         } else {
             // a refusal stays in the mode with the draft untouched — refusal is not an exit.
             optReadout = optimizeRefused(result.outcome, result.reason);
@@ -378,6 +372,29 @@ async function optimizeSolve(): Promise<void> {
     }
 }
 
+// the paced landing's expiry + skip: one timer clears it on schedule; Esc or any pointerdown
+// skips ahead (the pointer event still lands wherever it was going — skipping is not a modal).
+let landingTimer: ReturnType<typeof setTimeout> | undefined;
+onMount(() => {
+    const onDown = (): void => {
+        if (editor.landing !== null) skipLanding();
+    };
+    // Escape skips the animation as the innermost transient (one-layer dismissal): it exists
+    // only while the landing runs, and it swallows the key so nothing beneath also peels.
+    const onEsc = (e: KeyboardEvent): void => {
+        if (editor.landing === null || e.key !== "Escape") return;
+        e.stopImmediatePropagation();
+        skipLanding();
+    };
+    window.addEventListener("pointerdown", onDown, { capture: true });
+    window.addEventListener("keydown", onEsc, { capture: true });
+    return () => {
+        window.removeEventListener("pointerdown", onDown, { capture: true });
+        window.removeEventListener("keydown", onEsc, { capture: true });
+        clearTimeout(landingTimer);
+    };
+});
+
 function ctxOptimizeSolve(): void {
     closeContext();
     void optimizeSolve();
@@ -387,48 +404,33 @@ function cancelOptimizeSolve(): void {
     optimizeAbort?.abort(new Error("cancelled"));
 }
 
-// the live headroom read (pure counting, the tick-derived projection): the session section's
-// keyframes split free/locked. `MIN_FREE` is the kernel's own floor (`optimize.ts`) — the badge
-// and the Solve enablement both read this one derivation, so they can't disagree with the
-// refusal the kernel would have produced. an in-mode-added key is free by construction (locking
-// is opt-in membership in `editor.locked`).
-const opt = $derived.by((): { free: number; locked: number } | null => {
+// the live headroom read (pure counting, the tick-derived projection): whether the session
+// section keeps `MIN_FREE` free keys — the kernel's own floor (`optimize.ts`). Solve's
+// enablement reads this one derivation, so it can't disagree with the refusal the kernel would
+// have produced; the count itself is NOT displayed (the free–locked badge measured as noise in
+// the stage-5 feel pass — the reason shows subtly only while Solve is disabled). an
+// in-mode-added key is free by construction (locking is opt-in membership in `editor.locked`).
+const optOpen = $derived.by((): boolean => {
+    void tick;
+    return editor.optimizing !== null;
+});
+const optSolvable = $derived.by((): boolean => {
     void tick;
     const s = editor.optimizing;
-    if (s === null) return null;
+    if (s === null) return false;
     const rows = sectionForces(ecs, s.section);
     let locked = 0;
     for (const r of rows) if (editor.locked.has(r.id)) locked++;
-    return { free: rows.length - locked, locked };
+    return rows.length - locked >= MIN_FREE;
 });
-const optSolvable = $derived(opt !== null && opt.free >= MIN_FREE);
-
-// the mode popup's anchor: the stamped exit's screen point (it tracks pan/zoom like the v0
-// popover tracks the START diamond). placed by `readoutFit` off its measured box — centered
-// below the stamp ring, flipped above near the dock — the snap readout's own placement path.
-const OPT_RING_R = 7; // MIRRORS render.ts's stamp-ring radius — the popup clears the ring
-const OPT_GAP = 10;
-const optAnchor = $derived.by((): { x: number; y: number } | null => {
+// the docked panel's refusal/starved line (tick-derived primitive): the refusal readout while
+// one stands, else the starved reason only while Solve is disabled — one line, one register.
+const optReason = $derived.by((): string | null => {
     void tick;
-    const s = editor.optimizing;
-    if (s === null || !canvas) return null;
-    const tx = viewTransform(canvas);
-    return { x: tx.ox + s.stamp.x * tx.sx, y: tx.oy + s.stamp.y * tx.sy };
-});
-let optEl = $state<HTMLDivElement | undefined>(undefined);
-let optXY = $state<{ x: number; y: number } | null>(null);
-$effect(() => {
-    if (optAnchor === null || !optEl || !canvas) {
-        optXY = null;
-        return;
-    }
-    optXY = readoutFit(
-        optAnchor,
-        OPT_RING_R + OPT_GAP,
-        { w: optEl.offsetWidth, h: optEl.offsetHeight },
-        { w: canvas.clientWidth, h: canvas.clientHeight },
-        DOCK_RESERVE,
-    );
+    if (!optOpen) return null;
+    if (optReadout !== null) return optReadout;
+    if (!optSolvable) return `Needs ${MIN_FREE} free keys`;
+    return null;
 });
 
 // whether the node selection is a multi-set. the CANVAS shows NO contextual controls over one
@@ -530,6 +532,7 @@ const manip = $derived.by(
         const eid = editor.selection;
         if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
         if (nodeMulti()) return null;
+        if (editor.optimizing !== null) return null; // the lockdown: no geo chrome in-mode
         const s = samples.get(trackEid);
         if (!s) return null;
         const knobs = manipKnobs(ecs, s, viewTransform(canvas), eid);
@@ -560,6 +563,7 @@ const extendBtn = $derived.by((): { x: number; y: number } | null => {
     const eid = editor.selection;
     if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
     if (nodeMulti()) return null; // the whole ring goes on a multi-set (Add stays, grayed, in the menu)
+    if (editor.optimizing !== null) return null; // the lockdown: no geo chrome in-mode
     if (Handle.order.get(eid) === 0) return null; // the entry anchor never extends
     const section = Handle.section.get(eid);
     if (eid !== lastHandle(ecs, section)) return null; // the chain end alone extends
@@ -700,6 +704,9 @@ const nodeItems = $derived.by((): MenuItem[] => {
     const m = editor.nodeMenu;
     if (m === null) return [];
     const eid = m.eid;
+    // the lockdown (kex2d-optimize-mode stage 5): in-mode, only the optimizing (force) section
+    // is editable, so every geo-node edit row grays — visible, never hidden (the enablement law).
+    const ok = editor.optimizing === null;
     // a multi-selection: the bulk rows (the gray-never-hide law). Delete acts on the whole set iff
     // it's a valid suffix run (else grayed); Add + Handles are single-subject, so they gray out;
     // Tangents ▸ modes + Reset apply to every member in one entry. the mode `checked` reflects the
@@ -710,7 +717,7 @@ const nodeItems = $derived.by((): MenuItem[] => {
                 label: "Delete",
                 shortcut: "Del",
                 danger: true,
-                enabled: nodeSuffixOk,
+                enabled: nodeSuffixOk && ok,
                 action: doDeleteSet,
             },
             { label: "Add", shortcut: "Enter", enabled: false },
@@ -718,6 +725,7 @@ const nodeItems = $derived.by((): MenuItem[] => {
             { label: "Handles", enabled: false },
             {
                 label: "Tangents",
+                enabled: ok,
                 children: [
                     {
                         label: "Mirror",
@@ -735,16 +743,16 @@ const nodeItems = $derived.by((): MenuItem[] => {
                         action: () => pickModeSet(TangentMode.Free),
                     },
                     { separator: true },
-                    { label: "Reset", enabled: nodeSetHasTangent, action: doResetSet },
+                    { label: "Reset", enabled: nodeSetHasTangent && ok, action: doResetSet },
                 ],
             },
         ];
     }
     if (Handle.order.get(eid) === 0) {
         return [
-            { label: "Handles", checked: nodeEditing, action: () => toggleHandles(eid) },
+            { label: "Handles", checked: nodeEditing, enabled: ok, action: () => toggleHandles(eid) },
             { separator: true },
-            { label: "Reset", enabled: nodeHasTangent, action: () => doReset(eid) },
+            { label: "Reset", enabled: nodeHasTangent && ok, action: () => doReset(eid) },
         ];
     }
     return [
@@ -752,14 +760,15 @@ const nodeItems = $derived.by((): MenuItem[] => {
             label: "Delete",
             shortcut: "Del",
             danger: true,
-            enabled: nodeCanTrim,
+            enabled: nodeCanTrim && ok,
             action: () => doTrim(eid),
         },
-        { label: "Add", shortcut: "Enter", enabled: nodeIsEnd, action: () => doAdd(eid) },
+        { label: "Add", shortcut: "Enter", enabled: nodeIsEnd && ok, action: () => doAdd(eid) },
         { separator: true },
-        { label: "Handles", checked: nodeEditing, action: () => toggleHandles(eid) },
+        { label: "Handles", checked: nodeEditing, enabled: ok, action: () => toggleHandles(eid) },
         {
             label: "Tangents",
+            enabled: ok,
             children: [
                 {
                     label: "Mirror",
@@ -777,7 +786,7 @@ const nodeItems = $derived.by((): MenuItem[] => {
                     action: () => pickMode(TangentMode.Free, eid),
                 },
                 { separator: true },
-                { label: "Reset", enabled: nodeHasTangent, action: () => doReset(eid) },
+                { label: "Reset", enabled: nodeHasTangent && ok, action: () => doReset(eid) },
             ],
         },
     ];
@@ -969,7 +978,7 @@ const ctxItems = $derived.by((): MenuItem[] => {
     if (ctx === null) return [];
     // inside a live optimize session on THIS section: the mode's own rows replace the normal
     // menu entirely — convert/delete/join aren't available inside the mode (the locked
-    // decision's consent-boundary law). Solve gates on the same headroom read as the popup's
+    // decision's consent-boundary law). Solve gates on the same headroom read as the panel's
     // button (below MIN_FREE free keys there is nothing to solve — pure counting).
     if (editor.optimizing !== null && editor.optimizing.section === ctx.section) {
         return [
@@ -1087,13 +1096,6 @@ const noticeBad = $derived.by((): boolean => {
     void tick;
     return editor.notice?.kind === "error";
 });
-// the notice's optional detail lines (the optimize landing's per-key Δg ledger) — a new array
-// only when the notice changes, joined so the derived hands back a PRIMITIVE (the tick-derived
-// read law: the notice object is replaced whole, but a string can't go stale either way).
-const noticeRows = $derived.by((): string[] => {
-    void tick;
-    return editor.notice?.rows ?? [];
-});
 // focus the dialog when it mounts, so `aria-modal` is honest and the first Tab lands inside it
 // (the content is `inert`, so Cancel is the only thing left to reach). the element ref is what
 // says it's mounted; nothing else writes focus while the gate is open.
@@ -1128,6 +1130,7 @@ const V0_SCRUB = 0.1; // m/s per px — the START field's label-scrub rate
 // the number never shows jitter.
 function v0ScrubStart(e: PointerEvent): void {
     if (trackEid === null) return;
+    if (editor.optimizing !== null) return; // the lockdown: v0 re-times the whole track
     const te = trackEid;
     e.preventDefault();
     const label = e.currentTarget as HTMLElement;
@@ -1151,6 +1154,7 @@ function v0ScrubStart(e: PointerEvent): void {
 }
 function onV0Field(e: Event): void {
     if (trackEid === null) return;
+    if (editor.optimizing !== null) return; // the lockdown (the field is disabled too)
     const val = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
     if (!Number.isFinite(val)) return; // guard a cleared field
     beginV0(trackEid);
@@ -1234,13 +1238,6 @@ $effect(() => {
     {#if noticeText}
         <div class="notice" class:bad={noticeBad} role="status">
             {noticeText}
-            {#if noticeRows.length > 0}
-                <div class="ledger">
-                    {#each noticeRows as row, i (i)}
-                        <div class="lrow">{row}</div>
-                    {/each}
-                </div>
-            {/if}
         </div>
     {/if}
 
@@ -1356,6 +1353,7 @@ $effect(() => {
                     step="0.5"
                     min="0"
                     value={vText}
+                    disabled={optOpen}
                     onchange={onV0Field}
                     onfocus={(e) => e.currentTarget.select()}
                     onkeydown={(e) => v0Keydown(e, vText)}
@@ -1366,45 +1364,36 @@ $effect(() => {
         </div>
     {/if}
 
-    <!-- the optimize-mode popup: a persistent contextual surface summoned at mode entry,
-         anchored at the stamped exit (the app's popover idiom, the v0 popover's sibling). its
-         standing presence IS the "you are in the mode" signal, and it dismisses only with the
-         mode — Solve (the confirmation) and Exit (the byte-identical revert) live here, with
-         the headroom badge and the refusal readout. rendered off-screen for one measure pass
-         until `readoutFit` places it from the measured box (the snap readout's move). -->
-    {#if opt}
+    <!-- the optimize-mode panel: DOCKED, one small surface centered above the media player
+         (the docked idiom — no view occlusion, no layout shift on enter/exit: it floats
+         absolutely, moving nothing else). its standing presence IS the "you are in the mode"
+         signal, and it dismisses only with the mode — Solve (the confirmation, which also
+         closes the mode) and Exit (the rewind to the entry mark) live here, with the refusal
+         reason when one stands (or the starved reason, subtly, only while Solve is disabled).
+         no headroom count, no post-solve stats: the paced landing is the feedback. -->
+    {#if optOpen}
         <div
-            class="optpop"
-            bind:this={optEl}
-            style={optXY
-                ? `left: ${optXY.x}px; top: ${optXY.y}px;`
-                : "left: -9999px; top: -9999px;"}
+            class="optpanel"
+            style="bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP + PLAYER_H + 12}px;"
             role="dialog"
             aria-label="Optimize"
         >
-            <div class="head">
-                <span class="title">Optimize</span>
-                <span class="badge" class:low={!optSolvable}>
-                    {opt.free} free{opt.locked > 0 ? ` · ${opt.locked} locked` : ""}
-                </span>
-            </div>
-            {#if optReadout}
-                <div class="readout" role="status">{optReadout}</div>
+            <span class="title">Optimize</span>
+            <button
+                type="button"
+                class="solve"
+                disabled={!optSolvable || optimizeBusy}
+                title="Restore the stamped exit"
+                onclick={() => void optimizeSolve()}
+            >
+                Solve
+            </button>
+            <button type="button" class="exit" title="Exit (Esc)" onclick={optimizeExit}>
+                Exit
+            </button>
+            {#if optReason}
+                <span class="reason" class:bad={optReadout !== null} role="status">{optReason}</span>
             {/if}
-            <div class="actions">
-                <button
-                    type="button"
-                    class="solve"
-                    disabled={!optSolvable || optimizeBusy}
-                    title={optSolvable ? "Restore the stamped exit" : `Needs ${MIN_FREE} free keys`}
-                    onclick={() => void optimizeSolve()}
-                >
-                    Solve
-                </button>
-                <button type="button" class="exit" title="Exit (Esc)" onclick={optimizeExit}>
-                    Exit
-                </button>
-            </div>
         </div>
     {/if}
 
@@ -1497,7 +1486,7 @@ $effect(() => {
     :global([data-dragging]) .rbtn,
     :global([data-dragging]) .ctxmenu,
     :global([data-dragging]) .nodemenu,
-    :global([data-dragging]) .optpop,
+    :global([data-dragging]) .optpanel,
     :global([data-dragging]) .vtip {
         pointer-events: none;
         user-select: none;
@@ -1581,71 +1570,39 @@ $effect(() => {
         border-color: rgba(226, 109, 92, 0.5);
         color: #f0bdb1;
     }
-    /* the optimize landing's per-key Δg ledger under the headline: quiet mono rows, the
-       readout register (display only, dismissed with the toast). */
-    .notice .ledger {
-        margin-top: 4px;
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 10px;
-        font-variant-numeric: tabular-nums;
-        color: var(--muted);
-    }
 
-    /* the optimize-mode popup: the standing mode surface at the stamped exit — the same opaque
-       floating chrome as the v0 popover, plus its two action buttons. its persistent presence
-       is the mode signal, so it earns no extra ornament; the badge goes danger-tinted only
-       when Solve is starved below the kernel's free-key floor (two channels: color + the count
-       itself). */
-    .optpop {
+    /* the optimize-mode panel: one small docked surface centered above the media player (the
+       player's own chrome, one row). its persistent presence is the mode signal, so it earns
+       no extra ornament; the reason line is quiet muted text, danger-tinted only for a real
+       refusal. absolutely positioned (bottom inline from the shared dock/player constants), so
+       mode enter/exit shifts no layout. */
+    .optpanel {
         position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
         z-index: 3;
         display: flex;
-        flex-direction: column;
-        gap: 6px;
-        min-width: 148px;
-        padding: 7px 9px;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 12px;
         background: var(--bg-solid);
         border: 1px solid var(--border);
-        border-radius: 5px;
+        border-radius: 6px;
         box-shadow: var(--shadow);
         font-family: "Outfit", system-ui, sans-serif;
         font-size: 11px;
+        white-space: nowrap;
         user-select: none;
         animation: vtip-in 120ms ease;
     }
-    .optpop .head {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 12px;
-    }
-    .optpop .title {
+    .optpanel .title {
         color: var(--fg);
         font-size: 12px;
     }
-    .optpop .badge {
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 10px;
-        font-variant-numeric: tabular-nums;
-        color: var(--muted);
-        white-space: nowrap;
-    }
-    .optpop .badge.low {
-        color: var(--danger);
-    }
-    .optpop .readout {
-        max-width: 200px;
-        color: #f0bdb1;
-    }
-    .optpop .actions {
-        display: flex;
-        gap: 6px;
-    }
-    .optpop .actions button {
+    .optpanel button {
         all: unset;
         box-sizing: border-box;
-        flex: 1;
-        padding: 4px 0;
+        padding: 4px 14px;
         border: 1px solid var(--border);
         border-radius: 4px;
         font-size: 11px;
@@ -1654,18 +1611,24 @@ $effect(() => {
         cursor: pointer;
         transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
     }
-    .optpop .actions .solve {
+    .optpanel .solve {
         color: var(--accent);
         border-color: var(--accent-soft);
     }
-    .optpop .actions button:not(:disabled):hover {
+    .optpanel button:not(:disabled):hover {
         background: var(--accent-soft);
         border-color: var(--accent);
         color: var(--fg);
     }
-    .optpop .actions button:disabled {
+    .optpanel button:disabled {
         opacity: 0.4;
         cursor: default;
+    }
+    .optpanel .reason {
+        color: var(--muted);
+    }
+    .optpanel .reason.bad {
+        color: #f0bdb1;
     }
     /* the shared entrance for the surfaces that just appear (readout, scrim) — no travel, so it
        reads as arriving rather than sliding. */

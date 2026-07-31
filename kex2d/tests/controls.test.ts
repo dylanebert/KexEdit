@@ -16,6 +16,7 @@ import {
     nodeMetrics,
     normDeg,
     polarNudge,
+    sectionEditable,
     sectionOpsAllowed,
     sectionSolvable,
     sectionsDeletable,
@@ -659,6 +660,28 @@ describe("sectionOpsAllowed — optimize mode blocks delete, convert, and the do
             ghost: { x: new Float32Array(0), y: new Float32Array(0) },
         };
         expect(sectionOpsAllowed(session)).toBe(false);
+    });
+});
+
+// the editing lockdown's per-subject predicate (kex2d-optimize-mode stage 5): in-mode only the
+// optimizing section is editable — every edit surface (geo nodes, other sections' keys/extents,
+// v0) pairs its grayed affordance with this same guard at the action layer.
+describe("sectionEditable — the in-mode editing lockdown", () => {
+    const session = {
+        section: 7,
+        stamp: { x: 0, y: 0, theta: 0 },
+        ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+    };
+
+    test("no live session: everything is editable", () => {
+        expect(sectionEditable(null, 3)).toBe(true);
+        expect(sectionEditable(null, -1)).toBe(true); // the track-global sentinel too
+    });
+
+    test("in-mode: only the optimizing section passes; other sections and the track-global sentinel gray", () => {
+        expect(sectionEditable(session, 7)).toBe(true);
+        expect(sectionEditable(session, 3)).toBe(false);
+        expect(sectionEditable(session, -1)).toBe(false); // v0 (track-global) is locked in-mode
     });
 });
 

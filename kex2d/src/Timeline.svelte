@@ -14,6 +14,7 @@ import {
     endDrag as endDragGesture,
     enterForceEdit,
     exitForceEdit,
+    landingG,
     openContext,
     openForceMenu,
     openRulerMenu,
@@ -79,7 +80,7 @@ import {
     yGrow,
     zoomAt,
 } from "./timeline";
-import { armDrag, DRAG_PX, latchAngle, sectionOpsAllowed } from "./controls";
+import { armDrag, DRAG_PX, latchAngle, sectionEditable, sectionOpsAllowed } from "./controls";
 import {
     ANGLE_STEP_MAX,
     ANGLE_STEP_MIN,
@@ -112,7 +113,7 @@ import {
     trackDomain,
     V0,
 } from "./track";
-import { DOCK_HEIGHT, DOCK_INSET, resize } from "./view";
+import { DOCK_HEIGHT, DOCK_INSET, PLAYER_GAP, PLAYER_H, resize } from "./view";
 
 const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
 
@@ -169,7 +170,8 @@ const CLIP_PAD = 2; // px; vertical inset of a section clip inside the marker la
 const TOP = RULER_H + GAP_H; // chart top
 const BOT_PAD = 8; // chart inset, bottom
 const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
-const PLAYER_GAP = 32; // px the media player floats above the dock's top edge
+// PLAYER_GAP/PLAYER_H (view.ts) — the player's geometry above the dock, shared with the
+// optimize panel's anchor (App.svelte).
 const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer than this to the plot edge
 // reference comfort limits (g) — drawn as faint lines to read the force curve against, and the
 // value axis's RESTING frame: the window the view sits in whenever the data fits inside it (the
@@ -663,6 +665,16 @@ const lockedSet = $derived.by((): Set<number> => {
     void tick;
     return editor.locked;
 });
+// the paced landing (kex2d-optimize-mode stage 5): while one runs, a moved diamond DRAWS at
+// its interpolated g — the one cosmetic display override (the document already landed
+// atomically; `editor.landing` clears on expiry/skip). per-RAF via the tick, like everything
+// here, so the interpolation advances every frame.
+const landing = $derived.by(() => {
+    void tick;
+    return editor.landing;
+});
+const dispG = (p: ForcePt): number =>
+    landing === null ? p.g : (landingG(landing, p.id, performance.now()) ?? p.g);
 const selPoint = $derived.by((): ForcePt | null => {
     if (selForce === null) return null;
     return forcePts.find((p) => p.id === selForce) ?? null;
@@ -685,6 +697,13 @@ $effect(() => {
 const multiForce = $derived.by((): boolean => {
     void tick;
     return editor.forces.ids.size > 1;
+});
+// whether the selected keyframe sits OUTSIDE the live lockdown (kex2d-optimize-mode stage 5) —
+// its popover fields disable (grayed affordance; the write paths guard on the same predicate).
+const selLocked = $derived.by((): boolean => {
+    void tick;
+    const p = selPoint;
+    return p !== null && !sectionEditable(editor.optimizing, p.section);
 });
 
 // the axis pair: a coordinate on the chart's own axis ↔ its canvas x. Every native subject (a
@@ -765,6 +784,9 @@ function chartCreate(e: MouseEvent): void {
     }
     const c = clips.find((x) => x.kind === SectionKind.Force && u >= x.u0 && u <= x.u1);
     if (!c) return; // not over a force section
+    // the lockdown (kex2d-optimize-mode stage 5): in-mode, keys are added only on the
+    // optimizing section (the sanctioned way to create give) — other sections are read-only.
+    if (!sectionEditable(editor.optimizing, c.id)) return;
     // value = the authored profile at the SNAPPED section-local s (insert-on-curve: the new
     // point never bends the curve), so both position and value derive from the snapped place.
     const s = clamp(u - c.u0, 0, c.len); // (snapped) global → section-local, both native
@@ -877,7 +899,9 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     if (lastFdownId === p.id && e.timeStamp - lastFdownT < FDBL_MS) {
         lastFdownT = 0;
         lastFdownId = -1;
-        enterForceEdit(p.id); // second press on the same diamond → summon its handles (single-subject)
+        // second press on the same diamond → summon its handles (single-subject). handle edit
+        // is an editing surface, so the lockdown gates the summon like every other edit.
+        if (sectionEditable(editor.optimizing, p.section)) enterForceEdit(p.id);
         return;
     }
     lastFdownT = e.timeStamp;
@@ -887,6 +911,8 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     // clicked-selected-vs-unselected rule.
     if (editor.forces.ids.has(p.id)) activateForce(p.id);
     else selectForce(p.id);
+    // the lockdown: another section's keys still SELECT (selection is a read) but never drag.
+    if (!sectionEditable(editor.optimizing, p.section)) return;
     // the drag set: every selected member's start s/g + its own extent (size-1 for a single drag).
     const set = editor.forces.ids;
     const members = set.size > 1 ? forcePts.filter((fp) => set.has(fp.id)) : [p];
@@ -1372,11 +1398,17 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     const m = editor.forceMenu;
     if (m === null) return [];
     const id = m.id; // the active member (openForceMenu promotes the right-clicked one) — single subject
+    // the lockdown (kex2d-optimize-mode stage 5): bulk rows need the whole SET editable, the
+    // single-subject rows the active member — grayed, never hidden (the enablement law).
+    const setOk = forceSetEditable();
+    const pt = forcePts.find((p) => p.id === id);
+    const activeOk = pt !== undefined && sectionEditable(editor.optimizing, pt.section);
     const items: MenuItem[] = [
         {
             label: "Delete",
             shortcut: "Del",
             danger: true,
+            enabled: setOk,
             action: () => deleteForces(history, ecs, [...editor.forces.ids]),
         },
     ];
@@ -1392,7 +1424,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
         });
         items.push({
             label: "Easing",
-            enabled: targets.length > 0,
+            enabled: targets.length > 0 && setOk,
             children: [
                 easeRow("Linear", Easing.Linear),
                 easeRow("Cubic", Easing.Cubic),
@@ -1404,7 +1436,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
                 // keep the preset rows live.
                 {
                     label: "Custom",
-                    enabled: !fmenuTerminal,
+                    enabled: !fmenuTerminal && activeOk,
                     glyph: customGlyph(id),
                     checked: fmenuCustom,
                     action: () => chooseCustom(id),
@@ -1424,6 +1456,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
         });
         items.push({
             label: "Tangents",
+            enabled: activeOk,
             children: [
                 modeRow("Mirror", TangentMode.Mirror),
                 modeRow("Aligned", TangentMode.Aligned),
@@ -1596,6 +1629,8 @@ function toggleAppend(e: PointerEvent): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    // the lockdown: no section add while an optimize session is open (the button grays too).
+    if (!sectionOpsAllowed(editor.optimizing)) return;
     if (appendAnchor) {
         appendAnchor = null;
         return;
@@ -1770,6 +1805,9 @@ function lenDown(e: PointerEvent, c: Clip): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    // the lockdown: in-mode only the optimizing section's extent trims (length is authored
+    // slack — the author's own DOF); other sections are read-only.
+    if (!sectionEditable(editor.optimizing, c.id)) return;
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
     lenX0 = lenCx;
@@ -1843,6 +1881,7 @@ $effect(() => {
 function fieldEdit(s: number, g: number): void {
     const p = selPoint;
     if (p === null || !Number.isFinite(s) || !Number.isFinite(g)) return; // guard a cleared field
+    if (!sectionEditable(editor.optimizing, p.section)) return; // the lockdown (fields disabled too)
     beginForceMove(ecs, p.id);
     setForcePoint(ecs, p.id, clamp(s, 0, p.len), g);
     commit(history);
@@ -1866,6 +1905,7 @@ function onFieldG(e: Event): void {
 function handleFieldEdit(ds: number, dg: number): void {
     const h = selHandle;
     if (h === null || !Number.isFinite(ds) || !Number.isFinite(dg)) return; // guard a cleared field
+    if (!sectionEditable(editor.optimizing, h.pt.section)) return; // the lockdown
     const tan = tangentFor(h.pt.id, h.side, ds, dg);
     if (!tan) return;
     beginForceTangent(ecs, h.pt.id);
@@ -1956,6 +1996,7 @@ function cancelLabelScrub(): void {
 function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
     const p = selPoint;
     if (p === null) return;
+    if (!sectionEditable(editor.optimizing, p.section)) return; // the lockdown
     const freeze = {
         x: clamp(ptX(p), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
         y: clamp(yOf(p.g), TOP, h - BOT_PAD),
@@ -2054,11 +2095,24 @@ function fieldKeydown(e: KeyboardEvent, reset: string): void {
 }
 function deleteSelectedForce(): void {
     if (editor.force === null) return; // active is null iff the set is empty
+    // the lockdown: the whole set must be editable (the menu's Delete row grays on the same
+    // read) — a mixed set deletes nothing rather than silently deleting a subset.
+    if (!forceSetEditable()) return;
     // force multi-delete is UNCONDITIONAL: delete the whole selected set in ONE undo entry. no
     // explicit deselect — the popover/menu derive null once the subjects are gone and the $effect
     // above clears the stale active id (one mechanism for every death path). single-select is the
     // size-1 case.
     deleteForces(history, ecs, [...editor.forces.ids]);
+}
+// whether EVERY selected force keyframe's section is editable under the live lockdown — the
+// action-layer guard the Del key and the menu's bulk rows share (all-or-nothing: bulk ops act
+// on the whole set, so a mixed set grays rather than acting on a silent subset).
+function forceSetEditable(): boolean {
+    for (const id of editor.forces.ids) {
+        const p = forcePts.find((fp) => fp.id === id);
+        if (!p || !sectionEditable(editor.optimizing, p.section)) return false;
+    }
+    return true;
 }
 function cancelForceDrag(): void {
     if (dragForce === null) return;
@@ -2579,6 +2633,7 @@ onMount(() => {
                 // preserved (`nudgeForces`, timeline.ts). Shift coarse; one press = one undo entry.
                 const members = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
                 if (members.length === 0) return;
+                if (!forceSetEditable()) return; // the lockdown — all-or-nothing, like Del
                 e.preventDefault();
                 const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
                 const stepG = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
@@ -2598,8 +2653,15 @@ onMount(() => {
                 // the basic lock/free toggle (`kex2d-optimize-mode` stage 1): only meaningful
                 // inside a live optimize session, over the selected force keyframe set — the
                 // existing multiselect grammar is the lock gesture's own selection surface.
+                // restricted to the optimizing section's own keys (a lock on another section's
+                // key would be dead state — the solve never reads it).
                 e.preventDefault();
-                toggleLockedSet([...editor.forces.ids]);
+                const sid = editor.optimizing?.section;
+                toggleLockedSet(
+                    forcePts
+                        .filter((fp) => editor.forces.ids.has(fp.id) && fp.section === sid)
+                        .map((fp) => fp.id),
+                );
             }
         }
     };
@@ -2718,6 +2780,18 @@ onMount(() => {
                 <clipPath id="laneclip">
                     <rect x={LEFT_GUT} y={RULER_H} width={Math.max(0, w - LEFT_GUT)} height={GAP_H} />
                 </clipPath>
+                <!-- the optimize-mode stripes: the diagonal hatch the optimized section's clip
+                     wears while the mode is open (kex2d-optimize-mode stage 5 — the salient
+                     in-mode treatment; the old guide ring read as a mystery glyph). -->
+                <pattern
+                    id="modestripe"
+                    width="7"
+                    height="7"
+                    patternUnits="userSpaceOnUse"
+                    patternTransform="rotate(-45)"
+                >
+                    <line x1="0" y1="0" x2="0" y2="7" class="mode-stripe-line" />
+                </pattern>
             </defs>
             <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere here
                  moves the playhead (the distance ruler is the scrubber). -->
@@ -2791,6 +2865,18 @@ onMount(() => {
                                 >
                                     {isF ? "Force" : "Geo"}
                                 </text>
+                            {/if}
+                            {#if optClip !== null && optClip.id === c.id}
+                                <!-- the mode's own clip wears the stripes (pointer-inert: a
+                                     treatment, not a control — the clip beneath still picks). -->
+                                <rect
+                                    class="clip-stripes"
+                                    x={x0 + 0.5}
+                                    y={RULER_H + CLIP_PAD}
+                                    width={Math.max(1, cw - 1)}
+                                    height={GAP_H - 2 * CLIP_PAD}
+                                    rx="2"
+                                />
                             {/if}
                             {#if isF}
                                 <rect
@@ -2869,7 +2955,7 @@ onMount(() => {
                 {#each forcePts as p (p.id)}
                     {@const mx = ptX(p)}
                     {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
-                        {@const my = yOf(p.g)}
+                        {@const my = yOf(dispG(p))}
                         <!-- in-mode lock styling (kex2d-optimize-mode stage 4): a locked key wears
                              the CAD driven idiom — dashed + faded, still measures (it stays a
                              keyframe the profile reads; the solve just never moves it). free keys
@@ -2931,9 +3017,10 @@ onMount(() => {
             <!-- optimize-mode focus (kex2d-optimize-mode stage 4, the standard focus/mode
                  convention): everything outside the optimized section's span dims — lane, curve,
                  and markers alike (the dim is topmost) — while the span itself stays
-                 full-strength. pointer-inert: focus is a read, and authoring outside the span
-                 stays live in-mode. the stamped exit gets the constraint idiom's ring on the
-                 section's exit boundary guide (the viewport ring's timeline twin). -->
+                 full-strength. pointer-inert: focus is a read. the section's own timeline
+                 identity is the striped clip (above); the stamped exit's constraint ring +
+                 residual drop-line live in the viewport (render.ts) — the timeline guide's
+                 little ring read as noise (the stage-5 feel verdict) and is gone. -->
             {#if optClip}
                 {@const dimY = RULER_H}
                 {@const dimH = Math.max(0, h - BOT_PAD - RULER_H)}
@@ -2947,9 +3034,6 @@ onMount(() => {
                         <rect x={dx1} y={dimY} width={w - dx1} height={dimH} />
                     {/if}
                 </g>
-                {#if uPx(optClip.u1) >= LEFT_GUT && uPx(optClip.u1) <= w}
-                    <circle class="stamp-ring" cx={uPx(optClip.u1)} cy={TOP + 12} r="5" />
-                {/if}
             {/if}
         </svg>
         <!-- the selected handle's typed (Δs, Δg) fields: the SAME popover surface, summoned at
@@ -3044,6 +3128,7 @@ onMount(() => {
                             step={timeDomain ? 0.1 : 1}
                             min={selPoint.startU}
                             value={posText}
+                            disabled={selLocked}
                             onchange={onFieldPos}
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, posText)}
@@ -3061,6 +3146,7 @@ onMount(() => {
                             type="number"
                             step="0.1"
                             value={gText}
+                            disabled={selLocked}
                             onchange={onFieldG}
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, gText)}
@@ -3082,6 +3168,7 @@ onMount(() => {
                         class="clip-add"
                         class:open={appendAnchor !== null}
                         type="button"
+                        disabled={optClip !== null}
                         onpointerdown={toggleAppend}
                         title="Append section"
                         aria-label="Append section"
@@ -3136,7 +3223,7 @@ onMount(() => {
 <div
     class="player"
     class:idle={eid === null || tTotal <= 0}
-    style="bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP}px;"
+    style="bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP}px; height: {PLAYER_H}px;"
     onpointerenter={() => (editor.hover = "timeline")}
     onpointerleave={() => (editor.hover = "viewport")}
     role="group"
@@ -3657,13 +3744,18 @@ onMount(() => {
         fill: rgba(22, 20, 19, 0.55);
         pointer-events: none;
     }
-    /* the stamped exit's ring on the section boundary guide — the constraint idiom's hollow
-       ring (the viewport stamp ring's timeline twin), the light pin register. */
-    .stamp-ring {
-        fill: none;
-        stroke: var(--pin);
-        stroke-width: 1.6;
+    /* the optimize-mode clip stripes: the diagonal hatch the optimized section's clip wears
+       while the mode is open — the salient timeline identity of the mode (the accent register,
+       since the mode's subject is always a force section). pointer-inert: a treatment, not a
+       control. the pattern lives in the svg defs (`#modestripe`). */
+    .clip-stripes {
+        fill: url(#modestripe);
         pointer-events: none;
+    }
+    .mode-stripe-line {
+        stroke: var(--accent);
+        stroke-width: 2.5;
+        opacity: 0.55;
     }
 
     /* the summoned tangent handles on the edited force keyframe (the force analogue of the
@@ -3817,6 +3909,16 @@ onMount(() => {
         background: rgba(255, 255, 255, 0.12);
         color: var(--fg);
     }
+    /* grayed under the lockdown (no section add while an optimize session is open) — the
+       standard disabled affordance, matching the menu rows. */
+    .clip-add:disabled {
+        opacity: 0.4;
+        cursor: default;
+    }
+    .clip-add:disabled:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--muted);
+    }
     /* the append flyout: an instance of the shared `.menu` language, root-mounted and placed by
        `fitMenu` (left/top written by the action) — the same fixed-position, viewport-flipping
        treatment as the force keyframe menu, so the dock's `overflow: hidden` can't clip it. */
@@ -3879,7 +3981,7 @@ onMount(() => {
         transform: translateX(-50%);
         width: min(calc(100% - 32px), 560px);
         box-sizing: border-box;
-        height: 36px;
+        /* height inline-styled from PLAYER_H (view.ts) */
         display: flex;
         align-items: center;
         gap: 12px;

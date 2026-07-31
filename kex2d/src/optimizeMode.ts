@@ -3,20 +3,22 @@
  *  conversions: this module hands the kernel the document's own live state and lands its answer
  *  back as one undo entry. Nothing here decides anything about the solve.
  *
- *  **Entering the mode is a read, not a write.** `enterOptimize` stamps the section's CURRENT
- *  exit and freezes a ghost of its CURRENT shape — both live only in `editor.optimizing`
- *  (`editor.beginOptimize`), so entering/exiting the mode never touches history. Only a `Solve`
- *  that lands writes anything, and it writes once, at resolution, exactly like the two conversion
- *  commands: the façade (`optimize-async.ts`) is pure, so a cancelled or `"diverged"` solve leaves
- *  the track byte-identical.
+ *  **The mode is continuous history** (the stage-5 rewrite, superseding the stage-4 bracket).
+ *  Mode entry is itself an undoable action ({@link enterOptimizeMode} — the entry command carries
+ *  the stamp), every in-mode edit is a normal history entry, and a landed `Solve` is a normal
+ *  entry that also closes the mode (`history.solveOptimize`'s mode closures). Undo/redo run
+ *  through the whole process: undoing past the entry exits the mode, redoing back in re-enters it
+ *  with the mode state restored. {@link exitOptimizeMode} (Exit/Esc) is history navigation — it
+ *  rewinds to the entry mark and leaves, so the rewound edits stay redoable; nothing is
+ *  destroyed. A cancelled or `"diverged"` solve still writes nothing (the façade is pure).
  *
  *  **The target is always the CURRENT draft.** Every `Solve` invocation reads the section's live
  *  keyframes fresh — never the mode-entry snapshot the ghost was taken from — per the locked
  *  decision: in-mode edits are intent, so solving toward mode-entry would fight them. */
 
 import type { State } from "@dylanebert/shallot";
-import type { OptimizeSession } from "./editor";
-import { type History, solveOptimize as landOptimize } from "./history";
+import { beginOptimize, editor, endOptimize, type OptimizeSession } from "./editor";
+import { type History, record, solveOptimize as landOptimize, undo } from "./history";
 import type { OptimizeOpts, OptimizeResult } from "./optimize";
 import { type OptimizeRunOpts, runOptimize } from "./optimize-async";
 import { Domain, type Entry, evalForce } from "./section";
@@ -101,6 +103,46 @@ export function enterOptimize(ecs: State, sectionId: number): OptimizeSession | 
     };
 }
 
+// the live mode's entry command — the mark `exitOptimizeMode` rewinds to. one mode at a time,
+// so a module variable suffices; identity against the stack tells whether the mark still exists
+// (MAX_UNDO can evict it under 256+ in-mode edits, the one degraded case).
+let entryCmd: { apply(): void; reverse(): void } | null = null;
+
+/** Enter optimize mode on a force section AS AN UNDOABLE ACTION (continuous history): stamps the
+ *  exit + ghost ({@link enterOptimize}), opens the mode, and records the entry — undoing it exits
+ *  the mode, redoing it re-enters with the same stamp. Returns false (recording nothing) when the
+ *  section isn't a live force section.
+ *
+ * @example
+ * if (enterOptimizeMode(history, ecs, sectionId)) { ... in the mode ... }
+ */
+export function enterOptimizeMode(h: History, ecs: State, sectionId: number): boolean {
+    if (editor.optimizing !== null) return false; // one mode at a time (the row grays too)
+    const session = enterOptimize(ecs, sectionId);
+    if (!session) return false;
+    beginOptimize(session);
+    entryCmd = {
+        apply: () => beginOptimize(session),
+        reverse: () => endOptimize(),
+    };
+    record(h, entryCmd);
+    return true;
+}
+
+/** Exit/Esc: rewind history to the mode's entry mark and leave the mode — pure history
+ *  navigation, so every rewound step (the entry included) lands on the redo stack and stays
+ *  redoable. The loop's sentinel is the mode state itself: undoing the entry command closes the
+ *  mode. When the entry mark was evicted (MAX_UNDO under 256+ in-mode edits) a full rewind no
+ *  longer exists, so the mode closes in place rather than draining unrelated history. */
+export function exitOptimizeMode(h: History, ecs: State): void {
+    if (editor.optimizing === null) return;
+    const marked = entryCmd !== null && h.undo.some((e) => e.cmd === entryCmd);
+    if (marked) {
+        while (editor.optimizing !== null && h.undo.length > 0) undo(h, ecs);
+    }
+    endOptimize(); // a no-op after a marked rewind; the honest close when the mark was evicted
+}
+
 /** the document moved while the solve was running — mirrors `geoforce.ts`'s own class (`name`,
  *  not `instanceof`, is the tell a caller reads it by, the direction-neutral convention). */
 export class StaleOptimize extends Error {
@@ -118,8 +160,9 @@ const solving = new Set<number>();
  * the kernel's own mask (`optimize.ts`), asserted structurally in `tests/optimize.test.ts`.
  *
  * Resolves with `solveOptimize`'s own `OptimizeResult` either way. A `"solved"` answer is already
- * in the document (one undo entry, `history.solveOptimize`); `"unreachable"`/`"diverged"` resolve
- * too, but write nothing — the caller surfaces the outcome.
+ * in the document as one undo entry (`history.solveOptimize`) that ALSO closed the mode — Solve
+ * is the confirmation; `"unreachable"`/`"diverged"` resolve too, but write nothing and stay in
+ * the mode — the caller surfaces the outcome.
  *
  * Rejects, having written nothing, when: the section is missing, isn't force, or has no live
  * bake; a solve is already running on it; the signal aborts (with `signal.reason`); or the
@@ -175,13 +218,24 @@ export async function runOptimizeSection(
         if (result.outcome === "solved") {
             // `deltaG` is 0 at every locked index BY CONSTRUCTION (the kernel's own mask), so
             // filtering on it alone already excludes them — and also excludes a free key the
-            // solve left exactly where it was. An invoked solve is idempotent (`editor-ui.md`'s
-            // constraint-solver law): the zero-drift short-circuit means a second press on an
-            // already-restored draft has NOTHING to write, so it must not land a no-op undo entry.
+            // solve left exactly where it was.
             const writes = ids
                 .map((id, k) => ({ id, g: result.points[k].g }))
                 .filter((_, k) => result.deltaG[k] !== 0);
-            if (writes.length > 0) landOptimize(h, ecs, sectionId, writes);
+            // the landing ALWAYS records — even a zero-drift Solve closes the mode, and that
+            // transition must be an entry or undo/redo couldn't reproduce the mode state
+            // (continuous history). idempotence holds trivially now: a landed Solve closed the
+            // mode, so there is no second press. `relock` restores the lock set when undo walks
+            // back INTO the mode through this entry; cloned per enter, since `endOptimize`
+            // clears the live set in place.
+            const relock = new Set(locked);
+            landOptimize(h, ecs, sectionId, writes, {
+                enter: () => {
+                    beginOptimize(session);
+                    editor.locked = new Set(relock);
+                },
+                exit: () => endOptimize(),
+            });
         }
         return result;
     } finally {

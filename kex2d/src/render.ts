@@ -249,7 +249,6 @@ const TrackDrawSystem: System = {
                     ctx.stroke();
                     ctx.setLineDash([]);
                 }
-                // radius mirrored by App.svelte's OPT_RING_R (the popup clears the ring by it).
                 ctx.strokeStyle = "#ece8e3";
                 ctx.lineWidth = 1.6;
                 ctx.beginPath();

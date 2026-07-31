@@ -9,9 +9,10 @@ import {
     enterForceEdit,
     enterTangentEdit,
     fitDone,
+    landingG,
+    LANDING_MS,
     notify,
     openContext,
-    optimizeDone,
     optimizeRefused,
     solveDone,
     solveFailed,
@@ -432,41 +433,23 @@ test("a dense fit reads as a failure and names the node count — a held budget 
     });
 });
 
-// ── the optimize landing's readout (`optimizeDone`) + the refusal mapping (`optimizeRefused`) ──
-// kex2d-optimize-mode stage 4: Solve closes the mode, so the landing toast is the readout that
-// survives the close — headline + the per-key Δg ledger, capped with a counted remainder.
+// ── the paced landing's display interpolation (`landingG`) + the refusal mapping ──
+// kex2d-optimize-mode stage 5: the landing animation IS the feedback (the Δg toast is gone) —
+// the interpolation is the one cosmetic display override, so its edges are pinned here.
 
-test("optimizeDone: headline counts moved keys, ledger addresses each by its s, unmoved keys silent", () => {
-    const n = optimizeDone(
-        [
-            { s: 0, dg: 0 },
-            { s: 12, dg: 0.312 },
-            { s: 24, dg: -0.05 },
-        ],
-        "m",
-    );
-    expect(n.kind).toBe("done");
-    expect(n.text).toBe("Restored the exit · 2 keys moved · max Δg 0.31 g");
-    expect(n.rows).toEqual(["12.0 m · +0.31 g", "24.0 m · −0.05 g"]);
+test("landingG: interpolates a covered key from `from` toward `to`, ease-out, and expires to null", () => {
+    const landing = { start: 1000, moves: [{ id: 7, from: 1, to: 2 }] };
+    expect(landingG(landing, 7, 1000)).toBe(1); // t = 0: the pre-solve draft value
+    const mid = landingG(landing, 7, 1000 + LANDING_MS / 2);
+    if (mid === null) throw new Error("mid-animation read expired");
+    expect(mid).toBeGreaterThan(1.5); // ease-OUT: past the halfway value at half time
+    expect(mid).toBeLessThan(2);
+    expect(landingG(landing, 7, 1000 + LANDING_MS)).toBeNull(); // expiry → the document's own value
 });
 
-test("optimizeDone: a zero-drift landing confirms without a ledger", () => {
-    const n = optimizeDone(
-        [
-            { s: 0, dg: 0 },
-            { s: 10, dg: 0 },
-        ],
-        "m",
-    );
-    expect(n).toEqual({ kind: "done", text: "Exit already restored · no change" });
-});
-
-test("optimizeDone: the ledger caps and counts the remainder", () => {
-    const moves = Array.from({ length: 9 }, (_, k) => ({ s: k * 5, dg: 0.1 }));
-    const n = optimizeDone(moves, "s");
-    expect(n.rows).toHaveLength(7); // 6 rows + the remainder line
-    expect(n.rows?.[6]).toBe("+3 more");
-    expect(n.rows?.[0]).toBe("0.0 s · +0.10 g"); // the time-domain unit rides each row
+test("landingG: an uncovered key reads null (only moved keys animate)", () => {
+    const landing = { start: 0, moves: [{ id: 7, from: 1, to: 2 }] };
+    expect(landingG(landing, 8, 100)).toBeNull();
 });
 
 test("optimizeRefused: one plain sentence per refusal class", () => {

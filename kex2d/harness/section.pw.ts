@@ -727,56 +727,61 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     if (strip) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip });
 });
 
-// Drive OPTIMIZE MODE end to end (kex2d-optimize-mode stage 4) — the transactional session over
-// the real UI: the section menu's Optimize row → the standing mode popup at the stamped exit
-// (Solve / Exit + the headroom badge) → the layered Esc dismissal + the byte-identical Exit
-// revert → lock gating (L over the multiselect grammar; Solve starves below 3 free; an
-// in-mode-added key defaults free) → a REFUSED solve through the real gate (stays in-mode,
-// draft untouched, readout on the popup) → a landed solve (ONE undo entry for the whole
-// session, mode closes, the ledger toast) → one undo back to the pre-mode draft.
+// Drive OPTIMIZE MODE end to end (kex2d-optimize-mode stage 5) — continuous history over the
+// real UI: the section menu's Optimize row → the DOCKED panel above the player (Solve / Exit,
+// no headroom badge) + the striped clip → the editing lockdown (append + other-section rows
+// gray) → undo/redo CROSSING the mode boundary in both directions → Exit as the rewind (edits
+// stay redoable) → lock gating (L over the multiselect grammar; Solve starves below 3 free with
+// the reason shown only then) → a REFUSED solve through the real gate (stays in-mode, draft
+// untouched, reason on the panel) → a landed solve (a normal entry that closes the mode; the
+// paced landing runs, NO stats toast) → the full undo-walk back out to the pre-mode draft.
 test("optimize mode flow", async ({ page, boot }) => {
     await boot();
 
     const forces = () => kexCall(page, "forces");
     const undoDepth = () => kexCall(page, "undoDepth");
     const optimizing = () => kexCall(page, "optimizing");
+    const landing = () => kexCall(page, "landing");
     const lockedCount = () => kexCall(page, "lockedCount");
     const forceSelIds = () => kexCall(page, "forceSelIds");
     const forceCount = () => kexCall(page, "forceCount");
-    const pop = page.locator(".optpop");
-    const badge = page.locator(".optpop .badge");
-    const solveBtn = page.locator(".optpop .solve");
+    const panel = page.locator(".optpanel");
+    const solveBtn = page.locator(".optpanel .solve");
+    const reason = page.locator(".optpanel .reason");
     const strip = dockStrip(page);
     const sorted = (rows: { s: number; g: number }[]) => [...rows].sort((a, b) => a.s - b.s);
 
     // the bump profile on the boot section: 2 flat seeds + 3 authored keys (crest at index 2) —
     // plus an appended geo section, the consent-boundary leg's subject (an OTHER section whose
-    // Convert must gray while the mode is open).
+    // rows must gray while the mode is open).
     await kexCall(page, "seedForceBump");
     await expect.poll(forceCount).toBe(5);
     await kexCall(page, "append", 0); // SectionKind.Geo
     await expect.poll(() => kexCall(page, "sectionCount")).toBe(2);
     await frameTimeline(page);
-    const preMode = sorted(await forces()); // the pre-mode draft every revert assert reads
+    const preMode = sorted(await forces()); // the pre-mode draft every rewind assert reads
     const base = await undoDepth();
 
-    // ── 1. Enter through the section menu's Optimize row (terse verb — menus law). ──
+    // ── 1. Enter through the section menu's Optimize row (terse verb — menus law): the docked
+    // panel above the player is the mode signal, and the section's clip wears the stripes. entry
+    // itself is an undoable action, so the depth grows by one. ──
     await page.locator(".clip").first().click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
     await expect(
         page.locator(".ctxmenu").getByRole("menuitem", { name: "Optimize" }),
     ).toBeEnabled();
     await clickMenuItem(page, ".ctxmenu", "Optimize");
-    await expect(pop).toBeVisible(); // the standing popup IS the mode signal
+    await expect(panel).toBeVisible(); // the docked panel IS the mode signal
     await expect.poll(optimizing).toBe(true);
-    await expect(badge).toHaveText("5 free");
+    await expect(page.locator(".clip-stripes")).toHaveCount(1); // the striped timeline identity
+    expect(await undoDepth()).toBe(base + 1); // mode entry is a history entry
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-1-mode.png") });
 
-    // ── 1b. The consent boundary holds track-wide while the mode is open: another section's
-    // Convert row grays (the row stays discoverable — the gray-never-hide law), and the ruler's
-    // domain picker grays both rows (a domain switch is a lossy track-wide rewrite that would
-    // land inside the session bracket). Delete's gate is stage 1; these are its stage-4 twins. ──
+    // ── 1b. The editing lockdown holds track-wide while the mode is open: another section's
+    // Convert/Delete rows gray (discoverable — the gray-never-hide law), the ruler's domain
+    // picker grays both rows, and the append tail grays (no section add in-mode). ──
+    await expect(page.locator(".clip-add")).toBeDisabled();
     await page.locator(".clip").nth(1).click({ button: "right" }); // the appended GEO clip
     await expect(page.locator(".ctxmenu")).toBeVisible();
     await expect(
@@ -793,33 +798,46 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect(page.locator(".rmenu")).toHaveCount(0);
     expect(await optimizing()).toBe(true); // both menus peeled without touching the mode
 
-    // ── 2. An in-mode edit (arrow-nudge the crest), then the layered Esc rungs and the
-    // byte-identical Exit revert. positive control first: the edit must be seen to land. ──
+    // ── 2. An in-mode edit (arrow-nudge the crest) is a NORMAL history entry, and undo/redo
+    // cross the mode boundary in both directions; Esc = Exit = the rewind to the entry mark,
+    // with everything redoable. positive control first: the edit must be seen to land. ──
     const crestHit = await page.locator(".fhit").nth(2).boundingBox();
     if (!crestHit) throw new Error("crest hit target not laid out");
     await page.mouse.click(crestHit.x + crestHit.width / 2, crestHit.y + crestHit.height / 2);
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
     await page.keyboard.press("ArrowUp"); // one press = one undo entry (NUDGE_G)
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
-    expect(await undoDepth()).toBe(base + 1); // recorded in-session
+    expect(await undoDepth()).toBe(base + 2); // entry + the nudge, both normal entries
 
-    // Esc peels one rung at a time: selection first (mode stays), the mode only when bare.
+    // Esc peels one rung at a time: selection first (mode stays), then the Exit rewind.
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
     expect(await optimizing()).toBe(true); // still in the mode — Esc took the inner rung
-    await expect(pop).toBeVisible();
+    await expect(panel).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect.poll(optimizing).toBe(false); // the outermost rung: Exit
-    await expect(pop).toHaveCount(0); // the popup dies with the mode
-    // the transactional revert: the in-mode nudge is gone, byte-identically, with no residue.
-    expect(sorted(await forces())).toEqual(preMode);
+    await expect.poll(optimizing).toBe(false); // the outermost rung: Exit = the rewind
+    await expect(panel).toHaveCount(0); // the panel dies with the mode
+    expect(sorted(await forces())).toEqual(preMode); // rewound to the entry mark
     expect(await undoDepth()).toBe(base);
+    // the rewind destroyed nothing: redo re-enters the mode and replays the edit…
+    await page.keyboard.press("Control+Shift+z");
+    await expect.poll(optimizing).toBe(true);
+    await page.keyboard.press("Control+Shift+z");
+    await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
+    expect(await optimizing()).toBe(true);
+    // …and plain undo crosses back OUT through the boundary (the old bracket floored this).
+    await page.keyboard.press("Control+z"); // the edit
+    await page.keyboard.press("Control+z"); // the entry — exits the mode
+    await expect.poll(optimizing).toBe(false);
+    expect(sorted(await forces())).toEqual(preMode);
 
-    // ── 3. Lock gating (pure counting): lock 3 of 5 → 2 free, Solve starves; an in-mode-added
-    // key defaults FREE and re-arms it; delete + unlock restore the baseline. ──
+    // ── 3. Lock gating (pure counting): lock 3 of 5 → 2 free, Solve starves and the reason
+    // shows (only then — no standing count); an in-mode-added key defaults FREE and re-arms it;
+    // delete + unlock restore the baseline. ──
     await page.locator(".clip").first().click({ button: "right" });
     await clickMenuItem(page, ".ctxmenu", "Optimize");
-    await expect(pop).toBeVisible();
+    await expect(panel).toBeVisible();
+    const lockBase = await undoDepth(); // the re-entry landed one entry on a cleared redo branch
     const hit = async (i: number) => {
         const b = await page.locator(".fhit").nth(i).boundingBox();
         if (!b) throw new Error(`diamond ${i} not laid out`);
@@ -836,24 +854,25 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect.poll(async () => (await forceSelIds()).length).toBe(3);
     await page.keyboard.press("l"); // the lock gesture over the multiselect grammar
     await expect.poll(lockedCount).toBe(3);
-    await expect(badge).toHaveText("2 free · 3 locked");
-    await expect(badge).toHaveClass(/low/);
     await expect(solveBtn).toBeDisabled(); // starved below MIN_FREE — pure counting
+    await expect(reason).toHaveText("Needs 3 free keys"); // the reason, subtle, only while disabled
     await page.waitForTimeout(SHOT_MS);
     if (strip) await page.screenshot({ path: join(OUT, "optimize-2-locked.png"), clip: strip });
 
-    // an in-mode-added key is free by construction: the badge counts it and Solve re-arms.
+    // an in-mode-added key is free by construction: Solve re-arms and the reason clears.
     const body = page.locator(".dock .body");
     const bodyBox = await body.boundingBox();
     const clipBox = await page.locator(".clip").first().boundingBox();
     if (!bodyBox || !clipBox) throw new Error("timeline not laid out");
     await page.mouse.dblclick(clipBox.x + clipBox.width * 0.08, bodyBox.y + bodyBox.height * 0.5);
     await expect.poll(forceCount).toBe(6);
-    await expect(badge).toHaveText("3 free · 3 locked");
+    expect(await undoDepth()).toBe(lockBase + 1); // the create is a normal entry
     await expect(solveBtn).toBeEnabled();
+    await expect(reason).toHaveCount(0);
     await page.keyboard.press("Delete"); // the create selected it; Del removes it again
     await expect.poll(forceCount).toBe(5);
-    await expect(badge).toHaveText("2 free · 3 locked");
+    expect(await undoDepth()).toBe(lockBase + 2); // so is the delete
+    await expect(solveBtn).toBeDisabled();
     // unlock: the same three members, L on an all-locked set unlocks it.
     const q1 = await hit(1);
     await page.mouse.click(q1.x, q1.y);
@@ -865,54 +884,70 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.keyboard.up("Shift");
     await page.keyboard.press("l");
     await expect.poll(lockedCount).toBe(0);
-    await expect(badge).toHaveText("5 free");
+    await expect(solveBtn).toBeEnabled();
 
     // ── 4. A REFUSED solve through the real gate: flatten the crest to 1 g via the popover
     // (the draft goes exactly straight — the rank-deficient conditioning certificate), Solve →
-    // the refusal stays in-mode with the draft untouched and its readout on the popup. ──
+    // the refusal stays in-mode with the draft untouched and its reason on the panel. ──
     await page.keyboard.press("Escape"); // clear the 3-member set first — a click on a set
     await expect.poll(async () => (await forceSelIds()).length).toBe(0); // member would PROMOTE, not replace, and a multi-set shows no popover
     const crest2 = await hit(2);
     await page.mouse.click(crest2.x, crest2.y);
     await expect(page.locator(".ptip")).toBeVisible();
     const gField = page.locator('.ptip input[aria-label="Point force (g)"]');
+    await expect(gField).toBeEnabled(); // the optimizing section's own fields stay live in-mode
     await gField.fill("1");
     await gField.press("Enter");
     await expect.poll(async () => sorted(await forces())[2].g).toBe(1);
+    expect(await undoDepth()).toBe(lockBase + 3); // the popover edit records
     const flattened = sorted(await forces());
-    await pop.locator(".solve").click();
-    await expect(pop.locator(".readout")).toBeVisible({ timeout: 30_000 });
-    await expect(pop.locator(".readout")).toContainText("can't steer");
+    await solveBtn.click();
+    await expect(reason).toBeVisible({ timeout: 30_000 });
+    await expect(reason).toContainText("can't steer");
     expect(await optimizing()).toBe(true); // a refusal is not an exit
     expect(sorted(await forces())).toEqual(flattened); // …and writes nothing
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-3-refusal.png") });
 
     // ── 5. A landed solve: undo the flatten (in-mode undo stays live), make a real edit, Solve
-    // → the landing collapses the WHOLE session to one undo entry and closes the mode; the
-    // ledger toast survives the close. ──
+    // → a normal entry that closes the mode. the PACED LANDING is the feedback — it runs, then
+    // settles; there is NO stats toast. ──
     await page.keyboard.press("Control+z");
     await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
+    expect(await undoDepth()).toBe(lockBase + 2); // in-mode undo pops it (redo clears on the next edit)
     const crest3 = await hit(2);
     await page.mouse.click(crest3.x, crest3.y);
     await page.keyboard.press("ArrowUp");
+    await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
+    expect(await undoDepth()).toBe(lockBase + 3); // one press = one entry
     await page.keyboard.press("ArrowUp");
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
-    await pop.locator(".solve").click();
+    await solveBtn.click();
     await expect.poll(optimizing, { timeout: 30_000 }).toBe(false); // Solve confirms AND closes
-    await expect(pop).toHaveCount(0);
-    const notice = page.locator(".notice");
-    await expect(notice).toBeVisible();
-    await expect(notice).toContainText("Restored the exit");
-    await expect(notice.locator(".ledger")).toBeVisible(); // the per-key Δg ledger rode the toast
-    expect(await undoDepth()).toBe(base + 1); // flatten+undo+edits+landing = ONE session entry
+    await expect(panel).toHaveCount(0);
+    await expect.poll(landing).toBe(true); // the paced landing raised…
+    await expect.poll(landing).toBe(false); // …and settles closed (expiry)
+    await expect(page.locator(".notice")).toHaveCount(0); // no stats toast — the animation IS the feedback
+    // continuous history: entry + create + delete + flatten(undone, redo cleared) + 2 nudges +
+    // the landing = 6 entries above the lock-leg re-entry baseline of lockBase.
+    expect(await undoDepth()).toBe(lockBase + 5);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-4-landed.png") });
 
-    // ── 6. One undo restores the PRE-MODE draft byte-identically (the session is atomic from
-    // the outside). ──
+    // ── 6. The undo-walk back out: the first undo re-ENTERS the mode through the landing entry
+    // (the edited-but-unsolved draft, locks restored); walking on exits at the entry mark with
+    // the pre-mode draft byte-identical. ──
     await page.keyboard.press("Control+z");
-    await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
-    expect(sorted(await forces())).toEqual(preMode);
-    expect(await undoDepth()).toBe(base);
+    await expect.poll(optimizing).toBe(true); // undo re-enters the mode
+    await page.keyboard.press("Control+z"); // nudge 2
+    await page.keyboard.press("Control+z"); // nudge 1
+    await page.keyboard.press("Control+z"); // the deleted key returns
+    await page.keyboard.press("Control+z"); // the created key leaves
+    await expect.poll(optimizing).toBe(true); // still inside the mode
+    await page.keyboard.press("Control+z"); // the entry — exits the mode
+    await expect.poll(optimizing).toBe(false);
+    await expect
+        .poll(async () => JSON.stringify(sorted(await forces())))
+        .toBe(JSON.stringify(preMode));
+    expect(await undoDepth()).toBe(lockBase - 1); // back below the re-entry mark
 });
