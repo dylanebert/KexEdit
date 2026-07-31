@@ -1,4 +1,4 @@
-/** The masked-collocation solve behind optimize mode (`kex2d-optimize-mode` stage 1) — the
+/** The masked exit-restore solve behind optimize mode (`kex2d-optimize-mode` stage 1) — the
  *  invoked tool that restores a force section's stamped exit `(x, y, θ)` after the author
  *  retunes its keyframes, moving only the UN-LOCKED keys' g-ordinates.
  *

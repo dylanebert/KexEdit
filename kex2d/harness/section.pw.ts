@@ -931,7 +931,7 @@ test("optimize mode flow", async ({ page, boot }) => {
 
     // ── 4. A REFUSED solve through the real gate: flatten the crest to 1 g via the popover
     // (the draft goes exactly straight — the conditioning certificate), Solve → the refusal
-    // stays in-mode with the draft untouched and its reason on the panel. ──
+    // stays in-mode with the draft untouched, its readout on the shared notice. ──
     await page.keyboard.press("Escape"); // clear the selection — a member click would PROMOTE
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
     const crest2 = await hit(2);

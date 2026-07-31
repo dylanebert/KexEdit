@@ -156,8 +156,9 @@ interface EditorState {
     /** the optimize-mode session in flight on a force section, or null — the mode-scoped stamp +
      *  entry-frame ghost (`kex2d-optimize-mode` stage 1: `optimize.ts`'s masked solve). Entering
      *  the mode stamps the section's CURRENT exit as the pin and freezes a ghost of the CURRENT
-     *  shape; both live and die with this field — there is no persistent pin. Solving never clears
-     *  it (a solve is invoked repeatedly in-mode); only `endOptimize` (the Exit row) does. */
+     *  shape; both live and die with this field — there is no persistent pin. A refused solve
+     *  never clears it (refusal stays in-mode); only `endOptimize` does — Exit/Esc, or the
+     *  landed Solve that closes the mode. */
     optimizing: OptimizeSession | null;
     /** locked force-keyframe ids for the live optimize session — mode-scoped: locks persist
      *  across solves while the mode is open and are discarded on `endOptimize` (exit or the
@@ -472,7 +473,7 @@ const metres = (v: number): string => `${v.toFixed(2)} m`;
 const missed = (achieved: string, budget: string): string => `${achieved} off (${budget} allowed)`;
 
 /** the readout for a convert that RESOLVED. A convert that held its budget says so and stops —
- *  the count is what the author now edits, the rest is noise. `"budget"` landed too (the
+ *  anything past the confirmation is noise. `"budget"` landed too (the
  *  sanctioned narrow-feature outcome), but it missed, so it reports the miss. `"diverged"`
  *  resolved as well and landed NOTHING (the refinement hit an unreadable probe), so it reads as
  *  a failure. */

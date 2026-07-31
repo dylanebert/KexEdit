@@ -470,9 +470,9 @@ export function sectionsDeletable(selected: number, total: number): boolean {
  *  not just on the session's own section: convert/delete/join aren't available inside the mode
  *  (the locked decision's consent-boundary law). Deleting the session's own section would strand
  *  `editor.optimizing` on a dead id; a convert or a domain switch would land a track rewrite
- *  INSIDE the session bracket — an upstream convert silently rebases what the stamp means, and a
- *  domain switch is a lossy whole-track rewrite, so a later Solve would squash either into the
- *  Optimize's single undo entry. Extracted as its own predicate (mirrors `sectionsDeletable`/
+ *  INSIDE the open session — an upstream convert silently rebases what the stamp means, and a
+ *  domain switch is a lossy whole-track rewrite of the very store the session is solving.
+ *  Extracted as its own predicate (mirrors `sectionsDeletable`/
  *  `sectionSolvable` above) since the window keydown handlers and `pickDomain` have no DOM-free
  *  unit-test seam otherwise; every caller pairs the grayed affordance with this same guard at
  *  the action layer. */

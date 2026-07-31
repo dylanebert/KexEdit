@@ -121,8 +121,6 @@ export function createHistory(): History {
 /** the app's single history. tests build their own via `createHistory`. */
 export const history = createHistory();
 
-/** push an already-applied command (the do-path mutated live data first), with the pre-command
- *  selection snapshot (`undefined` for a gesture, which leaves the selection alone). */
 // ── the sandbox redirect (kex2d-optimize-mode stage 7) ────────────────────────────
 // while an optimize mode is open, EVERY recording lands in the mode's sandbox history instead of
 // the outer stack — structural containment (belt-and-suspenders with the editing lockdown: an
@@ -149,6 +147,8 @@ export function resumedLanding(): boolean {
     return resumed;
 }
 
+/** push an already-applied command (the do-path mutated live data first), with the pre-command
+ *  selection snapshot (`undefined` for a gesture, which leaves the selection alone). */
 export function record(h: History, cmd: Command, pre?: unknown): void {
     const t = redirect ?? h;
     if (t === redirect) resumed = false; // a new in-mode edit forks off the re-land offer
@@ -761,7 +761,7 @@ export function solveGeo(
  *  The whole-section snapshot pair still brackets it, and there is no provenance stamp: this
  *  isn't a kind conversion, so there is nothing for a reverse convert to consult.
  *
- *  **The landing IS the mode close** (continuous history, the stage-5 rewrite): Solve confirms
+ *  **The landing IS the mode close** (the sandbox contract, stage 7): Solve confirms
  *  and closes the mode, so the entry carries the mode transition alongside the write — redo
  *  re-closes (`mode.exit`), undo re-ENTERS the mode with its state restored (`mode.enter`). The
  *  closures are injected (this module never imports editor — the SelectionHook precedent), and

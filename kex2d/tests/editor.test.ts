@@ -315,9 +315,9 @@ test("a notice is raised and dismissed on its own, without touching the gate", (
 
 const answer = { outcome: "floor", keys: 12, deviation: 0.567, floor: 0.571 };
 
-test("a converged convert reads as a short confirmation — the count, nothing else", () => {
-    // it held its budget, so the numbers say only "it worked"; the key count is what the author
-    // now edits. Anything past that is noise the readout doesn't earn.
+test("a converged convert reads as a short confirmation, nothing else", () => {
+    // it held its budget, so the readout says only "it worked" — the key count was dropped as
+    // noise (stage 7: the curve is on screen). Anything past that is noise the readout doesn't earn.
     expect(solveDone(answer)).toEqual({ kind: "done", text: "Converted to force" });
 });
 
@@ -386,7 +386,7 @@ const fitAnswer = {
     forceBudget: 0.5,
 };
 
-test("a converged fit reads as a short confirmation — the node count, nothing else", () => {
+test("a converged fit reads as a short confirmation, nothing else", () => {
     expect(fitDone(fitAnswer)).toEqual({ kind: "done", text: "Converted to geo" });
 });
 

@@ -302,7 +302,7 @@ async function solveShape(section: number): Promise<void> {
 // outer stacks), Exit/Esc discards it without trace, and a landed Solve is ONE outer entry
 // carrying the experiment (undoing it reopens the mode with the sandbox restored). In-mode
 // undo/redo route to the sandbox (`undoRouted`/`redoRouted`, wired in Timeline). A refusal is
-// neither: it stays in the mode, draft untouched, its readout on the docked panel. The solve
+// neither: it stays in the mode, draft untouched, its readout on the shared notice. The solve
 // keeps its OWN blocking gate (`editor.optimizeSolving`), separate from the kind-conversion
 // `editor.converting`: the two invoked tools never overlap in scope, but sharing one boolean
 // would couple two independent modal surfaces.
@@ -919,7 +919,7 @@ const canDelete = $derived.by((): boolean => {
 // those, so this enablement is the gate, not a hint — and it grays rather than hides (the
 // bulk-row law), so the row is discoverable on a force section and on a multi-set alike.
 // `sectionOpsAllowed` is the consent boundary: NO section converts while an optimize session is
-// open (a convert would land a track rewrite inside the session bracket).
+// open (a convert would land a track rewrite inside the open session).
 const canSolve = $derived.by((): boolean => {
     void tick;
     return (
@@ -1361,8 +1361,8 @@ $effect(() => {
          (the docked idiom — no view occlusion, no layout shift on enter/exit: it floats
          absolutely, moving nothing else). its standing presence IS the "you are in the mode"
          signal, and it dismisses only with the mode — Solve (the confirmation, which also
-         closes the mode) and Exit (the rewind to the entry mark) live here, with the refusal
-         reason when one stands (or the starved reason, subtly, only while Solve is disabled).
+         closes the mode) and Exit (the sandbox discard) live here, with the starved reason,
+         subtly, only while Solve is disabled (a refusal rides the shared transient notice).
          no headroom count, no post-solve stats: the paced landing is the feedback. -->
     {#if optOpen}
         <!-- no title (stage-6 feel: the striped clip + dim already name the mode; the panel is

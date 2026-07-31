@@ -426,7 +426,7 @@ $effect(() => {
 function pickDomain(target: Domain): void {
     if (editor.dragging) return; // a live gesture holds the document axis still (editor-ui.md)
     // the consent boundary (kex2d-optimize-mode): a domain switch is a lossy track-wide rewrite,
-    // so it can't land inside an open optimize session's bracket — the rows gray on the same
+    // so it can't land inside an open optimize session — the rows gray on the same
     // predicate; this is the action-layer half of the pair (delete's belt-and-suspenders shape).
     if (!sectionOpsAllowed(editor.optimizing)) return;
     convertDomain(history, ecs, target); // rejects (writing nothing) on the active row and with
@@ -651,17 +651,17 @@ const selForceSet = $derived.by((): Set<number> => {
     void tick;
     return editor.forces.ids;
 });
-// locked force-keyframe ids for the live optimize session (kex2d-optimize-mode stage 1) — read
-// through the tick like `selForceSet`, so the diamond's locked ring stays live across a toggle.
 // the live optimize session's own clip (kex2d-optimize-mode stage 4), or null — the timeline's
-// one read of the mode: the focus dim brackets its span, the stamp ring rides its exit
-// boundary, and the driven keyframe styling keys off its section.
+// one read of the mode: the focus dim brackets its span, the striped clip marks it, and the
+// driven keyframe styling keys off its section.
 const optClip = $derived.by((): Clip | null => {
     void tick;
     const s = editor.optimizing;
     if (s === null) return null;
     return clips.find((c) => c.id === s.section) ?? null;
 });
+// locked force-keyframe ids for the live optimize session (kex2d-optimize-mode stage 1) — read
+// through the tick like `selForceSet`, so a diamond's driven styling stays live across a toggle.
 const lockedSet = $derived.by((): Set<number> => {
     void tick;
     return editor.locked;

@@ -1,4 +1,4 @@
-/** Optimize mode as an editor command — the seam between `optimize.ts`'s masked-collocation
+/** Optimize mode as an editor command — the seam between `optimize.ts`'s masked exit-restore
  *  kernel and the document, mirroring `geoforce.ts`/`forcegeo.ts`'s shape for the two kind
  *  conversions: this module hands the kernel the document's own live state and lands its answer
  *  back as one undo entry. Nothing here decides anything about the solve.
@@ -193,7 +193,7 @@ export class StaleOptimize extends Error {
 
 const solving = new Set<number>();
 
-/** Run the masked-collocation solve on a section's CURRENT draft and land it, off the main
+/** Run the masked exit-restore solve on a section's CURRENT draft and land it, off the main
  * thread. Only free (un-locked, by keyframe id) keys' `g` moves; `s`, length, structure, easing,
  * explicit handles, and every locked key's `g` land byte-identical to what was already there —
  * the kernel's own mask (`optimize.ts`), asserted structurally in `tests/optimize.test.ts`.

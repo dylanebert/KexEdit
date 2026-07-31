@@ -17,6 +17,7 @@ import {
     solveOptimize,
 } from "../src/optimize";
 import optimizeGolden from "./fixtures/optimize-golden.json";
+import { liveOptimizeWorkers } from "../src/optimize-async";
 import {
     enterOptimize,
     enterOptimizeMode,
@@ -44,7 +45,7 @@ import {
     SectionKind,
 } from "../src/track";
 
-// the invariant floor for optimize mode's masked-collocation solve (`kex2d-optimize-mode` stage
+// the invariant floor for optimize mode's masked exit-restore solve (`kex2d-optimize-mode` stage
 // 1, `optimize.ts`): zero-drift identity, the masking invariants (as a property test over
 // randomized lock subsets and a small scenario corpus), and byte-identical refusal/cancel — all
 // red-first (see each test's own note on how it was seen failing before the fix).
@@ -610,6 +611,7 @@ describe("runOptimizeSection — the document seam", () => {
         const h = createHistory();
         const result = await runOptimizeSection(h, state, session, locked);
         expect(result.outcome).toBe("solved");
+        expect(liveOptimizeWorkers()).toBe(0); // the one-shot worker settled with its answer
         state.step(0);
 
         // the locked endpoints' g are exactly what they were before the solve landed.
@@ -631,7 +633,7 @@ describe("runOptimizeSection — the document seam", () => {
     });
 
     test("Solve on an already-restored draft writes nothing, but still lands the mode close", async () => {
-        // stage-5 rewrite of the old "no undo entry" idempotence pin: under continuous history a
+        // stage-5 rewrite of the old "no undo entry" idempotence pin: under the sandbox contract a
         // landed Solve IS the mode close, so even a zero-drift solve records exactly one entry —
         // the transition — while the document stays byte-identical (the `deltaG !== 0` filter
         // still keeps every write out). idempotence holds trivially: the mode closed, so there
@@ -675,6 +677,7 @@ describe("runOptimizeSection — the document seam", () => {
         state.step(0);
         expect(docState(state, eid)).toEqual(before);
         expect(h.undo).toHaveLength(0);
+        expect(liveOptimizeWorkers()).toBe(0); // cancellation is worker termination — no leak
     });
 
     test("a document change during the solve rejects as StaleOptimize and writes nothing", async () => {
