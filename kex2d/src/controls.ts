@@ -1052,18 +1052,24 @@ export function attachControls(
             dragManipTo(ecs, canvas, e);
             return;
         }
-        // no gesture under way: track the section span under the pointer — the ephemeral hover the
-        // render overlay draws one kind-color rung up (`hovered`, colors.ts). `editor.dragging`
-        // catches a gesture owned by ANOTHER surface sweeping over the canvas (a timeline drag);
-        // the viewport's own gestures returned above, and each cleared the flag via `beginDrag`.
+        // no gesture under way: track what's under the pointer, in PICK order (a node picks
+        // before its section — hover must match what a click would take), so exactly one of the
+        // two hover reads is lit: the node the render brightens one rung, else the section span
+        // drawn one kind-color rung up (`hovered`, colors.ts). `editor.dragging` catches a
+        // gesture owned by ANOTHER surface sweeping over the canvas (a timeline drag); the
+        // viewport's own gestures returned above, and each cleared the flag via `beginDrag`.
         if (editor.dragging) return;
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
-        editor.hoverSection = pickSection(ecs, viewTransform(canvas), cx, cy);
+        const tx = viewTransform(canvas);
+        const node = pickNode(ecs, tx, cx, cy);
+        editor.hoverNode = node;
+        editor.hoverSection = node === null ? pickSection(ecs, tx, cx, cy) : null;
     };
 
     // the pointer leaving the canvas clears the hover (no move fires outside it).
     const onPointerLeave = (): void => {
         editor.hoverSection = null;
+        editor.hoverNode = null;
     };
 
     // wheel = zoom-at-cursor; trackpad pinch arrives as ctrl+wheel (browser convention)
@@ -1385,6 +1391,7 @@ export function attachControls(
         window.removeEventListener("blur", onBlur);
         canvas.style.cursor = ""; // detaching mid-pan must not leave a stuck grabbing cursor
         editor.hoverSection = null; // nor a lit span the remount has no pointer over
+        editor.hoverNode = null;
         clearGuides(); // detaching mid-drag must not leave a stuck guide for the remount
         cancelMarquee(); // detaching mid-marquee must not leave a stuck rect for the remount
         endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on

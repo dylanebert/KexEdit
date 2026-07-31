@@ -15,6 +15,7 @@ import {
     enterForceEdit,
     exitForceEdit,
     landingG,
+    lockLabel,
     openContext,
     skipLanding,
     openForceMenu,
@@ -1404,6 +1405,17 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     const setOk = forceSetEditable();
     const pt = forcePts.find((p) => p.id === id);
     const activeOk = pt !== undefined && sectionEditable(editor.optimizing, pt.section);
+    // the Lock/Unlock row (kex2d stage 6): SHOWN only in optimize mode on the optimizing
+    // section's own keys, HIDDEN everywhere else (`lockLabel`'s omit-vs-gray law) — the mouse
+    // path to the same set-toggle `Q` drives, over the same filtered member set.
+    const sid = editor.optimizing?.section;
+    const lockIds =
+        sid === undefined
+            ? []
+            : forcePts
+                  .filter((p) => editor.forces.ids.has(p.id) && p.section === sid)
+                  .map((p) => p.id);
+    const lock = pt === undefined ? null : lockLabel(editor.optimizing, pt.section, lockIds, editor.locked);
     const items: MenuItem[] = [
         {
             label: "Delete",
@@ -1413,6 +1425,12 @@ const fmenuItems = $derived.by((): MenuItem[] => {
             action: () => deleteForces(history, ecs, [...editor.forces.ids]),
         },
     ];
+    if (lock !== null)
+        items.unshift({
+            label: lock,
+            shortcut: "Q",
+            action: () => toggleLockedSet(lockIds),
+        });
     // shown whenever any easing target could exist (a multi-set, or a single non-terminal keyframe);
     // enabled only when the selection has a non-terminal member — else grayed, never hidden.
     if (multiForce || !fmenuTerminal) {
@@ -2652,17 +2670,19 @@ onMount(() => {
                 for (const w of nudgeForces(members, ds, dg)) setForcePoint(ecs, w.id, w.s, w.g);
                 commit(history);
             } else if (
-                (e.key === "l" || e.key === "L") &&
+                (e.key === "q" || e.key === "Q") &&
                 editor.optimizing !== null &&
                 editor.forces.ids.size > 0
             ) {
-                // the basic lock/free toggle (`kex2d-optimize-mode` stage 1): only meaningful
-                // inside a live optimize session, over the selected force keyframe set — the
-                // existing multiselect grammar is the lock gesture's own selection surface.
-                // restricted to the optimizing section's own keys (a lock on another section's
-                // key would be dead state — the solve never reads it).
+                // `Q` = the lock/free toggle (kex2d stage 6 — reachability is the criterion:
+                // left-hand top row, one hand on the keyboard while the other mouses; the old
+                // `L` was unreachable that way and is removed, not aliased). only meaningful
+                // inside a live optimize session over the selected keyframe set, restricted to
+                // the optimizing section's own keys (a lock on another section's key would be
+                // dead state — the solve never reads it). the mode-only menu row is the mouse
+                // path to the same toggle.
                 e.preventDefault();
-                const sid = editor.optimizing?.section;
+                const sid = editor.optimizing.section;
                 toggleLockedSet(
                     forcePts
                         .filter((fp) => editor.forces.ids.has(fp.id) && fp.section === sid)

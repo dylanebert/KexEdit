@@ -422,15 +422,11 @@ test("invoked solve flow", async ({ page, boot }) => {
     // modal that never rendered, or one whose counts never moved, both come back empty.
     await page.evaluate(() => {
         const w = window as any;
-        w.__solve = { frames: 0, stats: [] as string[] };
+        w.__solve = { frames: 0 };
         const step = (): void => {
-            const el = document.querySelector(".convert .stat");
-            if (el) {
-                const text = (el.textContent ?? "").trim();
-                w.__solve.frames++;
-                if (text !== w.__solve.stats[w.__solve.stats.length - 1])
-                    w.__solve.stats.push(text);
-            }
+            // the in-flight status is the SPINNER now (stage 6 — the phase/keys/probes prose
+            // was noise): the sampler counts the frames the affordance was actually on screen.
+            if (document.querySelector(".convert .spin")) w.__solve.frames++;
             requestAnimationFrame(step);
         };
         requestAnimationFrame(step);
@@ -442,14 +438,8 @@ test("invoked solve flow", async ({ page, boot }) => {
     // four parallel workers), so this wait is the flow's own budget, not the default 5s.
     await expect.poll(async () => (await kinds()).join(","), { timeout: 120_000 }).toBe("1,1");
 
-    const log = await page.evaluate(
-        (): { frames: number; stats: string[] } => (window as any).__solve,
-    );
-    expect(log.frames, "the progress surface was never on screen").toBeGreaterThan(0);
-    expect(log.stats.length, `progress never moved: ${JSON.stringify(log.stats)}`).toBeGreaterThan(
-        1,
-    );
-    expect(log.stats[log.stats.length - 1]).toMatch(/probes$/);
+    const log = await page.evaluate((): { frames: number } => (window as any).__solve);
+    expect(log.frames, "the progress spinner was never on screen").toBeGreaterThan(0);
     await expect(scrim).toHaveCount(0); // the gate closed with the answer
 
     // ── 7. What landed: the section is force, carrying the solve's keyframes, its realized
@@ -762,6 +752,20 @@ test("optimize mode flow", async ({ page, boot }) => {
     const preMode = sorted(await forces()); // the pre-mode draft every rewind assert reads
     const base = await undoDepth();
 
+    // ── 0b. The keyframe menu carries NO Lock row outside the mode (hidden, not grayed —
+    // lock is mode-scoped state and doesn't exist in normal editing). ──
+    const preHit = await page.locator(".fhit").nth(2).boundingBox();
+    if (!preHit) throw new Error("diamond 2 not laid out");
+    await page.mouse.click(preHit.x + preHit.width / 2, preHit.y + preHit.height / 2, {
+        button: "right",
+    });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await expect(page.locator(".fmenu").getByRole("menuitem", { name: "Lock" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    await page.keyboard.press("Escape"); // clear the selection the right-click made
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
+
     // ── 1. Enter through the section menu's Optimize row (terse verb — menus law): the docked
     // panel above the player is the mode signal, and the section's clip wears the stripes. entry
     // itself is an undoable action, so the depth grows by one. ──
@@ -852,7 +856,7 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.mouse.click(p3.x, p3.y);
     await page.keyboard.up("Shift");
     await expect.poll(async () => (await forceSelIds()).length).toBe(3);
-    await page.keyboard.press("l"); // the lock gesture over the multiselect grammar
+    await page.keyboard.press("q"); // the lock gesture (Q — one hand mouses, the other locks)
     await expect.poll(lockedCount).toBe(3);
     await expect(solveBtn).toBeDisabled(); // starved below MIN_FREE — pure counting
     await expect(reason).toHaveText("Needs 3 free keys"); // the reason, subtle, only while disabled
@@ -882,9 +886,25 @@ test("optimize mode flow", async ({ page, boot }) => {
     const q3 = await hit(3);
     await page.mouse.click(q3.x, q3.y);
     await page.keyboard.up("Shift");
-    await page.keyboard.press("l");
+    await page.keyboard.press("q");
     await expect.poll(lockedCount).toBe(0);
     await expect(solveBtn).toBeEnabled();
+
+    // the menu path to the same toggle (mode-only row, the mouse twin of Q): the row
+    // reads the selection's state — Lock on a free key, Unlock once it's locked. clear the
+    // 3-member set first so the right-click replace-selects one subject (a member click would
+    // PROMOTE and the row would act on all three).
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
+    const m1 = await hit(1);
+    await page.mouse.click(m1.x, m1.y, { button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await clickMenuItem(page, ".fmenu", "Lock");
+    await expect.poll(lockedCount).toBe(1);
+    await page.mouse.click(m1.x, m1.y, { button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await clickMenuItem(page, ".fmenu", "Unlock");
+    await expect.poll(lockedCount).toBe(0);
 
     // ── 4. A REFUSED solve through the real gate: flatten the crest to 1 g via the popover
     // (the draft goes exactly straight — the rank-deficient conditioning certificate), Solve →

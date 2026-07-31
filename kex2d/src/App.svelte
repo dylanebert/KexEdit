@@ -262,8 +262,9 @@ async function solve(section: number): Promise<void> {
 // the force→geo fit's own invocation — the reverse direction, `forcegeo.convertForce` behind the
 // SAME modal gate (`editor.converting`/`beginConvert`/`endConvert` are direction-neutral). the fit
 // is a single closed-form call with no internal phase (unlike `convertGeo`'s multi-probe search),
-// so there is no `onProgress` to wire — the modal's indeterminate text (`solveText`) is sanctioned
-// for exactly this case (`kex2d-forcegeo` stage 3).
+// so there is no `onProgress` to wire — both directions show the same indeterminate spinner
+// (stage-6 feel: in-flight narration was noise; `convertGeo`'s progress still folds into the
+// `editor.converting` gate as state, it just isn't prose on the modal).
 async function solveShape(section: number): Promise<void> {
     if (editor.converting !== null) return;
     if (!sectionOpsAllowed(editor.optimizing)) return; // consent boundary — the row grays too
@@ -371,6 +372,10 @@ async function optimizeSolve(): Promise<void> {
         endOptimizeSolve();
     }
 }
+
+// the docked panel's clearance above the player (stage-6 feel: further off the timeline than
+// the player's own PLAYER_GAP, so the mode surface reads as its own layer, not player chrome).
+const PANEL_GAP = 36;
 
 // the paced landing's expiry + skip: one timer clears it on schedule; Esc or any pointerdown
 // skips ahead (the pointer event still lands wherever it was going — skipping is not a modal).
@@ -1076,17 +1081,6 @@ const optimizeBusy = $derived.by((): boolean => {
     void tick;
     return editor.optimizeSolving;
 });
-const solveText = $derived.by((): string => {
-    void tick;
-    const c = editor.converting;
-    if (c === null) return "";
-    // the force→geo fit has no phase/probe count to report (`geofit-async.ts`'s note — a fit is
-    // one closed-form call, not a search) — an indeterminate wait, sanctioned by the spec.
-    if (solveKind === "shape") return "Fitting…";
-    // no total — the refinement discovers how many probes it needs, so a denominator would be
-    // invented (convert.ts). the counts climbing IS the liveness signal.
-    return `${c.phase} · ${c.keys} keys · ${c.probes} probes`;
-});
 // the transient readout, the same way: its text, and whether it's the failure register.
 const noticeText = $derived.by((): string => {
     void tick;
@@ -1372,13 +1366,15 @@ $effect(() => {
          reason when one stands (or the starved reason, subtly, only while Solve is disabled).
          no headroom count, no post-solve stats: the paced landing is the feedback. -->
     {#if optOpen}
+        <!-- no title (stage-6 feel: the striped clip + dim already name the mode; the panel is
+             the two actions), raised well clear of the player (PANEL_GAP). aria-label keeps the
+             dialog named for assistive tech without visible chrome. -->
         <div
             class="optpanel"
-            style="bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP + PLAYER_H + 12}px;"
+            style="bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP + PLAYER_H + PANEL_GAP}px;"
             role="dialog"
             aria-label="Optimize"
         >
-            <span class="title">Optimize</span>
             <button
                 type="button"
                 class="solve"
@@ -1402,14 +1398,13 @@ $effect(() => {
 
 <!-- the conversion modal, OUTSIDE the inert wrapper: up for the whole solve, and the only live
      control while it is. the scrim takes every pointer (it covers the canvas AND the dock) and
-     swallows the native context menu; keys and focus are handled in the script / by `inert`. the
-     counts climb per probe — no bar, because the refinement has no total to divide by. -->
+     swallows the native context menu; keys and focus are handled in the script / by `inert`.
+     in-flight status is the SPINNER, not prose (stage-6 feel: the phase/keys/probes narration
+     was noise — a solve in flight has nothing useful to say beyond "running", and the outcomes
+     that matter land as the toast after). -->
 {#if solving}
     {@const modalTitle = solveKind === "shape" ? "Converting to geo" : "Converting to force"}
     <div class="scrim" role="presentation" oncontextmenu={(e) => e.preventDefault()}>
-        <!-- `aria-live="off"`: a probe lands several times a second and hundreds of times at
-             stress scale, so announcing each one would be a stream, not information. The dialog's
-             own label carries the state. -->
         <div
             class="convert"
             role="dialog"
@@ -1419,7 +1414,7 @@ $effect(() => {
             bind:this={dialogEl}
         >
             <div class="title">{modalTitle}</div>
-            <div class="stat" aria-live="off">{solveText}</div>
+            <div class="spin" aria-hidden="true"></div>
             <button type="button" class="cancel" title="Cancel (Esc)" onclick={cancelSolve}>
                 Cancel
             </button>
@@ -1427,13 +1422,13 @@ $effect(() => {
     </div>
 {/if}
 
-<!-- the optimize solve's own minimal modal — an indeterminate wait (the kernel has no phase to
-     report, `geofit-async.ts`'s precedent) + Cancel, the mode's OWN blocking gate. -->
+<!-- the optimize solve's own minimal modal — the same title + spinner + Cancel, the mode's OWN
+     blocking gate (it flashes only when a solve outlives a frame; the kernel reports no phase). -->
 {#if optimizeBusy}
     <div class="scrim" role="presentation" oncontextmenu={(e) => e.preventDefault()}>
         <div class="convert" role="dialog" aria-modal="true" aria-label="Solving" tabindex="-1">
             <div class="title">Solving</div>
-            <div class="stat" aria-live="off">Restoring the exit…</div>
+            <div class="spin" aria-hidden="true"></div>
             <button type="button" class="cancel" title="Cancel (Esc)" onclick={cancelOptimizeSolve}>
                 Cancel
             </button>
@@ -1595,10 +1590,6 @@ $effect(() => {
         user-select: none;
         animation: vtip-in 120ms ease;
     }
-    .optpanel .title {
-        color: var(--fg);
-        font-size: 12px;
-    }
     .optpanel button {
         all: unset;
         box-sizing: border-box;
@@ -1669,13 +1660,20 @@ $effect(() => {
         font-size: 12px;
         color: var(--fg);
     }
-    /* the live counts: monospace + tabular figures so a climbing probe count doesn't jitter the
-       row's width. */
-    .convert .stat {
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 11px;
-        font-variant-numeric: tabular-nums;
-        color: var(--muted);
+    /* the in-flight spinner: a thin accent arc over a faint track ring, the minimal modern
+       progress affordance (indeterminate — the refinement has no total to divide by). */
+    .convert .spin {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        border: 2px solid var(--accent-soft);
+        border-top-color: var(--accent);
+        animation: spin 800ms linear infinite;
+    }
+    @keyframes spin {
+        to {
+            transform: rotate(360deg);
+        }
     }
     .convert .cancel {
         all: unset;

@@ -133,6 +133,12 @@ interface EditorState {
      *  `pickSection`, cleared on pointer leave and for the whole of any gesture (`beginDrag`).
      *  viewport-local by design: hovering a clip does not light the span, and vice versa. */
     hoverSection: number | null;
+    /** the eid of the pickable geo node under the pointer, or null — the node-level hover read
+     *  (kex2d-optimize-mode stage 6: hover must match what's clickable, and a node picks before
+     *  its section). written per pointermove by the controls' `pickNode`, mutually exclusive
+     *  with `hoverSection` (the pointer is over exactly one pick target), cleared on pointer
+     *  leave and for the whole of any gesture (`beginDrag`) like its section twin. */
+    hoverNode: number | null;
     /** which surface the pointer is over — routes the surface-scoped keys (`F` frames it,
      *  arrows act on it), ending the viewport-nudge vs timeline-playhead double-fire.
      *  defaults to the viewport, so keys route there before the pointer visits the dock;
@@ -278,6 +284,7 @@ export const editor: EditorState = {
     snap: true,
     dragging: false,
     hoverSection: null,
+    hoverNode: null,
     hover: "viewport",
     converting: null,
     notice: null,
@@ -317,6 +324,28 @@ export function toggleLocked(id: number): void {
     if (editor.optimizing === null) return;
     if (editor.locked.has(id)) editor.locked.delete(id);
     else editor.locked.add(id);
+}
+
+/** the keyframe context menu's Lock/Unlock row, or null when the row does not EXIST (kex2d
+ *  stage 6): lock is mode-scoped state — outside an optimize session (or on a section other than
+ *  the optimizing one) there is nothing to lock, so the row is OMITTED, not grayed (menus law:
+ *  gray a blocked action, omit one the subject rules out — contrast the in-mode Convert rows,
+ *  which gray because convert exists and is temporarily barred). the label mirrors the `Q`
+ *  hotkey's toggle semantics (`toggleLockedSet`): an all-locked selection offers Unlock,
+ *  anything else Lock.
+ *
+ * @example
+ * const label = lockLabel(editor.optimizing, pt.section, memberIds, editor.locked);
+ * if (label) items.unshift({ label, action: () => toggleLockedSet(memberIds) });
+ */
+export function lockLabel(
+    optimizing: OptimizeSession | null,
+    section: number,
+    ids: readonly number[],
+    locked: ReadonlySet<number>,
+): "Lock" | "Unlock" | null {
+    if (optimizing === null || optimizing.section !== section || ids.length === 0) return null;
+    return ids.every((id) => locked.has(id)) ? "Unlock" : "Lock";
 }
 
 /** toggle a SET of force keyframes' lock as one gesture (the multiselect bulk form, mirroring the
@@ -541,6 +570,7 @@ export function beginDrag(el: Element, pointerId: number): void {
     // the canvas hover has no `:hover` for the CSS rule below to kill, so the same suppression is
     // an explicit clear here: nothing lights up under a live gesture, whichever surface owns it.
     editor.hoverSection = null;
+    editor.hoverNode = null;
     try {
         el.setPointerCapture(pointerId);
     } catch {

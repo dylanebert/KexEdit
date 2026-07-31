@@ -4,7 +4,16 @@ import { COLOR_ACCENT, COLOR_GUIDE_RAY, hovered, kindSegments, selected } from "
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { editHandleSets } from "./tangents";
-import { bakeOut, Handle, handleTangent, samples, sectionInfo, sections, Track } from "./track";
+import {
+    bakeOut,
+    Handle,
+    handleAt,
+    handleTangent,
+    samples,
+    sectionInfo,
+    sections,
+    Track,
+} from "./track";
 import { Canvas2D, marquee, resize, snapGuides, viewTransform } from "./view";
 
 const HANDLE_R = 6;
@@ -289,8 +298,18 @@ const AnchorDrawSystem: System = {
                     ctx.stroke();
                     ctx.restore();
                 }
+                // hover, one rung up on the anchor's own color (kex2d stage 6: an order-0 anchor
+                // is pickable, so it hovers like any clickable node); selection stays the
+                // stronger read (the START's lit stroke wins).
+                const hov =
+                    editor.hoverNode !== null && editor.hoverNode === handleAt(ecs, sec.id, 0);
                 ctx.fillStyle = "#0e0d0c";
-                ctx.strokeStyle = sec.order === 0 && editor.start ? "#f0ece8" : COLOR_ANCHOR;
+                ctx.strokeStyle =
+                    sec.order === 0 && editor.start
+                        ? "#f0ece8"
+                        : hov
+                          ? hovered(COLOR_ANCHOR)
+                          : COLOR_ANCHOR;
                 ctx.lineWidth = 1.5;
                 ctx.beginPath();
                 // a diamond: entry anchors read as boundaries, not draggable nodes.
@@ -347,6 +366,10 @@ const HandleDrawSystem: System = {
             const active = eid === sel;
             const member = members.has(eid); // a selected member (active or not)
             const bad = badHandles.has(eid);
+            // hover, one rung up on the node's own color (kex2d stage 6: hover matches what's
+            // clickable). invisible on a selected member (selection is the stronger read of the
+            // same node) and never over the infeasible register — the standard hover priority.
+            const hov = editor.hoverNode === eid && !member && !bad;
 
             if (member) {
                 // every selected member wears the soft accent ring; the active one is set apart by
@@ -369,14 +392,16 @@ const HandleDrawSystem: System = {
                 ctx.restore();
             }
 
-            ctx.fillStyle = bad ? "#5a2c25" : "#ffd166";
+            ctx.fillStyle = bad ? "#5a2c25" : hov ? hovered("#ffd166") : "#ffd166";
             ctx.strokeStyle = bad
                 ? COLOR_INFEASIBLE
                 : active
                   ? "#f0ece8" // the active member — the brightest stroke (its ring anchors here)
                   : member
                     ? "#d8cbb0" // a non-active selected member — brighter than rest, dimmer than active
-                    : "#8a6a2a";
+                    : hov
+                      ? "#d8cbb0" // hovered — the fill + stroke lift one rung below selection
+                      : "#8a6a2a";
             ctx.lineWidth = member ? 2 : 1.5;
             ctx.beginPath();
             ctx.arc(cx, cy, HANDLE_R, 0, Math.PI * 2);

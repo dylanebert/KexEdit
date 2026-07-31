@@ -11,6 +11,7 @@ import {
     fitDone,
     landingG,
     LANDING_MS,
+    lockLabel,
     notify,
     openContext,
     optimizeRefused,
@@ -450,6 +451,33 @@ test("landingG: interpolates a covered key from `from` toward `to`, ease-out, an
 test("landingG: an uncovered key reads null (only moved keys animate)", () => {
     const landing = { start: 0, moves: [{ id: 7, from: 1, to: 2 }] };
     expect(landingG(landing, 8, 100)).toBeNull();
+});
+
+// ── the keyframe menu's Lock/Unlock row (`lockLabel`, kex2d stage 6) ──
+// mode-scoped existence: the row is OMITTED (null) outside optimize mode and on any section other
+// than the optimizing one (lock doesn't exist there — omit, not gray); inside, the label mirrors
+// the `Q` toggle's semantics (all locked → Unlock, else Lock).
+
+test("lockLabel: hidden outside the mode, on other sections, and on an empty set", () => {
+    const session = {
+        section: 7,
+        stamp: { x: 0, y: 0, theta: 0 },
+        ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+    };
+    expect(lockLabel(null, 7, [1, 2], new Set())).toBeNull(); // no mode → no row
+    expect(lockLabel(session, 3, [1, 2], new Set())).toBeNull(); // another section → no row
+    expect(lockLabel(session, 7, [], new Set())).toBeNull(); // nothing selected → no row
+});
+
+test("lockLabel: toggle semantics — all-locked offers Unlock, anything else Lock", () => {
+    const session = {
+        section: 7,
+        stamp: { x: 0, y: 0, theta: 0 },
+        ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+    };
+    expect(lockLabel(session, 7, [1, 2], new Set())).toBe("Lock"); // none locked
+    expect(lockLabel(session, 7, [1, 2], new Set([1]))).toBe("Lock"); // mixed → lock the rest
+    expect(lockLabel(session, 7, [1, 2], new Set([1, 2]))).toBe("Unlock"); // all locked
 });
 
 test("optimizeRefused: one plain sentence per refusal class", () => {

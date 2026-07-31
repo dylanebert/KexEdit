@@ -245,9 +245,9 @@ tail after the last clip appends (geo/force flyout). **Right-click a clip or spa
 the context menu: ONE conversion row, label and action fitted to the kind —
 **Convert to force** (`geoforce.ts`) on geo, **Convert to geo** (`forcegeo.ts`) on force; the
 other direction is absent, not dead. It grays (never hides) where the kind fits but the invoke
-can't run (no live bake, a multi-set), behind one **modal** (live `{phase, keys, probes}`
-geo→force, an indeterminate wait for the phase-less fit; Cancel or Esc, every other input
-blocked, then a transient outcome readout), and Delete (`Del`). Split and join left the
+can't run (no live bake, a multi-set), behind one **modal** (title + an indeterminate spinner —
+in-flight narration was feel-cut; Cancel or Esc, every other input blocked, then a transient
+outcome readout), and Delete (`Del`). Split and join left the
 editor — reserved for invoked tools (the substrate `splitGeo`/`splitForce`/`joinNext` + tests stay
 in-tree as their reference). Boundary anchors draw as viewport diamonds + chart guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo via a
 byte-identical whole-track snapshot pair.

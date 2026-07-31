@@ -320,8 +320,11 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   the viewport's own hover read — written per pointermove by `controls.pickSection`, drawn one
   kind-color rung up by the track overlay, cleared on pointer leave and for the whole of any gesture
   (`beginDrag`, the one suppression point); viewport-local, never synced with the clip strip's CSS
-  hover. The invoked-solve gate lives here too: `converting` (`{phase, keys, probes}` or
-  null — while it's set the modal is up and every other input is blocked) with
+  hover. `hoverNode` is its node-level twin (a node picks before its section, so exactly one of
+  the two is lit — hover matches what a click would take; the node draw lifts it one rung).
+  The invoked-solve gate lives here too: `converting` (`{phase, keys, probes}` or
+  null — while it's set the modal is up and every other input is blocked; the fields are gate
+  state, not display — the modal shows a spinner, not the counts) with
   `beginConvert`/`convertProgress`/`endConvert`, and `notice` (the transient outcome text) with
   `notify`/`dismissNotice`. It carries no `section` id: the surface that opened the modal owns
   that, and a copy here would be a second truth. `convertProgress` DROPS a report that lands after the gate closed — a
