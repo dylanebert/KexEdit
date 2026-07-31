@@ -239,6 +239,11 @@ if (import.meta.env.DEV) {
         // whether a force keyframe is in handle-edit sub-mode — the flow asserts a
         // double-click summoned the handles.
         forceEditing: (): boolean => editor.forceEdit !== null,
+        // whether an optimize-mode session is open, and how many keys it holds locked — the
+        // optimize flow asserts the transactional exits (mode open/closed) and the lock
+        // gesture's effect; the popup's badge/buttons are driven and read pointer-true by DOM.
+        optimizing: (): boolean => editor.optimizing !== null,
+        lockedCount: (): number => editor.locked.size,
         // which handle is selected within handle-edit ("in"/"out"/null) — the flow asserts a
         // click on a knob selects it (swapping the readout to the handle).
         forceHandleSel: (): string | null => editor.forceHandle,

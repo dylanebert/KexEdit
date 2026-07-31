@@ -152,10 +152,11 @@ interface EditorState {
      *  shape; both live and die with this field — there is no persistent pin. Solving never clears
      *  it (a solve is invoked repeatedly in-mode); only `endOptimize` (the Exit row) does. */
     optimizing: OptimizeSession | null;
-    /** locked force-keyframe ids for the live optimize session — mode-scoped (discarded on
-     *  `endOptimize`, per the stage-1 slice; persistence-across-solves is stage 4). All keys are
-     *  free by default (the locked decision's "all-free, locking is the gesture" law); a key not
-     *  in this set is a free DOF the solve may move. Meaningless outside a session, but not reset
+    /** locked force-keyframe ids for the live optimize session — mode-scoped: locks persist
+     *  across solves while the mode is open and are discarded on `endOptimize` (exit or the
+     *  landed Solve that closes the mode). All keys are free by default (the locked decision's
+     *  "all-free, locking is the gesture" law) — an in-mode-added key is free by construction,
+     *  since locking is opt-in membership here. Meaningless outside a session, but not reset
      *  automatically on entry ordering — `beginOptimize` clears it explicitly. */
     locked: Set<number>;
     /** whether an invoked optimize solve is running — the mode's OWN blocking gate, separate from
@@ -202,6 +203,9 @@ export interface Converting {
 export interface Notice {
     kind: "done" | "error";
     text: string;
+    /** optional detail lines under the headline — the optimize landing's per-key Δg ledger.
+     *  display only, like `text`. */
+    rows?: string[];
 }
 
 export const editor: EditorState = {
@@ -259,9 +263,10 @@ export function beginOptimize(session: OptimizeSession): void {
     editor.notice = null;
 }
 
-/** exit optimize mode (the Exit row / Esc): drop the stamp, the ghost, and every lock. a solve
- *  already landed stays landed (undo is the way back, same as any other authored edit) — only the
- *  session's own ephemeral state clears. */
+/** close optimize mode: drop the stamp, the ghost, and every lock. this clears only the mode's
+ *  own ephemeral state — the transactional document semantics (Solve collapses the session to
+ *  one undo entry; Exit/Esc reverts it byte-identically) live in `history`'s session bracket
+ *  (`commitSession`/`cancelSession`), which the invoking surface pairs with this call. */
 export function endOptimize(): void {
     editor.optimizing = null;
     editor.locked.clear();
@@ -330,8 +335,8 @@ export function endConvert(): void {
 }
 
 /** raise the transient readout (the completion outcome, or a failure). */
-export function notify(kind: "done" | "error", text: string): void {
-    editor.notice = { kind, text };
+export function notify(kind: "done" | "error", text: string, rows?: string[]): void {
+    editor.notice = { kind, text, rows };
 }
 
 /** clear the transient readout (its auto-dismiss, or a new solve starting). */
@@ -422,6 +427,53 @@ export function fitDone(r: FitOutcome): Notice {
             missed(gforce(r.forceError), gforce(r.forceBudget)),
         );
     return { kind: "done", text: `${text} · ${misses.join(" · ")}` };
+}
+
+/** what the optimize-mode landing readout needs off a solve's answer — one row per key, in key
+ *  order: its `s` (in the track domain's unit) and the Δg the solve applied. structural, like
+ *  `SolveOutcome` — built by the caller off `OptimizeResult`, this module never imports the
+ *  solver tier. */
+export interface OptimizeMove {
+    s: number;
+    dg: number;
+}
+
+/** how many ledger rows the landing notice prints before folding the rest into a count — a
+ *  toast is a readout, not a table. */
+const LEDGER_ROWS = 6;
+
+/** the readout for an optimize solve that LANDED (Solve confirmed and closed the mode): the
+ *  headline plus the per-key Δg ledger — one row per moved key (unmoved keys have nothing to
+ *  say), capped at {@link LEDGER_ROWS} with the remainder counted. `unit` is the track domain's
+ *  own axis unit ("m" | "s"), so a row addresses the key the way the ruler does. a solve that
+ *  moved nothing (the zero-drift no-op) confirms without a ledger. */
+export function optimizeDone(moves: readonly OptimizeMove[], unit: string): Notice {
+    const moved = moves.filter((m) => m.dg !== 0);
+    if (moved.length === 0) return { kind: "done", text: "Exit already restored · no change" };
+    const max = Math.max(...moved.map((m) => Math.abs(m.dg)));
+    const text = `Restored the exit · ${moved.length} key${moved.length === 1 ? "" : "s"} moved · max Δg ${max.toFixed(2)} g`;
+    const rows = moved
+        .slice(0, LEDGER_ROWS)
+        .map(
+            (m) =>
+                `${m.s.toFixed(1)} ${unit} · ${m.dg >= 0 ? "+" : "−"}${Math.abs(m.dg).toFixed(2)} g`,
+        );
+    if (moved.length > LEDGER_ROWS) rows.push(`+${moved.length - LEDGER_ROWS} more`);
+    return { kind: "done", text, rows };
+}
+
+/** the in-mode readout for a solve that REFUSED (a refusal stays in the mode with the draft
+ *  untouched, so its text lives on the mode popup, not the toast). one plain sentence per
+ *  refusal class — `reason` is the certifying check on an `"unreachable"` answer
+ *  (`optimize.UnreachableReason`, read structurally). */
+export function optimizeRefused(outcome: string, reason?: string): string {
+    if (outcome === "unreachable") {
+        if (reason === "stall") return "The draft stalls before the exit. Nothing changed.";
+        if (reason === "conditioning")
+            return "The free keys can't steer the exit from here. Nothing changed.";
+        return "Fewer than 3 free keys — nothing to solve.";
+    }
+    return "The solve did not converge. Nothing changed.";
 }
 
 /** the readout for a solve that REJECTED, plus the raw detail for the console.

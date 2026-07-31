@@ -135,9 +135,11 @@ export interface Kex {
     guides(): { ray: boolean; angle: string | null; length: string | null };
     infeasibleSpan(): { first: number; count: number; section: number | null; head: number };
     kind(): number;
+    lockedCount(): number;
     nodeAt(order: number): { x: number; y: number } | null;
     nodeCount(): number;
     nodeSelOrders(): number[];
+    optimizing(): boolean;
     parked(): boolean;
     placeForce(s: number, g: number): number;
     poses(): number[][];

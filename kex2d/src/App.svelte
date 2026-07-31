@@ -28,6 +28,8 @@ import {
     exitTangentEdit,
     fitDone,
     notify,
+    optimizeDone,
+    optimizeRefused,
     select,
     selectSection,
     selectStart,
@@ -36,12 +38,16 @@ import {
 } from "./editor";
 import { convertForce } from "./forcegeo";
 import { convertGeo } from "./geoforce";
+import { MIN_FREE } from "./optimize";
 import { enterOptimize, runOptimizeSection } from "./optimizeMode";
-import type { OptimizeResult } from "./optimize";
+import { Domain } from "./section";
 import {
     beginMove,
+    beginSession,
     beginV0,
+    cancelSession,
     commit,
+    commitSession,
     extendTrack,
     history,
     removeSection,
@@ -68,6 +74,7 @@ import {
     samples,
     SectionKind,
     sectionAt,
+    sectionForces,
     sectionHandles,
     sectionInfo,
     sections,
@@ -75,6 +82,7 @@ import {
     setTangent,
     setTrackV0,
     Track,
+    trackDomain,
 } from "./track";
 import {
     attachCanvas2D,
@@ -160,16 +168,39 @@ onMount(() => {
 
 // optimize mode's OWN permanent listener — the `editor.converting` key-swallow precedent
 // extended to "mode open" (`editor.optimizing !== null`), not just mid-solve: Escape is the
-// mode's own dismissal rung (Exit), and Delete/Backspace on a section selection is swallowed
-// here too — defense in depth alongside `controls.ts`'s own guard, since convert/delete/join
-// aren't available inside the mode (the locked decision's consent-boundary law). Gated on the
-// live field, not a tick-derived read (the dismissal standard every menu here wears).
+// mode's dismissal rung, and Delete/Backspace on a section selection is swallowed here too —
+// defense in depth alongside `controls.ts`'s own guard, since convert/delete/join aren't
+// available inside the mode (the locked decision's consent-boundary law). Gated on the live
+// field, not a tick-derived read (the dismissal standard every menu here wears).
+//
+// Escape is the OUTERMOST rung (root ui.md: dismissal peels one layer): the mode exits only
+// when no inner transient is open. This listener registers before the menus' capture handlers,
+// so it can't rely on ordering — it yields by GUARD instead: a focused field, an open menu, an
+// edit sub-mode, or any live selection all pass the key through to its own layer's handler.
 onMount(() => {
     const onKey = (e: KeyboardEvent): void => {
         if (editor.optimizing === null) return;
         if (e.key === "Escape") {
+            const t = e.target as HTMLElement | null;
+            if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
+                return; // the focused field reverts first
+            if (
+                editor.context !== null ||
+                editor.nodeMenu !== null ||
+                editor.forceMenu !== null ||
+                editor.rulerMenu !== null
+            )
+                return; // a summoned menu peels first (its own capture handler)
+            if (editor.tangentEdit !== null || editor.forceEdit !== null) return; // edit sub-modes
+            if (
+                editor.selection !== null ||
+                editor.force !== null ||
+                editor.section !== null ||
+                editor.start
+            )
+                return; // a selection clears first (controls.ts / Timeline)
             e.stopImmediatePropagation();
-            endOptimize();
+            optimizeExit();
             return;
         }
         if ((e.key === "Delete" || e.key === "Backspace") && editor.section !== null) {
@@ -191,8 +222,8 @@ function cancelSolve(): void {
 // a new solve's readout replaces the previous one's remaining time instead of stacking.
 const NOTICE_MS = 6000;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
-function raise(n: { kind: "done" | "error"; text: string }): void {
-    notify(n.kind, n.text);
+function raise(n: { kind: "done" | "error"; text: string; rows?: string[] }): void {
+    notify(n.kind, n.text, n.rows);
     clearTimeout(noticeTimer);
     noticeTimer = setTimeout(dismissNotice, NOTICE_MS);
 }
@@ -264,48 +295,54 @@ async function solveShape(section: number): Promise<void> {
     }
 }
 
-// ── optimize mode (kex2d-optimize-mode stage 1) ───────────────────────────────────
-// entering/exiting the mode is a read (`enterOptimize`/`endOptimize`) — no history entry; only a
-// landed Solve authors anything. The solve gets its OWN blocking gate (`editor.optimizeSolving`),
-// separate from the kind-conversion `editor.converting`: the two invoked tools never overlap in
-// scope, but sharing one boolean would couple two independent modal surfaces.
+// ── optimize mode (kex2d-optimize-mode stage 4: the transactional session) ────────
+// the mode is a supervised experiment on the section, with exactly two exits (the locked
+// decision): a LANDED Solve is the confirmation — it collapses everything the session recorded
+// into ONE undo entry (`commitSession`) and closes the mode — and Exit/Esc reverts to the
+// mode-entry draft byte-identically (`cancelSession`) and discards it. A refusal is neither:
+// it stays in the mode, draft untouched, its readout on the mode popup. Entering is a read
+// (`enterOptimize` stamps, `beginSession` brackets the stack) — no history entry of its own.
+// The solve keeps its OWN blocking gate (`editor.optimizeSolving`), separate from the
+// kind-conversion `editor.converting`: the two invoked tools never overlap in scope, but
+// sharing one boolean would couple two independent modal surfaces.
 let optimizeAbort: AbortController | null = null;
+// the mode popup's outcome line — a refusal (or a worker failure) that kept the mode open.
+// mode-scoped: cleared on entry, on each Solve press, and on exit.
+let optReadout = $state<string | null>(null);
+
+function optimizeEnter(section: number): void {
+    const session = enterOptimize(ecs, section);
+    if (!session) return;
+    beginOptimize(session);
+    beginSession(history);
+    optReadout = null;
+}
 
 function ctxOptimizeEnter(): void {
     if (ctx === null) return;
     const section = ctx.section;
     closeContext();
-    const session = enterOptimize(ecs, section);
-    if (session) beginOptimize(session);
+    optimizeEnter(section);
+}
+
+// Exit/Esc: revert the whole session byte-identically (every in-session entry's own reverse is
+// a snapshot restore) and close the mode. dismissal is safe by default — the one committing
+// gesture is the Solve that restores the stamped exit.
+function optimizeExit(): void {
+    cancelSession(history, ecs);
+    endOptimize();
+    optReadout = null;
 }
 
 function ctxOptimizeExit(): void {
     closeContext();
-    endOptimize();
+    optimizeExit();
 }
 
-/** a rudimentary per-key Δg ledger (stage 1's own minimal readout — the constraint-solver
- *  residual, not the finished glyph/badge polish stage 4 adds): how many free keys moved and by
- *  how much at most. */
-// the refusal taxonomy's labels — one line per certifying check (`optimize.UnreachableReason`).
-function unreachableText(reason: OptimizeResult["reason"]): string {
-    if (reason === "stall") return "The draft stalls before the exit. Nothing changed.";
-    if (reason === "conditioning")
-        return "The free keys can't steer the exit from here. Nothing changed.";
-    return "Fewer than 3 free keys — nothing to solve.";
-}
-
-function ledgerText(r: OptimizeResult): string {
-    const moved = r.deltaG.filter((d) => d !== 0);
-    if (moved.length === 0) return "no change";
-    const max = Math.max(...moved.map(Math.abs));
-    return `${moved.length} key${moved.length === 1 ? "" : "s"} moved · max Δg ${max.toFixed(2)} g`;
-}
-
-async function ctxOptimizeSolve(): Promise<void> {
+async function optimizeSolve(): Promise<void> {
     const session = editor.optimizing;
     if (session === null || editor.optimizeSolving) return;
-    closeContext();
+    optReadout = null;
     const controller = new AbortController();
     optimizeAbort = controller;
     beginOptimizeSolve();
@@ -313,15 +350,25 @@ async function ctxOptimizeSolve(): Promise<void> {
         const result = await runOptimizeSection(history, ecs, session, editor.locked, {
             signal: controller.signal,
         });
-        if (result.outcome === "solved") raise({ kind: "done", text: `Restored the exit · ${ledgerText(result)}` });
-        else if (result.outcome === "unreachable")
-            raise({ kind: "error", text: unreachableText(result.reason) });
-        else raise({ kind: "error", text: "The solve did not converge. Nothing changed." });
+        if (result.outcome === "solved") {
+            // solving IS the apply: the landed outcome (in-session edits + the solve's write)
+            // collapses to one undo entry and the mode closes. the per-key Δg ledger rides the
+            // landing toast — the popup dismisses with the mode, so the toast is the readout
+            // that survives the close.
+            const unit = trackDomain(ecs) === Domain.Time ? "s" : "m";
+            const moves = result.points.map((p, k) => ({ s: p.s, dg: result.deltaG[k] }));
+            commitSession(history);
+            endOptimize();
+            raise(optimizeDone(moves, unit));
+        } else {
+            // a refusal stays in the mode with the draft untouched — refusal is not an exit.
+            optReadout = optimizeRefused(result.outcome, result.reason);
+        }
     } catch (e) {
         if (!controller.signal.aborted) {
             const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
             console.error(detail);
-            raise({ kind: "error", text: "The solve could not finish. Nothing changed." });
+            optReadout = "The solve could not finish. Nothing changed.";
         }
     } finally {
         optimizeAbort = null;
@@ -329,9 +376,58 @@ async function ctxOptimizeSolve(): Promise<void> {
     }
 }
 
+function ctxOptimizeSolve(): void {
+    closeContext();
+    void optimizeSolve();
+}
+
 function cancelOptimizeSolve(): void {
     optimizeAbort?.abort(new Error("cancelled"));
 }
+
+// the live headroom read (pure counting, the tick-derived projection): the session section's
+// keyframes split free/locked. `MIN_FREE` is the kernel's own floor (`optimize.ts`) — the badge
+// and the Solve enablement both read this one derivation, so they can't disagree with the
+// refusal the kernel would have produced. an in-mode-added key is free by construction (locking
+// is opt-in membership in `editor.locked`).
+const opt = $derived.by((): { free: number; locked: number } | null => {
+    void tick;
+    const s = editor.optimizing;
+    if (s === null) return null;
+    const rows = sectionForces(ecs, s.section);
+    let locked = 0;
+    for (const r of rows) if (editor.locked.has(r.id)) locked++;
+    return { free: rows.length - locked, locked };
+});
+const optSolvable = $derived(opt !== null && opt.free >= MIN_FREE);
+
+// the mode popup's anchor: the stamped exit's screen point (it tracks pan/zoom like the v0
+// popover tracks the START diamond). placed by `readoutFit` off its measured box — centered
+// below the stamp ring, flipped above near the dock — the snap readout's own placement path.
+const OPT_RING_R = 7; // MIRRORS render.ts's stamp-ring radius — the popup clears the ring
+const OPT_GAP = 10;
+const optAnchor = $derived.by((): { x: number; y: number } | null => {
+    void tick;
+    const s = editor.optimizing;
+    if (s === null || !canvas) return null;
+    const tx = viewTransform(canvas);
+    return { x: tx.ox + s.stamp.x * tx.sx, y: tx.oy + s.stamp.y * tx.sy };
+});
+let optEl = $state<HTMLDivElement | undefined>(undefined);
+let optXY = $state<{ x: number; y: number } | null>(null);
+$effect(() => {
+    if (optAnchor === null || !optEl || !canvas) {
+        optXY = null;
+        return;
+    }
+    optXY = readoutFit(
+        optAnchor,
+        OPT_RING_R + OPT_GAP,
+        { w: optEl.offsetWidth, h: optEl.offsetHeight },
+        { w: canvas.clientWidth, h: canvas.clientHeight },
+        DOCK_RESERVE,
+    );
+});
 
 // whether the node selection is a multi-set. the CANVAS shows NO contextual controls over one
 // (editor-ui.md multi law, user-locked after three feel rounds): the whole node-action ring — both
@@ -833,6 +929,13 @@ const canSolveShape = $derived.by((): boolean => {
         ctxEdges,
     );
 });
+// optimize-mode entry: one force section with a live bake. deliberately NOT `canSolveShape` —
+// the `MAX_FIT_EDGES` density cap is the force→geo fit's own runaway guard; the optimize stamp
+// is one `evalForce` read, dense sections included.
+const canOptimize = $derived.by((): boolean => {
+    void tick;
+    return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Force);
+});
 // the ONE conversion row. A section is always exactly one kind, so only one direction was ever
 // live — two rows spent the menu's space on a row that could never fire. The row's label and its
 // action fit the target's kind (geo → force, force → geo), and it still GRAYS rather than hides
@@ -855,23 +958,31 @@ const convertRow = $derived.by((): MenuItem => {
 const ctxItems = $derived.by((): MenuItem[] => {
     void tick;
     if (ctx === null) return [];
-    // inside a live optimize session on THIS section: the mode's own minimal chrome replaces
-    // the normal menu entirely — convert/delete/join aren't available inside the mode (the
-    // locked decision's consent-boundary law).
+    // inside a live optimize session on THIS section: the mode's own rows replace the normal
+    // menu entirely — convert/delete/join aren't available inside the mode (the locked
+    // decision's consent-boundary law). Solve gates on the same headroom read as the popup's
+    // button (below MIN_FREE free keys there is nothing to solve — pure counting).
     if (editor.optimizing !== null && editor.optimizing.section === ctx.section) {
         return [
-            { label: "Solve", action: ctxOptimizeSolve, enabled: !editor.optimizeSolving },
-            { label: "Exit", action: ctxOptimizeExit },
+            {
+                label: "Solve",
+                action: ctxOptimizeSolve,
+                enabled: !editor.optimizeSolving && optSolvable,
+            },
+            { label: "Exit", shortcut: "Esc", action: ctxOptimizeExit },
         ];
     }
     const del = sectionMulti ? ctxDeleteSet : ctxDelete;
     const items: MenuItem[] = [convertRow];
-    // the mode's entry row — a force section only, and only when no other optimize session is
-    // already open (one mode at a time, mirroring the conversion tier's per-section lock).
+    // the mode's entry row — a force section only (the terse verb alone: the menu is summoned
+    // ON the section, so the noun restates the invoker — menus law), and only when no other
+    // optimize session is already open (one mode at a time, mirroring the conversion tier's
+    // per-section lock). Entry needs a live bake (the stamp is read off it), NOT headroom —
+    // adding keys in-mode is the sanctioned way to create give.
     if (ctxKind === SectionKind.Force && !sectionMulti) {
         items.push({
-            label: "Optimize forces",
-            enabled: canSolveShape && editor.optimizing === null,
+            label: "Optimize",
+            enabled: canOptimize && editor.optimizing === null,
             action: ctxOptimizeEnter,
         });
     }
@@ -966,6 +1077,13 @@ const noticeText = $derived.by((): string => {
 const noticeBad = $derived.by((): boolean => {
     void tick;
     return editor.notice?.kind === "error";
+});
+// the notice's optional detail lines (the optimize landing's per-key Δg ledger) — a new array
+// only when the notice changes, joined so the derived hands back a PRIMITIVE (the tick-derived
+// read law: the notice object is replaced whole, but a string can't go stale either way).
+const noticeRows = $derived.by((): string[] => {
+    void tick;
+    return editor.notice?.rows ?? [];
 });
 // focus the dialog when it mounts, so `aria-modal` is honest and the first Tab lands inside it
 // (the content is `inert`, so Cancel is the only thing left to reach). the element ref is what
@@ -1105,7 +1223,16 @@ $effect(() => {
         </div>
     {/if}
     {#if noticeText}
-        <div class="notice" class:bad={noticeBad} role="status">{noticeText}</div>
+        <div class="notice" class:bad={noticeBad} role="status">
+            {noticeText}
+            {#if noticeRows.length > 0}
+                <div class="ledger">
+                    {#each noticeRows as row, i (i)}
+                        <div class="lrow">{row}</div>
+                    {/each}
+                </div>
+            {/if}
+        </div>
     {/if}
 
     <!-- the extend (add-node) button on the ring's front slot (feel round 12): a real `.rbtn` at the
@@ -1230,6 +1357,48 @@ $effect(() => {
         </div>
     {/if}
 
+    <!-- the optimize-mode popup: a persistent contextual surface summoned at mode entry,
+         anchored at the stamped exit (the app's popover idiom, the v0 popover's sibling). its
+         standing presence IS the "you are in the mode" signal, and it dismisses only with the
+         mode — Solve (the confirmation) and Exit (the byte-identical revert) live here, with
+         the headroom badge and the refusal readout. rendered off-screen for one measure pass
+         until `readoutFit` places it from the measured box (the snap readout's move). -->
+    {#if opt}
+        <div
+            class="optpop"
+            bind:this={optEl}
+            style={optXY
+                ? `left: ${optXY.x}px; top: ${optXY.y}px;`
+                : "left: -9999px; top: -9999px;"}
+            role="dialog"
+            aria-label="Optimize"
+        >
+            <div class="head">
+                <span class="title">Optimize</span>
+                <span class="badge" class:low={!optSolvable}>
+                    {opt.free} free{opt.locked > 0 ? ` · ${opt.locked} locked` : ""}
+                </span>
+            </div>
+            {#if optReadout}
+                <div class="readout" role="status">{optReadout}</div>
+            {/if}
+            <div class="actions">
+                <button
+                    type="button"
+                    class="solve"
+                    disabled={!optSolvable || optimizeBusy}
+                    title={optSolvable ? "Restore the stamped exit" : `Needs ${MIN_FREE} free keys`}
+                    onclick={() => void optimizeSolve()}
+                >
+                    Solve
+                </button>
+                <button type="button" class="exit" title="Exit (Esc)" onclick={optimizeExit}>
+                    Exit
+                </button>
+            </div>
+        </div>
+    {/if}
+
     <Timeline {ecs} eid={trackEid} {tick} />
 </div>
 
@@ -1319,6 +1488,7 @@ $effect(() => {
     :global([data-dragging]) .rbtn,
     :global([data-dragging]) .ctxmenu,
     :global([data-dragging]) .nodemenu,
+    :global([data-dragging]) .optpop,
     :global([data-dragging]) .vtip {
         pointer-events: none;
         user-select: none;
@@ -1401,6 +1571,92 @@ $effect(() => {
     .notice.bad {
         border-color: rgba(226, 109, 92, 0.5);
         color: #f0bdb1;
+    }
+    /* the optimize landing's per-key Δg ledger under the headline: quiet mono rows, the
+       readout register (display only, dismissed with the toast). */
+    .notice .ledger {
+        margin-top: 4px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+    }
+
+    /* the optimize-mode popup: the standing mode surface at the stamped exit — the same opaque
+       floating chrome as the v0 popover, plus its two action buttons. its persistent presence
+       is the mode signal, so it earns no extra ornament; the badge goes danger-tinted only
+       when Solve is starved below the kernel's free-key floor (two channels: color + the count
+       itself). */
+    .optpop {
+        position: absolute;
+        z-index: 3;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 148px;
+        padding: 7px 9px;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        box-shadow: var(--shadow);
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 11px;
+        user-select: none;
+        animation: vtip-in 120ms ease;
+    }
+    .optpop .head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+    }
+    .optpop .title {
+        color: var(--fg);
+        font-size: 12px;
+    }
+    .optpop .badge {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+        white-space: nowrap;
+    }
+    .optpop .badge.low {
+        color: var(--danger);
+    }
+    .optpop .readout {
+        max-width: 200px;
+        color: #f0bdb1;
+    }
+    .optpop .actions {
+        display: flex;
+        gap: 6px;
+    }
+    .optpop .actions button {
+        all: unset;
+        box-sizing: border-box;
+        flex: 1;
+        padding: 4px 0;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font-size: 11px;
+        text-align: center;
+        color: var(--muted);
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+    }
+    .optpop .actions .solve {
+        color: var(--accent);
+        border-color: var(--accent-soft);
+    }
+    .optpop .actions button:not(:disabled):hover {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+        color: var(--fg);
+    }
+    .optpop .actions button:disabled {
+        opacity: 0.4;
+        cursor: default;
     }
     /* the shared entrance for the surfaces that just appear (readout, scrim) — no travel, so it
        reads as arriving rather than sliding. */

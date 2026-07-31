@@ -14,6 +14,9 @@ import {
 import {
     appendSection,
     beginForceMove,
+    beginSession,
+    cancelSession,
+    commitSession,
     beginForceMoves,
     beginLength,
     beginMove,
@@ -78,6 +81,7 @@ import {
     setStickyLen,
     setTangent,
     setTrackV0,
+    snapshotAll,
     snapshotSection,
     stampProvenance,
     stickyLen,
@@ -1204,4 +1208,90 @@ test("bulk tangent-mode: sets every member's mode in one entry; picking Aligned 
     setTangentModes(h2, s2, [{ section: sec2, order: 1 }], TangentMode.Aligned);
     expect(h2.undo.length).toBe(0);
     expect(handleTangent(s2, sec2, 1)).toBeUndefined();
+});
+
+// ── the session bracket (kex2d-optimize-mode stage 4: the transactional mode) ──
+// a session is a transactional bracket over the stack: in-session edits record and undo/redo
+// normally, but pre-session history is out of reach in BOTH directions while it's open, and
+// exactly one closer runs — commitSession collapses everything recorded in-session into ONE
+// entry, cancelSession reverts it all byte-identically and discards it.
+
+test("session: undo floors at the entry depth; in-session entries undo/redo freely", () => {
+    // seen failing with the floor guard removed from `undo` (the pre-session extend popped).
+    const { state, sec } = nodes();
+    const h = createHistory();
+    extendTrack(h, state, sec); // pre-session
+    beginSession(h);
+    undo(h, state); // floored — must NOT pop the pre-session extend
+    expect(orders(state, sec)).toEqual([0, 1, 2]);
+    expect(h.undo.length).toBe(1);
+    extendTrack(h, state, sec); // in-session
+    undo(h, state); // an in-session entry undoes freely
+    expect(orders(state, sec)).toEqual([0, 1, 2]);
+    redo(h, state); // …and redoes freely
+    expect(orders(state, sec)).toEqual([0, 1, 2, 3]);
+    cancelSession(h, state);
+});
+
+test("session: cancel reverts byte-identically and discards; pre-session history stays live", () => {
+    // seen failing with cancelSession's reverse loop removed (the snapshot compare) and with
+    // its redo truncation removed (the in-session branch escaped the bracket).
+    const { state, sec } = nodes();
+    const h = createHistory();
+    extendTrack(h, state, sec); // pre-session
+    const before = snapshotAll(state);
+    beginSession(h);
+    extendTrack(h, state, sec);
+    extendTrack(h, state, sec);
+    undo(h, state); // one member already undone in-session — it sits on redo, already reverted
+    cancelSession(h, state);
+    expect(snapshotAll(state)).toEqual(before); // byte-identical revert
+    expect(h.undo.length).toBe(1); // the pre-session extend alone
+    expect(h.redo.length).toBe(0); // the in-session branch never escapes the bracket
+    undo(h, state); // pre-session history is reachable again
+    expect(orders(state, sec)).toEqual([0, 1]);
+});
+
+test("session: pre-session redo is unreachable in-session and survives an untouched bracket", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    extendTrack(h, state, sec);
+    undo(h, state); // → a pre-session redo branch
+    beginSession(h);
+    redo(h, state); // the watermark guard: pre-session history is out of reach both ways
+    expect(orders(state, sec)).toEqual([0, 1]);
+    cancelSession(h, state);
+    redo(h, state); // …and reachable again once the untouched bracket closes
+    expect(orders(state, sec)).toEqual([0, 1, 2]);
+});
+
+test("session: commit collapses to ONE entry that round-trips the whole session", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    extendTrack(h, state, sec); // pre-session
+    const preSession = snapshotAll(state);
+    beginSession(h);
+    extendTrack(h, state, sec);
+    extendTrack(h, state, sec);
+    const post = snapshotAll(state);
+    commitSession(h);
+    expect(h.undo.length).toBe(2); // the pre-session extend + the ONE session entry
+    undo(h, state);
+    expect(snapshotAll(state)).toEqual(preSession); // one undo = the whole session, byte-identical
+    redo(h, state);
+    expect(snapshotAll(state)).toEqual(post); // one redo replays it whole
+});
+
+test("session: an untouched commit leaves no entry; a single-entry session stays one entry", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    beginSession(h);
+    commitSession(h);
+    expect(h.undo.length).toBe(0); // nothing recorded, nothing left behind
+    beginSession(h);
+    extendTrack(h, state, sec);
+    commitSession(h);
+    expect(h.undo.length).toBe(1);
+    undo(h, state);
+    expect(orders(state, sec)).toEqual([0, 1]);
 });

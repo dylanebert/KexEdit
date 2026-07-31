@@ -227,6 +227,35 @@ const TrackDrawSystem: System = {
                     strokeFeasible(ctx, xs, ys, out.feasible, info.startSample, info.endSample);
                 }
             }
+
+            // optimize mode's stamped exit — the constraint idiom (editor-ui.md), not a new
+            // glyph language: a hollow ring at the stamp (the demand), and the residual made
+            // visible as a dotted drop-line from the section's CURRENT baked exit (the
+            // achieved) to it. the line is zero-length while the exit sits on the stamp, so
+            // divergence needs no threshold — coincidence simply draws nothing visible.
+            if (editor.optimizing) {
+                const st = editor.optimizing.stamp;
+                const rx = ox + st.x * sx;
+                const ry = oy + st.y * sy;
+                const info = sectionInfo.get(editor.optimizing.section);
+                if (info) {
+                    const i = Math.min(info.endSample, count - 1);
+                    ctx.strokeStyle = COLOR_GUIDE_RAY;
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([2, 3]);
+                    ctx.beginPath();
+                    ctx.moveTo(xs[i], ys[i]);
+                    ctx.lineTo(rx, ry);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+                // radius mirrored by App.svelte's OPT_RING_R (the popup clears the ring by it).
+                ctx.strokeStyle = "#ece8e3";
+                ctx.lineWidth = 1.6;
+                ctx.beginPath();
+                ctx.arc(rx, ry, 7, 0, Math.PI * 2);
+                ctx.stroke();
+            }
             ctx.restore();
         }
     },

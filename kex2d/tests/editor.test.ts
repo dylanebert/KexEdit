@@ -11,6 +11,8 @@ import {
     fitDone,
     notify,
     openContext,
+    optimizeDone,
+    optimizeRefused,
     solveDone,
     solveFailed,
     type Selection,
@@ -428,4 +430,54 @@ test("a dense fit reads as a failure and names the node count — a held budget 
         kind: "error",
         text: "The fit needs 240 nodes — too many to author. Nothing changed.",
     });
+});
+
+// ── the optimize landing's readout (`optimizeDone`) + the refusal mapping (`optimizeRefused`) ──
+// kex2d-optimize-mode stage 4: Solve closes the mode, so the landing toast is the readout that
+// survives the close — headline + the per-key Δg ledger, capped with a counted remainder.
+
+test("optimizeDone: headline counts moved keys, ledger addresses each by its s, unmoved keys silent", () => {
+    const n = optimizeDone(
+        [
+            { s: 0, dg: 0 },
+            { s: 12, dg: 0.312 },
+            { s: 24, dg: -0.05 },
+        ],
+        "m",
+    );
+    expect(n.kind).toBe("done");
+    expect(n.text).toBe("Restored the exit · 2 keys moved · max Δg 0.31 g");
+    expect(n.rows).toEqual(["12.0 m · +0.31 g", "24.0 m · −0.05 g"]);
+});
+
+test("optimizeDone: a zero-drift landing confirms without a ledger", () => {
+    const n = optimizeDone(
+        [
+            { s: 0, dg: 0 },
+            { s: 10, dg: 0 },
+        ],
+        "m",
+    );
+    expect(n).toEqual({ kind: "done", text: "Exit already restored · no change" });
+});
+
+test("optimizeDone: the ledger caps and counts the remainder", () => {
+    const moves = Array.from({ length: 9 }, (_, k) => ({ s: k * 5, dg: 0.1 }));
+    const n = optimizeDone(moves, "s");
+    expect(n.rows).toHaveLength(7); // 6 rows + the remainder line
+    expect(n.rows?.[6]).toBe("+3 more");
+    expect(n.rows?.[0]).toBe("0.0 s · +0.10 g"); // the time-domain unit rides each row
+});
+
+test("optimizeRefused: one plain sentence per refusal class", () => {
+    expect(optimizeRefused("unreachable", "stall")).toBe(
+        "The draft stalls before the exit. Nothing changed.",
+    );
+    expect(optimizeRefused("unreachable", "conditioning")).toBe(
+        "The free keys can't steer the exit from here. Nothing changed.",
+    );
+    expect(optimizeRefused("unreachable", "free-count")).toBe(
+        "Fewer than 3 free keys — nothing to solve.",
+    );
+    expect(optimizeRefused("diverged")).toBe("The solve did not converge. Nothing changed.");
 });

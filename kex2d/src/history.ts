@@ -110,6 +110,8 @@ interface Entry {
 export interface History {
     undo: Entry[];
     redo: Entry[];
+    /** the open transactional session (optimize mode), or absent — see {@link beginSession}. */
+    session?: { floor: number; redoBase: number };
 }
 
 const MAX_UNDO = 256;
@@ -125,11 +127,23 @@ export const history = createHistory();
  *  selection snapshot (`undefined` for a gesture, which leaves the selection alone). */
 export function record(h: History, cmd: Command, pre?: unknown): void {
     h.undo.push({ cmd, pre });
-    if (h.undo.length > MAX_UNDO) h.undo.shift();
+    if (h.undo.length > MAX_UNDO) {
+        h.undo.shift();
+        // the session floor indexes into the stack, so a capped-out shift slides it too (the
+        // shifted-away entry leaves the transaction's reach, same as it leaves plain undo's).
+        if (h.session && h.session.floor > 0) h.session.floor--;
+    }
     h.redo.length = 0; // a new edit invalidates the redo branch
+    // …including a pre-session one: once an in-session edit lands, every redo entry that can
+    // ever exist while the session stays open is an in-session entry (pushed by in-session
+    // undo), so the session's redo watermark drops to the emptied stack.
+    if (h.session) h.session.redoBase = 0;
 }
 
 export function undo(h: History, ecs: State): void {
+    // an open session floors undo at its entry depth: pre-session history is out of the
+    // transaction's reach in both directions (its twin is `redo`'s watermark guard).
+    if (h.session && h.undo.length <= h.session.floor) return;
     const entry = h.undo.pop();
     if (!entry) return;
     entry.post = selHook?.snapshot(ecs); // the settled after-command selection (for redo)
@@ -139,11 +153,74 @@ export function undo(h: History, ecs: State): void {
 }
 
 export function redo(h: History, ecs: State): void {
+    // the session's redo watermark: entries at or below `redoBase` are pre-session, out of the
+    // transaction's reach (the floor guard's twin) — only in-session entries replay in-session.
+    if (h.session && h.redo.length <= h.session.redoBase) return;
     const entry = h.redo.pop();
     if (!entry) return;
     entry.cmd.apply();
     if (entry.post !== undefined) selHook?.restore(ecs, entry.post);
     h.undo.push(entry);
+}
+
+// ── session lifecycle: a transactional bracket over the stack ─────────────────────
+// optimize mode's exits (kex2d-optimize-mode: "Solve is the confirmation"). while a session is
+// open, in-session edits record and undo/redo normally but the stack floors at the entry depth —
+// pre-session history is unreachable in both directions, so the bracket's boundary can't be
+// crossed mid-transaction. exactly one of the two closers runs: `commitSession` collapses
+// everything recorded in-session into ONE entry (the session's outcome), `cancelSession` reverts
+// it all byte-identically (each entry's own reverse IS a snapshot restore) and discards it.
+
+/** open a transactional session at the current stack depth. one at a time (a second begin
+ *  replaces the bracket — the caller's mode gate already prevents overlap). */
+export function beginSession(h: History): void {
+    h.session = { floor: h.undo.length, redoBase: h.redo.length };
+}
+
+/** close the session by collapsing every entry recorded above its floor into ONE undo entry
+ *  (apply in order / reverse in reverse order — byte-identical by construction, since each
+ *  member is its own snapshot pair). zero entries collapse to nothing (an untouched session
+ *  leaves no trace); one entry stays as it is. in-session redo residue is discarded. */
+export function commitSession(h: History): void {
+    const s = h.session;
+    if (!s) return;
+    h.session = undefined;
+    h.redo.length = Math.min(h.redo.length, s.redoBase);
+    const n = h.undo.length - s.floor;
+    if (n <= 1) return;
+    const entries = h.undo.splice(s.floor, n);
+    // the collapsed entry's pre-selection is the FIRST captured one — the selection from before
+    // the session's first selection-affecting command (gesture entries carry none).
+    const pre = entries.find((e) => e.pre !== undefined)?.pre;
+    h.undo.push({
+        cmd: {
+            apply: () => {
+                for (const e of entries) e.cmd.apply();
+            },
+            reverse: () => {
+                for (let i = entries.length - 1; i >= 0; i--) entries[i].cmd.reverse();
+            },
+        },
+        pre,
+    });
+}
+
+/** close the session by reverting every entry recorded above its floor, byte-identically, and
+ *  discarding them — the transactional Exit/Esc. entries the author already undid in-session
+ *  sit on the redo stack (already reverted); they're discarded down to the session's watermark,
+ *  so a pre-session redo branch survives an untouched session and an in-session branch never
+ *  escapes the bracket. */
+export function cancelSession(h: History, ecs: State): void {
+    const s = h.session;
+    if (!s) return;
+    h.session = undefined;
+    while (h.undo.length > s.floor) {
+        const entry = h.undo.pop();
+        if (!entry) break;
+        entry.cmd.reverse();
+        if (entry.pre !== undefined) selHook?.restore(ecs, entry.pre);
+    }
+    h.redo.length = Math.min(h.redo.length, s.redoBase);
 }
 
 // ── gesture lifecycle: a drag (or a live inline edit) writes the canonical data

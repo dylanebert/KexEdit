@@ -271,15 +271,19 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape"); // the NEXT press peels the selection (no stale swallow)
     await expect.poll(selectedSection).toBe(null);
 
-    // ── 4. Right-click the force clip: the menu carries exactly TWO rows — the one conversion
-    // row, fitted to this section's kind (Convert to geo, live), and Delete. The opposite
-    // direction is absent, not grayed: a section is one kind, so the other row could never fire.
-    // (Also the real-menu regression guard for the destructive Convert row's removal.) ──
+    // ── 4. Right-click the force clip: the menu carries exactly THREE rows — the one conversion
+    // row, fitted to this section's kind (Convert to geo, live), the force-only Optimize entry
+    // (kex2d-optimize-mode stage 4), and Delete. The opposite conversion direction is absent,
+    // not grayed: a section is one kind, so the other row could never fire. (Also the real-menu
+    // regression guard for the destructive Convert row's removal.) ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(2);
+    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(3);
     await expect(
         page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to geo" }),
+    ).toBeEnabled();
+    await expect(
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Optimize" }),
     ).toBeEnabled();
     await expect(
         page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert to force" }),
@@ -721,4 +725,170 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     await expect(page.locator(".clip")).toHaveCount(3);
     await page.screenshot({ path: join(OUT, "dogfood-2-chain.png") });
     if (strip) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip });
+});
+
+// Drive OPTIMIZE MODE end to end (kex2d-optimize-mode stage 4) — the transactional session over
+// the real UI: the section menu's Optimize row → the standing mode popup at the stamped exit
+// (Solve / Exit + the headroom badge) → the layered Esc dismissal + the byte-identical Exit
+// revert → lock gating (L over the multiselect grammar; Solve starves below 3 free; an
+// in-mode-added key defaults free) → a REFUSED solve through the real gate (stays in-mode,
+// draft untouched, readout on the popup) → a landed solve (ONE undo entry for the whole
+// session, mode closes, the ledger toast) → one undo back to the pre-mode draft.
+test("optimize mode flow", async ({ page, boot }) => {
+    await boot();
+
+    const forces = () => kexCall(page, "forces");
+    const undoDepth = () => kexCall(page, "undoDepth");
+    const optimizing = () => kexCall(page, "optimizing");
+    const lockedCount = () => kexCall(page, "lockedCount");
+    const forceSelIds = () => kexCall(page, "forceSelIds");
+    const forceCount = () => kexCall(page, "forceCount");
+    const pop = page.locator(".optpop");
+    const badge = page.locator(".optpop .badge");
+    const solveBtn = page.locator(".optpop .solve");
+    const strip = dockStrip(page);
+    const sorted = (rows: { s: number; g: number }[]) => [...rows].sort((a, b) => a.s - b.s);
+
+    // the bump profile on the boot section: 2 flat seeds + 3 authored keys (crest at index 2).
+    await kexCall(page, "seedForceBump");
+    await expect.poll(forceCount).toBe(5);
+    await frameTimeline(page);
+    const preMode = sorted(await forces()); // the pre-mode draft every revert assert reads
+    const base = await undoDepth();
+
+    // ── 1. Enter through the section menu's Optimize row (terse verb — menus law). ──
+    await page.locator(".clip").first().click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await expect(
+        page.locator(".ctxmenu").getByRole("menuitem", { name: "Optimize" }),
+    ).toBeEnabled();
+    await clickMenuItem(page, ".ctxmenu", "Optimize");
+    await expect(pop).toBeVisible(); // the standing popup IS the mode signal
+    await expect.poll(optimizing).toBe(true);
+    await expect(badge).toHaveText("5 free");
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "optimize-1-mode.png") });
+
+    // ── 2. An in-mode edit (arrow-nudge the crest), then the layered Esc rungs and the
+    // byte-identical Exit revert. positive control first: the edit must be seen to land. ──
+    const crestHit = await page.locator(".fhit").nth(2).boundingBox();
+    if (!crestHit) throw new Error("crest hit target not laid out");
+    await page.mouse.click(crestHit.x + crestHit.width / 2, crestHit.y + crestHit.height / 2);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await page.keyboard.press("ArrowUp"); // one press = one undo entry (NUDGE_G)
+    await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
+    expect(await undoDepth()).toBe(base + 1); // recorded in-session
+
+    // Esc peels one rung at a time: selection first (mode stays), the mode only when bare.
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
+    expect(await optimizing()).toBe(true); // still in the mode — Esc took the inner rung
+    await expect(pop).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect.poll(optimizing).toBe(false); // the outermost rung: Exit
+    await expect(pop).toHaveCount(0); // the popup dies with the mode
+    // the transactional revert: the in-mode nudge is gone, byte-identically, with no residue.
+    expect(sorted(await forces())).toEqual(preMode);
+    expect(await undoDepth()).toBe(base);
+
+    // ── 3. Lock gating (pure counting): lock 3 of 5 → 2 free, Solve starves; an in-mode-added
+    // key defaults FREE and re-arms it; delete + unlock restore the baseline. ──
+    await page.locator(".clip").first().click({ button: "right" });
+    await clickMenuItem(page, ".ctxmenu", "Optimize");
+    await expect(pop).toBeVisible();
+    const hit = async (i: number) => {
+        const b = await page.locator(".fhit").nth(i).boundingBox();
+        if (!b) throw new Error(`diamond ${i} not laid out`);
+        return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    };
+    const p1 = await hit(1);
+    await page.mouse.click(p1.x, p1.y);
+    await page.keyboard.down("Shift");
+    const p2 = await hit(2);
+    await page.mouse.click(p2.x, p2.y);
+    const p3 = await hit(3);
+    await page.mouse.click(p3.x, p3.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(3);
+    await page.keyboard.press("l"); // the lock gesture over the multiselect grammar
+    await expect.poll(lockedCount).toBe(3);
+    await expect(badge).toHaveText("2 free · 3 locked");
+    await expect(badge).toHaveClass(/low/);
+    await expect(solveBtn).toBeDisabled(); // starved below MIN_FREE — pure counting
+    await page.waitForTimeout(SHOT_MS);
+    if (strip) await page.screenshot({ path: join(OUT, "optimize-2-locked.png"), clip: strip });
+
+    // an in-mode-added key is free by construction: the badge counts it and Solve re-arms.
+    const body = page.locator(".dock .body");
+    const bodyBox = await body.boundingBox();
+    const clipBox = await page.locator(".clip").first().boundingBox();
+    if (!bodyBox || !clipBox) throw new Error("timeline not laid out");
+    await page.mouse.dblclick(clipBox.x + clipBox.width * 0.08, bodyBox.y + bodyBox.height * 0.5);
+    await expect.poll(forceCount).toBe(6);
+    await expect(badge).toHaveText("3 free · 3 locked");
+    await expect(solveBtn).toBeEnabled();
+    await page.keyboard.press("Delete"); // the create selected it; Del removes it again
+    await expect.poll(forceCount).toBe(5);
+    await expect(badge).toHaveText("2 free · 3 locked");
+    // unlock: the same three members, L on an all-locked set unlocks it.
+    const q1 = await hit(1);
+    await page.mouse.click(q1.x, q1.y);
+    await page.keyboard.down("Shift");
+    const q2 = await hit(2);
+    await page.mouse.click(q2.x, q2.y);
+    const q3 = await hit(3);
+    await page.mouse.click(q3.x, q3.y);
+    await page.keyboard.up("Shift");
+    await page.keyboard.press("l");
+    await expect.poll(lockedCount).toBe(0);
+    await expect(badge).toHaveText("5 free");
+
+    // ── 4. A REFUSED solve through the real gate: flatten the crest to 1 g via the popover
+    // (the draft goes exactly straight — the rank-deficient conditioning certificate), Solve →
+    // the refusal stays in-mode with the draft untouched and its readout on the popup. ──
+    await page.keyboard.press("Escape"); // clear the 3-member set first — a click on a set
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0); // member would PROMOTE, not replace, and a multi-set shows no popover
+    const crest2 = await hit(2);
+    await page.mouse.click(crest2.x, crest2.y);
+    await expect(page.locator(".ptip")).toBeVisible();
+    const gField = page.locator('.ptip input[aria-label="Point force (g)"]');
+    await gField.fill("1");
+    await gField.press("Enter");
+    await expect.poll(async () => sorted(await forces())[2].g).toBe(1);
+    const flattened = sorted(await forces());
+    await pop.locator(".solve").click();
+    await expect(pop.locator(".readout")).toBeVisible({ timeout: 30_000 });
+    await expect(pop.locator(".readout")).toContainText("can't steer");
+    expect(await optimizing()).toBe(true); // a refusal is not an exit
+    expect(sorted(await forces())).toEqual(flattened); // …and writes nothing
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "optimize-3-refusal.png") });
+
+    // ── 5. A landed solve: undo the flatten (in-mode undo stays live), make a real edit, Solve
+    // → the landing collapses the WHOLE session to one undo entry and closes the mode; the
+    // ledger toast survives the close. ──
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
+    const crest3 = await hit(2);
+    await page.mouse.click(crest3.x, crest3.y);
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
+    await pop.locator(".solve").click();
+    await expect.poll(optimizing, { timeout: 30_000 }).toBe(false); // Solve confirms AND closes
+    await expect(pop).toHaveCount(0);
+    const notice = page.locator(".notice");
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText("Restored the exit");
+    await expect(notice.locator(".ledger")).toBeVisible(); // the per-key Δg ledger rode the toast
+    expect(await undoDepth()).toBe(base + 1); // flatten+undo+edits+landing = ONE session entry
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "optimize-4-landed.png") });
+
+    // ── 6. One undo restores the PRE-MODE draft byte-identically (the session is atomic from
+    // the outside). ──
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
+    expect(sorted(await forces())).toEqual(preMode);
+    expect(await undoDepth()).toBe(base);
 });

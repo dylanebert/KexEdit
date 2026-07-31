@@ -646,6 +646,15 @@ const selForceSet = $derived.by((): Set<number> => {
 });
 // locked force-keyframe ids for the live optimize session (kex2d-optimize-mode stage 1) — read
 // through the tick like `selForceSet`, so the diamond's locked ring stays live across a toggle.
+// the live optimize session's own clip (kex2d-optimize-mode stage 4), or null — the timeline's
+// one read of the mode: the focus dim brackets its span, the stamp ring rides its exit
+// boundary, and the driven keyframe styling keys off its section.
+const optClip = $derived.by((): Clip | null => {
+    void tick;
+    const s = editor.optimizing;
+    if (s === null) return null;
+    return clips.find((c) => c.id === s.section) ?? null;
+});
 const lockedSet = $derived.by((): Set<number> => {
     void tick;
     return editor.locked;
@@ -2854,7 +2863,18 @@ onMount(() => {
                     {@const mx = ptX(p)}
                     {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                         {@const my = yOf(p.g)}
-                        <g class="fpt" class:sel={selForceSet.has(p.id)} class:active={p.id === selForce}>
+                        <!-- in-mode lock styling (kex2d-optimize-mode stage 4): a locked key wears
+                             the CAD driven idiom — dashed + faded, still measures (it stays a
+                             keyframe the profile reads; the solve just never moves it). free keys
+                             keep the normal diamond. -->
+                        <g
+                            class="fpt"
+                            class:sel={selForceSet.has(p.id)}
+                            class:active={p.id === selForce}
+                            class:driven={optClip !== null &&
+                                optClip.id === p.section &&
+                                lockedSet.has(p.id)}
+                        >
                             <circle
                                 class="fhit"
                                 cx={mx}
@@ -2870,13 +2890,6 @@ onMount(() => {
                                 class="fmarker"
                                 points="{mx},{my - FMARKER_R} {mx + FMARKER_R},{my} {mx},{my + FMARKER_R} {mx - FMARKER_R},{my}"
                             />
-                            {#if editor.optimizing?.section === p.section && lockedSet.has(p.id)}
-                                <!-- the locked ring (kex2d-optimize-mode stage 1): minimal chrome, one
-                                     extra ring around a locked keyframe's diamond — no new glyph
-                                     meaning invented, `editor-ui.md`'s constraint vocabulary is stage
-                                     4's job; this is the smallest mark that reads as "won't move". -->
-                                <circle class="flock" cx={mx} cy={my} r={FMARKER_R + 3} />
-                            {/if}
                         </g>
                     {/if}
                 {/each}
@@ -2907,6 +2920,29 @@ onMount(() => {
                         <circle class="tknob" class:ghost={hnd.ghost} cx={hnd.x} cy={hnd.y} r={THANDLE_R} />
                     {/each}
                 </g>
+            {/if}
+            <!-- optimize-mode focus (kex2d-optimize-mode stage 4, the standard focus/mode
+                 convention): everything outside the optimized section's span dims — lane, curve,
+                 and markers alike (the dim is topmost) — while the span itself stays
+                 full-strength. pointer-inert: focus is a read, and authoring outside the span
+                 stays live in-mode. the stamped exit gets the constraint idiom's ring on the
+                 section's exit boundary guide (the viewport ring's timeline twin). -->
+            {#if optClip}
+                {@const dimY = RULER_H}
+                {@const dimH = Math.max(0, h - BOT_PAD - RULER_H)}
+                {@const dx0 = Math.min(Math.max(uPx(optClip.u0), LEFT_GUT), w)}
+                {@const dx1 = Math.min(Math.max(uPx(optClip.u1), LEFT_GUT), w)}
+                <g class="mode-dim">
+                    {#if dx0 > LEFT_GUT}
+                        <rect x={LEFT_GUT} y={dimY} width={dx0 - LEFT_GUT} height={dimH} />
+                    {/if}
+                    {#if dx1 < w}
+                        <rect x={dx1} y={dimY} width={w - dx1} height={dimH} />
+                    {/if}
+                </g>
+                {#if uPx(optClip.u1) >= LEFT_GUT && uPx(optClip.u1) <= w}
+                    <circle class="stamp-ring" cx={uPx(optClip.u1)} cy={TOP + 12} r="5" />
+                {/if}
             {/if}
         </svg>
         <!-- the selected handle's typed (Δs, Δg) fields: the SAME popover surface, summoned at
@@ -3593,13 +3629,33 @@ onMount(() => {
         stroke: #fff;
         stroke-width: 1.8;
     }
-    /* the optimize-mode lock ring (kex2d-optimize-mode stage 1) — a neutral ring, never the
-       accent or a kind color (both already mean something else), so "locked" reads as its own
-       fact rather than borrowing selection's or kind's register. */
-    .flock {
-        fill: none;
+    /* the optimize-mode locked keyframe (kex2d-optimize-mode stage 4) — the CAD driven idiom
+       (editor-ui.md constraint vocabulary): dashed + faded, still measures. the neutral guide
+       gray, never accent or a kind color (both already mean something else). selection still
+       reads on a locked key (the brightened stroke below), the dash stays — "selected AND
+       held". */
+    .fpt.driven .fmarker {
+        fill: color-mix(in srgb, var(--pin) 25%, transparent);
         stroke: #9aa0a6;
-        stroke-width: 1.4;
+        stroke-dasharray: 2 2;
+    }
+    .fpt.driven.sel .fmarker {
+        fill: color-mix(in srgb, var(--accent) 40%, transparent);
+        stroke: var(--fg);
+        stroke-dasharray: 2 2;
+    }
+    /* the optimize-mode focus dim: the standard focus convention — outside the optimized span
+       everything steps back one rung. a wash of the dock's own background, topmost, inert. */
+    .mode-dim rect {
+        fill: rgba(22, 20, 19, 0.55);
+        pointer-events: none;
+    }
+    /* the stamped exit's ring on the section boundary guide — the constraint idiom's hollow
+       ring (the viewport stamp ring's timeline twin), the light pin register. */
+    .stamp-ring {
+        fill: none;
+        stroke: var(--pin);
+        stroke-width: 1.6;
         pointer-events: none;
     }
 

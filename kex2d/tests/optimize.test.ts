@@ -1,7 +1,15 @@
 import { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
 import { beginOptimize, editor, endOptimize, toggleLockedSet } from "../src/editor";
-import { createHistory, undo } from "../src/history";
+import {
+    beginForceMove,
+    beginSession,
+    cancelSession,
+    commit,
+    commitSession,
+    createHistory,
+    undo,
+} from "../src/history";
 import {
     computeExit,
     derivedTol,
@@ -695,5 +703,93 @@ describe("editor.ts — optimize mode + lock toggling", () => {
         endOptimize();
         expect(editor.optimizing).toBeNull();
         expect(editor.locked.size).toBe(0);
+    });
+});
+
+describe("the transactional session (kex2d-optimize-mode stage 4)", () => {
+    // the mode's two exits over the real document + history substrate, orchestrated exactly the
+    // way App.svelte pairs them: enter = enterOptimize + beginSession; Exit = cancelSession +
+    // endOptimize; a landed Solve = commitSession + endOptimize. the session-bracket mechanics
+    // themselves are pinned in tests/history.test.ts (each guard seen failing under mutation);
+    // these pin the mode-level contract on a real force section.
+
+    test("Exit reverts the in-mode edits to the mode-entry draft byte-identically", () => {
+        const { state, eid, sec } = forceTrack();
+        const entryDraft = docState(state, eid);
+        const session = enterOptimize(state, sec);
+        if (!session) throw new Error("no session");
+        const h = createHistory();
+        beginSession(h);
+
+        // an in-mode edit through the normal idiom (the drag gesture's bracket).
+        const rows = sectionForces(state, sec);
+        beginForceMove(state, rows[2].id);
+        setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.6);
+        commit(h);
+        state.step(0);
+        expect(docState(state, eid)).not.toEqual(entryDraft); // the rig detects the edit
+
+        cancelSession(h, state);
+        endOptimize();
+        state.step(0);
+        expect(docState(state, eid)).toEqual(entryDraft); // byte-identical revert
+        expect(h.undo).toHaveLength(0); // the session left no trace
+    });
+
+    test("a landed Solve collapses the session (edits + landing) to ONE undo entry", async () => {
+        const { state, eid, sec } = forceTrack();
+        const entryDraft = docState(state, eid);
+        const session = enterOptimize(state, sec);
+        if (!session) throw new Error("no session");
+        const h = createHistory();
+        beginSession(h);
+
+        const rows = sectionForces(state, sec);
+        beginForceMove(state, rows[2].id);
+        setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.6);
+        commit(h);
+        state.step(0);
+
+        const result = await runOptimizeSection(h, state, session, new Set());
+        expect(result.outcome).toBe("solved");
+        commitSession(h);
+        endOptimize();
+        state.step(0);
+        const landed = docState(state, eid);
+
+        expect(h.undo).toHaveLength(1); // the whole session is one entry
+        undo(h, state);
+        state.step(0);
+        // one undo restores the MODE-ENTRY draft (not the edited-but-unsolved intermediate) —
+        // the session's outcome is atomic from the outside.
+        expect(docState(state, eid)).toEqual(entryDraft);
+        expect(landed).not.toEqual(entryDraft); // …and the landing really was a change
+    });
+
+    test("a refusal stays in-session: draft untouched, no entry, locks intact", async () => {
+        const { state, eid, sec } = forceTrack();
+        const session = enterOptimize(state, sec);
+        if (!session) throw new Error("no session");
+        beginOptimize(session);
+        const h = createHistory();
+        beginSession(h);
+
+        // starve the free set below MIN_FREE — the counting certificate refuses at invoke.
+        const rows = sectionForces(state, sec);
+        const locked = new Set(rows.slice(0, rows.length - 2).map((r) => r.id));
+        for (const id of locked) editor.locked.add(id);
+        const before = docState(state, eid);
+
+        const result = await runOptimizeSection(h, state, session, editor.locked);
+        expect(result.outcome).toBe("unreachable");
+        expect(result.reason).toBe("free-count");
+        state.step(0);
+        expect(docState(state, eid)).toEqual(before); // byte-identical, still in-mode
+        expect(h.undo).toHaveLength(0);
+        // lock persistence across solves in-mode: a refusal clears nothing.
+        expect(editor.locked.size).toBe(locked.size);
+        cancelSession(h, state);
+        endOptimize();
+        expect(editor.locked.size).toBe(0); // …and exit discards the locks
     });
 });
