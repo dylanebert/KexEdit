@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { DIM_WASH, hexToOklch, hovered, selected } from "../src/colors";
+import { DIM_WASH, HOVER_GROW, hexToOklch, hovered, selected } from "../src/colors";
 import { easeOut } from "../src/editor";
 
 // an independent sRGB #rrggbb reader (not the module under test).
@@ -85,6 +85,38 @@ describe("token mirrors (App.svelte :root)", () => {
                 sites: [],
             });
         }
+    });
+});
+
+describe("HOVER_GROW — one glyph grow ratio, both surfaces", () => {
+    test("is the area-doubling step (√2 — one hover step at area scale)", () => {
+        // the derivation, pinned as an invariant: a retune that leaves the area-step rationale
+        // must change the comment too, not just the number.
+        expect(HOVER_GROW * HOVER_GROW).toBeCloseTo(2, 12);
+    });
+
+    test("render.ts scales every pickable glyph radius by the one constant", () => {
+        const render = readFileSync(new URL("../src/render.ts", import.meta.url), "utf8");
+        for (const site of [
+            "FORCE_R * HOVER_GROW",
+            "HANDLE_R * HOVER_GROW",
+            "ANCHOR_R * HOVER_GROW",
+        ]) {
+            expect({ site, present: render.includes(site) }).toEqual({ site, present: true });
+        }
+    });
+
+    test("Timeline.svelte mirrors it as --hover-grow and both glyph rules scale by the var", () => {
+        // the DIM_WASH/--dim mirror precedent: the SVG side can't import into CSS, so the
+        // component wires the constant onto its root as a custom property and the hover rules
+        // reference only the var — no second literal ratio can drift.
+        const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(tl.includes("--hover-grow: {HOVER_GROW}")).toBe(true);
+        const growRules = tl.match(/scale\(var\(--hover-grow\)\)/g) ?? [];
+        expect(growRules.length).toBeGreaterThanOrEqual(2); // .fmarker + .tknob
+        // no literal-ratio grow on a glyph rule beside the var (the transport thumb and the
+        // button :active press are different idioms and keep their own numbers).
+        expect(tl.match(/\.(?:fmarker|tknob)\s*\{[^}]*scale\(\s*[\d.]/s)).toBeNull();
     });
 });
 

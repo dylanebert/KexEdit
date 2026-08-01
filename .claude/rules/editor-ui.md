@@ -332,9 +332,12 @@ span, chart curve, navigator. One resolver produces the colored spans (kex2d `ki
 `colors.ts`); surfaces project it, never re-derive. Selection is a **brightened analog of the
 element's own color** (the Ableton/Premiere clip idiom), derived by one mix-toward-white helper
 over the kind token, never a flat accent recolor — flat accent over force gold reads as no
-selection at all. **Hover is the rung below selection**, a `hovered()` variant of the element's
-own kind color with one derived knob (kex2d `HOVER_STEP`, derived from the clip strip's
-composited hover-fill step, never tuned). When languages stack, priority is infeasible-red >
+selection at all. **Hover is the rung below selection**, its channel forked by element class,
+meaning unchanged: an *area* (clip, span, curve) lifts one `hovered()` color rung (kex2d
+`HOVER_STEP`, derived from the clip strip's composited hover-fill step, never tuned); a *point
+glyph* (keyframe diamond, node, anchor, tangent knob) additionally grows one `HOVER_GROW` step
+(kex2d `colors.ts`, √2 — one hover step at area scale, since a color-only delta is sub-threshold
+at point size), the same ratio on every surface. When languages stack, priority is infeasible-red >
 selection (brightened kind) > hover > kind color, enforced by feasibility-skip in every color
 pass rather than draw order; dash carries not-authored-truth, red its infeasible rung (Mode
 vocabulary, below). Hover's boundaries travel
@@ -351,7 +354,9 @@ first or don't add the chrome. Earned by kex2d's optimize mode (2026-08-01), whe
 and viewport had drifted to different dialects of the same states.
 
 - **Kind color** = section kind, everywhere (Kind color, above). Selection brightens it, hover is
-  the rung below — states modulate the element's own color, never recolor it.
+  the rung below — by wash on areas, by one `HOVER_GROW` grow step + the fill lift on point
+  glyphs (one meaning, two channels forked by element class) — states modulate the element's own
+  color, never recolor it.
 - **Accent hatch** = the mode's subject: what this mode is operating on.
 - **Dim wash** (kex2d `rgba(22,20,19,0.55)`) = out-of-scope under a mode. One meaning, both
   surfaces: when a mode dims the timeline's non-subjects, the viewport dims the same spans. The

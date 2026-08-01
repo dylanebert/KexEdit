@@ -2,7 +2,7 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
-import { kindSegments } from "./colors";
+import { HOVER_GROW, kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
 import { fitMenu, type MenuItem } from "./menu";
 import {
@@ -2757,7 +2757,7 @@ onMount(() => {
 
 <aside
     class="dock"
-    style="height: {DOCK_HEIGHT}px; bottom: {DOCK_INSET}px;"
+    style="height: {DOCK_HEIGHT}px; bottom: {DOCK_INSET}px; --hover-grow: {HOVER_GROW};"
     onpointerenter={() => (editor.hover = "timeline")}
     onpointerleave={() => (editor.hover = "viewport")}
 >
@@ -3755,10 +3755,23 @@ onMount(() => {
         stroke: #0e0d0c;
         stroke-width: 1;
         pointer-events: none; /* the fat hit circle owns the interaction */
-        transition: fill 100ms var(--ease-out);
+        /* hover grows the glyph (kex2d-idioms stage 10): a point glyph's hover channel is
+           geometry — one --hover-grow step (colors.ts HOVER_GROW, the one ratio both surfaces
+           share) beside the fill lift, since a fill-only delta on a ~10 px near-white diamond
+           is sub-threshold. fill-box centers the scale on the diamond itself (an SVG transform:
+           no box-model change, no layout shift). */
+        transform-box: fill-box;
+        transform-origin: center;
+        transition:
+            fill 100ms var(--ease-out),
+            transform 100ms var(--ease-out);
     }
-    .fpt:hover .fmarker {
+    /* hover is the rung below selection and never reads on a stronger register (editor-ui.md
+       Kind color): a selected member keeps the brightened fill, a driven key its dash — both
+       hold size, so the grow marks exactly what a plain click would newly take. */
+    .fpt:hover:not(.sel):not(.driven) .fmarker {
         fill: #fff;
+        transform: scale(var(--hover-grow));
     }
     .fpt.sel .fmarker {
         fill: var(--accent);
@@ -3832,6 +3845,15 @@ onMount(() => {
         stroke: #0e0d0c;
         stroke-width: 1;
         pointer-events: none; /* the fat hit circle owns the interaction */
+        transform-box: fill-box;
+        transform-origin: center;
+        transition: transform 100ms var(--ease-out);
+    }
+    /* the knob is pickable through its fat .thit sibling, so it wears the same stage-10 hover
+       grow every pickable glyph does (one mechanic, one ratio). knobs carry no fill lift to
+       keep — the grow alone is the hover read. */
+    .thit:hover + .tknob {
+        transform: scale(var(--hover-grow));
     }
     .tknob.ghost {
         fill: transparent;

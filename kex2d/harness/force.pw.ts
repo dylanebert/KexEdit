@@ -1587,6 +1587,15 @@ test("viewport force markers flow", async ({ page, boot }) => {
     const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
+
+    // frame the track (`F` routes to the hovered viewport) so the five markers separate at
+    // pixel scale — at the default ±280 m framing they sit under 10 px apart and neighbouring
+    // diamonds overdraw the hover-grow probe's points (positive control: the camera moved).
+    const preCam = await kexCall(page, "cam");
+    await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 3);
+    await page.keyboard.press("f");
+    await expect.poll(() => kexCall(page, "cam")).not.toEqual(preCam);
+
     const markerAt = async (i: number): Promise<{ x: number; y: number }> => {
         const m = await kexCall(page, "forceMarkerAt", i);
         if (!m) throw new Error(`force marker ${i} not placed — the bake never landed`);
@@ -1630,8 +1639,69 @@ test("viewport force markers flow", async ({ page, boot }) => {
     const m1 = await markerAt(1);
     await page.mouse.move(cb.x + m1.x, cb.y + m1.y);
     await expect.poll(() => kexCall(page, "hoverForceId")).not.toBeNull();
+
+    // ── 4b. hover GROWS the glyph (kex2d-idioms stage 10): while hovered the diamond draws at
+    // FORCE_R × HOVER_GROW (half-diagonal 5 → 5·√2 ≈ 7.07 px), keeping the fill lift. Probed off
+    // the real canvas as a RAY RUN: walk device pixels outward from the marker center along the
+    // four axes and take the longest contiguous run of the hover FILL — where the fill actually
+    // ends, robust against the stroke/AA band a fixed boundary point sits in (a 1 px stroke on a
+    // 45° diamond edge is √2 px wide along an axis, so the axis fill reaches r − 0.71: base 4.29,
+    // grown 6.36). The 5.0 px floor splits the two bands with ~0.7 px beyond either one's
+    // worst AA-eaten edge. `center` is the positive control (the hover fill lift exists with or
+    // without the grow — proves the probe found a hovered marker). Polled: a cart transit over
+    // the marker only delays the read. HOVER_FILL mirrors colors.ts hovered(COLOR_FORCE) =
+    // #e4a169; tol 8 (the stage-5 dim probe's bound) separates it from base gold #d49560
+    // (16 apart on red, 12 on green).
+    const growProbe = () =>
+        page.evaluate(
+            ({ x, y, fill, tol }) => {
+                const canvas = document.querySelector<HTMLCanvasElement>("canvas.viewport");
+                const ctx = canvas?.getContext("2d");
+                if (!canvas || !ctx) return null;
+                const r = canvas.getBoundingClientRect();
+                const scale = canvas.width / r.width;
+                const cx = Math.round(x * scale);
+                const cy = Math.round(y * scale);
+                const match = (px: number, py: number): boolean => {
+                    if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return false;
+                    const p = ctx.getImageData(px, py, 1, 1).data;
+                    return fill.every((c, i) => Math.abs(p[i] - c) <= tol);
+                };
+                const run = (dx: number, dy: number): number => {
+                    let k = 0;
+                    while (match(cx + (k + 1) * dx, cy + (k + 1) * dy)) k++;
+                    return k / scale; // device px back to CSS px
+                };
+                return {
+                    center: match(cx, cy),
+                    run: Math.max(run(1, 0), run(-1, 0), run(0, 1), run(0, -1)),
+                };
+            },
+            { x: m1.x, y: m1.y, fill: [228, 161, 105] as [number, number, number], tol: 8 },
+        );
+    await expect
+        .poll(async () => {
+            const p = await growProbe();
+            return p === null ? null : { center: p.center, grown: p.run >= 5.0 };
+        })
+        .toEqual({ center: true, grown: true });
+
     await page.mouse.move(cb.x + 30, cb.y + 30);
     await expect.poll(() => kexCall(page, "hoverForceId")).toBeNull();
+
+    // ── 4c. the timeline glyph grows the SAME step: hovering a chart diamond's fat hit circle
+    // scales `.fmarker` by the one `--hover-grow` ratio (a CSS transform, so the rendered box —
+    // stroke included — scales uniformly: post ≈ pre × √2 ≈ 1.41; the 1.3 floor splits that from
+    // the no-grow 1.0 with margin for client-rect rounding). all diamonds are deselected here, so
+    // the hover isn't selection-suppressed. ──
+    const chartMarker = page.locator(".fpt .fmarker").first();
+    const preBox = await chartMarker.boundingBox();
+    if (!preBox) throw new Error("chart diamond not laid out");
+    await page.locator(".fhit").first().hover();
+    await expect
+        .poll(async () => (await chartMarker.boundingBox())?.width ?? 0)
+        .toBeGreaterThan(preBox.width * 1.3);
+    await page.mouse.move(cb.x + 30, cb.y + 30); // park back off both surfaces' glyphs
 
     // ── 5. the viewport marquee stays NODE-only: a box dragged right across the markers
     // selects no keyframes (the locked decision — authoring atoms only, and on this surface
