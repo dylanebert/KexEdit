@@ -587,16 +587,17 @@ describe("reheadOnDrag", () => {
         expect(Handle.theta.get(end)).toBeCloseTo(2 * Math.atan2(10, EXTEND_DIST), 10);
     });
 
-    test("dragging the node before the last re-aims the last node — no stale jump", () => {
+    test("dragging the node before the last preserves the tip's heading — no swing", () => {
         const { state, sec } = track();
         addNode(state, sec, 40, 0); // nodes 0,1,2 — node 2 is last, node 1 is before it
         const h = sectionHandles(state, sec);
         expect(Handle.theta.get(h[2])).toBe(0); // last starts flat
         Handle.pos.set(h[1], 16, 8); // drag the node *before* the last
         reheadOnDrag(state, h[1]);
-        // node 1 stays frozen; the last node re-derives from node 1's new position.
+        // node 1 stays frozen; the tip's own heading is untouched by a neighbor's move — the
+        // interior-node move only re-heads on ITS own move (idx === last), never last − 1.
         expect(Handle.theta.get(h[1])).toBe(0);
-        expect(Handle.theta.get(h[2])).toBeCloseTo(2 * Math.atan2(0 - 8, 40 - 16), 10);
+        expect(Handle.theta.get(h[2])).toBe(0);
     });
 
     test("the entry anchor and a pure interior node never re-derive", () => {

@@ -902,19 +902,21 @@ export function resetTangent(ecs: State, sectionId: number, order: number): void
     if (eid === handles[handles.length - 1]) headLast(handles); // the tip re-tracks its predecessor
 }
 
-/** refresh headings after a node is dragged. the **last** (heading) node always
- *  tracks its predecessor (re-derives when it or the node before it moves); node 0
- *  (the flat anchor) and **interior** nodes keep their heading frozen — the arc
+/** refresh headings after a node is dragged. the **last** (heading) node re-heads
+ *  only on its OWN move — node 0 (the flat anchor) and every **interior** node
+ *  (including the one just before the tip) keep their heading frozen. the arc
  *  contract can't hold on both of an interior node's segments at once, so a stable
- *  heading beats one that thrashes. a drag only changes the last node's heading, so
- *  the edit stays local; tangent lengths re-proportion automatically. */
+ *  heading beats one that thrashes, and re-heading on a neighbor's move swings the
+ *  last segment visibly (the misfeature this scoping removes — uniform with every
+ *  other interior node staying frozen). a drag only changes the last node's own
+ *  heading, so the edit stays local; tangent lengths re-proportion automatically. */
 export function reheadOnDrag(ecs: State, eid: number): void {
     const sectionId = Handle.section.get(eid);
     const handles = sectionHandles(ecs, sectionId);
     const last = handles.length - 1;
     if (last < 1) return;
     const idx = handles.indexOf(eid);
-    if (idx === last || idx === last - 1) headLast(handles);
+    if (idx === last) headLast(handles);
 }
 
 /** lay a new node past a section's end, continuing straight along the last node's
