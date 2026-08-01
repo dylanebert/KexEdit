@@ -107,8 +107,8 @@ not draggable; its world pose IS the entry, and the shape hangs off it in the en
   drag is a **free** direct-manipulation gesture with one landmark, the grab-ray angle latch
   (`latchAngle`). The **node context menu** (right-click any pickable node, any mode — the app's
   context-menu language, `menu.ts`): `Delete` then `Add` (chain-end, enablement-gated), a `Handles`
-  toggle (≡ the double-click summon) over a `Tangents ▸` submenu (Mirror | Aligned | Free, a
-  separator, then Reset). Node 0 is reachable: right-click or double-click at the START diamond
+  toggle (≡ the double-click summon) over a `Tangents ▸` submenu (Mirror | Aligned | Free), then a
+  top-level `Reset` (the Reset idiom law — one click from anywhere). Node 0 is reachable: right-click or double-click at the START diamond
   reaches the first section's node 0 (its menu is Handles + Reset only); a geo→geo boundary's
   node 0 is reached by tangent-editing the coincident upstream tip (the stitch).
 - **Recover force.** `forces` (`bake.ts`) reads the sampled positions → per-sample tangent θ (the

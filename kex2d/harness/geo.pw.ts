@@ -209,7 +209,7 @@ test("geo authoring flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Delete Del", "Add Enter", "Handles", "Tangents ▸"]); // ▸ = the submenu affix
+        .toEqual(["Delete Del", "Add Enter", "Handles", "Tangents ▸", "Reset"]); // ▸ = the submenu affix; Reset top-level (the Reset idiom law)
     await page.keyboard.press("Escape"); // dismiss the menu
     await expect(page.locator(".nodemenu")).toHaveCount(0);
     // …and the node it was summoned on survives that press (one rung), so the NEXT Escape is the
@@ -498,15 +498,16 @@ test("geo authoring flow", async ({ page, boot }) => {
 // Drive the TANGENT-EDIT flow (kex2d-authoring-surface stage 9): seed a shaped geo track →
 // frame it → DOUBLE-CLICK an interior node to enter tangent edit (feel round 12 restored the
 // double-click summon; the node is inferred, no stored tangent) → RIGHT-CLICK
-// the node to open the NODE context menu (Handles + a Tangents ▸ submenu) → open the submenu → set
-// FREE → drag its out-handle → assert Free independence and a re-bake → Reset via the submenu clears
-// the node back to live (Auto). The summon is a real canvas double-click, the node menu a real canvas
-// right-click (both located via __kex.nodeAt); the handle drag is a real canvas pointer drag located
-// through
+// the node to open the NODE context menu (Handles + a Tangents ▸ submenu + Reset) → open the
+// submenu → set FREE → drag its out-handle → assert Free independence and a re-bake → the
+// top-level Reset row clears the node back to live (Auto). The summon is a real canvas
+// double-click, the node menu a real canvas right-click (both located via __kex.nodeAt); the
+// handle drag is a real canvas pointer drag located through
 // __kex.tangentHandles (canvas-drawn handles carry no DOM box). Handle drags no longer snap, so
-// the drag lands where the pointer goes. The submenu items (Free, Reset) are clicked pointer-true
+// the drag lands where the pointer goes. The submenu item (Free) is clicked pointer-true
 // via clickFlyout — a coordinate click gated on elementFromPoint reachability, the regression net
-// for the context-submenu clip class (a selector .click() would fire on a clipped, unreachable row).
+// for the context-submenu clip class (a selector .click() would fire on a clipped, unreachable
+// row) — and Reset through clickMenuItem, the same net's top-level twin.
 test("tangent edit flow", async ({ page, boot }) => {
     await boot();
 
@@ -627,11 +628,12 @@ test("tangent edit flow", async ({ page, boot }) => {
     expect(degToken(far)).toBe(degToken(near)); // constant heading along the ray
     expect(lenToken(far)).toBe(lenToken(near)); // constant length = the node's chord, NOT the handle's
 
-    // ── 4. RIGHT-CLICK → Tangents ▸ → Reset → the node clears back to live (Auto inference
-    // resumes), so it carries no stored tangent again. available here (a tangent exists to clear). ──
+    // ── 4. RIGHT-CLICK → Reset (top-level, the Reset idiom law) → the node clears back to live
+    // (Auto inference resumes), so it carries no stored tangent again. available here (a tangent
+    // exists to clear). ──
     await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
     await expect(page.locator(".nodemenu")).toBeVisible();
-    await clickFlyout(page, ".nodemenu", "Tangents", "Reset");
+    await clickMenuItem(page, ".nodemenu", "Reset");
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
 
     // ── 5. Esc exits the sub-mode back to plain selection, and the knobs COME BACK — the summon is a

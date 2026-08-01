@@ -623,7 +623,7 @@ $effect(() => {
     );
 });
 
-// the NODE context menu (Handles toggle + a Tangents ▸ submenu), opened by right-click on any
+// the NODE context menu (Handles toggle + a Tangents ▸ submenu + Reset), opened by right-click on any
 // pickable node (controls.ts → editor.openNodeMenu). its visibility DERIVES from the node still
 // existing — like the section context menu derives from its subject — so any death path (undo,
 // a delete, a programmatic edit) dismisses it, no per-path close call.
@@ -702,8 +702,9 @@ const nodeSetHasTangent = $derived.by((): boolean => {
 });
 // the node menu as data (the shared MenuItem language): Add node / Delete node (chain-end-only, so
 // enablement-gated — the menu is Delete's only pointer path, the ring carries no trash button), then
-// a Handles toggle over a Tangents submenu (the three modes carry their `checked`; Reset carries its
-// derived enablement, after a separator). node 0 (the entry anchor) is the exception — never
+// a Handles toggle over a Tangents submenu (the three modes carry their `checked`), then a top-level
+// Reset closing the tangent-state group (the Reset idiom law: one click from anywhere — a submenu
+// row didn't read as available). node 0 (the entry anchor) is the exception — never
 // appendable/trimmable, and its handle is a single free entry handle (no coupled in-side), so it
 // carries NO Add/Delete and NO mode submenu: just Handles + Reset (back to the Auto C1 exit).
 const nodeItems = $derived.by((): MenuItem[] => {
@@ -715,7 +716,7 @@ const nodeItems = $derived.by((): MenuItem[] => {
     const ok = editor.optimizing === null;
     // a multi-selection: the bulk rows (the gray-never-hide law). Delete acts on the whole set iff
     // it's a valid suffix run (else grayed); Add + Handles are single-subject, so they gray out;
-    // Tangents ▸ modes + Reset apply to every member in one entry. the mode `checked` reflects the
+    // Tangents ▸ modes + the top-level Reset apply to every member in one entry. the mode `checked` reflects the
     // ACTIVE member (Blender active-only).
     if (nodeMulti()) {
         return [
@@ -748,10 +749,9 @@ const nodeItems = $derived.by((): MenuItem[] => {
                         checked: nodeMode === TangentMode.Free,
                         action: () => pickModeSet(TangentMode.Free),
                     },
-                    { separator: true },
-                    { label: "Reset", enabled: nodeSetHasTangent && ok, action: doResetSet },
                 ],
             },
+            { label: "Reset", enabled: nodeSetHasTangent && ok, action: doResetSet },
         ];
     }
     if (Handle.order.get(eid) === 0) {
@@ -791,10 +791,9 @@ const nodeItems = $derived.by((): MenuItem[] => {
                     checked: nodeMode === TangentMode.Free,
                     action: () => pickMode(TangentMode.Free, eid),
                 },
-                { separator: true },
-                { label: "Reset", enabled: nodeHasTangent && ok, action: () => doReset(eid) },
             ],
         },
+        { label: "Reset", enabled: nodeHasTangent && ok, action: () => doReset(eid) },
     ];
 });
 
@@ -1342,7 +1341,7 @@ $effect(() => {
         </button>
     {/if}
 
-    <!-- the node context menu (Handles toggle + a Tangents ▸ submenu): summoned by right-click on
+    <!-- the node context menu (Handles toggle + a Tangents ▸ submenu + Reset): summoned by right-click on
          any pickable node, an instance of the shared menu language (Menu.svelte) placed at the cursor
          by `fitMenu` — its top-left at the point (never covering the invoker), flipping up/left to
          stay in the viewport near an edge — the same look + placement as the section context menu. -->

@@ -303,12 +303,13 @@ bespoke component.
   it). Gray = "blocked action you know from elsewhere"; hidden = "state that isn't a thing
   here".
 - **Reset returns its subject to the state a fresh author would get** — one click back up the
-  layers, from anywhere, no confirm (byte-identical undo is the safety). The section menu's
-  Reset row (normal color — undo makes it non-destructive in spirit, so it doesn't wear Delete's
-  danger red; gated like its neighbors) is the section-level instance; node and keyframe
-  resets keep their existing idioms (`Tangents ▸ Reset`; picking an easing preset subsumes
-  Reset) — adding rows there would duplicate, not unify. Like a destructive convert, a reset
-  neither stamps nor consults the provenance sidecar.
+  layers, from anywhere, no confirm (byte-identical undo is the safety). Every context menu
+  carries Reset as a top-level row (section, node, node 0), normal color — undo makes it
+  non-destructive in spirit, so it doesn't wear Delete's danger red; gated like its neighbors.
+  A submenu row doesn't read as available (the buried `Tangents ▸ Reset` was moved out).
+  Keyframes are the one exception: picking an easing preset subsumes Reset — choosing the
+  layer is the reset. Like a destructive convert, a reset neither stamps nor consults the
+  provenance sidecar.
 - Flyouts fit the viewport on all four edges: flip the preferred side, clamp the rest.
 - **The positioned menu box is never `overflow: hidden`** — that clips an out-of-box flyout from
   paint *and* hit-testing. The rounded-corner row-wash clip lives on an inner rows wrapper;

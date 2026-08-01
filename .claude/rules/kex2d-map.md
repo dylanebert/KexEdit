@@ -656,9 +656,9 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   edit). In
   tangent-edit mode (`editor.tangentEdit`): `TangentDrawSystem` (`render.ts`) draws the edited
   node's handles (solid = explicit, hollow = `Auto` ghost); right-click any node opens the node
-  context menu (`Handles` toggle + a `Tangents ▸` submenu of Mirror | Aligned | Free / Reset, a
-  `Menu` over `editor.nodeMenu`, the same shared `.menu` look + cursor placement as the section
-  context menu). Snap-guide feedback: the viewport draws the incline **ray** in the shared neutral
+  context menu (`Handles` toggle + a `Tangents ▸` submenu of Mirror | Aligned | Free + a top-level
+  `Reset`, a `Menu` over `editor.nodeMenu`, the same shared `.menu` look + cursor placement as the
+  section context menu). Snap-guide feedback: the viewport draws the incline **ray** in the shared neutral
   gray (`COLOR_GUIDE_RAY`), the one register every snap guide wears (the timeline's `.snapguide`
   too); the numeric **°/m readout** is DOM — App's `.snap-readout`, the Blender modal-transform
   readout, shown **whenever a node is selected** (the Figma selected-object dimensions idiom): every
