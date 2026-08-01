@@ -1303,7 +1303,11 @@ test("bulk reset: clears every selected member's tangent in one entry; undo rest
     void e;
 });
 
-test("bulk reset: an all-live set records nothing (no tangent to clear)", () => {
+test("bulk reset: a set already at creation state records nothing", () => {
+    // `fourNodes` lays every node at the default-chord continuation with no tangent, so a bulk
+    // Reset re-creates each one exactly where it already sits — the `sameNodes` no-op guard is
+    // what keeps a stray click off the stack (enablement is no longer gated on "has something
+    // to clear").
     const { state, sec } = fourNodes();
     const h = createHistory();
     resetNodesBulk(h, state, [

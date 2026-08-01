@@ -1538,7 +1538,8 @@ export interface BakeLanding {
 
 let bakeLanding: BakeLanding | null = null;
 
-/** the live landing display override, or null — `BakeSystem`'s per-frame gate bypass reads it. */
+/** whether a landing display override is live — `BakeSystem`'s per-frame gate bypass and
+ *  `bakeLive`'s contamination consult both read it. */
 function landingLive(): boolean {
     return bakeLanding !== null;
 }
@@ -1629,7 +1630,7 @@ export function convertSection(ecs: State, sectionId: number): void {
  *  the kind held (the Reset idiom: the state a fresh author would get, one click, no confirm —
  *  byte-identical undo is the safety). a force section reseeds the two continuation keyframes
  *  at the bake-recovered entry force, so its enablement wants a live bake
- *  (`sectionResettable`); a geo section reads no bake at all. like `convertSection`, neither
+ *  (`sectionResettable`, below); a geo section reads no bake at all. like `convertSection`, neither
  *  stamps nor consults the provenance sidecar. does not itself record history —
  *  `history.resetSection` wraps it. */
 export function resetSection(ecs: State, sectionId: number): void {
@@ -1642,8 +1643,9 @@ export function resetSection(ecs: State, sectionId: number): void {
 /** whether the section menu's Reset row may fire: exactly ONE section, and — force only — a
  *  bake that IS the authored state (`bakeLive`), since the force seed's entry force is
  *  recovered from it (a stale bake would stamp a force that isn't on screen). a geo reset
- *  reads no bake. `controls.sectionSolvable`'s shape; the caller pairs it with
- *  `sectionOpsAllowed` (the optimize-mode consent boundary), like every section-structure row.
+ *  reads no bake. `sectionSolvable`'s shape; the caller pairs it with
+ *  `controls.sectionOpsAllowed` (the optimize-mode consent boundary), like every
+ *  section-structure row.
  *  pure — device-free, unit-tested. the row grays out otherwise (never hidden). */
 export function sectionResettable(
     selected: number,
@@ -1651,6 +1653,55 @@ export function sectionResettable(
     live: boolean,
 ): boolean {
     return selected === 1 && kind !== null && (kind === SectionKind.Geo || live);
+}
+
+/** the force→geo fit's own invoke ceiling (dense bake edges): the largest input the modal's
+ *  designed budget can absorb, derived from the fit's own measured cost, never tuned
+ *  (`coding.md` tolerance discipline).
+ *
+ *  The modal's own budget is the harness's completion wait (`harness/section.pw.ts`'s
+ *  `timeout: 30_000` — the concrete number "tens of seconds" grounds to), read as **browser**
+ *  wall time — the fit runs in a browser worker.
+ *
+ *  The fit's own cost is superlinear in edge count AND cliff-shaped near a profile's own
+ *  feasibility limit (a profile that nearly stalls the cart makes the fit saturate toward one
+ *  node per dense sample instead of converging — `main.ts`'s `seedForceStress` comment), so a
+ *  clean power-law extrapolation from a couple of anchors isn't trustworthy near the boundary —
+ *  the safe ceiling has to come from an already-measured point, not a fitted curve. `seedForceStress`
+ *  IS that point: its own tuning notes record a 1200 m section (2400 edges at the track-nominal
+ *  `DS_NOMINAL` = 0.5 m step) at ~1.9 s under bun, ~12 s in the browser worker (the ~7× ratio the
+ *  same comment measures) — comfortably inside the 30 s budget (2.5× margin) — while the next size
+ *  tried, 2000 m (4000 edges), "overshot the completion wait". The true boundary sits somewhere
+ *  between those two, unmeasured; 2400 is the largest edge count this codebase has actually run
+ *  and timed inside the modal's budget, so it's the ceiling — not extrapolated past what's known. */
+export const MAX_FIT_EDGES = 2400;
+
+/** whether an invoked solve is available on a section selection: exactly ONE section of the
+ *  direction's own `target` kind, and a bake that IS the authored state. All three are the
+ *  invoking command's own guards, which *throw* (`convertGeo`'s geo/live checks, `convertForce`'s
+ *  force/live twin) — the solve reads the bake's entry frame, so a stale bake would hand it a
+ *  shape that isn't on screen, and a set has no single subject to solve. `target` parameterizes
+ *  the direction (`SectionKind.Geo` for "Convert to force", `SectionKind.Force` for "Convert to
+ *  geo") rather than a second cloned predicate — the menu's ONE conversion row resolves its target
+ *  from the section's kind and asks this once. `edges` is the force→geo direction's own density
+ *  guard (`MAX_FIT_EDGES`, above) — the section's dense bake edge count (`endSample −
+ *  startSample`, cheap to read off `sectionInfo`, no fit invoked to check); the geo→force
+ *  direction's input is small authored nodes (already progress/cancel-designed), so `edges` is
+ *  inert there — optional, defaulting to 0 so a geo→force call site never has to supply it. The
+ *  row grays out otherwise (never hidden). Pure — device-free, unit-tested. */
+export function sectionSolvable(
+    selected: number,
+    kind: SectionKind | null,
+    live: boolean,
+    target: SectionKind,
+    edges = 0,
+): boolean {
+    return (
+        selected === 1 &&
+        kind === target &&
+        live &&
+        (target !== SectionKind.Force || edges <= MAX_FIT_EDGES)
+    );
 }
 
 /** an invoked solve's authored output: the keyframes it emitted, and the extent + step they

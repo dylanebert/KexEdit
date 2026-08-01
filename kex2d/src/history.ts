@@ -360,8 +360,11 @@ export function trimSuffix(h: History, ecs: State, section: number, k: number): 
 }
 
 /** Reset a SET of nodes to creation state as ONE undoable entry (the bulk Reset over a
- *  multi-selection) — members applied in ASCENDING (section, order), so each member's
- *  re-creation is computed against its already-reset predecessor: a bulk suffix reset is
+ *  multi-selection) — the sort GROUPS by section (its stable id, not chain `Section.order`) and
+ *  ascends `order` WITHIN each group, which is the only ordering `resetNode` reads: it re-creates
+ *  a node against its own section's `order − 1` predecessor and nothing else, so cross-section
+ *  order is unobservable and the section key needs no `Section.order` lookup. Within a section
+ *  each member is therefore computed against its already-reset predecessor: a bulk suffix reset is
  *  byte-equivalent to deleting the suffix and re-extending fresh. unlike the single
  *  `resetNodes` it doesn't couple a boundary stitch (a bulk reset resets each member's own
  *  half); records nothing when no member changed. */

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { DIM_WASH, hexToOklch, hovered, selected } from "../src/colors";
 import { easeOut } from "../src/editor";
 
@@ -77,13 +78,24 @@ describe("token mirrors (App.svelte :root)", () => {
 
     test("no bare `ease` keyword survives — every transition names the token", () => {
         // root ui.md Motion: transitions reference the shared token, never a bare keyword.
-        // (`linear` on the modal spinner's infinite rotation is not an eased transition.)
-        for (const f of ["App.svelte", "Timeline.svelte", "Menu.svelte"]) {
-            const css = readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
-            expect({ file: f, sites: css.match(/\d+ms\s+ease\b/g) ?? [] }).toEqual({
-                file: f,
-                sites: [],
-            });
+        // Globbed, not a hardcoded file list — a new component must not escape the pin. Every
+        // `transition:`/`animation:` shorthand is read whole, so the keyword is caught in EITHER
+        // order (`120ms ease`, `ease 120ms`) and anywhere in the value, and the whole bare family
+        // counts (`ease-in`, `ease-out`, `ease-in-out`) — `var(--ease-out)` is exempt by the
+        // leading `-`, which the boundary rejects.
+        // The one sanctioned non-token timing is `linear` (the modal spinner's infinite
+        // rotation): a constant-rate loop is not an eased transition, and no `ease*` keyword
+        // appears in it, so it needs no carve-out here.
+        const src = fileURLToPath(new URL("../src", import.meta.url));
+        const files = [...new Bun.Glob("**/*.svelte").scanSync(src)];
+        expect(files.length).toBeGreaterThan(0); // the glob reaches the components at all
+        for (const f of files) {
+            const css = readFileSync(`${src}/${f}`, "utf8");
+            const decls = css.match(/\b(?:transition|animation)\s*:[^;}]*/g) ?? [];
+            const sites = decls.filter((d) =>
+                /(?<![-\w])ease(?:-in|-out|-in-out)?(?![-\w])/.test(d),
+            );
+            expect({ file: f, sites }).toEqual({ file: f, sites: [] });
         }
     });
 });
@@ -94,8 +106,11 @@ describe("hover outline lift — a glyph's ink stroke joins its hovered tone (ke
         // lifts to the same hovered() tone its fill wears — silhouette contrast without a size
         // change. force markers + boundary anchors both resolve through the helper.
         const render = readFileSync(new URL("../src/render.ts", import.meta.url), "utf8");
-        // the force marker resolves hovered(COLOR_FORCE) twice — fill lift + outline lift.
-        expect((render.match(/hovered\(COLOR_FORCE\)/g) ?? []).length).toBe(2);
+        // presence, never an occurrence COUNT: a count breaks on a legitimate hoist into a local
+        // and passes on a tone computed and never used. What the lift DOES is pinned honestly by
+        // the harness ray-run off the real canvas (`harness/force.pw.ts` step 4b) — this only
+        // pins that the tone comes from the shared helper rather than a hand-written literal.
+        expect(render.includes("hovered(COLOR_FORCE)")).toBe(true);
         expect(/hov\s*\?\s*hovered\(COLOR_ANCHOR\)/.test(render)).toBe(true);
         // the grow channel is OUT (user feel verdict): no hover radius scaling anywhere.
         expect(render.includes("HOVER_GROW")).toBe(false);
@@ -106,11 +121,14 @@ describe("hover outline lift — a glyph's ink stroke joins its hovered tone (ke
         // base 1px width and without the accent fill — selected keeps 1.4px + accent, so the
         // two registers stay distinguishable by weight and fill, never by a size change.
         const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        const liftRules =
-            tl.match(
-                /\.(?:fpt:hover[^{]*\.fmarker|thit:hover \+ \.tknob)\s*\{[^}]*stroke: var\(--fg\)/gs,
-            ) ?? [];
-        expect(liftRules.length).toBe(2); // .fmarker + .tknob hover rules
+        // per-glyph presence, not a rule count. The `.fmarker` lift is behavior-pinned by the
+        // harness computed-style probe (`harness/force.pw.ts` step 4c); `.tknob`'s has no probe
+        // yet, so this is the only thing holding it — one assert each, so a missing rule names
+        // its own glyph instead of reading as "1 ≠ 2".
+        const lifted = (sel: RegExp): boolean =>
+            new RegExp(`${sel.source}\\s*\\{[^}]*stroke: var\\(--fg\\)`, "s").test(tl);
+        expect(lifted(/\.fpt:hover[^{]*\.fmarker/)).toBe(true);
+        expect(lifted(/\.thit:hover \+ \.tknob/)).toBe(true);
         // no geometry channel remains: no grow var, no hover scale transform.
         expect(tl.includes("--hover-grow")).toBe(false);
         expect(tl.includes("scale(var(--hover-grow))")).toBe(false);

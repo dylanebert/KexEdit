@@ -240,7 +240,9 @@ The worked example of the layered-expressiveness contract's summoned inner layer
 - **The surface is summoned**: double-click enters tangent edit (handles visible only there;
   Esc/click-away exits); the node context menu carries the Handles toggle and the mode submenu.
   Mere selection shows nothing.
-- **Reset always re-infers** — the way back up the layers is one click, from anywhere. On the
+- **Reset returns the node to creation state** — tangents re-infer *and* the position returns to
+  the default-chord continuation past the predecessor (the full law: Menus). The way back up the
+  layers is one click, from anywhere. On the
   force chart that click is picking an easing preset (Easing ▸ subsumes Reset — choosing the
   layer is the reset; no separate Reset row, and the Tangents ▸ mode submenu appears only while
   explicit handles exist).
@@ -308,7 +310,9 @@ bespoke component.
   layers, from anywhere, no confirm (byte-identical undo is the safety). Every context menu
   carries Reset as a top-level row (section, node, node 0), normal color — undo makes it
   non-destructive in spirit, so it doesn't wear Delete's danger red; gated like its neighbors,
-  never on "has something to clear" — a reset that changes nothing records no undo entry.
+  never on "has something to clear". A **node** reset that changes nothing records no undo entry
+  (`sameNodes`); a **section** reset re-seeds its payload by destroy-and-respawn, so it always
+  records.
   Node Reset re-creates: the continuation past its predecessor at the default chord
   (`EXTEND_DIST`, never the session-sticky length — unknowable creation-time state), tangents
   back to `Auto`; node 0's is the tangent clear (its position isn't authorable).
@@ -335,8 +339,9 @@ over the kind token, never a flat accent recolor — flat accent over force gold
 selection at all. **Hover is the rung below selection**, one meaning on one
 channel — color — calibrated per element class: an *area* (clip, span, curve) lifts its fill one
 `hovered()` rung (kex2d `HOVER_STEP`, derived from the clip strip's composited hover-fill step,
-never tuned); a *point glyph* (keyframe diamond, node, anchor, tangent knob) lifts fill *and* its
-ink outline — the stroke joins the hovered tone (canvas glyphs through the same `hovered()`
+never tuned); a *point glyph* (keyframe diamond, node, anchor, tangent knob) lifts its
+ink outline, and its fill where it has one to lift (a hollow knob's outline carries the whole
+read) — the stroke joins the hovered tone (canvas glyphs through the same `hovered()`
 helper; timeline glyphs to selection's own stroke token at the base width, one rung below its
 selected weight) — silhouette contrast without a size change. When languages stack, priority is infeasible-red >
 selection (brightened kind) > hover > kind color, enforced by feasibility-skip in every color
@@ -356,7 +361,8 @@ and viewport had drifted to different dialects of the same states.
 
 - **Kind color** = section kind, everywhere (Kind color, above). Selection brightens it, hover is
   the rung below — one channel (color), calibrated per element class: areas lift fill, point
-  glyphs lift fill + outline — states modulate the element's own color, never recolor it.
+  glyphs lift their ink outline (and their fill where they have one) — states modulate the
+  element's own color, never recolor it.
 - **Accent hatch** = the mode's subject: what this mode is operating on.
 - **Dim wash** (kex2d `rgba(22,20,19,0.55)`) = out-of-scope under a mode. One meaning, both
   surfaces: when a mode dims the timeline's non-subjects, the viewport dims the same spans. The

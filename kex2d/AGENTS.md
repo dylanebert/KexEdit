@@ -254,7 +254,10 @@ value (insertion never bends the curve; the section resolves from the cursor arc
 selection needed); drag a diamond in both axes (horizontal = s, vertical = g); `Del` removes,
 `Esc` deselects; the popover at the selected diamond types or scrubs its s/g. Points are authored
 section-local (s from the section entry) but drawn at their section's whole-track cumulative
-offset. Keyframes, not constraints. Snap + interaction conventions: `editor-ui.md`.
+offset. Keyframes, not constraints. They also **display + select on the viewport track** (the same
+entity, the same glyph, at the world point their `s` bakes to) but are **never draggable there** —
+one authoring surface per quantity, and g has no viewport axis. Snap + interaction conventions:
+`editor-ui.md`.
 
 **Section ops** (the multi-section chain) — select a section by clicking its **clip** in the timeline
 marker lane (or its viewport polyline span); a force clip's right edge is its extent trim, and a `+`
@@ -280,8 +283,10 @@ optimize state is temporary — every in-mode edit records into the mode's own h
 touches the outer stacks), in-mode undo/redo walk that sandbox alone, undo at its start acts as
 Exit, and Exit/Esc discards it without trace. A landed Solve is **one outer undo entry carrying
 the whole experiment** — undoing it reopens the mode with draft, locks, and in-mode undo/redo
-restored; redoing it re-lands and closes. A refusal (terse notice, top-center) stays in-mode with
-the draft untouched. While the mode is open the track is under an **editing lockdown** (only the
+restored; redoing it re-lands and closes. The paced landing that plays after Solve is the mode's
+**exit transition**: the modal chrome (panel in a disabled settling state, dim wash, subject hatch)
+holds through the window and releases in ONE moment at expiry or skip. A refusal (terse notice,
+top-center) stays in-mode with the draft untouched. While the mode is open the track is under an **editing lockdown** (only the
 optimizing section is editable — no section add/remove, convert, domain switch, v0, or
 other-section edits) and **downstream sections freeze** at their mode-entry placement: the
 boundary gap that opens while editing IS the residual (the drop-line's truth), and any close
@@ -319,62 +324,11 @@ sandbox + record-redirect seam (`editor.ts`/`history.ts`), and the downstream fr
   `Track.v0`, default `V0`; authored via the selectable START diamond's popover), not a node — a
   geo→force convert carries no geo start position (destructive; position is cosmetic). Force
   extent's convert-vs-append default: Model (force authoring), above.
-- **The bake uses `forces`, not `invertRange`.** `invertRange` is the *exact* reflection inverse of
-  the forward integrator (`θ_{i+1} = 2·m_i − θ_i`). It carries a leapfrog "computational mode": a
-  marginally-stable ±(−1)^i tangent oscillation. On positions the integrator itself produced it
-  cancels to zero (round-trip exact), but on a varying-curvature curve the mode is excited and **F_n
-  sawtooths sample-to-sample**. `forces` recovers θ as the chord bisector instead, which has no such
-  mode. Don't switch `BakeSystem` (or `section.evalGeo`/`evalForce`'s recovery) to `invertRange`.
-- **`forces` accumulates a *continuous* chord angle.** It unwraps the per-edge chord angle before
-  taking the tangent bisector, so θ stays continuous across the ±π atan2 branch cut. The cart lerps θ
-  for its orientation, so a raw-`atan2` θ would spin the cart a full turn when the heading crosses
-  ±π. A `bake.test.ts` test guards this.
-- **Node headings (`Handle.theta`) are stored authored state — keep them out of the bake.** The
-  bake's per-sample θ is a separate quantity, recovered from the sampled geometry (chord bisector).
-  Don't (a) make the bake read `Handle.theta`; (b) reintroduce a `Track.theta0` entry angle — node 0's
-  flat anchor *is* the entry (and in the substrate, the section entry); (c) switch `sampleChain` back
-  to inferring tangents from neighbor positions each bake (Catmull-Rom) — that breaks two-segment
-  locality.
-- **Stored `Handle.theta` ≠ the recovered curve heading once a node carries an explicit tangent.**
-  `Handle.theta` only drives the `Auto` arc rule; an explicit tangent's own vector governs the curve
-  instead, and nothing re-derives `theta` to track it. An op that needs the curve's actual
-  *direction* — the append/reflect seed, a split/join section boundary — must read the real exit
-  (`exitHeading` for append/extend, `headExit` for split/join: the section's recovered geometric
-  exit, `evalGeo(...).exit`), never `Handle.theta`, or it re-frames the downstream shape by however
-  far the two have drifted apart (`tests/ops.test.ts`'s split/join world-curve pins guard this).
-- **`sampleChain` per-edge ds is the exact chord.** `dsArr[i] = |P_{i+1} − P_i|`. A near-coincident
-  segment or `MAX_SAMPLES` truncation commits the prefix + orphans trailing nodes.
-- **A force section's exit is the geometry-RECOVERED state, not the integrator's.** `evalForce`
-  integrates, then re-runs `forces` and reads the exit off THAT — so a force section joins the next
-  section at the visible-tangent heading, matching a geo section. Don't thread the raw integrator
-  `theta`/`v` as the exit (it would introduce an O(ds) heading kink at the boundary).
-- **Chain sections share the boundary sample.** `chain` copies each section's points `1..edges`
-  (point 0 is the prior section's exit, already written). The shared index carries the prior exit
-  state, which is exactly this section's placement — C0/C1 by construction. Don't double-write it.
-- **Forward clamps are non-differentiable.** `vSafe` / `sqrt` kink at the boundary. The floor is
-  tiny, so coasting past an infeasible region behaves like "cart paused at peak then continued."
-- **While optimize mode is open, every `history.record` redirects into the mode's sandbox** —
-  by design (the sandbox contract: nothing applies to the outer stacks until Solve). The ONE
-  outer write, the Solve landing, goes through `history.recordOuter`; don't "simplify" it back to
-  `record`, and don't rely on call ordering to land outer. The sandbox is also **exempt from
-  `MAX_UNDO` eviction** — Exit discards by replaying every entry's reverse and the landing
-  freezes the stacks whole, so evicting one silently breaks both byte-identity guarantees; it's
-  bounded by the mode's lifetime instead.
-- **A Solve result may only land while its own session is still open.** `runOptimizeSection`
-  checks `editor.optimizing === session` after the await and discards as `StaleOptimize`
-  otherwise — the no-trace guarantee is this module invariant, not the UI's inert/Escape paths.
-  Same family: the lock ledger is frozen at invoke (`endOptimize` clears the live Set in place).
-- **Tick-derived `editor.*` reads lag a frame.** Svelte components read the plain `editor`
-  singleton through `$derived` of the per-RAF `tick` prop, so an `$effect` gated on such a value
-  outlives the real state change by up to a frame. Where the lagging listener *swallows*
-  (capture-phase + `stopImmediatePropagation`) or is non-idempotent, that lag is a defect: make
-  the listener permanent (`onMount`) and early-return on the live `editor.*` field. All three
-  menus (node, section ctx, Timeline force) wear this shape — it's the dismissal standard a new
-  menu copies, and the solve modal's key gate (`editor.converting`) is the fourth instance. A
-  lagging listener that only re-calls an idempotent close is tolerable. Its twin on the read side:
-  a tick-derived read must hand back PRIMITIVES, never a mutated object — the modal's progress is
-  rewritten in place, so a `$derived` returning that same reference compares `===` equal and the
-  surface never updates.
+
+Per-module hazards live beside their module in `.claude/rules/kex2d-map.md` (Hard gotchas): the
+bake/recovery traps (`forces` vs `invertRange`, the continuous chord angle, `Handle.theta` out of
+the bake and its drift from the recovered exit), the substrate's boundary + clamp laws, optimize
+mode's sandbox invariants, and the tick-lag dismissal standard every menu copies.
 
 ## Verify
 
@@ -386,38 +340,10 @@ cd kex2d && bun run capture   # UI screenshots → harness/shots/ (display-gated
 **Toolchain pin:** `typescript` 6.0.3 + `svelte-check` 4.7.3 — svelte-check crashes on TypeScript 7
 (the native Go port lacks the `ts.sys` API it needs). Revisit when it ships TS7 support.
 
-f64 mirror for tests: `tests/helpers/forward64.ts`. Independent physics check: `tests/oracles/rk4.ts`
-(time-parameterized RK4 — a different scheme + parameterization). Physics is gated against the
-oracle, not self-consistency.
-
-Investigation labs (run explicitly, not part of `bun test`) — the kernel-atom / future-tier
-reference: `tests/{geometry,collocate,loop,conditioning,fvd,hill,attribution,forcegeo,perf,pool,roundtrip}.lab.ts`.
-What each measures and reads against: `.claude/rules/kex2d-map.md` (Labs).
-Visual counterparts
-`geometry-lab.html` + `collocate-lab.html` + `loop-lab.html` + `fvd-lab.html` + `fit-lab.html`
-(canvas2D, captured by the harness). `fit-lab.html` is the conversion tier's own page: it plays
-back the pipeline's decisions (`playback.ts`) and is where the tier's output is judged as an
-authoring surface. Its corpus stays a focused test, so the page solves only the selected
-scenario.
-
-The ECS + substrate layers are covered device-free: `tests/section.test.ts` (the substrate),
-`tests/track.test.ts` + `tests/cart.test.ts` (`BakeSystem`, cart on a bare `State`). The `tests/setup.ts` enum-shim preload (`bunfig.toml`) lets them import the shallot barrel
-with no GPU device; the unit suite is canvas2D + device-free, no real-GPU leg.
-
-`harness/` — Playwright harness (`bun run capture` → `harness/shots/`, gitignored). The geo and
-force authoring-flow tests drive the real UI (seed → extend/convert → author → undo) and assert
-`window.__kex` state via `expect.poll` (no sleeps); the lab tests screenshot the atom pages. Drives
-the host's **real-GPU Chrome via the WSL→Windows bridge** (shallot's `run()` acquires a WebGPU
-device even though kex2d is canvas2D). Display-gated.
-
-It's a **sub-package with its own `package.json` + committed `bun.lock`** (Playwright is declared
-there, not in the app). `bun check` self-provisions it — the `harness:deps` script installs
-`--cwd harness --frozen-lockfile` when `harness/node_modules` is missing, so a fresh clone or
-worktree type-checks without a manual step. **Never fix a missing `@playwright/test` with a root
-`bun install`**: that replaces the `node_modules/@dylanebert/shallot` dev symlink with npm shallot
-and the app stops mounting. Its code IS under the project `tsconfig` + `biome`; the pure pieces
-(`args.ts`'s CLI/env validators + the `--out` wipe guard, `wsl.ts`'s provisioning key) are
-unit-tested in `tests/harness.test.ts`. `capture.pw.config.ts` + `flow.ts` + every `*.pw.ts` flow
-are **staged to the Windows host standalone** (`wsl.ts`), importing nothing outside the staged set
-(mirrored constants + verbatim-pinned validators, plus flow-authoring/verifier-integrity
-conventions: `.claude/rules/kex2d-harness.md`).
+Physics is gated against an independent oracle, not self-consistency; the ECS + substrate layers
+are covered device-free, so the unit suite has no real-GPU leg. Tiers, the f64 mirror + RK4
+oracle, and the investigation labs (run explicitly, never part of `bun test`):
+`.claude/rules/kex2d-map.md` (Test tiers, Labs). `bun run capture` drives the real UI on the
+host's GPU Chrome through the WSL→Windows bridge; the harness's structure, its sub-package
+install story, and its flow-authoring + verifier-integrity laws:
+`.claude/rules/kex2d-harness.md`.

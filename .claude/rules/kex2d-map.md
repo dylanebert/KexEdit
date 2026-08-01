@@ -7,8 +7,8 @@ paths:
 # kex2d Code Map
 
 Model internals + per-file map for `kex2d/`: the section substrate, the physics, what each module
-owns, and the external references. The behavioral contract (authoring models, authoring API,
-editing model, hard gotchas, verify) is `kex2d/AGENTS.md` — read it first.
+owns, its per-module hazards, the test tiers + labs, and the external references. The behavioral
+contract (authoring models, authoring API, editing model) is `kex2d/AGENTS.md` — read it first.
 
 ## The section substrate
 
@@ -92,7 +92,7 @@ Velocity uses the energy-delta (squared) form to avoid catastrophic cancellation
   (`ds_i = v_i·Δt` is exactly 0 at a stall), and the branch keeps the Distance path bit-identical
 
 `invertRange` (`θ_{i+1} = 2·m_i − θ_i`) is the integrator's exact reflection inverse — round-trip
-validation only, NOT the bake (`kex2d/AGENTS.md` Hard gotchas).
+validation only, NOT the bake (Hard gotchas, below).
 
 **The clamp-gradient law** (optimize-mode stage-3 conditioning lab): the forward clamps
 (`vSafe`, `sqrt`) make the exit map non-differentiable at a stall, and the cliff is
@@ -139,7 +139,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `mirrorTangent` re-collinearize a tangent on a mode switch.
 - `bake.ts` — `forces` (the bake path: positions → smooth tangent θ → v → physical `F_n`,
   per-edge ds). `invertRange`/`invert` (the exact reflection inverse, round-trip validation only —
-  see `kex2d/AGENTS.md` Hard gotchas), `replay` (forward-integrate F_n back to positions). `V_WARN` + re-exports
+  see Hard gotchas, below), `replay` (forward-integrate F_n back to positions). `V_WARN` + re-exports
   `forward`'s `V_FLOOR`.
 - `profile.ts` — the FORCE authoring primitive (the force analogue of `spline.ts`): per-segment
   cubic-bezier eval at the handle-resolution seam (`segment`: easing-tag-derived flat tangents via
@@ -288,7 +288,18 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   the default flow stores no tangents (`exitHeading` still resolves the append/reflect seed against
   an explicit tip's out-vector). Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
-  `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Kind + structure: `convertSection`, `applyConvert` (land an
+  `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Where a keyframe lands on the
+  baked track: `forceSample` (a stored native-axis `s` → flat sample index + fraction, walked over
+  the bake's own tables within the section's published range — per-edge `out.ds` on Distance, the
+  per-sample march clock `out.t` on Time; the ds-convention law's newest consumer, so a zero-length
+  edge is stepped over rather than divided by) and `forceMarkers` (those addresses lerped to world
+  points — the viewport marker substrate, `kindSegments`'s force-point sibling, read by
+  `render.ForceDrawSystem` and the controls' pick; a key past its section's extent is skipped, since
+  a trimmed-past key has no track position at all — the non-destructive trim law). Kind + structure:
+  `convertSection` + `resetSection` (the same reset with the kind HELD — both run the shared
+  `resetToForce`/`resetToGeo` bodies, so flip and Reset can't drift apart) with `sectionResettable`
+  its enablement predicate (exactly one section; force additionally wants a live bake, since its
+  seed's entry force is bake-recovered — a geo reset reads no bake), `applyConvert` (land an
   invoked solve: destroy the nodes, flip the kind, take the answer's extent + step, spawn its
   `{s,g}` keys — all default-Cubic by construction; typed on the structural `SolvedForce`, so the
   invoked tier stays off this module's graph. Its numbers arrive in the TRACK DOMAIN's unit, so a
@@ -343,6 +354,18 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   downstream (a track already past `MAX_SAMPLES`) publishes empty past-buffer ranges rather than
   stale prior-bake info. Tested in `tests/track.test.ts` + the mode-level freeze suite in
   `tests/optimize.test.ts`.
+  **The landing display override** (`setBakeLanding`/`BakeLanding`, the paced landing's
+  whole-display half): while a landed Solve's landing runs, `forceDense` substitutes the landing's
+  interpolated `g` for the landed section's keyframes — the ONE seam where keyframes become bake
+  input, so curve, viewport geometry, markers, and cart glide with the chart's diamonds instead of
+  snapping. `bakeFreeze ?? bakeLanding` holds the downstream freeze through the window (the mode
+  already closed, so nothing else would), and the hash gate is bypassed while `landingLive()` — the
+  interpolant moves while the authored hash stands still, so the window bakes every frame.
+  `setBakeFreeze`'s pattern throughout: module-level editor-owned state outside `bakeHash`,
+  invalidated through `freezeInvalid`. What makes "cosmetic only" true **at the seam** rather than
+  by convention is `bakeLive` returning false in-window: the override's bake carries display values
+  under the authored hash, so everything that certifies bake truth (Reset, Convert, Solve) grays for
+  the window instead of reading a contaminated bake as authored state.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `loopTime`, and **`trackMapping`**
@@ -353,8 +376,11 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
   fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
-  right-click menus: `context` (the section's ONE kind-fitted conversion row + Delete), `nodeMenu` (the
-  node context menu — Handles toggle + Tangents submenu — opened on any pickable node, any mode),
+  right-click menus: `context` (the section menu — the ONE kind-fitted `Convert` row, `Optimize` on a
+  force section, then top-level `Reset` and `Delete`; inside a live optimize session on that section
+  it becomes Solve + Exit instead), `nodeMenu` (the node context menu — Delete + Add, a Handles
+  toggle, a Tangents ▸ submenu holding the three modes, then a top-level Reset — opened on any
+  pickable node, any mode),
   and `rulerMenu` (the ruler's Meters/Seconds domain picker, `openRulerMenu`/`closeRulerMenu` — no
   target subject, the ruler addresses the whole timeline; a row's pick is a document conversion op,
   so no basis view-state lives here — the chart reads `Track.domain`) — all `{x, y, …}` or
@@ -368,6 +394,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   (`beginDrag`, the one suppression point); viewport-local, never synced with the clip strip's CSS
   hover. `hoverNode` is its node-level twin (a node picks before its section, so exactly one of
   the two is lit — hover matches what a click would take; the node draw lifts it one rung).
+  `hoverForce` is the force-marker twin, written by the same sweep and mutually exclusive with both.
   The invoked-solve gate lives here too: `converting` (`{phase, keys, probes}` or
   null — while it's set the modal is up and every other input is blocked; the fields are gate
   state, not display — the modal shows a spinner, not the counts) with
@@ -382,7 +409,12 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `endOptimize` are the only open/close choke points (every path goes through them), creating/
   discarding the sandbox history, setting/clearing `history.redirectHistory` and
   `track.setBakeFreeze`; `sandbox()`/`restoreSandbox` are the landing's capture/restore seam.
-  Plain singleton, read by Svelte via the per-RAF tick.
+  `Landing` carries the landed session's `section`, which is what makes `modeChromeSection()`
+  (`optimizing ?? landing`) possible — the modal chrome's subject, CHROME ONLY: the panel, the dim
+  wash, and the subject hatch key on it so the landing reads as the mode's exit transition, while
+  enablement and consent predicates keep reading `editor.optimizing`. `easeOut` is the one shared
+  easing curve (`landingG`'s interpolant and App's `--ease-out` token, pinned equal in
+  `colors.test.ts`). Plain singleton, read by Svelte via the per-RAF tick.
 - `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
   `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).
@@ -519,8 +551,15 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `exitOptimizeMode` discards: replay every sandbox reverse, close. Sandbox/boundary tests in
   `tests/optimize.test.ts` (mutation-proven guards).
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
-  teardown. `pickNode` (order-0 anchors are pickable, not draggable) then `pickSection` (nearest
-  span); a node body click **selects only** — except inside tangent edit, where grabbing the
+  teardown. Pick priority is node → force/START → section: `pickNode` (order-0 anchors are
+  pickable, not draggable), then `pickForceOrStart` (the middle rung, resolved **nearest-wins** with
+  an exact tie to START — a force-first section's `s = 0` seed sits exactly on the START diamond, so
+  a fixed order would leave one of the two permanently unreachable; `pickForce` is the marker-only
+  read), then `pickSection` (nearest span). The node write splits three ways: `placeNode` (world →
+  section-local, the bare write), `dragTo` (place + `reheadOnDrag` — the default surface's), and
+  `dragFreeTo` (place only, plus the lazy `Aligned` stamp at the first armed move: the tangent-edit
+  body drag is authoring, so it never re-heads).
+  A node body click **selects only** — except inside tangent edit, where grabbing the
   edited node's body starts a free unsnapped move (`dragNode`, same dead-zone/undo/blur machinery;
   Esc cancels it as its own dismissal rung, Delete/Backspace no-op on `editor.dragging`) —
   movement otherwise enters through `startManip` (the DOM knob
@@ -651,7 +690,12 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   selection > hover > kind, all three stroked through one `strokeFeasible`), the optimize-mode
   **out-of-scope dim** (every non-subject span, plus its anchors/nodes/markers, washed topmost in
   `colors.DIM_WASH` — the viewport half of the timeline's `.mode-dim` wash; one channel, both
-  surfaces, `editor-ui.md` Mode vocabulary), the node handles
+  surfaces, `editor-ui.md` Mode vocabulary; all four passes keyed on `editor.modeChromeSection()`,
+  so the wash holds through the paced landing and releases with it in one moment), the **force
+  keyframe markers** (`ForceDrawSystem`, ordered between the anchor and handle passes — the
+  timeline diamond's viewport twin over `track.forceMarkers`: same entity, same glyph, the kind-color
+  ladder plus the driven register for a locked key in optimize mode; display + select only, nothing
+  drags), the node handles
   (selected/orphan/infeasible), the cart, the
   **Timeline** dock, and the three-button radial ring around the selected node (`radial.ts`: the
   two manipulator knobs flanking extend, the extend button chain-end-only, all hidden in tangent
@@ -678,9 +722,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   point overlapped the buttons; a fixed top-left line read too far from the action.)
   It also owns the **invoked convert**: the section menu's ONE conversion row — labeled `Convert`
   (the kind implies the direction), its action and enablement resolved
-  from the target's kind through the one `controls.sectionSolvable` predicate (that kind, one
+  from the target's kind through the one `track.sectionSolvable` predicate (that kind, one
   section, a live bake, and — force→geo only — a bake within `MAX_FIT_EDGES` = 2400 edges, the
-  invoke-side runaway refusal; derivation on the constant in `controls.ts`: the largest edge count
+  invoke-side runaway refusal; derivation on the constant in `track.ts`, beside its twin
+  `sectionResettable` — both pure device-free section predicates: the largest edge count
   actually measured inside the modal's 30 s completion budget, never extrapolated. Grayed
   otherwise, never hidden — the opposite direction is absent, since a
   section is only ever one kind),
@@ -708,9 +753,91 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   never ships. Screen-space affordances are driven
   pointer-true through the real DOM (`.rbtn`, `.manip-length`, `.manip-angle`), not through hooks.
 
+## Hard gotchas
+
+Per-module hazards. The app-level ones (input wiring, the two keydown handlers, holding an eid
+across a restore, the force-profile endpoint hold, the START anchor) live in `kex2d/AGENTS.md`.
+
+- **The bake uses `forces`, not `invertRange`.** `invertRange` is the *exact* reflection inverse of
+  the forward integrator (`θ_{i+1} = 2·m_i − θ_i`). It carries a leapfrog "computational mode": a
+  marginally-stable ±(−1)^i tangent oscillation. On positions the integrator itself produced it
+  cancels to zero (round-trip exact), but on a varying-curvature curve the mode is excited and **F_n
+  sawtooths sample-to-sample**. `forces` recovers θ as the chord bisector instead, which has no such
+  mode. Don't switch `BakeSystem` (or `section.evalGeo`/`evalForce`'s recovery) to `invertRange`.
+- **`forces` accumulates a *continuous* chord angle.** It unwraps the per-edge chord angle before
+  taking the tangent bisector, so θ stays continuous across the ±π atan2 branch cut. The cart lerps θ
+  for its orientation, so a raw-`atan2` θ would spin the cart a full turn when the heading crosses
+  ±π. A `bake.test.ts` test guards this.
+- **Node headings (`Handle.theta`) are stored authored state — keep them out of the bake.** The
+  bake's per-sample θ is a separate quantity, recovered from the sampled geometry (chord bisector).
+  Don't (a) make the bake read `Handle.theta`; (b) reintroduce a `Track.theta0` entry angle — node 0's
+  flat anchor *is* the entry (and in the substrate, the section entry); (c) switch `sampleChain` back
+  to inferring tangents from neighbor positions each bake (Catmull-Rom) — that breaks two-segment
+  locality.
+- **Stored `Handle.theta` ≠ the recovered curve heading once a node carries an explicit tangent.**
+  `Handle.theta` only drives the `Auto` arc rule; an explicit tangent's own vector governs the curve
+  instead, and nothing re-derives `theta` to track it. An op that needs the curve's actual
+  *direction* — the append/reflect seed, a split/join section boundary — must read the real exit
+  (`exitHeading` for append/extend, `headExit` for split/join: the section's recovered geometric
+  exit, `evalGeo(...).exit`), never `Handle.theta`, or it re-frames the downstream shape by however
+  far the two have drifted apart (`tests/ops.test.ts`'s split/join world-curve pins guard this).
+- **`sampleChain` per-edge ds is the exact chord.** `dsArr[i] = |P_{i+1} − P_i|`. A near-coincident
+  segment or `MAX_SAMPLES` truncation commits the prefix + orphans trailing nodes.
+- **A force section's exit is the geometry-RECOVERED state, not the integrator's.** `evalForce`
+  integrates, then re-runs `forces` and reads the exit off THAT — so a force section joins the next
+  section at the visible-tangent heading, matching a geo section. Don't thread the raw integrator
+  `theta`/`v` as the exit (it would introduce an O(ds) heading kink at the boundary).
+- **Chain sections share the boundary sample.** `chain` copies each section's points `1..edges`
+  (point 0 is the prior section's exit, already written). The shared index carries the prior exit
+  state, which is exactly this section's placement — C0/C1 by construction. Don't double-write it.
+- **Forward clamps are non-differentiable.** `vSafe` / `sqrt` kink at the boundary. The floor is
+  tiny, so coasting past an infeasible region behaves like "cart paused at peak then continued."
+  What may and may not certify that cliff: the clamp-gradient law, above.
+- **While optimize mode is open, every `history.record` redirects into the mode's sandbox** —
+  by design (the sandbox contract: nothing applies to the outer stacks until Solve). The ONE
+  outer write, the Solve landing, goes through `history.recordOuter`; don't "simplify" it back to
+  `record`, and don't rely on call ordering to land outer. The sandbox is also **exempt from
+  `MAX_UNDO` eviction** — Exit discards by replaying every entry's reverse and the landing
+  freezes the stacks whole, so evicting one silently breaks both byte-identity guarantees; it's
+  bounded by the mode's lifetime instead.
+- **A Solve result may only land while its own session is still open.** `runOptimizeSection`
+  checks `editor.optimizing === session` after the await and discards as `StaleOptimize`
+  otherwise — the no-trace guarantee is this module invariant, not the UI's inert/Escape paths.
+  Same family: the lock ledger is frozen at invoke (`endOptimize` clears the live Set in place).
+- **Tick-derived `editor.*` reads lag a frame.** Svelte components read the plain `editor`
+  singleton through `$derived` of the per-RAF `tick` prop, so an `$effect` gated on such a value
+  outlives the real state change by up to a frame. Where the lagging listener *swallows*
+  (capture-phase + `stopImmediatePropagation`) or is non-idempotent, that lag is a defect: make
+  the listener permanent (`onMount`) and early-return on the live `editor.*` field. All three
+  menus (node, section ctx, Timeline force) wear this shape — it's the dismissal standard a new
+  menu copies, and the solve modal's key gate (`editor.converting`) is the fourth instance. A
+  lagging listener that only re-calls an idempotent close is tolerable. Its twin on the read side:
+  a tick-derived read must hand back PRIMITIVES, never a mutated object — the modal's progress is
+  rewritten in place, so a `$derived` returning that same reference compares `===` equal and the
+  surface never updates.
+
+## Test tiers
+
+`bun test` is the fast tier (~8s); `bun run test:full` adds the slow oracles (~45s) and is the
+pre-commit gate. Physics is gated against an **independent** oracle, not self-consistency:
+`tests/oracles/rk4.ts` is a time-parameterized RK4 (a different scheme *and* parameterization),
+and `tests/helpers/forward64.ts` is the f64 mirror the f32 path is measured against.
+
+The ECS + substrate layers are covered device-free — `tests/section.test.ts` (the substrate),
+`tests/track.test.ts` + `tests/cart.test.ts` (`BakeSystem`, cart on a bare `State`). The
+`tests/setup.ts` enum-shim preload (`bunfig.toml`) lets them import the shallot barrel with no GPU
+device; the unit suite is canvas2D + device-free, with no real-GPU leg. The real-GPU leg is the
+capture harness alone (`.claude/rules/kex2d-harness.md`).
+
 ## Labs
 
-Run explicitly, never part of `bun test` (index in `kex2d/AGENTS.md` Verify). The annotated ones:
+Run explicitly, never part of `bun test` — the kernel-atom / future-tier reference:
+`tests/{geometry,collocate,loop,conditioning,fvd,hill,attribution,forcegeo,perf,pool,roundtrip,optimize}.lab.ts`.
+Visual counterparts are the canvas2D atom pages the harness captures: `geometry-lab.html`,
+`collocate-lab.html`, `loop-lab.html`, `fvd-lab.html`, `fit-lab.html`. `fit-lab.html` is the
+conversion tier's own page — it plays back the pipeline's decisions (`playback.ts`) and is where
+the tier's output is judged as an authoring surface; its corpus stays a focused test, so the page
+solves only the selected scenario. The annotated labs:
 
 - `tests/attribution.lab.ts` — the flat conversion tier's authoring-floor sweep; its own header
   carries the readings.

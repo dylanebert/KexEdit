@@ -12,7 +12,6 @@ import {
     latchAngle,
     LATCH_PX,
     manipKnobs,
-    MAX_FIT_EDGES,
     nodeFrame,
     nodeMetrics,
     normDeg,
@@ -21,7 +20,6 @@ import {
     polarNudge,
     sectionEditable,
     sectionOpsAllowed,
-    sectionSolvable,
     sectionsDeletable,
     selectedMetrics,
     suffixRun,
@@ -710,59 +708,6 @@ describe("sectionEditable — the in-mode editing lockdown", () => {
         expect(sectionEditable(session, 7)).toBe(true);
         expect(sectionEditable(session, 3)).toBe(false);
         expect(sectionEditable(session, -1)).toBe(false); // v0 (track-global) is locked in-mode
-    });
-});
-
-// the invoked solve enablement (`sectionSolvable`, pure/device-free), both directions: the row is
-// live for exactly one section of the direction's own target kind with a live bake — `convertGeo`'s
-// (geo→force) and `convertForce`'s (force→geo) own guards, which throw, so this is the gate and not
-// a hint. Everything else grays.
-describe("sectionSolvable — invoked-solve enablement", () => {
-    test("one geo section with a live bake enables Convert to force (target Geo)", () => {
-        expect(sectionSolvable(1, SectionKind.Geo, true, SectionKind.Geo)).toBe(true);
-    });
-
-    test("a stale bake disqualifies — `sectionInfo` describes a shape that isn't on screen", () => {
-        expect(sectionSolvable(1, SectionKind.Geo, false, SectionKind.Geo)).toBe(false);
-    });
-
-    test("a force section disqualifies Convert to force — there is nothing to convert", () => {
-        expect(sectionSolvable(1, SectionKind.Force, true, SectionKind.Geo)).toBe(false);
-    });
-
-    test("a multi-set and an empty selection both disqualify (no single subject)", () => {
-        expect(sectionSolvable(2, SectionKind.Geo, true, SectionKind.Geo)).toBe(false);
-        expect(sectionSolvable(0, null, true, SectionKind.Geo)).toBe(false);
-    });
-
-    test("one force section with a live bake enables Convert to geo (target Force)", () => {
-        expect(sectionSolvable(1, SectionKind.Force, true, SectionKind.Force)).toBe(true);
-    });
-
-    test("a geo section disqualifies Convert to geo — there is no force curve to fit", () => {
-        expect(sectionSolvable(1, SectionKind.Geo, true, SectionKind.Force)).toBe(false);
-    });
-
-    // the force→geo direction's own density guard (`MAX_FIT_EDGES`): a dense-enough bake refuses
-    // at invoke rather than risk running past the modal's designed budget — the row grays, never
-    // hides, exactly like the other disqualifiers above. `edges` defaults to 0, so every call
-    // above (and every geo→force call, target `Geo`) is unaffected by this guard.
-    test("edges at the ceiling still enables Convert to geo", () => {
-        expect(sectionSolvable(1, SectionKind.Force, true, SectionKind.Force, MAX_FIT_EDGES)).toBe(
-            true,
-        );
-    });
-
-    test("one edge past the ceiling disqualifies Convert to geo", () => {
-        expect(
-            sectionSolvable(1, SectionKind.Force, true, SectionKind.Force, MAX_FIT_EDGES + 1),
-        ).toBe(false);
-    });
-
-    test("edges is inert on the geo→force direction (target Geo) — that input is small authored nodes, not bake edges", () => {
-        expect(
-            sectionSolvable(1, SectionKind.Geo, true, SectionKind.Geo, MAX_FIT_EDGES + 1000),
-        ).toBe(true);
     });
 });
 

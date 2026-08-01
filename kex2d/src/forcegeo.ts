@@ -60,7 +60,7 @@ export class StaleConvert extends Error {
  *  so `convertForce` (force-only) and `convertGeo` (geo-only) can never race the same id. */
 const converting = new Set<number>();
 
-/** the landing-side density guard, `MAX_FIT_EDGES`'s (`controls.ts`) twin on the OUTPUT: a
+/** the landing-side density guard, `MAX_FIT_EDGES`'s (`track.ts`) twin on the OUTPUT: a
  *  `"budget"` fit still resolves and still emits a node chain, but a chain past this size stops
  *  being a document a person hand-edits (drags, tangent-edits, right-clicks node by node) —
  *  authoring scale, not wall time, so it's derived from what this codebase has actually needed to

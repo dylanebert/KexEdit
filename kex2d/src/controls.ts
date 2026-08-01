@@ -352,8 +352,16 @@ export function pickForceOrStart(
     sx: number,
     sy: number,
 ): { kind: "force"; id: number } | { kind: "start" } | null {
-    const f = nearestForce(ecs, tx, sx, sy);
-    const s = startD2(ecs, tx, sx, sy);
+    return forceOrStart(nearestForce(ecs, tx, sx, sy), startD2(ecs, tx, sx, sy));
+}
+
+/** the tie rule itself, over readings already taken — so a caller that needs the nearest
+ *  marker for its own fallback (the contextmenu's force-first START branch) resolves it once
+ *  and asks this, instead of walking `forceMarkers` a second time. */
+function forceOrStart(
+    f: { id: number; d2: number } | null,
+    s: number | null,
+): { kind: "force"; id: number } | { kind: "start" } | null {
     if (s !== null && (f === null || s <= f.d2)) return { kind: "start" };
     return f !== null ? { kind: "force", id: f.id } : null;
 }
@@ -573,8 +581,8 @@ export function sectionsDeletable(selected: number, total: number): boolean {
  *  `editor.optimizing` on a dead id; a convert or a domain switch would land a track rewrite
  *  INSIDE the open session — an upstream convert silently rebases what the stamp means, and a
  *  domain switch is a lossy whole-track rewrite of the very store the session is solving.
- *  Extracted as its own predicate (mirrors `sectionsDeletable`/
- *  `sectionSolvable` above) since the window keydown handlers and `pickDomain` have no DOM-free
+ *  Extracted as its own predicate (mirrors `sectionsDeletable` above, and
+ *  `track.sectionSolvable`) since the window keydown handlers and `pickDomain` have no DOM-free
  *  unit-test seam otherwise; every caller pairs the grayed affordance with this same guard at
  *  the action layer. */
 export function sectionOpsAllowed(optimizing: OptimizeSession | null): boolean {
@@ -590,55 +598,6 @@ export function sectionOpsAllowed(optimizing: OptimizeSession | null): boolean {
  *  session id ever equals. */
 export function sectionEditable(optimizing: OptimizeSession | null, section: number): boolean {
     return optimizing === null || optimizing.section === section;
-}
-
-/** the force→geo fit's own invoke ceiling (dense bake edges): the largest input the modal's
- *  designed budget can absorb, derived from the fit's own measured cost, never tuned
- *  (`coding.md` tolerance discipline).
- *
- *  The modal's own budget is the harness's completion wait (`harness/section.pw.ts`'s
- *  `timeout: 30_000` — the concrete number "tens of seconds" grounds to), read as **browser**
- *  wall time — the fit runs in a browser worker.
- *
- *  The fit's own cost is superlinear in edge count AND cliff-shaped near a profile's own
- *  feasibility limit (a profile that nearly stalls the cart makes the fit saturate toward one
- *  node per dense sample instead of converging — `main.ts`'s `seedForceStress` comment), so a
- *  clean power-law extrapolation from a couple of anchors isn't trustworthy near the boundary —
- *  the safe ceiling has to come from an already-measured point, not a fitted curve. `seedForceStress`
- *  IS that point: its own tuning notes record a 1200 m section (2400 edges at the track-nominal
- *  `DS_NOMINAL` = 0.5 m step) at ~1.9 s under bun, ~12 s in the browser worker (the ~7× ratio the
- *  same comment measures) — comfortably inside the 30 s budget (2.5× margin) — while the next size
- *  tried, 2000 m (4000 edges), "overshot the completion wait". The true boundary sits somewhere
- *  between those two, unmeasured; 2400 is the largest edge count this codebase has actually run
- *  and timed inside the modal's budget, so it's the ceiling — not extrapolated past what's known. */
-export const MAX_FIT_EDGES = 2400;
-
-/** whether an invoked solve is available on a section selection: exactly ONE section of the
- *  direction's own `target` kind, and a bake that IS the authored state. All three are the
- *  invoking command's own guards, which *throw* (`convertGeo`'s geo/live checks, `convertForce`'s
- *  force/live twin) — the solve reads the bake's entry frame, so a stale bake would hand it a
- *  shape that isn't on screen, and a set has no single subject to solve. `target` parameterizes
- *  the direction (`SectionKind.Geo` for "Convert to force", `SectionKind.Force` for "Convert to
- *  geo") rather than a second cloned predicate — the menu's ONE conversion row resolves its target
- *  from the section's kind and asks this once. `edges` is the force→geo direction's own density
- *  guard (`MAX_FIT_EDGES`, above) — the section's dense bake edge count (`endSample −
- *  startSample`, cheap to read off `sectionInfo`, no fit invoked to check); the geo→force
- *  direction's input is small authored nodes (already progress/cancel-designed), so `edges` is
- *  inert there — optional, defaulting to 0 so a geo→force call site never has to supply it. The
- *  row grays out otherwise (never hidden). Pure — device-free, unit-tested. */
-export function sectionSolvable(
-    selected: number,
-    kind: SectionKind | null,
-    live: boolean,
-    target: SectionKind,
-    edges = 0,
-): boolean {
-    return (
-        selected === 1 &&
-        kind === target &&
-        live &&
-        (target !== SectionKind.Force || edges <= MAX_FIT_EDGES)
-    );
 }
 
 /** wrap a degree value into (−180, 180]. */
@@ -1096,7 +1055,8 @@ export function attachControls(
         // marker vs START resolves nearest-wins (`pickForceOrStart`); a winning START
         // reaches node 0's menu on a geo-first track, and a force-first track has no node 0,
         // so the coincident seed keyframe's menu opens instead.
-        const fs = pickForceOrStart(ecs, tx, cx, cy);
+        const near = nearestForce(ecs, tx, cx, cy); // the one marker walk both branches read
+        const fs = forceOrStart(near, startD2(ecs, tx, cx, cy));
         if (fs !== null) {
             if (fs.kind === "force") {
                 openForceMenu(e.clientX, e.clientY, fs.id);
@@ -1107,9 +1067,8 @@ export function attachControls(
                 openNodeMenu(e.clientX, e.clientY, n0);
                 return;
             }
-            const fp = pickForce(ecs, tx, cx, cy);
-            if (fp !== null) {
-                openForceMenu(e.clientX, e.clientY, fp);
+            if (near !== null) {
+                openForceMenu(e.clientX, e.clientY, near.id);
                 return;
             }
         }

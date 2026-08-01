@@ -6,7 +6,6 @@ import {
     manipKnobs,
     nodeMembers,
     sectionOpsAllowed,
-    sectionSolvable,
     sectionsDeletable,
     selectedMetrics,
     suffixRun,
@@ -77,6 +76,7 @@ import {
     sectionInfo,
     sectionResettable,
     sections,
+    sectionSolvable,
     seedTangent,
     setTangent,
     setTrackV0,
@@ -400,6 +400,10 @@ onMount(() => {
         window.removeEventListener("pointerdown", onDown, { capture: true });
         window.removeEventListener("keydown", onEsc, { capture: true });
         clearTimeout(landingTimer);
+        // detaching mid-landing must not leave the bake override stuck on: it's module state in
+        // `track.ts`, so a remount would inherit a landing nothing can skip (every skip listener
+        // just died) — `bakeLive` false and a bake every frame, forever.
+        skipLanding();
     };
 });
 
@@ -929,7 +933,7 @@ const canSolve = $derived.by((): boolean => {
     );
 });
 // the force→geo twin (target `Force`): one force section with a live bake, dense enough for the
-// fit to hold its modal budget (`sectionSolvable`'s `edges` guard, `controls.MAX_FIT_EDGES`) — a
+// fit to hold its modal budget (`sectionSolvable`'s `edges` guard, `track.MAX_FIT_EDGES`) — a
 // section's own bake edge count, cheap off `sectionInfo` (no fit invoked to check).
 const ctxEdges = $derived.by((): number => {
     void tick;

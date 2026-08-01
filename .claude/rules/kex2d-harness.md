@@ -8,7 +8,28 @@ paths:
 
 Conventions for `kex2d/harness/` (Playwright flows over the real UI, `bun run capture`). Each
 law below was earned by a root-caused flake or a live defect — they are why the suite is fast
-AND honest. Structure + install story: `kex2d/AGENTS.md` "Verify".
+AND honest.
+
+## Structure
+
+`harness/` is the Playwright harness: `bun run capture` → `harness/shots/` (gitignored). The geo
+and force authoring-flow tests drive the real UI (seed → extend/convert → author → undo) and
+assert `window.__kex` state via `expect.poll` (no sleeps); the lab tests screenshot the atom
+pages (`geometry-lab.html`, `collocate-lab.html`, `loop-lab.html`, `fvd-lab.html`,
+`fit-lab.html`). It drives the host's **real-GPU Chrome via the WSL→Windows bridge** (shallot's
+`run()` acquires a WebGPU device even though kex2d is canvas2D). Display-gated.
+
+It's a **sub-package with its own `package.json` + committed `bun.lock`** — Playwright is declared
+there, not in the app. `bun check` self-provisions it: the `harness:deps` script installs
+`--cwd harness --frozen-lockfile` when `harness/node_modules` is missing, so a fresh clone or
+worktree type-checks without a manual step. **Never fix a missing `@playwright/test` with a root
+`bun install`**: that replaces the `node_modules/@dylanebert/shallot` dev symlink with npm shallot
+and the app stops mounting.
+
+The harness code IS under the project `tsconfig` + `biome`. Its pure pieces — `args.ts`'s CLI/env
+validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-tested in
+`kex2d/tests/harness.test.ts`. What may cross the staging boundary is Verifier integrity's
+"Standalone staging", below.
 
 ## Iteration discipline
 
