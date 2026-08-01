@@ -1023,7 +1023,7 @@ const ctxItems = $derived.by((): MenuItem[] => {
             action: ctxOptimizeEnter,
         });
     }
-    items.push({ label: "Reset", danger: true, enabled: canReset, action: ctxReset });
+    items.push({ label: "Reset", enabled: canReset, action: ctxReset });
     items.push({ label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: del });
     return items;
 });

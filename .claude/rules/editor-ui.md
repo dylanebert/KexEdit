@@ -304,7 +304,8 @@ bespoke component.
   here".
 - **Reset returns its subject to the state a fresh author would get** — one click back up the
   layers, from anywhere, no confirm (byte-identical undo is the safety). The section menu's
-  Reset row (danger, gated like its neighbors) is the section-level instance; node and keyframe
+  Reset row (normal color — undo makes it non-destructive in spirit, so it doesn't wear Delete's
+  danger red; gated like its neighbors) is the section-level instance; node and keyframe
   resets keep their existing idioms (`Tangents ▸ Reset`; picking an easing preset subsumes
   Reset) — adding rows there would duplicate, not unify. Like a destructive convert, a reset
   neither stamps nor consults the provenance sidecar.
