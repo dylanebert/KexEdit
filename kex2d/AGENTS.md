@@ -89,8 +89,11 @@ not draggable; its world pose IS the entry, and the shape hangs off it in the en
 - **The default shaping is live everywhere — byte-identical to the pre-handles editor.** Nothing is
   stamped at append: the default add/extend/drag flow stores **no** tangents. The **last** node's
   heading tracks its predecessor's exit (`headLast`, the reflection `2·chord − prev`), re-deriving
-  on its **own** move, on append, and on tip promotion — never on a neighbor's move (dragging the
-  node before the tip preserves the tip's heading, single drag and group move alike); node 0 and **interior**
+  on its **own** move, on append, and on an `Auto` tip's promotion — never on a neighbor's move
+  (dragging the node before the tip preserves the tip's heading, single drag and group move
+  alike), and a neighbor's **delete** is not the tip's own move either: a tip promoted with an
+  explicit tangent keeps it whole — the surviving segment holds byte-identical, and it exits along
+  the authored out-vector (an explicit node's `theta` is dead, so no stale-heading hazard); node 0 and **interior**
   `Auto` nodes keep a frozen heading (stable beats thrashing — dragged far off its chord it
   bulges, the accepted misshaping). A node turns concrete bezier **only** when
   explicitly authored — a handle drag or a mode set (seeded from the live arc-rule vectors via
@@ -236,8 +239,8 @@ layer's idiom).
   lands; the geo half of the per-kind sticky store) — the ring's
   extend button (slot 0, chain-end only), `Enter`, or the node menu's `Add`; delete removes the
   trailing node — `Del`/`Backspace` or the node menu's `Delete`, never below the two nodes a
-  section needs, resetting-then-re-heading the promoted tip (the role-transition law,
-  `editor-ui.md`).
+  section needs; the promoted tip keeps an authored tangent whole, an `Auto` one re-heads (the
+  tip re-head law above — a neighbor's delete is not the tip's own move).
 - **Tangent edit**: double-click summons; the manipulator knobs hide while it's open. Model +
   substrate: `Model (geo authoring)` above.
 

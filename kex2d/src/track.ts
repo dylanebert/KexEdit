@@ -1025,24 +1025,21 @@ export function extend(ecs: State, sectionId: number): number {
 
 /** remove the trailing (highest-order) node on a section — never below the two
  *  nodes a geo section needs (node 0 the entry + one shape node). the promoted tip
- *  is reconciled to a well-formed tip: its explicit tangent is cleared to `Auto`
- *  and its heading re-derived (`headLast`) — the same reset a tip gets from
- *  `resetTangent`. returns true when a node was removed. */
+ *  keeps an explicit tangent whole — authored state is never implicitly destroyed
+ *  (a neighbor's delete is not the tip's own move): the surviving segment holds
+ *  byte-identical (its in-vector is untouched) and the tip exits along the authored
+ *  out-vector — an explicit node's `Handle.theta` is dead (`exitHeading`, the bake,
+ *  and the readout all read the out-vector), so there is no stale-heading hazard.
+ *  an `Auto` promoted tip re-derives its heading (`headLast`): its frozen interior
+ *  heading is ghost state with nothing authored to lose. returns true when a node
+ *  was removed. */
 export function removeTrailingHandle(ecs: State, sectionId: number): boolean {
     const last = lastHandle(ecs, sectionId);
     if (last === null) return false;
     if (sectionHandles(ecs, sectionId).length <= 2) return false;
     ecs.destroy(last);
     const handles = sectionHandles(ecs, sectionId);
-    // the promoted node was authored as an interior node: its out-vector shaped the segment we
-    // just deleted, so that vector is now ghost state pointing at where the trailing node stood.
-    // an explicit node's `Handle.theta` is dead (`exitHeading`/the bake read the out-vector), so
-    // `headLast` alone would silently no-op and the tip would report/extend along the stale
-    // out-vector. clear to `Auto` first so `headLast` actually governs — a delete now yields the
-    // same tip regardless of the promoted node's mode, indistinguishable from having authored the
-    // shorter chain directly. undo restores the tangent (`trimTrack` snapshots after this).
-    writeTangent(handles[handles.length - 1], undefined);
-    headLast(handles); // the promoted tip re-derives its heading from its new predecessor
+    if (readTangent(handles[handles.length - 1]) === undefined) headLast(handles);
     return true;
 }
 

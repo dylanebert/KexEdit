@@ -274,9 +274,10 @@ export function extendTrack(h: History, ecs: State, section: number): number {
     return eid;
 }
 
-/** trim a section's trailing node, recording an undoable remove. `removeTrailingHandle` reheads
- *  the promoted tip, so the command captures the whole section before/after (pose + heading +
- *  the trimmed node's tangent). no-op below the two-node floor (records nothing, returns false). */
+/** trim a section's trailing node, recording an undoable remove. `removeTrailingHandle` may
+ *  rehead an `Auto` promoted tip (an explicit one keeps its authored tangent whole), so the
+ *  command captures the whole section before/after (pose + heading + the trimmed node's
+ *  tangent). no-op below the two-node floor (records nothing, returns false). */
 export function trimTrack(h: History, ecs: State, section: number): boolean {
     const pre = selHook?.snapshot(ecs); // the tip being trimmed — captured before it's destroyed
     const before = snapshotSection(ecs, section);

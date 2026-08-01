@@ -91,7 +91,7 @@ import { DEFAULT_G, Easing } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { LENGTH_MIN } from "../src/magnet";
 import { Domain, evalGeo } from "../src/section";
-import { editTangent, type Node, sampleChain, TangentMode } from "../src/spline";
+import { editTangent, type Node, sampleChain, type Tangent, TangentMode } from "../src/spline";
 import { dToU } from "../src/timeline";
 import golden from "./fixtures/convert-golden.json";
 
@@ -206,24 +206,23 @@ describe("BakeSystem", () => {
     });
 
     // ── promoted-tip reconciliation ──────────────────────────────────────────────
-    // deleting the trailing node promotes an interior node to chain tip. an interior
-    // node's authored tangent shapes the segments around it; once it's the tip, its
-    // out-vector shaped the segment we just deleted, so it's ghost state. the class
-    // invariant: after a delete the promoted tip is well-formed — Auto (no ghost
-    // tangent), heading re-derived, so the readout (`exitWorld`) reports the authored
-    // heading, indistinguishable from having authored the shorter chain directly.
+    // deleting the trailing node promotes an interior node to chain tip. authored
+    // state is never implicitly destroyed (a neighbor's delete is not the tip's own
+    // move): an EXPLICIT promoted tip keeps its tangent whole — the surviving segment
+    // holds byte-identical (its in-vector is untouched) and the exit heading is the
+    // authored out-vector (`exitHeading` reads it; an explicit node's `theta` is dead,
+    // so there is no stale-heading hazard). an AUTO promoted tip re-derives its
+    // heading (`headLast`) — its frozen interior heading is ghost state with nothing
+    // authored to lose.
 
-    /** the chain tip is a well-formed Auto tip: no explicit tangent, and its authored
-     *  exit heading is the arc reflection of its predecessor — the same state a freshly
-     *  added tip carries. one assertion covers the bake (drives `handle()` via `theta`),
-     *  the readout (`exitWorld` reads `theta` for an Auto node), and extend/append. */
-    function expectTipReconciled(state: State, sec: number): void {
+    /** an Auto chain tip is well-formed: no explicit tangent, heading the arc
+     *  reflection of its predecessor's actual exit — the same state a freshly
+     *  added tip carries. */
+    function expectAutoTipReheaded(state: State, sec: number): void {
         const h = sectionHandles(state, sec);
         const tip = h[h.length - 1];
         const prev = h[h.length - 2];
         expect(handleTangent(state, sec, Handle.order.get(tip))).toBeUndefined();
-        // the reflection references the predecessor's ACTUAL exit — an authored predecessor
-        // exits along its out-vector, an Auto one along its stored theta.
         const prevTan = handleTangent(state, sec, Handle.order.get(prev));
         const prevExit = prevTan ? Math.atan2(prevTan.outY, prevTan.outX) : Handle.theta.get(prev);
         const chord = Math.atan2(
@@ -232,83 +231,111 @@ describe("BakeSystem", () => {
         );
         const expected = 2 * chord - prevExit;
         expect(Handle.theta.get(tip)).toBeCloseTo(expected, 10);
-        // prev is the first section here (entry.theta = 0), so the readout reports the
-        // re-derived heading directly, not a stale out-vector.
         expect(exitWorld(tip)).toBeCloseTo(expected, 10);
     }
 
-    test("delete after authoring a tangent on the intermediate node resets the promoted tip", () => {
-        // the user's exact sequence: manipulate an intermediate node's handle, then
-        // delete the node after it. before the fix the promoted tip kept its Aligned
-        // out-vector (authored toward the deleted node) and reported 45°, not the flat 0°.
-        const { state, sec } = track();
+    test("delete preserves the promoted tip's authored tangent, segment, and exit heading", () => {
+        // author an explicit tangent on node 1 (both vectors), then delete node 2.
+        // (a) node 1's tangent survives byte-identical, (b) the surviving segment
+        // 0→1 bakes byte-identical to pre-delete, (c) the exit heading is the
+        // authored out-vector's angle — the segment the user shaped never reshapes.
+        const { state, eid, sec } = track();
         addNode(state, sec, 20, 5); // nodes 0(0,0) 1(EXTEND_DIST,0) 2(20,5)
         state.step(0);
-        const seed = seedTangent(state, sec, 1, TangentMode.Aligned);
+        const seed = seedTangent(state, sec, 1, TangentMode.Free);
         if (!seed) throw new Error("seed");
-        setTangent(state, sec, 1, editTangent(seed, "out", 8, 8)); // pull node 1's handle to 45°
+        setTangent(state, sec, 1, editTangent(seed, "out", 8, 8)); // out toward 45°
+        setTangent(state, sec, 1, {
+            ...(handleTangent(state, sec, 1) as Tangent),
+            inX: 9,
+            inY: 2, // a distinct authored in-vector — the surviving segment's shape
+        });
         state.step(0);
-        expect(exitWorld(handleAt(state, sec, 1) as number)).toBeCloseTo(Math.PI / 4, 6); // 45° authored
+        const authored = handleTangent(state, sec, 1);
+        if (!authored) throw new Error("tangent");
+        const s = samples.get(eid);
+        if (!s) throw new Error("samples");
+        const node1 = handleAt(state, sec, 1) as number;
+        const upto = Handle.sample.get(node1); // the surviving segment's sample prefix
+        const preX = Array.from(s.posX.subarray(0, upto + 1));
+        const preY = Array.from(s.posY.subarray(0, upto + 1));
 
         expect(removeTrailingHandle(state, sec)).toBe(true); // delete node 2 → node 1 is the tip
         state.step(0);
-        expectTipReconciled(state, sec);
-        expect(exitWorld(handleAt(state, sec, 1) as number)).toBeCloseTo(0, 10); // flat, not 45°
+        // (a) the authored tangent survives byte-identical.
+        expect(handleTangent(state, sec, 1)).toEqual(authored);
+        // (b) the surviving segment's bake is byte-identical (no reshape).
+        expect(Array.from(s.posX.subarray(0, upto + 1))).toEqual(preX);
+        expect(Array.from(s.posY.subarray(0, upto + 1))).toEqual(preY);
+        // (c) exit heading = the authored out-vector's angle (entry.theta = 0 here).
+        expect(exitWorld(node1)).toBe(Math.atan2(authored.outY, authored.outX));
     });
 
-    test("delete when the trailing tip itself carries a tangent leaves a well-formed tip", () => {
-        // the deleted node's own tangent goes with it; the promoted node still reconciles.
+    test("delete when the trailing tip itself carries a tangent keeps the promoted node whole", () => {
+        // the deleted node's own tangent goes with it; the promoted explicit node
+        // keeps its authored state untouched.
         const { state, sec } = track();
         addNode(state, sec, 20, 6); // 0,1,2
         state.step(0);
-        // author BOTH the interior node and the trailing tip.
         const s1 = seedTangent(state, sec, 1, TangentMode.Aligned);
         const s2 = seedTangent(state, sec, 2, TangentMode.Free);
         if (!s1 || !s2) throw new Error("seed");
         setTangent(state, sec, 1, editTangent(s1, "out", 6, 5));
         setTangent(state, sec, 2, editTangent(s2, "in", -4, 3));
         state.step(0);
+        const authored = handleTangent(state, sec, 1);
         expect(removeTrailingHandle(state, sec)).toBe(true);
         state.step(0);
-        expectTipReconciled(state, sec);
+        expect(handleTangent(state, sec, 1)).toEqual(authored);
     });
 
-    test("deleting down to the two-node floor keeps every surviving tip well-formed", () => {
+    test("deleting down to the two-node floor keeps every promoted tip's authored tangent", () => {
         const { state, sec } = track();
         addNode(state, sec, 20, 4);
         addNode(state, sec, 34, 10); // 0,1,2,3
         state.step(0);
-        // author tangents across the interior so each promotion crosses a concrete node.
         for (const order of [1, 2]) {
             const seed = seedTangent(state, sec, order, TangentMode.Aligned);
             if (!seed) throw new Error("seed");
             setTangent(state, sec, order, editTangent(seed, "out", 5, 4));
         }
         state.step(0);
+        const t1 = handleTangent(state, sec, 1);
+        const t2 = handleTangent(state, sec, 2);
         expect(removeTrailingHandle(state, sec)).toBe(true); // 3 → node 2 tip
         state.step(0);
-        expectTipReconciled(state, sec);
+        expect(handleTangent(state, sec, 2)).toEqual(t2);
         expect(removeTrailingHandle(state, sec)).toBe(true); // 2 → node 1 tip
         state.step(0);
-        expectTipReconciled(state, sec);
+        expect(handleTangent(state, sec, 1)).toEqual(t1);
         expect(removeTrailingHandle(state, sec)).toBe(false); // floor
         expect(sectionHandles(state, sec).length).toBe(2);
     });
 
-    test("append after authoring the old tip, then delete, round-trips to a well-formed tip", () => {
-        // demotion (append makes the old tip interior — its tangent legitimately shapes both
-        // its segments) then re-promotion (delete) must not leave ghost state.
+    test("append after authoring the old tip, then delete, round-trips the tangent byte-identical", () => {
+        // demotion (append makes the old tip interior) then re-promotion (delete)
+        // is the identity on the authored tangent.
         const { state, sec } = track();
         state.step(0);
         const seed = seedTangent(state, sec, 1, TangentMode.Free);
         if (!seed) throw new Error("seed");
         setTangent(state, sec, 1, editTangent(seed, "out", 7, 6)); // author the tip (node 1)
+        const authored = handleTangent(state, sec, 1);
         addNode(state, sec, 30, 8); // append node 2 → node 1 demotes to interior, keeps its tangent
         state.step(0);
-        expect(handleTangent(state, sec, 1)).toBeDefined(); // interior authored state preserved
+        expect(handleTangent(state, sec, 1)).toEqual(authored); // interior authored state preserved
         expect(removeTrailingHandle(state, sec)).toBe(true); // delete node 2 → node 1 re-promoted
         state.step(0);
-        expectTipReconciled(state, sec); // the once-authored node is now a clean Auto tip
+        expect(handleTangent(state, sec, 1)).toEqual(authored); // round-trip identity
+    });
+
+    test("an Auto promoted tip still re-heads (nothing authored to lose)", () => {
+        const { state, sec } = track();
+        addNode(state, sec, 20, 4); // 0,1,2 — all Auto
+        state.step(0);
+        expect(removeTrailingHandle(state, sec)).toBe(true);
+        state.step(0);
+        expectAutoTipReheaded(state, sec);
     });
 
     test("an unchanged chain is not re-baked; moving a node re-bakes (hash gate)", () => {

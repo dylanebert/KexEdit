@@ -163,27 +163,27 @@ test("trim: undo restores the removed node and the promoted tip's pre-trim headi
     expect(Handle.theta.get(handleAt(state, sec, 1) as number)).toBe(tipAfter);
 });
 
-test("trim: undo restores the authored interior tangent the trim reset on promotion", () => {
-    // deleting the trailing node resets the promoted (once-interior) node to Auto. undo must
-    // restore its authored tangent verbatim — the reconciliation is captured in the trim's
-    // after-snapshot, so the before-snapshot carries the original tangent.
+test("trim: the promoted tip's authored tangent rides undo/redo byte-identical", () => {
+    // deleting the trailing node promotes the once-interior node with its authored
+    // tangent whole (a neighbor's delete never discards authored state), and the
+    // trim's snapshot pair carries it verbatim through undo and redo.
     const { state, sec } = nodes();
     addNode(state, sec, 40, 0); // node 2 tip; node 1 interior
     const seed = seedTangent(state, sec, 1, TangentMode.Aligned);
     if (!seed) throw new Error("seed");
     setTangent(state, sec, 1, editTangent(seed, "out", 8, 8)); // author node 1's tangent
-    const authored = handleTangent(state, sec, 1); // the f32-stored value undo must restore
+    const authored = handleTangent(state, sec, 1); // the f32-stored value
     const h = createHistory();
 
     expect(trimTrack(h, state, sec)).toBe(true);
-    expect(handleTangent(state, sec, 1)).toBeUndefined(); // promoted tip reset to Auto
+    expect(handleTangent(state, sec, 1)).toEqual(authored); // promoted tip keeps it
 
     undo(h, state);
     expect(orders(state, sec)).toEqual([0, 1, 2]); // node 2 back
-    expect(handleTangent(state, sec, 1)).toEqual(authored); // interior tangent restored verbatim
+    expect(handleTangent(state, sec, 1)).toEqual(authored); // interior tangent verbatim
 
     redo(h, state);
-    expect(handleTangent(state, sec, 1)).toBeUndefined(); // reset again
+    expect(handleTangent(state, sec, 1)).toEqual(authored); // preserved again
 });
 
 test("trim refuses at the two-node floor and records nothing", () => {

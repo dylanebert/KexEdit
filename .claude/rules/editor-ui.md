@@ -261,13 +261,14 @@ The worked example of the layered-expressiveness contract's summoned inner layer
   tip additionally summons the downstream node-0 out-handle — a single free entry handle (no mode
   submenu, no cross-section Mirror/Aligned coupling); dragging it writes the downstream section's
   tangent through its own gesture. Reset on the boundary clears both halves in one undo entry.
-- **Role transitions reconcile role-dependent state.** The tip heading has one source of truth, so
-  a structural op that removes a node's out-segment must reconcile its tangent: **a promotion
-  resets** (delete clears the promoted tip's explicit tangent to `Auto`, then re-heads — the result
-  is indistinguishable from authoring the shorter chain directly), **a demotion preserves** (undo
-  restores the authored interior state). Snapshot for undo *after* reconciling. The law fires when
-  the out-segment is removed — a split's boundary tip keeps its tangent, since it still shapes the
-  downstream first segment under the one-node view.
+- **Role transitions reconcile role-dependent state — but never discard authored state.** The tip
+  heading has one source of truth, so a structural op that removes a node's out-segment reconciles
+  what was *inferred*: an `Auto` promoted tip re-heads (`headLast` — nothing authored to lose); an
+  **explicit** promoted tip keeps its tangent whole (the surviving segment holds byte-identical,
+  and the exit heading is the authored out-vector — a neighbor's delete is not the tip's own
+  move, and only a user Reset clears authored tangents). **A demotion preserves** (undo restores
+  the authored interior state). Snapshot for undo *after* reconciling. A split's boundary tip
+  keeps its tangent, since it still shapes the downstream first segment under the one-node view.
 
 ## Affordance typing
 

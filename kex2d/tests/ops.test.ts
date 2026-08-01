@@ -20,6 +20,7 @@ import {
     EXTEND_DIST,
     exitWorld,
     Handle,
+    handleAt,
     handleTangent,
     joinNext,
     reheadOnDrag,
@@ -39,6 +40,7 @@ import {
 } from "../src/track";
 import { Domain } from "../src/section";
 import { editTangent, TangentMode } from "../src/spline";
+import { stitchNode } from "../src/tangents";
 
 // the multi-section structural ops: append / split / join / delete over the section
 // chain (kex2d/AGENTS.md, structural ops). the substrate (chain, sectionInfo,
@@ -483,11 +485,11 @@ describe("delete", () => {
         expect(s.posX[0]).toBeCloseTo(0, 4);
     });
 
-    test("trimming a downstream section's tip reconciles the promoted tip in the rotated frame", () => {
+    test("trimming a downstream section's tip keeps the authored tangent in the rotated frame", () => {
         // the boundary case: section B sits at A's climbing exit (entry.theta ≠ 0). author a
-        // tangent on an interior node of B, then trim B's tail. the promoted tip must reset to
-        // Auto and report its re-derived heading through the rotated entry frame — no ghost
-        // out-vector carried across the section boundary.
+        // tangent on an interior node of B, then trim B's tail. the promoted tip keeps its
+        // authored tangent whole (a neighbor's delete is not the tip's own move) and its exit
+        // heading is the authored out-vector rotated through the entry frame.
         const { state, b } = twoGeo();
         addNode(state, b, 20, 5); // B now has nodes 0,1,2 (section-local)
         state.step(0);
@@ -495,25 +497,60 @@ describe("delete", () => {
         if (!seed) throw new Error("seed");
         setTangent(state, b, 1, editTangent(seed, "out", 8, 8));
         state.step(0);
+        const authored = handleTangent(state, b, 1);
+        if (!authored) throw new Error("tangent");
 
         expect(removeTrailingHandle(state, b)).toBe(true); // trim B's tail → node 1 is B's tip
         state.step(0);
 
         const h = sectionHandles(state, b);
         const tip = h[h.length - 1];
-        const prev = h[h.length - 2];
-        expect(handleTangent(state, b, Handle.order.get(tip))).toBeUndefined(); // Auto, no ghost
+        expect(handleTangent(state, b, Handle.order.get(tip))).toEqual(authored); // preserved
         const info = sectionInfo.get(b);
         if (!info) throw new Error("section b info missing");
-        // local re-heading: reflect(prev heading, chord). prev is B's node 0 (theta 0 local).
-        const chord = Math.atan2(
-            Handle.pos.y.get(tip) - Handle.pos.y.get(prev),
-            Handle.pos.x.get(tip) - Handle.pos.x.get(prev),
-        );
-        const localExit = 2 * chord - Handle.theta.get(prev);
-        expect(Handle.theta.get(tip)).toBeCloseTo(localExit, 10);
-        // the readout reports the Auto heading rotated into world by the (non-zero) entry frame.
+        // the readout reports the authored out-vector rotated into world by the entry frame.
+        const localExit = Math.atan2(authored.outY, authored.outX);
         expect(exitWorld(tip)).toBeCloseTo(localExit + info.entry.theta, 10);
+    });
+
+    test("trimming the upstream section leaves the stitched boundary pair's authored state whole", () => {
+        // the geo→geo boundary is two coincident entities: A's tip + B's node 0 (the
+        // rigid-placement invariant). deleting A's trailing node moves B's entry frame,
+        // never B's section-local authored state: B's node-0 tangent survives
+        // byte-identical (it rides the frame rigidly), the promoted A node keeps its
+        // own authored tangent, and B's entry re-derives to the new tip's exit.
+        const { state, eid, a, b } = twoGeo();
+        addNode(state, a, 30, 14); // A now has nodes 0,1,2 — node 1 is the old boundary-adjacent interior
+        state.step(0);
+        // author A's interior node 1 (promoted by the trim) and B's node-0 out-handle (the stitch).
+        const sa = seedTangent(state, a, 1, TangentMode.Free);
+        const sb = seedTangent(state, b, 0, TangentMode.Free);
+        if (!sa || !sb) throw new Error("seed");
+        setTangent(state, a, 1, editTangent(sa, "out", 6, 7));
+        setTangent(state, b, 0, editTangent(sb, "out", 9, 3));
+        state.step(0);
+        const aAuthored = handleTangent(state, a, 1);
+        const bAuthored = handleTangent(state, b, 0);
+        if (!aAuthored || !bAuthored) throw new Error("tangent");
+
+        expect(removeTrailingHandle(state, a)).toBe(true); // delete A's boundary tip → node 1 promoted
+        state.step(0);
+
+        expect(handleTangent(state, a, 1)).toEqual(aAuthored); // promoted tip whole
+        expect(handleTangent(state, b, 0)).toEqual(bAuthored); // stitch half untouched
+        const newTip = sectionHandles(state, a)[sectionHandles(state, a).length - 1];
+        expect(stitchNode(state, newTip)).toBe(handleAt(state, b, 0)); // still the boundary pair
+        const infoA = sectionInfo.get(a);
+        const infoB = sectionInfo.get(b);
+        if (!infoA || !infoB) throw new Error("section info missing");
+        // the rigid re-place: B's entry is A's recovered exit (the substrate's entry-propagation
+        // contract, a bake-derived state — deliberately NOT the authored heading verbatim), and
+        // the boundary stays one shared sample: B's node 0 rides the frame to A's new tip.
+        expect(infoB.startSample).toBe(infoA.endSample);
+        const s = samples.get(eid);
+        if (!s) throw new Error("samples missing");
+        expect(infoB.entry.x).toBeCloseTo(s.posX[infoB.startSample], 4);
+        expect(infoB.entry.y).toBeCloseTo(s.posY[infoB.startSample], 4);
     });
 });
 
