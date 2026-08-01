@@ -19,7 +19,9 @@ import {
     extend,
     forceBake,
     forceEase,
+    forceMarkers,
     forcePointState,
+    forceSample,
     type ForceTangent,
     forceTangent,
     Handle,
@@ -2239,5 +2241,182 @@ describe("section reset (kex2d-idioms stage 2)", () => {
         expect(sectionResettable(2, SectionKind.Geo, true)).toBe(false);
         expect(sectionResettable(0, null, true)).toBe(false);
         expect(sectionResettable(1, null, true)).toBe(false);
+    });
+});
+
+// ── viewport force markers (kex2d-idioms stage 3): the native-axis arc→sample placement
+// helper + the per-marker world projection the ForceDrawSystem/pickForce read. the helper
+// walks the bake's OWN tables (per-edge `ds` on Distance, the per-sample march clock `t` on
+// Time — the ds-convention law), so the reference here is an INDEPENDENTLY-summed f64 station
+// table built by the test, never the helper's own walk.
+describe("forceSample", () => {
+    // edges 3..6 of a synthetic bake: stations from the entry are 0, 2, 5, 5 (zero-length
+    // edge — the freeze-gap / stall shape), 10.
+    const ds = new Float32Array(10);
+    ds[3] = 2;
+    ds[4] = 3;
+    ds[5] = 0;
+    ds[6] = 5;
+    const t = new Float32Array(10);
+    const info = { startSample: 3, endSample: 7 };
+
+    /** the station a returned address maps back to — the inverse the helper must satisfy. */
+    const station = (addr: { index: number; frac: number }): number => {
+        let cum = 0;
+        for (let i = info.startSample; i < addr.index; i++) cum += ds[i];
+        return cum + addr.frac * ds[addr.index];
+    };
+
+    test("distance: the address maps back to the clamped station, zero edges skipped", () => {
+        // hand table: s=0 → the entry sample; s=1 → half of edge 3; s=6 → 1 m into edge 6.
+        expect(forceSample({ ds, t }, info, 9, false, 0)).toEqual({ index: 3, frac: 0 });
+        expect(forceSample({ ds, t }, info, 9, false, 1)).toEqual({ index: 3, frac: 0.5 });
+        const at6 = forceSample({ ds, t }, info, 9, false, 6);
+        expect(at6).not.toBeNull();
+        expect(at6?.index).toBe(6); // past the zero edge, never ON it
+        expect(station(at6 as { index: number; frac: number })).toBeCloseTo(6, 6);
+        // landing exactly at the zero edge's station resolves finite (no divide-by-zero).
+        const at5 = forceSample({ ds, t }, info, 9, false, 5);
+        expect(at5).not.toBeNull();
+        expect(Number.isFinite((at5 as { frac: number }).frac)).toBe(true);
+        expect(station(at5 as { index: number; frac: number })).toBeCloseTo(5, 6);
+    });
+
+    test("distance: probes agree with an independently-summed f64 table", () => {
+        // a pseudo-random positive table, f64-summed by the test (the reference oracle).
+        const n = 40;
+        const rds = new Float32Array(n);
+        let seed = 42;
+        for (let i = 5; i < 25; i++) {
+            seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+            rds[i] = 0.25 + (seed % 1000) / 500;
+        }
+        const rinfo = { startSample: 5, endSample: 25 };
+        const cum: number[] = [0]; // f64 stations, one per sample 5..25
+        for (let i = 5; i < 25; i++) cum.push(cum[cum.length - 1] + rds[i]);
+        const total = cum[cum.length - 1];
+        for (let k = 0; k <= 20; k++) {
+            const s = (k / 20) * total;
+            const addr = forceSample({ ds: rds, t }, rinfo, n - 1, false, s);
+            expect(addr).not.toBeNull();
+            const a = addr as { index: number; frac: number };
+            // the independent station of the returned address (f64 partial sums of the table).
+            const st = cum[a.index - 5] + a.frac * rds[a.index];
+            expect(st).toBeCloseTo(s, 4);
+            // and the address brackets the reference table's own landing.
+            expect(cum[a.index - 5]).toBeLessThanOrEqual(s + 1e-4);
+            expect(cum[a.index - 5 + 1]).toBeGreaterThanOrEqual(s - 1e-4);
+        }
+    });
+
+    test("distance: clamps at both ends", () => {
+        expect(forceSample({ ds, t }, info, 9, false, -1)).toEqual({ index: 3, frac: 0 });
+        expect(forceSample({ ds, t }, info, 9, false, 99)).toEqual({ index: 7, frac: 0 });
+    });
+
+    test("time: the march clock table, stall plateau finite", () => {
+        // per-sample march times at samples 3..7: 1.0, 1.5, 2.5, 2.5 (stall plateau), 4.0.
+        const tt = new Float32Array(10);
+        tt[3] = 1.0;
+        tt[4] = 1.5;
+        tt[5] = 2.5;
+        tt[6] = 2.5;
+        tt[7] = 4.0;
+        expect(forceSample({ ds, t: tt }, info, 9, true, 0)).toEqual({ index: 3, frac: 0 });
+        expect(forceSample({ ds, t: tt }, info, 9, true, 0.25)).toEqual({ index: 3, frac: 0.5 });
+        // landing on the plateau value: finite, at the first sample reaching it.
+        const plateau = forceSample({ ds, t: tt }, info, 9, true, 1.5);
+        expect(plateau).not.toBeNull();
+        expect(Number.isFinite((plateau as { frac: number }).frac)).toBe(true);
+        // 1.5 s local = march clock 2.5 = samples 5 AND 6 — either address draws the same point.
+        const p = plateau as { index: number; frac: number };
+        expect(tt[p.index] + p.frac * (tt[p.index + 1] - tt[p.index])).toBeCloseTo(2.5, 6);
+        // past the plateau, interpolating the following live edge.
+        const after = forceSample({ ds, t: tt }, info, 9, true, 2.0);
+        expect(after).toEqual({ index: 6, frac: (2.0 - 1.5) / 1.5 });
+        // clamped at the exit.
+        expect(forceSample({ ds, t: tt }, info, 9, true, 9)).toEqual({ index: 7, frac: 0 });
+    });
+
+    test("an empty published range (past the sample budget) yields null", () => {
+        expect(forceSample({ ds, t }, { startSample: 8, endSample: 8 }, 9, false, 1)).toBeNull();
+        // a range published past the buffer end too (the budget-less downstream shape).
+        expect(forceSample({ ds, t }, { startSample: 12, endSample: 12 }, 9, false, 1)).toBeNull();
+    });
+});
+
+describe("forceMarkers", () => {
+    test("markers land on the baked track: seeds at the entry/exit samples exactly", () => {
+        const { state, eid, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force, two seed keyframes at (0, F) and (length, F)
+        state.step(1 / 60);
+        const s = samples.get(eid);
+        const info = sectionInfo.get(sec);
+        if (!s || !info) throw new Error("bake missing");
+        const ms = forceMarkers(state);
+        expect(ms.length).toBe(2);
+        expect(ms[0].section).toBe(sec);
+        expect(ms[0].x).toBeCloseTo(s.posX[info.startSample], 5);
+        expect(ms[0].y).toBeCloseTo(s.posY[info.startSample], 5);
+        expect(ms[1].x).toBeCloseTo(s.posX[info.endSample], 5);
+        expect(ms[1].y).toBeCloseTo(s.posY[info.endSample], 5);
+    });
+
+    test("an interior marker sits at its independently-summed station on the polyline", () => {
+        const { state, eid, sec } = track();
+        state.step(0);
+        convertSection(state, sec);
+        state.step(1 / 60);
+        const id = createForcePoint(state, sec, 7.3, 1.2);
+        state.step(2 / 60);
+        const s = samples.get(eid);
+        const out = bakeOut.get(eid);
+        const info = sectionInfo.get(sec);
+        if (!s || !out || !info) throw new Error("bake missing");
+        // the reference: f64-sum the bake's own per-edge ds to the bracketing edge.
+        let cum = 0;
+        let i = info.startSample;
+        while (i < info.endSample && cum + out.ds[i] < 7.3) {
+            cum += out.ds[i];
+            i++;
+        }
+        const frac = (7.3 - cum) / out.ds[i];
+        const rx = s.posX[i] + frac * (s.posX[i + 1] - s.posX[i]);
+        const ry = s.posY[i] + frac * (s.posY[i + 1] - s.posY[i]);
+        const m = forceMarkers(state).find((mk) => mk.id === id);
+        expect(m).toBeDefined();
+        expect(m?.x).toBeCloseTo(rx, 5);
+        expect(m?.y).toBeCloseTo(ry, 5);
+    });
+
+    test("a geo section contributes no markers; a dead bake range yields none", () => {
+        const { state } = track();
+        state.step(0);
+        expect(forceMarkers(state)).toEqual([]);
+    });
+
+    test("a key past the extent draws nothing; a key exactly AT it lands the exit sample", () => {
+        const { state, eid, sec } = track();
+        state.step(0);
+        convertSection(state, sec);
+        state.step(1 / 60);
+        const row = sections(state).find((r) => r.id === sec);
+        if (!row) throw new Error("section missing");
+        const exitSeed = sectionForces(state, sec).reduce((a, b) => (b.s > a.s ? b : a));
+        // a key trimmed past the extent has no track position (the non-destructive trim law:
+        // re-lengthening restores it) — it must NOT clamp onto the exit seed's sample.
+        const beyond = createForcePoint(state, sec, row.length + 2, 1.1);
+        state.step(2 / 60);
+        const ms = forceMarkers(state);
+        expect(ms.some((m) => m.id === beyond)).toBe(false);
+        // the exit seed sits exactly AT the extent (s === length): present, at the exit sample.
+        const s = samples.get(eid);
+        const info = sectionInfo.get(sec);
+        if (!s || !info) throw new Error("bake missing");
+        const exit = ms.find((m) => m.id === exitSeed.id);
+        expect(exit).toBeDefined();
+        expect(exit?.x).toBeCloseTo(s.posX[info.endSample], 5);
+        expect(exit?.y).toBeCloseTo(s.posY[info.endSample], 5);
     });
 });

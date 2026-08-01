@@ -1,11 +1,19 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
-import { COLOR_ACCENT, COLOR_GUIDE_RAY, hovered, kindSegments, selected } from "./colors";
+import {
+    COLOR_ACCENT,
+    COLOR_FORCE,
+    COLOR_GUIDE_RAY,
+    hovered,
+    kindSegments,
+    selected,
+} from "./colors";
 import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { editHandleSets } from "./tangents";
 import {
     bakeOut,
+    forceMarkers,
     Handle,
     handleAt,
     handleTangent,
@@ -325,6 +333,68 @@ const AnchorDrawSystem: System = {
     },
 };
 
+const FORCE_R = 5; // the marker diamond's half-diagonal (px) — Timeline.svelte's FMARKER_R
+
+/** the viewport force markers (kex2d-idioms stage 3): every force keyframe drawn ON the baked
+ *  track at its stored native-axis position — the timeline's glyph (a filled diamond, force
+ *  gold), same entity, same identity on both surfaces. distinguished from boundary anchors by
+ *  color (they wear the neutral anchor gray) and from nodes by shape. the kind-color ladder:
+ *  selection = the brightened kind color, hover one rung below (invisible on a selected
+ *  member), the active member set apart by its stroke; a locked key in optimize mode wears the
+ *  CAD driven idiom (dashed + faded — the timeline's `.fpt.driven`). display + select only —
+ *  s/g authoring stays on the chart, so nothing here drags. */
+const ForceDrawSystem: System = {
+    group: "draw",
+    update(ecs: State): void {
+        const { element: canvas, ctx } = Canvas2D;
+        if (!ctx) return;
+        const { sx, sy, ox, oy } = viewTransform(canvas);
+        const members = editor.forces.ids;
+        const active = editor.force;
+        const opt = editor.optimizing;
+
+        for (const m of forceMarkers(ecs)) {
+            const cx = ox + m.x * sx;
+            const cy = oy + m.y * sy;
+            const member = members.has(m.id);
+            const driven = opt !== null && opt.section === m.section && editor.locked.has(m.id);
+            const hov = editor.hoverForce === m.id && !member && !driven;
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - FORCE_R);
+            ctx.lineTo(cx + FORCE_R, cy);
+            ctx.lineTo(cx, cy + FORCE_R);
+            ctx.lineTo(cx - FORCE_R, cy);
+            ctx.closePath();
+            if (driven) {
+                // the driven register (dashed + faded): the kind color at the timeline's own
+                // 25% fill over the neutral guide-gray dash. selection still reads (the
+                // brightened stroke below) — "selected AND held", like the chart.
+                ctx.globalAlpha = 0.25;
+                ctx.fillStyle = COLOR_FORCE;
+                ctx.fill();
+                ctx.globalAlpha = 1;
+                ctx.strokeStyle = member ? "#f0ece8" : COLOR_GUIDE_RAY;
+                ctx.lineWidth = member ? 1.4 : 1;
+                ctx.setLineDash([2, 2]);
+                ctx.stroke();
+            } else {
+                ctx.fillStyle = member
+                    ? selected(COLOR_FORCE)
+                    : hov
+                      ? hovered(COLOR_FORCE)
+                      : COLOR_FORCE;
+                ctx.strokeStyle = m.id === active ? "#fff" : member ? "#f0ece8" : "#0e0d0c";
+                ctx.lineWidth = m.id === active ? 1.8 : member ? 1.4 : 1;
+                ctx.fill();
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+    },
+};
+
 const HandleDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
@@ -576,6 +646,7 @@ export const RenderPlugin: Plugin = {
         TrackDrawSystem,
         CartDrawSystem,
         AnchorDrawSystem,
+        ForceDrawSystem,
         HandleDrawSystem,
         TangentDrawSystem,
         SnapGuideSystem,

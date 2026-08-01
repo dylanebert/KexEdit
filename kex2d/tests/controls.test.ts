@@ -16,6 +16,8 @@ import {
     nodeFrame,
     nodeMetrics,
     normDeg,
+    pickForce,
+    pickForceOrStart,
     polarNudge,
     sectionEditable,
     sectionOpsAllowed,
@@ -43,9 +45,12 @@ import {
     addNode,
     appendSection,
     BakeSystem,
+    convertSection,
+    createForcePoint,
     createSection,
     createTrack,
     EXTEND_DIST,
+    forceMarkers,
     exitWorld,
     Handle,
     handleAt,
@@ -879,5 +884,95 @@ describe("tangent-edit free body drag (dragFreeTo)", () => {
         // and the position still writes through (first section: world == local).
         expect(Handle.pos.x.get(tip)).toBeCloseTo(21, 6);
         expect(Handle.pos.y.get(tip)).toBeCloseTo(12, 6);
+    });
+});
+
+// ── pickForce (kex2d-idioms stage 3): the viewport force-marker pick — select + menu only,
+// never a drag. slots between node and START in the handler sweeps; here the pure radius/
+// nearest behavior is pinned over a real baked force section, through the synthetic TX.
+describe("pickForce", () => {
+    function forceTrack(): { state: State; sec: number } {
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, EXTEND_DIST, 0);
+        state.step(0);
+        convertSection(state, sec); // → force, two seed keyframes (entry + exit)
+        state.step(1 / 60);
+        return { state, sec };
+    }
+
+    test("nearest marker within the radius wins; outside is null", () => {
+        const { state } = forceTrack();
+        const ms = forceMarkers(state);
+        expect(ms.length).toBe(2);
+        const px = (m: { x: number; y: number }): { x: number; y: number } => ({
+            x: TX.ox + m.x * TX.sx,
+            y: TX.oy + m.y * TX.sy,
+        });
+        const p0 = px(ms[0]);
+        const p1 = px(ms[1]);
+        // a few px off the marker still picks it; the other marker (far away) never does.
+        expect(pickForce(state, TX, p0.x + 3, p0.y - 2)).toBe(ms[0].id);
+        expect(pickForce(state, TX, p1.x - 2, p1.y + 3)).toBe(ms[1].id);
+        // just outside the pick radius: nothing.
+        expect(pickForce(state, TX, p0.x, p0.y + 13)).toBeNull();
+        // between the two, nearer the exit marker: the nearest wins. the probe is CONSTRUCTED
+        // inside the pick radius — 5 px off the exit marker toward the entry marker — so the
+        // assert always runs (a midpoint probe could fall outside r = 12 and pin nothing).
+        const L = Math.hypot(p0.x - p1.x, p0.y - p1.y);
+        expect(L).toBeGreaterThan(24); // the two markers sit a section apart — well clear
+        const probe = {
+            x: p1.x + (5 * (p0.x - p1.x)) / L,
+            y: p1.y + (5 * (p0.y - p1.y)) / L,
+        };
+        expect(pickForce(state, TX, probe.x, probe.y)).toBe(ms[1].id);
+    });
+
+    test("a geo track has no markers to pick", () => {
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, EXTEND_DIST, 0);
+        state.step(0);
+        expect(pickForce(state, TX, TX.ox, TX.oy)).toBeNull();
+    });
+});
+
+// ── pickForceOrStart (the stage-3 review fix): a force-first section's s=0 seed keyframe
+// sits exactly ON the START diamond and both pick at r=12, so a fixed force-before-START
+// order made START — the only path to the v0 popover — permanently unclickable. Nearest
+// wins; an exact tie goes to START (the coincident seed stays reachable on the chart).
+describe("pickForceOrStart", () => {
+    function forceTrack(): { state: State; sec: number } {
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, EXTEND_DIST, 0);
+        state.step(0);
+        convertSection(state, sec); // → force-FIRST: the s=0 seed lands on the START diamond
+        state.step(1 / 60);
+        return { state, sec };
+    }
+
+    test("a click at the origin of a force-first track resolves START, not the seed key", () => {
+        const { state } = forceTrack();
+        // world (0,0) is both the START diamond and the s=0 seed marker: an exact tie → START.
+        expect(pickForceOrStart(state, TX, TX.ox, TX.oy)).toEqual({ kind: "start" });
+        // a few px off center the two stay coincident — still a tie, still START.
+        expect(pickForceOrStart(state, TX, TX.ox + 4, TX.oy - 3)).toEqual({ kind: "start" });
+    });
+
+    test("nearest wins each way when START and a marker sit apart but overlap", () => {
+        const { state, sec } = forceTrack();
+        // a key 0.5 m in: ~20 px from the origin at sx=40, so the two pick discs overlap.
+        const id = createForcePoint(state, sec, 0.5, 1);
+        state.step(2 / 60);
+        const m = forceMarkers(state).find((mk) => mk.id === id);
+        if (!m) throw new Error("marker missing");
+        const mp = { x: TX.ox + m.x * TX.sx, y: TX.oy + m.y * TX.sy };
+        // 55% along START→marker: ~11 px to START, ~9 px to the key — the key wins.
+        const p55 = { x: TX.ox + 0.55 * (mp.x - TX.ox), y: TX.oy + 0.55 * (mp.y - TX.oy) };
+        expect(pickForceOrStart(state, TX, p55.x, p55.y)).toEqual({ kind: "force", id });
+        // 45% along: ~9 px to START, ~11 px to the key — START wins.
+        const p45 = { x: TX.ox + 0.45 * (mp.x - TX.ox), y: TX.oy + 0.45 * (mp.y - TX.oy) };
+        expect(pickForceOrStart(state, TX, p45.x, p45.y)).toEqual({ kind: "start" });
     });
 });

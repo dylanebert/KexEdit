@@ -1562,3 +1562,96 @@ test("timeline domain flow", async ({ page, boot }) => {
     expect(await domain()).toBe("distance");
     expect(await forces()).toEqual(metres); // …and the store this flow drove is untouched
 });
+
+// Viewport force markers (kex2d-idioms stage 3): every force keyframe draws ON the baked track —
+// the timeline's filled-diamond glyph in force gold, same entity on both surfaces — display +
+// select ONLY (s/g authoring stays on the chart; nothing here drags). This flow drives the whole
+// contract pointer-true: click-select routes through the one selectForce (the timeline popover
+// and Del key address the same selection), shift-click toggles the set, right-click on a set
+// member keeps the set and promotes it active (the promote-vs-replace law) while opening the SAME
+// keyframe context menu the chart opens, hover reads on the marker under the pointer, empty-click
+// deselects, and the viewport marquee stays node-only (markers are never box-hits).
+test("viewport force markers flow", async ({ page, boot }) => {
+    await boot();
+
+    // seed: convert the seed section to force + the airtime bump — 2 seed keyframes + 3 bump
+    // keys. the poke lands synchronously but the markers place off the NEXT bake (forceSample
+    // over bakeOut), so wait for the ride time to move off the flat seed's (the seedHill law).
+    const tTotal = () => kexCall(page, "tTotal");
+    await expect.poll(tTotal).toBeGreaterThan(0);
+    const flat = await tTotal();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(() => kexCall(page, "forceCount")).toBe(5);
+    await expect.poll(tTotal).not.toBe(flat);
+
+    const canvas = page.locator("canvas.viewport");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    const markerAt = async (i: number): Promise<{ x: number; y: number }> => {
+        const m = await kexCall(page, "forceMarkerAt", i);
+        if (!m) throw new Error(`force marker ${i} not placed — the bake never landed`);
+        return m;
+    };
+    const selIds = () => kexCall(page, "forceSelIds");
+
+    // ── 1. click marker 2 (the 0g crest, mid-section — clear of the START diamond at s=0):
+    // a replace-select through the one selectForce. ──
+    const m2 = await markerAt(2);
+    await page.mouse.click(cb.x + m2.x, cb.y + m2.y);
+    await expect.poll(async () => (await selIds()).length).toBe(1);
+    expect(await kexCall(page, "forceSelActive")).not.toBeNull();
+
+    // ── 2. shift-click marker 3: toggle membership (the multiselect grammar) — a set of 2,
+    // the shift-clicked member active. ──
+    const m3 = await markerAt(3);
+    await page.keyboard.down("Shift");
+    await page.mouse.click(cb.x + m3.x, cb.y + m3.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await selIds()).length).toBe(2);
+    const activeAfterShift = await kexCall(page, "forceSelActive");
+
+    // ── 3. right-click marker 2 (a member, NOT the active): the set is KEPT, the target
+    // promotes to active (promote-vs-replace), and the SAME keyframe context menu the chart
+    // opens appears at the cursor. ──
+    await page.mouse.click(cb.x + m2.x, cb.y + m2.y, { button: "right" });
+    await expect(page.locator(".fmenu")).toHaveCount(1);
+    expect((await selIds()).length).toBe(2); // the set survived the right-click
+    expect(await kexCall(page, "forceSelActive")).not.toBe(activeAfterShift); // promoted
+    // Escape peels the menu rung only (pin both layers: menu ON before the press, gone after,
+    // selection still standing).
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".fmenu")).toHaveCount(0);
+    expect((await selIds()).length).toBe(2);
+
+    // ── 4. hover: the marker under the pointer reads on `hoverForce` (the rung the render
+    // lifts); empty space clears it. deselect first so the hover isn't member-suppressed. ──
+    await page.mouse.click(cb.x + 30, cb.y + 30); // empty corner: deselect all
+    await expect.poll(async () => (await selIds()).length).toBe(0);
+    const m1 = await markerAt(1);
+    await page.mouse.move(cb.x + m1.x, cb.y + m1.y);
+    await expect.poll(() => kexCall(page, "hoverForceId")).not.toBeNull();
+    await page.mouse.move(cb.x + 30, cb.y + 30);
+    await expect.poll(() => kexCall(page, "hoverForceId")).toBeNull();
+
+    // ── 5. the viewport marquee stays NODE-only: a box dragged right across the markers
+    // selects no keyframes (the locked decision — authoring atoms only, and on this surface
+    // that's draggable geo nodes). positive control: the same box IS the deselect-all click
+    // path when empty, proven by 4's deselect; here the set stays empty THROUGH the drag. ──
+    const m0 = await markerAt(0);
+    const m4 = await markerAt(4);
+    await marqueeDrag(
+        page,
+        cb.x + Math.min(m0.x, m4.x) - 20,
+        cb.y + Math.min(m0.y, m4.y) - 30,
+        cb.x + Math.max(m0.x, m4.x) + 20,
+        cb.y + Math.max(m0.y, m4.y) + 30,
+    );
+    expect((await selIds()).length).toBe(0);
+
+    // ── 6. the shot: markers on the track, one selected (the brightened-kind read). ──
+    await page.mouse.click(cb.x + m2.x, cb.y + m2.y);
+    await expect.poll(async () => (await selIds()).length).toBe(1);
+    await page.mouse.move(cb.x + 30, cb.y + 30); // park the pointer off the markers
+    await page.waitForTimeout(SHOT_MS);
+    await canvas.screenshot({ path: join(OUT, "viewport-force-markers.png") });
+});

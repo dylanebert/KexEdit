@@ -21,6 +21,7 @@ import {
     createForcePoint,
     destroyForce,
     forceEase,
+    forceMarkers,
     forceTangent,
     Handle,
     handleAt,
@@ -233,6 +234,21 @@ if (import.meta.env.DEV) {
         // resolves its g ON the profile (not at the cursor's y).
         forces: (): { s: number; g: number }[] =>
             sectionForces(ecs, sec()).map((p) => ({ s: p.s, g: p.g })),
+        // a viewport force marker's canvas-local screen point, by index over `forceMarkers`'
+        // own order (per-section, sorted by s) — where the marker flow clicks/right-clicks
+        // (mirrors nodeAt: canvas-drawn markers carry no DOM box). null pre-bake or out of range.
+        forceMarkerAt: (i: number): { x: number; y: number } | null => {
+            const canvas = Canvas2D.element;
+            if (!canvas) return null;
+            const m = forceMarkers(ecs)[i];
+            if (!m) return null;
+            const tx = viewTransform(canvas);
+            return { x: tx.ox + m.x * tx.sx, y: tx.oy + m.y * tx.sy };
+        },
+        // the stable id of the viewport marker under the pointer, or null (`editor.hoverForce`)
+        // — the canvas hover has no honest DOM assert, so the flow reads the live field.
+        // read-only, like cam()/guides().
+        hoverForceId: (): number | null => editor.hoverForce,
         // the easing tag per point (sorted by s) — the menu flow asserts an Easing ▸ pick
         // flips the leading keyframe's tag.
         forceEases: (): number[] => sectionForces(ecs, sec()).map((p) => forceEase(ecs, p.id)),

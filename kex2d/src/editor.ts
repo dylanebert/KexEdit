@@ -141,6 +141,12 @@ interface EditorState {
      *  with `hoverSection` (the pointer is over exactly one pick target), cleared on pointer
      *  leave and for the whole of any gesture (`beginDrag`) like its section twin. */
     hoverNode: number | null;
+    /** the stable id of the viewport force marker under the pointer, or null — the force twin of
+     *  `hoverNode` (kex2d-idioms stage 3: force keyframes display + select on the track). written
+     *  per pointermove by the controls' pick sweep, mutually exclusive with `hoverNode`/
+     *  `hoverSection` (exactly one pick target under the pointer), cleared on pointer leave and
+     *  for the whole of any gesture (`beginDrag`). viewport-local like its siblings. */
+    hoverForce: number | null;
     /** which surface the pointer is over — routes the surface-scoped keys (`F` frames it,
      *  arrows act on it), ending the viewport-nudge vs timeline-playhead double-fire.
      *  defaults to the viewport, so keys route there before the pointer visits the dock;
@@ -294,6 +300,7 @@ export const editor: EditorState = {
     dragging: false,
     hoverSection: null,
     hoverNode: null,
+    hoverForce: null,
     hover: "viewport",
     converting: null,
     notice: null,
@@ -614,6 +621,7 @@ export function beginDrag(el: Element, pointerId: number): void {
     // an explicit clear here: nothing lights up under a live gesture, whichever surface owns it.
     editor.hoverSection = null;
     editor.hoverNode = null;
+    editor.hoverForce = null;
     try {
         el.setPointerCapture(pointerId);
     } catch {

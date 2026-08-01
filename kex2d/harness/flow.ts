@@ -130,8 +130,10 @@ export interface Kex {
         outDs: number;
         outDg: number;
     })[];
+    forceMarkerAt(i: number): { x: number; y: number } | null;
     forces(): { s: number; g: number }[];
     gRange(): [number, number];
+    hoverForceId(): number | null;
     guides(): { ray: boolean; angle: string | null; length: string | null };
     infeasibleSpan(): { first: number; count: number; section: number | null; head: number };
     entries(): { x: number; y: number; theta: number; v: number }[];

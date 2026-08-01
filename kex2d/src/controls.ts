@@ -6,9 +6,11 @@ import {
     enterTangentEdit,
     exitTangentEdit,
     openContext,
+    openForceMenu,
     openNodeMenu,
     type OptimizeSession,
     select,
+    selectForce,
     selectNodes,
     selectSection,
     selectStart,
@@ -53,6 +55,7 @@ import { editTangent, TangentMode } from "./spline";
 import { editHandleSets, localTipAt, type TangentSide } from "./tangents";
 import {
     exitWorld,
+    forceMarkers,
     Handle,
     handleAt,
     handleTangent,
@@ -87,6 +90,9 @@ import {
 const PICK_R = 16;
 const SECTION_PICK_R = 12;
 const START_PICK_R = 12;
+// force-marker pick radius (px) — the anchor-diamond scale, under the node radius: a node
+// within reach still wins (markers slot BETWEEN node and START in pick priority).
+const FORCE_PICK_R = 12;
 // tangent-handle grab radius (px). smaller than the node radius, and the selected node's
 // handles are checked before the node itself, so grabbing a handle beats a node under it.
 const TANGENT_PICK_R = 11;
@@ -286,15 +292,70 @@ function pickSection(ecs: State, tx: ViewTx, sx: number, sy: number): number | n
     return best;
 }
 
-/** true when the screen point hits the track START anchor. START is the first
- *  section's entry — sample 0, the world origin the diamond draws at (`AnchorDrawSystem`)
- *  — so this tests the pick radius against that sample regardless of the section's kind. */
-function pickStart(ecs: State, tx: ViewTx, sx: number, sy: number): boolean {
+/** the force marker nearest the screen point (within the pick radius), or its stable
+ *  keyframe id — kex2d-idioms stage 3: the viewport markers are pickable (select + the
+ *  keyframe context menu) but never draggable (s/g authoring stays on the chart). slots
+ *  between the node pick and the START anchor in every sweep — a node within reach wins,
+ *  a marker beats the diamond/section under it. exported for the pick tests. */
+export function pickForce(ecs: State, tx: ViewTx, sx: number, sy: number): number | null {
+    return nearestForce(ecs, tx, sx, sy)?.id ?? null;
+}
+
+/** the nearest force marker within the pick radius plus its screen distance² — the core
+ *  `pickForce` and the START tie-break (`pickForceOrStart`) share. */
+function nearestForce(
+    ecs: State,
+    tx: ViewTx,
+    sx: number,
+    sy: number,
+): { id: number; d2: number } | null {
+    let best: { id: number; d2: number } | null = null;
+    let bestD2 = FORCE_PICK_R * FORCE_PICK_R;
+    for (const m of forceMarkers(ecs)) {
+        const dx = sx - (tx.ox + m.x * tx.sx);
+        const dy = sy - (tx.oy + m.y * tx.sy);
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+            bestD2 = d2;
+            best = { id: m.id, d2 };
+        }
+    }
+    return best;
+}
+
+/** the screen distance² to the track START anchor when within its pick radius, else null.
+ *  START is the first section's entry — sample 0, the world origin the diamond draws at
+ *  (`AnchorDrawSystem`) — regardless of the section's kind. */
+function startD2(ecs: State, tx: ViewTx, sx: number, sy: number): number | null {
     const s = trackSamples(ecs);
-    if (!s) return false;
+    if (!s) return null;
     const dx = sx - (tx.ox + s.posX[0] * tx.sx);
     const dy = sy - (tx.oy + s.posY[0] * tx.sy);
-    return dx * dx + dy * dy < START_PICK_R * START_PICK_R;
+    const d2 = dx * dx + dy * dy;
+    return d2 < START_PICK_R * START_PICK_R ? d2 : null;
+}
+
+/** true when the screen point hits the track START anchor (the dblclick path's read). */
+function pickStart(ecs: State, tx: ViewTx, sx: number, sy: number): boolean {
+    return startD2(ecs, tx, sx, sy) !== null;
+}
+
+/** the force-marker vs START resolution every pointer sweep shares. Both pick at r = 12 and
+ *  a force-first section's s = 0 seed keyframe sits exactly ON the START diamond, so a fixed
+ *  force-before-START order would leave START — the only path to the v0 popover —
+ *  permanently unclickable. Nearest wins; an exact tie goes to START (the coincident seed
+ *  stays reachable on the chart). Node priority stays above both — callers pick nodes first.
+ *  exported for the pick tests. */
+export function pickForceOrStart(
+    ecs: State,
+    tx: ViewTx,
+    sx: number,
+    sy: number,
+): { kind: "force"; id: number } | { kind: "start" } | null {
+    const f = nearestForce(ecs, tx, sx, sy);
+    const s = startD2(ecs, tx, sx, sy);
+    if (s !== null && (f === null || s <= f.d2)) return { kind: "start" };
+    return f !== null ? { kind: "force", id: f.id } : null;
 }
 
 /** the tangent-edited node's handle nearest the screen point (within the grab radius), or
@@ -844,6 +905,7 @@ function finishMarquee(ecs: State, canvas: HTMLCanvasElement): void {
     if (!armed || !rect) {
         if (!shift) {
             select(null);
+            selectForce(null); // markers select in the viewport now, so empty-click clears them too
             selectSection(null);
             selectStart(false);
         }
@@ -859,6 +921,7 @@ function finishMarquee(ecs: State, canvas: HTMLCanvasElement): void {
     );
     if (!shift && res.ids.length === 0) {
         select(null);
+        selectForce(null); // an empty plain marquee deselects all, like an empty click
         selectSection(null);
         selectStart(false);
     } else {
@@ -1027,10 +1090,26 @@ export function attachControls(
             openNodeMenu(e.clientX, e.clientY, node);
             return;
         }
-        if (pickStart(ecs, tx, cx, cy)) {
+        // a force marker (kex2d-idioms stage 3) opens the KEYFRAME context menu — the same
+        // menu, rows, and promote-vs-replace law as the chart diamond (`openForceMenu`
+        // promotes a right-clicked set member to active, replace-selects a non-member).
+        // marker vs START resolves nearest-wins (`pickForceOrStart`); a winning START
+        // reaches node 0's menu on a geo-first track, and a force-first track has no node 0,
+        // so the coincident seed keyframe's menu opens instead.
+        const fs = pickForceOrStart(ecs, tx, cx, cy);
+        if (fs !== null) {
+            if (fs.kind === "force") {
+                openForceMenu(e.clientX, e.clientY, fs.id);
+                return;
+            }
             const n0 = startNode0(ecs);
             if (n0 !== null) {
                 openNodeMenu(e.clientX, e.clientY, n0);
+                return;
+            }
+            const fp = pickForce(ecs, tx, cx, cy);
+            if (fp !== null) {
+                openForceMenu(e.clientX, e.clientY, fp);
                 return;
             }
         }
@@ -1114,10 +1193,17 @@ export function attachControls(
             }
             return;
         }
-        // the START anchor (initial-speed handle) before the section span it sits on —
-        // both pass through the origin, so the on-object handle wins.
-        if (pickStart(ecs, tx, cx, cy)) {
-            selectStart(true);
+        // a force marker (kex2d-idioms stage 3): select only — same entity as the timeline
+        // diamond, so the selection routes through the one selectForce (shift-click toggles the
+        // set, the multiselect grammar). NO drag: s/g authoring stays on the chart (one
+        // authoring surface per quantity), so a grab here is a plain click whatever it does next.
+        // marker vs the START anchor (initial-speed handle) resolves nearest-wins
+        // (`pickForceOrStart` — ties to START, so a force-first seed can't occlude the v0
+        // popover); both beat the section span they sit on — the on-object handle wins.
+        const fs = pickForceOrStart(ecs, tx, cx, cy);
+        if (fs !== null) {
+            if (fs.kind === "force") selectForce(fs.id, e.shiftKey ? "toggle" : "replace");
+            else selectStart(true);
             return;
         }
         const sec = pickSection(ecs, tx, cx, cy);
@@ -1199,13 +1285,19 @@ export function attachControls(
         const tx = viewTransform(canvas);
         const node = pickNode(ecs, tx, cx, cy);
         editor.hoverNode = node;
-        editor.hoverSection = node === null ? pickSection(ecs, tx, cx, cy) : null;
+        // marker hover resolves through the same nearest-wins seam the click does — a marker
+        // a click would cede to START must not light (hover matches what a click would take).
+        const fs = node === null ? pickForceOrStart(ecs, tx, cx, cy) : null;
+        editor.hoverForce = fs !== null && fs.kind === "force" ? fs.id : null;
+        editor.hoverSection =
+            node === null && editor.hoverForce === null ? pickSection(ecs, tx, cx, cy) : null;
     };
 
     // the pointer leaving the canvas clears the hover (no move fires outside it).
     const onPointerLeave = (): void => {
         editor.hoverSection = null;
         editor.hoverNode = null;
+        editor.hoverForce = null;
     };
 
     // wheel = zoom-at-cursor; trackpad pinch arrives as ctrl+wheel (browser convention)
@@ -1605,6 +1697,7 @@ export function attachControls(
         canvas.style.cursor = ""; // detaching mid-pan must not leave a stuck grabbing cursor
         editor.hoverSection = null; // nor a lit span the remount has no pointer over
         editor.hoverNode = null;
+        editor.hoverForce = null;
         clearGuides(); // detaching mid-drag must not leave a stuck guide for the remount
         cancelMarquee(); // detaching mid-marquee must not leave a stuck rect for the remount
         endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on

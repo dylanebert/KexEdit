@@ -581,6 +581,92 @@ export function toLocalU(spans: SectionSpan[], u: number): { section: number; s:
     return toLocalOn(nativeAxis, spans, u);
 }
 
+/** the baked sample address of a section-local native-axis coordinate — where a force
+ *  keyframe's stored `s` lands on the flat SoA. Walks the bake's own tables within the
+ *  section's published range (the ds-convention law: per-edge `out.ds` on the Distance
+ *  axis, the per-sample march clock `out.t` on Time — never a chord re-derivation, never
+ *  the cart's arc↔time detour), so a zero-length edge (a Time-domain stall, the optimize
+ *  freeze's gap) is stepped over rather than divided by. Returns the flat sample index
+ *  plus the fraction toward `index + 1` (an exit landing reads `{endSample, 0}`), clamped
+ *  to the section's range at both ends; null when the section published no edges (placed
+ *  past the sample budget). */
+export function forceSample(
+    out: { ds: Float32Array; t: Float32Array },
+    info: { startSample: number; endSample: number },
+    last: number,
+    time: boolean,
+    s: number,
+): { index: number; frac: number } | null {
+    const start = info.startSample;
+    const end = Math.min(info.endSample, last);
+    if (start >= end) return null; // an empty published range — nothing to place on
+    if (time) {
+        const t0 = out.t[start];
+        for (let i = start; i < end; i++) {
+            const hi = out.t[i + 1] - t0;
+            if (hi >= s) {
+                const lo = out.t[i] - t0;
+                const dt = hi - lo;
+                return { index: i, frac: dt > 0 ? Math.min(Math.max((s - lo) / dt, 0), 1) : 0 };
+            }
+        }
+        return { index: end, frac: 0 };
+    }
+    let cum = 0;
+    for (let i = start; i < end; i++) {
+        const d = out.ds[i];
+        if (cum + d >= s) {
+            return { index: i, frac: d > 0 ? Math.min(Math.max((s - cum) / d, 0), 1) : 0 };
+        }
+        cum += d;
+    }
+    return { index: end, frac: 0 };
+}
+
+/** a force keyframe's world position on the baked track — the viewport marker substrate
+ *  (`kindSegments`'s force-point sibling): stable id, owning section, and the world point its
+ *  stored native-axis `s` lands at (`forceSample` over the bake's own tables, lerped between
+ *  the bracketing samples). Skips a section with no published edges, and skips a key whose
+ *  `s` exceeds the section's extent — a trimmed-past key has no track position (the
+ *  non-destructive trim law: re-lengthening restores it), so clamping it onto the exit
+ *  seed would draw a position that isn't the key's. Read by the render's ForceDrawSystem
+ *  and the controls' pick — display + select only, never a drag target. */
+export interface ForceMarker {
+    id: number;
+    section: number;
+    x: number;
+    y: number;
+}
+
+export function forceMarkers(ecs: State): ForceMarker[] {
+    const res: ForceMarker[] = [];
+    const trackEid = trackEntity(ecs);
+    if (trackEid === null) return res;
+    const s = samples.get(trackEid);
+    const out = bakeOut.get(trackEid);
+    if (!s || !out) return res;
+    const time = (Track.domain.get(trackEid) as Domain) === Domain.Time;
+    const last = Math.max(0, Track.count.get(trackEid) - 1);
+    for (const sec of sections(ecs)) {
+        if (sec.kind !== SectionKind.Force) continue;
+        const info = sectionInfo.get(sec.id);
+        if (!info) continue;
+        for (const p of sectionForces(ecs, sec.id)) {
+            if (p.s > sec.length) continue; // trimmed past the extent: no track position
+            const addr = forceSample(out, info, last, time, p.s);
+            if (!addr) continue;
+            const j = Math.min(addr.index + 1, last);
+            res.push({
+                id: p.id,
+                section: sec.id,
+                x: s.posX[addr.index] + addr.frac * (s.posX[j] - s.posX[addr.index]),
+                y: s.posY[addr.index] + addr.frac * (s.posY[j] - s.posY[addr.index]),
+            });
+        }
+    }
+    return res;
+}
+
 /** create a section at `order` with a fresh stable id — the append/seed path.
  *  `ds` is its baking step, defaulting to the track-nominal sentinel 0 (only an
  *  invoked solve's output carries its own step).

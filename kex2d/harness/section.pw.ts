@@ -271,17 +271,19 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape"); // the NEXT press peels the selection (no stale swallow)
     await expect.poll(selectedSection).toBe(null);
 
-    // ── 4. Right-click the force clip: the menu carries exactly THREE rows — ONE `Convert` row
+    // ── 4. Right-click the force clip: the menu carries exactly FOUR rows — ONE `Convert` row
     // (stage 7 naming: the section's kind implies the direction, so the label is the verb
-    // alone), the force-only Optimize entry, and Delete. (Also the real-menu regression guard
-    // for the destructive Convert row's removal.) ──
+    // alone), the force-only Optimize entry, Reset (kex2d-idioms stage 2 — kind-held, live on a
+    // baked force section), and Delete. (Also the real-menu regression guard for the destructive
+    // Convert row's removal.) ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(3);
+    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(4);
     await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" })).toBeEnabled();
     await expect(
         page.locator(".ctxmenu").getByRole("menuitem", { name: "Optimize" }),
     ).toBeEnabled();
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Reset" })).toBeEnabled();
     if (strip) await page.screenshot({ path: join(OUT, "section-4-menu.png"), clip: strip });
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);
