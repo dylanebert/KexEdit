@@ -536,6 +536,165 @@ test("tangent edit flow", async ({ page, boot }) => {
     await expect(page.locator(".manip-angle")).toBeVisible();
 });
 
+// Drive the TANGENT-EDIT FREE BODY DRAG (kex2d-node-move-ux stage 3): once a node is the
+// tangent-edited subject, grabbing its own BODY — not a handle — moves it directly and unsnapped,
+// the summoned inner layer's own idiom (handle drags are already free/no-guide); this retires the
+// default surface's select-only body rule for THIS one subject only. (a) a sub-DRAG_PX press/
+// release still stays a plain click — the same dead zone the "select-only body drag" positive
+// control above pins, replayed here to prove the gate survives inside tangent edit; (b) past the
+// zone the node lands EXACTLY where a real, UNSNAPPED move puts it — the manipulator knobs always
+// land on the 1 m / 5° grid, so the chord's fractional metre is the unsnapped-gesture signature —
+// as one undo entry, guides left clear; (c) a window blur mid-drag cancels it completely, the
+// `dragNode` branch of the same blur-teardown the manip drag's blur pin (above) drives for
+// `dragManip`; (d) Escape mid-drag cancels it the same way WITHOUT also exiting tangent edit (the
+// layered-dismissal law — one press peels one rung), a second Escape then reaching that rung; (e)
+// Delete/Backspace never fires the structural trim mid-drag (the stale-eid hazard a destructive op
+// racing a live gesture's raw eid would hit), driven on the chain TIP since only its own end-node
+// trim can fire at all (an interior node's own trim is already blocked by `endSelected`).
+test("tangent-edit free node-body drag", async ({ page, boot }) => {
+    await boot();
+
+    const nodeCount = () => kexCall(page, "nodeCount");
+    const editing = () => kexCall(page, "editing");
+    const selectedOrder = () => kexCall(page, "selectedOrder");
+    const undoDepth = () => kexCall(page, "undoDepth");
+    const poses = () => kexCall(page, "poses");
+    const guides = () => kexCall(page, "guides");
+    const cam = () => kexCall(page, "cam");
+
+    await seedHill(page);
+    await expect.poll(nodeCount).toBe(7);
+    await page.keyboard.press("f");
+
+    const canvas = page.locator("canvas.viewport");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+
+    const npos = await nodePoint(page, 3);
+    await page.mouse.dblclick(cb.x + npos.x, cb.y + npos.y);
+    await expect.poll(editing).toBe(true);
+    expect(await selectedOrder()).toBe(3);
+
+    // (a) sub-DRAG_PX: still a plain click (the dead zone), same as the default surface.
+    const before = await poses();
+    const undo0 = await undoDepth();
+    await page.mouse.move(cb.x + npos.x, cb.y + npos.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + npos.x + 2, cb.y + npos.y + 1, { steps: 2 }); // < DRAG_PX (4px)
+    await page.mouse.up();
+    expect((await poses())[3]).toEqual(before[3]);
+    expect(await undoDepth()).toBe(undo0);
+
+    // (b) past the dead zone: land EXACTLY at a chosen world point, so "unsnapped" is checked
+    // against the actual landing rather than merely "moved" (a re-snapped regression would still
+    // pass a bare displacement assert). `poses()` is the LOCAL Handle.pos; this section's entry
+    // frame is identity (the first section), so it's world-comparable to `cam()`'s affine directly.
+    // Target the previous node's chord at exactly `floor(oldChord) + 2.5` — a fractional metre of
+    // 0.5 by construction, the farthest point from any 1 m grid line, so the "away from the nearest
+    // multiple" assert below can't flake regardless of what the pre-drag chord happened to be.
+    const [zoom, ox, oy] = await cam();
+    const p2 = (await poses())[2];
+    const oldChord = Math.hypot(before[3][0] - p2[0], before[3][1] - p2[1]);
+    const ux = (before[3][0] - p2[0]) / oldChord;
+    const uy = (before[3][1] - p2[1]) / oldChord;
+    const targetChord = Math.floor(oldChord) + 2.5;
+    const targetWorld = { x: p2[0] + ux * targetChord, y: p2[1] + uy * targetChord };
+    const targetScreen = { x: ox + targetWorld.x * zoom, y: oy - targetWorld.y * zoom }; // cameraTx
+    await page.mouse.move(cb.x + npos.x, cb.y + npos.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + targetScreen.x, cb.y + targetScreen.y, { steps: 10 });
+    await page.mouse.up();
+    const moved = (await poses())[3];
+    const newChord = Math.hypot(moved[0] - p2[0], moved[1] - p2[1]);
+    expect(Math.abs(newChord - targetChord)).toBeLessThan(0.05); // landed at the intended point
+    const nearestMultiple = Math.round(newChord);
+    expect(Math.abs(newChord - nearestMultiple)).toBeGreaterThan(0.1); // the unsnapped signature
+    expect(await undoDepth()).toBe(undo0 + 1); // one drag → one undo entry
+    expect(await guides()).toEqual({ ray: false, angle: null, length: null }); // no guide, ever
+
+    // (c) blur mid-drag cancels completely — the dragNode teardown branch (positive control: the
+    // node is verifiably mid-move, and nothing has committed yet, before the blur fires). the node
+    // moved to a new screen point in (b), so re-locate it (a stale cached point would miss the
+    // pick entirely and this whole step would vacuously no-op — `kex2d-harness.md`'s pointer law).
+    const npos2 = await nodePoint(page, 3);
+    const pre = (await poses())[3];
+    const undoPre = await undoDepth();
+    await page.mouse.move(cb.x + npos2.x, cb.y + npos2.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + npos2.x + 30, cb.y + npos2.y + 30, { steps: 8 });
+    const mid = (await poses())[3];
+    expect(Math.hypot(mid[0] - pre[0], mid[1] - pre[1])).toBeGreaterThan(0.01); // it moved…
+    expect(await undoDepth()).toBe(undoPre); // …but nothing committed yet
+
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    const reverted = (await poses())[3];
+    expect(reverted[0]).toBeCloseTo(pre[0], 5);
+    expect(reverted[1]).toBeCloseTo(pre[1], 5);
+    expect(await guides()).toEqual({ ray: false, angle: null, length: null });
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
+    expect(await undoDepth()).toBe(undoPre);
+    await page.mouse.up(); // release cleanly — the gesture is already torn down
+
+    // exit tangent edit on node 3 (a plain rest-state Escape — no live gesture) and switch subject
+    // to the chain TIP for (d)/(e): the trim/delete branch only fires on the chain end
+    // (`endSelected`), so the mid-drag Delete guard needs a subject where the op would otherwise
+    // actually run.
+    expect(await editing()).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect.poll(editing).toBe(false);
+
+    const tip = await nodePoint(page, 6);
+    await page.mouse.dblclick(cb.x + tip.x, cb.y + tip.y);
+    await expect.poll(editing).toBe(true);
+    expect(await selectedOrder()).toBe(6);
+
+    // (d) Escape mid-drag cancels the free move WITHOUT exiting tangent edit — the layered-
+    // dismissal law (`kex2d-harness.md`): one press peels one rung, so the handles stay up and a
+    // SECOND Escape is what reaches the tangent-edit rung (the round trip the summon test above
+    // already pins at rest — this proves it survives with a gesture also live).
+    const preD = (await poses())[6];
+    const undoD = await undoDepth();
+    await page.mouse.move(cb.x + tip.x, cb.y + tip.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + tip.x + 25, cb.y + tip.y + 25, { steps: 6 });
+    const midD = (await poses())[6];
+    expect(Math.hypot(midD[0] - preD[0], midD[1] - preD[1])).toBeGreaterThan(0.01); // really live
+    await page.keyboard.press("Escape");
+    const afterEscape = (await poses())[6];
+    expect(afterEscape[0]).toBeCloseTo(preD[0], 5); // reverted…
+    expect(afterEscape[1]).toBeCloseTo(preD[1], 5);
+    expect(await undoDepth()).toBe(undoD); // …nothing committed…
+    expect(await editing()).toBe(true); // …and tangent edit is STILL open (one rung, not two)
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0); // capture released
+    await page.mouse.up(); // release cleanly — the gesture is already torn down
+
+    await page.keyboard.press("Escape"); // the second press now reaches the tangent-edit rung
+    await expect.poll(editing).toBe(false);
+    await page.mouse.dblclick(cb.x + tip.x, cb.y + tip.y); // re-summon for (e)
+    await expect.poll(editing).toBe(true);
+
+    // (e) Delete/Backspace is a no-op mid-drag — the structural trim would destroy the very node
+    // the drag holds a raw eid for (the stale-eid hazard). Node count and the live gesture both
+    // hold through the keypress; releasing the pointer commits the (untouched) move exactly as a
+    // Delete-free drag would — Delete was swallowed, not queued for after release.
+    const preE = (await poses())[6];
+    const nodeCountE = await nodeCount();
+    const undoE = await undoDepth();
+    await page.mouse.move(cb.x + tip.x, cb.y + tip.y);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + tip.x + 25, cb.y + tip.y + 25, { steps: 6 });
+    const midE = (await poses())[6];
+    expect(Math.hypot(midE[0] - preE[0], midE[1] - preE[1])).toBeGreaterThan(0.01); // really live
+    await page.keyboard.press("Delete");
+    expect(await nodeCount()).toBe(nodeCountE); // nothing destroyed
+    const stillMid = (await poses())[6];
+    expect(stillMid[0]).toBeCloseTo(midE[0], 5); // the gesture itself kept running (no queueing)
+    expect(stillMid[1]).toBeCloseTo(midE[1], 5);
+    await page.mouse.up();
+    expect(await nodeCount()).toBe(nodeCountE); // still nothing destroyed after release
+    expect(await undoDepth()).toBe(undoE + 1); // the drag itself committed normally
+});
+
 // Drive the START-HANDLE EDIT flow (kex2d-geo-ux stage 1): the section entry (node 0) is now
 // selectable + its tangent editable. The START diamond and the first section's node 0 are
 // coincident at the origin, so a plain click selects the START (v0 popover) while a DOUBLE-CLICK

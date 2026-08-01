@@ -785,4 +785,25 @@ describe("applyMultiDelta — group-drag idempotence (no accumulation)", () => {
         expect(localOf(n1).x).toBeCloseTo(localOf(ref.n1).x, 4);
         expect(localOf(n2).x).toBeCloseTo(localOf(ref.n2).x, 4);
     });
+
+    // the tip re-heads only on its OWN move (the same law reheadOnDrag holds for a single drag):
+    // polarDelta moves only selected nodes, so a group move of the tip's predecessor leaves the tip
+    // in place — re-heading it anyway swings the last segment under a gesture that never touched it.
+    test("a group move excluding the tip preserves the tip's heading", () => {
+        const { state, n1, n2 } = triple();
+        const before = Handle.theta.get(n2);
+        // rotate n1's chord +30° about the entry; n2 is unselected and must not move OR re-head.
+        applyMultiDelta(state, freezeChains(state, [n1]), "angle", Math.PI / 6);
+        expect(localOf(n2).x).toBeCloseTo(20, 4);
+        expect(localOf(n2).y).toBeCloseTo(0, 4);
+        expect(Handle.theta.get(n2)).toBeCloseTo(before, 6);
+    });
+
+    test("a group move including the tip still re-heads it", () => {
+        const { state, n1, n2 } = triple();
+        applyMultiDelta(state, freezeChains(state, [n1, n2]), "angle", Math.PI / 6);
+        // both chords rotated +30°; n1's interior heading stays frozen at 0, so the tip reflects
+        // to 2·chord − prev = 60°.
+        expect(Handle.theta.get(n2)).toBeCloseTo(Math.PI / 3, 4);
+    });
 });

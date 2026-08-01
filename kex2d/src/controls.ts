@@ -154,6 +154,21 @@ let manipDX = 0;
 let manipDY = 0;
 let manipCX = 0;
 let manipCY = 0;
+// the tangent-edit free node-body drag (kex2d-node-move-ux stage 3): grabbing the tangent-edited
+// node's own body moves it directly — the summoned inner layer's own unsnapped idiom (mirrors
+// `dragTangent`'s no-raster/no-guide feel), distinct from `dragManip` (the default surface's
+// polar knobs; the body stays select-only there). mutually exclusive with `dragManip` +
+// `dragTangent` + `panning` — one gesture at a time; the tangent-handle grab (below) still wins
+// pick priority over the node body.
+let dragNode: number | null = null;
+// the dead-zone latch + grab-offset state, the same shape as `dragManip`'s (`manipArmed`/
+// `manipDX`/`manipDY`/`manipCX`/`manipCY`).
+let nodeArmed = false;
+let nodeDX = 0;
+let nodeDY = 0;
+let nodeCX = 0;
+let nodeCY = 0;
+
 // the tangent handle under drag (the selected node's in/out handle), or null. mutually
 // exclusive with `dragManip` + `panning` — one gesture at a time.
 let dragTangent: { eid: number; side: TangentSide } | null = null;
@@ -661,7 +676,7 @@ export function freezeChains(ecs: State, ids: Iterable<number>): Map<number, Fro
 /** apply one shared polar `delta` to a group move's FROZEN start snapshot — per section, run its
  *  frozen start chain + selected orders through `polarDelta` (ascending order, running-prev anchor —
  *  each node in its own polar frame) and write each moved node's local position to LIVE `Handle.pos`,
- *  then rehead the section tip (the same `reheadOnDrag` a single drag runs). the contract is reads
+ *  then rehead the section tip when it is itself in the moved set. the contract is reads
  *  come from the frozen start, writes go to live: so a cumulative-from-start delta lands absolute —
  *  applying `d` then `d'` from the same snapshot equals a single application of `d'`, no accumulation
  *  (the positions a previous frame moved are never re-read as the next frame's start). */
@@ -678,7 +693,10 @@ export function applyMultiDelta(
             if (p) Handle.pos.set(eid, p.x, p.y);
         }
         const tip = lastHandle(ecs, sec);
-        if (tip !== null) reheadOnDrag(ecs, tip); // headLast re-derives the tip from its predecessor
+        // the tip re-heads only on its OWN move (reheadOnDrag's single-drag law): polarDelta moves
+        // only selected nodes, so an unselected tip stayed put and re-heading it would swing the
+        // last segment under a gesture that never touched it.
+        if (tip !== null && fs.selected.has(Handle.order.get(tip))) reheadOnDrag(ecs, tip);
     }
 }
 
@@ -849,6 +867,20 @@ function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
     reheadOnDrag(ecs, eid);
 }
 
+/** advance a tangent-edit free node-body drag: fold in the grab offset, map to world, and write
+ *  through the same `dragTo` a manipulator drag uses — but unsnapped, no raster, no guides (the
+ *  summoned inner layer's idiom, `dragTangentTo`'s twin). the dead-zone latch still gates a plain
+ *  click from moving the node. */
+function dragNodeTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): void {
+    if (dragNode === null) return;
+    const { x: cx, y: cy } = pointerToCanvas(canvas, e);
+    nodeArmed = armDrag(nodeArmed, cx - nodeCX, cy - nodeCY);
+    if (!nodeArmed) return;
+    const tx = viewTransform(canvas);
+    const w = screenToWorld(tx, cx + nodeDX, cy + nodeDY);
+    dragTo(ecs, dragNode, w.x, w.y);
+}
+
 /** advance a tangent-handle drag: fold in the grab offset, map to world, and write the edited
  *  tangent. handle drags do NOT snap — a bezier handle is a free direct-manipulation gesture, no
  *  raster, no guides. the first move of an `Auto` node's ghost handle seeds the explicit tangent
@@ -936,7 +968,7 @@ export function attachControls(
         // node-drag are mutually exclusive: refuse to start one while the other is live,
         // so a second button press can't leak pointer capture or an open history gesture.
         if (e.button === 1) {
-            if (dragManip !== null || dragTangent !== null) return;
+            if (dragManip !== null || dragTangent !== null || dragNode !== null) return;
             e.preventDefault();
             const { x, y } = pointerToCanvas(canvas, e);
             panning = true;
@@ -980,6 +1012,30 @@ export function attachControls(
         const eid = pickNode(ecs, tx, cx, cy);
         if (eid !== null) {
             select(eid, e.shiftKey ? "toggle" : "replace"); // shift-click toggles the set
+            // free move inside tangent edit (kex2d-node-move-ux stage 3): the summoned inner layer
+            // is already an unsnapped, no-guide gesture surface (handle drags) — a body grab on
+            // its OWN tangent-edited node moves it freely instead of staying select-only. re-reads
+            // `editor.tangentEdit` AFTER `select` (a shift-toggle that just dropped this node from
+            // the set exits tangent edit too, and must not also start a drag). node 0 never reaches
+            // here (`pickNode` skips it); `sectionEditable` mirrors the same in-mode guard every
+            // other grab on this node's section carries (`dragTangent`, `startManip`).
+            if (
+                editor.tangentEdit === eid &&
+                sectionEditable(editor.optimizing, Handle.section.get(eid))
+            ) {
+                const s = trackSamples(ecs);
+                if (s) {
+                    dragNode = eid;
+                    nodeArmed = false;
+                    nodeCX = cx;
+                    nodeCY = cy;
+                    const ns = sampleScreen(s, tx, Handle.sample.get(eid));
+                    nodeDX = ns.x - cx;
+                    nodeDY = ns.y - cy;
+                    beginMove(ecs, Handle.section.get(eid));
+                    beginDrag(canvas, e.pointerId);
+                }
+            }
             return;
         }
         // the START anchor (initial-speed handle) before the section span it sits on —
@@ -1046,6 +1102,10 @@ export function attachControls(
         }
         if (dragTangent !== null) {
             dragTangentTo(ecs, canvas, e);
+            return;
+        }
+        if (dragNode !== null) {
+            dragNodeTo(ecs, canvas, e);
             return;
         }
         if (dragManip !== null) {
@@ -1121,6 +1181,13 @@ export function attachControls(
             commit(history); // one handle drag → one undo entry (a no-move grab records nothing)
             return;
         }
+        if (dragNode !== null) {
+            dragNode = null;
+            nodeArmed = false;
+            clearGuides();
+            commit(history); // one free move → one undo entry (a no-move grab records nothing)
+            return;
+        }
         if (dragManip === null) return;
         const axis = dragManip;
         const armed = manipArmed; // captured before the reset below — the sticky-commit gate
@@ -1152,6 +1219,13 @@ export function attachControls(
             cancel();
             return;
         }
+        if (dragNode !== null) {
+            dragNode = null;
+            nodeArmed = false;
+            clearGuides();
+            cancel(); // interrupted drag: restore the pre-gesture pose
+            return;
+        }
         if (dragManip === null) return;
         dragManip = null;
         manipArmed = false;
@@ -1164,7 +1238,14 @@ export function attachControls(
     // reattaching to the old node on the next move. tear it down like a pointercancel: revert the
     // bracketed edit, drop the drag/pan state (cancelDrag), and clear the capture flag (endDrag).
     const onBlur = (): void => {
-        if (dragManip === null && dragTangent === null && !panning && !dragMarquee) return;
+        if (
+            dragManip === null &&
+            dragTangent === null &&
+            dragNode === null &&
+            !panning &&
+            !dragMarquee
+        )
+            return;
         cancelDrag();
         endDragGesture();
     };
@@ -1268,6 +1349,19 @@ export function attachControls(
                 endDragGesture();
                 return;
             }
+            // a live free node-body drag (kex2d-node-move-ux stage 3) is the next rung: Escape
+            // cancels the in-flight move (revert + clear capture, the same teardown as a blur)
+            // and does NOT also exit tangent edit in the same press — one press peels one layer,
+            // so a second Escape reaches the tangent-edit rung below. (`dragManip`/`dragTangent`
+            // have no equivalent live-gesture Escape rung today — a pre-existing gap this leaves
+            // alone; only the new `dragNode` path needs one, since Esc is tangent edit's own
+            // dismissal key and would otherwise close the handles out from under a live drag.)
+            if (dragNode !== null) {
+                e.preventDefault();
+                cancelDrag();
+                endDragGesture();
+                return;
+            }
             // dismissal peels one layer: exit tangent edit first (keep the node selected), else
             // clear the selection. the node menu is inside App and takes Escape first (capture),
             // so it closes before this handler sees the key.
@@ -1282,6 +1376,15 @@ export function attachControls(
             }
             return;
         }
+
+        // a live gesture never fires a structural Delete mid-flight: a drag can hold a raw eid
+        // (`dragNode`/`dragTangent`) or an open history bracket (`beginMove`), and destroying or
+        // committing over that entity mid-gesture is exactly the stale-eid hazard `AGENTS.md`'s
+        // "never hold a raw eid across a snapshot restore" gotcha warns about. the arrow-nudge
+        // handler above guards only the node-move gestures it directly competes with
+        // (`dragManip`/`panning`); a destructive op needs the wider net — `editor.dragging`, the
+        // ONE flag every gesture raises through `beginDrag` (the same guard `onWheel`/`F` use).
+        if ((e.key === "Delete" || e.key === "Backspace") && editor.dragging) return;
 
         // a whole section (or section SET) selected: delete it (Del; also the context-menu action).
         // a multi-set deletes as ONE entry, guarded at the last-section floor (`removeSections`); the
