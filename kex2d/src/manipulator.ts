@@ -160,6 +160,178 @@ export function angleControl(f: Frame, px: number, py: number, snap: boolean): A
     return { angle: chordForIncline(incline, f.tangent), incline, snapped: snap };
 }
 
+// ── the neighbor-chord frame (interior nodes) ────────────────────────────────────────
+// stage 2 of kex2d-node-move-ux: an INTERIOR node (both neighbors exist and stay frozen) trades
+// the polar frame for two constrained 1D axes anchored on the frozen `prev`→`next` chord instead
+// of orbiting the dragged node itself — `polarFrame` doesn't fit here (no previous exit incline to
+// snap, and a group of one polar frame per interior node would let a drag perturb its own anchor).
+// `slide` (∥, along the chord) replaces the length knob; `offset` (⊥, off the chord) replaces the
+// angle knob — same two-knob vocabulary, new loci. Both snap to the SAME 1 m grid (`snapLength`);
+// there is no angle grid on an interior node any more (the law `magnet.ts`/`editor-ui.md` documents
+// as retired by this stage).
+
+/** the neighbor-chord manipulation frame around an interior node. `u = normalized(next − prev)` is
+ *  the slide axis (screen px); `v` is its +90° rotation (screen px, y-down), sign-picked so it
+ *  points toward `sel` at build time — a node's own current side always reads a positive offset,
+ *  the same "no consumer negation" convention `polarFrame`'s world-radians carry, just picked once
+ *  per frame instead of folded into a fixed formula (an interior offset has no world-frame
+ *  reference the way a tip's incline does). `slide0`/`offset0` are `sel`'s own coordinates in this
+ *  frame at build time — the "other axis" locus each control's `*ToPoint` holds fixed while the
+ *  other one is dragged, exactly the role `polarFrame.radius` plays for `angleToPoint` and
+ *  `polarFrame.ux`/`uy` play for `lengthToPoint`. Rebuilt per pointermove like `polarFrame` — `sel`
+ *  moves, `prev`/`next` never do (frozen neighbors), so `u`/`v` are gesture-stable and only
+ *  `slide0`/`offset0` track the live position. `degenerate` marks a coincident `prev`≈`next` (no
+ *  chord direction) — `u` falls back to `+x`, `v` to `+y`; the inverses stay finite but the
+ *  round-trip only holds non-degenerate. */
+export interface ChordFrame {
+    /** the previous node — the axis origin, screen px. */
+    px: number;
+    py: number;
+    /** the unit chord direction previous→next (the slide axis); `(1, 0)` when degenerate. */
+    ux: number;
+    uy: number;
+    /** the unit perpendicular (the offset axis), +90° from `u`, sign toward `sel`; `(0, 1)` when
+     *  degenerate. */
+    vx: number;
+    vy: number;
+    /** `sel`'s own slide coordinate at build time (world metres) — the locus `offsetToPoint` holds
+     *  fixed. */
+    slide0: number;
+    /** `sel`'s own offset coordinate at build time (world metres) — the locus `slideToPoint` holds
+     *  fixed. */
+    offset0: number;
+    /** screen px per world metre (both axes share one scale). */
+    pxPerMeter: number;
+    degenerate: boolean;
+}
+
+/** build the chord frame from the previous, next, and selected (interior) node's screen points.
+ *  rebuilt per pointermove (see `ChordFrame`). */
+export function chordFrame(
+    prev: { x: number; y: number },
+    next: { x: number; y: number },
+    sel: { x: number; y: number },
+    pxPerMeter: number,
+): ChordFrame {
+    const dx = next.x - prev.x;
+    const dy = next.y - prev.y;
+    const len = Math.hypot(dx, dy);
+    if (len < EPS) {
+        return {
+            px: prev.x,
+            py: prev.y,
+            ux: 1,
+            uy: 0,
+            vx: 0,
+            vy: 1,
+            slide0: 0,
+            offset0: 0,
+            pxPerMeter,
+            degenerate: true,
+        };
+    }
+    const ux = dx / len;
+    const uy = dy / len;
+    let vx = -uy; // +90° rotation (screen px, y-down)
+    let vy = ux;
+    const sx = sel.x - prev.x;
+    const sy = sel.y - prev.y;
+    if (sx * vx + sy * vy < 0) {
+        // sel sits on the OTHER side — flip v so sel's own offset reads positive.
+        vx = -vx;
+        vy = -vy;
+    }
+    const base: ChordFrame = {
+        px: prev.x,
+        py: prev.y,
+        ux,
+        uy,
+        vx,
+        vy,
+        slide0: 0,
+        offset0: 0,
+        pxPerMeter,
+        degenerate: false,
+    };
+    return {
+        ...base,
+        slide0: screenToSlide(base, sel.x, sel.y),
+        offset0: screenToOffset(base, sel.x, sel.y),
+    };
+}
+
+/** screen point → slide (world metres): the signed projection onto the chord axis ÷ the scale. the
+ *  exact inverse of `slideToPoint`. */
+export function screenToSlide(f: ChordFrame, px: number, py: number): number {
+    const along = (px - f.px) * f.ux + (py - f.py) * f.uy;
+    return f.pxPerMeter > 0 ? along / f.pxPerMeter : 0;
+}
+
+/** slide (metres) → the screen point on the slide locus — the line through the frame's `offset0`,
+ *  parallel to the chord. the exact inverse of `screenToSlide` (a point on the locus, its
+ *  projection reads back the same slide). */
+export function slideToPoint(f: ChordFrame, meters: number): { x: number; y: number } {
+    const s = meters * f.pxPerMeter;
+    const o = f.offset0 * f.pxPerMeter;
+    return { x: f.px + f.ux * s + f.vx * o, y: f.py + f.uy * s + f.vy * o };
+}
+
+/** screen point → offset (world metres): the signed projection onto the perpendicular axis ÷ the
+ *  scale. the exact inverse of `offsetToPoint`. */
+export function screenToOffset(f: ChordFrame, px: number, py: number): number {
+    const along = (px - f.px) * f.vx + (py - f.py) * f.vy;
+    return f.pxPerMeter > 0 ? along / f.pxPerMeter : 0;
+}
+
+/** offset (metres) → the screen point on the offset locus — the line through the frame's
+ *  `slide0`, parallel to the perpendicular. the exact inverse of `screenToOffset`. */
+export function offsetToPoint(f: ChordFrame, meters: number): { x: number; y: number } {
+    const s = f.slide0 * f.pxPerMeter;
+    const o = meters * f.pxPerMeter;
+    return { x: f.px + f.ux * s + f.vx * o, y: f.py + f.uy * s + f.vy * o };
+}
+
+/** the slide control: resolve a raw screen point to a slide in world metres. snap-by-default
+ *  quantizes to the SAME length grid the tip's length knob uses (`snapLength`); the Ctrl modifier
+ *  (`snap === false`) bypasses to continuous. shares `snapLength`'s `LENGTH_MIN` floor — a slide
+ *  never collapses onto the previous node either, the same guard the tip's chord carries. */
+export function slideControl(f: ChordFrame, px: number, py: number, snap: boolean): LengthSnap {
+    return snapLength(screenToSlide(f, px, py), snap);
+}
+
+/** the offset control: resolve a raw screen point to an offset in world metres. snap-by-default
+ *  quantizes the MAGNITUDE to `snapLength`'s grid and restores the sign (an offset is symmetric —
+ *  either side of the chord is valid, unlike a chord length) — so it shares `snapLength`'s
+ *  `LENGTH_MIN` floor too: a snapped offset never lands closer than 1 m to the chord line itself
+ *  (Ctrl frees it to continuous, sign preserved either way). */
+export function offsetControl(f: ChordFrame, px: number, py: number, snap: boolean): LengthSnap {
+    const raw = screenToOffset(f, px, py);
+    const sign = raw < 0 ? -1 : 1;
+    const mag = snapLength(Math.abs(raw), snap);
+    return { meters: sign * mag.meters, snapped: mag.snapped };
+}
+
+/** the chord arrow-nudge target (the offset/slide controls' keyboard twin, `polarNudge`'s interior
+ *  analogue): step an interior node along its own chord frame by `step` world metres, `dir` = ±1.
+ *  works directly in the same world-space coordinates `polarNudge` takes (section-local, not
+ *  screen — `pxPerMeter` is fixed at 1 so `step` reads as metres straight through). a degenerate
+ *  chord (coincident neighbors) leaves the node in place — there is no axis to nudge along. pure —
+ *  unit-tested. */
+export function chordNudge(
+    prev: { x: number; y: number },
+    next: { x: number; y: number },
+    node: { x: number; y: number },
+    axis: "slide" | "offset",
+    dir: 1 | -1,
+    step: number,
+): { x: number; y: number } {
+    const f = chordFrame(prev, next, node, 1);
+    if (f.degenerate) return node;
+    return axis === "slide"
+        ? slideToPoint(f, f.slide0 + dir * step)
+        : offsetToPoint(f, f.offset0 + dir * step);
+}
+
 // ── per-node polar delta (the multiselect group move) ───────────────────────────────
 // a multi-node move applies ONE shared Δlength / Δangle to every selected node, each in its own
 // polar frame around its previous node (Blender's Individual Origins). the transform runs in the

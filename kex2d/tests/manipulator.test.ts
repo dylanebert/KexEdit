@@ -3,14 +3,25 @@ import {
     angleControl,
     angleToPoint,
     type ChainNode,
+    chordFrame,
+    chordNudge,
     lengthControl,
     lengthToPoint,
+    offsetControl,
+    offsetToPoint,
     polarDelta,
     polarFrame,
     screenToAngle,
     screenToLength,
+    screenToOffset,
+    screenToSlide,
+    slideControl,
+    slideToPoint,
 } from "../src/manipulator";
-import { ANGLE_STEP_DEFAULT as ANGLE_STEP } from "../src/settings";
+import {
+    ANGLE_STEP_DEFAULT as ANGLE_STEP,
+    LENGTH_STEP_DEFAULT as LENGTH_STEP,
+} from "../src/settings";
 
 // the manipulator works entirely in screen px (the caller projects world→screen at the boundary),
 // so a test builds the previous + selected node's screen points directly. the previous node is the
@@ -152,6 +163,168 @@ describe("angle control (5° grid, uniform tip + interior)", () => {
         const res = angleControl(f, rising.x, rising.y, false);
         expect(res.angle).toBeGreaterThan(0); // world chord angle
         expect(res.incline).toBeGreaterThan(0); // world exit incline (2·chord − tangent)
+    });
+});
+
+// the neighbor-chord frame (kex2d-node-move-ux stage 2): an interior node's two axes anchor on the
+// frozen prev→next chord instead of orbiting the dragged node. `u` (slide) = normalized(next −
+// prev); `v` (offset) its +90° rotation, sign picked toward `sel`. both snap to the SAME 1 m grid
+// (`snapLength`) — there is no angle grid here (the retired law).
+const PREV_C = { x: 0, y: 0 };
+const NEXT_C = { x: 200, y: 0 }; // chord along +x, 200 px = 4 m at 50 px/m
+const SEL_C = { x: 120, y: 40 }; // 2.4 m slide, 0.8 m offset (below the chord on screen)
+
+describe("chord frame", () => {
+    test("captures the chord direction and sel's own slide/offset", () => {
+        const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+        expect(f.degenerate).toBe(false);
+        expect(f.ux).toBeCloseTo(1, 9);
+        expect(f.uy).toBeCloseTo(0, 9);
+        expect(Math.hypot(f.vx, f.vy)).toBeCloseTo(1, 12); // unit perpendicular
+        expect(f.ux * f.vx + f.uy * f.vy).toBeCloseTo(0, 12); // u ⊥ v
+        expect(f.slide0).toBeCloseTo(120 / PX_PER_METER, 9);
+        // v is picked toward sel, so sel's own offset always reads positive.
+        expect(f.offset0).toBeGreaterThan(0);
+        expect(f.offset0).toBeCloseTo(40 / PX_PER_METER, 9);
+    });
+
+    test("v flips to keep sel's offset positive on the opposite side", () => {
+        const above = { x: 120, y: -40 }; // same slide, opposite screen side
+        const f = chordFrame(PREV_C, NEXT_C, above, PX_PER_METER);
+        expect(f.offset0).toBeGreaterThan(0);
+        expect(f.offset0).toBeCloseTo(40 / PX_PER_METER, 9);
+        // the two frames' v axes are opposite (each picked toward its own sel).
+        const f2 = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+        expect(f.vx).toBeCloseTo(-f2.vx, 9);
+        expect(f.vy).toBeCloseTo(-f2.vy, 9);
+    });
+
+    test("a coincident prev/next node is degenerate (guarded, no NaN)", () => {
+        const f = chordFrame(PREV_C, PREV_C, SEL_C, PX_PER_METER);
+        expect(f.degenerate).toBe(true);
+        expect(f.ux).toBe(1);
+        expect(f.uy).toBe(0);
+        expect(f.vx).toBe(0);
+        expect(f.vy).toBe(1);
+    });
+});
+
+describe("slide inverse round-trips", () => {
+    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+    for (const m of [-1.5, 0, 0.5, 2.4, 6]) {
+        test(`slide ${m} m → point on the slide locus → back to ${m} m`, () => {
+            const p = slideToPoint(f, m);
+            expect(screenToSlide(f, p.x, p.y)).toBeCloseTo(m, 9);
+            // the offset axis is held fixed at the frame's offset0 (the OTHER control's anchor).
+            expect(screenToOffset(f, p.x, p.y)).toBeCloseTo(f.offset0, 9);
+        });
+    }
+
+    test("a non-positive scale reads 0 (degenerate guard, no divide-by-zero)", () => {
+        const dgn = chordFrame(PREV_C, NEXT_C, SEL_C, 0);
+        expect(screenToSlide(dgn, SEL_C.x, SEL_C.y)).toBe(0);
+    });
+});
+
+describe("offset inverse round-trips", () => {
+    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+    for (const m of [-3, -0.2, 0, 0.8, 5]) {
+        test(`offset ${m} m → point on the offset locus → back to ${m} m`, () => {
+            const p = offsetToPoint(f, m);
+            expect(screenToOffset(f, p.x, p.y)).toBeCloseTo(m, 9);
+            // the slide axis is held fixed at the frame's slide0.
+            expect(screenToSlide(f, p.x, p.y)).toBeCloseTo(f.slide0, 9);
+        });
+    }
+});
+
+describe("slide control (whole-metre grid, min 1, no sign restriction beyond the floor)", () => {
+    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+    test("snap on: quantizes the drag to the nearest whole metre (what the readout shows lands)", () => {
+        const raw = slideToPoint(f, 3.1);
+        const res = slideControl(f, raw.x, raw.y, true);
+        expect(res.snapped).toBe(true);
+        expect(res.meters).toBeCloseTo(3, 9);
+        // the write lands exactly what the control resolved — no gap between shown and written.
+        const written = slideToPoint(f, res.meters);
+        expect(screenToSlide(f, written.x, written.y)).toBeCloseTo(res.meters, 9);
+    });
+
+    test("snap off (Ctrl bypass): continuous, passes the raw slide through", () => {
+        const raw = slideToPoint(f, 3.1);
+        const res = slideControl(f, raw.x, raw.y, false);
+        expect(res.snapped).toBe(false);
+        expect(res.meters).toBeCloseTo(3.1, 9);
+    });
+
+    test("floors at 1 m either way (shares the tip's chord floor)", () => {
+        const raw = slideToPoint(f, 0.3);
+        expect(slideControl(f, raw.x, raw.y, true).meters).toBeCloseTo(1, 9);
+        expect(slideControl(f, raw.x, raw.y, false).meters).toBeCloseTo(1, 9);
+    });
+});
+
+describe("offset control (whole-metre grid, sign preserved, no angle grid)", () => {
+    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+    test("snap on: quantizes to the nearest whole metre, sign preserved (positive side)", () => {
+        const raw = offsetToPoint(f, 3.1);
+        const res = offsetControl(f, raw.x, raw.y, true);
+        expect(res.snapped).toBe(true);
+        expect(res.meters).toBeCloseTo(3, 9);
+        // what the readout would show is exactly what a re-write lands.
+        const written = offsetToPoint(f, res.meters);
+        expect(screenToOffset(f, written.x, written.y)).toBeCloseTo(res.meters, 9);
+    });
+
+    test("snap on: negative side quantizes and keeps its sign", () => {
+        const raw = offsetToPoint(f, -3.1);
+        const res = offsetControl(f, raw.x, raw.y, true);
+        expect(res.snapped).toBe(true);
+        expect(res.meters).toBeCloseTo(-3, 9);
+    });
+
+    test("snap off (Ctrl bypass): continuous, sign preserved", () => {
+        const raw = offsetToPoint(f, -3.1);
+        const res = offsetControl(f, raw.x, raw.y, false);
+        expect(res.snapped).toBe(false);
+        expect(res.meters).toBeCloseTo(-3.1, 9);
+    });
+
+    test("no angle grid: a chord rotation between prev/next never enters this control", () => {
+        // offsetControl only ever reads the perpendicular projection — there is no angle axis to
+        // snap on an interior node any more (ANGLE_STEP plays no role here at all).
+        const raw = offsetToPoint(f, 2 * ANGLE_STEP); // an arbitrary non-grid-aligned metres value
+        const res = offsetControl(f, raw.x, raw.y, true);
+        const grid = Math.round((2 * ANGLE_STEP) / LENGTH_STEP) * LENGTH_STEP;
+        expect(res.meters).toBeCloseTo(Math.sign(2 * ANGLE_STEP) * Math.max(1, Math.abs(grid)), 9);
+    });
+});
+
+describe("chordNudge — interior arrow-nudge (world-space, the offset/slide keyboard twin)", () => {
+    // straight chain along +x in section-local (world) coords: prev (0,0), next (10,0).
+    const prev = { x: 0, y: 0 };
+    const next = { x: 10, y: 0 };
+
+    test("slide axis steps the node along the chord by exactly `step`", () => {
+        const node = { x: 4, y: 1.5 }; // slide 4, offset 1.5 (v picked toward this node)
+        const out = chordNudge(prev, next, node, "slide", 1, 0.5);
+        const f = chordFrame(prev, next, node, 1);
+        expect(screenToSlide(f, out.x, out.y)).toBeCloseTo(f.slide0 + 0.5, 9);
+        expect(screenToOffset(f, out.x, out.y)).toBeCloseTo(f.offset0, 9); // offset untouched
+    });
+
+    test("offset axis steps the node off the chord by exactly `step`, slide untouched", () => {
+        const node = { x: 4, y: 1.5 };
+        const out = chordNudge(prev, next, node, "offset", -1, 0.5);
+        const f = chordFrame(prev, next, node, 1);
+        expect(screenToOffset(f, out.x, out.y)).toBeCloseTo(f.offset0 - 0.5, 9);
+        expect(screenToSlide(f, out.x, out.y)).toBeCloseTo(f.slide0, 9);
+    });
+
+    test("a degenerate chord (coincident neighbors) leaves the node in place", () => {
+        const out = chordNudge(prev, prev, { x: 4, y: 1.5 }, "slide", 1, 0.5);
+        expect(out.x).toBeCloseTo(4, 9);
+        expect(out.y).toBeCloseTo(1.5, 9);
     });
 });
 
