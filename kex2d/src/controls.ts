@@ -910,19 +910,43 @@ function frameViewport(ecs: State, canvas: HTMLCanvasElement): void {
 }
 
 /** write a dragged node's section-local position from a world target — `localize`
- *  against the node's section entry (identity for the first section). */
-function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
+ *  against the node's section entry (identity for the first section). returns false
+ *  with no live entry (nothing written). */
+function placeNode(eid: number, worldX: number, worldY: number): boolean {
     const entry = sectionInfo.get(Handle.section.get(eid))?.entry;
-    if (!entry) return;
+    if (!entry) return false;
     const local = localize(entry, { x: worldX, y: worldY, theta: 0 });
     Handle.pos.set(eid, local.x, local.y);
-    reheadOnDrag(ecs, eid);
+    return true;
+}
+
+/** the default surface's node write: place, then refresh the tip re-head (the tip
+ *  re-heads on its own move — `reheadOnDrag`'s law). the manipulator drags land here. */
+function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
+    if (placeNode(eid, worldX, worldY)) reheadOnDrag(ecs, eid);
+}
+
+/** write a tangent-edit free node-body drag's target — the summoned inner layer's node write,
+ *  `dragTo`'s twin. inside tangent edit the subject's body drag is AUTHORING: the first armed
+ *  move lazy-stamps the still-`Auto` node's tangents concrete (seeded from the live arc rule via
+ *  `seedTangent` — visually continuous, so no jump; `beginMove`'s grab snapshot already carries
+ *  the pre-stamp state, so the stamp rides the move's one undo entry), and the write never
+ *  re-heads — `dragTo` → `reheadOnDrag` would swing the displayed ghost handle to the
+ *  circular-arc reflection every pointermove. Aligned is the seed mode: node 0 never reaches the
+ *  body drag (`pickNode` skips it), so there is no Free entry-handle case here. */
+export function dragFreeTo(ecs: State, eid: number, worldX: number, worldY: number): void {
+    const section = Handle.section.get(eid);
+    const order = Handle.order.get(eid);
+    if (handleTangent(ecs, section, order) === undefined) {
+        const seed = seedTangent(ecs, section, order, TangentMode.Aligned);
+        if (seed) setTangent(ecs, section, order, seed);
+    }
+    placeNode(eid, worldX, worldY);
 }
 
 /** advance a tangent-edit free node-body drag: fold in the grab offset, map to world, and write
- *  through the same `dragTo` a manipulator drag uses — but unsnapped, no raster, no guides (the
- *  summoned inner layer's idiom, `dragTangentTo`'s twin). the dead-zone latch still gates a plain
- *  click from moving the node. */
+ *  through `dragFreeTo` — unsnapped, no raster, no guides (the summoned inner layer's idiom,
+ *  `dragTangentTo`'s twin). the dead-zone latch still gates a plain click from moving the node. */
 function dragNodeTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): void {
     if (dragNode === null) return;
     const { x: cx, y: cy } = pointerToCanvas(canvas, e);
@@ -930,7 +954,7 @@ function dragNodeTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): voi
     if (!nodeArmed) return;
     const tx = viewTransform(canvas);
     const w = screenToWorld(tx, cx + nodeDX, cy + nodeDY);
-    dragTo(ecs, dragNode, w.x, w.y);
+    dragFreeTo(ecs, dragNode, w.x, w.y);
 }
 
 /** advance a tangent-handle drag: fold in the grab offset, map to world, and write the edited

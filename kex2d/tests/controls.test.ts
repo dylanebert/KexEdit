@@ -5,6 +5,7 @@ import {
     armDrag,
     beyondDeadZone,
     DRAG_PX,
+    dragFreeTo,
     formatDeg,
     formatLen,
     freezeChains,
@@ -48,6 +49,7 @@ import {
     exitWorld,
     Handle,
     handleAt,
+    handleTangent,
     lastHandle,
     reheadOnDrag,
     samples,
@@ -66,7 +68,9 @@ const trackOf = (state: State): number => {
     throw new Error("no track");
 };
 // replicate `dragManipTo`'s node write: place the tip at a screen point, then localize + rehead
-// (exactly what `dragTo` does inside the controls).
+// (exactly what `dragTo` does inside the controls — the DEFAULT surface's write. the tangent-edit
+// body drag writes through `dragFreeTo` instead, which stamps concrete and never re-heads; that
+// seam is exported and pinned directly below).
 function writeNode(state: State, eid: number, screen: { x: number; y: number }): void {
     const world = { x: (screen.x - TX.ox) / TX.sx, y: (screen.y - TX.oy) / TX.sy };
     const entry = sectionInfo.get(Handle.section.get(eid))?.entry;
@@ -822,5 +826,58 @@ describe("applyMultiDelta — group-drag idempotence (no accumulation)", () => {
         // both chords rotated +30°; n1's interior heading stays frozen at 0, so the tip reflects
         // to 2·chord − prev = 60°.
         expect(Handle.theta.get(n2)).toBeCloseTo(Math.PI / 3, 4);
+    });
+});
+
+// kex2d-idioms stage 1 — inside tangent edit the subject's body drag is AUTHORING: the first
+// armed move lazy-stamps the still-`Auto` node's tangents concrete (seeded jump-free from the
+// live arc rule, the handle drag's own summon shape) and the write never re-heads. before the
+// stamp, the body drag wrote through `dragTo` → `reheadOnDrag`, so the still-Auto node's
+// displayed ghost handle swung to the circular-arc reflection every pointermove.
+describe("tangent-edit free body drag (dragFreeTo)", () => {
+    /** a curved three-node geo chain (first section, so entry = identity: world == local). */
+    function curved(): { state: State; sec: number; tip: number } {
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 10, 0);
+        addNode(state, sec, 18, 7); // the tip — a bend, so a re-head visibly swings theta
+        state.step(0);
+        const tip = lastHandle(state, sec);
+        if (tip === null) throw new Error("no tip");
+        return { state, sec, tip };
+    }
+
+    test("the first move stamps the tangents concrete — seeded from the live arc rule, jump-free", () => {
+        const { state, sec, tip } = curved();
+        const order = Handle.order.get(tip);
+        expect(handleTangent(state, sec, order)).toBeUndefined(); // still Auto at grab
+        const seed = seedTangent(state, sec, order, TangentMode.Aligned); // the live arc rule NOW
+        if (!seed) throw new Error("no seed");
+        dragFreeTo(state, tip, 18.4, 7.3); // the first armed move
+        const tan = handleTangent(state, sec, order);
+        if (!tan) throw new Error("not stamped"); // concretized at drag start
+        // the stamp IS the live arc-rule seed (no jump) — exact to the tangent column's own f32
+        // rounding (the store is f32; the seed is computed in f64).
+        expect(tan.mode).toBe(TangentMode.Aligned);
+        expect(tan.inX).toBe(Math.fround(seed.inX));
+        expect(tan.inY).toBe(Math.fround(seed.inY));
+        expect(tan.outX).toBe(Math.fround(seed.outX));
+        expect(tan.outY).toBe(Math.fround(seed.outY));
+    });
+
+    test("heading never re-derives mid-drag — the stamped tangent holds, theta untouched", () => {
+        const { state, sec, tip } = curved();
+        const order = Handle.order.get(tip);
+        const theta0 = Handle.theta.get(tip);
+        dragFreeTo(state, tip, 19, 9);
+        expect(Handle.theta.get(tip)).toBe(theta0); // the stored heading never re-derives
+        const stamped = handleTangent(state, sec, order);
+        if (!stamped) throw new Error("not stamped");
+        dragFreeTo(state, tip, 21, 12); // keep dragging — no per-pointermove swing
+        expect(Handle.theta.get(tip)).toBe(theta0);
+        expect(handleTangent(state, sec, order)).toEqual(stamped); // held absolute under the drag
+        // and the position still writes through (first section: world == local).
+        expect(Handle.pos.x.get(tip)).toBeCloseTo(21, 6);
+        expect(Handle.pos.y.get(tip)).toBeCloseTo(12, 6);
     });
 });

@@ -249,7 +249,9 @@ The worked example of the layered-expressiveness contract's summoned inner layer
   (the angular window derived from it, never authored in degrees), so pulling out lengthens without
   bumping the angle; deviate and return and it re-latches (stateless, no monotonic release). On the
   default surface node moves snap the grid; inside tangent edit the edited node's body is a free
-  gesture too (unsnapped, no guides) — the whole summoned layer expresses.
+  gesture too (unsnapped, no guides) — the whole summoned layer expresses. And that body drag is
+  **authoring**: it concretizes the subject's tangents (lazy-stamped at drag start, seeded
+  jump-free from the live arc rule, riding the move's one undo entry) and never re-heads.
 - **The force chart bends free-gesture on the value axis only.** A handle's Δg snaps the g-grid in
   offset space (the space the readout prints — a snapped transition reads "+0.5 g"); Δs stays
   continuous: a keyframe's s is *placement* (authoring vocabulary, snapped), a handle's Δs is
