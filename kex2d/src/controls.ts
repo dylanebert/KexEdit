@@ -33,11 +33,18 @@ import {
     angleControl,
     angleToPoint,
     type ChainNode,
-    type Frame,
-    lengthControl,
-    lengthToPoint,
+    chordFrame,
+    type ChordFrame,
+    chordNudge,
+    offsetControl,
+    offsetToPoint,
     polarDelta,
     polarFrame,
+    lengthControl,
+    lengthToPoint,
+    slideControl,
+    slideToPoint,
+    type Frame,
 } from "./manipulator";
 import { LENGTH_MIN } from "./magnet";
 import { RadialSlot, ringBase, ringSlot } from "./radial";
@@ -350,26 +357,31 @@ function sampleScreen(
     return { x: tx.ox + s.posX[i] * tx.sx, y: tx.oy + s.posY[i] * tx.sy };
 }
 
-/** the polar manipulation frame for a selected node in screen px, or null when it has no previous
- *  node (node 0, the entry anchor) or the chord is degenerate (coincident with its previous node).
- *  rebuilt each pointermove against the live baked positions (the per-move-snapshot contract,
- *  `manipulator.ts`): the radius rides the live chord, so the incline snap window tracks the drag.
- *  the tip carries the previous node's AUTHORED exit heading in **world** radians (`exitWorld` — no
- *  screen y-flip, the manipulator convention) as its incline reference; an interior node leaves it
- *  null (a frozen heading has no incline quantum). */
+/** a selected node's manipulation frame, screen px — the polar frame for a growth tip (`kind:
+ *  "polar"`), the neighbor-chord frame for an interior node (`kind: "chord"`, kex2d-node-move-ux
+ *  stage 2). the discriminant is what forks `dragManipTo`/`manipKnobs`'s degenerate gate, never a
+ *  node-kind flag threaded separately — the frame IS the fork. */
+export type NodeFrame = { kind: "polar"; frame: Frame } | { kind: "chord"; frame: ChordFrame };
+
+/** the selected node's manipulation frame, or null when it has no previous node (node 0, the entry
+ *  anchor) or its frame is degenerate (a coincident neighbor). rebuilt each pointermove against the
+ *  live baked positions (the per-move-snapshot contract, `manipulator.ts`): a tip's `polarFrame`
+ *  rides the live chord (the incline snap window tracks the drag); an interior node's `chordFrame`
+ *  rides `prev`/`next`, which never move (frozen neighbors) — only its own `slide0`/`offset0` track
+ *  the live position. the tip carries the previous node's AUTHORED exit heading in **world** radians
+ *  (`exitWorld` — no screen y-flip, the manipulator convention) as its incline reference. */
 export function nodeFrame(
     ecs: State,
     s: NonNullable<ReturnType<typeof samples.get>>,
     tx: ViewTx,
     eid: number,
-): Frame | null {
+): NodeFrame | null {
     const section = Handle.section.get(eid);
     const order = Handle.order.get(eid);
     const prevEid = handleAt(ecs, section, order - 1);
     if (prevEid === null) return null; // node 0 (the entry anchor) has no polar origin
     const prev = sampleScreen(s, tx, Handle.sample.get(prevEid));
     const sel = sampleScreen(s, tx, Handle.sample.get(eid));
-    let tangent: number | null = null;
     if (eid === lastHandle(ecs, section)) {
         // the incline-snap reference is the previous node's AUTHORED exit heading (`exitWorld`) — the
         // SAME quantity the write re-heads the tip against (`headLast`: `reflect(exitHeading(prev),
@@ -378,13 +390,24 @@ export function nodeFrame(
         // (feel round 8: reading a flanking-sample re-derivation here diverged by the recovered-vs-
         // authored heading gap — a −30° drag rested at −32.3° — the round-3 law violated at the write
         // end. the resting readout already reports the authored quantity, so the snap must too.)
-        tangent = exitWorld(prevEid);
+        const f = polarFrame(prev, sel, Math.abs(tx.sx), exitWorld(prevEid));
+        return f.degenerate ? null : { kind: "polar", frame: f };
     }
-    const f = polarFrame(prev, sel, Math.abs(tx.sx), tangent);
-    return f.degenerate ? null : f;
+    // interior: both neighbors exist and stay frozen — the chord frame anchors on prev→next
+    // instead of orbiting the dragged node (kex2d-node-move-ux stage 2, retiring the interior
+    // chord-angle-snap law: an interior node no longer drags a polar frame at all).
+    const nextEid = handleAt(ecs, section, order + 1);
+    if (nextEid === null) return null; // unreachable: `lastHandle` above already caught the tip
+    const next = sampleScreen(s, tx, Handle.sample.get(nextEid));
+    const f = chordFrame(prev, next, sel, Math.abs(tx.sx));
+    return f.degenerate ? null : { kind: "chord", frame: f };
 }
 
-/** a manipulator knob in screen px — which control axis, and its knob's screen point. */
+/** a manipulator knob in screen px — which RING SLOT (`"length"` the slot nearer the extend button,
+ *  `"angle"` the far one) and its knob's screen point. the slot identity is stable across node
+ *  kind — an interior node's `"length"` slot drags SLIDE, its `"angle"` slot drags OFFSET
+ *  (kex2d-node-move-ux stage 2's knob remap: same two ring buttons, `dragManipTo` resolves which
+ *  control each drives off `nodeFrame`'s discriminant). */
 export interface ManipKnob {
     axis: "length" | "angle";
     x: number;
@@ -700,14 +723,19 @@ export function applyMultiDelta(
     }
 }
 
-/** advance a manipulator drag: rebuild the polar frame from the live positions, resolve the grabbed
- *  1D control (length along the chord ray, angle along the tangential arc) through the stage-4
- *  inverse, and write the node's new world position. the dead-zone latch keeps a sub-DRAG_PX grab a
- *  plain click; no Shift constrain — each gesture is already 1-DOF. snap-by-default (the two
- *  configured grids, `settings.ts`, defaults 1 m / 5°), Ctrl/Cmd bypasses. the readout is fed per-control through the one formatting seam
- *  (`formatDeg`/`formatLen`) into the magnet-labels source — the source `startManip` seeded, so it
+/** advance a manipulator drag: rebuild the node's frame from the live positions, resolve the
+ *  grabbed ring slot through its **kind-appropriate** control — a tip's `"length"`/`"angle"` slots
+ *  drive `lengthControl`/`angleControl` over its `polarFrame` (length along the chord ray, angle
+ *  along the tangential arc); an interior node's SAME two slots drive `slideControl`/`offsetControl`
+ *  over its `chordFrame` instead (kex2d-node-move-ux stage 2's knob remap — the ring buttons don't
+ *  move, only what they resolve to). the dead-zone latch keeps a sub-DRAG_PX grab a plain click; no
+ *  Shift constrain — each gesture is already 1-DOF. snap-by-default (the two configured grids,
+ *  `settings.ts`, defaults 1 m / 5° for the tip; a plain 1 m grid both axes for an interior node —
+ *  there is no angle grid on it any more), Ctrl/Cmd bypasses. The readout is fed per-control through
+ *  the one formatting seam into the magnet-labels source — the source `startManip` seeded, so it
  *  owns the gesture start-to-end (no mid-gesture switch); a tip angle snap also flashes the guide ray
- *  (world radians — `SnapGuideSystem` maps it to screen, no consumer negation). */
+ *  (world radians — `SnapGuideSystem` maps it to screen, no consumer negation); an interior drag
+ *  flashes none (no incline to display, same as its old frozen-heading behavior). */
 function dragManipTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): void {
     const sel = editor.selection;
     if (sel === null || dragManip === null) return;
@@ -717,13 +745,37 @@ function dragManipTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): vo
     manipArmed = armDrag(manipArmed, cx - manipCX, cy - manipCY);
     if (!manipArmed) return;
     const tx = viewTransform(canvas);
-    const f = nodeFrame(ecs, s, tx, sel); // rebuilt per move (live radius — the per-move snapshot)
-    if (!f) return;
+    const nf = nodeFrame(ecs, s, tx, sel); // rebuilt per move (live radius — the per-move snapshot)
+    if (!nf) return;
     // the grab-corrected node target screen point (grabbing a knob off-center doesn't jump the node).
     const ntx = cx + manipDX;
     const nty = cy + manipDY;
     const snap = snapActive(e.ctrlKey || e.metaKey);
     clearGuides();
+    if (nf.kind === "chord") {
+        const f = nf.frame;
+        // interior: the ring's "length" slot drags SLIDE (∥), "angle" drags OFFSET (⊥) — both
+        // through the same 1 m grid, sign preserved on offset. mid-drag readout shows both axes'
+        // CURRENT metres (the one just resolved, plus the frame's own anchor for the other) —
+        // plain wording, a feel-round knob; the resting readout stays heading + chord, untouched.
+        if (dragManip === "length") {
+            const res = slideControl(f, ntx, nty, snap);
+            const p = slideToPoint(f, res.meters);
+            const w = screenToWorld(tx, p.x, p.y);
+            dragTo(ecs, sel, w.x, w.y);
+            snapGuides.lengthLabel = `∥ ${formatLen(res.meters)}`;
+            snapGuides.angleLabel = `⊥ ${formatLen(f.offset0)}`;
+        } else {
+            const res = offsetControl(f, ntx, nty, snap);
+            const p = offsetToPoint(f, res.meters);
+            const w = screenToWorld(tx, p.x, p.y);
+            dragTo(ecs, sel, w.x, w.y);
+            snapGuides.angleLabel = `⊥ ${formatLen(res.meters)}`;
+            snapGuides.lengthLabel = `∥ ${formatLen(f.slide0)}`;
+        }
+        return;
+    }
+    const f = nf.frame;
     if (dragManip === "length") {
         const res = lengthControl(f, ntx, nty, snap); // floored at 1 m inside the resolver
         const p = lengthToPoint(f, res.meters);
@@ -739,11 +791,9 @@ function dragManipTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): vo
         const w = screenToWorld(tx, p.x, p.y);
         dragTo(ecs, sel, w.x, w.y);
         // the readout reports the AUTHORED exit heading (`exitWorld`, post-write) — the exact quantity
-        // the resting readout shows, so drag == rest for a tip AND an interior node (feel round 9, one
-        // consistent quantity). at the tip the write re-heads to the snapped incline, so this IS the
-        // snapped value; at an interior node the heading is frozen, so the displayed angle stays put
-        // while the chord rotates (the accepted tradeoff — the knob snaps the chord, the readout
-        // reports the heading). the chord length is constant during an angle drag, shown for continuity.
+        // the resting readout shows, so drag == rest for a tip (feel round 9). the write re-heads to
+        // the snapped incline, so this IS the snapped value. the chord length is constant during an
+        // angle drag, shown for continuity.
         snapGuides.angleLabel = formatDeg((exitWorld(sel) * 180) / Math.PI);
         snapGuides.lengthLabel = formatLen(f.radius / f.pxPerMeter);
         if (res.snapped && res.incline !== null) {
@@ -1281,12 +1331,17 @@ export function attachControls(
             return;
         }
 
-        // arrow-nudge the selected node in the polar frame around its previous node (the
-        // manipulators' keyboard twin): left/right rotate the chord angle, up/down change the chord
-        // length — a fixed on-screen step (Shift = coarse), one press = one undo entry (holding
-        // auto-repeats to many). gated on the viewport hover (the hovered-surface router) so it can't
-        // also fire over the timeline — that cross-surface playhead/force-point collision. (the
-        // mapping is the spec's proposal; the feel check-in decides it.)
+        // arrow-nudge the selected node (the manipulators' keyboard twin): left/right rotate,
+        // up/down translate — a fixed on-screen step (Shift = coarse), one press = one undo entry
+        // (holding auto-repeats to many). gated on the viewport hover (the hovered-surface router)
+        // so it can't also fire over the timeline — that cross-surface playhead/force-point
+        // collision. (the mapping is the spec's proposal; the feel check-in decides it.) a
+        // single-node nudge forks by node kind, mirroring the drag: a tip steps its polar
+        // length/angle (`polarNudge`); an interior node steps its chord slide/offset (`chordNudge`,
+        // kex2d-node-move-ux stage 2) — same up/down = length-role, left/right = angle-role key
+        // mapping either way, so the fork is invisible at the keyboard. the MULTI-select group move
+        // stays polar length/angle regardless of node kind (the multi law, `editor-ui.md`) — out of
+        // this stage's scope.
         if (
             editor.selection !== null &&
             editor.hover === "viewport" &&
@@ -1305,13 +1360,14 @@ export function attachControls(
             if (prevEid === null) return; // a non-anchor node always has a previous node
             e.preventDefault();
             const step = (e.shiftKey ? NUDGE_PX_COARSE : NUDGE_PX) / camera.zoom;
-            const axis = e.key === "ArrowUp" || e.key === "ArrowDown" ? "length" : "angle";
+            const lengthKey = e.key === "ArrowUp" || e.key === "ArrowDown";
             const dir = e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : -1;
             if (editor.nodes.ids.size > 1) {
                 // a multi-selection: one shared delta from the active node (length = a metre step;
                 // angle = the step's arc at the active radius) applied to the whole set, one entry.
                 // this is the ONLY group-move path — a multi-set shows no ring, so the capability
                 // lives on the keyboard alone (Blender's gizmo-less move; editor-ui.md multi law).
+                const axis = lengthKey ? "length" : "angle";
                 let delta = dir * step;
                 if (axis === "angle") {
                     const p = nodeLocal(prevEid);
@@ -1326,17 +1382,45 @@ export function attachControls(
                 commit(history);
                 return;
             }
-            const t = polarNudge(nodeLocal(prevEid), nodeLocal(eid), axis, dir, step, LENGTH_MIN);
+            if (eid === lastHandle(ecs, Handle.section.get(eid))) {
+                const axis = lengthKey ? "length" : "angle";
+                const t = polarNudge(
+                    nodeLocal(prevEid),
+                    nodeLocal(eid),
+                    axis,
+                    dir,
+                    step,
+                    LENGTH_MIN,
+                );
+                beginMove(ecs, Handle.section.get(eid));
+                // written straight to the authored local position — no world round trip (`nodeLocal`'s
+                // rigid-placement note): back-to-back presses read each other's write immediately, not
+                // last frame's bake.
+                Handle.pos.set(eid, t.x, t.y);
+                reheadOnDrag(ecs, eid);
+                // the nudge is the keyboard twin of the manipulator drag, sticky length included —
+                // always armed, since a nudge always moves.
+                if (lengthKey) commitChord(history, ecs, eid, true);
+                else commit(history);
+                return;
+            }
+            // interior: the chord-frame axes (slide ∥ / offset ⊥), neighbors frozen — no re-head
+            // (the frozen-heading law) and no sticky append memory (that's the tip's own
+            // append-continuity, meaningless mid-chain).
+            const nextEid = handleAt(ecs, Handle.section.get(eid), Handle.order.get(eid) + 1);
+            if (nextEid === null) return; // unreachable: the tip check above already caught it
+            const axis = lengthKey ? "slide" : "offset";
+            const t = chordNudge(
+                nodeLocal(prevEid),
+                nodeLocal(nextEid),
+                nodeLocal(eid),
+                axis,
+                dir,
+                step,
+            );
             beginMove(ecs, Handle.section.get(eid));
-            // written straight to the authored local position — no world round trip (`nodeLocal`'s
-            // rigid-placement note): back-to-back presses read each other's write immediately, not
-            // last frame's bake.
             Handle.pos.set(eid, t.x, t.y);
-            reheadOnDrag(ecs, eid);
-            // the nudge is the keyboard twin of the manipulator drag, sticky length included —
-            // always armed, since a nudge always moves.
-            if (axis === "length") commitChord(history, ecs, eid, true);
-            else commit(history);
+            commit(history);
             return;
         }
 

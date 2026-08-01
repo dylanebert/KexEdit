@@ -24,7 +24,14 @@
  *  loci carry (the chord ray's screen direction, the arc's screen centre/radius) stays screen px:
  *  it's the drag's own space, and a caller that draws a locus wants it there. */
 
-import { chordForIncline, inclineOf, type LengthSnap, snapAngle, snapLength } from "./magnet";
+import {
+    chordForIncline,
+    inclineOf,
+    type LengthSnap,
+    snapAngle,
+    snapGrid,
+    snapLength,
+} from "./magnet";
 
 const EPS = 1e-9;
 
@@ -166,23 +173,32 @@ export function angleControl(f: Frame, px: number, py: number, snap: boolean): A
 // of orbiting the dragged node itself — `polarFrame` doesn't fit here (no previous exit incline to
 // snap, and a group of one polar frame per interior node would let a drag perturb its own anchor).
 // `slide` (∥, along the chord) replaces the length knob; `offset` (⊥, off the chord) replaces the
-// angle knob — same two-knob vocabulary, new loci. Both snap to the SAME 1 m grid (`snapLength`);
-// there is no angle grid on an interior node any more (the law `magnet.ts`/`editor-ui.md` documents
-// as retired by this stage).
+// angle knob — same two-knob vocabulary, new loci. Both snap to the SAME 1 m grid (`snapGrid`, no
+// floor — an interior axis is a genuine signed coordinate, unlike a chord); there is no angle grid
+// on an interior node any more (the law `magnet.ts`/`editor-ui.md` documents as retired by this
+// stage).
+//
+// `v` is `u` rotated a FIXED +90°, never sign-picked toward the dragged node. A per-rebuild
+// sign-pick (tried first, reverted by the stage-2 adversarial pass) makes the reported offset jump
+// discontinuously the instant a drag crosses the chord: at offset +1.2 m the frame's `v` points one
+// way; drag to the other side and the NEXT rebuild (this frame is rebuilt every pointermove, `sel`
+// being the only thing that moves) re-picks `v` toward the node's new side and the SAME physical
+// motion reads as a sign flip on top of the real delta — the write stays continuous, the label
+// lies. A fixed `v` has no such branch: crossing the chord is just the coordinate passing through
+// zero, the same way `screenToLength` already returns negative behind the previous node's ray.
 
 /** the neighbor-chord manipulation frame around an interior node. `u = normalized(next − prev)` is
- *  the slide axis (screen px); `v` is its +90° rotation (screen px, y-down), sign-picked so it
- *  points toward `sel` at build time — a node's own current side always reads a positive offset,
- *  the same "no consumer negation" convention `polarFrame`'s world-radians carry, just picked once
- *  per frame instead of folded into a fixed formula (an interior offset has no world-frame
- *  reference the way a tip's incline does). `slide0`/`offset0` are `sel`'s own coordinates in this
- *  frame at build time — the "other axis" locus each control's `*ToPoint` holds fixed while the
- *  other one is dragged, exactly the role `polarFrame.radius` plays for `angleToPoint` and
- *  `polarFrame.ux`/`uy` play for `lengthToPoint`. Rebuilt per pointermove like `polarFrame` — `sel`
- *  moves, `prev`/`next` never do (frozen neighbors), so `u`/`v` are gesture-stable and only
- *  `slide0`/`offset0` track the live position. `degenerate` marks a coincident `prev`≈`next` (no
- *  chord direction) — `u` falls back to `+x`, `v` to `+y`; the inverses stay finite but the
- *  round-trip only holds non-degenerate. */
+ *  the slide axis (screen px); `v` is `u` rotated a FIXED +90° (screen px, y-down) — NEVER
+ *  sign-picked toward `sel` (see the module note above: a per-rebuild sign-pick is the discontinuous-
+ *  readout bug the stage-2 adversarial pass found). Offset is therefore a genuine signed 1D
+ *  coordinate — negative is legitimate, it's simply the other side. `slide0`/`offset0` are `sel`'s
+ *  own coordinates in this frame at build time — the "other axis" locus each control's `*ToPoint`
+ *  holds fixed while the other one is dragged, exactly the role `polarFrame.radius` plays for
+ *  `angleToPoint` and `polarFrame.ux`/`uy` play for `lengthToPoint`. Rebuilt per pointermove like
+ *  `polarFrame` — `sel` moves, `prev`/`next` never do (frozen neighbors), so `u`/`v` are
+ *  gesture-stable and only `slide0`/`offset0` track the live position. `degenerate` marks a
+ *  coincident `prev`≈`next` (no chord direction) — `u` falls back to `+x`, `v` to `+y`; the
+ *  inverses stay finite but the round-trip only holds non-degenerate. */
 export interface ChordFrame {
     /** the previous node — the axis origin, screen px. */
     px: number;
@@ -190,15 +206,15 @@ export interface ChordFrame {
     /** the unit chord direction previous→next (the slide axis); `(1, 0)` when degenerate. */
     ux: number;
     uy: number;
-    /** the unit perpendicular (the offset axis), +90° from `u`, sign toward `sel`; `(0, 1)` when
-     *  degenerate. */
+    /** the unit perpendicular (the offset axis) — `u` rotated a FIXED +90°, never sign-picked;
+     *  `(0, 1)` when degenerate. */
     vx: number;
     vy: number;
     /** `sel`'s own slide coordinate at build time (world metres) — the locus `offsetToPoint` holds
      *  fixed. */
     slide0: number;
-    /** `sel`'s own offset coordinate at build time (world metres) — the locus `slideToPoint` holds
-     *  fixed. */
+    /** `sel`'s own offset coordinate at build time (world metres, SIGNED) — the locus
+     *  `slideToPoint` holds fixed. */
     offset0: number;
     /** screen px per world metre (both axes share one scale). */
     pxPerMeter: number;
@@ -232,15 +248,8 @@ export function chordFrame(
     }
     const ux = dx / len;
     const uy = dy / len;
-    let vx = -uy; // +90° rotation (screen px, y-down)
-    let vy = ux;
-    const sx = sel.x - prev.x;
-    const sy = sel.y - prev.y;
-    if (sx * vx + sy * vy < 0) {
-        // sel sits on the OTHER side — flip v so sel's own offset reads positive.
-        vx = -vx;
-        vy = -vy;
-    }
+    const vx = -uy; // fixed +90° rotation (screen px, y-down) — never sign-picked, see above
+    const vy = ux;
     const base: ChordFrame = {
         px: prev.x,
         py: prev.y,
@@ -292,23 +301,21 @@ export function offsetToPoint(f: ChordFrame, meters: number): { x: number; y: nu
 }
 
 /** the slide control: resolve a raw screen point to a slide in world metres. snap-by-default
- *  quantizes to the SAME length grid the tip's length knob uses (`snapLength`); the Ctrl modifier
- *  (`snap === false`) bypasses to continuous. shares `snapLength`'s `LENGTH_MIN` floor — a slide
- *  never collapses onto the previous node either, the same guard the tip's chord carries. */
+ *  quantizes to the SAME length grid the tip's length knob uses, but through `snapGrid` — NO
+ *  `LENGTH_MIN` floor (the floor is a chord-degeneracy guard, meaningless on a signed axis where 0
+ *  is a legitimate station); the Ctrl modifier (`snap === false`) bypasses to continuous. */
 export function slideControl(f: ChordFrame, px: number, py: number, snap: boolean): LengthSnap {
-    return snapLength(screenToSlide(f, px, py), snap);
+    return snapGrid(screenToSlide(f, px, py), snap);
 }
 
 /** the offset control: resolve a raw screen point to an offset in world metres. snap-by-default
- *  quantizes the MAGNITUDE to `snapLength`'s grid and restores the sign (an offset is symmetric —
- *  either side of the chord is valid, unlike a chord length) — so it shares `snapLength`'s
- *  `LENGTH_MIN` floor too: a snapped offset never lands closer than 1 m to the chord line itself
- *  (Ctrl frees it to continuous, sign preserved either way). */
+ *  quantizes through `snapGrid` — a plain signed quantize, no magnitude/sign dance and no floor:
+ *  an offset is a genuine signed 1D coordinate (0 = on the chord, negative = the other side), and
+ *  `v`'s fixed (never sign-picked) orientation is what makes a plain signed quantize correct — see
+ *  `ChordFrame`'s module note on why a sign-picked `v` would need one. Ctrl (`snap === false`)
+ *  bypasses to continuous. */
 export function offsetControl(f: ChordFrame, px: number, py: number, snap: boolean): LengthSnap {
-    const raw = screenToOffset(f, px, py);
-    const sign = raw < 0 ? -1 : 1;
-    const mag = snapLength(Math.abs(raw), snap);
-    return { meters: sign * mag.meters, snapped: mag.snapped };
+    return snapGrid(screenToOffset(f, px, py), snap);
 }
 
 /** the chord arrow-nudge target (the offset/slide controls' keyboard twin, `polarNudge`'s interior

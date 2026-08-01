@@ -168,8 +168,11 @@ describe("angle control (5° grid, uniform tip + interior)", () => {
 
 // the neighbor-chord frame (kex2d-node-move-ux stage 2): an interior node's two axes anchor on the
 // frozen prev→next chord instead of orbiting the dragged node. `u` (slide) = normalized(next −
-// prev); `v` (offset) its +90° rotation, sign picked toward `sel`. both snap to the SAME 1 m grid
-// (`snapLength`) — there is no angle grid here (the retired law).
+// prev); `v` (offset) is `u`'s FIXED +90° rotation — NEVER sign-picked toward `sel` (the stage-2
+// adversarial-pass fix: a sign-pick rebuilt every pointermove flips the readout the instant a drag
+// crosses the chord — verified in "crossing continuity" below). Offset is a genuine signed 1D
+// coordinate; both axes snap the SAME 1 m grid via `snapGrid`, with NO floor (0 is legitimate on
+// either axis) — there is no angle grid here (the retired law).
 const PREV_C = { x: 0, y: 0 };
 const NEXT_C = { x: 200, y: 0 }; // chord along +x, 200 px = 4 m at 50 px/m
 const SEL_C = { x: 120, y: 40 }; // 2.4 m slide, 0.8 m offset (below the chord on screen)
@@ -183,20 +186,25 @@ describe("chord frame", () => {
         expect(Math.hypot(f.vx, f.vy)).toBeCloseTo(1, 12); // unit perpendicular
         expect(f.ux * f.vx + f.uy * f.vy).toBeCloseTo(0, 12); // u ⊥ v
         expect(f.slide0).toBeCloseTo(120 / PX_PER_METER, 9);
-        // v is picked toward sel, so sel's own offset always reads positive.
-        expect(f.offset0).toBeGreaterThan(0);
-        expect(f.offset0).toBeCloseTo(40 / PX_PER_METER, 9);
+        expect(f.offset0).toBeCloseTo(40 / PX_PER_METER, 9); // whichever sign this side happens to be
     });
 
-    test("v flips to keep sel's offset positive on the opposite side", () => {
+    test("v is FIXED — the same rotation regardless of which side sel sits on", () => {
         const above = { x: 120, y: -40 }; // same slide, opposite screen side
         const f = chordFrame(PREV_C, NEXT_C, above, PX_PER_METER);
-        expect(f.offset0).toBeGreaterThan(0);
-        expect(f.offset0).toBeCloseTo(40 / PX_PER_METER, 9);
-        // the two frames' v axes are opposite (each picked toward its own sel).
         const f2 = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
-        expect(f.vx).toBeCloseTo(-f2.vx, 9);
-        expect(f.vy).toBeCloseTo(-f2.vy, 9);
+        // v does NOT flip with sel's side — it's the same fixed rotation of u either way.
+        expect(f.vx).toBeCloseTo(f2.vx, 9);
+        expect(f.vy).toBeCloseTo(f2.vy, 9);
+        // so the two sides read OPPOSITE signed offsets, not both positive.
+        expect(f.offset0).toBeCloseTo(-f2.offset0, 9);
+    });
+
+    test("offset 0 (on the chord line) is a legitimate, unflagged reading", () => {
+        const onChord = { x: 120, y: 0 }; // exactly on the prev→next line
+        const f = chordFrame(PREV_C, NEXT_C, onChord, PX_PER_METER);
+        expect(f.offset0).toBeCloseTo(0, 9);
+        expect(f.degenerate).toBe(false); // only prev≈next is degenerate, never a zero offset
     });
 
     test("a coincident prev/next node is degenerate (guarded, no NaN)", () => {
@@ -206,6 +214,40 @@ describe("chord frame", () => {
         expect(f.uy).toBe(0);
         expect(f.vx).toBe(0);
         expect(f.vy).toBe(1);
+    });
+});
+
+// the bug the stage-2 adversarial pass found: a per-rebuild sign-pick makes the offset READOUT
+// jump discontinuously the moment a drag crosses the chord, even though the WRITE stays
+// continuous. Two adjacent pointermoves whose targets cross the chord (frame rebuilt between
+// them, as a real drag does every pointermove) must report a monotonically-changing signed offset
+// — no jump. Red-first: this fails against a per-rebuild sign-picked `v` (verified by temporarily
+// restoring that code and confirming the assertion below goes red).
+describe("crossing continuity — no sign-flip jump across the chord", () => {
+    test("offset steps uniformly as the target crosses the chord, through a frame rebuild each move", () => {
+        // four target y's, evenly spaced (40 screen px = 0.8 m each) straddling the chord — the
+        // crossing happens between target[1] (+20) and target[2] (−20). A real drag rebuilds the
+        // frame every pointermove FROM THE NODE'S JUST-WRITTEN position (simulated here: each
+        // frame builds off the PREVIOUS target, not the fixed original `sel`) — a sign-picked `v`
+        // only flips once THAT written position itself crosses, one step after the physical
+        // crossing, which is exactly what turns a uniform descent into a reversed step (the bug:
+        // +1.2 → +0.4 → −0.4 → +1.2 instead of continuing to −1.2).
+        const targets = [
+            { x: 120, y: 60 },
+            { x: 120, y: 20 },
+            { x: 120, y: -20 },
+            { x: 120, y: -60 },
+        ];
+        const readings: number[] = [];
+        let prevTarget: { x: number; y: number } = SEL_C;
+        for (const t of targets) {
+            const f = chordFrame(PREV_C, NEXT_C, prevTarget, PX_PER_METER);
+            readings.push(screenToOffset(f, t.x, t.y));
+            prevTarget = t; // the drag's own write becomes the next frame's `sel`
+        }
+        for (let i = 1; i < readings.length; i++) {
+            expect(readings[i - 1] - readings[i]).toBeCloseTo(0.8, 6); // uniform step, crossing included
+        }
     });
 });
 
@@ -238,7 +280,7 @@ describe("offset inverse round-trips", () => {
     }
 });
 
-describe("slide control (whole-metre grid, min 1, no sign restriction beyond the floor)", () => {
+describe("slide control (whole-metre grid, NO floor — a signed 1D coordinate)", () => {
     const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
     test("snap on: quantizes the drag to the nearest whole metre (what the readout shows lands)", () => {
         const raw = slideToPoint(f, 3.1);
@@ -257,14 +299,17 @@ describe("slide control (whole-metre grid, min 1, no sign restriction beyond the
         expect(res.meters).toBeCloseTo(3.1, 9);
     });
 
-    test("floors at 1 m either way (shares the tip's chord floor)", () => {
+    test("quantizes through zero and negative — no LENGTH_MIN floor on this axis", () => {
         const raw = slideToPoint(f, 0.3);
-        expect(slideControl(f, raw.x, raw.y, true).meters).toBeCloseTo(1, 9);
-        expect(slideControl(f, raw.x, raw.y, false).meters).toBeCloseTo(1, 9);
+        expect(slideControl(f, raw.x, raw.y, true).meters).toBeCloseTo(0, 9); // NOT floored to 1
+        const negRaw = slideToPoint(f, -2.4);
+        expect(slideControl(f, negRaw.x, negRaw.y, true).meters).toBeCloseTo(-2, 9);
+        const zeroRaw = slideToPoint(f, 0);
+        expect(slideControl(f, zeroRaw.x, zeroRaw.y, true).meters).toBe(0);
     });
 });
 
-describe("offset control (whole-metre grid, sign preserved, no angle grid)", () => {
+describe("offset control (whole-metre grid, plain signed quantize, no angle grid)", () => {
     const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
     test("snap on: quantizes to the nearest whole metre, sign preserved (positive side)", () => {
         const raw = offsetToPoint(f, 3.1);
@@ -283,6 +328,12 @@ describe("offset control (whole-metre grid, sign preserved, no angle grid)", () 
         expect(res.meters).toBeCloseTo(-3, 9);
     });
 
+    test("snap on: 0 (on the chord line) quantizes to exactly 0 — no floor pushes it to ±1", () => {
+        const raw = offsetToPoint(f, 0.3); // rounds to 0 on a 1 m grid
+        const res = offsetControl(f, raw.x, raw.y, true);
+        expect(res.meters).toBe(0);
+    });
+
     test("snap off (Ctrl bypass): continuous, sign preserved", () => {
         const raw = offsetToPoint(f, -3.1);
         const res = offsetControl(f, raw.x, raw.y, false);
@@ -290,13 +341,13 @@ describe("offset control (whole-metre grid, sign preserved, no angle grid)", () 
         expect(res.meters).toBeCloseTo(-3.1, 9);
     });
 
-    test("no angle grid: a chord rotation between prev/next never enters this control", () => {
+    test("no angle grid: an arbitrary metres value quantizes on the plain 1 m grid alone", () => {
         // offsetControl only ever reads the perpendicular projection — there is no angle axis to
         // snap on an interior node any more (ANGLE_STEP plays no role here at all).
         const raw = offsetToPoint(f, 2 * ANGLE_STEP); // an arbitrary non-grid-aligned metres value
         const res = offsetControl(f, raw.x, raw.y, true);
         const grid = Math.round((2 * ANGLE_STEP) / LENGTH_STEP) * LENGTH_STEP;
-        expect(res.meters).toBeCloseTo(Math.sign(2 * ANGLE_STEP) * Math.max(1, Math.abs(grid)), 9);
+        expect(res.meters).toBeCloseTo(grid, 9); // plain quantize, no floor
     });
 });
 
@@ -306,7 +357,7 @@ describe("chordNudge — interior arrow-nudge (world-space, the offset/slide key
     const next = { x: 10, y: 0 };
 
     test("slide axis steps the node along the chord by exactly `step`", () => {
-        const node = { x: 4, y: 1.5 }; // slide 4, offset 1.5 (v picked toward this node)
+        const node = { x: 4, y: 1.5 }; // slide 4, whatever signed offset this side reads as
         const out = chordNudge(prev, next, node, "slide", 1, 0.5);
         const f = chordFrame(prev, next, node, 1);
         expect(screenToSlide(f, out.x, out.y)).toBeCloseTo(f.slide0 + 0.5, 9);

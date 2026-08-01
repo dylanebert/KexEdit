@@ -25,7 +25,17 @@ import {
 } from "../src/controls";
 import { LENGTH_MIN } from "../src/magnet";
 import { ANGLE_STEP_DEFAULT as ANGLE_STEP } from "../src/settings";
-import { angleControl, angleToPoint, lengthControl, lengthToPoint } from "../src/manipulator";
+import {
+    angleControl,
+    angleToPoint,
+    lengthControl,
+    lengthToPoint,
+    offsetControl,
+    offsetToPoint,
+    screenToOffset,
+    slideControl,
+    slideToPoint,
+} from "../src/manipulator";
 import { localize } from "../src/section";
 import { TangentMode } from "../src/spline";
 import {
@@ -463,8 +473,9 @@ test("angle drag: the snapped incline shown equals the resting exit heading (no 
     const { state, tip } = curvedTip();
     const s = samples.get(trackOf(state));
     if (!s) throw new Error("no samples");
-    const f = nodeFrame(state, s, TX, tip);
-    if (!f) throw new Error("no frame");
+    const nf = nodeFrame(state, s, TX, tip);
+    if (!nf || nf.kind !== "polar") throw new Error("the tip must carry a polar frame");
+    const f = nf.frame;
     // drag to a raw chord; snap on quantizes the exit incline to a 5° grid multiple.
     const raw = angleToPoint(f, 0.42);
     const res = angleControl(f, raw.x, raw.y, true);
@@ -481,8 +492,9 @@ test("length drag: the snapped metres shown equal the resting chord (5 m rests a
     const { state, tip, prev } = curvedTip();
     const s = samples.get(trackOf(state));
     if (!s) throw new Error("no samples");
-    const f = nodeFrame(state, s, TX, tip);
-    if (!f) throw new Error("no frame");
+    const nf = nodeFrame(state, s, TX, tip);
+    if (!nf || nf.kind !== "polar") throw new Error("the tip must carry a polar frame");
+    const f = nf.frame;
     const raw = lengthToPoint(f, 5.02); // a raw pointer near 5 m
     const res = lengthControl(f, raw.x, raw.y, true);
     expect(res.meters).toBe(5); // snapped to the whole metre
@@ -495,15 +507,15 @@ test("length drag: the snapped metres shown equal the resting chord (5 m rests a
     expect(restChord).toBeCloseTo(res.meters, 4); // dragged 5 m rests at 5 m, not 5.02
 });
 
-// feel round 9 — the INTERIOR angle readout: the angle control snaps the CHORD (an interior node has
-// no exit incline), but the readout reports the node's AUTHORED exit heading (`exitWorld`) — drag AND
-// rest, the same quantity, no jump. an interior drag doesn't re-head the node, so that heading is
-// frozen through the rotation (the accepted tradeoff: the knob snaps the chord, the readout reports
-// the heading).
-test("angle drag on an INTERIOR node reports the frozen exit heading, not the chord it snaps", () => {
+// kex2d-node-move-ux stage 2 — the interior chord-angle-snap law is RETIRED: an interior node no
+// longer builds a polar frame at all (its own previous exit incline was never its reference —
+// `tangent` was always null there), so its manipulator drags a `chordFrame` (slide ∥ / offset ⊥
+// against the frozen prev→next chord), both axes on the SAME 1 m grid, no angle grid. This flips
+// the old "an interior node snaps its chord angle" pin below to the new law.
+test("an INTERIOR node's frame is the neighbor-chord frame, not polar (no angle grid any more)", () => {
     const { state, sec } = geoTrack();
     addNode(state, sec, 0, 0);
-    addNode(state, sec, 10, 6); // node 1 — the interior we drag (frozen heading ≠ its chord)
+    addNode(state, sec, 10, 6); // node 1 — the interior we drag
     addNode(state, sec, 22, 8); // node 2
     addNode(state, sec, 30, 6); // node 3 (tip) — makes node 1 a clean interior (not last / last-1)
     state.step(0);
@@ -511,23 +523,28 @@ test("angle drag on an INTERIOR node reports the frozen exit heading, not the ch
     if (interior === null) throw new Error("no interior node");
     const s = samples.get(trackOf(state));
     if (!s) throw new Error("no samples");
-    const f = nodeFrame(state, s, TX, interior);
-    if (!f) throw new Error("no frame");
-    expect(f.tangent).toBeNull(); // interior: no incline reference
+    const nf = nodeFrame(state, s, TX, interior);
+    if (!nf || nf.kind !== "chord") throw new Error("an interior node must carry a chord frame"); // the retired law: no more polar frame on an interior node
+    const f = nf.frame;
 
-    const headingBefore = exitWorld(interior);
-    const raw = angleToPoint(f, 0.7);
-    const res = angleControl(f, raw.x, raw.y, true);
-    expect(res.incline).toBeNull();
-    // the chord the knob snaps is a genuinely different quantity from the node's exit heading.
-    expect(Math.abs(res.angle - headingBefore)).toBeGreaterThan(0.05);
-    writeNode(state, interior, angleToPoint(f, res.angle));
-    // the interior drag doesn't re-head this node — its exit heading is frozen (drag == rest).
-    expect(exitWorld(interior)).toBeCloseTo(headingBefore, 9);
-    // and the resting readout reports exitWorld (the heading) — the SAME quantity the drag feed shows.
-    expect(selectedMetrics(state, interior)?.angleLabel).toBe(
-        formatDeg((exitWorld(interior) * 180) / Math.PI),
-    );
+    // slide: a whole-metre grid, snap-writes-what-lands (the readout invariant, same shape as the
+    // tip's length control).
+    const rawSlide = slideToPoint(f, f.slide0 + 3.1);
+    const slideRes = slideControl(f, rawSlide.x, rawSlide.y, true);
+    expect(slideRes.meters).toBeCloseTo(Math.round(f.slide0 + 3.1), 6);
+    writeNode(state, interior, slideToPoint(f, slideRes.meters));
+    state.step(0);
+    const wi = Handle.sample.get(interior);
+    // `f` is built in screen px (`nodeFrame` projects world→screen through `TX`); re-project the
+    // written world sample through the SAME transform before reading it back off the frame.
+    const written = { x: TX.ox + s.posX[wi] * TX.sx, y: TX.oy + s.posY[wi] * TX.sy };
+    // written offset (perpendicular to prev→next) is unchanged by a slide-only write.
+    expect(screenToOffset(f, written.x, written.y)).toBeCloseTo(f.offset0, 4);
+
+    // offset: same 1 m grid, sign preserved — no angle grid reachable from here at all.
+    const rawOffset = offsetToPoint(f, -2.6);
+    const offsetRes = offsetControl(f, rawOffset.x, rawOffset.y, true);
+    expect(offsetRes.meters).toBeCloseTo(-3, 6);
 });
 
 // the geo multi-delete enablement (`suffixRun`, pure/device-free): Delete acts on a node set iff it

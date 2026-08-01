@@ -55,3 +55,20 @@ export function snapLength(meters: number, snap: boolean): LengthSnap {
     const q = snap ? Math.round(meters / step) * step : meters;
     return { meters: Math.max(LENGTH_MIN, q), snapped: snap };
 }
+
+/** the interior chord axes' quantizer (slide ∥ / offset ⊥, kex2d-node-move-ux stage 2): the SAME
+ *  `snapSteps.length` grid as `snapLength`, but with NO floor. `LENGTH_MIN` guards a chord
+ *  collapsing onto the previous node (which would leave `polarFrame` with no direction) — a
+ *  category error on an interior axis, which is a genuine signed 1D coordinate: 0 (on the chord
+ *  line; at the previous node's own station) is a legitimate value, negative is the other
+ *  side/direction. The degenerate-chord hazard a snapped-to-0 slide/offset can create (landing
+ *  exactly on a neighbor) is accepted — the same tolerance the tangent-edit free node-body drag
+ *  already extends. Ctrl (`snap === false`) bypasses to continuous, same as `snapLength`. Since 0
+ *  is a real reading here (unlike `snapLength`, which never surfaces it past the floor), a
+ *  negative value quantizing to the zero bin is normalized off `-0` (`fmt`'s own display rule,
+ *  applied here at the source so no consumer re-derives it). */
+export function snapGrid(value: number, snap: boolean): LengthSnap {
+    const step = snapSteps.length;
+    const q = snap ? Math.round(value / step) * step : value;
+    return { meters: q === 0 ? 0 : q, snapped: snap };
+}

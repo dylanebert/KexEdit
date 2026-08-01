@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chordForIncline, inclineOf, snapAngle, snapLength } from "../src/magnet";
+import { chordForIncline, inclineOf, snapAngle, snapGrid, snapLength } from "../src/magnet";
 import {
     ANGLE_STEP_DEFAULT as ANGLE_STEP,
     LENGTH_STEP_DEFAULT,
@@ -28,6 +28,37 @@ describe("length snap (whole-metre grid, min 1)", () => {
         expect(snapLength(0.2, true)).toEqual({ meters: 1, snapped: true });
         // continuous: a tiny raw length is still floored to 1.
         expect(snapLength(0.2, false)).toEqual({ meters: 1, snapped: false });
+    });
+});
+
+// the interior chord axes' quantizer (kex2d-node-move-ux stage 2, the adversarial-pass fix): the
+// SAME whole-metre grid as `snapLength`, but with NO floor — a signed 1D coordinate legitimately
+// passes through 0 and negative (unlike a chord, which would leave `polarFrame` with no direction
+// at 0). Reusing `snapLength` here was the original (buggy) shape: its `Math.max(LENGTH_MIN, q)`
+// floor forced a snapped slide/offset near 0 to jump to ±1, and clamped every negative value to
+// +1 outright unless the caller restored the sign by hand.
+describe("grid snap (whole-metre grid, NO floor)", () => {
+    test("snap on: quantizes to the nearest whole metre, same grid as snapLength", () => {
+        expect(snapGrid(3.1, true)).toEqual({ meters: 3, snapped: true });
+        expect(snapGrid(3.9, true)).toEqual({ meters: 4, snapped: true });
+    });
+
+    test("snap off (Ctrl bypass): continuous, passes the raw value through", () => {
+        const res = snapGrid(3.1, false);
+        expect(res.snapped).toBe(false);
+        expect(res.meters).toBeCloseTo(3.1, 12);
+    });
+
+    test("quantizes straight through 0 — no floor pushes a near-zero value to ±1", () => {
+        expect(snapGrid(0.2, true)).toEqual({ meters: 0, snapped: true });
+        expect(snapGrid(-0.2, true)).toEqual({ meters: 0, snapped: true });
+        expect(snapGrid(0, true)).toEqual({ meters: 0, snapped: true });
+    });
+
+    test("negative values quantize and keep their sign — never clamped positive", () => {
+        expect(snapGrid(-3.1, true)).toEqual({ meters: -3, snapped: true });
+        expect(snapGrid(-0.6, true)).toEqual({ meters: -1, snapped: true });
+        expect(snapGrid(-3.1, false).meters).toBeCloseTo(-3.1, 12);
     });
 });
 

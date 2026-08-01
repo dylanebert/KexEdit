@@ -219,41 +219,67 @@ test("geo authoring flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape");
     await expect.poll(selectedOrder).toBeNull();
 
-    // ── 5. Interior angle drag==rest (feel round 9): the SAME invariant on an INTERIOR node. its angle
-    // knob snaps the chord, but the readout reports the node's (frozen) exit heading — drag AND rest,
-    // the same number. before the fix the drag showed the chord (moving), the rest the heading. ──
+    // ── 5. Interior OFFSET drag (kex2d-node-move-ux stage 2 — RETIRES feel round 9's chord-angle-snap
+    // pin above: an INTERIOR node no longer drags a polar frame at all). Its ring's "angle" slot now
+    // drives the neighbor-chord OFFSET (⊥ prev→next), with the "length" slot's SLIDE (∥) — both on a
+    // plain 1 m grid, no angle grid reachable from here. Three invariants a swapped/reverted wiring
+    // would fail: (a) BOTH neighbors (node 2, node 4) hold byte-identical through the gesture — the
+    // "neighbors fully frozen" law, unprovable before this stage since the old interior drag orbited
+    // node 2 itself; (b) the mid-drag readout switches to the plain ∥/⊥ metres wording (no degree
+    // token any more); (c) the RESTING readout reverts to heading + chord — drag ≠ rest text now,
+    // the opposite of the retired invariant, since the two surfaces report genuinely different
+    // quantities (a transient control value vs the node's permanent authored state). ──
     const interiorPos = await nodePoint(page, 3); // an interior node of the seeded hill
+    const crestBefore = (await poses())[3];
+    const prevBefore = (await poses())[2];
+    const nextBefore = (await poses())[4];
     await page.mouse.click(cb.x + interiorPos.x, cb.y + interiorPos.y);
     await expect.poll(selectedOrder).toBe(3);
     const iak = await knobCenter(page, cb, 3, "angle"); // waited onto node 3's own ring
     await page.mouse.move(iak.x, iak.y);
     await page.mouse.down();
-    await page.mouse.move(iak.x + 26, iak.y + 26, { steps: 10 }); // rotate the interior node
+    await page.mouse.move(iak.x + 26, iak.y + 26, { steps: 10 }); // drag the interior offset
     await frames(page);
-    const iDrag = await readoutAngle();
+    const dragText = await page.locator(".snap-readout").first().textContent();
+    expect(dragText).toContain("⊥"); // the interior offset control, mid-drag
+    expect(dragText).toContain("∥"); // …shown alongside the (unchanged) slide value
+    expect(dragText).not.toMatch(/-?\d+(?:\.\d+)?°/); // no degree token — no angle grid here any more
     await page.mouse.up();
     await frames(page);
-    const iRest = await readoutAngle();
-    expect(iDrag).not.toBeNull();
-    expect(iRest).toBe(iDrag); // interior drag == rest — one consistent quantity (the exit heading)
+    const restText = await page.locator(".snap-readout").first().textContent();
+    expect(restText).not.toContain("⊥"); // rest reverts to heading + chord (the unchanged law)
+    // both neighbors held exactly still through the whole gesture.
+    const after = await poses();
+    expect(after[2]).toEqual(prevBefore);
+    expect(after[4]).toEqual(nextBefore);
+    // and the dragged node itself actually moved (a real offset write landed) — compared against
+    // its OWN pre-drag pose, section-local (never against `interiorPos`, a screen-canvas point).
+    const moved = after[3];
+    expect(Math.hypot(moved[0] - crestBefore[0], moved[1] - crestBefore[1])).toBeGreaterThan(0.05);
 
-    // ── 6. POLAR ARROW-NUDGE — the manipulators' KEYBOARD twin (kex2d-geo-ux): left/right step the
-    // chord ANGLE around the previous node, up/down step the chord LENGTH along it, each press its
-    // own undo entry. `polarNudge`'s math is unit-covered; what is not is the KEY WIRING — which key
-    // reaches which axis, in which direction, and that a press brackets exactly one history entry.
-    // Section 0's entry frame is the identity, so a stored pose IS its world point and the chord from
-    // node 2 to node 3 is the polar pair (r, a) the two axes address. Each axis is pinned by BOTH
-    // halves: the quantity it moves, and the one it must leave exactly alone — a swapped mapping
-    // passes "something moved" and fails these. The step is `NUDGE_PX`(2)/zoom ≈ 0.05 m here, two
-    // decades above the f32 hold tolerances below. Mutations: stub the arrow branch → nothing moves →
-    // red; swap the axis map (ArrowUp → "angle") → both holds go red. ──
+    // ── 6. POLAR ARROW-NUDGE (the TIP) — the manipulators' KEYBOARD twin (kex2d-geo-ux): left/right
+    // step the chord ANGLE around the previous node, up/down step the chord LENGTH along it, each
+    // press its own undo entry. Driven on the chain end (node 6, prev node 5) — kex2d-node-move-ux
+    // stage 2 forks the single-node nudge by node kind, and this pin covers the TIP half (`polarNudge`,
+    // UNCHANGED); the interior half (`chordNudge`, slide/offset) is 6d below. `polarNudge`'s math is
+    // unit-covered; what is not is the KEY WIRING — which key reaches which axis, in which direction,
+    // and that a press brackets exactly one history entry. Section 0's entry frame is the identity, so
+    // a stored pose IS its world point and the chord from node 5 to node 6 is the polar pair (r, a) the
+    // two axes address. Each axis is pinned by BOTH halves: the quantity it moves, and the one it must
+    // leave exactly alone — a swapped mapping passes "something moved" and fails these. The step is
+    // `NUDGE_PX`(2)/zoom ≈ 0.05 m here, two decades above the f32 hold tolerances below. Mutations: stub
+    // the arrow branch → nothing moves → red; swap the axis map (ArrowUp → "angle") → both holds go
+    // red. ──
+    const tipPoint = await nodePoint(page, 6);
+    await page.mouse.click(cb.x + tipPoint.x, cb.y + tipPoint.y); // select the tip for the nudge below
+    await expect.poll(selectedOrder).toBe(6);
     const chord = async (): Promise<{ r: number; a: number }> => {
         const p = await poses();
-        const dx = p[3][0] - p[2][0];
-        const dy = p[3][1] - p[2][1];
+        const dx = p[6][0] - p[5][0];
+        const dy = p[6][1] - p[5][1];
         return { r: Math.hypot(dx, dy), a: Math.atan2(dy, dx) };
     };
-    const nodeScreen = () => kexCall(page, "nodeAt", 3);
+    const nodeScreen = () => kexCall(page, "nodeAt", 6);
     // wait the bake onto its OWN last write — the honest evidence a press's write reached the
     // samples (`kex2d-harness.md`'s bake-readiness law, read side). Deliberately not inside `nudge`
     // any more, and not fired between every press: the nudge now resolves its polar geometry from
@@ -328,6 +354,85 @@ test("geo authoring flow", async ({ page, boot }) => {
     const cRestored = await chord();
     expect(cRestored.a).toBeCloseTo(cD.a, 3);
     expect(await undoDepth()).toBe(undo0 + 8);
+
+    // ── 6d. CHORD ARROW-NUDGE (the INTERIOR half, kex2d-node-move-ux stage 2) — the SAME up/down =
+    // length-role, left/right = angle-role key mapping, but on an interior node (3, neighbors 2 and 4)
+    // it steps SLIDE (∥ the frozen 2→4 chord) and OFFSET (⊥) instead of orbiting node 2 — `chordNudge`
+    // is unit-covered; the wiring is not. `axes()` mirrors `src/manipulator.ts chordFrame`'s
+    // slide/offset projection verbatim (this file is staged standalone and imports nothing from
+    // `src/`, `kex2d-harness.md` "Standalone staging") over the SAME section-0-identity-frame poses
+    // the tip block above reads — `v` is the FIXED +90° rotation of `u`, NEVER sign-picked toward
+    // the node (the stage-2 adversarial-pass fix: a sign-pick rebuilt every pointermove flips the
+    // reported offset the instant a drag crosses the chord). Keep this in lockstep with
+    // `chordFrame` — a drift here would pin the WRONG axis convention silently. Both neighbors must
+    // hold exactly still through every press — the one invariant a tip nudge can't pin (a tip's
+    // "previous node" IS its nudge's own pivot). ──
+    const axes = async (): Promise<{ slide: number; offset: number }> => {
+        const p = await poses();
+        const prev = p[2];
+        const next = p[4];
+        const node = p[3];
+        const dx = next[0] - prev[0];
+        const dy = next[1] - prev[1];
+        const len = Math.hypot(dx, dy);
+        const ux = dx / len;
+        const uy = dy / len;
+        const vx = -uy; // fixed +90° rotation — never sign-picked, see above
+        const vy = ux;
+        const sx = node[0] - prev[0];
+        const sy = node[1] - prev[1];
+        return { slide: sx * ux + sy * uy, offset: sx * vx + sy * vy };
+    };
+    const interiorNodePoint = await nodePoint(page, 3);
+    await page.mouse.click(cb.x + interiorNodePoint.x, cb.y + interiorNodePoint.y);
+    await expect.poll(selectedOrder).toBe(3);
+    const nodeScreen3 = () => kexCall(page, "nodeAt", 3);
+    const settle3 = async (before: { x: number; y: number } | null): Promise<void> => {
+        await expect
+            .poll(async () => {
+                const p = await nodeScreen3();
+                return (
+                    p !== null &&
+                    before !== null &&
+                    Math.hypot(p.x - before.x, p.y - before.y) > 0.5
+                );
+            })
+            .toBe(true);
+    };
+    const prevPin = (await poses())[2];
+    const nextPin = (await poses())[4];
+    const a0 = await axes();
+    const undoI0 = await undoDepth();
+    let atI = await nodeScreen3();
+    await page.keyboard.press("ArrowUp"); // length-role key → SLIDE on an interior node
+    await settle3(atI);
+    const aUp = await axes();
+    expect(aUp.slide - a0.slide).toBeGreaterThan(5e-3); // up = a positive slide step…
+    expect(Math.abs(aUp.offset - a0.offset)).toBeLessThan(1e-3); // …offset untouched
+    expect(await undoDepth()).toBe(undoI0 + 1);
+    atI = await nodeScreen3();
+    await page.keyboard.press("ArrowDown");
+    await settle3(atI);
+    const aDown = await axes();
+    expect(aDown.slide).toBeCloseTo(a0.slide, 3); // back where it started
+    expect(await undoDepth()).toBe(undoI0 + 2);
+    atI = await nodeScreen3();
+    await page.keyboard.press("ArrowRight"); // angle-role key → OFFSET on an interior node
+    await settle3(atI);
+    const aRight = await axes();
+    expect(aRight.offset - aDown.offset).toBeGreaterThan(5e-3); // right = a positive offset step…
+    expect(Math.abs(aRight.slide - aDown.slide)).toBeLessThan(1e-3); // …slide untouched
+    expect(await undoDepth()).toBe(undoI0 + 3);
+    atI = await nodeScreen3();
+    await page.keyboard.press("ArrowLeft");
+    await settle3(atI);
+    const aLeft = await axes();
+    expect(aLeft.offset).toBeCloseTo(aDown.offset, 3);
+    expect(await undoDepth()).toBe(undoI0 + 4);
+    // neither neighbor moved a single step through any of the four presses — frozen by construction.
+    const neighborsAfter = await poses();
+    expect(neighborsAfter[2]).toEqual(prevPin);
+    expect(neighborsAfter[4]).toEqual(nextPin);
 
     // ── 7. BLUR CANCELS A LIVE MANIPULATOR DRAG, completely (`editor-ui.md`: "Window blur cancels an
     // in-flight gesture completely — revert the bracketed edit, clear guides and capture. No guide may
