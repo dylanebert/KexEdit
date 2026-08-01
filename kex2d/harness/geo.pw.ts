@@ -363,10 +363,16 @@ test("geo authoring flow", async ({ page, boot }) => {
     // `src/`, `kex2d-harness.md` "Standalone staging") over the SAME section-0-identity-frame poses
     // the tip block above reads — `v` is the FIXED +90° rotation of `u`, NEVER sign-picked toward
     // the node (the stage-2 adversarial-pass fix: a sign-pick rebuilt every pointermove flips the
-    // reported offset the instant a drag crosses the chord). Keep this in lockstep with
-    // `chordFrame` — a drift here would pin the WRONG axis convention silently. Both neighbors must
-    // hold exactly still through every press — the one invariant a tip nudge can't pin (a tip's
-    // "previous node" IS its nudge's own pivot). ──
+    // reported offset the instant a drag crosses the chord). `poses()` is section-local WORLD
+    // coordinates (y grows upward), the SAME space `chordNudge` itself builds from
+    // (`chordFrame(..., screenSpace: false)`) — this mirror's un-flipped `vx = -uy` is therefore
+    // already the canonical handedness `chordFrame` folds every OTHER (screen-space) build site
+    // to match (the follow-up adversarial-pass fix, `nodeFrame`'s cross-space handedness bug).
+    // Keep this in lockstep with `chordFrame` — a drift here would pin the WRONG axis convention
+    // silently, and a future edit here must track BOTH the sign-pick law above and which build
+    // space (`screenSpace`) this mirror represents. Both neighbors must hold exactly still through
+    // every press — the one invariant a tip nudge can't pin (a tip's "previous node" IS its
+    // nudge's own pivot). ──
     const axes = async (): Promise<{ slide: number; offset: number }> => {
         const p = await poses();
         const prev = p[2];
@@ -377,7 +383,7 @@ test("geo authoring flow", async ({ page, boot }) => {
         const len = Math.hypot(dx, dy);
         const ux = dx / len;
         const uy = dy / len;
-        const vx = -uy; // fixed +90° rotation — never sign-picked, see above
+        const vx = -uy; // fixed +90° rotation, world/local handedness (screenSpace: false) — never sign-picked
         const vy = ux;
         const sx = node[0] - prev[0];
         const sy = node[1] - prev[1];
@@ -441,8 +447,9 @@ test("geo authoring flow", async ({ page, boot }) => {
     // dragging, and the next move resumes against the stale grab. This drives `cancelDrag`'s MANIP
     // branch alone — the tangent / marquee / pan branches, and the timeline's missing blur cancel
     // entirely, are not pinned here. Driven on the TIP (order 6) because the guide ray exists only
-    // where an exit incline does — `angleControl` returns `incline: null` at an interior node, so the
-    // same drag on node 3 would make the ray assert vacuous; it also rides the magnet's default-on
+    // where an exit incline does — an interior node's own control (`offsetControl`/`slideControl`
+    // over `chordFrame`) has no incline to display at all, so the same drag on node 3 would make the
+    // ray assert vacuous; it also rides the magnet's default-on
     // state (a flow that pressed `S` first would take the ray poll red for an unrelated reason). The
     // blur is DISPATCHED: no Playwright gesture deterministically defocuses a headless page's window,
     // and the app's listener is a plain `window` blur listener, so the dispatched event is the same

@@ -518,17 +518,23 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `tests/optimize.test.ts` (mutation-proven guards).
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
   teardown. `pickNode` (order-0 anchors are pickable, not draggable) then `pickSection` (nearest
-  span); a node body click **selects only** — movement enters through `startManip` (the DOM knob
-  seam, button 0 only) → `dragManipTo` through the `manipulator.ts` inverses, plus the polar
-  arrow-nudge (`polarNudge`, pure: left/right = angle, up/down = length). Right-click a section span
+  span); a node body click **selects only** — except inside tangent edit, where grabbing the
+  edited node's body starts a free unsnapped move (`dragNode`, same dead-zone/undo/blur machinery;
+  Esc cancels it as its own dismissal rung, Delete/Backspace no-op on `editor.dragging`) —
+  movement otherwise enters through `startManip` (the DOM knob
+  seam, button 0 only) → `dragManipTo`, forked on `nodeFrame`'s discriminated `NodeFrame` (tip →
+  polar, interior → chord slide/offset), plus the arrow-nudge fork (`polarNudge`/`chordNudge`,
+  pure: left/right = angle-role, up/down = length-role). Right-click a section span
   opens the context menu (`openContext`). Keys: `Enter` extend / `Del` trim (node end); `Del` delete
   (selected section). All edits route through `history`. Also the readout metric seam: `nodeMetrics`
   (pure: node → `{angleLabel?, lengthLabel}`, over the authored `exitWorld` heading + chord) +
   `selectedMetrics` (the impure glue over the baked samples) + the shared formatters
   (`formatDeg`/`formatLen`, one decimal always, −0 normalized, trailing `.0` stripped — the geo
   readout's degree/length funnel, sharing `timeline.ts`'s `fmt` trim, the force readout's funnel).
-- `magnet.ts` — the two grid quantizers a manipulator drag resolves through (`snapLength`,
-  `snapSteps.length` grid + the `LENGTH_MIN` 1 m floor; `snapAngle`, the `snapSteps.angle` grid) plus
+- `magnet.ts` — the three grid quantizers a manipulator drag resolves through (`snapLength`,
+  `snapSteps.length` grid + the `LENGTH_MIN` 1 m floor; `snapAngle`, the `snapSteps.angle` grid;
+  `snapGrid`, the floorless signed grid the interior slide/offset axes use — −0 normalized at the
+  source, since 0 is a real reading there) plus
   the incline algebra
   (`inclineOf`/`chordForIncline`) a tip's exit-tangent snap needs. Grid, not magnet: the screen-px
   target pool, `COMBINE_DOT` co-fire, and shift-lock dissolved with the free 2D drag (each gesture
@@ -543,14 +549,20 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   collapse the control across reloads (recoverability, not precision). Deliberately NOT configurable: the timeline's `S_GRID`/`G_GRID`
   force grids (fixed constants) and `LENGTH_MIN` (the chord floor, a different quantity).
   Unit-tested in `settings.test.ts`.
-- `manipulator.ts` — the **polar control substrate**, and the 3D port's template. Pure and
-  device-free: the polar frame around the previous node (`polarFrame`, degenerate-chord guarded)
-  and the exact screen↔polar inverses each drag resolves through — `screenToLength` projects onto
-  the chord ray, `screenToAngle` sweeps the tangential arc (the two control loci; nothing draws
-  them, so they're geometry the inverses carry, not their own accessors). The `Frame` is a
+- `manipulator.ts` — the **node-manipulation substrate**, and the 3D port's template. Pure and
+  device-free, two frames: the tip's polar frame around the previous node (`polarFrame`,
+  degenerate-chord guarded) with the exact screen↔polar inverses — `screenToLength` projects onto
+  the chord ray, `screenToAngle` sweeps the tangential arc (the control loci; nothing draws
+  them, so they're geometry the inverses carry, not their own accessors) — and the interior
+  neighbor-chord frame (`chordFrame`: u = normalized(next−prev), v = u's fixed +90° in WORLD
+  orientation, never sign-picked from the node's side — a per-move sign-pick flips the readout
+  when the drag crosses the chord; offset signed, 0 legitimate; exact
+  `screenToSlide`/`slideToPoint`/`screenToOffset`/`offsetToPoint` inverses; `chordNudge` the
+  keyboard twin; degenerate-flagged on coincident neighbors; neighbors frozen, so only
+  `slide0`/`offset0` track the drag). The `Frame` is a
   **per-pointermove snapshot** (the incline
   window derives from the live chord radius — freezing it at gesture start diverges from the feel);
-  the angle control emits **world-space** radians, the y-flip folded inside, so no consumer negates.
+  every control emits **world-space** values, the y-flip folded inside, so no consumer negates.
   Unit-tested in `manipulator.test.ts`.
 - `radial.ts` — the one home for the summoned ring's geometry (`ringBase`/`ringSlot`/`RadialSlot`):
   a three-button 60° fan off the heading's screen angle — measure (length) −60° · extend 0° · pitch

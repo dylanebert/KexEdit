@@ -111,12 +111,18 @@ copies this shape:
   force-keyframe drag** (the per-axis start magnet already serves single-axis intent, so a lock is
   redundant); Shift is a no-op there.
   The shaping viewport carries one too: the building vocabulary is the quantum, and **snap quantizes what
-  the piece does** — a pure grid, snap-by-default: chord length and angle on per-user configurable
-  increments (defaults 1 m / 5°; the 1 m `LENGTH_MIN` chord floor is a separate quantity), uniform
-  tip + interior. A tip snaps its exit-tangent *incline* (the chord that
-  yields it, `incline = 2·chord − tangent`), an interior node its chord angle; the old tip-only
-  asymmetry existed only because a proximity quantum couldn't reach a frozen heading — a plain grid
-  needs none. Ctrl/Cmd bypasses to continuous. A zoom-dependent ruler tick or a nice-number gridline
+  the piece does** — a pure grid, snap-by-default, forked by node role. A **tip** snaps polar length
+  and angle on the per-user configurable increments (defaults 1 m / 5°; the 1 m `LENGTH_MIN` chord
+  floor is a separate quantity), the angle snapping its exit-tangent *incline* (the chord that
+  yields it, `incline = 2·chord − tangent`). An **interior** node has **no angle grid**: it edits on
+  two signed 1D axes in the frozen prev→next chord frame (slide ∥, offset ⊥), both on the plain
+  length grid through the floorless `snapGrid` — an axis whose zero is legitimate never wears
+  `snapLength`'s `LENGTH_MIN` floor (a chord-degeneracy guard, meaningless on a signed coordinate);
+  offset is signed, 0 and negative are real values. **A frame's axis orientation is never picked
+  from the state the gesture itself moves** — a per-move sign-pick flips the readout the instant
+  the drag crosses the chord. Ctrl/Cmd bypasses to continuous either way. A node whose neighbors
+  coincide has a degenerate chord frame — knobs and nudge withdraw; the tangent-edit free drag or a
+  neighbor move is the escape hatch. A zoom-dependent ruler tick or a nice-number gridline
   is display, not content. If nice-value targeting is ever wanted, it's a separate
   explicitly-enabled grid (the Figma split), never folded into the default magnet.
 - **Manipulator quanta are per-user configurable; timeline grids stay fixed** (the Figma split:
@@ -129,15 +135,20 @@ copies this shape:
   writes back), and the bypass modifier stays independent of the configured value. A popover's
   dismissal exemption targets the *invoker*, never its rail — a class-wide exemption silently
   breaks when a second rail tool arrives.
-- **Node movement is per-axis 1D controls in the content's own polar frame** (the previous node,
-  the piece being built), never free-2D or world-absolute. Absolute align-x/y families fight the
-  angle quantum and don't generalize to 3D. The kex2d polar manipulator is the 3D port's template:
-  a pure device-free module owns each axis's locus (chord ray, tangential arc) and its exact
-  screen↔value inverses — values world-space, the y-flip folded inside, no consumer negation —
-  with one grid quantizer per axis. A 1D gesture needs no pool competition, co-fire, or Shift
-  constrain (those dissolved with the free drag). In 3D the angle control becomes pitch, joined by
-  turn/roll rings; length unchanged. New capability is another 1D control on the ring, never
-  restructured input.
+- **Node movement is per-axis 1D controls in the content's own frame** — tip = polar around the
+  previous node, interior = the neighbor-chord frame — never free-2D **on the default surface** or
+  world-absolute. Absolute align-x/y families fight the angle quantum and don't generalize to 3D.
+  The summoned tangent-edit layer is the sanctioned free-gesture surface: there the edited node's
+  body drags freely, unsnapped, through the same dead-zone/undo/blur machinery. The kex2d
+  manipulator is the 3D port's template: a pure device-free module owns each axis's locus (chord
+  ray, tangential arc; chord-parallel and -perpendicular lines) and its exact screen↔value
+  inverses — values world-space, the y-flip folded inside, no consumer negation — with one grid
+  quantizer per axis, and the frame IS the fork (a discriminated frame union, never a node-kind
+  flag threaded beside it). A 1D gesture needs no pool competition, co-fire, or Shift constrain
+  (those dissolved with the free drag). In 3D the angle control becomes pitch, joined by turn/roll
+  rings, length unchanged; interior slide is unchanged and offset becomes the two axes in the
+  plane ⊥ the chord; the free body drag becomes a view-plane drag inside the summoned layer. New
+  capability is another 1D control on the ring, never restructured input.
 - **Targets must be stable under the gesture and reachable.** A gesture never snaps to geometry it
   is itself moving (the extent-trim self-snap lesson) or to a target the drag can't reach.
 - A snapped axis flashes a guide line (the Figma feedback); the guide clears with the gesture.
@@ -149,15 +160,20 @@ copies this shape:
   and mid-drag; an engaged snap feeds the same readout its snapped values. Never floating chips at
   the drag point (they collide with summoned controls), never a fixed far corner (too far from the
   action).
-- **The readout reports the node's authored quantities** — its world exit heading and the chord to
-  the previous node — the same value mid-drag and at rest, exactly. Never a bake re-derivation (it
-  drifts with resampling) and never a gesture-local value (a dragged handle's own angle/length is
-  not what the author is placing). The snap must quantize the same authored quantity the write
-  re-heads to, or drag ≠ rest by the gap between the two spaces.
+- **The readout reports authored quantities, and shows exactly what the snap lands.** At rest:
+  world exit heading + chord to the previous node, for every node. Mid-drag it reports the engaged
+  control's own quantity — a tip drag the authored heading + chord (drag == rest, exactly); an
+  interior drag the ∥/⊥ metres the write resolves through, both axes shown. Never a bake
+  re-derivation (it drifts with resampling) and never a gesture-local value (a dragged handle's
+  own angle/length is not what the author is placing). The snap must quantize the same quantity
+  the readout shows and the write lands, or drag ≠ rest by the gap between the two spaces.
 - **A pointerdown becomes a drag only past a dead-zone** (kex2d `DRAG_PX` = 4, the Figma/Blender
   click-vs-drag threshold); below it, release is a plain click. Window blur cancels an in-flight
   gesture completely — revert the bracketed edit, clear guides and capture. No guide may exist
-  without a live, threshold-crossed drag.
+  without a live, threshold-crossed drag. **Esc cancels a live gesture as its own dismissal rung**
+  (revert + clear, one press peels one layer, before any mode/selection rung), and destructive
+  keys (Delete/Backspace) no-op while `editor.dragging` — a structural edit never fires
+  mid-gesture; the one live-gesture flag is the guard, not an enumerated drag list.
 
 ## Multiselect
 
@@ -202,7 +218,9 @@ shape:
   running-prev anchor inside one pass; the gesture **reads from a frozen gesture-start chain
   snapshot and writes live** — re-reading moved positions under cumulative-from-start deltas
   compounds the delta and runs away. Angle delta is chord rotation, not incline (no single incline
-  reference exists across a set). Reached by arrow-nudge only, per the context-UI law above.
+  reference exists across a set), and the group move stays polar Δlength/Δangle regardless of node
+  kind — the chord axes are single-select controls. The section tip re-heads only when it is
+  itself in the moved set. Reached by arrow-nudge only, per the context-UI law above.
 - **History**: one undo entry per bulk op or gesture; single-op gestures generalize to sets; the
   selection hook snapshots the whole set by stable forms plus the active, and restores across
   entity-id recycle.
@@ -229,8 +247,9 @@ The worked example of the layered-expressiveness contract's summoned inner layer
 - **Handle drags are free gestures** — no raster, no guides. The one landmark is the grab ray: the
   angle latches to the grab direction while the tip stays within a perpendicular screen-px corridor
   (the angular window derived from it, never authored in degrees), so pulling out lengthens without
-  bumping the angle; deviate and return and it re-latches (stateless, no monotonic release). Node
-  moves snap the grid; handle drags express.
+  bumping the angle; deviate and return and it re-latches (stateless, no monotonic release). On the
+  default surface node moves snap the grid; inside tangent edit the edited node's body is a free
+  gesture too (unsnapped, no guides) — the whole summoned layer expresses.
 - **The force chart bends free-gesture on the value axis only.** A handle's Δg snaps the g-grid in
   offset space (the space the readout prints — a snapped transition reads "+0.5 g"); Δs stays
   continuous: a keyframe's s is *placement* (authoring vocabulary, snapped), a handle's Δs is

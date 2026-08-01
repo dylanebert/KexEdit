@@ -35,11 +35,16 @@ import {
 
 const EPS = 1e-9;
 
-/** the polar manipulation frame around a node. the geometry (`px`/`py`/`ux`/`uy`/`radius`) is
+/** the polar manipulation frame around a node — the LIVE app builds this only for a growth tip
+ *  (`nodeFrame`, `controls.ts`); an interior node uses `chordFrame` below instead (stage 2 of
+ *  kex2d-node-move-ux retired the polar frame's interior role — see the module note ahead of
+ *  `chordFrame`). the geometry (`px`/`py`/`ux`/`uy`/`radius`) is
  *  screen px — the length axis runs along the unit chord `(ux, uy)` from the previous node, the
  *  angle axis along the circle of `radius` centred on it. `tangent` is the previous exit incline in
- *  **world** radians (the same convention `angleControl` emits) for a growth tip, null for an
- *  interior node (which snaps its chord angle, not an incline). `degenerate` marks a coincident
+ *  **world** radians (the same convention `angleControl` emits) for a growth tip; `tangent: null` is
+ *  the module's own generality (a frame with no incline to snap), kept because the pure math still
+ *  supports it and it's exercised directly by unit tests, but no live caller constructs one any
+ *  more. `degenerate` marks a coincident
  *  previous/selected node — no chord direction, zero radius — where the direction falls back to `+x`
  *  and the loci collapse to the origin; the inverses stay finite but the round-trip only holds for a
  *  non-degenerate frame.
@@ -61,7 +66,8 @@ export interface Frame {
     radius: number;
     /** screen px per world metre (the length axis' scale). */
     pxPerMeter: number;
-    /** the previous exit incline in WORLD radians at a growth tip, else null (interior, free). */
+    /** the previous exit incline in WORLD radians at a growth tip; null only in the module's own
+     *  generality (no live caller passes it — see the doc above). */
     tangent: number | null;
     degenerate: boolean;
 }
@@ -141,25 +147,27 @@ export function lengthControl(f: Frame, px: number, py: number, snap: boolean): 
 }
 
 /** the angle control: resolve a raw screen point to a chord angle (+ the tip's exit incline), both
- *  in **world** radians. snap-by-default quantizes to the angle grid (`snapAngle`, default 5°),
- *  applied uniformly —
- *  at a growth tip (`tangent` set) it snaps the **exit incline** to the grid and maps back to the
- *  chord that yields it (`incline` is that value); at an interior node (`tangent` null) it snaps the
- *  **chord angle** to the grid (`incline` null — a frozen heading has no incline to display). the
- *  Ctrl modifier (`snap === false`) bypasses to continuous. a plain grid needs no radius-derived
- *  window, so the old "interior rotates free" asymmetry is gone (feel round 6). */
+ *  in **world** radians — the tip's own control (`f.tangent` set; the live app never builds a
+ *  null-tangent `Frame`, see `Frame`'s doc). snap-by-default quantizes to the angle grid
+ *  (`snapAngle`, default 5°): it snaps the **exit incline** to the grid and maps back to the
+ *  chord that yields it (`incline` is that value). the Ctrl modifier (`snap === false`) bypasses
+ *  to continuous. the `f.tangent === null` branch is the module's own generality (no incline to
+ *  snap, so it snaps the bare chord angle instead) — dead from the live app, kept for the pure
+ *  math's own completeness and exercised directly by unit tests. */
 export interface AngleControl {
     /** the resolved chord angle in WORLD radians — the chord that yields the snapped incline (tip)
-     *  or the snapped chord itself (interior). */
+     *  or the snapped chord itself (the null-tangent generality). */
     angle: number;
-    /** the tip's exit incline in WORLD radians (snapped to the grid), or null for an interior node. */
+    /** the tip's exit incline in WORLD radians (snapped to the grid), or null under the
+     *  null-tangent generality. */
     incline: number | null;
     snapped: boolean;
 }
 export function angleControl(f: Frame, px: number, py: number, snap: boolean): AngleControl {
     const chord = screenToAngle(f, px, py);
     if (f.tangent === null) {
-        // interior: no incline — snap the chord angle itself to the grid.
+        // the null-tangent generality (unreachable from the live app): no incline — snap the bare
+        // chord angle itself to the grid.
         return { angle: snap ? snapAngle(chord) : chord, incline: null, snapped: snap };
     }
     // tip: snap the EXIT INCLINE to the grid, then map back to the chord that produces it.
@@ -186,13 +194,30 @@ export function angleControl(f: Frame, px: number, py: number, snap: boolean): A
 // motion reads as a sign flip on top of the real delta — the write stays continuous, the label
 // lies. A fixed `v` has no such branch: crossing the chord is just the coordinate passing through
 // zero, the same way `screenToLength` already returns negative behind the previous node's ray.
+//
+// A fixed rotation is only "the same side" if it's fixed in ONE handedness — and the module has
+// two build spaces with OPPOSITE handedness for the identical `(-uy, ux)` formula: `nodeFrame`
+// (`controls.ts`) builds from SCREEN points (y grows downward), `chordNudge` below builds from
+// SECTION-LOCAL points (y grows upward, matching world/physics convention — `pxPerMeter: 1`). The
+// same algebraic rotation therefore points to the physically OPPOSITE world side depending on
+// which space built the frame (found by the follow-up adversarial pass, adjacent to the sign-pick
+// bug above but distinct — this one survives even a perfectly fixed `v`). `screenSpace` is the
+// fold: **world-space is the canonical handedness** (matching `chordNudge`'s existing local-space
+// callers, unaffected), and a screen-space caller (`nodeFrame`) negates the naive rotation to
+// land on the SAME world side — the same seam `polarFrame`'s `screenToAngle`/`angleToPoint` fold
+// the y-flip through for its angle, just applied to a rotation instead of an atan2. Which
+// physical side reads "+" was never adjudicated (sign-symmetric); what's fixed is that it agrees
+// between the two build sites.
 
 /** the neighbor-chord manipulation frame around an interior node. `u = normalized(next − prev)` is
- *  the slide axis (screen px); `v` is `u` rotated a FIXED +90° (screen px, y-down) — NEVER
- *  sign-picked toward `sel` (see the module note above: a per-rebuild sign-pick is the discontinuous-
- *  readout bug the stage-2 adversarial pass found). Offset is therefore a genuine signed 1D
- *  coordinate — negative is legitimate, it's simply the other side. `slide0`/`offset0` are `sel`'s
- *  own coordinates in this frame at build time — the "other axis" locus each control's `*ToPoint`
+ *  the slide axis; `v` is `u` rotated a FIXED +90° in WORLD-space handedness — NEVER sign-picked
+ *  toward `sel` (see the module note above: a per-rebuild sign-pick is the discontinuous-readout
+ *  bug the stage-2 adversarial pass found), and `screenSpace` folds the y-flip so a screen-built
+ *  frame (`nodeFrame`, y grows downward) picks the SAME world side as a locally-built one
+ *  (`chordNudge`, y grows upward) — the cross-space handedness bug the follow-up adversarial pass
+ *  found. Offset is therefore a genuine signed 1D coordinate, one convention everywhere it's
+ *  built — negative is legitimate, it's simply the other side. `slide0`/`offset0` are `sel`'s own
+ *  coordinates in this frame at build time — the "other axis" locus each control's `*ToPoint`
  *  holds fixed while the other one is dragged, exactly the role `polarFrame.radius` plays for
  *  `angleToPoint` and `polarFrame.ux`/`uy` play for `lengthToPoint`. Rebuilt per pointermove like
  *  `polarFrame` — `sel` moves, `prev`/`next` never do (frozen neighbors), so `u`/`v` are
@@ -200,14 +225,14 @@ export function angleControl(f: Frame, px: number, py: number, snap: boolean): A
  *  coincident `prev`≈`next` (no chord direction) — `u` falls back to `+x`, `v` to `+y`; the
  *  inverses stay finite but the round-trip only holds non-degenerate. */
 export interface ChordFrame {
-    /** the previous node — the axis origin, screen px. */
+    /** the previous node — the axis origin, in the caller's own space (screen px or local metres). */
     px: number;
     py: number;
     /** the unit chord direction previous→next (the slide axis); `(1, 0)` when degenerate. */
     ux: number;
     uy: number;
-    /** the unit perpendicular (the offset axis) — `u` rotated a FIXED +90°, never sign-picked;
-     *  `(0, 1)` when degenerate. */
+    /** the unit perpendicular (the offset axis) — `u` rotated a FIXED +90° in WORLD handedness
+     *  (folded per `screenSpace` at build time), never sign-picked; `(0, 1)` when degenerate. */
     vx: number;
     vy: number;
     /** `sel`'s own slide coordinate at build time (world metres) — the locus `offsetToPoint` holds
@@ -216,18 +241,23 @@ export interface ChordFrame {
     /** `sel`'s own offset coordinate at build time (world metres, SIGNED) — the locus
      *  `slideToPoint` holds fixed. */
     offset0: number;
-    /** screen px per world metre (both axes share one scale). */
+    /** screen px per world metre (both axes share one scale); `1` for a frame built directly in
+     *  local/world metres (`chordNudge`). */
     pxPerMeter: number;
     degenerate: boolean;
 }
 
-/** build the chord frame from the previous, next, and selected (interior) node's screen points.
- *  rebuilt per pointermove (see `ChordFrame`). */
+/** build the chord frame from the previous, next, and selected (interior) node's points.
+ *  `screenSpace` folds the build space's handedness into a fixed WORLD-space `v` (see
+ *  `ChordFrame`'s doc) — `true` for screen px (y grows downward, `nodeFrame`'s caller), `false`
+ *  for section-local/world coordinates (y grows upward, `chordNudge`'s own build). rebuilt per
+ *  pointermove (see `ChordFrame`). */
 export function chordFrame(
     prev: { x: number; y: number },
     next: { x: number; y: number },
     sel: { x: number; y: number },
     pxPerMeter: number,
+    screenSpace: boolean,
 ): ChordFrame {
     const dx = next.x - prev.x;
     const dy = next.y - prev.y;
@@ -248,8 +278,12 @@ export function chordFrame(
     }
     const ux = dx / len;
     const uy = dy / len;
-    const vx = -uy; // fixed +90° rotation (screen px, y-down) — never sign-picked, see above
-    const vy = ux;
+    // the naive +90° rotation `(-uy, ux)` is CCW in a y-UP frame — the WORLD/canonical handedness
+    // (chordNudge's own build space). A screen-space caller's y grows DOWNWARD, so the identical
+    // formula there lands on the opposite physical side; negate to fold it back to world.
+    const flip = screenSpace ? -1 : 1;
+    const vx = -uy * flip;
+    const vy = ux * flip;
     const base: ChordFrame = {
         px: prev.x,
         py: prev.y,
@@ -332,7 +366,7 @@ export function chordNudge(
     dir: 1 | -1,
     step: number,
 ): { x: number; y: number } {
-    const f = chordFrame(prev, next, node, 1);
+    const f = chordFrame(prev, next, node, 1, false); // local/world coords — the canonical handedness
     if (f.degenerate) return node;
     return axis === "slide"
         ? slideToPoint(f, f.slide0 + dir * step)

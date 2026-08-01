@@ -8,7 +8,8 @@ Mouse-driven and direct, parallel to `app/` (the eventual Shallot port). Whether
 augments / coexists with the 3D editor decides once it earns its place. Both atomic idioms author
 within a section:
 
-- **geo** — author node positions in the viewport (polar length/angle manipulators) →
+- **geo** — author node positions in the viewport (per-node 1D manipulators: polar at the tip,
+  chord slide/offset interior) →
   stored-heading cubic Hermite → physical F_n force curve, shown live in the timeline.
 - **force** — place force points on the timeline curve (filled-diamond keyframes, easing-tagged,
   optional explicit handles) → per-segment cubic-bezier dense F_n(s) → integrate the swept
@@ -68,9 +69,12 @@ full, the substrate detail, and the physics (integrator, force recovery, constan
 ## Model (geo authoring)
 
 Manipulator authoring, mouse-driven. The **control scheme** and the **representation** are separate:
-the controls place node positions through two snapped 1D polar controls around the previous node
-(length on a 1 m grid with a 1 m floor, angle on a 5° grid — both increments per-user configurable,
-`settings.ts`; Ctrl bypasses both to continuous; a body click only selects); the canonical
+the controls place node positions through two snapped 1D controls in the node's own frame — the
+**tip** polar around the previous node (length on a 1 m grid with a 1 m floor, angle on a 5° grid —
+both increments per-user configurable, `settings.ts`), an **interior** node on the frozen prev→next
+chord's slide (∥) and offset (⊥) axes, both on the plain length grid with **no floor and no angle
+grid** (offset is signed; 0 = on the chord is legitimate); Ctrl bypasses to continuous either way;
+a body click only selects (except inside tangent edit — below); the canonical
 representation is the F_n curve. Each node carries a **section-local** position and a tangent —
 **live-inferred** (`Auto`, the default: no stored vectors) or **explicit** (stored `in`/`out`
 vectors, the summoned inner layer). **Node 0 is the section entry** — pinned at the local origin,
@@ -85,7 +89,8 @@ not draggable; its world pose IS the entry, and the shape hangs off it in the en
 - **The default shaping is live everywhere — byte-identical to the pre-handles editor.** Nothing is
   stamped at append: the default add/extend/drag flow stores **no** tangents. The **last** node's
   heading tracks its predecessor's exit (`headLast`, the reflection `2·chord − prev`), re-deriving
-  whenever the tail changes, so a fresh append or drag never goes stale; node 0 and **interior**
+  on its **own** move, on append, and on tip promotion — never on a neighbor's move (dragging the
+  node before the tip preserves the tip's heading, single drag and group move alike); node 0 and **interior**
   `Auto` nodes keep a frozen heading (stable beats thrashing — dragged far off its chord it
   bulges, the accepted misshaping). A node turns concrete bezier **only** when
   explicitly authored — a handle drag or a mode set (seeded from the live arc-rule vectors via
@@ -212,15 +217,20 @@ context-menu target only**; it never gates authoring (force points are added by 
 nodes dragged in the viewport).
 
 **Geo authoring** (within a geo section) — author the shape in the viewport. Click a node to select
-it; click empty space to deselect. Movement is the two manipulators, never a free body drag.
+it; click empty space to deselect. Movement on the default surface is the two manipulators, never a
+free body drag; inside tangent edit the edited node's body drags freely (unsnapped — the summoned
+layer's idiom).
 
-- **The manipulators** (the two knobs on the selected node's ring — the polar controls above):
+- **The manipulators** (the two knobs on the selected node's ring — the per-node frames above; tip
+  = polar length/angle, interior = chord slide/offset on the same two slots):
   dragged (pointerdown on the knob captures the pointer, past the `DRAG_PX` dead zone) or
-  arrow-nudged (left/right = angle, up/down = length). A **drag** is purely snapped — the
+  arrow-nudged (left/right = angle-role, up/down = length-role, forked by node kind). A **drag** is
+  purely snapped — the
   configurable grids, Ctrl/Cmd bypasses to continuous. A **nudge** steps a fixed screen-px
   increment instead (`NUDGE_PX`, `NUDGE_PX_COARSE` with Shift) through the camera zoom, so the
-  keyboard moves a constant on-screen distance at any snap setting. Both go through `reheadOnDrag` refreshing the last node's heading after the write (node 0 +
-  interior stay frozen). A body drag does nothing but select.
+  keyboard moves a constant on-screen distance at any snap setting. The tip re-heads only on its
+  own move (node 0 + interior stay frozen; a neighbor's move never swings the tip). A body drag
+  outside tangent edit does nothing but select.
 - **Append / Delete**: append lays a node continuing the last edge by the **sticky**
   chord — the last committed length adjust (`history.commitChord`, `EXTEND_DIST` until one
   lands; the geo half of the per-kind sticky store) — the ring's

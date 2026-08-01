@@ -399,7 +399,9 @@ export function nodeFrame(
     const nextEid = handleAt(ecs, section, order + 1);
     if (nextEid === null) return null; // unreachable: `lastHandle` above already caught the tip
     const next = sampleScreen(s, tx, Handle.sample.get(nextEid));
-    const f = chordFrame(prev, next, sel, Math.abs(tx.sx));
+    // screen-built (y grows downward) — `chordFrame` folds the handedness so +offset lands on the
+    // same world side `chordNudge`'s local-space build reads (the cross-space adversarial finding).
+    const f = chordFrame(prev, next, sel, Math.abs(tx.sx), true);
     return f.degenerate ? null : { kind: "chord", frame: f };
 }
 

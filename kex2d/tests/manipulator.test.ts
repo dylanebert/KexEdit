@@ -179,20 +179,25 @@ const SEL_C = { x: 120, y: 40 }; // 2.4 m slide, 0.8 m offset (below the chord o
 
 describe("chord frame", () => {
     test("captures the chord direction and sel's own slide/offset", () => {
-        const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+        const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER, true);
         expect(f.degenerate).toBe(false);
         expect(f.ux).toBeCloseTo(1, 9);
         expect(f.uy).toBeCloseTo(0, 9);
         expect(Math.hypot(f.vx, f.vy)).toBeCloseTo(1, 12); // unit perpendicular
         expect(f.ux * f.vx + f.uy * f.vy).toBeCloseTo(0, 12); // u ⊥ v
         expect(f.slide0).toBeCloseTo(120 / PX_PER_METER, 9);
-        expect(f.offset0).toBeCloseTo(40 / PX_PER_METER, 9); // whichever sign this side happens to be
+        // screen-built: `v` folds the y-flip to WORLD handedness (the cross-space fix), so a point
+        // BELOW the chord on screen (larger y) reads NEGATIVE here — the opposite sign a naive
+        // screen-space rotation would give, and exactly what keeps this frame agreeing with a
+        // locally-built one over the same physical geometry (see "screenSpace folds the y-flip"
+        // below).
+        expect(f.offset0).toBeCloseTo(-40 / PX_PER_METER, 9);
     });
 
     test("v is FIXED — the same rotation regardless of which side sel sits on", () => {
         const above = { x: 120, y: -40 }; // same slide, opposite screen side
-        const f = chordFrame(PREV_C, NEXT_C, above, PX_PER_METER);
-        const f2 = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+        const f = chordFrame(PREV_C, NEXT_C, above, PX_PER_METER, true);
+        const f2 = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER, true);
         // v does NOT flip with sel's side — it's the same fixed rotation of u either way.
         expect(f.vx).toBeCloseTo(f2.vx, 9);
         expect(f.vy).toBeCloseTo(f2.vy, 9);
@@ -202,18 +207,58 @@ describe("chord frame", () => {
 
     test("offset 0 (on the chord line) is a legitimate, unflagged reading", () => {
         const onChord = { x: 120, y: 0 }; // exactly on the prev→next line
-        const f = chordFrame(PREV_C, NEXT_C, onChord, PX_PER_METER);
+        const f = chordFrame(PREV_C, NEXT_C, onChord, PX_PER_METER, true);
         expect(f.offset0).toBeCloseTo(0, 9);
         expect(f.degenerate).toBe(false); // only prev≈next is degenerate, never a zero offset
     });
 
     test("a coincident prev/next node is degenerate (guarded, no NaN)", () => {
-        const f = chordFrame(PREV_C, PREV_C, SEL_C, PX_PER_METER);
+        const f = chordFrame(PREV_C, PREV_C, SEL_C, PX_PER_METER, true);
         expect(f.degenerate).toBe(true);
         expect(f.ux).toBe(1);
         expect(f.uy).toBe(0);
         expect(f.vx).toBe(0);
         expect(f.vy).toBe(1);
+    });
+});
+
+// the cross-space handedness bug the follow-up adversarial pass found: `nodeFrame` (`controls.ts`)
+// builds a `ChordFrame` from SCREEN points (y grows downward), `chordNudge` builds one from
+// SECTION-LOCAL points (y grows upward). The identical `(-uy, ux)` rotation is a DIFFERENT physical
+// side in each space — a self-consistent frame in isolation, but the two paths disagreed about
+// which side of the chord reads "+" for the SAME node. Red-first: this fails without the
+// `screenSpace` fold (verified by temporarily building `v` with the naive un-folded rotation on the
+// screen side and confirming the assertion below goes red).
+describe("cross-space handedness agreement — screen-built vs locally-built", () => {
+    test("the SAME physical offset reads the SAME sign built from screen points or local points", () => {
+        // one geometry, in local/world coordinates (y grows upward): chord (0,0)→(4,0), node at
+        // local (2, 1) — slide 2 m, offset +1 m "above" the chord (world +y).
+        const prevW = { x: 0, y: 0 };
+        const nextW = { x: 4, y: 0 };
+        const selW = { x: 2, y: 1 };
+        const fLocal = chordFrame(prevW, nextW, selW, 1, false);
+
+        // the SAME geometry projected through a real y-flipped view transform (tests' TX shape,
+        // `controls.test.ts`): screen = origin + world · scale, scale.y NEGATIVE (screen y grows
+        // downward while world y grows upward).
+        const tx = { sx: 40, sy: -40, ox: 500, oy: 400 };
+        const project = (p: { x: number; y: number }) => ({
+            x: tx.ox + p.x * tx.sx,
+            y: tx.oy + p.y * tx.sy,
+        });
+        const fScreen = chordFrame(
+            project(prevW),
+            project(nextW),
+            project(selW),
+            Math.abs(tx.sx),
+            true,
+        );
+
+        // both must report the SAME world-metres offset for the SAME physical node — a sign
+        // disagreement here is exactly the bug: two build sites silently reading opposite sides.
+        expect(fScreen.offset0).toBeCloseTo(fLocal.offset0, 9);
+        expect(fScreen.offset0).toBeCloseTo(1, 9); // the physical value both should read
+        expect(fScreen.slide0).toBeCloseTo(fLocal.slide0, 9);
     });
 });
 
@@ -241,18 +286,21 @@ describe("crossing continuity — no sign-flip jump across the chord", () => {
         const readings: number[] = [];
         let prevTarget: { x: number; y: number } = SEL_C;
         for (const t of targets) {
-            const f = chordFrame(PREV_C, NEXT_C, prevTarget, PX_PER_METER);
+            const f = chordFrame(PREV_C, NEXT_C, prevTarget, PX_PER_METER, true);
             readings.push(screenToOffset(f, t.x, t.y));
             prevTarget = t; // the drag's own write becomes the next frame's `sel`
         }
         for (let i = 1; i < readings.length; i++) {
-            expect(readings[i - 1] - readings[i]).toBeCloseTo(0.8, 6); // uniform step, crossing included
+            // screen-built: the y-flip fold means offset DECREASES as screen-y increases (world
+            // handedness) — the step is uniformly −0.8, sign aside the point is it's the SAME
+            // magnitude and direction straight through the crossing, no reversal.
+            expect(readings[i - 1] - readings[i]).toBeCloseTo(-0.8, 6); // uniform step, crossing included
         }
     });
 });
 
 describe("slide inverse round-trips", () => {
-    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER, true);
     for (const m of [-1.5, 0, 0.5, 2.4, 6]) {
         test(`slide ${m} m → point on the slide locus → back to ${m} m`, () => {
             const p = slideToPoint(f, m);
@@ -263,13 +311,13 @@ describe("slide inverse round-trips", () => {
     }
 
     test("a non-positive scale reads 0 (degenerate guard, no divide-by-zero)", () => {
-        const dgn = chordFrame(PREV_C, NEXT_C, SEL_C, 0);
+        const dgn = chordFrame(PREV_C, NEXT_C, SEL_C, 0, true);
         expect(screenToSlide(dgn, SEL_C.x, SEL_C.y)).toBe(0);
     });
 });
 
 describe("offset inverse round-trips", () => {
-    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER, true);
     for (const m of [-3, -0.2, 0, 0.8, 5]) {
         test(`offset ${m} m → point on the offset locus → back to ${m} m`, () => {
             const p = offsetToPoint(f, m);
@@ -281,7 +329,7 @@ describe("offset inverse round-trips", () => {
 });
 
 describe("slide control (whole-metre grid, NO floor — a signed 1D coordinate)", () => {
-    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER, true);
     test("snap on: quantizes the drag to the nearest whole metre (what the readout shows lands)", () => {
         const raw = slideToPoint(f, 3.1);
         const res = slideControl(f, raw.x, raw.y, true);
@@ -310,7 +358,7 @@ describe("slide control (whole-metre grid, NO floor — a signed 1D coordinate)"
 });
 
 describe("offset control (whole-metre grid, plain signed quantize, no angle grid)", () => {
-    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER);
+    const f = chordFrame(PREV_C, NEXT_C, SEL_C, PX_PER_METER, true);
     test("snap on: quantizes to the nearest whole metre, sign preserved (positive side)", () => {
         const raw = offsetToPoint(f, 3.1);
         const res = offsetControl(f, raw.x, raw.y, true);
@@ -359,7 +407,7 @@ describe("chordNudge — interior arrow-nudge (world-space, the offset/slide key
     test("slide axis steps the node along the chord by exactly `step`", () => {
         const node = { x: 4, y: 1.5 }; // slide 4, whatever signed offset this side reads as
         const out = chordNudge(prev, next, node, "slide", 1, 0.5);
-        const f = chordFrame(prev, next, node, 1);
+        const f = chordFrame(prev, next, node, 1, false);
         expect(screenToSlide(f, out.x, out.y)).toBeCloseTo(f.slide0 + 0.5, 9);
         expect(screenToOffset(f, out.x, out.y)).toBeCloseTo(f.offset0, 9); // offset untouched
     });
@@ -367,7 +415,7 @@ describe("chordNudge — interior arrow-nudge (world-space, the offset/slide key
     test("offset axis steps the node off the chord by exactly `step`, slide untouched", () => {
         const node = { x: 4, y: 1.5 };
         const out = chordNudge(prev, next, node, "offset", -1, 0.5);
-        const f = chordFrame(prev, next, node, 1);
+        const f = chordFrame(prev, next, node, 1, false);
         expect(screenToOffset(f, out.x, out.y)).toBeCloseTo(f.offset0 - 0.5, 9);
         expect(screenToSlide(f, out.x, out.y)).toBeCloseTo(f.slide0, 9);
     });
