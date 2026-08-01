@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { DIM_WASH, HOVER_GROW, hexToOklch, hovered, selected } from "../src/colors";
+import { DIM_WASH, hexToOklch, hovered, selected } from "../src/colors";
 import { easeOut } from "../src/editor";
 
 // an independent sRGB #rrggbb reader (not the module under test).
@@ -88,35 +88,32 @@ describe("token mirrors (App.svelte :root)", () => {
     });
 });
 
-describe("HOVER_GROW — one glyph grow ratio, both surfaces", () => {
-    test("is the area-doubling step (√2 — one hover step at area scale)", () => {
-        // the derivation, pinned as an invariant: a retune that leaves the area-step rationale
-        // must change the comment too, not just the number.
-        expect(HOVER_GROW * HOVER_GROW).toBeCloseTo(2, 12);
-    });
-
-    test("render.ts scales every pickable glyph radius by the one constant", () => {
+describe("hover outline lift — a glyph's ink stroke joins its hovered tone (kex2d-idioms 10b)", () => {
+    test("render.ts derives every glyph hover stroke through hovered(), never a literal", () => {
+        // the color channel is hover's ONE channel: on hover a viewport glyph's dark ink stroke
+        // lifts to the same hovered() tone its fill wears — silhouette contrast without a size
+        // change. force markers + boundary anchors both resolve through the helper.
         const render = readFileSync(new URL("../src/render.ts", import.meta.url), "utf8");
-        for (const site of [
-            "FORCE_R * HOVER_GROW",
-            "HANDLE_R * HOVER_GROW",
-            "ANCHOR_R * HOVER_GROW",
-        ]) {
-            expect({ site, present: render.includes(site) }).toEqual({ site, present: true });
-        }
+        // the force marker resolves hovered(COLOR_FORCE) twice — fill lift + outline lift.
+        expect((render.match(/hovered\(COLOR_FORCE\)/g) ?? []).length).toBe(2);
+        expect(/hov\s*\?\s*hovered\(COLOR_ANCHOR\)/.test(render)).toBe(true);
+        // the grow channel is OUT (user feel verdict): no hover radius scaling anywhere.
+        expect(render.includes("HOVER_GROW")).toBe(false);
     });
 
-    test("Timeline.svelte mirrors it as --hover-grow and both glyph rules scale by the var", () => {
-        // the DIM_WASH/--dim mirror precedent: the SVG side can't import into CSS, so the
-        // component wires the constant onto its root as a custom property and the hover rules
-        // reference only the var — no second literal ratio can drift.
+    test("Timeline.svelte lifts both glyph strokes to the selection token at base width", () => {
+        // the rung below selection: hover borrows selection's stroke token (--fg) but at the
+        // base 1px width and without the accent fill — selected keeps 1.4px + accent, so the
+        // two registers stay distinguishable by weight and fill, never by a size change.
         const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(tl.includes("--hover-grow: {HOVER_GROW}")).toBe(true);
-        const growRules = tl.match(/scale\(var\(--hover-grow\)\)/g) ?? [];
-        expect(growRules.length).toBeGreaterThanOrEqual(2); // .fmarker + .tknob
-        // no literal-ratio grow on a glyph rule beside the var (the transport thumb and the
-        // button :active press are different idioms and keep their own numbers).
-        expect(tl.match(/\.(?:fmarker|tknob)\s*\{[^}]*scale\(\s*[\d.]/s)).toBeNull();
+        const liftRules =
+            tl.match(
+                /\.(?:fpt:hover[^{]*\.fmarker|thit:hover \+ \.tknob)\s*\{[^}]*stroke: var\(--fg\)/gs,
+            ) ?? [];
+        expect(liftRules.length).toBe(2); // .fmarker + .tknob hover rules
+        // no geometry channel remains: no grow var, no hover scale transform.
+        expect(tl.includes("--hover-grow")).toBe(false);
+        expect(tl.includes("scale(var(--hover-grow))")).toBe(false);
     });
 });
 

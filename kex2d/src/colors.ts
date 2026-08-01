@@ -56,16 +56,6 @@ export function selected(base: string): string {
  *  height in the stack instead of copying an alpha that means nothing to an opaque stroke. */
 export const HOVER_STEP = 0.3;
 
-/** the glyph hover grow ratio — the hover rung's GEOMETRY channel for point glyphs (force
- *  diamonds, geo nodes, anchors, tangent knobs), both surfaces. derived, not tuned: hover's
- *  perceptual signal scales with the element's area, and `HOVER_STEP` was derived from the clip
- *  strip's composited AREA wash — sub-threshold on a ~10 px point glyph (kex2d-idioms stage 10),
- *  so a glyph's hover forks channel to geometry: one hover step ≈ a doubled footprint, ratio
- *  √2 ≈ 1.4, inside the reference band (Figma/Illustrator anchor hover, ~1.3–1.5×). one number:
- *  render.ts scales the radii, Timeline.svelte mirrors it as `--hover-grow` (pinned in
- *  colors.test.ts); the px radius differs per glyph, the grow step never does. */
-export const HOVER_GROW = Math.SQRT2;
-
 /** an element's hover color: its own base color one rung up — the same OKLCH move `selected`
  *  makes, at `HOVER_STEP` of its size, hue held. the canvas twin of the clip strip's hover fill,
  *  a step below the selection lift, and one knob so a feel round retunes the rung alone. */

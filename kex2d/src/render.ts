@@ -5,7 +5,6 @@ import {
     COLOR_FORCE,
     COLOR_GUIDE_RAY,
     DIM_WASH,
-    HOVER_GROW,
     hovered,
     kindSegments,
     selected,
@@ -336,15 +335,15 @@ const AnchorDrawSystem: System = {
                     ctx.restore();
                 }
                 // hover, one rung up on the anchor's own color (kex2d stage 6: an order-0 anchor
-                // is pickable, so it hovers like any clickable node) PLUS the glyph grow (stage
-                // 10: a point glyph's hover is geometry — one HOVER_GROW step, both surfaces);
-                // selection stays the stronger read (the START's lit stroke wins, and its glyph
-                // holds size — hover is invisible on a selected element).
+                // is pickable, so it hovers like any clickable node) — the glyph outline lift
+                // (kex2d-idioms 10b): hover's one channel is color, and on a point glyph it's
+                // the ink outline that lifts, hovered() over the glyph's own tone. suppressed
+                // when the START is selected — selection is the stronger read of the same glyph
+                // (the lit stroke wins).
                 const hov =
                     editor.hoverNode !== null &&
                     editor.hoverNode === handleAt(ecs, sec.id, 0) &&
                     !(sec.order === 0 && editor.start);
-                const r = hov ? ANCHOR_R * HOVER_GROW : ANCHOR_R;
                 ctx.fillStyle = "#0e0d0c";
                 ctx.strokeStyle =
                     sec.order === 0 && editor.start
@@ -355,10 +354,10 @@ const AnchorDrawSystem: System = {
                 ctx.lineWidth = 1.5;
                 ctx.beginPath();
                 // a diamond: entry anchors read as boundaries, not draggable nodes.
-                ctx.moveTo(cx, cy - r);
-                ctx.lineTo(cx + r, cy);
-                ctx.lineTo(cx, cy + r);
-                ctx.lineTo(cx - r, cy);
+                ctx.moveTo(cx, cy - ANCHOR_R);
+                ctx.lineTo(cx + ANCHOR_R, cy);
+                ctx.lineTo(cx, cy + ANCHOR_R);
+                ctx.lineTo(cx - ANCHOR_R, cy);
                 ctx.closePath();
                 ctx.fill();
                 ctx.stroke();
@@ -412,18 +411,13 @@ const ForceDrawSystem: System = {
             const member = members.has(m.id);
             const driven = opt !== null && opt.section === m.section && editor.locked.has(m.id);
             const hov = editor.hoverForce === m.id && !member && !driven;
-            // the glyph hover grow (kex2d-idioms stage 10): hovered draws one HOVER_GROW step
-            // larger, keeping the fill lift below — canvas redraws per frame, so the grow lands
-            // instantly (one frame) where the SVG twin eases 100ms; at ~2 px of delta the
-            // difference is imperceptible, so no per-frame tween is warranted here.
-            const r = hov ? FORCE_R * HOVER_GROW : FORCE_R;
 
             ctx.save();
             ctx.beginPath();
-            ctx.moveTo(cx, cy - r);
-            ctx.lineTo(cx + r, cy);
-            ctx.lineTo(cx, cy + r);
-            ctx.lineTo(cx - r, cy);
+            ctx.moveTo(cx, cy - FORCE_R);
+            ctx.lineTo(cx + FORCE_R, cy);
+            ctx.lineTo(cx, cy + FORCE_R);
+            ctx.lineTo(cx - FORCE_R, cy);
             ctx.closePath();
             if (driven) {
                 // the driven register (dashed + faded): the kind color at the timeline's own
@@ -443,7 +437,18 @@ const ForceDrawSystem: System = {
                     : hov
                       ? hovered(COLOR_FORCE)
                       : COLOR_FORCE;
-                ctx.strokeStyle = m.id === active ? "#fff" : member ? "#f0ece8" : "#0e0d0c";
+                // the glyph outline lift (kex2d-idioms 10b): on hover the ink stroke joins the
+                // hovered fill tone, so the whole silhouette — outline ring included — reads at
+                // the hover rung without a size change. selection keeps its stronger identity
+                // (brightened fill + the light #f0ece8/#fff stroke at the heavier width).
+                ctx.strokeStyle =
+                    m.id === active
+                        ? "#fff"
+                        : member
+                          ? "#f0ece8"
+                          : hov
+                            ? hovered(COLOR_FORCE)
+                            : "#0e0d0c";
                 ctx.lineWidth = m.id === active ? 1.8 : member ? 1.4 : 1;
                 ctx.fill();
                 ctx.stroke();
@@ -510,8 +515,6 @@ const HandleDrawSystem: System = {
             // clickable). invisible on a selected member (selection is the stronger read of the
             // same node) and never over the infeasible register — the standard hover priority.
             const hov = editor.hoverNode === eid && !member && !bad;
-            // stage 10: hover grows the node one HOVER_GROW step beside the fill lift below.
-            const r = hov ? HANDLE_R * HOVER_GROW : HANDLE_R;
 
             if (member) {
                 // every selected member wears the soft accent ring; the active one is set apart by
@@ -546,7 +549,7 @@ const HandleDrawSystem: System = {
                       : "#8a6a2a";
             ctx.lineWidth = member ? 2 : 1.5;
             ctx.beginPath();
-            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            ctx.arc(cx, cy, HANDLE_R, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
 
