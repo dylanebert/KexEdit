@@ -757,14 +757,33 @@ export function addNode(ecs: State, sectionId: number, x: number, y: number): nu
     if (prev === null) {
         Handle.theta.set(eid, 0); // node 0 is a fixed local flat anchor (the entry)
     } else {
-        const chord = Math.atan2(y - Handle.pos.y.get(prev), x - Handle.pos.x.get(prev));
-        Handle.theta.set(eid, reflect(exitHeading(prev), chord));
+        Handle.theta.set(eid, creationTheta(prev, x, y));
         // the old tip becomes interior but stays live (`Auto`) — the default add/drag flow stores
         // NO tangents and shapes exactly like the pre-handles editor (frozen interior heading,
         // chord-scaled length, tip reflection). a node turns concrete bezier only when authored
         // (a handle drag or a mode set), never at append.
     }
     return eid;
+}
+
+/** the heading a node is born with at section-local `(x, y)`: the circular-arc reflection of
+ *  its predecessor's exit about their chord — `addNode`'s own seed, shared with `resetNode` so
+ *  re-creation can't drift from creation (placed straight along the exit, the reflection
+ *  returns the exit heading exactly). */
+function creationTheta(prev: number, x: number, y: number): number {
+    const chord = Math.atan2(y - Handle.pos.y.get(prev), x - Handle.pos.x.get(prev));
+    return reflect(exitHeading(prev), chord);
+}
+
+/** the creation placement past `prev`: `chord` metres straight along its exit heading — where
+ *  `extend` lays a fresh node and where `resetNode` returns one. one shared body so append and
+ *  Reset can't drift (the resetToForce/resetToGeo factoring precedent). */
+function continuation(prev: number, chord: number): { x: number; y: number } {
+    const th = exitHeading(prev);
+    return {
+        x: Handle.pos.x.get(prev) + Math.cos(th) * chord,
+        y: Handle.pos.y.get(prev) + Math.sin(th) * chord,
+    };
 }
 
 /** a node's exit heading — the direction its curve leaves along. an explicit node exits along
@@ -975,12 +994,12 @@ function headLast(handles: number[]): void {
     Handle.theta.set(last, reflect(exitHeading(prev), chord));
 }
 
-/** the Reset action: clear a node's explicit tangent back to live (`Auto` inference resumes).
- *  meaningful for any node: an interior re-uses its frozen arc-rule heading, the growth tip
- *  re-tracks its predecessor (its heading re-derived), and node 0 (the entry anchor, editable via
- *  its out-handle) returns to the `Auto` C1 exit along the entry heading. does not itself record
- *  history — a gesture (`beginMove`/`commit`) wraps it, `nodeSnapshot` captures the tangent + theta
- *  for undo. node 0 is never the chain tip, so it never triggers the tip re-head. */
+/** the tangent-clear half of Reset: clear a node's explicit tangent back to live (`Auto`
+ *  inference resumes). the user-facing node Reset is `resetNode` (re-create — it delegates
+ *  here for node 0, whose position isn't authorable: the entry anchor returns to the `Auto`
+ *  C1 exit along the entry heading); this stays the bare clear for the boundary stitch's
+ *  node-0 half and the tip re-track. does not itself record history — a gesture
+ *  (`beginMove`/`commit`) wraps it, `nodeSnapshot` captures the tangent + theta for undo. */
 export function resetTangent(ecs: State, sectionId: number, order: number): void {
     const handles = sectionHandles(ecs, sectionId);
     if (handles.length === 0) return;
@@ -988,6 +1007,31 @@ export function resetTangent(ecs: State, sectionId: number, order: number): void
     if (eid === null) return;
     writeTangent(eid, undefined); // clear to live
     if (eid === handles[handles.length - 1]) headLast(handles); // the tip re-tracks its predecessor
+}
+
+/** the Reset action for a node past order 0: RE-CREATE it — return it to the state a fresh
+ *  append would have given it (the Reset idiom law: the state a fresh author would get).
+ *  position = the continuation along its PREDECESSOR's exit heading at the default chord
+ *  `EXTEND_DIST` (the named default — the session-sticky length is unknowable creation-time
+ *  state), tangent cleared to `Auto`, heading re-seeded by the same arc-rule reflection
+ *  `addNode` writes at creation (`creationTheta`) — one formula for tip and interior alike,
+ *  since every node was the tip when it was created (placed on the exit ray, the reflection
+ *  returns the exit heading exactly). Reset is the node's OWN action, so the tip re-head is
+ *  sanctioned by the tip law; a neighbor's heading is never touched. node 0 (the pinned
+ *  entry — position not authorable) keeps the tangent clear (`resetTangent`). does not
+ *  itself record history — a command wraps it (`history.resetNodes`). */
+export function resetNode(ecs: State, sectionId: number, order: number): void {
+    if (order === 0) {
+        resetTangent(ecs, sectionId, order);
+        return;
+    }
+    const eid = handleAt(ecs, sectionId, order);
+    const prev = handleAt(ecs, sectionId, order - 1);
+    if (eid === null || prev === null) return;
+    const p = continuation(prev, EXTEND_DIST);
+    Handle.pos.set(eid, p.x, p.y);
+    writeTangent(eid, undefined);
+    Handle.theta.set(eid, creationTheta(prev, p.x, p.y));
 }
 
 /** refresh headings after a node is dragged. the **last** (heading) node re-heads
@@ -1018,11 +1062,8 @@ export function extend(ecs: State, sectionId: number): number {
     // continue along the tip's actual exit — its explicit out-vector when authored, else its
     // stored heading (the arc rule exits exactly along `theta`). placing straight along the exit
     // makes `reflect` return it, so the new segment opens straight.
-    const th = exitHeading(last);
-    const lx = Handle.pos.x.get(last);
-    const ly = Handle.pos.y.get(last);
-    const chord = stickyLen(SectionKind.Geo);
-    return addNode(ecs, sectionId, lx + Math.cos(th) * chord, ly + Math.sin(th) * chord);
+    const p = continuation(last, stickyLen(SectionKind.Geo));
+    return addNode(ecs, sectionId, p.x, p.y);
 }
 
 /** remove the trailing (highest-order) node on a section — never below the two

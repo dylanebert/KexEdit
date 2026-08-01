@@ -307,7 +307,11 @@ bespoke component.
 - **Reset returns its subject to the state a fresh author would get** — one click back up the
   layers, from anywhere, no confirm (byte-identical undo is the safety). Every context menu
   carries Reset as a top-level row (section, node, node 0), normal color — undo makes it
-  non-destructive in spirit, so it doesn't wear Delete's danger red; gated like its neighbors.
+  non-destructive in spirit, so it doesn't wear Delete's danger red; gated like its neighbors,
+  never on "has something to clear" — a reset that changes nothing records no undo entry.
+  Node Reset re-creates: the continuation past its predecessor at the default chord
+  (`EXTEND_DIST`, never the session-sticky length — unknowable creation-time state), tangents
+  back to `Auto`; node 0's is the tangent clear (its position isn't authorable).
   A submenu row doesn't read as available (the buried `Tangents ▸ Reset` was moved out).
   Keyframes are the one exception: picking an easing preset subsumes Reset — choosing the
   layer is the reset. Like a destructive convert, a reset neither stamps nor consults the

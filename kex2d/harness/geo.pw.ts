@@ -628,13 +628,23 @@ test("tangent edit flow", async ({ page, boot }) => {
     expect(degToken(far)).toBe(degToken(near)); // constant heading along the ray
     expect(lenToken(far)).toBe(lenToken(near)); // constant length = the node's chord, NOT the handle's
 
-    // ── 4. RIGHT-CLICK → Reset (top-level, the Reset idiom law) → the node clears back to live
-    // (Auto inference resumes), so it carries no stored tangent again. available here (a tangent
-    // exists to clear). ──
+    // ── 4. RIGHT-CLICK → Reset (top-level, the Reset idiom law) → the node RE-CREATES
+    // (kex2d-idioms stage 9): its tangent clears back to live (Auto inference resumes) AND its
+    // position returns to the default-chord continuation past its predecessor — so the node
+    // visibly MOVES off its authored hill spot. enabled whenever the node is editable (a no-op
+    // reset records nothing). ──
     await page.mouse.click(cb.x + npos.x, cb.y + npos.y, { button: "right" });
     await expect(page.locator(".nodemenu")).toBeVisible();
     await clickMenuItem(page, ".nodemenu", "Reset");
     await expect.poll(async () => (await tangent()) === null).toBe(true); // cleared to live
+    // the re-create moved the node: the re-baked node→sample map lands it away from the authored
+    // spot it held through steps 1–3 (npos — handle drags reshape tangents, never the position).
+    await expect
+        .poll(async () => {
+            const p = await nodePoint(page, 3);
+            return Math.hypot(p.x - npos.x, p.y - npos.y);
+        })
+        .toBeGreaterThan(5);
 
     // ── 5. Esc exits the sub-mode back to plain selection, and the knobs COME BACK — the summon is a
     // round trip, not a one-way hide (a guard that never restores would pass the step-1 assert alone).

@@ -281,8 +281,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   `geoNodes` (the ONE projection of a section's ECS columns onto `spline.Node`s — the bake payload
   and an invoked solve's input both read it, so a conversion solves what's displayed).
   Tangent: `handleTangent`/`setTangent` (read/write the explicit `Tangent`, `undefined` = `Auto`),
-  `seedTangent` (the arc-rule vector at a node, for the explicit-summon seed), `resetTangent`
-  (clear a node's tangent back to live; the tip re-heads; skips node 0). No append-time stamping —
+  `seedTangent` (the arc-rule vector at a node, for the explicit-summon seed), `resetNode`
+  (re-create: continuation at the default chord via the shared `creationTheta`/`continuation`
+  bodies, tangent cleared; order 0 delegates to `resetTangent`, the tangent-clear half). No
+  append-time stamping —
   the default flow stores no tangents (`exitHeading` still resolves the append/reflect seed against
   an explicit tip's out-vector). Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/

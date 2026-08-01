@@ -50,8 +50,8 @@ import {
     removeSection,
     removeSections,
     resetSection,
-    resetTangents,
-    resetTangentsBulk,
+    resetNodes,
+    resetNodesBulk,
     setTangentModes,
     trimSuffix,
     trimTrack,
@@ -664,19 +664,6 @@ const nodeMode = $derived.by((): TangentMode => {
     const tan = handleTangent(ecs, Handle.section.get(m.eid), Handle.order.get(m.eid));
     return tan ? tan.mode : TangentMode.Aligned;
 });
-// whether the target node carries a stored tangent — Reset's enablement (it's a no-op on a
-// live-inferred node), the same structural move as the context menu's derived Delete. at a geo→geo
-// boundary the tip and the coincident downstream node 0 are one node, so Reset is live when EITHER
-// half carries a tangent (it clears both).
-const nodeHasTangent = $derived.by((): boolean => {
-    void tick;
-    const m = editor.nodeMenu;
-    if (m === null) return false;
-    if (handleTangent(ecs, Handle.section.get(m.eid), Handle.order.get(m.eid)) !== undefined)
-        return true;
-    const stitch = stitchNode(ecs, m.eid);
-    return stitch !== null && handleTangent(ecs, Handle.section.get(stitch), 0) !== undefined;
-});
 // whether the target node's handles are summoned (in tangent edit) — the Handles toggle's check.
 const nodeEditing = $derived.by((): boolean => {
     void tick;
@@ -705,19 +692,14 @@ const nodeSuffixOk = $derived.by((): boolean => {
     void tick;
     return suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length) !== null;
 });
-// whether ANY selected member carries a stored tangent — the bulk Reset's enablement (a no-op on an
-// all-live set), the set analogue of `nodeHasTangent`.
-const nodeSetHasTangent = $derived.by((): boolean => {
-    void tick;
-    for (const m of nodeMembers(ecs))
-        if (handleTangent(ecs, m.section, m.order) !== undefined) return true;
-    return false;
-});
 // the node menu as data (the shared MenuItem language): Add node / Delete node (chain-end-only, so
 // enablement-gated — the menu is Delete's only pointer path, the ring carries no trash button), then
 // a Handles toggle over a Tangents submenu (the three modes carry their `checked`), then a top-level
-// Reset closing the tangent-state group (the Reset idiom law: one click from anywhere — a submenu
-// row didn't read as available). node 0 (the entry anchor) is the exception — never
+// Reset closing the group (the Reset idiom law: one click from anywhere, back to the state a fresh
+// author would get — Reset RE-CREATES the node: default-chord continuation, tangents Auto). it's
+// enabled whenever the subject is editable, never gated on "has something to clear" — a reset that
+// changes nothing records no undo entry (`sameNodes`), the same no-op guard every Reset row leans
+// on. node 0 (the entry anchor) is the exception — never
 // appendable/trimmable, and its handle is a single free entry handle (no coupled in-side), so it
 // carries NO Add/Delete and NO mode submenu: just Handles + Reset (back to the Auto C1 exit).
 const nodeItems = $derived.by((): MenuItem[] => {
@@ -764,14 +746,14 @@ const nodeItems = $derived.by((): MenuItem[] => {
                     },
                 ],
             },
-            { label: "Reset", enabled: nodeSetHasTangent && ok, action: doResetSet },
+            { label: "Reset", enabled: ok, action: doResetSet },
         ];
     }
     if (Handle.order.get(eid) === 0) {
         return [
             { label: "Handles", checked: nodeEditing, enabled: ok, action: () => toggleHandles(eid) },
             { separator: true },
-            { label: "Reset", enabled: nodeHasTangent && ok, action: () => doReset(eid) },
+            { label: "Reset", enabled: ok, action: () => doReset(eid) },
         ];
     }
     return [
@@ -806,7 +788,7 @@ const nodeItems = $derived.by((): MenuItem[] => {
                 },
             ],
         },
-        { label: "Reset", enabled: nodeHasTangent && ok, action: () => doReset(eid) },
+        { label: "Reset", enabled: ok, action: () => doReset(eid) },
     ];
 });
 
@@ -840,11 +822,13 @@ function pickMode(target: TangentMode, eid: number): void {
     commit(history);
 }
 
-// Reset: clear the node's tangent back to live (Auto inference resumes). one undo entry. at a
-// geo→geo boundary tip the coincident downstream node-0 tangent is cleared in the same entry (the
-// stitched "one node" view); everywhere else the stitch is null and it's a plain single-node reset.
+// Reset: re-create the node — the default-chord continuation past its predecessor, tangents back
+// to live (Auto); node 0 keeps the tangent clear (its position isn't authorable). one undo entry;
+// a node already at creation state records nothing. at a geo→geo boundary tip the coincident
+// downstream node-0 tangent is cleared in the same entry (the stitched "one node" view);
+// everywhere else the stitch is null and it's a plain single-node reset.
 function doReset(eid: number): void {
-    resetTangents(history, ecs, eid, stitchNode(ecs, eid));
+    resetNodes(history, ecs, eid, stitchNode(ecs, eid));
 }
 
 // the bulk node-menu actions over the whole selection set (one undo entry each). Delete trims the
@@ -856,7 +840,7 @@ function doDeleteSet(): void {
         select(lastHandle(ecs, run.section));
 }
 function doResetSet(): void {
-    resetTangentsBulk(history, ecs, nodeMembers(ecs));
+    resetNodesBulk(history, ecs, nodeMembers(ecs));
 }
 function pickModeSet(mode: TangentMode): void {
     setTangentModes(history, ecs, nodeMembers(ecs), mode);

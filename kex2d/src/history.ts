@@ -37,7 +37,7 @@ import {
     nodeSnapshot,
     removeTrailingHandle,
     resetSection as resetSectionKind,
-    resetTangent,
+    resetNode,
     restoreAll,
     restoreForcePoint,
     restoreNodes,
@@ -287,23 +287,25 @@ export function trimTrack(h: History, ecs: State, section: number): boolean {
     return true;
 }
 
-/** Reset a node's tangent(s) back to live (`Auto`), as one undoable entry. `stitch` is the
- *  downstream node-0 eid coincident with `tip` when `tip` is a geo→geo boundary (the "one node,
- *  stitched at the UI" view — kex2d-geo-ux): then the Reset clears BOTH halves, the tip's own
- *  tangent and the downstream section's node-0 tangent, each through its own section's reset path.
- *  `null` is the plain single-node reset (the START node 0, an interior node, or a final tip). The
- *  affected sections (one or two) go in one command, so a single undo restores every cleared half;
- *  records nothing if nothing changed (an enablement-gated Reset always clears something, but the
- *  guard keeps a stray invocation off the undo stack). Uses `restoreNodes` (writes by stable order,
- *  no eid recycle), matching the tangent-edit gesture. */
-export function resetTangents(h: History, ecs: State, tip: number, stitch: number | null): void {
+/** Reset a node to its CREATION state as one undoable entry (`track.resetNode`: position
+ *  re-created at the default-chord continuation + tangents cleared to `Auto`; node 0 the tangent
+ *  clear alone — its position isn't authorable). `stitch` is the downstream node-0 eid coincident
+ *  with `tip` when `tip` is a geo→geo boundary (the "one node, stitched at the UI" view —
+ *  kex2d-geo-ux): the boundary is one node, so the entry re-creates the tip AND clears the
+ *  downstream node-0 half; the downstream section rides the moved exit rigidly (the
+ *  rigid-placement invariant), so the boundary coincidence holds by construction. `null` is the
+ *  plain single-node reset. The affected sections (one or two) go in one command, so a single undo
+ *  restores every half; a reset that changes nothing (the node already sits at creation state)
+ *  records nothing. Uses `restoreNodes` (writes by stable order, no eid recycle), matching the
+ *  tangent-edit gesture. */
+export function resetNodes(h: History, ecs: State, tip: number, stitch: number | null): void {
     const pre = selHook?.snapshot(ecs);
     const secs = [Handle.section.get(tip)];
     if (stitch !== null && !secs.includes(Handle.section.get(stitch)))
         secs.push(Handle.section.get(stitch));
     const before = secs.map((s) => nodeSnapshot(ecs, s));
-    resetTangent(ecs, Handle.section.get(tip), Handle.order.get(tip));
-    if (stitch !== null) resetTangent(ecs, Handle.section.get(stitch), Handle.order.get(stitch));
+    resetNode(ecs, Handle.section.get(tip), Handle.order.get(tip));
+    if (stitch !== null) resetNode(ecs, Handle.section.get(stitch), Handle.order.get(stitch));
     const after = secs.map((s) => nodeSnapshot(ecs, s));
     if (secs.every((_, i) => sameNodes(before[i], after[i]))) return; // nothing cleared
     const restore = (snap: NodeState[][]): void => {
@@ -357,22 +359,24 @@ export function trimSuffix(h: History, ecs: State, section: number, k: number): 
     return true;
 }
 
-/** Reset a SET of nodes' tangent(s) back to live (`Auto`) as ONE undoable entry (the bulk Reset over
- *  a multi-selection) — each member's own tangent cleared through its section's reset path, one
- *  command over the affected sections. unlike the single `resetTangents` it doesn't couple a
- *  boundary stitch (a bulk reset clears each member's own half); records nothing when no member
- *  carried a tangent. */
-export function resetTangentsBulk(
+/** Reset a SET of nodes to creation state as ONE undoable entry (the bulk Reset over a
+ *  multi-selection) — members applied in ASCENDING (section, order), so each member's
+ *  re-creation is computed against its already-reset predecessor: a bulk suffix reset is
+ *  byte-equivalent to deleting the suffix and re-extending fresh. unlike the single
+ *  `resetNodes` it doesn't couple a boundary stitch (a bulk reset resets each member's own
+ *  half); records nothing when no member changed. */
+export function resetNodesBulk(
     h: History,
     ecs: State,
     members: readonly { section: number; order: number }[],
 ): void {
     const pre = selHook?.snapshot(ecs);
-    const secs = [...new Set(members.map((m) => m.section))];
+    const sorted = [...members].sort((a, b) => a.section - b.section || a.order - b.order);
+    const secs = [...new Set(sorted.map((m) => m.section))];
     const before = secs.map((s) => nodeSnapshot(ecs, s));
-    for (const m of members) resetTangent(ecs, m.section, m.order);
+    for (const m of sorted) resetNode(ecs, m.section, m.order);
     const after = secs.map((s) => nodeSnapshot(ecs, s));
-    if (secs.every((_, i) => sameNodes(before[i], after[i]))) return; // nothing cleared
+    if (secs.every((_, i) => sameNodes(before[i], after[i]))) return; // nothing changed
     const restore = (snap: NodeState[][]): void => {
         for (let i = 0; i < secs.length; i++) restoreNodes(ecs, secs[i], snap[i]);
     };

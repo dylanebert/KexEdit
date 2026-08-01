@@ -37,8 +37,11 @@ import {
     readProvenance,
     reheadOnDrag,
     removeTrailingHandle,
+    nodeSnapshot,
+    resetNode,
     resetSection,
     resetTangent,
+    sameNodes,
     restoreAll,
     restoreSection,
     samples,
@@ -1190,6 +1193,75 @@ describe("tangent model (feel round 2)", () => {
         expect(handleTangent(state, sec, 0)).toBeDefined();
         resetTangent(state, sec, 0);
         expect(handleTangent(state, sec, 0)).toBeUndefined();
+    });
+
+    // kex2d-idioms stage 9: node Reset means CREATION state, not tangent-clear — `resetNode`
+    // re-creates: position = the continuation along the PREVIOUS node's exit heading at the
+    // default chord `EXTEND_DIST` (never the session-sticky length), tangent cleared to Auto,
+    // heading re-seeded by `addNode`'s own arc-rule reflection (shared body, so append and
+    // Reset can't drift). node 0 keeps the tangent clear (position not authorable there).
+    test("resetNode re-creates an interior node at the default-chord continuation, tangent Auto", () => {
+        const { state, sec } = track();
+        addNode(state, sec, 40, 15);
+        addNode(state, sec, 70, 10); // orders [0, 1, 2, 3]; node 2 interior, node 3 the tip
+        const n2 = handleAt(state, sec, 2);
+        const n3 = handleAt(state, sec, 3);
+        const prev = handleAt(state, sec, 1);
+        if (n2 === null || n3 === null || prev === null) throw new Error("setup missing");
+        const tipX = Handle.pos.x.get(n3);
+        const tipTheta = Handle.theta.get(n3);
+
+        // author node 2: move it off the chain and give it a Free corner.
+        Handle.pos.set(n2, 33, 21);
+        setTangent(state, sec, 2, { mode: TangentMode.Free, inX: 3, inY: 9, outX: 9, outY: -3 });
+
+        resetNode(state, sec, 2);
+
+        // position = EXTEND_DIST straight along node 1's exit (Auto → its stored heading).
+        const th = Handle.theta.get(prev);
+        expect(Handle.pos.x.get(n2)).toBeCloseTo(
+            Handle.pos.x.get(prev) + Math.cos(th) * EXTEND_DIST,
+            4,
+        );
+        expect(Handle.pos.y.get(n2)).toBeCloseTo(
+            Handle.pos.y.get(prev) + Math.sin(th) * EXTEND_DIST,
+            4,
+        );
+        // tangent cleared to live; heading = the creation seed (placed on the exit ray, the
+        // reflection returns the exit heading exactly).
+        expect(handleTangent(state, sec, 2)).toBeUndefined();
+        expect(Handle.theta.get(n2)).toBeCloseTo(th, 6);
+        // the neighbor's authored state is untouched — a reset never re-heads the tip (the
+        // tip law: re-head is the tip's OWN move + append only).
+        expect(Handle.pos.x.get(n3)).toBe(tipX);
+        expect(Handle.theta.get(n3)).toBe(tipTheta);
+    });
+
+    test("resetting every shape node of a fresh first section lands the seed layout", () => {
+        const { state, sec } = track(); // the seed: addNode(0,0) + addNode(EXTEND_DIST, 0)
+        const seed = nodeSnapshot(state, sec);
+        const n1 = handleAt(state, sec, 1);
+        if (n1 === null) throw new Error("node missing");
+        // author node 1: move it, swing its heading, stamp a tangent.
+        Handle.pos.set(n1, 40, 18);
+        Handle.theta.set(n1, 0.7);
+        setTangent(state, sec, 1, { mode: TangentMode.Free, inX: 2, inY: 9, outX: 9, outY: -2 });
+
+        resetNode(state, sec, 1);
+        // byte-equivalent to the section-Reset geo seed (the two Resets agree by construction).
+        expect(sameNodes(nodeSnapshot(state, sec), seed)).toBe(true);
+    });
+
+    test("resetNode on node 0 keeps the tangent clear — position isn't authorable there", () => {
+        const { state, sec } = track();
+        setTangent(state, sec, 0, { mode: TangentMode.Free, inX: 1, inY: 0, outX: 8, outY: 4 });
+        resetNode(state, sec, 0);
+        expect(handleTangent(state, sec, 0)).toBeUndefined();
+        const n0 = handleAt(state, sec, 0);
+        if (n0 === null) throw new Error("node missing");
+        expect(Handle.pos.x.get(n0)).toBe(0); // the pinned entry never moves
+        expect(Handle.pos.y.get(n0)).toBe(0);
+        expect(Handle.theta.get(n0)).toBe(0);
     });
 
     test("an authored node-0 entry handle shapes the first segment and busts the bake hash", () => {

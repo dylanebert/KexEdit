@@ -103,9 +103,10 @@ not draggable; its world pose IS the entry, and the shape hangs off it in the en
 - **Explicit tangent modes** — the Figma mirroring taxonomy `Mirror` | `Aligned` | `Free`, an
   inferred node displaying as `Aligned` (there is never a no-mode state; the laws live in
   `editor-ui.md` Tangent editing). `setTangent`/`handleTangent` (`track.ts`) are the read/write
-  surface; **Reset** (`resetTangent`) clears back to live `Auto` inference. Node 0 (position
-  pinned) carries a single **free** out-handle — the entry handle; Reset restores its `Auto` C1
-  exit along the entry heading.
+  surface; **Reset** (`resetNode`) re-creates — continuation past the predecessor at the default
+  chord, tangents back to live `Auto` inference (the Reset idiom law, `editor-ui.md` Menus).
+  Node 0 (position pinned) carries a single **free** out-handle — the entry handle; its Reset is
+  the tangent clear (`resetTangent`), restoring the `Auto` C1 exit along the entry heading.
 - **Summoned, not default.** Handles render only in **tangent-edit mode**, entered by
   double-clicking a node (`editor.tangentEdit`, layered on node selection — Esc or click-away
   exits); mere selection shows nothing (`editor-ui.md`'s layered-expressiveness contract). A handle

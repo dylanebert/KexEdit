@@ -30,8 +30,8 @@ import {
     redo,
     removeSections,
     resetSection,
-    resetTangents,
-    resetTangentsBulk,
+    resetNodes,
+    resetNodesBulk,
     setForcesEase,
     setSelectionHook,
     setTangentModes,
@@ -64,10 +64,14 @@ import {
     Handle,
     handleAt,
     handleTangent,
+    extend,
     MIN_FORCE_LEN,
+    nodeSnapshot,
     readProvenance,
     reheadOnDrag,
+    removeTrailingHandle,
     resetTangent,
+    sameNodes,
     SectionKind,
     sectionForces,
     sectionHandles,
@@ -1065,12 +1069,13 @@ test("restore promotes the last-inserted survivor when the snapshotted active di
     expect(Handle.order.get(editor.nodes.active as number)).toBe(2); // last-inserted survivor, not order 1
 });
 
-// the boundary Reset (kex2d-geo-ux stage 1): a geo→geo boundary is one node at the UI — the
-// upstream tip + the coincident downstream section's node 0. Reset on the tip's node menu clears
-// BOTH halves back to Auto in ONE undoable entry (each through its own section's reset path), so a
-// single undo restores both. `resetTangents(tip, stitch)` is that grouping; `stitch === null`
-// elsewhere is the plain single-node reset.
-test("boundary Reset clears both the tip and the stitched downstream node-0 tangent, one undo", () => {
+// the boundary Reset (kex2d-geo-ux stage 1; re-create semantics kex2d-idioms stage 9): a geo→geo
+// boundary is one node at the UI — the upstream tip + the coincident downstream section's node 0.
+// Reset on that one node RE-CREATES the tip (the authorable half: default-chord continuation,
+// tangent Auto) and clears the downstream node-0 half, in ONE undoable entry. the downstream
+// node 0 stays pinned at its local origin — the downstream section rides the moved exit rigidly
+// (the rigid-placement invariant), so the boundary coincidence holds by construction.
+test("boundary Reset re-creates the tip and clears the stitched downstream node-0, one undo", () => {
     const state = new State();
     createTrack(state);
     const a = createSection(state, 0, SectionKind.Geo, 0);
@@ -1085,38 +1090,106 @@ test("boundary Reset clears both the tip and the stitched downstream node-0 tang
     if (tipA === null || node0B === null) throw new Error("setup missing");
     expect(stitchNode(state, tipA)).toBe(node0B); // the boundary is one node, stitched
 
-    // author both halves: the tip's own tangent AND the downstream node-0 entry handle.
+    // author both halves: MOVE the tip off its creation pose, tangent it, and author the
+    // downstream node-0 entry handle.
+    Handle.pos.set(tipA, 30, 10);
+    Handle.theta.set(tipA, 0.5);
     setTangent(state, a, 1, { mode: TangentMode.Free, inX: 3, inY: 9, outX: 9, outY: -3 });
     setTangent(state, b, 0, { mode: TangentMode.Free, inX: 1, inY: 0, outX: 8, outY: 4 });
+    const beforeA = nodeSnapshot(state, a);
+    const beforeB = nodeSnapshot(state, b);
 
     const h = createHistory();
-    resetTangents(h, state, tipA, stitchNode(state, tipA));
-    // both halves cleared back to live (Auto), one undo entry for the pair.
+    resetNodes(h, state, tipA, stitchNode(state, tipA));
+    // the tip re-created: back at the continuation along node 0's exit (θ = 0) at EXTEND_DIST,
+    // heading re-seeded flat, tangent cleared; the downstream half cleared, its position pinned.
+    expect(Handle.pos.x.get(tipA)).toBeCloseTo(EXTEND_DIST, 5);
+    expect(Handle.pos.y.get(tipA)).toBeCloseTo(0, 5);
+    expect(Handle.theta.get(tipA)).toBeCloseTo(0, 6);
     expect(handleTangent(state, a, 1)).toBeUndefined();
     expect(handleTangent(state, b, 0)).toBeUndefined();
+    expect(Handle.pos.x.get(node0B)).toBe(0);
     expect(h.undo.length).toBe(1);
 
-    // one Ctrl+Z restores BOTH halves (the single-transaction requirement).
+    // one Ctrl+Z restores BOTH halves byte-identical (the single-transaction requirement).
     undo(h, state);
-    expect(handleTangent(state, a, 1)).toBeDefined();
-    expect(handleTangent(state, b, 0)).toBeDefined();
+    expect(sameNodes(nodeSnapshot(state, a), beforeA)).toBe(true);
+    expect(sameNodes(nodeSnapshot(state, b), beforeB)).toBe(true);
 });
 
 // the non-boundary path: with no stitch (the START node 0, an interior node, a final tip), Reset
-// clears exactly the one node, one entry.
-test("single-node Reset (no stitch) clears just that node", () => {
+// re-creates exactly the one node, one entry; undo is byte-identical (the snapshot mechanism).
+test("single-node Reset (no stitch) re-creates just that node; undo round-trips byte-identical", () => {
     const { state, sec } = nodes();
     addNode(state, sec, 40, 15); // [0,1,2]
+    const n1 = handleAt(state, sec, 1);
+    if (n1 === null) throw new Error("node missing");
+    Handle.pos.set(n1, 31, 17); // author: move node 1 off its creation pose + tangent it
     setTangent(state, sec, 1, { mode: TangentMode.Free, inX: 3, inY: 9, outX: 9, outY: -3 });
-    const tip = handleAt(state, sec, 1);
-    if (tip === null) throw new Error("node missing");
+    const before = nodeSnapshot(state, sec);
 
     const h = createHistory();
-    resetTangents(h, state, tip, null);
+    resetNodes(h, state, n1, null);
+    // re-created: the default-chord continuation along node 0's flat exit, tangent Auto.
+    expect(Handle.pos.x.get(n1)).toBeCloseTo(EXTEND_DIST, 5);
+    expect(Handle.pos.y.get(n1)).toBeCloseTo(0, 5);
     expect(handleTangent(state, sec, 1)).toBeUndefined();
     expect(h.undo.length).toBe(1);
     undo(h, state);
-    expect(handleTangent(state, sec, 1)).toBeDefined();
+    expect(sameNodes(nodeSnapshot(state, sec), before)).toBe(true); // byte-identical round trip
+});
+
+// a reset that changes nothing records no undo entry — a fresh node already sits at its
+// creation state, so the `sameNodes` no-op guard keeps the stack clean (Reset's enablement is
+// no longer gated on "has something to clear", so the guard is what a stray click leans on).
+test("no-op Reset (node already at creation state) records nothing", () => {
+    const { state, sec } = nodes(); // the fresh seed: node 1 at (EXTEND_DIST, 0), Auto, θ = 0
+    const n1 = handleAt(state, sec, 1);
+    if (n1 === null) throw new Error("node missing");
+    const h = createHistory();
+    resetNodes(h, state, n1, null);
+    expect(h.undo.length).toBe(0);
+});
+
+// the bulk suffix reset ≡ deleting the suffix and re-extending fresh: members apply in
+// ASCENDING order, each re-created against its already-reset predecessor, and the placement
+// body is shared with `extend` — so the two paths land byte-equivalent node state (sticky at
+// its default: Reset always uses the named default `EXTEND_DIST`, never the sticky length).
+test("bulk suffix reset ≡ delete suffix + re-extend fresh, byte-equivalent", () => {
+    setStickyLen(SectionKind.Geo, EXTEND_DIST); // pin sticky at the default for the twin
+    const author = (state: State, sec: number): void => {
+        // move nodes 2 + 3 off their creation poses and tangent node 2 — identical authoring
+        // applied to both twins.
+        const n2 = handleAt(state, sec, 2);
+        const n3 = handleAt(state, sec, 3);
+        if (n2 === null || n3 === null) throw new Error("setup missing");
+        Handle.pos.set(n2, 55, 13);
+        Handle.theta.set(n2, 0.4);
+        setTangent(state, sec, 2, { mode: TangentMode.Free, inX: 2, inY: 9, outX: 9, outY: -2 });
+        Handle.pos.set(n3, 80, -6);
+        Handle.theta.set(n3, -0.3);
+    };
+
+    const twinA = fourNodes();
+    author(twinA.state, twinA.sec);
+    const h = createHistory();
+    resetNodesBulk(h, twinA.state, [
+        { section: twinA.sec, order: 3 }, // deliberately descending input — the op sorts ascending
+        { section: twinA.sec, order: 2 },
+    ]);
+    expect(h.undo.length).toBe(1);
+    // materialize A's snapshot BEFORE building the twin: component columns are module-level,
+    // so a second State's identical eids overwrite the first's column data.
+    const snapA = nodeSnapshot(twinA.state, twinA.sec);
+
+    const twinB = fourNodes();
+    author(twinB.state, twinB.sec);
+    removeTrailingHandle(twinB.state, twinB.sec);
+    removeTrailingHandle(twinB.state, twinB.sec);
+    extend(twinB.state, twinB.sec);
+    extend(twinB.state, twinB.sec);
+
+    expect(sameNodes(snapA, nodeSnapshot(twinB.state, twinB.sec))).toBe(true);
 });
 
 // ── multiselect bulk ops (stage 4) ─────────────────────────────────────────────────
@@ -1217,7 +1290,7 @@ test("bulk reset: clears every selected member's tangent in one entry; undo rest
         if (seed) setTangent(state, sec, o, seed);
     }
     expect(handleTangent(state, sec, 1)).not.toBeUndefined();
-    resetTangentsBulk(h, state, [
+    resetNodesBulk(h, state, [
         { section: sec, order: 1 },
         { section: sec, order: 2 },
     ]);
@@ -1233,7 +1306,7 @@ test("bulk reset: clears every selected member's tangent in one entry; undo rest
 test("bulk reset: an all-live set records nothing (no tangent to clear)", () => {
     const { state, sec } = fourNodes();
     const h = createHistory();
-    resetTangentsBulk(h, state, [
+    resetNodesBulk(h, state, [
         { section: sec, order: 1 },
         { section: sec, order: 2 },
     ]);
