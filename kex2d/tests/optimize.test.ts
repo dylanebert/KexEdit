@@ -6,6 +6,7 @@ import {
     editor,
     endOptimize,
     sandbox,
+    skipLanding,
     toggleLockedSet,
 } from "../src/editor";
 import { beginForceMove, commit, createHistory, redo, undo } from "../src/history";
@@ -1150,10 +1151,88 @@ describe("the sandbox (kex2d-optimize-mode stage 7)", () => {
         // a running landing or its frozen moves keep easing diamonds toward erased values.
         const { state, sec } = forceTrack();
         enterOptimizeMode(state, sec);
-        beginLanding([{ id: 1, from: 0, to: 1 }]);
+        beginLanding([{ id: 1, from: 0, to: 1 }], {
+            section: sec,
+            entry: { x: 0, y: 0, theta: 0, v: 10 },
+        });
         expect(editor.landing).not.toBeNull();
         exitOptimizeMode(state);
         expect(editor.landing).toBeNull();
+    });
+
+    test("skip mid-window snaps the whole display to the document (kex2d-idioms stage 4)", () => {
+        // every skip path — pointerdown, Esc, history nav, Exit — routes through the ONE
+        // `skipLanding` (App.svelte's capture listeners, Timeline's undo/redo keys,
+        // `exitOptimizeMode`), so the seam contract is pinned once here: mid-window the bake
+        // rides the interpolant (positive control), and the skip's next bake is byte-identical
+        // to the document's own values (the mechanism is substitution-then-removal, so the
+        // bound is equality — never a tolerance).
+        const { state, eid, sec } = forceTrack();
+        const out = bakeOut.get(eid);
+        if (!out) throw new Error("no bake");
+        const final = Array.from(out.fN.subarray(0, 40));
+        const crest = sectionForces(state, sec)[1];
+        // a landing opened NOW: t ≈ 0, so the display g sits at `from` (the pre-solve draft),
+        // well off the authored value.
+        beginLanding([{ id: crest.id, from: crest.g + 0.6, to: crest.g }], {
+            section: sec,
+            entry: { x: 0, y: 0, theta: 0, v: 20 },
+        });
+        state.step(0);
+        expect(Array.from(out.fN.subarray(0, 40))).not.toEqual(final); // mid-flight display
+        skipLanding();
+        state.step(0);
+        expect(Array.from(out.fN.subarray(0, 40))).toEqual(final); // snapped, no residue
+        expect(editor.landing).toBeNull();
+    });
+
+    test("a zero-move landing clears a live bake override (both halves, one clear)", () => {
+        // beginLanding([]) is the "solve moved nothing" path: it must clear BOTH halves of the
+        // landing state — a cleared `editor.landing` with a live `bakeLanding` desyncs them (the
+        // skip listeners all guard on `editor.landing !== null`, so no path could ever release
+        // the override, and the gate would bake every frame forever).
+        const { state, eid, sec } = forceTrack();
+        const out = bakeOut.get(eid);
+        if (!out) throw new Error("no bake");
+        const final = Array.from(out.fN.subarray(0, 40));
+        const crest = sectionForces(state, sec)[1];
+        beginLanding([{ id: crest.id, from: crest.g + 0.6, to: crest.g }], {
+            section: sec,
+            entry: { x: 0, y: 0, theta: 0, v: 20 },
+        });
+        state.step(0);
+        expect(Array.from(out.fN.subarray(0, 40))).not.toEqual(final); // live override
+        beginLanding([], { section: sec, entry: { x: 0, y: 0, theta: 0, v: 20 } });
+        state.step(0);
+        // the seam contract: override cleared ⇒ bake byte-identical to the authored document.
+        expect(Array.from(out.fN.subarray(0, 40))).toEqual(final);
+        expect(editor.landing).toBeNull();
+    });
+
+    test("beginOptimize skips a live landing (a session never opens over the override)", () => {
+        // exitOptimizeMode's symmetric twin: the mode OPEN must clear a running landing too, or
+        // the new session's freeze and the stale override's hold fight over the two-part chain.
+        const { state, eid, sec } = forceTrack();
+        const out = bakeOut.get(eid);
+        if (!out) throw new Error("no bake");
+        const final = Array.from(out.fN.subarray(0, 40));
+        const crest = sectionForces(state, sec)[1];
+        beginLanding([{ id: crest.id, from: crest.g + 0.6, to: crest.g }], {
+            section: sec,
+            entry: { x: 0, y: 0, theta: 0, v: 20 },
+        });
+        state.step(0);
+        expect(Array.from(out.fN.subarray(0, 40))).not.toEqual(final); // live override
+        beginOptimize({
+            section: sec,
+            stamp: { x: 0, y: 0, theta: 0 },
+            ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+            freeze: { x: 0, y: 0, theta: 0, v: 20 },
+        });
+        expect(editor.landing).toBeNull();
+        endOptimize();
+        state.step(0);
+        expect(Array.from(out.fN.subarray(0, 40))).toEqual(final); // no override residue
     });
 
     test("a refusal stays in the mode: draft + histories untouched, locks intact", async () => {
@@ -1277,5 +1356,46 @@ describe("the downstream freeze (kex2d-optimize-mode stage 7)", () => {
         expect(infoB.entry.x).toBeCloseTo(entryB0.x, 3);
         expect(infoB.entry.y).toBeCloseTo(entryB0.y, 3);
         expect(infoB.entry.theta).toBeCloseTo(entryB0.theta, 3);
+    });
+
+    test("the landing holds the freeze through its window; skip releases it (kex2d-idioms stage 4)", async () => {
+        // the App shape: the landed Solve closed the mode (freeze cleared), then `beginLanding`
+        // re-seeds downstream at the session's frozen entry for the window — so the frozen gap
+        // closes continuously with the interpolated exit instead of snapping at the close.
+        const { state, sec, secB } = twoSections();
+        const h = createHistory();
+        enterOptimizeMode(state, sec);
+        const session = editor.optimizing;
+        if (!session) throw new Error("no session");
+        const preRows = sectionForces(state, sec).map((r) => ({ id: r.id, g: r.g }));
+        bump(h, state, sec);
+        const result = await runOptimizeSection(h, state, session, editor.locked);
+        expect(result.outcome).toBe("solved");
+
+        // the App calls beginLanding synchronously on resolution — before any bake runs free.
+        const rows = sectionForces(state, sec);
+        beginLanding(
+            rows
+                .map((r, k) => ({ id: r.id, from: preRows[k].g, to: r.g }))
+                .filter((m) => m.from !== m.to),
+            { section: session.section, entry: session.freeze },
+        );
+        expect(editor.landing).not.toBeNull(); // the solve really moved keys (positive control)
+        state.step(0);
+        const infoA = sectionInfo.get(sec);
+        const infoB = sectionInfo.get(secB);
+        if (!infoA || !infoB) throw new Error("no landing bake");
+        expect(infoB.startSample).toBe(infoA.endSample + 1); // the freeze HELD through the close
+        expect(infoB.entry.x).toBe(session.freeze.x); // …at the session's frozen entry, bit-exact
+        expect(infoB.entry.y).toBe(session.freeze.y);
+        expect(infoB.entry.theta).toBe(session.freeze.theta);
+        expect(infoB.entry.v).toBe(session.freeze.v);
+
+        skipLanding();
+        state.step(0);
+        const infoA2 = sectionInfo.get(sec);
+        const infoB2 = sectionInfo.get(secB);
+        if (!infoA2 || !infoB2) throw new Error("no release bake");
+        expect(infoB2.startSample).toBe(infoA2.endSample); // released: shared boundary again
     });
 });

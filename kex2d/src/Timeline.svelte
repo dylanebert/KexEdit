@@ -1900,6 +1900,9 @@ function fieldEdit(s: number, g: number): void {
     const p = selPoint;
     if (p === null || !Number.isFinite(s) || !Number.isFinite(g)) return; // guard a cleared field
     if (!sectionEditable(editor.optimizing, p.section)) return; // the lockdown (fields disabled too)
+    // a keyboard-committed mutation skips a live landing first, like undo/redo (`onKey`): the
+    // pointer paths skip via App's capture listener, but Enter reaches here with no pointerdown.
+    skipLanding();
     beginForceMove(ecs, p.id);
     setForcePoint(ecs, p.id, clamp(s, 0, p.len), g);
     commit(history);
@@ -1926,6 +1929,7 @@ function handleFieldEdit(ds: number, dg: number): void {
     if (!sectionEditable(editor.optimizing, h.pt.section)) return; // the lockdown
     const tan = tangentFor(h.pt.id, h.side, ds, dg);
     if (!tan) return;
+    skipLanding(); // keyboard-committed keyframe mutation: same routing as fieldEdit above
     beginForceTangent(ecs, h.pt.id);
     setForceTangent(ecs, h.pt.id, tan);
     commit(history);
@@ -2116,6 +2120,9 @@ function deleteSelectedForce(): void {
     // the lockdown: the whole set must be editable (the menu's Delete row grays on the same
     // read) — a mixed set deletes nothing rather than silently deleting a subset.
     if (!forceSetEditable()) return;
+    // a keyboard mutation skips a live landing first (the undo/redo precedent in `onKey`) —
+    // deleting a moved key mid-window would leave the override easing a dead id.
+    skipLanding();
     // force multi-delete is UNCONDITIONAL: delete the whole selected set in ONE undo entry. no
     // explicit deselect — the popover/menu derive null once the subjects are gone and the $effect
     // above clears the stale active id (one mechanism for every death path). single-select is the
@@ -2660,6 +2667,7 @@ onMount(() => {
                 if (members.length === 0) return;
                 if (!forceSetEditable()) return; // the lockdown — all-or-nothing, like Del
                 e.preventDefault();
+                skipLanding(); // keyboard mutation mid-window: same routing as undo/redo above
                 const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
                 const stepG = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
                 const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;

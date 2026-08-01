@@ -5,12 +5,14 @@ import {
     appendSection,
     authoredHash,
     BakeSystem,
+    bakeLive,
     bakeOut,
     convertSection,
     createForcePoint,
     createSection,
     createTrack,
     setBakeFreeze,
+    setBakeLanding,
     deleteSection,
     DS_NOMINAL,
     DT_NOMINAL,
@@ -2418,5 +2420,159 @@ describe("forceMarkers", () => {
         expect(exit).toBeDefined();
         expect(exit?.x).toBeCloseTo(s.posX[info.endSample], 5);
         expect(exit?.y).toBeCloseTo(s.posY[info.endSample], 5);
+    });
+});
+
+// ── the landing display override at the bake seam (kex2d-idioms stage 4) ──────────
+// while a paced landing runs, `forceDense` substitutes the landing's interpolated g for the
+// landed section's keyframes and the downstream freeze holds at the session's frozen entry —
+// display-level only, outside `bakeHash`, cleared byte-identically. the interpolant itself is
+// `editor.landingG` (pinned in editor.test.ts); here the seam contract is pinned: what the
+// override's g reads is EXACTLY what an authored g would bake, and clearing leaves no residue.
+describe("landing display override (kex2d-idioms stage 4)", () => {
+    /** one force section, the crest key clearly off 1 g — the single-section case, so the
+     *  hold entry is inert (no downstream to seed) and profile identity is the whole claim. */
+    function landedTrack(): { state: State; eid: number; sec: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackV0(eid, 20);
+        const sec = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, 20, 1.5);
+        createForcePoint(state, sec, 40, 1);
+        state.step(0);
+        return { state, eid, sec };
+    }
+
+    /** the bake's live per-edge force, sliced to what was actually written. */
+    function bakedF(eid: number): number[] {
+        const out = bakeOut.get(eid);
+        if (!out) throw new Error("no bake");
+        return Array.from(out.fN.subarray(0, Track.count.get(eid) - 1));
+    }
+
+    const EntryHold = { x: 0, y: 0, theta: 0, v: 20 };
+
+    test("the override's g bakes byte-identical to authoring that g; cleared, byte-identical to the document", () => {
+        const { state, eid, sec } = landedTrack();
+        const final = bakedF(eid);
+        const crest = sectionForces(state, sec)[1];
+
+        // the reference: the same document AUTHORED at the interpolated value — same profile
+        // input, same code path, so the seam promises bit-identity (the derived-tolerance law:
+        // the mechanism is substitution, so the bound is equality). authored in place and
+        // reverted, never a twin State (the bake registries are module maps keyed by eid).
+        setForcePoint(state, crest.id, crest.s, 1.2);
+        state.step(0);
+        const ref = bakedF(eid);
+        setForcePoint(state, crest.id, crest.s, crest.g);
+        state.step(0);
+        expect(bakedF(eid)).toEqual(final); // the authoring round trip itself is clean
+
+        setBakeLanding({
+            section: sec,
+            entry: EntryHold,
+            g: (id) => (id === crest.id ? 1.2 : null),
+        });
+        state.step(0);
+        expect(bakedF(eid)).toEqual(ref); // the interpolant IS the bake input
+        expect(bakedF(eid)).not.toEqual(final); // positive control: the display moved
+
+        setBakeLanding(null);
+        state.step(0);
+        expect(bakedF(eid)).toEqual(final); // cleared ⇒ byte-identical, no residue
+    });
+
+    test("an uncovered key (g → null) falls back to its authored value", () => {
+        const { state, eid, sec } = landedTrack();
+        const final = bakedF(eid);
+        setBakeLanding({ section: sec, entry: EntryHold, g: () => null });
+        state.step(0);
+        expect(bakedF(eid)).toEqual(final); // full fallback = the document's own bake
+        setBakeLanding(null);
+    });
+
+    test("per-frame invalidation: the interpolant moves while the authored hash stands still", () => {
+        const { state, eid, sec } = landedTrack();
+        const crest = sectionForces(state, sec)[1];
+        let g = 1.5;
+        setBakeLanding({
+            section: sec,
+            entry: EntryHold,
+            g: (id) => (id === crest.id ? g : null),
+        });
+        state.step(0);
+        const a = bakedF(eid);
+        g = 1.1; // the next frame's interpolant — NO authored change, NO hash change
+        state.step(0);
+        const b = bakedF(eid);
+        expect(b).not.toEqual(a); // the gate baked again anyway (the landing bypass)
+        // …and it was the bypass, not a hash miss: the bake's hash matched the authored state
+        // the whole time (the override lives outside `bakeHash` by design).
+        expect(bakeOut.get(eid)?.hash).toBe(authoredHash(state));
+        setBakeLanding(null);
+    });
+
+    test("bakeLive is false while the override is live (a contaminated bake is not authored truth)", () => {
+        // the bake carries the interpolant but is stamped with the AUTHORED hash, so without the
+        // landing consult `bakeLive` would certify a landing-contaminated bake as authored truth
+        // for the whole window (consumers: forceBake, bakeEntryForce, enterOptimize, domain).
+        const { state, sec } = landedTrack();
+        const crest = sectionForces(state, sec)[1];
+        expect(bakeLive(state)).toBe(true);
+        setBakeLanding({
+            section: sec,
+            entry: EntryHold,
+            g: (id) => (id === crest.id ? 1.2 : null),
+        });
+        expect(bakeLive(state)).toBe(false); // false immediately, before any re-bake mid-frame
+        state.step(0);
+        expect(bakeLive(state)).toBe(false); // …and stays false while the window runs
+        setBakeLanding(null);
+        state.step(0);
+        expect(bakeLive(state)).toBe(true); // skip ⇒ the release re-bake certifies again
+    });
+
+    test("the hold: downstream seeds at the frozen entry (gap seam) and releases on clear", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackV0(eid, 20);
+        const secA = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, secA, 0, 1);
+        createForcePoint(state, secA, 20, 1.5);
+        createForcePoint(state, secA, 40, 1);
+        const secB = createSection(state, 1, SectionKind.Force, 30);
+        createForcePoint(state, secB, 0, 1);
+        createForcePoint(state, secB, 30, 1);
+        state.step(0);
+        const b0 = sectionInfo.get(secB);
+        if (!b0) throw new Error("no pre-landing bake");
+        const liveEntry = { ...b0.entry };
+        const finalF = bakedF(eid);
+
+        // a held entry visibly OFF the live exit, so the hold is observable (positive control).
+        const held = { x: liveEntry.x + 4, y: liveEntry.y - 2, theta: 0.3, v: 15 };
+        setBakeLanding({ section: secA, entry: held, g: () => null });
+        state.step(0);
+        const infoA = sectionInfo.get(secA);
+        const infoB = sectionInfo.get(secB);
+        if (!infoA || !infoB) throw new Error("no landing bake");
+        expect(infoB.startSample).toBe(infoA.endSample + 1); // the two-part gap seam holds
+        expect(infoB.entry.x).toBe(held.x); // …seeded at the frozen entry, bit-exact
+        expect(infoB.entry.y).toBe(held.y);
+        expect(infoB.entry.theta).toBe(held.theta);
+        expect(infoB.entry.v).toBe(held.v);
+
+        setBakeLanding(null);
+        state.step(0);
+        const infoA2 = sectionInfo.get(secA);
+        const infoB2 = sectionInfo.get(secB);
+        if (!infoA2 || !infoB2) throw new Error("no release bake");
+        expect(infoB2.startSample).toBe(infoA2.endSample); // released: shared boundary again
+        expect(infoB2.entry.x).toBe(liveEntry.x); // …and downstream back at the live exit
+        expect(infoB2.entry.y).toBe(liveEntry.y);
+        expect(bakedF(eid)).toEqual(finalF); // byte-identical to the pre-landing bake
     });
 });

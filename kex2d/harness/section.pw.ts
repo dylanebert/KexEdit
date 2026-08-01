@@ -979,6 +979,21 @@ test("optimize mode flow", async ({ page, boot }) => {
     expect(await undoDepth()).toBe(base + 1); // the WHOLE experiment is ONE outer entry
     await expect.poll(landing).toBe(true); // the paced landing raised — the feedback
 
+    // ── 5b. The landing is DISPLAY-WIDE (kex2d-idioms stage 4): mid-window the bake rides the
+    // interpolant — the viewport crest marker sits off its final placement (compared after the
+    // re-land, below) — and the downstream section's baked entry HOLDS at its frozen mode-entry
+    // value while the gap eases shut (bit-stable, the same read leg 2 pinned under the freeze).
+    // both reads then re-assert the landing is STILL live, so a too-slow run fails loudly on
+    // timing instead of silently comparing post-window state.
+    const midMarker = await kexCall(page, "forceMarkerAt", 2);
+    if (!midMarker) throw new Error("crest marker not baked during the landing");
+    const entryMid = (await entries())[1];
+    expect(await landing()).toBe(true); // both reads landed inside the window
+    expect(entryMid.x).toBe(entryB0.x); // the freeze held through the mode close
+    expect(entryMid.y).toBe(entryB0.y);
+    expect(entryMid.theta).toBe(entryB0.theta);
+    expect(entryMid.v).toBe(entryB0.v);
+
     // ── 6. Undo DURING the landing invalidates it AND reopens the mode with the experiment
     // RESUMED (sandbox restored: create, delete, flatten-undone, 2 nudges → 4 entries); walking
     // the sandbox out exits at its start with the pre-mode draft; redo then RE-LANDS. ──
@@ -1002,6 +1017,15 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.keyboard.press("Control+Shift+z"); // the outer redo holds the landing → RE-LANDS
     await expect.poll(optimizing).toBe(false);
     await expect.poll(undoDepth).toBe(base + 1);
+    // the display-wide landing's other half (5b): the settled final marker differs from the
+    // mid-window read — the viewport geometry really was mid-flight during the window (under a
+    // snap-to-final bake the two reads are byte-equal and this poll times out).
+    await expect
+        .poll(async () => {
+            const m = await kexCall(page, "forceMarkerAt", 2);
+            return m !== null && (m.x !== midMarker.x || m.y !== midMarker.y);
+        })
+        .toBe(true);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-4-landed.png") });
 });

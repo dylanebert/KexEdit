@@ -10,7 +10,7 @@
 import type { State } from "@dylanebert/shallot";
 import { createHistory, type History, redirectHistory } from "./history";
 import type { OptimizeOutcome, UnreachableReason } from "./optimize";
-import { forceAt, Handle, handleAt, sectionAt, setBakeFreeze } from "./track";
+import { forceAt, Handle, handleAt, sectionAt, setBakeFreeze, setBakeLanding } from "./track";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
  *  (the Blender/Unity hovered-surface model). */
@@ -228,11 +228,14 @@ export interface Notice {
     text: string;
 }
 
-/** the paced landing (kex2d-optimize-mode stage 5): a landed Solve's keyframes animate
- *  continuously from their pre-solve to their solved `g` over {@link LANDING_MS} so the solve
- *  reads as a process. COSMETIC ONLY — the document landed atomically before this state exists;
- *  it only offsets where the timeline DRAWS the moved diamonds while it runs. Esc or any
- *  pointerdown skips to the end state (`skipLanding`); expiry is equivalent to skipping. */
+/** the paced landing (kex2d-optimize-mode stage 5, display-wide since kex2d-idioms stage 4): a
+ *  landed Solve's keyframes animate continuously from their pre-solve to their solved `g` over
+ *  {@link LANDING_MS} so the solve reads as a process. COSMETIC ONLY — the document landed
+ *  atomically before this state exists; it offsets where the timeline DRAWS the moved diamonds
+ *  AND, through the bake seam (`track.setBakeLanding`), what the whole display bakes while it
+ *  runs — curve, viewport geometry, markers, cart, with the downstream freeze held through the
+ *  window. Esc or any pointerdown skips to the end state (`skipLanding`); expiry is equivalent
+ *  to skipping. */
 export interface Landing {
     /** `performance.now()` at the landing. */
     start: number;
@@ -244,14 +247,35 @@ export interface Landing {
  *  milliseconds; this is the feedback). */
 export const LANDING_MS = 500;
 
-/** open the paced landing display. a solve that moved nothing shows nothing. */
-export function beginLanding(moves: readonly { id: number; from: number; to: number }[]): void {
-    editor.landing = moves.length > 0 ? { start: performance.now(), moves } : null;
+/** open the paced landing display. a solve that moved nothing shows nothing. `hold` is the
+ *  landed session's section + frozen entry (`OptimizeSession.freeze`): the display bake keeps
+ *  downstream seeded there for the window, so the freeze the mode close released doesn't snap
+ *  — it eases shut as the interpolated exit converges to the stamp. */
+export function beginLanding(
+    moves: readonly { id: number; from: number; to: number }[],
+    hold: { section: number; entry: { x: number; y: number; theta: number; v: number } },
+): void {
+    if (moves.length === 0) {
+        // clear BOTH halves: a prior override left live under a null `editor.landing` would be
+        // unreleasable (every skip listener guards on the landing) and bake every frame forever.
+        editor.landing = null;
+        setBakeLanding(null);
+        return;
+    }
+    const landing: Landing = { start: performance.now(), moves };
+    editor.landing = landing;
+    setBakeLanding({
+        section: hold.section,
+        entry: hold.entry,
+        g: (id) => landingG(landing, id, performance.now()),
+    });
 }
 
-/** skip (or expire) the landing: the display snaps to the document's own values. */
+/** skip (or expire) the landing: the display snaps to the document's own values — the chart's
+ *  diamond override and the bake-seam override clear together (one skip, whole display). */
 export function skipLanding(): void {
     editor.landing = null;
+    setBakeLanding(null);
 }
 
 /** the displayed g for a keyframe under the live landing, or null when the landing doesn't
@@ -343,6 +367,9 @@ export function restoreSandbox(undoE: History["undo"], redoE: History["redo"]): 
  *  history until Solve), freeze the downstream chain at the session's recovered exit, and clear
  *  any stale lock set from a prior session. */
 export function beginOptimize(session: OptimizeSession): void {
+    // a session never opens over a live landing override (exitOptimizeMode's symmetric skip):
+    // the new session's freeze and a stale hold would fight over the two-part chain.
+    skipLanding();
     editor.optimizing = session;
     editor.locked = new Set();
     editor.notice = null;

@@ -1476,6 +1476,46 @@ export function setBakeFreeze(f: { section: number; entry: Entry } | null): void
     freezeInvalid = true;
 }
 
+// ── the landing display override (kex2d-idioms stage 4) ──────────────────────────
+// while a landed Solve's paced landing runs, the WHOLE display rides it: `forceDense`
+// substitutes the landing's interpolated g for the landed section's keyframes — the one seam
+// where keyframes become bake input — so the curve, the viewport geometry, the force markers,
+// and the cart all glide with the chart's diamonds instead of snapping. the downstream freeze
+// HOLDS through the window (the same two-part chain, seeded at the session's frozen entry): as
+// the interpolated exit converges to the stamp the frozen gap closes continuously, and the
+// end-of-window release is invisible up to the solve's converged residual. cosmetic only — the
+// document landed atomically before this state exists. `setBakeFreeze`'s pattern: module-level
+// editor-owned state outside `bakeHash`, invalidated via `freezeInvalid`; while the override is
+// live the gate bakes EVERY frame, since the interpolant moves while the authored hash stands
+// still.
+export interface BakeLanding {
+    /** the landed section — the only one whose keyframes read through `g`. */
+    section: number;
+    /** the downstream hold: the optimize session's frozen entry, held until the override
+     *  clears (the freeze the landing's mode close would otherwise have released). */
+    entry: Entry;
+    /** the display g for a keyframe id right now, or null where the landing doesn't cover it
+     *  (or has expired) — consulted per bake, so each frame reads the live interpolant. */
+    g: (id: number) => number | null;
+}
+
+let bakeLanding: BakeLanding | null = null;
+
+/** the live landing display override, or null — `BakeSystem`'s per-frame gate bypass reads it. */
+function landingLive(): boolean {
+    return bakeLanding !== null;
+}
+
+/** set (or clear, null) the landing display override — called by the paced landing's open/skip
+ *  (`editor.beginLanding`/`skipLanding`), never by authoring code. clearing forces the one final
+ *  bake that releases the hold onto the document's own values; a clear with no live override is
+ *  a no-op (the skip paths call unconditionally). */
+export function setBakeLanding(l: BakeLanding | null): void {
+    if (l === null && bakeLanding === null) return;
+    bakeLanding = l;
+    freezeInvalid = true;
+}
+
 /** the recovered force (g) arriving at a boundary sample from the current bake — the
  *  edge leading into `entrySample` (`fN[entrySample − 1]`). `DEFAULT_G` at the track
  *  start (sample 0) or with no bake. seeds a fresh force section so it continues the
@@ -1931,11 +1971,15 @@ function forceNominal(domain: Domain, trackDs: number): number {
 /** a force section's authored points gathered into the dense per-edge F_n(σ) profile over its
  *  extent — the one place a section's keyframes become the substrate's input. */
 function forceDense(ecs: State, sectionId: number, length: number, ds: number): Float32Array {
+    // the landing display override (stage 4): while a paced landing covers this section, a
+    // covered keyframe reads the landing's interpolated g instead of its authored one — the
+    // whole display (curve, geometry, markers, cart) rides the same substitution.
+    const land = bakeLanding !== null && bakeLanding.section === sectionId ? bakeLanding.g : null;
     const points: ForcePoint[] = sectionForces(ecs, sectionId).map((p) => {
         const tan = readForceTangent(p.eid);
         return {
             s: p.s,
-            g: p.g,
+            g: land?.(p.id) ?? p.g,
             ease: Force.ease.get(p.eid) as Easing,
             in: tan?.in,
             out: tan?.out,
@@ -2089,8 +2133,11 @@ export function authoredHash(ecs: State): string {
 /** whether the current bake IS the current authored state — the liveness anything reading
  *  `sectionInfo` as truth needs first. a bake that never ran, one invalidated since (the `""`
  *  sentinel), and one the two-node floor made `bake` early-return from all fail here, and each
- *  leaves `sectionInfo` describing a shape that is no longer on screen. */
+ *  leaves `sectionInfo` describing a shape that is no longer on screen. a live landing override
+ *  fails too: its bake carries the display interpolant yet is stamped with the AUTHORED hash,
+ *  so without this consult the window would certify a contaminated bake as authored truth. */
 export function bakeLive(ecs: State): boolean {
+    if (landingLive()) return false;
     const t = trackEntity(ecs);
     if (t === null) return false;
     const out = bakeOut.get(t);
@@ -2165,7 +2212,10 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     // runs in TWO parts — start..optimizing live, downstream seeded at the FROZEN entry — so
     // downstream holds its mode-entry placement while the optimizing exit wanders. one part
     // (today's whole-chain bake, byte-identical) everywhere else.
-    const fz = bakeFreeze;
+    // …and the landing HOLD (stage 4): a live landing keeps downstream seeded at the session's
+    // frozen entry after the mode close released `bakeFreeze`, so the frozen gap closes
+    // continuously with the interpolated exit instead of snapping at the close.
+    const fz = bakeFreeze ?? bakeLanding;
     const fzIdx = fz === null ? -1 : secs.findIndex((sec) => sec.id === fz.section);
     const split = fzIdx >= 0 && fzIdx < secs.length - 1 ? fzIdx + 1 : -1;
 
@@ -2289,8 +2339,11 @@ export const BakeSystem: System = {
             if (secs.length === 0) continue;
             // a freeze toggle changes how the bake is COMPUTED while the authored hash stands
             // still (mode open/close is editor state, not authored state), so it forces one pass
-            // through the gate.
-            if (!freezeInvalid && bakeHash(ecs, trackEid, secs) === out.hash) continue;
+            // through the gate. a live landing override moves the interpolant every frame with
+            // the hash equally still, so it bypasses the gate for its whole window (the accepted
+            // cost: one bake per frame for LANDING_MS, what a live drag pays per pointermove).
+            if (!freezeInvalid && !landingLive() && bakeHash(ecs, trackEid, secs) === out.hash)
+                continue;
             freezeInvalid = false;
             bake(ecs, trackEid, s, out, secs);
         }

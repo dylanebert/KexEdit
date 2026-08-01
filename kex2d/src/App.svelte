@@ -345,12 +345,15 @@ async function optimizeSolve(): Promise<void> {
         if (result.outcome === "solved") {
             // the landing already closed the mode as one undo entry (`runOptimizeSection`).
             // the feedback is the PACED LANDING (stage-5 feel verdict — no stats toast): the
-            // moved diamonds animate from their draft to their solved g over LANDING_MS,
+            // whole display animates from the draft to the solved g over LANDING_MS — the
+            // moved diamonds via the chart's own override, everything else via the bake seam,
+            // downstream held at the session's frozen entry so the freeze release eases shut —
             // cosmetic only, skipped by Esc or any pointerdown.
             beginLanding(
                 preRows
                     .map((r, k) => ({ id: r.id, from: r.g, to: result.points[k].g }))
                     .filter((m) => m.from !== m.to),
+                { section: session.section, entry: session.freeze },
             );
             clearTimeout(landingTimer);
             landingTimer = setTimeout(skipLanding, LANDING_MS);
