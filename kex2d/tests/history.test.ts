@@ -137,11 +137,13 @@ test("extend: undo removes the new node, redo restores it verbatim", () => {
     expect(poseOf(state, sec, order)).toEqual(pose); // same pos + heading
 });
 
-test("trim: undo restores the removed node and the promoted tip's pre-trim heading", () => {
+test("trim: undo restores the removed node; the promoted tip's heading never moves", () => {
+    // stage 7b flip: this test pinned the trim's re-head round-trip. deletion no
+    // longer re-heads at all (an Auto node's theta is authored by its own move; a
+    // neighbor's delete touches nothing), so the heading holds through trim AND undo.
     const { state, sec } = nodes();
     addNode(state, sec, 40, 0); // node 2 (the tip); node 1 is now interior, heading frozen
-    // shove interior node 1 off its chord so a trim's rehead of the promoted tip
-    // actually changes its stored heading (guards the rehead round-trip).
+    // shove interior node 1 off its chord — a re-head would visibly change its heading.
     Handle.pos.set(handleAt(state, sec, 1) as number, 16, 30);
     const h = createHistory();
 
@@ -150,17 +152,16 @@ test("trim: undo restores the removed node and the promoted tip's pre-trim headi
 
     expect(trimTrack(h, state, sec)).toBe(true);
     expect(orders(state, sec)).toEqual([0, 1]);
-    const tipAfter = Handle.theta.get(handleAt(state, sec, 1) as number);
-    expect(tipAfter).not.toBe(tipBefore); // headLast reheaded the promoted tip
+    expect(Handle.theta.get(handleAt(state, sec, 1) as number)).toBe(tipBefore); // untouched
 
     undo(h, state);
     expect(orders(state, sec)).toEqual([0, 1, 2]);
     expect(poseOf(state, sec, 2)).toEqual(removed); // node back verbatim
-    expect(Handle.theta.get(handleAt(state, sec, 1) as number)).toBe(tipBefore); // heading restored
+    expect(Handle.theta.get(handleAt(state, sec, 1) as number)).toBe(tipBefore);
 
     redo(h, state);
     expect(orders(state, sec)).toEqual([0, 1]);
-    expect(Handle.theta.get(handleAt(state, sec, 1) as number)).toBe(tipAfter);
+    expect(Handle.theta.get(handleAt(state, sec, 1) as number)).toBe(tipBefore);
 });
 
 test("trim: the promoted tip's authored tangent rides undo/redo byte-identical", () => {
@@ -1183,6 +1184,19 @@ test("bulk delete (trimSuffix): k trims are ONE entry; undo restores geometry + 
     const restored = [...editor.nodes.ids].map((eid) => Handle.order.get(eid)).sort();
     expect(restored).toEqual([2, 3]);
     expect(Handle.order.get(editor.nodes.active as number)).toBe(3); // active re-anchored
+});
+
+test("bulk delete: trimSuffix never re-heads the promoted tip (stage 7b — same rule as single)", () => {
+    // trimSuffix loops removeTrailingHandle, the one delete site; the promoted tip's
+    // frozen heading survives a bulk trim exactly as a single delete's.
+    const { state, sec } = fourNodes();
+    const node1 = handleAt(state, sec, 1) as number;
+    Handle.pos.set(node1, 16, 30); // off the chord — a re-head would move the heading
+    const frozen = Handle.theta.get(node1);
+    const h = createHistory();
+    expect(trimSuffix(h, state, sec, 2)).toBe(true); // 0,1,2,3 → 0,1
+    expect(orders(state, sec)).toEqual([0, 1]);
+    expect(Handle.theta.get(node1)).toBe(frozen);
 });
 
 test("bulk delete: trimSuffix floors at 2 nodes even when asked for more", () => {

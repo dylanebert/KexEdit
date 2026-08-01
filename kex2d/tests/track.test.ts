@@ -191,48 +191,29 @@ describe("BakeSystem", () => {
         expect(sectionHandles(state, sec).length).toBe(2);
     });
 
-    test("deleting the tip re-derives the promoted node's heading (no stale jump)", () => {
+    test("deleting the tip keeps the promoted Auto node's frozen heading (stage 7b flip)", () => {
+        // stage 7 pinned "an Auto promoted tip re-heads" — wrong by the revised lock:
+        // an Auto node's theta is authored substrate state (set by its own move), so
+        // a neighbor's delete touches nothing; the re-head list is own move + append only.
         const { state, sec } = track();
         addNode(state, sec, 40, 0); // nodes 0,1,2
         const h = sectionHandles(state, sec);
-        // node 1 is interior with an off-axis position and a deliberately stale
-        // heading — what a frozen interior heading looks like before promotion.
+        // node 1 interior, off-axis, heading deliberately off the arc-rule fixpoint —
+        // a re-head would land 2·atan2(8,16), visibly reshaping the surviving segment.
         Handle.pos.set(h[1], 16, 8);
         Handle.theta.set(h[1], 0.5);
         expect(removeTrailingHandle(state, sec)).toBe(true); // drop node 2 → node 1 is the tip
-        // the promoted tip re-derives from node 0 (origin, flat): reflect(0, chord₀→₁).
-        expect(Handle.theta.get(h[1])).toBeCloseTo(2 * Math.atan2(8, 16), 10);
-        expect(Handle.theta.get(h[1])).not.toBe(0.5); // not the stale value
+        expect(handleTangent(state, sec, 1)).toBeUndefined(); // still Auto
+        expect(Handle.theta.get(h[1])).toBe(0.5); // frozen heading untouched
     });
 
     // ── promoted-tip reconciliation ──────────────────────────────────────────────
     // deleting the trailing node promotes an interior node to chain tip. authored
-    // state is never implicitly destroyed (a neighbor's delete is not the tip's own
-    // move): an EXPLICIT promoted tip keeps its tangent whole — the surviving segment
-    // holds byte-identical (its in-vector is untouched) and the exit heading is the
-    // authored out-vector (`exitHeading` reads it; an explicit node's `theta` is dead,
-    // so there is no stale-heading hazard). an AUTO promoted tip re-derives its
-    // heading (`headLast`) — its frozen interior heading is ghost state with nothing
-    // authored to lose.
-
-    /** an Auto chain tip is well-formed: no explicit tangent, heading the arc
-     *  reflection of its predecessor's actual exit — the same state a freshly
-     *  added tip carries. */
-    function expectAutoTipReheaded(state: State, sec: number): void {
-        const h = sectionHandles(state, sec);
-        const tip = h[h.length - 1];
-        const prev = h[h.length - 2];
-        expect(handleTangent(state, sec, Handle.order.get(tip))).toBeUndefined();
-        const prevTan = handleTangent(state, sec, Handle.order.get(prev));
-        const prevExit = prevTan ? Math.atan2(prevTan.outY, prevTan.outX) : Handle.theta.get(prev);
-        const chord = Math.atan2(
-            Handle.pos.y.get(tip) - Handle.pos.y.get(prev),
-            Handle.pos.x.get(tip) - Handle.pos.x.get(prev),
-        );
-        const expected = 2 * chord - prevExit;
-        expect(Handle.theta.get(tip)).toBeCloseTo(expected, 10);
-        expect(exitWorld(tip)).toBeCloseTo(expected, 10);
-    }
+    // state is never implicitly destroyed, and a neighbor's delete is not the tip's
+    // own move — promotion touches NOTHING (stage 7b): an EXPLICIT promoted tip keeps
+    // its tangent whole, an AUTO one keeps its frozen `theta` (authored by its own
+    // move, exactly as the tangent record is). the surviving segment holds
+    // byte-identical either way; the re-head list is own move + append only.
 
     test("delete preserves the promoted tip's authored tangent, segment, and exit heading", () => {
         // author an explicit tangent on node 1 (both vectors), then delete node 2.
@@ -329,13 +310,38 @@ describe("BakeSystem", () => {
         expect(handleTangent(state, sec, 1)).toEqual(authored); // round-trip identity
     });
 
-    test("an Auto promoted tip still re-heads (nothing authored to lose)", () => {
-        const { state, sec } = track();
-        addNode(state, sec, 20, 4); // 0,1,2 — all Auto
+    test("delete preserves a polar-authored Auto tip's heading and surviving bake (no re-head)", () => {
+        // an Auto node's `theta` is authored substrate state (set by its own polar
+        // move), exactly as the tangent record is for an explicit node — a neighbor's
+        // delete re-deriving it resets the surviving segment the same way. promotion
+        // touches nothing; the re-head list is own move + append only.
+        const { state, eid, sec } = track();
+        const node1 = handleAt(state, sec, 1) as number;
+        // author node 1's heading via its OWN move (the real tip-drag path: pos + re-head)
+        Handle.pos.set(node1, 18, 9);
+        reheadOnDrag(state, node1);
+        const authored = Handle.theta.get(node1);
+        addNode(state, sec, 34, 2); // append node 2 → node 1 demotes, heading frozen
+        // an interior chord-frame move lands a raw pos write, no re-head — theta now
+        // deliberately differs from what the arc rule would re-derive at this position.
+        Handle.pos.set(node1, 16, 12);
         state.step(0);
-        expect(removeTrailingHandle(state, sec)).toBe(true);
+        expect(Handle.theta.get(node1)).toBe(authored); // frozen through the interior move
+        const s = samples.get(eid);
+        if (!s) throw new Error("samples");
+        const upto = Handle.sample.get(node1); // the surviving segment's sample prefix
+        const preX = Array.from(s.posX.subarray(0, upto + 1));
+        const preY = Array.from(s.posY.subarray(0, upto + 1));
+
+        expect(removeTrailingHandle(state, sec)).toBe(true); // delete node 2 → node 1 is the tip
         state.step(0);
-        expectAutoTipReheaded(state, sec);
+        // theta bit-identical: the promoted tip keeps its authored heading whole.
+        expect(Handle.theta.get(node1)).toBe(authored);
+        // the surviving segment's bake is byte-identical (no reshape).
+        expect(Array.from(s.posX.subarray(0, upto + 1))).toEqual(preX);
+        expect(Array.from(s.posY.subarray(0, upto + 1))).toEqual(preY);
+        // the readout/append exit is the frozen heading — what the node displayed pre-delete.
+        expect(exitWorld(node1)).toBe(authored);
     });
 
     test("an unchanged chain is not re-baked; moving a node re-bakes (hash gate)", () => {

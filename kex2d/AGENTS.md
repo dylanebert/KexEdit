@@ -89,11 +89,13 @@ not draggable; its world pose IS the entry, and the shape hangs off it in the en
 - **The default shaping is live everywhere — byte-identical to the pre-handles editor.** Nothing is
   stamped at append: the default add/extend/drag flow stores **no** tangents. The **last** node's
   heading tracks its predecessor's exit (`headLast`, the reflection `2·chord − prev`), re-deriving
-  on its **own** move, on append, and on an `Auto` tip's promotion — never on a neighbor's move
+  on its **own** move and on append — that is the whole re-head list. Never on a neighbor's move
   (dragging the node before the tip preserves the tip's heading, single drag and group move
-  alike), and a neighbor's **delete** is not the tip's own move either: a tip promoted with an
-  explicit tangent keeps it whole — the surviving segment holds byte-identical, and it exits along
-  the authored out-vector (an explicit node's `theta` is dead, so no stale-heading hazard); node 0 and **interior**
+  alike), and never on a **delete**: a neighbor's delete is not the tip's own move, so promotion
+  touches nothing — an explicit promoted tip keeps its tangent whole (it exits along the authored
+  out-vector; an explicit node's `theta` is dead), and an `Auto` promoted tip keeps its frozen
+  `theta` (authored substrate state, set by the node's own move exactly as a tangent record is) —
+  the surviving segment holds byte-identical either way; node 0 and **interior**
   `Auto` nodes keep a frozen heading (stable beats thrashing — dragged far off its chord it
   bulges, the accepted misshaping). A node turns concrete bezier **only** when
   explicitly authored — a handle drag or a mode set (seeded from the live arc-rule vectors via
@@ -239,8 +241,9 @@ layer's idiom).
   lands; the geo half of the per-kind sticky store) — the ring's
   extend button (slot 0, chain-end only), `Enter`, or the node menu's `Add`; delete removes the
   trailing node — `Del`/`Backspace` or the node menu's `Delete`, never below the two nodes a
-  section needs; the promoted tip keeps an authored tangent whole, an `Auto` one re-heads (the
-  tip re-head law above — a neighbor's delete is not the tip's own move).
+  section needs; deletion never re-heads — the promoted tip keeps its state whole, explicit
+  tangent and frozen `Auto` heading alike (the tip re-head law above: re-head is own move +
+  append only).
 - **Tangent edit**: double-click summons; the manipulator knobs hide while it's open. Model +
   substrate: `Model (geo authoring)` above.
 

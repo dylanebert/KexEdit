@@ -957,10 +957,12 @@ export function setTangent(
     if (eid !== null) writeTangent(eid, tan ?? undefined);
 }
 
-/** the standing invariant: the last (heading) node's angle is the circular-arc
- *  reflection of its predecessor's heading about their chord. re-derived whenever
- *  the chain's tail changes so the tip's angle is never stale. takes the section's
- *  sorted handles; no-op below two nodes. */
+/** the tip's arc-rule heading: the circular-arc reflection of its predecessor's
+ *  heading about their chord. re-derived only on the tip's OWN move (`reheadOnDrag`)
+ *  and on a user Reset (`resetTangent`) — never by a neighbor's op: `theta` is
+ *  authored substrate state (append seeds it, a polar move sets it), so a delete's
+ *  promotion touches nothing. takes the section's sorted handles; no-op below two
+ *  nodes. */
 function headLast(handles: number[]): void {
     const n = handles.length;
     if (n < 2) return;
@@ -1024,22 +1026,19 @@ export function extend(ecs: State, sectionId: number): number {
 }
 
 /** remove the trailing (highest-order) node on a section — never below the two
- *  nodes a geo section needs (node 0 the entry + one shape node). the promoted tip
- *  keeps an explicit tangent whole — authored state is never implicitly destroyed
- *  (a neighbor's delete is not the tip's own move): the surviving segment holds
- *  byte-identical (its in-vector is untouched) and the tip exits along the authored
- *  out-vector — an explicit node's `Handle.theta` is dead (`exitHeading`, the bake,
- *  and the readout all read the out-vector), so there is no stale-heading hazard.
- *  an `Auto` promoted tip re-derives its heading (`headLast`): its frozen interior
- *  heading is ghost state with nothing authored to lose. returns true when a node
- *  was removed. */
+ *  nodes a geo section needs (node 0 the entry + one shape node). promotion touches
+ *  nothing — authored state is never implicitly destroyed, and a neighbor's delete
+ *  is not the tip's own move (the re-head list is own move + append only): an
+ *  explicit promoted tip keeps its tangent whole, an `Auto` one keeps its frozen
+ *  `theta` (authored by the node's own polar move, exactly as the tangent record
+ *  is), so the surviving segment holds byte-identical and the tip exits along
+ *  what it displayed before the delete (`exitHeading`: the authored out-vector,
+ *  else `theta`). returns true when a node was removed. */
 export function removeTrailingHandle(ecs: State, sectionId: number): boolean {
     const last = lastHandle(ecs, sectionId);
     if (last === null) return false;
     if (sectionHandles(ecs, sectionId).length <= 2) return false;
     ecs.destroy(last);
-    const handles = sectionHandles(ecs, sectionId);
-    if (readTangent(handles[handles.length - 1]) === undefined) headLast(handles);
     return true;
 }
 
