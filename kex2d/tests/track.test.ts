@@ -33,6 +33,7 @@ import {
     readProvenance,
     reheadOnDrag,
     removeTrailingHandle,
+    resetSection,
     resetTangent,
     restoreAll,
     restoreSection,
@@ -43,6 +44,7 @@ import {
     sectionForces,
     sectionHandles,
     sectionInfo,
+    sectionResettable,
     sections,
     sectionSpans,
     seedTangent,
@@ -2140,4 +2142,102 @@ test("freeze with no downstream budget publishes empty ranges, never stale prior
     expect(info.endSample).toBe(count);
     expect(info.bakedNodes).toBe(0);
     setBakeFreeze(null);
+});
+
+// kex2d-idioms stage 2: `resetSection` — the destructive reset to the section's OWN kind's
+// default, factored out of `convertSection` (the shared `resetToForce`/`resetToGeo` bodies), so
+// the seeds are the SAME code path and can't drift. parity is therefore asserted against what
+// convertSection itself lands, never against re-stated constants.
+describe("section reset (kex2d-idioms stage 2)", () => {
+    test("geo reset holds the kind and lands the flat two-node seed — convertSection's own geo body", () => {
+        const { state, sec } = track();
+        addNode(state, sec, 40, 6); // shape it: a third off-axis node
+        state.step(0);
+        const shaped = snapshotSection(state, sec);
+
+        // the reference: the geo seed a force→geo convert lands (the shared body's output).
+        convertSection(state, sec); // geo → force
+        convertSection(state, sec); // force → geo: the shared geo seed
+        const refSeed = snapshotSection(state, sec);
+
+        restoreSection(state, shaped); // back to the shaped chain, byte-identical
+        resetSection(state, sec);
+        const got = snapshotSection(state, sec);
+        expect(got.kind).toBe(SectionKind.Geo);
+        expect(got.nodes.length).toBe(2);
+        expect(got.ds).toBe(0); // step back to the nominal sentinel
+        expect(got).toEqual(refSeed);
+    });
+
+    test("force reset reseeds the continuation keyframes at the bake-recovered entry force — convertSection's own force body", () => {
+        // a curved upstream section so the entry force is clearly ≠ DEFAULT_G.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 20, -4);
+        addNode(state, a, 44, -16);
+        const b = appendSection(state, SectionKind.Geo);
+        state.step(0);
+
+        convertSection(state, b); // geo → force: the reference seed
+        const seeded = snapshotSection(state, b);
+        expect(Math.abs(seeded.points[0].g - DEFAULT_G)).toBeGreaterThan(0.05);
+
+        // author the section away from the seed, then re-bake (the entry force is upstream's,
+        // so it is unchanged by b's own edits).
+        state.step(0);
+        const pts = sectionForces(state, b);
+        setForcePoint(state, pts[0].id, pts[0].s, 3);
+        createForcePoint(state, b, 11, 2.5);
+        setSectionLength(state, b, 77);
+        state.step(0);
+
+        resetSection(state, b);
+        const got = snapshotSection(state, b);
+        expect(got.kind).toBe(SectionKind.Force);
+        // byte-identical to the convert's own seed modulo the minted stable ids.
+        const strip = (s: typeof got) => ({
+            ...s,
+            points: s.points.map(({ id: _, ...rest }) => rest),
+        });
+        expect(strip(got)).toEqual(strip(seeded));
+    });
+
+    test("resetSection neither stamps nor consults the provenance sidecar", () => {
+        const { state, sec } = track();
+        state.step(0);
+        convertSection(state, sec); // → force
+        state.step(0);
+        // author a distinctive profile and stamp it (as a solve landing would).
+        const pts = sectionForces(state, sec);
+        setForcePoint(state, pts[0].id, pts[0].s, 3);
+        state.step(0);
+        stampProvenance(state, sec, snapshotSection(state, sec));
+        const token = readProvenance(sec)?.token;
+        expect(token).toBeDefined();
+
+        resetSection(state, sec);
+        // not consulted: the result is the seed (entry-force continuation), not the stamped
+        // 3g payload; not stamped/evicted: the sidecar entry is untouched.
+        expect(sectionForces(state, sec).every((p) => p.g !== 3)).toBe(true);
+        expect(readProvenance(sec)?.token).toBe(token as string);
+
+        // a section with no stamp gains none from a reset.
+        const t2 = track();
+        t2.state.step(0);
+        resetSection(t2.state, t2.sec);
+        expect(readProvenance(t2.sec)).toBeUndefined();
+    });
+
+    test("sectionResettable: one geo section needs no bake; a force section needs a live one; sets gray", () => {
+        expect(sectionResettable(1, SectionKind.Geo, false)).toBe(true);
+        expect(sectionResettable(1, SectionKind.Geo, true)).toBe(true);
+        expect(sectionResettable(1, SectionKind.Force, false)).toBe(false);
+        expect(sectionResettable(1, SectionKind.Force, true)).toBe(true);
+        expect(sectionResettable(2, SectionKind.Geo, true)).toBe(false);
+        expect(sectionResettable(0, null, true)).toBe(false);
+        expect(sectionResettable(1, null, true)).toBe(false);
+    });
 });

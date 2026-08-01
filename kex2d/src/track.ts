@@ -1414,38 +1414,80 @@ function seedForceKeyframes(ecs: State, sectionId: number, length: number, g: nu
     createForcePoint(ecs, sectionId, length, g);
 }
 
+/** reset a section's payload to the FORCE default: both row kinds cleared, the two
+ *  continuation keyframes seeded at the recovered entry force (a flat continuation over the
+ *  default extent), the baking step back to the nominal sentinel — a stored step belongs to
+ *  the solve that produced the payload, and this discards that payload. the ONE body behind
+ *  `convertSection`'s geo → force flip and `resetSection`'s force-held reset, so the two
+ *  seeds can't drift apart. */
+function resetToForce(ecs: State, eid: number, sectionId: number): void {
+    // recover the entry force from the current bake before the reset — the seed continues
+    // the incoming force, stamped at creation.
+    const info = sectionInfo.get(sectionId);
+    const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
+    Section.ds.set(eid, 0);
+    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    Section.kind.set(eid, SectionKind.Force);
+    // the default extent in the TRACK's active domain — a literal meters constant would be
+    // a 24-second, 480-edge section on a Time-domain track.
+    const extent = defaultForceExtent(trackDomain(ecs));
+    Section.length.set(eid, extent); // reset to the default extent, not inherited
+    seedForceKeyframes(ecs, sectionId, extent, gEntry);
+}
+
+/** reset a section's payload to the GEO default: both row kinds cleared, the flat two-node
+ *  seed, step back to the nominal sentinel. `resetToForce`'s twin — one body behind
+ *  `convertSection`'s force → geo flip and `resetSection`'s geo-held reset. */
+function resetToGeo(ecs: State, eid: number, sectionId: number): void {
+    Section.ds.set(eid, 0);
+    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    Section.kind.set(eid, SectionKind.Geo);
+    Section.length.set(eid, 0);
+    addNode(ecs, sectionId, 0, 0);
+    addNode(ecs, sectionId, EXTEND_DIST, 0);
+}
+
 /** destructively flip a section's kind to its opposite, resetting to that kind's
  *  default: geo → force clears the nodes and seeds the two continuation keyframes at
  *  the recovered entry force (a flat continuation over the default extent); force →
- *  geo clears the points for the flat two-node seed. the baking step resets to the
- *  nominal sentinel with them — a stored step belongs to the solve that produced the
- *  payload, and this discards that payload. undo (a `snapshotSection` pair)
+ *  geo clears the points for the flat two-node seed. undo (a `snapshotSection` pair)
  *  makes it safe, so there's no confirmation. does not itself record history —
  *  `history.convertSection` wraps it. */
 export function convertSection(ecs: State, sectionId: number): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) return;
-    Section.ds.set(eid, 0);
-    const kind = Section.kind.get(eid);
-    if (kind === SectionKind.Geo) {
-        // recover the entry force from the current (pre-convert, geo) bake before the
-        // reset — the seed continues the incoming force, stamped at creation.
-        const info = sectionInfo.get(sectionId);
-        const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
-        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-        Section.kind.set(eid, SectionKind.Force);
-        // the default extent in the TRACK's active domain — a literal meters constant would be
-        // a 24-second, 480-edge section on a Time-domain track.
-        const extent = defaultForceExtent(trackDomain(ecs));
-        Section.length.set(eid, extent); // reset to the default extent, not inherited
-        seedForceKeyframes(ecs, sectionId, extent, gEntry);
-    } else {
-        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-        Section.kind.set(eid, SectionKind.Geo);
-        Section.length.set(eid, 0);
-        addNode(ecs, sectionId, 0, 0);
-        addNode(ecs, sectionId, EXTEND_DIST, 0);
-    }
+    if (Section.kind.get(eid) === SectionKind.Geo) resetToForce(ecs, eid, sectionId);
+    else resetToGeo(ecs, eid, sectionId);
+}
+
+/** destructively reset a section to its OWN kind's default — `convertSection`'s bodies with
+ *  the kind held (the Reset idiom: the state a fresh author would get, one click, no confirm —
+ *  byte-identical undo is the safety). a force section reseeds the two continuation keyframes
+ *  at the bake-recovered entry force, so its enablement wants a live bake
+ *  (`sectionResettable`); a geo section reads no bake at all. like `convertSection`, neither
+ *  stamps nor consults the provenance sidecar. does not itself record history —
+ *  `history.resetSection` wraps it. */
+export function resetSection(ecs: State, sectionId: number): void {
+    const eid = sectionAt(ecs, sectionId);
+    if (eid === null) return;
+    if (Section.kind.get(eid) === SectionKind.Geo) resetToGeo(ecs, eid, sectionId);
+    else resetToForce(ecs, eid, sectionId);
+}
+
+/** whether the section menu's Reset row may fire: exactly ONE section, and — force only — a
+ *  bake that IS the authored state (`bakeLive`), since the force seed's entry force is
+ *  recovered from it (a stale bake would stamp a force that isn't on screen). a geo reset
+ *  reads no bake. `controls.sectionSolvable`'s shape; the caller pairs it with
+ *  `sectionOpsAllowed` (the optimize-mode consent boundary), like every section-structure row.
+ *  pure — device-free, unit-tested. the row grays out otherwise (never hidden). */
+export function sectionResettable(
+    selected: number,
+    kind: SectionKind | null,
+    live: boolean,
+): boolean {
+    return selected === 1 && kind !== null && (kind === SectionKind.Geo || live);
 }
 
 /** an invoked solve's authored output: the keyframes it emitted, and the extent + step they

@@ -48,6 +48,7 @@ import {
     history,
     removeSection,
     removeSections,
+    resetSection,
     resetTangents,
     resetTangentsBulk,
     setTangentModes,
@@ -73,6 +74,7 @@ import {
     sectionForces,
     sectionHandles,
     sectionInfo,
+    sectionResettable,
     sections,
     seedTangent,
     setTangent,
@@ -872,7 +874,7 @@ onMount(() => {
     };
 });
 
-// the section context menu (the conversion row + Delete), summoned by right-click on a clip or a
+// the section context menu (the conversion row + Optimize + Reset + Delete), summoned by right-click on a clip or a
 // viewport span (both call editor.openContext). rendered once here at the app root so it
 // can float over both the viewport and the dock; positioned at the cursor (screen px).
 // a summoned surface lives only as long as its subject (root ui.md): the menu's visibility
@@ -955,6 +957,18 @@ const canOptimize = $derived.by((): boolean => {
     void tick;
     return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Force);
 });
+// the Reset row (the Reset idiom law, editor-ui.md Menus): return the section to the state a
+// fresh author would get, kind held — no confirm, byte-identical undo is the safety. gated
+// like its neighbors: one subject (`sectionResettable`), a live bake on a force section only
+// (the seed's entry force is recovered from it; a geo reset reads no bake), and the optimize
+// consent boundary — it grays in optimize mode, never hides.
+const canReset = $derived.by((): boolean => {
+    void tick;
+    return (
+        sectionResettable(editor.sections.ids.size, ctxKind, bakeLive(ecs)) &&
+        sectionOpsAllowed(editor.optimizing)
+    );
+});
 // the ONE conversion row. A section is always exactly one kind, so only one direction was ever
 // live — two rows spent the menu's space on a row that could never fire. The row's label and its
 // action fit the target's kind (geo → force, force → geo), and it still GRAYS rather than hides
@@ -973,10 +987,11 @@ const convertRow = $derived.by((): MenuItem => {
     };
 });
 // the context menu as data: one array of MenuItems, rendered by the shared menu language —
-// the conversion row, then Delete. multi-select (Premiere multi-clip): the conversion row grays
-// (a set has no single subject to convert, `sectionSolvable`'s own `selected === 1`); Delete
-// carries the set-lifted enablement. the destructive Convert row (both single and bulk) was
-// removed (kex2d-geoforce-editor stage 5): redundant with delete + append.
+// the conversion row, Optimize (force only), Reset, then Delete. multi-select (Premiere
+// multi-clip): the single-subject rows gray (a set has no single subject, `selected === 1`);
+// Delete carries the set-lifted enablement. the destructive Convert row (both single and bulk)
+// was removed (kex2d-geoforce-editor stage 5): redundant with delete + append; Reset is its
+// kind-HELD successor (kex2d-idioms stage 2) — back to the kind's default, not a flip.
 const ctxItems = $derived.by((): MenuItem[] => {
     void tick;
     if (ctx === null) return [];
@@ -1008,9 +1023,18 @@ const ctxItems = $derived.by((): MenuItem[] => {
             action: ctxOptimizeEnter,
         });
     }
+    items.push({ label: "Reset", danger: true, enabled: canReset, action: ctxReset });
     items.push({ label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: del });
     return items;
 });
+// reset the section to its kind's fresh default — one undoable entry (`history.resetSection`).
+// the subject survives, so the menu closes explicitly (Delete's death-derivation can't fire).
+function ctxReset(): void {
+    if (ctx === null || !sectionOpsAllowed(editor.optimizing)) return;
+    const section = ctx.section;
+    closeContext();
+    resetSection(history, ecs, section);
+}
 // convert this geo shape into the force section that reproduces it (`geoforce.ts`) — the
 // conversion row's geo→force half. the menu closes first: the convert is modal, and its own
 // surface owns the screen from here.

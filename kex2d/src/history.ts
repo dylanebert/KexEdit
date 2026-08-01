@@ -36,6 +36,7 @@ import {
     nextForce,
     nodeSnapshot,
     removeTrailingHandle,
+    resetSection as resetSectionKind,
     resetTangent,
     restoreAll,
     restoreForcePoint,
@@ -718,6 +719,18 @@ export function convertSection(h: History, ecs: State, section: number): void {
     const pre = selHook?.snapshot(ecs);
     const before = snapshotSection(ecs, section);
     flipSectionKind(ecs, section);
+    const after = snapshotSection(ecs, section);
+    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+}
+
+/** reset a section to its own kind's default (the flat two-node seed / the two continuation
+ *  keyframes), as one undoable entry — `convertSection`'s wrapper shape over the kind-held
+ *  `track.resetSection`, so undo restores the pre-reset payload byte-identical: the safety
+ *  that replaces a confirm dialog (the Reset idiom law, editor-ui.md Menus). */
+export function resetSection(h: History, ecs: State, section: number): void {
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotSection(ecs, section);
+    resetSectionKind(ecs, section);
     const after = snapshotSection(ecs, section);
     record(h, restoreCommand(ecs, before, after, restoreSection), pre);
 }

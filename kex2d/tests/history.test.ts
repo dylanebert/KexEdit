@@ -29,6 +29,7 @@ import {
     extendTrack,
     redo,
     removeSections,
+    resetSection,
     resetTangents,
     resetTangentsBulk,
     setForcesEase,
@@ -407,6 +408,50 @@ test("convert geo→force undoes byte-identical to the shaped geo track", () => 
         theta: Handle.theta.get(e),
     }));
     expect(after).toEqual(before); // the geo chain restored exactly
+});
+
+// kex2d-idioms stage 2: the Reset row's wrapper — `convertSection`'s `snapshotSection`-pair
+// shape over the kind-held `track.resetSection`, so a reset is ONE undoable entry and undo
+// restores the pre-reset payload byte-identical (the safety that replaces a confirm).
+
+test("resetSection on a geo section is ONE entry and undoes byte-identical", () => {
+    const { state, sec } = nodes();
+    addNode(state, sec, 40, 6); // shape it: a third off-axis node
+    const h = createHistory();
+    const before = snapshotSection(state, sec);
+
+    resetSection(h, state, sec);
+    expect(h.undo.length).toBe(1);
+    expect(sectionHandles(state, sec).length).toBe(2); // the flat two-node seed
+    const seeded = snapshotSection(state, sec);
+    expect(seeded.kind).toBe(SectionKind.Geo); // the kind held
+
+    undo(h, state);
+    expect(snapshotSection(state, sec)).toEqual(before); // byte-identical restore
+    redo(h, state);
+    expect(snapshotSection(state, sec)).toEqual(seeded); // and forward again
+});
+
+test("resetSection on a force section is ONE entry and undoes byte-identical", () => {
+    const { state, sec } = bakedNodes(); // a real bake: the force seed reads the entry force
+    const h = createHistory();
+    convertSection(h, state, sec); // → force (the two seed keyframes)
+    state.step(0);
+    createForce(h, state, sec, 12, 2); // author it away from the seed
+    setSectionLength(state, sec, 60);
+    const before = snapshotSection(state, sec);
+    const depth = h.undo.length;
+
+    resetSection(h, state, sec);
+    expect(h.undo.length).toBe(depth + 1);
+    expect(sectionForces(state, sec).length).toBe(2); // reseeded
+    const seeded = snapshotSection(state, sec);
+    expect(seeded.kind).toBe(SectionKind.Force); // the kind held
+
+    undo(h, state);
+    expect(snapshotSection(state, sec)).toEqual(before); // byte-identical restore
+    redo(h, state);
+    expect(snapshotSection(state, sec)).toEqual(seeded);
 });
 
 // ── section bulk ops (shift-click set — Premiere multi-clip) ─────────────────────
