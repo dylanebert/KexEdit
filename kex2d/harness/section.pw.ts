@@ -761,6 +761,52 @@ test("optimize mode flow", async ({ page, boot }) => {
         p?.every((v, i) => Math.abs(v - c[i]) <= ProbeTol) ?? false;
     const geoMid = () => kexCall(page, "spanMidAt", 1);
 
+    // ── the stage-8 chrome-hold composite (kex2d-idioms): every mid-window claim in ONE
+    // batched in-page read (several `__kex` calls inside one evaluate — the sanctioned
+    // typed-inline-cast exception), so the asserts fit the 500 ms landing window on the
+    // bridge. Returns the violated claims by name (empty = the whole modal presentation
+    // holds); `landing` is part of the composite, so every green read describes MID-window
+    // state and a too-slow run fails loudly on timing instead of comparing post-window
+    // chrome. The pixel leg re-reads `spanMidAt` per attempt (polled — a cart transit over
+    // the point only delays the read, the leg-0c/1a probe's own law).
+    const chromeHeld = () =>
+        page.evaluate(
+            ({ tol, dim }) => {
+                const kex = (
+                    window as unknown as {
+                        __kex: {
+                            landing(): boolean;
+                            spanMidAt(i: number): { x: number; y: number } | null;
+                        };
+                    }
+                ).__kex;
+                const bad: string[] = [];
+                if (!kex.landing()) bad.push("landing");
+                if (document.querySelector(".optpanel") === null) bad.push("panel");
+                const solve = document.querySelector<HTMLButtonElement>(".optpanel .solve");
+                const exit = document.querySelector<HTMLButtonElement>(".optpanel .exit");
+                if (!solve?.disabled) bad.push("solve-disabled");
+                if (!exit?.disabled) bad.push("exit-disabled");
+                if (document.querySelectorAll(".clip-stripes").length !== 1) bad.push("hatch");
+                if (document.querySelectorAll(".mode-dim rect").length === 0) bad.push("mode-dim");
+                const pt = kex.spanMidAt(1);
+                const canvas = document.querySelector<HTMLCanvasElement>("canvas.viewport");
+                const ctx = canvas?.getContext("2d");
+                let pixel: Uint8ClampedArray | null = null;
+                if (pt && canvas && ctx) {
+                    const r = canvas.getBoundingClientRect();
+                    const px = Math.round((pt.x * canvas.width) / r.width);
+                    const py = Math.round((pt.y * canvas.height) / r.height);
+                    if (px >= 0 && py >= 0 && px < canvas.width && py < canvas.height)
+                        pixel = ctx.getImageData(px, py, 1, 1).data;
+                }
+                if (!pixel || !dim.every((c, i) => Math.abs(pixel[i] - c) <= tol))
+                    bad.push("viewport-dim");
+                return bad;
+            },
+            { tol: ProbeTol, dim: [66, 85, 107] as [number, number, number] },
+        );
+
     // the bump profile on the boot section: 2 flat seeds + 3 authored keys (crest at index 2) —
     // plus an appended geo section: the lockdown leg's subject AND the downstream-freeze subject.
     await kexCall(page, "seedForceBump");
@@ -1014,12 +1060,16 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
     await solveBtn.click();
     await expect.poll(optimizing, { timeout: 30_000 }).toBe(false); // Solve confirms AND closes
-    await expect(panel).toHaveCount(0);
+    await expect.poll(landing).toBe(true); // the paced landing raised — the feedback
+    // ── 5a. The landing HOLDS the modal chrome (kex2d-idioms stage 8): mid-window the panel
+    // stays mounted with both actions disabled (the settling state), the subject clip keeps
+    // its hatch, the timeline dim brackets, and the viewport dim wash all hold — the modal
+    // presentation releases in ONE moment at window end or skip, never at the mode close.
+    await expect.poll(chromeHeld).toEqual([]);
     // no stats toast — the animation IS the feedback. leg 4's refusal notice may still be
     // auto-dismissing, so the pin is register-shaped: no non-error (done-register) notice.
     await expect(page.locator(".notice:not(.bad)")).toHaveCount(0);
     expect(await undoDepth()).toBe(base + 1); // the WHOLE experiment is ONE outer entry
-    await expect.poll(landing).toBe(true); // the paced landing raised — the feedback
 
     // ── 5b. The landing is DISPLAY-WIDE (kex2d-idioms stage 4): mid-window the bake rides the
     // interpolant — the viewport crest marker sits off its final placement (compared after the
@@ -1070,4 +1120,29 @@ test("optimize mode flow", async ({ page, boot }) => {
         .toBe(true);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-4-landed.png") });
+
+    // ── 7. A skip releases the WHOLE chrome in one moment (kex2d-idioms stage 8): re-enter,
+    // nudge the crest, Solve → the settling chrome holds mid-window (the same composite);
+    // a pointerdown then skips the landing, and the panel, hatch, timeline dim, and viewport
+    // dim all drop together with the display snapped to the document's own values. ──
+    await page.locator(".clip").first().click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await clickMenuItem(page, ".ctxmenu", "Optimize");
+    await expect(panel).toBeVisible();
+    const g7 = sorted(await forces())[2].g;
+    const c7 = await hit(2);
+    await page.mouse.click(c7.x, c7.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(async () => sorted(await forces())[2].g).not.toBe(g7);
+    await solveBtn.click();
+    await expect.poll(optimizing, { timeout: 30_000 }).toBe(false);
+    await expect.poll(chromeHeld).toEqual([]); // held mid-window (positive control for the skip)
+    await page.mouse.click(vp.x + vp.width * 0.06, vp.y + vp.height * 0.06); // pointerdown = skip
+    await expect.poll(landing).toBe(false);
+    await expect(panel).toHaveCount(0); // …and the whole presentation released with it
+    await expect(page.locator(".clip-stripes")).toHaveCount(0);
+    await expect(page.locator(".mode-dim")).toHaveCount(0);
+    await expect.poll(async () => near(await probe(await geoMid()), [120, 165, 214])).toBe(true);
+    expect(await undoDepth()).toBe(base + 2); // the second experiment is one more outer entry
 });

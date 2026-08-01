@@ -9,7 +9,7 @@ import {
     kindSegments,
     selected,
 } from "./colors";
-import { editor } from "./editor";
+import { editor, modeChromeSection } from "./editor";
 import { niceStep } from "./timeline";
 import { editHandleSets } from "./tangents";
 import {
@@ -252,8 +252,11 @@ const TrackDrawSystem: System = {
             // rect, so the wash strokes over each non-subject section's own polyline, topmost
             // over every rung under it (kind, hover, selection, the dashed-red pass — the dim
             // is topmost there too). width 4 covers the widest rung below (selection, 3).
-            if (editor.optimizing) {
-                const subj = editor.optimizing.section;
+            // keyed on `modeChromeSection` (kex2d-idioms stage 8): the wash holds through the
+            // landing window and releases in one moment with the panel and the hatch.
+            const chromeSubj = modeChromeSection();
+            if (chromeSubj !== null) {
+                const subj = chromeSubj;
                 ctx.setLineDash([]);
                 ctx.strokeStyle = DIM_WASH;
                 ctx.lineWidth = 4;
@@ -311,6 +314,7 @@ const AnchorDrawSystem: System = {
         if (!ctx) return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
 
+        const chromeSubj = modeChromeSection();
         for (const trackEid of ecs.query([Track])) {
             const s = samples.get(trackEid);
             if (!s) continue;
@@ -353,9 +357,10 @@ const AnchorDrawSystem: System = {
                 ctx.fill();
                 ctx.stroke();
                 // out-of-scope under optimize mode: wash the same shapes topmost (the dim
-                // channel — see TrackDrawSystem). the subject's own entry anchor stays bright,
-                // like the span boundary on the timeline.
-                if (editor.optimizing && editor.optimizing.section !== sec.id) {
+                // channel — see TrackDrawSystem, incl. the stage-8 landing hold). the
+                // subject's own entry anchor stays bright, like the span boundary on the
+                // timeline.
+                if (chromeSubj !== null && chromeSubj !== sec.id) {
                     ctx.save();
                     ctx.fillStyle = DIM_WASH;
                     ctx.strokeStyle = DIM_WASH;
@@ -393,6 +398,7 @@ const ForceDrawSystem: System = {
         const members = editor.forces.ids;
         const active = editor.force;
         const opt = editor.optimizing;
+        const chromeSubj = modeChromeSection();
 
         for (const m of forceMarkers(ecs)) {
             const cx = ox + m.x * sx;
@@ -432,8 +438,10 @@ const ForceDrawSystem: System = {
                 ctx.stroke();
             }
             // out-of-scope under optimize mode: another section's keyframe washes topmost
-            // (the dim channel — see TrackDrawSystem); the subject's own keys stay bright.
-            if (opt !== null && opt.section !== m.section) {
+            // (the dim channel — see TrackDrawSystem, incl. the stage-8 landing hold); the
+            // subject's own keys stay bright. driven styling above keeps reading the MODE
+            // (the lock ledger dies with the session).
+            if (chromeSubj !== null && chromeSubj !== m.section) {
                 ctx.fillStyle = DIM_WASH;
                 ctx.strokeStyle = DIM_WASH;
                 ctx.lineWidth = 2;
@@ -453,6 +461,7 @@ const HandleDrawSystem: System = {
         const { sx, sy, ox, oy } = viewTransform(canvas);
         const sel = editor.selection; // the active member (the ring + readout anchor)
         const members = editor.nodes.ids; // the whole selection set (single-select is the size-1 case)
+        const chromeSubj = modeChromeSection();
 
         // pre-compute the red set: nodes at/past the chain's first infeasibility
         // (energy-out reachable) plus orphan nodes (their section's segment failed to
@@ -529,9 +538,10 @@ const HandleDrawSystem: System = {
             ctx.stroke();
 
             // out-of-scope under optimize mode: wash node + rings topmost (the dim channel —
-            // see TrackDrawSystem). the subject is always a force section, so every geo node
-            // dims; the section guard keeps the rule honest rather than assuming that.
-            if (editor.optimizing && editor.optimizing.section !== Handle.section.get(eid)) {
+            // see TrackDrawSystem, incl. the stage-8 landing hold). the subject is always a
+            // force section, so every geo node dims; the section guard keeps the rule honest
+            // rather than assuming that.
+            if (chromeSubj !== null && chromeSubj !== Handle.section.get(eid)) {
                 ctx.save();
                 ctx.fillStyle = DIM_WASH;
                 ctx.strokeStyle = DIM_WASH;

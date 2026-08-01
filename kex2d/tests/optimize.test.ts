@@ -5,6 +5,7 @@ import {
     beginOptimize,
     editor,
     endOptimize,
+    modeChromeSection,
     sandbox,
     skipLanding,
     toggleLockedSet,
@@ -1381,6 +1382,9 @@ describe("the downstream freeze (kex2d-optimize-mode stage 7)", () => {
             { section: session.section, entry: session.freeze },
         );
         expect(editor.landing).not.toBeNull(); // the solve really moved keys (positive control)
+        // the chrome predicate seam (kex2d-idioms stage 8): the mode is CLOSED here, but the
+        // modal presentation still names the landed section — the exit transition holds it.
+        expect(modeChromeSection()).toBe(session.section);
         state.step(0);
         const infoA = sectionInfo.get(sec);
         const infoB = sectionInfo.get(secB);
@@ -1392,6 +1396,7 @@ describe("the downstream freeze (kex2d-optimize-mode stage 7)", () => {
         expect(infoB.entry.v).toBe(session.freeze.v);
 
         skipLanding();
+        expect(modeChromeSection()).toBeNull(); // the skip releases the chrome in the same call
         state.step(0);
         const infoA2 = sectionInfo.get(sec);
         const infoB2 = sectionInfo.get(secB);

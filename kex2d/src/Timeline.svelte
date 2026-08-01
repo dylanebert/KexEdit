@@ -16,6 +16,7 @@ import {
     exitForceEdit,
     landingG,
     lockLabel,
+    modeChromeSection,
     openContext,
     skipLanding,
     openForceMenu,
@@ -659,6 +660,18 @@ const optClip = $derived.by((): Clip | null => {
     const s = editor.optimizing;
     if (s === null) return null;
     return clips.find((c) => c.id === s.section) ?? null;
+});
+// the modal-chrome clip (kex2d-idioms stage 8): the subject clip while the mode OR its exit
+// transition (the paced landing) is live — `modeChromeSection`, the one chrome predicate. The
+// hatch and the focus dim key HERE, so the modal presentation holds through the landing
+// window and releases in one moment at expiry or skip. Enablement (`clip-add`) and the driven
+// keyframe styling keep reading `optClip` — document truth (the lock ledger dies with the
+// session anyway).
+const chromeClip = $derived.by((): Clip | null => {
+    void tick;
+    const s = modeChromeSection();
+    if (s === null) return null;
+    return clips.find((c) => c.id === s) ?? null;
 });
 // locked force-keyframe ids for the live optimize session (kex2d-optimize-mode stage 1) — read
 // through the tick like `selForceSet`, so a diamond's driven styling stays live across a toggle.
@@ -2901,9 +2914,10 @@ onMount(() => {
                                     {isF ? "Force" : "Geo"}
                                 </text>
                             {/if}
-                            {#if optClip !== null && optClip.id === c.id}
+                            {#if chromeClip !== null && chromeClip.id === c.id}
                                 <!-- the mode's own clip wears the stripes (pointer-inert: a
-                                     treatment, not a control — the clip beneath still picks). -->
+                                     treatment, not a control — the clip beneath still picks);
+                                     held through the landing window (stage 8: chromeClip). -->
                                 <rect
                                     class="clip-stripes"
                                     x={x0 + 0.5}
@@ -3055,12 +3069,13 @@ onMount(() => {
                  full-strength. pointer-inert: focus is a read. the section's own timeline
                  identity is the striped clip (above); the stamped exit's constraint ring +
                  residual drop-line live in the viewport (render.ts) — the timeline guide's
-                 little ring read as noise (the stage-5 feel verdict) and is gone. -->
-            {#if optClip}
+                 little ring read as noise (the stage-5 feel verdict) and is gone. keyed on
+                 chromeClip (stage 8): the dim holds through the landing window. -->
+            {#if chromeClip}
                 {@const dimY = RULER_H}
                 {@const dimH = Math.max(0, h - BOT_PAD - RULER_H)}
-                {@const dx0 = Math.min(Math.max(uPx(optClip.u0), LEFT_GUT), w)}
-                {@const dx1 = Math.min(Math.max(uPx(optClip.u1), LEFT_GUT), w)}
+                {@const dx0 = Math.min(Math.max(uPx(chromeClip.u0), LEFT_GUT), w)}
+                {@const dx1 = Math.min(Math.max(uPx(chromeClip.u1), LEFT_GUT), w)}
                 <g class="mode-dim">
                     {#if dx0 > LEFT_GUT}
                         <rect x={LEFT_GUT} y={dimY} width={dx0 - LEFT_GUT} height={dimH} />

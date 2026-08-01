@@ -27,6 +27,7 @@ import {
     exitTangentEdit,
     fitDone,
     LANDING_MS,
+    modeChromeSection,
     notify,
     optimizeRefused,
     select,
@@ -421,6 +422,18 @@ const optOpen = $derived.by((): boolean => {
     void tick;
     return editor.optimizing !== null;
 });
+// the modal-chrome predicate (kex2d-idioms stage 8): the panel mounts on `modeChromeSection`
+// (optimizing ∥ landing), so the landed Solve's paced landing keeps the modal presentation up
+// and everything releases in ONE moment at window end or skip. `settling` is its disabled
+// tail (mode closed, landing live): both actions inert — a second Solve or an Exit on the
+// already-closed mode is unreachable from the panel — and the panel pointer-inert, so a press
+// on it skips the landing like any other pointerdown. Enablement stays on the MODE
+// (`optOpen`, `sectionOpsAllowed`, the lockdowns): chrome holds, document truth doesn't.
+const modeChrome = $derived.by((): boolean => {
+    void tick;
+    return modeChromeSection() !== null;
+});
+const settling = $derived(modeChrome && !optOpen);
 const optSolvable = $derived.by((): boolean => {
     void tick;
     const s = editor.optimizing;
@@ -1389,13 +1402,16 @@ $effect(() => {
          signal, and it dismisses only with the mode — Solve (the confirmation, which also
          closes the mode) and Exit (the sandbox discard) live here, with the starved reason,
          subtly, only while Solve is disabled (a refusal rides the shared transient notice).
-         no headroom count, no post-solve stats: the paced landing is the feedback. -->
-    {#if optOpen}
+         no headroom count, no post-solve stats: the paced landing is the feedback — and while
+         it runs the panel STAYS, settling (stage 8: the landing is the mode's exit
+         transition, so the chrome releases with the window, not the mode close). -->
+    {#if modeChrome}
         <!-- no title (stage-6 feel: the striped clip + dim already name the mode; the panel is
              the two actions), raised well clear of the player (PANEL_GAP). aria-label keeps the
              dialog named for assistive tech without visible chrome. -->
         <div
             class="optpanel"
+            class:settling
             style="bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP + PLAYER_H + PANEL_GAP}px;"
             role="dialog"
             aria-label="Optimize"
@@ -1409,7 +1425,13 @@ $effect(() => {
             >
                 Solve
             </button>
-            <button type="button" class="exit" title="Exit (Esc)" onclick={optimizeExit}>
+            <button
+                type="button"
+                class="exit"
+                title="Exit (Esc)"
+                disabled={settling}
+                onclick={optimizeExit}
+            >
                 Exit
             </button>
             {#if optReason}
@@ -1641,6 +1663,12 @@ $effect(() => {
     .optpanel button:disabled {
         opacity: 0.4;
         cursor: default;
+    }
+    /* the settling state (stage 8: landing live, mode closed): pointer-inert so a press on the
+       panel skips the landing like any other pointerdown — the disabled buttons carry the dim
+       cue (Mode vocabulary: no new channel). */
+    .optpanel.settling {
+        pointer-events: none;
     }
     .optpanel .reason {
         color: var(--muted);

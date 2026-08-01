@@ -235,10 +235,15 @@ export interface Notice {
  *  AND, through the bake seam (`track.setBakeLanding`), what the whole display bakes while it
  *  runs — curve, viewport geometry, markers, cart, with the downstream freeze held through the
  *  window. Esc or any pointerdown skips to the end state (`skipLanding`); expiry is equivalent
- *  to skipping. */
+ *  to skipping. It is also the mode's EXIT TRANSITION (kex2d-idioms stage 8): while it runs
+ *  the modal presentation holds — {@link modeChromeSection}. */
 export interface Landing {
     /** `performance.now()` at the landing. */
     start: number;
+    /** the landed session's section — the modal chrome's subject through the window
+     *  ({@link modeChromeSection}): the dim's scope and the subject hatch key here once the
+     *  mode itself has closed. */
+    section: number;
     /** the moved keys only: each id's pre-solve and solved g. */
     moves: readonly { id: number; from: number; to: number }[];
 }
@@ -262,7 +267,7 @@ export function beginLanding(
         setBakeLanding(null);
         return;
     }
-    const landing: Landing = { start: performance.now(), moves };
+    const landing: Landing = { start: performance.now(), section: hold.section, moves };
     editor.landing = landing;
     setBakeLanding({
         section: hold.section,
@@ -276,6 +281,17 @@ export function beginLanding(
 export function skipLanding(): void {
     editor.landing = null;
     setBakeLanding(null);
+}
+
+/** the modal chrome's subject section, or null when no modal presentation holds (kex2d-idioms
+ *  stage 8): the live optimize session's, else the paced landing's — the landing is the mode's
+ *  exit transition, so the panel, the dim wash, and the subject hatch hold through the window
+ *  and release in ONE moment (expiry or skip). CHROME ONLY, never a second mode state:
+ *  enablement and consent predicates (`sectionOpsAllowed`, `sectionEditable`, the lockdowns)
+ *  keep reading `editor.optimizing` — document truth — and an in-window edit stays
+ *  possible-but-skip (every entry gesture routes through `skipLanding` first). */
+export function modeChromeSection(): number | null {
+    return editor.optimizing?.section ?? editor.landing?.section ?? null;
 }
 
 /** the one shared easing curve (`editor-ui.md` Mode vocabulary: Motion) — cubic ease-out,

@@ -12,6 +12,7 @@ import {
     landingG,
     LANDING_MS,
     lockLabel,
+    modeChromeSection,
     notify,
     openContext,
     optimizeRefused,
@@ -437,7 +438,7 @@ test("a dense fit reads as a failure and names the node count — a held budget 
 // the interpolation is the one cosmetic display override, so its edges are pinned here.
 
 test("landingG: interpolates a covered key from `from` toward `to`, ease-out, and expires to null", () => {
-    const landing = { start: 1000, moves: [{ id: 7, from: 1, to: 2 }] };
+    const landing = { start: 1000, section: 0, moves: [{ id: 7, from: 1, to: 2 }] };
     expect(landingG(landing, 7, 1000)).toBe(1); // t = 0: the pre-solve draft value
     const mid = landingG(landing, 7, 1000 + LANDING_MS / 2);
     if (mid === null) throw new Error("mid-animation read expired");
@@ -447,8 +448,30 @@ test("landingG: interpolates a covered key from `from` toward `to`, ease-out, an
 });
 
 test("landingG: an uncovered key reads null (only moved keys animate)", () => {
-    const landing = { start: 0, moves: [{ id: 7, from: 1, to: 2 }] };
+    const landing = { start: 0, section: 0, moves: [{ id: 7, from: 1, to: 2 }] };
     expect(landingG(landing, 8, 100)).toBeNull();
+});
+
+// ── the modal-chrome predicate (`modeChromeSection`, kex2d-idioms stage 8) ──
+// the landing is the mode's exit transition: the panel, dim wash, and subject hatch key on
+// this one predicate (optimizing ∥ landing) so the modal presentation holds through the
+// window and releases in ONE moment — chrome only, never a second mode state (enablement
+// keeps reading `editor.optimizing`).
+
+test("modeChromeSection: null at rest, the session's section in-mode, the landing's through the window", () => {
+    expect(modeChromeSection()).toBeNull();
+    editor.optimizing = {
+        section: 3,
+        stamp: { x: 0, y: 0, theta: 0 },
+        ghost: { x: new Float32Array(0), y: new Float32Array(0) },
+        freeze: { x: 0, y: 0, theta: 0, v: 10 },
+    };
+    expect(modeChromeSection()).toBe(3); // the live mode
+    editor.optimizing = null;
+    editor.landing = { start: 0, section: 3, moves: [{ id: 1, from: 0, to: 1 }] };
+    expect(modeChromeSection()).toBe(3); // the exit transition holds the chrome
+    editor.landing = null;
+    expect(modeChromeSection()).toBeNull(); // one release moment — skip and expiry alike
 });
 
 // ── the keyframe menu's Lock/Unlock row (`lockLabel`, kex2d stage 6) ──
