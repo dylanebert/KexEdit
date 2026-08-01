@@ -237,6 +237,20 @@ if (import.meta.env.DEV) {
         // a viewport force marker's canvas-local screen point, by index over `forceMarkers`'
         // own order (per-section, sorted by s) — where the marker flow clicks/right-clicks
         // (mirrors nodeAt: canvas-drawn markers carry no DOM box). null pre-bake or out of range.
+        // a section span's mid-sample screen point (canvas-local px), by chain index — where
+        // the optimize flow pixel-probes the polyline for the out-of-scope dim (mirrors
+        // startAt/nodeAt: the canvas-drawn track carries no DOM box). null pre-bake.
+        spanMidAt: (i: number): { x: number; y: number } | null => {
+            const s = samples.get(track);
+            const canvas = Canvas2D.element;
+            const secId = sections(ecs)[i]?.id;
+            if (!s || !canvas || secId === undefined) return null;
+            const info = sectionInfo.get(secId);
+            if (!info) return null;
+            const tx = viewTransform(canvas);
+            const mid = (info.startSample + info.endSample) >> 1;
+            return { x: tx.ox + s.posX[mid] * tx.sx, y: tx.oy + s.posY[mid] * tx.sy };
+        },
         forceMarkerAt: (i: number): { x: number; y: number } | null => {
             const canvas = Canvas2D.element;
             if (!canvas) return null;

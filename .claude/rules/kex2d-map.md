@@ -646,7 +646,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   polyline (solid feasible blue / dashed infeasible red), section-entry **anchor diamonds**, the
   hover + selected-section span overlays (each in the section's OWN kind color — one rung up under
   the pointer (`hovered`), brightened when selected (`selected`); priority infeasible-red >
-  selection > hover > kind, all three stroked through one `strokeFeasible`), the node handles
+  selection > hover > kind, all three stroked through one `strokeFeasible`), the optimize-mode
+  **out-of-scope dim** (every non-subject span, plus its anchors/nodes/markers, washed topmost in
+  `colors.DIM_WASH` — the viewport half of the timeline's `.mode-dim` wash; one channel, both
+  surfaces, `editor-ui.md` Mode vocabulary), the node handles
   (selected/orphan/infeasible), the cart, the
   **Timeline** dock, and the three-button radial ring around the selected node (`radial.ts`: the
   two manipulator knobs flanking extend, the extend button chain-end-only, all hidden in tangent

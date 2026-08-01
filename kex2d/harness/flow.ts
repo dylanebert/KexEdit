@@ -163,6 +163,7 @@ export interface Kex {
     setLen(i: number, len: number): void;
     setV0(v: number): void;
     selectedSection(): number | null;
+    spanMidAt(i: number): { x: number; y: number } | null;
     startAt(): { x: number; y: number } | null;
     tTotal(): number;
     tangent(): { mode: number; inX: number; inY: number; outX: number; outY: number } | null;

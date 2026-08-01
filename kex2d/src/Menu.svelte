@@ -163,7 +163,7 @@ function leaf(item: MenuItem): void {
         margin-left: 3px;
         min-width: 128px;
         z-index: 1;
-        animation: sub-in 100ms ease;
+        animation: sub-in 100ms var(--ease-out);
     }
     .submenu.flip-x {
         left: auto;

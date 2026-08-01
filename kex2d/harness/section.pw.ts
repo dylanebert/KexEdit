@@ -734,6 +734,33 @@ test("optimize mode flow", async ({ page, boot }) => {
     const strip = dockStrip(page);
     const sorted = (rows: { s: number; g: number }[]) => [...rows].sort((a, b) => a.s - b.s);
 
+    // ── the viewport dim probe (kex2d-idioms stage 5): read one polyline pixel off the real
+    // canvas at a `spanMidAt` point (canvas-local CSS px → device px via the backing-store
+    // scale). null when the canvas isn't up or the point is outside it.
+    const probe = (pt: { x: number; y: number } | null) =>
+        pt === null
+            ? Promise.resolve(null)
+            : page.evaluate(({ x, y }) => {
+                  const canvas = document.querySelector<HTMLCanvasElement>("canvas.viewport");
+                  const ctx = canvas?.getContext("2d");
+                  if (!canvas || !ctx) return null;
+                  const r = canvas.getBoundingClientRect();
+                  const px = Math.round((x * canvas.width) / r.width);
+                  const py = Math.round((y * canvas.height) / r.height);
+                  if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
+                  const d = ctx.getImageData(px, py, 1, 1).data;
+                  return [d[0], d[1], d[2]] as [number, number, number];
+              }, pt);
+    // GEO #78a5d6 = (120,165,214); the dim wash rgba(22,20,19,0.55) composites source-over to
+    // round(0.45·c + 0.55·w) = (66,85,107). PROBE_TOL 8: compositing rounds ±1 per channel and
+    // device-pixel rounding keeps the probe inside the 2px stroke's solid core — while the two
+    // registers sit 54 apart on red, so the bands can't overlap. polled, so a cart transit
+    // over the point only delays the read.
+    const ProbeTol = 8;
+    const near = (p: number[] | null, c: [number, number, number]) =>
+        p?.every((v, i) => Math.abs(v - c[i]) <= ProbeTol) ?? false;
+    const geoMid = () => kexCall(page, "spanMidAt", 1);
+
     // the bump profile on the boot section: 2 flat seeds + 3 authored keys (crest at index 2) —
     // plus an appended geo section: the lockdown leg's subject AND the downstream-freeze subject.
     await kexCall(page, "seedForceBump");
@@ -759,6 +786,16 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape"); // clear the selection the right-click made
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
 
+    // ── 0c. Dim probe positive control: frame the viewport (hover routes `f` there; the corner
+    // park keeps the pointer off the track so no hover rung tints the read), then the DOWNSTREAM
+    // geo span's mid-sample pixel must read the plain geo kind color — proving the rig sees the
+    // bright register BEFORE the mode opens, so the dim assert below can't pass vacuously. ──
+    const vp = await page.locator("canvas.viewport").boundingBox();
+    if (!vp) throw new Error("viewport canvas not laid out");
+    await page.mouse.move(vp.x + vp.width * 0.08, vp.y + vp.height * 0.08);
+    await page.keyboard.press("f"); // nothing selected → the whole chain frames
+    await expect.poll(async () => near(await probe(await geoMid()), [120, 165, 214])).toBe(true);
+
     // ── 1. Enter through the section menu's Optimize row: the docked panel + the striped clip
     // are the mode signal — and the OUTER history is untouched (the sandbox contract: entering
     // records nothing; a fresh, empty sandbox opens instead). ──
@@ -775,6 +812,11 @@ test("optimize mode flow", async ({ page, boot }) => {
     expect(await sandboxDepth()).toBe(0); // …the sandbox opened empty
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "optimize-1-mode.png") });
+
+    // ── 1a. The viewport out-of-scope dim (kex2d-idioms stage 5, editor-ui.md Mode
+    // vocabulary): the same span's pixel now reads the dim-washed geo color — the timeline's
+    // `.mode-dim` meaning on the viewport, same spans, same channel. ──
+    await expect.poll(async () => near(await probe(await geoMid()), [66, 85, 107])).toBe(true);
 
     // ── 1b. The editing lockdown holds track-wide while the mode is open: another section's
     // Convert/Delete rows gray, the ruler's domain picker grays both rows, the append tail

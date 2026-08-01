@@ -1482,6 +1482,8 @@ $effect(() => {
         --danger: #e26d5c;
         --danger-soft: rgba(226, 109, 92, 0.16);
         --guide: #9aa0a6; /* snap-guide neutral gray (timeline + viewport); mirrors colors.ts COLOR_GUIDE_RAY */
+        --dim: rgba(22, 20, 19, 0.55); /* out-of-scope dim wash under a mode, both surfaces (editor-ui.md Mode vocabulary); mirrors colors.ts DIM_WASH */
+        --ease-out: cubic-bezier(0.33333, 1, 0.66667, 1); /* the one easing token (ui.md Motion) — the exact bezier of 1 − (1 − t)³; JS twin editor.ts easeOut */
         --border: rgba(255, 255, 255, 0.08);
         --shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
     }
@@ -1585,7 +1587,7 @@ $effect(() => {
         color: var(--fg);
         user-select: none;
         pointer-events: none;
-        animation: fade-in 120ms ease;
+        animation: fade-in 120ms var(--ease-out);
     }
     .notice.bad {
         border-color: rgba(226, 109, 92, 0.5);
@@ -1614,7 +1616,7 @@ $effect(() => {
         font-size: 11px;
         white-space: nowrap;
         user-select: none;
-        animation: vtip-in 120ms ease;
+        animation: vtip-in 120ms var(--ease-out);
     }
     .optpanel button {
         all: unset;
@@ -1626,7 +1628,7 @@ $effect(() => {
         text-align: center;
         color: var(--muted);
         cursor: pointer;
-        transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+        transition: background 120ms var(--ease-out), color 120ms var(--ease-out), border-color 120ms var(--ease-out);
     }
     .optpanel .solve {
         color: var(--accent);
@@ -1663,7 +1665,7 @@ $effect(() => {
         align-items: center;
         justify-content: center;
         background: rgba(0, 0, 0, 0.45);
-        animation: fade-in 120ms ease;
+        animation: fade-in 120ms var(--ease-out);
     }
     .convert {
         display: flex;
@@ -1707,7 +1709,7 @@ $effect(() => {
         font-size: 11px;
         color: var(--muted);
         cursor: pointer;
-        transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+        transition: background 120ms var(--ease-out), color 120ms var(--ease-out), border-color 120ms var(--ease-out);
     }
     .convert .cancel:hover {
         background: var(--accent-soft);
@@ -1735,7 +1737,7 @@ $effect(() => {
         box-shadow: var(--shadow);
         cursor: pointer;
         pointer-events: auto;
-        transition: background 120ms ease, border-color 120ms ease;
+        transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out);
     }
     .rbtn svg {
         width: 14px;
@@ -1776,7 +1778,7 @@ $effect(() => {
         position: fixed;
         z-index: 10;
         min-width: 132px;
-        animation: ctx-in 120ms ease;
+        animation: ctx-in 120ms var(--ease-out);
     }
     /* the current-mode row: accent-lit like every other active state; the trailing check is the
        colorblind-safe second channel (shape, not color alone — root ui.md). */
@@ -1819,7 +1821,7 @@ $effect(() => {
         padding: 5px 10px;
         color: var(--muted);
         cursor: pointer;
-        transition: background 120ms ease, color 120ms ease;
+        transition: background 120ms var(--ease-out), color 120ms var(--ease-out);
     }
     :global(.menu-item:not(:disabled):hover) {
         background: var(--accent-soft);
@@ -1851,7 +1853,7 @@ $effect(() => {
         position: fixed;
         z-index: 10;
         min-width: 132px;
-        animation: ctx-in 120ms ease;
+        animation: ctx-in 120ms var(--ease-out);
     }
     @keyframes ctx-in {
         from {
@@ -1876,7 +1878,7 @@ $effect(() => {
         overflow: hidden; /* the focus wash clips to the rounded corners */
         transform: translate(-50%, calc(-100% - 12px));
         font-family: "JetBrains Mono", ui-monospace, monospace;
-        animation: vtip-in 120ms ease;
+        animation: vtip-in 120ms var(--ease-out);
     }
     @keyframes vtip-in {
         from {
@@ -1890,7 +1892,7 @@ $effect(() => {
         gap: 6px;
         padding: 4px 9px;
         font-size: 11px;
-        transition: background 120ms ease;
+        transition: background 120ms var(--ease-out);
     }
     .vtip .fld:focus-within {
         background: rgba(255, 255, 255, 0.04);
@@ -1911,7 +1913,7 @@ $effect(() => {
         user-select: none;
         -webkit-user-select: none;
         touch-action: none;
-        transition: color 120ms ease, background 120ms ease;
+        transition: color 120ms var(--ease-out), background 120ms var(--ease-out);
     }
     .vtip .key:hover {
         color: var(--fg);

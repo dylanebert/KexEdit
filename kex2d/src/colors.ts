@@ -19,6 +19,13 @@ export const COLOR_FORCE = COLOR_ACCENT;
  *  off the `--fg` token), so no canvas label color lives here. */
 export const COLOR_GUIDE_RAY = "#9aa0a6";
 
+/** the out-of-scope dim wash (`editor-ui.md` Mode vocabulary): while a mode is open,
+ *  everything outside its subject steps back one rung under this wash — one meaning, both
+ *  surfaces. Mirrors App.svelte's `--dim` CSS custom property (Timeline.svelte's `.mode-dim`
+ *  rects); pinned equal in colors.test.ts. On the canvas it is drawn OVER the element's own
+ *  shapes (the timeline's topmost-rect compositing, per element), never a recolor. */
+export const DIM_WASH = "rgba(22, 20, 19, 0.55)";
+
 export function kindColor(kind: SectionKind): string {
     return kind === SectionKind.Force ? COLOR_FORCE : COLOR_GEO;
 }

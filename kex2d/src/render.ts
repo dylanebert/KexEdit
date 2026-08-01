@@ -4,6 +4,7 @@ import {
     COLOR_ACCENT,
     COLOR_FORCE,
     COLOR_GUIDE_RAY,
+    DIM_WASH,
     hovered,
     kindSegments,
     selected,
@@ -245,6 +246,29 @@ const TrackDrawSystem: System = {
                 }
             }
 
+            // the optimize-mode out-of-scope dim (editor-ui.md Mode vocabulary): the timeline
+            // dims everything outside the optimized span (`.mode-dim`); the viewport dims the
+            // SAME spans — same meaning, same channel. the viewport's span is the curve, not a
+            // rect, so the wash strokes over each non-subject section's own polyline, topmost
+            // over every rung under it (kind, hover, selection, the dashed-red pass — the dim
+            // is topmost there too). width 4 covers the widest rung below (selection, 3).
+            if (editor.optimizing) {
+                const subj = editor.optimizing.section;
+                ctx.setLineDash([]);
+                ctx.strokeStyle = DIM_WASH;
+                ctx.lineWidth = 4;
+                for (const seg of segs) {
+                    if (seg.id === subj) continue;
+                    const to = Math.min(seg.endSample, count - 1);
+                    ctx.beginPath();
+                    for (let i = seg.startSample; i <= to; i++) {
+                        if (i === seg.startSample) ctx.moveTo(xs[i], ys[i]);
+                        else ctx.lineTo(xs[i], ys[i]);
+                    }
+                    ctx.stroke();
+                }
+            }
+
             // optimize mode's stamped exit — the constraint idiom (editor-ui.md), not a new
             // glyph language: a hollow ring at the stamp (the demand), and the residual made
             // visible as a dotted drop-line from the section's CURRENT baked exit (the
@@ -328,6 +352,23 @@ const AnchorDrawSystem: System = {
                 ctx.closePath();
                 ctx.fill();
                 ctx.stroke();
+                // out-of-scope under optimize mode: wash the same shapes topmost (the dim
+                // channel — see TrackDrawSystem). the subject's own entry anchor stays bright,
+                // like the span boundary on the timeline.
+                if (editor.optimizing && editor.optimizing.section !== sec.id) {
+                    ctx.save();
+                    ctx.fillStyle = DIM_WASH;
+                    ctx.strokeStyle = DIM_WASH;
+                    ctx.fill();
+                    ctx.stroke();
+                    if (sec.order === 0 && editor.start) {
+                        ctx.lineWidth = 1.5;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, ANCHOR_R + 4, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                    ctx.restore();
+                }
             }
         }
     },
@@ -387,6 +428,15 @@ const ForceDrawSystem: System = {
                       : COLOR_FORCE;
                 ctx.strokeStyle = m.id === active ? "#fff" : member ? "#f0ece8" : "#0e0d0c";
                 ctx.lineWidth = m.id === active ? 1.8 : member ? 1.4 : 1;
+                ctx.fill();
+                ctx.stroke();
+            }
+            // out-of-scope under optimize mode: another section's keyframe washes topmost
+            // (the dim channel — see TrackDrawSystem); the subject's own keys stay bright.
+            if (opt !== null && opt.section !== m.section) {
+                ctx.fillStyle = DIM_WASH;
+                ctx.strokeStyle = DIM_WASH;
+                ctx.lineWidth = 2;
                 ctx.fill();
                 ctx.stroke();
             }
@@ -477,6 +527,29 @@ const HandleDrawSystem: System = {
             ctx.arc(cx, cy, HANDLE_R, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
+
+            // out-of-scope under optimize mode: wash node + rings topmost (the dim channel —
+            // see TrackDrawSystem). the subject is always a force section, so every geo node
+            // dims; the section guard keeps the rule honest rather than assuming that.
+            if (editor.optimizing && editor.optimizing.section !== Handle.section.get(eid)) {
+                ctx.save();
+                ctx.fillStyle = DIM_WASH;
+                ctx.strokeStyle = DIM_WASH;
+                ctx.fill();
+                ctx.stroke();
+                ctx.lineWidth = 1.5;
+                if (member) {
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, HANDLE_R_SEL + 3, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                if (bad) {
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, HANDLE_R + 4, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
         }
     },
 };

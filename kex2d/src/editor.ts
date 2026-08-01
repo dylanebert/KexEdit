@@ -278,15 +278,23 @@ export function skipLanding(): void {
     setBakeLanding(null);
 }
 
+/** the one shared easing curve (`editor-ui.md` Mode vocabulary: Motion) — cubic ease-out,
+ *  `1 − (1 − t)³`. The CSS twin is App.svelte's `--ease-out` token, the exact bezier of this
+ *  polynomial (`cubic-bezier(0.33333, 1, 0.66667, 1)`); pinned equal in colors.test.ts, so
+ *  the two halves can't drift into two dialects of one motion. */
+export function easeOut(t: number): number {
+    return 1 - (1 - t) ** 3;
+}
+
 /** the displayed g for a keyframe under the live landing, or null when the landing doesn't
- *  cover it (or has expired) — the one cosmetic display override. cubic ease-out, so the
+ *  cover it (or has expired) — the one cosmetic display override. the shared ease-out, so the
  *  motion decelerates into the solved value. */
 export function landingG(landing: Landing, id: number, now: number): number | null {
     const t = (now - landing.start) / LANDING_MS;
     if (t >= 1) return null;
     const m = landing.moves.find((mv) => mv.id === id);
     if (!m) return null;
-    const k = t <= 0 ? 0 : 1 - (1 - t) ** 3;
+    const k = t <= 0 ? 0 : easeOut(t);
     return m.from + (m.to - m.from) * k;
 }
 

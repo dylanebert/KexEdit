@@ -1022,7 +1022,8 @@ test("viewport kind color shot", async ({ page, boot }) => {
 // used to cover only by accident (an append racing the bake), authored deliberately here —
 // (a) dashed infeasible red over a kind-colored chain, (b) that same red UNDER a selected
 // section's accent overlay, which must not paint over it (`editor-ui.md` Kind color: priority is
-// infeasible-red > selection > kind, and dash is reserved for infeasibility).
+// infeasible-red > selection > kind; red is the infeasible rung of the dash channel — Mode
+// vocabulary).
 //
 // The scenario is a hill the launch can't climb, and every number in it is derived from the
 // energy budget, not tuned: speed comes only from height (`v² = v0² − 2g·Δy`, g = 9.80665), so a

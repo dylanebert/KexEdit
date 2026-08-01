@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { hexToOklch, hovered, selected } from "../src/colors";
+import { readFileSync } from "node:fs";
+import { DIM_WASH, hexToOklch, hovered, selected } from "../src/colors";
+import { easeOut } from "../src/editor";
 
 // an independent sRGB #rrggbb reader (not the module under test).
 function rgb(hex: string): [number, number, number] {
@@ -42,6 +44,47 @@ describe("selected — OKLCH tone variant", () => {
 
     test("returns a well-formed lowercase 6-digit hex", () => {
         expect(selected("#010203")).toMatch(/^#[0-9a-f]{6}$/);
+    });
+});
+
+// ── token mirrors: App.svelte's `:root` is the CSS token home; the canvas/JS twins live in
+// colors.ts / editor.ts (the COLOR_GUIDE_RAY ↔ `--guide` precedent, now pinned instead of
+// comment-only). A drift between the two halves is exactly the "two dialects of one channel"
+// failure the Mode vocabulary exists to prevent (editor-ui.md).
+const appCss = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
+
+describe("token mirrors (App.svelte :root)", () => {
+    test("DIM_WASH mirrors the --dim token — one out-of-scope wash, both surfaces", () => {
+        const m = appCss.match(/--dim:\s*([^;]+);/);
+        expect(m?.[1].trim()).toBe(DIM_WASH);
+    });
+
+    test("--ease-out is the exact bezier of editor.ts easeOut (1 − (1 − t)³)", () => {
+        const m = appCss.match(/--ease-out:\s*cubic-bezier\(([^)]+)\)/);
+        expect(m).not.toBeNull();
+        const [x1, y1, x2, y2] = (m as RegExpMatchArray)[1].split(",").map(Number);
+        // y1 = y2 = 1 makes the bezier's y-polynomial exactly 3t − 3t² + t³ = 1 − (1 − t)³,
+        // and x1 = 1/3, x2 = 2/3 make x(t) = t exactly — so y(x) IS easeOut. The token prints
+        // the thirds at 5 decimals, so the control-point error bound is 5e-6, not a tuned tol.
+        expect(y1).toBe(1);
+        expect(y2).toBe(1);
+        expect(Math.abs(x1 - 1 / 3)).toBeLessThanOrEqual(5e-6);
+        expect(Math.abs(x2 - 2 / 3)).toBeLessThanOrEqual(5e-6);
+        for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+            expect(easeOut(t)).toBeCloseTo(3 * t - 3 * t ** 2 + t ** 3, 12);
+        }
+    });
+
+    test("no bare `ease` keyword survives — every transition names the token", () => {
+        // root ui.md Motion: transitions reference the shared token, never a bare keyword.
+        // (`linear` on the modal spinner's infinite rotation is not an eased transition.)
+        for (const f of ["App.svelte", "Timeline.svelte", "Menu.svelte"]) {
+            const css = readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+            expect({ file: f, sites: css.match(/\d+ms\s+ease\b/g) ?? [] }).toEqual({
+                file: f,
+                sites: [],
+            });
+        }
     });
 });
 

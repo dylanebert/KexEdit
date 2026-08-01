@@ -329,11 +329,42 @@ selection at all. **Hover is the rung below selection**, a `hovered()` variant o
 own kind color with one derived knob (kex2d `HOVER_STEP`, derived from the clip strip's
 composited hover-fill step, never tuned). When languages stack, priority is infeasible-red >
 selection (brightened kind) > hover > kind color, enforced by feasibility-skip in every color
-pass rather than draw order; dash stays reserved for infeasibility. Hover's boundaries travel
+pass rather than draw order; dash carries not-authored-truth, red its infeasible rung (Mode
+vocabulary, below). Hover's boundaries travel
 with the rung: suppressed for the whole of any gesture (guard on the one live-gesture flag),
 invisible on an already-selected element (selection is the stronger read of the same span), and
 no cross-surface hover sync — a clip's CSS hover and the viewport span stay local to their own
 surfaces.
+
+## Mode vocabulary
+
+Every visual channel carries exactly one meaning, on every surface that shows the state. A new
+state reuses its meaning's channel; a channel with no meaning here doesn't ship — add the row
+first or don't add the chrome. Earned by kex2d's optimize mode (2026-08-01), where the timeline
+and viewport had drifted to different dialects of the same states.
+
+- **Kind color** = section kind, everywhere (Kind color, above). Selection brightens it, hover is
+  the rung below — states modulate the element's own color, never recolor it.
+- **Accent hatch** = the mode's subject: what this mode is operating on.
+- **Dim wash** (kex2d `rgba(22,20,19,0.55)`) = out-of-scope under a mode. One meaning, both
+  surfaces: when a mode dims the timeline's non-subjects, the viewport dims the same spans. The
+  wash is a *mode* channel and sits above the whole feasibility/selection stack — an out-of-scope
+  section's infeasible-red dims with the rest (red outranks everything *within* scope; scope
+  outranks red).
+- **Dashed + faded** = not authored truth, with *color* carrying which kind: red dash =
+  infeasible (a stable achieved-vs-demanded shortfall, Constraint-solver UX); neutral/kind-faded
+  dash = shown-but-not-authored (a ghost preview, a driven/locked target, the freeze gap). Dash
+  is never decoration, and infeasible-red outranks every other in-scope language (Kind color's
+  priority order; the mode dim above sits over even red). Guide dashes (baseline, boundary,
+  drop-lines) are the same shown-but-not-authored axis in the guide register — their one-gray
+  law lives in Snapping.
+- **Hollow vs filled** = target vs keyframe: constraints wear the ring, authored diamonds fill
+  (Constraint-solver UX).
+- **Motion** = one shared easing token (root `ui.md`): every UI transition names it, and
+  `landingG`'s cubic ease-out is the same named curve — pacing reads as one hand.
+
+The rail stays bounded to global authoring toggles; per-mode chrome (borders, cursors, badges)
+is exactly the channel-without-a-meaning this table exists to refuse.
 
 ## Keyframe / curve-editor conventions
 

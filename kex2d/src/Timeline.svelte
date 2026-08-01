@@ -3425,7 +3425,7 @@ onMount(() => {
         color: var(--muted);
         cursor: pointer;
         opacity: 0.6;
-        transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+        transition: opacity 120ms var(--ease-out), color 120ms var(--ease-out), background 120ms var(--ease-out);
     }
     .rail-tool:hover {
         opacity: 0.9;
@@ -3466,7 +3466,7 @@ onMount(() => {
         box-shadow: var(--shadow);
         overflow: hidden; /* the focus wash clips to the rounded corners */
         transform: translate(-50%, calc(-100% - 12px));
-        animation: tip-in 120ms ease;
+        animation: tip-in 120ms var(--ease-out);
     }
     .ptip.below {
         transform: translate(-50%, 12px);
@@ -3496,7 +3496,7 @@ onMount(() => {
         padding: 4px 9px;
         font-family: "JetBrains Mono", ui-monospace, monospace;
         font-size: 11px;
-        transition: background 120ms ease;
+        transition: background 120ms var(--ease-out);
     }
     .fld:focus-within {
         background: rgba(255, 255, 255, 0.04);
@@ -3519,7 +3519,7 @@ onMount(() => {
         user-select: none;
         -webkit-user-select: none;
         touch-action: none;
-        transition: color 120ms ease, background 120ms ease;
+        transition: color 120ms var(--ease-out), background 120ms var(--ease-out);
     }
     .fld .key:hover {
         color: var(--fg);
@@ -3595,7 +3595,7 @@ onMount(() => {
     .nav {
         flex: none;
         padding: 2px 0 6px;
-        transition: opacity 150ms ease;
+        transition: opacity 150ms var(--ease-out);
     }
     .nav.idle {
         opacity: 0.4;
@@ -3625,7 +3625,7 @@ onMount(() => {
         border: 1px solid rgba(255, 255, 255, 0.22);
         border-radius: 3px;
         cursor: grab;
-        transition: background 120ms ease;
+        transition: background 120ms var(--ease-out);
     }
     .nav-window:hover {
         background: rgba(255, 255, 255, 0.12);
@@ -3740,7 +3740,7 @@ onMount(() => {
         stroke: #0e0d0c;
         stroke-width: 1;
         pointer-events: none; /* the fat hit circle owns the interaction */
-        transition: fill 100ms ease;
+        transition: fill 100ms var(--ease-out);
     }
     .fpt:hover .fmarker {
         fill: #fff;
@@ -3776,7 +3776,7 @@ onMount(() => {
     /* the optimize-mode focus dim: the standard focus convention — outside the optimized span
        everything steps back one rung. a wash of the dock's own background, topmost, inert. */
     .mode-dim rect {
-        fill: rgba(22, 20, 19, 0.55);
+        fill: var(--dim);
         pointer-events: none;
     }
     /* the optimize-mode clip stripes: the diagonal hatch the optimized section's clip wears
@@ -3836,7 +3836,7 @@ onMount(() => {
         stroke: transparent;
         stroke-width: 1;
         outline: none; /* pointer-only (tabindex -1); no browser focus ring on click */
-        transition: fill 120ms ease, stroke 120ms ease;
+        transition: fill 120ms var(--ease-out), stroke 120ms var(--ease-out);
     }
     .clip.geo {
         fill: color-mix(in srgb, var(--geo) 28%, transparent);
@@ -3906,7 +3906,7 @@ onMount(() => {
         fill: transparent;
         pointer-events: all;
         cursor: ew-resize;
-        transition: fill 100ms ease;
+        transition: fill 100ms var(--ease-out);
     }
     .clip-trim:hover,
     .clip-trim.active {
@@ -3933,7 +3933,7 @@ onMount(() => {
         border: 1px solid var(--border);
         color: var(--muted);
         cursor: pointer;
-        transition: background 120ms ease, color 120ms ease;
+        transition: background 120ms var(--ease-out), color 120ms var(--ease-out);
     }
     .clip-add svg {
         width: 12px;
@@ -3961,7 +3961,7 @@ onMount(() => {
         position: fixed;
         min-width: 62px;
         z-index: 10;
-        animation: tip-in 120ms ease;
+        animation: tip-in 120ms var(--ease-out);
     }
 
     /* the snap-increment popover: the shared `.menu` surface hosting two `.fld` rows (the field
@@ -3970,7 +3970,7 @@ onMount(() => {
     .snap-pop {
         position: fixed;
         z-index: 10;
-        animation: tip-in 120ms ease;
+        animation: tip-in 120ms var(--ease-out);
     }
     /* the rows carry the corner clip (so the focus wash rounds) and the surface's own inner pad —
        the `.menu` box above stays `overflow: visible`, per the menus law. */
@@ -3993,7 +3993,7 @@ onMount(() => {
         position: fixed;
         z-index: 10;
         min-width: 132px;
-        animation: tip-in 120ms ease;
+        animation: tip-in 120ms var(--ease-out);
     }
 
     /* the ruler context menu (Meters / Seconds): the same instance, narrower — two flat rows,
@@ -4002,7 +4002,7 @@ onMount(() => {
         position: fixed;
         z-index: 10;
         min-width: 104px;
-        animation: tip-in 120ms ease;
+        animation: tip-in 120ms var(--ease-out);
     }
 
     /* the player: a media transport (play · global scrub · timecode) floated as its
@@ -4047,7 +4047,7 @@ onMount(() => {
         border-radius: 50%;
         color: var(--neutral);
         cursor: pointer;
-        transition: background 120ms ease, transform 80ms ease;
+        transition: background 120ms var(--ease-out), transform 80ms var(--ease-out);
     }
     .play:hover {
         background: var(--neutral-soft);
@@ -4099,7 +4099,7 @@ onMount(() => {
         background: var(--neutral);
         border: 2px solid var(--bg-solid);
         transform: translate(-50%, -50%);
-        transition: transform 100ms ease;
+        transition: transform 100ms var(--ease-out);
         pointer-events: none;
     }
     .scrub:hover .thumb,
