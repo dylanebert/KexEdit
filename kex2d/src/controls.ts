@@ -88,7 +88,7 @@ import {
     zoomAt,
 } from "./view";
 
-const PICK_R = 16;
+export const PICK_R = 16;
 const SECTION_PICK_R = 12;
 const START_PICK_R = 12;
 // force-marker pick radius (px) — the anchor-diamond scale, under the node radius: a node
@@ -96,7 +96,7 @@ const START_PICK_R = 12;
 const FORCE_PICK_R = 12;
 // tangent-handle grab radius (px). smaller than the node radius, and the selected node's
 // handles are checked before the node itself, so grabbing a handle beats a node under it.
-const TANGENT_PICK_R = 11;
+export const TANGENT_PICK_R = 11;
 
 // wheel zoom rate: screen-px-independent, exp(−deltaY·rate) so scaling is symmetric
 // (in then out returns to the same zoom) and reads the same for wheel + trackpad pinch
@@ -397,6 +397,32 @@ function pickTangentHandle(
         }
     }
     return best;
+}
+
+/** the pointermove hover sweep, pure and DOM-free — the four pickers run in the same PICK
+ *  order `onPointerDown` grabs by (a summoned knob wins first, then its node, then a force
+ *  marker, else the section span), so exactly one of the four reads lights: a handle over its
+ *  node still reads as the knob, matching what a click would take. `onPointerMove` is the only
+ *  caller; factored out so the wiring is unit-testable without a canvas. */
+export function pickHover(
+    ecs: State,
+    tx: ViewTx,
+    sx: number,
+    sy: number,
+): {
+    knob: { eid: number; side: TangentSide } | null;
+    node: number | null;
+    force: number | null;
+    section: number | null;
+} {
+    const th = pickTangentHandle(ecs, tx, sx, sy);
+    const knob = th !== null ? { eid: th.eid, side: th.side } : null;
+    const node = th === null ? pickNode(ecs, tx, sx, sy) : null;
+    const fs = th === null && node === null ? pickForceOrStart(ecs, tx, sx, sy) : null;
+    const force = fs !== null && fs.kind === "force" ? fs.id : null;
+    const section =
+        th === null && node === null && force === null ? pickSection(ecs, tx, sx, sy) : null;
+    return { knob, node, force, section };
 }
 
 /** node 0 of the first section (the one at order 0) when it is geo, else null — the START
@@ -1234,23 +1260,22 @@ export function attachControls(
             dragManipTo(ecs, canvas, e);
             return;
         }
-        // no gesture under way: track what's under the pointer, in PICK order (a node picks
-        // before its section — hover must match what a click would take), so exactly one of the
-        // two hover reads is lit: the node the render brightens one rung, else the section span
-        // drawn one kind-color rung up (`hovered`, colors.ts). `editor.dragging` catches a
-        // gesture owned by ANOTHER surface sweeping over the canvas (a timeline drag); the
-        // viewport's own gestures returned above, and each cleared the flag via `beginDrag`.
+        // no gesture under way: track what's under the pointer, in PICK order (a knob picks
+        // before its node, a node before its section — hover must match what a click would
+        // take), so exactly one of the four hover reads is lit: the knob or node the render
+        // brightens one rung, else the marker, else the section span drawn one kind-color rung
+        // up (`hovered`, colors.ts). `editor.dragging` catches a gesture owned by ANOTHER
+        // surface sweeping over the canvas (a timeline drag); the viewport's own gestures
+        // returned above, and each cleared the flag via `beginDrag`. `pickHover` is the pure
+        // sweep, unit-tested directly against the same priority `onPointerDown` grabs by.
         if (editor.dragging) return;
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
-        const node = pickNode(ecs, tx, cx, cy);
-        editor.hoverNode = node;
-        // marker hover resolves through the same nearest-wins seam the click does — a marker
-        // a click would cede to START must not light (hover matches what a click would take).
-        const fs = node === null ? pickForceOrStart(ecs, tx, cx, cy) : null;
-        editor.hoverForce = fs !== null && fs.kind === "force" ? fs.id : null;
-        editor.hoverSection =
-            node === null && editor.hoverForce === null ? pickSection(ecs, tx, cx, cy) : null;
+        const hover = pickHover(ecs, tx, cx, cy);
+        editor.hoverKnob = hover.knob;
+        editor.hoverNode = hover.node;
+        editor.hoverForce = hover.force;
+        editor.hoverSection = hover.section;
     };
 
     // the pointer leaving the canvas clears the hover (no move fires outside it).
@@ -1258,6 +1283,7 @@ export function attachControls(
         editor.hoverSection = null;
         editor.hoverNode = null;
         editor.hoverForce = null;
+        editor.hoverKnob = null;
     };
 
     // wheel = zoom-at-cursor; trackpad pinch arrives as ctrl+wheel (browser convention)
@@ -1654,6 +1680,7 @@ export function attachControls(
         editor.hoverSection = null; // nor a lit span the remount has no pointer over
         editor.hoverNode = null;
         editor.hoverForce = null;
+        editor.hoverKnob = null;
         clearGuides(); // detaching mid-drag must not leave a stuck guide for the remount
         cancelMarquee(); // detaching mid-marquee must not leave a stuck rect for the remount
         endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on

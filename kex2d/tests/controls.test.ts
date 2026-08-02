@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, afterEach } from "bun:test";
 import { State } from "@dylanebert/shallot";
+import { readFileSync } from "node:fs";
 import {
     applyMultiDelta,
     armDrag,
@@ -17,6 +18,8 @@ import {
     normDeg,
     pickForce,
     pickForceOrStart,
+    pickHover,
+    PICK_R,
     polarNudge,
     sectionEditable,
     sectionOpsAllowed,
@@ -24,6 +27,8 @@ import {
     selectedMetrics,
     suffixRun,
 } from "../src/controls";
+import { beginDrag, editor, enterTangentEdit, exitTangentEdit } from "../src/editor";
+import { editHandleSets } from "../src/tangents";
 import { LENGTH_MIN } from "../src/magnet";
 import { ANGLE_STEP_DEFAULT as ANGLE_STEP } from "../src/settings";
 import {
@@ -919,5 +924,167 @@ describe("pickForceOrStart", () => {
         // 45% along: ~9 px to START, ~11 px to the key — START wins.
         const p45 = { x: TX.ox + 0.45 * (mp.x - TX.ox), y: TX.oy + 0.45 * (mp.y - TX.oy) };
         expect(pickForceOrStart(state, TX, p45.x, p45.y)).toEqual({ kind: "start" });
+    });
+});
+
+// ── pickHover (kex2d-burndown stage 3): the pointermove sweep's pure core — the four pickers
+// run in the same PICK order `onPointerDown` grabs by (a summoned knob wins first, then its
+// node, then a force marker, else the section span), so hover matches exactly what a click
+// would take. Factored out of the DOM-bound `attachControls` closure so it's unit-testable
+// without a canvas — the real wiring `onPointerMove` calls, not a restatement of it.
+describe("pickHover", () => {
+    /** a three-node geo chain, tangent-edited on its tip (first section, so entry is identity —
+     *  world == local) with a deliberately SHORT explicit out-handle — short enough that its
+     *  knob lands inside the node's own pick radius too, the exact "handle over its node"
+     *  overlap `onPointerDown`'s comment calls out. real coincidence, not two probes on
+     *  separate glyphs: it's the only case where pick ORDER (not just radius) decides the
+     *  read. */
+    function tangentTrack(): { state: State; sec: number; tip: number } {
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 10, 0);
+        addNode(state, sec, 18, 7);
+        state.step(0);
+        const tip = lastHandle(state, sec);
+        if (tip === null) throw new Error("no tip");
+        const order = Handle.order.get(tip);
+        // 0.1 m at TX.sx=40 is a 4 px knob offset — inside both TANGENT_PICK_R (11) and PICK_R
+        // (16), so the node's own pick disc covers the knob's screen point too.
+        setTangent(state, sec, order, {
+            mode: TangentMode.Free,
+            inX: 0.1,
+            inY: 0,
+            outX: 0.1,
+            outY: 0,
+        });
+        state.step(1 / 60);
+        enterTangentEdit(tip);
+        return { state, sec, tip };
+    }
+
+    afterEach(() => {
+        exitTangentEdit(); // a leaked `editor.tangentEdit` would leak the knob into later tests
+    });
+
+    test("a knob wins over its own node — the click priority, mutually exclusive both ways", () => {
+        const { state, tip } = tangentTrack();
+        const trackEid = [...state.query([Track])][0];
+        const s = samples.get(trackEid);
+        if (!s) throw new Error("no bake");
+        const set = [...editHandleSets(state, s, TX, tip)].find((st) => st.eid === tip);
+        const knob = set?.handles.find((h) => h.side === "in");
+        if (!knob) throw new Error("no in-handle");
+        const i = Handle.sample.get(tip);
+        const nx = TX.ox + s.posX[i] * TX.sx;
+        const ny = TX.oy + s.posY[i] * TX.sy;
+        // the overlap this test depends on: the knob sits inside the node's OWN pick radius too.
+        expect(Math.hypot(knob.x - nx, knob.y - ny)).toBeLessThan(PICK_R);
+
+        // probing at the node's screen point (== the knob's, to float precision): the knob
+        // wins — the same priority `onPointerDown` grabs by — and the node it sits over,
+        // itself pickable at this exact point, stays unlit.
+        const hover = pickHover(state, TX, nx, ny);
+        expect(hover.knob).toEqual({ eid: tip, side: "in" });
+        expect(hover.node).toBeNull();
+        expect(hover.force).toBeNull();
+        expect(hover.section).toBeNull();
+    });
+
+    test("outside tangent edit the same point picks only the node — no stray knob read", () => {
+        const { state, tip } = tangentTrack();
+        exitTangentEdit(); // this test's own scope: no leftover handles to grab
+        const trackEid = [...state.query([Track])][0];
+        const s = samples.get(trackEid);
+        if (!s) throw new Error("no bake");
+        const i = Handle.sample.get(tip);
+        const nx = TX.ox + s.posX[i] * TX.sx;
+        const ny = TX.oy + s.posY[i] * TX.sy;
+        const hover = pickHover(state, TX, nx, ny);
+        expect(hover.knob).toBeNull();
+        expect(hover.node).toBe(tip);
+    });
+
+    test("a force marker lights only when no knob or node is under the pointer", () => {
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, EXTEND_DIST, 0);
+        state.step(0);
+        convertSection(state, sec);
+        state.step(1 / 60);
+        const ms = forceMarkers(state);
+        const m = ms[1]; // ms[0] (s=0) coincides with the START diamond — pickForceOrStart's own
+        // tie rule would resolve that one to START, not the marker (the existing pickForceOrStart
+        // pin above); the exit marker sits clear of it.
+        const hover = pickHover(state, TX, TX.ox + m.x * TX.sx + 3, TX.oy + m.y * TX.sy - 2);
+        expect(hover.knob).toBeNull();
+        expect(hover.node).toBeNull();
+        expect(hover.force).toBe(m.id);
+        expect(hover.section).toBeNull();
+    });
+
+    test("the section span lights only when nothing else is under the pointer", () => {
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, EXTEND_DIST, 0);
+        state.step(0);
+        // the segment midpoint, off any node/knob/marker pick radius.
+        const midX = TX.ox + (EXTEND_DIST / 2) * TX.sx;
+        const midY = TX.oy;
+        const hover = pickHover(state, TX, midX, midY);
+        expect(hover.knob).toBeNull();
+        expect(hover.node).toBeNull();
+        expect(hover.force).toBeNull();
+        expect(hover.section).toBe(sec);
+    });
+});
+
+// ── hover clearing (kex2d-burndown stage 3): `pickHover`'s four reads are cleared at three
+// sites — `editor.beginDrag` (the whole-gesture suppression) and `attachControls`'s
+// pointerleave/remount teardown. Each site clearing its *three* siblings but not `hoverKnob` is
+// exactly the bug class (kex2d-idioms 10b's stale-hover class, one field short).
+describe("editor.beginDrag clears hoverKnob for the whole of any gesture", () => {
+    test("a real beginDrag call clears a set hoverKnob, same as its three siblings", () => {
+        // `beginDrag` is exported and DOM-free apart from reaching for `window.addEventListener`
+        // to arm the release listeners (unreachable headless — no `window` under `bun test`); shim
+        // it locally, scoped to this test, so the REAL production function runs end to end rather
+        // than a restatement of it.
+        const g = globalThis as Record<string, unknown>;
+        g.window = { addEventListener() {}, removeEventListener() {} };
+        try {
+            editor.hoverSection = 1;
+            editor.hoverNode = 2;
+            editor.hoverForce = 3;
+            editor.hoverKnob = { eid: 4, side: "in" };
+            const fakeEl = {
+                setPointerCapture() {},
+                addEventListener() {},
+                removeEventListener() {},
+            } as unknown as Element;
+            beginDrag(fakeEl, 1);
+            expect(editor.hoverKnob).toBeNull();
+            // its three siblings, for context — `beginDrag` clears all four in one place.
+            expect(editor.hoverSection).toBeNull();
+            expect(editor.hoverNode).toBeNull();
+            expect(editor.hoverForce).toBeNull();
+        } finally {
+            delete g.window;
+        }
+    });
+});
+
+// controls.ts's pointerleave/remount-teardown clears live inside `attachControls`'s DOM-bound
+// closure (canvas listeners, `window` keydown) — no callable seam without a real canvas, unlike
+// `beginDrag` above. This is a SOURCE pin standing in for an unreachable behavioral one (the same
+// tier colors.test.ts's hover-lift pin uses for canvas-only behavior): it proves the clearing
+// LINE exists at both sites, not that the listener fires it — that's the harness's job.
+describe("controls.ts's pointerleave and remount teardown both clear hoverKnob", () => {
+    test("both closures carry the hoverKnob clear beside its three siblings", () => {
+        const src = readFileSync(new URL("../src/controls.ts", import.meta.url), "utf8");
+        const leave = src.slice(src.indexOf("const onPointerLeave"));
+        const leaveBody = leave.slice(0, leave.indexOf("};"));
+        expect(leaveBody.includes("editor.hoverKnob = null;")).toBe(true);
+        const detach = src.slice(src.indexOf("const detach"));
+        const detachBody = detach.slice(0, detach.indexOf("clearGuides()"));
+        expect(detachBody.includes("editor.hoverKnob = null;")).toBe(true);
     });
 });

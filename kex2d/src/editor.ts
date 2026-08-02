@@ -11,6 +11,7 @@ import type { State } from "@dylanebert/shallot";
 import { createHistory, type History, redirectHistory } from "./history";
 import type { OptimizeOutcome, UnreachableReason } from "./optimize";
 import { forceAt, Handle, handleAt, sectionAt, setBakeFreeze, setBakeLanding } from "./track";
+import type { TangentSide } from "./tangents";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
  *  (the Blender/Unity hovered-surface model). */
@@ -147,6 +148,14 @@ interface EditorState {
      *  `hoverSection` (exactly one pick target under the pointer), cleared on pointer leave and
      *  for the whole of any gesture (`beginDrag`). viewport-local like its siblings. */
     hoverForce: number | null;
+    /** the tangent-edited node's handle under the pointer, or null — the knob twin of
+     *  `hoverNode`/`hoverForce`/`hoverSection` (kex2d-burndown stage 3: knobs were the one
+     *  pickable glyph class with no hover). written first in the controls' pointermove sweep,
+     *  through `pickTangentHandle`, so it wins on the same priority a click takes (a handle over
+     *  its node still grabs) — mutually exclusive with the other three. `side` distinguishes a
+     *  node's two knobs (in/out), matching `dragTangent`'s shape. cleared on pointer leave and
+     *  for the whole of any gesture (`beginDrag`) like its siblings. */
+    hoverKnob: { eid: number; side: TangentSide } | null;
     /** which surface the pointer is over — routes the surface-scoped keys (`F` frames it,
      *  arrows act on it), ending the viewport-nudge vs timeline-playhead double-fire.
      *  defaults to the viewport, so keys route there before the pointer visits the dock;
@@ -349,6 +358,7 @@ export const editor: EditorState = {
     hoverSection: null,
     hoverNode: null,
     hoverForce: null,
+    hoverKnob: null,
     hover: "viewport",
     converting: null,
     notice: null,
@@ -673,6 +683,7 @@ export function beginDrag(el: Element, pointerId: number): void {
     editor.hoverSection = null;
     editor.hoverNode = null;
     editor.hoverForce = null;
+    editor.hoverKnob = null;
     try {
         el.setPointerCapture(pointerId);
     } catch {

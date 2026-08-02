@@ -581,6 +581,7 @@ const HandleDrawSystem: System = {
 };
 
 const TANGENT_KNOB = 3.5; // half-size of a handle knob square (px)
+const TANGENT_GHOST = "#f0ece8"; // a ghost knob's light outline, before its 0.7 alpha
 
 /** the tangent-edited node's handles: an arm from the node to each in/out knob. an *explicit*
  *  node draws solid filled knobs (the authored inner layer); a live tip draws hollow ghost
@@ -619,8 +620,14 @@ const TangentDrawSystem: System = {
                 }
                 ctx.stroke();
                 // the knobs — a small square (the bezier-handle convention, distinct from the round
-                // node). explicit = filled accent; ghost = hollow light outline.
+                // node). explicit = filled accent; ghost = hollow light outline. hover (kex2d-
+                // burndown stage 3) lifts the ink outline through the shared `hovered()` helper —
+                // a hollow ghost has no fill to lift, so its outline carries the whole read.
                 for (const h of set.handles) {
+                    const hov =
+                        editor.hoverKnob !== null &&
+                        editor.hoverKnob.eid === set.eid &&
+                        editor.hoverKnob.side === h.side;
                     ctx.beginPath();
                     ctx.rect(
                         h.x - TANGENT_KNOB,
@@ -629,17 +636,19 @@ const TangentDrawSystem: System = {
                         TANGENT_KNOB * 2,
                     );
                     if (explicit) {
-                        ctx.fillStyle = COLOR_ACCENT;
-                        ctx.strokeStyle = "#0e0d0c";
+                        ctx.fillStyle = hov ? hovered(COLOR_ACCENT) : COLOR_ACCENT;
+                        ctx.strokeStyle = hov ? hovered(COLOR_ACCENT) : "#0e0d0c";
                         ctx.lineWidth = 1;
                         ctx.fill();
                         ctx.stroke();
                     } else {
                         ctx.fillStyle = "#0e0d0c";
-                        ctx.strokeStyle = "rgba(240, 236, 232, 0.7)";
-                        ctx.lineWidth = 1;
                         ctx.fill();
+                        ctx.strokeStyle = hov ? hovered(TANGENT_GHOST) : TANGENT_GHOST;
+                        ctx.globalAlpha = 0.7;
+                        ctx.lineWidth = 1;
                         ctx.stroke();
+                        ctx.globalAlpha = 1;
                     }
                 }
                 ctx.restore();
