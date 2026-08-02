@@ -581,6 +581,7 @@ describe("solveOptimize — golden fixture (bit identity)", () => {
         expect(r.iters).toBe(optimizeGolden.iters);
         expect(r.residual).toBe(optimizeGolden.residual);
         expect(r.angleResidual).toBe(optimizeGolden.angleResidual);
+        expect(r.vSqResidual).toBe(optimizeGolden.vSqResidual);
         for (let k = 0; k < r.points.length; k++) {
             expect(r.points[k].g).toBe(optimizeGolden.g[k]);
             expect(r.deltaG[k]).toBe(optimizeGolden.deltaG[k]);
