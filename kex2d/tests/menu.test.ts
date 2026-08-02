@@ -1327,16 +1327,26 @@ describe("menus.ts module graph — the builders import nothing impure", () => {
 // close that: every row array lives in the pure builders module, and every menu renders through
 // the one recursive renderer.
 describe("menu source pins — builders and renderer stay singular", () => {
-    const src = (file: string): string =>
-        readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
-    const srcFiles = readdirSync(join(import.meta.dir, "..", "src")).filter(
-        (f) => f.endsWith(".ts") || f.endsWith(".svelte"),
-    );
+    const srcRoot = join(import.meta.dir, "..", "src");
+    const src = (file: string): string => readFileSync(join(srcRoot, file), "utf8");
+
+    // recursive — a flat `readdirSync` sees only the top level, so a future nested module
+    // (`src/ui/Menu2.svelte`) would be invisible to both greps below while they stayed green,
+    // exactly the drift these pins exist to catch.
+    function collectSrcFiles(dir: string, prefix = ""): string[] {
+        return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) return collectSrcFiles(join(dir, entry.name), rel);
+            return entry.name.endsWith(".ts") || entry.name.endsWith(".svelte") ? [rel] : [];
+        });
+    }
+    const srcFiles = collectSrcFiles(srcRoot);
+
+    // matches a MenuGroup value specifically (GROUPS in menu.ts), not an unrelated `group` field
+    // (render.ts's ECS system-scheduling groups) or a JSDoc `@example`'s prose.
+    const groupPattern = /group:\s*"(create|modify|lifecycle)"/;
 
     test('no `group: "` row literal outside src/menus.ts', () => {
-        // matches a MenuGroup value specifically (GROUPS in menu.ts), not an unrelated `group`
-        // field (render.ts's ECS system-scheduling groups) or a JSDoc `@example`'s prose.
-        const pattern = /group:\s*"(create|modify|lifecycle)"/;
         const bad = srcFiles.filter(
             (f) =>
                 f !== "menus.ts" &&
@@ -1345,10 +1355,22 @@ describe("menu source pins — builders and renderer stay singular", () => {
                     .some((line) => {
                         const trimmed = line.trim();
                         if (trimmed.startsWith("*") || trimmed.startsWith("//")) return false;
-                        return pattern.test(line);
+                        return groupPattern.test(line);
                     }),
         );
         expect(bad).toEqual([]);
+    });
+
+    // positive control: proves the pattern can actually match something. `menus.ts` is excluded
+    // from the check above, so a pattern that stopped matching production's spelling (a `GROUPS[n]`
+    // rewrite, a `row()` helper) would leave the check above green forever — matching nothing
+    // anywhere is indistinguishable from matching nothing bad.
+    test('positive control: `group: "` DOES match a line in src/menus.ts', () => {
+        expect(
+            src("menus.ts")
+                .split("\n")
+                .some((line) => groupPattern.test(line)),
+        ).toBe(true);
     });
 
     test('no `class="menu-item"` outside src/Menu.svelte', () => {
@@ -1356,5 +1378,12 @@ describe("menu source pins — builders and renderer stay singular", () => {
             (f) => f !== "Menu.svelte" && src(f).includes('class="menu-item"'),
         );
         expect(bad).toEqual([]);
+    });
+
+    // positive control: same shape as above — proves the literal still exists in the one place
+    // it's allowed, so a rename there (a class-name refactor) can't leave this check vacuously
+    // green.
+    test('positive control: `class="menu-item"` DOES appear in src/Menu.svelte', () => {
+        expect(src("Menu.svelte").includes('class="menu-item"')).toBe(true);
     });
 });
