@@ -617,8 +617,10 @@ const TangentDrawSystem: System = {
                 }
                 ctx.stroke();
                 // the knobs — a small square (the bezier-handle convention, distinct from the
-                // round node), always filled accent. hover lifts the fill + outline through the
-                // shared `hovered()` helper.
+                // round node), filled accent with an ink outline at rest (the point-glyph
+                // calibration, editor-ui.md Kind color). hover lifts BOTH the fill and the
+                // outline to the hovered tone through the shared `hovered()` helper — silhouette
+                // contrast without a size change.
                 for (const h of set.handles) {
                     const hov =
                         editor.hoverKnob !== null &&
@@ -631,7 +633,7 @@ const TangentDrawSystem: System = {
                         TANGENT_KNOB * 2,
                         TANGENT_KNOB * 2,
                     );
-                    ctx.strokeStyle = hov ? hovered(COLOR_ACCENT) : COLOR_ACCENT;
+                    ctx.strokeStyle = hov ? hovered(COLOR_ACCENT) : "#0e0d0c";
                     ctx.fillStyle = hov ? hovered(COLOR_ACCENT) : COLOR_ACCENT;
                     ctx.lineWidth = 1;
                     ctx.fill();

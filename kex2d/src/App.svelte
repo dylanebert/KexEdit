@@ -1708,20 +1708,18 @@ $effect(() => {
     }
     /* the two polar manipulator knobs: `.rbtn` shells positioned absolutely at their ring screen
        point (left/top inline) and centered on it. accent-lit, with a hover wash — the hover/active
-       states the canvas-drawn knobs lacked (feel round 6). the grab affordance is a move cursor:
-       these initiate a drag. */
+       states the canvas-drawn knobs lacked (feel round 6). no hand cursor (kex2d-burndown feel
+       fix): the grab/pointer affordance is out of the design space for these — the ring itself
+       already reads as draggable, so the default arrow stays. */
     .rbtn.manip {
         color: var(--accent);
         transform: translate(-50%, -50%);
-        cursor: grab;
+        cursor: default;
         touch-action: none; /* the pointerdown drives a pointer drag, not a scroll/zoom gesture */
     }
     .rbtn.manip:hover {
         background: var(--accent-soft);
         border-color: var(--accent);
-    }
-    .rbtn.manip:active {
-        cursor: grabbing;
     }
     /* the node context menu: an instance of the shared `.menu` language at the cursor (the same
        fixed-position context-menu placement as .ctxmenu). min-width so the rows + check + the

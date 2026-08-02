@@ -135,34 +135,35 @@ describe("hover outline lift — a glyph's ink stroke joins its hovered tone (ke
     });
 });
 
-describe("tangent knob — one accent appearance, no authored/inferred channel (kex2d-burndown feel fix)", () => {
-    test("TangentDrawSystem draws every knob filled accent — no explicit/ghost fork", () => {
-        // the black-filled ghost read as receding/subordinate against the viewport, and the
-        // authored/inferred distinction it encoded is not a state the user ever chooses
-        // (inferred is simply pre-first-drag) — not worth a visual channel. every knob now draws
-        // identically: filled COLOR_ACCENT, hover-lifted through hovered() (editor-ui.md Kind
-        // color).
+describe("tangent knob — one appearance, ink outline at rest, hover lifts both channels (kex2d-burndown feel fix)", () => {
+    test("TangentDrawSystem draws every knob with the point-glyph hover calibration — no explicit/ghost fork", () => {
+        // the authored/inferred distinction the old ghost fork encoded is not a state the user
+        // ever chooses (inferred is simply pre-first-drag) — not worth a visual channel, so every
+        // knob draws identically. But identical still needs the point-glyph calibration
+        // (editor-ui.md Kind color): an ink outline at rest, hover lifting BOTH the fill and the
+        // outline to the hovered tone — silhouette contrast without a size change. A collapse
+        // that set both channels to the same resting tone (accent stroke on accent fill) loses
+        // the hover read entirely, which is the regression this pins against.
         const render = readFileSync(new URL("../src/render.ts", import.meta.url), "utf8");
         const start = render.indexOf("const TangentDrawSystem");
         const end = render.indexOf("const CartDrawSystem");
         expect(start).toBeGreaterThan(-1);
         expect(end).toBeGreaterThan(start);
         const body = render.slice(start, end);
-        // no black fill/outline literal survives on the tangent knob path, and the retired
-        // ghost-outline constant has no caller left.
-        expect(body.includes('"#0e0d0c"')).toBe(false);
+        // the retired ghost-outline constant has no caller left.
         expect(body.includes("TANGENT_GHOST")).toBe(false);
         // no explicit/ghost fork remains — `explicit` is dead once the branch is gone.
         expect(body.includes("if (explicit)")).toBe(false);
         expect(body.includes("const explicit")).toBe(false);
-        // fill is unconditional: exactly one `ctx.fill()` call in the knob loop, set every
-        // iteration alongside the stroke, both through the shared hover helper.
-        expect(body.includes("ctx.strokeStyle = hov ? hovered(COLOR_ACCENT) : COLOR_ACCENT;")).toBe(
+        // rest state: ink outline, accent fill. hover: both lift to hovered(COLOR_ACCENT).
+        expect(body.includes('ctx.strokeStyle = hov ? hovered(COLOR_ACCENT) : "#0e0d0c";')).toBe(
             true,
         );
         expect(body.includes("ctx.fillStyle = hov ? hovered(COLOR_ACCENT) : COLOR_ACCENT;")).toBe(
             true,
         );
+        // fill is unconditional: exactly one `ctx.fill()` call in the knob loop, set every
+        // iteration alongside the stroke, both through the shared hover helper.
         expect((body.match(/ctx\.fill\(\);/g) ?? []).length).toBe(1);
     });
 });
