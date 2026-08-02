@@ -1,5 +1,6 @@
 /** standard gravity, m/s² — owned here (the lowest layer, the integrator that consumes it) and
- *  re-exported by `bake.ts`/read by `optimize.ts`, the same one-home pattern as `V_FLOOR`. */
+ *  read by `bake.ts`/`optimize.ts`, the same one-home pattern as `V_FLOOR` (which `bake.ts` does
+ *  re-export, since its own inversion needs the identical clamp value). */
 export const G = 9.80665;
 
 /**
