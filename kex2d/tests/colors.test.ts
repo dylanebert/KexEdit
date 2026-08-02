@@ -104,14 +104,15 @@ describe("hover outline lift — a glyph's ink stroke joins its hovered tone (ke
     test("render.ts derives every glyph hover stroke through hovered(), never a literal", () => {
         // the color channel is hover's ONE channel: on hover a viewport glyph's dark ink stroke
         // lifts to the same hovered() tone its fill wears — silhouette contrast without a size
-        // change. force markers + boundary anchors both resolve through the helper.
+        // change. force markers resolve through the helper; the boundary anchor's own lift is
+        // now proven behaviorally (`tests/render.test.ts` reads the actual `strokeStyle` off a
+        // recorded draw call, not this source text — kex2d-followups follow-up 9).
         const render = readFileSync(new URL("../src/render.ts", import.meta.url), "utf8");
         // presence, never an occurrence COUNT: a count breaks on a legitimate hoist into a local
         // and passes on a tone computed and never used. What the lift DOES is pinned honestly by
         // the harness ray-run off the real canvas (`harness/force.pw.ts` step 4b) — this only
         // pins that the tone comes from the shared helper rather than a hand-written literal.
         expect(render.includes("hovered(COLOR_FORCE)")).toBe(true);
-        expect(/hov\s*\?\s*hovered\(COLOR_ANCHOR\)/.test(render)).toBe(true);
         // the grow channel is OUT (user feel verdict): no hover radius scaling anywhere.
         expect(render.includes("HOVER_GROW")).toBe(false);
     });
@@ -135,38 +136,14 @@ describe("hover outline lift — a glyph's ink stroke joins its hovered tone (ke
     });
 });
 
-describe("tangent knob — one appearance, ink outline at rest, hover lifts both channels (kex2d-burndown feel fix)", () => {
-    test("TangentDrawSystem draws every knob with the point-glyph hover calibration — no explicit/ghost fork", () => {
-        // the authored/inferred distinction the old ghost fork encoded is not a state the user
-        // ever chooses (inferred is simply pre-first-drag) — not worth a visual channel, so every
-        // knob draws identically. But identical still needs the point-glyph calibration
-        // (editor-ui.md Kind color): an ink outline at rest, hover lifting BOTH the fill and the
-        // outline to the hovered tone — silhouette contrast without a size change. A collapse
-        // that set both channels to the same resting tone (accent stroke on accent fill) loses
-        // the hover read entirely, which is the regression this pins against.
-        const render = readFileSync(new URL("../src/render.ts", import.meta.url), "utf8");
-        const start = render.indexOf("const TangentDrawSystem");
-        const end = render.indexOf("const CartDrawSystem");
-        expect(start).toBeGreaterThan(-1);
-        expect(end).toBeGreaterThan(start);
-        const body = render.slice(start, end);
-        // the retired ghost-outline constant has no caller left.
-        expect(body.includes("TANGENT_GHOST")).toBe(false);
-        // no explicit/ghost fork remains — `explicit` is dead once the branch is gone.
-        expect(body.includes("if (explicit)")).toBe(false);
-        expect(body.includes("const explicit")).toBe(false);
-        // rest state: ink outline, accent fill. hover: both lift to hovered(COLOR_ACCENT).
-        expect(body.includes('ctx.strokeStyle = hov ? hovered(COLOR_ACCENT) : "#0e0d0c";')).toBe(
-            true,
-        );
-        expect(body.includes("ctx.fillStyle = hov ? hovered(COLOR_ACCENT) : COLOR_ACCENT;")).toBe(
-            true,
-        );
-        // fill is unconditional: exactly one `ctx.fill()` call in the knob loop, set every
-        // iteration alongside the stroke, both through the shared hover helper.
-        expect((body.match(/ctx\.fill\(\);/g) ?? []).length).toBe(1);
-    });
-});
+// the tangent-knob calibration (kex2d-burndown feel fix: one appearance, ink outline at rest,
+// hover lifts both channels, no explicit/ghost fork) used to be a source-pin regex over
+// `TangentDrawSystem`'s body text here. Retired (kex2d-followups follow-up 9): it re-derived
+// the rule it checked (a renderer that called `hovered()` and then styled something else
+// entirely still passed it). `tests/render.test.ts` now drives the real `TangentDrawSystem`
+// over a recording `ctx` double and reads the actual `strokeStyle`/`fillStyle` at the knob's
+// draw call, for an inferred AND an explicitly authored node both — the behavioral proof that
+// no fork survives between them.
 
 describe("hovered — the rung below selection", () => {
     const kinds = ["#78a5d6", "#d49560"];

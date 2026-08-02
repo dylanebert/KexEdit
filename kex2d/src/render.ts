@@ -306,7 +306,7 @@ const TrackDrawSystem: System = {
 /** the section-entry anchors: node 0 of every section (the start + interior
  *  boundaries), drawn at the baked sample they pin to. distinct from the draggable
  *  shape handles — an anchor is derived (the entry), not authored. */
-const AnchorDrawSystem: System = {
+export const AnchorDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
         const { element: canvas, ctx } = Canvas2D;
@@ -589,7 +589,7 @@ const TANGENT_KNOB = 3.5; // half-size of a handle knob square (px)
  *  node in tangent-edit mode (double-clicked) shows any, so mere selection stays uncluttered. at a
  *  geo→geo boundary an extra set draws the downstream node-0's out-handle (the stitch, one node in
  *  two halves). hover lifts the fill + outline through the shared `hovered()` helper. */
-const TangentDrawSystem: System = {
+export const TangentDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
         const { element: canvas, ctx } = Canvas2D;
