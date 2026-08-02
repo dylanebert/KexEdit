@@ -94,7 +94,7 @@ Velocity uses the energy-delta (squared) form to avoid catastrophic cancellation
 `invertRange` (`θ_{i+1} = 2·m_i − θ_i`) is the integrator's exact reflection inverse — round-trip
 validation only, NOT the bake (Hard gotchas, below).
 
-**The clamp-gradient law** (optimize-mode stage-3 conditioning lab): the forward clamps
+**The clamp-gradient law** (pin-mode stage-3 conditioning lab): the forward clamps
 (`vSafe`, `sqrt`) make the exit map non-differentiable at a stall, and the cliff is
 **derivative-inaccessible** — no draft-property read (a vMin march scan, a closed-form
 `G·L/V_WARN²` bound) can certify it; both were tried and removed as unsound. The one honest
@@ -104,7 +104,7 @@ separate every floor-touching corpus draft from every smooth one, threshold-free
 
 **The ds-convention law**: anything needing arclength sums the bake's own per-edge `out.ds`,
 never re-derives from chord distance. The two agree to f32 rounding on a normal chain, but the
-optimize mode's downstream freeze publishes a **zero-length gap edge over a real position jump**
+pin mode's downstream freeze publishes a **zero-length gap edge over a real position jump**
 (the residual made visible), so a chord walk diverges from the chart axis by the whole gap.
 `forceCurve`, `sectionSpans`, and `cart.trackMapping` all speak `out.ds`; so must any new
 consumer (and `tests/domain.test.ts`'s independent-table oracle).
@@ -221,7 +221,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
 - `convert-worker.ts` — the pool's worker: `refine.solve` per message and nothing else. The bake
   crosses once at `init`, then each message is a knot set; no refinement state, no policy, no
   decisions live here.
-- `optimize.ts` — optimize mode's **masked exit-restore kernel**, f64: a small constrained
+- `optimize.ts` — pin mode's **masked exit-restore kernel**, f64: a small constrained
   Gauss-Newton (dense KKT, damped backtrack with SOC retry + restoration fallback, adaptive
   re-anchored continuation for large drift) whose only DOF are the FREE keys' g-ordinates — s,
   length, structure, easing, and locked keys are invariant by construction. Objective = exact
@@ -343,8 +343,8 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   Destroy paths (`deleteSection`/`joinNext`) evict; ids never recycle, so a stale entry can't
   alias; a future document-load path must wipe the map (nothing else clears it). A restore never
   re-stamps. `convertSection` (the destructive flip) neither stamps nor consults.
-  **The downstream freeze** (`setBakeFreeze`, optimize mode): while set, `bake()` runs TWO chains
-  — start..the optimizing section live, downstream seeded at the FROZEN entry (the session's
+  **The downstream freeze** (`setBakeFreeze`, pin mode): while set, `bake()` runs TWO chains
+  — start..the pinning section live, downstream seeded at the FROZEN entry (the session's
   recovered exit), so downstream holds its mode-entry placement while the live exit wanders.
   Downstream payloads can't change in-mode (the lockdown), so the frozen part re-bakes
   byte-identical with no snapshot. The seam is a zero-length GAP edge over a real position jump
@@ -353,7 +353,7 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   hash gate (`freezeInvalid` — mode open/close is editor state, not authored state); budget-less
   downstream (a track already past `MAX_SAMPLES`) publishes empty past-buffer ranges rather than
   stale prior-bake info. Tested in `tests/track.test.ts` + the mode-level freeze suite in
-  `tests/optimize.test.ts`.
+  `tests/pin.test.ts`.
   **The landing display override** (`setBakeLanding`/`BakeLanding`, the paced landing's
   whole-display half): while a landed Solve's landing runs, `forceDense` substitutes the landing's
   interpolated `g` for the landed section's keyframes — the ONE seam where keyframes become bake
@@ -376,10 +376,10 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
   fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
-  right-click menus: `context` (the section menu — the ONE kind-fitted `Convert` row, `Optimize` on a
-  force section, then top-level `Reset` and `Delete`; inside a live optimize session on that section
-  it becomes Solve + Exit instead), `nodeMenu` (the node context menu — Delete + Add, a Handles
-  toggle, a Tangents ▸ submenu holding the three modes, then a top-level Reset — opened on any
+  right-click menus: `context` (the section menu — the ONE kind-fitted `Convert` row, `Pin` on a
+  force section, then `Reset` and `Delete`; inside a live pin session on that section
+  it becomes Solve + Exit instead), `nodeMenu` (the node context menu — Add, a Handles
+  toggle, a Tangents ▸ submenu holding the three modes, then Reset and Delete — opened on any
   pickable node, any mode),
   and `rulerMenu` (the ruler's Meters/Seconds domain picker, `openRulerMenu`/`closeRulerMenu` — no
   target subject, the ruler addresses the whole timeline; a row's pick is a document conversion op,
@@ -403,16 +403,16 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   that, and a copy here would be a second truth. `convertProgress` DROPS a report that lands after the gate closed — a
   cancelled solve's in-flight probe would otherwise raise the modal back with no cancel path left.
   The gate is pure state; the `AbortController` and the await live with the surface that opened it
-  (`App.svelte`). Optimize-mode state lives here too: `optimizing` (the session — stamp, ghost,
-  downstream-freeze seed), `locked`, `optimizeSolving` (the mode's own blocking gate), `landing`
-  (the paced-landing display override, cosmetic only), and the SANDBOX — `beginOptimize`/
-  `endOptimize` are the only open/close choke points (every path goes through them), creating/
+  (`App.svelte`). Pin-mode state lives here too: `pinning` (the session — stamp, ghost,
+  downstream-freeze seed), `locked`, `pinSolving` (the mode's own blocking gate), `landing`
+  (the paced-landing display override, cosmetic only), and the SANDBOX — `beginPin`/
+  `endPin` are the only open/close choke points (every path goes through them), creating/
   discarding the sandbox history, setting/clearing `history.redirectHistory` and
   `track.setBakeFreeze`; `sandbox()`/`restoreSandbox` are the landing's capture/restore seam.
   `Landing` carries the landed session's `section`, which is what makes `modeChromeSection()`
-  (`optimizing ?? landing`) possible — the modal chrome's subject, CHROME ONLY: the panel, the dim
+  (`pinning ?? landing`) possible — the modal chrome's subject, CHROME ONLY: the panel, the dim
   wash, and the subject hatch key on it so the landing reads as the mode's exit transition, while
-  enablement and consent predicates keep reading `editor.optimizing`. `easeOut` is the one shared
+  enablement and consent predicates keep reading `editor.pinning`. `easeOut` is the one shared
   easing curve (`landingG`'s interpolant and App's `--ease-out` token, pinned equal in
   `colors.test.ts`). Plain singleton, read by Svelte via the per-RAF tick.
 - `history.ts` — **one undo/redo stack for the whole editor** (mirrors shallot's editor
@@ -430,12 +430,12 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   verbatim (current `order` kept, no re-stamp) as one undoable entry, the `"restored"` outcome's
   write path for both directions' `tryRestore`.
   Structural: `appendSection`/`splitSection`/`joinSection`/`removeSection` — each a whole-track
-  `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). Optimize-mode
+  `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). Pin-mode
   seams: `redirectHistory` (while set, EVERY `record` lands in the sandbox — structural
   containment, and the redirect target is exempt from `MAX_UNDO` eviction: Exit replays and the
   landing freezes whole stacks, so eviction would silently break byte-identity), `recordOuter`
   (the redirect bypass the Solve landing uses), `resumedLanding`/`markResumedLanding` (the
-  reopened session's redo-at-end re-land offer, cleared by a forking record), and `solveOptimize`
+  reopened session's redo-at-end re-land offer, cleared by a forking record), and `solvePin`
   (the landing: free-key g writes + the mode transition in one outer entry whose reverse restores
   the draft AND reopens the mode via injected enter/exit closures — this module still never
   imports editor). `history` singleton; `createHistory` for tests.
@@ -535,21 +535,24 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   corpus + hill seed, both directions, every trip must land `"restored"`) over
   `tests/helpers/roundtrip-doc.ts`, with the fast-tier hill sentinel `tests/roundtrip.test.ts`;
   `tests/roundtrip.lab.ts` stays the kernel-seam yardstick and never sees provenance.
-- `optimizeMode.ts` — the **optimize-mode document seam** (`geoforce.ts`'s sibling), and the
-  sandbox's routing layer. `enterOptimize` stamps the section's current exit + freezes the ghost
+- `pin.ts` — the **pin-mode document seam** (`geoforce.ts`'s sibling), and the
+  sandbox's routing layer. The mode is the pin, the kernel it drives is the optimizer — which is
+  the whole naming split (`kex2d/AGENTS.md`, Pin mode). `enterPin` stamps the section's current
+  exit + freezes the ghost
   and the downstream-freeze seed in ONE `evalForce` call (the same computation the solve's own
-  residual reads); `enterOptimizeMode` opens the mode (which opens the sandbox — outer history
-  untouched). `runOptimizeSection` re-reads the section's live baking parameters per invoke,
+  residual reads); `enterPinMode` opens the mode (which opens the sandbox — outer history
+  untouched). `runPinSection` re-reads the section's live baking parameters per invoke,
   freezes the lock ledger AT INVOKE, translates stable keyframe ids to kernel indices, and lands
-  a `"solved"` answer through `history.solveOptimize` as the ONE outer entry (always — a
+  a `"solved"` answer through `history.solvePin` as the ONE outer entry (always — a
   zero-drift Solve still closes the mode, and the transition must sit on the stack). Guards:
-  per-section in-flight lock, post-await SESSION IDENTITY (`editor.optimizing === session` — a
-  late-resolving Solve after Exit discards as `StaleOptimize`; the no-trace guarantee is a module
+  per-section in-flight lock, post-await SESSION IDENTITY (`editor.pinning === session` — a
+  late-resolving Solve after Exit discards as `StalePin`; the no-trace guarantee is a module
   invariant), then `authoredHash`. `undoRouted`/`redoRouted` are the editor-level undo/redo: the
   sandbox while a mode is open (undo at its start = Exit; a redo at a RESUMED sandbox's end falls
   through to the outer re-land, offer cleared by a forking edit), the outer history otherwise.
-  `exitOptimizeMode` discards: replay every sandbox reverse, close. Sandbox/boundary tests in
-  `tests/optimize.test.ts` (mutation-proven guards).
+  `exitPinMode` discards: replay every sandbox reverse, close. Sandbox/boundary tests in
+  `tests/pin.test.ts` (mutation-proven guards), which also carries the grep sentinel pinning that
+  no mode identifier drifts back into the solver set.
 - `controls.ts` — `attachControls(canvas, ecs)` wires canvas pointer + window keyboard, returns a
   teardown. Pick priority is node → force/START → section: `pickNode` (order-0 anchors are
   pickable, not draggable), then `pickForceOrStart` (the middle rung, resolved **nearest-wins** with
@@ -674,27 +677,36 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   keyframe drag and the extent trim freeze the view (`yGrow`/`xGrow` edge-scroll past the chart edge,
   resume on release). Conventions: `kexedit/.claude/rules/editor-ui.md`. Takes `ecs`; routes edits
   through `history`.
-- `menu.ts` + `Menu.svelte` — `MenuItem` is the shared row-language a menu renders as pure data:
-  label, `checked` (a selectable row's accent-lit state, e.g. the current tangent mode), `enabled`
-  (derived from editor state, a disabled row dimmed + inert), `shortcut`/`danger`, plus the standard
-  shapes `separator` (a divider row) and `children` (a `Tangents ▸` submenu — a hover/click flyout,
-  positioned to never cover its parent row and to flip in-viewport). `Menu.svelte` is the ONE
-  renderer (recursive for submenus); every menu is an instance of it inside a positioned `.menu`
-  wrapper — the section context menu + the node context menu (`App.svelte`) and the timeline's
-  append flyout (`Timeline.svelte`). Enablement, separators, and submenus are per-item properties,
-  not per-menu special cases.
+- `menu.ts` + `menus.ts` + `Menu.svelte` — the menu substrate, in three parts. `menu.ts` holds the
+  language: `MenuItem` (label, `group`, `checked`, `enabled`, `shortcut`/`danger`, `separator`,
+  `children`), the `GROUPS` taxonomy the ordering law is written in, `BINDINGS` (the keyboard
+  table both the handlers and the rows advertising a hint read — `bound(binding, key)` is the
+  handler half), `menuRows` (the rendered sequence: the builder's rows with a divider derived at
+  every group change, an authored within-group divider collapsing with a derived one rather than
+  doubling), and the two pure fit solvers `menuFit`/`flyoutFit`. `menus.ts` holds every row array
+  as a PURE builder — `sectionMenu`, `nodeMenu`, `keyframeMenu`, `rulerMenu`, `appendMenu`, each
+  `(state, actions) => MenuItem[]` over an explicit descriptor — and is module-graph pure (it
+  reaches only `menu`/`profile`/`section`/`spline`; the graph is walked as a test). That purity is
+  the point: the rows used to live in `$derived.by` closures no test could read, and the grammar
+  over them was a convention until the lift made it gateable. `Menu.svelte` is the ONE renderer
+  (recursive for submenus), rendering `menuRows(items)` inside a positioned `.menu` wrapper and
+  publishing each row's `data-group` so the capture harness can cross-check the DOM against the
+  same builders. Consumers: the section + node context menus (`App.svelte`), the keyframe, ruler,
+  and append menus (`Timeline.svelte`). The grammar itself (groups, ordering, separators,
+  `checked`, toggle labels, `shortcut`) is `editor-ui.md` Menus; the oracle over every builder ×
+  its full state matrix is `tests/menu.test.ts`.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), section-entry **anchor diamonds**, the
   hover + selected-section span overlays (each in the section's OWN kind color — one rung up under
   the pointer (`hovered`), brightened when selected (`selected`); priority infeasible-red >
-  selection > hover > kind, all three stroked through one `strokeFeasible`), the optimize-mode
+  selection > hover > kind, all three stroked through one `strokeFeasible`), the pin-mode
   **out-of-scope dim** (every non-subject span, plus its anchors/nodes/markers, washed topmost in
   `colors.DIM_WASH` — the viewport half of the timeline's `.mode-dim` wash; one channel, both
   surfaces, `editor-ui.md` Mode vocabulary; all four passes keyed on `editor.modeChromeSection()`,
   so the wash holds through the paced landing and releases with it in one moment), the **force
   keyframe markers** (`ForceDrawSystem`, ordered between the anchor and handle passes — the
   timeline diamond's viewport twin over `track.forceMarkers`: same entity, same glyph, the kind-color
-  ladder plus the driven register for a locked key in optimize mode; display + select only, nothing
+  ladder plus the driven register for a locked key in pin mode; display + select only, nothing
   drags), the node handles
   (selected/orphan/infeasible), the cart, the
   **Timeline** dock, and the three-button radial ring around the selected node (`radial.ts`: the
@@ -702,9 +714,8 @@ Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasib
   edit). In
   tangent-edit mode (`editor.tangentEdit`): `TangentDrawSystem` (`render.ts`) draws the edited
   node's handles (solid = explicit, hollow = `Auto` ghost); right-click any node opens the node
-  context menu (`Handles` toggle + a `Tangents ▸` submenu of Mirror | Aligned | Free + a top-level
-  `Reset`, a `Menu` over `editor.nodeMenu`, the same shared `.menu` look + cursor placement as the
-  section context menu). Snap-guide feedback: the viewport draws the incline **ray** in the shared neutral
+  context menu (`menus.nodeMenu` rendered by a `Menu` over `editor.nodeMenu`, the same shared
+  `.menu` look + cursor placement as the section context menu). Snap-guide feedback: the viewport draws the incline **ray** in the shared neutral
   gray (`COLOR_GUIDE_RAY`), the one register every snap guide wears (the timeline's `.snapguide`
   too); the numeric **°/m readout** is DOM — App's `.snap-readout`, the Blender modal-transform
   readout, shown **whenever a node is selected** (the Figma selected-object dimensions idiom): every
@@ -793,17 +804,17 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 - **Forward clamps are non-differentiable.** `vSafe` / `sqrt` kink at the boundary. The floor is
   tiny, so coasting past an infeasible region behaves like "cart paused at peak then continued."
   What may and may not certify that cliff: the clamp-gradient law, above.
-- **While optimize mode is open, every `history.record` redirects into the mode's sandbox** —
+- **While pin mode is open, every `history.record` redirects into the mode's sandbox** —
   by design (the sandbox contract: nothing applies to the outer stacks until Solve). The ONE
   outer write, the Solve landing, goes through `history.recordOuter`; don't "simplify" it back to
   `record`, and don't rely on call ordering to land outer. The sandbox is also **exempt from
   `MAX_UNDO` eviction** — Exit discards by replaying every entry's reverse and the landing
   freezes the stacks whole, so evicting one silently breaks both byte-identity guarantees; it's
   bounded by the mode's lifetime instead.
-- **A Solve result may only land while its own session is still open.** `runOptimizeSection`
-  checks `editor.optimizing === session` after the await and discards as `StaleOptimize`
+- **A Solve result may only land while its own session is still open.** `runPinSection`
+  checks `editor.pinning === session` after the await and discards as `StalePin`
   otherwise — the no-trace guarantee is this module invariant, not the UI's inert/Escape paths.
-  Same family: the lock ledger is frozen at invoke (`endOptimize` clears the live Set in place).
+  Same family: the lock ledger is frozen at invoke (`endPin` clears the live Set in place).
 - **Tick-derived `editor.*` reads lag a frame.** Svelte components read the plain `editor`
   singleton through `$derived` of the per-RAF `tick` prop, so an `$effect` gated on such a value
   outlives the real state change by up to a frame. Where the lagging listener *swallows*
@@ -828,6 +839,15 @@ The ECS + substrate layers are covered device-free — `tests/section.test.ts` (
 `tests/setup.ts` enum-shim preload (`bunfig.toml`) lets them import the shallot barrel with no GPU
 device; the unit suite is canvas2D + device-free, with no real-GPU leg. The real-GPU leg is the
 capture harness alone (`.claude/rules/kex2d-harness.md`).
+
+**Two suites split by what they import, not by feature.** `tests/optimize.test.ts` is the KERNEL
+suite — it reaches `optimize.ts`/`profile`/`section` only. `tests/pin.test.ts` is the mode's
+**document-seam** suite (`State`, `editor`, `history`): `runPinSection`'s guards, the lock toggle,
+the sandbox, the downstream freeze, and the grep sentinel over the Pin/solver naming boundary. They
+shared a filename until the rename found the seam; keep a new test on the side its imports put it.
+`tests/menu.test.ts` is the menus' whole gate — the per-builder characterization pins, the grammar
+oracle over every builder × its full state matrix, the `checked` registry and binding tables, and
+the `menus.ts` module-graph walk.
 
 ## Labs
 

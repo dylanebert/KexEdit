@@ -282,18 +282,61 @@ the button, `Enter`, or the menu; double-click is tangent edit, never append.
 
 ## Menus
 
-One menu substrate (kex2d `menu.ts` + `Menu.svelte` is the worked example): a menu is pure
-`MenuItem` data — label, `checked`, `enabled`, `shortcut`, `danger`, `separator`, `children` (a
-submenu flyout) — rendered by one recursive renderer. Every menu is an instance of it, never a
-bespoke component.
+One menu substrate (kex2d `menu.ts` + `menus.ts` + `Menu.svelte` is the worked example): a menu is
+pure `MenuItem` data — label, `group`, `checked`, `enabled`, `shortcut`, `danger`, `separator`,
+`children` (a submenu flyout) — rendered by one recursive renderer. Every menu is an instance of
+it, never a bespoke component.
+
+**The grammar below is a gate, not a convention, and the lift is what makes it one.** Every row
+array is a pure `(state, actions) => MenuItem[]` builder in its own module (kex2d `menus.ts`),
+taking an explicit state descriptor and reaching no ECS, editor, or DOM, so a grammar oracle can
+run every builder across its full state matrix (`tests/menu.test.ts`). That is the transferable
+part for any surface adopting this: **a law over UI data embedded in component closures is a
+convention; the lift to pure builders is what makes it a rule.** kex2d's menus drifted for exactly
+as long as their rows lived inside `$derived.by` closures no pure test could reach.
 
 - Right-click context menus are the app's menu language; a summoned menu never covers its invoker;
   functional menus animate minimally.
-- **Rows are terse and frequency-ordered.** A context menu is summoned *on* its subject, so the row
-  names the verb alone — `Delete`, not `Delete node` (the noun restates what the invoker already
-  said, the naming rule's module-scope-is-context). Order by how often a row is reached, not by
-  safety or by the order the features were built; `danger` marks the destructive row, so a
-  frequently-used delete leads without reading as a trap.
+- **Rows sort by group, then by frequency within the group.** Three groups, canonical order, each
+  with a membership test that classifies a new row:
+
+  | group | test | members today |
+  |---|---|---|
+  | `create` | the document gains an object | Add, the append flyout's Geo/Force |
+  | `modify` | changes the subject that summoned the menu, or enters / acts in / leaves a mode scoped to it | Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock, Meters/Seconds |
+  | `lifecycle` | the subject ends at its creation state or gone | Reset, then Delete |
+
+  `modify` is the residual class, defined as such honestly. `danger` implies the terminal row of
+  the whole menu. Frequency survives only as the *within-group* tiebreaker: as a free-form
+  whole-menu rule it was a per-menu judgment call, unenforceable, and it is why node Delete led
+  its menu while section Delete trailed.
+- **Separators derive from group boundaries.** The renderer emits a divider wherever the group
+  changes (kex2d `menuRows`); builders author none. One escape hatch survives — an explicit
+  `separator` is legal as a WITHIN-group divider, and the oracle constrains it to positions no
+  derived boundary can occupy (never first or last, never straddling a group change). Its one
+  sanctioned use is `Easing ▸`, dividing the preset picks from `Custom` (which materializes handles
+  and steps into handle edit: a different kind of row, the same group). An authored divider landing
+  at a boundary collapses with the derived one rather than doubling.
+- **Rows are terse.** A context menu is summoned *on* its subject, so the row names the verb alone
+  — `Delete`, not `Delete node` (the noun restates what the invoker already said, the naming rule's
+  module-scope-is-context).
+- **`checked` means exactly one thing: this row's state is in effect now.** Never "recently used",
+  never "this is the default". Backed by a declared registry — a row may light up iff its path is
+  listed there with the state it reports, asserted both directions, so a stale entry is a failure
+  of its own. kex2d declares 13 row paths in six families: `Handles`, the node `Tangents ▸`
+  modes, the keyframe `Tangents ▸` modes, the `Easing ▸` presets, `Easing ▸ Custom`, and the
+  ruler's Meters/Seconds.
+- **Toggle labeling follows set-valuedness.** A toggle over a **single subject** keeps a stable
+  label and carries `checked` (`Handles`). A toggle over a **set whose members can disagree** flips
+  its label to name the act the press performs, and carries no check (`Lock`/`Unlock`) — a
+  checkmark cannot express a mix. The two labels are one row wearing two names, never two rows.
+- **`shortcut` appears iff a keyboard binding invokes that row's action**, and it names the
+  ACTION, not the row's live enablement: a disabled `Add` still shows `Enter`, the way a locked-down
+  `Delete` keeps `Del`. A pointer gesture is not a shortcut (`Handles` is double-click and
+  advertises nothing). The bindings are a production table both ends read (kex2d `BINDINGS` in
+  `menu.ts` — the handler matches its `keys`, the row prints its `hint`), so a rebind moves the hint
+  with it. A table living in the test instead stays green through a rebind, which is how `L` → `Q`
+  would have gone unnoticed.
 - **Gray a row whose preconditions fail; omit one its subject rules out.** Graying keeps an
   applicable-but-blocked row discoverable (no live bake, a multi-set — the bulk-row law above). A
   row that could never fire on this subject is different: a section is exactly one kind, so the
@@ -302,7 +345,7 @@ bespoke component.
   permanently dead twin. Two rows for two directions spend the menu's space on a row the subject
   can never reach. **Mode-scoped state refines the same split**: a row whose subject state
   doesn't EXIST outside a mode is hidden outside it, not grayed — kex2d's keyframe Lock/Unlock
-  row appears only inside optimize mode (lock is mode-scoped; there is nothing to lock in normal
+  row appears only inside pin mode (lock is mode-scoped; there is nothing to lock in normal
   editing), while the in-mode `Convert` row grays (convert exists, the mode temporarily bars
   it). Gray = "blocked action you know from elsewhere"; hidden = "state that isn't a thing
   here".
@@ -327,7 +370,10 @@ bespoke component.
 - **Menu flows are verified pointer-true**: real hover, coordinate clicks, and an
   `elementFromPoint` reachability assert. A selector-targeted `.click()` fires handlers on
   clipped, humanly-unreachable elements — a green selector test proves nothing about
-  reachability.
+  reachability. The same walk cross-checks the rendered rows against the builders themselves
+  (labels, `data-group`, derived dividers), so the renderer is proven to TRANSMIT the grammar the
+  oracle proves the builders obey — never against a hand-typed sequence, which a matching hand-edit
+  would keep green (kex2d `kex2d-harness.md`, Verifier integrity).
 
 ## Kind color
 
@@ -356,8 +402,13 @@ surfaces.
 
 Every visual channel carries exactly one meaning, on every surface that shows the state. A new
 state reuses its meaning's channel; a channel with no meaning here doesn't ship — add the row
-first or don't add the chrome. Earned by kex2d's optimize mode (2026-08-01), where the timeline
+first or don't add the chrome. Earned by kex2d's pin mode (2026-08-01), where the timeline
 and viewport had drifted to different dialects of the same states.
+
+- **Pin vs Lock** — both mean hold-fixed, on different objects and at different roles. A **pin** is
+  an *end*: the state a solve must restore (kex2d stamps a section's exit at mode entry). A **lock**
+  is a *means*: a DOF the solver may not move (kex2d `Q`, per keyframe). Goal versus frozen
+  variable. Two words because they are two things; don't collapse them.
 
 - **Kind color** = section kind, everywhere (Kind color, above). Selection brightens it, hover is
   the rung below — one channel (color), calibrated per element class: areas lift fill, point
@@ -449,7 +500,7 @@ invoked-solve surface, 2D or 3D.
 
 ## Sandbox-mode UX
 
-Earned by kex2d's optimize mode (three feel iterations, 2026-07-30 — a transactional bracket and
+Earned by kex2d's pin mode (three feel iterations, 2026-07-30 — a transactional bracket and
 a continuous-history model were both built and superseded by hand); applies to any mode whose
 point is an experiment the user confirms or abandons — an invoked-solve workspace, a preview
 edit, a what-if.

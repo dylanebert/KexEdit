@@ -112,9 +112,9 @@ not draggable; its world pose IS the entry, and the shape hangs off it in the en
   exits); mere selection shows nothing (`editor-ui.md`'s layered-expressiveness contract). A handle
   drag is a **free** direct-manipulation gesture with one landmark, the grab-ray angle latch
   (`latchAngle`). The **node context menu** (right-click any pickable node, any mode — the app's
-  context-menu language, `menu.ts`): `Delete` then `Add` (chain-end, enablement-gated), a `Handles`
-  toggle (≡ the double-click summon) over a `Tangents ▸` submenu (Mirror | Aligned | Free), then a
-  top-level `Reset` (the Reset idiom law — one click from anywhere). Node 0 is reachable: right-click or double-click at the START diamond
+  context-menu language, `menu.ts`), in the grammar's canonical order: `Add` (chain-end,
+  enablement-gated), a `Handles` toggle (≡ the double-click summon) over a `Tangents ▸` submenu
+  (Mirror | Aligned | Free), then `Reset` and `Delete`. Node 0 is reachable: right-click or double-click at the START diamond
   reaches the first section's node 0 (its menu is Handles + Reset only); a geo→geo boundary's
   node 0 is reached by tangent-editing the coincident upstream tip (the stitch).
 - **Recover force.** `forces` (`bake.ts`) reads the sampled positions → per-sample tangent θ (the
@@ -272,14 +272,19 @@ editor — reserved for invoked tools (the substrate `splitGeo`/`splitForce`/`jo
 in-tree as their reference). Boundary anchors draw as viewport diamonds + chart guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo via a
 byte-identical whole-track snapshot pair.
 
-**Optimize mode** (endpoint-preserving force edits) — entered from a force section's context menu
-(`Optimize`): the section's current exit `(x, y, θ)` is **stamped** as the pin, the author retunes
+**Pin mode** (endpoint-preserving force edits) — entered from a force section's context menu
+(`Pin`): the section's current exit `(x, y, θ)` is **stamped** as the pin, the author retunes
 force keyframes with the normal idiom (add keys, drag, trim length — slack is authored, never
 inferred), and an invoked **Solve** adjusts only un-locked keys' `g` to restore the stamp — s,
-length, structure, easing, and locked keys land byte-identical. All keys are free by default;
+length, structure, easing, and locked keys land byte-identical. **The solver optimizes, the mode
+pins**, and that line is where the naming splits: `pin.ts` is the mode, while `optimize.ts` /
+`optimize-async.ts` / `optimize-worker.ts` keep their names because they genuinely are a
+constrained minimization the author never sees. Pin and Lock are also two things, not a collision:
+the pin is the *end* the solve must restore, a lock is a *means* the solve may not move
+(`editor-ui.md` Mode vocabulary). All keys are free by default;
 **`Q`** toggles lock on the selected set (the keyframe menu's mode-only Lock/Unlock row is the
-mouse path), locked keys wear the driven (dashed/faded) styling. The mode is a **sandbox**: the
-optimize state is temporary — every in-mode edit records into the mode's own history (nothing
+mouse path), locked keys wear the driven (dashed/faded) styling. The mode is a **sandbox**: its
+state is temporary — every in-mode edit records into the mode's own history (nothing
 touches the outer stacks), in-mode undo/redo walk that sandbox alone, undo at its start acts as
 Exit, and Exit/Esc discards it without trace. A landed Solve is **one outer undo entry carrying
 the whole experiment** — undoing it reopens the mode with draft, locks, and in-mode undo/redo
@@ -287,10 +292,10 @@ restored; redoing it re-lands and closes. The paced landing that plays after Sol
 **exit transition**: the modal chrome (panel in a disabled settling state, dim wash, subject hatch)
 holds through the window and releases in ONE moment at expiry or skip. A refusal (terse notice,
 top-center) stays in-mode with the draft untouched. While the mode is open the track is under an **editing lockdown** (only the
-optimizing section is editable — no section add/remove, convert, domain switch, v0, or
+pinning section is editable — no section add/remove, convert, domain switch, v0, or
 other-section edits) and **downstream sections freeze** at their mode-entry placement: the
 boundary gap that opens while editing IS the residual (the drop-line's truth), and any close
-repropagates. Five modules: `optimize.ts` (the masked exit-restore kernel), `optimizeMode.ts` (the
+repropagates. Five modules: `optimize.ts` (the masked exit-restore kernel), `pin.ts` (the
 document seam), `optimize-async.ts`/`optimize-worker.ts` (the one-shot worker façade), the
 sandbox + record-redirect seam (`editor.ts`/`history.ts`), and the downstream freeze
 (`track.setBakeFreeze`). Detail per module: `.claude/rules/kex2d-map.md`.
@@ -327,7 +332,7 @@ sandbox + record-redirect seam (`editor.ts`/`history.ts`), and the downstream fr
 
 Per-module hazards live beside their module in `.claude/rules/kex2d-map.md` (Hard gotchas): the
 bake/recovery traps (`forces` vs `invertRange`, the continuous chord angle, `Handle.theta` out of
-the bake and its drift from the recovered exit), the substrate's boundary + clamp laws, optimize
+the bake and its drift from the recovered exit), the substrate's boundary + clamp laws, pin
 mode's sandbox invariants, and the tick-lag dismissal standard every menu copies.
 
 ## Verify

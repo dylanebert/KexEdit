@@ -101,6 +101,21 @@ validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-
   LIST now, not a glob (`capture.ts`'s `stage.files`), so `tests/harness.test.ts` walks the
   harness dir for the real staged set and pins every entry is named there — a new flow file
   landing unstaged fails that pin instead of silently missing from the Windows-side run.
+- **The PAGE may import app source the staged file can't.** Staging forbids `flow.ts` importing
+  `../src` — but the page it drives is served by the vite dev server, so a `page.evaluate` can
+  `await import("/src/menus.ts")` and compute the expected answer from the real module at runtime.
+  `flow.ts`'s own imports and `capture.ts`'s `stage.files` are untouched, so the staging law holds
+  as written. This is the sanctioned way to compare rendered DOM against production data: the menu
+  cross-check rebuilds each menu from `src/menus.ts` + `menuRows` and asserts the DOM's row labels,
+  `data-group`s, and derived dividers against it. A hand-typed expected sequence in the harness is
+  the alternative, and it makes a builder reorder plus a matching hand-edit here silently green —
+  the exact drift the cross-check exists to catch. Two conditions make it free, and both must hold
+  before reaching for it: the module is **module-graph pure** (`menus.ts` touches no ECS, editor, or
+  DOM, gated by a walk in `tests/menu.test.ts`), and the descriptor crossing into the page stays
+  plain data — enum-valued fields travel as `"<module>.<Enum>.<Member>"` strings resolved from the
+  real module in the page, never as mirrored numeric literals, and function-valued fields are
+  stubbed. Importing an impure module this way would boot a second copy of app state inside the
+  flow.
 - **A deleted flow file must not outlive the checkout.** The Windows stage dir is PERSISTENT (its
   `node_modules` is the point) and the config now collects by glob, so a staged `*.pw.ts` the repo
   no longer has keeps running there: the split's first full capture ran the pre-split `shot.pw.ts`
