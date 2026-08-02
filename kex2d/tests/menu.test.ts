@@ -1127,16 +1127,14 @@ describe("the menu grammar — every builder, every state", () => {
     // ── the `Acts` REVERSE direction: `Acts` above closes "does this act's row show the right
     // hint", but says nothing about whether every keyboard binding is reachable from a menu at
     // all — a `BINDINGS` entry with no act naming it would sit unbound and untested forever. Every
-    // key `BINDINGS` declares must show up as an `Acts` value (some row's action invokes it) or be
-    // named here with why it has no menu path — the `RawKeys` shape (above), applied to the other
-    // end of the same table. Empty today: `remove`, `append`, `exitMode`, and `lock` are all menu-
-    // reachable (`remove`/`removeSet`, `add`, `pinExit`, `toggleLock`), so nothing is declared —
-    // which is exactly why the positive control below is the deliverable's real evidence.
+    // key `BINDINGS` declares must show up as an `Acts` value or be named here with why it has no
+    // menu path — the declared-registry law (editor-ui.md Menus), applied to the other end of the
+    // same table. Empty today: `remove`, `append`, `exitMode`, and `lock` are all menu-reachable
+    // (`remove`/`removeSet`, `add`, `pinExit`, `toggleLock`), which is exactly why the positive
+    // control below is the deliverable's real evidence.
     const MenulessBindings: Partial<Record<keyof typeof BINDINGS, { why: string }>> = {};
 
     test("every `BINDINGS` key is menu-reachable via `Acts`, or declared in `MenulessBindings`", () => {
-        // both directions: an undeclared unbound binding fails (missing from the union below), and
-        // a `MenulessBindings` entry for a binding a menu row DOES reach is an orphan and fails too.
         const reachable = new Set(
             Object.values(Acts).filter((b): b is keyof typeof BINDINGS => b !== null),
         );

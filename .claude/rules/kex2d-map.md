@@ -906,6 +906,14 @@ The ECS + substrate layers are covered device-free — `tests/section.test.ts` (
 device; the unit suite is canvas2D + device-free, with no real-GPU leg. The real-GPU leg is the
 capture harness alone (`.claude/rules/kex2d-harness.md`).
 
+`render.ts` is covered the same device-free way through `tests/helpers/recording-ctx.ts` — a
+recording `CanvasRenderingContext2D` double that snapshots `strokeStyle`/`fillStyle`/`lineWidth`/
+`globalAlpha` at the instant each draw method fires, with a real `save()`/`restore()` style stack.
+It pins style at the draw call, never geometry — a knob drawn at the wrong position with the right
+color is invisible to it, and that stays the capture harness's job. The convention it implies:
+draw systems export from `render.ts` so the harness can reach them (`AnchorDrawSystem`,
+`TangentDrawSystem` today). `tests/render.test.ts` is its first consumer.
+
 **Two suites split by what they import, not by feature.** `tests/optimize.test.ts` is the KERNEL
 suite — it reaches `optimize.ts`/`profile`/`section` only. `tests/pin.test.ts` is the mode's
 **document-seam** suite (`State`, `editor`, `history`): `runPinSection`'s guards, the lock toggle,

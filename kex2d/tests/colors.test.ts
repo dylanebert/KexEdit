@@ -177,13 +177,10 @@ describe("hovered — the rung below selection", () => {
 // already), so a new occurrence anywhere in the tree is either a genuine pannable/clickable
 // chrome affordance or a regression sneaking the cursor channel onto a glyph it doesn't belong
 // on. CSS `cursor` has no cheap behavioral read, so this stays a SOURCE pin by design (the
-// spec's locked decision) — the strongest mechanism available, not a stand-in for one. A
-// declared registry, asserted BOTH directions like the `checked`/separator registries (an
-// undeclared cursor site and an orphan registry entry each fail), walked recursively (`Bun.Glob`,
-// not `readdirSync` — the source-pin law, editor-ui.md Menus) so a new component can't escape it.
-// Two dialects wear the one channel: a `.svelte` CSS `cursor:` declaration, and a canvas
-// `style.cursor = "…"` assignment in `.ts` (`controls.ts`'s pan-grabbing affordance — the single
-// most on-point instance of the law, and the one dialect a `.svelte`-only glob would never reach).
+// spec's locked decision) — the declared-registry law, editor-ui.md Menus. Two dialects wear the
+// one channel: a `.svelte` CSS `cursor:` declaration, and a canvas `style.cursor = "…"`
+// assignment in `.ts` (`controls.ts`'s pan-grabbing affordance — the single most on-point
+// instance of the law, and the one dialect a `.svelte`-only glob would never reach).
 
 interface CursorSite {
     file: string;

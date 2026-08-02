@@ -320,6 +320,22 @@ source pin must prove it reached its input: walk the tree recursively (a non-rec
 is blind to `src/ui/Menu2.svelte`) and carry a positive control, or a production spelling that drifts
 makes the pattern match nothing anywhere and the pin passes forever.
 
+**A declared registry is the general law; state it once.** Four instances share this shape —
+`checked`, authored separators (below), `MenulessBindings` (kex2d `tests/menu.test.ts`), and the
+cursor allowlist (`tests/colors.test.ts`) — so it lands here rather than re-derived at each site:
+enumerate the population **from source**, walk the tree **recursively**, assert **both
+directions** (an undeclared instance fails; an orphan declaration fails), and carry a **positive
+control per direction**. A registry that ships **empty** — nothing today needs it — makes the
+positive controls the whole deliverable: there is nothing else proving the machinery works. And
+the clause the cursor allowlist's own bug earned: **the control must exercise the scanner, not
+just the set comparison.** A control that reconstructs the assertion inline (fabricate an unlisted
+site, assert it reads as unlisted) proves the diff logic and never the enumerator — a scanner gone
+blind on a brace shape or a dialect it doesn't parse still passes every existing control. The
+cursor allowlist shipped exactly this: its glob covered `.svelte` only and missed `controls.ts`'s
+`style.cursor = "grabbing"`, the most on-point instance of the law, while every check stayed
+green. The fix that generalizes: assert a raw, structure-free match count over all scanned text
+equals the parsed site count — an independent read that can't miss what the real parser misses.
+
 **A descriptor field costing a full-document walk is a getter, and the gate asserts the cheap fork
 reads none of them.** The pure-builder lift replaces a closure that could read the live document
 lazily with an eagerly-built descriptor, which turns a menu open into whole-document work. Lazy
@@ -365,21 +381,19 @@ a declared list of the walking fields, and an assert that the fork not needing t
   at a boundary collapses with the derived one rather than doubling.
 
   Position-legal is only a floor — the oracle can say where a divider may sit, never what it
-  divides — so every authored `separator` is backed by a declared registry the way `checked` is,
-  naming what it separates and asserted both directions: an undeclared divider and an orphan entry
-  each fail. A label-less row has only its position as a handle, so the key is the containing
-  menu's `▸` path plus the row's index in the AUTHORED array (kex2d's one member:
+  divides — so every authored `separator` is backed by the declared-registry law above, naming
+  what it separates. A label-less row has only its position as a handle, so the key is the
+  containing menu's `▸` path plus the row's index in the AUTHORED array (kex2d's one member:
   `keyframeMenu ▸ Easing #3`). Reordering a submenu is then a deliberate registry edit, not silent
   breakage.
 - **Rows are terse.** A context menu is summoned *on* its subject, so the row names the verb alone
   — `Delete`, not `Delete node` (the noun restates what the invoker already said, the naming rule's
   module-scope-is-context).
 - **`checked` means exactly one thing: this row's state is in effect now.** Never "recently used",
-  never "this is the default". Backed by a declared registry — a row may light up iff its path is
-  listed there with the state it reports, asserted both directions, so a stale entry is a failure
-  of its own. kex2d declares 13 row paths in six families: `Handles`, the node `Tangents ▸`
-  modes, the keyframe `Tangents ▸` modes, the `Easing ▸` presets, `Easing ▸ Custom`, and the
-  ruler's Meters/Seconds.
+  never "this is the default". Backed by the declared-registry law above — a row may light up iff
+  its path is listed with the state it reports. kex2d declares 13 row paths in six families:
+  `Handles`, the node `Tangents ▸` modes, the keyframe `Tangents ▸` modes, the `Easing ▸` presets,
+  `Easing ▸ Custom`, and the ruler's Meters/Seconds.
 - **Toggle labeling follows set-valuedness.** A toggle over a **single subject** keeps a stable
   label and carries `checked` (`Handles`). A toggle over a **set whose members can disagree** flips
   its label to name the act the press performs, and carries no check (`Lock`/`Unlock`) — a
