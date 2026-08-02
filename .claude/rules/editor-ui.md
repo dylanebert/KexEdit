@@ -271,7 +271,19 @@ The worked example of the layered-expressiveness contract's summoned inner layer
   displayed before the delete (the authored out-vector, else the frozen `theta`). Re-head is own
   move + append only; only a user Reset clears authored state. **A demotion preserves** (undo
   restores the authored interior state). A split's boundary tip keeps its tangent, since it
-  still shapes the downstream first segment under the one-node view.
+  still shapes the downstream first segment under the one-node view. A join carries the authored
+  out-half the other way: an explicit downstream node 0 is authored intent on the forward side, so
+  it rotates into the upstream frame and stamps the merged tip (`in` = the tip's own in-half, `out`
+  = the rotated downstream out), the tip's mode surviving only if the merged pair still satisfies
+  it. An `Auto` node 0 stamps nothing — its stored `theta` is placement bookkeeping. The cost is
+  deliberate: an `Auto` upstream tip merging against an explicit node 0 does get concretized,
+  losing its live chord rescale, because the author's forward gesture outranks the tip's
+  inference.
+- **The explicit/inferred fork is a glyph channel only where it names a layer.** In the viewport a
+  node's tangent being stored or still inferred is not a state the author picks (inferred is simply
+  pre-first-drag, and it already displays `Aligned` checked), so every knob draws identically. On
+  the force chart the same fork DOES name a layer — an explicit handle is what makes the segment
+  Custom instead of its named easing — so the ghost knob stays hollow there. Don't harmonize them.
 
 ## Affordance typing
 
@@ -279,6 +291,12 @@ When two adds coexist, the glyphs are op-shaped: add-node is a segment-with-a-do
 add-section a plain `+` on the clip tail — the surface carries the rest (a 16px clip-in-a-box was
 unreadable, and the inverted assignment was tried first). And one gesture means one thing: append is
 the button, `Enter`, or the menu; double-click is tangent edit, never append.
+
+- **The cursor is not an affordance channel.** Every direct-manipulation glyph keeps the arrow and
+  states hover through color (the hover rung): viewport nodes, ring chrome and its manipulator
+  knobs, chart keyframes, and their bezier handles alike. Grab hands mean pannable surfaces and
+  nothing else — a hand over canvas-adjacent chrome reads as a link. (kex2d shed `.rbtn`,
+  `.rbtn.manip`, and `.thit`'s cursors in one pass.)
 
 ## Menus
 
@@ -374,10 +392,14 @@ a declared list of the walking fields, and an assert that the fork not needing t
   with it. A table living in the test instead stays green through a rebind, which is how `L` → `Q`
   would have gone unnoticed.
 
-  The oracle's row-to-binding map is keyed by the row's full `menu ▸ label` path (kex2d
-  `tests/menu.test.ts`), the way the `checked` registry is, and every key must resolve to a row that
-  exists. A bare-label key silently enforces the stronger "every row named `Delete` anywhere carries
-  `Del`", which breaks on the first menu that reuses a label for a different act.
+  The oracle derives each row's act rather than hand-mapping it (kex2d `tests/menu.test.ts`): it
+  invokes the row's own `action` against the corpus recorder and reads the logged name, then maps
+  act → binding through a table censused against the recorder's full act list. A hand-typed
+  `menu ▸ label` → binding map was tried and deleted — a row that IS bound but whose entry nobody
+  wrote passes on `undefined === undefined`, the exact hole the derivation closes. An action-less
+  row (a permanently-disabled twin like the multi-select `Add`) resolves through the same path's
+  act elsewhere in the corpus, so it still owes its binding's hint; a path with no action anywhere
+  is a true submenu parent and owes nothing.
 - **Gray a row whose preconditions fail; omit one its subject rules out.** Graying keeps an
   applicable-but-blocked row discoverable (no live bake, a multi-set — the bulk-row law above). A
   row that could never fire on this subject is different: a section is exactly one kind, so the
@@ -490,8 +512,8 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   screen-space grabs — guarded on the *one* live-gesture flag (kex2d `editor.dragging`) so the
   rule can't go stale as gestures are added. Wheel and `F` are both closed. The 3D `app/`
   viewport faces the identical hazard.
-- **Arrow cursor over keyframes** (AE/Unity/Blender); grab hands mean pannable surfaces. Hover
-  affordance is the marker's fill change, not the cursor.
+- **Arrow cursor over keyframes** (AE/Unity/Blender) — the shared law, Affordance typing. Hover
+  affordance is the marker's fill change.
 - **Numeric fields are summoned at the object.** A selected keyframe's fields float in a popover
   at the point (root gate 3), the live readout during a drag (pointer-inert then). The field
   surface + behavior is root `ui.md` "Fields".

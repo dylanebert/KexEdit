@@ -425,12 +425,17 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
   surface, routing the surface-scoped keys (`F` frames it, arrows act on it), ending the
   viewport-nudge vs timeline-playhead double-fire. `hoverSection` (a stable `Section.id` or null) is
-  the viewport's own hover read — written per pointermove by `controls.pickSection`, drawn one
+  the viewport's own hover read — written per pointermove by `controls.pickHover` (the DOM-free
+  sweep, unit-tested directly against the pick order `onPointerDown` grabs by), drawn one
   kind-color rung up by the track overlay, cleared on pointer leave and for the whole of any gesture
   (`beginDrag`, the one suppression point); viewport-local, never synced with the clip strip's CSS
   hover. `hoverNode` is its node-level twin (a node picks before its section, so exactly one of
   the two is lit — hover matches what a click would take; the node draw lifts it one rung).
   `hoverForce` is the force-marker twin, written by the same sweep and mutually exclusive with both.
+  `hoverKnob` (`{eid, side}` or null) is the tangent-knob twin, live only in tangent edit and
+  written FIRST in the sweep — a summoned knob over its own node reads as the knob, the priority a
+  click takes. All four come from one `pickHover` call and clear together at three sites: pointer
+  leave, remount teardown, and `beginDrag` for the whole of any gesture.
   The invoked-solve gate lives here too: `converting` (`{phase, keys, probes}` or
   null — while it's set the modal is up and every other input is blocked; the fields are gate
   state, not display — the modal shows a spinner, not the counts) with
