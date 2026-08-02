@@ -28,6 +28,17 @@ import { type Node, sampleChain, type Tangent } from "./spline";
 /** default sample-buffer ceiling — mirrors `track.MAX_SAMPLES`. */
 const MAX = 4096;
 
+/** whether a section is authored as GEOMETRY (drag nodes in the viewport, recover
+ *  the force) or FORCE (place points on the force curve, integrate the geometry) —
+ *  the two atomic idioms of the section substrate.
+ *  a track is a chain of sections, each with its own kind. the ECS layer stores it
+ *  on `Section.kind` as its numeric value and re-exports this enum, so a pure
+ *  consumer names a kind without reaching the ECS module's graph. */
+export enum SectionKind {
+    Geo = 0,
+    Force = 1,
+}
+
 /** the unit a force section's section-local coordinate is authored in: **distance**
  *  (keyframes at arclength s, extent in meters) or **time** (keyframes at time t,
  *  extent in seconds; the swept geometry is emergent). the domain is a *step rule*

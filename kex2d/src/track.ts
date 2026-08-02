@@ -12,18 +12,14 @@ import {
     localize,
     place,
     type Section as SectionSpec,
+    SectionKind,
 } from "./section";
 import { autoTangent, type Node, reflect, type Tangent, type TangentMode } from "./spline";
 
-/** whether a section is authored as GEOMETRY (drag nodes in the viewport, recover
- *  the force) or FORCE (place points on the force curve, integrate the geometry) —
- *  the two atomic idioms of the section substrate.
- *  a track is a chain of sections, each with its own kind. stored on `Section.kind`
- *  as its numeric value. */
-export enum SectionKind {
-    Geo = 0,
-    Force = 1,
-}
+/** the kind enum is defined with the substrate that gives it meaning (`section.ts`);
+ *  it is re-exported here because `Section.kind` is where the document stores it, and
+ *  every ECS-side consumer already reaches for it through this module. */
+export { SectionKind } from "./section";
 
 /** per-track scalars. `count` is the total sample count over the whole chain (bake
  *  output, varies with the authored payload). `ds` is the nominal target spacing —

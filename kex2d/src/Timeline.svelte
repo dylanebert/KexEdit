@@ -5,6 +5,7 @@ import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./
 import { kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
 import { fitMenu, type MenuItem } from "./menu";
+import { appendMenu, keyframeMenu, rulerMenu } from "./menus";
 import {
     activateForce,
     beginDrag,
@@ -1400,14 +1401,9 @@ const bulkEaseIds = $derived.by((): number[] => {
     }
     return res;
 });
-// the menu as data: Delete (the whole SET, one entry — force multi-delete is unconditional), then an
-// Easing ▸ submenu — Linear | Cubic | Quintic (checked by the ACTIVE keyframe's tag), a separator,
-// then Custom. the preset rows apply to ALL selected non-terminal keyframes (bulkEaseIds); the row
-// grays when none is applicable. each row carries its real curve glyph (drawn from the same
-// influence the segment uses, so the icon can't drift). Custom is single-subject (the active): both
-// the derived-provenance indicator (checked when an explicit handle bounds its segment) AND a choice
-// — picking it materializes the segment's handles and steps into handle edit; picking a preset
-// clears them back. a single terminal keyframe governs no segment, so it shows Delete alone.
+// the keyframe menu's rows are built by the pure `menus.keyframeMenu` (the row law lives with it);
+// this assembles its state descriptor from the deriveds above and binds the actions to the active
+// keyframe + the live member sets.
 const fmenuItems = $derived.by((): MenuItem[] => {
     const m = editor.forceMenu;
     if (m === null) return [];
@@ -1417,9 +1413,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     const setOk = forceSetEditable();
     const pt = forcePts.find((p) => p.id === id);
     const activeOk = pt !== undefined && sectionEditable(editor.optimizing, pt.section);
-    // the Lock/Unlock row (kex2d stage 6): SHOWN only in optimize mode on the optimizing
-    // section's own keys, HIDDEN everywhere else (`lockLabel`'s omit-vs-gray law) — the mouse
-    // path to the same set-toggle `Q` drives, over the same filtered member set.
+    // the Lock/Unlock row's member set: the optimizing section's own selected keys.
     const sid = editor.optimizing?.section;
     const lockIds =
         sid === undefined
@@ -1428,74 +1422,44 @@ const fmenuItems = $derived.by((): MenuItem[] => {
                   .filter((p) => editor.forces.ids.has(p.id) && p.section === sid)
                   .map((p) => p.id);
     const lock = pt === undefined ? null : lockLabel(editor.optimizing, pt.section, lockIds, editor.locked);
-    const items: MenuItem[] = [
+    // the Easing ▸ and Tangents ▸ fields are GETTERS: each is guarded by a builder branch, and
+    // `easeTargets`/`custom` walk the whole force store while `customGlyph` re-solves the addressed
+    // segment's bezier. a terminal single keyframe shows Delete alone, so it must pay for none of
+    // them. a getter runs synchronously inside this `$derived.by` when the builder reads it, so the
+    // reactive dependency still registers.
+    return keyframeMenu(
         {
-            label: "Delete",
-            shortcut: "Del",
-            danger: true,
-            enabled: setOk,
-            action: () => deleteForces(history, ecs, [...editor.forces.ids]),
+            setOk,
+            activeOk,
+            lock,
+            multi: multiForce,
+            terminal: fmenuTerminal,
+            get easeTargets() {
+                return bulkEaseIds.length;
+            },
+            get custom() {
+                return fmenuCustom;
+            },
+            get ease() {
+                return fmenuEase;
+            },
+            hasHandles: fmenuHasHandles,
+            get mode() {
+                return fmenuMode;
+            },
+            presetGlyph,
+            get customGlyph() {
+                return customGlyph(id);
+            },
         },
-    ];
-    if (lock !== null)
-        items.unshift({
-            label: lock,
-            shortcut: "Q",
-            action: () => toggleLockedSet(lockIds),
-        });
-    // shown whenever any easing target could exist (a multi-set, or a single non-terminal keyframe);
-    // enabled only when the selection has a non-terminal member — else grayed, never hidden.
-    if (multiForce || !fmenuTerminal) {
-        const targets = bulkEaseIds;
-        const easeRow = (label: string, e: Easing): MenuItem => ({
-            label,
-            glyph: presetGlyph(e),
-            checked: !fmenuCustom && fmenuEase === e,
-            action: () => setForcesEase(history, ecs, targets, e),
-        });
-        items.push({
-            label: "Easing",
-            enabled: targets.length > 0 && setOk,
-            children: [
-                easeRow("Linear", Easing.Linear),
-                easeRow("Cubic", Easing.Cubic),
-                easeRow("Quintic", Easing.Quintic),
-                { separator: true },
-                // Custom is single-subject (the active) and steps into handle edit on it — a terminal
-                // keyframe governs no segment, a state single-select can't reach (its whole Easing ▸ is
-                // hidden), so gray Custom when the active is terminal even while non-terminal siblings
-                // keep the preset rows live.
-                {
-                    label: "Custom",
-                    enabled: !fmenuTerminal && activeOk,
-                    glyph: customGlyph(id),
-                    checked: fmenuCustom,
-                    action: () => chooseCustom(id),
-                },
-            ],
-        });
-    }
-    // a keyframe with explicit handles (either side) carries a Tangents ▸ mode submenu (Mirror |
-    // Aligned | Free, checked by the stored mode) — the geo node menu's convention. shown even at a
-    // terminal keyframe (whose only handle is the incoming in-side). no Reset row: the way back to
-    // derived is picking a preset in Easing ▸ (which clears the segment's handles).
-    if (fmenuHasHandles) {
-        const modeRow = (label: string, mode: TangentMode): MenuItem => ({
-            label,
-            checked: fmenuMode === mode,
-            action: () => pickForceMode(id, mode),
-        });
-        items.push({
-            label: "Tangents",
-            enabled: activeOk,
-            children: [
-                modeRow("Mirror", TangentMode.Mirror),
-                modeRow("Aligned", TangentMode.Aligned),
-                modeRow("Free", TangentMode.Free),
-            ],
-        });
-    }
-    return items;
+        {
+            remove: () => deleteForces(history, ecs, [...editor.forces.ids]),
+            toggleLock: () => toggleLockedSet(lockIds),
+            setEase: (e) => setForcesEase(history, ecs, bulkEaseIds, e),
+            chooseCustom: () => chooseCustom(id),
+            pickMode: (mode) => pickForceMode(id, mode),
+        },
+    );
 });
 // set the addressed keyframe's tangent mode as one undo entry (the geo `pickMode` analogue),
 // reconciling the handle pair in chart pixels so it stays jump-consistent with the drag coupling.
@@ -1589,26 +1553,24 @@ const rmenu = $derived.by((): { x: number; y: number } | null => {
     void tick;
     return editor.rulerMenu;
 });
-// flat rows, not a `Units ▸` submenu: the menu has nothing else in it, so nesting would spend a
-// click opening a submenu with no sibling rows to justify it (`editor-ui.md`'s terse-rows law —
-// a menu that's only ever one submenu should just be its rows). `checked` reads `Track.domain`,
-// the store's own unit, so a lit row can't lie about what the chart reads, and `enabled` is the
-// pure `domain.pickable` predicate — the active row always (picking it is a no-op), a converting
-// row only when the conversion can actually run, grayed otherwise. No keyboard shortcut — the
-// second feel check-in's call: the pick doesn't warrant one, and it is an undoable document op now.
+// the ruler menu's rows are built by the pure `menus.rulerMenu` (the row law lives with it); this
+// resolves the two enablement predicates and the live domain it checks against.
+// `pickable` is the per-row half: the active row is always pickable (its pick is a no-op), a
+// converting row only when the conversion can actually run. `sectionOpsAllowed` is the consent
+// boundary and grays BOTH rows — the active one included, since a lit-enabled row over a blocked
+// surface would misread as available — while an optimize session is open.
 const rulerMenuItems = $derived.by((): MenuItem[] => {
     void tick;
     if (editor.rulerMenu === null) return [];
-    // `sectionOpsAllowed`: the consent boundary grays BOTH rows (the active one included — its
-    // pick is a no-op, but a lit-enabled row over a blocked surface would misread as available)
-    // while an optimize session is open.
-    const row = (label: string, target: Domain): MenuItem => ({
-        label,
-        enabled: pickable(ecs, target) && sectionOpsAllowed(editor.optimizing),
-        checked: domain === target,
-        action: () => pickDomain(target),
-    });
-    return [row("Meters", Domain.Distance), row("Seconds", Domain.Time)];
+    const allowed = sectionOpsAllowed(editor.optimizing);
+    return rulerMenu(
+        {
+            domain,
+            metersEnabled: pickable(ecs, Domain.Distance) && allowed,
+            secondsEnabled: pickable(ecs, Domain.Time) && allowed,
+        },
+        { pick: pickDomain },
+    );
 });
 // dismissal mirrors the force menu's exactly: permanent listeners gated on the live
 // `editor.rulerMenu`, never the tick-lagging `rmenu` (`kex2d/AGENTS.md`'s tick-derived-read
@@ -1673,13 +1635,7 @@ function append(kind: SectionKind): void {
     appendAnchor = null;
     selectSection(appendSection(history, ecs, kind));
 }
-// the append flyout as data, one instance of the shared menu language. both choices are
-// always possible (a chain end always accepts a geo or force section), so neither declares
-// enablement — the substrate carries it, this menu just has nothing to disable.
-const appendItems: MenuItem[] = [
-    { label: "Geo", aria: "Append geometry section", action: () => append(SectionKind.Geo) },
-    { label: "Force", aria: "Append force section", action: () => append(SectionKind.Force) },
-];
+const appendItems: MenuItem[] = appendMenu({ append });
 // appending never moves the view: the x-axis is a document axis, and the always-framed
 // lead-out (`marginArc`, floored at 50 m) is where a new section lands — visible without
 // any auto-pan. an append while zoomed in elsewhere stays put; `F` or the navigator reaches

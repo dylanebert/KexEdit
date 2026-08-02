@@ -57,6 +57,7 @@ import {
 } from "./history";
 import Menu from "./Menu.svelte";
 import { fitMenu, type MenuItem } from "./menu";
+import { nodeMenu, sectionMenu } from "./menus";
 import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "./radial";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { stitchNode } from "./tangents";
@@ -696,104 +697,40 @@ const nodeSuffixOk = $derived.by((): boolean => {
     void tick;
     return suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length) !== null;
 });
-// the node menu as data (the shared MenuItem language): Add node / Delete node (chain-end-only, so
-// enablement-gated — the menu is Delete's only pointer path, the ring carries no trash button), then
-// a Handles toggle over a Tangents submenu (the three modes carry their `checked`), then a top-level
-// Reset closing the group (the Reset idiom law: one click from anywhere, back to the state a fresh
-// author would get — Reset RE-CREATES the node: default-chord continuation, tangents Auto). it's
-// enabled whenever the subject is editable, never gated on "has something to clear" — a reset that
-// changes nothing records no undo entry (`sameNodes`), the same no-op guard every Reset row leans
-// on. node 0 (the entry anchor) is the exception — never
-// appendable/trimmable, and its handle is a single free entry handle (no coupled in-side), so it
-// carries NO Add/Delete and NO mode submenu: just Handles + Reset (back to the Auto C1 exit).
+// the node menu's rows are built by the pure `menus.nodeMenu` (the row law lives with it); this
+// assembles its state descriptor from the deriveds above and binds the actions to the target eid.
+// the lockdown (kex2d-optimize-mode stage 5): in-mode, only the optimizing (force) section
+// is editable, so every geo-node edit row grays — visible, never hidden (the enablement law).
 const nodeItems = $derived.by((): MenuItem[] => {
     const m = editor.nodeMenu;
     if (m === null) return [];
     const eid = m.eid;
-    // the lockdown (kex2d-optimize-mode stage 5): in-mode, only the optimizing (force) section
-    // is editable, so every geo-node edit row grays — visible, never hidden (the enablement law).
-    const ok = editor.optimizing === null;
-    // a multi-selection: the bulk rows (the gray-never-hide law). Delete acts on the whole set iff
-    // it's a valid suffix run (else grayed); Add + Handles are single-subject, so they gray out;
-    // Tangents ▸ modes + the top-level Reset apply to every member in one entry. the mode `checked` reflects the
-    // ACTIVE member (Blender active-only).
-    if (nodeMulti()) {
-        return [
-            {
-                label: "Delete",
-                shortcut: "Del",
-                danger: true,
-                enabled: nodeSuffixOk && ok,
-                action: doDeleteSet,
-            },
-            { label: "Add", shortcut: "Enter", enabled: false },
-            { separator: true },
-            { label: "Handles", enabled: false },
-            {
-                label: "Tangents",
-                enabled: ok,
-                children: [
-                    {
-                        label: "Mirror",
-                        checked: nodeMode === TangentMode.Mirror,
-                        action: () => pickModeSet(TangentMode.Mirror),
-                    },
-                    {
-                        label: "Aligned",
-                        checked: nodeMode === TangentMode.Aligned,
-                        action: () => pickModeSet(TangentMode.Aligned),
-                    },
-                    {
-                        label: "Free",
-                        checked: nodeMode === TangentMode.Free,
-                        action: () => pickModeSet(TangentMode.Free),
-                    },
-                ],
-            },
-            { label: "Reset", enabled: ok, action: doResetSet },
-        ];
-    }
-    if (Handle.order.get(eid) === 0) {
-        return [
-            { label: "Handles", checked: nodeEditing, enabled: ok, action: () => toggleHandles(eid) },
-            { separator: true },
-            { label: "Reset", enabled: ok, action: () => doReset(eid) },
-        ];
-    }
-    return [
+    return nodeMenu(
         {
-            label: "Delete",
-            shortcut: "Del",
-            danger: true,
-            enabled: nodeCanTrim && ok,
-            action: () => doTrim(eid),
+            multi: nodeMulti(),
+            isEntry: Handle.order.get(eid) === 0,
+            ok: editor.optimizing === null,
+            mode: nodeMode,
+            editing: nodeEditing,
+            isEnd: nodeIsEnd,
+            canTrim: nodeCanTrim,
+            // multi-only, and a whole-set ECS walk (`suffixRun` over every member's section) —
+            // lazy, so the single-node and node-0 forks never pay for it.
+            get suffixOk() {
+                return nodeSuffixOk;
+            },
         },
-        { label: "Add", shortcut: "Enter", enabled: nodeIsEnd && ok, action: () => doAdd(eid) },
-        { separator: true },
-        { label: "Handles", checked: nodeEditing, enabled: ok, action: () => toggleHandles(eid) },
         {
-            label: "Tangents",
-            enabled: ok,
-            children: [
-                {
-                    label: "Mirror",
-                    checked: nodeMode === TangentMode.Mirror,
-                    action: () => pickMode(TangentMode.Mirror, eid),
-                },
-                {
-                    label: "Aligned",
-                    checked: nodeMode === TangentMode.Aligned,
-                    action: () => pickMode(TangentMode.Aligned, eid),
-                },
-                {
-                    label: "Free",
-                    checked: nodeMode === TangentMode.Free,
-                    action: () => pickMode(TangentMode.Free, eid),
-                },
-            ],
+            remove: () => doTrim(eid),
+            removeSet: doDeleteSet,
+            add: () => doAdd(eid),
+            toggleHandles: () => toggleHandles(eid),
+            pickMode: (mode) => pickMode(mode, eid),
+            pickModeSet,
+            reset: () => doReset(eid),
+            resetSet: doResetSet,
         },
-        { label: "Reset", enabled: ok, action: () => doReset(eid) },
-    ];
+    );
 });
 
 // Handles: the double-click tangent-edit toggle, reached from the menu — summon the node's
@@ -972,63 +909,55 @@ const canReset = $derived.by((): boolean => {
         sectionOpsAllowed(editor.optimizing)
     );
 });
-// the ONE conversion row. A section is always exactly one kind, so only one direction was ever
-// live — two rows spent the menu's space on a row that could never fire. The row's label and its
-// action fit the target's kind (geo → force, force → geo), and it still GRAYS rather than hides
-// when the kind fits but the invoke can't run (no live bake, a multi-set): the affordance stays
-// discoverable, which is what the grayed-never-hidden law is for.
-const convertRow = $derived.by((): MenuItem => {
-    void tick;
-    const toGeo = ctxKind === SectionKind.Force;
-    return {
-        // `Convert`, no destination noun (stage 7, menus law): the section's kind implies the
-        // direction — force converts to geo, geo to force — and the row is summoned ON the
-        // section, so the label carries the verb alone.
-        label: "Convert",
-        enabled: toGeo ? canSolveShape : canSolve,
-        action: toGeo ? ctxSolveShape : ctxSolve,
-    };
-});
-// the context menu as data: one array of MenuItems, rendered by the shared menu language —
-// the conversion row, Optimize (force only), Reset, then Delete. multi-select (Premiere
-// multi-clip): the single-subject rows gray (a set has no single subject, `selected === 1`);
-// Delete carries the set-lifted enablement. the destructive Convert row (both single and bulk)
-// was removed (kex2d-geoforce-editor stage 5): redundant with delete + append; Reset is its
-// kind-HELD successor (kex2d-idioms stage 2) — back to the kind's default, not a flip.
+// the section menu's rows are built by the pure `menus.sectionMenu` (the row law lives with it);
+// this assembles its state descriptor from the deriveds above and hands over the actions.
+// every branch-guarded predicate is a GETTER, not a value. `canSolve`/`canSolveShape`/`canOptimize`/
+// `canReset` each run `bakeLive` → a full-track `authoredHash` walk, and the in-mode fork returns
+// its two rows without reading any of them — an eagerly-assembled descriptor would pay four
+// full-track walks every RAF the menu is open inside the mode, where the old in-place fork paid
+// none. `optSolvable` (in-mode only) and `canDelete` are the cheap mirror of the same guard. a
+// getter runs synchronously inside this `$derived.by` when the builder reads it, so the reactive
+// dependency still registers.
 const ctxItems = $derived.by((): MenuItem[] => {
     void tick;
     if (ctx === null) return [];
-    // inside a live optimize session on THIS section: the mode's own rows replace the normal
-    // menu entirely — convert/delete/join aren't available inside the mode (the locked
-    // decision's consent-boundary law). Solve gates on the same headroom read as the panel's
-    // button (below MIN_FREE free keys there is nothing to solve — pure counting).
-    if (editor.optimizing !== null && editor.optimizing.section === ctx.section) {
-        return [
-            {
-                label: "Solve",
-                action: ctxOptimizeSolve,
-                enabled: !editor.optimizeSolving && optSolvable,
+    return sectionMenu(
+        {
+            inMode: editor.optimizing !== null && editor.optimizing.section === ctx.section,
+            solving: editor.optimizeSolving,
+            get optSolvable() {
+                return optSolvable;
             },
-            { label: "Exit", shortcut: "Esc", action: ctxOptimizeExit },
-        ];
-    }
-    const del = sectionMulti ? ctxDeleteSet : ctxDelete;
-    const items: MenuItem[] = [convertRow];
-    // the mode's entry row — a force section only (the terse verb alone: the menu is summoned
-    // ON the section, so the noun restates the invoker — menus law), and only when no other
-    // optimize session is already open (one mode at a time, mirroring the conversion tier's
-    // per-section lock). Entry needs a live bake (the stamp is read off it), NOT headroom —
-    // adding keys in-mode is the sanctioned way to create give.
-    if (ctxKind === SectionKind.Force && !sectionMulti) {
-        items.push({
-            label: "Optimize",
-            enabled: canOptimize && editor.optimizing === null,
-            action: ctxOptimizeEnter,
-        });
-    }
-    items.push({ label: "Reset", enabled: canReset, action: ctxReset });
-    items.push({ label: "Delete", shortcut: "Del", danger: true, enabled: canDelete, action: del });
-    return items;
+            kind: ctxKind,
+            multi: sectionMulti,
+            modeOpen: editor.optimizing !== null,
+            get canSolve() {
+                return canSolve;
+            },
+            get canSolveShape() {
+                return canSolveShape;
+            },
+            get canOptimize() {
+                return canOptimize;
+            },
+            get canReset() {
+                return canReset;
+            },
+            get canDelete() {
+                return canDelete;
+            },
+        },
+        {
+            solve: ctxSolve,
+            solveShape: ctxSolveShape,
+            optimizeSolve: ctxOptimizeSolve,
+            optimizeExit: ctxOptimizeExit,
+            optimizeEnter: ctxOptimizeEnter,
+            reset: ctxReset,
+            remove: ctxDelete,
+            removeSet: ctxDeleteSet,
+        },
+    );
 });
 // reset the section to its kind's fresh default — one undoable entry (`history.resetSection`).
 // the subject survives, so the menu closes explicitly (Delete's death-derivation can't fire).
