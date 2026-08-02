@@ -1394,11 +1394,16 @@ describe("menus.ts module graph — the builders import nothing impure", () => {
     });
 });
 
-// ── two source pins keeping the next menu inside the lift (kex2d-menu-grammar's follow-up
-// burn-down). A row array built inline in a new .svelte file, or a bespoke `{#each}` instead of
-// `Menu.svelte`, would defeat every menu gate above while leaving them all green. These greps
-// close that: every row array lives in the pure builders module, and every menu renders through
-// the one recursive renderer.
+// ── three source pins keeping the next menu inside the lift (kex2d-menu-grammar's follow-up
+// burn-down; the renderer pin TIGHTENED in kex2d-burndown 1b). A row array built inline in a new
+// .svelte file, or a bespoke `{#each}` instead of `Menu.svelte`, would defeat every menu gate
+// above while leaving them all green. `class="menu-item"` only catches a literal COPY of
+// `Menu.svelte`'s markup — a bespoke renderer with different class names sails past it. The
+// tighter pin is the TYPE: `MenuItem` is what a row array is, so nothing outside a declared
+// allowlist may import it at all — a new renderer needs the type to accept a `MenuItem[]`, so it
+// fails closed even with markup that shares no class name. These greps close that: every row
+// array lives in the pure builders module, `MenuItem` is imported only where declared, and
+// `class="menu-item"` stays confined to `Menu.svelte` as a second, redundant signal.
 describe("menu source pins — builders and renderer stay singular", () => {
     const srcRoot = join(import.meta.dir, "..", "src");
     const src = (file: string): string => readFileSync(join(srcRoot, file), "utf8");
@@ -1458,5 +1463,29 @@ describe("menu source pins — builders and renderer stay singular", () => {
     // green.
     test('positive control: `class="menu-item"` DOES appear in src/Menu.svelte', () => {
         expect(src("Menu.svelte").includes('class="menu-item"')).toBe(true);
+    });
+
+    // the tightened pin (kex2d-burndown 1b): nothing outside this declared set may import the
+    // `MenuItem` type at all. `menu.ts` DECLARES the type rather than importing it, so it's
+    // excluded from the walk — the allowlist is who may READ it from elsewhere.
+    const MenuItemAllowlist = new Set(["menus.ts", "Menu.svelte", "App.svelte", "Timeline.svelte"]);
+
+    function importsMenuItem(file: string): boolean {
+        for (const m of src(file).matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+"\.\/menu"/g))
+            if (/\bMenuItem\b/.test(m[1])) return true;
+        return false;
+    }
+
+    test("`MenuItem` is imported ONLY by the declared allowlist, both directions", () => {
+        // an undeclared importer fails — a bespoke renderer that needs the type to accept a
+        // `MenuItem[]` can't dodge this the way it dodges the markup-literal pin above.
+        const bad = srcFiles.filter(
+            (f) => f !== "menu.ts" && importsMenuItem(f) && !MenuItemAllowlist.has(f),
+        );
+        expect(bad, "undeclared MenuItem importers").toEqual([]);
+        // and so does an allowlisted file that no longer imports it — a stale entry is a lie of
+        // its own, the same both-directions law every other registry in this file keeps.
+        const stale = [...MenuItemAllowlist].filter((f) => !importsMenuItem(f));
+        expect(stale, "allowlisted files that no longer import MenuItem").toEqual([]);
     });
 });
