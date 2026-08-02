@@ -201,10 +201,14 @@ export function editTangent(tan: Tangent, side: "in" | "out", offX: number, offY
     };
 }
 
-/** collinearity tolerance shared by every direction-agnostic caller below: relative to the
- *  vector magnitudes, f32 handle storage (`Handle.tin`/`tout`, `Force.tin`/`tout` alike; 2^-24
- *  unit roundoff) perturbs a genuinely collinear pair's angle by ≤ ~2·2^-24 ≈ 1.2e-7; 1e-6
- *  clears that with margin while staying orders below any deliberate off-flat divergence. */
+/** collinearity tolerance shared by every direction-agnostic caller below, under TWO readings.
+ *  As an angular bound (`collinearVec`, below): relative to the vector magnitudes, f32 handle
+ *  storage (`Handle.tin`/`tout`, `Force.tin`/`tout` alike; 2^-24 unit roundoff) perturbs a
+ *  genuinely collinear pair's angle by ≤ ~2·2^-24 ≈ 1.2e-7. As a relative DISTANCE bound
+ *  (`track.vecEqual`, `Mirror`'s equal-vector constraint): the same f32 storage perturbs a
+ *  genuinely equal pair's component-wise gap by ≤ ~√2·2^-24 ≈ 8.4e-8. 1e-6 clears both readings
+ *  with 8–12× margin while staying orders below any deliberate off-flat divergence — one shared
+ *  constant, so a tightening for one reading doesn't silently retune the other. */
 export const COLLINEAR_TOL = 1e-6;
 
 /** whether two vectors lie on one line through the origin — the scale-relative cross-product

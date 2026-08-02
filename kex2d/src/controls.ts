@@ -6,6 +6,7 @@ import {
     endDrag as endDragGesture,
     enterTangentEdit,
     exitTangentEdit,
+    type Hover,
     openContext,
     openForceMenu,
     openNodeMenu,
@@ -406,17 +407,7 @@ function pickTangentHandle(
  *  marker, else the section span), so exactly one of the four reads lights: a handle over its
  *  node still reads as the knob, matching what a click would take. `onPointerMove` is the only
  *  caller; factored out so the wiring is unit-testable without a canvas. */
-export function pickHover(
-    ecs: State,
-    tx: ViewTx,
-    sx: number,
-    sy: number,
-): {
-    knob: { eid: number; side: TangentSide } | null;
-    node: number | null;
-    force: number | null;
-    section: number | null;
-} {
+export function pickHover(ecs: State, tx: ViewTx, sx: number, sy: number): Hover {
     const th = pickTangentHandle(ecs, tx, sx, sy);
     const knob = th !== null ? { eid: th.eid, side: th.side } : null;
     const node = th === null ? pickNode(ecs, tx, sx, sy) : null;

@@ -368,21 +368,31 @@ export const editor: EditorState = {
     landing: null,
 };
 
+/** the four hover fields as one named shape — `controls.pickHover`'s return type, annotated
+ *  explicitly at that one call site rather than left as an inferred object literal, so excess
+ *  properties are checked at BOTH ends: a `pickHover` that grows a fifth hover read is a compile
+ *  error here, not a silently-dropped field caught only by code review (`kex2d-followups` finding
+ *  2 — the three-of-four bug class `writeHover` exists to close, reopened by a non-literal
+ *  parameter turning excess-property checking off). Exported so `controls.ts` can annotate against
+ *  it without importing `EditorState`; the dependency stays one-way (`controls.ts` already imports
+ *  from `./editor`, never the reverse). */
+export type Hover = {
+    knob: EditorState["hoverKnob"];
+    node: EditorState["hoverNode"];
+    force: EditorState["hoverForce"];
+    section: EditorState["hoverSection"];
+};
+
 /** write a pointer-hover reading to `editor` through ONE seam — the four hover fields (`hoverKnob`
  *  /`hoverNode`/`hoverForce`/`hoverSection`, above) land together, so a caller can't write three of
  *  them and miss the fourth. `clearHover`'s null form is the same seam every clear site shares
  *  (pointer leave, remount teardown, `beginDrag`'s whole-gesture suppression, below) — a site now
  *  CALLS the shared clear instead of restating four literal assignments, which is what makes a
  *  dropped field impossible rather than merely unlikely (the kex2d-idioms 10b bug class this
- *  closes). Typed structurally against the state's own hover fields, not `controls.pickHover`'s
- *  return type: this module owns the hover state, `controls.ts` already depends on `editor.ts` (not
- *  the reverse), and `pickHover`'s return still satisfies this shape at the one call site. */
-export function writeHover(hover: {
-    knob: EditorState["hoverKnob"];
-    node: EditorState["hoverNode"];
-    force: EditorState["hoverForce"];
-    section: EditorState["hoverSection"];
-}): void {
+ *  closes). Typed on {@link Hover}, this module's own shape (not `ReturnType<typeof pickHover>` —
+ *  that reference would pull the dependency the wrong way): `controls.ts` annotates `pickHover`'s
+ *  return as `Hover` explicitly, which is what makes a fifth field a compile error at both ends. */
+export function writeHover(hover: Hover): void {
     editor.hoverKnob = hover.knob;
     editor.hoverNode = hover.node;
     editor.hoverForce = hover.force;

@@ -181,6 +181,9 @@ describe("hovered — the rung below selection", () => {
 // declared registry, asserted BOTH directions like the `checked`/separator registries (an
 // undeclared cursor site and an orphan registry entry each fail), walked recursively (`Bun.Glob`,
 // not `readdirSync` — the source-pin law, editor-ui.md Menus) so a new component can't escape it.
+// Two dialects wear the one channel: a `.svelte` CSS `cursor:` declaration, and a canvas
+// `style.cursor = "…"` assignment in `.ts` (`controls.ts`'s pan-grabbing affordance — the single
+// most on-point instance of the law, and the one dialect a `.svelte`-only glob would never reach).
 
 interface CursorSite {
     file: string;
@@ -189,10 +192,11 @@ interface CursorSite {
 }
 
 // today's population, enumerated FROM THE SOURCE (`cursorSites()` below) — not hand-guessed: the
-// panning pair (`.nav-window` grab/grabbing, `.body.panning` grabbing while the drag is live) and
-// every plain clickable affordance that carries `cursor: pointer` (the rail's snap toggle, the
-// section clip strip, its append tail, the transport play button, the global scrubber, the two
-// modal buttons, and the shared menu-item class every context menu renders through).
+// panning pair (`.nav-window` grab/grabbing, `.body.panning` grabbing while the drag is live), the
+// viewport's own pan-grabbing canvas assignment (`controls.ts`), and every plain clickable
+// affordance that carries `cursor: pointer` (the rail's snap toggle, the section clip strip, its
+// append tail, the transport play button, the global scrubber, the two modal buttons, and the
+// shared menu-item class every context menu renders through).
 const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "App.svelte", selector: ".pinpanel button", value: "pointer" },
     { file: "App.svelte", selector: ".convert .cancel", value: "pointer" },
@@ -205,29 +209,50 @@ const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "Timeline.svelte", selector: ".clip-add", value: "pointer" },
     { file: "Timeline.svelte", selector: ".play", value: "pointer" },
     { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
+    { file: "controls.ts", selector: "canvas.style.cursor", value: "grabbing" },
 ];
 
-/** walk every `.svelte` file recursively and collect every `cursor: grab|grabbing|pointer`
- *  declaration paired with its rule's own selector — a real (if simple) CSS parse over
- *  non-nested rule blocks, not a per-line grep, so a multi-selector list or a doc comment sitting
- *  just above the rule still resolves to the one selector that owns the declaration. */
-function cursorSites(): CursorSite[] {
+/** every scanned source file's raw text — `.svelte` (CSS) and `.ts` (canvas assignments) alike,
+ *  walked recursively (`Bun.Glob`, not `readdirSync` — the source-pin law, editor-ui.md Menus) —
+ *  the one text corpus both `cursorSites()` and its scanner-level control (below) read, so the
+ *  two can't drift over which files exist. */
+function scannedFiles(): { file: string; text: string }[] {
     const src = fileURLToPath(new URL("../src", import.meta.url));
-    const files = [...new Bun.Glob("**/*.svelte").scanSync(src)];
+    const files = [
+        ...new Bun.Glob("**/*.svelte").scanSync(src),
+        ...new Bun.Glob("**/*.ts").scanSync(src),
+    ];
+    return files.map((f) => ({ file: f, text: readFileSync(`${src}/${f}`, "utf8") }));
+}
+
+/** walk every scanned file and collect every `cursor: grab|grabbing|pointer` CSS declaration
+ *  (`.svelte` `<style>` blocks) or `style.cursor = "…"` canvas assignment (`.ts`), paired with the
+ *  selector/expression that owns it — a real (if simple) CSS parse over non-nested rule blocks,
+ *  not a per-line grep, so a multi-selector list or a doc comment sitting just above the rule
+ *  still resolves to the one selector that owns the declaration. The CSS value regex tolerates
+ *  BOTH a trailing `;` and a declaration that's last in its block (terminated by `}` instead), and
+ *  an optional `!important` between the value and its terminator — a rule that closes without a
+ *  semicolon, or wears `!important`, still resolves instead of going invisible to the scanner. */
+function cursorSites(): CursorSite[] {
     const out: CursorSite[] = [];
-    for (const f of files) {
-        const text = readFileSync(`${src}/${f}`, "utf8");
-        const style = text.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "";
-        const blocks = style.match(/[^{}]+\{[^{}]*\}/g) ?? [];
-        for (const b of blocks) {
-            const m = b.match(/cursor:\s*(grab|grabbing|pointer)\s*;/);
-            if (!m) continue;
-            const selector = b
-                .slice(0, b.indexOf("{"))
-                .replace(/\/\*[\s\S]*?\*\//g, "") // strip a doc comment sitting right above the rule
-                .trim()
-                .replace(/\s+/g, " ");
-            out.push({ file: f, selector, value: m[1] as CursorSite["value"] });
+    for (const { file, text } of scannedFiles()) {
+        if (file.endsWith(".svelte")) {
+            const style = text.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "";
+            const blocks = style.match(/[^{}]+\{[^{}]*\}/g) ?? [];
+            for (const b of blocks) {
+                const m = b.match(/cursor:\s*(grab|grabbing|pointer)\s*(?:!important)?\s*[;}]/);
+                if (!m) continue;
+                const selector = b
+                    .slice(0, b.indexOf("{"))
+                    .replace(/\/\*[\s\S]*?\*\//g, "") // strip a doc comment sitting right above the rule
+                    .trim()
+                    .replace(/\s+/g, " ");
+                out.push({ file, selector, value: m[1] as CursorSite["value"] });
+            }
+        } else {
+            const re = /([A-Za-z0-9_.]+\.style\.cursor)\s*=\s*["'](grab|grabbing|pointer)["']/g;
+            for (const m of text.matchAll(re))
+                out.push({ file, selector: m[1], value: m[2] as CursorSite["value"] });
         }
     }
     return out;
@@ -235,7 +260,7 @@ function cursorSites(): CursorSite[] {
 
 const cursorKey = (s: CursorSite): string => `${s.file}::${s.selector}::${s.value}`;
 
-describe("cursor allowlist — grab/grabbing/pointer only in a declared registry", () => {
+describe("cursor allowlist — CSS declarations and canvas assignments, grab/grabbing/pointer only in a declared registry", () => {
     test("the glob reaches the components at all", () => {
         expect(cursorSites().length).toBeGreaterThan(0);
     });
@@ -266,5 +291,20 @@ describe("cursor allowlist — grab/grabbing/pointer only in a declared registry
         const registry = [...CURSOR_ALLOWLIST, bogus];
         const found = new Set(cursorSites().map(cursorKey));
         expect(registry.some((s) => !found.has(cursorKey(s)))).toBe(true);
+    });
+
+    // the SCANNER-level control (kex2d-followups finding 1): the two directions above prove the
+    // set-difference LOGIC, never the block parser that produced `cursorSites()` in the first
+    // place — a parser that silently drops a real declaration (an unhandled brace shape, a
+    // trailing-`;` regression) shrinks both sides of every diff above together and stays green. A
+    // raw, structure-free regex count over the same scanned corpus is an INDEPENDENT read of the
+    // same text — it can't miss what the block parser misses, so the two counts must agree.
+    test("scanner-level control: raw cursor declarations match the parsed site count exactly", () => {
+        const raw = scannedFiles().reduce(
+            (n, { text }) =>
+                n + (text.match(/cursor\s*[:=]\s*["']?(grab|grabbing|pointer)["']?/g) ?? []).length,
+            0,
+        );
+        expect(raw).toBe(cursorSites().length);
     });
 });

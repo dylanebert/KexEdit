@@ -282,8 +282,12 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   surface's `Scale` part of it. The CLASSIFIER is shared by the fit lab's overlay and the
   conversion tier's oracle asserts; the `Scale` is each caller's own, so a census is a reading of
   a surface and two are comparable only at the same scale. The scale-free question (are a key's
-  two handles one line) is `profile.collinear` — a collinear profile still censuses `broken`
-  wherever its handles draw under `ALIGN_PX`. Unit-tested in `census.test.ts`.
+  two handles one line) is `profile.collinear` — the `Offset`-shaped wrapper over the one shared
+  numeric core, `spline.collinearVec` (direction-agnostic; the sign clause belongs to each domain's
+  own caller, `kex2d-followups` Locked decision). `census.classify` deliberately stays OUT of that
+  fold: it answers a different, screen-space question against an absolute `ALIGN_PX`, so a
+  collinear profile still censuses `broken` wherever its handles draw under that pixel threshold.
+  Unit-tested in `census.test.ts`.
 - `playback.ts` — the fit lab's **playback timeline**: the pipeline's decisions turned into
   frames a scrubber walks (`fitlab.ts` draws them; this decides what they are). Not a kernel
   atom — it solves nothing — but it lives with them because what it asserts is a
@@ -434,7 +438,8 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `hoverForce` is the force-marker twin, written by the same sweep and mutually exclusive with both.
   `hoverKnob` (`{eid, side}` or null) is the tangent-knob twin, live only in tangent edit and
   written FIRST in the sweep — a summoned knob over its own node reads as the knob, the priority a
-  click takes. All four come from one `pickHover` call and clear together at three sites: pointer
+  click takes. All four land through one seam, `editor.writeHover`/`clearHover` — a caller can't
+  write three of the four fields and miss the fourth — and clear together at three sites: pointer
   leave, remount teardown, and `beginDrag` for the whole of any gesture.
   The invoked-solve gate lives here too: `converting` (`{phase, keys, probes}` or
   null — while it's set the modal is up and every other input is blocked; the fields are gate
