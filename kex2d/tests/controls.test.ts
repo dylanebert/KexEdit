@@ -680,7 +680,7 @@ describe("sectionOpsAllowed — pin mode blocks delete, convert, and the domain 
     test("a live session on ANY section blocks the whole surface, not just its own section", () => {
         const session = {
             section: 7,
-            stamp: { x: 0, y: 0, theta: 0 },
+            stamp: { x: 0, y: 0, theta: 0, v: 10 },
             ghost: { x: new Float32Array(0), y: new Float32Array(0) },
             freeze: { x: 0, y: 0, theta: 0, v: 10 },
         };
@@ -694,7 +694,7 @@ describe("sectionOpsAllowed — pin mode blocks delete, convert, and the domain 
 describe("sectionEditable — the in-mode editing lockdown", () => {
     const session = {
         section: 7,
-        stamp: { x: 0, y: 0, theta: 0 },
+        stamp: { x: 0, y: 0, theta: 0, v: 10 },
         ghost: { x: new Float32Array(0), y: new Float32Array(0) },
         freeze: { x: 0, y: 0, theta: 0, v: 10 },
     };

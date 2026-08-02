@@ -85,6 +85,9 @@ describe("solveOptimize — zero-drift identity", () => {
             expect(r.iters).toBe(0);
             expect(r.residual).toBe(0);
             expect(r.angleResidual).toBe(0);
+            // the landed-energy gate (kex2d-gate-hardening 1b) never touches this path: same
+            // g-vector, same march, same v — exempt by construction, not by a redundant check.
+            expect(r.vResidual).toBe(0);
             expect(r.deltaG).toEqual(new Array(points.length).fill(0));
             expect(r.points).toEqual(points);
         });
@@ -581,5 +584,87 @@ describe("solveOptimize — golden fixture (bit identity)", () => {
             expect(r.points[k].g).toBe(optimizeGolden.g[k]);
             expect(r.deltaG[k]).toBe(optimizeGolden.deltaG[k]);
         }
+    });
+});
+
+describe("solveOptimize — landed-energy gate (kex2d-gate-hardening 1b)", () => {
+    // RED FIRST, by stamp perturbation (per 1a's finding: the swept corpus carries no breach —
+    // 110 drafts, 0 crossing tolV — so no draft reproduces the gate for its own reason). Before
+    // `finalize` gated the v gap, this asserted `outcome === "diverged"` and failed with
+    // `"solved"`: the (x, y, θ) residual converges cleanly (real drift on g, no clamp involved),
+    // and nothing checked the landed v against the stamp at all. The stamp here is displaced past
+    // tolV from what the energy identity produces for the SAME (x, y, θ) — a landed state
+    // disagreeing with the stamped v is exactly the failure the gate exists to catch, even though
+    // it never occurs on an authored draft.
+    test("a stamp whose v disagrees with the converged (x, y, θ) refuses as diverged, not solved", () => {
+        const { points, length } = corpus()[0];
+        const trueStamp = computeExit(ENTRY, points, length, DS);
+        const tolV = derivedTol(trueStamp, length, DS).v;
+        const badStamp = { ...trueStamp, v: trueStamp.v + Math.max(0.5, 100 * tolV) };
+        const edited = points.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.6 : p.g }));
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: edited,
+            locked: new Set(),
+            length,
+            ds: DS,
+            stamp: badStamp,
+        });
+        const floor = derivedTol(badStamp, length, DS);
+        // the (x, y, θ) rows converge — the certificate that fires is the v gap alone, never a
+        // fourth residual row.
+        expect(r.residual).toBeLessThan(floor.pos);
+        expect(r.angleResidual).toBeLessThan(floor.angle);
+        expect(r.vResidual).toBeGreaterThan(floor.v);
+        expect(r.outcome).toBe("diverged");
+        // a landing read is a state read, not a Jacobian-read certificate — never "unreachable".
+        expect(r.reason).toBeUndefined();
+    });
+
+    // discriminates the gate's ACTUAL tolerance field (`vTol`, ~0.53× the position floor at this
+    // entry speed) from a same-magnitude decoy (`derivedTol(...).pos`, the position row's own
+    // floor): a v-displacement in the band between the two gates correctly under the real
+    // comparison but would NOT gate under a mutant reading `vResidual > tolD.pos` instead — the
+    // menu-oracle failure mode (coding.md): an assert whose displacement clears every tolerance
+    // field by the same wide margin can't tell which field the code actually reads.
+    test("a v-displacement between vTol and the position floor still refuses (discriminates the tolerance field)", () => {
+        const { points, length } = corpus()[0];
+        const trueStamp = computeExit(ENTRY, points, length, DS);
+        const posFloor = derivedTol(trueStamp, length, DS).pos;
+        const badStamp = { ...trueStamp, v: trueStamp.v + 0.8 * posFloor };
+        const floor = derivedTol(badStamp, length, DS);
+        // sanity: 0.8·pos really sits strictly between vTol and pos (measured 0.53× / 1.0×), with
+        // enough margin either side to survive the solve's own convergence noise.
+        expect(floor.v).toBeLessThan(0.8 * posFloor);
+        expect(0.8 * posFloor).toBeLessThan(posFloor);
+        const edited = points.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.6 : p.g }));
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: edited,
+            locked: new Set(),
+            length,
+            ds: DS,
+            stamp: badStamp,
+        });
+        expect(r.residual).toBeLessThan(floor.pos);
+        expect(r.vResidual).toBeGreaterThan(floor.v);
+        expect(r.vResidual).toBeLessThan(floor.pos); // inside the band, not past the decoy field
+        expect(r.outcome).toBe("diverged");
+    });
+
+    test("a stamp whose v agrees with the converged (x, y, θ) solves normally (the gate isn't trigger-happy)", () => {
+        const { points, length } = corpus()[0];
+        const stamp = computeExit(ENTRY, points, length, DS);
+        const edited = points.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.6 : p.g }));
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: edited,
+            locked: new Set(),
+            length,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("solved");
+        expect(r.vResidual).toBeLessThan(derivedTol(stamp, length, DS).v);
     });
 });

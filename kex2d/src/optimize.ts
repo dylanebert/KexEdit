@@ -45,6 +45,32 @@
  *  leave the caller free to retry with a different lock set — nothing here writes to the
  *  document; that's the caller's job, once, on a `"solved"` answer.
  *
+ *  **The landed-energy gate (stage 1b, `kex2d-gate-hardening`) is the same taxonomy's fourth
+ *  member, and it's `"diverged"`, not `"unreachable"`.** The conservative-energy law
+ *  (`kex2d-map.md`) makes exit `v` a strict function of exit `y` — so the 3-row `(x, y, θ)` pin
+ *  already pins `v` too, EXCEPT through the one breach the physics itself carries: the forward
+ *  integrator's `vSafe`/`sqrt` clamp injects energy when a march runs out of it, and that
+ *  injection survives convergence — a `"solved"` answer's landed `v` can still disagree with
+ *  what the stamped `(x, y, θ)` implies. Every certificate above is a JACOBIAN READ at invoke,
+ *  before any solving; the landing gate is a STATE READ after convergence, and a local method has
+ *  no Jacobian-shaped certificate for "the clamp fired somewhere along this particular march" —
+ *  it can only compare the two states it has in hand. So the gate is honest non-convergence
+ *  (the iterate the solver landed on is not the fixpoint it reports), never a diagnosis, and it
+ *  downgrades `"solved"` → `"diverged"` in `finalize` — the ONE seam both the direct solve and the
+ *  continuation loop's early return already route through, so there is nowhere else the gate
+ *  needs to live. Its tolerance is `vTol` (`solveOptimize`'s own local, beside `W`), derived
+ *  through the same energy identity that makes `v` a strict function of `y` in the first place:
+ *  `v·dv = −g·dy` gives `dv = G·dy/v`, and the position row's own converged bound asserts
+ *  `|dy| ≤ tol` — the EFFECTIVE position tolerance the solve actually converges to (`opts.tol` if
+ *  the caller overrides it, else the derived default), never the derived default alone: an
+ *  override that loosens what the solve converges to must loosen what the gate accepts, or the
+ *  gate refuses answers the caller's own tolerance calls converged. So
+ *  `vTol = G · tol / max(stamp.v, V_FLOOR)` — the floor is the SAME clamp the breach comes from,
+ *  not a new number. `derivedTol`'s `v` field is the reference this equals when nothing is
+ *  overridden, not what `finalize` reads. The zero-drift identity path never reaches this gate:
+ *  same g-vector, same march, same `v`, so it's exempt by construction rather than by a redundant
+ *  check.
+ *
  *  **Continuation (stage 3).** Large drift puts the stamp outside the direct SQP's basin (a
  *  ±3 g edit converges, slowly, only past the 30-iteration budget). When the direct solve
  *  refuses, a homotopy ladder re-solves through intermediate targets `exit₀ + (k/n)·(stamp −
@@ -65,15 +91,20 @@
  *  bit-exact zero and the solve returns immediately with every Δg exactly 0 — no floating step
  *  ever executes. */
 
+import { G, V_FLOOR } from "./forward";
 import { forceProfile, type ForcePoint } from "./profile";
 import { type Domain, type Entry, evalForce } from "./section";
 
-/** the section's exit anchor a stamp addresses — `v` is excluded (energy conservation makes it a
- *  derived function of `y` given the fixed entry speed, so pinning `(x, y, θ)` pins it too). */
+/** the section's exit anchor a stamp addresses. `v` is STAMPED, not PINNED: energy conservation
+ *  makes it a derived function of `y` given the fixed entry speed, so the 3-row `(x, y, θ)`
+ *  residual already determines it — carrying it here is what lets `finalize`'s landed-energy gate
+ *  (module header) compare the solve's own landed `v` against it without a fourth residual row,
+ *  which would read linearly dependent with `y` under the `"conditioning"` certificate. */
 export interface OptimizeStamp {
     x: number;
     y: number;
     theta: number;
+    v: number;
 }
 
 /** the fewest free keys a 3-row exit pin can generically satisfy — the counting necessary
@@ -97,16 +128,26 @@ const F32_EPS = 2 ** -24;
  *  Measured against the mechanism in `tests/optimize.lab.ts` §2–3: the per-read RMS scatter is
  *  ≤1 ulp of scale and the SQP loop reliably converges under this floor across the corpus.
  *  The angle floor is the same length in the scaled-row frame: `pos / length` (a heading error
- *  δθ displaces the downstream by ~L·δθ, the same lever the θ residual row is weighted by). */
+ *  δθ displaces the downstream by ~L·δθ, the same lever the θ residual row is weighted by).
+ *
+ *  The `v` field is the landed-energy gate's DEFAULT tolerance (module header) — what `finalize`
+ *  actually compares against is `solveOptimize`'s own local `vTol`, derived the same way but from
+ *  the EFFECTIVE `tol` the solve converges to (`opts.tol` if the caller overrides it), because the
+ *  underlying energy identity's premise is `|dy| ≤` whatever bound the position row actually
+ *  converged to, not this function's default. This field is that identity at the default: `v·dv =
+ *  −g·dy` gives `dv = G·dy/v`, and `|dy| ≤ pos` by the position row's own bound above, so `v = G ·
+ *  pos / max(stamp.v, V_FLOOR)` — `V_FLOOR` because the stamped `v` can itself sit at the
+ *  integrator's own clamp floor, and dividing by a near-zero speed would blow the tolerance up
+ *  rather than derive it. */
 export function derivedTol(
     stamp: OptimizeStamp,
     length: number,
     ds: number,
-): { pos: number; angle: number } {
+): { pos: number; angle: number; v: number } {
     const edges = Math.max(1, Math.round(length / ds));
     const scale = Math.max(Math.abs(stamp.x), Math.abs(stamp.y), length);
     const pos = 3 * F32_EPS * Math.sqrt(edges) * scale;
-    return { pos, angle: pos / length };
+    return { pos, angle: pos / length, v: (G * pos) / Math.max(stamp.v, V_FLOOR) };
 }
 
 const MAX_ITERS = 30;
@@ -166,6 +207,11 @@ export interface OptimizeResult {
     residual: number;
     /** final |θ| exit gap (rad). */
     angleResidual: number;
+    /** final |v| landed-vs-stamped exit gap (m/s) — the landed-energy gate's own reading (module
+     *  header); what `finalize` compares against `derivedTol(...).v` to decide the `"solved"` →
+     *  `"diverged"` downgrade. Reported on every outcome, not just `"solved"`, the same way
+     *  `residual`/`angleResidual` are. */
+    vResidual: number;
 }
 
 export interface OptimizeOpts {
@@ -196,14 +242,17 @@ export function computeExit(
 ): OptimizeStamp {
     const dense = forceProfile(points, length, ds);
     const exit = evalForce(entry, dense, ds, domain);
-    return { x: exit.exit.x, y: exit.exit.y, theta: exit.exit.theta };
+    return { x: exit.exit.x, y: exit.exit.y, theta: exit.exit.theta, v: exit.exit.v };
 }
 
 function withG(points: readonly ForcePoint[], g: ArrayLike<number>): ForcePoint[] {
     return points.map((p, k) => ({ ...p, g: g[k] }));
 }
 
-function residualOf(e: { x: number; y: number; theta: number }, stamp: OptimizeStamp): number[] {
+function residualOf(
+    e: { x: number; y: number; theta: number },
+    stamp: { x: number; y: number; theta: number },
+): number[] {
     return [e.x - stamp.x, e.y - stamp.y, e.theta - stamp.theta];
 }
 
@@ -264,6 +313,12 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     // Without it the radian row sits ~20× below the metre rows and the backtrack's max-norm
     // criterion effectively ignores the heading. W = length at the derived defaults.
     const W = tol / angleTol;
+    // the landed-energy gate's tolerance, derived from the EFFECTIVE position tolerance the solve
+    // actually converges to (`tol`, which may be caller-overridden via `OptimizeOpts.tol`), never
+    // `tolD.pos` alone: the derivation's own premise is `|dy| ≤` the position row's converged
+    // bound, and that bound is whatever `tol` the solve was run under — `tolD.v` is only the
+    // DEFAULT this equals when nothing is overridden (module header, `derivedTol`'s own doc).
+    const vTol = (G * tol) / Math.max(stamp.v, V_FLOOR);
     const K = points.length;
     const g0 = Float64Array.from(points, (p) => p.g);
     const freeIdx: number[] = [];
@@ -276,6 +331,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         iters: number,
         res: number,
         ang: number,
+        vRes: number,
     ): OptimizeResult => ({
         points: points.map((p) => ({ ...p })),
         deltaG: new Array(K).fill(0),
@@ -284,18 +340,24 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         iters,
         residual: res,
         angleResidual: ang,
+        vResidual: vRes,
     });
 
-    if (P < MIN_FREE) return zeroResult("unreachable", "free-count", 0, NaN, NaN);
+    if (P < MIN_FREE) return zeroResult("unreachable", "free-count", 0, NaN, NaN, NaN);
 
-    const exitAt = (g: ArrayLike<number>): { x: number; y: number; theta: number } => {
+    // the exit's full state — including `v`, the landed-energy gate's own reading — read through
+    // the SAME production integrator call the residual rows use (module header).
+    const exitAt = (g: ArrayLike<number>): Entry => {
         const dense = forceProfile(withG(points, g), length, ds);
         return evalForce(entry, dense, ds, domain).exit;
     };
 
     const e0 = exitAt(g0);
     const c0 = residualOf(e0, stamp);
-    if (c0[0] === 0 && c0[1] === 0 && c0[2] === 0) return zeroResult("solved", undefined, 0, 0, 0);
+    // the zero-drift identity is exempt from the landed-energy gate BY CONSTRUCTION, not by a
+    // redundant check: the same g-vector through the same march produces the same `v`.
+    if (c0[0] === 0 && c0[1] === 0 && c0[2] === 0)
+        return zeroResult("solved", undefined, 0, 0, 0, 0);
 
     // the Gram matrix M (P×P): each free key's unit-g-bump response, ds-weighted inner product.
     // exact globally (not a linearization) — the dense profile is affine in g with s frozen.
@@ -327,6 +389,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
             0,
             Math.max(Math.abs(c0[0]), Math.abs(c0[1])),
             Math.abs(c0[2]),
+            Math.abs(e0.v - stamp.v),
         );
 
     // full g-vector scattering a free-index iterate `z` over the locked baseline.
@@ -360,6 +423,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     // ── the at-invoke Jacobian-read certificates (one FD pass, J0 reused below) ──
     const res0 = Math.max(Math.abs(c0[0]), Math.abs(c0[1]));
     const ang0 = Math.abs(c0[2]);
+    const vRes0 = Math.abs(e0.v - stamp.v);
 
     // (stall) the θ-row derivative-consistency read: the same eP/eM probes the central
     // difference is built from also give the two one-sided differences. On a smooth map both
@@ -393,7 +457,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         const bwd = (length * (e0.theta - eM.theta)) / JAC_H;
         if (fwd * bwd < 0 && Math.min(Math.abs(fwd), Math.abs(bwd)) > noiseSlope) cliff = true;
     }
-    if (cliff) return zeroResult("unreachable", "stall", 0, res0, ang0);
+    if (cliff) return zeroResult("unreachable", "stall", 0, res0, ang0, vRes0);
 
     // (conditioning) σmin/σmax of the scaled Jacobian, read exactly off the 3×3 J·Jᵀ
     // eigenvalues (cyclic Jacobi): below COND_FLOOR the smallest pin direction is inside the
@@ -412,7 +476,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     const eigs = sym3Eigs(A0);
     const lamMax = Math.max(...eigs);
     if (lamMax <= 0 || Math.sqrt(Math.max(0, Math.min(...eigs)) / lamMax) < COND_FLOOR)
-        return zeroResult("unreachable", "conditioning", 0, res0, ang0);
+        return zeroResult("unreachable", "conditioning", 0, res0, ang0, vRes0);
 
     // ── one damped-SQP stage toward `target`, warm-started at `zStart` ──
     // The objective reference stays the global draft `z0` regardless of stage: minimize
@@ -420,7 +484,10 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     // from the current draft. `firstJ` reuses the invoke Jacobian when `zStart` is `z0`
     // (the Jacobian depends on the iterate, never on the target).
     const gn = (
-        target: OptimizeStamp,
+        // an intermediate homotopy waypoint is a bare (x, y, θ) target, never a full stamp — the
+        // landed-energy gate reads `v` only against the TRUE stamp, at `finalize`, never against
+        // a stage's interpolated point.
+        target: { x: number; y: number; theta: number },
         zStart: Float64Array,
         firstJ: Float64Array[] | null,
         // an intermediate homotopy stage converges its target to the same RELATIVE depth the
@@ -531,19 +598,29 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         return { z, solved: false, iters: maxIters };
     };
 
+    // the ONE seam the landed-energy gate lives at (module header) — both the direct solve's
+    // return and the continuation loop's early return route through here, so a `"solved"`
+    // outcome whose landed `v` disagrees with the stamped `v` beyond `vTol` (the EFFECTIVE
+    // tolerance, above — never `tolD.v`) downgrades to `"diverged"` in exactly one place, never a
+    // fourth residual row.
     const finalize = (z: Float64Array, outcome: OptimizeOutcome, iters: number): OptimizeResult => {
         const gFinal = scatter(z);
-        const c = residualOf(exitAt(gFinal), stamp);
+        const e = exitAt(gFinal);
+        const c = residualOf(e, stamp);
         const outPoints = points.map((p, k) => ({ ...p, g: gFinal[k] }));
         const deltaG = new Array(K).fill(0);
         for (const k of freeIdx) deltaG[k] = gFinal[k] - g0[k];
+        const vResidual = Math.abs(e.v - stamp.v);
+        const gated: OptimizeOutcome =
+            outcome === "solved" && vResidual > vTol ? "diverged" : outcome;
         return {
             points: outPoints,
             deltaG,
-            outcome,
+            outcome: gated,
             iters,
             residual: Math.max(Math.abs(c[0]), Math.abs(c[1])),
             angleResidual: Math.abs(c[2]),
+            vResidual,
         };
     };
 
@@ -579,7 +656,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         const c = residualOf(e, stamp);
         if (Math.abs(c[0]) < tol && Math.abs(c[1]) < tol && Math.abs(c[2]) < angleTol)
             return finalize(bestZ, "solved", iters);
-        const target: OptimizeStamp =
+        const target: { x: number; y: number; theta: number } =
             frac === 1
                 ? stamp
                 : {

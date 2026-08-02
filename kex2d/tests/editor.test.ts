@@ -462,7 +462,7 @@ test("modeChromeSection: null at rest, the session's section in-mode, the landin
     expect(modeChromeSection()).toBeNull();
     editor.pinning = {
         section: 3,
-        stamp: { x: 0, y: 0, theta: 0 },
+        stamp: { x: 0, y: 0, theta: 0, v: 10 },
         ghost: { x: new Float32Array(0), y: new Float32Array(0) },
         freeze: { x: 0, y: 0, theta: 0, v: 10 },
     };
@@ -482,7 +482,7 @@ test("modeChromeSection: null at rest, the session's section in-mode, the landin
 test("lockLabel: hidden outside the mode, on other sections, and on an empty set", () => {
     const session = {
         section: 7,
-        stamp: { x: 0, y: 0, theta: 0 },
+        stamp: { x: 0, y: 0, theta: 0, v: 10 },
         ghost: { x: new Float32Array(0), y: new Float32Array(0) },
         freeze: { x: 0, y: 0, theta: 0, v: 10 },
     };
@@ -494,7 +494,7 @@ test("lockLabel: hidden outside the mode, on other sections, and on an empty set
 test("lockLabel: toggle semantics — all-locked offers Unlock, anything else Lock", () => {
     const session = {
         section: 7,
-        stamp: { x: 0, y: 0, theta: 0 },
+        stamp: { x: 0, y: 0, theta: 0, v: 10 },
         ghost: { x: new Float32Array(0), y: new Float32Array(0) },
         freeze: { x: 0, y: 0, theta: 0, v: 10 },
     };

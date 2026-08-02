@@ -199,7 +199,7 @@ interface EditorState {
  *  convention, not drift-handling. */
 export interface PinSession {
     section: number;
-    stamp: { x: number; y: number; theta: number };
+    stamp: { x: number; y: number; theta: number; v: number };
     ghost: { x: Float32Array; y: Float32Array };
     /** the section's full recovered exit at mode entry — the downstream freeze's chain seed
      *  (`track.setBakeFreeze`): while the mode is open, sections after this one bake from HERE,

@@ -1,4 +1,6 @@
-const G = 9.80665;
+/** standard gravity, m/s² — owned here (the lowest layer, the integrator that consumes it) and
+ *  re-exported by `bake.ts`/read by `optimize.ts`, the same one-home pattern as `V_FLOOR`. */
+export const G = 9.80665;
 
 /**
  * numerical velocity floor: `step` clamps `vSafe = max(|v|, V_FLOOR)` so the

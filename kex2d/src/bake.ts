@@ -1,10 +1,8 @@
-import { step, V_FLOOR } from "./forward";
+import { G, step, V_FLOOR } from "./forward";
 
-// V_FLOOR is owned by `forward` (the integrator that clamps `vSafe`); the
-// inversion below must use the same value, so re-export it from one source.
+// V_FLOOR/G are owned by `forward` (the integrator that clamps `vSafe` and drives the march);
+// the inversion below must use the same values, so re-export/read them from one source.
 export { V_FLOOR };
-
-const G = 9.80665;
 
 /**
  * diagnostic threshold for first-class infeasibility surfacing — distinct

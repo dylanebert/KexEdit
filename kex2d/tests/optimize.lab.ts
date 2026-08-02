@@ -22,7 +22,7 @@
 //
 // Run: bun tests/optimize.lab.ts
 
-import { V_FLOOR } from "../src/forward";
+import { G, V_FLOOR } from "../src/forward";
 import { derivedTol, type OptimizeOpts, solveOptimize } from "../src/optimize";
 import { forceProfile, type ForcePoint } from "../src/profile";
 import { type Entry, evalForce } from "../src/section";
@@ -79,11 +79,14 @@ function corpus(): Scenario[] {
     ];
 }
 
-function exitAt(sc: Scenario, points: ForcePoint[]): { x: number; y: number; theta: number } {
+function exitAt(
+    sc: Scenario,
+    points: ForcePoint[],
+): { x: number; y: number; theta: number; v: number } {
     const entry = sc.entry ?? ENTRY;
     const dense = forceProfile(points, sc.length, DS);
     const e = evalForce(entry, dense, DS, undefined).exit;
-    return { x: e.x, y: e.y, theta: e.theta };
+    return { x: e.x, y: e.y, theta: e.theta, v: e.v };
 }
 
 function withBump(points: ForcePoint[], k: number, dg: number): ForcePoint[] {
@@ -516,7 +519,6 @@ console.log(
     "\n── 6. landed-v breach sweep (solved drafts whose landed v strays from the energy-derived stamp v beyond tolV) ──",
 );
 {
-    const G = 9.80665; // mirror of forward.ts's own constant (not exported pre-1b)
     const climbBase: ForcePoint[] = [
         { s: 0, g: 1 },
         { s: 10, g: 2.2 },
@@ -552,7 +554,7 @@ console.log(
     ): void {
         total++;
         const stampExit = fullExit(entry, base, length);
-        const stamp = { x: stampExit.x, y: stampExit.y, theta: stampExit.theta };
+        const stamp = { x: stampExit.x, y: stampExit.y, theta: stampExit.theta, v: stampExit.v };
         const r = solveOptimize({
             entry,
             points: edited,

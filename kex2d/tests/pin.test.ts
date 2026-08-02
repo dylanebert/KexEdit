@@ -644,7 +644,7 @@ describe("the sandbox (kex2d-optimize-mode stage 7)", () => {
         expect(Array.from(out.fN.subarray(0, 40))).not.toEqual(final); // live override
         beginPin({
             section: sec,
-            stamp: { x: 0, y: 0, theta: 0 },
+            stamp: { x: 0, y: 0, theta: 0, v: 20 },
             ghost: { x: new Float32Array(0), y: new Float32Array(0) },
             freeze: { x: 0, y: 0, theta: 0, v: 20 },
         });

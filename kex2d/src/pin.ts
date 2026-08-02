@@ -117,7 +117,7 @@ export function enterPin(ecs: State, sectionId: number): PinSession | null {
     // (`editor.PinSession`).
     return {
         section: sectionId,
-        stamp: { x: r.exit.x, y: r.exit.y, theta: r.exit.theta },
+        stamp: { x: r.exit.x, y: r.exit.y, theta: r.exit.theta, v: r.exit.v },
         ghost: { x: r.posX, y: r.posY },
         freeze: { x: r.exit.x, y: r.exit.y, theta: r.exit.theta, v: r.exit.v },
     };
