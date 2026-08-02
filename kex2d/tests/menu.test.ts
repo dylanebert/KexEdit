@@ -995,6 +995,49 @@ describe("the menu grammar — every builder, every state", () => {
         (f) => f.endsWith(".ts") || f.endsWith(".svelte"),
     );
 
+    // the hand-typed `RawKeys` list above is only a census if it actually COVERS `BINDINGS` — a
+    // fifth binding landing with no matching `RawKeys` entries would otherwise fall through the
+    // loop below untested while the test's own name keeps claiming completeness.
+    test("`RawKeys` censuses every key every binding declares", () => {
+        const declared = new Set<string>();
+        for (const binding of Object.values<Binding>(BINDINGS))
+            for (const key of binding.keys) declared.add(key);
+        expect(Object.keys(RawKeys).sort()).toEqual([...declared].sort());
+    });
+
+    // a `code`-form comparison bypasses `BINDINGS` (and this whole `key`-form census) entirely —
+    // `Timeline.svelte`'s `e.code === "Space"` already proves the shape exists in this codebase,
+    // so a rebind hiding behind `e.code === "KeyQ"` would keep every `key`-form assert green while
+    // `BINDINGS.lock.hint` kept printing `Q` over a dead binding. One declared exemption: `Space`
+    // is a real, non-menu `code` comparison (the playback toggle has no row), named here so a NEW
+    // `code` comparison anywhere else fails closed instead of silently joining it.
+    const CodeExempt = { value: "Space", files: ["Timeline.svelte"] } as const;
+
+    test("no module compares a key by `code` outside the one declared exemption", () => {
+        const pattern = /code\s*[!=]==\s*"([^"]+)"/g;
+        const bad: string[] = [];
+        for (const f of srcFiles) {
+            if (f === "menu.ts") continue;
+            for (const m of src(f).matchAll(pattern)) {
+                const value = m[1];
+                if (
+                    value === CodeExempt.value &&
+                    (CodeExempt.files as readonly string[]).includes(f)
+                )
+                    continue;
+                bad.push(`${f}: code === "${value}"`);
+            }
+        }
+        expect(bad).toEqual([]);
+        // the exemption itself isn't vacuous — Space really is compared by CODE where declared, so
+        // deleting the exemption line above would go red here, not pass by omission.
+        expect(
+            CodeExempt.files.some((f) =>
+                new RegExp(`code\\s*[!=]==\\s*"${CodeExempt.value}"`).test(src(f)),
+            ),
+        ).toBe(true);
+    });
+
     test("each binding's hint names its own key", () => {
         // `keys` and `hint` are two fields of one entry, so a rebind that edits only the keys would
         // still desync the row. The hint is the key's display form: two irregular abbreviations,

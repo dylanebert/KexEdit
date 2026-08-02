@@ -310,6 +310,19 @@ as long as their rows lived inside `$derived.by` closures no pure test could rea
   the whole menu. Frequency survives only as the *within-group* tiebreaker: as a free-form
   whole-menu rule it was a per-menu judgment call, unenforceable, and it is why node Delete led
   its menu while section Delete trailed.
+
+  The membership tests are written about the subject, which is enough for every row shipped today
+  because every row's object *is* its subject. The first op whose object is a neighbor breaks that:
+  `joinNext` modifies the subject and destroys the section beside it, so the written test files it
+  under `modify` while `split` files under `create`, and the pair that reads as one thought lands at
+  opposite ends of the menu. Resolve this when the structural editing tier scopes, not by widening
+  `lifecycle` (that still splits the pair) but by deciding whether a fourth `structure` group lands
+  between `modify` and `lifecycle`. Four groups were tried once and rejected, but that rejection
+  does not transfer: it was argued against splitting `mode` out of `modify`, which gave the four-row
+  section menu three separators. `structure` gives a six-row section menu two.
+
+  `GROUPS` in kex2d `src/menu.ts` is the source of truth for the group set and its canonical order;
+  the table above is its prose mirror.
 - **Separators derive from group boundaries.** The renderer emits a divider wherever the group
   changes (kex2d `menuRows`); builders author none. One escape hatch survives — an explicit
   `separator` is legal as a WITHIN-group divider, and the oracle constrains it to positions no
@@ -317,6 +330,12 @@ as long as their rows lived inside `$derived.by` closures no pure test could rea
   sanctioned use is `Easing ▸`, dividing the preset picks from `Custom` (which materializes handles
   and steps into handle edit: a different kind of row, the same group). An authored divider landing
   at a boundary collapses with the derived one rather than doubling.
+
+  **Position-legal is a floor, and it is all the gate has today.** A divider an author placed by
+  feel passes every positional check — the oracle can say where it may sit, never what it divides.
+  That is the same gap `checked` had before its registry, and it wants the same answer: a declared
+  registry naming each authored divider's row path and what it separates, asserted both directions.
+  Not built. Until it is, an authored `separator` is a reviewed decision, not a gated one.
 - **Rows are terse.** A context menu is summoned *on* its subject, so the row names the verb alone
   — `Delete`, not `Delete node` (the noun restates what the invoker already said, the naming rule's
   module-scope-is-context).
@@ -337,6 +356,12 @@ as long as their rows lived inside `$derived.by` closures no pure test could rea
   `menu.ts` — the handler matches its `keys`, the row prints its `hint`), so a rebind moves the hint
   with it. A table living in the test instead stays green through a rebind, which is how `L` → `Q`
   would have gone unnoticed.
+
+  **Known gap: the row-to-binding map is keyed by the bare label today** (kex2d
+  `tests/menu.test.ts`). That silently enforces "every row named `Delete` anywhere carries `Del`",
+  which is a stronger law than the one written here and breaks on the first menu that reuses a label
+  for a different act. Key it by the row's full `menu ▸ label` path instead, the way the `checked`
+  registry already is.
 - **Gray a row whose preconditions fail; omit one its subject rules out.** Graying keeps an
   applicable-but-blocked row discoverable (no live bake, a multi-set — the bulk-row law above). A
   row that could never fire on this subject is different: a section is exactly one kind, so the

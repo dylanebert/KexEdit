@@ -471,10 +471,21 @@ export async function clickMenuItem(page: Page, menu: string, item: string): Pro
 //
 // What it adds over the pure oracle: the oracle proves every builder obeys the grammar; this proves
 // `Menu.svelte` TRANSMITS it — each row's `data-group` published, rows in the builder's order, the
-// dividers derived where `menuRows` puts them — and that every rendered row is REACHABLE by a real
-// pointer, at the root and inside each flyout.
+// dividers derived where `menuRows` puts them, `enabled`/`checked` rendered as the native
+// `disabled` attribute and the `checked` CSS class — and that every rendered row is REACHABLE by a
+// real pointer, at the root and inside each flyout. `enabled`/`checked` matter here specifically
+// because they're invisible to every OTHER gate: a wiring bug that always derives `enabled: true`
+// still passes the pure grammar oracle (each state in the matrix is still internally consistent)
+// and every label/group/separator assert here, so only comparing the DOM's actual disabled/checked
+// state against the builder's own answer for the SAME descriptor catches it.
 
-export type MenuRow = { label: string; group: string | null; separator: boolean };
+export type MenuRow = {
+    label: string;
+    group: string | null;
+    separator: boolean;
+    disabled: boolean;
+    checked: boolean;
+};
 
 /** how a flow names the menu it opened, so the page can rebuild it from the real builder. */
 export type MenuSpec = {
@@ -531,11 +542,19 @@ async function builderAnswer(page: Page, spec: MenuSpec): Promise<MenuAnswer> {
                     path,
                     rows: menuRows(rows).map((r: Item) =>
                         r.separator
-                            ? { label: "", group: null, separator: true }
+                            ? {
+                                  label: "",
+                                  group: null,
+                                  separator: true,
+                                  disabled: false,
+                                  checked: false,
+                              }
                             : {
                                   label: (r.label as string) ?? "",
                                   group: (r.group as string) ?? null,
                                   separator: false,
+                                  disabled: r.enabled === false,
+                                  checked: r.checked === true,
                               },
                     ),
                 });
@@ -567,10 +586,17 @@ async function domLevel(
         if (!rows) throw new Error(`no menu rows at "${s}"`);
         return [...rows.children].map((el) => {
             const b = el.getBoundingClientRect();
+            const separator = el.getAttribute("role") === "separator";
             return {
                 label: (el.querySelector("span")?.textContent ?? "").replace(/\s+/g, " ").trim(),
                 group: el.getAttribute("data-group"),
-                separator: el.getAttribute("role") === "separator",
+                separator,
+                // native `disabled` and `Menu.svelte`'s own `class:checked` are the real DOM
+                // signals `Menu.svelte` already renders `enabled`/`checked` through — no new
+                // attribute needed, so a builder/renderer drift on EITHER channel is visible here
+                // exactly the way `data-group` already catches a drift on ordering.
+                disabled: !separator && el.hasAttribute("disabled"),
+                checked: !separator && el.classList.contains("checked"),
                 x: b.x + b.width / 2,
                 y: b.y + b.height / 2,
             };
@@ -599,8 +625,14 @@ export async function menuGrammar(page: Page, menu: string, spec: MenuSpec): Pro
         }
         const actual = await domLevel(page, menu, path.length);
         expect(
-            actual.map((r) => ({ label: r.label, group: r.group, separator: r.separator })),
-            `${where} — the rendered rows must be the builder's rows, dividers included`,
+            actual.map((r) => ({
+                label: r.label,
+                group: r.group,
+                separator: r.separator,
+                disabled: r.disabled,
+                checked: r.checked,
+            })),
+            `${where} — the rendered rows must be the builder's rows, dividers included, enabled/checked matching too`,
         ).toEqual(rows);
         for (const row of actual.filter((r) => !r.separator)) {
             const hit = await menuHit(page, row.x, row.y);

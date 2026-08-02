@@ -702,6 +702,14 @@ const nodeSuffixOk = $derived.by((): boolean => {
 // the lockdown (kex2d-optimize-mode stage 5): in-mode, only the pinning (force) section
 // is editable, so every geo-node edit row grays — visible, never hidden (the enablement law).
 const nodeItems = $derived.by((): MenuItem[] => {
+    // `ok` (the lockdown gate, below) reads `editor.pinning` DIRECTLY — a plain field on the
+    // `editor` singleton, not itself reactive (`kex2d-map.md` "Tick-derived `editor.*` reads lag a
+    // frame") — so this derived needs its OWN `void tick;`, the way `ctxItems` (the section menu's
+    // twin) already has. Without it, Svelte only re-runs this body when one of the READ deriveds
+    // below (`nodeMode`/`nodeEditing`/`nodeIsEnd`/`nodeCanTrim`) changes VALUE, which a pin-mode
+    // entry never does on its own — the lockdown would silently never engage on an already-open
+    // node menu, exactly the wiring bug the harness's disabled/checked cross-check exists to catch.
+    void tick;
     const m = editor.nodeMenu;
     if (m === null) return [];
     const eid = m.eid;

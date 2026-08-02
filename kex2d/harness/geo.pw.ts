@@ -1427,3 +1427,82 @@ test("viewport multiselect flow", async ({ page, boot }) => {
     await page.keyboard.press("f");
     await expect.poll(async () => (await cam())[0]).toBeLessThan(zoomed[0]);
 });
+
+// kex2d-menu-grammar decision 8's cross-check is blind to `enabled`/`checked` unless the DOM
+// scrape and the builder-answer mapping both carry them (`flow.ts`'s `MenuRow`/`domLevel`). This
+// flow is the case that gap let through silently: the node menu's whole pin-mode LOCKDOWN
+// (`App.svelte`'s `ok: editor.pinning === null` — editor-ui.md's Sandbox-mode UX, "the mode is a
+// consent boundary") is wired ENTIRELY through `enabled`, so a label/group/separator-only
+// cross-check (and every other gate: the pure grammar oracle, both registries, all 31 other
+// captures) stays green even if that wiring silently inverted to `ok: true`. Only comparing the
+// rendered `disabled` state against the SAME builder's answer for the SAME descriptor catches it.
+test("node menu grays under the pin-mode lockdown (kex2d-menu-grammar)", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await expect.poll(() => kexCall(page, "nodeCount")).toBe(7);
+
+    // a second, FORCE section becomes the pin subject — `nodeAt`'s hook always addresses section
+    // 0 (`main.ts`'s `sec()`), so the geo hill's nodes stay reachable no matter which section a
+    // pin session is open on, which is exactly what makes this the lockdown's OWN cross-check
+    // rather than a coincidence of which section the mode happens to be pinning.
+    await kexCall(page, "append", 1); // SectionKind.Force
+    await expect.poll(() => kexCall(page, "sectionCount")).toBe(2);
+    await frameTimeline(page);
+
+    const canvas = page.locator("canvas.viewport");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    const n = await nodePoint(page, 3); // an interior hill node — not the entry, not the chain end
+
+    const nodeState = (ok: boolean) => ({
+        multi: false,
+        isEntry: false,
+        ok,
+        editing: false,
+        isEnd: false,
+        canTrim: false,
+        suffixOk: false,
+    });
+
+    // ── baseline, no pin session anywhere: the edit rows are live. ──
+    await page.mouse.click(cb.x + n.x, cb.y + n.y, { button: "right" });
+    await expect(page.locator(".nodemenu")).toBeVisible();
+    await menuGrammar(page, ".nodemenu", {
+        builder: "nodeMenu",
+        state: nodeState(true),
+        enums: { mode: "spline.TangentMode.Aligned" },
+    });
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".nodemenu")).toHaveCount(0);
+    await page.keyboard.press("Escape"); // clear the selection the right-click made
+
+    // ── enter pin mode on the OTHER (force) section. ──
+    await page.locator(".clip").nth(1).click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await clickMenuItem(page, ".ctxmenu", "Pin");
+    await expect(page.locator(".pinpanel")).toBeVisible();
+    await expect.poll(() => kexCall(page, "pinning")).toBe(true);
+
+    // ── the lockdown: the SAME geo node's menu now grays Handles/Tangents/Reset. The builder
+    // answer for `ok: false` says every one of those rows is disabled — asserting that against the
+    // rendered DOM is what an `ok: true` regression at App.svelte's node-menu wiring would break.
+    // Re-locate through `nodePoint` rather than reusing `n`: the pin panel docking in reflows the
+    // viewport, which moves this node's SCREEN point even though its model-space position hasn't
+    // changed (the kex2d-harness law against driving a pointer through a box cached across a
+    // camera/layout change). ──
+    const n2 = await nodePoint(page, 3);
+    await page.mouse.click(cb.x + n2.x, cb.y + n2.y, { button: "right" });
+    await expect(page.locator(".nodemenu")).toBeVisible();
+    await menuGrammar(page, ".nodemenu", {
+        builder: "nodeMenu",
+        state: nodeState(false),
+        enums: { mode: "spline.TangentMode.Aligned" },
+    });
+    await page.keyboard.press("Escape"); // rung 1: closes the menu, the right-clicked node stays selected
+    await expect(page.locator(".nodemenu")).toHaveCount(0);
+    await page.keyboard.press("Escape"); // rung 2: clears the node selection
+
+    // exit the mode cleanly — Esc discards without trace (the sandbox contract).
+    await page.keyboard.press("Escape"); // rung 3: Exit
+    await expect.poll(() => kexCall(page, "pinning")).toBe(false);
+});
