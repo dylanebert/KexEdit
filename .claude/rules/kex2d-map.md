@@ -102,6 +102,31 @@ stall certificate is the **θ-row one-sided sign opposition** read off the invok
 (a smooth map's one-sided slopes stay same-signed; the clamp cliff flips them), measured to
 separate every floor-touching corpus draft from every smooth one, threshold-free.
 
+**The conservative-energy law**: speed is a strict function of height. The integrator advances
+`v²_{i+1} = v²_i − 2g·Δy` and the recovery reads `v²_i = v²_0 − 2g·(y_i − y_0)`, so `F_n` reaches
+`v` only through `dθ` → `y`. Normal force does no work, and that is a property of the physics
+rather than of any solver: **an optimizer whose DOF are force ordinates cannot move exit `v`
+except by moving exit `y`.** Pin mode's three-row exit stamp is therefore already a full
+four-state pin (measured 2026-08-01: landed `exit.v` matches the energy-derived value to
+1e-5 m/s across flat / gentle-hill / airtime-dip / steep-climb drafts, and a length change
+doesn't touch it — stamped at L = 60 and re-solved at 65 / 75 it holds, while short lengths
+refuse on geometric reach instead). A fourth residual row on `v` is refused for cause: linearly
+dependent with the `y` row, it would make a well-posed problem read as rank-deficient under the
+`"conditioning"` certificate.
+
+The identity survives *authored* energy input. A launch or brake at a fixed station adds a known
+term, and `v_exit` stays a function of `y_exit` plus constants no DOF reaches. What breaks it is
+**path-dependent dissipation** — friction, drag, or a control acting over a time window — where
+the loss integrates `F_n` along the path and the DOF finally couples to the energy. Until that
+exists, a speed row is chrome for a state that doesn't exist.
+
+**The one breach today is the velocity clamp.** `step` and `forces` both take
+`v = sqrt(max(v², 0))`, so a march that runs out of energy has energy *injected* at the clamp and
+`v_exit` stops following `y_exit` (measured 1.4–5.1 m/s above the derived value). Invoke-time
+certificates do not cover the landed state: a draft that passes the stall certificate can still
+wander into a stalled iterate mid-solve (measured at L = 90, `vmin` 0, `vErr` 0.45 m/s, refused
+as `"diverged"`). Certifying that at the landing is open work (roadmap).
+
 **The ds-convention law**: anything needing arclength sums the bake's own per-edge `out.ds`,
 never re-derives from chord distance. The two agree to f32 rounding on a normal chain, but the
 pin mode's downstream freeze publishes a **zero-length gap edge over a real position jump**
