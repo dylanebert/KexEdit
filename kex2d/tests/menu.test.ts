@@ -257,6 +257,86 @@ describe("sectionMenu — the section context menu's rows", () => {
     });
 });
 
+// ── the descriptor-laziness gate (`menus.ts`'s module header contract, kex2d-gate-hardening
+// stage 5). `App.svelte` hands `sectionMenu` four fields — `canSolve`, `canSolveShape`, `canPin`,
+// `canReset` — as GETTERS specifically because each runs `bakeLive(ecs)`, a full-track
+// `authoredHash` walk, and the in-mode fork (the branch that swaps in the mode's own two rows)
+// must never pay for one. Declared as ONE list, not four separate hand-written asserts, so a
+// fifth expensive predicate is a deliberate edit here rather than a silent omission.
+const LazyFields = ["canSolve", "canSolveShape", "canPin", "canReset"] as const;
+
+function countingDescriptor(inMode: boolean): {
+    state: SectionMenuState;
+    reads: Record<(typeof LazyFields)[number], number>;
+} {
+    const reads = { canSolve: 0, canSolveShape: 0, canPin: 0, canReset: 0 };
+    const state: SectionMenuState = {
+        inMode,
+        solving: false,
+        pinSolvable: true,
+        kind: SectionKind.Force,
+        multi: false,
+        modeOpen: false,
+        canDelete: true,
+        get canSolve() {
+            reads.canSolve++;
+            return true;
+        },
+        get canSolveShape() {
+            reads.canSolveShape++;
+            return true;
+        },
+        get canPin() {
+            reads.canPin++;
+            return true;
+        },
+        get canReset() {
+            reads.canReset++;
+            return true;
+        },
+    };
+    return { state, reads };
+}
+
+describe("sectionMenu — descriptor laziness (the lazy-getter contract, menus.ts's header)", () => {
+    const acts = () =>
+        recorder(
+            "solve",
+            "solveShape",
+            "pinSolve",
+            "pinExit",
+            "pinEnter",
+            "reset",
+            "remove",
+            "removeSet",
+        );
+
+    // the positive control: proves the counting descriptor can actually SEE a read, rather than
+    // reporting zero because it's blind. A force section out-of-mode reads three of the four
+    // (Convert → `canSolveShape` since a force section converts to geo; Pin → `canPin`; Reset →
+    // `canReset`); `canSolve` stays unread because the Convert row's ONE branch took the other arm.
+    test("positive control: the out-of-mode fork DOES read some of the four", () => {
+        const { state, reads } = countingDescriptor(false);
+        sectionMenu(state, acts());
+        expect(reads.canSolveShape, "canSolveShape").toBe(1);
+        expect(reads.canPin, "canPin").toBe(1);
+        expect(reads.canReset, "canReset").toBe(1);
+        expect(reads.canSolve, "canSolve").toBe(0);
+    });
+
+    // the gate itself: in-mode, the mode's own two rows (Solve, Exit) replace the menu entirely,
+    // and none of the four `authoredHash`-walking fields may be touched to build them.
+    test("in-mode: none of the four authoredHash-walking predicates are read", () => {
+        const { state, reads } = countingDescriptor(true);
+        sectionMenu(state, acts());
+        for (const field of LazyFields)
+            expect(
+                reads[field],
+                `"${field}" was read ${reads[field]} time(s) building the in-mode fork`,
+            ).toBe(0);
+    });
+});
+
 describe("nodeMenu — the node context menu's rows", () => {
     const base: NodeMenuState = {
         multi: false,
@@ -1238,5 +1318,43 @@ describe("menus.ts module graph — the builders import nothing impure", () => {
         expect(imports("track.ts", "@dylanebert/shallot")).toBe(true);
         for (const file of reach("menus.ts"))
             expect(imports(file, "@dylanebert/shallot")).toBe(false);
+    });
+});
+
+// ── two source pins keeping the next menu inside the lift (kex2d-menu-grammar's follow-up
+// burn-down). A row array built inline in a new .svelte file, or a bespoke `{#each}` instead of
+// `Menu.svelte`, would defeat every menu gate above while leaving them all green. These greps
+// close that: every row array lives in the pure builders module, and every menu renders through
+// the one recursive renderer.
+describe("menu source pins — builders and renderer stay singular", () => {
+    const src = (file: string): string =>
+        readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
+    const srcFiles = readdirSync(join(import.meta.dir, "..", "src")).filter(
+        (f) => f.endsWith(".ts") || f.endsWith(".svelte"),
+    );
+
+    test('no `group: "` row literal outside src/menus.ts', () => {
+        // matches a MenuGroup value specifically (GROUPS in menu.ts), not an unrelated `group`
+        // field (render.ts's ECS system-scheduling groups) or a JSDoc `@example`'s prose.
+        const pattern = /group:\s*"(create|modify|lifecycle)"/;
+        const bad = srcFiles.filter(
+            (f) =>
+                f !== "menus.ts" &&
+                src(f)
+                    .split("\n")
+                    .some((line) => {
+                        const trimmed = line.trim();
+                        if (trimmed.startsWith("*") || trimmed.startsWith("//")) return false;
+                        return pattern.test(line);
+                    }),
+        );
+        expect(bad).toEqual([]);
+    });
+
+    test('no `class="menu-item"` outside src/Menu.svelte', () => {
+        const bad = srcFiles.filter(
+            (f) => f !== "Menu.svelte" && src(f).includes('class="menu-item"'),
+        );
+        expect(bad).toEqual([]);
     });
 });
