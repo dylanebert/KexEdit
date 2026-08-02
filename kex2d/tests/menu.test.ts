@@ -1124,6 +1124,31 @@ describe("the menu grammar — every builder, every state", () => {
         expect(Object.keys(Acts).sort()).toEqual([...declared].sort());
     });
 
+    // ── the `Acts` REVERSE direction: `Acts` above closes "does this act's row show the right
+    // hint", but says nothing about whether every keyboard binding is reachable from a menu at
+    // all — a `BINDINGS` entry with no act naming it would sit unbound and untested forever. Every
+    // key `BINDINGS` declares must show up as an `Acts` value (some row's action invokes it) or be
+    // named here with why it has no menu path — the `RawKeys` shape (above), applied to the other
+    // end of the same table. Empty today: `remove`, `append`, `exitMode`, and `lock` are all menu-
+    // reachable (`remove`/`removeSet`, `add`, `pinExit`, `toggleLock`), so nothing is declared —
+    // which is exactly why the positive control below is the deliverable's real evidence.
+    const MenulessBindings: Partial<Record<keyof typeof BINDINGS, { why: string }>> = {};
+
+    test("every `BINDINGS` key is menu-reachable via `Acts`, or declared in `MenulessBindings`", () => {
+        // both directions: an undeclared unbound binding fails (missing from the union below), and
+        // a `MenulessBindings` entry for a binding a menu row DOES reach is an orphan and fails too.
+        const reachable = new Set(
+            Object.values(Acts).filter((b): b is keyof typeof BINDINGS => b !== null),
+        );
+        const declared = new Set(Object.keys(MenulessBindings) as (keyof typeof BINDINGS)[]);
+        expect(
+            [...new Set([...reachable, ...declared])].sort(),
+            "every BINDINGS key must be reachable or declared",
+        ).toEqual((Object.keys(BINDINGS) as (keyof typeof BINDINGS)[]).sort());
+        const orphans = [...declared].filter((k) => reachable.has(k));
+        expect(orphans, "MenulessBindings entries for a menu-reachable binding").toEqual([]);
+    });
+
     test("`shortcut` is present iff a keyboard binding invokes that row's action", () => {
         // `Handles` is double-click — a pointer gesture is not a shortcut, so it declares nothing.
         cachedActByPath = undefined;
