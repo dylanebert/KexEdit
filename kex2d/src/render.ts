@@ -17,7 +17,6 @@ import {
     forceMarkers,
     Handle,
     handleAt,
-    handleTangent,
     samples,
     sectionInfo,
     sections,
@@ -581,14 +580,15 @@ const HandleDrawSystem: System = {
 };
 
 const TANGENT_KNOB = 3.5; // half-size of a handle knob square (px)
-const TANGENT_GHOST = "#f0ece8"; // a ghost knob's light outline, before its 0.7 alpha
 
-/** the tangent-edited node's handles: an arm from the node to each in/out knob. an *explicit*
- *  node draws solid filled knobs (the authored inner layer); a live tip draws hollow ghost
- *  knobs — the affordance a first drag stamps into an explicit tangent. only the node in
- *  tangent-edit mode (double-clicked) shows any, so mere selection stays uncluttered. at a
- *  geo→geo boundary an extra set draws the downstream node-0's out-handle (the stitch, one node
- *  in two halves), each set colored by its OWN explicit/ghost state. */
+/** the tangent-edited node's handles: an arm from the node to each in/out knob. every knob draws
+ *  the same filled accent square — the small-square shape is the bezier-handle convention,
+ *  distinct from the round node, and that's the only distinction the glyph carries: whether a
+ *  node's tangent is stored explicit or still live-inferred is not a state the user chooses (it's
+ *  simply whether the node has been dragged yet), so it isn't worth a visual channel. only the
+ *  node in tangent-edit mode (double-clicked) shows any, so mere selection stays uncluttered. at a
+ *  geo→geo boundary an extra set draws the downstream node-0's out-handle (the stitch, one node in
+ *  two halves). hover lifts the fill + outline through the shared `hovered()` helper. */
 const TangentDrawSystem: System = {
     group: "draw",
     update(ecs: State): void {
@@ -605,9 +605,6 @@ const TangentDrawSystem: System = {
                 const i = Handle.sample.get(set.eid);
                 const nx = tx.ox + s.posX[i] * tx.sx;
                 const ny = tx.oy + s.posY[i] * tx.sy;
-                const explicit =
-                    handleTangent(ecs, Handle.section.get(set.eid), Handle.order.get(set.eid)) !==
-                    undefined;
 
                 ctx.save();
                 // the arms — thin, subtle, drawn under the knobs.
@@ -619,10 +616,9 @@ const TangentDrawSystem: System = {
                     ctx.lineTo(h.x, h.y);
                 }
                 ctx.stroke();
-                // the knobs — a small square (the bezier-handle convention, distinct from the round
-                // node). explicit = filled accent; ghost = hollow light outline. hover (kex2d-
-                // burndown stage 3) lifts the ink outline through the shared `hovered()` helper —
-                // a hollow ghost has no fill to lift, so its outline carries the whole read.
+                // the knobs — a small square (the bezier-handle convention, distinct from the
+                // round node), always filled accent. hover lifts the fill + outline through the
+                // shared `hovered()` helper.
                 for (const h of set.handles) {
                     const hov =
                         editor.hoverKnob !== null &&
@@ -635,21 +631,11 @@ const TangentDrawSystem: System = {
                         TANGENT_KNOB * 2,
                         TANGENT_KNOB * 2,
                     );
-                    if (explicit) {
-                        ctx.fillStyle = hov ? hovered(COLOR_ACCENT) : COLOR_ACCENT;
-                        ctx.strokeStyle = hov ? hovered(COLOR_ACCENT) : "#0e0d0c";
-                        ctx.lineWidth = 1;
-                        ctx.fill();
-                        ctx.stroke();
-                    } else {
-                        ctx.fillStyle = "#0e0d0c";
-                        ctx.fill();
-                        ctx.strokeStyle = hov ? hovered(TANGENT_GHOST) : TANGENT_GHOST;
-                        ctx.globalAlpha = 0.7;
-                        ctx.lineWidth = 1;
-                        ctx.stroke();
-                        ctx.globalAlpha = 1;
-                    }
+                    ctx.strokeStyle = hov ? hovered(COLOR_ACCENT) : COLOR_ACCENT;
+                    ctx.fillStyle = hov ? hovered(COLOR_ACCENT) : COLOR_ACCENT;
+                    ctx.lineWidth = 1;
+                    ctx.fill();
+                    ctx.stroke();
                 }
                 ctx.restore();
             }

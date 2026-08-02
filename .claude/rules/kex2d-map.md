@@ -749,7 +749,8 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   two manipulator knobs flanking extend, the extend button chain-end-only, all hidden in tangent
   edit). In
   tangent-edit mode (`editor.tangentEdit`): `TangentDrawSystem` (`render.ts`) draws the edited
-  node's handles (solid = explicit, hollow = `Auto` ghost); right-click any node opens the node
+  node's handles — one accent knob, authored and inferred alike, since inferred is the
+  initialization rather than a state the author picks; right-click any node opens the node
   context menu (`menus.nodeMenu` rendered by a `Menu` over `editor.nodeMenu`, the same shared
   `.menu` look + cursor placement as the section context menu). Snap-guide feedback: the viewport draws the incline **ray** in the shared neutral
   gray (`COLOR_GUIDE_RAY`), the one register every snap guide wears (the timeline's `.snapguide`
