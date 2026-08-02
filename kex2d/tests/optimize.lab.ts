@@ -22,7 +22,8 @@
 //
 // Run: bun tests/optimize.lab.ts
 
-import { type OptimizeOpts, solveOptimize } from "../src/optimize";
+import { V_FLOOR } from "../src/forward";
+import { derivedTol, type OptimizeOpts, solveOptimize } from "../src/optimize";
 import { forceProfile, type ForcePoint } from "../src/profile";
 import { type Entry, evalForce } from "../src/section";
 
@@ -500,4 +501,143 @@ for (const sc of [corpus()[0], corpus()[1]]) {
         );
     }
     console.log(`${sc.name}: ${marks.join("  ")}`);
+}
+
+// ── 6. LANDED-V BREACH ──────────────────────────────────────────────────────────────
+// (kex2d-gate-hardening stage 1a) The conservative-energy law (kex2d-map.md) says exit v is a
+// strict function of exit y — a converged 3-row residual should already bound v. The one breach
+// is the velocity clamp (`sqrt(max(v², 0))` in forward.ts): a march that runs out of energy has
+// energy INJECTED there, and a "solved" draft whose march touches the floor mid-run can land
+// with v off the energy-derived curve. Sweeps the stall neighborhood: the climb profile (§4/§4b)
+// across length neighbors of L = 90 and entry v0 in the floor-graze/deep-stall band, plus the
+// named §4b floor-touching drafts run through the ACTUAL solve (not just the Jacobian-read stall
+// certificate at invoke — this reads the LANDED state, which no invoke-time certificate covers).
+console.log(
+    "\n── 6. landed-v breach sweep (solved drafts whose landed v strays from the energy-derived stamp v beyond tolV) ──",
+);
+{
+    const G = 9.80665; // mirror of forward.ts's own constant (not exported pre-1b)
+    const climbBase: ForcePoint[] = [
+        { s: 0, g: 1 },
+        { s: 10, g: 2.2 },
+        { s: 20, g: 0.4 },
+        { s: 30, g: 1 },
+        { s: 40, g: 1 },
+    ];
+    const climbScaled = (L: number): ForcePoint[] =>
+        climbBase.map((p) => ({ ...p, s: (p.s * L) / 40 }));
+
+    function fullExit(
+        entry: Entry,
+        points: ForcePoint[],
+        length: number,
+    ): { x: number; y: number; theta: number; v: number } {
+        const dense = forceProfile(points, length, DS);
+        return evalForce(entry, dense, DS, undefined).exit;
+    }
+
+    let breaches = 0;
+    let total = 0;
+    let bestSolvedRatio = 0;
+    let bestSolvedRow = "";
+    let worstGapOverall = 0;
+    let worstGapRow = "";
+
+    function runCase(
+        label: string,
+        entry: Entry,
+        base: ForcePoint[],
+        length: number,
+        edited: ForcePoint[],
+    ): void {
+        total++;
+        const stampExit = fullExit(entry, base, length);
+        const stamp = { x: stampExit.x, y: stampExit.y, theta: stampExit.theta };
+        const r = solveOptimize({
+            entry,
+            points: edited,
+            locked: new Set(),
+            length,
+            ds: DS,
+            stamp,
+        });
+        const vmin = minSpeed({ name: label, points: edited, length, entry }, edited);
+        const landedExit = fullExit(entry, r.points, length);
+        const gap = Math.abs(landedExit.v - stampExit.v);
+        const tolD = derivedTol(stamp, length, DS);
+        const tolV = (G * tolD.pos) / Math.max(landedExit.v, V_FLOOR);
+        const breach = r.outcome === "solved" && gap > tolV;
+        if (breach) breaches++;
+        if (r.outcome === "solved" && gap / tolV > bestSolvedRatio) {
+            bestSolvedRatio = gap / tolV;
+            bestSolvedRow = label;
+        }
+        if (gap > worstGapOverall) {
+            worstGapOverall = gap;
+            worstGapRow = label;
+        }
+        console.log(
+            `${label}: outcome=${r.outcome} vmin=${vmin.toFixed(3)} residual=${r.residual.toExponential(2)} ` +
+                `angleResidual=${r.angleResidual.toExponential(2)} vGap=${gap.toFixed(4)} tolV=${tolV.toFixed(4)}` +
+                `${breach ? " BREACH" : ""}`,
+        );
+    }
+
+    for (const L of [75, 90, 105]) {
+        const base = climbScaled(L);
+        for (const v0 of [8, 7, 6.5, 6]) {
+            const entry: Entry = { x: 0, y: 0, theta: 0, v: v0 };
+            for (const dg of [-1, -0.5, 0.5, 1, 1.5, 2, 2.5, 3]) {
+                const edited = withBump(base, 1, dg);
+                runCase(
+                    `climb L=${L} v0=${v0} key1${dg > 0 ? "+" : ""}${dg}`,
+                    entry,
+                    base,
+                    L,
+                    edited,
+                );
+            }
+        }
+    }
+
+    // the named §4b floor-touching drafts, run through the real solve (not just the stall read).
+    const hillPts = corpus()[0].points;
+    for (const dg of [1.8, 1.9, 2, 2.1, 2.2, 3]) {
+        runCase(
+            `hill key1+${dg} (§4b floor-touching)`,
+            ENTRY,
+            hillPts,
+            40,
+            withBump(hillPts, 1, dg),
+        );
+    }
+    const hill10sc = corpus()[3];
+    runCase(
+        "hill10 key3+0.2 (§4b localized stall)",
+        hill10sc.entry ?? ENTRY,
+        hill10sc.points,
+        hill10sc.length,
+        withBump(hill10sc.points, 3, 0.2),
+    );
+
+    // the closest approach found (fine boundary sweep around the hill/hill×4 stall-graze edge):
+    // the scaled-up hill x4 key1+4 solve lands at gap/tolV ≈ 0.80 — the nearest a solved draft
+    // gets to breaching in this corpus.
+    const hill4Pts = hillPts.map((p) => ({ ...p, s: p.s * 4 }));
+    const entry4: Entry = { x: 0, y: 0, theta: 0, v: 30 };
+    for (const dg of [1.9, 2, 2.05, 2.1, 2.2, 3, 4]) {
+        runCase(
+            `hillx4 key1+${dg} (fine boundary sweep)`,
+            entry4,
+            hill4Pts,
+            160,
+            withBump(hill4Pts, 1, dg),
+        );
+    }
+
+    console.log(
+        `\n${breaches} breaches over ${total} drafts swept. Largest solved gap/tolV ratio: ` +
+            `${bestSolvedRatio.toFixed(3)} (${bestSolvedRow}). Largest v gap overall (any outcome): ` +
+            `${worstGapOverall.toFixed(4)} (${worstGapRow}).`,
+    );
 }
