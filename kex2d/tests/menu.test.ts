@@ -957,13 +957,29 @@ describe("the menu grammar — every builder, every state", () => {
     // (a) which ROW each binding belongs to, and (b) that the handlers still go through the table
     // rather than a re-inlined literal (the `L` → `Q` rebind is the precedent, and a table anchored
     // to nothing would have stayed green through it).
+    // keyed by the row's full `menu ▸ label` PATH (the `Checked` registry's shape), not the bare
+    // label — a bare-label key would enforce "every row named `Delete` ANYWHERE carries `Del`",
+    // a stronger law than the one written here, and it breaks on the first menu that reuses a
+    // label for a different act (`editor-ui.md` Menus, the known-gap paragraph this stage closes).
     const Rows: Record<string, keyof typeof BINDINGS> = {
-        Delete: "remove",
-        Add: "append",
-        Exit: "exitMode",
-        Lock: "lock",
-        Unlock: "lock",
+        "sectionMenu ▸ Delete": "remove",
+        "sectionMenu ▸ Exit": "exitMode",
+        "nodeMenu ▸ Add": "append",
+        "nodeMenu ▸ Delete": "remove",
+        "keyframeMenu ▸ Delete": "remove",
+        "keyframeMenu ▸ Lock": "lock",
+        "keyframeMenu ▸ Unlock": "lock",
     };
+
+    test("every `Rows` key resolves to a row that exists", () => {
+        // the stale-key direction: a registry entry naming a path with no matching row is a lie
+        // of its own, same as `Checked` and `Separators` above.
+        const paths = new Set<string>();
+        for (const { name, rows } of levels())
+            for (const row of rows) if (!row.separator) paths.add(`${name} ▸ ${row.label}`);
+        for (const key of Object.keys(Rows))
+            expect(paths.has(key), `Rows key "${key}" has no matching row`).toBe(true);
+    });
 
     test("`shortcut` is present iff a keyboard binding invokes that row's action", () => {
         // `Handles` is double-click — a pointer gesture is not a shortcut, so it declares nothing.
@@ -972,7 +988,7 @@ describe("the menu grammar — every builder, every state", () => {
                 const bad: string[] = [];
                 for (const row of rows) {
                     if (row.separator) continue;
-                    const binding = Rows[row.label ?? ""];
+                    const binding = Rows[`${name} ▸ ${row.label}`];
                     const hint = binding === undefined ? undefined : BINDINGS[binding].hint;
                     const where = `${label(name, rows)} — "${row.label}"`;
                     if (row.shortcut !== hint)
