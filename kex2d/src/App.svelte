@@ -1671,7 +1671,8 @@ $effect(() => {
 
     /* the round `.rbtn` button — the dark shell every ring affordance wears (the two manipulator
        knobs + the extend button). positioned absolutely at its ring screen point (left/top
-       inline). */
+       inline). no cursor change on any ring affordance: viewport chrome states hover through color
+       (`editor-ui.md`'s hover rung), and a hand over the canvas is out of the vocabulary. */
     .rbtn {
         all: unset;
         position: absolute;
@@ -1687,7 +1688,7 @@ $effect(() => {
         background: var(--bg-solid);
         border: 1px solid var(--border);
         box-shadow: var(--shadow);
-        cursor: pointer;
+        cursor: default;
         pointer-events: auto;
         transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out);
     }
@@ -1696,8 +1697,8 @@ $effect(() => {
         height: 14px;
     }
     /* the extend (add-node) button: a `.rbtn` at the ring's front slot, positioned absolutely
-       (left/top inline) and centered on it. accent-lit with a hover wash — a click, so the default
-       pointer cursor. */
+       (left/top inline) and centered on it. accent-lit with a hover wash, the cursor unchanged
+       like every ring affordance. */
     .rbtn.extend {
         color: var(--accent);
         transform: translate(-50%, -50%);
@@ -1708,13 +1709,11 @@ $effect(() => {
     }
     /* the two polar manipulator knobs: `.rbtn` shells positioned absolutely at their ring screen
        point (left/top inline) and centered on it. accent-lit, with a hover wash — the hover/active
-       states the canvas-drawn knobs lacked (feel round 6). no hand cursor (kex2d-burndown feel
-       fix): the grab/pointer affordance is out of the design space for these — the ring itself
-       already reads as draggable, so the default arrow stays. */
+       states the canvas-drawn knobs lacked (feel round 6). the cursor comes from `.rbtn` — no hand
+       on any ring affordance. */
     .rbtn.manip {
         color: var(--accent);
         transform: translate(-50%, -50%);
-        cursor: default;
         touch-action: none; /* the pointerdown drives a pointer drag, not a scroll/zoom gesture */
     }
     .rbtn.manip:hover {
