@@ -295,6 +295,21 @@ part for any surface adopting this: **a law over UI data embedded in component c
 convention; the lift to pure builders is what makes it a rule.** kex2d's menus drifted for exactly
 as long as their rows lived inside `$derived.by` closures no pure test could reach.
 
+The lift is itself pinned, because a lifted grammar decays the moment the next menu is authored
+outside it. Two source pins (kex2d `tests/menu.test.ts`, beside the module-graph walk) reject a
+`group:` row literal outside the builder module and the row markup outside the one renderer. A
+source pin must prove it reached its input: walk the tree recursively (a non-recursive `readdirSync`
+is blind to `src/ui/Menu2.svelte`) and carry a positive control, or a production spelling that drifts
+makes the pattern match nothing anywhere and the pin passes forever.
+
+**A descriptor field costing a full-document walk is a getter, and the gate asserts the cheap fork
+reads none of them.** The pure-builder lift replaces a closure that could read the live document
+lazily with an eagerly-built descriptor, which turns a menu open into whole-document work. Lazy
+getters restore the laziness; nothing gates them, so a counting descriptor does — per-field counters,
+a declared list of the walking fields, and an assert that the fork not needing them reads zero
+(kex2d: `sectionMenu` with `inMode: true` touches none of `canSolve`, `canSolveShape`, `canPin`,
+`canReset`). The out-of-mode fork is the positive control proving the counters aren't blind.
+
 - Right-click context menus are the app's menu language; a summoned menu never covers its invoker;
   functional menus animate minimally.
 - **Rows sort by group, then by frequency within the group.** Three groups, canonical order, each
@@ -331,11 +346,13 @@ as long as their rows lived inside `$derived.by` closures no pure test could rea
   and steps into handle edit: a different kind of row, the same group). An authored divider landing
   at a boundary collapses with the derived one rather than doubling.
 
-  **Position-legal is a floor, and it is all the gate has today.** A divider an author placed by
-  feel passes every positional check — the oracle can say where it may sit, never what it divides.
-  That is the same gap `checked` had before its registry, and it wants the same answer: a declared
-  registry naming each authored divider's row path and what it separates, asserted both directions.
-  Not built. Until it is, an authored `separator` is a reviewed decision, not a gated one.
+  Position-legal is only a floor — the oracle can say where a divider may sit, never what it
+  divides — so every authored `separator` is backed by a declared registry the way `checked` is,
+  naming what it separates and asserted both directions: an undeclared divider and an orphan entry
+  each fail. A label-less row has only its position as a handle, so the key is the containing
+  menu's `▸` path plus the row's index in the AUTHORED array (kex2d's one member:
+  `keyframeMenu ▸ Easing #3`). Reordering a submenu is then a deliberate registry edit, not silent
+  breakage.
 - **Rows are terse.** A context menu is summoned *on* its subject, so the row names the verb alone
   — `Delete`, not `Delete node` (the noun restates what the invoker already said, the naming rule's
   module-scope-is-context).
@@ -357,11 +374,10 @@ as long as their rows lived inside `$derived.by` closures no pure test could rea
   with it. A table living in the test instead stays green through a rebind, which is how `L` → `Q`
   would have gone unnoticed.
 
-  **Known gap: the row-to-binding map is keyed by the bare label today** (kex2d
-  `tests/menu.test.ts`). That silently enforces "every row named `Delete` anywhere carries `Del`",
-  which is a stronger law than the one written here and breaks on the first menu that reuses a label
-  for a different act. Key it by the row's full `menu ▸ label` path instead, the way the `checked`
-  registry already is.
+  The oracle's row-to-binding map is keyed by the row's full `menu ▸ label` path (kex2d
+  `tests/menu.test.ts`), the way the `checked` registry is, and every key must resolve to a row that
+  exists. A bare-label key silently enforces the stronger "every row named `Delete` anywhere carries
+  `Del`", which breaks on the first menu that reuses a label for a different act.
 - **Gray a row whose preconditions fail; omit one its subject rules out.** Graying keeps an
   applicable-but-blocked row discoverable (no live bake, a multi-set — the bulk-row law above). A
   row that could never fire on this subject is different: a section is exactly one kind, so the

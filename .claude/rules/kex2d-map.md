@@ -125,7 +125,17 @@ exists, a speed row is chrome for a state that doesn't exist.
 `v_exit` stops following `y_exit` (measured 1.4–5.1 m/s above the derived value). Invoke-time
 certificates do not cover the landed state: a draft that passes the stall certificate can still
 wander into a stalled iterate mid-solve (measured at L = 90, `vmin` 0, `vErr` 0.45 m/s, refused
-as `"diverged"`). Certifying that at the landing is open work (roadmap).
+as `"diverged"`). The landed state is covered by an **acceptance gate, not a fourth residual row**:
+`finalize` (`optimize.ts`) compares `|v_land² − v_stamp²|` — reported as `OptimizeResult.vSqResidual`
+— against `exitTol(tol)` and downgrades `"solved"` → `"diverged"`. The bound is exact, not a
+linearization: `v² = v₀² − 2g(y−y₀)` and `|Δy| ≤ tol` give `exitTol = 2·G·tol` algebraically, so
+`V_FLOOR` never enters it. Read the tolerance through `exitTol`; a caller comparing `vSqResidual`
+against `tol` is comparing a squared gap to a linear one. The gate is a **belt, and its evidence is
+empirical**: a 110-draft stall-neighborhood sweep found 0 breaches (closest solved `gap/exitTol`
+0.795), so the corpus cannot currently produce a user-visible one. That is a measurement, not a
+proof — there is no bound on the injection. `vSafe` floors only the `dθ` denominator; the energy
+update clamps `sqrt(max(v², 0))` with no floor at all, so the injection is `−min(v²,0)/2` per
+clamped sample and unbounded above.
 
 **The ds-convention law**: anything needing arclength sums the bake's own per-edge `out.ds`,
 never re-derives from chord distance. The two agree to f32 rounding on a normal chain, but the
@@ -134,8 +144,9 @@ pin mode's downstream freeze publishes a **zero-length gap edge over a real posi
 `forceCurve`, `sectionSpans`, and `cart.trackMapping` all speak `out.ds`; so must any new
 consumer (and `tests/domain.test.ts`'s independent-table oracle).
 
-Constants: `V_FLOOR` = 0.01 in `forward.ts`; `V_WARN` = 1.0 (diagnostic infeasibility threshold) in
-`bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` = 4096 in `track.ts`; `V0` = 10
+Constants: `G` = 9.80665 and `V_FLOOR` = 0.01 in `forward.ts` (the integrator owns both; `bake.ts`
+and `optimize.ts` import `G` rather than redeclaring it); `V_WARN` = 1.0 (diagnostic infeasibility
+threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` = 4096 in `track.ts`; `V0` = 10
 (the DEFAULT initial speed — now authored per-track as `Track.v0`) in `track.ts`.
 
 ## Code map
