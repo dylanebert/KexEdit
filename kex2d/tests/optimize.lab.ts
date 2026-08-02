@@ -22,8 +22,7 @@
 //
 // Run: bun tests/optimize.lab.ts
 
-import { G, V_FLOOR } from "../src/forward";
-import { derivedTol, type OptimizeOpts, solveOptimize } from "../src/optimize";
+import { derivedTol, exitTol, type OptimizeOpts, solveOptimize } from "../src/optimize";
 import { forceProfile, type ForcePoint } from "../src/profile";
 import { type Entry, evalForce } from "../src/section";
 
@@ -507,16 +506,24 @@ for (const sc of [corpus()[0], corpus()[1]]) {
 }
 
 // ── 6. LANDED-V BREACH ──────────────────────────────────────────────────────────────
-// (kex2d-gate-hardening stage 1a) The conservative-energy law (kex2d-map.md) says exit v is a
-// strict function of exit y — a converged 3-row residual should already bound v. The one breach
-// is the velocity clamp (`sqrt(max(v², 0))` in forward.ts): a march that runs out of energy has
-// energy INJECTED there, and a "solved" draft whose march touches the floor mid-run can land
-// with v off the energy-derived curve. Sweeps the stall neighborhood: the climb profile (§4/§4b)
-// across length neighbors of L = 90 and entry v0 in the floor-graze/deep-stall band, plus the
-// named §4b floor-touching drafts run through the ACTUAL solve (not just the Jacobian-read stall
+// (kex2d-gate-hardening stage 1a; tolerance corrected + wired to the production seam stage 6)
+// The conservative-energy law (kex2d-map.md) says exit v is a strict function of exit y — a
+// converged 3-row residual should already bound v. The one breach is the velocity clamp
+// (`sqrt(max(v², 0))` in forward.ts): a march that runs out of energy has energy INJECTED there,
+// and a "solved" draft whose march touches the floor mid-run can land with v off the
+// energy-derived curve. Sweeps the stall neighborhood: the climb profile (§4/§4b) across length
+// neighbors of L = 90 and entry v0 in the floor-graze/deep-stall band, plus the named §4b
+// floor-touching drafts run through the ACTUAL solve (not just the Jacobian-read stall
 // certificate at invoke — this reads the LANDED state, which no invoke-time certificate covers).
+// The bound is `exitTol` — `optimize.ts`'s own exported production seam, not a re-derivation:
+// an earlier version of this sweep computed its own `G·tolD.pos/max(landedExit.v, V_FLOOR)`,
+// the differentiated (and looser) form production no longer ships, denominated on the LANDED
+// exit speed rather than production's stamped one — the two differ precisely in the
+// energy-losing direction, the breach direction, so that sweep measured a looser gate than
+// ships. The exact bound has no denominator at all (module header, `exitTol`), so that whole
+// class of drift is gone by construction.
 console.log(
-    "\n── 6. landed-v breach sweep (solved drafts whose landed v strays from the energy-derived stamp v beyond tolV) ──",
+    "\n── 6. landed-v breach sweep (solved drafts whose landed v² strays from the energy-derived stamp v² beyond exitTol) ──",
 );
 {
     const climbBase: ForcePoint[] = [
@@ -565,22 +572,22 @@ console.log(
         });
         const vmin = minSpeed({ name: label, points: edited, length, entry }, edited);
         const landedExit = fullExit(entry, r.points, length);
-        const gap = Math.abs(landedExit.v - stampExit.v);
+        const gapSq = Math.abs(landedExit.v * landedExit.v - stampExit.v * stampExit.v);
         const tolD = derivedTol(stamp, length, DS);
-        const tolV = (G * tolD.pos) / Math.max(landedExit.v, V_FLOOR);
-        const breach = r.outcome === "solved" && gap > tolV;
+        const bound = exitTol(tolD.pos);
+        const breach = r.outcome === "solved" && gapSq > bound;
         if (breach) breaches++;
-        if (r.outcome === "solved" && gap / tolV > bestSolvedRatio) {
-            bestSolvedRatio = gap / tolV;
+        if (r.outcome === "solved" && gapSq / bound > bestSolvedRatio) {
+            bestSolvedRatio = gapSq / bound;
             bestSolvedRow = label;
         }
-        if (gap > worstGapOverall) {
-            worstGapOverall = gap;
+        if (gapSq > worstGapOverall) {
+            worstGapOverall = gapSq;
             worstGapRow = label;
         }
         console.log(
             `${label}: outcome=${r.outcome} vmin=${vmin.toFixed(3)} residual=${r.residual.toExponential(2)} ` +
-                `angleResidual=${r.angleResidual.toExponential(2)} vGap=${gap.toFixed(4)} tolV=${tolV.toFixed(4)}` +
+                `angleResidual=${r.angleResidual.toExponential(2)} vGapSq=${gapSq.toExponential(3)} bound=${bound.toExponential(3)}` +
                 `${breach ? " BREACH" : ""}`,
         );
     }
@@ -622,9 +629,8 @@ console.log(
         withBump(hill10sc.points, 3, 0.2),
     );
 
-    // the closest approach found (fine boundary sweep around the hill/hill×4 stall-graze edge):
-    // the scaled-up hill x4 key1+4 solve lands at gap/tolV ≈ 0.80 — the nearest a solved draft
-    // gets to breaching in this corpus.
+    // the fine boundary sweep around the hill/hill×4 stall-graze edge — the closest a solved
+    // draft in this corpus is measured to get to breaching the exact bound.
     const hill4Pts = hillPts.map((p) => ({ ...p, s: p.s * 4 }));
     const entry4: Entry = { x: 0, y: 0, theta: 0, v: 30 };
     for (const dg of [1.9, 2, 2.05, 2.1, 2.2, 3, 4]) {
@@ -638,8 +644,8 @@ console.log(
     }
 
     console.log(
-        `\n${breaches} breaches over ${total} drafts swept. Largest solved gap/tolV ratio: ` +
-            `${bestSolvedRatio.toFixed(3)} (${bestSolvedRow}). Largest v gap overall (any outcome): ` +
-            `${worstGapOverall.toFixed(4)} (${worstGapRow}).`,
+        `\n${breaches} breaches over ${total} drafts swept. Largest solved gap/bound ratio: ` +
+            `${bestSolvedRatio.toFixed(3)} (${bestSolvedRow}). Largest v² gap overall (any outcome): ` +
+            `${worstGapOverall.toExponential(3)} (${worstGapRow}).`,
     );
 }
