@@ -555,7 +555,7 @@ describe("provenance short-circuit", () => {
 // alignment divides out the fitted chain's corner-cutting shortfall, reading 0.48 g against
 // 1.57 g displayed on valley-explicit). The station-axis alignment lives in
 // `helpers/stations.ts`; the corpus-wide gate over the same metric is `forcegeo.oracle.ts`
-// (full tier).
+// (`forcegeo.oracle.ts`, run explicitly).
 
 /** the section's force stations off the track's live bake — what the timeline draws. */
 function sectionStations(eid: number, id: number): Stations {

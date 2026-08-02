@@ -6,7 +6,7 @@ import { divergingPool, dyingPool, withWorker } from "./helpers/pool";
 
 // pool behavior on cheap scenarios — the fast tier. The corpus-wide pool gates (whole-corpus
 // bit-identity, pool-size invariance, the mid-fan-out abort that needs double-hump's wide prune
-// rounds) run at the full tier (`convert.oracle.ts`, `bun run test:full`).
+// rounds) run at `convert.oracle.ts`, run explicitly.
 
 describe("pooled conversion", () => {
     // Progress is what makes a multi-second solve legible, so it has to be honest about the shape

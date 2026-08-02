@@ -1,4 +1,4 @@
-// the corpus-wide conversion gates — the full tier (`bun run test:full`), outside the default
+// the corpus-wide conversion gates — run explicitly (`bun test ./tests/refine.oracle.ts`), outside the default
 // `bun test` glob because building the ten-scenario corpus in-process costs ~25 s. The fast tier
 // (`refine.test.ts`) keeps a three-scenario mini-corpus golden gate against the same fixture, so
 // a kernel edit still fails in seconds; the corpus-wide claims live here.

@@ -9,7 +9,7 @@ import { sweepCorpus, sweepForceLeg, sweepGeoLeg } from "./helpers/roundtrip-doc
 // any non-"restored" outcome here is a DEFECT, not a coverage gap: `sweepGeoLeg`/`sweepForceLeg`
 // (`helpers/roundtrip-doc.ts`) throw loudly on one, failing the test rather than skipping it.
 //
-// Full tier (`bun run test:full`): real solves over 22 document-layer trips (11 scenarios × 2
+// Run explicitly (`bun test ./tests/roundtrip.oracle.ts`): real solves over 22 document-layer trips (11 scenarios × 2
 // directions), each driving the real worker pool / dedicated fit worker `geoforce.ts`/
 // `forcegeo.ts` use — the fast-tier sentinel (`roundtrip.test.ts`, the hill seed alone) covers
 // the same claim in seconds for the default `bun test` loop.

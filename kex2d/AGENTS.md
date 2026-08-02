@@ -338,7 +338,7 @@ mode's sandbox invariants, and the tick-lag dismissal standard every menu copies
 ## Verify
 
 ```bash
-cd kex2d && bun check && bun test   # fast tier (~8s); bun run test:full before commit/PR (~45s)
+cd kex2d && bun check && bun test   # the default gate (~12s); corpus oracles + labs run by path
 cd kex2d && bun run capture   # UI screenshots → harness/shots/ (display-gated)
 ```
 

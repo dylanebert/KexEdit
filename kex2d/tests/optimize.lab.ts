@@ -18,7 +18,7 @@
 //      direct solve stops converging → sizes what continuation must cover.
 //
 // Labs inform; suites pin — every finding promoted to a law lands a committed test
-// (`tests/optimize.test.ts` sentinel + corpus scale in the full tier).
+// (`tests/optimize.test.ts` sentinel + corpus scale in `optimize.oracle.ts`).
 //
 // Run: bun tests/optimize.lab.ts
 

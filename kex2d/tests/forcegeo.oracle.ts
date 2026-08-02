@@ -1,4 +1,4 @@
-// the force→geo fit's corpus-wide oracles — the full tier (`bun run test:full`), outside the
+// the force→geo fit's corpus-wide oracles — run explicitly (`bun test ./tests/forcegeo.oracle.ts`), outside the
 // default `bun test` glob because they drive the whole ten-scenario corpus through the fit. The
 // fast tier (`forcegeo.test.ts`) keeps the document-seam pins and two hand-picked ECS fidelity
 // cases; the corpus-wide claims live here.

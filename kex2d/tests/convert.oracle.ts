@@ -1,4 +1,4 @@
-// the pool's corpus-wide gates — the full tier (`bun run test:full`), outside the default
+// the pool's corpus-wide gates — run explicitly (`bun test ./tests/convert.oracle.ts`), outside the default
 // `bun test` glob because driving the whole corpus through the worker pool costs ~20 s. The
 // fast tier (`convert.test.ts`) keeps every pool-behavior check on cheap scenarios; the
 // corpus-wide claims and the fan-out-dependent abort live here.

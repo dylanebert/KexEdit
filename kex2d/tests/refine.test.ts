@@ -19,8 +19,8 @@ import golden from "./fixtures/convert-golden.json";
 
 // The seconds-scale slice of the conversion corpus — the three cheapest scenarios, refined
 // through the same shipping path the full corpus takes. The corpus-wide gates (floor hold,
-// replay, key counts, the full golden) run at the full tier (`refine.oracle.ts`,
-// `bun run test:full`); this mini corpus keeps a bit-identity golden gate in the default
+// replay, key counts, the full golden) run in `refine.oracle.ts`,
+// run explicitly; this mini corpus keeps a bit-identity golden gate in the default
 // `bun test` loop so a kernel edit still fails in seconds.
 const MINI = ["circular-arc", "straight-fillet", "hill-explicit"] as const;
 const CORPUS = MINI.map((name) => {
@@ -106,7 +106,7 @@ describe("flat split → exhaustive prune", () => {
     // The production path is the same conversion with the lab's freight unbuilt, so it must
     // land on the byte-identical answer the rich path froze. Two scenarios, not ten: the
     // recording seam is one branch in `polish`/`refine` that every probe of every geometry
-    // takes the same way, and the corpus-wide gate (full tier) already runs the math.
+    // takes the same way, and the corpus-wide gate (`refine.oracle.ts`) already runs the math.
     test("the production path narrows to the golden with no freight recorded", () => {
         for (const name of ["circular-arc", "hill-explicit"]) {
             const item = CORPUS.find(({ scenario }) => scenario.name === name);

@@ -4,7 +4,7 @@ import { computeExit, derivedTol, solveOptimize } from "../src/optimize";
 import { forceProfile, type ForcePoint } from "../src/profile";
 import { type Entry, evalForce } from "../src/section";
 
-// the corpus-scale optimize gate (`kex2d-optimize-mode` stage 3, full tier): the universal
+// the corpus-scale optimize gate (`kex2d-optimize-mode` stage 3, run explicitly): the universal
 // claims over the lab's scenario set — every feasible single-key edit solves and its replayed
 // exit meets the DERIVED floor (never an absolute number); every stalling edit certifies
 // `"unreachable"/"stall"` at invoke; the continuation ladder holds the drift ramp the lab

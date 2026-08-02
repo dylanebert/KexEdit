@@ -865,8 +865,27 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 
 ## Test tiers
 
-`bun test` is the fast tier (~8s); `bun run test:full` adds the slow oracles (~45s) and is the
-pre-commit gate. Physics is gated against an **independent** oracle, not self-consistency:
+`bun test` is the whole default gate (~12 s, 1206 tests) and it runs every time. The corpus-scale
+`.oracle.ts` files sit outside it and are **run explicitly by path, exactly like the labs** — no
+`package.json` script, no composite. Run the one whose kernel you touched:
+
+| oracle | gates | cost |
+|---|---|---|
+| `bun test ./tests/roundtrip.oracle.ts` | the document layer: `geoforce.ts` + `forcegeo.ts` round trips | ~28 s |
+| `bun test ./tests/refine.oracle.ts` | `refine.ts` — geo→force, corpus-wide | ~23 s |
+| `bun test ./tests/convert.oracle.ts` | `convert.ts` — the worker pool driven over the corpus | ~20 s |
+| `bun test ./tests/forcegeo.oracle.ts` | `geofit.ts` — the force→geo dual-budget fit | ~2 s |
+| `bun test ./tests/polish.oracle.ts` | `polish.ts` / `fit.ts` bit-identity hash | ~1 s |
+| `bun test ./tests/optimize.oracle.ts` | `optimize.ts` — the corpus-scale solve claims | <1 s |
+
+The `./` prefix is load-bearing — a bare path is a name filter to bun and silently matches nothing.
+
+All six cost ~74 s against the default gate's 12 s, so they are never a routine pre-commit sweep.
+**Every oracle has a fast-tier sentinel sibling** (`convert.test.ts`, `refine.test.ts`,
+`roundtrip.test.ts`, …) hitting the same kernel on a mini-corpus against the same frozen fixture, so
+a kernel edit still fails in seconds without the oracle; the oracle confirms the corpus-wide claim,
+and only its own kernel's edit can move it. A commit touching menus, UI, or the ECS layer runs
+`bun test` alone. Physics is gated against an **independent** oracle, not self-consistency:
 `tests/oracles/rk4.ts` is a time-parameterized RK4 (a different scheme *and* parameterization),
 and `tests/helpers/forward64.ts` is the f64 mirror the f32 path is measured against.
 

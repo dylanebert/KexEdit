@@ -21,7 +21,7 @@ const solve = (name: string) => {
 };
 
 // behavior checks on cheap scenarios — the fast tier. The corpus-wide full-free bit-identity
-// hash runs at the full tier (`polish.oracle.ts`, `bun run test:full`).
+// hash runs at `polish.oracle.ts`, run explicitly.
 describe("polish families", () => {
     test("flat is exactly one g variable per key and materializes no shaping", () => {
         const points: ForcePoint[] = [

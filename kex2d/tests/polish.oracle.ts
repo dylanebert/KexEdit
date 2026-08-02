@@ -1,4 +1,4 @@
-// the full-free oracle's corpus-wide bit-identity hash — the full tier (`bun run test:full`),
+// the full-free oracle's corpus-wide bit-identity hash — run explicitly (`bun test ./tests/polish.oracle.ts`),
 // outside the default `bun test` glob because it solves the whole ten-scenario corpus. The fast
 // tier (`polish.test.ts`) keeps every behavior check on cheap scenarios.
 import { describe, expect, test } from "bun:test";
