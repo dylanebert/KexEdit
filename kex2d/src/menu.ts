@@ -16,6 +16,41 @@ export const GROUPS = ["create", "modify", "lifecycle"] as const;
 
 export type MenuGroup = (typeof GROUPS)[number];
 
+/** a keyboard binding: the `KeyboardEvent.key` values that fire it, and the hint a menu row
+ *  advertising the same action prints. */
+export type Binding = { readonly keys: readonly string[]; readonly hint: string };
+
+/**
+ * The keyboard bindings a menu row may advertise — the ONE place a key and its menu hint are
+ * written down. A `shortcut` is legal on a row iff a binding here invokes that row's own action,
+ * and both halves read the same entry: the handler matches on `keys` (`bound`), the builder prints
+ * `hint`. So a rebind moves the hint with it and a row can't come to lie about its key — the
+ * failure the `L` → `Q` rebind would have caused with the table living in a test.
+ *
+ * A pointer gesture is not a shortcut (`Handles` is double-click and advertises nothing), and the
+ * hint names the row's ACTION, not its live enablement — a grayed row keeps it, the way a disabled
+ * `Add` still tells you append is `Enter`.
+ *
+ * Homes: `remove` — `controls.ts` (section, node set, chain-end trim) + `Timeline.svelte` (force
+ * keyframe); `append` — `controls.ts`; `exitMode` — `App.svelte`; `lock` — `Timeline.svelte`.
+ * `Escape` and `Delete` also drive dismissal/guard rungs that are nobody's menu row; those stay
+ * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one.
+ */
+export const BINDINGS = {
+    remove: { keys: ["Delete", "Backspace"], hint: "Del" },
+    append: { keys: ["Enter"], hint: "Enter" },
+    exitMode: { keys: ["Escape"], hint: "Esc" },
+    lock: { keys: ["q", "Q"], hint: "Q" },
+} as const satisfies Record<string, Binding>;
+
+/** whether a `KeyboardEvent.key` fires this binding.
+ *
+ * @example if (bound(BINDINGS.remove, e.key)) deleteSelection();
+ */
+export function bound(binding: Binding, key: string): boolean {
+    return binding.keys.includes(key);
+}
+
 /**
  * A row in the shared menu language (`Menu.svelte`, rendered inside the `.menu` look). The
  * section context menu, the node context menu, and the append flyout all render an array of

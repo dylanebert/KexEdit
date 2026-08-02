@@ -4,7 +4,7 @@ import { onMount, untrack } from "svelte";
 import { cartState, forceCurve, parkAtArc, parkFromTime, trackMapping } from "./cart";
 import { kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
-import { fitMenu, type MenuItem } from "./menu";
+import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { appendMenu, keyframeMenu, rulerMenu } from "./menus";
 import {
     activateForce,
@@ -2617,7 +2617,7 @@ onMount(() => {
                 if (editor.forceHandle !== null) selectForceHandle(null);
                 else if (editor.forceEdit !== null) exitForceEdit();
                 else selectForce(null);
-            } else if (e.key === "Delete" || e.key === "Backspace") {
+            } else if (bound(BINDINGS.remove, e.key)) {
                 e.preventDefault();
                 deleteSelectedForce();
             } else if (
@@ -2648,7 +2648,7 @@ onMount(() => {
                 for (const w of nudgeForces(members, ds, dg)) setForcePoint(ecs, w.id, w.s, w.g);
                 commit(history);
             } else if (
-                (e.key === "q" || e.key === "Q") &&
+                bound(BINDINGS.lock, e.key) &&
                 editor.optimizing !== null &&
                 editor.forces.ids.size > 0
             ) {

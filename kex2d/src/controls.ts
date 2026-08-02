@@ -49,6 +49,7 @@ import {
     type Frame,
 } from "./manipulator";
 import { LENGTH_MIN } from "./magnet";
+import { BINDINGS, bound } from "./menu";
 import { RadialSlot, ringBase, ringSlot } from "./radial";
 import { localize } from "./section";
 import { editTangent, TangentMode } from "./spline";
@@ -1545,7 +1546,7 @@ export function attachControls(
         // handler above guards only the node-move gestures it directly competes with
         // (`dragManip`/`panning`); a destructive op needs the wider net — `editor.dragging`, the
         // ONE flag every gesture raises through `beginDrag` (the same guard `onWheel`/`F` use).
-        if ((e.key === "Delete" || e.key === "Backspace") && editor.dragging) return;
+        if (bound(BINDINGS.remove, e.key) && editor.dragging) return;
 
         // a whole section (or section SET) selected: delete it (Del; also the context-menu action).
         // a multi-set deletes as ONE entry, guarded at the last-section floor (`removeSections`); the
@@ -1554,10 +1555,7 @@ export function attachControls(
         // section under a live session would strand `editor.optimizing` on a dead id (the mode's own
         // Exit lives only on that section's own context menu, so nothing could ever reach it again).
         if (editor.section !== null) {
-            if (
-                (e.key === "Delete" || e.key === "Backspace") &&
-                sectionOpsAllowed(editor.optimizing)
-            ) {
+            if (bound(BINDINGS.remove, e.key) && sectionOpsAllowed(editor.optimizing)) {
                 e.preventDefault();
                 if (editor.sections.ids.size > 1) {
                     if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
@@ -1575,7 +1573,7 @@ export function attachControls(
         // set here, never lingering to alias a recycled entity). anything else is a no-op (the menu
         // grays the row). Enter/extend is single-subject, so a multi-set doesn't extend.
         if (editor.nodes.ids.size > 1) {
-            if (e.key === "Delete" || e.key === "Backspace") {
+            if (bound(BINDINGS.remove, e.key)) {
                 e.preventDefault();
                 if (!sectionEditable(editor.optimizing, Handle.section.get(editor.selection)))
                     return; // the lockdown — the node menu's bulk Delete grays on the same read
@@ -1589,10 +1587,10 @@ export function attachControls(
         const section = Handle.section.get(editor.selection);
         if (!sectionEditable(editor.optimizing, section)) return; // the lockdown (extend/trim)
         if (!endSelected(ecs)) return;
-        if (e.key === "Enter") {
+        if (bound(BINDINGS.append, e.key)) {
             e.preventDefault();
             select(extendTrack(history, ecs, section)); // lay a node, select it
-        } else if (e.key === "Delete" || e.key === "Backspace") {
+        } else if (bound(BINDINGS.remove, e.key)) {
             e.preventDefault();
             if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
         }

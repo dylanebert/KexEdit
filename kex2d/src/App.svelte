@@ -56,7 +56,7 @@ import {
     trimTrack,
 } from "./history";
 import Menu from "./Menu.svelte";
-import { fitMenu, type MenuItem } from "./menu";
+import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { nodeMenu, sectionMenu } from "./menus";
 import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "./radial";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
@@ -183,7 +183,7 @@ onMount(() => {
 onMount(() => {
     const onKey = (e: KeyboardEvent): void => {
         if (editor.optimizing === null) return;
-        if (e.key === "Escape") {
+        if (bound(BINDINGS.exitMode, e.key)) {
             const t = e.target as HTMLElement | null;
             if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
                 return; // the focused field reverts first
@@ -206,7 +206,7 @@ onMount(() => {
             optimizeExit();
             return;
         }
-        if ((e.key === "Delete" || e.key === "Backspace") && editor.section !== null) {
+        if (bound(BINDINGS.remove, e.key) && editor.section !== null) {
             e.stopImmediatePropagation();
         }
     };

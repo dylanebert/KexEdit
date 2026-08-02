@@ -1,7 +1,16 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { flyoutFit, GROUPS, type MenuGroup, type MenuItem, menuFit, menuRows } from "../src/menu";
+import {
+    BINDINGS,
+    type Binding,
+    flyoutFit,
+    GROUPS,
+    type MenuGroup,
+    type MenuItem,
+    menuFit,
+    menuRows,
+} from "../src/menu";
 import * as menus from "../src/menus";
 import {
     appendMenu,
@@ -662,9 +671,13 @@ describe("the menu grammar — every builder, every state", () => {
         secondsEnabled: bool,
     });
 
-    // every menu the app can summon, as `(name, rows)` pairs — the oracle's whole input.
-    function corpus(): { name: string; rows: MenuItem[] }[] {
-        const all: { name: string; rows: MenuItem[] }[] = [];
+    // every menu the app can summon, as `(name, rows, state)` triples — the oracle's whole input.
+    // The state rides along because several laws are state-SENSITIVE: whether a toggle addresses a
+    // single subject or a set decides whether it may carry a checkmark at all, and a law keyed on
+    // the label alone can't see that (the stage-2 review's finding).
+    type Menu = { name: string; rows: MenuItem[]; state: object };
+    function corpus(): Menu[] {
+        const all: Menu[] = [];
         const acts = () =>
             recorder(
                 "solve",
@@ -687,22 +700,27 @@ describe("the menu grammar — every builder, every state", () => {
                 "append",
             );
         for (const s of sectionStates)
-            all.push({ name: "sectionMenu", rows: sectionMenu(s, acts()) });
-        for (const s of nodeStates) all.push({ name: "nodeMenu", rows: nodeMenu(s, acts()) });
+            all.push({ name: "sectionMenu", rows: sectionMenu(s, acts()), state: s });
+        for (const s of nodeStates)
+            all.push({ name: "nodeMenu", rows: nodeMenu(s, acts()), state: s });
         for (const s of keyframeStates)
-            all.push({ name: "keyframeMenu", rows: keyframeMenu(s, acts()) });
-        for (const s of rulerStates) all.push({ name: "rulerMenu", rows: rulerMenu(s, acts()) });
-        all.push({ name: "appendMenu", rows: appendMenu(acts()) });
+            all.push({ name: "keyframeMenu", rows: keyframeMenu(s, acts()), state: s });
+        for (const s of rulerStates)
+            all.push({ name: "rulerMenu", rows: rulerMenu(s, acts()), state: s });
+        all.push({ name: "appendMenu", rows: appendMenu(acts()), state: {} });
         return all;
     }
     // every menu AND every submenu, flattened — a flyout is a menu, so the same laws hold in it.
-    function levels(): { name: string; rows: MenuItem[] }[] {
-        const out: { name: string; rows: MenuItem[] }[] = [];
-        const walk = (name: string, rows: MenuItem[]): void => {
-            out.push({ name, rows });
-            for (const row of rows) if (row.children) walk(`${name} ▸ ${row.label}`, row.children);
+    // A submenu inherits its parent's name as a `▸` path (the registries below address rows by it)
+    // and its parent's state (the flyout is summoned from the same subject).
+    function levels(): Menu[] {
+        const out: Menu[] = [];
+        const walk = (name: string, rows: MenuItem[], state: object): void => {
+            out.push({ name, rows, state });
+            for (const row of rows)
+                if (row.children) walk(`${name} ▸ ${row.label}`, row.children, state);
         };
-        for (const menu of corpus()) walk(menu.name, menu.rows);
+        for (const menu of corpus()) walk(menu.name, menu.rows, menu.state);
         return out;
     }
     const label = (name: string, rows: MenuItem[]): string =>
@@ -727,7 +745,7 @@ describe("the menu grammar — every builder, every state", () => {
     // Violations are COLLECTED, deduped by their own message, and asserted empty — a grammar
     // oracle that threw on the first bad menu would report one and hide the rest, and the whole
     // point of running the full matrix is seeing every menu that breaks the law at once.
-    function violations(check: (menu: { name: string; rows: MenuItem[] }) => string[]): string[] {
+    function violations(check: (menu: Menu) => string[]): string[] {
         const seen = new Set<string>();
         for (const menu of levels()) for (const v of check(menu)) seen.add(v);
         return [...seen].sort();
@@ -786,10 +804,48 @@ describe("the menu grammar — every builder, every state", () => {
         ).toEqual([]);
     });
 
-    test("`checked` appears only on rows that declare state", () => {
-        // a check reports a state the row's OWN press sets, so it belongs to a leaf with an action;
-        // a separator, a submenu parent, or an actionless row has no state to report. And a
-        // destructive row is an act, never a state.
+    // ── `checked` means exactly ONE thing: this row's state is currently in effect (stage 3).
+    // The shape check below (boolean, has an action, not a submenu parent, not danger) is a floor,
+    // not the law — it admits `checked` on nearly every act row in the app, so it could never catch
+    // a row lighting up for "recently used" or "this is the default". The law is this DECLARED
+    // REGISTRY: a row may carry `checked` iff its path is here, and each entry names the state the
+    // check reports. Adding a `checked` needs a line here that reads as a state in effect right
+    // now; a state that only "was" or "would be" has no honest entry to write.
+    const Checked: Record<string, string> = {
+        // the node's handles are summoned right now (`editor.tangentEdit` is this node).
+        "nodeMenu ▸ Handles": "the handles are on screen for this node",
+        // the node's DISPLAYED tangent mode — the pick governing its curve right now.
+        "nodeMenu ▸ Tangents ▸ Mirror": "this node's tangents are mirrored",
+        "nodeMenu ▸ Tangents ▸ Aligned": "this node's tangents are aligned",
+        "nodeMenu ▸ Tangents ▸ Free": "this node's tangents are free",
+        // the easing tag governing the addressed segment right now — cleared while explicit
+        // handles bound it, so exactly one of the four Easing rows is ever lit.
+        "keyframeMenu ▸ Easing ▸ Linear": "this segment is driven by the Linear tag",
+        "keyframeMenu ▸ Easing ▸ Cubic": "this segment is driven by the Cubic tag",
+        "keyframeMenu ▸ Easing ▸ Quintic": "this segment is driven by the Quintic tag",
+        "keyframeMenu ▸ Easing ▸ Custom":
+            "an explicit handle bounds this segment (derived provenance)",
+        // the keyframe's stored tangent mode, governing its handles right now.
+        "keyframeMenu ▸ Tangents ▸ Mirror": "this keyframe's handles are mirrored",
+        "keyframeMenu ▸ Tangents ▸ Aligned": "this keyframe's handles are aligned",
+        "keyframeMenu ▸ Tangents ▸ Free": "this keyframe's handles are free",
+        // the store's own unit (`Track.domain`) — what the chart reads right now.
+        "rulerMenu ▸ Meters": "the track domain is meters of arclength",
+        "rulerMenu ▸ Seconds": "the track domain is seconds of march time",
+    };
+
+    test("`checked` appears on exactly the DECLARED state-declaring rows", () => {
+        // both directions: an undeclared row that lights up fails, and so does a declared entry
+        // whose row no longer carries a check (a stale registry is a lie of its own).
+        const lit = new Set<string>();
+        for (const { name, rows } of levels())
+            for (const row of rows)
+                if (row.checked !== undefined) lit.add(`${name} ▸ ${row.label}`);
+        expect([...lit].sort()).toEqual(Object.keys(Checked).sort());
+    });
+
+    test("a state-declaring row is a leaf pick: boolean, actioned, never a parent or destructive", () => {
+        // the shape floor under the registry — a check reports a state the row's OWN press sets.
         expect(
             violations(({ name, rows }) => {
                 const bad: string[] = [];
@@ -807,28 +863,169 @@ describe("the menu grammar — every builder, every state", () => {
         ).toEqual([]);
     });
 
-    test("`shortcut` is present iff a keyboard binding invokes that row's action", () => {
-        // the declared binding table: a row's hint is legal only where a KEY reaches the same
-        // action. `Handles` is double-click — a pointer gesture is not a shortcut, so it declares
-        // nothing. Sources: controls.ts (Enter extend / Del trim / Del section), Timeline.svelte
-        // (Del force), optimize mode (Q lock, Esc exit).
-        const Bindings: Record<string, string> = {
-            Delete: "Del",
-            Add: "Enter",
-            Exit: "Esc",
-            Lock: "Q",
-            Unlock: "Q",
-        };
+    // ── toggle labeling follows SET-VALUEDNESS (stage 3). A toggle over a single subject keeps a
+    // stable label and reports its state with `checked`; a toggle over a set whose members can
+    // disagree flips its label to name the act the press performs instead, because a checkmark
+    // cannot express a mixed set. That is the constraint `lockLabel` was actually written against.
+    test("the single-subject toggle keeps its label and carries the check", () => {
+        // `Handles` — one node, so the label never moves and the check reports that node's own
+        // state. On a multi-set it has no single subject at all: it grays and drops the check
+        // rather than inventing a label flip.
         expect(
-            violations(({ name, rows }) =>
-                rows
-                    .filter((r) => !r.separator && r.shortcut !== Bindings[r.label ?? ""])
-                    .map(
-                        (r) =>
-                            `${label(name, rows)} — "${r.label}" shows ${JSON.stringify(r.shortcut)}, the binding table says ${JSON.stringify(Bindings[r.label ?? ""])}`,
-                    ),
-            ),
+            violations(({ name, rows, state }) => {
+                if (name !== "nodeMenu") return [];
+                const s = state as NodeMenuState;
+                const bad: string[] = [];
+                for (const row of rows) {
+                    if (row.label !== "Handles") continue;
+                    const where = `${label(name, rows)} — "Handles"`;
+                    if (s.multi && row.checked !== undefined)
+                        bad.push(`${where} checks a multi-SET (a checkmark can't express a mix)`);
+                    if (!s.multi && typeof row.checked !== "boolean")
+                        bad.push(`${where} is single-subject but reports no state`);
+                }
+                return bad;
+            }),
         ).toEqual([]);
+        // and it is ONE row under one name: `Handles` never shows beside a second spelling of
+        // itself, the way a flipping toggle's two labels would if they ever both materialized.
+        expect(
+            violations(({ name, rows }) => {
+                const hits = rows.filter((r) => r.label === "Handles");
+                return hits.length > 1 ? [`${label(name, rows)} — two Handles rows`] : [];
+            }),
+        ).toEqual([]);
+    });
+
+    test("the set-valued toggle flips its label to the act and never carries a check", () => {
+        // `Lock`/`Unlock` — the selected keyframe SET, whose members can disagree. Both labels must
+        // be reachable (a toggle that never flips is single-subject and owes a checkmark instead),
+        // and neither may ever light up.
+        const seen = new Set<string>();
+        expect(
+            violations(({ name, rows, state }) => {
+                if (name !== "keyframeMenu") return [];
+                const s = state as KeyframeMenuState;
+                const bad: string[] = [];
+                const pair = rows.filter((r) => r.label === "Lock" || r.label === "Unlock");
+                // the two labels are one row wearing two names — never two rows.
+                if (pair.length > 1) bad.push(`${label(name, rows)} — Lock and Unlock co-occur`);
+                for (const row of rows) {
+                    if (row.label !== "Lock" && row.label !== "Unlock") continue;
+                    seen.add(row.label);
+                    const where = `${label(name, rows)} — "${row.label}"`;
+                    if (row.checked !== undefined)
+                        bad.push(`${where} carries a check over a SET that can disagree`);
+                    if (row.label !== s.lock)
+                        bad.push(`${where} does not name the act its state demands (${s.lock})`);
+                }
+                return bad;
+            }),
+        ).toEqual([]);
+        expect([...seen].sort()).toEqual(["Lock", "Unlock"]);
+    });
+
+    // ── `shortcut` appears iff a keyboard binding invokes the SAME action (stage 3). The table
+    // itself now lives in `src/menu.ts` and both halves read it — the handler matches on `keys`,
+    // the builder prints `hint` — so a rebind moves the hint with it. What's left for the oracle is
+    // (a) which ROW each binding belongs to, and (b) that the handlers still go through the table
+    // rather than a re-inlined literal (the `L` → `Q` rebind is the precedent, and a table anchored
+    // to nothing would have stayed green through it).
+    const Rows: Record<string, keyof typeof BINDINGS> = {
+        Delete: "remove",
+        Add: "append",
+        Exit: "exitMode",
+        Lock: "lock",
+        Unlock: "lock",
+    };
+
+    test("`shortcut` is present iff a keyboard binding invokes that row's action", () => {
+        // `Handles` is double-click — a pointer gesture is not a shortcut, so it declares nothing.
+        expect(
+            violations(({ name, rows }) => {
+                const bad: string[] = [];
+                for (const row of rows) {
+                    if (row.separator) continue;
+                    const binding = Rows[row.label ?? ""];
+                    const hint = binding === undefined ? undefined : BINDINGS[binding].hint;
+                    const where = `${label(name, rows)} — "${row.label}"`;
+                    if (row.shortcut !== hint)
+                        bad.push(
+                            `${where} shows ${JSON.stringify(row.shortcut)}, the binding table says ${JSON.stringify(hint)}`,
+                        );
+                    // the hint names the row's ACTION, not its live enablement — a grayed `Add`
+                    // still tells you append is Enter. But an ENABLED row promising a key while
+                    // carrying nothing to invoke is a plain lie.
+                    if (row.shortcut !== undefined && !row.action && row.enabled !== false)
+                        bad.push(`${where} advertises a key while live with no action`);
+                }
+                return bad;
+            }),
+        ).toEqual([]);
+    });
+
+    // the handler modules whose key press invokes the same action the row does — the other end of
+    // each binding. Both ends read `src/menu.ts`'s table, so this pins that they still do.
+    const Handlers: Record<keyof typeof BINDINGS, string[]> = {
+        remove: ["controls.ts", "Timeline.svelte", "App.svelte"],
+        append: ["controls.ts"],
+        exitMode: ["App.svelte"],
+        lock: ["Timeline.svelte"],
+    };
+    // a bound key also drives presses that are NOBODY's menu row — dismissal rungs, a field's
+    // commit-and-blur. Those stay raw literals, and this is exactly which files may hold one; any
+    // other file comparing a bound key raw is a handler that slipped out of the table.
+    const RawKeys: Record<string, { files: string[]; why: string }> = {
+        Delete: { files: [], why: "every Del press is the remove binding" },
+        Backspace: { files: [], why: "Del's twin, same binding" },
+        Enter: {
+            files: ["App.svelte", "Timeline.svelte"],
+            why: "a popover field's commit-and-blur — not the Add row's append",
+        },
+        Escape: {
+            files: ["App.svelte", "Timeline.svelte", "controls.ts"],
+            why: "the dismissal ladder (modal cancel, menu close, landing skip, marquee/drag/selection peel) — none of them the Exit row",
+        },
+        q: { files: [], why: "the lock toggle only" },
+        Q: { files: [], why: "the lock toggle only" },
+    };
+    const src = (file: string): string =>
+        readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
+    const srcFiles = readdirSync(join(import.meta.dir, "..", "src")).filter(
+        (f) => f.endsWith(".ts") || f.endsWith(".svelte"),
+    );
+
+    test("each binding's hint names its own key", () => {
+        // `keys` and `hint` are two fields of one entry, so a rebind that edits only the keys would
+        // still desync the row. The hint is the key's display form: two irregular abbreviations,
+        // everything else the key itself (a single character upper-cased).
+        const Abbrev: Record<string, string> = { Delete: "Del", Escape: "Esc" };
+        for (const [name, binding] of Object.entries<Binding>(BINDINGS)) {
+            const primary = binding.keys[0];
+            const shown =
+                Abbrev[primary] ?? (primary.length === 1 ? primary.toUpperCase() : primary);
+            expect(binding.hint, `the "${name}" binding's hint`).toBe(shown);
+        }
+    });
+
+    test("each binding's own handlers read the shared table", () => {
+        // a handler that re-inlines its key drops out of here — the drift this stage exists to
+        // close, since the hint would then stand still while the key moved.
+        // asserted as a boolean, not `toContain`: a failing `toContain` dumps the whole module.
+        for (const [name, files] of Object.entries(Handlers))
+            for (const file of files)
+                expect(
+                    src(file).includes(`BINDINGS.${name}`),
+                    `${file} must reach the "${name}" binding through BINDINGS.${name}`,
+                ).toBe(true);
+    });
+
+    test("no module compares a bound key raw outside the declared non-row presses", () => {
+        for (const [key, { files }] of Object.entries(RawKeys)) {
+            const pattern = new RegExp(`key\\s*[!=]==\\s*"${key}"`);
+            const found = srcFiles.filter((f) => f !== "menu.ts" && pattern.test(src(f)));
+            expect(found.sort(), `raw "${key}" comparisons`).toEqual([...files].sort());
+        }
     });
 
     // the divider count is not the law — a renderer emitting every derived divider ONE ROW LATE

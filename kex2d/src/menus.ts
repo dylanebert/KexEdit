@@ -1,4 +1,4 @@
-import type { MenuItem } from "./menu";
+import { BINDINGS, type MenuItem } from "./menu";
 import { Easing } from "./profile";
 import { Domain, SectionKind } from "./section";
 import { TangentMode } from "./spline";
@@ -91,7 +91,12 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
                 action: a.optimizeSolve,
                 enabled: !s.solving && s.optSolvable,
             },
-            { label: "Exit", group: "modify", shortcut: "Esc", action: a.optimizeExit },
+            {
+                label: "Exit",
+                group: "modify",
+                shortcut: BINDINGS.exitMode.hint,
+                action: a.optimizeExit,
+            },
         ];
     }
     const del = s.multi ? a.removeSet : a.remove;
@@ -113,7 +118,7 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
     items.push({
         label: "Delete",
         group: "lifecycle",
-        shortcut: "Del",
+        shortcut: BINDINGS.remove.hint,
         danger: true,
         enabled: s.canDelete,
         action: del,
@@ -171,7 +176,7 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
     // ACTIVE member (Blender active-only).
     if (s.multi) {
         return [
-            { label: "Add", group: "create", shortcut: "Enter", enabled: false },
+            { label: "Add", group: "create", shortcut: BINDINGS.append.hint, enabled: false },
             { label: "Handles", group: "modify", enabled: false },
             {
                 label: "Tangents",
@@ -202,7 +207,7 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
             {
                 label: "Delete",
                 group: "lifecycle",
-                shortcut: "Del",
+                shortcut: BINDINGS.remove.hint,
                 danger: true,
                 enabled: s.suffixOk && s.ok,
                 action: a.removeSet,
@@ -225,7 +230,7 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
         {
             label: "Add",
             group: "create",
-            shortcut: "Enter",
+            shortcut: BINDINGS.append.hint,
             enabled: s.isEnd && s.ok,
             action: a.add,
         },
@@ -265,7 +270,7 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
         {
             label: "Delete",
             group: "lifecycle",
-            shortcut: "Del",
+            shortcut: BINDINGS.remove.hint,
             danger: true,
             enabled: s.canTrim && s.ok,
             action: a.remove,
@@ -327,7 +332,12 @@ export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): Menu
     // section's own keys, HIDDEN everywhere else (`lockLabel`'s omit-vs-gray law) — the mouse
     // path to the same set-toggle `Q` drives, over the same filtered member set.
     if (s.lock !== null)
-        items.push({ label: s.lock, group: "modify", shortcut: "Q", action: a.toggleLock });
+        items.push({
+            label: s.lock,
+            group: "modify",
+            shortcut: BINDINGS.lock.hint,
+            action: a.toggleLock,
+        });
     // shown whenever any easing target could exist (a multi-set, or a single non-terminal keyframe);
     // enabled only when the selection has a non-terminal member — else grayed, never hidden.
     if (s.multi || !s.terminal) {
@@ -387,7 +397,7 @@ export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): Menu
     items.push({
         label: "Delete",
         group: "lifecycle",
-        shortcut: "Del",
+        shortcut: BINDINGS.remove.hint,
         danger: true,
         enabled: s.setOk,
         action: a.remove,
