@@ -804,6 +804,32 @@ describe("the menu grammar — every builder, every state", () => {
         ).toEqual([]);
     });
 
+    // ── an authored separator's POSITION passes the within-group law above, but position alone
+    // can't say what it divides — the same shape-floor-vs-law gap the `Checked` registry closes
+    // below, one section down. This is that registry's twin for separators: a declared table, a
+    // row may carry a separator iff its slot is listed here with what it divides.
+    //
+    // A separator carries no label, so it can't be addressed by `menu ▸ label` the way `Checked`
+    // addresses a checked ROW. Its address is the containing menu's `▸` path plus its own index in
+    // the AUTHORED rows array (`levels()`'s `rows`, before `menuRows` derives anything) — the
+    // position IS the only handle a label-less row has. That makes a legitimate reorder of the
+    // submenu's rows a DELIBERATE registry edit (the index moves, so the old key goes stale and
+    // the completeness assert below catches it) rather than silent breakage.
+    const Separators: Record<string, string> = {
+        "keyframeMenu ▸ Easing #3": "divides the Linear/Cubic/Quintic presets from Custom",
+    };
+
+    test("an authored separator's divide is DECLARED, both directions", () => {
+        // both directions: an authored separator with no registry entry fails, and a registry
+        // entry with no matching authored separator fails just as hard (a stale line is a lie).
+        const authored = new Set<string>();
+        for (const { name, rows } of levels())
+            rows.forEach((row, i) => {
+                if (row.separator) authored.add(`${name} #${i}`);
+            });
+        expect([...authored].sort()).toEqual(Object.keys(Separators).sort());
+    });
+
     // ── `checked` means exactly ONE thing: this row's state is currently in effect (stage 3).
     // The shape check below (boolean, has an action, not a submenu parent, not danger) is a floor,
     // not the law — it admits `checked` on nearly every act row in the app, so it could never catch
