@@ -3775,7 +3775,8 @@ onMount(() => {
     /* the summoned tangent handles on the edited force keyframe (the force analogue of the
        geo tangent-edit handles): a thin accent arm to each knob, a filled knob when the
        handle is explicit / hollow when it's the derived (ghost) flat tangent. the wide
-       invisible .thit carries the grab. grab cursor — a handle initiates a drag. */
+       invisible .thit carries the grab. no cursor change: a handle states hover through color
+       (`editor-ui.md`'s hover rung), the same as every other point glyph. */
     .tarm {
         stroke: var(--accent);
         stroke-width: 1;
@@ -3785,11 +3786,7 @@ onMount(() => {
     .thit {
         fill: transparent;
         pointer-events: all;
-        cursor: grab;
         outline: none; /* pointer-only (tabindex -1); no browser focus ring on click */
-    }
-    .thit:active {
-        cursor: grabbing;
     }
     .tknob {
         fill: var(--accent);
