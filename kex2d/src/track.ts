@@ -14,7 +14,7 @@ import {
     type Section as SectionSpec,
     SectionKind,
 } from "./section";
-import { autoTangent, type Node, reflect, type Tangent, type TangentMode } from "./spline";
+import { autoTangent, type Node, reflect, type Tangent, TangentMode } from "./spline";
 
 /** the kind enum is defined with the substrate that gives it meaning (`section.ts`);
  *  it is re-exported here because `Section.kind` is where the document stores it, and
@@ -1942,6 +1942,78 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     return bId;
 }
 
+/** relative tolerance for the join merge rule's mode-preservation check (`mergeTangent`,
+ *  below) — mirrors `profile.collinear`'s own derivation: the merged vectors round-trip
+ *  through the same f32 `Handle.tin`/`tout` storage, which perturbs a genuinely
+ *  equal/collinear pair's angle by ≤ ~2·2^-24 ≈ 1.2e-7 relative; this clears that with
+ *  margin while staying orders below any deliberate off-flat divergence. */
+const MERGE_TANGENT_TOL = 1e-6;
+
+/** whether two vectors are equal within the merge tolerance — `Mirror`'s own constraint
+ *  (`editTangent`: both sides equal the dragged forward vector). */
+function vecEqual(ax: number, ay: number, bx: number, by: number): boolean {
+    const scale = Math.max(Math.hypot(ax, ay), Math.hypot(bx, by));
+    return Math.hypot(ax - bx, ay - by) <= scale * MERGE_TANGENT_TOL;
+}
+
+/** whether two vectors are collinear within the merge tolerance — `Aligned`'s own
+ *  constraint (`alignTangent`: one shared forward direction, per-side length). */
+function vecCollinear(ax: number, ay: number, bx: number, by: number): boolean {
+    const cross = ax * by - ay * bx;
+    const scale = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    return Math.abs(cross) <= scale * MERGE_TANGENT_TOL;
+}
+
+/** the join merge rule's stamp (`joinNext`, geo branch; spec: `kex2d-burndown`): B node
+ *  0's explicit out-vector is authored intent, rotated into A's frame (`frameTheta` —
+ *  `headExit`'s recovered exit heading, A-local; `autoTangent` is rotation-equivariant so
+ *  the arc-rule seed below is taken directly at the A-local chord rather than rotated
+ *  after the fact) and stamped onto the merged tip: `in` = A's tip's own in-half (its
+ *  explicit `in`, else the arc-rule vector at the live chord from its previous node — the
+ *  same read `seedTangent`'s `inVec` takes), `out` = B's rotated out. Mode preserves A's
+ *  iff the merged pair still satisfies it (`Mirror`: the two vectors equal; `Aligned`:
+ *  collinear) — an authored-state predicate over what was just computed, never a
+ *  resolved-float comparison — else `Free`. An `Auto` A tip has no explicit mode to
+ *  preserve; it displays `Aligned` (`editor-ui.md`: inference is aligned-shaped), so it
+ *  reads that way here too. */
+function mergeTangent(
+    aTip: number,
+    aHandles: readonly number[],
+    aN: number,
+    frameTheta: number,
+    bTangent: Tangent,
+): void {
+    const c = Math.cos(frameTheta);
+    const s = Math.sin(frameTheta);
+    const outX = c * bTangent.outX - s * bTangent.outY;
+    const outY = s * bTangent.outX + c * bTangent.outY;
+
+    const aTan = readTangent(aTip);
+    let inX: number;
+    let inY: number;
+    if (aTan) {
+        inX = aTan.inX;
+        inY = aTan.inY;
+    } else {
+        const prev = aHandles[aN - 1];
+        const dx = Handle.pos.x.get(aTip) - Handle.pos.x.get(prev);
+        const dy = Handle.pos.y.get(aTip) - Handle.pos.y.get(prev);
+        [inX, inY] = autoTangent(Handle.theta.get(aTip), Math.atan2(dy, dx), Math.hypot(dx, dy));
+    }
+
+    const aMode = aTan?.mode ?? TangentMode.Aligned;
+    let mode: TangentMode;
+    if (aMode === TangentMode.Mirror) {
+        mode = vecEqual(inX, inY, outX, outY) ? TangentMode.Mirror : TangentMode.Free;
+    } else if (aMode === TangentMode.Aligned) {
+        mode = vecCollinear(inX, inY, outX, outY) ? TangentMode.Aligned : TangentMode.Free;
+    } else {
+        mode = TangentMode.Free;
+    }
+
+    writeTangent(aTip, { mode, inX, inY, outX, outY });
+}
+
 /** join a section with the next one in the chain (same-kind only). geo appends the
  *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
  *  geo split); force concatenates the extents and rebases the neighbor's points. the
@@ -1959,10 +2031,18 @@ export function joinNext(ecs: State, sectionId: number): boolean {
     if (aKind === SectionKind.Geo) {
         const aHandles = sectionHandles(ecs, sectionId);
         const aN = aHandles.length - 1;
+        const aTip = aHandles[aN];
         // place B against A's RECOVERED exit (the bake's downstream entry, the exact
         // inverse of a geo split), not A's stored tip heading — see `headExit`.
         const frame = headExit(ecs, aHandles, aN);
         const bHandles = sectionHandles(ecs, b.id);
+        const bTangent = readTangent(bHandles[0]);
+        // the join merge rule (kex2d-burndown spec): B node 0 explicit is authored
+        // intent on the forward half — carry it into the merged tip rather than
+        // discarding it (the implicit-discard class the idioms unit closed for
+        // delete). B node 0 Auto has nothing authored on the forward side, so the
+        // merged tip stays exactly what it was (today's behavior).
+        if (bTangent) mergeTangent(aTip, aHandles, aN, frame.theta, bTangent);
         // skip B node 0 (== the shared boundary, already A's tip); append B[1..m].
         for (let j = 1; j < bHandles.length; j++) {
             const w = place(frame, {

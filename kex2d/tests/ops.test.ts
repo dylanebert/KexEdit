@@ -76,6 +76,27 @@ function worldSamples(eid: number): { x: number; y: number }[] {
     return out;
 }
 
+/** append a geo section B after the track's current (sole) section and bake once,
+ *  returning B's id and the RECOVERED boundary heading `phi` (A's actual bake exit,
+ *  `sectionInfo`'s own reading) — the exact rotation `joinNext`'s own `headExit` will
+ *  use, learned from a real bake rather than guessed (the join-pin technique above,
+ *  factored out for the mode-preservation pins below, which all need it). */
+function boundaryPhi(state: State): { b: number; phi: number } {
+    const b = appendSection(state, SectionKind.Geo);
+    state.step(0);
+    const infoB = sectionInfo.get(b);
+    if (!infoB) throw new Error("section B info missing");
+    return { b, phi: infoB.entry.theta };
+}
+
+/** B node 0's local out-vector that rotates, through the join, to the given A-frame world
+ *  vector `(vx, vy)` — `R(−phi)`, the exact inverse of `mergeTangent`'s `R(phi)` stamp. */
+function localOutFor(phi: number, vx: number, vy: number): { x: number; y: number } {
+    const c = Math.cos(phi);
+    const s = Math.sin(phi);
+    return { x: c * vx + s * vy, y: -s * vx + c * vy };
+}
+
 describe("chain continuity", () => {
     test("appended section shares its entry with the prior exit (no gap, C0)", () => {
         const { eid, a, b } = twoGeo();
@@ -303,6 +324,229 @@ describe("join", () => {
         // headroom well below the metres a stale-theta frame would drift on this decoupled
         // boundary.
         expect(maxDev).toBeLessThan(0.05);
+    });
+
+    test("joining across a boundary with an explicit B node 0 carries B's authored departure", () => {
+        // the join merge rule (kex2d-burndown spec, sub-stage 2): B node 0's explicit
+        // out-vector is authored intent (the stitch gesture's whole point) and must
+        // survive the join. Built directly (not via splitGeo — the round trip's two
+        // re-frames cancel the bug, so it can't pin this). B's out is DELIBERATELY
+        // DIFFERENT from A's tip's own out — the world-curve pin above makes them equal,
+        // which is why it stays green today even though the merge silently discards B's
+        // authored departure and keeps A's tip whole instead.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+        ])
+            addNode(state, a, x, y);
+        const mag = 15;
+        const ang = 1.2;
+        const wx = mag * Math.cos(ang);
+        const wy = mag * Math.sin(ang);
+        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
+
+        const b = appendSection(state, SectionKind.Geo);
+        state.step(0);
+        // B node 0's own authored out — off A's tip's departure direction by 0.6 rad, a
+        // real reshape of the departure past the boundary.
+        const bAng = ang + 0.6;
+        const bx = mag * Math.cos(bAng);
+        const by = mag * Math.sin(bAng);
+        setTangent(state, b, 0, { mode: TangentMode.Free, inX: bx, inY: by, outX: bx, outY: by });
+        state.step(0);
+        const before = worldSamples(eid);
+
+        expect(joinNext(state, a)).toBe(true);
+        state.step(0);
+        const after = worldSamples(eid);
+
+        expect(after.length).toBe(before.length);
+        let maxDev = 0;
+        for (let i = 0; i < before.length; i++)
+            maxDev = Math.max(
+                maxDev,
+                Math.hypot(after[i].x - before[i].x, after[i].y - before[i].y),
+            );
+        // same derived floor as the two pins above — the merge must carry B's authored
+        // out-half, not discard it; the track doesn't move.
+        expect(maxDev).toBeLessThan(0.05);
+    });
+
+    // the merge rule's mode-preservation predicate (kex2d-burndown spec, sub-stage 2):
+    // authored state, never a resolved-float comparison. Four pins over its two modes ×
+    // two outcomes — the piece of the Locked decision that earned its own paragraph plus
+    // an explicitly rejected alternative, so it ships with direct coverage of the stored
+    // mode, not just a world-curve deviation a hardcoded `Free` or an inverted `Mirror`
+    // branch would leave green.
+    test("join stamps Mirror when the merged pair still satisfies it", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+        ])
+            addNode(state, a, x, y);
+        const mag = 15;
+        const ang = 1.2;
+        const wx = mag * Math.cos(ang);
+        const wy = mag * Math.sin(ang);
+        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
+
+        const { b, phi } = boundaryPhi(state);
+        // B's own authored out, rotated through the join, lands exactly on A's in-half
+        // (wx, wy) — the Mirror-preserving case.
+        const lo = localOutFor(phi, wx, wy);
+        setTangent(state, b, 0, {
+            mode: TangentMode.Free,
+            inX: lo.x,
+            inY: lo.y,
+            outX: lo.x,
+            outY: lo.y,
+        });
+
+        expect(joinNext(state, a)).toBe(true);
+        const merged = handleTangent(state, a, 2);
+        expect(merged?.mode).toBe(TangentMode.Mirror);
+        expect(merged?.inX).toBeCloseTo(wx, 4);
+        expect(merged?.inY).toBeCloseTo(wy, 4);
+        expect(merged?.outX).toBeCloseTo(wx, 4);
+        expect(merged?.outY).toBeCloseTo(wy, 4);
+    });
+
+    test("join stamps Free when a Mirror tip's merged pair no longer matches", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+        ])
+            addNode(state, a, x, y);
+        const mag = 15;
+        const ang = 1.2;
+        const wx = mag * Math.cos(ang);
+        const wy = mag * Math.sin(ang);
+        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
+
+        const { b, phi } = boundaryPhi(state);
+        // B's own authored out, rotated through the join, points well off A's in-half
+        // (0.6 rad away) — the pair no longer satisfies Mirror.
+        const bAng = ang + 0.6;
+        const vx = mag * Math.cos(bAng);
+        const vy = mag * Math.sin(bAng);
+        const lo = localOutFor(phi, vx, vy);
+        setTangent(state, b, 0, {
+            mode: TangentMode.Free,
+            inX: lo.x,
+            inY: lo.y,
+            outX: lo.x,
+            outY: lo.y,
+        });
+
+        expect(joinNext(state, a)).toBe(true);
+        const merged = handleTangent(state, a, 2);
+        expect(merged?.mode).toBe(TangentMode.Free);
+    });
+
+    test("join stamps Aligned when the merged pair stays collinear", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+        ])
+            addNode(state, a, x, y);
+        const ang = 0.4;
+        const ix = 12 * Math.cos(ang);
+        const iy = 12 * Math.sin(ang);
+        const ox = 8 * Math.cos(ang);
+        const oy = 8 * Math.sin(ang);
+        setTangent(state, a, 2, {
+            mode: TangentMode.Aligned,
+            inX: ix,
+            inY: iy,
+            outX: ox,
+            outY: oy,
+        });
+
+        const { b, phi } = boundaryPhi(state);
+        // B's own authored out, rotated through the join, shares A's in-half's direction
+        // at a different length — still collinear, so Aligned survives.
+        const vx = 20 * Math.cos(ang);
+        const vy = 20 * Math.sin(ang);
+        const lo = localOutFor(phi, vx, vy);
+        setTangent(state, b, 0, {
+            mode: TangentMode.Free,
+            inX: lo.x,
+            inY: lo.y,
+            outX: lo.x,
+            outY: lo.y,
+        });
+
+        expect(joinNext(state, a)).toBe(true);
+        const merged = handleTangent(state, a, 2);
+        expect(merged?.mode).toBe(TangentMode.Aligned);
+        expect(merged?.inX).toBeCloseTo(ix, 4);
+        expect(merged?.inY).toBeCloseTo(iy, 4);
+        expect(merged?.outX).toBeCloseTo(vx, 4);
+        expect(merged?.outY).toBeCloseTo(vy, 4);
+    });
+
+    test("join stamps Free when an Aligned tip's merged pair goes non-collinear", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+        ])
+            addNode(state, a, x, y);
+        const ang = 0.4;
+        const ix = 12 * Math.cos(ang);
+        const iy = 12 * Math.sin(ang);
+        const ox = 8 * Math.cos(ang);
+        const oy = 8 * Math.sin(ang);
+        setTangent(state, a, 2, {
+            mode: TangentMode.Aligned,
+            inX: ix,
+            inY: iy,
+            outX: ox,
+            outY: oy,
+        });
+
+        const { b, phi } = boundaryPhi(state);
+        // B's own authored out, rotated through the join, points 0.5 rad off A's in-half's
+        // direction — no longer collinear.
+        const offAng = ang + 0.5;
+        const vx = 20 * Math.cos(offAng);
+        const vy = 20 * Math.sin(offAng);
+        const lo = localOutFor(phi, vx, vy);
+        setTangent(state, b, 0, {
+            mode: TangentMode.Free,
+            inX: lo.x,
+            inY: lo.y,
+            outX: lo.x,
+            outY: lo.y,
+        });
+
+        expect(joinNext(state, a)).toBe(true);
+        const merged = handleTangent(state, a, 2);
+        expect(merged?.mode).toBe(TangentMode.Free);
     });
 });
 
