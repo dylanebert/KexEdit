@@ -221,7 +221,7 @@ test("geo authoring flow", async ({ page, boot }) => {
     await menuGrammar(page, ".nodemenu", {
         builder: "nodeMenu",
         // the chain-end node of the only section: a single selection, not the entry anchor, not in
-        // tangent edit, appendable and trimmable, no optimize session open.
+        // tangent edit, appendable and trimmable, no pin session open.
         state: {
             multi: false,
             isEntry: false,

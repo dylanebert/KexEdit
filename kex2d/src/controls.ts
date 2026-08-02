@@ -8,7 +8,7 @@ import {
     openContext,
     openForceMenu,
     openNodeMenu,
-    type OptimizeSession,
+    type PinSession,
     select,
     selectForce,
     selectNodes,
@@ -576,29 +576,29 @@ export function sectionsDeletable(selected: number, total: number): boolean {
 
 /** the consent boundary's one predicate: whether the section-structure surface — Delete on a
  *  whole-section selection, either Convert direction on ANY section, and the ruler's domain
- *  switch — may run right now. False while ANY optimize session is open (`editor.optimizing`),
+ *  switch — may run right now. False while ANY pin session is open (`editor.pinning`),
  *  not just on the session's own section: convert/delete/join aren't available inside the mode
  *  (the locked decision's consent-boundary law). Deleting the session's own section would strand
- *  `editor.optimizing` on a dead id; a convert or a domain switch would land a track rewrite
+ *  `editor.pinning` on a dead id; a convert or a domain switch would land a track rewrite
  *  INSIDE the open session — an upstream convert silently rebases what the stamp means, and a
  *  domain switch is a lossy whole-track rewrite of the very store the session is solving.
  *  Extracted as its own predicate (mirrors `sectionsDeletable` above, and
  *  `track.sectionSolvable`) since the window keydown handlers and `pickDomain` have no DOM-free
  *  unit-test seam otherwise; every caller pairs the grayed affordance with this same guard at
  *  the action layer. */
-export function sectionOpsAllowed(optimizing: OptimizeSession | null): boolean {
-    return optimizing === null;
+export function sectionOpsAllowed(pinning: PinSession | null): boolean {
+    return pinning === null;
 }
 
-/** the editing lockdown's per-subject predicate (kex2d-optimize-mode stage 5): while an optimize
- *  session is open, ONLY the optimizing section is editable — every edit surface addressing any
+/** the editing lockdown's per-subject predicate (kex2d-optimize-mode stage 5): while a pin
+ *  session is open, ONLY the pinning section is editable — every edit surface addressing any
  *  other section (geo nodes, other force sections' keys/extents, the track v0) grays its
  *  affordance and guards its action on this. `sectionOpsAllowed` (above) stays the stricter
- *  structural gate: add/remove/convert/domain are barred even on the optimizing section.
+ *  structural gate: add/remove/convert/domain are barred even on the pinning section.
  *  `section` is the subject's own section id; pass -1 for a track-global subject (v0), which no
  *  session id ever equals. */
-export function sectionEditable(optimizing: OptimizeSession | null, section: number): boolean {
-    return optimizing === null || optimizing.section === section;
+export function sectionEditable(pinning: PinSession | null, section: number): boolean {
+    return pinning === null || pinning.section === section;
 }
 
 /** wrap a degree value into (−180, 180]. */
@@ -1100,7 +1100,7 @@ export function attachControls(
         // the selected node's tangent handle wins first — a summoned handle sitting over its
         // node must still grab (the vector-editor priority).
         const th = pickTangentHandle(ecs, tx, cx, cy);
-        if (th !== null && sectionEditable(editor.optimizing, Handle.section.get(th.eid))) {
+        if (th !== null && sectionEditable(editor.pinning, Handle.section.get(th.eid))) {
             dragTangent = { eid: th.eid, side: th.side };
             grabHX = th.x - cx;
             grabHY = th.y - cy;
@@ -1136,7 +1136,7 @@ export function attachControls(
             // other grab on this node's section carries (`dragTangent`, `startManip`).
             if (
                 editor.tangentEdit === eid &&
-                sectionEditable(editor.optimizing, Handle.section.get(eid))
+                sectionEditable(editor.pinning, Handle.section.get(eid))
             ) {
                 const s = trackSamples(ecs);
                 if (s) {
@@ -1198,14 +1198,14 @@ export function attachControls(
         const eid = pickNode(ecs, tx, cx, cy);
         if (eid !== null) {
             // the lockdown (kex2d-optimize-mode stage 5): tangent edit is an editing surface, so
-            // in-mode it only opens on the optimizing section — which owns no geo nodes, so this
+            // in-mode it only opens on the pinning section — which owns no geo nodes, so this
             // is a plain in-mode bar; the general predicate keeps it one law.
-            if (sectionEditable(editor.optimizing, Handle.section.get(eid))) enterTangentEdit(eid);
+            if (sectionEditable(editor.pinning, Handle.section.get(eid))) enterTangentEdit(eid);
             return;
         }
         if (pickStart(ecs, tx, cx, cy)) {
             const n0 = startNode0(ecs);
-            if (n0 !== null && sectionEditable(editor.optimizing, Handle.section.get(n0)))
+            if (n0 !== null && sectionEditable(editor.pinning, Handle.section.get(n0)))
                 enterTangentEdit(n0);
         }
     };
@@ -1431,8 +1431,8 @@ export function attachControls(
             const eid = editor.selection;
             const s = trackSamples(ecs);
             if (dragManip !== null || panning || Handle.order.get(eid) === 0 || !s) return;
-            // the lockdown: geo nodes are never the optimizing section's, so no nudge in-mode.
-            if (!sectionEditable(editor.optimizing, Handle.section.get(eid))) return;
+            // the lockdown: geo nodes are never the pinning section's, so no nudge in-mode.
+            if (!sectionEditable(editor.pinning, Handle.section.get(eid))) return;
             if (!(camera.zoom > 0)) return; // pre-framing: no scale to convert px through
             const prevEid = handleAt(ecs, Handle.section.get(eid), Handle.order.get(eid) - 1);
             if (prevEid === null) return; // a non-anchor node always has a previous node
@@ -1550,12 +1550,12 @@ export function attachControls(
 
         // a whole section (or section SET) selected: delete it (Del; also the context-menu action).
         // a multi-set deletes as ONE entry, guarded at the last-section floor (`removeSections`); the
-        // size-1 case is `removeSection`. Guarded on `editor.optimizing`: convert/delete/join aren't
-        // available inside optimize mode (the locked decision's consent-boundary law) — deleting the
-        // section under a live session would strand `editor.optimizing` on a dead id (the mode's own
+        // size-1 case is `removeSection`. Guarded on `editor.pinning`: convert/delete/join aren't
+        // available inside pin mode (the locked decision's consent-boundary law) — deleting the
+        // section under a live session would strand `editor.pinning` on a dead id (the mode's own
         // Exit lives only on that section's own context menu, so nothing could ever reach it again).
         if (editor.section !== null) {
-            if (bound(BINDINGS.remove, e.key) && sectionOpsAllowed(editor.optimizing)) {
+            if (bound(BINDINGS.remove, e.key) && sectionOpsAllowed(editor.pinning)) {
                 e.preventDefault();
                 if (editor.sections.ids.size > 1) {
                     if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
@@ -1575,8 +1575,7 @@ export function attachControls(
         if (editor.nodes.ids.size > 1) {
             if (bound(BINDINGS.remove, e.key)) {
                 e.preventDefault();
-                if (!sectionEditable(editor.optimizing, Handle.section.get(editor.selection)))
-                    return; // the lockdown — the node menu's bulk Delete grays on the same read
+                if (!sectionEditable(editor.pinning, Handle.section.get(editor.selection))) return; // the lockdown — the node menu's bulk Delete grays on the same read
                 const run = suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length);
                 if (run !== null && trimSuffix(history, ecs, run.section, run.k))
                     select(lastHandle(ecs, run.section));
@@ -1585,7 +1584,7 @@ export function attachControls(
         }
 
         const section = Handle.section.get(editor.selection);
-        if (!sectionEditable(editor.optimizing, section)) return; // the lockdown (extend/trim)
+        if (!sectionEditable(editor.pinning, section)) return; // the lockdown (extend/trim)
         if (!endSelected(ecs)) return;
         if (bound(BINDINGS.append, e.key)) {
             e.preventDefault();
@@ -1606,7 +1605,7 @@ export function attachControls(
     const startManip = (e: PointerEvent, axis: "length" | "angle"): void => {
         const sel = editor.selection;
         if (sel === null || panning || dragTangent !== null) return;
-        if (!sectionEditable(editor.optimizing, Handle.section.get(sel))) return; // the lockdown
+        if (!sectionEditable(editor.pinning, Handle.section.get(sel))) return; // the lockdown
         const s = trackSamples(ecs);
         if (!s) return;
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);

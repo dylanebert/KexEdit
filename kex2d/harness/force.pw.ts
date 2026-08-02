@@ -385,7 +385,7 @@ test("force easing menu flow", async ({ page, boot }) => {
     await menuGrammar(page, ".fmenu", {
         builder: "keyframeMenu",
         // the leading keyframe of a bumped force section: single selection, non-terminal (it
-        // governs the following segment), no explicit handles, no optimize session (so no
+        // governs the following segment), no explicit handles, no pin session (so no
         // Lock/Unlock row), nothing under lockdown.
         state: {
             setOk: true,

@@ -1,4 +1,4 @@
-/** The masked exit-restore solve behind optimize mode (`kex2d-optimize-mode` stage 1) — the
+/** The masked exit-restore solve behind pin mode (`kex2d-optimize-mode` stage 1) — the
  *  invoked tool that restores a force section's stamped exit `(x, y, θ)` after the author
  *  retunes its keyframes, moving only the UN-LOCKED keys' g-ordinates.
  *
@@ -251,7 +251,7 @@ function choleskySolve(L: Float64Array, n: number, b: ArrayLike<number>): Float6
  * const stamp = computeExit(entry, draftAtModeEntry, length, ds);
  * // ... the author retunes some keyframes, locks a few ...
  * const r = solveOptimize({ entry, points: currentDraft, locked, length, ds, stamp });
- * if (r.outcome === "solved") landOptimize(history, ecs, section, r.points);
+ * if (r.outcome === "solved") landPin(history, ecs, section, r.points);
  */
 export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     const { entry, points, locked, length, ds, domain, stamp } = opts;

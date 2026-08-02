@@ -235,7 +235,7 @@ if (import.meta.env.DEV) {
         forces: (): { s: number; g: number }[] =>
             sectionForces(ecs, sec()).map((p) => ({ s: p.s, g: p.g })),
         // a section span's mid-sample screen point (canvas-local px), by chain index — where
-        // the optimize flow pixel-probes the polyline for the out-of-scope dim (mirrors
+        // the pin flow pixel-probes the polyline for the out-of-scope dim (mirrors
         // startAt/nodeAt: the canvas-drawn track carries no DOM box). null pre-bake.
         spanMidAt: (i: number): { x: number; y: number } | null => {
             const s = samples.get(track);
@@ -269,16 +269,16 @@ if (import.meta.env.DEV) {
         // whether a force keyframe is in handle-edit sub-mode — the flow asserts a
         // double-click summoned the handles.
         forceEditing: (): boolean => editor.forceEdit !== null,
-        // whether an optimize-mode session is open, and how many keys it holds locked — the
-        // optimize flow asserts the transactional exits (mode open/closed) and the lock
+        // whether an pin-mode session is open, and how many keys it holds locked — the
+        // pin flow asserts the transactional exits (mode open/closed) and the lock
         // gesture's effect; the popup's badge/buttons are driven and read pointer-true by DOM.
-        optimizing: (): boolean => editor.optimizing !== null,
+        pinning: (): boolean => editor.pinning !== null,
         lockedCount: (): number => editor.locked.size,
-        // the sandbox's undo depth, or null with no mode open — the optimize flow asserts
+        // the sandbox's undo depth, or null with no mode open — the pin flow asserts
         // in-mode edits land HERE while the outer depth stands still (the sandbox contract).
         sandboxDepth: (): number | null => sandbox()?.undo.length ?? null,
         // every section's baked entry (order-sorted) — the downstream-freeze assert reads the
-        // section AFTER the optimizing one and pins it byte-stable across an in-mode edit.
+        // section AFTER the pinning one and pins it byte-stable across an in-mode edit.
         entries: (): { x: number; y: number; theta: number; v: number }[] =>
             sections(ecs).map((s) => {
                 const e = sectionInfo.get(s.id)?.entry;
@@ -286,7 +286,7 @@ if (import.meta.env.DEV) {
                     ? { x: e.x, y: e.y, theta: e.theta, v: e.v }
                     : { x: 0, y: 0, theta: 0, v: 0 };
             }),
-        // whether the paced landing animation is running — the optimize flow asserts a landed
+        // whether the paced landing animation is running — the pin flow asserts a landed
         // Solve raises it (the feedback) and that it settles closed.
         landing: (): boolean => editor.landing !== null,
         // which handle is selected within handle-edit ("in"/"out"/null) — the flow asserts a

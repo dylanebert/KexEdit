@@ -3,7 +3,7 @@
  *
  * - `create` — the document gains an object (Add, the append flyout's Geo/Force).
  * - `modify` — changes the subject that summoned the menu, or enters / acts in / leaves a mode
- *   scoped to it (Convert, Optimize, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock,
+ *   scoped to it (Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock,
  *   Meters/Seconds). The residual class, honestly.
  * - `lifecycle` — the subject ends at its creation state or gone (Reset, then Delete).
  *

@@ -665,14 +665,14 @@ describe("sectionsDeletable — section multi-delete enablement", () => {
 });
 
 // the section-structure surface — delete, EITHER convert direction, and the ruler's domain
-// switch — is blocked entirely while a live optimize session is open (kex2d-optimize-mode: the
+// switch — is blocked entirely while a live pin session is open (kex2d-optimize-mode: the
 // consent-boundary law; delete was stage 1's blocker, convert + domain stage 4's adversarial
 // finding 2 — both were reachable in-mode and would have landed a track rewrite inside the
 // open session, seen red in the capture flow's disabled-row asserts before the guard wired
 // in). The window keydown handlers and `pickDomain` have no DOM-free unit-test seam, so the
 // guard is extracted as this one predicate and tested directly; every surface pairs the grayed
 // affordance with the same guard at the action layer.
-describe("sectionOpsAllowed — optimize mode blocks delete, convert, and the domain switch", () => {
+describe("sectionOpsAllowed — pin mode blocks delete, convert, and the domain switch", () => {
     test("no live session: the structure surface is allowed", () => {
         expect(sectionOpsAllowed(null)).toBe(true);
     });
@@ -689,7 +689,7 @@ describe("sectionOpsAllowed — optimize mode blocks delete, convert, and the do
 });
 
 // the editing lockdown's per-subject predicate (kex2d-optimize-mode stage 5): in-mode only the
-// optimizing section is editable — every edit surface (geo nodes, other sections' keys/extents,
+// pinning section is editable — every edit surface (geo nodes, other sections' keys/extents,
 // v0) pairs its grayed affordance with this same guard at the action layer.
 describe("sectionEditable — the in-mode editing lockdown", () => {
     const session = {
@@ -704,7 +704,7 @@ describe("sectionEditable — the in-mode editing lockdown", () => {
         expect(sectionEditable(null, -1)).toBe(true); // the track-global sentinel too
     });
 
-    test("in-mode: only the optimizing section passes; other sections and the track-global sentinel gray", () => {
+    test("in-mode: only the pinning section passes; other sections and the track-global sentinel gray", () => {
         expect(sectionEditable(session, 7)).toBe(true);
         expect(sectionEditable(session, 3)).toBe(false);
         expect(sectionEditable(session, -1)).toBe(false); // v0 (track-global) is locked in-mode

@@ -2678,7 +2678,7 @@ describe("landing display override (kex2d-idioms stage 4)", () => {
     test("bakeLive is false while the override is live (a contaminated bake is not authored truth)", () => {
         // the bake carries the interpolant but is stamped with the AUTHORED hash, so without the
         // landing consult `bakeLive` would certify a landing-contaminated bake as authored truth
-        // for the whole window (consumers: forceBake, bakeEntryForce, enterOptimize, domain).
+        // for the whole window (consumers: forceBake, bakeEntryForce, enterPin, domain).
         const { state, sec } = landedTrack();
         const crest = sectionForces(state, sec)[1];
         expect(bakeLive(state)).toBe(true);

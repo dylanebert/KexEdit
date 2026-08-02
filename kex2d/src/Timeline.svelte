@@ -46,7 +46,7 @@ import {
     setForcesEase,
     setForceTangentMode,
 } from "./history";
-import { redoRouted, undoRouted } from "./optimizeMode";
+import { redoRouted, undoRouted } from "./pin";
 import { convertDomain, pickable } from "./domain";
 import { Domain } from "./section";
 import {
@@ -174,7 +174,7 @@ const TOP = RULER_H + GAP_H; // chart top
 const BOT_PAD = 8; // chart inset, bottom
 const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
 // PLAYER_GAP/PLAYER_H (view.ts) — the player's geometry above the dock, shared with the
-// optimize panel's anchor (App.svelte).
+// pin panel's anchor (App.svelte).
 const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer than this to the plot edge
 // reference comfort limits (g) — drawn as faint lines to read the force curve against, and the
 // value axis's RESTING frame: the window the view sits in whenever the data fits inside it (the
@@ -428,9 +428,9 @@ $effect(() => {
 function pickDomain(target: Domain): void {
     if (editor.dragging) return; // a live gesture holds the document axis still (editor-ui.md)
     // the consent boundary (kex2d-optimize-mode): a domain switch is a lossy track-wide rewrite,
-    // so it can't land inside an open optimize session — the rows gray on the same
+    // so it can't land inside an open pin session — the rows gray on the same
     // predicate; this is the action-layer half of the pair (delete's belt-and-suspenders shape).
-    if (!sectionOpsAllowed(editor.optimizing)) return;
+    if (!sectionOpsAllowed(editor.pinning)) return;
     convertDomain(history, ecs, target); // rejects (writing nothing) on the active row and with
     // nothing convertible — the same reading the row is grayed on
 }
@@ -653,12 +653,12 @@ const selForceSet = $derived.by((): Set<number> => {
     void tick;
     return editor.forces.ids;
 });
-// the live optimize session's own clip (kex2d-optimize-mode stage 4), or null — the timeline's
+// the live pin session's own clip (kex2d-optimize-mode stage 4), or null — the timeline's
 // one read of the mode: the focus dim brackets its span, the striped clip marks it, and the
 // driven keyframe styling keys off its section.
 const optClip = $derived.by((): Clip | null => {
     void tick;
-    const s = editor.optimizing;
+    const s = editor.pinning;
     if (s === null) return null;
     return clips.find((c) => c.id === s.section) ?? null;
 });
@@ -674,7 +674,7 @@ const chromeClip = $derived.by((): Clip | null => {
     if (s === null) return null;
     return clips.find((c) => c.id === s) ?? null;
 });
-// locked force-keyframe ids for the live optimize session (kex2d-optimize-mode stage 1) — read
+// locked force-keyframe ids for the live pin session (kex2d-optimize-mode stage 1) — read
 // through the tick like `selForceSet`, so a diamond's driven styling stays live across a toggle.
 const lockedSet = $derived.by((): Set<number> => {
     void tick;
@@ -718,7 +718,7 @@ const multiForce = $derived.by((): boolean => {
 const selLocked = $derived.by((): boolean => {
     void tick;
     const p = selPoint;
-    return p !== null && !sectionEditable(editor.optimizing, p.section);
+    return p !== null && !sectionEditable(editor.pinning, p.section);
 });
 
 // the axis pair: a coordinate on the chart's own axis ↔ its canvas x. Every native subject (a
@@ -800,8 +800,8 @@ function chartCreate(e: MouseEvent): void {
     const c = clips.find((x) => x.kind === SectionKind.Force && u >= x.u0 && u <= x.u1);
     if (!c) return; // not over a force section
     // the lockdown (kex2d-optimize-mode stage 5): in-mode, keys are added only on the
-    // optimizing section (the sanctioned way to create give) — other sections are read-only.
-    if (!sectionEditable(editor.optimizing, c.id)) return;
+    // pinning section (the sanctioned way to create give) — other sections are read-only.
+    if (!sectionEditable(editor.pinning, c.id)) return;
     // value = the authored profile at the SNAPPED section-local s (insert-on-curve: the new
     // point never bends the curve), so both position and value derive from the snapped place.
     const s = clamp(u - c.u0, 0, c.len); // (snapped) global → section-local, both native
@@ -916,7 +916,7 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
         lastFdownId = -1;
         // second press on the same diamond → summon its handles (single-subject). handle edit
         // is an editing surface, so the lockdown gates the summon like every other edit.
-        if (sectionEditable(editor.optimizing, p.section)) enterForceEdit(p.id);
+        if (sectionEditable(editor.pinning, p.section)) enterForceEdit(p.id);
         return;
     }
     lastFdownT = e.timeStamp;
@@ -927,7 +927,7 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     if (editor.forces.ids.has(p.id)) activateForce(p.id);
     else selectForce(p.id);
     // the lockdown: another section's keys still SELECT (selection is a read) but never drag.
-    if (!sectionEditable(editor.optimizing, p.section)) return;
+    if (!sectionEditable(editor.pinning, p.section)) return;
     // the drag set: every selected member's start s/g + its own extent (size-1 for a single drag).
     const set = editor.forces.ids;
     const members = set.size > 1 ? forcePts.filter((fp) => set.has(fp.id)) : [p];
@@ -1412,16 +1412,16 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     // single-subject rows the active member — grayed, never hidden (the enablement law).
     const setOk = forceSetEditable();
     const pt = forcePts.find((p) => p.id === id);
-    const activeOk = pt !== undefined && sectionEditable(editor.optimizing, pt.section);
-    // the Lock/Unlock row's member set: the optimizing section's own selected keys.
-    const sid = editor.optimizing?.section;
+    const activeOk = pt !== undefined && sectionEditable(editor.pinning, pt.section);
+    // the Lock/Unlock row's member set: the pinning section's own selected keys.
+    const sid = editor.pinning?.section;
     const lockIds =
         sid === undefined
             ? []
             : forcePts
                   .filter((p) => editor.forces.ids.has(p.id) && p.section === sid)
                   .map((p) => p.id);
-    const lock = pt === undefined ? null : lockLabel(editor.optimizing, pt.section, lockIds, editor.locked);
+    const lock = pt === undefined ? null : lockLabel(editor.pinning, pt.section, lockIds, editor.locked);
     // the Easing ▸ and Tangents ▸ fields are GETTERS: each is guarded by a builder branch, and
     // `easeTargets`/`custom` walk the whole force store while `customGlyph` re-solves the addressed
     // segment's bezier. a terminal single keyframe shows Delete alone, so it must pay for none of
@@ -1558,11 +1558,11 @@ const rmenu = $derived.by((): { x: number; y: number } | null => {
 // `pickable` is the per-row half: the active row is always pickable (its pick is a no-op), a
 // converting row only when the conversion can actually run. `sectionOpsAllowed` is the consent
 // boundary and grays BOTH rows — the active one included, since a lit-enabled row over a blocked
-// surface would misread as available — while an optimize session is open.
+// surface would misread as available — while an pin session is open.
 const rulerMenuItems = $derived.by((): MenuItem[] => {
     void tick;
     if (editor.rulerMenu === null) return [];
-    const allowed = sectionOpsAllowed(editor.optimizing);
+    const allowed = sectionOpsAllowed(editor.pinning);
     return rulerMenu(
         {
             domain,
@@ -1622,8 +1622,8 @@ function toggleAppend(e: PointerEvent): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    // the lockdown: no section add while an optimize session is open (the button grays too).
-    if (!sectionOpsAllowed(editor.optimizing)) return;
+    // the lockdown: no section add while an pin session is open (the button grays too).
+    if (!sectionOpsAllowed(editor.pinning)) return;
     if (appendAnchor) {
         appendAnchor = null;
         return;
@@ -1792,9 +1792,9 @@ function lenDown(e: PointerEvent, c: Clip): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    // the lockdown: in-mode only the optimizing section's extent trims (length is authored
+    // the lockdown: in-mode only the pinning section's extent trims (length is authored
     // slack — the author's own DOF); other sections are read-only.
-    if (!sectionEditable(editor.optimizing, c.id)) return;
+    if (!sectionEditable(editor.pinning, c.id)) return;
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
     lenX0 = lenCx;
@@ -1868,7 +1868,7 @@ $effect(() => {
 function fieldEdit(s: number, g: number): void {
     const p = selPoint;
     if (p === null || !Number.isFinite(s) || !Number.isFinite(g)) return; // guard a cleared field
-    if (!sectionEditable(editor.optimizing, p.section)) return; // the lockdown (fields disabled too)
+    if (!sectionEditable(editor.pinning, p.section)) return; // the lockdown (fields disabled too)
     // a keyboard-committed mutation skips a live landing first, like undo/redo (`onKey`): the
     // pointer paths skip via App's capture listener, but Enter reaches here with no pointerdown.
     skipLanding();
@@ -1895,7 +1895,7 @@ function onFieldG(e: Event): void {
 function handleFieldEdit(ds: number, dg: number): void {
     const h = selHandle;
     if (h === null || !Number.isFinite(ds) || !Number.isFinite(dg)) return; // guard a cleared field
-    if (!sectionEditable(editor.optimizing, h.pt.section)) return; // the lockdown
+    if (!sectionEditable(editor.pinning, h.pt.section)) return; // the lockdown
     const tan = tangentFor(h.pt.id, h.side, ds, dg);
     if (!tan) return;
     skipLanding(); // keyboard-committed keyframe mutation: same routing as fieldEdit above
@@ -1987,7 +1987,7 @@ function cancelLabelScrub(): void {
 function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
     const p = selPoint;
     if (p === null) return;
-    if (!sectionEditable(editor.optimizing, p.section)) return; // the lockdown
+    if (!sectionEditable(editor.pinning, p.section)) return; // the lockdown
     const freeze = {
         x: clamp(ptX(p), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
         y: clamp(yOf(p.g), TOP, h - BOT_PAD),
@@ -2104,7 +2104,7 @@ function deleteSelectedForce(): void {
 function forceSetEditable(): boolean {
     for (const id of editor.forces.ids) {
         const p = forcePts.find((fp) => fp.id === id);
-        if (!p || !sectionEditable(editor.optimizing, p.section)) return false;
+        if (!p || !sectionEditable(editor.pinning, p.section)) return false;
     }
     return true;
 }
@@ -2560,7 +2560,7 @@ onMount(() => {
                 // would otherwise keep easing diamonds toward values the undo just erased
                 // (adversarial finding 2; the same skip pointerdown/Esc and Exit apply).
                 skipLanding();
-                // routed (stage 7): the SANDBOX while an optimize mode is open — in-mode
+                // routed (stage 7): the SANDBOX while an pin mode is open — in-mode
                 // undo/redo never reach the outer stacks, and undo at the sandbox's start exits.
                 if (e.shiftKey) redoRouted(history, ecs);
                 else undoRouted(history, ecs);
@@ -2649,18 +2649,18 @@ onMount(() => {
                 commit(history);
             } else if (
                 bound(BINDINGS.lock, e.key) &&
-                editor.optimizing !== null &&
+                editor.pinning !== null &&
                 editor.forces.ids.size > 0
             ) {
                 // `Q` = the lock/free toggle (kex2d stage 6 — reachability is the criterion:
                 // left-hand top row, one hand on the keyboard while the other mouses; the old
                 // `L` was unreachable that way and is removed, not aliased). only meaningful
-                // inside a live optimize session over the selected keyframe set, restricted to
-                // the optimizing section's own keys (a lock on another section's key would be
+                // inside a live pin session over the selected keyframe set, restricted to
+                // the pinning section's own keys (a lock on another section's key would be
                 // dead state — the solve never reads it). the mode-only menu row is the mouse
                 // path to the same toggle.
                 e.preventDefault();
-                const sid = editor.optimizing.section;
+                const sid = editor.pinning.section;
                 toggleLockedSet(
                     forcePts
                         .filter((fp) => editor.forces.ids.has(fp.id) && fp.section === sid)
@@ -2784,7 +2784,7 @@ onMount(() => {
                 <clipPath id="laneclip">
                     <rect x={LEFT_GUT} y={RULER_H} width={Math.max(0, w - LEFT_GUT)} height={GAP_H} />
                 </clipPath>
-                <!-- the optimize-mode stripes: the diagonal hatch the optimized section's clip
+                <!-- the pin-mode stripes: the diagonal hatch the pinned section's clip
                      wears while the mode is open (kex2d-optimize-mode stage 5 — the salient
                      in-mode treatment; the old guide ring read as a mystery glyph). -->
                 <pattern
@@ -3019,8 +3019,8 @@ onMount(() => {
                     {/each}
                 </g>
             {/if}
-            <!-- optimize-mode focus (kex2d-optimize-mode stage 4, the standard focus/mode
-                 convention): everything outside the optimized section's span dims — lane, curve,
+            <!-- pin-mode focus (kex2d-optimize-mode stage 4, the standard focus/mode
+                 convention): everything outside the pinned section's span dims — lane, curve,
                  and markers alike (the dim is topmost) — while the span itself stays
                  full-strength. pointer-inert: focus is a read. the section's own timeline
                  identity is the striped clip (above); the stamped exit's constraint ring +
@@ -3737,7 +3737,7 @@ onMount(() => {
         stroke: #fff;
         stroke-width: 1.8;
     }
-    /* the optimize-mode locked keyframe (kex2d-optimize-mode stage 4) — the CAD driven idiom
+    /* the pin-mode locked keyframe (kex2d-optimize-mode stage 4) — the CAD driven idiom
        (editor-ui.md constraint vocabulary): dashed + faded, still measures. the neutral guide
        gray, never accent or a kind color (both already mean something else). selection still
        reads on a locked key (the brightened stroke below), the dash stays — "selected AND
@@ -3752,13 +3752,13 @@ onMount(() => {
         stroke: var(--fg);
         stroke-dasharray: 2 2;
     }
-    /* the optimize-mode focus dim: the standard focus convention — outside the optimized span
+    /* the pin-mode focus dim: the standard focus convention — outside the pinned span
        everything steps back one rung. a wash of the dock's own background, topmost, inert. */
     .mode-dim rect {
         fill: var(--dim);
         pointer-events: none;
     }
-    /* the optimize-mode clip stripes: the diagonal hatch the optimized section's clip wears
+    /* the pin-mode clip stripes: the diagonal hatch the pinned section's clip wears
        while the mode is open — the salient timeline identity of the mode (the accent register,
        since the mode's subject is always a force section). pointer-inert: a treatment, not a
        control. the pattern lives in the svg defs (`#modestripe`). */
@@ -3930,7 +3930,7 @@ onMount(() => {
         background: rgba(255, 255, 255, 0.12);
         color: var(--fg);
     }
-    /* grayed under the lockdown (no section add while an optimize session is open) — the
+    /* grayed under the lockdown (no section add while an pin session is open) — the
        standard disabled affordance, matching the menu rows. */
     .clip-add:disabled {
         opacity: 0.4;

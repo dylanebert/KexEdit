@@ -581,7 +581,7 @@ export function toLocalU(spans: SectionSpan[], u: number): { section: number; s:
  *  keyframe's stored `s` lands on the flat SoA. Walks the bake's own tables within the
  *  section's published range (the ds-convention law: per-edge `out.ds` on the Distance
  *  axis, the per-sample march clock `out.t` on Time — never a chord re-derivation, never
- *  the cart's arc↔time detour), so a zero-length edge (a Time-domain stall, the optimize
+ *  the cart's arc↔time detour), so a zero-length edge (a Time-domain stall, the pin
  *  freeze's gap) is stepped over rather than divided by. Returns the flat sample index
  *  plus the fraction toward `index + 1` (an exit landing reads `{endSample, 0}`), clamped
  *  to the section's range at both ends; null when the section published no edges (placed
@@ -1488,9 +1488,9 @@ function invalidateBake(ecs: State): void {
 }
 
 // ── the downstream freeze (kex2d-optimize-mode stage 7, the sandbox contract) ─────────
-// while an optimize mode is open, sections AFTER the optimizing one hold their mode-entry
+// while an pin mode is open, sections AFTER the pinning one hold their mode-entry
 // placement: the bake splits into two chains, the second seeded with the frozen entry (the
-// optimizing section's recovered exit at mode entry) instead of the live exit. downstream
+// pinning section's recovered exit at mode entry) instead of the live exit. downstream
 // payloads can't change in-mode (the editing lockdown), so the frozen part re-bakes
 // byte-identical every pass — no snapshot needed, just the entry. the seam between the two
 // parts is a GAP, not an edge: the live exit and the frozen entry are two distinct samples
@@ -1502,8 +1502,8 @@ function invalidateBake(ecs: State): void {
 let bakeFreeze: { section: number; entry: Entry } | null = null;
 let freezeInvalid = false;
 
-/** set (or clear, null) the downstream freeze — called by the optimize mode's open/close
- *  (`editor.beginOptimize`/`endOptimize`), never by authoring code. */
+/** set (or clear, null) the downstream freeze — called by the pin mode's open/close
+ *  (`editor.beginPin`/`endPin`), never by authoring code. */
 export function setBakeFreeze(f: { section: number; entry: Entry } | null): void {
     bakeFreeze = f;
     freezeInvalid = true;
@@ -1524,7 +1524,7 @@ export function setBakeFreeze(f: { section: number; entry: Entry } | null): void
 export interface BakeLanding {
     /** the landed section — the only one whose keyframes read through `g`. */
     section: number;
-    /** the downstream hold: the optimize session's frozen entry, held until the override
+    /** the downstream hold: the pin session's frozen entry, held until the override
      *  clears (the freeze the landing's mode close would otherwise have released). */
     entry: Entry;
     /** the display g for a keyframe id right now, or null where the landing doesn't cover it
@@ -1640,7 +1640,7 @@ export function resetSection(ecs: State, sectionId: number): void {
  *  bake that IS the authored state (`bakeLive`), since the force seed's entry force is
  *  recovered from it (a stale bake would stamp a force that isn't on screen). a geo reset
  *  reads no bake. `sectionSolvable`'s shape; the caller pairs it with
- *  `controls.sectionOpsAllowed` (the optimize-mode consent boundary), like every
+ *  `controls.sectionOpsAllowed` (the pin-mode consent boundary), like every
  *  section-structure row.
  *  pure — device-free, unit-tested. the row grays out otherwise (never hidden). */
 export function sectionResettable(
@@ -2293,8 +2293,8 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         return forcePayload(ecs, sec.id, sec.length, step, domain);
     });
     // the downstream freeze (stage 7): with a live freeze on a non-terminal section, the chain
-    // runs in TWO parts — start..optimizing live, downstream seeded at the FROZEN entry — so
-    // downstream holds its mode-entry placement while the optimizing exit wanders. one part
+    // runs in TWO parts — start..pinning live, downstream seeded at the FROZEN entry — so
+    // downstream holds its mode-entry placement while the pinning exit wanders. one part
     // (today's whole-chain bake, byte-identical) everywhere else.
     // …and the landing HOLD (stage 4): a live landing keeps downstream seeded at the session's
     // frozen entry after the mode close released `bakeFreeze`, so the frozen gap closes

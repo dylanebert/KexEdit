@@ -274,16 +274,14 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
 
     // ── 4. Right-click the force clip: the menu carries exactly FOUR rows — ONE `Convert` row
     // (stage 7 naming: the section's kind implies the direction, so the label is the verb
-    // alone), the force-only Optimize entry, Reset (kex2d-idioms stage 2 — kind-held, live on a
+    // alone), the force-only Pin entry, Reset (kex2d-idioms stage 2 — kind-held, live on a
     // baked force section), and Delete. (Also the real-menu regression guard for the destructive
     // Convert row's removal.) ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
     await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(4);
     await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" })).toBeEnabled();
-    await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Optimize" }),
-    ).toBeEnabled();
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Pin" })).toBeEnabled();
     await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Reset" })).toBeEnabled();
     // the section menu's rows already sorted canonically, so the grammar's arrival adds only the
     // DERIVED modify→lifecycle divider. The expectation comes from the real `sectionMenu` builder,
@@ -291,17 +289,17 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     // cross-check, kex2d-menu-grammar decision 8).
     await menuGrammar(page, ".ctxmenu", {
         builder: "sectionMenu",
-        // a single, baked force section, no optimize session anywhere: Convert runs the force→geo
-        // fit, Optimize can enter, Reset and Delete are live.
+        // a single, baked force section, no pin session anywhere: Convert runs the force→geo
+        // fit, Pin can enter, Reset and Delete are live.
         state: {
             inMode: false,
             solving: false,
-            optSolvable: false,
+            pinSolvable: false,
             multi: false,
             modeOpen: false,
             canSolve: false,
             canSolveShape: true,
-            canOptimize: true,
+            canPin: true,
             canReset: true,
             canDelete: true,
         },
@@ -734,26 +732,26 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     if (strip) await page.screenshot({ path: join(OUT, "dogfood-3-timeline.png"), clip: strip });
 });
 
-// Drive OPTIMIZE MODE end to end (kex2d-optimize-mode stage 7) — the SANDBOX over the real UI:
+// Drive PIN MODE end to end (kex2d-optimize-mode stage 7) — the SANDBOX over the real UI:
 // entering opens a sandbox (outer history untouched), in-mode edits + undo/redo live in it,
 // undo at its start exits, Exit/Esc discards without trace, downstream sections FREEZE at their
 // mode-entry placement, a landed Solve is ONE outer entry whose undo reopens the resumed
 // experiment and whose redo re-lands.
-test("optimize mode flow", async ({ page, boot }) => {
+test("pin mode flow", async ({ page, boot }) => {
     await boot();
 
     const forces = () => kexCall(page, "forces");
     const undoDepth = () => kexCall(page, "undoDepth");
     const sandboxDepth = () => kexCall(page, "sandboxDepth");
     const entries = () => kexCall(page, "entries");
-    const optimizing = () => kexCall(page, "optimizing");
+    const pinning = () => kexCall(page, "pinning");
     const landing = () => kexCall(page, "landing");
     const lockedCount = () => kexCall(page, "lockedCount");
     const forceSelIds = () => kexCall(page, "forceSelIds");
     const forceCount = () => kexCall(page, "forceCount");
-    const panel = page.locator(".optpanel");
-    const solveBtn = page.locator(".optpanel .solve");
-    const reason = page.locator(".optpanel .reason");
+    const panel = page.locator(".pinpanel");
+    const solveBtn = page.locator(".pinpanel .solve");
+    const reason = page.locator(".pinpanel .reason");
     const strip = dockStrip(page);
     const sorted = (rows: { s: number; g: number }[]) => [...rows].sort((a, b) => a.s - b.s);
 
@@ -805,9 +803,9 @@ test("optimize mode flow", async ({ page, boot }) => {
                 ).__kex;
                 const bad: string[] = [];
                 if (!kex.landing()) bad.push("landing");
-                if (document.querySelector(".optpanel") === null) bad.push("panel");
-                const solve = document.querySelector<HTMLButtonElement>(".optpanel .solve");
-                const exit = document.querySelector<HTMLButtonElement>(".optpanel .exit");
+                if (document.querySelector(".pinpanel") === null) bad.push("panel");
+                const solve = document.querySelector<HTMLButtonElement>(".pinpanel .solve");
+                const exit = document.querySelector<HTMLButtonElement>(".pinpanel .exit");
                 if (!solve?.disabled) bad.push("solve-disabled");
                 if (!exit?.disabled) bad.push("exit-disabled");
                 if (document.querySelectorAll(".clip-stripes").length !== 1) bad.push("hatch");
@@ -865,22 +863,20 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.keyboard.press("f"); // nothing selected → the whole chain frames
     await expect.poll(async () => near(await probe(await geoMid()), [120, 165, 214])).toBe(true);
 
-    // ── 1. Enter through the section menu's Optimize row: the docked panel + the striped clip
+    // ── 1. Enter through the section menu's Pin row: the docked panel + the striped clip
     // are the mode signal — and the OUTER history is untouched (the sandbox contract: entering
     // records nothing; a fresh, empty sandbox opens instead). ──
     await page.locator(".clip").first().click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    await expect(
-        page.locator(".ctxmenu").getByRole("menuitem", { name: "Optimize" }),
-    ).toBeEnabled();
-    await clickMenuItem(page, ".ctxmenu", "Optimize");
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Pin" })).toBeEnabled();
+    await clickMenuItem(page, ".ctxmenu", "Pin");
     await expect(panel).toBeVisible();
-    await expect.poll(optimizing).toBe(true);
+    await expect.poll(pinning).toBe(true);
     await expect(page.locator(".clip-stripes")).toHaveCount(1);
     expect(await undoDepth()).toBe(base); // NOTHING landed outer
     expect(await sandboxDepth()).toBe(0); // …the sandbox opened empty
     await page.waitForTimeout(SHOT_MS);
-    await page.screenshot({ path: join(OUT, "optimize-1-mode.png") });
+    await page.screenshot({ path: join(OUT, "pin-1-mode.png") });
 
     // ── 1a. The viewport out-of-scope dim (kex2d-idioms stage 5, editor-ui.md Mode
     // vocabulary): the same span's pixel now reads the dim-washed geo color — the timeline's
@@ -905,7 +901,7 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect(page.locator(".rmenu").getByRole("menuitem", { name: "Seconds" })).toBeDisabled();
     await page.keyboard.press("Escape");
     await expect(page.locator(".rmenu")).toHaveCount(0);
-    expect(await optimizing()).toBe(true); // both menus peeled without touching the mode
+    expect(await pinning()).toBe(true); // both menus peeled without touching the mode
 
     // ── 2. An in-mode edit lands in the SANDBOX (outer untouched), downstream FREEZES at its
     // mode-entry placement, in-mode undo/redo walk the sandbox, undo at its start EXITS, and
@@ -918,7 +914,7 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
     expect(await undoDepth()).toBe(base); // the OUTER stack stood still
     expect(await sandboxDepth()).toBe(1); // the sandbox took the edit
-    // the downstream freeze: the edit moved the optimizing exit, but the next section's baked
+    // the downstream freeze: the edit moved the pinning exit, but the next section's baked
     // entry is BYTE-STABLE at its mode-entry value (no live repropagation — the gap is the
     // residual made visible).
     const entryB1 = (await entries())[1];
@@ -929,20 +925,20 @@ test("optimize mode flow", async ({ page, boot }) => {
 
     await page.keyboard.press("Control+z"); // in-mode undo: the sandbox, not the outer stack
     await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
-    expect(await optimizing()).toBe(true); // still in the mode
+    expect(await pinning()).toBe(true); // still in the mode
     expect(await undoDepth()).toBe(base);
     await page.keyboard.press("Control+Shift+z"); // in-mode redo replays it
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
-    expect(await optimizing()).toBe(true);
+    expect(await pinning()).toBe(true);
     await page.keyboard.press("Control+z"); // back off again
     await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
     await page.keyboard.press("Control+z"); // at the sandbox's start → acts as EXIT
-    await expect.poll(optimizing).toBe(false);
+    await expect.poll(pinning).toBe(false);
     await expect(panel).toHaveCount(0);
     expect(sorted(await forces())).toEqual(preMode);
     expect(await undoDepth()).toBe(base);
     await page.keyboard.press("Control+Shift+z"); // no trace: nothing to redo
-    await expect.poll(optimizing).toBe(false);
+    await expect.poll(pinning).toBe(false);
     expect(sorted(await forces())).toEqual(preMode);
     // unfrozen on close: downstream repropagates — the draft was restored, so it lands where
     // it started.
@@ -952,7 +948,7 @@ test("optimize mode flow", async ({ page, boot }) => {
 
     // the Esc path is the same discard: re-enter, edit, Esc peels selection, Esc discards.
     await page.locator(".clip").first().click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Optimize");
+    await clickMenuItem(page, ".ctxmenu", "Pin");
     await expect(panel).toBeVisible();
     // a DIFFERENT diamond than leg 2's crest: a second left press on the same diamond within
     // FDBL_MS is the double-press handle-edit summon BY DESIGN, and the flow's own pace can
@@ -966,16 +962,16 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect.poll(async () => sorted(await forces())[1].g).not.toBe(preMode[1].g);
     await page.keyboard.press("Escape"); // peels the selection first
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
-    expect(await optimizing()).toBe(true);
+    expect(await pinning()).toBe(true);
     await page.keyboard.press("Escape"); // the outermost rung: Exit = discard
-    await expect.poll(optimizing).toBe(false);
+    await expect.poll(pinning).toBe(false);
     expect(sorted(await forces())).toEqual(preMode);
     expect(await undoDepth()).toBe(base);
 
     // ── 3. Lock gating (pure counting): lock 3 of 5 → 2 free, Solve starves and the reason
     // shows; an in-mode-added key defaults FREE and re-arms it; delete + unlock restore. ──
     await page.locator(".clip").first().click({ button: "right" });
-    await clickMenuItem(page, ".ctxmenu", "Optimize");
+    await clickMenuItem(page, ".ctxmenu", "Pin");
     await expect(panel).toBeVisible();
     const hit = async (i: number) => {
         const b = await page.locator(".fhit").nth(i).boundingBox();
@@ -996,7 +992,7 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect(solveBtn).toBeDisabled(); // starved below MIN_FREE — pure counting
     await expect(reason).toHaveText("Needs 3 free keys");
     await page.waitForTimeout(SHOT_MS);
-    if (strip) await page.screenshot({ path: join(OUT, "optimize-2-locked.png"), clip: strip });
+    if (strip) await page.screenshot({ path: join(OUT, "pin-2-locked.png"), clip: strip });
 
     // an in-mode-added key is free by construction: Solve re-arms and the reason clears —
     // and the create lands in the SANDBOX.
@@ -1051,7 +1047,7 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.mouse.click(crest2.x, crest2.y);
     await expect(page.locator(".ptip")).toBeVisible();
     const gField = page.locator('.ptip input[aria-label="Point force (g)"]');
-    await expect(gField).toBeEnabled(); // the optimizing section's own fields stay live in-mode
+    await expect(gField).toBeEnabled(); // the pinning section's own fields stay live in-mode
     await gField.fill("1");
     await gField.press("Enter");
     await expect.poll(async () => sorted(await forces())[2].g).toBe(1);
@@ -1063,11 +1059,11 @@ test("optimize mode flow", async ({ page, boot }) => {
     await expect(page.locator(".notice.bad")).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(".notice.bad")).toContainText("can't steer the exit.");
     await expect(reason).toHaveCount(0); // the panel line is the starved reason only, and Solve is armed
-    expect(await optimizing()).toBe(true); // a refusal is not an exit
+    expect(await pinning()).toBe(true); // a refusal is not an exit
     expect(sorted(await forces())).toEqual(flattened); // …and writes nothing
     expect(await undoDepth()).toBe(base); // …anywhere
     await page.waitForTimeout(SHOT_MS);
-    await page.screenshot({ path: join(OUT, "optimize-3-refusal.png") });
+    await page.screenshot({ path: join(OUT, "pin-3-refusal.png") });
 
     // ── 5. A landed solve: undo the flatten (in-mode), make a real edit, Solve → ONE outer
     // entry, the mode closes, the PACED LANDING is the feedback (no stats toast). ──
@@ -1082,7 +1078,7 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.keyboard.press("ArrowUp");
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
     await solveBtn.click();
-    await expect.poll(optimizing, { timeout: 30_000 }).toBe(false); // Solve confirms AND closes
+    await expect.poll(pinning, { timeout: 30_000 }).toBe(false); // Solve confirms AND closes
     await expect.poll(landing).toBe(true); // the paced landing raised — the feedback
     // ── 5a. The landing HOLDS the modal chrome (kex2d-idioms stage 8): mid-window the panel
     // stays mounted with both actions disabled (the settling state), the subject clip keeps
@@ -1114,7 +1110,7 @@ test("optimize mode flow", async ({ page, boot }) => {
     // the sandbox out exits at its start with the pre-mode draft; redo then RE-LANDS. ──
     await page.keyboard.press("Control+z");
     await expect.poll(landing).toBe(false); // invalidated by the undo route, not left to expire
-    await expect.poll(optimizing).toBe(true); // the experiment resumed
+    await expect.poll(pinning).toBe(true); // the experiment resumed
     expect(await sandboxDepth()).toBe(4); // create, delete, nudge 1, nudge 2 — all undoable again
     expect(await undoDepth()).toBe(base); // the landing sits on the outer REDO
     await page.keyboard.press("Control+z"); // nudge 2
@@ -1122,15 +1118,15 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.keyboard.press("Control+z"); // the deleted key returns
     await page.keyboard.press("Control+z"); // the created key leaves
     await expect.poll(sandboxDepth).toBe(0);
-    expect(await optimizing()).toBe(true); // still inside the mode
+    expect(await pinning()).toBe(true); // still inside the mode
     await page.keyboard.press("Control+z"); // at the sandbox's start → exits
-    await expect.poll(optimizing).toBe(false);
+    await expect.poll(pinning).toBe(false);
     await expect
         .poll(async () => JSON.stringify(sorted(await forces())))
         .toBe(JSON.stringify(preMode));
     expect(await undoDepth()).toBe(base);
     await page.keyboard.press("Control+Shift+z"); // the outer redo holds the landing → RE-LANDS
-    await expect.poll(optimizing).toBe(false);
+    await expect.poll(pinning).toBe(false);
     await expect.poll(undoDepth).toBe(base + 1);
     // the display-wide landing's other half (5b): the settled final marker differs from the
     // mid-window read — the viewport geometry really was mid-flight during the window (under a
@@ -1142,7 +1138,7 @@ test("optimize mode flow", async ({ page, boot }) => {
         })
         .toBe(true);
     await page.waitForTimeout(SHOT_MS);
-    await page.screenshot({ path: join(OUT, "optimize-4-landed.png") });
+    await page.screenshot({ path: join(OUT, "pin-4-landed.png") });
 
     // ── 7. A skip releases the WHOLE chrome in one moment (kex2d-idioms stage 8): re-enter,
     // nudge the crest, Solve → the settling chrome holds mid-window (the same composite);
@@ -1150,7 +1146,7 @@ test("optimize mode flow", async ({ page, boot }) => {
     // dim all drop together with the display snapped to the document's own values. ──
     await page.locator(".clip").first().click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    await clickMenuItem(page, ".ctxmenu", "Optimize");
+    await clickMenuItem(page, ".ctxmenu", "Pin");
     await expect(panel).toBeVisible();
     const g7 = sorted(await forces())[2].g;
     const c7 = await hit(2);
@@ -1159,7 +1155,7 @@ test("optimize mode flow", async ({ page, boot }) => {
     await page.keyboard.press("ArrowUp");
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(g7);
     await solveBtn.click();
-    await expect.poll(optimizing, { timeout: 30_000 }).toBe(false);
+    await expect.poll(pinning, { timeout: 30_000 }).toBe(false);
     await expect.poll(chromeHeld).toEqual([]); // held mid-window (positive control for the skip)
     await page.mouse.click(vp.x + vp.width * 0.06, vp.y + vp.height * 0.06); // pointerdown = skip
     await expect.poll(landing).toBe(false);

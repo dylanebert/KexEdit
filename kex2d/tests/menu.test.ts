@@ -158,13 +158,13 @@ describe("sectionMenu — the section context menu's rows", () => {
     const base: SectionMenuState = {
         inMode: false,
         solving: false,
-        optSolvable: false,
+        pinSolvable: false,
         kind: SectionKind.Geo,
         multi: false,
         modeOpen: false,
         canSolve: true,
         canSolveShape: false,
-        canOptimize: false,
+        canPin: false,
         canReset: true,
         canDelete: true,
     };
@@ -172,9 +172,9 @@ describe("sectionMenu — the section context menu's rows", () => {
         recorder(
             "solve",
             "solveShape",
-            "optimizeSolve",
-            "optimizeExit",
-            "optimizeEnter",
+            "pinSolve",
+            "pinExit",
+            "pinEnter",
             "reset",
             "remove",
             "removeSet",
@@ -187,29 +187,29 @@ describe("sectionMenu — the section context menu's rows", () => {
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
-    test("a single FORCE section adds Optimize between Convert and Reset", () => {
+    test("a single FORCE section adds Pin between Convert and Reset", () => {
         const s = {
             ...base,
             kind: SectionKind.Force,
             canSolve: false,
             canSolveShape: true,
-            canOptimize: true,
+            canPin: true,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
             { label: "Convert", group: "modify", enabled: true },
-            { label: "Optimize", group: "modify", enabled: true },
+            { label: "Pin", group: "modify", enabled: true },
             { label: "Reset", group: "lifecycle", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
-    test("a multi-set grays the single-subject rows and drops Optimize (force set included)", () => {
+    test("a multi-set grays the single-subject rows and drops Pin (force set included)", () => {
         const s = {
             ...base,
             kind: SectionKind.Force,
             multi: true,
             canSolve: false,
             canSolveShape: false,
-            canOptimize: false,
+            canPin: false,
             canReset: false,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
@@ -218,10 +218,10 @@ describe("sectionMenu — the section context menu's rows", () => {
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
-    test("an open session on ANOTHER section still grays Optimize on this one", () => {
-        const s = { ...base, kind: SectionKind.Force, canOptimize: true, modeOpen: true };
+    test("an open session on ANOTHER section still grays Pin on this one", () => {
+        const s = { ...base, kind: SectionKind.Force, canPin: true, modeOpen: true };
         expect(shape(sectionMenu(s, acts()))[1]).toEqual({
-            label: "Optimize",
+            label: "Pin",
             group: "modify",
             enabled: false,
         });
@@ -232,14 +232,14 @@ describe("sectionMenu — the section context menu's rows", () => {
             kind: SectionKind.Force,
             inMode: true,
             modeOpen: true,
-            optSolvable: true,
+            pinSolvable: true,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
             { label: "Solve", group: "modify", enabled: true },
             { label: "Exit", group: "modify", shortcut: "Esc" },
         ]);
         expect(shape(sectionMenu({ ...s, solving: true }, acts()))[0].enabled).toBe(false);
-        expect(shape(sectionMenu({ ...s, optSolvable: false }, acts()))[0].enabled).toBe(false);
+        expect(shape(sectionMenu({ ...s, pinSolvable: false }, acts()))[0].enabled).toBe(false);
     });
     test("Convert's action follows the kind; Delete's follows the set", () => {
         const geo = acts();
@@ -631,13 +631,13 @@ describe("the menu grammar — every builder, every state", () => {
     const sectionStates = states<SectionMenuState>({
         inMode: bool,
         solving: bool,
-        optSolvable: bool,
+        pinSolvable: bool,
         kind: [SectionKind.Geo, SectionKind.Force, null],
         multi: bool,
         modeOpen: bool,
         canSolve: bool,
         canSolveShape: bool,
-        canOptimize: bool,
+        canPin: bool,
         canReset: bool,
         canDelete: bool,
     });
@@ -682,9 +682,9 @@ describe("the menu grammar — every builder, every state", () => {
             recorder(
                 "solve",
                 "solveShape",
-                "optimizeSolve",
-                "optimizeExit",
-                "optimizeEnter",
+                "pinSolve",
+                "pinExit",
+                "pinEnter",
                 "reset",
                 "remove",
                 "removeSet",

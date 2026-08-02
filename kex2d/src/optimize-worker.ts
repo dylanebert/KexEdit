@@ -1,4 +1,4 @@
-/** Optimize mode's dedicated worker: one `solveOptimize` call per message, mirroring
+/** Pin mode's dedicated worker: one `solveOptimize` call per message, mirroring
  *  `geofit-worker.ts` — a single closed-form-shaped call (no probe search, no pool), so this
  *  worker takes exactly one message and replies exactly once. */
 

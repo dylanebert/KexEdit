@@ -144,7 +144,7 @@ export interface Kex {
     nodeAt(order: number): { x: number; y: number } | null;
     nodeCount(): number;
     nodeSelOrders(): number[];
-    optimizing(): boolean;
+    pinning(): boolean;
     parked(): boolean;
     placeForce(s: number, g: number): number;
     poses(): number[][];

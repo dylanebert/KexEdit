@@ -14,21 +14,21 @@ import {
     beginConvert,
     beginDrag,
     beginLanding,
-    beginOptimizeSolve,
+    beginPinSolve,
     closeContext,
     closeNodeMenu,
     convertProgress,
     dismissNotice,
     editor,
     endConvert,
-    endOptimizeSolve,
+    endPinSolve,
     enterTangentEdit,
     exitTangentEdit,
     fitDone,
     LANDING_MS,
     modeChromeSection,
     notify,
-    optimizeRefused,
+    pinRefused,
     select,
     selectSection,
     selectStart,
@@ -39,7 +39,7 @@ import {
 import { convertForce } from "./forcegeo";
 import { convertGeo } from "./geoforce";
 import { MIN_FREE } from "./optimize";
-import { enterOptimizeMode, exitOptimizeMode, runOptimizeSection } from "./optimizeMode";
+import { enterPinMode, exitPinMode, runPinSection } from "./pin";
 import {
     beginMove,
     beginV0,
@@ -156,21 +156,21 @@ onMount(() => {
     return () => window.removeEventListener("keydown", onKey, { capture: true });
 });
 
-// the optimize solve's OWN blocking gate (`editor.optimizeSolving`) — same shape as the
+// the pin solve's OWN blocking gate (`editor.pinSolving`) — same shape as the
 // conversion gate above, kept separate: the two invoked tools never overlap in scope, so one
 // shared boolean would only couple two independent modal surfaces for no reason.
 onMount(() => {
     const onKey = (e: KeyboardEvent): void => {
-        if (!editor.optimizeSolving) return;
+        if (!editor.pinSolving) return;
         e.stopImmediatePropagation();
-        if (e.key === "Escape") cancelOptimizeSolve();
+        if (e.key === "Escape") cancelPinSolve();
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
 });
 
-// optimize mode's OWN permanent listener — the `editor.converting` key-swallow precedent
-// extended to "mode open" (`editor.optimizing !== null`), not just mid-solve: Escape is the
+// pin mode's OWN permanent listener — the `editor.converting` key-swallow precedent
+// extended to "mode open" (`editor.pinning !== null`), not just mid-solve: Escape is the
 // mode's dismissal rung, and Delete/Backspace on a section selection is swallowed here too —
 // defense in depth alongside `controls.ts`'s own guard, since convert/delete/join aren't
 // available inside the mode (the locked decision's consent-boundary law). Gated on the live
@@ -182,7 +182,7 @@ onMount(() => {
 // edit sub-mode, or any live selection all pass the key through to its own layer's handler.
 onMount(() => {
     const onKey = (e: KeyboardEvent): void => {
-        if (editor.optimizing === null) return;
+        if (editor.pinning === null) return;
         if (bound(BINDINGS.exitMode, e.key)) {
             const t = e.target as HTMLElement | null;
             if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
@@ -203,7 +203,7 @@ onMount(() => {
             )
                 return; // a selection clears first (controls.ts / Timeline)
             e.stopImmediatePropagation();
-            optimizeExit();
+            pinExit();
             return;
         }
         if (bound(BINDINGS.remove, e.key) && editor.section !== null) {
@@ -242,7 +242,7 @@ let solveKind = $state<"force" | "shape" | null>(null);
 // answer that expired) leaves the track exactly as it was and only the readout differs.
 async function solve(section: number): Promise<void> {
     if (editor.converting !== null) return; // one at a time (the gate's own reentrancy guard)
-    if (!sectionOpsAllowed(editor.optimizing)) return; // consent boundary — the row grays too
+    if (!sectionOpsAllowed(editor.pinning)) return; // consent boundary — the row grays too
     const controller = new AbortController();
     solveAbort = controller;
     solveKind = "force";
@@ -271,7 +271,7 @@ async function solve(section: number): Promise<void> {
 // `editor.converting` gate as state, it just isn't prose on the modal).
 async function solveShape(section: number): Promise<void> {
     if (editor.converting !== null) return;
-    if (!sectionOpsAllowed(editor.optimizing)) return; // consent boundary — the row grays too
+    if (!sectionOpsAllowed(editor.pinning)) return; // consent boundary — the row grays too
     const controller = new AbortController();
     solveAbort = controller;
     solveKind = "shape";
@@ -301,51 +301,51 @@ async function solveShape(section: number): Promise<void> {
     }
 }
 
-// ── optimize mode (kex2d-optimize-mode stage 7: the sandbox) ──────────────────────
-// the optimize state is temporary: entering opens a sandbox history (nothing applies to the
+// ── pin mode (kex2d-optimize-mode stage 7: the sandbox) ──────────────────────
+// the pin state is temporary: entering opens a sandbox history (nothing applies to the
 // outer stacks), Exit/Esc discards it without trace, and a landed Solve is ONE outer entry
 // carrying the experiment (undoing it reopens the mode with the sandbox restored). In-mode
 // undo/redo route to the sandbox (`undoRouted`/`redoRouted`, wired in Timeline). A refusal is
 // neither: it stays in the mode, draft untouched, its readout on the shared notice. The solve
-// keeps its OWN blocking gate (`editor.optimizeSolving`), separate from the kind-conversion
+// keeps its OWN blocking gate (`editor.pinSolving`), separate from the kind-conversion
 // `editor.converting`: the two invoked tools never overlap in scope, but sharing one boolean
 // would couple two independent modal surfaces.
-let optimizeAbort: AbortController | null = null;
+let pinAbort: AbortController | null = null;
 
-function ctxOptimizeEnter(): void {
+function ctxPinEnter(): void {
     if (ctx === null) return;
     const section = ctx.section;
     closeContext();
-    enterOptimizeMode(ecs, section);
+    enterPinMode(ecs, section);
 }
 
 // Exit/Esc: discard the sandbox — every in-mode edit reverts, the outer history is untouched
 // (no trace, redo branch included). dismissal is safe by default; the one committing gesture is
 // the Solve that restores the stamped exit.
-function optimizeExit(): void {
-    exitOptimizeMode(ecs);
+function pinExit(): void {
+    exitPinMode(ecs);
 }
 
-function ctxOptimizeExit(): void {
+function ctxPinExit(): void {
     closeContext();
-    optimizeExit();
+    pinExit();
 }
 
-async function optimizeSolve(): Promise<void> {
-    const session = editor.optimizing;
-    if (session === null || editor.optimizeSolving) return;
+async function pinSolve(): Promise<void> {
+    const session = editor.pinning;
+    if (session === null || editor.pinSolving) return;
     // the pre-solve draft, id-aligned with the answer (`sectionForces` order — the same read
-    // `runOptimizeSection` scatters back onto): the paced landing animates from these values.
+    // `runPinSection` scatters back onto): the paced landing animates from these values.
     const preRows = sectionForces(ecs, session.section);
     const controller = new AbortController();
-    optimizeAbort = controller;
-    beginOptimizeSolve();
+    pinAbort = controller;
+    beginPinSolve();
     try {
-        const result = await runOptimizeSection(history, ecs, session, editor.locked, {
+        const result = await runPinSection(history, ecs, session, editor.locked, {
             signal: controller.signal,
         });
         if (result.outcome === "solved") {
-            // the landing already closed the mode as one undo entry (`runOptimizeSection`).
+            // the landing already closed the mode as one undo entry (`runPinSection`).
             // the feedback is the PACED LANDING (stage-5 feel verdict — no stats toast): the
             // whole display animates from the draft to the solved g over LANDING_MS — the
             // moved diamonds via the chart's own override, everything else via the bake seam,
@@ -363,7 +363,7 @@ async function optimizeSolve(): Promise<void> {
             // a refusal stays in the mode with the draft untouched — refusal is not an exit.
             // its readout rides the app's ONE status surface, the transient notice (stage-7
             // fourth check-in: the panel keeps only the actions).
-            raise({ kind: "error", text: optimizeRefused(result.outcome, result.reason) });
+            raise({ kind: "error", text: pinRefused(result.outcome, result.reason) });
         }
     } catch (e) {
         if (!controller.signal.aborted) {
@@ -372,8 +372,8 @@ async function optimizeSolve(): Promise<void> {
             raise({ kind: "error", text: "The solve could not finish." });
         }
     } finally {
-        optimizeAbort = null;
-        endOptimizeSolve();
+        pinAbort = null;
+        endPinSolve();
     }
 }
 
@@ -408,13 +408,13 @@ onMount(() => {
     };
 });
 
-function ctxOptimizeSolve(): void {
+function ctxPinSolve(): void {
     closeContext();
-    void optimizeSolve();
+    void pinSolve();
 }
 
-function cancelOptimizeSolve(): void {
-    optimizeAbort?.abort(new Error("cancelled"));
+function cancelPinSolve(): void {
+    pinAbort?.abort(new Error("cancelled"));
 }
 
 // the live headroom read (pure counting, the tick-derived projection): whether the session
@@ -423,25 +423,25 @@ function cancelOptimizeSolve(): void {
 // have produced; the count itself is NOT displayed (the free–locked badge measured as noise in
 // the stage-5 feel pass — the reason shows subtly only while Solve is disabled). an
 // in-mode-added key is free by construction (locking is opt-in membership in `editor.locked`).
-const optOpen = $derived.by((): boolean => {
+const pinOpen = $derived.by((): boolean => {
     void tick;
-    return editor.optimizing !== null;
+    return editor.pinning !== null;
 });
 // the modal-chrome predicate (kex2d-idioms stage 8): the panel mounts on `modeChromeSection`
-// (optimizing ∥ landing), so the landed Solve's paced landing keeps the modal presentation up
+// (pinning ∥ landing), so the landed Solve's paced landing keeps the modal presentation up
 // and everything releases in ONE moment at window end or skip. `settling` is its disabled
 // tail (mode closed, landing live): both actions inert — a second Solve or an Exit on the
 // already-closed mode is unreachable from the panel — and the panel pointer-inert, so a press
 // on it skips the landing like any other pointerdown. Enablement stays on the MODE
-// (`optOpen`, `sectionOpsAllowed`, the lockdowns): chrome holds, document truth doesn't.
+// (`pinOpen`, `sectionOpsAllowed`, the lockdowns): chrome holds, document truth doesn't.
 const modeChrome = $derived.by((): boolean => {
     void tick;
     return modeChromeSection() !== null;
 });
-const settling = $derived(modeChrome && !optOpen);
-const optSolvable = $derived.by((): boolean => {
+const settling = $derived(modeChrome && !pinOpen);
+const pinSolvable = $derived.by((): boolean => {
     void tick;
-    const s = editor.optimizing;
+    const s = editor.pinning;
     if (s === null) return false;
     const rows = sectionForces(ecs, s.section);
     let locked = 0;
@@ -450,10 +450,10 @@ const optSolvable = $derived.by((): boolean => {
 });
 // the docked panel's one conditional line (tick-derived primitive): the starved reason, shown
 // subtly only while Solve is disabled — refusals ride the shared transient notice instead.
-const optReason = $derived.by((): string | null => {
+const pinReason = $derived.by((): string | null => {
     void tick;
-    if (!optOpen) return null;
-    if (!optSolvable) return `Needs ${MIN_FREE} free keys`;
+    if (!pinOpen) return null;
+    if (!pinSolvable) return `Needs ${MIN_FREE} free keys`;
     return null;
 });
 
@@ -556,7 +556,7 @@ const manip = $derived.by(
         const eid = editor.selection;
         if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
         if (nodeMulti()) return null;
-        if (editor.optimizing !== null) return null; // the lockdown: no geo chrome in-mode
+        if (editor.pinning !== null) return null; // the lockdown: no geo chrome in-mode
         const s = samples.get(trackEid);
         if (!s) return null;
         const knobs = manipKnobs(ecs, s, viewTransform(canvas), eid);
@@ -587,7 +587,7 @@ const extendBtn = $derived.by((): { x: number; y: number } | null => {
     const eid = editor.selection;
     if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
     if (nodeMulti()) return null; // the whole ring goes on a multi-set (Add stays, grayed, in the menu)
-    if (editor.optimizing !== null) return null; // the lockdown: no geo chrome in-mode
+    if (editor.pinning !== null) return null; // the lockdown: no geo chrome in-mode
     if (Handle.order.get(eid) === 0) return null; // the entry anchor never extends
     const section = Handle.section.get(eid);
     if (eid !== lastHandle(ecs, section)) return null; // the chain end alone extends
@@ -699,7 +699,7 @@ const nodeSuffixOk = $derived.by((): boolean => {
 });
 // the node menu's rows are built by the pure `menus.nodeMenu` (the row law lives with it); this
 // assembles its state descriptor from the deriveds above and binds the actions to the target eid.
-// the lockdown (kex2d-optimize-mode stage 5): in-mode, only the optimizing (force) section
+// the lockdown (kex2d-optimize-mode stage 5): in-mode, only the pinning (force) section
 // is editable, so every geo-node edit row grays — visible, never hidden (the enablement law).
 const nodeItems = $derived.by((): MenuItem[] => {
     const m = editor.nodeMenu;
@@ -709,7 +709,7 @@ const nodeItems = $derived.by((): MenuItem[] => {
         {
             multi: nodeMulti(),
             isEntry: Handle.order.get(eid) === 0,
-            ok: editor.optimizing === null,
+            ok: editor.pinning === null,
             mode: nodeMode,
             editing: nodeEditing,
             isEnd: nodeIsEnd,
@@ -814,7 +814,7 @@ onMount(() => {
     };
 });
 
-// the section context menu (the conversion row + Optimize + Reset + Delete), summoned by right-click on a clip or a
+// the section context menu (the conversion row + Pin + Reset + Delete), summoned by right-click on a clip or a
 // viewport span (both call editor.openContext). rendered once here at the app root so it
 // can float over both the viewport and the dock; positioned at the cursor (screen px).
 // a summoned surface lives only as long as its subject (root ui.md): the menu's visibility
@@ -853,20 +853,20 @@ const canDelete = $derived.by((): boolean => {
     void tick;
     return (
         sectionsDeletable(editor.sections.ids.size, sections(ecs).length) &&
-        sectionOpsAllowed(editor.optimizing)
+        sectionOpsAllowed(editor.pinning)
     );
 });
 // whether the invoked geo→force solve is available on this selection (`sectionSolvable`,
 // controls.ts, target `Geo`): one geo section with a live bake. `convertGeo` THROWS on each of
 // those, so this enablement is the gate, not a hint — and it grays rather than hides (the
 // bulk-row law), so the row is discoverable on a force section and on a multi-set alike.
-// `sectionOpsAllowed` is the consent boundary: NO section converts while an optimize session is
+// `sectionOpsAllowed` is the consent boundary: NO section converts while an pin session is
 // open (a convert would land a track rewrite inside the open session).
 const canSolve = $derived.by((): boolean => {
     void tick;
     return (
         sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Geo) &&
-        sectionOpsAllowed(editor.optimizing)
+        sectionOpsAllowed(editor.pinning)
     );
 });
 // the force→geo twin (target `Force`): one force section with a live bake, dense enough for the
@@ -887,35 +887,35 @@ const canSolveShape = $derived.by((): boolean => {
             bakeLive(ecs),
             SectionKind.Force,
             ctxEdges,
-        ) && sectionOpsAllowed(editor.optimizing)
+        ) && sectionOpsAllowed(editor.pinning)
     );
 });
-// optimize-mode entry: one force section with a live bake. deliberately NOT `canSolveShape` —
-// the `MAX_FIT_EDGES` density cap is the force→geo fit's own runaway guard; the optimize stamp
+// pin-mode entry: one force section with a live bake. deliberately NOT `canSolveShape` —
+// the `MAX_FIT_EDGES` density cap is the force→geo fit's own runaway guard; the pin stamp
 // is one `evalForce` read, dense sections included.
-const canOptimize = $derived.by((): boolean => {
+const canPin = $derived.by((): boolean => {
     void tick;
     return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Force);
 });
 // the Reset row (the Reset idiom law, editor-ui.md Menus): return the section to the state a
 // fresh author would get, kind held — no confirm, byte-identical undo is the safety. gated
 // like its neighbors: one subject (`sectionResettable`), a live bake on a force section only
-// (the seed's entry force is recovered from it; a geo reset reads no bake), and the optimize
-// consent boundary — it grays in optimize mode, never hides.
+// (the seed's entry force is recovered from it; a geo reset reads no bake), and the pin
+// consent boundary — it grays in pin mode, never hides.
 const canReset = $derived.by((): boolean => {
     void tick;
     return (
         sectionResettable(editor.sections.ids.size, ctxKind, bakeLive(ecs)) &&
-        sectionOpsAllowed(editor.optimizing)
+        sectionOpsAllowed(editor.pinning)
     );
 });
 // the section menu's rows are built by the pure `menus.sectionMenu` (the row law lives with it);
 // this assembles its state descriptor from the deriveds above and hands over the actions.
-// every branch-guarded predicate is a GETTER, not a value. `canSolve`/`canSolveShape`/`canOptimize`/
+// every branch-guarded predicate is a GETTER, not a value. `canSolve`/`canSolveShape`/`canPin`/
 // `canReset` each run `bakeLive` → a full-track `authoredHash` walk, and the in-mode fork returns
 // its two rows without reading any of them — an eagerly-assembled descriptor would pay four
 // full-track walks every RAF the menu is open inside the mode, where the old in-place fork paid
-// none. `optSolvable` (in-mode only) and `canDelete` are the cheap mirror of the same guard. a
+// none. `pinSolvable` (in-mode only) and `canDelete` are the cheap mirror of the same guard. a
 // getter runs synchronously inside this `$derived.by` when the builder reads it, so the reactive
 // dependency still registers.
 const ctxItems = $derived.by((): MenuItem[] => {
@@ -923,22 +923,22 @@ const ctxItems = $derived.by((): MenuItem[] => {
     if (ctx === null) return [];
     return sectionMenu(
         {
-            inMode: editor.optimizing !== null && editor.optimizing.section === ctx.section,
-            solving: editor.optimizeSolving,
-            get optSolvable() {
-                return optSolvable;
+            inMode: editor.pinning !== null && editor.pinning.section === ctx.section,
+            solving: editor.pinSolving,
+            get pinSolvable() {
+                return pinSolvable;
             },
             kind: ctxKind,
             multi: sectionMulti,
-            modeOpen: editor.optimizing !== null,
+            modeOpen: editor.pinning !== null,
             get canSolve() {
                 return canSolve;
             },
             get canSolveShape() {
                 return canSolveShape;
             },
-            get canOptimize() {
-                return canOptimize;
+            get canPin() {
+                return canPin;
             },
             get canReset() {
                 return canReset;
@@ -950,9 +950,9 @@ const ctxItems = $derived.by((): MenuItem[] => {
         {
             solve: ctxSolve,
             solveShape: ctxSolveShape,
-            optimizeSolve: ctxOptimizeSolve,
-            optimizeExit: ctxOptimizeExit,
-            optimizeEnter: ctxOptimizeEnter,
+            pinSolve: ctxPinSolve,
+            pinExit: ctxPinExit,
+            pinEnter: ctxPinEnter,
             reset: ctxReset,
             remove: ctxDelete,
             removeSet: ctxDeleteSet,
@@ -962,7 +962,7 @@ const ctxItems = $derived.by((): MenuItem[] => {
 // reset the section to its kind's fresh default — one undoable entry (`history.resetSection`).
 // the subject survives, so the menu closes explicitly (Delete's death-derivation can't fire).
 function ctxReset(): void {
-    if (ctx === null || !sectionOpsAllowed(editor.optimizing)) return;
+    if (ctx === null || !sectionOpsAllowed(editor.pinning)) return;
     const section = ctx.section;
     closeContext();
     resetSection(history, ecs, section);
@@ -984,13 +984,13 @@ function ctxSolveShape(): void {
     void solveShape(section);
 }
 function ctxDelete(): void {
-    if (ctx === null || !sectionOpsAllowed(editor.optimizing)) return;
+    if (ctx === null || !sectionOpsAllowed(editor.pinning)) return;
     // no explicit close: removing the section makes `ctx` derive null, so the menu dismisses
     // by subject existence (one mechanism) and the $effect clears the stale target id.
     if (removeSection(history, ecs, ctx.section)) selectSection(null);
 }
 function ctxDeleteSet(): void {
-    if (!sectionOpsAllowed(editor.optimizing)) return;
+    if (!sectionOpsAllowed(editor.pinning)) return;
     if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
 }
 // dismiss the menu on any outside press or Escape (clicks on the menu itself pass through
@@ -1029,12 +1029,12 @@ const solving = $derived.by((): boolean => {
     void tick;
     return editor.converting !== null;
 });
-// the optimize solve's own blocking gate, read the same tick-derived way — kept as its own
+// the pin solve's own blocking gate, read the same tick-derived way — kept as its own
 // primitive so `.content`'s `inert` and the capture-phase key swallow above never fight over
 // which gate is live (the two invoked tools never overlap in scope).
-const optimizeBusy = $derived.by((): boolean => {
+const pinBusy = $derived.by((): boolean => {
     void tick;
-    return editor.optimizeSolving;
+    return editor.pinSolving;
 });
 // the transient readout, the same way: its text, and whether it's the failure register.
 const noticeText = $derived.by((): string => {
@@ -1079,7 +1079,7 @@ const V0_SCRUB = 0.1; // m/s per px — the START field's label-scrub rate
 // the number never shows jitter.
 function v0ScrubStart(e: PointerEvent): void {
     if (trackEid === null) return;
-    if (editor.optimizing !== null) return; // the lockdown: v0 re-times the whole track
+    if (editor.pinning !== null) return; // the lockdown: v0 re-times the whole track
     const te = trackEid;
     e.preventDefault();
     const label = e.currentTarget as HTMLElement;
@@ -1103,7 +1103,7 @@ function v0ScrubStart(e: PointerEvent): void {
 }
 function onV0Field(e: Event): void {
     if (trackEid === null) return;
-    if (editor.optimizing !== null) return; // the lockdown (the field is disabled too)
+    if (editor.pinning !== null) return; // the lockdown (the field is disabled too)
     const val = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
     if (!Number.isFinite(val)) return; // guard a cleared field
     beginV0(trackEid);
@@ -1138,7 +1138,7 @@ $effect(() => {
      layout is exactly as if the wrapper weren't there; `inert` while a solve runs takes pointer,
      focus, and activation from the whole subtree at once (the scrim below is its sibling, so it
      stays live). -->
-<div class="content" inert={solving || optimizeBusy}>
+<div class="content" inert={solving || pinBusy}>
     <!-- the shaping viewport. `.viewport` is its stable hook: the harness drives it by class, not
          by depth under `#app`, so wrapping it (the inert content) can't silently unhook it. -->
     <canvas class="viewport" bind:this={canvas}></canvas>
@@ -1302,7 +1302,7 @@ $effect(() => {
                     step="0.5"
                     min="0"
                     value={vText}
-                    disabled={optOpen}
+                    disabled={pinOpen}
                     onchange={onV0Field}
                     onfocus={(e) => e.currentTarget.select()}
                     onkeydown={(e) => v0Keydown(e, vText)}
@@ -1313,7 +1313,7 @@ $effect(() => {
         </div>
     {/if}
 
-    <!-- the optimize-mode panel: DOCKED, one small surface centered above the media player
+    <!-- the pin-mode panel: DOCKED, one small surface centered above the media player
          (the docked idiom — no view occlusion, no layout shift on enter/exit: it floats
          absolutely, moving nothing else). its standing presence IS the "you are in the mode"
          signal, and it dismisses only with the mode — Solve (the confirmation, which also
@@ -1327,18 +1327,18 @@ $effect(() => {
              the two actions), raised well clear of the player (PANEL_GAP). aria-label keeps the
              dialog named for assistive tech without visible chrome. -->
         <div
-            class="optpanel"
+            class="pinpanel"
             class:settling
             style="bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP + PLAYER_H + PANEL_GAP}px;"
             role="dialog"
-            aria-label="Optimize"
+            aria-label="Pin"
         >
             <button
                 type="button"
                 class="solve"
-                disabled={!optSolvable || optimizeBusy}
+                disabled={!pinSolvable || pinBusy}
                 title="Restore the stamped exit"
-                onclick={() => void optimizeSolve()}
+                onclick={() => void pinSolve()}
             >
                 Solve
             </button>
@@ -1347,12 +1347,12 @@ $effect(() => {
                 class="exit"
                 title="Exit (Esc)"
                 disabled={settling}
-                onclick={optimizeExit}
+                onclick={pinExit}
             >
                 Exit
             </button>
-            {#if optReason}
-                <span class="reason" role="status">{optReason}</span>
+            {#if pinReason}
+                <span class="reason" role="status">{pinReason}</span>
             {/if}
         </div>
     {/if}
@@ -1386,14 +1386,14 @@ $effect(() => {
     </div>
 {/if}
 
-<!-- the optimize solve's own minimal modal — the same title + spinner + Cancel, the mode's OWN
+<!-- the pin solve's own minimal modal — the same title + spinner + Cancel, the mode's OWN
      blocking gate (it flashes only when a solve outlives a frame; the kernel reports no phase). -->
-{#if optimizeBusy}
+{#if pinBusy}
     <div class="scrim" role="presentation" oncontextmenu={(e) => e.preventDefault()}>
         <div class="convert" role="dialog" aria-modal="true" aria-label="Solving" tabindex="-1">
             <div class="title">Solving</div>
             <div class="spin" aria-hidden="true"></div>
-            <button type="button" class="cancel" title="Cancel (Esc)" onclick={cancelOptimizeSolve}>
+            <button type="button" class="cancel" title="Cancel (Esc)" onclick={cancelPinSolve}>
                 Cancel
             </button>
         </div>
@@ -1447,7 +1447,7 @@ $effect(() => {
     :global([data-dragging]) .rbtn,
     :global([data-dragging]) .ctxmenu,
     :global([data-dragging]) .nodemenu,
-    :global([data-dragging]) .optpanel,
+    :global([data-dragging]) .pinpanel,
     :global([data-dragging]) .vtip {
         pointer-events: none;
         user-select: none;
@@ -1532,12 +1532,12 @@ $effect(() => {
         color: #f0bdb1;
     }
 
-    /* the optimize-mode panel: one small docked surface centered above the media player (the
+    /* the pin-mode panel: one small docked surface centered above the media player (the
        player's own chrome, one row). its persistent presence is the mode signal, so it earns
        no extra ornament; the reason line is quiet muted text, danger-tinted only for a real
        refusal. absolutely positioned (bottom inline from the shared dock/player constants), so
        mode enter/exit shifts no layout. */
-    .optpanel {
+    .pinpanel {
         position: absolute;
         left: 50%;
         transform: translateX(-50%);
@@ -1556,7 +1556,7 @@ $effect(() => {
         user-select: none;
         animation: vtip-in 120ms var(--ease-out);
     }
-    .optpanel button {
+    .pinpanel button {
         all: unset;
         box-sizing: border-box;
         padding: 4px 14px;
@@ -1568,26 +1568,26 @@ $effect(() => {
         cursor: pointer;
         transition: background 120ms var(--ease-out), color 120ms var(--ease-out), border-color 120ms var(--ease-out);
     }
-    .optpanel .solve {
+    .pinpanel .solve {
         color: var(--accent);
         border-color: var(--accent-soft);
     }
-    .optpanel button:not(:disabled):hover {
+    .pinpanel button:not(:disabled):hover {
         background: var(--accent-soft);
         border-color: var(--accent);
         color: var(--fg);
     }
-    .optpanel button:disabled {
+    .pinpanel button:disabled {
         opacity: 0.4;
         cursor: default;
     }
     /* the settling state (stage 8: landing live, mode closed): pointer-inert so a press on the
        panel skips the landing like any other pointerdown — the disabled buttons carry the dim
        cue (Mode vocabulary: no new channel). */
-    .optpanel.settling {
+    .pinpanel.settling {
         pointer-events: none;
     }
-    .optpanel .reason {
+    .pinpanel .reason {
         color: var(--muted);
     }
     /* the shared entrance for the surfaces that just appear (readout, scrim) — no travel, so it

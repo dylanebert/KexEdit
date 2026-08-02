@@ -24,21 +24,21 @@ import { TangentMode } from "./spline";
 
 /** the section context menu's state (`App.svelte`'s `ctx*` deriveds). */
 export type SectionMenuState = {
-    /** a live optimize session on THIS section — the mode's own rows replace the menu. */
+    /** a live pin session on THIS section — the mode's own rows replace the menu. */
     inMode: boolean;
-    /** the mode's own blocking gate (`editor.optimizeSolving`). */
+    /** the mode's own blocking gate (`editor.pinSolving`). */
     solving: boolean;
     /** enough free keys for the solve to have something to move. */
-    optSolvable: boolean;
+    pinSolvable: boolean;
     /** the target section's kind. */
     kind: SectionKind | null;
     /** a multi-set section selection. */
     multi: boolean;
-    /** any optimize session is open (`editor.optimizing !== null`). */
+    /** any pin session is open (`editor.pinning !== null`). */
     modeOpen: boolean;
     canSolve: boolean;
     canSolveShape: boolean;
-    canOptimize: boolean;
+    canPin: boolean;
     canReset: boolean;
     canDelete: boolean;
 };
@@ -46,9 +46,9 @@ export type SectionMenuState = {
 export type SectionMenuActions = {
     solve: () => void;
     solveShape: () => void;
-    optimizeSolve: () => void;
-    optimizeExit: () => void;
-    optimizeEnter: () => void;
+    pinSolve: () => void;
+    pinExit: () => void;
+    pinEnter: () => void;
     reset: () => void;
     remove: () => void;
     removeSet: () => void;
@@ -73,13 +73,13 @@ function convertRow(s: SectionMenuState, a: SectionMenuActions): MenuItem {
 }
 
 /** the context menu as data: one array of MenuItems, rendered by the shared menu language —
- *  the conversion row, Optimize (force only), Reset, then Delete. multi-select (Premiere
+ *  the conversion row, Pin (force only), Reset, then Delete. multi-select (Premiere
  *  multi-clip): the single-subject rows gray (a set has no single subject, `selected === 1`);
  *  Delete carries the set-lifted enablement. the destructive Convert row (both single and bulk)
  *  was removed (kex2d-geoforce-editor stage 5): redundant with delete + append; Reset is its
  *  kind-HELD successor (kex2d-idioms stage 2) — back to the kind's default, not a flip. */
 export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuItem[] {
-    // inside a live optimize session on THIS section: the mode's own rows replace the normal
+    // inside a live pin session on THIS section: the mode's own rows replace the normal
     // menu entirely — convert/delete/join aren't available inside the mode (the locked
     // decision's consent-boundary law). Solve gates on the same headroom read as the panel's
     // button (below MIN_FREE free keys there is nothing to solve — pure counting).
@@ -88,14 +88,14 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
             {
                 label: "Solve",
                 group: "modify",
-                action: a.optimizeSolve,
-                enabled: !s.solving && s.optSolvable,
+                action: a.pinSolve,
+                enabled: !s.solving && s.pinSolvable,
             },
             {
                 label: "Exit",
                 group: "modify",
                 shortcut: BINDINGS.exitMode.hint,
-                action: a.optimizeExit,
+                action: a.pinExit,
             },
         ];
     }
@@ -103,15 +103,15 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
     const items: MenuItem[] = [convertRow(s, a)];
     // the mode's entry row — a force section only (the terse verb alone: the menu is summoned
     // ON the section, so the noun restates the invoker — menus law), and only when no other
-    // optimize session is already open (one mode at a time, mirroring the conversion tier's
+    // pin session is already open (one mode at a time, mirroring the conversion tier's
     // per-section lock). Entry needs a live bake (the stamp is read off it), NOT headroom —
     // adding keys in-mode is the sanctioned way to create give.
     if (s.kind === SectionKind.Force && !s.multi) {
         items.push({
-            label: "Optimize",
+            label: "Pin",
             group: "modify",
-            enabled: s.canOptimize && !s.modeOpen,
-            action: a.optimizeEnter,
+            enabled: s.canPin && !s.modeOpen,
+            action: a.pinEnter,
         });
     }
     items.push({ label: "Reset", group: "lifecycle", enabled: s.canReset, action: a.reset });
@@ -132,7 +132,7 @@ export type NodeMenuState = {
     multi: boolean;
     /** the target is node 0 — its section's entry anchor. */
     isEntry: boolean;
-    /** the lockdown: no optimize session is open, so geo-node edit rows are live. */
+    /** the lockdown: no pin session is open, so geo-node edit rows are live. */
     ok: boolean;
     /** the target node's displayed tangent mode. */
     mode: TangentMode;
@@ -328,7 +328,7 @@ export type KeyframeMenuActions = {
  *  clears them back. a single terminal keyframe governs no segment, so it shows Delete alone. */
 export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): MenuItem[] {
     const items: MenuItem[] = [];
-    // the Lock/Unlock row (kex2d stage 6): SHOWN only in optimize mode on the optimizing
+    // the Lock/Unlock row (kex2d stage 6): SHOWN only in pin mode on the pinning
     // section's own keys, HIDDEN everywhere else (`lockLabel`'s omit-vs-gray law) — the mouse
     // path to the same set-toggle `Q` drives, over the same filtered member set.
     if (s.lock !== null)

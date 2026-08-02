@@ -136,12 +136,12 @@ const TrackDrawSystem: System = {
         if (!ctx) return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
 
-        // optimize mode's whole-shape ghost (kex2d-optimize-mode stage 1): the mode-entry
-        // geometry, frozen at `beginOptimize` and never re-derived — a faint dashed reference
+        // pin mode's whole-shape ghost (kex2d-optimize-mode stage 1): the mode-entry
+        // geometry, frozen at `beginPin` and never re-derived — a faint dashed reference
         // so the author sees how far the current draft has drifted from where the mode's stamp
         // was taken. Drawn first (underneath the live track); the ghost never picks or hovers.
-        if (editor.optimizing) {
-            const { x: gx, y: gy } = editor.optimizing.ghost;
+        if (editor.pinning) {
+            const { x: gx, y: gy } = editor.pinning.ghost;
             if (gx.length >= 2) {
                 ctx.save();
                 ctx.strokeStyle = "rgba(240, 236, 232, 0.25)";
@@ -246,8 +246,8 @@ const TrackDrawSystem: System = {
                 }
             }
 
-            // the optimize-mode out-of-scope dim (editor-ui.md Mode vocabulary): the timeline
-            // dims everything outside the optimized span (`.mode-dim`); the viewport dims the
+            // the pin-mode out-of-scope dim (editor-ui.md Mode vocabulary): the timeline
+            // dims everything outside the pinned span (`.mode-dim`); the viewport dims the
             // SAME spans — same meaning, same channel. the viewport's span is the curve, not a
             // rect, so the wash strokes over each non-subject section's own polyline, topmost
             // over every rung under it (kind, hover, selection, the dashed-red pass — the dim
@@ -272,16 +272,16 @@ const TrackDrawSystem: System = {
                 }
             }
 
-            // optimize mode's stamped exit — the constraint idiom (editor-ui.md), not a new
+            // pin mode's stamped exit — the constraint idiom (editor-ui.md), not a new
             // glyph language: a hollow ring at the stamp (the demand), and the residual made
             // visible as a dotted drop-line from the section's CURRENT baked exit (the
             // achieved) to it. the line is zero-length while the exit sits on the stamp, so
             // divergence needs no threshold — coincidence simply draws nothing visible.
-            if (editor.optimizing) {
-                const st = editor.optimizing.stamp;
+            if (editor.pinning) {
+                const st = editor.pinning.stamp;
                 const rx = ox + st.x * sx;
                 const ry = oy + st.y * sy;
-                const info = sectionInfo.get(editor.optimizing.section);
+                const info = sectionInfo.get(editor.pinning.section);
                 if (info) {
                     const i = Math.min(info.endSample, count - 1);
                     ctx.strokeStyle = COLOR_GUIDE_RAY;
@@ -361,7 +361,7 @@ const AnchorDrawSystem: System = {
                 ctx.closePath();
                 ctx.fill();
                 ctx.stroke();
-                // out-of-scope under optimize mode: wash the same shapes topmost (the dim
+                // out-of-scope under pin mode: wash the same shapes topmost (the dim
                 // channel — see TrackDrawSystem, incl. the stage-8 landing hold). the
                 // subject's own entry anchor stays bright, like the span boundary on the
                 // timeline.
@@ -391,7 +391,7 @@ const FORCE_R = 5; // the marker diamond's half-diagonal (px) — Timeline.svelt
  *  gold), same entity, same identity on both surfaces. distinguished from boundary anchors by
  *  color (they wear the neutral anchor gray) and from nodes by shape. the kind-color ladder:
  *  selection = the brightened kind color, hover one rung below (invisible on a selected
- *  member), the active member set apart by its stroke; a locked key in optimize mode wears the
+ *  member), the active member set apart by its stroke; a locked key in pin mode wears the
  *  CAD driven idiom (dashed + faded — the timeline's `.fpt.driven`). display + select only —
  *  s/g authoring stays on the chart, so nothing here drags. */
 const ForceDrawSystem: System = {
@@ -402,7 +402,7 @@ const ForceDrawSystem: System = {
         const { sx, sy, ox, oy } = viewTransform(canvas);
         const members = editor.forces.ids;
         const active = editor.force;
-        const opt = editor.optimizing;
+        const opt = editor.pinning;
         const chromeSubj = modeChromeSection();
 
         for (const m of forceMarkers(ecs)) {
@@ -453,7 +453,7 @@ const ForceDrawSystem: System = {
                 ctx.fill();
                 ctx.stroke();
             }
-            // out-of-scope under optimize mode: another section's keyframe washes topmost
+            // out-of-scope under pin mode: another section's keyframe washes topmost
             // (the dim channel — see TrackDrawSystem, incl. the stage-8 landing hold); the
             // subject's own keys stay bright. driven styling above keeps reading the MODE
             // (the lock ledger dies with the session).
@@ -553,7 +553,7 @@ const HandleDrawSystem: System = {
             ctx.fill();
             ctx.stroke();
 
-            // out-of-scope under optimize mode: wash node + rings topmost (the dim channel —
+            // out-of-scope under pin mode: wash node + rings topmost (the dim channel —
             // see TrackDrawSystem, incl. the stage-8 landing hold). the subject is always a
             // force section, so every geo node dims; the section guard keeps the rule honest
             // rather than assuming that.

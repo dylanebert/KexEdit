@@ -28,7 +28,7 @@ export const DOCK_INSET = 16;
 export const DOCK_RESERVE = DOCK_HEIGHT + DOCK_INSET;
 /** the media player's geometry above the dock — like `DOCK_HEIGHT`/`DOCK_INSET`, the single
  *  source `Timeline.svelte` styles the player from, shared so a surface docking ABOVE the
- *  player (the optimize-mode panel, App.svelte) derives its anchor instead of mirroring. */
+ *  player (the pin-mode panel, App.svelte) derives its anchor instead of mirroring. */
 export const PLAYER_GAP = 32;
 export const PLAYER_H = 36;
 /** zoom limits (px per world meter). the affine viewport is an infinite canvas — pan is

@@ -123,10 +123,10 @@ export function createHistory(): History {
 export const history = createHistory();
 
 // ── the sandbox redirect (kex2d-optimize-mode stage 7) ────────────────────────────
-// while an optimize mode is open, EVERY recording lands in the mode's sandbox history instead of
+// while an pin mode is open, EVERY recording lands in the mode's sandbox history instead of
 // the outer stack — structural containment (belt-and-suspenders with the editing lockdown: an
 // edit that slipped a guard still can't touch outer history). the editor sets it on mode open
-// and clears it on close (`beginOptimize`/`endOptimize`); the one outer record while a mode is
+// and clears it on close (`beginPin`/`endPin`); the one outer record while a mode is
 // open — the Solve landing — runs after the close, so it lands outer by ordering.
 let redirect: History | null = null;
 export function redirectHistory(h: History | null): void {
@@ -789,7 +789,7 @@ export function solveGeo(
     landSolve(h, ecs, section, () => applyConvertGeo(ecs, section, solved, entry), true);
 }
 
-/** land an invoked optimize-mode solve (`optimizeMode.ts` drives it) on a section as one
+/** land an invoked pin-mode solve (`pin.ts` drives it) on a section as one
  *  undoable entry — the mode's own landing, sibling to `solveForce`/`solveGeo` but narrower: the
  *  kernel (`optimize.ts`) only ever rewrites free keys' `g`, so `writes` carries just those pairs
  *  (locked keys, `s`, easing, handles, length, and structure are the same values already there).
@@ -803,7 +803,7 @@ export function solveGeo(
  *  the entry lands even when `writes` is empty: a zero-drift Solve still closes the mode, and
  *  that transition must sit on the stack or undo/redo would walk through mode states it can't
  *  reproduce. */
-export function solveOptimize(
+export function solvePin(
     h: History,
     ecs: State,
     section: number,

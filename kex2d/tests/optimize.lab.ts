@@ -1,4 +1,4 @@
-// Optimize-mode solver conditioning + norm lab (`kex2d-optimize-mode` stage 3).
+// Pin-mode solver conditioning + norm lab (`kex2d-optimize-mode` stage 3).
 //
 // Five questions, each sized to a stage-3 decision:
 //   1. COST — re-baseline the solve's wall time post-JAC_H fix (it was ~5× cheaper in the

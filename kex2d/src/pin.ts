@@ -1,15 +1,15 @@
-/** Optimize mode as an editor command — the seam between `optimize.ts`'s masked exit-restore
+/** Pin mode as an editor command — the seam between `optimize.ts`'s masked exit-restore
  *  kernel and the document, mirroring `geoforce.ts`/`forcegeo.ts`'s shape for the two kind
  *  conversions: this module hands the kernel the document's own live state and lands its answer
  *  back as one undo entry. Nothing here decides anything about the solve.
  *
  *  **The mode is a SANDBOX** (feel iteration 3, superseding both the stage-4 bracket and the
- *  stage-5 continuous-history walk). The optimize state is temporary: every in-mode recording
+ *  stage-5 continuous-history walk). The pin state is temporary: every in-mode recording
  *  lands in the mode's own sandbox history (`editor.sandbox()`, wired structurally through
  *  `history.redirectHistory`), so nothing applies to the outer stacks until Solve. In-mode
  *  undo/redo ({@link undoRouted}/{@link redoRouted}) operate over the sandbox only — pre-mode
  *  history is unreachable from inside, and undo at the sandbox's start EXITS the mode (acts as
- *  Exit). {@link exitOptimizeMode} (Exit/Esc) reverts the sandbox and discards it — no trace in
+ *  Exit). {@link exitPinMode} (Exit/Esc) reverts the sandbox and discards it — no trace in
  *  outer history, redo branch included. A landed Solve is ONE outer entry that carries the
  *  sandbox frozen at solve time: undoing it reopens the mode with the experiment resumed (draft,
  *  locks, and in-mode undo/redo all restored), redoing it re-lands and closes. A cancelled or
@@ -21,10 +21,10 @@
 
 import type { State } from "@dylanebert/shallot";
 import {
-    beginOptimize,
+    beginPin,
     editor,
-    endOptimize,
-    type OptimizeSession,
+    endPin,
+    type PinSession,
     restoreSandbox,
     sandbox,
     skipLanding,
@@ -34,7 +34,7 @@ import {
     markResumedLanding,
     redo,
     resumedLanding,
-    solveOptimize as landOptimize,
+    solvePin as landPin,
     undo,
 } from "./history";
 import type { OptimizeOpts, OptimizeResult } from "./optimize";
@@ -94,17 +94,17 @@ function sectionPoints(ecs: State, sectionId: number): { ids: number[]; points: 
     return { ids, points };
 }
 
-/** enter optimize mode on a force section: stamp its current exit `(x, y, θ)` and freeze a ghost
+/** enter pin mode on a force section: stamp its current exit `(x, y, θ)` and freeze a ghost
  *  of its current shape, both computed in the ONE `evalForce` call that also is the exact
  *  production integrator (`section.ts`) — so the stamp a later `Solve` targets is the same
  *  computation its own residual check reads. Returns `null` when the section isn't a live force
  *  section (the invoking surface's enablement should already have gated this).
  *
  * @example
- * const session = enterOptimize(ecs, sectionId);
- * if (session) beginOptimize(session);
+ * const session = enterPin(ecs, sectionId);
+ * if (session) beginPin(session);
  */
-export function enterOptimize(ecs: State, sectionId: number): OptimizeSession | null {
+export function enterPin(ecs: State, sectionId: number): PinSession | null {
     if (!bakeLive(ecs)) return null;
     const spec = sectionSpec(ecs, sectionId);
     if (!spec) return null;
@@ -112,9 +112,9 @@ export function enterOptimize(ecs: State, sectionId: number): OptimizeSession | 
     const dense = forceProfile(points, spec.length, spec.ds);
     const r = evalForce(spec.entry, dense, spec.ds, spec.domain);
     // the session carries only the stamp + ghost + the downstream freeze seed (all frozen at
-    // mode entry); the section's baking parameters are NOT cached here — `runOptimizeSection`
+    // mode entry); the section's baking parameters are NOT cached here — `runPinSection`
     // re-reads them live off `sectionSpec` at every invoke, same as any other invoked command
-    // (`editor.OptimizeSession`).
+    // (`editor.PinSession`).
     return {
         section: sectionId,
         stamp: { x: r.exit.x, y: r.exit.y, theta: r.exit.theta },
@@ -123,20 +123,20 @@ export function enterOptimize(ecs: State, sectionId: number): OptimizeSession | 
     };
 }
 
-/** Enter optimize mode on a force section: stamps the exit + ghost + freeze seed
- *  ({@link enterOptimize}) and opens the mode — which opens the SANDBOX (`editor.beginOptimize`:
+/** Enter pin mode on a force section: stamps the exit + ghost + freeze seed
+ *  ({@link enterPin}) and opens the mode — which opens the SANDBOX (`editor.beginPin`:
  *  a fresh in-mode history, the record redirect, the downstream freeze). Entering touches the
- *  outer history not at all: the optimize state is temporary until Solve lands. Returns false
+ *  outer history not at all: the pin state is temporary until Solve lands. Returns false
  *  when the section isn't a live force section (or a mode is already open).
  *
  * @example
- * if (enterOptimizeMode(ecs, sectionId)) { ... in the mode ... }
+ * if (enterPinMode(ecs, sectionId)) { ... in the mode ... }
  */
-export function enterOptimizeMode(ecs: State, sectionId: number): boolean {
-    if (editor.optimizing !== null) return false; // one mode at a time (the row grays too)
-    const session = enterOptimize(ecs, sectionId);
+export function enterPinMode(ecs: State, sectionId: number): boolean {
+    if (editor.pinning !== null) return false; // one mode at a time (the row grays too)
+    const session = enterPin(ecs, sectionId);
     if (!session) return false;
-    beginOptimize(session);
+    beginPin(session);
     return true;
 }
 
@@ -144,22 +144,22 @@ export function enterOptimizeMode(ecs: State, sectionId: number): boolean {
  *  snapshot restore) and close the mode, leaving no trace in the outer history: outer undo AND
  *  redo are byte-identical to before entry. Nothing is destroyed that was ever committed —
  *  everything discarded was sandbox state. */
-export function exitOptimizeMode(ecs: State): void {
-    if (editor.optimizing === null) return;
+export function exitPinMode(ecs: State): void {
+    if (editor.pinning === null) return;
     skipLanding(); // never leave a landing easing toward values the discard erases
     const sb = sandbox();
     if (sb) while (sb.undo.length > 0) undo(sb, ecs);
-    endOptimize();
+    endPin();
 }
 
-/** the editor-level undo: routed to the SANDBOX while an optimize mode is open (in-mode undo
+/** the editor-level undo: routed to the SANDBOX while an pin mode is open (in-mode undo
  *  operates over in-mode edits only — pre-mode history is unreachable from inside), where an
  *  undo at the sandbox's start EXITS the mode (acts as Exit — the sandbox contract); the outer
  *  history otherwise. */
 export function undoRouted(h: History, ecs: State): void {
     const sb = sandbox();
     if (sb !== null) {
-        if (sb.undo.length === 0) exitOptimizeMode(ecs);
+        if (sb.undo.length === 0) exitPinMode(ecs);
         else undo(sb, ecs);
         return;
     }
@@ -184,10 +184,10 @@ export function redoRouted(h: History, ecs: State): void {
 
 /** the document moved while the solve was running — mirrors `geoforce.ts`'s own class (`name`,
  *  not `instanceof`, is the tell a caller reads it by, the direction-neutral convention). */
-export class StaleOptimize extends Error {
+export class StalePin extends Error {
     constructor(sectionId: number) {
-        super(`runOptimizeSection: section ${sectionId} changed during the solve`);
-        this.name = "StaleOptimize";
+        super(`runPinSection: section ${sectionId} changed during the solve`);
+        this.name = "StalePin";
     }
 }
 
@@ -199,34 +199,33 @@ const solving = new Set<number>();
  * the kernel's own mask (`optimize.ts`), asserted structurally in `tests/optimize.test.ts`.
  *
  * Resolves with `solveOptimize`'s own `OptimizeResult` either way. A `"solved"` answer is already
- * in the document as one undo entry (`history.solveOptimize`) that ALSO closed the mode — Solve
+ * in the document as one undo entry (`history.solvePin`) that ALSO closed the mode — Solve
  * is the confirmation; `"unreachable"`/`"diverged"` resolve too, but write nothing and stay in
  * the mode — the caller surfaces the outcome.
  *
  * Rejects, having written nothing, when: the section is missing, isn't force, or has no live
  * bake; a solve is already running on it; the signal aborts (with `signal.reason`); or the
- * document changed during the solve ({@link StaleOptimize}).
+ * document changed during the solve ({@link StalePin}).
  *
  * @example
  * const controller = new AbortController();
- * const result = await runOptimizeSection(history, ecs, session, locked, {
+ * const result = await runPinSection(history, ecs, session, locked, {
  *     signal: controller.signal,
  * });
  */
-export async function runOptimizeSection(
+export async function runPinSection(
     h: History,
     ecs: State,
-    session: OptimizeSession,
+    session: PinSession,
     locked: ReadonlySet<number>,
     opts: OptimizeRunOpts = {},
 ): Promise<OptimizeResult> {
     const sectionId = session.section;
     if (solving.has(sectionId))
-        throw new Error(`runOptimizeSection: section ${sectionId} is already solving`);
+        throw new Error(`runPinSection: section ${sectionId} is already solving`);
     const spec = sectionSpec(ecs, sectionId);
-    if (!spec) throw new Error(`runOptimizeSection: no live force section ${sectionId}`);
-    if (!bakeLive(ecs))
-        throw new Error(`runOptimizeSection: section ${sectionId} has no live bake`);
+    if (!spec) throw new Error(`runPinSection: no live force section ${sectionId}`);
+    if (!bakeLive(ecs)) throw new Error(`runPinSection: section ${sectionId} has no live bake`);
 
     const { ids, points } = sectionPoints(ecs, sectionId);
     // the kernel masks by INDEX into `points` (its own DOF space); the caller locks by stable
@@ -248,7 +247,7 @@ export async function runOptimizeSection(
 
     const authored = authoredHash(ecs);
     // the lock ledger, frozen AT INVOKE (review finding B): `locked` is by-reference (the live
-    // `editor.locked`), and `endOptimize` clears that Set IN PLACE — a capture after the await
+    // `editor.locked`), and `endPin` clears that Set IN PLACE — a capture after the await
     // would read whatever a mid-flight close (or any other in-place mutation) left behind.
     const relock = new Set(locked);
     solving.add(sectionId);
@@ -259,11 +258,11 @@ export async function runOptimizeSection(
         // MODULE invariant, so a result may only land while the very session that invoked it is
         // still the open one. `authoredHash` below can't catch this (Exit restores the draft
         // byte-identically, so the hash matches); session identity is the check.
-        if (editor.optimizing !== session) throw new StaleOptimize(sectionId);
+        if (editor.pinning !== session) throw new StalePin(sectionId);
         const live = sectionAt(ecs, sectionId);
         if (live === null || Section.kind.get(live) !== SectionKind.Force)
-            throw new StaleOptimize(sectionId);
-        if (authoredHash(ecs) !== authored) throw new StaleOptimize(sectionId);
+            throw new StalePin(sectionId);
+        if (authoredHash(ecs) !== authored) throw new StalePin(sectionId);
         if (result.outcome === "solved") {
             // `deltaG` is 0 at every locked index BY CONSTRUCTION (the kernel's own mask), so
             // filtering on it alone already excludes them — and also excludes a free key the
@@ -284,14 +283,14 @@ export async function runOptimizeSection(
             const sb = sandbox();
             const frozenU = sb ? [...sb.undo] : [];
             const frozenR = sb ? [...sb.redo] : [];
-            landOptimize(h, ecs, sectionId, writes, {
+            landPin(h, ecs, sectionId, writes, {
                 enter: () => {
-                    beginOptimize(session);
+                    beginPin(session);
                     editor.locked = new Set(relock);
                     restoreSandbox(frozenU, frozenR);
                     markResumedLanding(); // redo at the resumed sandbox's end re-lands (contract)
                 },
-                exit: () => endOptimize(),
+                exit: () => endPin(),
             });
         }
         return result;

@@ -15,7 +15,7 @@ import {
     modeChromeSection,
     notify,
     openContext,
-    optimizeRefused,
+    pinRefused,
     solveDone,
     solveFailed,
     type Selection,
@@ -454,20 +454,20 @@ test("landingG: an uncovered key reads null (only moved keys animate)", () => {
 
 // ── the modal-chrome predicate (`modeChromeSection`, kex2d-idioms stage 8) ──
 // the landing is the mode's exit transition: the panel, dim wash, and subject hatch key on
-// this one predicate (optimizing ∥ landing) so the modal presentation holds through the
+// this one predicate (pinning ∥ landing) so the modal presentation holds through the
 // window and releases in ONE moment — chrome only, never a second mode state (enablement
-// keeps reading `editor.optimizing`).
+// keeps reading `editor.pinning`).
 
 test("modeChromeSection: null at rest, the session's section in-mode, the landing's through the window", () => {
     expect(modeChromeSection()).toBeNull();
-    editor.optimizing = {
+    editor.pinning = {
         section: 3,
         stamp: { x: 0, y: 0, theta: 0 },
         ghost: { x: new Float32Array(0), y: new Float32Array(0) },
         freeze: { x: 0, y: 0, theta: 0, v: 10 },
     };
     expect(modeChromeSection()).toBe(3); // the live mode
-    editor.optimizing = null;
+    editor.pinning = null;
     editor.landing = { start: 0, section: 3, moves: [{ id: 1, from: 0, to: 1 }] };
     expect(modeChromeSection()).toBe(3); // the exit transition holds the chrome
     editor.landing = null;
@@ -475,8 +475,8 @@ test("modeChromeSection: null at rest, the session's section in-mode, the landin
 });
 
 // ── the keyframe menu's Lock/Unlock row (`lockLabel`, kex2d stage 6) ──
-// mode-scoped existence: the row is OMITTED (null) outside optimize mode and on any section other
-// than the optimizing one (lock doesn't exist there — omit, not gray); inside, the label mirrors
+// mode-scoped existence: the row is OMITTED (null) outside pin mode and on any section other
+// than the pinning one (lock doesn't exist there — omit, not gray); inside, the label mirrors
 // the `Q` toggle's semantics (all locked → Unlock, else Lock).
 
 test("lockLabel: hidden outside the mode, on other sections, and on an empty set", () => {
@@ -503,13 +503,11 @@ test("lockLabel: toggle semantics — all-locked offers Unlock, anything else Lo
     expect(lockLabel(session, 7, [1, 2], new Set([1, 2]))).toBe("Unlock"); // all locked
 });
 
-test("optimizeRefused: one TERSE sentence per refusal class, taxonomy distinguishable", () => {
+test("pinRefused: one TERSE sentence per refusal class, taxonomy distinguishable", () => {
     // stage-7 fourth check-in: no "Nothing changed" padding (the sandbox guarantees it); the
     // three unreachable certificates stay distinct from did-not-converge.
-    expect(optimizeRefused("unreachable", "stall")).toBe("The draft stalls before the exit.");
-    expect(optimizeRefused("unreachable", "conditioning")).toBe(
-        "The free keys can't steer the exit.",
-    );
-    expect(optimizeRefused("unreachable", "free-count")).toBe("Fewer than 3 free keys.");
-    expect(optimizeRefused("diverged")).toBe("Failed to converge.");
+    expect(pinRefused("unreachable", "stall")).toBe("The draft stalls before the exit.");
+    expect(pinRefused("unreachable", "conditioning")).toBe("The free keys can't steer the exit.");
+    expect(pinRefused("unreachable", "free-count")).toBe("Fewer than 3 free keys.");
+    expect(pinRefused("diverged")).toBe("Failed to converge.");
 });
