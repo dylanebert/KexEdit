@@ -368,6 +368,35 @@ export const editor: EditorState = {
     landing: null,
 };
 
+/** write a pointer-hover reading to `editor` through ONE seam — the four hover fields (`hoverKnob`
+ *  /`hoverNode`/`hoverForce`/`hoverSection`, above) land together, so a caller can't write three of
+ *  them and miss the fourth. `clearHover`'s null form is the same seam every clear site shares
+ *  (pointer leave, remount teardown, `beginDrag`'s whole-gesture suppression, below) — a site now
+ *  CALLS the shared clear instead of restating four literal assignments, which is what makes a
+ *  dropped field impossible rather than merely unlikely (the kex2d-idioms 10b bug class this
+ *  closes). Typed structurally against the state's own hover fields, not `controls.pickHover`'s
+ *  return type: this module owns the hover state, `controls.ts` already depends on `editor.ts` (not
+ *  the reverse), and `pickHover`'s return still satisfies this shape at the one call site. */
+export function writeHover(hover: {
+    knob: EditorState["hoverKnob"];
+    node: EditorState["hoverNode"];
+    force: EditorState["hoverForce"];
+    section: EditorState["hoverSection"];
+}): void {
+    editor.hoverKnob = hover.knob;
+    editor.hoverNode = hover.node;
+    editor.hoverForce = hover.force;
+    editor.hoverSection = hover.section;
+}
+
+/** clear all four hover reads — `writeHover`'s null form. */
+export function clearHover(): void {
+    editor.hoverKnob = null;
+    editor.hoverNode = null;
+    editor.hoverForce = null;
+    editor.hoverSection = null;
+}
+
 // ── pin mode (kex2d-optimize-mode stage 7: the sandbox) ──────────────────────
 // mode-scoped: entering stamps the exit, freezes a ghost + the downstream chain, and opens the
 // SANDBOX — a second History every in-mode recording lands in (`history.redirectHistory`), so the
@@ -679,11 +708,9 @@ export function beginDrag(el: Element, pointerId: number): void {
     dragId = pointerId;
     editor.dragging = true;
     // the canvas hover has no `:hover` for the CSS rule below to kill, so the same suppression is
-    // an explicit clear here: nothing lights up under a live gesture, whichever surface owns it.
-    editor.hoverSection = null;
-    editor.hoverNode = null;
-    editor.hoverForce = null;
-    editor.hoverKnob = null;
+    // an explicit clear here (through the one hover seam, `clearHover`, above): nothing lights up
+    // under a live gesture, whichever surface owns it.
+    clearHover();
     try {
         el.setPointerCapture(pointerId);
     } catch {

@@ -1,6 +1,7 @@
-import { beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
     beginConvert,
+    clearHover,
     closeContext,
     convertProgress,
     dismissNotice,
@@ -27,6 +28,7 @@ import {
     selectStart,
     setMember,
     toggleMember,
+    writeHover,
 } from "../src/editor";
 import { StaleConvert } from "../src/geoforce";
 
@@ -510,4 +512,35 @@ test("pinRefused: one TERSE sentence per refusal class, taxonomy distinguishable
     expect(pinRefused("unreachable", "conditioning")).toBe("The free keys can't steer the exit.");
     expect(pinRefused("unreachable", "free-count")).toBe("Fewer than 3 free keys.");
     expect(pinRefused("diverged")).toBe("Failed to converge.");
+});
+
+// ── the hover seam (kex2d-followups stage 3, follow-up 7): `writeHover`/`clearHover` are pure —
+// they only mutate this module's own `hoverKnob`/`hoverNode`/`hoverForce`/`hoverSection` fields —
+// so they're pinned here, beside the state they own, rather than in controls.test.ts (whose
+// pointerleave/detach pin needs a real `attachControls` wiring and stays there).
+describe("writeHover / clearHover — the one seam every hover write and clear go through", () => {
+    afterEach(() => {
+        clearHover();
+    });
+
+    test("writeHover writes exactly the given four fields, replacing whatever was there", () => {
+        writeHover({ knob: { eid: 9, side: "out" }, node: null, force: null, section: null });
+        expect(editor.hoverKnob).toEqual({ eid: 9, side: "out" });
+        expect(editor.hoverNode).toBeNull();
+        expect(editor.hoverForce).toBeNull();
+        expect(editor.hoverSection).toBeNull();
+
+        writeHover({ knob: null, node: 5, force: null, section: null });
+        expect(editor.hoverKnob).toBeNull();
+        expect(editor.hoverNode).toBe(5);
+    });
+
+    test("clearHover clears all four fields regardless of their prior values", () => {
+        writeHover({ knob: { eid: 1, side: "in" }, node: 2, force: 3, section: 4 });
+        clearHover();
+        expect(editor.hoverKnob).toBeNull();
+        expect(editor.hoverNode).toBeNull();
+        expect(editor.hoverForce).toBeNull();
+        expect(editor.hoverSection).toBeNull();
+    });
 });

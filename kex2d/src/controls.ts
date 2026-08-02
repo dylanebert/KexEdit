@@ -1,6 +1,7 @@
 import type { State } from "@dylanebert/shallot";
 import {
     beginDrag,
+    clearHover,
     editor,
     endDrag as endDragGesture,
     enterTangentEdit,
@@ -16,6 +17,7 @@ import {
     selectStart,
     snapActive,
     toggleSnap,
+    writeHover,
 } from "./editor";
 import { hits, merge, normRect } from "./marquee";
 import {
@@ -96,7 +98,7 @@ const START_PICK_R = 12;
 const FORCE_PICK_R = 12;
 // tangent-handle grab radius (px). smaller than the node radius, and the selected node's
 // handles are checked before the node itself, so grabbing a handle beats a node under it.
-export const TANGENT_PICK_R = 11;
+const TANGENT_PICK_R = 11;
 
 // wheel zoom rate: screen-px-independent, exp(−deltaY·rate) so scaling is symmetric
 // (in then out returns to the same zoom) and reads the same for wheel + trackpad pinch
@@ -1271,19 +1273,12 @@ export function attachControls(
         if (editor.dragging) return;
         const { x: cx, y: cy } = pointerToCanvas(canvas, e);
         const tx = viewTransform(canvas);
-        const hover = pickHover(ecs, tx, cx, cy);
-        editor.hoverKnob = hover.knob;
-        editor.hoverNode = hover.node;
-        editor.hoverForce = hover.force;
-        editor.hoverSection = hover.section;
+        writeHover(pickHover(ecs, tx, cx, cy));
     };
 
     // the pointer leaving the canvas clears the hover (no move fires outside it).
     const onPointerLeave = (): void => {
-        editor.hoverSection = null;
-        editor.hoverNode = null;
-        editor.hoverForce = null;
-        editor.hoverKnob = null;
+        clearHover();
     };
 
     // wheel = zoom-at-cursor; trackpad pinch arrives as ctrl+wheel (browser convention)
@@ -1677,10 +1672,7 @@ export function attachControls(
         window.removeEventListener("keydown", onKeyDown);
         window.removeEventListener("blur", onBlur);
         canvas.style.cursor = ""; // detaching mid-pan must not leave a stuck grabbing cursor
-        editor.hoverSection = null; // nor a lit span the remount has no pointer over
-        editor.hoverNode = null;
-        editor.hoverForce = null;
-        editor.hoverKnob = null;
+        clearHover(); // nor a lit span/node/marker/knob the remount has no pointer over
         clearGuides(); // detaching mid-drag must not leave a stuck guide for the remount
         cancelMarquee(); // detaching mid-marquee must not leave a stuck rect for the remount
         endDragGesture(); // detaching mid-drag must not leave the drag flag stuck on

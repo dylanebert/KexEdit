@@ -193,3 +193,101 @@ describe("hovered — the rung below selection", () => {
         }
     });
 });
+
+// ── cursor allowlist (kex2d-followups follow-up 6): `cursor: grab | grabbing | pointer` is a
+// real affordance channel (editor-ui.md Affordance typing — grab hands mean a pannable surface
+// and nothing else; a direct-manipulation glyph keeps the arrow, `.rbtn`/`.thit` shed theirs
+// already), so a new occurrence anywhere in the tree is either a genuine pannable/clickable
+// chrome affordance or a regression sneaking the cursor channel onto a glyph it doesn't belong
+// on. CSS `cursor` has no cheap behavioral read, so this stays a SOURCE pin by design (the
+// spec's locked decision) — the strongest mechanism available, not a stand-in for one. A
+// declared registry, asserted BOTH directions like the `checked`/separator registries (an
+// undeclared cursor site and an orphan registry entry each fail), walked recursively (`Bun.Glob`,
+// not `readdirSync` — the source-pin law, editor-ui.md Menus) so a new component can't escape it.
+
+interface CursorSite {
+    file: string;
+    selector: string;
+    value: "grab" | "grabbing" | "pointer";
+}
+
+// today's population, enumerated FROM THE SOURCE (`cursorSites()` below) — not hand-guessed: the
+// panning pair (`.nav-window` grab/grabbing, `.body.panning` grabbing while the drag is live) and
+// every plain clickable affordance that carries `cursor: pointer` (the rail's snap toggle, the
+// section clip strip, its append tail, the transport play button, the global scrubber, the two
+// modal buttons, and the shared menu-item class every context menu renders through).
+const CURSOR_ALLOWLIST: CursorSite[] = [
+    { file: "App.svelte", selector: ".pinpanel button", value: "pointer" },
+    { file: "App.svelte", selector: ".convert .cancel", value: "pointer" },
+    { file: "App.svelte", selector: ":global(.menu-item)", value: "pointer" },
+    { file: "Timeline.svelte", selector: ".rail-tool", value: "pointer" },
+    { file: "Timeline.svelte", selector: ".body.panning, .body.panning *", value: "grabbing" },
+    { file: "Timeline.svelte", selector: ".nav-window", value: "grab" },
+    { file: "Timeline.svelte", selector: ".nav-window:active", value: "grabbing" },
+    { file: "Timeline.svelte", selector: ".clip", value: "pointer" },
+    { file: "Timeline.svelte", selector: ".clip-add", value: "pointer" },
+    { file: "Timeline.svelte", selector: ".play", value: "pointer" },
+    { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
+];
+
+/** walk every `.svelte` file recursively and collect every `cursor: grab|grabbing|pointer`
+ *  declaration paired with its rule's own selector — a real (if simple) CSS parse over
+ *  non-nested rule blocks, not a per-line grep, so a multi-selector list or a doc comment sitting
+ *  just above the rule still resolves to the one selector that owns the declaration. */
+function cursorSites(): CursorSite[] {
+    const src = fileURLToPath(new URL("../src", import.meta.url));
+    const files = [...new Bun.Glob("**/*.svelte").scanSync(src)];
+    const out: CursorSite[] = [];
+    for (const f of files) {
+        const text = readFileSync(`${src}/${f}`, "utf8");
+        const style = text.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "";
+        const blocks = style.match(/[^{}]+\{[^{}]*\}/g) ?? [];
+        for (const b of blocks) {
+            const m = b.match(/cursor:\s*(grab|grabbing|pointer)\s*;/);
+            if (!m) continue;
+            const selector = b
+                .slice(0, b.indexOf("{"))
+                .replace(/\/\*[\s\S]*?\*\//g, "") // strip a doc comment sitting right above the rule
+                .trim()
+                .replace(/\s+/g, " ");
+            out.push({ file: f, selector, value: m[1] as CursorSite["value"] });
+        }
+    }
+    return out;
+}
+
+const cursorKey = (s: CursorSite): string => `${s.file}::${s.selector}::${s.value}`;
+
+describe("cursor allowlist — grab/grabbing/pointer only in a declared registry", () => {
+    test("the glob reaches the components at all", () => {
+        expect(cursorSites().length).toBeGreaterThan(0);
+    });
+
+    test("every found cursor:grab/grabbing/pointer site is declared in the registry", () => {
+        const declared = new Set(CURSOR_ALLOWLIST.map(cursorKey));
+        const undeclared = cursorSites().filter((s) => !declared.has(cursorKey(s)));
+        expect(undeclared).toEqual([]);
+    });
+
+    test("every registry entry corresponds to a real cursor declaration in source", () => {
+        const found = new Set(cursorSites().map(cursorKey));
+        const orphans = CURSOR_ALLOWLIST.filter((s) => !found.has(cursorKey(s)));
+        expect(orphans).toEqual([]);
+    });
+
+    // the positive control, both directions (the source-pin law, editor-ui.md Menus): an
+    // undeclared cursor site and an orphan registry entry must each be CAUGHT.
+    test("an undeclared cursor site is caught (positive control)", () => {
+        const bogus: CursorSite = { file: "Fake.svelte", selector: ".bogus", value: "pointer" };
+        const found = [...cursorSites(), bogus];
+        const declared = new Set(CURSOR_ALLOWLIST.map(cursorKey));
+        expect(found.some((s) => !declared.has(cursorKey(s)))).toBe(true);
+    });
+
+    test("an orphan registry entry is caught (positive control)", () => {
+        const bogus: CursorSite = { file: "Fake.svelte", selector: ".bogus", value: "pointer" };
+        const registry = [...CURSOR_ALLOWLIST, bogus];
+        const found = new Set(cursorSites().map(cursorKey));
+        expect(registry.some((s) => !found.has(cursorKey(s)))).toBe(true);
+    });
+});

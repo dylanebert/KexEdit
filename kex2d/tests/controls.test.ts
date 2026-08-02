@@ -1,9 +1,9 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import { readFileSync } from "node:fs";
 import {
     applyMultiDelta,
     armDrag,
+    attachControls,
     beyondDeadZone,
     DRAG_PX,
     dragFreeTo,
@@ -1038,12 +1038,19 @@ describe("pickHover", () => {
     });
 });
 
-// ── hover clearing (kex2d-burndown stage 3): `pickHover`'s four reads are cleared at three
-// sites — `editor.beginDrag` (the whole-gesture suppression) and `attachControls`'s
-// pointerleave/remount teardown. Each site clearing its *three* siblings but not `hoverKnob` is
-// exactly the bug class (kex2d-idioms 10b's stale-hover class, one field short).
-describe("editor.beginDrag clears hoverKnob for the whole of any gesture", () => {
-    test("a real beginDrag call clears a set hoverKnob, same as its three siblings", () => {
+// ── the hover seam (kex2d-followups stage 3, follow-up 7): `pickHover`'s four reads are now
+// written and cleared through ONE pair of functions — `editor.writeHover`/`clearHover` — instead
+// of four literal field assignments repeated at every site. `writeHover` is pointermove's one
+// write; `clearHover` is shared by all three clear sites (`editor.beginDrag`'s whole-gesture
+// suppression, `attachControls`'s pointerleave, and its remount teardown). A site clearing three
+// siblings but missing `hoverKnob` was exactly the bug class the seam closes (kex2d-idioms 10b's
+// stale-hover class, one field short) — there's now one call to get right, not four assignments to
+// keep in sync. The seam functions themselves live in `editor.ts` beside the hover fields they
+// mutate (`tests/editor.test.ts` pins their pure behavior); this file keeps only what needs a real
+// `attachControls` wiring — `beginDrag`'s clear, and the pointerleave/detach closures below.
+
+describe("editor.beginDrag clears the hover seam for the whole of any gesture", () => {
+    test("a real beginDrag call clears all four hover reads, through clearHover", () => {
         // `beginDrag` is exported and DOM-free apart from reaching for `window.addEventListener`
         // to arm the release listeners (unreachable headless — no `window` under `bun test`); shim
         // it locally, scoped to this test, so the REAL production function runs end to end rather
@@ -1062,7 +1069,6 @@ describe("editor.beginDrag clears hoverKnob for the whole of any gesture", () =>
             } as unknown as Element;
             beginDrag(fakeEl, 1);
             expect(editor.hoverKnob).toBeNull();
-            // its three siblings, for context — `beginDrag` clears all four in one place.
             expect(editor.hoverSection).toBeNull();
             expect(editor.hoverNode).toBeNull();
             expect(editor.hoverForce).toBeNull();
@@ -1072,19 +1078,75 @@ describe("editor.beginDrag clears hoverKnob for the whole of any gesture", () =>
     });
 });
 
-// controls.ts's pointerleave/remount-teardown clears live inside `attachControls`'s DOM-bound
-// closure (canvas listeners, `window` keydown) — no callable seam without a real canvas, unlike
-// `beginDrag` above. This is a SOURCE pin standing in for an unreachable behavioral one (the same
-// tier colors.test.ts's hover-lift pin uses for canvas-only behavior): it proves the clearing
-// LINE exists at both sites, not that the listener fires it — that's the harness's job.
-describe("controls.ts's pointerleave and remount teardown both clear hoverKnob", () => {
-    test("both closures carry the hoverKnob clear beside its three siblings", () => {
-        const src = readFileSync(new URL("../src/controls.ts", import.meta.url), "utf8");
-        const leave = src.slice(src.indexOf("const onPointerLeave"));
-        const leaveBody = leave.slice(0, leave.indexOf("};"));
-        expect(leaveBody.includes("editor.hoverKnob = null;")).toBe(true);
-        const detach = src.slice(src.indexOf("const detach"));
-        const detachBody = detach.slice(0, detach.indexOf("clearGuides()"));
-        expect(detachBody.includes("editor.hoverKnob = null;")).toBe(true);
+// controls.ts's pointerleave and remount-teardown clears now run through the SAME `clearHover`
+// seam, which makes them reachable BEHAVIORALLY instead of needing a source grep (the promotion
+// this stage exists for, `kex2d-followups.md`'s locked decision): shim a minimal canvas + window
+// (the same shape `beginDrag`'s shim above uses), call the REAL `attachControls`, capture the two
+// closures it registers or returns, and fire them — no restatement of the clearing logic, the
+// production listener runs end to end and the assert reads the resulting editor state, not the
+// source text.
+describe("attachControls's pointerleave and remount teardown both clear the hover seam", () => {
+    /** a canvas double that RECORDS every listener `attachControls` registers, keyed by event
+     *  type, so a test can fire the exact production closure instead of grepping for it. */
+    function fakeCanvas(): { el: HTMLCanvasElement; listeners: Map<string, () => void> } {
+        const listeners = new Map<string, () => void>();
+        const el = {
+            style: {},
+            addEventListener(type: string, fn: () => void) {
+                listeners.set(type, fn);
+            },
+            removeEventListener() {},
+            setPointerCapture() {},
+            hasPointerCapture: () => false,
+            releasePointerCapture() {},
+        } as unknown as HTMLCanvasElement;
+        return { el, listeners };
+    }
+
+    function withWindow<T>(fn: () => T): T {
+        const g = globalThis as Record<string, unknown>;
+        g.window = { addEventListener() {}, removeEventListener() {} };
+        try {
+            return fn();
+        } finally {
+            delete g.window;
+        }
+    }
+
+    function litHover(): void {
+        editor.hoverSection = 1;
+        editor.hoverNode = 2;
+        editor.hoverForce = 3;
+        editor.hoverKnob = { eid: 4, side: "in" };
+    }
+
+    function expectCleared(): void {
+        expect(editor.hoverKnob).toBeNull();
+        expect(editor.hoverSection).toBeNull();
+        expect(editor.hoverNode).toBeNull();
+        expect(editor.hoverForce).toBeNull();
+    }
+
+    test("a real pointerleave dispatch clears all four fields", () => {
+        withWindow(() => {
+            const { el, listeners } = fakeCanvas();
+            const { detach } = attachControls(el, new State());
+            litHover();
+            const leave = listeners.get("pointerleave");
+            if (!leave) throw new Error("no pointerleave listener registered");
+            leave();
+            expectCleared();
+            detach();
+        });
+    });
+
+    test("detach (remount teardown) clears all four fields — the same real closure", () => {
+        withWindow(() => {
+            const { el } = fakeCanvas();
+            const { detach } = attachControls(el, new State());
+            litHover();
+            detach();
+            expectCleared();
+        });
     });
 });
