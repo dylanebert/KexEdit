@@ -408,18 +408,36 @@ export async function clickFlyout(
     if (!b) throw new Error(`flyout item "${item}" not laid out`);
     const x = b.x + b.width / 2;
     const y = b.y + b.height / 2;
-    const reachable = await page.evaluate(
-        (p: { x: number; y: number; label: string }) => {
-            const el = document.elementFromPoint(p.x, p.y);
-            return el?.closest(".menu-item")?.textContent?.trim() === p.label;
-        },
-        { x, y, label: item },
-    );
+    const hit = await menuHit(page, x, y);
     expect(
-        reachable,
+        hit?.text,
         `flyout item "${item}" must be hit-testable at its own center (not clipped out of paint)`,
-    ).toBe(true);
+    ).toBe(item);
     await page.mouse.click(x, y); // coordinate click a real pointer can land
+}
+
+// The reachability read every menu assert shares: which menu row a REAL pointer lands on at this
+// page point. `null` where the point resolves to no row at all. `text` is the row's whole rendered
+// text (label plus any shortcut), `label` the label alone — a caller picks the one its own match
+// needs. One home, so the three call sites below can't drift into three different notions of
+// "reachable" (this is the assert that caught the submenu-clip bug; a selector `.click()` fires
+// handlers on elements clipped out of paint AND hit-testing).
+async function menuHit(
+    page: Page,
+    x: number,
+    y: number,
+): Promise<{ text: string; label: string } | null> {
+    return page.evaluate(
+        (p: { x: number; y: number }) => {
+            const row = document.elementFromPoint(p.x, p.y)?.closest(".menu-item");
+            if (!row) return null;
+            return {
+                text: (row.textContent ?? "").trim(),
+                label: (row.querySelector("span")?.textContent ?? "").replace(/\s+/g, " ").trim(),
+            };
+        },
+        { x, y },
+    );
 }
 
 // Pointer-true click on a TOP-LEVEL menu row (no parent hover needed — the row isn't behind a
@@ -434,18 +452,174 @@ export async function clickMenuItem(page: Page, menu: string, item: string): Pro
     if (!b) throw new Error(`menu item "${item}" not laid out`);
     const x = b.x + b.width / 2;
     const y = b.y + b.height / 2;
-    const reachable = await page.evaluate(
-        (p: { x: number; y: number; label: string }) => {
-            const el = document.elementFromPoint(p.x, p.y);
-            return el?.closest(".menu-item")?.textContent?.trim().startsWith(p.label) ?? false;
-        },
-        { x, y, label: item },
-    );
+    const hit = await menuHit(page, x, y);
     expect(
-        reachable,
+        hit?.text.startsWith(item) ?? false,
         `menu item "${item}" must be hit-testable at its own center (not clipped out of paint)`,
     ).toBe(true);
     await page.mouse.click(x, y);
+}
+
+// ── the rendered-DOM cross-check against the REAL builders (kex2d-menu-grammar decision 8).
+//
+// The source of truth is `src/menus.ts` itself, not a copy of it here: this file is staged to the
+// Windows host standalone and so can't IMPORT app source, but the page it drives is served by the
+// vite dev server, so the PAGE imports the real modules at runtime (`/src/menus.ts`, `/src/menu.ts`
+// — `menus.ts` is module-graph pure, gated by `tests/menu.test.ts`, so pulling it in costs
+// nothing). A hand-typed expected sequence would make a builder reorder plus a matching hand-edit
+// here silently green, which is the exact drift this stage exists to close.
+//
+// What it adds over the pure oracle: the oracle proves every builder obeys the grammar; this proves
+// `Menu.svelte` TRANSMITS it — each row's `data-group` published, rows in the builder's order, the
+// dividers derived where `menuRows` puts them — and that every rendered row is REACHABLE by a real
+// pointer, at the root and inside each flyout.
+
+export type MenuRow = { label: string; group: string | null; separator: boolean };
+
+/** how a flow names the menu it opened, so the page can rebuild it from the real builder. */
+export type MenuSpec = {
+    /** the export name in `src/menus.ts`. */
+    builder: string;
+    /** the descriptor the surface derives, field for field — `null` for a builder that takes only
+     *  actions (`appendMenu`). Enum-valued and function-valued fields go in `enums` / `fns`. */
+    state: Record<string, unknown> | null;
+    /** enum-valued descriptor fields, named `<module>.<Enum>.<Member>` and resolved from the real
+     *  module in the page — never a mirrored numeric literal, which is what a staged copy would
+     *  otherwise force. */
+    enums?: Record<string, string>;
+    /** descriptor fields the builder CALLS (the easing glyph resolvers). Stubbed in the page: a
+     *  glyph is a `d` string, invisible to the label/group/divider sequence asserted here. */
+    fns?: string[];
+};
+
+type MenuLevel = { path: string[]; rows: MenuRow[] };
+// `levels`: one entry per menu level the flow can OPEN — the root, then each enabled submenu
+// parent (a disabled parent's flyout can't be hovered open, so it makes no claim).
+// `parents`: every child-bearing row, enabled or not — which rows must NOT be hovered when the
+// walk wants a flyout CLOSED again.
+type MenuAnswer = { levels: MenuLevel[]; parents: string[] };
+
+/** the builder's own answer for this descriptor, computed in the page against the real modules. */
+async function builderAnswer(page: Page, spec: MenuSpec): Promise<MenuAnswer> {
+    return page.evaluate(
+        async (s: MenuSpec & { menusUrl: string; menuUrl: string }): Promise<MenuAnswer> => {
+            type Item = { [k: string]: unknown };
+            const menus = await import(s.menusUrl);
+            const { menuRows } = await import(s.menuUrl);
+            const build = menus[s.builder];
+            if (typeof build !== "function")
+                throw new Error(`src/menus.ts exports no builder "${s.builder}"`);
+            // every action is a no-op: the ROWS are what's asserted here, and each row's action
+            // binding is pinned by the pure characterization suite.
+            const actions = new Proxy({}, { get: () => () => {} });
+            let items: Item[];
+            if (s.state === null) items = build(actions);
+            else {
+                const state: Record<string, unknown> = { ...s.state };
+                for (const [field, path] of Object.entries(s.enums ?? {})) {
+                    const [mod, name, member] = path.split(".");
+                    const value = (await import(`/src/${mod}.ts`))[name]?.[member];
+                    if (value === undefined) throw new Error(`no enum member ${path}`);
+                    state[field] = value;
+                }
+                for (const field of s.fns ?? []) state[field] = () => "";
+                items = build(state, actions);
+            }
+            const answer: MenuAnswer = { levels: [], parents: [] };
+            const walk = (path: string[], rows: Item[]): void => {
+                answer.levels.push({
+                    path,
+                    rows: menuRows(rows).map((r: Item) =>
+                        r.separator
+                            ? { label: "", group: null, separator: true }
+                            : {
+                                  label: (r.label as string) ?? "",
+                                  group: (r.group as string) ?? null,
+                                  separator: false,
+                              },
+                    ),
+                });
+                for (const row of rows) {
+                    if (!row.children) continue;
+                    answer.parents.push(row.label as string);
+                    if (row.enabled !== false)
+                        walk([...path, row.label as string], row.children as Item[]);
+                }
+            };
+            walk([], items);
+            return answer;
+        },
+        { ...spec, menusUrl: "/src/menus.ts", menuUrl: "/src/menu.ts" },
+    );
+}
+
+// One menu level as RENDERED, in paint order, with each row's own center so reachability is read
+// from the same pass. `depth` selects the level: 0 is the root `.menu-rows`, each step down is the
+// open flyout's own (one flyout is open at a time, so the descendant selector is unambiguous).
+async function domLevel(
+    page: Page,
+    menu: string,
+    depth: number,
+): Promise<(MenuRow & { x: number; y: number })[]> {
+    const sel = `${menu}${" .submenu".repeat(depth)} > .menu-rows`;
+    return page.evaluate((s: string) => {
+        const rows = document.querySelector(s);
+        if (!rows) throw new Error(`no menu rows at "${s}"`);
+        return [...rows.children].map((el) => {
+            const b = el.getBoundingClientRect();
+            return {
+                label: (el.querySelector("span")?.textContent ?? "").replace(/\s+/g, " ").trim(),
+                group: el.getAttribute("data-group"),
+                separator: el.getAttribute("role") === "separator",
+                x: b.x + b.width / 2,
+                y: b.y + b.height / 2,
+            };
+        });
+    }, sel);
+}
+
+/**
+ * Assert the open menu's rendered DOM — every level of it — is exactly what the real builder says,
+ * and that a real pointer reaches every row. Flyouts are opened by REAL hover, the way a user opens
+ * them (`clickFlyout`'s model), so the within-group divider inside `Easing ▸` is DOM-verified too.
+ * Leaves the menu with no flyout open and the pointer off it, so a screenshot after this call sees
+ * the same menu it would have seen before.
+ */
+export async function menuGrammar(page: Page, menu: string, spec: MenuSpec): Promise<void> {
+    const { levels, parents } = await builderAnswer(page, spec);
+    for (const { path, rows } of levels) {
+        const where = `${menu}${path.map((p) => ` ▸ ${p}`).join("")}`;
+        for (let d = 0; d < path.length; d++) {
+            const scope = `${menu}${" .submenu".repeat(d)}`;
+            await page
+                .locator(scope)
+                .first()
+                .getByRole("menuitem", { name: path[d], exact: true })
+                .hover();
+        }
+        const actual = await domLevel(page, menu, path.length);
+        expect(
+            actual.map((r) => ({ label: r.label, group: r.group, separator: r.separator })),
+            `${where} — the rendered rows must be the builder's rows, dividers included`,
+        ).toEqual(rows);
+        for (const row of actual.filter((r) => !r.separator)) {
+            const hit = await menuHit(page, row.x, row.y);
+            expect(
+                hit?.label,
+                `${where} — "${row.label}" must be hit-testable at its own center (a row clipped out of hit-testing renders fine and can't be clicked)`,
+            ).toBe(row.label);
+        }
+    }
+    // close any flyout the walk opened — hovering a sibling LEAF is what closes one — then take the
+    // pointer off the menu so no CSS hover survives into a screenshot taken after this call.
+    if (levels.length > 1) {
+        const root = await domLevel(page, menu, 0);
+        const leaf = root.find((r) => !r.separator && !parents.includes(r.label));
+        if (!leaf) throw new Error(`${menu} is all submenu parents — no leaf to close a flyout on`);
+        await page.mouse.move(leaf.x, leaf.y);
+        await expect(page.locator(`${menu} .submenu`)).toHaveCount(0);
+    }
+    await page.mouse.move(0, 0);
 }
 
 // A marquee (box-select) drag from one page-space corner to another — shared by the viewport

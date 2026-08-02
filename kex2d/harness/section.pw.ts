@@ -13,6 +13,7 @@ import {
     seedHill,
     frameTimeline,
     clickMenuItem,
+    menuGrammar,
     marqueeDrag,
     dockStrip,
     DOCK_RESERVE,
@@ -284,6 +285,28 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
         page.locator(".ctxmenu").getByRole("menuitem", { name: "Optimize" }),
     ).toBeEnabled();
     await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Reset" })).toBeEnabled();
+    // the section menu's rows already sorted canonically, so the grammar's arrival adds only the
+    // DERIVED modify→lifecycle divider. The expectation comes from the real `sectionMenu` builder,
+    // run in the page against this section's live state (the section half of the rendered-DOM
+    // cross-check, kex2d-menu-grammar decision 8).
+    await menuGrammar(page, ".ctxmenu", {
+        builder: "sectionMenu",
+        // a single, baked force section, no optimize session anywhere: Convert runs the force→geo
+        // fit, Optimize can enter, Reset and Delete are live.
+        state: {
+            inMode: false,
+            solving: false,
+            optSolvable: false,
+            multi: false,
+            modeOpen: false,
+            canSolve: false,
+            canSolveShape: true,
+            canOptimize: true,
+            canReset: true,
+            canDelete: true,
+        },
+        enums: { kind: "section.SectionKind.Force" },
+    });
     if (strip) await page.screenshot({ path: join(OUT, "section-4-menu.png"), clip: strip });
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);

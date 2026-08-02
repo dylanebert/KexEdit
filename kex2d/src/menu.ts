@@ -1,4 +1,22 @@
 /**
+ * The row taxonomy, in canonical order — the menus' ordering law:
+ *
+ * - `create` — the document gains an object (Add, the append flyout's Geo/Force).
+ * - `modify` — changes the subject that summoned the menu, or enters / acts in / leaves a mode
+ *   scoped to it (Convert, Optimize, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock,
+ *   Meters/Seconds). The residual class, honestly.
+ * - `lifecycle` — the subject ends at its creation state or gone (Reset, then Delete).
+ *
+ * A menu's rows sort by this order, then by frequency WITHIN a group (the old free-form
+ * frequency rule, demoted to a tiebreaker where it's cheap and unenforceable-but-harmless).
+ * `danger` implies the terminal row of the whole menu. The grammar is machine-checked over every
+ * builder across the full state matrix in `tests/menu.test.ts` — it is a gate, not a convention.
+ */
+export const GROUPS = ["create", "modify", "lifecycle"] as const;
+
+export type MenuGroup = (typeof GROUPS)[number];
+
+/**
  * A row in the shared menu language (`Menu.svelte`, rendered inside the `.menu` look). The
  * section context menu, the node context menu, and the append flyout all render an array of
  * these, so a menu is pure data and enablement, separators, and submenus are first-class
@@ -7,6 +25,10 @@
 export type MenuItem = {
     /** the row label. omitted for a separator. */
     label?: string;
+    /** the row's taxonomy class — what KIND of act it is, and the menu's whole ordering law.
+     *  Every non-separator row declares one; rows sort by `GROUPS`'s canonical order, and
+     *  `menuRows` derives a divider at each change. A separator carries none. */
+    group?: MenuGroup;
     /** a11y name when the visible label is terse; defaults to `label`. */
     aria?: string;
     /** an inline shortcut hint, right-aligned by the row (e.g. "Del"). */
@@ -39,6 +61,37 @@ export type MenuItem = {
      *  submenu parent. */
     action?: () => void;
 };
+
+/** the rows as RENDERED: the builder's rows with a divider derived at every group change. Grouping
+ *  is the taxonomy's own consequence, so no builder authors a top-level separator — an explicit
+ *  `separator` survives only as a WITHIN-group divider (`Easing ▸`, dividing the preset picks from
+ *  Custom), and the grammar oracle constrains it to positions no derived boundary can occupy.
+ *  Items pass through by reference: never copy a row here (a builder's descriptor reads are lazy).
+ *
+ *  A divider is owed before the next row either way — authored or derived — so the two collapse to
+ *  ONE (an authored separator sitting AT a group boundary can't double up), and a divider owed with
+ *  no row on one side of it is dropped (no leading or trailing hairline, a menu of nothing but
+ *  separators renders empty). That makes the renderer correct by construction rather than by the
+ *  oracle's within-group law holding forever: this is a public seam other menus will call.
+ *
+ * @example menuRows([{ label: "Add", group: "create" }, { label: "Reset", group: "lifecycle" }])
+ */
+export function menuRows(items: MenuItem[]): MenuItem[] {
+    const rows: MenuItem[] = [];
+    let prev: MenuGroup | undefined;
+    let owed = false;
+    for (const item of items) {
+        if (item.separator) {
+            owed = rows.length > 0;
+            continue;
+        }
+        if (rows.length > 0 && (owed || item.group !== prev)) rows.push({ separator: true });
+        rows.push(item);
+        prev = item.group;
+        owed = false;
+    }
+    return rows;
+}
 
 /** where a summoned root context menu's top-left lands so the whole box stays in the viewport,
  *  guarding all four edges (root ui.md "summoned panels fit the viewport"). The menu opens

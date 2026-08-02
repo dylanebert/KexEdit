@@ -19,6 +19,7 @@ import {
     frameTimeline,
     clickFlyout,
     clickMenuItem,
+    menuGrammar,
     marqueeDrag,
     dockStrip,
     DOCK_RESERVE,
@@ -199,8 +200,11 @@ test("geo authoring flow", async ({ page, boot }) => {
     const chainEndBack = await nodePoint(page, 6);
     expect(Math.hypot(chainEndBack.x - chainEnd.x, chainEndBack.y - chainEnd.y)).toBeLessThan(1);
     // the node menu (right-click the chain end) carries the structural ops (delete stays off-ring),
-    // ordered by access frequency: Delete before Add. the rows are terse — the menu is ON the node,
-    // so the noun would only restate its subject.
+    // in the GRAMMAR's canonical order (kex2d-menu-grammar stage 2): create · modify · lifecycle,
+    // with the destructive row terminal — so Add leads and Delete closes, reversing the old
+    // free-form frequency order. The dividers between the three groups are DERIVED from the group
+    // changes, not authored. the rows are terse — the menu is ON the node, so the noun would only
+    // restate its subject.
     await page.mouse.click(cb.x + chainEndBack.x, cb.y + chainEndBack.y, { button: "right" });
     await expect(page.locator(".nodemenu")).toBeVisible();
     await expect
@@ -209,7 +213,26 @@ test("geo authoring flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Delete Del", "Add Enter", "Handles", "Tangents ▸", "Reset"]); // ▸ = the submenu affix; Reset top-level (the Reset idiom law)
+        .toEqual(["Add Enter", "Handles", "Tangents ▸", "Reset", "Delete Del"]); // ▸ = the submenu affix; Reset top-level (the Reset idiom law)
+    // …and the RENDERED rows are the real `nodeMenu` builder's rows for THIS node's live state,
+    // taxonomy and derived dividers included, checked at the root and inside `Tangents ▸`. The
+    // expectation is computed from `src/menus.ts` in the page, so a builder reorder can't be
+    // "fixed" by editing a literal here (kex2d-menu-grammar decision 8).
+    await menuGrammar(page, ".nodemenu", {
+        builder: "nodeMenu",
+        // the chain-end node of the only section: a single selection, not the entry anchor, not in
+        // tangent edit, appendable and trimmable, no optimize session open.
+        state: {
+            multi: false,
+            isEntry: false,
+            ok: true,
+            editing: false,
+            isEnd: true,
+            canTrim: true,
+            suffixOk: false,
+        },
+        enums: { mode: "spline.TangentMode.Aligned" },
+    });
     await page.keyboard.press("Escape"); // dismiss the menu
     await expect(page.locator(".nodemenu")).toHaveCount(0);
     // …and the node it was summoned on survives that press (one rung), so the NEXT Escape is the

@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { flyoutFit, type MenuItem, menuFit } from "../src/menu";
+import { flyoutFit, GROUPS, type MenuGroup, type MenuItem, menuFit, menuRows } from "../src/menu";
+import * as menus from "../src/menus";
 import {
     appendMenu,
     keyframeMenu,
@@ -9,6 +10,7 @@ import {
     nodeMenu,
     type NodeMenuState,
     rulerMenu,
+    type RulerMenuState,
     sectionMenu,
     type SectionMenuState,
 } from "../src/menus";
@@ -107,6 +109,7 @@ describe("flyoutFit — submenu flyout viewport fit (all four edges)", () => {
 // actual `checked: false`).
 type Row = {
     label?: string;
+    group?: MenuGroup;
     aria?: string;
     shortcut?: string;
     danger?: boolean;
@@ -120,6 +123,7 @@ function shape(items: MenuItem[]): Row[] {
     return items.map((i) => {
         const row: Row = {
             label: i.label,
+            group: i.group,
             aria: i.aria,
             shortcut: i.shortcut,
             danger: i.danger,
@@ -169,9 +173,9 @@ describe("sectionMenu — the section context menu's rows", () => {
 
     test("a single GEO section: Convert, Reset, Delete", () => {
         expect(shape(sectionMenu(base, acts()))).toEqual([
-            { label: "Convert", enabled: true },
-            { label: "Reset", enabled: true },
-            { label: "Delete", shortcut: "Del", danger: true, enabled: true },
+            { label: "Convert", group: "modify", enabled: true },
+            { label: "Reset", group: "lifecycle", enabled: true },
+            { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
     test("a single FORCE section adds Optimize between Convert and Reset", () => {
@@ -183,10 +187,10 @@ describe("sectionMenu — the section context menu's rows", () => {
             canOptimize: true,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Convert", enabled: true },
-            { label: "Optimize", enabled: true },
-            { label: "Reset", enabled: true },
-            { label: "Delete", shortcut: "Del", danger: true, enabled: true },
+            { label: "Convert", group: "modify", enabled: true },
+            { label: "Optimize", group: "modify", enabled: true },
+            { label: "Reset", group: "lifecycle", enabled: true },
+            { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
     test("a multi-set grays the single-subject rows and drops Optimize (force set included)", () => {
@@ -200,14 +204,18 @@ describe("sectionMenu — the section context menu's rows", () => {
             canReset: false,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Convert", enabled: false },
-            { label: "Reset", enabled: false },
-            { label: "Delete", shortcut: "Del", danger: true, enabled: true },
+            { label: "Convert", group: "modify", enabled: false },
+            { label: "Reset", group: "lifecycle", enabled: false },
+            { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
     test("an open session on ANOTHER section still grays Optimize on this one", () => {
         const s = { ...base, kind: SectionKind.Force, canOptimize: true, modeOpen: true };
-        expect(shape(sectionMenu(s, acts()))[1]).toEqual({ label: "Optimize", enabled: false });
+        expect(shape(sectionMenu(s, acts()))[1]).toEqual({
+            label: "Optimize",
+            group: "modify",
+            enabled: false,
+        });
     });
     test("in-mode on THIS section: the mode's own two rows replace the menu", () => {
         const s = {
@@ -218,8 +226,8 @@ describe("sectionMenu — the section context menu's rows", () => {
             optSolvable: true,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Solve", enabled: true },
-            { label: "Exit", shortcut: "Esc" },
+            { label: "Solve", group: "modify", enabled: true },
+            { label: "Exit", group: "modify", shortcut: "Esc" },
         ]);
         expect(shape(sectionMenu({ ...s, solving: true }, acts()))[0].enabled).toBe(false);
         expect(shape(sectionMenu({ ...s, optSolvable: false }, acts()))[0].enabled).toBe(false);
@@ -264,54 +272,71 @@ describe("nodeMenu — the node context menu's rows", () => {
         );
     const tangents = (enabled: boolean, mode: TangentMode): Row => ({
         label: "Tangents",
+        group: "modify",
         enabled,
         children: [
-            { label: "Mirror", checked: mode === TangentMode.Mirror },
-            { label: "Aligned", checked: mode === TangentMode.Aligned },
-            { label: "Free", checked: mode === TangentMode.Free },
+            { label: "Mirror", group: "modify", checked: mode === TangentMode.Mirror },
+            { label: "Aligned", group: "modify", checked: mode === TangentMode.Aligned },
+            { label: "Free", group: "modify", checked: mode === TangentMode.Free },
         ],
     });
+    const handles = (checked: boolean | undefined, enabled: boolean): Row => ({
+        label: "Handles",
+        group: "modify",
+        checked,
+        enabled,
+    });
+    const del = (enabled: boolean): Row => ({
+        label: "Delete",
+        group: "lifecycle",
+        shortcut: "Del",
+        danger: true,
+        enabled,
+    });
+    const add = (enabled: boolean): Row => ({
+        label: "Add",
+        group: "create",
+        shortcut: "Enter",
+        enabled,
+    });
+    const reset = (enabled: boolean): Row => ({ label: "Reset", group: "lifecycle", enabled });
 
-    test("an INTERIOR node: Delete + Add both gated off, then Handles / Tangents / Reset", () => {
+    test("an INTERIOR node: Add + Delete both gated off, Handles / Tangents / Reset between", () => {
         expect(shape(nodeMenu(base, acts()))).toEqual([
-            { label: "Delete", shortcut: "Del", danger: true, enabled: false },
-            { label: "Add", shortcut: "Enter", enabled: false },
-            { separator: true },
-            { label: "Handles", checked: false, enabled: true },
+            add(false),
+            handles(false, true),
             tangents(true, TangentMode.Aligned),
-            { label: "Reset", enabled: true },
+            reset(true),
+            del(false),
         ]);
     });
-    test("a CHAIN-END node lights Delete + Add; the mode check follows the target", () => {
+    test("a CHAIN-END node lights Add + Delete; the mode check follows the target", () => {
         const s = { ...base, isEnd: true, canTrim: true, editing: true, mode: TangentMode.Free };
         expect(shape(nodeMenu(s, acts()))).toEqual([
-            { label: "Delete", shortcut: "Del", danger: true, enabled: true },
-            { label: "Add", shortcut: "Enter", enabled: true },
-            { separator: true },
-            { label: "Handles", checked: true, enabled: true },
+            add(true),
+            handles(true, true),
             tangents(true, TangentMode.Free),
-            { label: "Reset", enabled: true },
+            reset(true),
+            del(true),
         ]);
     });
     test("NODE 0 carries Handles + Reset only (no Add/Delete, no mode submenu)", () => {
         expect(shape(nodeMenu({ ...base, isEntry: true }, acts()))).toEqual([
-            { label: "Handles", checked: false, enabled: true },
-            { separator: true },
-            { label: "Reset", enabled: true },
+            handles(false, true),
+            reset(true),
         ]);
     });
     test("NODE 0's Handles check lights in tangent edit, like every other node's", () => {
         expect(shape(nodeMenu({ ...base, isEntry: true, editing: true }, acts()))).toEqual([
-            { label: "Handles", checked: true, enabled: true },
-            { separator: true },
-            { label: "Reset", enabled: true },
+            handles(true, true),
+            reset(true),
         ]);
     });
     test("node 0's rows act on the single target — Reset is `reset`, never `resetSet`", () => {
         const rec = acts();
         const rows = nodeMenu({ ...base, isEntry: true }, rec);
         rows[0].action?.();
-        rows[2].action?.();
+        rows[1].action?.();
         expect(rec.log).toEqual(["toggleHandles()", "reset()"]);
     });
     test("a MULTI set holding node 0 keeps the bulk menu — the multi fork outranks isEntry", () => {
@@ -319,39 +344,30 @@ describe("nodeMenu — the node context menu's rows", () => {
         // rows win. node 0's own two-row menu is the SINGLE-subject shape only.
         const s = { ...base, multi: true, isEntry: true, suffixOk: true, mode: TangentMode.Mirror };
         expect(shape(nodeMenu(s, acts()))).toEqual([
-            { label: "Delete", shortcut: "Del", danger: true, enabled: true },
-            { label: "Add", shortcut: "Enter", enabled: false },
-            { separator: true },
-            { label: "Handles", enabled: false },
+            add(false),
+            handles(undefined, false),
             tangents(true, TangentMode.Mirror),
-            { label: "Reset", enabled: true },
+            reset(true),
+            del(true),
         ]);
     });
     test("a MULTI set: bulk Delete on a suffix run, Add + Handles grayed, no Handles check", () => {
         const s = { ...base, multi: true, suffixOk: true, mode: TangentMode.Mirror };
         expect(shape(nodeMenu(s, acts()))).toEqual([
-            { label: "Delete", shortcut: "Del", danger: true, enabled: true },
-            { label: "Add", shortcut: "Enter", enabled: false },
-            { separator: true },
-            { label: "Handles", enabled: false },
+            add(false),
+            handles(undefined, false),
             tangents(true, TangentMode.Mirror),
-            { label: "Reset", enabled: true },
+            reset(true),
+            del(true),
         ]);
     });
     test("the lockdown grays every edit row, single and multi alike", () => {
         const single = shape(nodeMenu({ ...base, ok: false, isEnd: true, canTrim: true }, acts()));
-        expect(single.map((r) => r.enabled)).toEqual([
-            false,
-            false,
-            undefined,
-            false,
-            false,
-            false,
-        ]);
+        expect(single.map((r) => r.enabled)).toEqual([false, false, false, false, false]);
         const multi = shape(nodeMenu({ ...base, ok: false, multi: true, suffixOk: true }, acts()));
-        expect(multi.map((r) => r.enabled)).toEqual([false, false, undefined, false, false, false]);
+        expect(multi.map((r) => r.enabled)).toEqual([false, false, false, false, false]);
         const zero = shape(nodeMenu({ ...base, ok: false, isEntry: true }, acts()));
-        expect(zero.map((r) => r.enabled)).toEqual([false, undefined, false]);
+        expect(zero.map((r) => r.enabled)).toEqual([false, false]);
     });
     test("the single rows act on the target, the multi rows on the set", () => {
         // EVERY submenu row is invoked, in order: three near-identical copy-pasted rows per branch
@@ -361,29 +377,29 @@ describe("nodeMenu — the node context menu's rows", () => {
         const rows = nodeMenu(base, one);
         rows[0].action?.();
         rows[1].action?.();
+        for (const c of rows[2].children ?? []) c.action?.();
         rows[3].action?.();
-        for (const c of rows[4].children ?? []) c.action?.();
-        rows[5].action?.();
+        rows[4].action?.();
         expect(one.log).toEqual([
-            "remove()",
             "add()",
             "toggleHandles()",
             `pickMode(${TangentMode.Mirror})`,
             `pickMode(${TangentMode.Aligned})`,
             `pickMode(${TangentMode.Free})`,
             "reset()",
+            "remove()",
         ]);
         const set = acts();
         const bulk = nodeMenu({ ...base, multi: true }, set);
-        bulk[0].action?.();
-        for (const c of bulk[4].children ?? []) c.action?.();
-        bulk[5].action?.();
+        for (const c of bulk[2].children ?? []) c.action?.();
+        bulk[3].action?.();
+        bulk[4].action?.();
         expect(set.log).toEqual([
-            "removeSet()",
             `pickModeSet(${TangentMode.Mirror})`,
             `pickModeSet(${TangentMode.Aligned})`,
             `pickModeSet(${TangentMode.Free})`,
             "resetSet()",
+            "removeSet()",
         ]);
     });
 });
@@ -411,62 +427,90 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
         custom = false,
     ): Row => ({
         label: "Easing",
+        group: "modify",
         enabled,
         children: [
-            { label: "Linear", glyph: "preset:0", checked: checked === Easing.Linear },
-            { label: "Cubic", glyph: "preset:1", checked: checked === Easing.Cubic },
-            { label: "Quintic", glyph: "preset:2", checked: checked === Easing.Quintic },
+            {
+                label: "Linear",
+                group: "modify",
+                glyph: "preset:0",
+                checked: checked === Easing.Linear,
+            },
+            {
+                label: "Cubic",
+                group: "modify",
+                glyph: "preset:1",
+                checked: checked === Easing.Cubic,
+            },
+            {
+                label: "Quintic",
+                group: "modify",
+                glyph: "preset:2",
+                checked: checked === Easing.Quintic,
+            },
+            // the ONE authored separator left in the app: a WITHIN-group divider (the preset picks
+            // from Custom), a position no derived group boundary can occupy.
             { separator: true },
-            { label: "Custom", enabled: customEnabled, glyph: "custom:glyph", checked: custom },
+            {
+                label: "Custom",
+                group: "modify",
+                enabled: customEnabled,
+                glyph: "custom:glyph",
+                checked: custom,
+            },
         ],
     });
+    const del = (enabled: boolean): Row => ({
+        label: "Delete",
+        group: "lifecycle",
+        shortcut: "Del",
+        danger: true,
+        enabled,
+    });
 
-    test("a single NON-TERMINAL keyframe: Delete then Easing ▸ (the tag checked)", () => {
+    test("a single NON-TERMINAL keyframe: Easing ▸ (the tag checked) then Delete", () => {
         expect(shape(keyframeMenu(base, acts()))).toEqual([
-            { label: "Delete", shortcut: "Del", danger: true, enabled: true },
             easing(true, Easing.Cubic, true),
+            del(true),
         ]);
     });
     test("a single TERMINAL keyframe shows Delete alone", () => {
         expect(shape(keyframeMenu({ ...base, terminal: true, easeTargets: 0 }, acts()))).toEqual([
-            { label: "Delete", shortcut: "Del", danger: true, enabled: true },
+            del(true),
         ]);
     });
     test("a MULTI set keeps Easing ▸ even on a terminal active, graying Custom", () => {
         const s = { ...base, multi: true, terminal: true, easeTargets: 2 };
         expect(shape(keyframeMenu(s, acts()))).toEqual([
-            { label: "Delete", shortcut: "Del", danger: true, enabled: true },
             easing(true, Easing.Cubic, false),
+            del(true),
         ]);
     });
     test("no applicable easing target grays the row; an explicit handle unchecks the preset", () => {
         const s = { ...base, easeTargets: 0, custom: true };
-        expect(shape(keyframeMenu(s, acts()))[1]).toEqual(easing(false, null, true, true));
+        expect(shape(keyframeMenu(s, acts()))[0]).toEqual(easing(false, null, true, true));
     });
-    test("in-mode: the Lock row leads, above Delete", () => {
+    test("in-mode: the Lock row leads, and Delete still lands last", () => {
         const locked = shape(keyframeMenu({ ...base, lock: "Lock" }, acts()));
-        expect(locked[0]).toEqual({ label: "Lock", shortcut: "Q" });
-        expect(locked[1]).toEqual({
-            label: "Delete",
-            shortcut: "Del",
-            danger: true,
-            enabled: true,
-        });
+        expect(locked[0]).toEqual({ label: "Lock", group: "modify", shortcut: "Q" });
+        expect(locked.at(-1)).toEqual(del(true));
         expect(locked).toHaveLength(3);
         expect(shape(keyframeMenu({ ...base, lock: "Unlock" }, acts()))[0]).toEqual({
             label: "Unlock",
+            group: "modify",
             shortcut: "Q",
         });
     });
-    test("explicit handles add the Tangents ▸ submenu last, checked by the stored mode", () => {
+    test("explicit handles add the Tangents ▸ submenu, checked by the stored mode, above Delete", () => {
         const s = { ...base, hasHandles: true, mode: TangentMode.Mirror };
-        expect(shape(keyframeMenu(s, acts())).at(-1)).toEqual({
+        expect(shape(keyframeMenu(s, acts())).at(-2)).toEqual({
             label: "Tangents",
+            group: "modify",
             enabled: true,
             children: [
-                { label: "Mirror", checked: true },
-                { label: "Aligned", checked: false },
-                { label: "Free", checked: false },
+                { label: "Mirror", group: "modify", checked: true },
+                { label: "Aligned", group: "modify", checked: false },
+                { label: "Free", group: "modify", checked: false },
             ],
         });
     });
@@ -474,10 +518,10 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
         const rows = shape(
             keyframeMenu({ ...base, setOk: false, activeOk: false, hasHandles: true }, acts()),
         );
-        expect(rows[0].enabled).toBe(false);
-        expect(rows[1].enabled).toBe(false);
-        expect(rows[1].children?.[4].enabled).toBe(false);
-        expect(rows[2].enabled).toBe(false);
+        expect(rows[0].enabled).toBe(false); // Easing ▸
+        expect(rows[0].children?.[4].enabled).toBe(false); // …its Custom row
+        expect(rows[1].enabled).toBe(false); // Tangents ▸
+        expect(rows[2].enabled).toBe(false); // Delete
     });
     test("the rows act on their subjects", () => {
         // every submenu row is invoked, in order — three near-identical preset rows and three mode
@@ -485,12 +529,11 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
         const rec = acts();
         const rows = keyframeMenu({ ...base, lock: "Lock", hasHandles: true }, rec);
         rows[0].action?.(); // Lock
-        rows[1].action?.(); // Delete
-        for (const c of rows[2].children ?? []) c.action?.(); // Easing ▸ (separator inert)
-        for (const c of rows[3].children ?? []) c.action?.(); // Tangents ▸
+        for (const c of rows[1].children ?? []) c.action?.(); // Easing ▸ (separator inert)
+        for (const c of rows[2].children ?? []) c.action?.(); // Tangents ▸
+        rows[3].action?.(); // Delete
         expect(rec.log).toEqual([
             "toggleLock()",
-            "remove()",
             `setEase(${Easing.Linear})`,
             `setEase(${Easing.Cubic})`,
             `setEase(${Easing.Quintic})`,
@@ -498,6 +541,7 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
             `pickMode(${TangentMode.Mirror})`,
             `pickMode(${TangentMode.Aligned})`,
             `pickMode(${TangentMode.Free})`,
+            "remove()",
         ]);
     });
 });
@@ -513,16 +557,16 @@ describe("rulerMenu / appendMenu — the flat two-row menus", () => {
                 ),
             ),
         ).toEqual([
-            { label: "Meters", enabled: true, checked: true },
-            { label: "Seconds", enabled: true, checked: false },
+            { label: "Meters", group: "modify", enabled: true, checked: true },
+            { label: "Seconds", group: "modify", enabled: true, checked: false },
         ]);
         expect(
             shape(
                 rulerMenu({ domain: Domain.Time, metersEnabled: false, secondsEnabled: true }, rec),
             ),
         ).toEqual([
-            { label: "Meters", enabled: false, checked: false },
-            { label: "Seconds", enabled: true, checked: true },
+            { label: "Meters", group: "modify", enabled: false, checked: false },
+            { label: "Seconds", group: "modify", enabled: true, checked: true },
         ]);
     });
     test("each ruler row picks its OWN domain", () => {
@@ -537,11 +581,329 @@ describe("rulerMenu / appendMenu — the flat two-row menus", () => {
     test("the append flyout: Geo | Force, both always live, each with its a11y name", () => {
         const rec = recorder("append");
         expect(shape(appendMenu(rec))).toEqual([
-            { label: "Geo", aria: "Append geometry section" },
-            { label: "Force", aria: "Append force section" },
+            { label: "Geo", group: "create", aria: "Append geometry section" },
+            { label: "Force", group: "create", aria: "Append force section" },
         ]);
         for (const r of appendMenu(rec)) r.action?.();
         expect(rec.log).toEqual([`append(${SectionKind.Geo})`, `append(${SectionKind.Force})`]);
+    });
+});
+
+// ── the GRAMMAR ORACLE (kex2d-menu-grammar stage 2). The characterization suite above pins what
+// each menu says today; this pins the LAW every menu obeys — and it runs over EVERY builder across
+// its FULL state matrix, so a menu added later is caught by this same code rather than by someone
+// remembering to hand-write asserts for it. `builders` below is checked exhaustive against the
+// module's own exports, so a new builder that isn't given a matrix fails here.
+describe("the menu grammar — every builder, every state", () => {
+    // A state matrix is a per-field candidate list; the oracle walks its full cartesian product.
+    // Fields are ASSIGNED one by one, never spread from a shared object: an app descriptor may
+    // carry lazy getters (an expensive predicate a builder branch might never read), and a spread
+    // collapses them — the oracle must not model a descriptor in a shape the app can't hand it.
+    type Matrix<S> = { [K in keyof S]: readonly S[K][] };
+    function states<S extends object>(matrix: Matrix<S>): S[] {
+        let out: S[] = [{} as S];
+        for (const key of Object.keys(matrix) as (keyof S)[]) {
+            const next: S[] = [];
+            for (const partial of out)
+                for (const value of matrix[key]) {
+                    const s = {} as S;
+                    for (const k of Object.keys(partial) as (keyof S)[]) s[k] = partial[k];
+                    s[key] = value;
+                    next.push(s);
+                }
+            out = next;
+        }
+        return out;
+    }
+
+    const bool = [false, true] as const;
+    const modes = [TangentMode.Mirror, TangentMode.Aligned, TangentMode.Free] as const;
+
+    const sectionStates = states<SectionMenuState>({
+        inMode: bool,
+        solving: bool,
+        optSolvable: bool,
+        kind: [SectionKind.Geo, SectionKind.Force, null],
+        multi: bool,
+        modeOpen: bool,
+        canSolve: bool,
+        canSolveShape: bool,
+        canOptimize: bool,
+        canReset: bool,
+        canDelete: bool,
+    });
+    const nodeStates = states<NodeMenuState>({
+        multi: bool,
+        isEntry: bool,
+        ok: bool,
+        mode: modes,
+        editing: bool,
+        isEnd: bool,
+        canTrim: bool,
+        suffixOk: bool,
+    });
+    const keyframeStates = states<KeyframeMenuState>({
+        setOk: bool,
+        activeOk: bool,
+        lock: ["Lock", "Unlock", null],
+        multi: bool,
+        terminal: bool,
+        easeTargets: [0, 1, 2],
+        custom: bool,
+        ease: [Easing.Linear, Easing.Cubic, Easing.Quintic],
+        hasHandles: bool,
+        mode: modes,
+        presetGlyph: [(e: Easing) => `preset:${e}`],
+        customGlyph: ["custom:glyph"],
+    });
+    const rulerStates = states<RulerMenuState>({
+        domain: [Domain.Distance, Domain.Time],
+        metersEnabled: bool,
+        secondsEnabled: bool,
+    });
+
+    // every menu the app can summon, as `(name, rows)` pairs — the oracle's whole input.
+    function corpus(): { name: string; rows: MenuItem[] }[] {
+        const all: { name: string; rows: MenuItem[] }[] = [];
+        const acts = () =>
+            recorder(
+                "solve",
+                "solveShape",
+                "optimizeSolve",
+                "optimizeExit",
+                "optimizeEnter",
+                "reset",
+                "remove",
+                "removeSet",
+                "add",
+                "toggleHandles",
+                "pickMode",
+                "pickModeSet",
+                "resetSet",
+                "toggleLock",
+                "setEase",
+                "chooseCustom",
+                "pick",
+                "append",
+            );
+        for (const s of sectionStates)
+            all.push({ name: "sectionMenu", rows: sectionMenu(s, acts()) });
+        for (const s of nodeStates) all.push({ name: "nodeMenu", rows: nodeMenu(s, acts()) });
+        for (const s of keyframeStates)
+            all.push({ name: "keyframeMenu", rows: keyframeMenu(s, acts()) });
+        for (const s of rulerStates) all.push({ name: "rulerMenu", rows: rulerMenu(s, acts()) });
+        all.push({ name: "appendMenu", rows: appendMenu(acts()) });
+        return all;
+    }
+    // every menu AND every submenu, flattened — a flyout is a menu, so the same laws hold in it.
+    function levels(): { name: string; rows: MenuItem[] }[] {
+        const out: { name: string; rows: MenuItem[] }[] = [];
+        const walk = (name: string, rows: MenuItem[]): void => {
+            out.push({ name, rows });
+            for (const row of rows) if (row.children) walk(`${name} ▸ ${row.label}`, row.children);
+        };
+        for (const menu of corpus()) walk(menu.name, menu.rows);
+        return out;
+    }
+    const label = (name: string, rows: MenuItem[]): string =>
+        `${name}: [${rows.map((r) => (r.separator ? "—" : `${r.label}/${r.group}`)).join(", ")}]`;
+
+    // Every callable `menus.ts` exports is a builder unless it is named here. Filtering on a
+    // `Menu` SUFFIX instead would let an `easingSubmenu` / `contextRows` / a re-exported row helper
+    // slip past BOTH sides of the equality below and stay silently ungated with the oracle green;
+    // callable-minus-allowlist fails closed instead. Empty today — `menus.ts` exports builders and
+    // types only. A helper that has to be exported goes here WITH its reason.
+    const NotBuilders = new Set<string>([]);
+
+    test("the corpus covers every builder `menus.ts` exports", () => {
+        // the completeness pin: a builder added later with no matrix here is not silently ungated.
+        const covered = new Set(corpus().map((m) => m.name.replace(/ ▸.*/, "")));
+        const exported = Object.entries(menus)
+            .filter(([k, v]) => typeof v === "function" && !NotBuilders.has(k))
+            .map(([k]) => k);
+        expect([...covered].sort()).toEqual(exported.sort());
+    });
+
+    // Violations are COLLECTED, deduped by their own message, and asserted empty — a grammar
+    // oracle that threw on the first bad menu would report one and hide the rest, and the whole
+    // point of running the full matrix is seeing every menu that breaks the law at once.
+    function violations(check: (menu: { name: string; rows: MenuItem[] }) => string[]): string[] {
+        const seen = new Set<string>();
+        for (const menu of levels()) for (const v of check(menu)) seen.add(v);
+        return [...seen].sort();
+    }
+
+    test("every non-separator row declares a group", () => {
+        expect(
+            violations(({ name, rows }) =>
+                rows
+                    .filter((r) => !r.separator && !GROUPS.includes(r.group as MenuGroup))
+                    .map((r) => `${label(name, rows)} — "${r.label}" declares no group`),
+            ),
+        ).toEqual([]);
+    });
+
+    test("groups are non-decreasing in canonical order", () => {
+        expect(
+            violations(({ name, rows }) => {
+                const items = rows.filter((r) => !r.separator);
+                const rank = (r: MenuItem): number => GROUPS.indexOf(r.group as MenuGroup);
+                return items
+                    .filter((r, i) => i > 0 && rank(r) < rank(items[i - 1]))
+                    .map(
+                        (r) =>
+                            `${label(name, rows)} — "${r.label}" (${r.group}) sorts before its predecessor`,
+                    );
+            }),
+        ).toEqual([]);
+    });
+
+    test("`danger` appears only on the menu's terminal row", () => {
+        expect(
+            violations(({ name, rows }) =>
+                rows
+                    .filter((r, i) => r.danger && i !== rows.length - 1)
+                    .map((r) => `${label(name, rows)} — "${r.label}" is danger but not terminal`),
+            ),
+        ).toEqual([]);
+    });
+
+    test("an explicit separator is a WITHIN-group divider only", () => {
+        // every group boundary's divider is DERIVED (`menuRows`), so an authored one is legal only
+        // where a derived one can never land: interior, and between two rows of the same group.
+        expect(
+            violations(({ name, rows }) => {
+                const bad: string[] = [];
+                for (let i = 0; i < rows.length; i++) {
+                    if (!rows[i].separator) continue;
+                    const where = `${label(name, rows)} — separator at ${i}`;
+                    if (i === 0 || i === rows.length - 1) bad.push(`${where} is first or last`);
+                    else if (rows[i + 1].group !== rows[i - 1].group)
+                        bad.push(`${where} straddles a group change`);
+                }
+                return bad;
+            }),
+        ).toEqual([]);
+    });
+
+    test("`checked` appears only on rows that declare state", () => {
+        // a check reports a state the row's OWN press sets, so it belongs to a leaf with an action;
+        // a separator, a submenu parent, or an actionless row has no state to report. And a
+        // destructive row is an act, never a state.
+        expect(
+            violations(({ name, rows }) => {
+                const bad: string[] = [];
+                for (const row of rows) {
+                    if (row.checked === undefined) continue;
+                    const where = `${label(name, rows)} — "${row.label}"`;
+                    if (typeof row.checked !== "boolean")
+                        bad.push(`${where} checked is not a boolean`);
+                    if (!row.action) bad.push(`${where} is checked with no action`);
+                    if (row.children) bad.push(`${where} is a checked submenu parent`);
+                    if (row.danger) bad.push(`${where} is checked AND danger`);
+                }
+                return bad;
+            }),
+        ).toEqual([]);
+    });
+
+    test("`shortcut` is present iff a keyboard binding invokes that row's action", () => {
+        // the declared binding table: a row's hint is legal only where a KEY reaches the same
+        // action. `Handles` is double-click — a pointer gesture is not a shortcut, so it declares
+        // nothing. Sources: controls.ts (Enter extend / Del trim / Del section), Timeline.svelte
+        // (Del force), optimize mode (Q lock, Esc exit).
+        const Bindings: Record<string, string> = {
+            Delete: "Del",
+            Add: "Enter",
+            Exit: "Esc",
+            Lock: "Q",
+            Unlock: "Q",
+        };
+        expect(
+            violations(({ name, rows }) =>
+                rows
+                    .filter((r) => !r.separator && r.shortcut !== Bindings[r.label ?? ""])
+                    .map(
+                        (r) =>
+                            `${label(name, rows)} — "${r.label}" shows ${JSON.stringify(r.shortcut)}, the binding table says ${JSON.stringify(Bindings[r.label ?? ""])}`,
+                    ),
+            ),
+        ).toEqual([]);
+    });
+
+    // the divider count is not the law — a renderer emitting every derived divider ONE ROW LATE
+    // keeps the count, the subsequence, the no-two-adjacent rule and the not-first/last rule, and
+    // renders `Add | Handles | — | Tangents | Reset | — | Delete`. So the assert is POSITIONAL:
+    // `gaps` reads how many dividers sit in each slot between consecutive rows (slot 0 = before the
+    // first row, slot n = after the last), and each slot's rendered count is pinned against what
+    // the authored rows demand there.
+    function gaps(rows: MenuItem[]): number[] {
+        const out = [0];
+        for (const row of rows) {
+            if (row.separator) out[out.length - 1]++;
+            else out.push(0);
+        }
+        return out;
+    }
+
+    test("`menuRows` puts a divider in exactly the slots that demand one", () => {
+        for (const { name, rows } of levels()) {
+            const rendered = menuRows(rows);
+            const authored = rows.filter((r) => !r.separator);
+            const where = label(name, rows);
+            expect(
+                rendered.filter((r) => !r.separator),
+                where,
+            ).toEqual(authored);
+            const demanded = gaps(rows);
+            const actual = gaps(rendered);
+            expect(actual.length, `${where} — row count changed`).toBe(demanded.length);
+            for (let k = 0; k < demanded.length; k++) {
+                // an outer slot never carries one (nothing to divide); an interior slot carries
+                // exactly one iff the group changes there OR the builder authored a within-group
+                // divider — the two collapse rather than doubling up.
+                const inner = k > 0 && k < demanded.length - 1;
+                const change = inner && authored[k].group !== authored[k - 1].group;
+                expect(actual[k], `${where} — slot ${k} divider count`).toBe(
+                    inner && (change || demanded[k] > 0) ? 1 : 0,
+                );
+            }
+        }
+    });
+});
+
+// `menuRows` is a public seam other menus will call, so its edge cases are pinned directly rather
+// than left to the corpus above (which reaches none of them: no shipping builder authors a
+// separator at a group boundary or an empty menu). Correct by construction, not by the oracle's
+// within-group law holding forever.
+describe("menuRows — the renderer's own edge cases", () => {
+    const row = (label: string, group: MenuGroup): MenuItem => ({ label, group });
+    const sep: MenuItem = { separator: true };
+
+    test("an authored separator AT a group boundary collapses with the derived one", () => {
+        expect(menuRows([row("Add", "create"), sep, row("Reset", "lifecycle")])).toEqual([
+            row("Add", "create"),
+            { separator: true },
+            row("Reset", "lifecycle"),
+        ]);
+    });
+    test("adjacent authored separators collapse to one", () => {
+        expect(menuRows([row("Handles", "modify"), sep, sep, row("Custom", "modify")])).toEqual([
+            row("Handles", "modify"),
+            { separator: true },
+            row("Custom", "modify"),
+        ]);
+    });
+    test("leading and trailing separators are dropped", () => {
+        expect(menuRows([sep, row("Handles", "modify"), sep])).toEqual([row("Handles", "modify")]);
+    });
+    test("a menu of nothing but separators renders empty", () => {
+        expect(menuRows([sep, sep])).toEqual([]);
+        expect(menuRows([])).toEqual([]);
+    });
+    test("items pass through BY REFERENCE (a builder's descriptor reads are lazy)", () => {
+        const item = row("Add", "create");
+        expect(menuRows([item])[0]).toBe(item);
     });
 });
 

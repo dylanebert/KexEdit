@@ -66,6 +66,7 @@ function convertRow(s: SectionMenuState, a: SectionMenuActions): MenuItem {
         // direction — force converts to geo, geo to force — and the row is summoned ON the
         // section, so the label carries the verb alone.
         label: "Convert",
+        group: "modify",
         enabled: toGeo ? s.canSolveShape : s.canSolve,
         action: toGeo ? a.solveShape : a.solve,
     };
@@ -84,8 +85,13 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
     // button (below MIN_FREE free keys there is nothing to solve — pure counting).
     if (s.inMode) {
         return [
-            { label: "Solve", action: a.optimizeSolve, enabled: !s.solving && s.optSolvable },
-            { label: "Exit", shortcut: "Esc", action: a.optimizeExit },
+            {
+                label: "Solve",
+                group: "modify",
+                action: a.optimizeSolve,
+                enabled: !s.solving && s.optSolvable,
+            },
+            { label: "Exit", group: "modify", shortcut: "Esc", action: a.optimizeExit },
         ];
     }
     const del = s.multi ? a.removeSet : a.remove;
@@ -98,13 +104,15 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
     if (s.kind === SectionKind.Force && !s.multi) {
         items.push({
             label: "Optimize",
+            group: "modify",
             enabled: s.canOptimize && !s.modeOpen,
             action: a.optimizeEnter,
         });
     }
-    items.push({ label: "Reset", enabled: s.canReset, action: a.reset });
+    items.push({ label: "Reset", group: "lifecycle", enabled: s.canReset, action: a.reset });
     items.push({
         label: "Delete",
+        group: "lifecycle",
         shortcut: "Del",
         danger: true,
         enabled: s.canDelete,
@@ -144,11 +152,13 @@ export type NodeMenuActions = {
     resetSet: () => void;
 };
 
-/** the node menu as data (the shared MenuItem language): Add node / Delete node (chain-end-only, so
- *  enablement-gated — the menu is Delete's only pointer path, the ring carries no trash button), then
- *  a Handles toggle over a Tangents submenu (the three modes carry their `checked`), then a top-level
- *  Reset closing the group (the Reset idiom law: one click from anywhere, back to the state a fresh
- *  author would get — Reset RE-CREATES the node: default-chord continuation, tangents Auto). it's
+/** the node menu as data (the shared MenuItem language), in the grammar's canonical order: Add
+ *  (`create`), then a Handles toggle over a Tangents submenu (`modify`; the three modes carry
+ *  their `checked`), then Reset and Delete (`lifecycle`, the destructive row terminal). Add and
+ *  Delete are both chain-end-only, so both are enablement-gated — the menu is Delete's only
+ *  pointer path, the ring carries no trash button. Reset is the Reset idiom law: one click from
+ *  anywhere, back to the state a fresh author would get — Reset RE-CREATES the node (default-chord
+ *  continuation, tangents Auto). it's
  *  enabled whenever the subject is editable, never gated on "has something to clear" — a reset that
  *  changes nothing records no undo entry (`sameNodes`), the same no-op guard every Reset row leans
  *  on. node 0 (the entry anchor) is the exception — never
@@ -161,80 +171,105 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
     // ACTIVE member (Blender active-only).
     if (s.multi) {
         return [
-            {
-                label: "Delete",
-                shortcut: "Del",
-                danger: true,
-                enabled: s.suffixOk && s.ok,
-                action: a.removeSet,
-            },
-            { label: "Add", shortcut: "Enter", enabled: false },
-            { separator: true },
-            { label: "Handles", enabled: false },
+            { label: "Add", group: "create", shortcut: "Enter", enabled: false },
+            { label: "Handles", group: "modify", enabled: false },
             {
                 label: "Tangents",
+                group: "modify",
                 enabled: s.ok,
                 children: [
                     {
                         label: "Mirror",
+                        group: "modify",
                         checked: s.mode === TangentMode.Mirror,
                         action: () => a.pickModeSet(TangentMode.Mirror),
                     },
                     {
                         label: "Aligned",
+                        group: "modify",
                         checked: s.mode === TangentMode.Aligned,
                         action: () => a.pickModeSet(TangentMode.Aligned),
                     },
                     {
                         label: "Free",
+                        group: "modify",
                         checked: s.mode === TangentMode.Free,
                         action: () => a.pickModeSet(TangentMode.Free),
                     },
                 ],
             },
-            { label: "Reset", enabled: s.ok, action: a.resetSet },
+            { label: "Reset", group: "lifecycle", enabled: s.ok, action: a.resetSet },
+            {
+                label: "Delete",
+                group: "lifecycle",
+                shortcut: "Del",
+                danger: true,
+                enabled: s.suffixOk && s.ok,
+                action: a.removeSet,
+            },
         ];
     }
     if (s.isEntry) {
         return [
-            { label: "Handles", checked: s.editing, enabled: s.ok, action: a.toggleHandles },
-            { separator: true },
-            { label: "Reset", enabled: s.ok, action: a.reset },
+            {
+                label: "Handles",
+                group: "modify",
+                checked: s.editing,
+                enabled: s.ok,
+                action: a.toggleHandles,
+            },
+            { label: "Reset", group: "lifecycle", enabled: s.ok, action: a.reset },
         ];
     }
     return [
         {
-            label: "Delete",
-            shortcut: "Del",
-            danger: true,
-            enabled: s.canTrim && s.ok,
-            action: a.remove,
+            label: "Add",
+            group: "create",
+            shortcut: "Enter",
+            enabled: s.isEnd && s.ok,
+            action: a.add,
         },
-        { label: "Add", shortcut: "Enter", enabled: s.isEnd && s.ok, action: a.add },
-        { separator: true },
-        { label: "Handles", checked: s.editing, enabled: s.ok, action: a.toggleHandles },
+        {
+            label: "Handles",
+            group: "modify",
+            checked: s.editing,
+            enabled: s.ok,
+            action: a.toggleHandles,
+        },
         {
             label: "Tangents",
+            group: "modify",
             enabled: s.ok,
             children: [
                 {
                     label: "Mirror",
+                    group: "modify",
                     checked: s.mode === TangentMode.Mirror,
                     action: () => a.pickMode(TangentMode.Mirror),
                 },
                 {
                     label: "Aligned",
+                    group: "modify",
                     checked: s.mode === TangentMode.Aligned,
                     action: () => a.pickMode(TangentMode.Aligned),
                 },
                 {
                     label: "Free",
+                    group: "modify",
                     checked: s.mode === TangentMode.Free,
                     action: () => a.pickMode(TangentMode.Free),
                 },
             ],
         },
-        { label: "Reset", enabled: s.ok, action: a.reset },
+        { label: "Reset", group: "lifecycle", enabled: s.ok, action: a.reset },
+        {
+            label: "Delete",
+            group: "lifecycle",
+            shortcut: "Del",
+            danger: true,
+            enabled: s.canTrim && s.ok,
+            action: a.remove,
+        },
     ];
 }
 
@@ -274,9 +309,12 @@ export type KeyframeMenuActions = {
     pickMode: (mode: TangentMode) => void;
 };
 
-/** the menu as data: Delete (the whole SET, one entry — force multi-delete is unconditional), then an
- *  Easing ▸ submenu — Linear | Cubic | Quintic (checked by the ACTIVE keyframe's tag), a separator,
- *  then Custom. the preset rows apply to ALL selected non-terminal keyframes — the caller resolves
+/** the menu as data, in the grammar's canonical order: the mode-scoped Lock/Unlock, an Easing ▸
+ *  submenu, a Tangents ▸ submenu (all `modify`), then Delete last — the whole SET in one entry,
+ *  force multi-delete being unconditional. Easing ▸ is Linear | Cubic | Quintic (checked by the
+ *  ACTIVE keyframe's tag), the one sanctioned WITHIN-group separator, then Custom — Custom
+ *  materializes handles and steps into handle edit, a different kind of row but the same group, so
+ *  the divider is authored rather than derived. the preset rows apply to ALL selected non-terminal keyframes — the caller resolves
  *  that member set and reports only its size (`easeTargets`), so the row grays when none is
  *  applicable. each row carries its real curve glyph (drawn from the same
  *  influence the segment uses, so the icon can't drift). Custom is single-subject (the active): both
@@ -284,24 +322,25 @@ export type KeyframeMenuActions = {
  *  — picking it materializes the segment's handles and steps into handle edit; picking a preset
  *  clears them back. a single terminal keyframe governs no segment, so it shows Delete alone. */
 export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): MenuItem[] {
-    const items: MenuItem[] = [
-        { label: "Delete", shortcut: "Del", danger: true, enabled: s.setOk, action: a.remove },
-    ];
+    const items: MenuItem[] = [];
     // the Lock/Unlock row (kex2d stage 6): SHOWN only in optimize mode on the optimizing
     // section's own keys, HIDDEN everywhere else (`lockLabel`'s omit-vs-gray law) — the mouse
     // path to the same set-toggle `Q` drives, over the same filtered member set.
-    if (s.lock !== null) items.unshift({ label: s.lock, shortcut: "Q", action: a.toggleLock });
+    if (s.lock !== null)
+        items.push({ label: s.lock, group: "modify", shortcut: "Q", action: a.toggleLock });
     // shown whenever any easing target could exist (a multi-set, or a single non-terminal keyframe);
     // enabled only when the selection has a non-terminal member — else grayed, never hidden.
     if (s.multi || !s.terminal) {
         const easeRow = (label: string, e: Easing): MenuItem => ({
             label,
+            group: "modify",
             glyph: s.presetGlyph(e),
             checked: !s.custom && s.ease === e,
             action: () => a.setEase(e),
         });
         items.push({
             label: "Easing",
+            group: "modify",
             enabled: s.easeTargets > 0 && s.setOk,
             children: [
                 easeRow("Linear", Easing.Linear),
@@ -314,6 +353,7 @@ export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): Menu
                 // keep the preset rows live.
                 {
                     label: "Custom",
+                    group: "modify",
                     enabled: !s.terminal && s.activeOk,
                     glyph: s.customGlyph,
                     checked: s.custom,
@@ -329,11 +369,13 @@ export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): Menu
     if (s.hasHandles) {
         const modeRow = (label: string, mode: TangentMode): MenuItem => ({
             label,
+            group: "modify",
             checked: s.mode === mode,
             action: () => a.pickMode(mode),
         });
         items.push({
             label: "Tangents",
+            group: "modify",
             enabled: s.activeOk,
             children: [
                 modeRow("Mirror", TangentMode.Mirror),
@@ -342,6 +384,14 @@ export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): Menu
             ],
         });
     }
+    items.push({
+        label: "Delete",
+        group: "lifecycle",
+        shortcut: "Del",
+        danger: true,
+        enabled: s.setOk,
+        action: a.remove,
+    });
     return items;
 }
 
@@ -367,6 +417,7 @@ export type RulerMenuState = {
 export function rulerMenu(s: RulerMenuState, a: { pick: (target: Domain) => void }): MenuItem[] {
     const row = (label: string, target: Domain, enabled: boolean): MenuItem => ({
         label,
+        group: "modify",
         enabled,
         checked: s.domain === target,
         action: () => a.pick(target),
@@ -382,9 +433,15 @@ export function rulerMenu(s: RulerMenuState, a: { pick: (target: Domain) => void
  *  enablement — the substrate carries it, this menu just has nothing to disable. */
 export function appendMenu(a: { append: (kind: SectionKind) => void }): MenuItem[] {
     return [
-        { label: "Geo", aria: "Append geometry section", action: () => a.append(SectionKind.Geo) },
+        {
+            label: "Geo",
+            group: "create",
+            aria: "Append geometry section",
+            action: () => a.append(SectionKind.Geo),
+        },
         {
             label: "Force",
+            group: "create",
             aria: "Append force section",
             action: () => a.append(SectionKind.Force),
         },

@@ -1,5 +1,5 @@
 <script lang="ts">
-import { flyoutFit, type MenuItem } from "./menu";
+import { flyoutFit, type MenuItem, menuRows } from "./menu";
 import Menu from "./Menu.svelte"; // self-reference: a submenu is another Menu (Svelte 5 recursion)
 
 // the shared menu renderer (root ui.md's one-language): a MenuItem[] drawn as rows in the
@@ -7,6 +7,13 @@ import Menu from "./Menu.svelte"; // self-reference: a submenu is another Menu (
 // every menu (section context, node context, append flyout) is one instance of this, not a
 // bespoke `{#each}`. the caller owns the root position; this owns the row + flyout rendering.
 const { items, onclose }: { items: MenuItem[]; onclose?: () => void } = $props();
+
+// group DIVIDERS ARE DERIVED, not authored: a builder declares each row's taxonomy group and the
+// renderer draws the hairline wherever that group changes (`menuRows`). A builder can no longer
+// place a top-level separator by feel, which is how the menus drifted apart in the first place.
+// Every row also publishes its `data-group`, so the capture harness can cross-check the rendered
+// DOM against the same pure builder the grammar oracle reads.
+const rows = $derived(menuRows(items));
 
 // the index of the row whose submenu is open (one at a time). hovering a submenu row opens
 // its flyout; hovering a sibling leaf closes it (the standard menu hover model).
@@ -57,7 +64,7 @@ function leaf(item: MenuItem): void {
      trims each row's hover wash to the corners); the flyout is hoisted OUT of it below, a direct
      child of the outer `.menu`, so the clip can't swallow it. -->
 <div class="menu-rows">
-    {#each items as item, i (i)}
+    {#each rows as item, i (i)}
         {#if item.separator}
             <div class="menu-sep" role="separator"></div>
         {:else if item.children}
@@ -68,6 +75,7 @@ function leaf(item: MenuItem): void {
                 role="menuitem"
                 aria-haspopup="menu"
                 aria-expanded={open === i}
+                data-group={item.group}
                 disabled={item.enabled === false}
                 aria-disabled={item.enabled === false || undefined}
                 onmouseenter={() => item.enabled !== false && enter(i, item)}
@@ -84,6 +92,7 @@ function leaf(item: MenuItem): void {
                 class:checked={item.checked}
                 class:danger={item.danger}
                 role="menuitem"
+                data-group={item.group}
                 aria-label={item.aria}
                 disabled={item.enabled === false}
                 aria-disabled={item.enabled === false || undefined}
@@ -111,7 +120,7 @@ function leaf(item: MenuItem): void {
         {/if}
     {/each}
 </div>
-{#each items as item, i (i)}
+{#each rows as item, i (i)}
     {#if item.children && open === i}
         <div
             class="menu submenu"

@@ -12,6 +12,7 @@ import {
     frameTimeline,
     clickFlyout,
     clickMenuItem,
+    menuGrammar,
     marqueeDrag,
     dockStrip,
     overlaps,
@@ -363,9 +364,10 @@ test("force easing menu flow", async ({ page, boot }) => {
     await frameTimeline(page); // bring the whole force section into view for the diamond DOM boxes
     await expect(page.locator(".fpt")).toHaveCount(nPts);
 
-    // ── 1. Right-click the leading (first) keyframe → the force keyframe menu, in row order
-    // Delete · Easing ▸ (the Handles + Reset rows are gone — both subsumed into the Easing list:
-    // Custom steps in, a preset steps back out). ──
+    // ── 1. Right-click the leading (first) keyframe → the force keyframe menu, in the grammar's
+    // canonical row order Easing ▸ · Delete — modify before lifecycle, the destructive row
+    // terminal (kex2d-menu-grammar stage 2). (The Handles + Reset rows are gone — both subsumed
+    // into the Easing list: Custom steps in, a preset steps back out.) ──
     await page.locator(".fpt").first().click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
     await expect
@@ -374,7 +376,31 @@ test("force easing menu flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Delete Del", "Easing ▸"]);
+        .toEqual(["Easing ▸", "Delete Del"]);
+    // the rendered rows are the real `keyframeMenu` builder's, run in the page against this
+    // keyframe's live state — the keyframe menu's half of the DOM cross-check. It reaches INSIDE
+    // `Easing ▸` by real hover, which is where the app's ONE authored within-group separator lives
+    // (the preset picks divided from Custom): the whole escape hatch rests on that row, and this is
+    // the only place it's verified as rendered DOM.
+    await menuGrammar(page, ".fmenu", {
+        builder: "keyframeMenu",
+        // the leading keyframe of a bumped force section: single selection, non-terminal (it
+        // governs the following segment), no explicit handles, no optimize session (so no
+        // Lock/Unlock row), nothing under lockdown.
+        state: {
+            setOk: true,
+            activeOk: true,
+            lock: null,
+            multi: false,
+            terminal: false,
+            easeTargets: 1,
+            custom: false,
+            hasHandles: false,
+            customGlyph: "",
+        },
+        enums: { ease: "profile.Easing.Cubic", mode: "spline.TangentMode.Aligned" },
+        fns: ["presetGlyph"],
+    });
     await page.waitForTimeout(SHOT_MS);
     const menuStrip = dockStrip(page);
     if (menuStrip)
@@ -807,7 +833,25 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Delete Del", "Easing ▸", "Tangents ▸"]);
+        .toEqual(["Easing ▸", "Tangents ▸", "Delete Del"]);
+    // the two-flyout shape, cross-checked against the real builder: `hasHandles` adds Tangents ▸
+    // inside `modify`, so the ONE derived divider still lands before Delete.
+    await menuGrammar(page, ".fmenu", {
+        builder: "keyframeMenu",
+        state: {
+            setOk: true,
+            activeOk: true,
+            lock: null,
+            multi: false,
+            terminal: false,
+            easeTargets: 1,
+            custom: true, // an explicit handle bounds the addressed segment
+            hasHandles: true,
+            customGlyph: "",
+        },
+        enums: { ease: "profile.Easing.Cubic", mode: "spline.TangentMode.Aligned" },
+        fns: ["presetGlyph"],
+    });
     await page.locator(".fmenu").getByRole("menuitem", { name: "Tangents", exact: true }).hover();
     await expect(
         page.locator(".fmenu").getByRole("menuitem", { name: "Aligned", exact: true }),
@@ -854,7 +898,7 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Delete Del", "Easing ▸"]); // no Tangents ▸ on a derived keyframe
+        .toEqual(["Easing ▸", "Delete Del"]); // no Tangents ▸ on a derived keyframe
     await page.keyboard.press("Escape");
     await expect(page.locator(".fmenu")).toHaveCount(0);
 });
