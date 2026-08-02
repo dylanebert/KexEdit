@@ -25,6 +25,8 @@
  *  the displayed curve is re-recovered from the swept geometry, so a keyframe sits
  *  O(ds) off these authored values — expected, not a bug (the one-display-path law). */
 
+import { collinearVec } from "./spline";
+
 /** a keyframe's easing tag — the convenient middle layer over the bezier
  *  substrate. each row maps to one derived-flat-tangent influence (the table
  *  below): the honest span of FVD++'s degree ladder collapsed to one axis. */
@@ -99,16 +101,14 @@ export interface Offset {
 /** whether two handle offsets lie on one straight line through the keyframe — the
  *  geometric precondition for storing `TangentMode.Aligned` (angle mirrored, `Aligned ⟹
  *  collinear`). a missing side is vacuously aligned (a single-sided keyframe has nothing
- *  to diverge from). the cross product is compared against a relative tolerance derived
- *  from f32 handle storage: a genuinely-collinear pair round-tripped through the f32
- *  `Force.tin`/`tout` columns perturbs by ≤ ~2·2^-24 in angle, so |cross|/(|a|·|b|) ≤
- *  ~1.2e-7; `COLLINEAR_TOL` clears that with margin while staying orders below any
- *  deliberate off-flat handle's angle. */
+ *  to diverge from). the `Offset`-shaped wrapper over `spline.collinearVec` — the bare,
+ *  direction-agnostic test, with no sign clause: a force keyframe's `in`/`out` handles
+ *  point AWAY from the key in opposite directions (`segment`: `p1s` forward, `p2s`
+ *  backward), so an aligned pair is antiparallel by construction and a positive-dot
+ *  requirement would invert this predicate (`kex2d-followups` Locked decision). */
 export function collinear(a?: Offset, b?: Offset): boolean {
     if (!a || !b) return true;
-    const cross = a.ds * b.dg - a.dg * b.ds;
-    const scale = Math.hypot(a.ds, a.dg) * Math.hypot(b.ds, b.dg);
-    return Math.abs(cross) <= scale * COLLINEAR_TOL;
+    return collinearVec(a.ds, a.dg, b.ds, b.dg);
 }
 
 /** whether the segment between adjacent keyframes `a` and `b` is **Custom** — derived
@@ -144,11 +144,6 @@ export interface ForcePoint {
 export const DEFAULT_G = 1;
 
 const EPS = 1e-12;
-
-/** collinearity tolerance for `collinear`, relative to the handle magnitudes. f32 handle
- *  storage (2^-24 unit roundoff) perturbs a collinear pair's angle by ≤ ~2·2^-24 ≈ 1.2e-7;
- *  1e-6 clears that with margin, far below any deliberate off-flat handle's angle. */
-const COLLINEAR_TOL = 1e-6;
 
 /** residual bound for the s(t) = target root solve, relative to the segment span.
  *  ~a few ULP of a double: the Linear-tag exactness error is |Δg|·(residual/span)

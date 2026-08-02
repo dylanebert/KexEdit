@@ -14,7 +14,15 @@ import {
     type Section as SectionSpec,
     SectionKind,
 } from "./section";
-import { autoTangent, type Node, reflect, type Tangent, TangentMode } from "./spline";
+import {
+    autoTangent,
+    collinearVec,
+    COLLINEAR_TOL,
+    type Node,
+    reflect,
+    type Tangent,
+    TangentMode,
+} from "./spline";
 
 /** the kind enum is defined with the substrate that gives it meaning (`section.ts`);
  *  it is re-exported here because `Section.kind` is where the document stores it, and
@@ -1942,44 +1950,44 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     return bId;
 }
 
-/** relative tolerance for the join merge rule's mode-preservation check (`mergeTangent`,
- *  below) — mirrors `profile.collinear`'s own derivation: the merged vectors round-trip
- *  through the same f32 `Handle.tin`/`tout` storage, which perturbs a genuinely
- *  equal/collinear pair's angle by ≤ ~2·2^-24 ≈ 1.2e-7 relative; this clears that with
- *  margin while staying orders below any deliberate off-flat divergence. */
-const MERGE_TANGENT_TOL = 1e-6;
-
-/** whether two vectors are equal within the merge tolerance — `Mirror`'s own constraint
+/** whether two vectors are equal within `COLLINEAR_TOL` — `Mirror`'s own constraint
  *  (`editTangent`: both sides equal the dragged forward vector). */
 function vecEqual(ax: number, ay: number, bx: number, by: number): boolean {
     const scale = Math.max(Math.hypot(ax, ay), Math.hypot(bx, by));
-    return Math.hypot(ax - bx, ay - by) <= scale * MERGE_TANGENT_TOL;
+    return Math.hypot(ax - bx, ay - by) <= scale * COLLINEAR_TOL;
 }
 
-/** whether two vectors are collinear within the merge tolerance — `Aligned`'s own
- *  constraint (`alignTangent`: one shared forward direction, per-side length). */
+/** whether two FORWARD-pointing tangent vectors are collinear AND same-direction —
+ *  `Aligned`'s own constraint (`alignTangent`: one shared forward direction, per-side
+ *  length) under the join merge's forward/forward convention. `spline.collinearVec` is the
+ *  bare, direction-agnostic core; the positive-dot clause is named HERE because it's this
+ *  caller's convention, not the core's — `seedTangent`'s `in`/`out` both point forward
+ *  along travel, so a genuinely aligned pair has positive dot, and an antiparallel pair is
+ *  a state the arc rule can never emit (`kex2d-followups` Locked decision, bug (1): a
+ *  bare `collinearVec` call here stamped `Aligned` on an antiparallel merged pair). */
 function vecCollinear(ax: number, ay: number, bx: number, by: number): boolean {
-    const cross = ax * by - ay * bx;
-    const scale = Math.hypot(ax, ay) * Math.hypot(bx, by);
-    return Math.abs(cross) <= scale * MERGE_TANGENT_TOL;
+    return collinearVec(ax, ay, bx, by) && ax * bx + ay * by > 0;
 }
 
-/** the join merge rule's stamp (`joinNext`, geo branch; spec: `kex2d-burndown`): B node
+/** the join merge rule's stamp (`joinNext`, geo branch): B node
  *  0's explicit out-vector is authored intent, rotated into A's frame (`frameTheta` —
  *  `headExit`'s recovered exit heading, A-local; `autoTangent` is rotation-equivariant so
  *  the arc-rule seed below is taken directly at the A-local chord rather than rotated
  *  after the fact) and stamped onto the merged tip: `in` = A's tip's own in-half (its
- *  explicit `in`, else the arc-rule vector at the live chord from its previous node — the
- *  same read `seedTangent`'s `inVec` takes), `out` = B's rotated out. Mode preserves A's
+ *  explicit `in`, else the arc-rule vector `seedTangent` derives for this same node —
+ *  `seedTangent`'s `prev === null` branch is what guards a single-node A, where the tip
+ *  has no previous node to take a chord from; a bespoke inline read here once skipped that
+ *  guard and stamped `in = (0, 0)`, bug (2)), `out` = B's rotated out. Mode preserves A's
  *  iff the merged pair still satisfies it (`Mirror`: the two vectors equal; `Aligned`:
- *  collinear) — an authored-state predicate over what was just computed, never a
- *  resolved-float comparison — else `Free`. An `Auto` A tip has no explicit mode to
- *  preserve; it displays `Aligned` (`editor-ui.md`: inference is aligned-shaped), so it
- *  reads that way here too. */
+ *  collinear AND same-direction) — an authored-state predicate over what was just
+ *  computed, never a resolved-float comparison — else `Free`. An `Auto` A tip has no
+ *  explicit mode to preserve; it displays `Aligned` (`editor-ui.md`: inference is
+ *  aligned-shaped), so it reads that way here too. */
 function mergeTangent(
+    ecs: State,
+    sectionId: number,
     aTip: number,
-    aHandles: readonly number[],
-    aN: number,
+    aOrder: number,
     frameTheta: number,
     bTangent: Tangent,
 ): void {
@@ -1995,10 +2003,13 @@ function mergeTangent(
         inX = aTan.inX;
         inY = aTan.inY;
     } else {
-        const prev = aHandles[aN - 1];
-        const dx = Handle.pos.x.get(aTip) - Handle.pos.x.get(prev);
-        const dy = Handle.pos.y.get(aTip) - Handle.pos.y.get(prev);
-        [inX, inY] = autoTangent(Handle.theta.get(aTip), Math.atan2(dy, dx), Math.hypot(dx, dy));
+        // discard the out-half — mergeTangent only needs how the tip ARRIVES; seedTangent's
+        // in-vector derivation is the same arc-rule read a bespoke inline copy once got wrong.
+        const seed = seedTangent(ecs, sectionId, aOrder, TangentMode.Aligned);
+        if (!seed)
+            throw new Error(`mergeTangent: node ${aOrder} not found in section ${sectionId}`);
+        inX = seed.inX;
+        inY = seed.inY;
     }
 
     const aMode = aTan?.mode ?? TangentMode.Aligned;
@@ -2037,12 +2048,12 @@ export function joinNext(ecs: State, sectionId: number): boolean {
         const frame = headExit(ecs, aHandles, aN);
         const bHandles = sectionHandles(ecs, b.id);
         const bTangent = readTangent(bHandles[0]);
-        // the join merge rule (kex2d-burndown spec): B node 0 explicit is authored
-        // intent on the forward half — carry it into the merged tip rather than
-        // discarding it (the implicit-discard class the idioms unit closed for
-        // delete). B node 0 Auto has nothing authored on the forward side, so the
-        // merged tip stays exactly what it was (today's behavior).
-        if (bTangent) mergeTangent(aTip, aHandles, aN, frame.theta, bTangent);
+        // the join merge rule: B node 0 explicit is authored intent on the forward
+        // half — carry it into the merged tip rather than discarding it (the
+        // implicit-discard class the idioms unit closed for delete). B node 0 Auto has
+        // nothing authored on the forward side, so the merged tip stays exactly what
+        // it was (today's behavior).
+        if (bTangent) mergeTangent(ecs, sectionId, aTip, aN, frame.theta, bTangent);
         // skip B node 0 (== the shared boundary, already A's tip); append B[1..m].
         for (let j = 1; j < bHandles.length; j++) {
             const w = place(frame, {

@@ -201,6 +201,24 @@ export function editTangent(tan: Tangent, side: "in" | "out", offX: number, offY
     };
 }
 
+/** collinearity tolerance shared by every direction-agnostic caller below: relative to the
+ *  vector magnitudes, f32 handle storage (`Handle.tin`/`tout`, `Force.tin`/`tout` alike; 2^-24
+ *  unit roundoff) perturbs a genuinely collinear pair's angle by ≤ ~2·2^-24 ≈ 1.2e-7; 1e-6
+ *  clears that with margin while staying orders below any deliberate off-flat divergence. */
+export const COLLINEAR_TOL = 1e-6;
+
+/** whether two vectors lie on one line through the origin — the scale-relative cross-product
+ *  magnitude test, and nothing more. Direction-agnostic by design: a parallel AND an
+ *  antiparallel pair both read collinear here. `spline`/`profile`/`track` share two callers
+ *  with OPPOSITE sign conventions (a geo `Tangent`'s `in`/`out` point forward along travel, a
+ *  force `Offset` pair points away from the key in opposite directions), so a sign requirement
+ *  belongs to each caller, never to this core (`kex2d-followups` Locked decision). */
+export function collinearVec(ax: number, ay: number, bx: number, by: number): boolean {
+    const cross = ax * by - ay * bx;
+    const scale = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    return Math.abs(cross) <= scale * COLLINEAR_TOL;
+}
+
 /** collinearize a tangent onto one shared forward direction, keeping each side's length —
  *  what switching a `Free` node to `Aligned` does (the Blender handle-type change re-aligns
  *  immediately, rather than leaving a corner the mode label contradicts). the direction comes

@@ -548,6 +548,88 @@ describe("join", () => {
         const merged = handleTangent(state, a, 2);
         expect(merged?.mode).toBe(TangentMode.Free);
     });
+
+    // bug (1), kex2d-followups: the merged pair's mode-preservation test is direction-agnostic
+    // cross-product only — collinear-but-REVERSED reads as Aligned, a state the forward/forward
+    // arc rule can never emit (`seedTangent`'s in/out both point forward along travel). Fixed by
+    // requiring a positive dot alongside the cross-product test.
+    test("join stamps Free when an Aligned tip's merged pair comes out antiparallel (bug 1)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+        ])
+            addNode(state, a, x, y);
+        const ang = 0.4;
+        const ix = 12 * Math.cos(ang);
+        const iy = 12 * Math.sin(ang);
+        const ox = 8 * Math.cos(ang);
+        const oy = 8 * Math.sin(ang);
+        setTangent(state, a, 2, {
+            mode: TangentMode.Aligned,
+            inX: ix,
+            inY: iy,
+            outX: ox,
+            outY: oy,
+        });
+
+        const { b, phi } = boundaryPhi(state);
+        // B's own authored out, rotated through the join, points exactly OPPOSITE A's in-half's
+        // direction — collinear (cross ≈ 0) but antiparallel (dot < 0): the merge's own
+        // forward/forward convention can never produce this from an inferred chain, so it must
+        // read as Free, not Aligned.
+        const vx = -20 * Math.cos(ang);
+        const vy = -20 * Math.sin(ang);
+        const lo = localOutFor(phi, vx, vy);
+        setTangent(state, b, 0, {
+            mode: TangentMode.Free,
+            inX: lo.x,
+            inY: lo.y,
+            outX: lo.x,
+            outY: lo.y,
+        });
+
+        expect(joinNext(state, a)).toBe(true);
+        const merged = handleTangent(state, a, 2);
+        expect(merged?.mode).toBe(TangentMode.Free);
+    });
+
+    // bug (2), kex2d-followups: `mergeTangent` on a single-node A restated `seedTangent`'s
+    // in-vector derivation off an unguarded `aHandles[aN - 1]`, undefined for a single-node A
+    // (its tip has no previous node) — stamping `in = (0, 0)`. Fixed by delegating to
+    // `seedTangent` itself, whose `prev === null` branch already guards exactly this.
+    test("join seeds the correct heading vector for a single-node A (bug 2, not (0, 0))", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0); // A has exactly one node — its tip IS node 0
+
+        // a single-node A is below the two-node bake floor (`track.ts bake`'s "keep the prior
+        // bake rather than half-render the chain" guard), so this deliberately builds B WITHOUT
+        // a live bake — `joinNext`'s geo branch computes its own frame via `headExit`
+        // (pure `evalGeo`, no ECS bake) and never reads `sectionInfo`.
+        const b = appendSection(state, SectionKind.Geo);
+        setTangent(state, b, 0, {
+            mode: TangentMode.Free,
+            inX: -3,
+            inY: 1,
+            outX: 5,
+            outY: 2,
+        });
+
+        expect(joinNext(state, a)).toBe(true);
+        const merged = handleTangent(state, a, 0);
+        expect(merged).not.toBeUndefined();
+        // node 0's heading is the flat entry (theta = 0): the seeded in-vector is the unit
+        // heading (1, 0) — not the unguarded read's (0, 0).
+        expect(merged?.inX).toBeCloseTo(1, 6);
+        expect(merged?.inY).toBeCloseTo(0, 6);
+    });
 });
 
 describe("split → join round-trips", () => {
@@ -615,6 +697,42 @@ describe("split → join round-trips", () => {
         const { state, a } = twoGeo();
         convertSection(state, a); // a is now force, b is geo — mismatched
         expect(joinNext(state, a)).toBe(false);
+    });
+
+    // pin (3), kex2d-followups: the tolerance's LOW side. The four mode-preservation pins above
+    // use 0.5–0.6 rad offsets, so COLLINEAR_TOL could regress to 1e-2 or 1e-12 and every one
+    // stays green. A split→join round trip reproduces the boundary vectors to f32 round-off —
+    // exactly the band 1e-6 admits and 1e-12 rejects — so an explicit Mirror boundary surviving
+    // the trip is the low-side pin.
+    test("split→join round trip preserves an explicit Mirror boundary to f32 round-off", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+            [60, -2],
+        ])
+            addNode(state, a, x, y);
+        const mag = 12;
+        const ang = 0.7;
+        const wx = mag * Math.cos(ang);
+        const wy = mag * Math.sin(ang);
+        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
+
+        const b = splitGeo(state, a, 2);
+        expect(b).not.toBeNull();
+        expect(joinNext(state, a)).toBe(true);
+
+        expect(sections(state).length).toBe(1);
+        const merged = handleTangent(state, a, 2);
+        expect(merged?.mode).toBe(TangentMode.Mirror);
+        expect(merged?.inX).toBeCloseTo(wx, 4);
+        expect(merged?.inY).toBeCloseTo(wy, 4);
+        expect(merged?.outX).toBeCloseTo(wx, 4);
+        expect(merged?.outY).toBeCloseTo(wy, 4);
     });
 });
 
