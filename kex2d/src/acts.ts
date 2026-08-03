@@ -125,6 +125,18 @@ export function forceSetEditable(ecs: State): boolean {
     return true;
 }
 
+/** the lock toggle's member set: the selected force keyframes that lie on the PINNING section —
+ *  a lock on another section's key would be dead state, since the solve never reads it. One
+ *  resolution, read by both halves of the row: `keyframeActs.toggleLock` acts on it, and the
+ *  menu's Lock/Unlock label is computed over it (`editor-ui.md`'s toggle-labeling law makes those
+ *  one row wearing two names, so they must not derive the set twice). Empty outside a session. */
+export function lockCandidates(ecs: State): number[] {
+    if (editor.pinning === null) return [];
+    return sectionForces(ecs, editor.pinning.section)
+        .filter((r) => editor.forces.ids.has(r.id))
+        .map((r) => r.id);
+}
+
 /** the section context menu's document acts (`remove`/`removeSet`/`reset`/`pinExit`) — the
  *  chrome-free half of `SectionMenuActions`. `solve`/`solveShape`/`pinSolve`/`pinEnter` stay in
  *  `App.svelte` (each closes over the modal gate + abort controller — chrome, not document
@@ -222,13 +234,7 @@ export function keyframeActs(ecs: State): Pick<KeyframeMenuActions, "remove" | "
             deleteForces(history, ecs, [...editor.forces.ids]);
         },
         toggleLock: () => {
-            if (editor.pinning === null) return;
-            const sid = editor.pinning.section;
-            toggleLockedSet(
-                sectionForces(ecs, sid)
-                    .filter((r) => editor.forces.ids.has(r.id))
-                    .map((r) => r.id),
-            );
+            toggleLockedSet(lockCandidates(ecs));
         },
     };
 }

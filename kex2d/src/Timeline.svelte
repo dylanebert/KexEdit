@@ -82,7 +82,13 @@ import {
     yGrow,
     zoomAt,
 } from "./timeline";
-import { forceSetEditable, keyframeActs, sectionEditable, sectionOpsAllowed } from "./acts";
+import {
+    forceSetEditable,
+    keyframeActs,
+    lockCandidates,
+    sectionEditable,
+    sectionOpsAllowed,
+} from "./acts";
 import { armDrag, DRAG_PX, latchAngle } from "./controls";
 import {
     ANGLE_STEP_MAX,
@@ -1413,14 +1419,10 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     const setOk = forceSetEditable(ecs);
     const pt = forcePts.find((p) => p.id === id);
     const activeOk = pt !== undefined && sectionEditable(editor.pinning, pt.section);
-    // the Lock/Unlock row's member set: the pinning section's own selected keys.
-    const sid = editor.pinning?.section;
-    const lockIds =
-        sid === undefined
-            ? []
-            : forcePts
-                  .filter((p) => editor.forces.ids.has(p.id) && p.section === sid)
-                  .map((p) => p.id);
+    // the Lock/Unlock row's member set — resolved by `acts.lockCandidates`, the same read the
+    // toggle itself acts on: the label and the act are one row wearing two names (`editor-ui.md`'s
+    // toggle-labeling law), so they must not derive the set twice.
+    const lockIds = lockCandidates(ecs);
     const lock = pt === undefined ? null : lockLabel(editor.pinning, pt.section, lockIds, editor.locked);
     // the Easing ▸ and Tangents ▸ fields are GETTERS: each is guarded by a builder branch, and
     // `easeTargets`/`custom` walk the whole force store while `customGlyph` re-solves the addressed
@@ -1453,10 +1455,13 @@ const fmenuItems = $derived.by((): MenuItem[] => {
             },
         },
         {
-            ...keyframeActs(ecs),
+            // the chrome keys first, the factory spread LAST (`editor-ui.md` Menus): a re-forked
+            // `remove` here would otherwise shadow the hoisted body for the menu while `Del` kept
+            // the factory's — the exact drift this seam deletes.
             setEase: (e) => setForcesEase(history, ecs, bulkEaseIds, e),
             chooseCustom: () => chooseCustom(id),
             pickMode: (mode) => pickForceMode(id, mode),
+            ...keyframeActs(ecs),
         },
     );
 });

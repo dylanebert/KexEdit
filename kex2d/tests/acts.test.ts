@@ -361,6 +361,12 @@ describe("keyframeActs", () => {
         exitPinMode(state);
     });
 
+    // No "toggleLock refuses outside a session" test, deliberately: `lockCandidates`'s
+    // `editor.pinning === null` early-out is TYPE NARROWING for the very next line, not defense —
+    // deleting it doesn't yield a silent no-op to assert against, it fails to compile. There is no
+    // legal mutant, so an assert here would pin nothing. The refusal is layered elsewhere and
+    // tested there: `forceKeyAct` gates on `pinning && size > 0` (`tests/menu.test.ts`), and the
+    // menu row is mode-scoped-hidden (`lockLabel`).
     test("toggleLock locks the selected set, filtered to the pinning section", () => {
         const { state, a, b } = twoForceSections();
         if (!enterPinMode(state, a)) throw new Error("no session");

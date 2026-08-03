@@ -1501,6 +1501,11 @@ describe("acts.ts source census — every home reaches its factory", () => {
         keyframeActs: ["Timeline.svelte"],
     };
 
+    // What this census does and does NOT prove: it proves a file MENTIONS its factory. It does not
+    // prove the keydown handler dispatches through it, that the builder passes it, or that no
+    // private twin sits beside it — that wiring is gated by the capture flows alone (the key-act
+    // seam's one surviving limit, `editor-ui.md` Menus). The spread-last law is what keeps a twin
+    // from winning if one is ever written.
     test("each declared home calls its factory, and no undeclared file does", () => {
         for (const [factory, homes] of Object.entries(FactoryHomes)) {
             const pattern = `${factory}(`;
@@ -1510,10 +1515,16 @@ describe("acts.ts source census — every home reaches its factory", () => {
     });
 
     // positive control (the declared-registry law's own clause: the control must exercise the
-    // SCANNER, not just the set comparison): proves the recursive walk + substring read actually
-    // fires true somewhere, so an empty walk (a wrong root, a dead filter) can't pass the census
-    // above on a vacuous `[] === []`.
-    test("positive control: the scan DOES find `sectionActs(` in App.svelte", () => {
+    // SCANNER, not just the set comparison). It drives `collectSrc` itself — a wrong root, a dead
+    // extension filter, or a recursion that stopped recursing fails HERE, rather than being caught
+    // by luck upstairs when a blind walk's `[]` misses the non-empty declaration.
+    test("positive control: the walk reaches the homes it censuses", () => {
+        expect(srcFiles).toContain("App.svelte");
+        expect(srcFiles).toContain("Timeline.svelte");
+        expect(srcFiles).toContain("controls.ts");
+        // a floor, not the exact count: the walk must be reading the whole module tree, not one
+        // lucky directory entry.
+        expect(srcFiles.length).toBeGreaterThan(30);
         expect(src("App.svelte").includes("sectionActs(")).toBe(true);
     });
 });

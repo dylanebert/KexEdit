@@ -181,10 +181,12 @@ onMount(() => {
                     editor.section !== null ||
                     editor.start,
             });
-            if (act !== null) {
+            if (act !== null && editor.pinning !== null) {
                 e.stopImmediatePropagation();
-                const acts = sectionActs(ecs, editor.pinning?.section ?? -1);
-                acts[act]();
+                // the session's own section, never a sentinel: `pinExit` ignores the subject, but a
+                // record built on a placeholder id leaves `remove`/`reset` bound to a section that
+                // doesn't exist, live the moment this rung grows a second act.
+                sectionActs(ecs, editor.pinning.section)[act]();
             }
             return;
         }
@@ -859,11 +861,14 @@ const ctxItems = $derived.by((): MenuItem[] => {
             },
         },
         {
-            ...sectionActs(ecs, ctx.section),
+            // the chrome keys first, the factory spread LAST: a sibling key re-forked here is then
+            // overridden by the hoisted body instead of shadowing it, so the drift this seam
+            // deletes can't be re-created by an ordinary-looking edit (`editor-ui.md` Menus).
             solve: ctxSolve,
             solveShape: ctxSolveShape,
             pinSolve: ctxPinSolve,
             pinEnter: ctxPinEnter,
+            ...sectionActs(ecs, ctx.section),
         },
     );
 });
