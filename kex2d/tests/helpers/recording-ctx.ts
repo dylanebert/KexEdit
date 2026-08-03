@@ -13,6 +13,12 @@
  *  in `save()`/`restore()` — `render.ts` does, for the START anchor's soft ring — replays correctly
  *  against this double instead of leaking state across the boundary.
  *
+ *  Records the four ink methods (`fill`/`stroke`/`fillRect`/`strokeRect`) and no text/image
+ *  path — no system draws text under test yet. That's the honest boundary today: this pins
+ *  style at the draw call, never geometry, and text/image are a style dimension too, so a
+ *  `fillText`/`drawImage` capture arrives when the first text- or image-drawing system needs
+ *  coverage, not before.
+ *
  * @example
  * const { ctx, calls } = recordingContext();
  * Object.assign(Canvas2D, { element: fakeCanvas, ctx });

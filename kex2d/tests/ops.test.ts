@@ -734,6 +734,43 @@ describe("split → join round-trips", () => {
         expect(merged?.outX).toBeCloseTo(wx, 4);
         expect(merged?.outY).toBeCloseTo(wy, 4);
     });
+
+    // the same low-side pin on the OTHER branch of mergeTangent's mode check: an explicit
+    // Aligned boundary must survive the trip through `vecCollinear`, exactly as Mirror must
+    // survive `vecEqual` above.
+    test("split→join round trip preserves an explicit Aligned boundary to f32 round-off", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+            [60, -2],
+        ])
+            addNode(state, a, x, y);
+        const inMag = 8;
+        const outMag = 12;
+        const ang = 0.7;
+        const inX = inMag * Math.cos(ang);
+        const inY = inMag * Math.sin(ang);
+        const outX = outMag * Math.cos(ang);
+        const outY = outMag * Math.sin(ang);
+        setTangent(state, a, 2, { mode: TangentMode.Aligned, inX, inY, outX, outY });
+
+        const b = splitGeo(state, a, 2);
+        expect(b).not.toBeNull();
+        expect(joinNext(state, a)).toBe(true);
+
+        expect(sections(state).length).toBe(1);
+        const merged = handleTangent(state, a, 2);
+        expect(merged?.mode).toBe(TangentMode.Aligned);
+        expect(merged?.inX).toBeCloseTo(inX, 4);
+        expect(merged?.inY).toBeCloseTo(inY, 4);
+        expect(merged?.outX).toBeCloseTo(outX, 4);
+        expect(merged?.outY).toBeCloseTo(outY, 4);
+    });
 });
 
 // the per-section step (kex2d-geoforce-editor stage 1): a converted section carries the

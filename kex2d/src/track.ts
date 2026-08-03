@@ -1986,11 +1986,14 @@ function vecCollinear(ax: number, ay: number, bx: number, by: number): boolean {
 function mergeTangent(
     ecs: State,
     sectionId: number,
-    aTip: number,
     aOrder: number,
     frameTheta: number,
     bTangent: Tangent,
 ): void {
+    const aTip = handleAt(ecs, sectionId, aOrder);
+    if (aTip === null)
+        throw new Error(`mergeTangent: node ${aOrder} not found in section ${sectionId}`);
+
     const c = Math.cos(frameTheta);
     const s = Math.sin(frameTheta);
     const outX = c * bTangent.outX - s * bTangent.outY;
@@ -2005,6 +2008,8 @@ function mergeTangent(
     } else {
         // discard the out-half — mergeTangent only needs how the tip ARRIVES; seedTangent's
         // in-vector derivation is the same arc-rule read a bespoke inline copy once got wrong.
+        // the `TangentMode.Aligned` mode argument rides along with that discarded out-half —
+        // it's never read back, so don't chase it as a decision.
         const seed = seedTangent(ecs, sectionId, aOrder, TangentMode.Aligned);
         if (!seed)
             throw new Error(`mergeTangent: node ${aOrder} not found in section ${sectionId}`);
@@ -2042,7 +2047,6 @@ export function joinNext(ecs: State, sectionId: number): boolean {
     if (aKind === SectionKind.Geo) {
         const aHandles = sectionHandles(ecs, sectionId);
         const aN = aHandles.length - 1;
-        const aTip = aHandles[aN];
         // place B against A's RECOVERED exit (the bake's downstream entry, the exact
         // inverse of a geo split), not A's stored tip heading — see `headExit`.
         const frame = headExit(ecs, aHandles, aN);
@@ -2053,7 +2057,7 @@ export function joinNext(ecs: State, sectionId: number): boolean {
         // implicit-discard class the idioms unit closed for delete). B node 0 Auto has
         // nothing authored on the forward side, so the merged tip stays exactly what
         // it was (today's behavior).
-        if (bTangent) mergeTangent(ecs, sectionId, aTip, aN, frame.theta, bTangent);
+        if (bTangent) mergeTangent(ecs, sectionId, aN, frame.theta, bTangent);
         // skip B node 0 (== the shared boundary, already A's tip); append B[1..m].
         for (let j = 1; j < bHandles.length; j++) {
             const w = place(frame, {
