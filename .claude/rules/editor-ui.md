@@ -336,6 +336,22 @@ cursor allowlist shipped exactly this: its glob covered `.svelte` only and misse
 green. The fix that generalizes: assert a raw, structure-free match count over all scanned text
 equals the parsed site count — an independent read that can't miss what the real parser misses.
 
+**Enumerate a keyboard population from a decider layer, not by hand.** `MenulessBindings` is the
+law's one instance whose population is a *reachability* claim, and a hand-authored (binding → act)
+table doesn't enumerate it from source. The close is a **key-act seam**: a pure `keys.ts` that is
+the keyboard twin of `menus.ts` — one decider per `BINDINGS` home, `(key, stateDescriptor) →
+actName | null`, returning a name from the same act vocabulary the menu builders' actions record
+uses (type it `Extract<keyof XMenuActions, …>`, so a rename in the record fails the decider at
+compile time). Each keydown handler becomes `const act = xKeyAct(e.key, {…}); if (act !== null) {
+e.preventDefault(); acts[act](); }`; the guard predicates stay where they live and the decider
+takes their results. The test drives every decider across its state space and asserts
+`Acts[act] === binding`, so `MenulessBindings` covers only what no decider emits — empty, by
+derivation. Two limits are the seam's stated edge, not defects: the deciders' *wiring* into the
+handlers is gated by the capture flows alone (a perfect decider nobody calls passes every unit
+check), and act **bodies** stay per-surface, so the seam unifies act names, not behavior. A
+descriptor whose fields are read on only one branch is a discriminated union, not a boolean
+product — the union deletes the unread field and narrows the return per call site.
+
 **A descriptor field costing a full-document walk is a getter, and the gate asserts the cheap fork
 reads none of them.** The pure-builder lift replaces a closure that could read the live document
 lazily with an eagerly-built descriptor, which turns a menu open into whole-document work. Lazy
