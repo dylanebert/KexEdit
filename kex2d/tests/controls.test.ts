@@ -740,18 +740,14 @@ describe("sectionKeyAct — the whole-section Delete rung", () => {
 
 describe("nodeKeyAct — the node Enter/Delete rungs (chain-end trim + multi node-set trim)", () => {
     test("the editing lockdown bars every act, multi or single", () => {
-        expect(
-            nodeKeyAct("Delete", { editable: false, multi: true, endSelected: true }),
-        ).toBeNull();
+        expect(nodeKeyAct("Delete", { editable: false, multi: true })).toBeNull();
         expect(
             nodeKeyAct("Enter", { editable: false, multi: false, endSelected: true }),
         ).toBeNull();
     });
     test("a multi node-set only fires removeSet, never add", () => {
-        expect(nodeKeyAct("Delete", { editable: true, multi: true, endSelected: false })).toBe(
-            "removeSet",
-        );
-        expect(nodeKeyAct("Enter", { editable: true, multi: true, endSelected: false })).toBeNull();
+        expect(nodeKeyAct("Delete", { editable: true, multi: true })).toBe("removeSet");
+        expect(nodeKeyAct("Enter", { editable: true, multi: true })).toBeNull();
     });
     test("single-subject: off the chain end, neither add nor remove fires", () => {
         expect(

@@ -17,7 +17,6 @@ import {
     modeKeyAct,
     type ModeKeyState,
     nodeKeyAct,
-    type NodeKeyState,
     sectionKeyAct,
     type SectionKeyState,
 } from "../src/keys";
@@ -1169,7 +1168,31 @@ describe("the menu grammar — every builder, every state", () => {
         return pairs;
     }
     const sectionKeyStates = states<SectionKeyState>({ opsAllowed: bool, multi: bool });
-    const nodeKeyStates = states<NodeKeyState>({ editable: bool, multi: bool, endSelected: bool });
+    // `NodeKeyState` is a discriminated union on `multi` (`keys.ts`) — the multi branch carries no
+    // `endSelected` field, so its full state space is the two branches' matrices driven
+    // separately, not one cartesian product over all three fields (which isn't expressible
+    // against the type any more, and would have driven the multi branch redundantly over an
+    // `endSelected` it never reads). `nodeKeyAct` is overloaded per branch, so each matrix is
+    // driven through its own `driveKeyAct` call rather than concatenated into one `NodeKeyState[]`
+    // — a union array defeats the overload's own per-branch narrowing at the call site.
+    const nodeKeyStatesMulti = states<{ editable: boolean; multi: true }>({
+        editable: bool,
+        multi: [true],
+    });
+    const nodeKeyStatesSingle = states<{ editable: boolean; multi: false; endSelected: boolean }>({
+        editable: bool,
+        multi: [false],
+        endSelected: bool,
+    });
+    // plain (non-overloaded) wrappers: passed BARE, `nodeKeyAct`'s overload set resolves against
+    // whichever signature the last overload happens to expose to a generic callback position,
+    // not per call site — these pin each branch to its own overload explicitly.
+    const nodeKeyActMulti = (key: string, s: { editable: boolean; multi: true }) =>
+        nodeKeyAct(key, s);
+    const nodeKeyActSingle = (
+        key: string,
+        s: { editable: boolean; multi: false; endSelected: boolean },
+    ) => nodeKeyAct(key, s);
     const forceKeyStates = states<ForceKeyState>({ pinning: bool, size: [0, 1, 2] });
     const modeKeyStates = states<ModeKeyState>({
         modeOpen: bool,
@@ -1181,7 +1204,8 @@ describe("the menu grammar — every builder, every state", () => {
     function keyActPairs(): { binding: keyof typeof BINDINGS; act: string }[] {
         return [
             ...driveKeyAct(sectionKeyAct, sectionKeyStates),
-            ...driveKeyAct(nodeKeyAct, nodeKeyStates),
+            ...driveKeyAct(nodeKeyActMulti, nodeKeyStatesMulti),
+            ...driveKeyAct(nodeKeyActSingle, nodeKeyStatesSingle),
             ...driveKeyAct(forceKeyAct, forceKeyStates),
             ...driveKeyAct(modeKeyAct, modeKeyStates),
         ];

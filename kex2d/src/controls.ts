@@ -1605,7 +1605,6 @@ export function attachControls(
             const act = nodeKeyAct(e.key, {
                 editable: sectionEditable(editor.pinning, Handle.section.get(sel)),
                 multi: true,
-                endSelected: false, // unread on the multi path — nodeKeyAct's own guard
             });
             if (act === "removeSet") {
                 e.preventDefault();
@@ -1622,7 +1621,6 @@ export function attachControls(
             multi: false,
             endSelected: endSelected(ecs),
         });
-        if (act === "removeSet") return; // unreachable: this branch always passes `multi: false`
         if (act !== null) {
             e.preventDefault();
             const nodeActs: Record<"remove" | "add", () => void> = {
