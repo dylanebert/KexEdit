@@ -250,8 +250,10 @@ layer's idiom).
 
 **Force authoring** (on the timeline chart, whole-track) — the chart draws every force section's
 points at once. Double-click over a force section's arc places a point at the authored profile's
-value (insertion never bends the curve; the section resolves from the cursor arclength, no
-selection needed); drag a diamond in both axes (horizontal = s, vertical = g); `Del` removes,
+value (insertion never jumps the VALUE there — the new keyframe's own default-eased tangents
+still reshape the curve locally, unlike a Cut's exact de Casteljau-subdivided tangent; the section
+resolves from the cursor arclength, no selection needed); drag a diamond in both axes (horizontal =
+s, vertical = g); `Del` removes,
 `Esc` deselects; the popover at the selected diamond types or scrubs its s/g. Points are authored
 section-local (s from the section entry) but drawn at their section's whole-track cumulative
 offset. Keyframes, not constraints. They also **display + select on the viewport track** (the same

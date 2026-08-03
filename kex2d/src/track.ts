@@ -2,7 +2,14 @@ import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@d
 import { V_FLOOR, V_WARN } from "./bake";
 import type { GeofitBake } from "./geofit";
 import { LENGTH_MIN } from "./magnet";
-import { DEFAULT_G, Easing, type ForcePoint, forceProfile, type Offset } from "./profile";
+import {
+    DEFAULT_G,
+    Easing,
+    type ForcePoint,
+    forceProfile,
+    type Offset,
+    subdivide,
+} from "./profile";
 import {
     chain,
     Domain,
@@ -1130,8 +1137,17 @@ export function forceAt(ecs: State, id: number): number | null {
 let nextForceId = 0;
 
 /** author a new force point on a section at `(s, g)` with a fresh stable id — the
- *  create path. returns the id (undo/redo addresses points by id, not eid). */
-export function createForcePoint(ecs: State, sectionId: number, s: number, g: number): number {
+ *  create path. returns the id (undo/redo addresses points by id, not eid). `ease`/
+ *  `tan` default to the "no stored state" convention (a fresh keyframe); `splitForce`
+ *  passes them explicit to plant a de Casteljau-subdivided boundary keyframe. */
+export function createForcePoint(
+    ecs: State,
+    sectionId: number,
+    s: number,
+    g: number,
+    ease: Easing = FORCE_EASE_DEFAULT,
+    tan?: ForceTangent,
+): number {
     const eid = ecs.create();
     ecs.add(eid, Force);
     const id = nextForceId++;
@@ -1139,8 +1155,8 @@ export function createForcePoint(ecs: State, sectionId: number, s: number, g: nu
     Force.id.set(eid, id);
     Force.s.set(eid, s);
     Force.g.set(eid, g);
-    Force.ease.set(eid, FORCE_EASE_DEFAULT); // a fresh keyframe is the default ease, no handles
-    writeForceTangent(eid, undefined);
+    Force.ease.set(eid, ease);
+    writeForceTangent(eid, tan);
     return id;
 }
 
@@ -1929,24 +1945,102 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
  *  [0, s] and its points there; a new section takes extent [s, length] with the
  *  remaining points rebased to its entry (a lossless partition). **both halves
  *  inherit the baking step** (as a geo split does): a split partitions the profile at
- *  its own density, it doesn't re-solve it. no-op outside
- *  the interior. returns the new (tail) section id, or null. */
+ *  its own density, it doesn't re-solve it.
+ *
+ *  a bare partition leaves the head flat to its new end — its curve toward whatever
+ *  moved to the tail is lost. so the cut also **plants a boundary keyframe at `s`,
+ *  duplicated into both halves** (the geo split's own shape: `splitGeo` duplicates
+ *  node `k`): if `s` lands exactly on an existing keyframe, that keyframe already IS
+ *  the exact value there and is duplicated verbatim; otherwise the bracketing segment
+ *  is de Casteljau-subdivided (`profile.subdivide`) at `s`, and the subdivided
+ *  tangent lands per side — head gets the in-half at `s = headLen`, tail the out-half
+ *  at `s = 0` — which also re-parents the bracketing keyframes' own facing tangent
+ *  (their old derived-from-`ease` sizing was scaled to the FULL span). Both new
+ *  boundary keys read Custom (`profile.custom`): the visible cost of an exact
+ *  mid-segment cut. no-op outside the interior. returns the new (tail) section id,
+ *  or null. */
 export function splitForce(ecs: State, sectionId: number, s: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null || Section.kind.get(secEid) !== SectionKind.Force) return null;
     const len = Section.length.get(secEid);
     if (s <= 0 || s >= len) return null;
 
+    const points = sectionForces(ecs, sectionId);
     const order = Section.order.get(secEid);
     bumpOrders(ecs, order + 1, +1);
     const bId = createSection(ecs, order + 1, SectionKind.Force, len - s, Section.ds.get(secEid));
-    for (const p of sectionForces(ecs, sectionId)) {
-        if (p.s >= s) {
+
+    // an exact-match keyframe (p.s === s) already IS the shared boundary and stays
+    // with the head; everything strictly downstream moves to the tail, rebased. `a` =
+    // the last point at or before `s`, `b` = the first point strictly after it — read
+    // off the pre-move snapshot, since `points[i].s` is a captured value, not live.
+    let a: ForceRow | null = null;
+    let b: ForceRow | null = null;
+    for (const p of points) {
+        if (p.s > s) {
+            if (b === null) b = p;
             Force.section.set(p.eid, bId);
             Force.s.set(p.eid, p.s - s);
+        } else {
+            a = p;
         }
     }
     Section.length.set(secEid, s);
+
+    if (a !== null && a.s === s) {
+        // landmark: `a` is already the exact boundary value — duplicate it into the
+        // tail's opening keyframe, carrying its own `out` half forward (its `in` stays
+        // with the head, governing the segment arriving at it); no subdivision needed.
+        const tan = readForceTangent(a.eid);
+        createForcePoint(
+            ecs,
+            bId,
+            0,
+            a.g,
+            Force.ease.get(a.eid) as Easing,
+            tan?.out ? { mode: tan.mode, out: tan.out } : undefined,
+        );
+    } else if (a !== null && b !== null) {
+        // mid-segment: de Casteljau-subdivide the bracketing segment at `s`.
+        const aTan = readForceTangent(a.eid);
+        const bTan = readForceTangent(b.eid);
+        const aPoint: ForcePoint = {
+            s: a.s,
+            g: a.g,
+            ease: Force.ease.get(a.eid) as Easing,
+            in: aTan?.in,
+            out: aTan?.out,
+        };
+        const bPoint: ForcePoint = {
+            s: b.s,
+            g: b.g,
+            ease: Force.ease.get(b.eid) as Easing,
+            in: bTan?.in,
+            out: bTan?.out,
+        };
+        const sub = subdivide(aPoint, bPoint, s);
+
+        writeForceTangent(a.eid, { mode: TangentMode.Free, in: aTan?.in, out: sub.outA });
+        writeForceTangent(b.eid, { mode: TangentMode.Free, in: sub.inB, out: bTan?.out });
+        createForcePoint(ecs, sectionId, s, sub.g, Easing.Cubic, {
+            mode: TangentMode.Free,
+            in: sub.inMid,
+        });
+        createForcePoint(ecs, bId, 0, sub.g, Easing.Cubic, {
+            mode: TangentMode.Free,
+            out: sub.outMid,
+        });
+    } else if (a !== null && b === null) {
+        // the cut lands past the last keyframe: the head keeps the whole (flat-tailed)
+        // shape, the tail opens on that same held value (`sampleForce`'s hold-flat rule,
+        // extended across the new boundary).
+        createForcePoint(ecs, bId, 0, a.g);
+    } else if (a === null && b !== null) {
+        // the cut lands before the first keyframe: the head is flat at that keyframe's
+        // value up to the boundary; the tail carries the (unshifted-at-this-point)
+        // authored points unchanged.
+        createForcePoint(ecs, sectionId, s, b.g);
+    }
     return bId;
 }
 
@@ -2071,7 +2165,35 @@ export function joinNext(ecs: State, sectionId: number): boolean {
         for (const h of bHandles) ecs.destroy(h);
     } else {
         const aLen = Section.length.get(aEid);
-        for (const p of sectionForces(ecs, b.id)) {
+        const aForces = sectionForces(ecs, sectionId);
+        const bForces = sectionForces(ecs, b.id);
+        const aTail: ForceRow | undefined = aForces[aForces.length - 1];
+        const bHead: ForceRow | undefined = bForces[0];
+        // a coincident boundary pair — A's own last keyframe sitting exactly at its
+        // length, B's own first sitting exactly at 0 — is `splitForce`'s own planted
+        // duplicate ONLY when the two also agree in VALUE: position alone is a
+        // positional heuristic that also matches two independently-authored adjacent
+        // sections whose keyframes happen to sit on the shared boundary (a documented
+        // snap landmark, `editor-ui.md` Snapping — the common case once stage 5's Join
+        // runs over an arbitrary same-kind selection, not just a Cut's own round trip).
+        // Collapsing to one keyframe is lossless (preserves the sampled profile)
+        // exactly when `g` agrees too — that's the shape a subdivided/duplicated split
+        // boundary always has. When the values disagree the join is reconciling a real
+        // discontinuity: keep both keyframes, the pre-fix behavior for that path.
+        const coincident =
+            aTail !== undefined &&
+            bHead !== undefined &&
+            aTail.s === aLen &&
+            bHead.s === 0 &&
+            aTail.g === bHead.g;
+        if (coincident && aTail !== undefined && bHead !== undefined) {
+            const aTan = readForceTangent(aTail.eid);
+            const bTan = readForceTangent(bHead.eid);
+            writeForceTangent(aTail.eid, { mode: TangentMode.Free, in: aTan?.in, out: bTan?.out });
+            ecs.destroy(bHead.eid);
+        }
+        for (const p of bForces) {
+            if (coincident && bHead !== undefined && p.eid === bHead.eid) continue;
             Force.section.set(p.eid, sectionId);
             Force.s.set(p.eid, p.s + aLen);
         }

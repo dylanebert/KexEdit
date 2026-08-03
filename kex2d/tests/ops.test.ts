@@ -19,6 +19,8 @@ import {
     deleteSection,
     EXTEND_DIST,
     exitWorld,
+    Force,
+    forceTangent,
     Handle,
     handleAt,
     handleTangent,
@@ -39,8 +41,27 @@ import {
     Track,
 } from "../src/track";
 import { Domain } from "../src/section";
+import { custom, DEFAULT_G, type Easing, type ForcePoint, sampleForce } from "../src/profile";
 import { editTangent, TangentMode } from "../src/spline";
 import { stitchNode } from "../src/tangents";
+
+/** a section's authored force keyframes as `profile.ts`'s `ForcePoint[]` — the exact
+ *  projection `forceDense`/the bake use — so a test can sample the section's own
+ *  profile through `sampleForce`, the SAME math the bake samples through, rather
+ *  than re-deriving `splitForce`'s point-partition arithmetic (`coding.md`: a check
+ *  that re-derives the rule it checks discriminates almost nothing). */
+function forcePoints(state: State, sectionId: number): ForcePoint[] {
+    return sectionForces(state, sectionId).map((p) => {
+        const tan = forceTangent(state, p.id);
+        return {
+            s: p.s,
+            g: p.g,
+            ease: Force.ease.get(p.eid) as Easing,
+            in: tan?.in,
+            out: tan?.out,
+        };
+    });
+}
 
 // the multi-section structural ops: append / split / join / delete over the section
 // chain (kex2d/AGENTS.md, structural ops). the substrate (chain, sectionInfo,
@@ -220,18 +241,199 @@ describe("split", () => {
         expect(b).not.toBeNull();
         if (b === null) return;
 
-        // the point at s=10 stays in A; the s=30 point moves to B, rebased to 10.
-        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10]);
-        expect(sectionForces(state, b).map((p) => p.s)).toEqual([10]);
+        // the point at s=10 stays in A; the s=30 point moves to B, rebased to 10 — plus
+        // the boundary keyframe the exactness fix plants into both halves at the cut
+        // (`splitForce`'s own subdivided value, s=20 head-side / s=0 tail-side).
+        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10, 20]);
+        expect(sectionForces(state, b).map((p) => p.s)).toEqual([0, 10]);
         // extents split at 20.
         expect(sections(state).find((s) => s.id === a)?.length).toBe(20);
         expect(sections(state).find((s) => s.id === b)?.length).toBe(20);
     });
 
-    test("splitting a force section in a Time-domain track is a lossless partition in the store's unit (seconds)", () => {
+    test("splitForce preserves the head's authored profile exactly (plants the boundary keyframe)", () => {
+        // `splitForce` moves points by `s`, but never planted a boundary keyframe at
+        // the cut — the head was left holding its last remaining keyframe's value flat
+        // to its new end, instead of continuing to curve toward the point that moved
+        // to the tail. Sample the ORIGINAL authored profile (via `sampleForce`, not a
+        // re-derivation of `splitForce`'s own point-partition arithmetic) across the
+        // head's future extent [0, 20] before the split, then compare against the
+        // head's own profile after — a cut mid-segment (s=20, strictly between the
+        // keyframes at 10 and 30) must not change the curve on either side of it.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 10, 1);
+        createForcePoint(state, a, 30, 2);
+        const original: ForcePoint[] = [
+            { s: 10, g: 1 },
+            { s: 30, g: 2 },
+        ];
+
+        const before: number[] = [];
+        for (let s = 0; s <= 20; s += 2) before.push(sampleForce(original, s));
+
+        const b = splitForce(state, a, 20);
+        expect(b).not.toBeNull();
+        if (b === null) return;
+
+        const head = forcePoints(state, a);
+        const after: number[] = [];
+        for (let s = 0; s <= 20; s += 2) after.push(sampleForce(head, s));
+
+        for (let i = 0; i < before.length; i++) expect(after[i]).toBeCloseTo(before[i], 5);
+    });
+
+    test("splitForce on a LANDMARK (s exactly on an existing keyframe) preserves the profile exactly and stays in the named-easing layer", () => {
+        // the spec's primary Cut path: a cut invoked from a node/keyframe menu lands
+        // exactly on that landmark. Distinct branch from the mid-segment one above —
+        // no subdivision needed, so it must NOT demote to Custom (`profile.custom`):
+        // the duplicated boundary keyframe on each side keeps deriving its tangent
+        // from `ease`, same as before the cut.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 10, 1);
+        createForcePoint(state, a, 30, 2);
+        const original: ForcePoint[] = [
+            { s: 10, g: 1 },
+            { s: 30, g: 2 },
+        ];
+
+        const b = splitForce(state, a, 10); // exactly on the s=10 keyframe
+        expect(b).not.toBeNull();
+        if (b === null) return;
+
+        const head = forcePoints(state, a);
+        const tail = forcePoints(state, b);
+        for (let s = 0; s <= 10; s += 1)
+            expect(sampleForce(head, s)).toBeCloseTo(sampleForce(original, s), 5);
+        for (let s = 10; s <= 30; s += 2)
+            expect(sampleForce(tail, s - 10)).toBeCloseTo(sampleForce(original, s), 5);
+
+        // stays named — no explicit handles anywhere near the boundary, and the
+        // (only) segment on each side reads as NOT Custom (`profile.custom`).
+        expect(head.some((p) => p.in !== undefined || p.out !== undefined)).toBe(false);
+        expect(tail.some((p) => p.in !== undefined || p.out !== undefined)).toBe(false);
+        for (let i = 0; i + 1 < head.length; i++) expect(custom(head[i], head[i + 1])).toBe(false);
+        for (let i = 0; i + 1 < tail.length; i++) expect(custom(tail[i], tail[i + 1])).toBe(false);
+    });
+
+    test("splitForce before the first keyframe holds the head flat and preserves the tail exactly", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 20, 1);
+        createForcePoint(state, a, 30, 2);
+        const original: ForcePoint[] = [
+            { s: 20, g: 1 },
+            { s: 30, g: 2 },
+        ];
+
+        const b = splitForce(state, a, 5); // strictly before the first keyframe (s=20)
+        expect(b).not.toBeNull();
+        if (b === null) return;
+
+        const head = forcePoints(state, a);
+        const tail = forcePoints(state, b);
+        for (let s = 0; s <= 5; s += 1)
+            expect(sampleForce(head, s)).toBeCloseTo(sampleForce(original, s), 5);
+        for (let s = 5; s <= 40; s += 2)
+            expect(sampleForce(tail, s - 5)).toBeCloseTo(sampleForce(original, s), 5);
+    });
+
+    test("splitForce past the last keyframe preserves the head exactly and holds the tail flat", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 10, 1);
+        createForcePoint(state, a, 20, 2);
+        const original: ForcePoint[] = [
+            { s: 10, g: 1 },
+            { s: 20, g: 2 },
+        ];
+
+        const b = splitForce(state, a, 30); // strictly after the last keyframe (s=20)
+        expect(b).not.toBeNull();
+        if (b === null) return;
+
+        const head = forcePoints(state, a);
+        const tail = forcePoints(state, b);
+        for (let s = 0; s <= 30; s += 2)
+            expect(sampleForce(head, s)).toBeCloseTo(sampleForce(original, s), 5);
+        for (let s = 30; s <= 40; s += 2)
+            expect(sampleForce(tail, s - 30)).toBeCloseTo(sampleForce(original, s), 5);
+    });
+
+    test("splitForce on a section with ZERO keyframes is a no-op profile on both halves (flat DEFAULT_G)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+
+        const b = splitForce(state, a, 15);
+        expect(b).not.toBeNull();
+        if (b === null) return;
+
+        expect(sectionForces(state, a)).toEqual([]);
+        expect(sectionForces(state, b)).toEqual([]);
+        for (let s = 0; s <= 15; s += 3)
+            expect(sampleForce(forcePoints(state, a), s)).toBe(DEFAULT_G);
+        for (let s = 0; s <= 25; s += 3)
+            expect(sampleForce(forcePoints(state, b), s)).toBe(DEFAULT_G);
+    });
+
+    test("splitForce on a section with ONE keyframe preserves the profile exactly, cutting before it", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 15, 2.5);
+        const original: ForcePoint[] = [{ s: 15, g: 2.5 }];
+
+        const b = splitForce(state, a, 5); // before the single keyframe
+        expect(b).not.toBeNull();
+        if (b === null) return;
+
+        const head = forcePoints(state, a);
+        const tail = forcePoints(state, b);
+        for (let s = 0; s <= 5; s += 1)
+            expect(sampleForce(head, s)).toBeCloseTo(sampleForce(original, s), 5);
+        for (let s = 5; s <= 40; s += 2)
+            expect(sampleForce(tail, s - 5)).toBeCloseTo(sampleForce(original, s), 5);
+    });
+
+    test("splitForce on a section with ONE keyframe preserves the profile exactly, cutting after it", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 15, 2.5);
+        const original: ForcePoint[] = [{ s: 15, g: 2.5 }];
+
+        const b = splitForce(state, a, 25); // after the single keyframe
+        expect(b).not.toBeNull();
+        if (b === null) return;
+
+        const head = forcePoints(state, a);
+        const tail = forcePoints(state, b);
+        for (let s = 0; s <= 25; s += 2)
+            expect(sampleForce(head, s)).toBeCloseTo(sampleForce(original, s), 5);
+        for (let s = 25; s <= 40; s += 2)
+            expect(sampleForce(tail, s - 25)).toBeCloseTo(sampleForce(original, s), 5);
+    });
+
+    test("splitting a force section in a Time-domain track is a lossless partition in the store's unit (seconds), and the cut → join round trip closes", () => {
         // splitForce/joinNext partition whatever unit `Track.domain` holds — the docstrings
         // used to say "arclength s", which is false once the store is seconds. This pins
-        // the split as a lossless partition in the store's own unit, then joins back.
+        // the split as a lossless partition in the store's own unit, then joins back —
+        // exercising the exactness fix and the join dedupe in the domain the timeline's
+        // s-axis actually authors in when the track is Time (`kex2d/AGENTS.md` Two
+        // coordinate frames).
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
@@ -239,27 +441,96 @@ describe("split", () => {
         const a = createSection(state, 0, SectionKind.Force, 40);
         createForcePoint(state, a, 10, 1);
         createForcePoint(state, a, 30, 2);
+        const before = forcePoints(state, a);
 
         const b = splitForce(state, a, 20);
         expect(b).not.toBeNull();
         if (b === null) return;
 
         // keyframe positions re-home exactly: the s=10 point stays in A, the s=30 point
-        // moves to B rebased to 10 — in seconds, same as the arclength case.
-        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10]);
-        expect(sectionForces(state, b).map((p) => p.s)).toEqual([10]);
+        // moves to B rebased to 10 — in seconds, same as the arclength case — plus the
+        // boundary keyframe the exactness fix plants at the cut in each half.
+        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10, 20]);
+        expect(sectionForces(state, b).map((p) => p.s)).toEqual([0, 10]);
         // extents split at 20 (seconds).
         expect(sections(state).find((s) => s.id === a)?.length).toBe(20);
         expect(sections(state).find((s) => s.id === b)?.length).toBe(20);
 
-        // join restores the pre-split partition exactly.
+        // the exactness oracle: the head's sampled profile over [0, 20] is unchanged
+        // by the cut (the boundary key continues the original curve, not a flat hold).
+        for (let s = 0; s <= 20; s += 2)
+            expect(sampleForce(forcePoints(state, a), s)).toBeCloseTo(sampleForce(before, s), 5);
+
+        // join dedupes the coincident boundary pair the split planted: the round trip
+        // closes to A(10), the merged boundary(20), B(30) — one extra keyframe over the
+        // pre-split pair, permanent (an arbitrary mid-segment cut isn't a landmark, so
+        // the join can dedupe the duplicate but can't un-plant the point) — and the
+        // sampled profile across the WHOLE extent is byte-close to the original.
         expect(joinNext(state, a)).toBe(true);
-        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10, 30]);
+        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10, 20, 30]);
         expect(sections(state).find((s) => s.id === a)?.length).toBe(40);
+        const after = forcePoints(state, a);
+        for (let s = 0; s <= 40; s += 2)
+            expect(sampleForce(after, s)).toBeCloseTo(sampleForce(before, s), 5);
     });
 });
 
 describe("join", () => {
+    test("joining two independently-authored force sections with DIFFERING boundary values keeps both keyframes (no silent destruction)", () => {
+        // two adjacent sections built directly (NOT via splitForce) whose own keyframes
+        // happen to sit exactly on the shared boundary — the common case once Join runs
+        // over an arbitrary same-kind selection: a section boundary is a documented snap
+        // landmark (`editor-ui.md` Snapping), so an author placing a keyframe there is
+        // ordinary, not a split artifact. The two values disagree (a real discontinuity,
+        // e.g. a hard-cut transition authored on purpose) — the dedupe guard must NOT
+        // fire, or it would silently destroy one keyframe and overwrite the other's
+        // tangent based on position alone.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20);
+        createForcePoint(state, a, 10, 1);
+        createForcePoint(state, a, 20, 3); // A's own boundary keyframe: g=3
+        const b = createSection(state, 1, SectionKind.Force, 20);
+        createForcePoint(state, b, 0, 5); // B's own boundary keyframe: g=5 — DISAGREES
+        createForcePoint(state, b, 10, 2);
+
+        expect(joinNext(state, a)).toBe(true);
+
+        const after = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
+        // both boundary keyframes survive, at the same s (20) — nothing merged.
+        expect(after).toEqual([
+            { s: 10, g: 1 },
+            { s: 20, g: 3 },
+            { s: 20, g: 5 },
+            { s: 30, g: 2 },
+        ]);
+    });
+
+    test("joining two independently-authored force sections with EQUAL boundary values dedupes losslessly", () => {
+        // the mirror case: the two boundary keyframes agree in value, so collapsing to
+        // one is the lossless merge (whether they arrived there via a Cut or two authors
+        // independently landing on the same value) — the guard's positive control.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20);
+        createForcePoint(state, a, 10, 1);
+        createForcePoint(state, a, 20, 3);
+        const b = createSection(state, 1, SectionKind.Force, 20);
+        createForcePoint(state, b, 0, 3); // agrees with A's boundary value
+        createForcePoint(state, b, 10, 2);
+
+        expect(joinNext(state, a)).toBe(true);
+
+        const after = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
+        expect(after).toEqual([
+            { s: 10, g: 1 },
+            { s: 20, g: 3 },
+            { s: 30, g: 2 },
+        ]);
+    });
+
     test("joining across a boundary with an explicit tangent keeps the baked world curve", () => {
         // one-sided: A and B are built directly, NOT via splitGeo (a split→join round-trip
         // would cancel the frame bug — the two re-frames compose back to identity — so it
@@ -670,14 +941,20 @@ describe("split → join round-trips", () => {
         }
     });
 
-    test("force split then join restores the point payload and extent", () => {
+    test("force split then join restores the extent and the sampled profile exactly (Distance domain)", () => {
+        // the payload no longer round-trips to the original TWO keyframes — an
+        // arbitrary mid-segment cut (s=16, strictly between 8 and 24) plants a genuine
+        // third keyframe (the exactness fix), and the join dedupes only the coincident
+        // PAIR the split itself created, not the point. The two original keyframes'
+        // own g survive untouched; the oracle that actually matters is the sampled
+        // profile, byte-close across the whole extent through the round trip.
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
         const a = createSection(state, 0, SectionKind.Force, 40);
         createForcePoint(state, a, 8, 1.5);
         createForcePoint(state, a, 24, 0.4);
-        const before = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
+        const before = forcePoints(state, a);
 
         const b = splitForce(state, a, 16);
         expect(b).not.toBeNull();
@@ -686,11 +963,13 @@ describe("split → join round-trips", () => {
         expect(sections(state).length).toBe(1);
         expect(sections(state)[0].length).toBeCloseTo(40, 5);
         const after = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
-        expect(after.length).toBe(before.length);
-        for (let i = 0; i < before.length; i++) {
-            expect(after[i].s).toBeCloseTo(before[i].s, 4);
-            expect(after[i].g).toBe(before[i].g);
-        }
+        expect(after.map((p) => p.s)).toEqual([8, 16, 24]);
+        expect(after[0].g).toBe(before[0].g);
+        expect(after[2].g).toBe(before[1].g);
+
+        const afterPoints = forcePoints(state, a);
+        for (let s = 0; s <= 40; s += 2)
+            expect(sampleForce(afterPoints, s)).toBeCloseTo(sampleForce(before, s), 5);
     });
 
     test("join refuses across kinds", () => {
@@ -1001,6 +1280,32 @@ describe("undo (byte-identical)", () => {
             theta: Handle.theta.get(e),
         }));
         // restoreAll replays the stored f32 verbatim — bit-exact, not just close.
+        expect(after).toEqual(before);
+    });
+
+    test("force split → undo restores the point payload byte-identical (the boundary-keyframe plant included)", () => {
+        // the exactness fix's data boundary: `splitCmd`'s whole-track snapshot must
+        // round-trip the PLANTED boundary keyframe's explicit tangent columns
+        // (`Force.tmode`/`tin`/`tout`), not just `s`/`g` — a risky surface this stage
+        // newly exercises (`review.md`'s data-boundary trigger).
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 10, 1);
+        createForcePoint(state, a, 30, 2);
+        const before = forcePoints(state, a);
+        const h = createHistory();
+
+        const b = splitCmd(h, state, a, 20);
+        expect(b).not.toBeNull();
+        expect(sections(state).length).toBe(2);
+        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10, 20]);
+
+        undo(h, state);
+        expect(sections(state).length).toBe(1);
+        const after = forcePoints(state, a);
+        // restoreAll replays the stored f32/tangent columns verbatim.
         expect(after).toEqual(before);
     });
 
