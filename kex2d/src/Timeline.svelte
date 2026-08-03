@@ -46,6 +46,7 @@ import {
     setForcesEase,
     setForceTangentMode,
 } from "./history";
+import { forceKeyAct } from "./keys";
 import { redoRouted, undoRouted } from "./pin";
 import { convertDomain, pickable } from "./domain";
 import { Domain } from "./section";
@@ -2608,6 +2609,9 @@ onMount(() => {
         }
         // force-point select/delete/nudge — guarded on a live force selection so geo-node
         // Esc/Del/arrows (controls.ts) stay unambiguous (the selections are mutually exclusive).
+        // Delete and `Q` route through `keys.ts`'s `forceKeyAct` (the keyboard twin of
+        // `menus.keyframeMenu`'s `Delete`/Lock-Unlock rows); Escape and the arrow-nudge are
+        // nobody's menu row and stay raw.
         if (editor.force !== null) {
             if (e.key === "Escape") {
                 // dismissal peels one layer: deselect the handle first (back to the keyframe
@@ -2617,55 +2621,62 @@ onMount(() => {
                 if (editor.forceHandle !== null) selectForceHandle(null);
                 else if (editor.forceEdit !== null) exitForceEdit();
                 else selectForce(null);
-            } else if (bound(BINDINGS.remove, e.key)) {
-                e.preventDefault();
-                deleteSelectedForce();
-            } else if (
-                editor.hover === "timeline" &&
-                (e.key === "ArrowLeft" ||
-                    e.key === "ArrowRight" ||
-                    e.key === "ArrowUp" ||
-                    e.key === "ArrowDown")
-            ) {
-                // arrow-nudge the selected force set — only while the pointer is over the timeline (the
-                // hovered-surface router — a node nudge in the viewport must not also move a force
-                // point). single-select rounds the absolute result to the field grid (pre-multiselect
-                // semantics); a multi-set moves by one shared delta under the rigid clamp, offsets
-                // preserved (`nudgeForces`, timeline.ts). Shift coarse; one press = one undo entry.
-                const members = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
-                if (members.length === 0) return;
-                if (!forceSetEditable()) return; // the lockdown — all-or-nothing, like Del
-                e.preventDefault();
-                skipLanding(); // keyboard mutation mid-window: same routing as undo/redo above
-                const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
-                const stepG = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
-                const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
-                const dg = e.key === "ArrowUp" ? stepG : e.key === "ArrowDown" ? -stepG : 0;
-                beginForceMoves(
-                    ecs,
-                    members.map((m) => m.id),
-                );
-                for (const w of nudgeForces(members, ds, dg)) setForcePoint(ecs, w.id, w.s, w.g);
-                commit(history);
-            } else if (
-                bound(BINDINGS.lock, e.key) &&
-                editor.pinning !== null &&
-                editor.forces.ids.size > 0
-            ) {
-                // `Q` = the lock/free toggle (kex2d stage 6 — reachability is the criterion:
-                // left-hand top row, one hand on the keyboard while the other mouses; the old
-                // `L` was unreachable that way and is removed, not aliased). only meaningful
-                // inside a live pin session over the selected keyframe set, restricted to
-                // the pinning section's own keys (a lock on another section's key would be
-                // dead state — the solve never reads it). the mode-only menu row is the mouse
-                // path to the same toggle.
-                e.preventDefault();
-                const sid = editor.pinning.section;
-                toggleLockedSet(
-                    forcePts
-                        .filter((fp) => editor.forces.ids.has(fp.id) && fp.section === sid)
-                        .map((fp) => fp.id),
-                );
+            } else {
+                const act = forceKeyAct(e.key, {
+                    pinning: editor.pinning !== null,
+                    size: editor.forces.ids.size,
+                });
+                if (act !== null) {
+                    e.preventDefault();
+                    const forceActs: Record<"remove" | "toggleLock", () => void> = {
+                        remove: deleteSelectedForce,
+                        // `Q` = the lock/free toggle (kex2d stage 6 — reachability is the
+                        // criterion: left-hand top row, one hand on the keyboard while the other
+                        // mouses; the old `L` was unreachable that way and is removed, not
+                        // aliased), restricted to the pinning section's own keys (a lock on
+                        // another section's key would be dead state — the solve never reads it).
+                        // the mode-only menu row is the mouse path to the same toggle.
+                        toggleLock: () => {
+                            if (editor.pinning === null) return; // guaranteed by forceKeyAct
+                            const sid = editor.pinning.section;
+                            toggleLockedSet(
+                                forcePts
+                                    .filter((fp) => editor.forces.ids.has(fp.id) && fp.section === sid)
+                                    .map((fp) => fp.id),
+                            );
+                        },
+                    };
+                    forceActs[act]();
+                } else if (
+                    editor.hover === "timeline" &&
+                    (e.key === "ArrowLeft" ||
+                        e.key === "ArrowRight" ||
+                        e.key === "ArrowUp" ||
+                        e.key === "ArrowDown")
+                ) {
+                    // arrow-nudge the selected force set — only while the pointer is over the
+                    // timeline (the hovered-surface router — a node nudge in the viewport must not
+                    // also move a force point). single-select rounds the absolute result to the
+                    // field grid (pre-multiselect semantics); a multi-set moves by one shared delta
+                    // under the rigid clamp, offsets preserved (`nudgeForces`, timeline.ts). Shift
+                    // coarse; one press = one undo entry.
+                    const members = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
+                    if (members.length === 0) return;
+                    if (!forceSetEditable()) return; // the lockdown — all-or-nothing, like Del
+                    e.preventDefault();
+                    skipLanding(); // keyboard mutation mid-window: same routing as undo/redo above
+                    const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
+                    const stepG = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
+                    const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
+                    const dg = e.key === "ArrowUp" ? stepG : e.key === "ArrowDown" ? -stepG : 0;
+                    beginForceMoves(
+                        ecs,
+                        members.map((m) => m.id),
+                    );
+                    for (const w of nudgeForces(members, ds, dg))
+                        setForcePoint(ecs, w.id, w.s, w.g);
+                    commit(history);
+                }
             }
         }
     };

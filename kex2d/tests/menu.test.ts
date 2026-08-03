@@ -11,6 +11,16 @@ import {
     menuFit,
     menuRows,
 } from "../src/menu";
+import {
+    forceKeyAct,
+    type ForceKeyState,
+    modeKeyAct,
+    type ModeKeyState,
+    nodeKeyAct,
+    type NodeKeyState,
+    sectionKeyAct,
+    type SectionKeyState,
+} from "../src/keys";
 import * as menus from "../src/menus";
 import {
     appendMenu,
@@ -1125,26 +1135,93 @@ describe("the menu grammar — every builder, every state", () => {
     });
 
     // ── the `Acts` REVERSE direction: `Acts` above closes "does this act's row show the right
-    // hint", but says nothing about whether every keyboard binding is reachable from a menu at
-    // all — a `BINDINGS` entry with no act naming it would sit unbound and untested forever. Every
-    // key `BINDINGS` declares must show up as an `Acts` value or be named here with why it has no
-    // menu path — the declared-registry law (editor-ui.md Menus), applied to the other end of the
-    // same table. Empty today: `remove`, `append`, `exitMode`, and `lock` are all menu-reachable
-    // (`remove`/`removeSet`, `add`, `pinExit`, `toggleLock`), which is exactly why the positive
-    // control below is the deliverable's real evidence.
+    // hint", but says nothing about whether every keyboard binding actually FIRES the act it
+    // claims — a `BINDINGS` entry with no decider ever reaching it would sit unbound and untested
+    // forever. kex2d-test-mechanism stage 2 moves this direction's population OFF a hand-typed
+    // `Acts`-values census and onto the key-act seam (`src/keys.ts`): every decider is the
+    // keyboard twin of a menu builder, so it's driven the same way the grammar oracle drives a
+    // builder — over its FULL state matrix — and every (binding, act) pair production actually
+    // emits is collected from the deciders' own return values, never fabricated inline (the
+    // declared-registry law's own clause, editor-ui.md Menus: the control must exercise the
+    // driver). `MenulessBindings` then covers only a binding no decider ever emits.
     const MenulessBindings: Partial<Record<keyof typeof BINDINGS, { why: string }>> = {};
 
-    test("every `BINDINGS` key is menu-reachable via `Acts`, or declared in `MenulessBindings`", () => {
-        const reachable = new Set(
-            Object.values(Acts).filter((b): b is keyof typeof BINDINGS => b !== null),
+    // every `key` any `BINDINGS` entry declares, paired with the binding it belongs to — the
+    // production table, not a hand-typed copy, so a rebind moves this census with it.
+    function keySpace(): { binding: keyof typeof BINDINGS; key: string }[] {
+        const out: { binding: keyof typeof BINDINGS; key: string }[] = [];
+        for (const [name, b] of Object.entries<Binding>(BINDINGS))
+            for (const key of b.keys) out.push({ binding: name as keyof typeof BINDINGS, key });
+        return out;
+    }
+    // drives ONE decider over every declared key × every state in its matrix (`states`, above —
+    // the same cartesian-product helper the grammar oracle drives a menu builder with), recording
+    // each (binding, act) pair it actually emits. This IS the driver the positive control below
+    // exercises — a decider gone silent on every input still passes a hand-fabricated pair, but
+    // fails here (the reachability assert two tests down goes red with nothing collected).
+    function driveKeyAct<S>(fn: (key: string, s: S) => string | null, matrix: S[]) {
+        const pairs: { binding: keyof typeof BINDINGS; act: string }[] = [];
+        for (const { binding, key } of keySpace())
+            for (const s of matrix) {
+                const act = fn(key, s);
+                if (act !== null) pairs.push({ binding, act });
+            }
+        return pairs;
+    }
+    const sectionKeyStates = states<SectionKeyState>({ opsAllowed: bool, multi: bool });
+    const nodeKeyStates = states<NodeKeyState>({ editable: bool, multi: bool, endSelected: bool });
+    const forceKeyStates = states<ForceKeyState>({ pinning: bool, size: [0, 1, 2] });
+    const modeKeyStates = states<ModeKeyState>({
+        modeOpen: bool,
+        menuOpen: bool,
+        editing: bool,
+        selected: bool,
+    });
+
+    function keyActPairs(): { binding: keyof typeof BINDINGS; act: string }[] {
+        return [
+            ...driveKeyAct(sectionKeyAct, sectionKeyStates),
+            ...driveKeyAct(nodeKeyAct, nodeKeyStates),
+            ...driveKeyAct(forceKeyAct, forceKeyStates),
+            ...driveKeyAct(modeKeyAct, modeKeyStates),
+        ];
+    }
+
+    test("positive control: driving the deciders emits at least one pair per binding they cover", () => {
+        // proves `keyActPairs` reaches production and isn't silently empty (a broken import, a
+        // decider that always returns null) — the exact hole a hand-fabricated pair can't close.
+        const pairs = keyActPairs();
+        expect(pairs.length, "the deciders emitted no pairs at all").toBeGreaterThan(0);
+        const seen = new Set(pairs.map((p) => `${p.binding}:${p.act}`));
+        expect([...seen].sort()).toEqual(
+            [
+                "remove:remove",
+                "remove:removeSet",
+                "append:add",
+                "exitMode:pinExit",
+                "lock:toggleLock",
+            ].sort(),
         );
+    });
+
+    test("every emitted (binding, act) pair agrees with `Acts`", () => {
+        // the seam's whole point: a decider that fires the WRONG act for its binding (a swapped
+        // `remove`/`toggleLock`, a dropped guard) is caught here, not by the set-comparison below
+        // alone — `Acts` is itself derived from the menus' real actions (the forward-direction
+        // census above), so this cross-checks two independently-derived tables against each other.
+        for (const { binding, act } of keyActPairs())
+            expect(Acts[act], `"${act}" (fired by "${binding}") in Acts`).toBe(binding);
+    });
+
+    test("every `BINDINGS` key is keyboard-reachable via a decider, or declared in `MenulessBindings`", () => {
+        const reachable = new Set(keyActPairs().map((p) => p.binding));
         const declared = new Set(Object.keys(MenulessBindings) as (keyof typeof BINDINGS)[]);
         expect(
             [...new Set([...reachable, ...declared])].sort(),
             "every BINDINGS key must be reachable or declared",
         ).toEqual((Object.keys(BINDINGS) as (keyof typeof BINDINGS)[]).sort());
         const orphans = [...declared].filter((k) => reachable.has(k));
-        expect(orphans, "MenulessBindings entries for a menu-reachable binding").toEqual([]);
+        expect(orphans, "MenulessBindings entries for a decider-reachable binding").toEqual([]);
     });
 
     test("`shortcut` is present iff a keyboard binding invokes that row's action", () => {
@@ -1183,12 +1260,16 @@ describe("the menu grammar — every builder, every state", () => {
     });
 
     // the handler modules whose key press invokes the same action the row does — the other end of
-    // each binding. Both ends read `src/menu.ts`'s table, so this pins that they still do.
+    // each binding. Both ends read `src/menu.ts`'s table, so this pins that they still do. The
+    // key-act seam (`keys.ts`) is where every decider itself reads `BINDINGS` now; a home file
+    // keeps its own entry only where it ALSO compares the binding raw outside the decider (a
+    // mid-drag guard, a defense-in-depth swallow) — `controls.ts`'s `editor.dragging` early-out,
+    // `App.svelte`'s permanent-listener top check and its Delete swallow.
     const Handlers: Record<keyof typeof BINDINGS, string[]> = {
-        remove: ["controls.ts", "Timeline.svelte", "App.svelte"],
-        append: ["controls.ts"],
-        exitMode: ["App.svelte"],
-        lock: ["Timeline.svelte"],
+        remove: ["controls.ts", "App.svelte", "keys.ts"],
+        append: ["keys.ts"],
+        exitMode: ["App.svelte", "keys.ts"],
+        lock: ["keys.ts"],
     };
     // a bound key also drives presses that are NOBODY's menu row — dismissal rungs, a field's
     // commit-and-blur. Those stay raw literals, and this is exactly which files may hold one; any

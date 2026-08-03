@@ -51,6 +51,7 @@ import {
     slideToPoint,
     type Frame,
 } from "./manipulator";
+import { nodeKeyAct, sectionKeyAct } from "./keys";
 import { LENGTH_MIN } from "./magnet";
 import { BINDINGS, bound } from "./menu";
 import { RadialSlot, ringBase, ringSlot } from "./radial";
@@ -1566,28 +1567,48 @@ export function attachControls(
         // available inside pin mode (the locked decision's consent-boundary law) — deleting the
         // section under a live session would strand `editor.pinning` on a dead id (the mode's own
         // Exit lives only on that section's own context menu, so nothing could ever reach it again).
+        // routed through `keys.ts`'s `sectionKeyAct` (the keyboard twin of `menus.sectionMenu`'s
+        // `remove`/`removeSet` rows) — the guards stay here, the decider only reads their results.
         if (editor.section !== null) {
-            if (bound(BINDINGS.remove, e.key) && sectionOpsAllowed(editor.pinning)) {
+            const section = editor.section;
+            const act = sectionKeyAct(e.key, {
+                opsAllowed: sectionOpsAllowed(editor.pinning),
+                multi: editor.sections.ids.size > 1,
+            });
+            if (act !== null) {
                 e.preventDefault();
-                if (editor.sections.ids.size > 1) {
-                    if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
-                } else if (removeSection(history, ecs, editor.section)) selectSection(null);
+                const sectionActs: Record<"remove" | "removeSet", () => void> = {
+                    remove: () => {
+                        if (removeSection(history, ecs, section)) selectSection(null);
+                    },
+                    removeSet: () => {
+                        if (removeSections(history, ecs, [...editor.sections.ids]))
+                            selectSection(null);
+                    },
+                };
+                sectionActs[act]();
             }
             return;
         }
 
         // a node selected: extend, or trim the chain end.
         if (editor.selection === null) return;
+        const sel = editor.selection;
 
         // a MULTI node set: Delete acts on the whole set iff it's a valid suffix run (a contiguous
         // suffix of one section, excluding node 0, leaving ≥ 2) — trimmed as ONE undo entry, then the
         // selection prunes to the surviving tip (the live-pruner answer: the destroyed eids leave the
         // set here, never lingering to alias a recycled entity). anything else is a no-op (the menu
-        // grays the row). Enter/extend is single-subject, so a multi-set doesn't extend.
+        // grays the row). Enter/extend is single-subject, so a multi-set doesn't extend. routed
+        // through `keys.ts`'s `nodeKeyAct`, same as the chain-end rung below.
         if (editor.nodes.ids.size > 1) {
-            if (bound(BINDINGS.remove, e.key)) {
+            const act = nodeKeyAct(e.key, {
+                editable: sectionEditable(editor.pinning, Handle.section.get(sel)),
+                multi: true,
+                endSelected: false, // unread on the multi path — nodeKeyAct's own guard
+            });
+            if (act === "removeSet") {
                 e.preventDefault();
-                if (!sectionEditable(editor.pinning, Handle.section.get(editor.selection))) return; // the lockdown — the node menu's bulk Delete grays on the same read
                 const run = suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length);
                 if (run !== null && trimSuffix(history, ecs, run.section, run.k))
                     select(lastHandle(ecs, run.section));
@@ -1595,15 +1616,22 @@ export function attachControls(
             return;
         }
 
-        const section = Handle.section.get(editor.selection);
-        if (!sectionEditable(editor.pinning, section)) return; // the lockdown (extend/trim)
-        if (!endSelected(ecs)) return;
-        if (bound(BINDINGS.append, e.key)) {
+        const section = Handle.section.get(sel);
+        const act = nodeKeyAct(e.key, {
+            editable: sectionEditable(editor.pinning, section),
+            multi: false,
+            endSelected: endSelected(ecs),
+        });
+        if (act === "removeSet") return; // unreachable: this branch always passes `multi: false`
+        if (act !== null) {
             e.preventDefault();
-            select(extendTrack(history, ecs, section)); // lay a node, select it
-        } else if (bound(BINDINGS.remove, e.key)) {
-            e.preventDefault();
-            if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
+            const nodeActs: Record<"remove" | "add", () => void> = {
+                add: () => select(extendTrack(history, ecs, section)), // lay a node, select it
+                remove: () => {
+                    if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
+                },
+            };
+            nodeActs[act]();
         }
     };
 

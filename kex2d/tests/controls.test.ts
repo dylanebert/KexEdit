@@ -28,6 +28,7 @@ import {
     suffixRun,
 } from "../src/controls";
 import { beginDrag, editor, enterTangentEdit, exitTangentEdit } from "../src/editor";
+import { forceKeyAct, modeKeyAct, nodeKeyAct, sectionKeyAct } from "../src/keys";
 import { editHandleSets } from "../src/tangents";
 import { LENGTH_MIN } from "../src/magnet";
 import { ANGLE_STEP_DEFAULT as ANGLE_STEP } from "../src/settings";
@@ -674,9 +675,10 @@ describe("sectionsDeletable — section multi-delete enablement", () => {
 // consent-boundary law; delete was stage 1's blocker, convert + domain stage 4's adversarial
 // finding 2 — both were reachable in-mode and would have landed a track rewrite inside the
 // open session, seen red in the capture flow's disabled-row asserts before the guard wired
-// in). The window keydown handlers and `pickDomain` have no DOM-free unit-test seam, so the
-// guard is extracted as this one predicate and tested directly; every surface pairs the grayed
-// affordance with the same guard at the action layer.
+// in). The BINDINGS rungs of the window keydown handlers have a DOM-free seam now (`keys.ts`,
+// tested below) — what's left with none is the raw-Escape dismissal rung, the arrow-nudge rung,
+// and `pickDomain`; the guard below is still extracted as its own predicate and tested directly,
+// and every surface pairs the grayed affordance with the same guard at the action layer.
 describe("sectionOpsAllowed — pin mode blocks delete, convert, and the domain switch", () => {
     test("no live session: the structure surface is allowed", () => {
         expect(sectionOpsAllowed(null)).toBe(true);
@@ -713,6 +715,90 @@ describe("sectionEditable — the in-mode editing lockdown", () => {
         expect(sectionEditable(session, 7)).toBe(true);
         expect(sectionEditable(session, 3)).toBe(false);
         expect(sectionEditable(session, -1)).toBe(false); // v0 (track-global) is locked in-mode
+    });
+});
+
+// the key-act seam (kex2d-test-mechanism stage 2): the keyboard twin of `menus.ts`'s builders,
+// one pure decider per `BINDINGS` home. Each guard's yield and each act's firing condition, over
+// the vocabulary `tests/menu.test.ts` drives the same deciders against (the reverse-direction
+// oracle) — these pin the PER-CASE behavior the drive-over-the-matrix test can't read off a
+// pass/fail count alone.
+describe("sectionKeyAct — the whole-section Delete rung", () => {
+    test("off BINDINGS.remove: null regardless of state", () => {
+        expect(sectionKeyAct("a", { opsAllowed: true, multi: false })).toBeNull();
+        expect(sectionKeyAct("Enter", { opsAllowed: true, multi: true })).toBeNull();
+    });
+    test("the consent boundary bars it even on a bound key", () => {
+        expect(sectionKeyAct("Delete", { opsAllowed: false, multi: false })).toBeNull();
+        expect(sectionKeyAct("Backspace", { opsAllowed: false, multi: true })).toBeNull();
+    });
+    test("a single section fires remove; a multi-selection fires removeSet", () => {
+        expect(sectionKeyAct("Delete", { opsAllowed: true, multi: false })).toBe("remove");
+        expect(sectionKeyAct("Backspace", { opsAllowed: true, multi: true })).toBe("removeSet");
+    });
+});
+
+describe("nodeKeyAct — the node Enter/Delete rungs (chain-end trim + multi node-set trim)", () => {
+    test("the editing lockdown bars every act, multi or single", () => {
+        expect(
+            nodeKeyAct("Delete", { editable: false, multi: true, endSelected: true }),
+        ).toBeNull();
+        expect(
+            nodeKeyAct("Enter", { editable: false, multi: false, endSelected: true }),
+        ).toBeNull();
+    });
+    test("a multi node-set only fires removeSet, never add", () => {
+        expect(nodeKeyAct("Delete", { editable: true, multi: true, endSelected: false })).toBe(
+            "removeSet",
+        );
+        expect(nodeKeyAct("Enter", { editable: true, multi: true, endSelected: false })).toBeNull();
+    });
+    test("single-subject: off the chain end, neither add nor remove fires", () => {
+        expect(
+            nodeKeyAct("Enter", { editable: true, multi: false, endSelected: false }),
+        ).toBeNull();
+        expect(
+            nodeKeyAct("Delete", { editable: true, multi: false, endSelected: false }),
+        ).toBeNull();
+    });
+    test("single-subject on the chain end: Enter adds, Delete removes", () => {
+        expect(nodeKeyAct("Enter", { editable: true, multi: false, endSelected: true })).toBe(
+            "add",
+        );
+        expect(nodeKeyAct("Delete", { editable: true, multi: false, endSelected: true })).toBe(
+            "remove",
+        );
+    });
+});
+
+describe("forceKeyAct — the force-keyframe Delete/Lock rungs", () => {
+    test("Delete removes unconditionally — no pin-mode or set-size guard", () => {
+        expect(forceKeyAct("Delete", { pinning: false, size: 0 })).toBe("remove");
+        expect(forceKeyAct("Backspace", { pinning: true, size: 3 })).toBe("remove");
+    });
+    test("Q toggles the lock only inside a live pin session over a non-empty set", () => {
+        expect(forceKeyAct("q", { pinning: false, size: 3 })).toBeNull(); // no session open
+        expect(forceKeyAct("Q", { pinning: true, size: 0 })).toBeNull(); // empty set
+        expect(forceKeyAct("q", { pinning: true, size: 1 })).toBe("toggleLock");
+    });
+    test("off both bindings: null", () => {
+        expect(forceKeyAct("Escape", { pinning: true, size: 3 })).toBeNull();
+    });
+});
+
+describe("modeKeyAct — the pin-mode Escape rung", () => {
+    const open = { modeOpen: true, menuOpen: false, editing: false, selected: false };
+    test("off BINDINGS.exitMode, or the mode not open: null", () => {
+        expect(modeKeyAct("a", open)).toBeNull();
+        expect(modeKeyAct("Escape", { ...open, modeOpen: false })).toBeNull();
+    });
+    test("every inner dismissal layer yields first — a summoned menu, an edit sub-mode, a live selection", () => {
+        expect(modeKeyAct("Escape", { ...open, menuOpen: true })).toBeNull();
+        expect(modeKeyAct("Escape", { ...open, editing: true })).toBeNull();
+        expect(modeKeyAct("Escape", { ...open, selected: true })).toBeNull();
+    });
+    test("every inner layer yielded: Escape fires pinExit", () => {
+        expect(modeKeyAct("Escape", open)).toBe("pinExit");
     });
 });
 

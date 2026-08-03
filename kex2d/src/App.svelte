@@ -38,6 +38,7 @@ import {
 } from "./editor";
 import { convertForce } from "./forcegeo";
 import { convertGeo } from "./geoforce";
+import { modeKeyAct } from "./keys";
 import { MIN_FREE } from "./optimize";
 import { enterPinMode, exitPinMode, runPinSection } from "./pin";
 import {
@@ -187,23 +188,28 @@ onMount(() => {
             const t = e.target as HTMLElement | null;
             if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
                 return; // the focused field reverts first
-            if (
-                editor.context !== null ||
-                editor.nodeMenu !== null ||
-                editor.forceMenu !== null ||
-                editor.rulerMenu !== null
-            )
-                return; // a summoned menu peels first (its own capture handler)
-            if (editor.tangentEdit !== null || editor.forceEdit !== null) return; // edit sub-modes
-            if (
-                editor.selection !== null ||
-                editor.force !== null ||
-                editor.section !== null ||
-                editor.start
-            )
-                return; // a selection clears first (controls.ts / Timeline)
-            e.stopImmediatePropagation();
-            pinExit();
+            // routed through `keys.ts`'s `modeKeyAct` (the keyboard twin of `menus.sectionMenu`'s
+            // in-mode `Exit` row) — the dismissal-ladder guards stay here, the decider only reads
+            // their results.
+            const act = modeKeyAct(e.key, {
+                modeOpen: editor.pinning !== null,
+                menuOpen:
+                    editor.context !== null ||
+                    editor.nodeMenu !== null ||
+                    editor.forceMenu !== null ||
+                    editor.rulerMenu !== null,
+                editing: editor.tangentEdit !== null || editor.forceEdit !== null,
+                selected:
+                    editor.selection !== null ||
+                    editor.force !== null ||
+                    editor.section !== null ||
+                    editor.start,
+            });
+            if (act !== null) {
+                e.stopImmediatePropagation();
+                const modeActs: Record<"pinExit", () => void> = { pinExit };
+                modeActs[act]();
+            }
             return;
         }
         if (bound(BINDINGS.remove, e.key) && editor.section !== null) {
