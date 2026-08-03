@@ -27,7 +27,6 @@ import {
     selectForces,
     selectSection,
     snapActive,
-    toggleLockedSet,
     toggleSnap,
 } from "./editor";
 import {
@@ -40,7 +39,6 @@ import {
     commit,
     commitLength,
     createForce,
-    deleteForces,
     history,
     materializeCustom,
     setForcesEase,
@@ -84,7 +82,8 @@ import {
     yGrow,
     zoomAt,
 } from "./timeline";
-import { armDrag, DRAG_PX, latchAngle, sectionEditable, sectionOpsAllowed } from "./controls";
+import { forceSetEditable, keyframeActs, sectionEditable, sectionOpsAllowed } from "./acts";
+import { armDrag, DRAG_PX, latchAngle } from "./controls";
 import {
     ANGLE_STEP_MAX,
     ANGLE_STEP_MIN,
@@ -1411,7 +1410,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     const id = m.id; // the active member (openForceMenu promotes the right-clicked one) — single subject
     // the lockdown (kex2d-optimize-mode stage 5): bulk rows need the whole SET editable, the
     // single-subject rows the active member — grayed, never hidden (the enablement law).
-    const setOk = forceSetEditable();
+    const setOk = forceSetEditable(ecs);
     const pt = forcePts.find((p) => p.id === id);
     const activeOk = pt !== undefined && sectionEditable(editor.pinning, pt.section);
     // the Lock/Unlock row's member set: the pinning section's own selected keys.
@@ -1454,8 +1453,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
             },
         },
         {
-            remove: () => deleteForces(history, ecs, [...editor.forces.ids]),
-            toggleLock: () => toggleLockedSet(lockIds),
+            ...keyframeActs(ecs),
             setEase: (e) => setForcesEase(history, ecs, bulkEaseIds, e),
             chooseCustom: () => chooseCustom(id),
             pickMode: (mode) => pickForceMode(id, mode),
@@ -2085,30 +2083,6 @@ function fieldKeydown(e: KeyboardEvent, reset: string): void {
         input.blur();
     }
 }
-function deleteSelectedForce(): void {
-    if (editor.force === null) return; // active is null iff the set is empty
-    // the lockdown: the whole set must be editable (the menu's Delete row grays on the same
-    // read) — a mixed set deletes nothing rather than silently deleting a subset.
-    if (!forceSetEditable()) return;
-    // a keyboard mutation skips a live landing first (the undo/redo precedent in `onKey`) —
-    // deleting a moved key mid-window would leave the override easing a dead id.
-    skipLanding();
-    // force multi-delete is UNCONDITIONAL: delete the whole selected set in ONE undo entry. no
-    // explicit deselect — the popover/menu derive null once the subjects are gone and the $effect
-    // above clears the stale active id (one mechanism for every death path). single-select is the
-    // size-1 case.
-    deleteForces(history, ecs, [...editor.forces.ids]);
-}
-// whether EVERY selected force keyframe's section is editable under the live lockdown — the
-// action-layer guard the Del key and the menu's bulk rows share (all-or-nothing: bulk ops act
-// on the whole set, so a mixed set grays rather than acting on a silent subset).
-function forceSetEditable(): boolean {
-    for (const id of editor.forces.ids) {
-        const p = forcePts.find((fp) => fp.id === id);
-        if (!p || !sectionEditable(editor.pinning, p.section)) return false;
-    }
-    return true;
-}
 function cancelForceDrag(): void {
     if (dragForce === null) return;
     dragForce = null;
@@ -2628,25 +2602,13 @@ onMount(() => {
                 });
                 if (act !== null) {
                     e.preventDefault();
-                    const forceActs: Record<"remove" | "toggleLock", () => void> = {
-                        remove: deleteSelectedForce,
-                        // `Q` = the lock/free toggle (kex2d stage 6 — reachability is the
-                        // criterion: left-hand top row, one hand on the keyboard while the other
-                        // mouses; the old `L` was unreachable that way and is removed, not
-                        // aliased), restricted to the pinning section's own keys (a lock on
-                        // another section's key would be dead state — the solve never reads it).
-                        // the mode-only menu row is the mouse path to the same toggle.
-                        toggleLock: () => {
-                            if (editor.pinning === null) return; // guaranteed by forceKeyAct
-                            const sid = editor.pinning.section;
-                            toggleLockedSet(
-                                forcePts
-                                    .filter((fp) => editor.forces.ids.has(fp.id) && fp.section === sid)
-                                    .map((fp) => fp.id),
-                            );
-                        },
-                    };
-                    forceActs[act]();
+                    // `Q` = the lock/free toggle (kex2d stage 6 — reachability is the criterion:
+                    // left-hand top row, one hand on the keyboard while the other mouses; the old
+                    // `L` was unreachable that way and is removed, not aliased), restricted to the
+                    // pinning section's own keys (a lock on another section's key would be dead
+                    // state — the solve never reads it). the mode-only menu row is the mouse path
+                    // to the same toggle.
+                    keyframeActs(ecs)[act]();
                 } else if (
                     editor.hover === "timeline" &&
                     (e.key === "ArrowLeft" ||
@@ -2662,7 +2624,7 @@ onMount(() => {
                     // coarse; one press = one undo entry.
                     const members = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
                     if (members.length === 0) return;
-                    if (!forceSetEditable()) return; // the lockdown — all-or-nothing, like Del
+                    if (!forceSetEditable(ecs)) return; // the lockdown — all-or-nothing, like Del
                     e.preventDefault();
                     skipLanding(); // keyboard mutation mid-window: same routing as undo/redo above
                     const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;

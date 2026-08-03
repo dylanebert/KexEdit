@@ -1,15 +1,8 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
-import {
-    attachControls,
-    manipKnobs,
-    nodeMembers,
-    sectionOpsAllowed,
-    sectionsDeletable,
-    selectedMetrics,
-    suffixRun,
-} from "./controls";
+import { nodeActs, nodeMembers, sectionActs, sectionOpsAllowed, suffixRun } from "./acts";
+import { attachControls, manipKnobs, sectionsDeletable, selectedMetrics } from "./controls";
 import {
     beginConvert,
     beginDrag,
@@ -41,27 +34,12 @@ import { convertGeo } from "./geoforce";
 import { modeKeyAct } from "./keys";
 import { MIN_FREE } from "./optimize";
 import { enterPinMode, exitPinMode, runPinSection } from "./pin";
-import {
-    beginMove,
-    beginV0,
-    commit,
-    extendTrack,
-    history,
-    removeSection,
-    removeSections,
-    resetSection,
-    resetNodes,
-    resetNodesBulk,
-    setTangentModes,
-    trimSuffix,
-    trimTrack,
-} from "./history";
+import { beginV0, commit, history } from "./history";
 import Menu from "./Menu.svelte";
 import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { nodeMenu, sectionMenu } from "./menus";
 import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "./radial";
-import { alignTangent, mirrorTangent, TangentMode } from "./spline";
-import { stitchNode } from "./tangents";
+import { TangentMode } from "./spline";
 import Timeline from "./Timeline.svelte";
 import {
     bakeLive,
@@ -79,8 +57,6 @@ import {
     sectionResettable,
     sections,
     sectionSolvable,
-    seedTangent,
-    setTangent,
     setTrackV0,
     Track,
 } from "./track";
@@ -207,8 +183,8 @@ onMount(() => {
             });
             if (act !== null) {
                 e.stopImmediatePropagation();
-                const modeActs: Record<"pinExit", () => void> = { pinExit };
-                modeActs[act]();
+                const acts = sectionActs(ecs, editor.pinning?.section ?? -1);
+                acts[act]();
             }
             return;
         }
@@ -330,11 +306,6 @@ function ctxPinEnter(): void {
 // the Solve that restores the stamped exit.
 function pinExit(): void {
     exitPinMode(ecs);
-}
-
-function ctxPinExit(): void {
-    closeContext();
-    pinExit();
 }
 
 async function pinSolve(): Promise<void> {
@@ -539,17 +510,6 @@ const RADIAL_BTN_R = 15; // `.rbtn` is 30px square → 15px radius (CSS)
 const READOUT_GAP = 8; // clearance between the ring's far edge and the readout
 const READOUT_OFFSET = RADIAL_R + RADIAL_BTN_R + READOUT_GAP; // node center → readout top (or bottom, flipped)
 
-// append (extend the chain by a node) + trim (remove the trailing node). append is also the ring's
-// extend button and Enter; trim is also Del. both are chain-end-only, so the node menu gates their
-// enablement on the node being the chain end.
-function doAdd(eid: number): void {
-    select(extendTrack(history, ecs, Handle.section.get(eid)));
-}
-function doTrim(eid: number): void {
-    const section = Handle.section.get(eid);
-    if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
-}
-
 // the two polar manipulator knobs — real DOM `.rbtn` buttons on the node-action ring (feel round 6),
 // peers of the extend button they flank: the length knob (measure/ruler) at −60° off the heading, the
 // angle knob (pitch/↕) at +60°. shown on EVERY singly-selected node (not just the chain end), hidden
@@ -609,7 +569,7 @@ const extendBtn = $derived.by((): { x: number; y: number } | null => {
 // the extend button click → append a node at the chain end (Enter's twin), selecting the new node.
 function onExtend(): void {
     const eid = editor.selection;
-    if (eid !== null) doAdd(eid);
+    if (eid !== null) nodeActs(ecs, eid).add();
 }
 
 // the readout follows the selected node (the dragged node during a drag — a drag selects what it
@@ -734,72 +694,9 @@ const nodeItems = $derived.by((): MenuItem[] => {
                 return nodeSuffixOk;
             },
         },
-        {
-            remove: () => doTrim(eid),
-            removeSet: doDeleteSet,
-            add: () => doAdd(eid),
-            toggleHandles: () => toggleHandles(eid),
-            pickMode: (mode) => pickMode(mode, eid),
-            pickModeSet,
-            reset: () => doReset(eid),
-            resetSet: doResetSet,
-        },
+        nodeActs(ecs, eid),
     );
 });
-
-// Handles: the double-click tangent-edit toggle, reached from the menu — summon the node's
-// handles, or peel them if already summoned.
-function toggleHandles(eid: number): void {
-    if (editor.tangentEdit === eid) exitTangentEdit();
-    else enterTangentEdit(eid);
-}
-
-// set the target node's tangent mode as one undo entry (the move gesture's node snapshot carries
-// the tangent). picking the checked mode on an inferred node is a no-op (it already displays as
-// Aligned — no stamp). otherwise a live node is seeded from the arc rule first (continuous, no
-// jump); Mirror/Aligned re-collinearize the vectors to honor the mode, Free just relabels.
-function pickMode(target: TangentMode, eid: number): void {
-    const section = Handle.section.get(eid);
-    const order = Handle.order.get(eid);
-    const cur = handleTangent(ecs, section, order);
-    if (cur === undefined && target === TangentMode.Aligned) return; // inferred already shows Aligned
-    beginMove(ecs, section);
-    const base = cur ?? seedTangent(ecs, section, order, target);
-    if (base) {
-        const next =
-            target === TangentMode.Mirror
-                ? mirrorTangent(base)
-                : target === TangentMode.Aligned
-                  ? alignTangent(base)
-                  : { ...base, mode: TangentMode.Free };
-        setTangent(ecs, section, order, next);
-    }
-    commit(history);
-}
-
-// Reset: re-create the node — the default-chord continuation past its predecessor, tangents back
-// to live (Auto); node 0 keeps the tangent clear (its position isn't authorable). one undo entry;
-// a node already at creation state records nothing. at a geo→geo boundary tip the coincident
-// downstream node-0 tangent is cleared in the same entry (the stitched "one node" view);
-// everywhere else the stitch is null and it's a plain single-node reset.
-function doReset(eid: number): void {
-    resetNodes(history, ecs, eid, stitchNode(ecs, eid));
-}
-
-// the bulk node-menu actions over the whole selection set (one undo entry each). Delete trims the
-// suffix run then prunes the selection to the surviving tip (the live-pruner answer — the destroyed
-// eids leave the set here). Reset + the mode picks apply per member across the affected sections.
-function doDeleteSet(): void {
-    const run = suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length);
-    if (run !== null && trimSuffix(history, ecs, run.section, run.k))
-        select(lastHandle(ecs, run.section));
-}
-function doResetSet(): void {
-    resetNodesBulk(history, ecs, nodeMembers(ecs));
-}
-function pickModeSet(mode: TangentMode): void {
-    setTangentModes(history, ecs, nodeMembers(ecs), mode);
-}
 
 // dismiss the node menu on any outside press or Escape (clicks on the menu pass through so
 // its items act first). Escape peels just this menu layer (capture + stop, so controls.ts
@@ -962,25 +859,14 @@ const ctxItems = $derived.by((): MenuItem[] => {
             },
         },
         {
+            ...sectionActs(ecs, ctx.section),
             solve: ctxSolve,
             solveShape: ctxSolveShape,
             pinSolve: ctxPinSolve,
-            pinExit: ctxPinExit,
             pinEnter: ctxPinEnter,
-            reset: ctxReset,
-            remove: ctxDelete,
-            removeSet: ctxDeleteSet,
         },
     );
 });
-// reset the section to its kind's fresh default — one undoable entry (`history.resetSection`).
-// the subject survives, so the menu closes explicitly (Delete's death-derivation can't fire).
-function ctxReset(): void {
-    if (ctx === null || !sectionOpsAllowed(editor.pinning)) return;
-    const section = ctx.section;
-    closeContext();
-    resetSection(history, ecs, section);
-}
 // convert this geo shape into the force section that reproduces it (`geoforce.ts`) — the
 // conversion row's geo→force half. the menu closes first: the convert is modal, and its own
 // surface owns the screen from here.
@@ -996,16 +882,6 @@ function ctxSolveShape(): void {
     const section = ctx.section;
     closeContext();
     void solveShape(section);
-}
-function ctxDelete(): void {
-    if (ctx === null || !sectionOpsAllowed(editor.pinning)) return;
-    // no explicit close: removing the section makes `ctx` derive null, so the menu dismisses
-    // by subject existence (one mechanism) and the $effect clears the stale target id.
-    if (removeSection(history, ecs, ctx.section)) selectSection(null);
-}
-function ctxDeleteSet(): void {
-    if (!sectionOpsAllowed(editor.pinning)) return;
-    if (removeSections(history, ecs, [...editor.sections.ids])) selectSection(null);
 }
 // dismiss the menu on any outside press or Escape (clicks on the menu itself pass through
 // so its items can act before it closes). Escape peels just this menu layer (capture + stop,

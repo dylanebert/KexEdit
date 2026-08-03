@@ -1,5 +1,6 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { State } from "@dylanebert/shallot";
+import { sectionEditable, sectionOpsAllowed, suffixRun } from "../src/acts";
 import {
     applyMultiDelta,
     armDrag,
@@ -21,11 +22,8 @@ import {
     pickHover,
     PICK_R,
     polarNudge,
-    sectionEditable,
-    sectionOpsAllowed,
     sectionsDeletable,
     selectedMetrics,
-    suffixRun,
 } from "../src/controls";
 import { beginDrag, editor, enterTangentEdit, exitTangentEdit } from "../src/editor";
 import { forceKeyAct, modeKeyAct, nodeKeyAct, sectionKeyAct } from "../src/keys";

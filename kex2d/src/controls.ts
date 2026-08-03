@@ -1,4 +1,5 @@
 import type { State } from "@dylanebert/shallot";
+import { nodeActs, sectionActs, sectionEditable, sectionOpsAllowed } from "./acts";
 import {
     beginDrag,
     clearHover,
@@ -10,7 +11,6 @@ import {
     openContext,
     openForceMenu,
     openNodeMenu,
-    type PinSession,
     select,
     selectForce,
     selectNodes,
@@ -21,19 +21,7 @@ import {
     writeHover,
 } from "./editor";
 import { hits, merge, normRect } from "./marquee";
-import {
-    beginMove,
-    beginMoves,
-    cancel,
-    commit,
-    commitChord,
-    extendTrack,
-    history,
-    removeSection,
-    removeSections,
-    trimSuffix,
-    trimTrack,
-} from "./history";
+import { beginMove, beginMoves, cancel, commit, commitChord, history } from "./history";
 import {
     angleControl,
     angleToPoint,
@@ -562,63 +550,12 @@ export function polarNudge(
     return { x: prev.x + Math.cos(na) * r, y: prev.y + Math.sin(na) * r };
 }
 
-/** whether a selected node set is a Delete-able **suffix run** — a contiguous suffix of ONE section's
- *  chain, excluding node 0, that leaves ≥ 2 nodes (the enablement the user named: end-of-geo yes,
- *  intermediate no). `members` are the selected nodes' (section, order); `count(section)` yields that
- *  section's node count. returns the section and the number of trailing nodes to trim (`k`), or null
- *  when the set spans two sections, has a gap, includes node 0, or would leave < 2 nodes. pure —
- *  device-free, unit-tested. the size-1 case is a single tip (today's trim). */
-export function suffixRun(
-    members: readonly { section: number; order: number }[],
-    count: (section: number) => number,
-): { section: number; k: number } | null {
-    if (members.length === 0) return null;
-    const section = members[0].section;
-    for (const m of members) if (m.section !== section) return null; // spans two sections
-    const orders = [...new Set(members.map((m) => m.order))].sort((a, b) => a - b);
-    if (orders.length !== members.length) return null; // a duplicate order (never expected)
-    if (orders[0] === 0) return null; // excludes node 0 (the entry anchor)
-    const k = orders.length;
-    const n = count(section);
-    if (orders[k - 1] !== n - 1) return null; // must reach the chain tip (a suffix, not interior)
-    for (let i = 1; i < k; i++) if (orders[i] !== orders[i - 1] + 1) return null; // contiguous
-    if (n - k < 2) return null; // a section keeps ≥ 2 nodes
-    return { section, k };
-}
-
 /** whether Delete is valid on a section SET — the last-section floor (`deleteSection`'s own guard,
  *  lifted to the set): a set smaller than the total section count, never every section (one must
  *  survive). the single-section case (`selected` = 1) reduces to `total > 1`, today's enablement.
  *  pure — device-free, unit-tested; the bulk row grays out otherwise (never hidden). */
 export function sectionsDeletable(selected: number, total: number): boolean {
     return selected > 0 && selected < total;
-}
-
-/** the consent boundary's one predicate: whether the section-structure surface — Delete on a
- *  whole-section selection, either Convert direction on ANY section, and the ruler's domain
- *  switch — may run right now. False while ANY pin session is open (`editor.pinning`),
- *  not just on the session's own section: convert/delete/join aren't available inside the mode
- *  (the locked decision's consent-boundary law). Deleting the session's own section would strand
- *  `editor.pinning` on a dead id; a convert or a domain switch would land a track rewrite
- *  INSIDE the open session — an upstream convert silently rebases what the stamp means, and a
- *  domain switch is a lossy whole-track rewrite of the very store the session is solving.
- *  Extracted as its own predicate (mirrors `sectionsDeletable` above, and
- *  `track.sectionSolvable`) since the window keydown handlers and `pickDomain` have no DOM-free
- *  unit-test seam otherwise; every caller pairs the grayed affordance with this same guard at
- *  the action layer. */
-export function sectionOpsAllowed(pinning: PinSession | null): boolean {
-    return pinning === null;
-}
-
-/** the editing lockdown's per-subject predicate (kex2d-optimize-mode stage 5): while a pin
- *  session is open, ONLY the pinning section is editable — every edit surface addressing any
- *  other section (geo nodes, other force sections' keys/extents, the track v0) grays its
- *  affordance and guards its action on this. `sectionOpsAllowed` (above) stays the stricter
- *  structural gate: add/remove/convert/domain are barred even on the pinning section.
- *  `section` is the subject's own section id; pass -1 for a track-global subject (v0), which no
- *  session id ever equals. */
-export function sectionEditable(pinning: PinSession | null, section: number): boolean {
-    return pinning === null || pinning.section === section;
 }
 
 /** wrap a degree value into (−180, 180]. */
@@ -692,16 +629,6 @@ function sectionsOf(ecs: State, ids: Iterable<number>): number[] {
         const sec = Handle.section.get(eid);
         if (!out.includes(sec)) out.push(sec);
     }
-    return out;
-}
-
-/** the selected node set as stable (section, order) members — the suffix-run enablement + the bulk
- *  tangent ops read this (a raw eid can't cross a snapshot restore). */
-export function nodeMembers(ecs: State): { section: number; order: number }[] {
-    const out: { section: number; order: number }[] = [];
-    for (const eid of editor.nodes.ids)
-        if (ecs.has(eid, Handle))
-            out.push({ section: Handle.section.get(eid), order: Handle.order.get(eid) });
     return out;
 }
 
@@ -1577,16 +1504,8 @@ export function attachControls(
             });
             if (act !== null) {
                 e.preventDefault();
-                const sectionActs: Record<"remove" | "removeSet", () => void> = {
-                    remove: () => {
-                        if (removeSection(history, ecs, section)) selectSection(null);
-                    },
-                    removeSet: () => {
-                        if (removeSections(history, ecs, [...editor.sections.ids]))
-                            selectSection(null);
-                    },
-                };
-                sectionActs[act]();
+                const acts = sectionActs(ecs, section);
+                acts[act]();
             }
             return;
         }
@@ -1600,17 +1519,17 @@ export function attachControls(
         // selection prunes to the surviving tip (the live-pruner answer: the destroyed eids leave the
         // set here, never lingering to alias a recycled entity). anything else is a no-op (the menu
         // grays the row). Enter/extend is single-subject, so a multi-set doesn't extend. routed
-        // through `keys.ts`'s `nodeKeyAct`, same as the chain-end rung below.
+        // through `keys.ts`'s `nodeKeyAct`, same as the chain-end rung below — the record indexes
+        // through `nodeActs` like its siblings, not as an inline special case.
         if (editor.nodes.ids.size > 1) {
             const act = nodeKeyAct(e.key, {
                 editable: sectionEditable(editor.pinning, Handle.section.get(sel)),
                 multi: true,
             });
-            if (act === "removeSet") {
+            if (act !== null) {
                 e.preventDefault();
-                const run = suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length);
-                if (run !== null && trimSuffix(history, ecs, run.section, run.k))
-                    select(lastHandle(ecs, run.section));
+                const acts = nodeActs(ecs, sel);
+                acts[act]();
             }
             return;
         }
@@ -1623,13 +1542,8 @@ export function attachControls(
         });
         if (act !== null) {
             e.preventDefault();
-            const nodeActs: Record<"remove" | "add", () => void> = {
-                add: () => select(extendTrack(history, ecs, section)), // lay a node, select it
-                remove: () => {
-                    if (trimTrack(history, ecs, section)) select(lastHandle(ecs, section));
-                },
-            };
-            nodeActs[act]();
+            const acts = nodeActs(ecs, sel);
+            acts[act]();
         }
     };
 
