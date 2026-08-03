@@ -741,6 +741,24 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   and append menus (`Timeline.svelte`). The grammar itself (groups, ordering, separators,
   `checked`, toggle labels, `shortcut`) is `editor-ui.md` Menus; the oracle over every builder ×
   its full state matrix is `tests/menu.test.ts`.
+- `keys.ts` + `acts.ts` — the menu triple's other two members (`menus.ts` is the rows). `keys.ts`
+  is the pure keyboard twin of `menus.ts`: one decider per `BINDINGS` home, `(key,
+  stateDescriptor) → actName | null`, typed `Extract<keyof XMenuActions, …>` and reaching only
+  `menu.ts` at runtime, so `tests/menu.test.ts` drives every decider across its state matrix with
+  no shim. `acts.ts` is the ONE impure member: `sectionActs(ecs, subject)` / `nodeActs(ecs, eid)` /
+  `keyframeActs(ecs)` each return the `Pick<>` of their surface's actions record holding the
+  **document** acts — ECS + `history` + `editor` writes — and both the menu builder and the keydown
+  home consume it, so a row and its bound key can't run different bodies. Chrome acts (a modal
+  drive, a worker façade, a chart-pixel coupling) stay in the `.svelte` home; the membership test,
+  and the spread-last law that keeps a re-forked key from shadowing a hoisted body, are
+  `editor-ui.md` Menus. A factory **closes over and computes nothing at construction** — the menu
+  builder calls it inside a `$derived.by` that rebuilds on every open, and a test constructs one
+  against a bare `State`. It also owns the act-layer predicates the guards read
+  (`sectionOpsAllowed`, `sectionEditable`, `suffixRun`, `nodeMembers`, `forceSetEditable`,
+  `lockCandidates`), moved off `controls.ts`, which imports them back for its drag guards — the
+  edge is one-way, `acts.ts` never imports `controls.ts`. Tests: `tests/acts.test.ts` (every act
+  driven on a real ECS track), plus `tests/menu.test.ts`'s naming→behavior bridge and the homes
+  census.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), section-entry **anchor diamonds**, the
   hover + selected-section span overlays (each in the section's OWN kind color — one rung up under
@@ -876,7 +894,7 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 
 ## Test tiers
 
-`bun test` is the whole default gate (~12 s, 1206 tests) and it runs every time. The corpus-scale
+`bun test` is the whole default gate (~12 s, 1281 tests) and it runs every time. The corpus-scale
 `.oracle.ts` files sit outside it and are **run explicitly by path, exactly like the labs** — no
 `package.json` script, no composite. Run the one whose kernel you touched:
 
@@ -920,8 +938,11 @@ suite — it reaches `optimize.ts`/`profile`/`section` only. `tests/pin.test.ts`
 the sandbox, the downstream freeze, and the grep sentinel over the Pin/solver naming boundary. They
 shared a filename until the rename found the seam; keep a new test on the side its imports put it.
 `tests/menu.test.ts` is the menus' whole gate — the per-builder characterization pins, the grammar
-oracle over every builder × its full state matrix, the `checked` registry and binding tables, and
-the `menus.ts` module-graph walk.
+oracle over every builder × its full state matrix, the `checked` registry and binding tables, the
+naming→behavior bridge against the production factory records, the `acts.ts` homes census, and the
+`menus.ts` module-graph walk. `tests/acts.test.ts` is the act layer's own suite — every factory act
+driven on a real ECS track, guards included; it tests the record's entry, not the `history` op
+underneath (that's `history.test.ts`/`ops.test.ts`).
 
 ## Labs
 

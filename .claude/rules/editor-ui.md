@@ -346,11 +346,31 @@ compile time). Each keydown handler becomes `const act = xKeyAct(e.key, {…}); 
 e.preventDefault(); acts[act](); }`; the guard predicates stay where they live and the decider
 takes their results. The test drives every decider across its state space and asserts
 `Acts[act] === binding`, so `MenulessBindings` covers only what no decider emits — empty, by
-derivation. Two limits are the seam's stated edge, not defects: the deciders' *wiring* into the
-handlers is gated by the capture flows alone (a perfect decider nobody calls passes every unit
-check), and act **bodies** stay per-surface, so the seam unifies act names, not behavior. A
-descriptor whose fields are read on only one branch is a discriminated union, not a boolean
-product — the union deletes the unread field and narrows the return per call site.
+derivation. A descriptor whose fields are read on only one branch is a discriminated union, not a
+boolean product — the union deletes the unread field and narrows the return per call site.
+
+**The act BODY is the seam's third layer, and what hoists is a written test.** Unified names still
+let a row and its bound key run different code, so each surface's document act bodies live in one
+impure factory module both homes consume (kex2d `acts.ts`, beside pure `menus.ts` and pure
+`keys.ts`). A factory is `(ecs, subject) => Pick<XMenuActions, …>`: the keydown home indexes it
+(`acts[act]()`), the menu builder spreads it, and the decider's `Extract<keyof …>` return type
+against that `Pick` is the compile-time pin that every emitted name has a live body. Two clauses
+decide membership, in order. **(1) An act that only writes the document or the editor singleton
+hoists** — a menu close is such a write, so a row that closes its menu keeps the close *inside* the
+hoisted body rather than being wrapped at the component, and a row that dismisses by subject death
+carries no close at all. **(2) An act needing a component-local value stays** — but only while that
+value is genuinely component-local. A `$derived` that is a pure function of the ECS is a hoist
+candidate to be re-derived at the factory, not a boundary (kex2d's `forceSetEditable` moved off the
+chart's `forcePts` for exactly this). Clause 2 is the residual class and the unstable one: name the
+value that pins each act that stays, so the next author can tell a real boundary (a modal's abort
+controller, a chart-pixel coupling) from an un-hoisted derivation. **Spread the factory last**
+where a component adds its chrome keys — spread-first lets a re-forked sibling key silently shadow
+the hoisted body with nothing to catch it. And a factory **closes over, it computes nothing at
+construction**: it is called per menu rebuild and per keypress.
+
+One limit survives the hoist. Wiring is still gated by the capture flows alone: a source census
+proves a home *mentions* its factory, never that it dispatches through it or keeps no private twin
+beside it.
 
 **A descriptor field costing a full-document walk is a getter, and the gate asserts the cheap fork
 reads none of them.** The pure-builder lift replaces a closure that could read the live document
