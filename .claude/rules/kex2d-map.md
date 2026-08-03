@@ -753,12 +753,13 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   and the spread-last law that keeps a re-forked key from shadowing a hoisted body, are
   `editor-ui.md` Menus. A factory **closes over and computes nothing at construction** — the menu
   builder calls it inside a `$derived.by` that rebuilds on every open, and a test constructs one
-  against a bare `State`. It also owns the act-layer predicates the guards read
-  (`sectionOpsAllowed`, `sectionEditable`, `suffixRun`, `nodeMembers`, `forceSetEditable`,
-  `lockCandidates`), moved off `controls.ts`, which imports them back for its drag guards — the
-  edge is one-way, `acts.ts` never imports `controls.ts`. Tests: `tests/acts.test.ts` (every act
-  driven on a real ECS track), plus `tests/menu.test.ts`'s naming→behavior bridge and the homes
-  census.
+  against a bare `State`. It also owns the act-layer predicates the guards read:
+  `sectionOpsAllowed`/`sectionEditable`/`suffixRun`/`nodeMembers` moved off `controls.ts` (which
+  imports `sectionOpsAllowed`/`sectionEditable` back for its own drag guards), while
+  `forceSetEditable`/`lockCandidates` are new — lifted off `Timeline.svelte`'s local
+  re-derivations. The edge is one-way, `acts.ts` never imports `controls.ts`. Tests:
+  `tests/acts.test.ts` (every act driven on a real ECS track), plus `tests/menu.test.ts`'s
+  naming→behavior bridge and the homes census.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
   polyline (solid feasible blue / dashed infeasible red), section-entry **anchor diamonds**, the
   hover + selected-section span overlays (each in the section's OWN kind color — one rung up under
