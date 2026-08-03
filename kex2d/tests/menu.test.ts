@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import { State } from "@dylanebert/shallot";
+import { keyframeActs, nodeActs, sectionActs } from "../src/acts";
 import {
     BINDINGS,
     type Binding,
@@ -1248,6 +1250,43 @@ describe("the menu grammar — every builder, every state", () => {
         expect(orphans, "MenulessBindings entries for a decider-reachable binding").toEqual([]);
     });
 
+    // ── the naming→behavior bridge (kex2d-act-factory stage 2). `Acts` above closes "does this
+    // act's row show the right hint", and the reachability assert closes "does every binding fire
+    // SOME act" — neither says the act a decider names still points at a live BODY. Since sub-stage
+    // 1's hoist, a document act's body lives in a `src/acts.ts` factory record (`sectionActs`,
+    // `nodeActs`, `keyframeActs`); a decider's return type is already `Extract<keyof
+    // XMenuActions, …>`, which the factory's own `Pick<...>` return type ties to at compile time —
+    // but `bun test` runs no type checker, so this is the runtime twin of that guarantee, and it's
+    // read off the factory's OWN keys (never a hand-typed list, the whole seam's law): a factory
+    // that silently drops a key it's supposed to carry (an `as` cast past the Pick, a stale
+    // literal) fails here even though `bun check` would have caught the source. Reuses
+    // `driveKeyAct` — the proven driver, not a fabricated pair — over the SAME per-surface state
+    // matrices the reachability assert above already builds.
+    test("every emitted act names a key of its surface's PRODUCTION factory record (acts.ts)", () => {
+        const dummy = new State();
+        const sectionKeys = new Set(Object.keys(sectionActs(dummy, -1)));
+        const nodeKeysSet = new Set(Object.keys(nodeActs(dummy, -1)));
+        const keyframeKeys = new Set(Object.keys(keyframeActs(dummy)));
+        let checked = 0;
+        const assertIn = (act: string, keys: Set<string>, factory: string): void => {
+            checked++;
+            expect(keys.has(act), `"${act}" is not a key of ${factory}'s record`).toBe(true);
+        };
+        for (const { act } of driveKeyAct(sectionKeyAct, sectionKeyStates))
+            assertIn(act, sectionKeys, "sectionActs");
+        for (const { act } of driveKeyAct(modeKeyAct, modeKeyStates))
+            assertIn(act, sectionKeys, "sectionActs"); // `pinExit` lives in `sectionActs`
+        for (const { act } of driveKeyAct(nodeKeyActMulti, nodeKeyStatesMulti))
+            assertIn(act, nodeKeysSet, "nodeActs");
+        for (const { act } of driveKeyAct(nodeKeyActSingle, nodeKeyStatesSingle))
+            assertIn(act, nodeKeysSet, "nodeActs");
+        for (const { act } of driveKeyAct(forceKeyAct, forceKeyStates))
+            assertIn(act, keyframeKeys, "keyframeActs");
+        // the positive control every driver in this suite carries: proves the loop above actually
+        // walked live pairs rather than vacuously passing over zero.
+        expect(checked, "no decider ever emitted an act to check").toBeGreaterThan(0);
+    });
+
     test("`shortcut` is present iff a keyboard binding invokes that row's action", () => {
         // `Handles` is double-click — a pointer gesture is not a shortcut, so it declares nothing.
         cachedActByPath = undefined;
@@ -1432,6 +1471,50 @@ describe("the menu grammar — every builder, every state", () => {
                 );
             }
         }
+    });
+});
+
+// ── the source census (kex2d-act-factory stage 2, the `Handlers` census's precedent): every home
+// that builds a menu or dispatches a key REACHES its surface's factory (`src/acts.ts`) rather than
+// keeping a private body. Two of the three homes are `.svelte` and unreachable from `bun test` at
+// all — this is what pins that the hoist actually landed there, not just that `keys.ts`/`menus.ts`
+// name the right acts.
+describe("acts.ts source census — every home reaches its factory", () => {
+    const srcRoot = join(import.meta.dir, "..", "src");
+    const src = (file: string): string => readFileSync(join(srcRoot, file), "utf8");
+    // recursive — a flat `readdirSync` sees only the top level, so a future nested module would be
+    // invisible to the census below while it stayed green (the declared-registry law's own clause).
+    function collectSrc(dir: string, prefix = ""): string[] {
+        return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) return collectSrc(join(dir, entry.name), rel);
+            return entry.name.endsWith(".ts") || entry.name.endsWith(".svelte") ? [rel] : [];
+        });
+    }
+    const srcFiles = collectSrc(srcRoot).filter((f) => f !== "acts.ts"); // acts.ts IS the factory
+
+    // the declared population: which files call which factory. Both directions checked below — an
+    // undeclared file calling a factory fails just as hard as a declared home that stopped.
+    const FactoryHomes: Record<"sectionActs" | "nodeActs" | "keyframeActs", string[]> = {
+        sectionActs: ["App.svelte", "controls.ts"],
+        nodeActs: ["App.svelte", "controls.ts"],
+        keyframeActs: ["Timeline.svelte"],
+    };
+
+    test("each declared home calls its factory, and no undeclared file does", () => {
+        for (const [factory, homes] of Object.entries(FactoryHomes)) {
+            const pattern = `${factory}(`;
+            const calling = srcFiles.filter((f) => src(f).includes(pattern));
+            expect(calling.sort(), `files calling ${pattern}`).toEqual([...homes].sort());
+        }
+    });
+
+    // positive control (the declared-registry law's own clause: the control must exercise the
+    // SCANNER, not just the set comparison): proves the recursive walk + substring read actually
+    // fires true somewhere, so an empty walk (a wrong root, a dead filter) can't pass the census
+    // above on a vacuous `[] === []`.
+    test("positive control: the scan DOES find `sectionActs(` in App.svelte", () => {
+        expect(src("App.svelte").includes("sectionActs(")).toBe(true);
     });
 });
 
