@@ -2,7 +2,13 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
 import { nodeActs, nodeMembers, sectionActs, sectionOpsAllowed, suffixRun } from "./acts";
-import { attachControls, manipKnobs, sectionsDeletable, selectedMetrics } from "./controls";
+import {
+    attachControls,
+    manipKnobs,
+    sectionsDeletable,
+    sectionsJoinable,
+    selectedMetrics,
+} from "./controls";
 import {
     beginConvert,
     beginDrag,
@@ -769,6 +775,18 @@ const canDelete = $derived.by((): boolean => {
         sectionOpsAllowed(editor.pinning)
     );
 });
+// whether the selected section SET is Join-able — `sectionsJoinable` (a contiguous same-kind
+// run, `controls.ts`) plus the pin consent boundary Join shares with every structural row
+// (it reaches past its subject to destroy a neighbor, squarely inside the lockdown). computable
+// today straight off `editor.sections.ids` and `sections(ecs)` — unlike `canCut`, it needs no
+// `toLocal`/`toLocalU` cursor-resolution lens, so it isn't deferred to stage 6.
+const canJoin = $derived.by((): boolean => {
+    void tick;
+    return (
+        sectionsJoinable([...editor.sections.ids], sections(ecs)) &&
+        sectionOpsAllowed(editor.pinning)
+    );
+});
 // whether the invoked geo→force solve is available on this selection (`sectionSolvable`,
 // controls.ts, target `Geo`): one geo section with a live bake. `convertGeo` THROWS on each of
 // those, so this enablement is the gate, not a hint — and it grays rather than hides (the
@@ -858,6 +876,9 @@ const ctxItems = $derived.by((): MenuItem[] => {
             },
             get canDelete() {
                 return canDelete;
+            },
+            get canJoin() {
+                return canJoin;
             },
         },
         {

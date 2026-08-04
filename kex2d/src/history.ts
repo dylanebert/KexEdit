@@ -972,3 +972,47 @@ export function removeSections(h: History, ecs: State, ids: readonly number[]): 
     record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return true;
 }
+
+/** join a SET of sections into one as ONE undoable entry (the bulk Join — Audacity's Clip >
+ *  Join over a selection, stage 5's set-lift of the single-subject `joinSection`). guards its
+ *  own copy of the same-kind-contiguous-run law (`sectionsJoinable`, `controls.ts`, is the UI's
+ *  matching enablement predicate — this reads the LIVE section table rather than importing that
+ *  module back, the `removeSections`/`sectionsDeletable` precedent), then folds the run into its
+ *  lowest-order member by calling `track.joinNext` on that head id once per remaining member —
+ *  each call absorbs the immediate next section in chain order (`joinNext`'s own contract), so
+ *  the head keeps ratcheting up the run exactly the way a run of two (today's single-subject
+ *  `joinSection`) does in one call. no-op (records nothing, returns null) when the set isn't a
+ *  valid run. undo respawns every joined section verbatim (whole-track snapshot — a join
+ *  reorders every downstream section, like `removeSections`); returns the surviving (head)
+ *  section's stable id so a caller can re-select the merge's result. */
+export function joinSections(h: History, ecs: State, ids: readonly number[]): number | null {
+    const targets = new Set(ids);
+    if (targets.size < 2) return null;
+    const rows = sections(ecs).filter((s) => targets.has(s.id));
+    if (rows.length !== targets.size) return null; // a stale id
+    rows.sort((a, b) => a.order - b.order);
+    const kind = rows[0].kind;
+    for (let i = 0; i < rows.length; i++) {
+        if (rows[i].kind !== kind) return null;
+        if (i > 0 && rows[i].order !== rows[i - 1].order + 1) return null; // not contiguous
+    }
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotAll(ecs);
+    const headId = rows[0].id;
+    for (let i = 1; i < rows.length; i++) {
+        // the validation above (contiguous, one kind, every row live) is exactly `joinNext`'s
+        // own precondition, so every call in this loop is expected to succeed — a `false` here
+        // is an invariant violation, not a normal refusal. Fail loudly rather than let a
+        // partially-merged track get `snapshotAll`'d and recorded as one clean undo entry
+        // (`coding.md`'s no-silent-swallowing-at-a-boundary): there's no honest partial-rollback
+        // to invent, since the ECS is already mid-mutation.
+        if (!joinNext(ecs, headId)) {
+            throw new Error(
+                `joinSections: joinNext(${headId}) failed mid-loop despite passing validation`,
+            );
+        }
+    }
+    const after = snapshotAll(ecs);
+    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
+    return headId;
+}

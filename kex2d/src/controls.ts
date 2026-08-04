@@ -558,6 +558,39 @@ export function sectionsDeletable(selected: number, total: number): boolean {
     return selected > 0 && selected < total;
 }
 
+/** whether a selected section SET is Join-able — a contiguous run of ≥2 sections, all one
+ *  KIND (`joinNext`'s own same-kind guard, lifted to the set): every id resolves to a row,
+ *  sorted by chain order the run is unbroken (no gap, no cross-run pick — a skipped section
+ *  in the middle disqualifies the whole set), and every row shares one `kind`. pure —
+ *  device-free, unit-tested; the bulk row grays out otherwise (never hidden), mirroring
+ *  `sectionsDeletable`. `history.joinSections` guards its own copy of this law reading the
+ *  LIVE section table (the `removeSections`/`sectionsDeletable` precedent — the op and the
+ *  UI predicate stay two small guards rather than one importing the other, since `history.ts`
+ *  can't reach back into `controls.ts`). deduped the same way `joinSections` dedupes its own
+ *  `ids` (a `Set`) — the two laws read the same input shape, so a duplicated id can't make
+ *  them disagree at that edge (not reachable today, since `editor.sections.ids` is itself a
+ *  `Set`, but the two copies must still agree on paper). */
+export function sectionsJoinable(
+    ids: readonly number[],
+    sections: readonly { id: number; order: number; kind: SectionKind }[],
+): boolean {
+    const targets = new Set(ids);
+    if (targets.size < 2) return false;
+    const rows: { order: number; kind: SectionKind }[] = [];
+    for (const id of targets) {
+        const row = sections.find((s) => s.id === id);
+        if (!row) return false; // a stale id — not a valid run
+        rows.push(row);
+    }
+    rows.sort((a, b) => a.order - b.order);
+    const kind = rows[0].kind;
+    for (let i = 0; i < rows.length; i++) {
+        if (rows[i].kind !== kind) return false;
+        if (i > 0 && rows[i].order !== rows[i - 1].order + 1) return false;
+    }
+    return true;
+}
+
 /** wrap a degree value into (−180, 180]. */
 export function normDeg(d: number): number {
     const w = ((((d + 180) % 360) + 360) % 360) - 180;
@@ -1501,6 +1534,7 @@ export function attachControls(
             const act = sectionKeyAct(e.key, {
                 opsAllowed: sectionOpsAllowed(editor.pinning),
                 multi: editor.sections.ids.size > 1,
+                joinable: sectionsJoinable([...editor.sections.ids], sections(ecs)),
             });
             if (act !== null) {
                 e.preventDefault();

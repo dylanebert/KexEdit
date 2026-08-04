@@ -191,10 +191,18 @@ describe("sectionMenu — the section context menu's rows", () => {
             "remove",
             "removeSet",
             "cutAt",
+            "join",
         );
     // no `shortcut`: the cursor-anchored section Cut carries no keyboard binding at all (the
     // locked decision's asymmetry — `nodeMenu`/`keyframeMenu`'s Cut rows DO carry `K`).
     const cut = (enabled: boolean): Row => ({ label: "Cut", group: "structure", enabled });
+    // Join DOES carry `J` — unlike Cut it needs no cursor position, so it's wired directly.
+    const join = (enabled: boolean): Row => ({
+        label: "Join",
+        group: "structure",
+        shortcut: "J",
+        enabled,
+    });
 
     test("a single GEO section: Convert, Cut, Reset, Delete", () => {
         expect(shape(sectionMenu(base, acts()))).toEqual([
@@ -220,7 +228,7 @@ describe("sectionMenu — the section context menu's rows", () => {
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
-    test("a multi-set grays the single-subject rows, and OMITS Pin + Cut (force set included)", () => {
+    test("a multi-set grays the single-subject rows, OMITS Pin + Cut, and shows Join in their place (force set included)", () => {
         const s = {
             ...base,
             kind: SectionKind.Force,
@@ -230,12 +238,18 @@ describe("sectionMenu — the section context menu's rows", () => {
             canPin: false,
             canReset: false,
             canCut: false,
+            canJoin: false,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
             { label: "Convert", group: "modify", enabled: false },
+            join(false),
             { label: "Reset", group: "lifecycle", enabled: false },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
+    });
+    test("a joinable multi-set enables Join", () => {
+        const s = { ...base, multi: true, canJoin: true };
+        expect(shape(sectionMenu(s, acts()))[1]).toEqual(join(true));
     });
     test("an open session on ANOTHER section still grays Pin on this one", () => {
         const s = { ...base, kind: SectionKind.Force, canPin: true, modeOpen: true };
@@ -260,7 +274,7 @@ describe("sectionMenu — the section context menu's rows", () => {
         expect(shape(sectionMenu({ ...s, solving: true }, acts()))[0].enabled).toBe(false);
         expect(shape(sectionMenu({ ...s, pinSolvable: false }, acts()))[0].enabled).toBe(false);
     });
-    test("Convert's action follows the kind; Cut's action is `cutAt`; Delete's follows the set", () => {
+    test("Convert's action follows the kind; Cut's is `cutAt`; Join's is `join`; Delete's follows the set", () => {
         const geo = acts();
         sectionMenu(base, geo)[0].action?.();
         expect(geo.log).toEqual(["solve()"]);
@@ -273,8 +287,11 @@ describe("sectionMenu — the section context menu's rows", () => {
         const single = acts();
         sectionMenu(base, single)[3].action?.();
         expect(single.log).toEqual(["remove()"]);
+        const joiner = acts();
+        sectionMenu({ ...base, multi: true, canJoin: true }, joiner)[1].action?.();
+        expect(joiner.log).toEqual(["join()"]);
         const multi = acts();
-        sectionMenu({ ...base, multi: true }, multi)[2].action?.();
+        sectionMenu({ ...base, multi: true }, multi)[3].action?.();
         expect(multi.log).toEqual(["removeSet()"]);
     });
 });
@@ -333,6 +350,7 @@ describe("sectionMenu — descriptor laziness (the lazy-getter contract, menus.t
             "remove",
             "removeSet",
             "cutAt",
+            "join",
         );
 
     // the positive control: proves the counting descriptor can actually SEE a read, rather than
@@ -796,6 +814,7 @@ describe("the menu grammar — every builder, every state", () => {
         canReset: bool,
         canDelete: bool,
         canCut: bool,
+        canJoin: bool,
     });
     const nodeStates = states<NodeMenuState>({
         multi: bool,
@@ -860,6 +879,7 @@ describe("the menu grammar — every builder, every state", () => {
                 "append",
                 "cut",
                 "cutAt",
+                "join",
             );
         for (const s of sectionStates) {
             const a = acts();
@@ -1195,6 +1215,7 @@ describe("the menu grammar — every builder, every state", () => {
         append: null,
         cut: "cut",
         cutAt: null,
+        join: "join",
     };
 
     test("`Acts` censuses every act name the corpus recorder declares", () => {
@@ -1240,7 +1261,11 @@ describe("the menu grammar — every builder, every state", () => {
             }
         return pairs;
     }
-    const sectionKeyStates = states<SectionKeyState>({ opsAllowed: bool, multi: bool });
+    const sectionKeyStates = states<SectionKeyState>({
+        opsAllowed: bool,
+        multi: bool,
+        joinable: bool,
+    });
     // `NodeKeyState` is a discriminated union on `multi` (`keys.ts`) — the multi branch carries no
     // `endSelected` field, so its full state space is the two branches' matrices driven
     // separately, not one cartesian product over all three fields (which isn't expressible
@@ -1309,6 +1334,7 @@ describe("the menu grammar — every builder, every state", () => {
                 "exitMode:pinExit",
                 "lock:toggleLock",
                 "cut:cut",
+                "join:join",
             ].sort(),
         );
     });
@@ -1417,6 +1443,7 @@ describe("the menu grammar — every builder, every state", () => {
         exitMode: ["App.svelte", "keys.ts"],
         lock: ["keys.ts"],
         cut: ["keys.ts"],
+        join: ["keys.ts"],
     };
     // a bound key also drives presses that are NOBODY's menu row — dismissal rungs, a field's
     // commit-and-blur. Those stay raw literals, and this is exactly which files may hold one; any
@@ -1436,6 +1463,8 @@ describe("the menu grammar — every builder, every state", () => {
         Q: { files: [], why: "the lock toggle only" },
         k: { files: [], why: "the landmark Cut binding only" },
         K: { files: [], why: "the landmark Cut binding only" },
+        j: { files: [], why: "the bulk Join binding only" },
+        J: { files: [], why: "the bulk Join binding only" },
     };
     const src = (file: string): string =>
         readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
@@ -1561,10 +1590,10 @@ describe("the menu grammar — every builder, every state", () => {
 
     // ── the `structure` group. GROUPS widened to four in stage 3, ordered
     // `create < modify < structure < lifecycle`, shipping empty (Cut/Join land in later stages).
-    // Cut lands the group's first rows here (stage 4); Join (stage 5) is the second. The
+    // Cut landed the group's first row (stage 4); Join is the second (stage 5). The
     // renderer-level positive controls below (`menuRows` on fabricated rows) predate any real
     // occupant and stay as the machinery-level proof; the corpus-level test is the production
-    // proof that Cut actually reached the group it was designed for.
+    // proof that both actually reached the group they were designed for.
     describe("the `structure` group", () => {
         const row = (label: string, group: MenuGroup): MenuItem => ({ label, group });
 
@@ -1572,16 +1601,16 @@ describe("the menu grammar — every builder, every state", () => {
             expect(GROUPS).toEqual(["create", "modify", "structure", "lifecycle"]);
         });
 
-        // the production proof (stage 4): Cut reaches every builder that carries it, tagged
-        // `structure` — never left behind as a `modify` row the way a hand-authored menu could
-        // silently drift.
-        test("every `structure` row the corpus emits today is named Cut", () => {
+        // the production proof (stages 4-5): Cut and Join reach every builder that carries them,
+        // both tagged `structure` — never left behind as a `modify` row the way a hand-authored
+        // menu could silently drift.
+        test("every `structure` row the corpus emits today is named Cut or Join", () => {
             const labels = new Set(
                 levels()
                     .flatMap((m) => m.rows.filter((r) => r.group === "structure"))
                     .map((r) => r.label),
             );
-            expect([...labels]).toEqual(["Cut"]);
+            expect([...labels].sort()).toEqual(["Cut", "Join"]);
         });
 
         // positive control — slot-by-slot DERIVED divider positions (never a count) over a
@@ -1681,6 +1710,25 @@ describe("acts.ts source census — every home reaches its factory", () => {
         expect(srcFiles.length).toBeGreaterThan(30);
         expect(src("App.svelte").includes("sectionActs(")).toBe(true);
     });
+});
+
+// ── canJoin parity (stage 5 review finding 1): the `J` key and the Join row must read the SAME
+// law, or a live key sits behind a permanently-grayed row. `controls.ts`'s keydown handler feeds
+// `joinable: sectionsJoinable(...)` straight to `sectionKeyAct`; `App.svelte`'s `canJoin`
+// derivation must call the identical function, not a hand-rolled twin that could drift — the
+// gap this test would have caught: `App.svelte` never supplying `canJoin` at all, so `s.canJoin
+// === true` (`menus.ts`) stayed permanently false while the key merged a run live. A source
+// sentinel is the reachable check here — `sectionsJoinable` is pure and device-free
+// (`controls.test.ts` already drives it directly), but whether `App.svelte`'s `$derived` reads
+// it is wiring the census, not a unit test, can see (`editor-ui.md`'s source-census limit: a
+// home reaching its factory is provable from source, dispatching through it is the capture
+// flows' job alone).
+test("App.svelte's canJoin derivation calls the same sectionsJoinable the key decider feeds", () => {
+    const appSrc = readFileSync(join(import.meta.dir, "..", "src", "App.svelte"), "utf8");
+    const controlsSrc = readFileSync(join(import.meta.dir, "..", "src", "controls.ts"), "utf8");
+    expect(controlsSrc.includes("joinable: sectionsJoinable(")).toBe(true); // the key's own read
+    expect(appSrc.includes("sectionsJoinable(")).toBe(true); // the row's read — the finding's gap
+    expect(appSrc.includes("canJoin")).toBe(true); // and the descriptor actually carries it
 });
 
 // `menuRows` is a public seam other menus will call, so its edge cases are pinned directly rather

@@ -6,7 +6,7 @@
  *   scoped to it (Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock,
  *   Meters/Seconds). The residual class, honestly.
  * - `structure` — changes the CHAIN, reaching past the subject to a neighbor (Cut makes a new
- *   section, Join destroys the one beside it) — none today; lands with the structural ops.
+ *   section, Join destroys the one beside it).
  * - `lifecycle` — the subject ends at its creation state or gone (Reset, then Delete).
  *
  * A menu's rows sort by this order, then by frequency WITHIN a group (the old free-form
@@ -38,7 +38,10 @@ export type Binding = { readonly keys: readonly string[]; readonly hint: string 
  * `cut` — the landmark paths only (a selected node's own `controls.ts` home, a selected force
  * keyframe's own `Timeline.svelte` home — wiring lands with `kex2d-structural-editing` stage 6).
  * The cursor-anchored section Cut carries no binding at all — a free position has no keyboard
- * anchor to name (`editor-ui.md` Menus' shortcut-asymmetry clause).
+ * anchor to name (`editor-ui.md` Menus' shortcut-asymmetry clause). `join` — `controls.ts`, the
+ * bulk section-set rung beside `remove`'s own multi branch (Blender/Audacity's own key): unlike
+ * Cut it needs no cursor position, only the live selected set, so it's wired directly rather than
+ * deferred.
  * `Escape` and `Delete` also drive dismissal/guard rungs that are nobody's menu row; those stay
  * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one.
  */
@@ -48,6 +51,7 @@ export const BINDINGS = {
     exitMode: { keys: ["Escape"], hint: "Esc" },
     lock: { keys: ["q", "Q"], hint: "Q" },
     cut: { keys: ["k", "K"], hint: "K" },
+    join: { keys: ["j", "J"], hint: "J" },
 } as const satisfies Record<string, Binding>;
 
 /** whether a `KeyboardEvent.key` fires this binding.

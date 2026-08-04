@@ -4,6 +4,7 @@ import {
     appendSection as appendCmd,
     createHistory,
     joinSection as joinCmd,
+    joinSections as joinSectionsCmd,
     removeSection as removeCmd,
     splitSection as splitCmd,
     undo,
@@ -1524,5 +1525,77 @@ describe("undo (byte-identical)", () => {
 
         expect(removeCmd(h, state, a)).toBe(true);
         expect(h.undo.length).toBe(1);
+    });
+
+    test("joinSections (bulk) → undo restores the section chain byte-identical", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, EXTEND_DIST, 0);
+        const b = appendSection(state, SectionKind.Geo);
+        const c = appendSection(state, SectionKind.Geo);
+        state.step(0);
+        const before = sections(state).map((s) => ({ id: s.id, order: s.order, kind: s.kind }));
+        const h = createHistory();
+
+        expect(joinSectionsCmd(h, state, [a, b])).toBe(a); // the head of the run survives
+        expect(sections(state).map((s) => s.id)).toEqual([a, c]);
+        expect(h.undo.length).toBe(1); // ONE bulk join entry
+
+        undo(h, state);
+        expect(sections(state).map((s) => ({ id: s.id, order: s.order, kind: s.kind }))).toEqual(
+            before,
+        ); // restoreAll replays the stored payload verbatim
+    });
+});
+
+// the Cut → Join round trip at the DOCUMENT layer (`history.splitSection` + the set-lifted
+// `history.joinSections`, stage 5's own op), both `Track.domain`s — the store's unit is
+// domain-dependent (`kex2d/AGENTS.md` Two coordinate frames), and the Time-domain split test
+// above (`splitting a force section in a Time-domain track…`) is the precedent this extends from
+// the raw substrate functions (`splitForce`/`joinNext`) up to the document ops a real Cut-then-
+// bulk-Join gesture actually calls.
+describe("Cut → Join round trip (document ops, both `Track.domain`s)", () => {
+    function roundTrip(domain: Domain): void {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        if (domain === Domain.Time) setTrackDomain(state, domain);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 8, 1.5);
+        createForcePoint(state, a, 24, 0.4);
+        const before = forcePoints(state, a);
+        const h = createHistory();
+
+        const b = splitCmd(h, state, a, 16); // Cut, mid-segment — plants the boundary keyframe
+        expect(b).not.toBeNull();
+        if (b === null) return;
+        expect(sections(state).length).toBe(2);
+
+        expect(joinSectionsCmd(h, state, [a, b])).toBe(a); // the bulk Join, the set-lifted op
+        expect(sections(state).length).toBe(1);
+        expect(sections(state)[0].length).toBeCloseTo(40, 5);
+
+        // the authored payload: the two original keyframes' own g survive untouched (dedupe
+        // collapses only the coincident pair the split itself planted).
+        const after = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
+        expect(after.map((p) => p.s)).toEqual([8, 16, 24]);
+        expect(after[0].g).toBe(before[0].g);
+        expect(after[2].g).toBe(before[1].g);
+
+        // the sampled profile: byte-close to the original across the whole extent.
+        const afterPoints = forcePoints(state, a);
+        for (let s = 0; s <= 40; s += 2)
+            expect(sampleForce(afterPoints, s)).toBeCloseTo(sampleForce(before, s), 5);
+    }
+
+    test("Distance domain: Cut then bulk Join restores the sampled profile + authored payload", () => {
+        roundTrip(Domain.Distance);
+    });
+
+    test("Time domain: Cut then bulk Join restores the sampled profile + authored payload", () => {
+        roundTrip(Domain.Time);
     });
 });

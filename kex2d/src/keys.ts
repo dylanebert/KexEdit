@@ -19,24 +19,31 @@ import type { KeyframeMenuActions, NodeMenuActions, SectionMenuActions } from ".
  * today; a decider takes their RESULTS, never recomputes them.
  */
 
-/** the whole-section delete rung's state (`controls.ts`'s `onKeyDown`, a section selected). */
+/** the whole-section delete + bulk-join rung's state (`controls.ts`'s `onKeyDown`, a section
+ *  selected). */
 export type SectionKeyState = {
     /** the consent boundary: no pin session is open (`sectionOpsAllowed`). */
     opsAllowed: boolean;
     /** a multi-section selection — deletes as one entry (`removeSections`) vs. `removeSection`. */
     multi: boolean;
+    /** the selected set is a valid Join run — `controls.sectionsJoinable` (a contiguous run of
+     *  ≥2, one kind) — `J`'s own gate, mirroring `remove`'s `multi` fork. */
+    joinable: boolean;
 };
 
-/** whole-section Delete: `remove` for a single section, `removeSet` for a multi-selection, `null`
- *  off `BINDINGS.remove` or while the consent boundary bars structural ops. Typed off
- *  `SectionMenuActions`' own keys — `menus.ts`'s reverse-direction check — rather than a
- *  restated literal, so a rename in the actions record fails here at compile time. */
+/** whole-section Delete/`J`: `remove` for a single section, `removeSet` for a multi-selection
+ *  (`BINDINGS.remove`), `join` for a valid multi-set run (`BINDINGS.join`) — `null` off every
+ *  binding or while the consent boundary bars structural ops. Typed off `SectionMenuActions`' own
+ *  keys — `menus.ts`'s reverse-direction check — rather than a restated literal, so a rename in
+ *  the actions record fails here at compile time. */
 export function sectionKeyAct(
     key: string,
     s: SectionKeyState,
-): Extract<keyof SectionMenuActions, "remove" | "removeSet"> | null {
-    if (!bound(BINDINGS.remove, key) || !s.opsAllowed) return null;
-    return s.multi ? "removeSet" : "remove";
+): Extract<keyof SectionMenuActions, "remove" | "removeSet" | "join"> | null {
+    if (!s.opsAllowed) return null;
+    if (bound(BINDINGS.remove, key)) return s.multi ? "removeSet" : "remove";
+    if (bound(BINDINGS.join, key)) return s.joinable ? "join" : null;
+    return null;
 }
 
 /** the node rungs' state (`controls.ts`'s `onKeyDown`, a node or node set selected) — covers both

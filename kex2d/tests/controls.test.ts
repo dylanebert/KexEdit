@@ -29,6 +29,7 @@ import {
     PICK_R,
     polarNudge,
     sectionsDeletable,
+    sectionsJoinable,
     selectedMetrics,
 } from "../src/controls";
 import { beginDrag, editor, enterTangentEdit, exitTangentEdit } from "../src/editor";
@@ -674,6 +675,68 @@ describe("sectionsDeletable — section multi-delete enablement", () => {
     });
 });
 
+// the section multi-join enablement (`sectionsJoinable`, pure/device-free): Join acts on a
+// section SET iff it's a contiguous run of ≥2 sections all one kind (`joinNext`'s own same-kind
+// guard, lifted to the set). Each clause pinned in isolation — a check that only proves the happy
+// path can't tell a mutant that dropped one of the three from one that kept them all.
+describe("sectionsJoinable — section multi-join enablement (contiguous run, ≥2, one kind)", () => {
+    const rows = [
+        { id: 1, order: 0, kind: SectionKind.Geo },
+        { id: 2, order: 1, kind: SectionKind.Geo },
+        { id: 3, order: 2, kind: SectionKind.Force },
+        { id: 4, order: 3, kind: SectionKind.Force },
+    ];
+
+    test("a contiguous same-kind run of two is joinable", () => {
+        expect(sectionsJoinable([1, 2], rows)).toBe(true);
+        expect(sectionsJoinable([3, 4], rows)).toBe(true);
+    });
+
+    test("a run of three, one kind, joins", () => {
+        const threeRows = [
+            { id: 1, order: 0, kind: SectionKind.Geo },
+            { id: 2, order: 1, kind: SectionKind.Geo },
+            { id: 3, order: 2, kind: SectionKind.Geo },
+        ];
+        expect(sectionsJoinable([1, 2, 3], threeRows)).toBe(true);
+    });
+
+    test("fewer than two selected disqualifies — nothing to join", () => {
+        expect(sectionsJoinable([1], rows)).toBe(false);
+        expect(sectionsJoinable([], rows)).toBe(false);
+    });
+
+    test("a cross-kind pair disqualifies, even when adjacent", () => {
+        expect(sectionsJoinable([2, 3], rows)).toBe(false);
+    });
+
+    test("a non-contiguous same-kind pair disqualifies — a gap in the run", () => {
+        const gapRows = [
+            { id: 1, order: 0, kind: SectionKind.Geo },
+            { id: 2, order: 1, kind: SectionKind.Geo },
+            { id: 3, order: 2, kind: SectionKind.Geo },
+        ];
+        expect(sectionsJoinable([1, 3], gapRows)).toBe(false); // skips the middle section
+    });
+
+    test("order is read from the row, not the id array's own order", () => {
+        expect(sectionsJoinable([2, 1], rows)).toBe(true);
+    });
+
+    test("a stale id (no matching row) disqualifies", () => {
+        expect(sectionsJoinable([1, 999], rows)).toBe(false);
+    });
+
+    // `history.joinSections` dedupes its own `ids` through a `Set` before validating the run
+    // (the `removeSections`/`sectionsDeletable` precedent for a duplicated law reading the same
+    // input shape) — a duplicated id must not make this copy disagree with that one at the same
+    // edge, even though `editor.sections.ids` being itself a `Set` keeps it unreachable today.
+    test("a duplicated id in the array dedupes to the same run — agrees with `joinSections`", () => {
+        expect(sectionsJoinable([1, 2, 2], rows)).toBe(true);
+        expect(sectionsJoinable([2, 1, 2, 1], rows)).toBe(true);
+    });
+});
+
 // the section-structure surface — delete, EITHER convert direction, and the ruler's domain
 // switch — is blocked entirely while a live pin session is open (kex2d-optimize-mode: the
 // consent-boundary law; delete was stage 1's blocker, convert + domain stage 4's adversarial
@@ -761,18 +824,37 @@ describe("keyframeCuttable — the keyframe landmark Cut point (`splitForce`'s o
 // the vocabulary `tests/menu.test.ts` drives the same deciders against (the reverse-direction
 // oracle) — these pin the PER-CASE behavior the drive-over-the-matrix test can't read off a
 // pass/fail count alone.
-describe("sectionKeyAct — the whole-section Delete rung", () => {
-    test("off BINDINGS.remove: null regardless of state", () => {
-        expect(sectionKeyAct("a", { opsAllowed: true, multi: false })).toBeNull();
-        expect(sectionKeyAct("Enter", { opsAllowed: true, multi: true })).toBeNull();
+describe("sectionKeyAct — the whole-section Delete + bulk-Join rungs", () => {
+    test("off every binding: null regardless of state", () => {
+        expect(sectionKeyAct("a", { opsAllowed: true, multi: false, joinable: false })).toBeNull();
+        expect(
+            sectionKeyAct("Enter", { opsAllowed: true, multi: true, joinable: true }),
+        ).toBeNull();
     });
-    test("the consent boundary bars it even on a bound key", () => {
-        expect(sectionKeyAct("Delete", { opsAllowed: false, multi: false })).toBeNull();
-        expect(sectionKeyAct("Backspace", { opsAllowed: false, multi: true })).toBeNull();
+    test("the consent boundary bars both acts even on a bound key", () => {
+        expect(
+            sectionKeyAct("Delete", { opsAllowed: false, multi: false, joinable: false }),
+        ).toBeNull();
+        expect(
+            sectionKeyAct("Backspace", { opsAllowed: false, multi: true, joinable: true }),
+        ).toBeNull();
+        expect(sectionKeyAct("j", { opsAllowed: false, multi: true, joinable: true })).toBeNull();
     });
     test("a single section fires remove; a multi-selection fires removeSet", () => {
-        expect(sectionKeyAct("Delete", { opsAllowed: true, multi: false })).toBe("remove");
-        expect(sectionKeyAct("Backspace", { opsAllowed: true, multi: true })).toBe("removeSet");
+        expect(sectionKeyAct("Delete", { opsAllowed: true, multi: false, joinable: false })).toBe(
+            "remove",
+        );
+        expect(sectionKeyAct("Backspace", { opsAllowed: true, multi: true, joinable: false })).toBe(
+            "removeSet",
+        );
+    });
+    test("`J` fires join only over a valid run", () => {
+        expect(sectionKeyAct("j", { opsAllowed: true, multi: true, joinable: true })).toBe("join");
+        expect(sectionKeyAct("J", { opsAllowed: true, multi: true, joinable: true })).toBe("join");
+    });
+    test("`J` no-ops on an invalid (non-contiguous or single) selection, even with ops allowed", () => {
+        expect(sectionKeyAct("j", { opsAllowed: true, multi: true, joinable: false })).toBeNull();
+        expect(sectionKeyAct("j", { opsAllowed: true, multi: false, joinable: false })).toBeNull();
     });
 });
 

@@ -16,6 +16,7 @@ import {
     deleteForces,
     extendTrack,
     history,
+    joinSections,
     removeSection,
     removeSections,
     resetNodes,
@@ -170,14 +171,14 @@ export function lockCandidates(ecs: State): number[] {
         .map((r) => r.id);
 }
 
-/** the section context menu's document acts (`remove`/`removeSet`/`reset`/`pinExit`/`cutAt`) — the
- *  chrome-free half of `SectionMenuActions`. `solve`/`solveShape`/`pinSolve`/`pinEnter` stay in
- *  `App.svelte` (each closes over the modal gate + abort controller — chrome, not document
- *  writes). `reset` and `pinExit` close their summoning context menu INSIDE the body (the locked
- *  decision: `closeContext` is an `editor` write like any other, and it's a no-op from the
- *  keyboard, where the deciders that reach these acts already return null while a menu is open).
- *  `remove`/`removeSet` dismiss by subject death instead — the menu derives null once the section
- *  is gone, so they carry no close.
+/** the section context menu's document acts (`remove`/`removeSet`/`reset`/`pinExit`/`cutAt`/
+ *  `join`) — the chrome-free half of `SectionMenuActions`. `solve`/`solveShape`/`pinSolve`/
+ *  `pinEnter` stay in `App.svelte` (each closes over the modal gate + abort controller — chrome,
+ *  not document writes). `reset` and `pinExit` close their summoning context menu INSIDE the body
+ *  (the locked decision: `closeContext` is an `editor` write like any other, and it's a no-op
+ *  from the keyboard, where the deciders that reach these acts already return null while a menu
+ *  is open). `remove`/`removeSet`/`join` dismiss by subject death (or survivor promotion) instead
+ *  — the menu derives null once the section is gone, so they carry no close.
  *
  *  `position` is the cursor-anchored Cut's own resolved landing point — genuinely component-local
  *  (a screen cursor, resolved through `editor-ui.md`'s toLocal/toLocalU lens), so it rides in as a
@@ -188,12 +189,18 @@ export function lockCandidates(ecs: State): number[] {
  *  `cutAt`, not `cut` — `nodeActs`/`keyframeActs` bind `K` to `cut`; this surface carries no
  *  shortcut at all (the locked decision's asymmetry, `editor-ui.md` Menus), and the two acts must
  *  stay apart by NAME for `Acts` (`tests/menu.test.ts`) to tell them apart — `append`/`add`'s own
- *  precedent, two acts colliding only in English. */
+ *  precedent, two acts colliding only in English.
+ *
+ *  `join` is the set-lifted Join (stage 5): it reads the selected set exactly like `removeSet`
+ *  does, carries the SAME `sectionOpsAllowed` guard every structural row here does (Join reaches
+ *  past its subject to destroy a neighbor — squarely the consent boundary Cut joined at stage 4),
+ *  and re-selects the merge's survivor (`history.joinSections`' own return) rather than clearing
+ *  the selection the way a delete must. */
 export function sectionActs(
     ecs: State,
     subject: number,
     position: CutPosition | null = null,
-): Pick<SectionMenuActions, "remove" | "removeSet" | "reset" | "pinExit" | "cutAt"> {
+): Pick<SectionMenuActions, "remove" | "removeSet" | "reset" | "pinExit" | "cutAt" | "join"> {
     return {
         remove: () => {
             if (!sectionOpsAllowed(editor.pinning)) return;
@@ -216,6 +223,11 @@ export function sectionActs(
             if (!sectionOpsAllowed(editor.pinning)) return;
             if (position === null) return;
             cutSection(ecs, subject, position);
+        },
+        join: () => {
+            if (!sectionOpsAllowed(editor.pinning)) return;
+            const survivor = joinSections(history, ecs, [...editor.sections.ids]);
+            if (survivor !== null) selectSection(survivor);
         },
     };
 }

@@ -48,6 +48,13 @@ export type SectionMenuState = {
      *  until a caller supplies it, Cut ships present but conservatively grayed (never `true` by
      *  default), the same shape the `structure` group itself shipped in at stage 3. */
     canCut?: boolean;
+    /** the selected section SET is a valid Join run — `controls.sectionsJoinable` (a contiguous
+     *  run of ≥2, one kind). Multi-set only: never read on a single-subject menu (below, the
+     *  Cut/Pin symmetry's mirror image). OPTIONAL, the same shape as `canCut` — `sectionMenu`'s
+     *  own state is only ever built in `App.svelte`, out of this stage's scope, so wiring a real
+     *  reading lands there even though the predicate itself needs no cursor lens (unlike Cut);
+     *  until supplied, Join ships present but conservatively grayed (never `true` by default). */
+    canJoin?: boolean;
 };
 
 export type SectionMenuActions = {
@@ -64,6 +71,9 @@ export type SectionMenuActions = {
      *  asymmetry), so the two acts must stay apart by name for the key-act seam's `Acts` table to
      *  tell them apart (`append`/`add`'s own precedent). */
     cutAt: () => void;
+    /** the set-lifted Join (stage 5) — merges the selected contiguous same-kind run into one
+     *  section as one undo entry (`history.joinSections`). */
+    join: () => void;
 };
 
 /** The ONE conversion row. A section is always exactly one kind, so only one direction was ever
@@ -85,13 +95,14 @@ function convertRow(s: SectionMenuState, a: SectionMenuActions): MenuItem {
 }
 
 /** the context menu as data: one array of MenuItems, rendered by the shared menu language —
- *  the conversion row, Pin (force only), Cut, Reset, then Delete. multi-select (Premiere
- *  multi-clip): the single-subject rows gray (a set has no single subject, `selected === 1`);
- *  Delete carries the set-lifted enablement, Pin and Cut OMIT instead (a multi-set has neither a
- *  single subject to pin nor a single cursor position to cut at). the destructive Convert row
- *  (both single and bulk) was removed (kex2d-geoforce-editor stage 5): redundant with delete +
- *  append; Reset is its kind-HELD successor (kex2d-idioms stage 2) — back to the kind's default,
- *  not a flip. */
+ *  the conversion row, Pin (force only) / Join (multi only), Cut (single only), Reset, then
+ *  Delete. multi-select (Premiere multi-clip): the single-subject rows gray (a set has no single
+ *  subject, `selected === 1`); Delete carries the set-lifted enablement, Pin and Cut OMIT instead
+ *  (a multi-set has neither a single subject to pin nor a single cursor position to cut at) while
+ *  Join takes their vacated slot (a single-subject selection has nothing to join). the
+ *  destructive Convert row (both single and bulk) was removed (kex2d-geoforce-editor stage 5):
+ *  redundant with delete + append; Reset is its kind-HELD successor (kex2d-idioms stage 2) — back
+ *  to the kind's default, not a flip. */
 export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuItem[] {
     // inside a live pin session on THIS section: the mode's own rows replace the normal
     // menu entirely — convert/delete/join aren't available inside the mode (the locked
@@ -133,13 +144,26 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
     // "a row that could never fire on this subject" law that keeps Pin off the multi menu. No
     // `shortcut`: the cursor-anchored section Cut carries no binding at all (the locked
     // decision's asymmetry — `nodeMenu`/`keyframeMenu`'s Cut rows bind `K`, this one can't name a
-    // key for a free position).
+    // key for a free position). Join is Cut's multi-set mirror: a single-subject selection has
+    // nothing to join (`joinNext` needs a same-kind neighbor beside it, and the rejected
+    // single-subject "Join Next" would read asymmetric next to a point-anchored Cut — the locked
+    // decision), so it's OMITTED there and shown only over a multi-set, `shortcut`ed (Blender/
+    // Audacity's `J`, unlike Cut's cursor-anchored asymmetry) since the whole selected set names
+    // the run with no cursor needed.
     if (!s.multi) {
         items.push({
             label: "Cut",
             group: "structure",
             enabled: s.canCut === true,
             action: a.cutAt,
+        });
+    } else {
+        items.push({
+            label: "Join",
+            group: "structure",
+            shortcut: BINDINGS.join.hint,
+            enabled: s.canJoin === true,
+            action: a.join,
         });
     }
     items.push({ label: "Reset", group: "lifecycle", enabled: s.canReset, action: a.reset });
