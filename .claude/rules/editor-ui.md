@@ -561,8 +561,10 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
 `Timeline.svelte`). Feel changes here get the hands-on check-in (`kex` `ui.md`).
 
 - **Insert on the curve.** Double-click creates a keyframe at the authored profile's value there
-  (the DAW/AE envelope-insertion identity: insertion never bends the curve), never at the cursor's
-  y-value.
+  (the DAW/AE envelope-insertion identity), never at the cursor's y-value. The identity is over the
+  VALUE, not the curve: the new keyframe carries its own default-eased tangents, so the curve still
+  reshapes locally around it. Only a Cut, which subdivides the segment exactly, preserves the shape
+  as well as the value.
 - **Nothing moves under its own gesture** (root `ui.md` "Surfaces hold still"). Chart addition:
   both axes clamp the cursor to the chart during a keyframe drag. Camera / document-axis
   navigation is a no-op while any gesture is live — a mid-gesture view change corrupts
