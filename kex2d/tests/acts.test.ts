@@ -94,6 +94,32 @@ function twoForceSections(): { state: State; a: number; b: number } {
     return { state, a, b };
 }
 
+/** a pinnable force section (`a`) plus an UNRELATED force section (`b`) carrying its own
+ *  interior keyframe — `twoForceSections`' `b` only has the two boundary continuation
+ *  keyframes (non-interior, so a cut there would no-op on its OWN merits and couldn't
+ *  distinguish a consent-boundary leak from a correct refusal). `b`'s middle key at s=20
+ *  is a genuine landmark Cut point. */
+function twoForceSectionsInterior(): { state: State; a: number; b: number } {
+    const { state, a } = twoForceSections();
+    const b = createSection(state, 1, SectionKind.Force, 40);
+    createForcePoint(state, b, 0, 1);
+    createForcePoint(state, b, 20, 1);
+    createForcePoint(state, b, 40, 1);
+    state.step(0);
+    return { state, a, b };
+}
+
+/** a pinnable force section (`a`) plus an UNRELATED geo section (`geo`) with an interior,
+ *  cuttable node (order 2 of 4) — the consent-boundary repro's shape for `nodeActs.cut`. */
+function forceAndGeoSections(): { state: State; force: number; geo: number } {
+    const { state, sec: force } = forceTrack();
+    const geo = appendSection(state, SectionKind.Geo);
+    addNode(state, geo, 2 * EXTEND_DIST, 0);
+    addNode(state, geo, 3 * EXTEND_DIST, 0);
+    state.step(0);
+    return { state, force, geo };
+}
+
 afterEach(() => {
     // a leaked pin session would leave `history.record` redirected into a dead sandbox for
     // every later test (`endPin`'s `redirectHistory(null)` is what actually clears that global).
@@ -199,6 +225,31 @@ describe("sectionActs", () => {
         sectionActs(state, a).pinExit();
         expect(editor.context).toBeNull();
         expect(editor.pinning).toBeNull();
+    });
+
+    test("cutAt splits at the resolved position, landing one undo entry", () => {
+        const { state, sec } = geoTrack(4);
+        const before = sections(state).length;
+        const undoBefore = history.undo.length;
+        sectionActs(state, sec, { at: 2 }).cutAt();
+        expect(sections(state).length).toBe(before + 1);
+        expect(history.undo.length).toBe(undoBefore + 1);
+    });
+
+    test("cutAt no-ops with no resolved position (the default)", () => {
+        const { state, sec } = geoTrack(4);
+        const before = sections(state).length;
+        sectionActs(state, sec).cutAt();
+        expect(sections(state).length).toBe(before);
+    });
+
+    test("cutAt refuses while ANY pin session is open, even on a different section", () => {
+        const { state, a, b } = twoForceSections();
+        if (!enterPinMode(state, a)) throw new Error("no session");
+        const before = sections(state).length;
+        sectionActs(state, b, { at: 20 }).cutAt();
+        expect(sections(state).length).toBe(before);
+        exitPinMode(state);
     });
 });
 
@@ -308,6 +359,38 @@ describe("nodeActs", () => {
         // continuation lands one more chord past it.
         expect(Handle.pos.x.get(tip)).toBeCloseTo(2 * EXTEND_DIST, 5);
     });
+
+    test("cut splits the section at the node's own order, landing one undo entry", () => {
+        const { state, sec } = geoTrack(4); // orders 0..3; order 2 is interior
+        const handles = sectionHandles(state, sec);
+        const before = sections(state).length;
+        const undoBefore = history.undo.length;
+        nodeActs(state, handles[2]).cut();
+        expect(sections(state).length).toBe(before + 1);
+        expect(history.undo.length).toBe(undoBefore + 1);
+        // a landmark cut is the no-subdivision reduction: the clicked node's own eid survives,
+        // still the head section's new tip (`splitGeo`'s own shape — kept verbatim, not moved).
+        expect(sectionHandles(state, sec).at(-1)).toBe(handles[2]);
+    });
+
+    test("cut no-ops at the chain end (non-interior — `splitGeo`'s own guard)", () => {
+        const { state, sec } = geoTrack(3);
+        const tip = lastHandle(state, sec);
+        if (tip === null) throw new Error("no tip");
+        const before = sections(state).length;
+        nodeActs(state, tip).cut();
+        expect(sections(state).length).toBe(before);
+    });
+
+    test("cut refuses while ANY pin session is open, even on an unrelated geo section", () => {
+        const { state, force, geo } = forceAndGeoSections();
+        if (!enterPinMode(state, force)) throw new Error("no session");
+        const handles = sectionHandles(state, geo);
+        const before = sections(state).length;
+        nodeActs(state, handles[2]).cut();
+        expect(sections(state).length).toBe(before);
+        exitPinMode(state);
+    });
 });
 
 describe("keyframeActs", () => {
@@ -384,6 +467,45 @@ describe("keyframeActs", () => {
         keyframeActs(state).toggleLock();
         expect(editor.locked.has(idsA[0])).toBe(false);
         expect(editor.locked.has(idsA[1])).toBe(false);
+        exitPinMode(state);
+    });
+
+    test("cut splits the section at the active keyframe's own s, landing one undo entry", () => {
+        const { state, sec } = forceTrack(); // keys at s = 0, 10, 20, 30, 40; length 40
+        const ids = sectionForces(state, sec).map((r) => r.id);
+        selectForce(ids[2]); // s = 20, interior
+        const before = sections(state).length;
+        const undoBefore = history.undo.length;
+        keyframeActs(state).cut();
+        expect(sections(state).length).toBe(before + 1);
+        expect(history.undo.length).toBe(undoBefore + 1);
+    });
+
+    test("cut no-ops at the section exit (non-interior — `splitForce`'s own guard)", () => {
+        const { state, sec } = forceTrack();
+        const ids = sectionForces(state, sec).map((r) => r.id);
+        selectForce(ids.at(-1) ?? null); // s = 40 === length, the exit
+        const before = sections(state).length;
+        keyframeActs(state).cut();
+        expect(sections(state).length).toBe(before);
+    });
+
+    test("cut no-ops when nothing is selected", () => {
+        const { state } = forceTrack();
+        selectForce(null);
+        const before = sections(state).length;
+        keyframeActs(state).cut();
+        expect(sections(state).length).toBe(before);
+    });
+
+    test("cut refuses while ANY pin session is open, even on an unrelated force section", () => {
+        const { state, a, b } = twoForceSectionsInterior();
+        if (!enterPinMode(state, a)) throw new Error("no session");
+        const idsB = sectionForces(state, b).map((r) => r.id);
+        selectForce(idsB[1]); // s = 20, interior — a genuine cut point, on the NON-pinning section
+        const before = sections(state).length;
+        keyframeActs(state).cut();
+        expect(sections(state).length).toBe(before);
         exitPinMode(state);
     });
 });

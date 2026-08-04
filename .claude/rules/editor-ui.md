@@ -390,7 +390,7 @@ a declared list of the walking fields, and an assert that the fork not needing t
   |---|---|---|
   | `create` | the document gains an object | Add, the append flyout's Geo/Force |
   | `modify` | changes the subject that summoned the menu, or enters / acts in / leaves a mode scoped to it | Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock, Meters/Seconds |
-  | `structure` | changes the CHAIN — reaches past the subject to a neighbor | none yet — lands with Cut and Join |
+  | `structure` | changes the CHAIN — reaches past the subject to a neighbor | Cut (Join lands next) |
   | `lifecycle` | the subject ends at its creation state or gone | Reset, then Delete |
 
   `modify` is the residual class, defined as such honestly. `danger` implies the terminal row of
@@ -457,6 +457,19 @@ a declared list of the walking fields, and an assert that the fork not needing t
   row (a permanently-disabled twin like the multi-select `Add`) resolves through the same path's
   act elsewhere in the corpus, so it still owes its binding's hint; a path with no action anywhere
   is a true submenu parent and owes nothing.
+
+  **The same op can carry a shortcut on one surface and none on another — deliberately, not a
+  gap.** Cut's landmark paths (the node menu's own node, the keyframe menu's own keyframe) bind
+  `K` (kex2d `BINDINGS.cut`, Blender VSE's own key): the subject already supplies the exact cut
+  point with no pointer tracking, so a key can name the whole gesture. The section menu's
+  cursor-anchored Cut carries no binding at all — a free position has nothing for a key to name
+  (there is no "cut here" without a cursor there), so its row never advertises `shortcut`, stated
+  as the omission rather than left to read as an oversight. The two rows share one act NAME only
+  where the underlying body is truly one function; here they don't — `NodeMenuActions.cut` /
+  `KeyframeMenuActions.cut` are the bound landmark case, `SectionMenuActions.cutAt` the unbound
+  cursor case, apart by name for the same reason `append` (unbound) and `add` (bound to `Enter`)
+  are: one English verb, two acts, so the key-act seam's `Acts` table can tell a bound row from an
+  unbound one that merely reads the same in prose.
 - **Gray a row whose preconditions fail; omit one its subject rules out.** Graying keeps an
   applicable-but-blocked row discoverable (no live bake, a multi-set — the bulk-row law above). A
   row that could never fire on this subject is different: a section is exactly one kind, so the

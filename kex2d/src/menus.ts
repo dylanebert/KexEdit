@@ -41,6 +41,13 @@ export type SectionMenuState = {
     canPin: boolean;
     canReset: boolean;
     canDelete: boolean;
+    /** the resolved cursor position is an interior point AND `sectionOpsAllowed` — Cut's own
+     *  enablement (`editor-ui.md`'s grays-never-hides law). Single-subject only: omitted
+     *  entirely on a multi-set (below), never read there. OPTIONAL — the resolution wiring
+     *  (`editor-ui.md`'s toLocal/toLocalU lens) lands with `kex2d-structural-editing` stage 6;
+     *  until a caller supplies it, Cut ships present but conservatively grayed (never `true` by
+     *  default), the same shape the `structure` group itself shipped in at stage 3. */
+    canCut?: boolean;
 };
 
 export type SectionMenuActions = {
@@ -52,6 +59,11 @@ export type SectionMenuActions = {
     reset: () => void;
     remove: () => void;
     removeSet: () => void;
+    /** the cursor-anchored Cut, named apart from `NodeMenuActions`/`KeyframeMenuActions`' `cut` —
+     *  this surface carries no keyboard binding at all (the locked decision's shortcut
+     *  asymmetry), so the two acts must stay apart by name for the key-act seam's `Acts` table to
+     *  tell them apart (`append`/`add`'s own precedent). */
+    cutAt: () => void;
 };
 
 /** The ONE conversion row. A section is always exactly one kind, so only one direction was ever
@@ -73,11 +85,13 @@ function convertRow(s: SectionMenuState, a: SectionMenuActions): MenuItem {
 }
 
 /** the context menu as data: one array of MenuItems, rendered by the shared menu language —
- *  the conversion row, Pin (force only), Reset, then Delete. multi-select (Premiere
+ *  the conversion row, Pin (force only), Cut, Reset, then Delete. multi-select (Premiere
  *  multi-clip): the single-subject rows gray (a set has no single subject, `selected === 1`);
- *  Delete carries the set-lifted enablement. the destructive Convert row (both single and bulk)
- *  was removed (kex2d-geoforce-editor stage 5): redundant with delete + append; Reset is its
- *  kind-HELD successor (kex2d-idioms stage 2) — back to the kind's default, not a flip. */
+ *  Delete carries the set-lifted enablement, Pin and Cut OMIT instead (a multi-set has neither a
+ *  single subject to pin nor a single cursor position to cut at). the destructive Convert row
+ *  (both single and bulk) was removed (kex2d-geoforce-editor stage 5): redundant with delete +
+ *  append; Reset is its kind-HELD successor (kex2d-idioms stage 2) — back to the kind's default,
+ *  not a flip. */
 export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuItem[] {
     // inside a live pin session on THIS section: the mode's own rows replace the normal
     // menu entirely — convert/delete/join aren't available inside the mode (the locked
@@ -114,6 +128,20 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
             action: a.pinEnter,
         });
     }
+    // Cut — single-subject, like Pin above: a multi-section selection has no single cursor
+    // position to cut at, so it's OMITTED there (never grayed) rather than shown dead, the same
+    // "a row that could never fire on this subject" law that keeps Pin off the multi menu. No
+    // `shortcut`: the cursor-anchored section Cut carries no binding at all (the locked
+    // decision's asymmetry — `nodeMenu`/`keyframeMenu`'s Cut rows bind `K`, this one can't name a
+    // key for a free position).
+    if (!s.multi) {
+        items.push({
+            label: "Cut",
+            group: "structure",
+            enabled: s.canCut === true,
+            action: a.cutAt,
+        });
+    }
     items.push({ label: "Reset", group: "lifecycle", enabled: s.canReset, action: a.reset });
     items.push({
         label: "Delete",
@@ -144,6 +172,10 @@ export type NodeMenuState = {
     canTrim: boolean;
     /** the selected set is a Delete-able suffix run. */
     suffixOk: boolean;
+    /** the target is a valid Cut point — `acts.nodeCuttable` (interior, never node 0 or the
+     *  chain end) — read only on the single-subject rung; the multi rung grays unconditionally.
+     *  OPTIONAL, same shape as `SectionMenuState.canCut`: not `true` by default. */
+    canCut?: boolean;
 };
 
 export type NodeMenuActions = {
@@ -155,20 +187,23 @@ export type NodeMenuActions = {
     pickModeSet: (mode: TangentMode) => void;
     reset: () => void;
     resetSet: () => void;
+    cut: () => void;
 };
 
 /** the node menu as data (the shared MenuItem language), in the grammar's canonical order: Add
  *  (`create`), then a Handles toggle over a Tangents submenu (`modify`; the three modes carry
- *  their `checked`), then Reset and Delete (`lifecycle`, the destructive row terminal). Add and
- *  Delete are both chain-end-only, so both are enablement-gated — the menu is Delete's only
- *  pointer path, the ring carries no trash button. Reset is the Reset idiom law: one click from
- *  anywhere, back to the state a fresh author would get — Reset RE-CREATES the node (default-chord
- *  continuation, tangents Auto). it's
+ *  their `checked`), then Cut (`structure`), then Reset and Delete (`lifecycle`, the destructive
+ *  row terminal). Add and Delete are both chain-end-only, so both are enablement-gated — the menu
+ *  is Delete's only pointer path, the ring carries no trash button. Reset is the Reset idiom law:
+ *  one click from anywhere, back to the state a fresh author would get — Reset RE-CREATES the node
+ *  (default-chord continuation, tangents Auto). it's
  *  enabled whenever the subject is editable, never gated on "has something to clear" — a reset that
  *  changes nothing records no undo entry (`sameNodes`), the same no-op guard every Reset row leans
  *  on. node 0 (the entry anchor) is the exception — never
- *  appendable/trimmable, and its handle is a single free entry handle (no coupled in-side), so it
- *  carries NO Add/Delete and NO mode submenu: just Handles + Reset (back to the Auto C1 exit). */
+ *  appendable/trimmable/cuttable (it's the section entry, never an interior split point — a
+ *  structural impossibility rather than a contextual one, so it's OMITTED like Add/Delete, not
+ *  grayed), and its handle is a single free entry handle (no coupled in-side), so it
+ *  carries NO Add/Delete/Cut and NO mode submenu: just Handles + Reset (back to the Auto C1 exit). */
 export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
     // a multi-selection: the bulk rows (the gray-never-hide law). Delete acts on the whole set iff
     // it's a valid suffix run (else grayed); Add + Handles are single-subject, so they gray out;
@@ -203,6 +238,9 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
                     },
                 ],
             },
+            // Cut is single-subject (a cut lands at ONE node) — a multi-set grays it
+            // unconditionally, the same shape as Add/Handles above (`canCut` isn't even read).
+            { label: "Cut", group: "structure", shortcut: BINDINGS.cut.hint, enabled: false },
             { label: "Reset", group: "lifecycle", enabled: s.ok, action: a.resetSet },
             {
                 label: "Delete",
@@ -266,6 +304,13 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
                 },
             ],
         },
+        {
+            label: "Cut",
+            group: "structure",
+            shortcut: BINDINGS.cut.hint,
+            enabled: s.ok && s.canCut === true,
+            action: a.cut,
+        },
         { label: "Reset", group: "lifecycle", enabled: s.ok, action: a.reset },
         {
             label: "Delete",
@@ -304,6 +349,11 @@ export type KeyframeMenuState = {
     presetGlyph: (ease: Easing) => string;
     /** the Custom row's glyph (the addressed segment's actual curve). */
     customGlyph: string;
+    /** the ACTIVE keyframe is a valid Cut point — `acts.keyframeCuttable` (interior, never the
+     *  section entry or exit) — read only outside a multi-set (below), where Cut grays regardless
+     *  (single-subject, like Custom, but unlike Custom it needs exactly ONE clean position).
+     *  OPTIONAL, same shape as `SectionMenuState.canCut`: not `true` by default. */
+    canCut?: boolean;
 };
 
 export type KeyframeMenuActions = {
@@ -312,11 +362,12 @@ export type KeyframeMenuActions = {
     setEase: (ease: Easing) => void;
     chooseCustom: () => void;
     pickMode: (mode: TangentMode) => void;
+    cut: () => void;
 };
 
 /** the menu as data, in the grammar's canonical order: the mode-scoped Lock/Unlock, an Easing ▸
- *  submenu, a Tangents ▸ submenu (all `modify`), then Delete last — the whole SET in one entry,
- *  force multi-delete being unconditional. Easing ▸ is Linear | Cubic | Quintic (checked by the
+ *  submenu, a Tangents ▸ submenu (all `modify`), then Cut (`structure`), then Delete last — the
+ *  whole SET in one entry, force multi-delete being unconditional. Easing ▸ is Linear | Cubic | Quintic (checked by the
  *  ACTIVE keyframe's tag), the one sanctioned WITHIN-group separator, then Custom — Custom
  *  materializes handles and steps into handle edit, a different kind of row but the same group, so
  *  the divider is authored rather than derived. the preset rows apply to ALL selected non-terminal keyframes — the caller resolves
@@ -392,6 +443,23 @@ export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): Menu
                 modeRow("Aligned", TangentMode.Aligned),
                 modeRow("Free", TangentMode.Free),
             ],
+        });
+    }
+    // Cut — a terminal active keyframe governs no segment, so it's structurally never an
+    // interior split point (Easing's own reason to omit its whole submenu); shown otherwise, but
+    // GRAYED on a multi-set even when the active is non-terminal — unlike Custom (which stays
+    // single-subject regardless of `multi`), Cut needs exactly ONE clean position and a set
+    // selection doesn't read as one. `activeOk` is the SAME lockdown gate Tangents ▸ and Custom
+    // above already carry — Cut acts on the active keyframe alone, so it owes its editability
+    // check too (the adversarial pass's finding: `canCut`'s own interior-point predicate says
+    // nothing about whether the section is editable right now).
+    if (!s.terminal) {
+        items.push({
+            label: "Cut",
+            group: "structure",
+            shortcut: BINDINGS.cut.hint,
+            enabled: s.canCut === true && !s.multi && s.activeOk,
+            action: a.cut,
         });
     }
     items.push({

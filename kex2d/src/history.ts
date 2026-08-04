@@ -65,7 +65,7 @@ import {
     type SolvedGeo,
     spawnForce,
     splitForce,
-    splitGeo,
+    splitGeoAt,
     setTrackDomain,
     trackDomain,
     type TrackV0State,
@@ -903,18 +903,28 @@ export function appendSection(h: History, ecs: State, kind: SectionKind): number
     return id;
 }
 
-/** split a section, recording one undoable entry. `at` is a geo section's interior
- *  node order or a force section's arclength s (the caller supplies the right one for
- *  the kind). no-op (records nothing) at a non-interior split point; returns the new
- *  tail section id, or null. */
-export function splitSection(h: History, ecs: State, section: number, at: number): number | null {
+/** split a section, recording one undoable entry. `at` is a geo section's node order or
+ *  segment index or a force section's arclength `s` (the caller supplies the right one
+ *  for the kind); `t` is the geo free-position parameter within segment `at`
+ *  (`track.splitGeoAt`'s own reduction: omitted or `≤ 0` is the landmark case, `splitGeo`
+ *  at node order `at`, unchanged from before Cut; `0 < t < 1` is the interior de
+ *  Casteljau-subdivided cut Cut needs, `at` then a SEGMENT index). Ignored on a force
+ *  section — `splitForce` is already exact at any interior `s` (stage 1). no-op (records
+ *  nothing) at a non-interior split point; returns the new tail section id, or null. */
+export function splitSection(
+    h: History,
+    ecs: State,
+    section: number,
+    at: number,
+    t = 0,
+): number | null {
     const eid = sectionAt(ecs, section);
     if (eid === null) return null;
     const pre = selHook?.snapshot(ecs);
     const before = snapshotAll(ecs);
     const id =
         Section.kind.get(eid) === SectionKind.Geo
-            ? splitGeo(ecs, section, at)
+            ? splitGeoAt(ecs, section, at, t)
             : splitForce(ecs, section, at);
     if (id === null) return null; // nothing split — don't record
     const after = snapshotAll(ecs);

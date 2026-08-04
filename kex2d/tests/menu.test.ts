@@ -178,6 +178,7 @@ describe("sectionMenu — the section context menu's rows", () => {
         canPin: false,
         canReset: true,
         canDelete: true,
+        canCut: true,
     };
     const acts = () =>
         recorder(
@@ -189,16 +190,21 @@ describe("sectionMenu — the section context menu's rows", () => {
             "reset",
             "remove",
             "removeSet",
+            "cutAt",
         );
+    // no `shortcut`: the cursor-anchored section Cut carries no keyboard binding at all (the
+    // locked decision's asymmetry — `nodeMenu`/`keyframeMenu`'s Cut rows DO carry `K`).
+    const cut = (enabled: boolean): Row => ({ label: "Cut", group: "structure", enabled });
 
-    test("a single GEO section: Convert, Reset, Delete", () => {
+    test("a single GEO section: Convert, Cut, Reset, Delete", () => {
         expect(shape(sectionMenu(base, acts()))).toEqual([
             { label: "Convert", group: "modify", enabled: true },
+            cut(true),
             { label: "Reset", group: "lifecycle", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
-    test("a single FORCE section adds Pin between Convert and Reset", () => {
+    test("a single FORCE section adds Pin between Convert and Cut", () => {
         const s = {
             ...base,
             kind: SectionKind.Force,
@@ -209,11 +215,12 @@ describe("sectionMenu — the section context menu's rows", () => {
         expect(shape(sectionMenu(s, acts()))).toEqual([
             { label: "Convert", group: "modify", enabled: true },
             { label: "Pin", group: "modify", enabled: true },
+            cut(true),
             { label: "Reset", group: "lifecycle", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
-    test("a multi-set grays the single-subject rows and drops Pin (force set included)", () => {
+    test("a multi-set grays the single-subject rows, and OMITS Pin + Cut (force set included)", () => {
         const s = {
             ...base,
             kind: SectionKind.Force,
@@ -222,6 +229,7 @@ describe("sectionMenu — the section context menu's rows", () => {
             canSolveShape: false,
             canPin: false,
             canReset: false,
+            canCut: false,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
             { label: "Convert", group: "modify", enabled: false },
@@ -252,15 +260,18 @@ describe("sectionMenu — the section context menu's rows", () => {
         expect(shape(sectionMenu({ ...s, solving: true }, acts()))[0].enabled).toBe(false);
         expect(shape(sectionMenu({ ...s, pinSolvable: false }, acts()))[0].enabled).toBe(false);
     });
-    test("Convert's action follows the kind; Delete's follows the set", () => {
+    test("Convert's action follows the kind; Cut's action is `cutAt`; Delete's follows the set", () => {
         const geo = acts();
         sectionMenu(base, geo)[0].action?.();
         expect(geo.log).toEqual(["solve()"]);
         const force = acts();
         sectionMenu({ ...base, kind: SectionKind.Force }, force)[0].action?.();
         expect(force.log).toEqual(["solveShape()"]);
+        const cutter = acts();
+        sectionMenu(base, cutter)[1].action?.();
+        expect(cutter.log).toEqual(["cutAt()"]);
         const single = acts();
-        sectionMenu(base, single)[2].action?.();
+        sectionMenu(base, single)[3].action?.();
         expect(single.log).toEqual(["remove()"]);
         const multi = acts();
         sectionMenu({ ...base, multi: true }, multi)[2].action?.();
@@ -289,6 +300,7 @@ function countingDescriptor(inMode: boolean): {
         multi: false,
         modeOpen: false,
         canDelete: true,
+        canCut: true,
         get canSolve() {
             reads.canSolve++;
             return true;
@@ -320,6 +332,7 @@ describe("sectionMenu — descriptor laziness (the lazy-getter contract, menus.t
             "reset",
             "remove",
             "removeSet",
+            "cutAt",
         );
 
     // the positive control: proves the counting descriptor can actually SEE a read, rather than
@@ -358,6 +371,7 @@ describe("nodeMenu — the node context menu's rows", () => {
         isEnd: false,
         canTrim: false,
         suffixOk: false,
+        canCut: true,
     };
     const acts = () =>
         recorder(
@@ -369,7 +383,16 @@ describe("nodeMenu — the node context menu's rows", () => {
             "pickModeSet",
             "reset",
             "resetSet",
+            "cut",
         );
+    // node's Cut ALWAYS shows `K`, enabled or not (the hint names the action, not the live
+    // enablement — a grayed row keeps it, like `Add`'s own `Enter`).
+    const cut = (enabled: boolean): Row => ({
+        label: "Cut",
+        group: "structure",
+        shortcut: "K",
+        enabled,
+    });
     const tangents = (enabled: boolean, mode: TangentMode): Row => ({
         label: "Tangents",
         group: "modify",
@@ -401,21 +424,30 @@ describe("nodeMenu — the node context menu's rows", () => {
     });
     const reset = (enabled: boolean): Row => ({ label: "Reset", group: "lifecycle", enabled });
 
-    test("an INTERIOR node: Add + Delete both gated off, Handles / Tangents / Reset between", () => {
+    test("an INTERIOR node: Add + Delete both gated off, Handles / Tangents / Cut / Reset between", () => {
         expect(shape(nodeMenu(base, acts()))).toEqual([
             add(false),
             handles(false, true),
             tangents(true, TangentMode.Aligned),
+            cut(true),
             reset(true),
             del(false),
         ]);
     });
-    test("a CHAIN-END node lights Add + Delete; the mode check follows the target", () => {
-        const s = { ...base, isEnd: true, canTrim: true, editing: true, mode: TangentMode.Free };
+    test("a CHAIN-END node lights Add + Delete; Cut grays (the chain end is never interior)", () => {
+        const s = {
+            ...base,
+            isEnd: true,
+            canTrim: true,
+            editing: true,
+            mode: TangentMode.Free,
+            canCut: false,
+        };
         expect(shape(nodeMenu(s, acts()))).toEqual([
             add(true),
             handles(true, true),
             tangents(true, TangentMode.Free),
+            cut(false),
             reset(true),
             del(true),
         ]);
@@ -447,25 +479,27 @@ describe("nodeMenu — the node context menu's rows", () => {
             add(false),
             handles(undefined, false),
             tangents(true, TangentMode.Mirror),
+            cut(false),
             reset(true),
             del(true),
         ]);
     });
-    test("a MULTI set: bulk Delete on a suffix run, Add + Handles grayed, no Handles check", () => {
+    test("a MULTI set: bulk Delete on a suffix run, Add + Handles + Cut grayed, no Handles check", () => {
         const s = { ...base, multi: true, suffixOk: true, mode: TangentMode.Mirror };
         expect(shape(nodeMenu(s, acts()))).toEqual([
             add(false),
             handles(undefined, false),
             tangents(true, TangentMode.Mirror),
+            cut(false),
             reset(true),
             del(true),
         ]);
     });
     test("the lockdown grays every edit row, single and multi alike", () => {
         const single = shape(nodeMenu({ ...base, ok: false, isEnd: true, canTrim: true }, acts()));
-        expect(single.map((r) => r.enabled)).toEqual([false, false, false, false, false]);
+        expect(single.map((r) => r.enabled)).toEqual([false, false, false, false, false, false]);
         const multi = shape(nodeMenu({ ...base, ok: false, multi: true, suffixOk: true }, acts()));
-        expect(multi.map((r) => r.enabled)).toEqual([false, false, false, false, false]);
+        expect(multi.map((r) => r.enabled)).toEqual([false, false, false, false, false, false]);
         const zero = shape(nodeMenu({ ...base, ok: false, isEntry: true }, acts()));
         expect(zero.map((r) => r.enabled)).toEqual([false, false]);
     });
@@ -478,22 +512,25 @@ describe("nodeMenu — the node context menu's rows", () => {
         rows[0].action?.();
         rows[1].action?.();
         for (const c of rows[2].children ?? []) c.action?.();
-        rows[3].action?.();
+        rows[3].action?.(); // Cut
         rows[4].action?.();
+        rows[5].action?.();
         expect(one.log).toEqual([
             "add()",
             "toggleHandles()",
             `pickMode(${TangentMode.Mirror})`,
             `pickMode(${TangentMode.Aligned})`,
             `pickMode(${TangentMode.Free})`,
+            "cut()",
             "reset()",
             "remove()",
         ]);
         const set = acts();
         const bulk = nodeMenu({ ...base, multi: true }, set);
         for (const c of bulk[2].children ?? []) c.action?.();
-        bulk[3].action?.();
+        bulk[3].action?.(); // Cut (multi) — no action; a no-op, contributes nothing to the log
         bulk[4].action?.();
+        bulk[5].action?.();
         expect(set.log).toEqual([
             `pickModeSet(${TangentMode.Mirror})`,
             `pickModeSet(${TangentMode.Aligned})`,
@@ -518,8 +555,18 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
         mode: TangentMode.Aligned,
         presetGlyph: (e) => `preset:${e}`,
         customGlyph: "custom:glyph",
+        canCut: true,
     };
-    const acts = () => recorder("remove", "toggleLock", "setEase", "chooseCustom", "pickMode");
+    const acts = () =>
+        recorder("remove", "toggleLock", "setEase", "chooseCustom", "pickMode", "cut");
+    // keyframe's Cut ALWAYS shows `K` when the row exists at all (omitted only when the active
+    // is terminal — Easing's own reason to omit its whole submenu).
+    const cut = (enabled: boolean): Row => ({
+        label: "Cut",
+        group: "structure",
+        shortcut: "K",
+        enabled,
+    });
     const easing = (
         enabled: boolean,
         checked: Easing | null,
@@ -568,9 +615,10 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
         enabled,
     });
 
-    test("a single NON-TERMINAL keyframe: Easing ▸ (the tag checked) then Delete", () => {
+    test("a single NON-TERMINAL keyframe: Easing ▸ (the tag checked), Cut, then Delete", () => {
         expect(shape(keyframeMenu(base, acts()))).toEqual([
             easing(true, Easing.Cubic, true),
+            cut(true),
             del(true),
         ]);
     });
@@ -594,16 +642,16 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
         const locked = shape(keyframeMenu({ ...base, lock: "Lock" }, acts()));
         expect(locked[0]).toEqual({ label: "Lock", group: "modify", shortcut: "Q" });
         expect(locked.at(-1)).toEqual(del(true));
-        expect(locked).toHaveLength(3);
+        expect(locked).toHaveLength(4);
         expect(shape(keyframeMenu({ ...base, lock: "Unlock" }, acts()))[0]).toEqual({
             label: "Unlock",
             group: "modify",
             shortcut: "Q",
         });
     });
-    test("explicit handles add the Tangents ▸ submenu, checked by the stored mode, above Delete", () => {
+    test("explicit handles add the Tangents ▸ submenu, checked by the stored mode, above Cut/Delete", () => {
         const s = { ...base, hasHandles: true, mode: TangentMode.Mirror };
-        expect(shape(keyframeMenu(s, acts())).at(-2)).toEqual({
+        expect(shape(keyframeMenu(s, acts())).at(-3)).toEqual({
             label: "Tangents",
             group: "modify",
             enabled: true,
@@ -614,14 +662,28 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
             ],
         });
     });
-    test("the lockdown: the set gates Delete + Easing, the active member gates Custom", () => {
+    test("the lockdown: the set gates Delete + Easing + Cut, the active member gates Custom", () => {
         const rows = shape(
-            keyframeMenu({ ...base, setOk: false, activeOk: false, hasHandles: true }, acts()),
+            keyframeMenu(
+                { ...base, setOk: false, activeOk: false, hasHandles: true, canCut: false },
+                acts(),
+            ),
         );
         expect(rows[0].enabled).toBe(false); // Easing ▸
         expect(rows[0].children?.[4].enabled).toBe(false); // …its Custom row
         expect(rows[1].enabled).toBe(false); // Tangents ▸
-        expect(rows[2].enabled).toBe(false); // Delete
+        expect(rows[2].enabled).toBe(false); // Cut
+        expect(rows[3].enabled).toBe(false); // Delete
+    });
+    // isolates `activeOk` from `canCut`/`multi`: a valid interior cut point on a section the
+    // live lockdown bars must still gray — Cut is single-subject (the active), so it owes the
+    // SAME `activeOk` gate Custom/Tangents already carry, not just its own interior-point
+    // predicate. Adversarial-pass finding (kex2d-structural-editing stage 4).
+    test("Cut grays under the lockdown even at a genuinely interior, single-select point", () => {
+        const s = { ...base, activeOk: false, canCut: true, multi: false, terminal: false };
+        const rows = shape(keyframeMenu(s, acts()));
+        const cutRow = rows.find((r) => r.label === "Cut");
+        expect(cutRow?.enabled).toBe(false);
     });
     test("the rows act on their subjects", () => {
         // every submenu row is invoked, in order — three near-identical preset rows and three mode
@@ -631,7 +693,8 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
         rows[0].action?.(); // Lock
         for (const c of rows[1].children ?? []) c.action?.(); // Easing ▸ (separator inert)
         for (const c of rows[2].children ?? []) c.action?.(); // Tangents ▸
-        rows[3].action?.(); // Delete
+        rows[3].action?.(); // Cut
+        rows[4].action?.(); // Delete
         expect(rec.log).toEqual([
             "toggleLock()",
             `setEase(${Easing.Linear})`,
@@ -641,6 +704,7 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
             `pickMode(${TangentMode.Mirror})`,
             `pickMode(${TangentMode.Aligned})`,
             `pickMode(${TangentMode.Free})`,
+            "cut()",
             "remove()",
         ]);
     });
@@ -731,6 +795,7 @@ describe("the menu grammar — every builder, every state", () => {
         canPin: bool,
         canReset: bool,
         canDelete: bool,
+        canCut: bool,
     });
     const nodeStates = states<NodeMenuState>({
         multi: bool,
@@ -741,6 +806,7 @@ describe("the menu grammar — every builder, every state", () => {
         isEnd: bool,
         canTrim: bool,
         suffixOk: bool,
+        canCut: bool,
     });
     const keyframeStates = states<KeyframeMenuState>({
         setOk: bool,
@@ -755,6 +821,7 @@ describe("the menu grammar — every builder, every state", () => {
         mode: modes,
         presetGlyph: [(e: Easing) => `preset:${e}`],
         customGlyph: ["custom:glyph"],
+        canCut: bool,
     });
     const rulerStates = states<RulerMenuState>({
         domain: [Domain.Distance, Domain.Time],
@@ -791,6 +858,8 @@ describe("the menu grammar — every builder, every state", () => {
                 "chooseCustom",
                 "pick",
                 "append",
+                "cut",
+                "cutAt",
             );
         for (const s of sectionStates) {
             const a = acts();
@@ -1124,6 +1193,8 @@ describe("the menu grammar — every builder, every state", () => {
         chooseCustom: null,
         pick: null,
         append: null,
+        cut: "cut",
+        cutAt: null,
     };
 
     test("`Acts` censuses every act name the corpus recorder declares", () => {
@@ -1181,10 +1252,16 @@ describe("the menu grammar — every builder, every state", () => {
         editable: bool,
         multi: [true],
     });
-    const nodeKeyStatesSingle = states<{ editable: boolean; multi: false; endSelected: boolean }>({
+    const nodeKeyStatesSingle = states<{
+        editable: boolean;
+        multi: false;
+        endSelected: boolean;
+        cuttable: boolean;
+    }>({
         editable: bool,
         multi: [false],
         endSelected: bool,
+        cuttable: bool,
     });
     // plain (non-overloaded) wrappers: passed BARE, `nodeKeyAct`'s overload set resolves against
     // whichever signature the last overload happens to expose to a generic callback position,
@@ -1193,9 +1270,14 @@ describe("the menu grammar — every builder, every state", () => {
         nodeKeyAct(key, s);
     const nodeKeyActSingle = (
         key: string,
-        s: { editable: boolean; multi: false; endSelected: boolean },
+        s: { editable: boolean; multi: false; endSelected: boolean; cuttable: boolean },
     ) => nodeKeyAct(key, s);
-    const forceKeyStates = states<ForceKeyState>({ pinning: bool, size: [0, 1, 2] });
+    const forceKeyStates = states<ForceKeyState>({
+        pinning: bool,
+        size: [0, 1, 2],
+        cuttable: bool,
+        editable: bool,
+    });
     const modeKeyStates = states<ModeKeyState>({
         modeOpen: bool,
         menuOpen: bool,
@@ -1226,6 +1308,7 @@ describe("the menu grammar — every builder, every state", () => {
                 "append:add",
                 "exitMode:pinExit",
                 "lock:toggleLock",
+                "cut:cut",
             ].sort(),
         );
     });
@@ -1333,6 +1416,7 @@ describe("the menu grammar — every builder, every state", () => {
         append: ["keys.ts"],
         exitMode: ["App.svelte", "keys.ts"],
         lock: ["keys.ts"],
+        cut: ["keys.ts"],
     };
     // a bound key also drives presses that are NOBODY's menu row — dismissal rungs, a field's
     // commit-and-blur. Those stay raw literals, and this is exactly which files may hold one; any
@@ -1350,6 +1434,8 @@ describe("the menu grammar — every builder, every state", () => {
         },
         q: { files: [], why: "the lock toggle only" },
         Q: { files: [], why: "the lock toggle only" },
+        k: { files: [], why: "the landmark Cut binding only" },
+        K: { files: [], why: "the landmark Cut binding only" },
     };
     const src = (file: string): string =>
         readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
@@ -1473,30 +1559,34 @@ describe("the menu grammar — every builder, every state", () => {
         }
     });
 
-    // ── the `structure` group (kex2d-structural-editing stage 3). GROUPS widens to four, ordered
-    // `create < modify < structure < lifecycle`, but every builder ships zero `structure` rows
-    // today (Cut/Join land in a later stage) — so the corpus above never drives the new slot. Per
-    // the declared-registry law (`editor-ui.md` Menus): "a registry that ships empty... makes the
-    // positive controls the whole deliverable." These are those controls, driven through `menuRows`
-    // itself on fabricated rows, and through `levels()` (in scope here) for the "nothing uses it
-    // yet" direction.
-    describe("the `structure` group — landed empty (kex2d-structural-editing stage 3)", () => {
+    // ── the `structure` group. GROUPS widened to four in stage 3, ordered
+    // `create < modify < structure < lifecycle`, shipping empty (Cut/Join land in later stages).
+    // Cut lands the group's first rows here (stage 4); Join (stage 5) is the second. The
+    // renderer-level positive controls below (`menuRows` on fabricated rows) predate any real
+    // occupant and stay as the machinery-level proof; the corpus-level test is the production
+    // proof that Cut actually reached the group it was designed for.
+    describe("the `structure` group", () => {
         const row = (label: string, group: MenuGroup): MenuItem => ({ label, group });
 
         test("GROUPS widens to four, `structure` ordered between `modify` and `lifecycle`", () => {
             expect(GROUPS).toEqual(["create", "modify", "structure", "lifecycle"]);
         });
 
-        // direction 1 — no shipping builder emits a `structure` row yet. The corpus can't already
-        // satisfy the widened law by accident; the group is genuinely unused today.
-        test("no shipping builder emits a `structure` row today", () => {
-            const rows = levels().flatMap((m) => m.rows.filter((r) => r.group === "structure"));
-            expect(rows).toEqual([]);
+        // the production proof (stage 4): Cut reaches every builder that carries it, tagged
+        // `structure` — never left behind as a `modify` row the way a hand-authored menu could
+        // silently drift.
+        test("every `structure` row the corpus emits today is named Cut", () => {
+            const labels = new Set(
+                levels()
+                    .flatMap((m) => m.rows.filter((r) => r.group === "structure"))
+                    .map((r) => r.label),
+            );
+            expect([...labels]).toEqual(["Cut"]);
         });
 
-        // direction 2, positive control — slot-by-slot DERIVED divider positions (never a count) over a
-        // fabricated four-group menu: one divider at every group change, none elsewhere. This is also
-        // the canonical-order control, since `menuRows` walks GROUPS to place them.
+        // positive control — slot-by-slot DERIVED divider positions (never a count) over a
+        // fabricated four-group menu: one divider at every group change, none elsewhere. This is
+        // also the canonical-order control, since `menuRows` walks GROUPS to place them.
         test("positive control: `menuRows` derives one divider at every group change across all four groups", () => {
             const items = [
                 row("Add", "create"),
@@ -1515,11 +1605,13 @@ describe("the menu grammar — every builder, every state", () => {
             ]);
         });
 
-        // the empty group's own deliverable: an unoccupied `structure` group sitting between two used
-        // ones derives no divider either side of it — slot-by-slot, not a count. Three rows, exactly
-        // two dividers (create|modify, modify|lifecycle), never three: a divider-COUNT-only check
-        // can't distinguish this from a renderer that emits a divider for the unused group anyway.
-        test("an unoccupied `structure` group derives no divider either side of it", () => {
+        // the renderer's own edge case: a group with no row between two occupied ones derives no
+        // divider either side of it — slot-by-slot, not a count. Three rows, exactly two dividers
+        // (create|modify, modify|lifecycle), never three: a divider-COUNT-only check can't
+        // distinguish this from a renderer that emits a divider for the unused group anyway.
+        // `structure` itself is occupied now, so this fabricates the gap directly rather than
+        // reaching for a real empty group.
+        test("an unoccupied group derives no divider either side of it", () => {
             const items = [
                 row("Add", "create"),
                 row("Convert", "modify"),
@@ -1706,7 +1798,7 @@ describe("menu source pins — builders and renderer stay singular", () => {
 
     // matches a MenuGroup value specifically (GROUPS in menu.ts), not an unrelated `group` field
     // (render.ts's ECS system-scheduling groups) or a JSDoc `@example`'s prose.
-    const groupPattern = /group:\s*"(create|modify|lifecycle)"/;
+    const groupPattern = /group:\s*"(create|modify|structure|lifecycle)"/;
 
     test('no `group: "` row literal outside src/menus.ts', () => {
         const bad = srcFiles.filter(

@@ -34,7 +34,11 @@ export type Binding = { readonly keys: readonly string[]; readonly hint: string 
  * `Add` still tells you append is `Enter`.
  *
  * Homes: `remove` — `controls.ts` (section, node set, chain-end trim) + `Timeline.svelte` (force
- * keyframe); `append` — `controls.ts`; `exitMode` — `App.svelte`; `lock` — `Timeline.svelte`.
+ * keyframe); `append` — `controls.ts`; `exitMode` — `App.svelte`; `lock` — `Timeline.svelte`;
+ * `cut` — the landmark paths only (a selected node's own `controls.ts` home, a selected force
+ * keyframe's own `Timeline.svelte` home — wiring lands with `kex2d-structural-editing` stage 6).
+ * The cursor-anchored section Cut carries no binding at all — a free position has no keyboard
+ * anchor to name (`editor-ui.md` Menus' shortcut-asymmetry clause).
  * `Escape` and `Delete` also drive dismissal/guard rungs that are nobody's menu row; those stay
  * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one.
  */
@@ -43,6 +47,7 @@ export const BINDINGS = {
     append: { keys: ["Enter"], hint: "Enter" },
     exitMode: { keys: ["Escape"], hint: "Esc" },
     lock: { keys: ["q", "Q"], hint: "Q" },
+    cut: { keys: ["k", "K"], hint: "K" },
 } as const satisfies Record<string, Binding>;
 
 /** whether a `KeyboardEvent.key` fires this binding.
