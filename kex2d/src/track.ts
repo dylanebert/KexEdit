@@ -27,6 +27,7 @@ import {
     COLLINEAR_TOL,
     type Node,
     reflect,
+    subdivide as subdivideGeo,
     type Tangent,
     TangentMode,
 } from "./spline";
@@ -1938,6 +1939,90 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
     }
     for (let i = k + 1; i <= n; i++) ecs.destroy(handles[i]); // trim the head to [0..k]
     return bId;
+}
+
+/** insert a node at parameter `t` ∈ (0, 1) of segment `j` (the edge from node `j`
+ *  to node `j + 1`) — the free-position half of Cut's exactness: `spline.subdivide`
+ *  lands the new node exactly on the authored curve (de Casteljau), so `splitGeo`
+ *  at its order reduces to a lossless cut anywhere, not just at a landmark. Both
+ *  boundary nodes' facing tangent re-parents to the subdivided value and the node
+ *  goes Free explicit (the visible cost of an exact mid-segment cut, mirroring
+ *  `splitForce`'s Custom demotion); the FAR side of each — the side the split
+ *  doesn't touch — is preserved verbatim (an already-explicit node's own vector,
+ *  else the live arc-rule vector seeded through `seedTangent`, so an `Auto`
+ *  boundary doesn't jump). returns the new node's order (`j + 1`), or null when
+ *  the section isn't geo, `j` is out of range, or `t` isn't strictly interior. */
+export function insertGeoNode(ecs: State, sectionId: number, j: number, t: number): number | null {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return null;
+    const handles = sectionHandles(ecs, sectionId);
+    const n = handles.length - 1;
+    if (j < 0 || j >= n || !(t > 0 && t < 1)) return null;
+
+    const paEid = handles[j];
+    const pbEid = handles[j + 1];
+    const pa: Node = {
+        x: Handle.pos.x.get(paEid),
+        y: Handle.pos.y.get(paEid),
+        theta: Handle.theta.get(paEid),
+        tangent: readTangent(paEid),
+    };
+    const pb: Node = {
+        x: Handle.pos.x.get(pbEid),
+        y: Handle.pos.y.get(pbEid),
+        theta: Handle.theta.get(pbEid),
+        tangent: readTangent(pbEid),
+    };
+    const sub = subdivideGeo(pa, pb, t);
+
+    // the far side of each boundary node is unaffected by the split — seed it from
+    // the node's OWN current state (explicit verbatim, else the live arc-rule vector
+    // `seedTangent` reads before the insertion changes any neighbor).
+    const aFar = pa.tangent ?? seedTangent(ecs, sectionId, j, TangentMode.Free);
+    const bFar = pb.tangent ?? seedTangent(ecs, sectionId, j + 1, TangentMode.Free);
+    if (aFar === null || bFar === null) return null; // unreachable: j/j+1 both resolved above
+
+    writeTangent(paEid, {
+        mode: TangentMode.Free,
+        inX: aFar.inX,
+        inY: aFar.inY,
+        outX: sub.outA[0],
+        outY: sub.outA[1],
+    });
+    writeTangent(pbEid, {
+        mode: TangentMode.Free,
+        inX: sub.inB[0],
+        inY: sub.inB[1],
+        outX: bFar.outX,
+        outY: bFar.outY,
+    });
+
+    for (let i = handles.length - 1; i > j; i--) {
+        Handle.order.set(handles[i], Handle.order.get(handles[i]) + 1);
+    }
+    const midTheta = Math.atan2(sub.outMid[1], sub.outMid[0]); // dead once explicit; kept sane
+    spawnNode(ecs, sectionId, j + 1, sub.x, sub.y, midTheta, {
+        mode: TangentMode.Free,
+        inX: sub.inMid[0],
+        inY: sub.inMid[1],
+        outX: sub.outMid[0],
+        outY: sub.outMid[1],
+    });
+    return j + 1;
+}
+
+/** cut a geo section at parameter `t` of segment `j` — Cut's free-position entry
+ *  point. `t` at (or past) 0 or 1 reduces to today's landmark `splitGeo` unchanged
+ *  (no subdivision, no node inserted, no Custom demotion — the locked decision's
+ *  "a cut invoked from a node menu stays in the named-easing layer"); the interior
+ *  case inserts the subdivided boundary node (`insertGeoNode`) first, then splits
+ *  there. returns the new tail section id, or null (kind mismatch, `j` out of
+ *  range, or the landmark split's own no-op at the entry/last node). */
+export function splitGeoAt(ecs: State, sectionId: number, j: number, t: number): number | null {
+    if (t <= 0) return splitGeo(ecs, sectionId, j);
+    if (t >= 1) return splitGeo(ecs, sectionId, j + 1);
+    const k = insertGeoNode(ecs, sectionId, j, t);
+    return k === null ? null : splitGeo(ecs, sectionId, k);
 }
 
 /** split a force section at `s` (0 < s < length), in the track domain's unit

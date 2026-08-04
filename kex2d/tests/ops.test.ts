@@ -24,6 +24,7 @@ import {
     Handle,
     handleAt,
     handleTangent,
+    insertGeoNode,
     joinNext,
     reheadOnDrag,
     removeTrailingHandle,
@@ -38,7 +39,9 @@ import {
     setTrackDomain,
     splitForce,
     splitGeo,
+    splitGeoAt,
     Track,
+    trackDs,
 } from "../src/track";
 import { Domain } from "../src/section";
 import { custom, DEFAULT_G, type Easing, type ForcePoint, sampleForce } from "../src/profile";
@@ -95,6 +98,56 @@ function worldSamples(eid: number): { x: number; y: number }[] {
     const out: { x: number; y: number }[] = [];
     for (let i = 0; i < count; i++) out.push({ x: s.posX[i], y: s.posY[i] });
     return out;
+}
+
+/** cumulative arclength at each sample of a polyline (chord sums, `s[0] = 0`) — the
+ *  station axis `atArc` interpolates over. */
+function cumulativeArc(pts: { x: number; y: number }[]): number[] {
+    const s = [0];
+    for (let i = 1; i < pts.length; i++) {
+        s.push(s[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+    }
+    return s;
+}
+
+/** a baked polyline's own position at an arbitrary cumulative arclength, linearly
+ *  interpolated between its two bracketing samples — the world-curve pin's "matching
+ *  arclengths" primitive: it reads a station independent of how densely either side of
+ *  a cut happened to re-quantize its own segment. */
+function atArc(
+    pts: { x: number; y: number }[],
+    arc: number[],
+    target: number,
+): { x: number; y: number } {
+    const clamped = Math.max(0, Math.min(target, arc[arc.length - 1]));
+    let i = 1;
+    while (i < arc.length - 1 && arc[i] < clamped) i++;
+    const s0 = arc[i - 1];
+    const s1 = arc[i];
+    const frac = s1 > s0 ? (clamped - s0) / (s1 - s0) : 0;
+    return {
+        x: pts[i - 1].x + frac * (pts[i].x - pts[i - 1].x),
+        y: pts[i - 1].y + frac * (pts[i].y - pts[i - 1].y),
+    };
+}
+
+/** the largest 3-point circumscribed-circle curvature over a polyline — κ = 4·Area(ABC)
+ *  / (|AB|·|BC|·|CA|), measured directly off the baked samples. Feeds the derived
+ *  chord-interpolation error bound in the world-curve pin below (never a tuned number,
+ *  `coding.md`'s tolerance-discipline rule). */
+function maxCurvature(pts: { x: number; y: number }[]): number {
+    let k = 0;
+    for (let i = 1; i < pts.length - 1; i++) {
+        const a = pts[i - 1];
+        const b = pts[i];
+        const c = pts[i + 1];
+        const area = Math.abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2;
+        const ab = Math.hypot(b.x - a.x, b.y - a.y);
+        const bc = Math.hypot(c.x - b.x, c.y - b.y);
+        const ca = Math.hypot(a.x - c.x, a.y - c.y);
+        if (ab > 0 && bc > 0 && ca > 0) k = Math.max(k, (4 * area) / (ab * bc * ca));
+    }
+    return k;
 }
 
 /** append a geo section B after the track's current (sole) section and bake once,
@@ -900,6 +953,158 @@ describe("join", () => {
         // heading (1, 0) — not the unguarded read's (0, 0).
         expect(merged?.inX).toBeCloseTo(1, 6);
         expect(merged?.inY).toBeCloseTo(0, 6);
+    });
+});
+
+// `splitGeoAt` — the free-position geo cut (`spline.subdivide` + `insertGeoNode` +
+// `splitGeo`). The landmark cases (t at 0 or 1) reduce to today's `splitGeo`
+// unchanged; the interior case is the world-curve pin, `headExit`'s telescoping
+// argument extended from a node boundary to an arbitrary mid-segment one.
+describe("splitGeoAt — geo cut at arbitrary t", () => {
+    /** four Auto nodes with real curvature — the same fixture the landmark split
+     *  tests use, so a mid-segment cut is measured against a known-good baseline. */
+    function fourNode(): { state: State; eid: number; a: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+            [60, 0],
+        ])
+            addNode(state, a, x, y);
+        return { state, eid, a };
+    }
+
+    test("t = 0 reduces to today's splitGeo unchanged — no node inserted, the boundary stays Auto", () => {
+        const { state, a } = fourNode();
+        const beforeModes = sectionHandles(state, a).map((e) => Handle.tmode.get(e));
+
+        const b = splitGeoAt(state, a, 2, 0); // segment 2's start IS node 2 — the landmark
+        expect(b).not.toBeNull();
+        if (b === null) return;
+
+        // no midpoint inserted: the head keeps exactly 3 nodes (orders 0..2), the tail 2
+        // (orders 0..1) — the same partition a bare `splitGeo(state, a, 2)` produces.
+        expect(sectionHandles(state, a).length).toBe(3);
+        expect(sectionHandles(state, b).length).toBe(2);
+        // the boundary node's tangent mode is untouched (still Auto) — a landmark cut
+        // never demotes anything.
+        expect(Handle.tmode.get(sectionHandles(state, a)[2])).toBe(beforeModes[2]);
+    });
+
+    test("t = 1 of the LAST segment reduces to today's splitGeo unchanged (its own no-op at the tip)", () => {
+        const { state, a } = fourNode();
+        // segment j=2 runs node 2 → node 3 (the tip); t=1 lands exactly on the tip, where
+        // `splitGeo` already refuses (nothing downstream of the last node to cut off).
+        expect(splitGeoAt(state, a, 2, 1)).toBeNull();
+        expect(sections(state).length).toBe(1);
+        expect(sectionHandles(state, a).length).toBe(4); // untouched
+    });
+
+    test("the cut's baked world curve reproduces the PRE-CUT bake across the WHOLE extent, both halves — not just the tail's own entry", () => {
+        // the boundary-only pin this replaces (`info.entry` against a `subdivide`-built
+        // expectation) covers nothing past the split: mutation-proven, swapping
+        // `insertGeoNode`'s write of `pb`'s tangent (`inX: sub.inB[1], inY: sub.inB[0]`,
+        // corrupting the mid→pb segment) passed every test in this file. Building the
+        // expectation from `subdivide` is ALSO invalid on its own — mutation-proven,
+        // perturbing `subdivide`'s own midpoint (`mx/my += 5`) passed too, because both
+        // sides of that pin called the same production function. This pin bakes the
+        // PRE-cut curve first (touching neither `subdivide` nor `insertGeoNode`), cuts,
+        // then samples both post-cut halves' ACTUAL baked world curve at matching
+        // arclengths across the full original extent — the independent truth the locked
+        // decision names.
+        const { state, eid, a } = fourNode();
+        state.step(0);
+        const pre = worldSamples(eid);
+        const preArc = cumulativeArc(pre);
+        const total = preArc[preArc.length - 1];
+        const kappa = maxCurvature(pre);
+        const ds = trackDs(state);
+
+        const b = splitGeoAt(state, a, 1, 0.35);
+        expect(b).not.toBeNull();
+        if (b === null) return;
+        state.step(0);
+        const post = worldSamples(eid);
+        const postArc = cumulativeArc(post);
+
+        // `subdivide` reproduces the identical analytic curve exactly (proven in
+        // `spline.test.ts`), so the only disagreement between the pre- and post-cut
+        // POLYLINES at a shared target arclength is chord-interpolation error: each side
+        // independently re-quantizes its segment's edge count (`sampleChain`'s own
+        // `round(length/ds)`, `spline.ts:432`), so the discrete samples bracketing a given
+        // station don't land at the same parameter on each side. That error is a sagitta,
+        // at most ds²·κ/8 per side (standard chord-vs-arc bound at curvature κ over a
+        // step ≤ ds) — ds²·κ/4 total for the two independent reconstructions — plus the
+        // rigid re-frame's own f32 round-off floor (0.05 m), the SAME derived floor the
+        // sibling node-boundary split pin above carries ("splitting at a node with an
+        // explicit tangent keeps the baked world curve").
+        const tol = 0.05 + (ds * ds * kappa) / 4;
+
+        for (let f = 0.05; f < 1; f += 0.1) {
+            const s = f * total;
+            const p = atArc(pre, preArc, s);
+            const q = atArc(post, postArc, s);
+            expect(Math.hypot(q.x - p.x, q.y - p.y)).toBeLessThan(tol);
+        }
+    });
+
+    test("cutting mid-segment preserves the FAR side of each boundary node (only the facing side re-parents)", () => {
+        const { state, a } = fourNode();
+        const before1 = seedTangent(state, a, 1, TangentMode.Free); // node 1's live Auto vectors
+        const before2 = seedTangent(state, a, 2, TangentMode.Free); // node 2's live Auto vectors
+        if (!before1 || !before2) throw new Error("seedTangent failed");
+
+        insertGeoNode(state, a, 1, 0.35);
+
+        // node 1 (order 1, unmoved): its `in` (arriving from node 0) is untouched by a
+        // split of ITS OWN segment — only `out` (facing the new mid node) re-parents.
+        // precision 5, not 6: `before1` is the raw f64 computation, `after1` reads back
+        // through the ECS's f32 `Handle.tin` column — one f32 quantization at magnitude
+        // ~19 (~2e-6), which `toBeCloseTo(…, 6)` (5e-7) is tighter than.
+        const after1 = handleTangent(state, a, 1);
+        expect(after1?.inX).toBeCloseTo(before1.inX, 5);
+        expect(after1?.inY).toBeCloseTo(before1.inY, 5);
+
+        // node 2 shifted to order 3 (the mid node took order 2): its `out` (departing
+        // to node 3) is untouched — only `in` (facing the new mid node) re-parents.
+        const after2 = handleTangent(state, a, 3);
+        expect(after2?.outX).toBeCloseTo(before2.outX, 5);
+        expect(after2?.outY).toBeCloseTo(before2.outY, 5);
+    });
+
+    test("split→join round trip at an arbitrary t restores the node payload (exact to f32 round-off)", () => {
+        const { state, a } = fourNode();
+        const before = sectionHandles(state, a).map((e) => ({
+            x: Handle.pos.x.get(e),
+            y: Handle.pos.y.get(e),
+        }));
+
+        const b = splitGeoAt(state, a, 1, 0.35);
+        expect(b).not.toBeNull();
+        if (b === null) return;
+        // the mid-segment cut planted a genuine extra node (not a landmark), so the join
+        // dedupes only the coincident pair the cut itself created — the round trip closes
+        // to ONE extra authored node over the original four, permanent (mirrors
+        // `splitForce`'s extra planted keyframe).
+        expect(joinNext(state, a)).toBe(true);
+
+        expect(sections(state).length).toBe(1);
+        const after = sectionHandles(state, a).map((e) => ({
+            x: Handle.pos.x.get(e),
+            y: Handle.pos.y.get(e),
+        }));
+        expect(after.length).toBe(before.length + 1);
+        // the node-level round trip: every ORIGINAL node's position survives untouched
+        // (the extra planted node sits between whichever two it split).
+        for (const p of before) {
+            expect(
+                after.some((q) => Math.abs(q.x - p.x) < 1e-3 && Math.abs(q.y - p.y) < 1e-3),
+            ).toBe(true);
+        }
     });
 });
 

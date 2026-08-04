@@ -155,6 +155,68 @@ export function autoTangent(theta: number, chordAngle: number, chordLen: number)
     return handle(theta, chordAngle, chordLen);
 }
 
+/** de Casteljau-subdivide the Hermite segment between adjacent nodes `pa`/`pb` at
+ *  parameter `t` ∈ (0, 1) — the geo half of an exact mid-segment Cut, `profile.subdivide`'s
+ *  positional twin. A cubic Hermite is a cubic bezier under the standard conversion
+ *  (`P1 = pa + va/3`, `P2 = pb − vb/3`, where `va`/`vb` are `outVec(pa, …)`/`inVec(pb, …)` —
+ *  the SAME per-edge tangent `sampleAt` resolves, so this reads the segment exactly as the
+ *  bake would), and de Casteljau's split control points ARE that bezier's own geometry,
+ *  re-parented rather than re-derived: the two resulting halves (pa→mid, mid→pb) trace
+ *  exactly the original segment's curve, divided at `t`. `outA` (`pa`'s own facing tangent)
+ *  and `inB` (`pb`'s) come back re-parented too — their old scale was proportioned to the
+ *  FULL segment, invalid once it splits — alongside the new midpoint's `inMid`/`outMid`.
+ *  Cutting at `t = 0` or `t = 1` is the caller's job to special-case (a node already sits
+ *  there); this always subdivides. */
+export function subdivide(
+    pa: Node,
+    pb: Node,
+    t: number,
+): {
+    x: number;
+    y: number;
+    outA: [number, number];
+    inMid: [number, number];
+    outMid: [number, number];
+    inB: [number, number];
+} {
+    const chordAngle = Math.atan2(pb.y - pa.y, pb.x - pa.x);
+    const chordLen = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+    const va = outVec(pa, chordAngle, chordLen);
+    const vb = inVec(pb, chordAngle, chordLen);
+
+    const p1x = pa.x + va[0] / 3;
+    const p1y = pa.y + va[1] / 3;
+    const p2x = pb.x - vb[0] / 3;
+    const p2y = pb.y - vb[1] / 3;
+
+    const lerp = (x0: number, x1: number) => x0 + (x1 - x0) * t;
+
+    // the standard cubic de Casteljau split at `t`: two rounds of control-point
+    // lerps (P0..P3 → Q1..Q3 → R1..R2), the third round landing on the curve point
+    // itself (M) — the left curve is [P0, Q1, R1, M], the right [M, R2, Q3, P3].
+    const q1x = lerp(pa.x, p1x);
+    const q1y = lerp(pa.y, p1y);
+    const q2x = lerp(p1x, p2x);
+    const q2y = lerp(p1y, p2y);
+    const q3x = lerp(p2x, pb.x);
+    const q3y = lerp(p2y, pb.y);
+    const r1x = lerp(q1x, q2x);
+    const r1y = lerp(q1y, q2y);
+    const r2x = lerp(q2x, q3x);
+    const r2y = lerp(q2y, q3y);
+    const mx = lerp(r1x, r2x);
+    const my = lerp(r1y, r2y);
+
+    return {
+        x: mx,
+        y: my,
+        outA: [3 * (q1x - pa.x), 3 * (q1y - pa.y)],
+        inMid: [3 * (mx - r1x), 3 * (my - r1y)],
+        outMid: [3 * (r2x - mx), 3 * (r2y - my)],
+        inB: [3 * (pb.x - q3x), 3 * (pb.y - q3y)],
+    };
+}
+
 /** the visual offset of a tangent handle from its node, segment-local — the space the UI
  *  draws the handle knob at and a handle drag inverts through. the out-handle sits at the
  *  stored out-vector (the forward departure velocity); the in-handle sits at the *negated*
