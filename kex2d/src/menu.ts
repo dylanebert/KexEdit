@@ -5,6 +5,8 @@
  * - `modify` — changes the subject that summoned the menu, or enters / acts in / leaves a mode
  *   scoped to it (Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock,
  *   Meters/Seconds). The residual class, honestly.
+ * - `structure` — changes the CHAIN, reaching past the subject to a neighbor (Cut makes a new
+ *   section, Join destroys the one beside it) — none today; lands with the structural ops.
  * - `lifecycle` — the subject ends at its creation state or gone (Reset, then Delete).
  *
  * A menu's rows sort by this order, then by frequency WITHIN a group (the old free-form
@@ -12,7 +14,7 @@
  * `danger` implies the terminal row of the whole menu. The grammar is machine-checked over every
  * builder across the full state matrix in `tests/menu.test.ts` — it is a gate, not a convention.
  */
-export const GROUPS = ["create", "modify", "lifecycle"] as const;
+export const GROUPS = ["create", "modify", "structure", "lifecycle"] as const;
 
 export type MenuGroup = (typeof GROUPS)[number];
 

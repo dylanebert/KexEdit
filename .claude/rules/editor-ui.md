@@ -383,13 +383,14 @@ a declared list of the walking fields, and an assert that the fork not needing t
 
 - Right-click context menus are the app's menu language; a summoned menu never covers its invoker;
   functional menus animate minimally.
-- **Rows sort by group, then by frequency within the group.** Three groups, canonical order, each
+- **Rows sort by group, then by frequency within the group.** Four groups, canonical order, each
   with a membership test that classifies a new row:
 
   | group | test | members today |
   |---|---|---|
   | `create` | the document gains an object | Add, the append flyout's Geo/Force |
   | `modify` | changes the subject that summoned the menu, or enters / acts in / leaves a mode scoped to it | Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock, Meters/Seconds |
+  | `structure` | changes the CHAIN — reaches past the subject to a neighbor | none yet — lands with Cut and Join |
   | `lifecycle` | the subject ends at its creation state or gone | Reset, then Delete |
 
   `modify` is the residual class, defined as such honestly. `danger` implies the terminal row of
@@ -397,15 +398,20 @@ a declared list of the walking fields, and an assert that the fork not needing t
   whole-menu rule it was a per-menu judgment call, unenforceable, and it is why node Delete led
   its menu while section Delete trailed.
 
-  The membership tests are written about the subject, which is enough for every row shipped today
-  because every row's object *is* its subject. The first op whose object is a neighbor breaks that:
-  `joinNext` modifies the subject and destroys the section beside it, so the written test files it
-  under `modify` while `split` files under `create`, and the pair that reads as one thought lands at
-  opposite ends of the menu. Resolve this when the structural editing tier scopes, not by widening
-  `lifecycle` (that still splits the pair) but by deciding whether a fourth `structure` group lands
-  between `modify` and `lifecycle`. Four groups were tried once and rejected, but that rejection
-  does not transfer: it was argued against splitting `mode` out of `modify`, which gave the four-row
-  section menu three separators. `structure` gives a six-row section menu two.
+  The membership tests are written about the subject, which is enough for every row whose object
+  *is* its subject. `joinNext` broke that: it modifies the subject and destroys the section beside
+  it, so under three groups the written test filed it under `modify` while `split` filed under
+  `create`, landing the pair that reads as one thought at opposite ends of the menu. **`structure`
+  closes the gap by changing what the membership test is about, not by widening `lifecycle`** (which
+  would still split the pair): a `structure` row's test is about the CHAIN — does it reach past the
+  subject to a neighbor — so Cut (the document gains a section, but by splitting one apart, not by
+  the plain `create` shape) and Join (destroys the neighbor beside the subject, not the subject
+  itself) both land there together. A fourth group was tried once before and rejected, but that
+  rejection doesn't transfer: it argued against splitting `mode` out of `modify` on a cost basis —
+  mode's rows are a small fraction of one menu, and splitting them out gave the four-row section
+  menu three separators for no new taxonomic class. `structure` is a real class the other three
+  can't express (a subject-only test can't see "destroys its neighbor"), and it costs the six-row
+  section menu (Convert, Pin, Cut, Join, Reset, Delete) only two separators.
 
   `GROUPS` in kex2d `src/menu.ts` is the source of truth for the group set and its canonical order;
   the table above is its prose mirror.

@@ -1472,6 +1472,68 @@ describe("the menu grammar — every builder, every state", () => {
             }
         }
     });
+
+    // ── the `structure` group (kex2d-structural-editing stage 3). GROUPS widens to four, ordered
+    // `create < modify < structure < lifecycle`, but every builder ships zero `structure` rows
+    // today (Cut/Join land in a later stage) — so the corpus above never drives the new slot. Per
+    // the declared-registry law (`editor-ui.md` Menus): "a registry that ships empty... makes the
+    // positive controls the whole deliverable." These are those controls, driven through `menuRows`
+    // itself on fabricated rows, and through `levels()` (in scope here) for the "nothing uses it
+    // yet" direction.
+    describe("the `structure` group — landed empty (kex2d-structural-editing stage 3)", () => {
+        const row = (label: string, group: MenuGroup): MenuItem => ({ label, group });
+
+        test("GROUPS widens to four, `structure` ordered between `modify` and `lifecycle`", () => {
+            expect(GROUPS).toEqual(["create", "modify", "structure", "lifecycle"]);
+        });
+
+        // direction 1 — no shipping builder emits a `structure` row yet. The corpus can't already
+        // satisfy the widened law by accident; the group is genuinely unused today.
+        test("no shipping builder emits a `structure` row today", () => {
+            const rows = levels().flatMap((m) => m.rows.filter((r) => r.group === "structure"));
+            expect(rows).toEqual([]);
+        });
+
+        // direction 2, positive control — slot-by-slot DERIVED divider positions (never a count) over a
+        // fabricated four-group menu: one divider at every group change, none elsewhere. This is also
+        // the canonical-order control, since `menuRows` walks GROUPS to place them.
+        test("positive control: `menuRows` derives one divider at every group change across all four groups", () => {
+            const items = [
+                row("Add", "create"),
+                row("Convert", "modify"),
+                row("Cut", "structure"),
+                row("Reset", "lifecycle"),
+            ];
+            expect(menuRows(items)).toEqual([
+                row("Add", "create"),
+                { separator: true },
+                row("Convert", "modify"),
+                { separator: true },
+                row("Cut", "structure"),
+                { separator: true },
+                row("Reset", "lifecycle"),
+            ]);
+        });
+
+        // the empty group's own deliverable: an unoccupied `structure` group sitting between two used
+        // ones derives no divider either side of it — slot-by-slot, not a count. Three rows, exactly
+        // two dividers (create|modify, modify|lifecycle), never three: a divider-COUNT-only check
+        // can't distinguish this from a renderer that emits a divider for the unused group anyway.
+        test("an unoccupied `structure` group derives no divider either side of it", () => {
+            const items = [
+                row("Add", "create"),
+                row("Convert", "modify"),
+                row("Reset", "lifecycle"),
+            ];
+            expect(menuRows(items)).toEqual([
+                row("Add", "create"),
+                { separator: true },
+                row("Convert", "modify"),
+                { separator: true },
+                row("Reset", "lifecycle"),
+            ]);
+        });
+    });
 });
 
 // ── the source census (kex2d-act-factory stage 2, the `Handlers` census's precedent): every home
