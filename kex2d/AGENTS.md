@@ -269,10 +269,12 @@ direction — menus law), its action fitted to the kind: `geoforce.ts` on geo, `
 force. It grays (never hides) where the kind fits but the invoke
 can't run (no live bake, a multi-set), behind one **modal** (title + an indeterminate spinner —
 in-flight narration was feel-cut; Cancel or Esc, every other input blocked, then a transient
-outcome readout), and Delete (`Del`). Split and join left the
-editor — reserved for invoked tools (the substrate `splitGeo`/`splitForce`/`joinNext` + tests stay
-in-tree as their reference). Boundary anchors draw as viewport diamonds + chart guides. One open chain — no branching, circuit closure, or mid-chain insertion. All ops undo via a
-byte-identical whole-track snapshot pair.
+outcome readout), and Delete (`Del`). **Cut** (`C`) and **Join** (`J`) are editor ops on the timeline
+clip strip's context menu: Cut's sole surface is the clip strip (no viewport equivalent), and its
+menu invocation snaps to a parked playhead within `SNAP_PX` (screen space), landing exactly on it
+without moving it. Join is set-lifted over a contiguous same-kind run. Boundary anchors draw as
+viewport diamonds + chart guides. One open chain — no branching, circuit closure, or mid-chain
+insertion. All ops undo via a byte-identical whole-track snapshot pair.
 
 **Pin mode** (endpoint-preserving force edits) — entered from a force section's context menu
 (`Pin`): the section's current exit `(x, y, θ)` is **stamped** as the pin, the author retunes

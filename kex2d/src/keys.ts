@@ -29,13 +29,16 @@ export type SectionKeyState = {
     /** the selected set is a valid Join run — `controls.sectionsJoinable` (a contiguous run of
      *  ≥2, one kind) — `J`'s own gate, mirroring `remove`'s `multi` fork. */
     joinable: boolean;
-    /** the playhead resolves to an interior cut point on THIS section — `track.sectionCutAt`'s
-     *  own non-null return, read off the playhead's own stored arclength (never a cursor
-     *  reading: `C`'s clip-strip home is playhead-exact, no threshold — `editor-ui.md`'s
-     *  transport-read clause). Single-subject only, mirroring `nodeCuttable`/`keyframeCuttable`
-     *  (a multi-set has no single subject to cut, the same reason it OMITS the menu row).
-     *  OPTIONAL, the same shape as its siblings — an existing caller driving only remove/join
-     *  keeps compiling. */
+    /** the playhead resolves to a cut position on THIS section — `track.sectionCutAt`'s own
+     *  non-null return, read off the playhead's own stored arclength (never a cursor reading:
+     *  `C`'s clip-strip home is playhead-exact, no threshold — `editor-ui.md`'s transport-read
+     *  clause). A resolvable position isn't always an interior one: the force branch can resolve
+     *  `s = length` when the playhead sits exactly on the section's exit boundary, which the op
+     *  itself still refuses as a safe no-op (`splitForce` declines, nothing is recorded) — so this
+     *  flag gates on resolvability, not on the op's own acceptance. Single-subject only, mirroring
+     *  `nodeCuttable`/`keyframeCuttable` (a multi-set has no single subject to cut, the same reason
+     *  it OMITS the menu row). OPTIONAL, the same shape as its siblings — an existing caller
+     *  driving only remove/join keeps compiling. */
     cuttable?: boolean;
 };
 
@@ -59,7 +62,7 @@ export function sectionKeyAct(
 }
 
 /** the node rungs' state (`controls.ts`'s `onKeyDown`, a node or node set selected) — covers both
- *  the multi node-set trim and the single chain-end extend/trim, plus (single) `K` Cut. A
+ *  the multi node-set trim and the single chain-end extend/trim, plus (single) `C` Cut. A
  *  discriminated union on `multi`: the multi rung never reads `endSelected`/`cuttable` (its own
  *  suffix-run validity is the act layer's guard, and Cut is single-subject — `nodeMenu` grays it
  *  unconditionally on a multi-set), so neither single-subject field exists on that variant, and
@@ -72,7 +75,7 @@ export type NodeKeyState =
 
 type NodeAct = Extract<keyof NodeMenuActions, "remove" | "removeSet" | "add" | "cut">;
 
-/** node Enter/Delete/`K`: `add` on the chain end (`BINDINGS.append`), `remove` to trim it
+/** node Enter/Delete/`C`: `add` on the chain end (`BINDINGS.append`), `remove` to trim it
  *  (`BINDINGS.remove`, single), `removeSet` to trim a selected suffix run (`BINDINGS.remove`,
  *  multi), `cut` on a cuttable interior node (`BINDINGS.cut`, single only — the landmark path,
  *  `editor-ui.md`'s shortcut asymmetry) — `null` off every binding, off the lockdown, or (single,
@@ -116,7 +119,7 @@ export type ForceKeyState = {
     cuttable?: boolean;
 };
 
-/** force-keyframe Delete/`Q`/`K`: `remove` (unconditional — `deleteSelectedForce` guards its own
+/** force-keyframe Delete/`Q`/`C`: `remove` (unconditional — `deleteSelectedForce` guards its own
  *  editability), `toggleLock` only in-mode over a non-empty set, `cut` on a cuttable active
  *  keyframe with EXACTLY one selected (single-subject — a set reads as no clean position, the same
  *  reason `keyframeMenu` grays Cut on a multi-set) AND no pin session open anywhere (`!s.pinning`

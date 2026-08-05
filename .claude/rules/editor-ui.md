@@ -399,7 +399,7 @@ a declared list of the walking fields, and an assert that the fork not needing t
   |---|---|---|
   | `create` | the document gains an object | Add, the append flyout's Geo/Force |
   | `modify` | changes the subject that summoned the menu, or enters / acts in / leaves a mode scoped to it | Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock, Meters/Seconds |
-  | `structure` | changes the CHAIN — reaches past the subject to a neighbor | Cut (Join lands next) |
+  | `structure` | changes the CHAIN — reaches past the subject to a neighbor | Cut, Join |
   | `lifecycle` | the subject ends at its creation state or gone | Reset, then Delete |
 
   `modify` is the residual class, defined as such honestly. `danger` implies the terminal row of
