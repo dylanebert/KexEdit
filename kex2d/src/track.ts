@@ -2370,6 +2370,15 @@ export function joinNext(ecs: State, sectionId: number): boolean {
         if (coincident && aTail !== undefined && bHead !== undefined) {
             const aTan = readForceTangent(aTail.eid);
             const bTan = readForceTangent(bHead.eid);
+            // the merged key becomes the LEADING keyframe of the tail's opening
+            // segment — `profile.segment`'s own rule, the same reasoning
+            // `splitForce`'s landmark branch already applies (the tail's opening
+            // keyframe carries the departing point's `out` half forward). So its
+            // `ease` must be bHead's, not aTail's: aTail's is inert pre-join (A's
+            // last key, held flat past it), and a merge that keeps it stale re-derives
+            // an undeclared `out` from the wrong easing tag whenever bHead carries no
+            // explicit handle.
+            Force.ease.set(aTail.eid, Force.ease.get(bHead.eid) as Easing);
             writeForceTangent(aTail.eid, { mode: TangentMode.Free, in: aTan?.in, out: bTan?.out });
             ecs.destroy(bHead.eid);
         }

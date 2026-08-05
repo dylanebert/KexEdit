@@ -49,7 +49,7 @@ import {
     trackDs,
 } from "../src/track";
 import { Domain } from "../src/section";
-import { custom, DEFAULT_G, type Easing, type ForcePoint, sampleForce } from "../src/profile";
+import { custom, DEFAULT_G, Easing, type ForcePoint, sampleForce } from "../src/profile";
 import { editTangent, subdivide, TangentMode } from "../src/spline";
 import { stitchNode } from "../src/tangents";
 
@@ -587,6 +587,40 @@ describe("join", () => {
             { s: 20, g: 3 },
             { s: 30, g: 2 },
         ]);
+    });
+
+    test("join carries bHead's ease onto the merged key, not aTail's inert one", () => {
+        // A and B agree in VALUE at the shared boundary (the dedupe fires) but carry
+        // DIFFERENT eases. aTail's ease is inert pre-join — it's A's last key, so the
+        // profile holds flat past it — while bHead's ease governs the tail's opening
+        // segment (`profile.segment`'s leading-keyframe rule). bHead carries no
+        // explicit tangent, so a wrong ease hides inside the derived-from-ease
+        // fallback rather than showing up as a stored vector mismatch.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20);
+        createForcePoint(state, a, 10, 1, Easing.Linear);
+        createForcePoint(state, a, 20, 3, Easing.Quintic); // aTail: ease inert pre-join
+        const b = createSection(state, 1, SectionKind.Force, 20);
+        createForcePoint(state, b, 0, 3, Easing.Linear); // bHead: agrees in g, governs the tail's opening segment
+        createForcePoint(state, b, 10, 2, Easing.Cubic);
+
+        // the pre-op observable: sample each section's OWN profile before the join,
+        // over the whole joined extent — never the op's own helper at one boundary
+        // (`kex2d-map.md` Test tiers).
+        const preA = forcePoints(state, a);
+        const preB = forcePoints(state, b);
+        const reference: number[] = [];
+        for (let s = 0; s <= 40; s += 2)
+            reference.push(s <= 20 ? sampleForce(preA, s) : sampleForce(preB, s - 20));
+
+        expect(joinNext(state, a)).toBe(true);
+
+        const after = forcePoints(state, a);
+        let i = 0;
+        for (let s = 0; s <= 40; s += 2, i++)
+            expect(sampleForce(after, s)).toBeCloseTo(reference[i], 5);
     });
 
     test("joining across a boundary with an explicit tangent keeps the baked world curve", () => {
