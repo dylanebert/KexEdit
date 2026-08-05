@@ -79,6 +79,18 @@ validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-
   red if the listener moves after `goto` or the injection is removed. Its verdict is inverted —
   a green run prints that flow with the failure mark, and skipping it still fails the run —
   don't "fix" either.
+- **A flow that asserts only counts pins no behavior.** Three Cut flows passed 35/35 while force
+  Cut and geo-graph Cut were both broken, because they asserted `sectionCount` and `undoDepth` —
+  which a wrong-but-plausible cut satisfies exactly. Assert what the op claims: that the split
+  landed at the position the menu itself resolved, that every keyframe's `(s, g)` survived. A count
+  is the flow-level twin of `kex2d-map.md`'s vacuous exactness pin.
+- **A stage that retires a behavior runs the display-gated suite in that stage.** The trigger is the
+  retirement, not the schedule. Skipped for two stages, this suite accumulated assertions pinning
+  the retired law — `force.pw.ts` still asserting the curve-span→leading-keyframe behavior that had
+  been deleted, three flows still expecting a `Cut K` hint after the rebind to `C`, all of it green
+  in `bun test` because none of it had met a browser since the last capture. A gate whose cost
+  defers it is a gate whose *fixtures* drift, and the drift always points backward at the law the
+  diff just retired.
 - **A multi-flow red is presumptively host-level.** Unrelated flows failing together in one
   full run (observed ~1/18; never reproduced in isolation or ×12 consecutive) is a run-level
   signature on the shared GPU bridge — re-run once before debugging any flow; if it recurs,

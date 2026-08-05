@@ -507,6 +507,19 @@ a declared list of the walking fields, and an assert that the fork not needing t
   the builder's state (`menus.SectionMenuState.cutSurface`), never an optional one defaulting to
   shown: every call site says which surface it is, and the menu-grammar oracle drives the flag
   both directions with a positive control per direction.
+- **A consent boundary is a derived membership check inside the op, never a per-surface guard.**
+  kex2d's structural ops broke three times on this: each fix added another hand-written guard at the
+  new call site, the next surface reintroduced the hole, and the doc comment claimed coverage
+  throughout. It stopped when the guard moved *into* `cutSection`, so every surface inherits it by
+  construction and the wrong predicate became unrepresentable in the state type. The
+  declared-registry law applied to a guard rather than a row set — the op owns the boundary, a
+  caller owns only its row's enablement — and the oracle drives both directions: every act reaching
+  the op is gated by construction, and every row's enablement agrees with its act's guard.
+- **An op's keyboard path and its menu row go live as one unit.** kex2d wired `J` into the live
+  keydown decider while `App.svelte` never supplied `canJoin`, so the shortcut worked against a
+  grayed row advertising that same key. Guard parity was never the defect; *availability* parity
+  was. The tell is a deferral whose stated reason is "that file is another stage's" rather than
+  "the value isn't computable yet."
 - **Reset returns its subject to the state a fresh author would get** — one click back up the
   layers, from anywhere, no confirm (byte-identical undo is the safety). Every context menu
   carries Reset as a top-level row (section, node, node 0), normal color — undo makes it

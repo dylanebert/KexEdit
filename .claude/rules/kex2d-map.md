@@ -350,7 +350,22 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   reads it — `evalForce` at the section's own step, clipped to the sample budget `chain` leaves it,
   so the fit's input is the displayed prefix),
   `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection`, `snapshotSection`/`restoreSection`
-  + whole-track `snapshotAll`/`restoreAll`. Initial speed: `trackV0State`/`setTrackV0` (`Track.v0`).
+  + whole-track `snapshotAll`/`restoreAll`. **Cut's position resolvers** sit one layer above the
+  splits: `splitGeoAt` (de Casteljau-subdivide segment `j` at bezier `t`, so the authored curve
+  survives exactly — the stated cost is that subdivision produces explicit tangents, so both new
+  boundary keys read `Custom` instead of their named easing), `geoCutAt` (a node order, or a
+  `(j, t)` landing, → `splitGeo`) and `sectionCutAt` (a native-axis `s` → `splitForce`).
+  **The cut/join boundary-keyframe law.** A cut duplicates the landmark it lands on into both
+  halves, so `joinNext`'s collapse is what makes the round trip lossless — and it dedupes on
+  position *and* value, never position alone: a section boundary is a documented snap landmark, so
+  two independently-authored neighbors routinely hold keys there, and collapsing is lossless exactly
+  when the two agree in `g`. Where they disagree the join is reconciling a real discontinuity and
+  both keys stay. The collapse **carries the departing key's ease** (`bHead`'s, not `aTail`'s):
+  `profile.segment` derives a segment's tangents from the *leading* keyframe's ease, and a collapse
+  changes which keyframe leads — `aTail`'s ease is inert pre-join (last key of its section, the
+  profile holds flat past it) while `bHead`'s governs the tail's opening segment. General form:
+  **a structural op that undoes another op must test for the shape, not the position** — position
+  alone is provenance guesswork, and snapping makes the false positive routine. Initial speed: `trackV0State`/`setTrackV0` (`Track.v0`).
   `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`, `DS_NOMINAL`. Bake liveness: `authoredHash`
   (the gate's reading computed from the LIVE authored state, not read off the last bake) +
   `bakeLive` (whether the current bake IS that state) — what anything treating `sectionInfo` as
@@ -763,7 +778,12 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `sectionOpsAllowed`/`sectionEditable`/`suffixRun`/`nodeMembers` moved off `controls.ts` (which
   imports `sectionOpsAllowed`/`sectionEditable` back for its own drag guards), while
   `forceSetEditable`/`lockCandidates` are new — lifted off `Timeline.svelte`'s local
-  re-derivations. The edge is one-way, `acts.ts` never imports `controls.ts`. Tests:
+  re-derivations. Structural ops enter through `cutSection(ecs, section, position)`, with
+  `CutPosition = { at, t? }` resolved by the CALLER (a menu's cursor read, a key's playhead read)
+  and the consent guard living **inside** the op, so every surface inherits it by construction;
+  `nodeCuttable`/`keyframeCuttable` are the row-enablement predicates that must agree with that
+  guard (`editor-ui.md` Menus, the consent-boundary law). The edge is one-way, `acts.ts` never
+  imports `controls.ts`. Tests:
   `tests/acts.test.ts` (every act driven on a real ECS track), plus `tests/menu.test.ts`'s
   naming→behavior bridge and the homes census.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
@@ -938,6 +958,17 @@ It pins style at the draw call, never geometry — a knob drawn at the wrong pos
 color is invisible to it, and that stays the capture harness's job. The convention it implies:
 draw systems export from `render.ts` so the harness can reach them (`AnchorDrawSystem`,
 `TangentDrawSystem` today). `tests/render.test.ts` is its first consumer.
+
+**A structural op's exactness pin samples the pre-op observable across the whole extent**, never
+the op's own helper at one boundary. Two mutants proved the boundary-only form vacuous on Cut: the
+op's inverse-facing half is the untested half, and the pre-op bake is the only independent truth.
+Same family as `coding.md`'s "a check that re-derives the rule it checks." The shape that holds:
+sample both halves' authored profile across the ORIGINAL extent and assert f32-identity to the
+pre-cut sample. On baked geometry the bound is the two discretizations' own disagreement, derived
+from `ds` and the extent (`forceProfile` takes `edges = round(length/ds)`, so the halves' σ grids
+restart at the cut), never an absolute number. The vacuity has a second face: a dedupe test that
+asserts the authored `{s, g}` list and never the sampled profile misses everything the payload
+doesn't carry, which is how the join's ease defect stayed green through every gate.
 
 **Two suites split by what they import, not by feature.** `tests/optimize.test.ts` is the KERNEL
 suite — it reaches `optimize.ts`/`profile`/`section` only. `tests/pin.test.ts` is the mode's
