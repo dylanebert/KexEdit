@@ -186,7 +186,7 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   ONE seam that pairs a force section's realized edge count with its per-edge step:
   `edges = max(1, round(length/step))`, `ds = length/edges`. So `edges·ds === length` to f32
   accumulation instead of leaving a rounding-residual gap between the authored extent and the
-  realized one (`kex2d-section-extent`, locked decision) — within the sample budget: a
+  realized one — within the sample budget: a
   `MAX_SAMPLES`-clipped chain, and `forceBake` (`track.ts:2523`, which clips deliberately),
   truncate the march short of `edges`, so the identity is conditional on nothing having clipped.
   The conformed `ds` is a fixed point of this same rounding, so re-resolving an already-conforming
@@ -202,7 +202,7 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   travel in pairs.** `resolveStep`'s `{edges, ds}` is one seam producing two values a caller must
   use TOGETHER; a caller that destructures `edges` alone and later hands `forceProfile`/
   `evalForce` some OTHER, unconformed `ds` has split the pair — `optimize.ts` shipped exactly this
-  latently (`kex2d-section-extent` stage 4) — and no per-file registry pin can see it, since the
+  latently, for a whole stage — and no per-file registry pin can see it, since the
   file still mentions `resolveStep` truthfully. The source pin below asserts at the invariant's
   own granularity (per call site: does THIS `forceProfile`/`evalForce` call consume a `ds` bound
   by `resolveStep` in the same module), not per-file presence. The structural fix — `forceProfile`
@@ -222,6 +222,15 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `playback.ts`/`fitlab.ts` (consume an already-conformed `ds` from upstream), `section.ts` (its
   `chain()` calls `evalForce` with a step traced through `resolveStep` upstream), and
   `spline.ts:432` (the geo variable-chord rule: a different domain, not a force pairing).
+  **The pin's visibility is LEXICAL and FILE-LOCAL** — a `ds` counts as conformed at a call site
+  only if a `resolveStep` binding is open there (its block path a prefix of the use's), across all
+  three conforming forms (destructure with alias, member access, whole pair), comments stripped
+  first because `polish.ts` carries a `forceProfile(...)` call inside a JSDoc `@example`. So what
+  it cannot see is **cross-function dataflow**: a function taking `ds` as a bare parameter whose
+  every caller conformed upstream. Those are a declared, name-keyed exemption, not something the
+  scan proves — `track.ts` `forceDense`, `pin.ts` `enterPin`, `polish.ts` `violence`. The
+  structural fix above (the callee requiring the resolved pair) is what closes that gap for good;
+  a smarter scanner isn't.
   Opinion-free: the substrate consumes dense F_n, this builds it from authored points.
   Unit-tested in `tests/profile.test.ts`.
 
@@ -417,7 +426,7 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   **What that carry buys is now an open question.** It used to be what closed the pinned exit:
   replaying at the nominal quantum missed by metres-scale fractions, because the nominal replay
   wasn't conformed. Under `resolveStep` both replays conform to the same exact step and land
-  **bit-identical** (`kex2d-section-extent` stage 2; `tests/track.test.ts` pins the identity, still
+  **bit-identical** (`tests/track.test.ts` pins the identity, still
   guarding the old `shortfall > 0.2` so it can't go vacuous). The step's remaining unique claim is
   recording the solve's *chosen edge count* against a `length` or nominal step that later drifts out
   from under it. Re-justify it on that basis or remove it; until then the carry is unexplained, not
@@ -996,6 +1005,11 @@ The ECS + substrate layers are covered device-free — `tests/section.test.ts` (
 `tests/setup.ts` enum-shim preload (`bunfig.toml`) lets them import the shallot barrel with no GPU
 device; the unit suite is canvas2D + device-free, with no real-GPU leg. The real-GPU leg is the
 capture harness alone (`.claude/rules/kex2d-harness.md`).
+
+**A test touching a structural or domain op re-resolves its sections by stable `order`, never by a
+held eid.** `convertDomain` lands through a whole-track snapshot restore, so an eid captured before
+it addresses nothing after; a test that held one read `Section.length` as 0 and looked like a physics
+bug. Same for split/join/delete, which renumber the chain.
 
 `render.ts` is covered the same device-free way through `tests/helpers/recording-ctx.ts` — a
 recording `CanvasRenderingContext2D` double that snapshots `strokeStyle`/`fillStyle`/`lineWidth`/

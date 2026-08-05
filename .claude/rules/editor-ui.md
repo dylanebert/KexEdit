@@ -346,6 +346,16 @@ cursor allowlist shipped exactly this: its glob covered `.svelte` only and misse
 green. The fix that generalizes: assert a raw, structure-free match count over all scanned text
 equals the parsed site count — an independent read that can't miss what the real parser misses.
 
+And the clause the force-pairing census earned: **key the matcher on the shape the invariant is
+about, never on a variable name.** A pin that required the substrings `len`/`length` and `ds`/`step`
+satisfied every clause of the law above — from source, recursive, both directions, a control per
+direction — and still passed 39/0 against a real `Math.round(length / quantum)` in production,
+because the spelling drifted one word. The law already warns that a scanner matching nothing passes
+forever; a test written *to* the law reproduced it anyway. Naming the observable instead (any
+`Math.(round|ceil|floor|trunc)` over a quotient) makes the census spelling-independent. Its sibling
+half — that a pin must also assert at the *granularity* of what it protects — generalizes past
+menus and lives in `coding.md`.
+
 **Enumerate a keyboard population from a decider layer, not by hand.** `MenulessBindings` is the
 law's one instance whose population is a *reachability* claim, and a hand-authored (binding → act)
 table doesn't enumerate it from source. The close is a **key-act seam**: a pure `keys.ts` that is
