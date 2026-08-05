@@ -56,6 +56,7 @@ import {
     sections,
     sectionSolvable,
     sectionSpans,
+    splitForce,
     seedTangent,
     setForceEase,
     setForcePoint,
@@ -1996,6 +1997,108 @@ describe("per-section step (Section.ds)", () => {
         const secEid = sectionAt(state, sec);
         if (secEid === null) throw new Error("section missing");
         expect(Section.ds.get(secEid)).toBe(0);
+    });
+});
+
+// `specs/kex2d-section-extent.md` stage 1 — red-first oracles for the extent-identity defect:
+// `profile.forceProfile` bakes `edges = round(length/ds)` and marches exactly that many
+// `ds`-sized steps, so the REALIZED extent (`sectionSpans`, a boundary keyframe's
+// `toGlobalU`) is `edges·ds` while the AUTHORED extent (`Section.length`) is `length` — the
+// two disagree by the rounding residual whenever `length` isn't a whole multiple of `ds`.
+// Expected RED until stage 2 makes the bake conform to the authored length.
+describe("section extent identity (kex2d-section-extent stage 1)", () => {
+    /** a one-force-section track at `(length, ds)` — its OWN step, never the nominal sentinel
+     *  (`ds = 0` would resolve to the track-nominal quantum, defeating the sweep). */
+    function extentTrack(
+        length: number,
+        ds: number,
+        points: readonly { s: number; g: number }[] = [],
+    ): { state: State; eid: number; sec: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, length, ds);
+        for (const p of points) createForcePoint(state, sec, p.s, p.g);
+        state.step(0);
+        return { state, eid, sec };
+    }
+
+    /** the f32-accumulation bound over `edges` edges totaling `extent` — DERIVED, never an
+     *  absolute number (`coding.md` "Tolerance discipline"). */
+    function accumTol(edges: number, extent: number): number {
+        return edges * 2 ** -24 * extent;
+    }
+
+    const dsList = [0.5, 0.25, 0.1, 0.05];
+    const lengths = [12.345, 23.7, 8.13, 40.07, 5.555, 100.001, 2.222, 61.61, 3.9, 17.017];
+
+    /** true when `length` happens to land exactly on `ds`'s grid — the sweep is about the
+     *  off-grid case, so a coincidental on-grid pair is skipped rather than diluting it. */
+    function onGrid(length: number, ds: number): boolean {
+        const edges = Math.max(1, Math.round(length / ds));
+        return Math.abs(length - edges * ds) < 1e-6;
+    }
+
+    test("a section's sectionSpans extent equals its authored length, off-grid lengths × ds", () => {
+        for (const ds of dsList) {
+            for (const length of lengths) {
+                if (onGrid(length, ds)) continue;
+                const edges = Math.max(1, Math.round(length / ds));
+                const { state, eid, sec } = extentTrack(length, ds);
+                const spans = sectionSpans(state, eid);
+                const sp = spans.find((x) => x.id === sec);
+                if (!sp) throw new Error("section missing from spans");
+                const tol = accumTol(edges, length);
+                expect(Math.abs(sp.len - length)).toBeLessThan(tol);
+            }
+        }
+    });
+
+    test("a boundary keyframe's toGlobalU equals the next section's entryU, off-grid cuts", () => {
+        for (const ds of dsList) {
+            for (const length of lengths) {
+                if (onGrid(length, ds)) continue;
+                const edges = Math.max(1, Math.round(length / ds));
+                const cut = length * 0.4137; // an off-grid interior split position
+                const { state, eid, sec } = extentTrack(length, ds, [
+                    { s: 0, g: 1 },
+                    { s: length, g: 1 },
+                ]);
+                const tail = splitForce(state, sec, cut);
+                if (tail === null) throw new Error("split refused");
+                state.step(0);
+                const spans = sectionSpans(state, eid);
+                const headU = toGlobalU(spans, sec, cut);
+                const tailEntryU = toGlobalU(spans, tail, 0);
+                if (headU === null || tailEntryU === null) throw new Error("section off the bake");
+                const tol = accumTol(edges, length);
+                expect(Math.abs(headU - tailEntryU)).toBeLessThan(tol);
+            }
+        }
+    });
+
+    test("the never-cut case: a section's own seed key at s = length shows the same gap", () => {
+        for (const ds of dsList) {
+            for (const length of lengths) {
+                if (onGrid(length, ds)) continue;
+                const edges = Math.max(1, Math.round(length / ds));
+                const { state, eid, sec } = extentTrack(length, ds, [
+                    { s: 0, g: 1 },
+                    { s: length, g: 1 }, // the section's own seed key at its authored end — no cut
+                ]);
+                const spans = sectionSpans(state, eid);
+                const sp = spans.find((x) => x.id === sec);
+                if (!sp) throw new Error("section missing from spans");
+                // the authored end (`toGlobalU` at s = length, exact affine over `entryU`) vs
+                // the section's own baked exit (`entryU + lenU`, the realized `edges·ds`) — the
+                // same disagreement as the cut case, with no cut anywhere in the picture.
+                const authoredEnd = toGlobalU(spans, sec, length);
+                if (authoredEnd === null) throw new Error("section off the bake");
+                const bakedExit = sp.entryU + sp.lenU;
+                const tol = accumTol(edges, length);
+                expect(Math.abs(authoredEnd - bakedExit)).toBeLessThan(tol);
+            }
+        }
     });
 });
 
