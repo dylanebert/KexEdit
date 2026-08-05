@@ -181,9 +181,27 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   cubic-bezier eval at the handle-resolution seam (`segment`: easing-tag-derived flat tangents via
   the influence table ?? explicit stored; `autoTangent`/`segmentSeed`/`segmentControls` shared
   with the UI), Blender-style x-monotonicity clamp, `sampleForce` (held endpoints, `DEFAULT_G`
-  empty) + `forceProfile` (dense per-edge F_n(σ), σ = i·ds, `edges = round(length/ds)`,
-  warm-started t-march). Opinion-free: the substrate consumes dense F_n, this builds it from
-  authored points. Unit-tested in `tests/profile.test.ts`.
+  empty) + `forceProfile` (dense per-edge F_n(σ), σ = i·ds, warm-started t-march). **The
+  authored `length` is truth and the bake conforms to it**: `resolveStep(length, step)` is the
+  ONE seam that pairs a force section's realized edge count with its per-edge step:
+  `edges = max(1, round(length/step))`, `ds = length/edges`. So `edges·ds === length` to f32
+  accumulation instead of leaving a rounding-residual gap between the authored extent and the
+  realized one (`kex2d-section-extent`, locked decision). The conformed `ds` is a fixed point of
+  this same rounding, so re-resolving an already-conforming step (a converted section's stored
+  `Section.ds`) is a no-op. `forceProfile` itself still takes a pre-resolved `ds` and computes
+  `edges = round(length/ds)` locally: a no-op once its caller has already conformed via
+  `resolveStep`, never a second, independent rounding. Every production pairing of a force
+  section's edge count with its step goes through `resolveStep` (`track.ts` `forceDense` /
+  `forcePayload` / `forceBake`, `pin.ts`, `optimize.ts` ×2, `polish.ts` `spine`). A recursive
+  source-tree walk in `tests/profile.test.ts` holds that population closed, asserted both
+  directions (a declared site missing from source, and a source site building its own
+  `(edges, ds)` pair outside `resolveStep` with no declaration), against an explicit exemption
+  table for `playback.ts`/`fitlab.ts` (consume an already-conformed `ds` from upstream),
+  `section.ts` (its `chain()` calls `evalForce` with a step traced through `resolveStep`
+  upstream), and `spline.ts:432` (the geo variable-chord rule: a different domain, not a force
+  pairing).
+  Opinion-free: the substrate consumes dense F_n, this builds it from authored points.
+  Unit-tested in `tests/profile.test.ts`.
 
 **Invoked conversion/optimization atoms (NOT on the live editor path):**
 
@@ -373,9 +391,15 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   bake leaves it describing a shape that is no longer on screen.
   **The per-section step** (`Section.ds`, resolved by `sectionStep`): a section bakes at its own
   step, `0` meaning the track-nominal `DS_NOMINAL`. Only an invoked solve writes one — a converted
-  section carries the solve's realized `length/edges` so its profile spans the section exactly, and
-  replaying it at the nominal quantum misses the pinned exit by metres-scale fractions (`refine.ts`;
-  pinned at the document layer in `tests/track.test.ts` against the frozen golden). It's authored
+  section carries the solve's realized `length/edges` so its profile spans the section exactly.
+  **What that carry buys is now an open question.** It used to be what closed the pinned exit:
+  replaying at the nominal quantum missed by metres-scale fractions, because the nominal replay
+  wasn't conformed. Under `resolveStep` both replays conform to the same exact step and land
+  **bit-identical** (`kex2d-section-extent` stage 2; `tests/track.test.ts` pins the identity, still
+  guarding the old `shortfall > 0.2` so it can't go vacuous). The step's remaining unique claim is
+  recording the solve's *chosen edge count* against a `length` or nominal step that later drifts out
+  from under it. Re-justify it on that basis or remove it; until then the carry is unexplained, not
+  load-bearing. It's authored
   input, so it's in `bakeHash` (written only when set, so the sentinel leaves an authored track's
   hash byte-identical) and in `snapshotSection`/`restoreSection`/`spawnSection`. Three op rules:
   **a convert resets it** (the destructive reset discards the payload the step belonged to), **a
@@ -965,8 +989,9 @@ op's inverse-facing half is the untested half, and the pre-op bake is the only i
 Same family as `coding.md`'s "a check that re-derives the rule it checks." The shape that holds:
 sample both halves' authored profile across the ORIGINAL extent and assert f32-identity to the
 pre-cut sample. On baked geometry the bound is the two discretizations' own disagreement, derived
-from `ds` and the extent (`forceProfile` takes `edges = round(length/ds)`, so the halves' σ grids
-restart at the cut), never an absolute number. The vacuity has a second face: a dedupe test that
+from `ds` and the extent (each half resolves its own `(edges, ds)` from its own length through
+`profile.resolveStep`, so the halves' σ grids restart at the cut on a step of their own), never an
+absolute number. The vacuity has a second face: a dedupe test that
 asserts the authored `{s, g}` list and never the sampled profile misses everything the payload
 doesn't carry, which is how the join's ease defect stayed green through every gate.
 

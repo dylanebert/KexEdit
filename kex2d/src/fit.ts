@@ -270,8 +270,11 @@ function step(
  * const f = fit(r.fN, r.ds, 0.05);
  * // load it as a force section: the resample lands on the UNIFORM σ = i·ds a force
  * // section integrates, a different frame from the fit's cumulative chords, so expect
- * // the shift — never compare `dense` against `r.fN` element-wise.
- * const dense = forceProfile(f.points, f.length, 0.5);
+ * // the shift — never compare `dense` against `r.fN` element-wise. A production caller
+ * // conforms its step through `resolveStep` before `forceProfile` ever sees it — never
+ * // the nominal step directly (`kex2d-section-extent`, Locked decision).
+ * const { ds } = resolveStep(f.length, 0.5);
+ * const dense = forceProfile(f.points, f.length, ds);
  */
 export function fit(fN: ArrayLike<number>, ds: ArrayLike<number>, tol: number): Fit {
     if (fN.length !== ds.length)

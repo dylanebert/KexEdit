@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
     DEFAULT_G,
@@ -530,5 +532,130 @@ describe("resolveStep — the ONE seam pairing a force section's edge count with
         const { edges, ds } = resolveStep(24.0, 0.5);
         expect(edges).toBe(48);
         expect(ds).toBe(0.5);
+    });
+});
+
+// `kex2d-section-extent` stage 3 — the source pin: no production module builds a force
+// section's own `(edges, ds)` pair outside the `resolveStep` seam above. Declared-registry
+// law (`editor-ui.md` Menus): enumerate the population FROM SOURCE, walk the tree
+// RECURSIVELY, assert BOTH directions (an undeclared site fails; an orphan declaration
+// fails), and carry a POSITIVE CONTROL per direction that exercises the SCANNER, not just
+// the set comparison (the cursor-allowlist lesson, same file).
+describe("force-payload pairing population is closed (kex2d-section-extent stage 3)", () => {
+    const srcRoot = join(import.meta.dir, "..", "src");
+    const src = (file: string): string => readFileSync(join(srcRoot, file), "utf8");
+
+    // recursive — a flat `readdirSync` sees only the top level, so a future nested module
+    // would be invisible to the census below while it stayed green (menu.test.ts's own clause).
+    function collectSrc(dir: string, prefix = ""): string[] {
+        return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) return collectSrc(join(dir, entry.name), rel);
+            return entry.name.endsWith(".ts") ? [rel] : [];
+        });
+    }
+    const srcFiles = collectSrc(srcRoot);
+
+    // ── direction A: no OTHER module hand-rolls the ROUNDED-QUOTIENT edge-count shape
+    // `resolveStep` owns. Named on the SHAPE, not on variable names: a variable-name-keyed
+    // regex (`len`/`length` × `ds`/`step`) stayed green when a hand-rolled pairing was spelled
+    // `Math.round(length / quantum)` — this codebase already renames this way (`polish.ts:354`'s
+    // `const h = sp.ds;`). The invariant is "nobody derives an edge count by rounding a quotient
+    // except `resolveStep`", so the census is name-free: any `Math.(round|ceil|floor|trunc)(...)`
+    // whose argument contains a bare `/` (no nested call breaking the single-level scan — a
+    // structure-free match, editor-ui.md's cursor-allowlist lesson).
+    const RoundShape = /Math\.(?:round|ceil|floor|trunc)\([^()]*\/[^()]*\)/;
+    // The whole population, censused against the current tree: 13 sites across 7 files.
+    // `profile.ts` carries the seam itself (351) and `forceProfile`'s internal re-derivation
+    // (369) — a NO-OP once its caller has already conformed (the fixed-point property; see the
+    // module header), never a second independent rounding — so it's excluded from the
+    // outside-profile.ts check below, not the census.
+    const RoundShapeSites: Record<string, string> = {
+        "section.ts":
+            "the σ-index lookup `fN[round(σ/ds)]` (the Distance closure) — an index, not a pairing",
+        "spline.ts": "the geo variable-chord rule — a different domain, not a force pairing",
+        "magnet.ts": "snap/grid quantizers — not edge counts",
+        "timeline.ts": "snap/grid quantizers — not edge counts",
+        "fvdlab.ts": "lab sample count, not production",
+        "collocatelab.ts": "lab sample count, not production",
+    };
+    test("no module outside profile.ts hand-rolls a rounded-quotient edge-count shape", () => {
+        const hits = srcFiles.filter((f) => RoundShape.test(src(f)));
+        expect(hits.sort()).toEqual(["profile.ts", ...Object.keys(RoundShapeSites)].sort());
+        for (const f of hits) if (f !== "profile.ts") expect(RoundShapeSites[f]).toBeDefined();
+    });
+    // positive control: an independent read over the SAME enumeration path (`collectSrc` +
+    // `readFileSync`, not a synthetic string handed to `.test()` in isolation) — a raw,
+    // structure-free match count across every scanned file's raw content must equal the
+    // declared per-file count, closing editor-ui.md's declared-registry law's own lesson (a
+    // control that never routes through the real scanner can't catch the scanner going blind).
+    const RoundShapeCounts: Record<string, number> = {
+        "profile.ts": 2,
+        "section.ts": 1,
+        "spline.ts": 1,
+        "magnet.ts": 3,
+        "timeline.ts": 4,
+        "fvdlab.ts": 1,
+        "collocatelab.ts": 1,
+    };
+    test("positive control: the raw match count over all scanned source equals the declared site count", () => {
+        const global = new RegExp(RoundShape.source, "g");
+        const rawTotal = srcFiles.reduce((sum, f) => sum + (src(f).match(global)?.length ?? 0), 0);
+        const declaredTotal = Object.values(RoundShapeCounts).reduce((a, b) => a + b, 0);
+        expect(declaredTotal).toBe(13);
+        expect(rawTotal).toBe(declaredTotal);
+    });
+
+    // ── direction B: every module that pairs a step with `forceProfile`/`evalForce` (the
+    // seam's two consumers) is seamed through `resolveStep` itself, or is a declared exemption
+    // consuming an already-conformed `ds` from upstream. Only `profile.ts` (defines both
+    // `resolveStep` and `forceProfile`) is excluded by construction, as the seam's own home — a
+    // blanket "definition site" exclusion for `section.ts` too was unsound: `section.ts`'s own
+    // `chain()` calls `evalForce(entry, sec.fN, sec.ds, sec.domain)`, a genuine second consumer,
+    // not part of `evalForce`'s own definition. It's declared below with its conformance trace
+    // instead of swept under the blanket.
+    const Seamed = ["track.ts", "pin.ts", "optimize.ts", "polish.ts"];
+    const PairingExempt: Record<string, string> = {
+        "playback.ts": "consumes an already-conformed `ds` off a landed solve's own answer",
+        "fitlab.ts": "consumes an already-conformed `ds` off a landed solve's own answer",
+        "fit.ts":
+            "a JSDoc @example only, no runtime call — fit.ts never touches a section's baking step",
+        "section.ts":
+            "chain()'s evalForce call consumes sec.ds, which traces through track.ts's forcePayload/forceBake to resolveStep — a conformed step, not a second independent pairing",
+    };
+    test("every caller of forceProfile/evalForce is seamed through resolveStep, or a declared exemption", () => {
+        const callers = srcFiles.filter(
+            (f) =>
+                f !== "profile.ts" &&
+                (src(f).includes("forceProfile(") || src(f).includes("evalForce(")),
+        );
+        expect(callers.sort()).toEqual([...Seamed, ...Object.keys(PairingExempt)].sort());
+        for (const f of Seamed) expect(src(f).includes("resolveStep(")).toBe(true);
+    });
+    // F4: aliased-import evasion. A raw substring scan for `forceProfile(`/`evalForce(` is
+    // blind to `import { forceProfile as fp } from "./profile"` followed by `fp(...)`, or a
+    // bare-reference hold (`const f = forceProfile; f(...)`). No file does this today; the check
+    // closes the aliased-import half cheaply — a textual scan of import statements only, no AST.
+    function hasAliasedImport(text: string): boolean {
+        return text
+            .split("\n")
+            .filter((line) => line.trimStart().startsWith("import"))
+            .some((line) => /\b(?:forceProfile|evalForce)\s+as\s+\w+/.test(line));
+    }
+    test("no import aliases forceProfile or evalForce (closes the aliased-import evasion)", () => {
+        const aliased = srcFiles.filter((f) => hasAliasedImport(src(f)));
+        expect(aliased).toEqual([]);
+    });
+    test("positive control: the alias detector catches an aliased import", () => {
+        expect(hasAliasedImport('import { forceProfile as fp } from "./profile";')).toBe(true);
+        expect(hasAliasedImport('import { evalForce as ef } from "./section";')).toBe(true);
+        expect(hasAliasedImport('import { forceProfile } from "./profile";')).toBe(false);
+    });
+    test("positive control: the walk reaches the declared population", () => {
+        for (const f of [...Seamed, ...Object.keys(PairingExempt), "profile.ts", "spline.ts"])
+            expect(srcFiles).toContain(f);
+        // a floor, not the exact count: the walk must be reading the whole module tree, not one
+        // lucky directory entry.
+        expect(srcFiles.length).toBeGreaterThan(30);
     });
 });

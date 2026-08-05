@@ -29,9 +29,10 @@ export interface Bake {
 /** the bake resampled onto the UNIFORM arclength grid a force section integrates on —
  *  the polish's tracking target and its hard exit pin. */
 export interface Spine {
-    /** edge count of the uniform grid, `round(length/dsNominal)`. */
+    /** edge count of the uniform grid, from `profile.resolveStep` — the one seam pairing a
+     *  force section's edge count with its step. */
     edges: number;
-    /** the realized edge step `length/edges` (m). */
+    /** the realized edge step `length/edges` (m), exact by construction (`resolveStep`). */
     ds: number;
     /** the bake's total arclength (m) — the force section's extent. */
     length: number;
@@ -119,7 +120,7 @@ export interface PolishOpts {
     /** Fixed-s warm start. Free-family points carry every explicit side; flat-family
      *  points carry no explicit handles or easing tag. */
     points: readonly ForcePoint[];
-    /** nominal edge step (m); the realized step is `length/round(length/ds)`. */
+    /** nominal edge step (m); the realized step is `profile.resolveStep(length, ds).ds`. */
     ds: number;
     /** feasibility tolerance, position-equivalent m (default `TOL_FEAS`). */
     tol?: number;

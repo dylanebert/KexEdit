@@ -152,7 +152,8 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
   extent-trim (`track.setStickyLen`; a solve never touches it). Editable via the **force clip's
   right edge** (`ew-resize`, `setSectionLength`, floored at `minForceExtent`, one undo entry via
   `history.beginLength`). Shortening below a point's s just stops sampling there (non-destructive —
-  re-lengthening restores it).
+  re-lengthening restores it). **The bake conforms to the authored length exactly, via
+  `profile.resolveStep`** (the resolver's math lives in `kex2d-map.md`'s `profile.ts` entry).
 
 ## Authoring API — the substrate is the agent surface
 
