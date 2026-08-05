@@ -85,6 +85,7 @@ import {
 import {
     forceSetEditable,
     keyframeActs,
+    keyframeCuttable,
     lockCandidates,
     sectionEditable,
     sectionOpsAllowed,
@@ -110,6 +111,7 @@ import {
     Handle,
     minForceExtent,
     SectionKind,
+    sectionCutAt,
     sectionForces,
     sectionHandles,
     sectionInfo,
@@ -1419,6 +1421,9 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     const setOk = forceSetEditable(ecs);
     const pt = forcePts.find((p) => p.id === id);
     const activeOk = pt !== undefined && sectionEditable(editor.pinning, pt.section);
+    // Cut's OWN consent-boundary gate — stricter than `activeOk` above (which is `true` inside a
+    // pin session on the active keyframe's OWN section, exactly the case Cut must still bar).
+    const opsAllowed = sectionOpsAllowed(editor.pinning);
     // the Lock/Unlock row's member set — resolved by `acts.lockCandidates`, the same read the
     // toggle itself acts on: the label and the act are one row wearing two names (`editor-ui.md`'s
     // toggle-labeling law), so they must not derive the set twice.
@@ -1433,6 +1438,7 @@ const fmenuItems = $derived.by((): MenuItem[] => {
         {
             setOk,
             activeOk,
+            opsAllowed,
             lock,
             multi: multiForce,
             terminal: fmenuTerminal,
@@ -1453,6 +1459,11 @@ const fmenuItems = $derived.by((): MenuItem[] => {
             get customGlyph() {
                 return customGlyph(id);
             },
+            // the landmark Cut's own interior bound (`acts.keyframeCuttable`) — no cursor lens
+            // needed, unlike the section menu's free-position `canCut` (the keyframe under the
+            // menu already names the exact cut point). `keyframeMenu`'s own `opsAllowed` folds in
+            // the lockdown separately, so this stays the bare interior predicate.
+            canCut: pt !== undefined && keyframeCuttable(pt.s, pt.len),
         },
         {
             // the chrome keys first, the factory spread LAST (`editor-ui.md` Menus): a re-forked
@@ -1609,10 +1620,18 @@ function selectClip(e: PointerEvent, c: Clip): void {
     selectSection(c.id, e.shiftKey ? "toggle" : "replace");
 }
 // right-click a clip → the section context menu (Convert / Delete) at the cursor.
+// Cut's free-position resolution off a clip right-click — the chart's own x-axis IS the
+// native domain coordinate by construction (`Timeline`'s whole point, `editor-ui.md`), so `u`
+// is a direct pixel read; `d` (the geo-side arc reading `track.sectionCutAt` wants) projects
+// through the SAME `dOf`/`uOf` seam the curve and every arclength-authored subject on this
+// chart already go through — `track.geoCutAt` never sees a raw pixel.
 function clipMenu(e: MouseEvent, c: Clip): void {
     e.preventDefault();
     e.stopPropagation();
-    openContext(e.clientX, e.clientY, c.id);
+    const rect = canvas.getBoundingClientRect();
+    const u = uAtPx(e.clientX - rect.left);
+    const cut = sectionCutAt(ecs, c.id, spans, dOf(u), u);
+    openContext(e.clientX, e.clientY, c.id, cut);
 }
 
 // ── the append tail: a `+` after the last clip opens a two-choice geo/force flyout —
@@ -2601,9 +2620,16 @@ onMount(() => {
                 else if (editor.forceEdit !== null) exitForceEdit();
                 else selectForce(null);
             } else {
+                // Cut's own landmark guard — the interior bound (`keyframeCuttable`, no cursor
+                // lens needed); the consent-boundary check is `pinning` itself (`!s.pinning` inside
+                // `forceKeyAct`, `acts.sectionOpsAllowed`'s own shape) — the same field the lock
+                // toggle already reads, not a second `sectionEditable` reading (the stage-6 review's
+                // finding: that field reads true on the pinning session's own keyframe).
+                const activePt = forcePts.find((p) => p.id === editor.force);
                 const act = forceKeyAct(e.key, {
                     pinning: editor.pinning !== null,
                     size: editor.forces.ids.size,
+                    cuttable: activePt !== undefined && keyframeCuttable(activePt.s, activePt.len),
                 });
                 if (act !== null) {
                     e.preventDefault();

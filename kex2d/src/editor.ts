@@ -105,8 +105,18 @@ interface EditorState {
     start: boolean;
     /** the section right-click menu (Convert / Delete): screen position + target
      *  section id, or null when closed. shared so both the clip strip and the viewport
-     *  span open the same menu, rendered once at the app root. */
-    context: { x: number; y: number; section: number } | null;
+     *  span open the same menu, rendered once at the app root. `cut` is the free-position
+     *  Cut's own resolved landing point (`track.sectionCutAt`, run once at open time off the
+     *  click that summoned this menu — the cursor doesn't move while the menu is open, so
+     *  there's nothing to re-resolve): a geo section's segment + parameter, or a force
+     *  section's native local `s`, or null when the click didn't resolve one (no live bake, a
+     *  stale span). */
+    context: {
+        x: number;
+        y: number;
+        section: number;
+        cut: { at: number; t?: number } | null;
+    } | null;
     /** the node context menu (`Handles` toggle + a `Tangents ▸` submenu): screen position +
      *  the target node eid, or null when closed. opened by right-click on any pickable node
      *  (any mode) — the same shared menu language as `context`, rendered once at the app root. */
@@ -947,11 +957,18 @@ export function selectStart(on: boolean): void {
  *  member of a multi-set keeps the set and promotes the target to active (the bulk rows — Delete,
  *  Convert — act on the whole set; single-subject rows, like Convert's named destination, read the
  *  active); a right-click outside the set replace-selects just it (today's single-select behavior).
- *  mirrors `openNodeMenu`/`openForceMenu`. */
-export function openContext(x: number, y: number, section: number): void {
+ *  mirrors `openNodeMenu`/`openForceMenu`. `cut` is the free-position Cut's own resolved landing
+ *  point (`track.sectionCutAt`) — optional, defaulting to null (no resolvable position) so a
+ *  caller that never resolves one still compiles. */
+export function openContext(
+    x: number,
+    y: number,
+    section: number,
+    cut: { at: number; t?: number } | null = null,
+): void {
     if (editor.sections.ids.has(section)) editor.sections.active = section;
     else selectSection(section);
-    editor.context = { x, y, section };
+    editor.context = { x, y, section, cut };
 }
 
 /** close the section context menu. */

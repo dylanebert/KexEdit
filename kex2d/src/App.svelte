@@ -1,7 +1,15 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
-import { nodeActs, nodeMembers, sectionActs, sectionOpsAllowed, suffixRun } from "./acts";
+import {
+    keyframeCuttable,
+    nodeActs,
+    nodeCuttable,
+    nodeMembers,
+    sectionActs,
+    sectionOpsAllowed,
+    suffixRun,
+} from "./acts";
 import {
     attachControls,
     manipKnobs,
@@ -55,6 +63,7 @@ import {
     handleTangent,
     lastHandle,
     samples,
+    Section,
     SectionKind,
     sectionAt,
     sectionForces,
@@ -701,6 +710,11 @@ const nodeItems = $derived.by((): MenuItem[] => {
             get suffixOk() {
                 return nodeSuffixOk;
             },
+            // the landmark Cut's own interior bound (`acts.nodeCuttable`) — no cursor lens
+            // needed, unlike the section menu's free-position `canCut` (the object under the
+            // menu already names the exact cut point). `nodeMenu`'s own `s.ok` folds in
+            // `sectionOpsAllowed`, so this stays the bare interior predicate.
+            canCut: nodeCuttable(Handle.order.get(eid), sectionHandles(ecs, Handle.section.get(eid)).length),
         },
         nodeActs(ecs, eid),
     );
@@ -740,7 +754,12 @@ onMount(() => {
 // DERIVES from its target section still existing, so any death path — Del, undo, a programmatic
 // edit — dismisses it by derivation, no per-path close call. the effect below clears the stale
 // target id once the subject is gone, so an undo that restores the same id can't resurrect it.
-const ctx = $derived.by((): { x: number; y: number; section: number } | null => {
+const ctx = $derived.by((): {
+    x: number;
+    y: number;
+    section: number;
+    cut: { at: number; t?: number } | null;
+} | null => {
     void tick;
     const c = editor.context;
     if (c === null || sectionAt(ecs, c.section) === null) return null;
@@ -755,6 +774,23 @@ const ctxKind = $derived.by((): SectionKind | null => {
     void tick;
     if (ctx === null) return null;
     return sections(ecs).find((s) => s.id === ctx.section)?.kind ?? null;
+});
+// Cut's own enablement — the resolved cursor position (`ctx.cut`, `controls.pickCut`/
+// `Timeline.svelte`'s clip-menu twin, both landing through `track.sectionCutAt`) is an interior
+// point AND `sectionOpsAllowed`. A geo position's interior-ness is already fully decided by
+// `track.geoCutAt`'s own null-ness (it refuses node 0 / the chain end); a force position still
+// needs the landmark's own interior bound (`acts.keyframeCuttable`) since `sectionCutAt` hands
+// back the raw `toLocalU` reading, entry/exit included, same shape as the node/keyframe menus'
+// own `canCut` fields reusing the identical predicate.
+const canCut = $derived.by((): boolean => {
+    void tick;
+    if (ctx === null || ctx.cut === null) return false;
+    if (!sectionOpsAllowed(editor.pinning)) return false;
+    if (ctxKind === SectionKind.Force) {
+        const secEid = sectionAt(ecs, ctx.section);
+        return secEid !== null && keyframeCuttable(ctx.cut.at, Section.length.get(secEid));
+    }
+    return true; // geo: `ctx.cut` already came back null for a non-interior point
 });
 // whether the section selection is a multi-set — a right-click keeps the set (`openContext`
 // promotes the target to active), so Delete acts on the whole set. single-select is the
@@ -880,6 +916,9 @@ const ctxItems = $derived.by((): MenuItem[] => {
             get canJoin() {
                 return canJoin;
             },
+            get canCut() {
+                return canCut;
+            },
         },
         {
             // the chrome keys first, the factory spread LAST: a sibling key re-forked here is then
@@ -889,7 +928,7 @@ const ctxItems = $derived.by((): MenuItem[] => {
             solveShape: ctxSolveShape,
             pinSolve: ctxPinSolve,
             pinEnter: ctxPinEnter,
-            ...sectionActs(ecs, ctx.section),
+            ...sectionActs(ecs, ctx.section, ctx.cut),
         },
     );
 });

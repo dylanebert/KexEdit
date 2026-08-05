@@ -2025,6 +2025,102 @@ export function splitGeoAt(ecs: State, sectionId: number, j: number, t: number):
     return k === null ? null : splitGeo(ecs, sectionId, k);
 }
 
+/** the interior geo segment + de Casteljau parameter a section-local arclength `s` (from the
+ *  section entry) resolves to — the geo-side half of the free-position Cut's cursor resolution
+ *  (`editor-ui.md`'s toLocal/toLocalU lens locates the SECTION and the arc; `splitGeoAt`
+ *  addresses a segment index plus a curve parameter, never a raw arclength, so this is the
+ *  seam between the two). Walks the section's own nodes' baked arclength (`Handle.sample`
+ *  against the whole-track bake's own `out.ds`, never a chord re-derive) to bracket `s` between
+ *  two adjacent nodes, THEN walks the bracket's own sub-edges (the exact `sampleAt` topology —
+ *  uniformly spaced in the bezier parameter `t`, not in arclength) the same way, so the interior
+ *  fraction is the bake's own arclength-to-parameter inversion rather than a linear guess across
+ *  the whole bracket: a linear interpolation is exact only when the segment's speed is constant,
+ *  and a real bend's speed varies, so it can land the cut over a meter off the visual click point
+ *  on a sharp single-segment turn — the locked decision's "lands anywhere the author clicks and
+ *  IS exact there" means the parameter the click names, not a nearby one the sampling density
+ *  happens to agree with. `subdivideGeo` still performs an exact split at whatever `t` it's
+ *  handed; this is what makes the handed `t` the one the cursor actually pointed at.
+ *  null off a geo section, a <2-node chain, an unset bake, or a point that resolves to node 0
+ *  or the chain's last node (never an interior split point, `nodeCuttable`'s own bound). */
+export function geoCutAt(
+    ecs: State,
+    sectionId: number,
+    s: number,
+): { at: number; t: number } | null {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return null;
+    const trackEid = trackEntity(ecs);
+    const info = sectionInfo.get(sectionId);
+    const out = trackEid === null ? undefined : bakeOut.get(trackEid);
+    if (!out || !info) return null;
+    const handles = sectionHandles(ecs, sectionId);
+    const n = handles.length;
+    if (n < 2) return null;
+    const arcs: number[] = new Array(n);
+    let a = 0;
+    let prevSample = info.startSample;
+    for (let i = 0; i < n; i++) {
+        const sample = Handle.sample.get(handles[i]);
+        for (let k = prevSample; k < sample; k++) a += out.ds[k];
+        arcs[i] = a;
+        prevSample = sample;
+    }
+    let j = 0;
+    while (j < n - 2 && s > arcs[j + 1]) j++;
+    if (j === 0 && s <= arcs[0]) return null; // at or before node 0 — never a split point
+    if (j === n - 2 && s >= arcs[n - 1]) return null; // at or past the chain's last node
+
+    // invert arclength → bezier parameter within bracket [j, j+1] by walking its own sub-edges
+    // (`sampleAt` lands sub-edge `k` at `t = k/m`), rather than lerping across the whole bracket.
+    const p0 = Handle.sample.get(handles[j]);
+    const p1 = Handle.sample.get(handles[j + 1]);
+    const m = p1 - p0;
+    let t = 0.5;
+    if (m > 0) {
+        const target = s - arcs[j];
+        let cum = 0;
+        let k = 0;
+        while (k < m - 1 && cum + out.ds[p0 + k] < target) {
+            cum += out.ds[p0 + k];
+            k++;
+        }
+        const edge = out.ds[p0 + k];
+        const frac = edge > 0 ? Math.min(1, Math.max(0, (target - cum) / edge)) : 0;
+        t = Math.min(1, Math.max(0, (k + frac) / m));
+    }
+    return { at: j, t };
+}
+
+/** the free-position Cut's whole cursor resolution — a picked global arclength `d` and native
+ *  coordinate `u` (the caller's own seam already resolved both: the viewport picks a world
+ *  point, arc-length by construction; the timeline reads its chart axis, native by
+ *  construction) through `toLocal`/`toLocalU` into the section-local address `splitSection`
+ *  wants for `sectionId`'s own kind — a geo section's segment + parameter (`geoCutAt`, off the
+ *  arc reading) or a force section's native `s` (`toLocalU` alone, the force store's own axis,
+ *  no further conversion). null when the section can't be found or `d`/`u` don't land inside it
+ *  (a stale span table, a picked point off the current bake). The returned force position may
+ *  still be non-interior (`s` at 0 or the section's length) — the interior bound
+ *  (`acts.keyframeCuttable`) is the caller's own enablement predicate, same shape as
+ *  `geoCutAt`'s own interior guard above. */
+export function sectionCutAt(
+    ecs: State,
+    sectionId: number,
+    spans: SectionSpan[],
+    d: number,
+    u: number,
+): { at: number; t?: number } | null {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null) return null;
+    if (Section.kind.get(secEid) === SectionKind.Geo) {
+        const loc = toLocal(spans, d);
+        if (loc === null || loc.section !== sectionId) return null;
+        return geoCutAt(ecs, sectionId, loc.s);
+    }
+    const loc = toLocalU(spans, u);
+    if (loc === null || loc.section !== sectionId) return null;
+    return { at: loc.s };
+}
+
 /** split a force section at `s` (0 < s < length), in the track domain's unit
  *  (meters of arclength, or seconds of section-local time): the head keeps extent
  *  [0, s] and its points there; a new section takes extent [s, length] with the

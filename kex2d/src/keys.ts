@@ -88,27 +88,27 @@ export function nodeKeyAct(key: string, s: NodeKeyState): NodeAct | null {
 
 /** the force-keyframe rung's state (`Timeline.svelte`, a force selection). */
 export type ForceKeyState = {
-    /** a live pin session is open — `Q` (lock) only means something inside one. */
+    /** a live pin session is open ANYWHERE (`editor.pinning !== null`) — `Q` (lock) only means
+     *  something inside one, and it's ALSO Cut's own consent-boundary gate (`acts.sectionOpsAllowed`
+     *  is exactly `!pinning`): Cut is barred while any session is open, not just a session on some
+     *  OTHER section, so it reads this same field rather than the per-subject `sectionEditable` a
+     *  keyframe's own section membership would suggest — the stage-6 review's finding, where a
+     *  second, more lenient field fed Cut and let it fire (then silently no-op inside `cutSection`)
+     *  on the pinning session's own interior keyframe. One boolean, two readings that happen to
+     *  need the same value, not two fields that can drift apart. */
     pinning: boolean;
     /** the selected force set's size — `Q` needs at least one member. */
     size: number;
     /** the ACTIVE keyframe is a valid Cut point — `acts.keyframeCuttable(s, length)`. OPTIONAL
      *  (default not-cuttable) so an existing caller driving only remove/lock keeps compiling. */
     cuttable?: boolean;
-    /** the ACTIVE keyframe's own section is editable under the live lockdown
-     *  (`acts.sectionEditable`) — Cut's OWN gate, mirroring `nodeKeyAct`'s top-level `editable`.
-     *  `cuttable` is purely the interior-point predicate and knows nothing about a live pin
-     *  session elsewhere barring this section, so Cut needs both. `remove`/`toggleLock` don't
-     *  read this field — `remove` guards its own editability inside the act body (`keyframeActs`
-     *  doc), and `toggleLock`'s own act filters to the pinning section by construction. OPTIONAL
-     *  (default not-editable) so an existing caller driving only remove/lock keeps compiling. */
-    editable?: boolean;
 };
 
 /** force-keyframe Delete/`Q`/`K`: `remove` (unconditional — `deleteSelectedForce` guards its own
- *  editability), `toggleLock` only in-mode over a non-empty set, `cut` on a cuttable, EDITABLE
- *  active keyframe with EXACTLY one selected (single-subject — a set reads as no clean position,
- *  the same reason `keyframeMenu` grays Cut on a multi-set), `null` otherwise. Typed off
+ *  editability), `toggleLock` only in-mode over a non-empty set, `cut` on a cuttable active
+ *  keyframe with EXACTLY one selected (single-subject — a set reads as no clean position, the same
+ *  reason `keyframeMenu` grays Cut on a multi-set) AND no pin session open anywhere (`!s.pinning`
+ *  — `cutSection`'s own guard, `acts.sectionOpsAllowed`), `null` otherwise. Typed off
  *  `KeyframeMenuActions`' own keys, per `sectionKeyAct` above. */
 export function forceKeyAct(
     key: string,
@@ -116,8 +116,7 @@ export function forceKeyAct(
 ): Extract<keyof KeyframeMenuActions, "remove" | "toggleLock" | "cut"> | null {
     if (bound(BINDINGS.remove, key)) return "remove";
     if (bound(BINDINGS.lock, key) && s.pinning && s.size > 0) return "toggleLock";
-    if (bound(BINDINGS.cut, key) && s.size === 1 && s.cuttable === true && s.editable === true)
-        return "cut";
+    if (bound(BINDINGS.cut, key) && s.size === 1 && s.cuttable === true && !s.pinning) return "cut";
     return null;
 }
 

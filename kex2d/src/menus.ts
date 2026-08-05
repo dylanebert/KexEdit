@@ -378,6 +378,13 @@ export type KeyframeMenuState = {
      *  (single-subject, like Custom, but unlike Custom it needs exactly ONE clean position).
      *  OPTIONAL, same shape as `SectionMenuState.canCut`: not `true` by default. */
     canCut?: boolean;
+    /** no pin session is open ANYWHERE (`acts.sectionOpsAllowed`) — Cut's OWN gate, stricter than
+     *  `activeOk` (which only checks the active keyframe's OWN section, `sectionEditable`, and
+     *  reads `true` inside a session on that same section — exactly the case Cut must still bar,
+     *  since `cutSection` refuses on ANY open session). Cut reads this, never `activeOk` — the
+     *  stage-6 review's finding: reusing `activeOk` here let the row read enabled on the pinning
+     *  session's own interior keyframe while the act silently no-op'd underneath it. */
+    opsAllowed: boolean;
 };
 
 export type KeyframeMenuActions = {
@@ -473,16 +480,17 @@ export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): Menu
     // interior split point (Easing's own reason to omit its whole submenu); shown otherwise, but
     // GRAYED on a multi-set even when the active is non-terminal — unlike Custom (which stays
     // single-subject regardless of `multi`), Cut needs exactly ONE clean position and a set
-    // selection doesn't read as one. `activeOk` is the SAME lockdown gate Tangents ▸ and Custom
-    // above already carry — Cut acts on the active keyframe alone, so it owes its editability
-    // check too (the adversarial pass's finding: `canCut`'s own interior-point predicate says
-    // nothing about whether the section is editable right now).
+    // selection doesn't read as one. `opsAllowed`, NOT `activeOk`, is Cut's own consent-boundary
+    // check — Cut is barred while ANY pin session is open, on any section (the widened boundary),
+    // stricter than the per-subject `activeOk` Tangents ▸ and Custom above carry (a stage-6
+    // review finding: `activeOk` reads true on the pinning session's own keyframe, which Cut must
+    // still bar since `cutSection` refuses there too).
     if (!s.terminal) {
         items.push({
             label: "Cut",
             group: "structure",
             shortcut: BINDINGS.cut.hint,
-            enabled: s.canCut === true && !s.multi && s.activeOk,
+            enabled: s.canCut === true && !s.multi && s.opsAllowed,
             action: a.cut,
         });
     }

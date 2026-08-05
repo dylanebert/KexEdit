@@ -19,9 +19,11 @@ import {
     createTrack,
     deleteSection,
     EXTEND_DIST,
+    bakeOut,
     exitWorld,
     Force,
     forceTangent,
+    geoCutAt,
     Handle,
     handleAt,
     handleTangent,
@@ -30,11 +32,13 @@ import {
     reheadOnDrag,
     removeTrailingHandle,
     samples,
+    sectionCutAt,
     SectionKind,
     sectionForces,
     sectionHandles,
     sectionInfo,
     sections,
+    sectionSpans,
     seedTangent,
     setTangent,
     setTrackDomain,
@@ -46,7 +50,7 @@ import {
 } from "../src/track";
 import { Domain } from "../src/section";
 import { custom, DEFAULT_G, type Easing, type ForcePoint, sampleForce } from "../src/profile";
-import { editTangent, TangentMode } from "../src/spline";
+import { editTangent, subdivide, TangentMode } from "../src/spline";
 import { stitchNode } from "../src/tangents";
 
 /** a section's authored force keyframes as `profile.ts`'s `ForcePoint[]` — the exact
@@ -1106,6 +1110,282 @@ describe("splitGeoAt — geo cut at arbitrary t", () => {
                 after.some((q) => Math.abs(q.x - p.x) < 1e-3 && Math.abs(q.y - p.y) < 1e-3),
             ).toBe(true);
         }
+    });
+});
+
+// `geoCutAt`/`sectionCutAt` — the free-position Cut's cursor resolution (`track.ts`). Zero unit
+// coverage existed before this suite (kex2d-structural-editing stage 6 review): the capture
+// flows only assert `sectionCount`/`sectionKinds`/`undoDepth`, which a wrong-but-still-interior
+// resolution satisfies just as well as a correct one.
+describe("geoCutAt — the geo-side bracket walk + interior refusal", () => {
+    /** four Auto nodes with real curvature (3 segments) — `splitGeoAt`'s own fixture, so the
+     *  bracket boundaries are known-good from that suite. */
+    function fourNode(): { state: State; eid: number; a: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+            [60, 0],
+        ])
+            addNode(state, a, x, y);
+        state.step(0);
+        return { state, eid, a };
+    }
+
+    /** the node arclengths ground truth, independent of `geoCutAt`'s own walk: the baked
+     *  polyline's cumulative chord sum, indexed at each node's landing sample — the SAME per-edge
+     *  `out.ds` values `geoCutAt` reads, but read here through `worldSamples`, not `bakeOut`
+     *  directly, so a corrupted bracket-index arithmetic in `geoCutAt` can't also corrupt the
+     *  expectation (`coding.md`'s "a check that re-derives the rule it checks" — the two paths
+     *  share only the bake's OWN geometry, never `geoCutAt`'s bookkeeping). */
+    function nodeArcs(state: State, eid: number, a: number): number[] {
+        const pts = worldSamples(eid);
+        const arc = cumulativeArc(pts);
+        return sectionHandles(state, a).map((h) => arc[Handle.sample.get(h)]);
+    }
+
+    test("a point in the FIRST segment resolves to bracket 0", () => {
+        const { state, eid, a } = fourNode();
+        const arcs = nodeArcs(state, eid, a);
+        const mid = (arcs[0] + arcs[1]) / 2;
+        const r = geoCutAt(state, a, mid);
+        expect(r).not.toBeNull();
+        expect(r?.at).toBe(0);
+        expect(r?.t).toBeGreaterThan(0);
+        expect(r?.t).toBeLessThan(1);
+    });
+
+    test("a point in an INTERIOR segment resolves to its own bracket (the multi-segment walk)", () => {
+        const { state, eid, a } = fourNode();
+        const arcs = nodeArcs(state, eid, a);
+        const mid = (arcs[1] + arcs[2]) / 2;
+        const r = geoCutAt(state, a, mid);
+        expect(r).not.toBeNull();
+        expect(r?.at).toBe(1);
+    });
+
+    test("a point in the LAST segment resolves to the final bracket", () => {
+        const { state, eid, a } = fourNode();
+        const arcs = nodeArcs(state, eid, a);
+        const mid = (arcs[2] + arcs[3]) / 2;
+        const r = geoCutAt(state, a, mid);
+        expect(r).not.toBeNull();
+        expect(r?.at).toBe(2);
+    });
+
+    test("t increases monotonically with s within one bracket", () => {
+        const { state, eid, a } = fourNode();
+        const arcs = nodeArcs(state, eid, a);
+        const lo = arcs[1] + 0.05 * (arcs[2] - arcs[1]);
+        const hi = arcs[1] + 0.95 * (arcs[2] - arcs[1]);
+        const rLo = geoCutAt(state, a, lo);
+        const rHi = geoCutAt(state, a, hi);
+        expect(rLo?.at).toBe(1);
+        expect(rHi?.at).toBe(1);
+        expect(rHi?.t ?? 0).toBeGreaterThan(rLo?.t ?? 1);
+    });
+
+    // the two refusal boundaries `nodeCuttable`'s own interior bound owes (`editor-ui.md`'s
+    // grays-never-hides law reads this same predicate at the row): a resolution AT or before node
+    // 0, and AT or past the chain's last node, are both never a split point.
+    test("resolves to node 0 (at or before its arclength) refuses — never a split point", () => {
+        const { state, a } = fourNode();
+        expect(geoCutAt(state, a, 0)).toBeNull();
+        expect(geoCutAt(state, a, -5)).toBeNull();
+    });
+
+    test("resolves to the chain's last node (at or past its arclength) refuses", () => {
+        const { state, eid, a } = fourNode();
+        const arcs = nodeArcs(state, eid, a);
+        const total = arcs[arcs.length - 1];
+        expect(geoCutAt(state, a, total)).toBeNull();
+        expect(geoCutAt(state, a, total + 5)).toBeNull();
+    });
+
+    test("null off a force section, an unset bake, or a <2-node chain", () => {
+        const geoOnly = fourNode();
+        const b = createSection(geoOnly.state, 1, SectionKind.Force, 40);
+        expect(geoCutAt(geoOnly.state, b, 10)).toBeNull(); // wrong kind
+
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const empty = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, empty, 0, 0); // one node only — never bakes
+        state.step(0);
+        expect(geoCutAt(state, empty, 5)).toBeNull(); // <2-node chain
+
+        const noBakeState = new State();
+        const noBakeEid = createTrack(noBakeState);
+        const noBakeSec = createSection(noBakeState, 0, SectionKind.Geo, 0);
+        addNode(noBakeState, noBakeSec, 0, 0);
+        addNode(noBakeState, noBakeSec, EXTEND_DIST, 0);
+        void noBakeEid;
+        expect(geoCutAt(noBakeState, noBakeSec, 5)).toBeNull(); // no BakeSystem — unset bake
+    });
+
+    // the click-landing exactness pin (kex2d-structural-editing stage 6 review): the returned `t`
+    // must reproduce the point the author actually clicked, not a nearby one. `t` is resolved by
+    // walking the bake's own sub-edge arclength table (`out.ds` between consecutive SAMPLES, the
+    // exact discretization `sampleAt` used to draw the curve), never a linear guess across the
+    // whole node-to-node bracket — a linear guess is exact only at constant curve speed, and a
+    // real bend's speed varies with the local tangent length. Oracle shape: pick a point EXACTLY
+    // at a baked sample (the pixel the author visually clicked, since the render IS this
+    // polyline), resolve it through `geoCutAt`, then feed the returned `(at, t)` to `subdivide` —
+    // an independently-tested function this pin doesn't touch — and compare ITS landing to the
+    // true clicked point. That closes the loop end to end without re-deriving `geoCutAt`'s own
+    // bracket arithmetic (`coding.md`'s "a check that re-derives the rule it checks").
+    test("the resolved t lands `subdivide` back at the exact point the author clicked, on a high-curvature single segment", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 10, 0);
+        state.step(0);
+        const handles = sectionHandles(state, a);
+        // explicit tangents pointing sharply apart — a single segment with real bend, the class
+        // of curve the linear guess gets furthest wrong (measured below: the app's documented
+        // curvature range, not a contrived extreme).
+        setTangent(state, a, 0, { mode: TangentMode.Free, inX: 0, inY: 0, outX: 5, outY: 8 });
+        setTangent(state, a, 1, { mode: TangentMode.Free, inX: -8, inY: 5, outX: 0, outY: 0 });
+        state.step(0);
+
+        const out = bakeOut.get(eid);
+        const s = samples.get(eid);
+        if (!out || !s) throw new Error("no bake");
+        const count = Track.count.get(eid);
+        const mid = Math.floor(count / 2);
+        let sTrue = 0;
+        for (let i = 0; i < mid; i++) sTrue += out.ds[i];
+        const trueX = s.posX[mid];
+        const trueY = s.posY[mid];
+
+        const r = geoCutAt(state, a, sTrue);
+        expect(r).not.toBeNull();
+        if (r === null) return;
+
+        const ta = handleTangent(state, a, 0);
+        const tb = handleTangent(state, a, 1);
+        const pa = {
+            x: Handle.pos.x.get(handles[0]),
+            y: Handle.pos.y.get(handles[0]),
+            theta: Handle.theta.get(handles[0]),
+            tangent: ta,
+        };
+        const pb = {
+            x: Handle.pos.x.get(handles[1]),
+            y: Handle.pos.y.get(handles[1]),
+            theta: Handle.theta.get(handles[1]),
+            tangent: tb,
+        };
+        const landed = subdivide(pa, pb, r.t);
+        const err = Math.hypot(landed.x - trueX, landed.y - trueY);
+        // measured: ~2e-8 m (f32-storage-roundoff floor: `Handle.pos` is f32, hermite evaluated
+        // in f64 from it, magnitude ~10 → ulp ~6e-7). 1e-4 clears that floor with wide margin
+        // while sitting three-and-a-half orders below the linear guess's own error on this exact
+        // fixture (measured ~1.72 m, 15% of the ~11.35 m segment — the mutant this pin catches).
+        expect(err).toBeLessThan(1e-4);
+    });
+});
+
+describe("sectionCutAt — the kind-fitted geo/force dispatch", () => {
+    function geoFixture(): { state: State; eid: number; a: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+            [60, 0],
+        ])
+            addNode(state, a, x, y);
+        state.step(0);
+        return { state, eid, a };
+    }
+
+    function forceFixture(domain: Domain = Domain.Distance): {
+        state: State;
+        eid: number;
+        a: number;
+    } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        if (domain === Domain.Time) setTrackDomain(state, Domain.Time);
+        const a = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, a, 10, 1);
+        createForcePoint(state, a, 30, 2);
+        state.step(0);
+        return { state, eid, a };
+    }
+
+    test("geo branch reduces to `geoCutAt` off the arc reading `d`, ignoring `u`", () => {
+        const { state, eid, a } = geoFixture();
+        const spans = sectionSpans(state, eid);
+        const arcs = worldSamples(eid);
+        const arc = cumulativeArc(arcs);
+        const total = arc[arc.length - 1];
+        const d = total * 0.4;
+        // `u` is deliberately garbage — the geo branch must never read it.
+        const r = sectionCutAt(state, a, spans, d, -999999);
+        expect(r).toEqual(geoCutAt(state, a, d));
+        expect(r).not.toBeNull();
+    });
+
+    test("geo branch returns null when `d` resolves outside the target section", () => {
+        const { state, eid, a } = geoFixture();
+        const b = appendSection(state, SectionKind.Geo);
+        addNode(state, b, 200, 0);
+        state.step(0);
+        const spans = sectionSpans(state, eid);
+        // a `d` deep into section b's span, queried against `a`.
+        const bSpan = spans.find((s) => s.id === b);
+        if (!bSpan) throw new Error("no span for b");
+        expect(sectionCutAt(state, a, spans, bSpan.offset + 1, 0)).toBeNull();
+    });
+
+    test("force branch resolves the native `s` directly (`toLocalU` alone, no subdivision param)", () => {
+        const { state, eid, a } = forceFixture();
+        const spans = sectionSpans(state, eid);
+        // the force branch reads `u`, not `d` — feed a garbage `d` to prove it's never read.
+        const r = sectionCutAt(state, a, spans, -999999, 15);
+        expect(r).toEqual({ at: 15 }); // no `t` — splitForce is exact at any interior s already
+    });
+
+    test("force branch is domain-dependent: `u` reads whichever native axis `Track.domain` holds", () => {
+        // the SAME authored section (points at s=10, s=30 of a length-40 extent), built once in
+        // Distance and once in Time — `u` names a different physical quantity (meters vs seconds)
+        // in each, and the branch must read whichever one `Track.domain` currently holds rather
+        // than always resolving arclength.
+        const dist = forceFixture(Domain.Distance);
+        const distSpans = sectionSpans(dist.state, dist.eid);
+        expect(sectionCutAt(dist.state, dist.a, distSpans, 0, 15)).toEqual({ at: 15 });
+
+        const time = forceFixture(Domain.Time);
+        const timeSpans = sectionSpans(time.state, time.eid);
+        // same `u = 15`, but now interpreted as seconds of section-local march time — the
+        // section-local force store already holds `s` in seconds (`createForcePoint(a, 10, 1)`
+        // means "10 seconds in"), so the resolution is still a direct pass-through, just of a
+        // different unit than the Distance case above.
+        expect(sectionCutAt(time.state, time.a, timeSpans, 0, 15)).toEqual({ at: 15 });
+    });
+
+    test("force branch returns null when `u` resolves outside the target section", () => {
+        const { state, eid, a } = forceFixture();
+        const b = appendSection(state, SectionKind.Force);
+        createForcePoint(state, b, 10, 1);
+        state.step(0);
+        const spans = sectionSpans(state, eid);
+        const bSpan = spans.find((s) => s.id === b);
+        if (!bSpan) throw new Error("no span for b");
+        expect(sectionCutAt(state, a, spans, 0, bSpan.entryU + 1)).toBeNull();
     });
 });
 

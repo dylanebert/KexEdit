@@ -259,7 +259,7 @@ test("openContext on a member of a multi-set promotes it active, keeping the who
     openContext(50, 60, 1); // right-click a non-active MEMBER
     expect([...editor.sections.ids].sort((a, b) => a - b)).toEqual([1, 2, 3]); // set preserved
     expect(editor.sections.active).toBe(1); // promoted, not replaced
-    expect(editor.context).toEqual({ x: 50, y: 60, section: 1 });
+    expect(editor.context).toEqual({ x: 50, y: 60, section: 1, cut: null });
     closeContext();
     expect(editor.context).toBeNull();
 });

@@ -563,6 +563,7 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
     const base: KeyframeMenuState = {
         setOk: true,
         activeOk: true,
+        opsAllowed: true,
         lock: null,
         multi: false,
         terminal: false,
@@ -680,10 +681,10 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
             ],
         });
     });
-    test("the lockdown: the set gates Delete + Easing + Cut, the active member gates Custom", () => {
+    test("the lockdown: the set gates Delete + Easing, the active member gates Custom, `opsAllowed` gates Cut", () => {
         const rows = shape(
             keyframeMenu(
-                { ...base, setOk: false, activeOk: false, hasHandles: true, canCut: false },
+                { ...base, setOk: false, activeOk: false, opsAllowed: false, hasHandles: true },
                 acts(),
             ),
         );
@@ -693,15 +694,31 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
         expect(rows[2].enabled).toBe(false); // Cut
         expect(rows[3].enabled).toBe(false); // Delete
     });
-    // isolates `activeOk` from `canCut`/`multi`: a valid interior cut point on a section the
-    // live lockdown bars must still gray — Cut is single-subject (the active), so it owes the
-    // SAME `activeOk` gate Custom/Tangents already carry, not just its own interior-point
-    // predicate. Adversarial-pass finding (kex2d-structural-editing stage 4).
+    // isolates `opsAllowed` from `canCut`/`multi`: a valid interior cut point on a section the
+    // live lockdown bars must still gray — Cut is single-subject (the active), so it owes its
+    // OWN consent-boundary check, not just its own interior-point predicate. Adversarial-pass
+    // finding (kex2d-structural-editing stage 4).
     test("Cut grays under the lockdown even at a genuinely interior, single-select point", () => {
-        const s = { ...base, activeOk: false, canCut: true, multi: false, terminal: false };
+        const s = { ...base, opsAllowed: false, canCut: true, multi: false, terminal: false };
         const rows = shape(keyframeMenu(s, acts()));
         const cutRow = rows.find((r) => r.label === "Cut");
         expect(cutRow?.enabled).toBe(false);
+    });
+    // the stage-6 review's regression: `activeOk` (the active keyframe's OWN section, `true`
+    // inside a pin session ON that section) is NOT Cut's gate — reusing it let the row read
+    // enabled on the pinning session's own interior keyframe while `cutSection` silently no-op'd
+    // underneath. `opsAllowed` alone (`true` only with no session open anywhere) must gate Cut,
+    // both directions: `activeOk` true can't paper over `opsAllowed` false, and `activeOk` false
+    // can't block Cut once `opsAllowed` is true.
+    test("Cut reads ONLY `opsAllowed`, never `activeOk` — both directions", () => {
+        const blockedByOpsAllowed = shape(
+            keyframeMenu({ ...base, activeOk: true, opsAllowed: false }, acts()),
+        ).find((r) => r.label === "Cut");
+        expect(blockedByOpsAllowed?.enabled).toBe(false); // the exact stage-6 repro
+        const unblockedByActiveOk = shape(
+            keyframeMenu({ ...base, activeOk: false, opsAllowed: true }, acts()),
+        ).find((r) => r.label === "Cut");
+        expect(unblockedByActiveOk?.enabled).toBe(true); // activeOk alone never gates Cut
     });
     test("the rows act on their subjects", () => {
         // every submenu row is invoked, in order — three near-identical preset rows and three mode
@@ -830,6 +847,7 @@ describe("the menu grammar — every builder, every state", () => {
     const keyframeStates = states<KeyframeMenuState>({
         setOk: bool,
         activeOk: bool,
+        opsAllowed: bool,
         lock: ["Lock", "Unlock", null],
         multi: bool,
         terminal: bool,
@@ -1301,7 +1319,6 @@ describe("the menu grammar — every builder, every state", () => {
         pinning: bool,
         size: [0, 1, 2],
         cuttable: bool,
-        editable: bool,
     });
     const modeKeyStates = states<ModeKeyState>({
         modeOpen: bool,

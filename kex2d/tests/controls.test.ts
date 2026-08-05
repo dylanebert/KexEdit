@@ -23,9 +23,11 @@ import {
     nodeFrame,
     nodeMetrics,
     normDeg,
+    pickCut,
     pickForce,
     pickForceOrStart,
     pickHover,
+    pickSectionArc,
     PICK_R,
     polarNudge,
     sectionsDeletable,
@@ -54,6 +56,7 @@ import {
     addNode,
     appendSection,
     BakeSystem,
+    bakeOut,
     convertSection,
     createForcePoint,
     createSection,
@@ -900,19 +903,17 @@ describe("forceKeyAct — the force-keyframe Delete/Lock rungs", () => {
     test("off both bindings: null", () => {
         expect(forceKeyAct("Escape", { pinning: true, size: 3 })).toBeNull();
     });
-    // adversarial-pass finding (kex2d-structural-editing stage 4): K must not fire "cut" on a
-    // genuinely cuttable, single-select keyframe whose OWN section the live lockdown bars —
-    // `cuttable` is purely the interior-point predicate and says nothing about editability,
-    // mirroring `nodeKeyAct`'s top-level `editable` gate.
+    // adversarial-pass finding (kex2d-structural-editing stage 4, re-broken and closed again at
+    // stage 6): K must not fire "cut" while ANY pin session is open — even on the pinning
+    // session's OWN keyframe, where a looser per-section `editable` reading used to read true.
+    // `cuttable` is purely the interior-point predicate and says nothing about the consent
+    // boundary, mirroring `nodeKeyAct`'s top-level `editable` gate — `pinning` (the SAME field
+    // the lock toggle reads) is Cut's own gate now, not a second hand-kept-in-sync field.
     test("K refuses under the lockdown even on a cuttable, single-select keyframe", () => {
-        expect(
-            forceKeyAct("k", { pinning: false, size: 1, cuttable: true, editable: false }),
-        ).toBeNull();
+        expect(forceKeyAct("k", { pinning: true, size: 1, cuttable: true })).toBeNull();
     });
-    test("K cuts a cuttable, single-select, editable keyframe", () => {
-        expect(forceKeyAct("K", { pinning: false, size: 1, cuttable: true, editable: true })).toBe(
-            "cut",
-        );
+    test("K cuts a cuttable, single-select keyframe when no pin session is open", () => {
+        expect(forceKeyAct("K", { pinning: false, size: 1, cuttable: true })).toBe("cut");
     });
 });
 
@@ -1140,6 +1141,110 @@ describe("pickForceOrStart", () => {
         // 45% along: ~9 px to START, ~11 px to the key — START wins.
         const p45 = { x: TX.ox + 0.45 * (mp.x - TX.ox), y: TX.oy + 0.45 * (mp.y - TX.oy) };
         expect(pickForceOrStart(state, TX, p45.x, p45.y)).toEqual({ kind: "start" });
+    });
+});
+
+// ── pickSectionArc / pickCut — the free-position Cut's viewport-side resolution
+// (kex2d-structural-editing stage 6 review: zero unit coverage existed before this suite).
+describe("pickSectionArc / pickCut", () => {
+    /** four Auto nodes with real curvature — enough segments to exercise an interior pick that
+     *  isn't the first or last sample. */
+    function curvedGeoTrack(): { state: State; sec: number } {
+        const { state, sec } = geoTrack();
+        for (const [x, y] of [
+            [0, 0],
+            [20, 4],
+            [40, 4],
+            [60, 0],
+        ])
+            addNode(state, sec, x, y);
+        state.step(0);
+        return { state, sec };
+    }
+
+    function forceFixture(): { state: State; sec: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 40);
+        createForcePoint(state, sec, 10, 1);
+        createForcePoint(state, sec, 30, 2);
+        state.step(0);
+        return { state, sec };
+    }
+
+    /** the screen point of baked sample `i` — an exact hit, zero pick error. */
+    function samplePx(state: State, i: number): { x: number; y: number } {
+        const eid = trackOf(state);
+        const s = samples.get(eid);
+        if (!s) throw new Error("no samples");
+        return { x: TX.ox + s.posX[i] * TX.sx, y: TX.oy + s.posY[i] * TX.sy };
+    }
+
+    test("returns the section and the exact cumulative arclength at the nearest sample", () => {
+        const { state, sec } = curvedGeoTrack();
+        const eid = trackOf(state);
+        const out = bakeOut.get(eid);
+        if (!out) throw new Error("no bakeOut");
+        const i = Math.floor(Track.count.get(eid) / 2);
+        const px = samplePx(state, i);
+        const hit = pickSectionArc(state, TX, px.x, px.y);
+        expect(hit).not.toBeNull();
+        expect(hit?.section).toBe(sec);
+        let expected = 0;
+        for (let k = 0; k < i; k++) expected += out.ds[k];
+        expect(hit?.d).toBeCloseTo(expected, 4);
+    });
+
+    test("outside the pick radius: null", () => {
+        const { state } = curvedGeoTrack();
+        expect(pickSectionArc(state, TX, TX.ox + 5000, TX.oy + 5000)).toBeNull();
+    });
+
+    test("pickCut resolves an interior geo point to a real cut (`at`/`t` set)", () => {
+        const { state, sec } = curvedGeoTrack();
+        const eid = trackOf(state);
+        const i = Math.floor(Track.count.get(eid) / 2);
+        const px = samplePx(state, i);
+        const hit = pickCut(state, TX, px.x, px.y);
+        expect(hit).not.toBeNull();
+        expect(hit?.section).toBe(sec);
+        expect(hit?.cut).not.toBeNull();
+        expect(hit?.cut?.t).toBeGreaterThanOrEqual(0);
+        expect(hit?.cut?.t).toBeLessThanOrEqual(1);
+    });
+
+    test("pickCut still resolves the section at node 0, but its cut refuses (never a split point)", () => {
+        const { state, sec } = curvedGeoTrack();
+        const px = samplePx(state, 0); // sample 0 IS node 0 (the section entry)
+        const hit = pickCut(state, TX, px.x, px.y);
+        expect(hit).not.toBeNull();
+        expect(hit?.section).toBe(sec);
+        expect(hit?.cut).toBeNull();
+    });
+
+    test("pickCut on a force section resolves the native local `s` directly", () => {
+        const { state, sec } = forceFixture();
+        const eid = trackOf(state);
+        const out = bakeOut.get(eid);
+        if (!out) throw new Error("no bakeOut");
+        // a force section's samples are a straight line at F=0 (default seed) here — just pick a
+        // sample partway through and check the returned `at` reads back through `toLocalU` to the
+        // matching native s (same seam `sectionCutAt` itself resolves through).
+        const i = Math.floor(Track.count.get(eid) / 2);
+        const px = samplePx(state, i);
+        const hit = pickCut(state, TX, px.x, px.y);
+        expect(hit).not.toBeNull();
+        expect(hit?.section).toBe(sec);
+        expect(hit?.cut).not.toBeNull();
+        expect(hit?.cut?.t).toBeUndefined(); // no subdivision parameter on the force branch
+        expect(hit?.cut?.at).toBeGreaterThan(0);
+        expect(hit?.cut?.at).toBeLessThan(40);
+    });
+
+    test("outside the pick radius entirely: null", () => {
+        const { state } = curvedGeoTrack();
+        expect(pickCut(state, TX, TX.ox + 5000, TX.oy + 5000)).toBeNull();
     });
 });
 

@@ -252,6 +252,20 @@ describe("sectionActs", () => {
         exitPinMode(state);
     });
 
+    // `cutSection` (`acts.ts`) is the ONE choke point every Cut surface funnels through, and it
+    // carries the `sectionOpsAllowed` guard itself now (kex2d-structural-editing stage 6 review) —
+    // so THIS refusal, on the pinning session's OWN subject at a genuinely interior point, is what
+    // proves the guard lives where every surface reaches it rather than at three independently
+    // hand-written call sites (one of which, the keyframe row/key, drifted onto a looser check).
+    test("cutAt refuses even on the pinning session's OWN section, at a genuinely interior point", () => {
+        const { state, a } = twoForceSections(); // a: keys at s=0,10,20,30,40, length 40
+        if (!enterPinMode(state, a)) throw new Error("no session");
+        const before = sections(state).length;
+        sectionActs(state, a, { at: 20 }).cutAt(); // s=20 is a real landmark cut point
+        expect(sections(state).length).toBe(before);
+        exitPinMode(state);
+    });
+
     test("join merges the selected contiguous run and selects the survivor", () => {
         const { state, a, b, c } = threeGeoSections();
         selectSection(a);
@@ -533,6 +547,22 @@ describe("keyframeActs", () => {
         if (!enterPinMode(state, a)) throw new Error("no session");
         const idsB = sectionForces(state, b).map((r) => r.id);
         selectForce(idsB[1]); // s = 20, interior — a genuine cut point, on the NON-pinning section
+        const before = sections(state).length;
+        keyframeActs(state).cut();
+        expect(sections(state).length).toBe(before);
+        exitPinMode(state);
+    });
+
+    // the stage-6 review's exact repro: the active keyframe sits on the PINNING session's OWN
+    // section, at a genuinely interior point — `sectionEditable` reads true there (it's the
+    // session's own subject), which is what let the row/key wiring bug through undetected. The
+    // act body itself was always correctly guarded (`cutSection`'s own `sectionOpsAllowed`); this
+    // pins that the guard holds on the session's own subject too, not just an unrelated one.
+    test("cut refuses on the pinning session's OWN section, at its own interior keyframe", () => {
+        const { state, a } = twoForceSectionsInterior(); // a: keys at s=0,10,20,30,40, length 40
+        if (!enterPinMode(state, a)) throw new Error("no session");
+        const idsA = sectionForces(state, a).map((r) => r.id);
+        selectForce(idsA[2]); // s = 20, interior, ON the pinning section itself
         const before = sections(state).length;
         keyframeActs(state).cut();
         expect(sections(state).length).toBe(before);

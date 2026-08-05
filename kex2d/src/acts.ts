@@ -115,9 +115,17 @@ export type CutPosition = { at: number; t?: number };
 /** the ONE structural Cut body shared by the section, node, and keyframe menu triples
  *  (`editor-ui.md` Menus' key-act seam) — one `history.splitSection` call, its own kind-fitted
  *  dispatch (`track.splitGeoAt` for geo, `track.splitForce` for force) and its own undo entry, so
- *  the three rows can't drift onto three bodies. Returns the new tail section id, or null (no-op
- *  at a non-interior point). */
+ *  the three rows can't drift onto three bodies. **The `sectionOpsAllowed` consent-boundary
+ *  guard lives HERE, not at each of the three call sites** — the stage-4 review found the
+ *  boundary re-broken by a hand-written guard missing from one surface, and stage 6's review
+ *  found it broken again by a hand-written ENABLEMENT predicate on a fourth surface (the
+ *  keyframe row/key) disagreeing with this guard. Three independently-maintained copies of the
+ *  same check is the defect class, not any one omission; putting the guard in the one function
+ *  every surface already funnels through makes a future surface inherit it for free rather than
+ *  needing to remember it. Returns the new tail section id, or null (a non-interior point, or the
+ *  guard). */
 export function cutSection(ecs: State, section: number, position: CutPosition): number | null {
+    if (!sectionOpsAllowed(editor.pinning)) return null;
     return splitSection(history, ecs, section, position.at, position.t);
 }
 
@@ -185,8 +193,8 @@ export function lockCandidates(ecs: State): number[] {
  *  third constructor argument rather than being derivable from `subject` alone the way a node's
  *  order or a keyframe's `s` is. `null` (the default — no menu has summoned a position yet) makes
  *  `cutAt` a safe no-op; the row's own `enabled` is the real gate (`editor-ui.md`'s grays-never-
- *  hides law), this is defense-in-depth like `remove`'s own `sectionOpsAllowed` guard. Named
- *  `cutAt`, not `cut` — `nodeActs`/`keyframeActs` bind `K` to `cut`; this surface carries no
+ *  hides law), and `cutSection` carries the `sectionOpsAllowed` consent-boundary guard itself
+ *  (below). Named `cutAt`, not `cut` — `nodeActs`/`keyframeActs` bind `K` to `cut`; this surface carries no
  *  shortcut at all (the locked decision's asymmetry, `editor-ui.md` Menus), and the two acts must
  *  stay apart by NAME for `Acts` (`tests/menu.test.ts`) to tell them apart — `append`/`add`'s own
  *  precedent, two acts colliding only in English.
@@ -220,7 +228,8 @@ export function sectionActs(
             exitPinMode(ecs);
         },
         cutAt: () => {
-            if (!sectionOpsAllowed(editor.pinning)) return;
+            // `cutSection` itself carries the `sectionOpsAllowed` guard now — the one shared
+            // enforcement point, not a fourth hand-written copy of it here.
             if (position === null) return;
             cutSection(ecs, subject, position);
         },
@@ -237,9 +246,10 @@ export function sectionActs(
  *  is the landmark case (`t` omitted): the clicked node's own `order` reduces `track.splitGeoAt`
  *  to today's `splitGeo`, no subdivision, no `Custom` demotion (the locked decision's "a cut
  *  invoked from a node menu stays in the named-easing layer"). It's a structural op like
- *  `sectionActs`' remove/reset, so it carries the SAME `sectionOpsAllowed` guard those do —
- *  Cut is barred while ANY pin session is open, on any section, not just the pinning one (the
- *  widened consent boundary above). */
+ *  `sectionActs`' remove/reset — Cut is barred while ANY pin session is open, on any section, not
+ *  just the pinning one (the widened consent boundary above) — but unlike those, it carries no
+ *  guard of its OWN here: `cutSection` enforces `sectionOpsAllowed` itself (above), the one shared
+ *  point every Cut surface funnels through. */
 export function nodeActs(ecs: State, eid: number): NodeMenuActions {
     return {
         add: () => select(extendTrack(history, ecs, Handle.section.get(eid))),
@@ -284,7 +294,6 @@ export function nodeActs(ecs: State, eid: number): NodeMenuActions {
             resetNodesBulk(history, ecs, nodeMembers(ecs));
         },
         cut: () => {
-            if (!sectionOpsAllowed(editor.pinning)) return;
             cutSection(ecs, Handle.section.get(eid), { at: Handle.order.get(eid) });
         },
     };
@@ -299,10 +308,10 @@ export function nodeActs(ecs: State, eid: number): NodeMenuActions {
  *  delete directly, the standing drift this hoist fixes. `cut` is single-subject (the ACTIVE
  *  keyframe, like `chooseCustom`'s own Custom row) — the landmark case (`t` omitted): the
  *  keyframe's own stored `s` is already the exact boundary value, so `track.splitForce` duplicates
- *  it verbatim, no subdivision, no `Custom` demotion. It carries the same `sectionOpsAllowed`
- *  guard `sectionActs`' structural rows and `nodeActs.cut` do — Cut is barred while ANY pin
- *  session is open, on any section (the widened consent boundary above), checked before
- *  `remove`'s own editability guard even runs since Cut has no partial-set shape to refuse into. */
+ *  it verbatim, no subdivision, no `Custom` demotion. Cut is barred while ANY pin session is open,
+ *  on any section (the widened consent boundary above) — enforced by `cutSection` itself, not a
+ *  guard here (this surface has no partial-set shape to refuse into first the way `remove` does,
+ *  so there's nothing this body needs to check before delegating). */
 export function keyframeActs(
     ecs: State,
 ): Pick<KeyframeMenuActions, "remove" | "toggleLock" | "cut"> {
@@ -317,7 +326,6 @@ export function keyframeActs(
             toggleLockedSet(lockCandidates(ecs));
         },
         cut: () => {
-            if (!sectionOpsAllowed(editor.pinning)) return;
             if (editor.force === null) return;
             const eid = forceAt(ecs, editor.force);
             if (eid === null) return;

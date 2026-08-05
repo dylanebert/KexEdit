@@ -279,9 +279,12 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     // Convert row's removal.) ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(4);
+    // 5 rows now (kex2d-structural-editing stage 6): the free-position Cut joined Convert / Pin /
+    // Reset / Delete — the click lands at the clip's own center, a real interior point.
+    await expect(page.locator(".ctxmenu").getByRole("menuitem")).toHaveCount(5);
     await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" })).toBeEnabled();
     await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Pin" })).toBeEnabled();
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Cut" })).toBeEnabled();
     await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Reset" })).toBeEnabled();
     // the section menu's rows already sorted canonically, so the grammar's arrival adds only the
     // DERIVED modify→lifecycle divider. The expectation comes from the real `sectionMenu` builder,
@@ -290,7 +293,8 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await menuGrammar(page, ".ctxmenu", {
         builder: "sectionMenu",
         // a single, baked force section, no pin session anywhere: Convert runs the force→geo
-        // fit, Pin can enter, Reset and Delete are live.
+        // fit, Pin can enter, Reset and Delete are live. The click landed at the clip's own
+        // center — a real interior point, so Cut resolves live too.
         state: {
             inMode: false,
             solving: false,
@@ -302,6 +306,7 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
             canPin: true,
             canReset: true,
             canDelete: true,
+            canCut: true,
         },
         enums: { kind: "section.SectionKind.Force" },
     });
@@ -1164,4 +1169,110 @@ test("pin mode flow", async ({ page, boot }) => {
     await expect(page.locator(".mode-dim")).toHaveCount(0);
     await expect.poll(async () => near(await probe(await geoMid()), [120, 165, 214])).toBe(true);
     expect(await undoDepth()).toBe(base + 2); // the second experiment is one more outer entry
+});
+
+// Drive Cut end to end from the VIEWPORT (kex2d-structural-editing stage 6) — the surface
+// stage 4 shipped grayed pending this stage's cursor-resolution lens. Right-click the track
+// polyline strictly between two nodes (never a node's own landing) opens the section menu with
+// a REAL resolved free position; clicking Cut must reach `history.splitSection` from that real
+// click, landing one undo entry. This is deliberately NOT re-proving the split's own exactness
+// (`tests/ops.test.ts` owns that) — only that the row dispatches at all, the hole the source
+// census can't see (`editor-ui.md:371-373`).
+test("cut in viewport flow", async ({ page, boot }) => {
+    await boot();
+
+    const sectionCount = () => kexCall(page, "sectionCount");
+    const sectionKinds = () => kexCall(page, "sectionKinds");
+    const undoDepth = () => kexCall(page, "undoDepth");
+    const canvas = page.locator("canvas.viewport");
+
+    await seedHill(page);
+    expect(await sectionCount()).toBe(1);
+    expect((await sectionKinds())[0]).toBe(0); // SectionKind.Geo
+    await page.keyboard.press("f"); // frame the hill so its nodes separate at pixel scale
+
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    // the segment from the entry anchor to node 1 — `seedHill`'s own shape holds both at y=0
+    // local, so the Hermite curve between them is exactly straight, and their midpoint lands
+    // ON the polyline (`spanMidAt`'s own SAMPLE midpoint instead lands exactly on the hill's
+    // symmetric crest NODE, which the node pick beats the section pick to; a straight-line
+    // midpoint between two farther-apart nodes isn't reliably on a curved segment either).
+    const n0 = await kexCall(page, "startAt");
+    if (!n0) throw new Error("track start not laid out");
+    const n1 = await nodePoint(page, 1);
+    const mid = { x: (n0.x + n1.x) / 2, y: (n0.y + n1.y) / 2 };
+
+    const before = await undoDepth();
+    await page.mouse.click(cb.x + mid.x, cb.y + mid.y, { button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    // the free-position resolution landed a real interior point — canCut is live, not the
+    // conservatively-grayed default stage 4 shipped.
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Cut" })).toBeEnabled();
+    await clickMenuItem(page, ".ctxmenu", "Cut");
+    await expect.poll(sectionCount).toBe(2);
+    expect((await sectionKinds()).join(",")).toBe("0,0"); // both halves stay geo
+    await expect.poll(undoDepth).toBe(before + 1); // ONE undo entry
+    await page.keyboard.press("Control+z");
+    await expect.poll(sectionCount).toBe(1);
+});
+
+// Cut's TIMELINE twin — a right-click on a force clip resolves the free position through the
+// chart's own native axis (`uAtPx`/`dOf`), never the viewport's world-point pick, so this flow
+// exercises the OTHER half of stage 6's cursor lens (`toLocalU` off a chart coordinate) and the
+// force-side `splitForce` dispatch, distinct from the geo path `cut in viewport flow` proves.
+test("cut in timeline flow", async ({ page, boot }) => {
+    await boot();
+
+    const sectionCount = () => kexCall(page, "sectionCount");
+    const sectionKinds = () => kexCall(page, "sectionKinds");
+    const undoDepth = () => kexCall(page, "undoDepth");
+
+    await seedHill(page);
+    await kexCall(page, "append", 1); // SectionKind.Force
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
+    await frameTimeline(page); // append never pans; frame the chain so `.clip.nth()` resolves
+
+    const before = await undoDepth();
+    await page.locator(".clip").nth(1).click({ button: "right" }); // the force clip, its own center
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Cut" })).toBeEnabled();
+    await clickMenuItem(page, ".ctxmenu", "Cut");
+    await expect.poll(sectionCount).toBe(3);
+    expect((await sectionKinds()).join(",")).toBe("0,1,1"); // the force section split in two
+    await expect.poll(undoDepth).toBe(before + 1);
+    await page.keyboard.press("Control+z");
+    await expect.poll(sectionCount).toBe(2);
+});
+
+// Join by multi-select (stage 5's own op, wired since that stage — this flow is its first
+// real-UI proof): shift-click a contiguous same-kind run into a set, right-click a member (the
+// promote-vs-replace grammar keeps the set), Join merges it as one undo entry.
+test("join a run flow", async ({ page, boot }) => {
+    await boot();
+
+    const sectionCount = () => kexCall(page, "sectionCount");
+    const sectionKinds = () => kexCall(page, "sectionKinds");
+    const undoDepth = () => kexCall(page, "undoDepth");
+
+    await seedHill(page);
+    await kexCall(page, "append", 0); // a second geo section
+    await kexCall(page, "append", 0); // a third — three geo sections in a row
+    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,0,0");
+    await frameTimeline(page);
+
+    const before = await undoDepth();
+    await page.locator(".clip").nth(0).click();
+    await page
+        .locator(".clip")
+        .nth(1)
+        .click({ modifiers: ["Shift"] }); // a two-section run, {0,1}
+    await page.locator(".clip").nth(0).click({ button: "right" }); // right-click keeps the set
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Join" })).toBeEnabled();
+    await clickMenuItem(page, ".ctxmenu", "Join");
+    await expect.poll(sectionCount).toBe(2); // {0,1} merged; the third section stays apart
+    await expect.poll(undoDepth).toBe(before + 1);
+    await page.keyboard.press("Control+z");
+    await expect.poll(sectionCount).toBe(3);
 });
