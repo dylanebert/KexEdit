@@ -307,6 +307,7 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
             canReset: true,
             canDelete: true,
             canCut: true,
+            cutSurface: true, // the clip strip — Cut's sole surface (`editor-ui.md` Menus)
         },
         enums: { kind: "section.SectionKind.Force" },
     });
@@ -1171,25 +1172,30 @@ test("pin mode flow", async ({ page, boot }) => {
     expect(await undoDepth()).toBe(base + 2); // the second experiment is one more outer entry
 });
 
-// Drive Cut end to end from the VIEWPORT (kex2d-structural-editing stage 6) — the surface
-// stage 4 shipped grayed pending this stage's cursor-resolution lens. Right-click the track
-// polyline strictly between two nodes (never a node's own landing) opens the section menu with
-// a REAL resolved free position; clicking Cut must reach `history.splitSection` from that real
-// click, landing one undo entry. This is deliberately NOT re-proving the split's own exactness
-// (`tests/ops.test.ts` owns that) — only that the row dispatches at all, the hole the source
-// census can't see (`editor-ui.md:371-373`).
-test("cut in viewport flow", async ({ page, boot }) => {
+// Cut is ABSENT on the VIEWPORT surface (kex2d-structural-editing stage 7a) — the surface stage
+// 4 shipped grayed, stage 6 resolved a real cursor position for, and stage 7 took away entirely
+// (`pickSectionArc`/`pickCut` deleted; "cutting would be too imprecise" — the round-7 verdict).
+// Right-click the track polyline strictly between two nodes still opens the section context
+// menu (Convert/Reset/Delete), but it carries NO Cut row at all — absent, not grayed
+// (`editor-ui.md` Menus, the surface axis). `tests/menu.test.ts`'s grammar oracle already drives
+// `cutSurface: false` through the pure builder; this is the real-DOM half no source census can
+// reach — a regression that resurrected `pickSectionArc` would light this up. It also doubles as
+// deliverable 1's proof on a SECOND surface: the right-click lands on an unselected section and
+// selects it before the menu opens (`openContext`), the same law the clip-strip flow (below)
+// proves on its own surface.
+test("cut absent on the viewport surface flow", async ({ page, boot }) => {
     await boot();
 
     const sectionCount = () => kexCall(page, "sectionCount");
     const sectionKinds = () => kexCall(page, "sectionKinds");
-    const undoDepth = () => kexCall(page, "undoDepth");
+    const selectedSection = () => kexCall(page, "selectedSection");
     const canvas = page.locator("canvas.viewport");
 
     await seedHill(page);
     expect(await sectionCount()).toBe(1);
     expect((await sectionKinds())[0]).toBe(0); // SectionKind.Geo
     await page.keyboard.press("f"); // frame the hill so its nodes separate at pixel scale
+    expect(await selectedSection()).toBe(null); // nothing selected yet — the click below must select
 
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
@@ -1202,47 +1208,110 @@ test("cut in viewport flow", async ({ page, boot }) => {
     if (!n0) throw new Error("track start not laid out");
     const n1 = await nodePoint(page, 1);
     const mid = { x: (n0.x + n1.x) / 2, y: (n0.y + n1.y) / 2 };
+    const secId = (await kexCall(page, "sectionIds"))[0];
 
-    const before = await undoDepth();
     await page.mouse.click(cb.x + mid.x, cb.y + mid.y, { button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
-    // the free-position resolution landed a real interior point — canCut is live, not the
-    // conservatively-grayed default stage 4 shipped.
-    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Cut" })).toBeEnabled();
-    await clickMenuItem(page, ".ctxmenu", "Cut");
-    await expect.poll(sectionCount).toBe(2);
-    expect((await sectionKinds()).join(",")).toBe("0,0"); // both halves stay geo
-    await expect.poll(undoDepth).toBe(before + 1); // ONE undo entry
-    await page.keyboard.press("Control+z");
-    await expect.poll(sectionCount).toBe(1);
+    expect(await selectedSection()).toBe(secId); // deliverable 1: selected before the menu shows
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Convert" })).toBeVisible();
+    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Cut" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".ctxmenu")).toHaveCount(0);
 });
 
-// Cut's TIMELINE twin — a right-click on a force clip resolves the free position through the
-// chart's own native axis (`uAtPx`/`dOf`), never the viewport's world-point pick, so this flow
-// exercises the OTHER half of stage 6's cursor lens (`toLocalU` off a chart coordinate) and the
-// force-side `splitForce` dispatch, distinct from the geo path `cut in viewport flow` proves.
-test("cut in timeline flow", async ({ page, boot }) => {
+// Drive a FORCE Cut end to end from the CLIP STRIP (kex2d-structural-editing stage 9) —
+// Cut's sole surface. Stage 6's flow passed 35/35 while this exact op was broken on two
+// surfaces because it asserted only `sectionCount`/`undoDepth`, which a wrong-but-plausible cut
+// (wrong split position, a dropped or corrupted keyframe) satisfies just as well as a correct
+// one (`kex2d-harness.md`'s residue entry). This flow instead asserts the BEHAVIOR: the split
+// lands exactly at the position the menu itself resolved and showed (`ctxCut`, read before the
+// row is clicked — never a pixel→domain re-derivation of the harness's own), and every authored
+// keyframe on both sides of the cut keeps its exact (s, g) — rebased on the tail, untouched on
+// the head — proving nothing was lost, reset, or misplaced. It also drives deliverable 1 on the
+// clip strip itself: the right-click lands on a clip that is NOT the current selection and
+// selects it before the menu opens.
+test("force cut flow", async ({ page, boot }) => {
     await boot();
 
     const sectionCount = () => kexCall(page, "sectionCount");
     const sectionKinds = () => kexCall(page, "sectionKinds");
+    const sectionLengths = () => kexCall(page, "sectionLengths");
+    const sectionIds = () => kexCall(page, "sectionIds");
     const undoDepth = () => kexCall(page, "undoDepth");
+    const selectedSection = () => kexCall(page, "selectedSection");
+    const forces = () => kexCall(page, "forces");
+    const forceU = () => kexCall(page, "forceU");
+    const ctxCut = () => kexCall(page, "ctxCut");
+    const bySVal = <T extends { s: number }>(a: T[]): T[] => [...a].sort((x, y) => x.s - y.s);
 
-    await seedHill(page);
-    await kexCall(page, "append", 1); // SectionKind.Force
-    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
-    await frameTimeline(page); // append never pans; frame the chain so `.clip.nth()` resolves
+    // seedForceBump converts the single default section to Force and lays 3 bump points (0.2L
+    // g=1, 0.5L g=0 crest, 0.8L g=1) alongside the convert's own 2 continuation seeds (0, L) —
+    // a genuinely non-flat profile, so a cut that corrupts a value is visible, not masked by a
+    // flat curve where every g happens to already agree.
+    await kexCall(page, "seedForceBump");
+    expect((await sectionKinds())[0]).toBe(1); // SectionKind.Force
+    const preLen = (await sectionLengths())[0];
+    const pre = bySVal(await forces());
+    expect(pre.length).toBe(5);
+    await frameTimeline(page);
+    expect(await selectedSection()).toBe(null); // nothing selected — the click below must select
+
+    // right-click strictly between the two interior bump points (0.2L, 0.5L) — a real mid-
+    // segment position, comfortably clear of the parked playhead's snap radius at u=0 so the
+    // resolved position isn't pulled to the track start.
+    const clipBox = await page.locator(".clip").first().boundingBox();
+    if (!clipBox) throw new Error("force clip not laid out");
+    const cx = clipBox.x + clipBox.width * 0.35;
+    const cy = clipBox.y + clipBox.height / 2;
+    const secId = (await sectionIds())[0];
 
     const before = await undoDepth();
-    await page.locator(".clip").nth(1).click({ button: "right" }); // the force clip, its own center
+    await page.mouse.click(cx, cy, { button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();
+    expect(await selectedSection()).toBe(secId); // deliverable 1: selected before the menu shows
+
+    const cut = await ctxCut();
+    if (cut === null) throw new Error("Cut did not resolve a landing position");
+    expect(cut.at).toBeGreaterThan(pre[1].s); // strictly past the 0.2L keyframe
+    expect(cut.at).toBeLessThan(pre[2].s); // strictly before the 0.5L crest
     await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Cut" })).toBeEnabled();
     await clickMenuItem(page, ".ctxmenu", "Cut");
-    await expect.poll(sectionCount).toBe(3);
-    expect((await sectionKinds()).join(",")).toBe("0,1,1"); // the force section split in two
-    await expect.poll(undoDepth).toBe(before + 1);
-    await page.keyboard.press("Control+z");
+
     await expect.poll(sectionCount).toBe(2);
+    expect((await sectionKinds()).join(",")).toBe("1,1"); // both halves stay force
+    await expect.poll(undoDepth).toBe(before + 1); // ONE undo entry
+
+    // the split landed exactly where the menu showed — not the clip midpoint, not the segment
+    // start, not the playhead.
+    const [headId, tailId] = await sectionIds();
+    const lens = await sectionLengths();
+    expect(lens[0]).toBeCloseTo(cut.at, 3);
+    expect(lens[1]).toBeCloseTo(preLen - cut.at, 3);
+
+    // every ORIGINAL keyframe survives with its exact authored value: unchanged on the head,
+    // rebased (s -= cut.at) on the tail — a corrupted, dropped, or repositioned point fails
+    // this even though sectionCount/undoDepth alone would have passed it.
+    const post = await forceU();
+    const head = bySVal(post.filter((p) => p.section === headId));
+    const tail = bySVal(post.filter((p) => p.section === tailId));
+    const headOriginal = pre.filter((p) => p.s < cut.at);
+    const tailOriginal = pre.filter((p) => p.s > cut.at);
+    expect(head.length).toBe(headOriginal.length + 1); // + the new boundary keyframe
+    expect(tail.length).toBe(tailOriginal.length + 1);
+    for (let i = 0; i < headOriginal.length; i++) {
+        expect(head[i].s).toBeCloseTo(headOriginal[i].s, 3);
+        expect(head[i].g).toBeCloseTo(headOriginal[i].g, 5);
+    }
+    for (let i = 0; i < tailOriginal.length; i++) {
+        expect(tail[i + 1].s).toBeCloseTo(tailOriginal[i].s - cut.at, 3);
+        expect(tail[i + 1].g).toBeCloseTo(tailOriginal[i].g, 5);
+    }
+    expect(head[head.length - 1].s).toBeCloseTo(cut.at, 3); // the new head-side boundary key
+    expect(tail[0].s).toBeCloseTo(0, 5); // the new tail-side boundary key, rebased to its entry
+
+    await page.keyboard.press("Control+z");
+    await expect.poll(sectionCount).toBe(1);
+    expect(bySVal(await forces())).toEqual(pre); // undo restored the authored profile exactly
 });
 
 // Join by multi-select (stage 5's own op, wired since that stage — this flow is its first

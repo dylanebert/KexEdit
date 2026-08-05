@@ -446,6 +446,13 @@ if (import.meta.env.DEV) {
             const s = sections(ecs)[i];
             if (s) convertSection(history, ecs, s.id);
         },
+        // the open section menu's own resolved Cut landing (`editor.context.cut`), or null with
+        // no menu open / no resolvable position — the ground truth a right-click ITSELF computed,
+        // read before the row is clicked. The Cut flow reads this rather than re-deriving the
+        // pixel→domain math a second time in the harness (which would prove only that two copies
+        // of the same arithmetic agree, not that the op landed where the click showed). read-only,
+        // like cam()/guides().
+        ctxCut: (): { at: number; t?: number } | null => editor.context?.cut ?? null,
     };
 }
 

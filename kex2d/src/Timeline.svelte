@@ -2702,10 +2702,13 @@ onMount(() => {
             // the domain the chart READS (`Track.domain`, tick-derived so a flow polls it), and
             // every keyframe's coordinate on that axis — paired with the stored `s` the flow
             // asserts held, since the time-constrained assertion is exactly "every other
-            // keyframe's stored t AND its drawn position unchanged" across an edit.
+            // keyframe's stored t AND its drawn position unchanged" across an edit. `section` +
+            // `g` (kex2d-structural-editing stage 9) let a multi-section flow read a Cut's TWO
+            // halves apart — `main.ts`'s `forces()` only ever reads section 0 (`sec()`), so it
+            // can't see a split's tail — without re-deriving `forcePts`' own grouping by hand.
             k.domain = (): string => (domain === Domain.Time ? "time" : "distance");
-            k.forceU = (): { id: number; s: number; u: number }[] =>
-                forcePts.map((p) => ({ id: p.id, s: p.s, u: p.u }));
+            k.forceU = (): { id: number; section: number; s: number; g: number; u: number }[] =>
+                forcePts.map((p) => ({ id: p.id, section: p.section, s: p.s, g: p.g, u: p.u }));
         }
     }
     return () => {

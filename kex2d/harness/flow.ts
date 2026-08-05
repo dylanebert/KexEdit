@@ -111,6 +111,7 @@ export interface Kex {
     cartArc(): number | null;
     convert(): void;
     convertAt(i: number): void;
+    ctxCut(): { at: number; t?: number } | null;
     deleteAt(i: number): boolean;
     domain(): string;
     editing(): boolean;
@@ -120,7 +121,7 @@ export interface Kex {
     forceHandleSel(): string | null;
     forceSelActive(): number | null;
     forceSelIds(): number[];
-    forceU(): { id: number; s: number; u: number }[];
+    forceU(): { id: number; section: number; s: number; g: number; u: number }[];
     forceTangents(): (null | {
         mode: number;
         inOn: boolean;

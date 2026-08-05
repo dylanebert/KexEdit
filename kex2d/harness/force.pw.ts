@@ -376,7 +376,7 @@ test("force easing menu flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Easing ▸", "Cut K", "Delete Del"]);
+        .toEqual(["Easing ▸", "Cut C", "Delete Del"]);
     // the rendered rows are the real `keyframeMenu` builder's, run in the page against this
     // keyframe's live state — the keyframe menu's half of the DOM cross-check. It reaches INSIDE
     // `Easing ▸` by real hover, which is where the app's ONE authored within-group separator lives
@@ -418,42 +418,49 @@ test("force easing menu flow", async ({ page, boot }) => {
     await expect.poll(async () => (await forceEases())[0]).toBe(0); // Easing.Linear
 
     // ── 2b. Right-click the CURVE SPAN between keyframe 0 (s=0) and keyframe 1 (the first
-    // bump shoulder, s = 0.2·length) — a chart point, not a diamond — → the same LEADING
-    // keyframe's menu (the Blender convention: a segment addresses the keyframe before it).
-    // Setting Quintic through it is a value change, so it proves the addressing. `openForceMenu`
-    // also SELECTS its target (keyframe 0, from step 1), so its `.ptip` popover is still floating
-    // over the chart near it — Escape deselects and closes the popover first, or it eats the click. ──
+    // bump shoulder, s = 0.2·length) — a chart point, not a diamond — opens NO menu. This used to
+    // address the LEADING keyframe (the Blender curve-span convention); that convention is
+    // RETIRED (kex2d-structural-editing stage 7b, feel round 8: "I wouldn't expect that" — a
+    // right-click addresses what's under the cursor or nothing, never a nearby landmark,
+    // `editor-ui.md` Keyframe/curve-editor conventions). This is the spec's own named mutant:
+    // restoring `chartCtx` makes this assertion fail. Step 1's right-click on the diamond is this
+    // test's positive control (the rig does open `.fmenu` on a real hit) — this is the negative
+    // twin, on a real pointer event, that the source census alone (`tests/menu.test.ts`) can't
+    // reach (no DOM in `bun test`). `openForceMenu`'s old target (keyframe 0) also SELECTS, so
+    // its `.ptip` popover is still floating over the chart from step 1 — Escape deselects and
+    // closes it first, or it eats the click. ──
     await page.keyboard.press("Escape");
     await expect(page.locator(".ptip")).toHaveCount(0);
     const fcb = await page.locator(".clip").first().boundingBox();
     const kf0 = await page.locator(".fpt").nth(0).boundingBox(); // s=0 seed (~1g)
     const kf1 = await page.locator(".fpt").nth(1).boundingBox(); // first bump shoulder (1g)
     if (!fcb || !kf0 || !kf1) throw new Error("force clip / keyframes not laid out");
-    // the segment hit-target is gated to the drawn curve (chartCtx's FHIT_R vertical tolerance),
-    // so the click must land ON the span. x ≈ 0.1·length sits halfway between kf0 (s=0) and
-    // kf1 (s=0.2·length); the near-flat ~1g span there tracks the two flanking diamonds, so the
-    // mean of their centre-y lands on the curve.
+    // the OLD hit-target was gated to the drawn curve (chartCtx's own FHIT_R vertical tolerance),
+    // so this click lands exactly where that convention used to fire. x ≈ 0.1·length sits halfway
+    // between kf0 (s=0) and kf1 (s=0.2·length); the near-flat ~1g span there tracks the two
+    // flanking diamonds, so the mean of their centre-y lands ON the curve.
     const midX = fcb.x + fcb.width * 0.1;
     const midY = (kf0.y + kf0.height / 2 + (kf1.y + kf1.height / 2)) / 2;
     await page.mouse.click(midX, midY, { button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
-    await clickFlyout(page, ".fmenu", "Easing", "Quintic");
+    // a menu that IS going to open renders on the next tick, so one projected frame is the
+    // condition that makes this absence assert mean something (kex2d-harness.md, "a negative
+    // assert needs a positive control" — the positive control here is step 1, above).
+    await frames(page);
     await expect(page.locator(".fmenu")).toHaveCount(0);
-    await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Quintic — keyframe 0 moved, not keyframe 1
-    expect((await forceEases())[1]).toBe(1); // keyframe 1's own tag (Cubic, untouched) proves it
+    expect((await forceEases())[0]).toBe(0); // unchanged (Easing.Linear from step 2) — inert
+    expect(await kexCall(page, "forceSelActive")).toBe(null); // no selection either — a miss changes nothing
 
     // ── 2c. A right-click in EMPTY chart space (over the force section horizontally but ~1g
-    // from the curve vertically) opens NO keyframe menu — the segment hit-target is the drawn
-    // curve, not the whole force-section column. ──
+    // from the curve vertically) also opens NO menu — the chartzone carries no `oncontextmenu`
+    // at all; the outer `.body` wrapper's own handler is what keeps a miss from opening the
+    // browser's menu (`Timeline.svelte`, the chartzone comment). ──
     const crest = await page.locator(".fpt").nth(2).boundingBox(); // airtime crest (0g)
     if (!crest) throw new Error("crest keyframe not laid out");
     await page.mouse.click(midX, crest.y + crest.height / 2, { button: "right" });
-    // a menu that IS going to open renders on the next tick, so one projected frame is the
-    // condition that makes this absence assert mean something (a bare `toHaveCount(0)` passes
-    // instantly against a menu that simply hasn't rendered yet).
     await frames(page);
     await expect(page.locator(".fmenu")).toHaveCount(0);
-    expect((await forceEases())[0]).toBe(2); // unchanged — the empty-space click was inert
+    expect((await forceEases())[0]).toBe(0); // unchanged — the empty-space click was inert
+    expect(await kexCall(page, "forceSelActive")).toBe(null);
 
     // ── 3. Double-click an interior keyframe → handle-edit sub-mode summons its two handles
     // (the direct gesture into handle edit; a diamond hit beats the chart's insertion double-
@@ -836,7 +843,7 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Easing ▸", "Tangents ▸", "Cut K", "Delete Del"]);
+        .toEqual(["Easing ▸", "Tangents ▸", "Cut C", "Delete Del"]);
     // the two-flyout shape, cross-checked against the real builder: `hasHandles` adds Tangents ▸
     // inside `modify`, so the ONE derived divider still lands before Delete.
     await menuGrammar(page, ".fmenu", {
@@ -902,7 +909,7 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Easing ▸", "Cut K", "Delete Del"]); // no Tangents ▸ on a derived keyframe; kf3 is interior too
+        .toEqual(["Easing ▸", "Cut C", "Delete Del"]); // no Tangents ▸ on a derived keyframe; kf3 is interior too
     await page.keyboard.press("Escape");
     await expect(page.locator(".fmenu")).toHaveCount(0);
 });

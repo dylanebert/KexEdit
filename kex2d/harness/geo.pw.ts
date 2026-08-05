@@ -213,7 +213,7 @@ test("geo authoring flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Add Enter", "Handles", "Tangents ▸", "Cut K", "Reset", "Delete Del"]); // ▸ = the submenu affix; Reset top-level (the Reset idiom law)
+        .toEqual(["Add Enter", "Handles", "Tangents ▸", "Cut C", "Reset", "Delete Del"]); // ▸ = the submenu affix; Reset top-level (the Reset idiom law)
     // …and the RENDERED rows are the real `nodeMenu` builder's rows for THIS node's live state,
     // taxonomy and derived dividers included, checked at the root and inside `Tangents ▸`. The
     // expectation is computed from `src/menus.ts` in the page, so a builder reorder can't be
