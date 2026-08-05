@@ -343,10 +343,13 @@ export function sampleForce(points: readonly ForcePoint[], s: number): number {
  *  `evalForce`'s march disagreeing with the authored extent (`kex2d-section-extent`, locked
  *  decision). The conformed `ds` is a FIXED POINT of this same rounding — re-resolving an
  *  already-conforming step (a converted section's stored `Section.ds`) reproduces the same
- *  `edges` and leaves `ds` unchanged, so calling this on an already-exact pair is a no-op.
- *  Every production pairing of a force section's edge count with its step goes through this
- *  ONE seam — never its own local `round(length/step)` — so `forceProfile`'s σ grid and
- *  `evalForce`'s march always agree on the same `ds`. */
+ *  `edges`, the quantity that actually survives; `ds` itself is re-derived in f64 and may differ
+ *  from a stored f32 step by up to one f32 ulp, a strict improvement over the stored value, not a
+ *  no-op. Every production pairing of a force section's edge count with its step goes through
+ *  this ONE seam — never its own local `round(length/step)`, and never split (destructuring
+ *  `edges` alone and marching `forceProfile`/`evalForce` on some OTHER `ds` defeats the pairing
+ *  as surely as skipping the seam — `kex2d-section-extent` stage 4) — so `forceProfile`'s σ grid
+ *  and `evalForce`'s march always agree on the same `ds`. */
 export function resolveStep(length: number, step: number): { edges: number; ds: number } {
     const edges = Math.max(1, Math.round(length / step));
     return { edges, ds: length / edges };

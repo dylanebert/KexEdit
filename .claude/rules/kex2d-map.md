@@ -186,20 +186,42 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   ONE seam that pairs a force section's realized edge count with its per-edge step:
   `edges = max(1, round(length/step))`, `ds = length/edges`. So `edges·ds === length` to f32
   accumulation instead of leaving a rounding-residual gap between the authored extent and the
-  realized one (`kex2d-section-extent`, locked decision). The conformed `ds` is a fixed point of
-  this same rounding, so re-resolving an already-conforming step (a converted section's stored
-  `Section.ds`) is a no-op. `forceProfile` itself still takes a pre-resolved `ds` and computes
-  `edges = round(length/ds)` locally: a no-op once its caller has already conformed via
-  `resolveStep`, never a second, independent rounding. Every production pairing of a force
-  section's edge count with its step goes through `resolveStep` (`track.ts` `forceDense` /
-  `forcePayload` / `forceBake`, `pin.ts`, `optimize.ts` ×2, `polish.ts` `spine`). A recursive
-  source-tree walk in `tests/profile.test.ts` holds that population closed, asserted both
-  directions (a declared site missing from source, and a source site building its own
-  `(edges, ds)` pair outside `resolveStep` with no declaration), against an explicit exemption
-  table for `playback.ts`/`fitlab.ts` (consume an already-conformed `ds` from upstream),
-  `section.ts` (its `chain()` calls `evalForce` with a step traced through `resolveStep`
-  upstream), and `spline.ts:432` (the geo variable-chord rule: a different domain, not a force
-  pairing).
+  realized one (`kex2d-section-extent`, locked decision) — within the sample budget: a
+  `MAX_SAMPLES`-clipped chain, and `forceBake` (`track.ts:2523`, which clips deliberately),
+  truncate the march short of `edges`, so the identity is conditional on nothing having clipped.
+  The conformed `ds` is a fixed point of this same rounding, so re-resolving an already-conforming
+  step (a converted section's stored `Section.ds`) preserves the same `edges` — what survives
+  re-resolution is the EDGE COUNT, not the `ds` value bit-for-bit: the returned `ds` is re-derived
+  in f64 and may differ from a stored f32 step by up to one f32 ulp, a strict improvement over the
+  stored value rather than a no-op. `forceProfile` itself still takes a pre-resolved `ds` and
+  computes `edges = round(length/ds)` locally: recovers the SAME edge count once its caller has
+  already conformed via `resolveStep` (the fixed-point property), never a second, independent
+  rounding.
+
+  **Pairing is a source-of-truth law, not a per-call convention: a value produced in pairs must
+  travel in pairs.** `resolveStep`'s `{edges, ds}` is one seam producing two values a caller must
+  use TOGETHER; a caller that destructures `edges` alone and later hands `forceProfile`/
+  `evalForce` some OTHER, unconformed `ds` has split the pair — `optimize.ts` shipped exactly this
+  latently (`kex2d-section-extent` stage 4) — and no per-file registry pin can see it, since the
+  file still mentions `resolveStep` truthfully. The source pin below asserts at the invariant's
+  own granularity (per call site: does THIS `forceProfile`/`evalForce` call consume a `ds` bound
+  by `resolveStep` in the same module), not per-file presence. The structural fix — `forceProfile`
+  taking the resolved pair as a single value the callee REQUIRES, deleting its own second
+  rounding — would make the split a type error instead of a latent bug; deferred pending that
+  signature change (roadmap), so the per-call-site pin carries the invariant until then.
+
+  Every production pairing of a force section's edge count with its step goes through
+  `resolveStep` — six sites in four modules: `track.ts` `forcePayload` + `forceBake`, `pin.ts`
+  `sectionSpec`, `optimize.ts` `derivedTol` + the Gram matrix build, `polish.ts` `spine`.
+  `track.ts`'s `forceDense` is a CONSUMER of an already-conformed `ds`, not a pairing site of its
+  own: its `ds` parameter is conformed once upstream, by `forcePayload`/`forceBake`, each of which
+  calls `resolveStep` before passing it in. A recursive source-tree walk in
+  `tests/profile.test.ts` holds the six-site population closed, asserted both directions (a
+  declared site missing from source, and a source site building its own `(edges, ds)` pair
+  outside `resolveStep` with no declaration), against an explicit exemption table for
+  `playback.ts`/`fitlab.ts` (consume an already-conformed `ds` from upstream), `section.ts` (its
+  `chain()` calls `evalForce` with a step traced through `resolveStep` upstream), and
+  `spline.ts:432` (the geo variable-chord rule: a different domain, not a force pairing).
   Opinion-free: the substrate consumes dense F_n, this builds it from authored points.
   Unit-tested in `tests/profile.test.ts`.
 

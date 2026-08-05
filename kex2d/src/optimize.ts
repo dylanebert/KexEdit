@@ -249,9 +249,10 @@ export function computeExit(
     entry: Entry,
     points: readonly ForcePoint[],
     length: number,
-    ds: number,
+    step: number,
     domain?: Domain,
 ): OptimizeStamp {
+    const { ds } = resolveStep(length, step);
     const dense = forceProfile(points, length, ds);
     const exit = evalForce(entry, dense, ds, domain);
     return { x: exit.exit.x, y: exit.exit.y, theta: exit.exit.theta, v: exit.exit.v };
@@ -315,8 +316,12 @@ function choleskySolve(L: Float64Array, n: number, b: ArrayLike<number>): Float6
  * if (r.outcome === "solved") landPin(history, ecs, section, r.points);
  */
 export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
-    const { entry, points, locked, length, ds, domain, stamp } = opts;
+    const { entry, points, locked, length, ds: step, domain, stamp } = opts;
     const maxIters = opts.maxIters ?? MAX_ITERS;
+    // conform once (the pairing seam) so every downstream forceProfile/evalForce call below
+    // marches at the SAME exact step (`kex2d-section-extent` stage 4) — never the caller's raw
+    // `step`, whose rounding residual would otherwise disagree with `profile.ts`'s own σ grid.
+    const { edges, ds } = resolveStep(length, step);
     const tolD = derivedTol(stamp, length, ds);
     const tol = opts.tol ?? tolD.pos;
     const angleTol = opts.angleTol ?? tolD.angle;
@@ -367,7 +372,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
 
     // the Gram matrix M (P×P): each free key's unit-g-bump response, ds-weighted inner product.
     // exact globally (not a linearization) — the dense profile is affine in g with s frozen.
-    const { edges } = resolveStep(length, ds);
+    // `edges`/`ds` are the SAME conformed pair resolved once at function entry.
     const base = forceProfile(points, length, ds);
     const cols: Float64Array[] = freeIdx.map((k) => {
         const gPert = Float64Array.from(g0);

@@ -500,7 +500,6 @@ describe("resolveStep — the ONE seam pairing a force section's edge count with
         ];
         for (const { ds, length } of cases) {
             const { edges, ds: dsOut } = resolveStep(length, ds);
-            expect(edges).toBe(Math.max(1, Math.round(length / ds)));
             expect(Math.abs(edges * dsOut - length)).toBeLessThan(conformTol(length));
         }
     });
@@ -516,6 +515,9 @@ describe("resolveStep — the ONE seam pairing a force section's edge count with
                 const second = resolveStep(length, first.ds);
                 expect(second.edges).toBe(first.edges);
                 expect(second.ds).toBe(first.ds); // bit-identical, not just close
+                // crosses the f32 `Section.ds` column the fixed-point claim is actually about
+                // (a converted section's stored step) — `first.ds` alone never leaves f64.
+                expect(resolveStep(length, Math.fround(first.ds)).edges).toBe(first.edges);
                 count++;
             }
         }
@@ -630,7 +632,258 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
                 (src(f).includes("forceProfile(") || src(f).includes("evalForce(")),
         );
         expect(callers.sort()).toEqual([...Seamed, ...Object.keys(PairingExempt)].sort());
+        // a floor, not the invariant: a module can MENTION resolveStep while still handing
+        // forceProfile/evalForce a `ds` that never went through it — the per-call-site test
+        // below is what actually closes that gap (kex2d-section-extent stage 4).
         for (const f of Seamed) expect(src(f).includes("resolveStep(")).toBe(true);
+    });
+
+    // Per-file presence isn't per-call-site granularity: `optimize.ts` shipped
+    // `const { edges } = resolveStep(length, ds);` at two sites and then marched
+    // `forceProfile`/`evalForce` on the CALLER's raw, unconformed `ds` at six call sites —
+    // `src(f).includes("resolveStep(")` above stayed true throughout. A first per-call-site cut
+    // (flat file-global bound-name set) was ITSELF too loose: the adversarial pass measured it
+    // asserting presence of a SPELLING, not provenance — `bound: ["ds"], args: ["ds","ds"], all
+    // bound? true` on a probe where a second, unrelated function took a raw `ds` param and
+    // marched it straight through, passing purely because the bare spelling `ds` happened to be
+    // bound SOMEWHERE ELSE in the file — the exact reintroduction path this stage exists to
+    // close. It also flipped false on `const ds = resolveStep(length, step).ds;`, a legitimately
+    // conformed member-access binding the destructure-only regex never recognized. Both are
+    // fixed here by making visibility LEXICAL (a binding must be in scope at the call, not merely
+    // present in the file) and by recognizing all three conforming binding forms.
+    //
+    // comments are blanked first (space-for-non-newline-char, so every offset below stays
+    // stable) — `polish.ts` carries `forceProfile(points, length, ds)` inside a JSDoc `@example`
+    // and its own module-header prose, which read as real call sites otherwise.
+    function stripComments(text: string): string {
+        let out = "";
+        let i = 0;
+        while (i < text.length) {
+            if (text[i] === "/" && text[i + 1] === "/") {
+                while (i < text.length && text[i] !== "\n") {
+                    out += " ";
+                    i++;
+                }
+            } else if (text[i] === "/" && text[i + 1] === "*") {
+                out += "  ";
+                i += 2;
+                while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) {
+                    out += text[i] === "\n" ? "\n" : " ";
+                    i++;
+                }
+                if (i < text.length) {
+                    out += "  ";
+                    i += 2;
+                }
+            } else {
+                out += text[i];
+                i++;
+            }
+        }
+        return out;
+    }
+    // the brace-open positions enclosing a given offset, in outer-to-inner order — a binding's
+    // block path must be a PREFIX of a use's block path for the binding to still be in scope
+    // there (every block open when it was declared is still open at the use).
+    type BraceEvent = { pos: number; open: boolean };
+    function blockEvents(text: string): BraceEvent[] {
+        const events: BraceEvent[] = [];
+        for (let i = 0; i < text.length; i++) {
+            if (text[i] === "{") events.push({ pos: i, open: true });
+            else if (text[i] === "}") events.push({ pos: i, open: false });
+        }
+        return events;
+    }
+    function blockPathAt(events: BraceEvent[], pos: number): number[] {
+        const stack: number[] = [];
+        for (const e of events) {
+            if (e.pos >= pos) break;
+            if (e.open) stack.push(e.pos);
+            else stack.pop();
+        }
+        return stack;
+    }
+    type Binding = { name: string; pos: number; blockPath: number[] };
+    type Use = { name: string; pos: number; blockPath: number[] };
+    function visible(binding: Binding, use: Use): boolean {
+        if (binding.pos >= use.pos) return false;
+        if (binding.blockPath.length > use.blockPath.length) return false;
+        return binding.blockPath.every((p, i) => use.blockPath[i] === p);
+    }
+    // the three conforming binding forms, each normalized to the name a CALL SITE would spell —
+    // the same normalization `dsUses` applies to its argument (`.split(".").pop()`), so a
+    // whole-pair bind (form C) registers under the literal name "ds" too: a caller only ever
+    // reads `.ds` off it.
+    function resolveStepBindings(text: string, events: BraceEvent[]): Binding[] {
+        const bindings: Binding[] = [];
+        let m: RegExpExecArray | null;
+        // (A) const { edges, ds } = resolveStep(...) — incl. aliases (`ds: dsC`)
+        const destructure = /\{\s*([\w\s,:]+)\}\s*=\s*resolveStep\(/g;
+        while ((m = destructure.exec(text)) !== null) {
+            for (const field of m[1].split(",")) {
+                const [key, alias] = field.split(":").map((s) => s.trim());
+                if (key === "ds")
+                    bindings.push({
+                        name: alias ?? key,
+                        pos: m.index,
+                        blockPath: blockPathAt(events, m.index),
+                    });
+            }
+        }
+        // (B) const dsVar = resolveStep(...).ds
+        const memberBind = /\bconst\s+(\w+)\s*=\s*resolveStep\([^()]*\)\.ds\b/g;
+        while ((m = memberBind.exec(text)) !== null)
+            bindings.push({ name: m[1], pos: m.index, blockPath: blockPathAt(events, m.index) });
+        // (C) const pair = resolveStep(...) — the whole pair, not immediately narrowed
+        const wholeBind = /\bconst\s+\w+\s*=\s*resolveStep\([^()]*\)(?!\s*\.)/g;
+        while ((m = wholeBind.exec(text)) !== null)
+            bindings.push({ name: "ds", pos: m.index, blockPath: blockPathAt(events, m.index) });
+        return bindings;
+    }
+    // balanced-paren argument splitter — a plain comma split breaks on a nested call
+    // (`dense.subarray(0, avail)`, a ternary) inside an argument.
+    function splitArgs(s: string): string[] {
+        const args: string[] = [];
+        let depth = 0;
+        let cur = "";
+        for (const ch of s) {
+            if (ch === "(" || ch === "[" || ch === "{") depth++;
+            if (ch === ")" || ch === "]" || ch === "}") depth--;
+            if (ch === "," && depth === 0) {
+                args.push(cur);
+                cur = "";
+            } else cur += ch;
+        }
+        if (cur.trim()) args.push(cur);
+        return args;
+    }
+    function callArgs(text: string, name: string): Array<{ args: string[]; pos: number }> {
+        const calls: Array<{ args: string[]; pos: number }> = [];
+        const marker = `${name}(`;
+        let i = text.indexOf(marker);
+        while (i !== -1) {
+            let depth = 1;
+            let j = i + marker.length;
+            while (j < text.length && depth > 0) {
+                if (text[j] === "(") depth++;
+                else if (text[j] === ")") depth--;
+                j++;
+            }
+            calls.push({ args: splitArgs(text.slice(i + marker.length, j - 1)), pos: i });
+            i = text.indexOf(marker, j);
+        }
+        return calls;
+    }
+    // `ds` is the third positional argument of both `forceProfile(points, length, ds)` and
+    // `evalForce(entry, dense, ds, domain)` — the two seam consumers this whole population is
+    // about.
+    function dsUses(text: string, events: BraceEvent[]): Use[] {
+        const uses: Use[] = [];
+        for (const name of ["forceProfile", "evalForce"]) {
+            for (const { args, pos } of callArgs(text, name)) {
+                const raw = args[2]?.trim();
+                if (raw)
+                    uses.push({
+                        name: raw.split(".").pop()?.trim() ?? raw,
+                        pos,
+                        blockPath: blockPathAt(events, pos),
+                    });
+            }
+        }
+        return uses;
+    }
+    // the nearest preceding top-level `function NAME(` — a cheap enclosing-function reader, only
+    // used to key the cross-function exemption below.
+    function enclosingFunctionName(text: string, pos: number): string | null {
+        const decl = /\bfunction\s+(\w+)\s*\(/g;
+        let m: RegExpExecArray | null;
+        let name: string | null = null;
+        while ((m = decl.exec(text)) !== null) {
+            if (m.index > pos) break;
+            name = m[1];
+        }
+        return name;
+    }
+    // What a LEXICAL scanner still cannot see: cross-function dataflow, where a function takes
+    // `ds` as a bare parameter (or a field off another function's return) that every one of ITS
+    // OWN callers already conformed before passing in. That is a real, load-bearing shape in this
+    // codebase (`kex2d-map.md`'s `profile.ts` entry: `track.ts`'s `forceDense` is a declared
+    // CONSUMER, not a pairing site) — proving it requires following the argument across a call
+    // boundary, which this file-local scan doesn't do (and is exactly the gap the structural fix,
+    // `forceProfile` taking the resolved pair as a type the callee requires, closes for good —
+    // Residue, `kex2d-section-extent`). Declared, not swept, keyed by enclosing function name so
+    // a NEW function taking the same shape does NOT inherit the exemption for free — the
+    // coordinator's `evil` probe below is what the declared registry must still catch.
+    const CrossFunctionConsumers: Record<string, string[]> = {
+        "track.ts": ["forceDense"],
+        "pin.ts": ["enterPin"],
+        "polish.ts": ["violence"],
+    };
+    function unboundUses(text: string, file: string): Use[] {
+        const stripped = stripComments(text);
+        const events = blockEvents(stripped);
+        const bindings = resolveStepBindings(stripped, events);
+        return dsUses(stripped, events).filter((u) => {
+            if (bindings.some((b) => b.name === u.name && visible(b, u))) return false;
+            const fn = enclosingFunctionName(stripped, u.pos);
+            return !(fn && CrossFunctionConsumers[file]?.includes(fn));
+        });
+    }
+    test("every forceProfile/evalForce call site in a Seamed module consumes a ds bound by resolveStep in its own lexical scope (or a declared cross-function consumer)", () => {
+        for (const f of Seamed) expect(unboundUses(src(f), f)).toEqual([]);
+    });
+    // positive controls: exercise the SCANNER end to end (`unboundUses`), not just a set
+    // comparison — the cursor-allowlist lesson, same file (editor-ui.md Menus). Every one of
+    // these is graded against "not in `Seamed`" (file `"probe.ts"`), so the cross-function
+    // exemption table — keyed per file — never accidentally covers them.
+    test("positive control: an unrouted ds argument at a call site is caught", () => {
+        const unrouted = `
+            function f(length, ds) {
+                const { edges } = resolveStep(length, ds);
+                return forceProfile(points, length, ds);
+            }
+        `;
+        expect(unboundUses(unrouted, "probe.ts").length).toBeGreaterThan(0);
+    });
+    test("positive control: a properly paired ds argument passes", () => {
+        const routed = `
+            function f(length, step) {
+                const { edges, ds } = resolveStep(length, step);
+                return forceProfile(points, length, ds);
+            }
+        `;
+        expect(unboundUses(routed, "probe.ts")).toEqual([]);
+    });
+    // the coordinator's two probes (adversarial pass on this stage's diff), reproduced verbatim.
+    test("positive control: a spelling bound in ONE function doesn't leak into a sibling that never conformed (evasion)", () => {
+        const evasion = `
+            function legit(length, step) {
+                const { edges, ds } = resolveStep(length, step);
+                return forceProfile(points, length, ds);
+            }
+            function evil(length, ds) {
+                return forceProfile(points, length, ds);
+            }
+        `;
+        expect(unboundUses(evasion, "probe.ts").length).toBeGreaterThan(0);
+    });
+    test("positive control: a member-access binding (const ds = resolveStep(...).ds) is recognized, not just a destructure (false positive)", () => {
+        const memberBound = `
+            function f(length, step) {
+                const ds = resolveStep(length, step).ds;
+                return forceProfile(points, length, ds);
+            }
+        `;
+        expect(unboundUses(memberBound, "probe.ts")).toEqual([]);
+    });
+    test("positive control: a whole-pair binding (const pair = resolveStep(...); pair.ds) is recognized", () => {
+        const pairBound = `
+            function f(length, step) {
+                const pair = resolveStep(length, step);
+                return forceProfile(points, length, pair.ds);
+            }
+        `;
+        expect(unboundUses(pairBound, "probe.ts")).toEqual([]);
     });
     // F4: aliased-import evasion. A raw substring scan for `forceProfile(`/`evalForce(` is
     // blind to `import { forceProfile as fp } from "./profile"` followed by `fp(...)`, or a

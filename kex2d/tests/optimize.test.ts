@@ -8,8 +8,8 @@ import {
     solveOptimize,
 } from "../src/optimize";
 import optimizeGolden from "./fixtures/optimize-golden.json";
-import { Easing, type ForcePoint } from "../src/profile";
-import { Domain, type Entry } from "../src/section";
+import { Easing, type ForcePoint, forceProfile, resolveStep } from "../src/profile";
+import { Domain, type Entry, evalForce } from "../src/section";
 
 // the invariant floor for pin mode's masked exit-restore solve (`kex2d-optimize-mode` stage
 // 1, `optimize.ts`): zero-drift identity, the masking invariants (as a property test over
@@ -677,5 +677,59 @@ describe("solveOptimize — landed-energy gate (kex2d-gate-hardening 1b, exact b
         });
         expect(r.outcome).toBe("solved");
         expect(r.vSqResidual).toBeLessThan(exitTol(derivedTol(stamp, length, DS).pos));
+    });
+});
+
+describe("computeExit/solveOptimize conform ds at an off-grid length (kex2d-section-extent stage 4)", () => {
+    // every case above, and every case in optimize.oracle.ts, uses length 40 or 400 at
+    // DS = 0.5 — grid-aligned, so `resolveStep` is a no-op and can't expose a caller marching
+    // on the raw, unconformed `ds` instead of the seam's conformed pair. 12.345 is the locked
+    // decision's own worked example (edges = 25, realized 12.5, a +0.155 m gap against the
+    // document's own conformed bake — four orders above `derivedTol.pos`).
+    const OffLength = 12.345;
+    const offPoints: ForcePoint[] = [
+        { s: 0, g: 1 },
+        { s: OffLength / 2, g: 1.4 },
+        { s: OffLength, g: 1.1 },
+    ];
+
+    test("computeExit matches the document's own conformed bake, not a raw-ds march", () => {
+        // RED FIRST (seen failing pre-fix, off by ~0.155 m on x): computeExit handed
+        // forceProfile/evalForce the caller's raw ds (0.5) directly (`:255`/`:256`); the
+        // document's own bake (profile.ts's ONE seam, `resolveStep`) marches at the conformed
+        // step instead.
+        const { ds: conformed } = resolveStep(OffLength, DS);
+        const documentBake = forceProfile(offPoints, OffLength, conformed);
+        const exit = evalForce(ENTRY, documentBake, conformed, undefined).exit;
+        const stamp = computeExit(ENTRY, offPoints, OffLength, DS);
+        expect(stamp.x).toBeCloseTo(exit.x, 12);
+        expect(stamp.y).toBeCloseTo(exit.y, 12);
+        expect(stamp.theta).toBeCloseTo(exit.theta, 12);
+    });
+
+    test("solveOptimize's own march conforms ds too (zero-drift identity against the document bake)", () => {
+        // RED FIRST: the target stamp is built directly off the document-conformed march,
+        // never through computeExit, so this is independent of the test above. Pre-fix,
+        // `exitAt`'s own march (`:357`/`:358`) still used the raw ds, so `e0` disagreed with
+        // `stamp` and the exact `c0 === 0` short-circuit missed, falling through into the
+        // Gram-matrix build (`:371`/`:375`/`:385`) at the raw, unconformed step too — this
+        // failed with a nonzero iters/residual rather than the exact zero-drift identity.
+        const { ds: conformed } = resolveStep(OffLength, DS);
+        const documentBake = forceProfile(offPoints, OffLength, conformed);
+        const exit = evalForce(ENTRY, documentBake, conformed, undefined).exit;
+        const stamp = { x: exit.x, y: exit.y, theta: exit.theta, v: exit.v };
+        const r = solveOptimize({
+            entry: ENTRY,
+            points: offPoints,
+            locked: new Set(),
+            length: OffLength,
+            ds: DS,
+            stamp,
+        });
+        expect(r.outcome).toBe("solved");
+        expect(r.iters).toBe(0);
+        expect(r.residual).toBe(0);
+        expect(r.angleResidual).toBe(0);
+        expect(r.deltaG).toEqual(new Array(offPoints.length).fill(0));
     });
 });
