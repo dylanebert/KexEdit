@@ -81,10 +81,15 @@ export type SectionMenuActions = {
     reset: () => void;
     remove: () => void;
     removeSet: () => void;
-    /** the cursor-anchored Cut, named apart from `NodeMenuActions`/`KeyframeMenuActions`' `cut` —
-     *  this surface carries no keyboard binding at all (the locked decision's shortcut
-     *  asymmetry), so the two acts must stay apart by name for the key-act seam's `Acts` table to
-     *  tell them apart (`append`/`add`'s own precedent). */
+    /** the section-selected Cut, named apart from `NodeMenuActions`/`KeyframeMenuActions`' `cut`
+     *  — the row resolves a CURSOR position (the menu's own free-position reading), while
+     *  `BINDINGS.cut` on this surface (`keys.ts sectionKeyAct`) resolves the PLAYHEAD's instead
+     *  (kex2d-structural-editing stage 8's reopening of the shortcut asymmetry: a free cursor
+     *  position had nothing for a key to name, but the playhead does). Same act body either way
+     *  (`cutSection`) — only the resolved `position` argument differs by caller, the CutPosition
+     *  doc's own contract — so the two acts must stay apart by name for the key-act seam's `Acts`
+     *  table to tell them apart (`append`/`add`'s own precedent), not because one is bound and
+     *  the other isn't: both are, now. */
     cutAt: () => void;
     /** the set-lifted Join (stage 5) — merges the selected contiguous same-kind run into one
      *  section as one undo entry (`history.joinSections`). */
@@ -156,22 +161,24 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
     }
     // Cut — single-subject, like Pin above: a multi-section selection has no single cursor
     // position to cut at, so it's OMITTED there (never grayed) rather than shown dead, the same
-    // "a row that could never fire on this subject" law that keeps Pin off the multi menu. No
-    // `shortcut`: the cursor-anchored section Cut carries no binding at all (the locked
-    // decision's asymmetry — `nodeMenu`/`keyframeMenu`'s Cut rows bind `K`, this one can't name a
-    // key for a free position). Join is Cut's multi-set mirror: a single-subject selection has
-    // nothing to join (`joinNext` needs a same-kind neighbor beside it, and the rejected
-    // single-subject "Join Next" would read asymmetric next to a point-anchored Cut — the locked
-    // decision), so it's OMITTED there and shown only over a multi-set, `shortcut`ed (Blender/
-    // Audacity's `J`, unlike Cut's cursor-anchored asymmetry) since the whole selected set names
-    // the run with no cursor needed. `cutSurface` is the OTHER omission axis (stage 7): the
-    // canvas can never serve Cut regardless of selection shape, so the row is absent there too —
-    // "a row that could never fire on this SURFACE" is the same law as "on this subject", just
-    // read off a different field, and both gate the row's PRESENCE, never its `enabled`.
+    // "a row that could never fire on this subject" law that keeps Pin off the multi menu.
+    // `shortcut: BINDINGS.cut.hint` — stage 8 reopened the asymmetry: the row's own click still
+    // resolves a cursor, but `C` on this same surface resolves the PLAYHEAD instead
+    // (`keys.ts sectionKeyAct`, `editor-ui.md`'s Menus section) — the hint names the ACTION,
+    // which now genuinely is keyboard-reachable, not the row's own free-position read. Join is
+    // Cut's multi-set mirror: a single-subject selection has nothing to join (`joinNext` needs a
+    // same-kind neighbor beside it, and the rejected single-subject "Join Next" would read
+    // asymmetric next to a point-anchored Cut — the locked decision), so it's OMITTED there and
+    // shown only over a multi-set, `shortcut`ed (Blender/Audacity's `J`) since the whole selected
+    // set names the run with no cursor needed. `cutSurface` is the OTHER omission axis (stage 7):
+    // the canvas can never serve Cut regardless of selection shape, so the row is absent there
+    // too — "a row that could never fire on this SURFACE" is the same law as "on this subject",
+    // just read off a different field, and both gate the row's PRESENCE, never its `enabled`.
     if (!s.multi && s.cutSurface) {
         items.push({
             label: "Cut",
             group: "structure",
+            shortcut: BINDINGS.cut.hint,
             enabled: s.canCut === true,
             action: a.cutAt,
         });

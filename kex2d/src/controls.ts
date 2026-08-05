@@ -1,5 +1,12 @@
 import type { State } from "@dylanebert/shallot";
-import { nodeActs, nodeCuttable, sectionActs, sectionEditable, sectionOpsAllowed } from "./acts";
+import {
+    type CutPosition,
+    nodeActs,
+    nodeCuttable,
+    sectionActs,
+    sectionEditable,
+    sectionOpsAllowed,
+} from "./acts";
 import {
     beginDrag,
     clearHover,
@@ -39,6 +46,7 @@ import {
     slideToPoint,
     type Frame,
 } from "./manipulator";
+import { playheadPosition } from "./cart";
 import { nodeKeyAct, sectionKeyAct } from "./keys";
 import { LENGTH_MIN } from "./magnet";
 import { BINDINGS, bound } from "./menu";
@@ -56,12 +64,15 @@ import {
     reheadOnDrag,
     samples,
     SectionKind,
+    sectionCutAt,
     sectionHandles,
     sectionInfo,
     sections,
+    sectionSpans,
     seedTangent,
     setTangent,
     Track,
+    trackEntity,
 } from "./track";
 import { fmt } from "./timeline";
 import {
@@ -1533,17 +1544,31 @@ export function attachControls(
         // section under a live session would strand `editor.pinning` on a dead id (the mode's own
         // Exit lives only on that section's own context menu, so nothing could ever reach it again).
         // routed through `keys.ts`'s `sectionKeyAct` (the keyboard twin of `menus.sectionMenu`'s
-        // `remove`/`removeSet` rows) — the guards stay here, the decider only reads their results.
+        // `remove`/`removeSet`/`Cut` rows) — the guards stay here, the decider only reads their
+        // results. `position` is `C`'s own resolution: the playhead's own stored position
+        // (`cart.playheadPosition`, never a cursor reading — the locked decision's "the keyboard
+        // cuts at the playhead... with no threshold") run through the SAME `sectionCutAt` seam
+        // the clip-strip menu row resolves a cursor through, scoped to THIS section — null off
+        // the track (no bake) or off the section (the playhead sits outside it), either of which
+        // makes `C` a no-op here exactly like a non-interior click would.
         if (editor.section !== null) {
             const section = editor.section;
+            const trackEid = trackEntity(ecs);
+            let position: CutPosition | null = null;
+            if (trackEid !== null) {
+                const ph = playheadPosition(trackEid);
+                if (ph !== null)
+                    position = sectionCutAt(ecs, section, sectionSpans(ecs, trackEid), ph.d, ph.u);
+            }
             const act = sectionKeyAct(e.key, {
                 opsAllowed: sectionOpsAllowed(editor.pinning),
                 multi: editor.sections.ids.size > 1,
                 joinable: sectionsJoinable([...editor.sections.ids], sections(ecs)),
+                cuttable: position !== null,
             });
             if (act !== null) {
                 e.preventDefault();
-                const acts = sectionActs(ecs, section);
+                const acts = sectionActs(ecs, section, position);
                 acts[act]();
             }
             return;

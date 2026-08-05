@@ -410,7 +410,13 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `loopTime`, and **`trackMapping`**
   (the per-sample arclength↔time table over the display bake — the cart's `t`↔chart-`s` projection;
-  the cart rides in time, the chart is distance).
+  the cart rides in time, the chart is distance). `cartArc` reads the playhead's own arclength off
+  the current bake; `playheadPosition` wraps it with the SAME axis pair (`d` and the track's
+  native `u`, `dToU`-projected) — the ONE resolution every playhead-anchored Cut reads, never a
+  pixel- or table-derived reading (`editor-ui.md`'s transport-read clause, `kex2d-structural-
+  editing` stage 8): `controls.ts`'s keyboard path (`keys.ts sectionKeyAct`'s playhead-exact
+  `cutAt`) AND `Timeline.svelte`'s `clipMenu` (the menu's cursor→playhead snap, `timeline.ts
+  snapCutToPlayhead`) both call it directly — one call site, not two paths that happen to agree.
 - `editor.ts` — ephemeral UI state: `selection` (node), `force` (point id), `section` (id), `start`
   (the track START anchor / v0 handle) + their setters. The four are **mutually exclusive** (selecting
   one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a

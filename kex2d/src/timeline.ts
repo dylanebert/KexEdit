@@ -314,6 +314,38 @@ export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX)
     return best;
 }
 
+/** the clip-strip Cut's cursor→playhead snap (`editor-ui.md`'s Snapping section, the playhead
+ *  landmark) — the reused `snap` resolver, called with a target set of exactly one. Within
+ *  `threshold` PIXELS of the cursor's own chart position, the cut lands EXACTLY on the
+ *  playhead's own stored `(d, u)` pair — `playheadD`/`playheadU`, never re-derived through a
+ *  snapped pixel's inverse projection (the locked decision's "exact, not near": a pixel round
+ *  trip is a nearby reading, not the landmark's own value) — else the raw cursor `(rawD, rawU)`
+ *  passes through unchanged. `playheadPx` is the SAME projection the caller used to place
+ *  `rawPx` (`uToPx` over the live view), so the pixel comparison is apples to apples at any
+ *  zoom — `threshold` stays the fixed on-screen pull `SNAP_PX` names, never a domain-unit
+ *  literal. `playheadD`/`playheadU`/`playheadPx` all null together (no live playhead to snap
+ *  to, e.g. unparked) is a plain pass-through, matching `sTargets`' own "only while parked"
+ *  precedent. Pure and read-only by construction — this takes no cart/editor state, only
+ *  already-resolved numbers, so it cannot itself move anything. Returns the resolved `(d, u)`
+ *  pair plus the guide px to flash (a landmark hit) or `null` (no snap — the caller then draws
+ *  no guide, `chartCreate`'s own precedent). */
+export function snapCutToPlayhead(
+    rawPx: number,
+    rawD: number,
+    rawU: number,
+    playheadD: number | null,
+    playheadU: number | null,
+    playheadPx: number | null,
+    threshold = SNAP_PX,
+): { d: number; u: number; guide: number | null } {
+    if (playheadD === null || playheadU === null || playheadPx === null) {
+        return { d: rawD, u: rawU, guide: null };
+    }
+    const hit = snap(rawPx, [playheadPx], threshold);
+    if (hit === null) return { d: rawD, u: rawU, guide: null };
+    return { d: playheadD, u: playheadU, guide: hit };
+}
+
 /** the force-keyframe drag grid quanta — the authoring vocabulary a value snaps to when no
  *  landmark is in range (a force keyframe demands a value, so its axes carry a semantic
  *  quantum, unlike the landmarks-only extent/scrub axes). hand-tuned at the feel check-in;

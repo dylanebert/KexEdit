@@ -194,9 +194,15 @@ describe("sectionMenu — the section context menu's rows", () => {
             "cutAt",
             "join",
         );
-    // no `shortcut`: the cursor-anchored section Cut carries no keyboard binding at all (the
-    // locked decision's asymmetry — `nodeMenu`/`keyframeMenu`'s Cut rows DO carry `K`).
-    const cut = (enabled: boolean): Row => ({ label: "Cut", group: "structure", enabled });
+    // `shortcut: "C"` — stage 8 reopened the asymmetry: `C` on this surface fires the SAME
+    // `cutAt` act, resolved against the playhead rather than the row's own cursor read
+    // (`keys.ts sectionKeyAct`).
+    const cut = (enabled: boolean): Row => ({
+        label: "Cut",
+        group: "structure",
+        shortcut: "C",
+        enabled,
+    });
     // Join DOES carry `J` — unlike Cut it needs no cursor position, so it's wired directly.
     const join = (enabled: boolean): Row => ({
         label: "Join",
@@ -441,12 +447,12 @@ describe("nodeMenu — the node context menu's rows", () => {
             "resetSet",
             "cut",
         );
-    // node's Cut ALWAYS shows `K`, enabled or not (the hint names the action, not the live
+    // node's Cut ALWAYS shows `C`, enabled or not (the hint names the action, not the live
     // enablement — a grayed row keeps it, like `Add`'s own `Enter`).
     const cut = (enabled: boolean): Row => ({
         label: "Cut",
         group: "structure",
-        shortcut: "K",
+        shortcut: "C",
         enabled,
     });
     const tangents = (enabled: boolean, mode: TangentMode): Row => ({
@@ -616,12 +622,12 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
     };
     const acts = () =>
         recorder("remove", "toggleLock", "setEase", "chooseCustom", "pickMode", "cut");
-    // keyframe's Cut ALWAYS shows `K` when the row exists at all (omitted only when the active
+    // keyframe's Cut ALWAYS shows `C` when the row exists at all (omitted only when the active
     // is terminal — Easing's own reason to omit its whole submenu).
     const cut = (enabled: boolean): Row => ({
         label: "Cut",
         group: "structure",
-        shortcut: "K",
+        shortcut: "C",
         enabled,
     });
     const easing = (
@@ -1271,7 +1277,7 @@ describe("the menu grammar — every builder, every state", () => {
         pick: null,
         append: null,
         cut: "cut",
-        cutAt: null,
+        cutAt: "cut",
         join: "join",
     };
 
@@ -1322,6 +1328,7 @@ describe("the menu grammar — every builder, every state", () => {
         opsAllowed: bool,
         multi: bool,
         joinable: bool,
+        cuttable: bool,
     });
     // `NodeKeyState` is a discriminated union on `multi` (`keys.ts`) — the multi branch carries no
     // `endSelected` field, so its full state space is the two branches' matrices driven
@@ -1390,6 +1397,7 @@ describe("the menu grammar — every builder, every state", () => {
                 "exitMode:pinExit",
                 "lock:toggleLock",
                 "cut:cut",
+                "cut:cutAt",
                 "join:join",
             ].sort(),
         );
@@ -1517,8 +1525,8 @@ describe("the menu grammar — every builder, every state", () => {
         },
         q: { files: [], why: "the lock toggle only" },
         Q: { files: [], why: "the lock toggle only" },
-        k: { files: [], why: "the landmark Cut binding only" },
-        K: { files: [], why: "the landmark Cut binding only" },
+        c: { files: [], why: "the Cut binding only (landmark or playhead, by surface)" },
+        C: { files: [], why: "the Cut binding only (landmark or playhead, by surface)" },
         j: { files: [], why: "the bulk Join binding only" },
         J: { files: [], why: "the bulk Join binding only" },
     };

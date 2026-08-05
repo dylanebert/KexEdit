@@ -35,13 +35,15 @@ export type Binding = { readonly keys: readonly string[]; readonly hint: string 
  *
  * Homes: `remove` — `controls.ts` (section, node set, chain-end trim) + `Timeline.svelte` (force
  * keyframe); `append` — `controls.ts`; `exitMode` — `App.svelte`; `lock` — `Timeline.svelte`;
- * `cut` — the landmark paths only (a selected node's own `controls.ts` home, a selected force
- * keyframe's own `Timeline.svelte` home — wiring lands with `kex2d-structural-editing` stage 6).
- * The cursor-anchored section Cut carries no binding at all — a free position has no keyboard
- * anchor to name (`editor-ui.md` Menus' shortcut-asymmetry clause). `join` — `controls.ts`, the
- * bulk section-set rung beside `remove`'s own multi branch (Blender/Audacity's own key): unlike
- * Cut it needs no cursor position, only the live selected set, so it's wired directly rather than
- * deferred.
+ * `cut` — three landing surfaces, all through `keys.ts` deciders: a selected node's own landmark
+ * (`controls.ts`), a selected force keyframe's own landmark (`Timeline.svelte`), and a selected
+ * SECTION's own playhead (`controls.ts`, `kex2d-structural-editing` stage 8) — the reopening of
+ * what used to be a hard asymmetry: a free CURSOR position has no keyboard anchor to name, but
+ * the playhead does (`editor-ui.md` Menus, `editor-ui.md`'s transport-read clause), so the
+ * clip-strip's cursor-anchored Cut row now advertises the same key its playhead-exact keyboard
+ * twin fires. `join` — `controls.ts`, the bulk section-set rung beside `remove`'s own multi
+ * branch (Blender/Audacity's own key): unlike Cut it needs no cursor position, only the live
+ * selected set, so it's wired directly rather than deferred.
  * `Escape` and `Delete` also drive dismissal/guard rungs that are nobody's menu row; those stay
  * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one.
  */
@@ -50,7 +52,7 @@ export const BINDINGS = {
     append: { keys: ["Enter"], hint: "Enter" },
     exitMode: { keys: ["Escape"], hint: "Esc" },
     lock: { keys: ["q", "Q"], hint: "Q" },
-    cut: { keys: ["k", "K"], hint: "K" },
+    cut: { keys: ["c", "C"], hint: "C" },
     join: { keys: ["j", "J"], hint: "J" },
 } as const satisfies Record<string, Binding>;
 

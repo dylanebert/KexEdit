@@ -58,6 +58,15 @@ old Unity playback/edit *mode* split, and don't add a second video frame — in 
 already *is* the playback. A separate playback render earns its place only for a different **camera**
 (a rider POV), a 3D `app/` concern, not 2D kex2d.
 
+**The isolation is one-way, and it's about control, not knowledge.** Authoring may *read* the
+playhead — it's already a snap landmark for a drag (Snapping, below), and an invoked op may name it
+as a position (kex2d's keyboard `Cut` lands there exactly). What the isolation forbids is the
+transport becoming an authoring control or authoring driving the transport: an op that resolves a
+position against the playhead must never *move* it, and a scrub must never edit. So the read is the
+sanctioned direction and the write is the violation — the same asymmetry that keeps one clock
+serving two scopes. Named because the rule read as an outright ban on a playhead-anchored op and was
+cited that way once (`kex2d-structural-editing`, before feel round 7 asked for exactly that op).
+
 ## Document axis vs value axis
 
 Every chart axis is one or the other, and the distinction decides what may rescale it (earned by
@@ -458,18 +467,22 @@ a declared list of the walking fields, and an assert that the fork not needing t
   act elsewhere in the corpus, so it still owes its binding's hint; a path with no action anywhere
   is a true submenu parent and owes nothing.
 
-  **The same op can carry a shortcut on one surface and none on another — deliberately, not a
-  gap.** Cut's landmark paths (the node menu's own node, the keyframe menu's own keyframe) bind
-  `K` (kex2d `BINDINGS.cut`, Blender VSE's own key): the subject already supplies the exact cut
-  point with no pointer tracking, so a key can name the whole gesture. The section menu's
-  cursor-anchored Cut carries no binding at all — a free position has nothing for a key to name
-  (there is no "cut here" without a cursor there), so its row never advertises `shortcut`, stated
-  as the omission rather than left to read as an oversight. The two rows share one act NAME only
-  where the underlying body is truly one function; here they don't — `NodeMenuActions.cut` /
-  `KeyframeMenuActions.cut` are the bound landmark case, `SectionMenuActions.cutAt` the unbound
-  cursor case, apart by name for the same reason `append` (unbound) and `add` (bound to `Enter`)
-  are: one English verb, two acts, so the key-act seam's `Acts` table can tell a bound row from an
-  unbound one that merely reads the same in prose.
+  **A row earns a shortcut when the keyboard can name its position without a pointer.** That's the
+  test, and it's why the same op can be bound on one surface and not another. Cut's landmark paths
+  (the node menu's own node, the keyframe menu's own keyframe) bind `C` (kex2d `BINDINGS.cut`,
+  Premiere's razor key): the subject already supplies the exact point. The section row looked like
+  the counterexample — a free cursor position has nothing for a key to name, there being no "cut
+  here" without a cursor there — and shipped unbound on that reasoning. **It was too narrow.** The
+  playhead is a position the keyboard *can* name: deliberately parked, always addressable, no
+  pointer involved. So `C` on a selected section cuts at the playhead exactly (no threshold), the
+  row's own click still resolves the cursor (snapping to the playhead within `SNAP_PX`), and the row
+  advertises `C` — the hint names the *action*, which is genuinely keyboard-reachable, not the row's
+  own free-position read. The lesson generalizes past Cut: "no keyboard anchor" is a claim about
+  every position the surface can name, and a surface with a transport always has at least one.
+  The acts still stay apart by name — `NodeMenuActions.cut` / `KeyframeMenuActions.cut` versus
+  `SectionMenuActions.cutAt` — but for the seam's reason, not boundness: one English verb, two
+  acts, so the key-act seam's `Acts` table can tell them apart. (`append` / `add` remain the
+  bound-vs-unbound instance of the same naming rule.)
 - **Gray a row whose preconditions fail; omit one its subject rules out.** Graying keeps an
   applicable-but-blocked row discoverable (no live bake, a multi-set — the bulk-row law above). A
   row that could never fire on this subject is different: a section is exactly one kind, so the

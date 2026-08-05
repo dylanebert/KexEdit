@@ -19,8 +19,8 @@ import type { KeyframeMenuActions, NodeMenuActions, SectionMenuActions } from ".
  * today; a decider takes their RESULTS, never recomputes them.
  */
 
-/** the whole-section delete + bulk-join rung's state (`controls.ts`'s `onKeyDown`, a section
- *  selected). */
+/** the whole-section delete + bulk-join + playhead-Cut rung's state (`controls.ts`'s
+ *  `onKeyDown`, a section selected). */
 export type SectionKeyState = {
     /** the consent boundary: no pin session is open (`sectionOpsAllowed`). */
     opsAllowed: boolean;
@@ -29,20 +29,32 @@ export type SectionKeyState = {
     /** the selected set is a valid Join run — `controls.sectionsJoinable` (a contiguous run of
      *  ≥2, one kind) — `J`'s own gate, mirroring `remove`'s `multi` fork. */
     joinable: boolean;
+    /** the playhead resolves to an interior cut point on THIS section — `track.sectionCutAt`'s
+     *  own non-null return, read off the playhead's own stored arclength (never a cursor
+     *  reading: `C`'s clip-strip home is playhead-exact, no threshold — `editor-ui.md`'s
+     *  transport-read clause). Single-subject only, mirroring `nodeCuttable`/`keyframeCuttable`
+     *  (a multi-set has no single subject to cut, the same reason it OMITS the menu row).
+     *  OPTIONAL, the same shape as its siblings — an existing caller driving only remove/join
+     *  keeps compiling. */
+    cuttable?: boolean;
 };
 
-/** whole-section Delete/`J`: `remove` for a single section, `removeSet` for a multi-selection
- *  (`BINDINGS.remove`), `join` for a valid multi-set run (`BINDINGS.join`) — `null` off every
- *  binding or while the consent boundary bars structural ops. Typed off `SectionMenuActions`' own
- *  keys — `menus.ts`'s reverse-direction check — rather than a restated literal, so a rename in
- *  the actions record fails here at compile time. */
+/** whole-section Delete/`J`/`C`: `remove` for a single section, `removeSet` for a
+ *  multi-selection (`BINDINGS.remove`), `join` for a valid multi-set run (`BINDINGS.join`),
+ *  `cutAt` on a cuttable single section (`BINDINGS.cut`, playhead-exact — the clip strip's
+ *  keyboard twin of its cursor-anchored menu row, `SectionMenuActions.cutAt` itself unchanged:
+ *  only the resolved `position` argument differs by caller) — `null` off every binding or while
+ *  the consent boundary bars structural ops. Typed off `SectionMenuActions`' own keys —
+ *  `menus.ts`'s reverse-direction check — rather than a restated literal, so a rename in the
+ *  actions record fails here at compile time. */
 export function sectionKeyAct(
     key: string,
     s: SectionKeyState,
-): Extract<keyof SectionMenuActions, "remove" | "removeSet" | "join"> | null {
+): Extract<keyof SectionMenuActions, "remove" | "removeSet" | "join" | "cutAt"> | null {
     if (!s.opsAllowed) return null;
     if (bound(BINDINGS.remove, key)) return s.multi ? "removeSet" : "remove";
     if (bound(BINDINGS.join, key)) return s.joinable ? "join" : null;
+    if (bound(BINDINGS.cut, key)) return !s.multi && s.cuttable === true ? "cutAt" : null;
     return null;
 }
 

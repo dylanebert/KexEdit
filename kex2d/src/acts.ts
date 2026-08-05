@@ -188,16 +188,19 @@ export function lockCandidates(ecs: State): number[] {
  *  is open). `remove`/`removeSet`/`join` dismiss by subject death (or survivor promotion) instead
  *  — the menu derives null once the section is gone, so they carry no close.
  *
- *  `position` is the cursor-anchored Cut's own resolved landing point — genuinely component-local
- *  (a screen cursor, resolved through `editor-ui.md`'s toLocal/toLocalU lens), so it rides in as a
- *  third constructor argument rather than being derivable from `subject` alone the way a node's
- *  order or a keyframe's `s` is. `null` (the default — no menu has summoned a position yet) makes
- *  `cutAt` a safe no-op; the row's own `enabled` is the real gate (`editor-ui.md`'s grays-never-
- *  hides law), and `cutSection` carries the `sectionOpsAllowed` consent-boundary guard itself
- *  (below). Named `cutAt`, not `cut` — `nodeActs`/`keyframeActs` bind `K` to `cut`; this surface carries no
- *  shortcut at all (the locked decision's asymmetry, `editor-ui.md` Menus), and the two acts must
- *  stay apart by NAME for `Acts` (`tests/menu.test.ts`) to tell them apart — `append`/`add`'s own
- *  precedent, two acts colliding only in English.
+ *  `position` is Cut's own resolved landing point — genuinely CALLER-local (the menu's own screen
+ *  cursor resolved through `editor-ui.md`'s toLocal/toLocalU lens, or `controls.ts`'s own read of
+ *  the playhead through `cart.playheadPosition` + the same `sectionCutAt` seam — two different
+ *  resolutions of the same `CutPosition` shape), so it rides in as a third constructor argument
+ *  rather than being derivable from `subject` alone the way a node's order or a keyframe's `s` is.
+ *  `null` (the default — no caller has resolved a position yet) makes `cutAt` a safe no-op; the
+ *  row's own `enabled` and the keyboard decider's own `cuttable` are the real gates
+ *  (`editor-ui.md`'s grays-never-hides law), and `cutSection` carries the `sectionOpsAllowed`
+ *  consent-boundary guard itself (below). Named `cutAt`, not `cut` — `nodeActs`/`keyframeActs`
+ *  bind `C` to `cut` on a NODE/keyframe landmark; this is a different act on a different subject
+ *  that happens to share the same binding on ITS surface (`keys.ts sectionKeyAct`), and the two
+ *  must stay apart by NAME for `Acts` (`tests/menu.test.ts`) to tell them apart — `append`/`add`'s
+ *  own precedent, two acts colliding only in English.
  *
  *  `join` is the set-lifted Join (stage 5): it reads the selected set exactly like `removeSet`
  *  does, carries the SAME `sectionOpsAllowed` guard every structural row here does (Join reaches

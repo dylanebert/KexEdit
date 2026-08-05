@@ -901,16 +901,16 @@ describe("forceKeyAct — the force-keyframe Delete/Lock rungs", () => {
         expect(forceKeyAct("Escape", { pinning: true, size: 3 })).toBeNull();
     });
     // adversarial-pass finding (kex2d-structural-editing stage 4, re-broken and closed again at
-    // stage 6): K must not fire "cut" while ANY pin session is open — even on the pinning
+    // stage 6): C must not fire "cut" while ANY pin session is open — even on the pinning
     // session's OWN keyframe, where a looser per-section `editable` reading used to read true.
     // `cuttable` is purely the interior-point predicate and says nothing about the consent
     // boundary, mirroring `nodeKeyAct`'s top-level `editable` gate — `pinning` (the SAME field
     // the lock toggle reads) is Cut's own gate now, not a second hand-kept-in-sync field.
-    test("K refuses under the lockdown even on a cuttable, single-select keyframe", () => {
-        expect(forceKeyAct("k", { pinning: true, size: 1, cuttable: true })).toBeNull();
+    test("C refuses under the lockdown even on a cuttable, single-select keyframe", () => {
+        expect(forceKeyAct("c", { pinning: true, size: 1, cuttable: true })).toBeNull();
     });
-    test("K cuts a cuttable, single-select keyframe when no pin session is open", () => {
-        expect(forceKeyAct("K", { pinning: false, size: 1, cuttable: true })).toBe("cut");
+    test("C cuts a cuttable, single-select keyframe when no pin session is open", () => {
+        expect(forceKeyAct("C", { pinning: false, size: 1, cuttable: true })).toBe("cut");
     });
 });
 

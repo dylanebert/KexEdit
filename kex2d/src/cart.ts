@@ -1,5 +1,5 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
-import { arcToTime, type Mapping, timeToArc } from "./timeline";
+import { arcToTime, dToU, type Mapping, timeToArc } from "./timeline";
 import { bakeOut, samples, sectionSpans, toLocal, Track } from "./track";
 
 /** a content-anchored park position: the section (stable id) the parked playhead is
@@ -159,6 +159,19 @@ export function cartArc(eid: number): number | null {
     const m = trackMapping(eid);
     if (!st || !m) return null;
     return timeToArc(m, st.t);
+}
+
+/** the playhead's own stored position, in BOTH axes a caller might need it in — arclength
+ *  (`d`, `cartArc`'s own reading) and the track's native domain axis (`u`, projected through
+ *  the SAME `dToU` seam every arclength-authored subject on the chart uses). The ONE resolution
+ *  a playhead-anchored op reads (kex2d's keyboard Cut, `editor-ui.md`'s transport-read clause):
+ *  never a pixel- or table-derived reading, so a caller feeding `sectionCutAt` this pair lands
+ *  exactly where the playhead itself sits, not a rounding of it. Read-only — this touches no
+ *  cart state. null below the two-node floor (`cartArc`'s own). */
+export function playheadPosition(eid: number): { d: number; u: number } | null {
+    const d = cartArc(eid);
+    if (d === null) return null;
+    return { d, u: dToU(trackMapping(eid), Track.domain.get(eid), d) };
 }
 
 /** locate sample interval `[i, i+1]` containing time `t` on `tBuf` of length
