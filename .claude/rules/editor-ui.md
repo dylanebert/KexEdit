@@ -481,7 +481,19 @@ a declared list of the walking fields, and an assert that the fork not needing t
   row appears only inside pin mode (lock is mode-scoped; there is nothing to lock in normal
   editing), while the in-mode `Convert` row grays (convert exists, the mode temporarily bars
   it). Gray = "blocked action you know from elsewhere"; hidden = "state that isn't a thing
-  here".
+  here". **The surface is a third axis, above both**: a row that can never enable on the surface
+  the menu was summoned from is ABSENT there, not grayed — graying says "not now", absence says
+  "not here". kex2d's `Cut` is the case: **the timeline clip strip is its sole surface** — it
+  omits itself entirely on both the canvas and the graph, because a position-along-arclength op
+  has no honest cursor reading on a spatial view (the canvas) and the graph is a plot of values,
+  not a strip of subjects (its empty space is a coordinate, not an object — round 8, below).
+  Feel round 7 rejected the grayed form outright ("confusing" — a permanently-disabled row reads
+  as broken chrome, not as a boundary); round 8 pushed the same law from "which subject" to
+  "which surface", retiring a graph-as-second-surface attempt that read as "right-clicking
+  randomly being equivalent to a timeline right-click." Structural, so it's a required field on
+  the builder's state (`menus.SectionMenuState.cutSurface`), never an optional one defaulting to
+  shown: every call site says which surface it is, and the menu-grammar oracle drives the flag
+  both directions with a positive control per direction.
 - **Reset returns its subject to the state a fresh author would get** — one click back up the
   layers, from anywhere, no confirm (byte-identical undo is the safety). Every context menu
   carries Reset as a top-level row (section, node, node 0), normal color — undo makes it
@@ -595,9 +607,16 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   already snaps the near-still axis back to its start, so a Shift lock is redundant; Shift is a
   no-op on a keyframe drag. Single-axis intent is the magnet's job, not a modifier's.
 - **Easing lives on the leading keyframe** (the Blender F-curve convention) and governs its
-  following segment. The curve span between two keyframes is a *hit-target addressing the leading
-  keyframe*, never a selectable object — right-click the curve to change that transition, without
-  adding a new selection kind. The terminal keyframe carries no Easing submenu.
+  following segment — reached through that keyframe's own right-click menu (its Easing
+  submenu), never through the curve itself. The curve span between two keyframes used to be a
+  *hit-target addressing the leading keyframe* — right-click the curve to change that transition
+  without adding a new selection kind — but that convention is retired, not relocated
+  (kex2d-structural-editing feel round 8: "I wouldn't expect that," shown a right-click on a
+  non-keyframe curve point promoting to the keyframe before it). **A right-click addresses what's
+  under the cursor or nothing; it never promotes to a nearby landmark.** This is distinct from a
+  *drag*, where a grab radius is what makes a small target usable — a menu names a subject, and
+  naming one the cursor isn't on is a wrong answer, not a forgiving one. The terminal keyframe
+  carries no Easing submenu.
 - **The easing middle layer is a small named menu, never a scalar.** The layers trade one decision
   degree per step for strictly more expressiveness: default (zero decisions) → named eases (one
   categorical pick — Linear | Cubic | Quintic, the FVD++ ladder vocabulary) → handles (the full

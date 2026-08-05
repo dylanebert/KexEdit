@@ -104,18 +104,24 @@ interface EditorState {
      *  boolean; selecting it summons the initial-speed (v0) field popover. */
     start: boolean;
     /** the section right-click menu (Convert / Delete): screen position + target
-     *  section id, or null when closed. shared so both the clip strip and the viewport
-     *  span open the same menu, rendered once at the app root. `cut` is the free-position
-     *  Cut's own resolved landing point (`track.sectionCutAt`, run once at open time off the
-     *  click that summoned this menu — the cursor doesn't move while the menu is open, so
-     *  there's nothing to re-resolve): a geo section's segment + parameter, or a force
-     *  section's native local `s`, or null when the click didn't resolve one (no live bake, a
-     *  stale span). */
+     *  section id, or null when closed. shared so the clip strip and the viewport span both
+     *  open the same menu, rendered once at the app root — the graph never opens it at all (the
+     *  chart's only right-click subject is a keyframe diamond, `Timeline.svelte forceCtx`,
+     *  through the separate `fmenu`). `cut` is the free-position Cut's own resolved landing
+     *  point (`track.sectionCutAt`, run once at open time off the click that summoned this menu
+     *  — the cursor doesn't move while the menu is open, so there's nothing to re-resolve): a
+     *  geo section's segment + parameter, or a force section's native local `s`, or null when
+     *  the click didn't resolve one (no live bake, a stale span). `cutSurface` is the
+     *  absent-not-grayed surface law (`editor-ui.md` Menus): `true` ONLY from the timeline clip
+     *  strip, its sole surface; `false` from the viewport span — `menus.sectionMenu` omits the
+     *  Cut row entirely when it's `false`, rather than rendering it grayed, since the canvas has
+     *  no honest cursor position for a structural op to land at. */
     context: {
         x: number;
         y: number;
         section: number;
         cut: { at: number; t?: number } | null;
+        cutSurface: boolean;
     } | null;
     /** the node context menu (`Handles` toggle + a `Tangents ▸` submenu): screen position +
      *  the target node eid, or null when closed. opened by right-click on any pickable node
@@ -959,16 +965,19 @@ export function selectStart(on: boolean): void {
  *  active); a right-click outside the set replace-selects just it (today's single-select behavior).
  *  mirrors `openNodeMenu`/`openForceMenu`. `cut` is the free-position Cut's own resolved landing
  *  point (`track.sectionCutAt`) — optional, defaulting to null (no resolvable position) so a
- *  caller that never resolves one still compiles. */
+ *  caller that never resolves one still compiles. `cutSurface` defaults to `false` (the
+ *  conservative default — Cut absent, `editor-ui.md` Menus): only the timeline clip strip,
+ *  Cut's sole surface, passes `true` explicitly. */
 export function openContext(
     x: number,
     y: number,
     section: number,
     cut: { at: number; t?: number } | null = null,
+    cutSurface = false,
 ): void {
     if (editor.sections.ids.has(section)) editor.sections.active = section;
     else selectSection(section);
-    editor.context = { x, y, section, cut };
+    editor.context = { x, y, section, cut, cutSurface };
 }
 
 /** close the section context menu. */

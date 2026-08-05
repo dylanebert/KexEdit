@@ -771,11 +771,6 @@ function gTargets(exclude?: Set<number>): number[] {
     return out;
 }
 
-// the pointer's global distance on the chart (clamped to the track), through the seam.
-function chartS(e: MouseEvent): number {
-    const rect = canvas.getBoundingClientRect();
-    return clamp(dAtPx(e.clientX - rect.left), 0, sTotal);
-}
 // the pointer's AXIS coordinate (clamped to the addressable span) — where every native gesture
 // reads the cursor: a grab origin, an insertion, a trim candidate.
 function chartU(e: MouseEvent): number {
@@ -1281,55 +1276,16 @@ function forceCtx(e: MouseEvent, p: ForcePt): void {
     e.stopPropagation();
     openForceMenu(e.clientX, e.clientY, p.id);
 }
-// the recovered force curve's g at a cumulative arclength — a linear interp over the baked
-// per-sample series (clamped to the ends). the curve is the geometry-recovered force the
-// chart draws, so a hit-test against it matches what the eye sees, not the authored profile
-// (a diamond sits O(ds) off the drawn curve). used to gate a chart right-click to the span.
-function curveGAt(cumS: number): number {
-    const c = curve;
-    if (!c || c.n === 0) return Y_BASE;
-    if (cumS <= c.s[0]) return c.f[0];
-    if (cumS >= c.s[c.n - 1]) return c.f[c.n - 1];
-    let lo = 0;
-    let hi = c.n - 1;
-    while (hi - lo > 1) {
-        const mid = (lo + hi) >> 1;
-        if (c.s[mid] <= cumS) lo = mid;
-        else hi = mid;
-    }
-    const span = c.s[hi] - c.s[lo];
-    const t = span > 0 ? (cumS - c.s[lo]) / span : 0;
-    return c.f[lo] + t * (c.f[hi] - c.f[lo]);
-}
-// right-click the curve span between two keyframes → the LEADING keyframe's menu (the
-// Blender convention: easing lives on the keyframe and governs the following segment, so
-// the segment addresses the keyframe before it). the hit-target is the drawn curve span,
-// NOT the whole force-section column: a right-click far above or below the curve is empty
-// chart space and opens nothing. over empty/geo, or left of the first keyframe (no
-// leading), it's a no-op too.
-function chartCtx(e: MouseEvent): void {
-    e.preventDefault();
-    e.stopPropagation();
-    const u = chartU(e);
-    const c = clips.find((x) => x.kind === SectionKind.Force && u >= x.u0 && u <= x.u1);
-    if (!c) return;
-    // the curve is drawn per baked sample over ARCLENGTH, so its y is read at the cursor's
-    // arclength (the projected read), while the keyframe below is addressed natively.
-    const cumS = chartS(e);
-    // the click must land within the force-point grab radius (FHIT_R — the same fat pick
-    // zone a diamond carries) of the curve span vertically; a click out in empty chart space
-    // addresses no keyframe (a diamond hit is handled by forceCtx, on the marker's own rect).
-    if (Math.abs(e.clientY - canvas.getBoundingClientRect().top - yOf(curveGAt(cumS))) > FHIT_R)
-        return;
-    const localS = u - c.u0;
-    let lead: number | null = null;
-    for (const p of sectionForces(ecs, c.id)) {
-        if (p.s <= localS + 1e-6) lead = p.id;
-        else break;
-    }
-    if (lead === null) return;
-    openForceMenu(e.clientX, e.clientY, lead);
-}
+// the chart's only right-click subject is a keyframe diamond (`forceCtx`, on the marker's own
+// rect, above) — round 8 retired both the free-position Cut this graph never gets (Locked
+// decision: a right-click in empty chart space names no object, so opening the section menu
+// there reads as the click having hit something it didn't) and the pre-existing curve-span→
+// leading-keyframe convention (a right-click on a non-keyframe point on the force curve used to
+// address the keyframe before it — "I wouldn't expect that", the round-8 verdict: a right-click
+// addresses what's under the cursor or nothing, never a nearby landmark). So the chartzone
+// itself carries no `oncontextmenu` at all; the outer `.body` wrapper's own handler
+// (`e.preventDefault()`) is what keeps a miss from opening the browser's menu, and a right-click
+// there changes no selection because nothing here writes one.
 
 // ── the force keyframe context menu (Delete / Easing ▸ / Handles / Reset), an instance of
 // the shared menu language rendered at the app root over both surfaces. its visibility
@@ -1624,14 +1580,15 @@ function selectClip(e: PointerEvent, c: Clip): void {
 // native domain coordinate by construction (`Timeline`'s whole point, `editor-ui.md`), so `u`
 // is a direct pixel read; `d` (the geo-side arc reading `track.sectionCutAt` wants) projects
 // through the SAME `dOf`/`uOf` seam the curve and every arclength-authored subject on this
-// chart already go through — `track.geoCutAt` never sees a raw pixel.
+// chart already go through — `track.geoCutAt` never sees a raw pixel. `cutSurface: true` — the
+// clip strip is Cut's SOLE surface (`editor-ui.md` Menus, the surface axis).
 function clipMenu(e: MouseEvent, c: Clip): void {
     e.preventDefault();
     e.stopPropagation();
     const rect = canvas.getBoundingClientRect();
     const u = uAtPx(e.clientX - rect.left);
     const cut = sectionCutAt(ecs, c.id, spans, dOf(u), u);
-    openContext(e.clientX, e.clientY, c.id, cut);
+    openContext(e.clientX, e.clientY, c.id, cut, true);
 }
 
 // ── the append tail: a `+` after the last clip opens a two-choice geo/force flyout —
@@ -2833,7 +2790,6 @@ onMount(() => {
                     width={Math.max(0, w - LEFT_GUT)}
                     height={Math.max(0, h - BOT_PAD - TOP)}
                     ondblclick={chartCreate}
-                    oncontextmenu={chartCtx}
                     onpointerdown={marqueeDown}
                     role="presentation"
                 />
@@ -3274,8 +3230,8 @@ onMount(() => {
 </div>
 
 <!-- the force keyframe context menu (Delete / Easing ▸ / Handles / Reset): summoned by a
-     right-click on a diamond or the curve span (the leading keyframe), an instance of the
-     shared menu language (Menu.svelte) at the cursor. rendered at the component root so it
+     right-click on a diamond (the chart's only right-click subject, `forceCtx`), an instance of
+     the shared menu language (Menu.svelte) at the cursor. rendered at the component root so it
      floats over the dock; the same look + placement as the section context menu. -->
 {#if fmenu}
     <div class="fmenu menu" use:fitMenu={{ x: fmenu.x, y: fmenu.y }} role="menu" aria-label="Force keyframe">

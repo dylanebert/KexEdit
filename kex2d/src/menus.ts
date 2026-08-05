@@ -48,6 +48,21 @@ export type SectionMenuState = {
      *  until a caller supplies it, Cut ships present but conservatively grayed (never `true` by
      *  default), the same shape the `structure` group itself shipped in at stage 3. */
     canCut?: boolean;
+    /** whether THIS surface can serve Cut at all — the absent-not-grayed surface law
+     *  (`editor-ui.md` Menus, the surface axis): `true` ONLY from the timeline clip strip, its
+     *  sole surface; `false` everywhere else (the viewport span, the graph). A row that can never
+     *  enable on a surface is ABSENT there, not grayed — graying means "not now", absence means
+     *  "not here" — so this is structural (never optional, unlike `canCut` above): every call
+     *  site must say which surface it is. A position-along-arclength op has no honest cursor
+     *  reading on the canvas (the spatial view `pickSectionArc`/`pickCut` used to fake one for;
+     *  both are gone, feel round 7) or on the graph, a plot of values rather than a strip of
+     *  subjects (feel round 8 — its empty space names no object, so a right-click there reads as
+     *  the click having hit something it didn't; `Timeline.svelte`'s chart carries no
+     *  `oncontextmenu` handler at all). `cutSurface: false` there omits the row entirely rather
+     *  than shipping it permanently disabled (the exact shape feel round 7 rejected on the force
+     *  graph BEFORE round 8 removed the graph as a surface outright). Single-subject only, like
+     *  `canCut` — never read on a multi-set, where Join takes the slot instead. */
+    cutSurface: boolean;
     /** the selected section SET is a valid Join run — `controls.sectionsJoinable` (a contiguous
      *  run of ≥2, one kind). Multi-set only: never read on a single-subject menu (below, the
      *  Cut/Pin symmetry's mirror image). OPTIONAL, the same shape as `canCut` — `sectionMenu`'s
@@ -149,15 +164,18 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
     // single-subject "Join Next" would read asymmetric next to a point-anchored Cut — the locked
     // decision), so it's OMITTED there and shown only over a multi-set, `shortcut`ed (Blender/
     // Audacity's `J`, unlike Cut's cursor-anchored asymmetry) since the whole selected set names
-    // the run with no cursor needed.
-    if (!s.multi) {
+    // the run with no cursor needed. `cutSurface` is the OTHER omission axis (stage 7): the
+    // canvas can never serve Cut regardless of selection shape, so the row is absent there too —
+    // "a row that could never fire on this SURFACE" is the same law as "on this subject", just
+    // read off a different field, and both gate the row's PRESENCE, never its `enabled`.
+    if (!s.multi && s.cutSurface) {
         items.push({
             label: "Cut",
             group: "structure",
             enabled: s.canCut === true,
             action: a.cutAt,
         });
-    } else {
+    } else if (s.multi) {
         items.push({
             label: "Join",
             group: "structure",

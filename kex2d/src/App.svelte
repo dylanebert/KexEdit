@@ -759,6 +759,7 @@ const ctx = $derived.by((): {
     y: number;
     section: number;
     cut: { at: number; t?: number } | null;
+    cutSurface: boolean;
 } | null => {
     void tick;
     const c = editor.context;
@@ -775,9 +776,10 @@ const ctxKind = $derived.by((): SectionKind | null => {
     if (ctx === null) return null;
     return sections(ecs).find((s) => s.id === ctx.section)?.kind ?? null;
 });
-// Cut's own enablement — the resolved cursor position (`ctx.cut`, `controls.pickCut`/
-// `Timeline.svelte`'s clip-menu twin, both landing through `track.sectionCutAt`) is an interior
-// point AND `sectionOpsAllowed`. A geo position's interior-ness is already fully decided by
+// Cut's own enablement — the resolved cursor position (`ctx.cut`, resolved by `Timeline.svelte`'s
+// `clipMenu` — Cut's sole surface; the canvas span and the graph never resolve one at all,
+// `cutSurface` gates presence instead — landing through `track.sectionCutAt`) is an interior point AND
+// `sectionOpsAllowed`. A geo position's interior-ness is already fully decided by
 // `track.geoCutAt`'s own null-ness (it refuses node 0 / the chain end); a force position still
 // needs the landmark's own interior bound (`acts.keyframeCuttable`) since `sectionCutAt` hands
 // back the raw `toLocalU` reading, entry/exit included, same shape as the node/keyframe menus'
@@ -919,6 +921,7 @@ const ctxItems = $derived.by((): MenuItem[] => {
             get canCut() {
                 return canCut;
             },
+            cutSurface: ctx.cutSurface,
         },
         {
             // the chrome keys first, the factory spread LAST: a sibling key re-forked here is then

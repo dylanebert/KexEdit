@@ -179,6 +179,7 @@ describe("sectionMenu — the section context menu's rows", () => {
         canReset: true,
         canDelete: true,
         canCut: true,
+        cutSurface: true,
     };
     const acts = () =>
         recorder(
@@ -227,6 +228,42 @@ describe("sectionMenu — the section context menu's rows", () => {
             { label: "Reset", group: "lifecycle", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
+    });
+    // the absent-not-grayed surface law (`kex2d-structural-editing` Locked decision, stage 7):
+    // `cutSurface: false` (every surface but the clip strip — the canvas, and the graph too as
+    // of round 8) omits Cut ENTIRELY, even at a fully-valid interior cut point (`canCut: true`)
+    // — graying would still be discoverable chrome for an op the surface can never serve, which
+    // is exactly the shape feel round 7 rejected on the force graph. Both kinds: Cut's row law
+    // doesn't read `kind` at all, so the omission can't quietly depend on it.
+    test("cutSurface false OMITS Cut entirely on a GEO section, even with canCut true", () => {
+        const s = { ...base, cutSurface: false };
+        const rows = shape(sectionMenu(s, acts()));
+        expect(rows.find((r) => r.label === "Cut")).toBeUndefined();
+        expect(rows).toEqual([
+            { label: "Convert", group: "modify", enabled: true },
+            { label: "Reset", group: "lifecycle", enabled: true },
+            { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
+        ]);
+    });
+    test("cutSurface false OMITS Cut entirely on a FORCE section, even with canCut true", () => {
+        const s = { ...base, kind: SectionKind.Force, canPin: true, cutSurface: false };
+        const rows = shape(sectionMenu(s, acts()));
+        expect(rows.find((r) => r.label === "Cut")).toBeUndefined();
+    });
+    // the positive control the other direction: `cutSurface: true` (the timeline clip strip,
+    // Cut's sole surface) renders Cut ENABLED at the same interior point, for both kinds —
+    // proving the omission above is the surface flag's doing, not some other field silently
+    // also gating it.
+    test("cutSurface true renders an ENABLED Cut for both GEO and FORCE, at the same canCut", () => {
+        const geo = shape(sectionMenu({ ...base, cutSurface: true, canCut: true }, acts()));
+        expect(geo.find((r) => r.label === "Cut")).toEqual(cut(true));
+        const force = shape(
+            sectionMenu(
+                { ...base, kind: SectionKind.Force, canPin: true, cutSurface: true, canCut: true },
+                acts(),
+            ),
+        );
+        expect(force.find((r) => r.label === "Cut")).toEqual(cut(true));
     });
     test("a multi-set grays the single-subject rows, OMITS Pin + Cut, and shows Join in their place (force set included)", () => {
         const s = {
@@ -318,6 +355,7 @@ function countingDescriptor(inMode: boolean): {
         modeOpen: false,
         canDelete: true,
         canCut: true,
+        cutSurface: true,
         get canSolve() {
             reads.canSolve++;
             return true;
@@ -832,6 +870,7 @@ describe("the menu grammar — every builder, every state", () => {
         canDelete: bool,
         canCut: bool,
         canJoin: bool,
+        cutSurface: bool,
     });
     const nodeStates = states<NodeMenuState>({
         multi: bool,
@@ -1630,6 +1669,43 @@ describe("the menu grammar — every builder, every state", () => {
             expect([...labels].sort()).toEqual(["Cut", "Join"]);
         });
 
+        // ── the surface law (kex2d-structural-editing stage 7b, feel round 8): `sectionMenu`
+        // carries a `Cut` row IFF `cutSurface` is true AND the state is single-subject — the
+        // corpus-wide twin of the three example-based `cutSurface` tests above, which pinned this
+        // at three hand-picked points. Nothing until now drove it over the FULL state matrix
+        // `sectionStates` already generates (`cutSurface: bool` rides the matrix, but no law read
+        // it), so a `sectionMenu` regression anywhere off those three points went unpinned. Both
+        // directions in one equality: a present-but-shouldn't-be Cut and an absent-but-should-be
+        // one both fail it. `inMode` replaces the whole menu with Solve/Exit (above), so it's
+        // excluded the same way the menu itself excludes it — a live pin session has no Cut row
+        // to check regardless of `cutSurface`.
+        test("sectionMenu carries Cut iff cutSurface AND single-subject, both directions over the full matrix", () => {
+            const bad = corpus()
+                .filter((m) => m.name === "sectionMenu")
+                .map((m) => ({
+                    s: m.state as SectionMenuState,
+                    hasCut: m.rows.some((r) => r.label === "Cut"),
+                }))
+                .filter(({ s }) => !s.inMode)
+                .filter(({ s, hasCut }) => hasCut !== (s.cutSurface && !s.multi))
+                .map(
+                    ({ s, hasCut }) =>
+                        `cutSurface=${s.cutSurface} multi=${s.multi} — Cut ${hasCut ? "present" : "absent"}`,
+                );
+            expect(bad).toEqual([]);
+        });
+
+        // positive control: the matrix actually drives `sectionMenu` through both a Cut-bearing
+        // and a Cut-absent state — without this, the iff above could pass vacuously if
+        // `cutSurface` never varied in practice or `sectionMenu` never emitted the row at all.
+        test("positive control: the matrix drives sectionMenu through both a Cut-bearing and a Cut-absent state", () => {
+            const rows = corpus()
+                .filter((m) => m.name === "sectionMenu")
+                .map((m) => m.rows.some((r) => r.label === "Cut"));
+            expect(rows).toContain(true);
+            expect(rows).toContain(false);
+        });
+
         // positive control — slot-by-slot DERIVED divider positions (never a count) over a
         // fabricated four-group menu: one divider at every group change, none elsewhere. This is
         // also the canonical-order control, since `menuRows` walks GROUPS to place them.
@@ -1928,5 +2004,66 @@ describe("menu source pins — builders and renderer stay singular", () => {
         // its own, the same both-directions law every other registry in this file keeps.
         const stale = [...MenuItemAllowlist].filter((f) => !importsMenuItem(f));
         expect(stale, "allowlisted files that no longer import MenuItem").toEqual([]);
+    });
+});
+
+// ── chart inertness (kex2d-structural-editing stage 7b, feel round 8): the graph stops being a
+// Cut surface at all, and with it the pre-existing curve-span→leading-keyframe convention that
+// used to promote a non-keyframe click to the leading keyframe's Easing menu ("I wouldn't expect
+// that" — round 8's verdict). The chart's only right-click subject is a keyframe diamond
+// (`forceCtx`, on the marker's own `fhit` rect); every other chart right-click opens nothing and
+// selects nothing. Neither behavior is reachable from `bun test` as a live DOM interaction (no
+// jsdom/browser in this suite — `bun run capture` covers pointer-true reachability), so this
+// pins it as a source census, the same declared-registry shape `acts.ts source census` above
+// uses for the same reason (two of its three homes are `.svelte` and equally unreachable): every
+// `oncontextmenu` site in `Timeline.svelte`, enumerated in source order, both directions.
+describe("Chart inertness — the chart's only right-click subject is a keyframe diamond", () => {
+    const timelineSrc = readFileSync(join(import.meta.dir, "..", "src", "Timeline.svelte"), "utf8");
+
+    // the declared registry: every `oncontextmenu` handler in the file, in source order.
+    // `chartzone` — the chart's empty-space hit rect — is deliberately absent. If it's ever
+    // given a handler again (the retired curve-span path restored, or a fresh free-position
+    // fallback), it appears here as an extra entry and the exact-order `toEqual` below fails.
+    const Handlers = [
+        "toggleSnapPop", // the snap-toggle rail's own increment popover
+        "(e) => e.preventDefault()", // the .body wrapper: blocks the browser menu, opens nothing
+        "rulerCtx", // the ruler's Meters/Seconds domain picker
+        "(e) => clipMenu(e, c)", // the clip strip — Cut's sole surface
+        "(e) => forceCtx(e, p)", // the keyframe diamond's own fhit rect
+    ];
+
+    test("every oncontextmenu site in Timeline.svelte matches the declared registry, in order", () => {
+        const found = [...timelineSrc.matchAll(/oncontextmenu=\{([^}]*)\}/g)].map((m) => m[1]);
+        expect(found).toEqual(Handlers);
+    });
+
+    // positive control (the declared-registry law's own clause: prove the SCANNER, not just the
+    // comparison — the cursor-allowlist lesson, `editor-ui.md` Menus). A renamed known handler
+    // must show up as a mismatch, or the regex above is matching nothing.
+    test("positive control: a renamed handler breaks the registry match", () => {
+        const mutated = timelineSrc.replace(
+            "oncontextmenu={rulerCtx}",
+            "oncontextmenu={rulerCtxRENAMED}",
+        );
+        const found = [...mutated.matchAll(/oncontextmenu=\{([^}]*)\}/g)].map((m) => m[1]);
+        expect(found).not.toEqual(Handlers);
+    });
+
+    // the chartzone rect itself, isolated: no oncontextmenu attribute at all. Since nothing
+    // handles the event there, nothing opens a menu and nothing writes selection — the two
+    // properties the spec's Validation names — as a direct consequence of there being no
+    // handler to do either. Redundant with the registry test above by construction (a chartzone
+    // handler would also break it); kept because it names the specific element the law is about.
+    test("the chartzone rect carries no oncontextmenu handler", () => {
+        const m = timelineSrc.match(/<rect\s+class="chartzone"[\s\S]*?\/>/);
+        expect(m).not.toBeNull();
+        expect(m?.[0]).not.toMatch(/oncontextmenu/);
+    });
+
+    // the retired curve-span→leading-keyframe fallback itself: gone, not just unwired. Guards
+    // against a mutant that restores the function but forgets to re-wire it (which the registry
+    // tests above wouldn't catch on their own).
+    test("chartCtx (the retired curve-span path) no longer exists in Timeline.svelte", () => {
+        expect(timelineSrc).not.toContain("function chartCtx");
     });
 });

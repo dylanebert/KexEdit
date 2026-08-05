@@ -1,13 +1,5 @@
 import type { State } from "@dylanebert/shallot";
-import {
-    type CutPosition,
-    nodeActs,
-    nodeCuttable,
-    sectionActs,
-    sectionEditable,
-    sectionOpsAllowed,
-} from "./acts";
-import { trackMapping } from "./cart";
+import { nodeActs, nodeCuttable, sectionActs, sectionEditable, sectionOpsAllowed } from "./acts";
 import {
     beginDrag,
     clearHover,
@@ -55,7 +47,6 @@ import { localize } from "./section";
 import { editTangent, TangentMode } from "./spline";
 import { editHandleSets, localTipAt, type TangentSide } from "./tangents";
 import {
-    bakeOut,
     exitWorld,
     forceMarkers,
     Handle,
@@ -65,18 +56,14 @@ import {
     reheadOnDrag,
     samples,
     SectionKind,
-    sectionCutAt,
     sectionHandles,
     sectionInfo,
     sections,
-    sectionSpans,
     seedTangent,
     setTangent,
     Track,
-    trackDomain,
-    trackEntity,
 } from "./track";
-import { dToU, fmt } from "./timeline";
+import { fmt } from "./timeline";
 import {
     camera,
     clearGuides,
@@ -296,68 +283,6 @@ function pickSection(ecs: State, tx: ViewTx, sx: number, sy: number): number | n
         }
     }
     return best;
-}
-
-/** `pickSection`'s own walk, additionally returning the winning sample's global arclength `d` —
- *  the free-position Cut's viewport-side pick (the object under the cursor is both the section
- *  AND the exact point along it, `editor-ui.md`'s no-proximity-magnet lock). A SEPARATE pass
- *  from `pickSection` would risk disagreeing with it at a shared boundary (two independent
- *  nearest-sample searches breaking a tie differently); this one pass keeps them in lockstep by
- *  construction. null outside `SECTION_PICK_R` or with no live bake. */
-export function pickSectionArc(
-    ecs: State,
-    tx: ViewTx,
-    sx: number,
-    sy: number,
-): { section: number; d: number } | null {
-    const s = trackSamples(ecs);
-    if (!s) return null;
-    const trackEid = trackEntity(ecs);
-    const out = trackEid === null ? undefined : bakeOut.get(trackEid);
-    if (!out) return null;
-    let best: number | null = null;
-    let bestSample = -1;
-    let bestD2 = SECTION_PICK_R * SECTION_PICK_R;
-    for (const sec of sections(ecs)) {
-        const info = sectionInfo.get(sec.id);
-        if (!info) continue;
-        for (let i = info.startSample; i <= info.endSample; i++) {
-            const dx = sx - (tx.ox + s.posX[i] * tx.sx);
-            const dy = sy - (tx.oy + s.posY[i] * tx.sy);
-            const d2 = dx * dx + dy * dy;
-            if (d2 < bestD2) {
-                bestD2 = d2;
-                best = sec.id;
-                bestSample = i;
-            }
-        }
-    }
-    if (best === null) return null;
-    let d = 0;
-    for (let i = 0; i < bestSample; i++) d += out.ds[i];
-    return { section: best, d };
-}
-
-/** the free-position Cut's whole viewport-side resolution — `pickSectionArc`'s section + global
- *  arc `d`, projected to the native coordinate `u` (`timeline.dToU`, the arc↔native seam) and
- *  handed to `track.sectionCutAt` (the kind-fitted `toLocal`/`toLocalU` lens). null wherever
- *  `pickSectionArc` itself would be, so a caller checking only THIS return value already covers
- *  both failure modes. */
-export function pickCut(
-    ecs: State,
-    tx: ViewTx,
-    sx: number,
-    sy: number,
-): { section: number; cut: CutPosition | null } | null {
-    const hit = pickSectionArc(ecs, tx, sx, sy);
-    if (hit === null) return null;
-    const trackEid = trackEntity(ecs);
-    if (trackEid === null) return { section: hit.section, cut: null };
-    const domain = trackDomain(ecs);
-    const mapping = trackMapping(trackEid);
-    const u = dToU(mapping, domain, hit.d);
-    const cut = sectionCutAt(ecs, hit.section, sectionSpans(ecs, trackEid), hit.d, u);
-    return { section: hit.section, cut };
 }
 
 /** the force marker nearest the screen point (within the pick radius), or its stable
@@ -1128,10 +1053,13 @@ export function attachControls(
                 return;
             }
         }
-        // right-click a section span → the menu, with Cut's own free-position resolution
-        // (`pickCut`, one pass so it can't disagree with which section the click targeted).
-        const hit = pickCut(ecs, tx, cx, cy);
-        if (hit !== null) openContext(e.clientX, e.clientY, hit.section, hit.cut);
+        // right-click a section span → the menu (Convert/Pin/Reset/Delete), Cut OMITTED: the
+        // canvas is a spatial view, and a position-along-arclength op has no honest home there
+        // (`editor-ui.md` Menus, the surface axis — the viewport picking lens that used to resolve a
+        // cut point here, `pickSectionArc`/`pickCut`, is gone). `cutSurface` defaults to `false`,
+        // so `openContext` needs no third/fourth argument here.
+        const sec = pickSection(ecs, tx, cx, cy);
+        if (sec !== null) openContext(e.clientX, e.clientY, sec);
     };
 
     const onPointerDown = (e: PointerEvent): void => {
