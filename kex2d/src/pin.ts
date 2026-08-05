@@ -40,7 +40,7 @@ import {
 import type { OptimizeOpts, OptimizeResult } from "./optimize";
 import { type OptimizeRunOpts, runOptimize } from "./optimize-async";
 import { Domain, type Entry, evalForce } from "./section";
-import { forceProfile, type ForcePoint } from "./profile";
+import { forceProfile, type ForcePoint, resolveStep } from "./profile";
 import {
     authoredHash,
     bakeLive,
@@ -73,12 +73,14 @@ function sectionSpec(ecs: State, sectionId: number): SectionSpec | null {
     if (!info) return null;
     const domain = trackDomain(ecs);
     const nominal = domain === Domain.Time ? DT_NOMINAL : trackDs(ecs);
-    return {
-        entry: info.entry,
-        length: Section.length.get(eid),
-        ds: sectionStep(Section.ds.get(eid), nominal),
-        domain,
-    };
+    const length = Section.length.get(eid);
+    const step = sectionStep(Section.ds.get(eid), nominal);
+    // the pairing seam: conform once here so every downstream use of this spec's `ds`
+    // (this module's own `forceProfile`/`evalForce` call below, and `optimize.ts`'s kernel,
+    // which reads `spec.ds` through `OptimizeOpts`) marches at the same exact step the mode
+    // stamped its exit at.
+    const { ds } = resolveStep(length, step);
+    return { entry: info.entry, length, ds, domain };
 }
 
 /** the section's authored keyframes as `ForcePoint`s, sorted by `s` (`sectionForces`'s own

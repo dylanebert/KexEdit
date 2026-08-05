@@ -8,6 +8,7 @@ import {
     type ForcePoint,
     forceProfile,
     type Offset,
+    resolveStep,
     subdivide,
 } from "./profile";
 import {
@@ -2481,14 +2482,18 @@ function forceDense(ecs: State, sectionId: number, length: number, ds: number): 
 
 /** a force section's payload: its dense profile + the step it bakes at (its own or the
  *  nominal), which sets both the edge count and the integrator's march, and the track's
- *  `domain` — the step rule `evalForce` (`section.ts`) consults. */
+ *  `domain` — the step rule `evalForce` (`section.ts`) consults. `step` conforms through
+ *  {@link resolveStep} before either the profile or the payload's own `ds` sees it, so
+ *  `forceDense`'s σ grid and `evalForce`'s march (which reads this payload's `ds` in
+ *  `chain`) always agree on the same exact step — the pairing seam, applied once, here. */
 function forcePayload(
     ecs: State,
     sectionId: number,
     length: number,
-    ds: number,
+    step: number,
     domain: Domain,
 ): SectionSpec {
+    const { ds } = resolveStep(length, step);
     return { kind: "force", fN: forceDense(ecs, sectionId, length, ds), ds, domain };
 }
 
@@ -2508,13 +2513,17 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     if (Section.kind.get(eid) !== SectionKind.Force)
         throw new Error(`forceBake: section ${sectionId} is not force`);
     const domain = trackDomain(ecs);
+    const length = Section.length.get(eid);
     const step = sectionStep(Section.ds.get(eid), forceNominal(domain, trackDs(ecs)));
-    const dense = forceDense(ecs, sectionId, Section.length.get(eid), step);
+    // conform once (the pairing seam) so the dense profile's σ grid and evalForce's march
+    // below agree on the same exact step, exactly what `forcePayload` does for the live bake.
+    const { ds } = resolveStep(length, step);
+    const dense = forceDense(ecs, sectionId, length, ds);
     const avail = Math.max(1, MAX_SAMPLES - 1 - info.startSample);
     const r = evalForce(
         info.entry,
         dense.length > avail ? dense.subarray(0, avail) : dense,
-        step,
+        ds,
         domain,
     );
     return { x: r.posX, y: r.posY, fN: r.fN, ds: r.ds, edges: r.edges };
@@ -2696,8 +2705,12 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     const payloads = secs.map((sec, k) => {
         if (sec.kind === SectionKind.Geo) return geoPayload(ecs, sec.id, sectionStep(sec.ds, ds));
         const step = sectionStep(sec.ds, forceNominal(domain, ds));
-        if (domain === Domain.Time) marchedStep[k] = step;
-        return forcePayload(ecs, sec.id, sec.length, step, domain);
+        const payload = forcePayload(ecs, sec.id, sec.length, step, domain);
+        // `payload.ds` is the CONFORMED step (`forcePayload`'s own `resolveStep` seam) — the
+        // exact value `evalForce`/`chain` marches this section at below, so `computeTime` must
+        // read the same number, never the pre-conform `step` this section's edges no longer use.
+        if (domain === Domain.Time) marchedStep[k] = payload.ds;
+        return payload;
     });
     // the downstream freeze (stage 7): with a live freeze on a non-terminal section, the chain
     // runs in TWO parts — start..pinning live, downstream seeded at the FROZEN entry — so

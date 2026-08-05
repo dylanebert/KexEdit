@@ -99,7 +99,7 @@
  *  ever executes. */
 
 import { G } from "./forward";
-import { forceProfile, type ForcePoint } from "./profile";
+import { forceProfile, type ForcePoint, resolveStep } from "./profile";
 import { type Domain, type Entry, evalForce } from "./section";
 
 /** the section's exit anchor a stamp addresses. `v` is STAMPED, not PINNED: energy conservation
@@ -141,7 +141,7 @@ export function derivedTol(
     length: number,
     ds: number,
 ): { pos: number; angle: number } {
-    const edges = Math.max(1, Math.round(length / ds));
+    const { edges } = resolveStep(length, ds);
     const scale = Math.max(Math.abs(stamp.x), Math.abs(stamp.y), length);
     const pos = 3 * F32_EPS * Math.sqrt(edges) * scale;
     return { pos, angle: pos / length };
@@ -367,7 +367,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
 
     // the Gram matrix M (P×P): each free key's unit-g-bump response, ds-weighted inner product.
     // exact globally (not a linearization) — the dense profile is affine in g with s frozen.
-    const edges = Math.max(1, Math.round(length / ds));
+    const { edges } = resolveStep(length, ds);
     const base = forceProfile(points, length, ds);
     const cols: Float64Array[] = freeIdx.map((k) => {
         const gPert = Float64Array.from(g0);

@@ -4,6 +4,7 @@ import {
     Easing,
     type ForcePoint,
     forceProfile,
+    resolveStep,
     sampleForce,
     segmentControls,
     segmentSeed,
@@ -473,5 +474,61 @@ describe("segmentSeed — the no-jump Custom materialization seed", () => {
         const linear = forceProfile([a, b], 12, 0.1);
         const custom = forceProfile([aCustom, bCustom], 12, 0.1);
         expect(custom).toEqual(linear);
+    });
+});
+
+describe("resolveStep — the ONE seam pairing a force section's edge count with its step", () => {
+    // resolveStep is f64 (plain JS numbers), not the f32 display bake — so its own
+    // conforming identity (edges·ds === length) is bounded by f64 rounding: one
+    // division (length/edges) then one multiplication (edges·ds) back, each within
+    // Number.EPSILON relative, so 2·Number.EPSILON·length covers both roundings.
+    function conformTol(length: number): number {
+        return 2 * Number.EPSILON * Math.max(length, 1);
+    }
+
+    test("edges = max(1, round(length/step)) and edges·ds conforms to length (off-grid table)", () => {
+        // the spec's measured table (kex2d-section-extent, Locked decision): ds against
+        // off-grid lengths that land the realized extent short/long under the naive step.
+        const cases: Array<{ ds: number; length: number }> = [
+            { ds: 0.5, length: 24.0 },
+            { ds: 0.5, length: 12.345 },
+            { ds: 0.5, length: 23.7 },
+            { ds: 0.25, length: 12.345 },
+            { ds: 0.1, length: 12.345 },
+        ];
+        for (const { ds, length } of cases) {
+            const { edges, ds: dsOut } = resolveStep(length, ds);
+            expect(edges).toBe(Math.max(1, Math.round(length / ds)));
+            expect(Math.abs(edges * dsOut - length)).toBeLessThan(conformTol(length));
+        }
+    });
+
+    test("a conformed step is a fixed point: re-resolving it is a no-op (sweep)", () => {
+        // 4 steps × ~430 off-grid lengths, mirroring the spec's measured sweep shape.
+        const steps = [0.5, 0.25, 0.1, 0.05];
+        let count = 0;
+        for (const step of steps) {
+            for (let i = 1; i <= 430; i++) {
+                const length = i * 0.2371 + 0.0413; // irrational-ish increment: stays off-grid
+                const first = resolveStep(length, step);
+                const second = resolveStep(length, first.ds);
+                expect(second.edges).toBe(first.edges);
+                expect(second.ds).toBe(first.ds); // bit-identical, not just close
+                count++;
+            }
+        }
+        expect(count).toBe(steps.length * 430);
+    });
+
+    test("the max(1, …) floor: a length shorter than step still yields one edge spanning it exactly", () => {
+        const { edges, ds } = resolveStep(0.3, 2.0);
+        expect(edges).toBe(1);
+        expect(ds).toBe(0.3); // length/1 === length, bit-identical
+    });
+
+    test("an on-grid length is untouched: the exact multiple returns the nominal step", () => {
+        const { edges, ds } = resolveStep(24.0, 0.5);
+        expect(edges).toBe(48);
+        expect(ds).toBe(0.5);
     });
 });

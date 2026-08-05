@@ -1908,12 +1908,24 @@ describe("per-section step (Section.ds)", () => {
         return { x: s.posX[last], y: s.posY[last] };
     }
 
-    test("the stored step closes the pinned exit the nominal step misses", () => {
+    test("the stored step and the nominal replay both close the pinned exit — the conforming rule generalizes (kex2d-section-extent stage 2)", () => {
         // the conversion tier's own oracle, at the document layer: replay a shipped
         // conversion (the frozen golden for loop-explicit) as an authored force section and
-        // measure where it lands against the geo shape it was solved from. the solve pins the
-        // exit, so the section must march its OWN step — `length/edges` — not the nominal
-        // quantum (`refine.ts`, `refine.test.ts`'s atom-layer pin).
+        // measure where it lands against the geo shape it was solved from.
+        //
+        // Pre-stage-2, only the solve's OWN stored step (`Section.ds`, `length/edges`) closed
+        // this exit — the nominal quantum's un-conformed march stopped short by the section's
+        // rounding residual (`refine.ts`; `refine.test.ts`'s atom-layer pin). Stage 2 made the
+        // pairing seam (`profile.resolveStep`) universal: EVERY force section's replay now
+        // conforms `edges = max(1, round(length/step))` / `ds = length/edges`, stored step or
+        // sentinel-0 nominal alike. For an UNCHANGED length that seam is a fixed point of the
+        // solve's own edge count (the stage-2 locked decision's own measurement: 0 edge-count
+        // drift re-resolving an already-conforming pair), so the nominal replay now reproduces
+        // the exact same `(edges, ds)` the solve chose and closes the exit too — the two
+        // replays land BIT-IDENTICAL, not just both-close. `Section.ds`'s carry is no longer
+        // what keeps this exit closed; what it still uniquely records is the solve's CHOSEN
+        // edge count against a length or nominal step that later moves out from under it
+        // (roadmap follow-up, not this unit's).
         const scenario = scenarios.find((s) => s.name === "loop-explicit");
         if (!scenario) throw new Error("missing loop-explicit scenario");
         const solved = golden["loop-explicit"];
@@ -1929,15 +1941,18 @@ describe("per-section step (Section.ds)", () => {
         const missRealized = Math.hypot(realized.x - pinned.x, realized.y - pinned.y);
         const missNominal = Math.hypot(nominal.x - pinned.x, nominal.y - pinned.y);
 
-        // the realized step spans the solve exactly, so the exit closes within the same 1e-3 m
-        // contract `refine.test.ts` holds the atom layer to (measured 1.9e-5 m through the f32
-        // ECS columns).
+        // both close within the same 1e-3 m contract `refine.test.ts` holds the atom layer to
+        // (measured ~1.9e-5 m through the f32 ECS columns) — the shape this test used to pin
+        // as the stored step's exclusive privilege.
         expect(missRealized).toBeLessThan(1e-3);
-        // the nominal step marches `edges · 0.5` where the section is `length` long, so it
-        // stops short by that shortfall (0.240 m here) and cannot close the exit within it.
+        expect(missNominal).toBeLessThan(1e-3);
+        // not merely both-close: the seam resolves both replays to the identical conformed
+        // step, so they land on the identical f32 exit.
+        expect(nominal).toEqual(realized);
+        // the residual the pre-stage-2 nominal path used to stop short by, kept as evidence
+        // the two steps genuinely differ in VALUE even though they now agree in effect.
         const shortfall = Math.abs(solved.length - solved.edges * DS_NOMINAL);
         expect(shortfall).toBeGreaterThan(0.2);
-        expect(missNominal).toBeGreaterThan(0.5 * shortfall);
     });
 
     test("changing the stored step re-bakes the section at it", () => {
@@ -2097,6 +2112,39 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
                 const bakedExit = sp.entryU + sp.lenU;
                 const tol = accumTol(edges, length);
                 expect(Math.abs(authoredEnd - bakedExit)).toBeLessThan(tol);
+            }
+        }
+    });
+
+    // stage 2 — the seam (`profile.resolveStep`) now makes every force-payload pairing conform
+    // to the authored extent, on EITHER axis: the Distance-domain sweep above and this
+    // Time-domain twin. `sectionSpans`'s `lenU` is the native-axis reading — in `Time` that's
+    // the section's own realized march DURATION (`bakeOut.t` exit − entry) — so this is the
+    // exact other-axis form of the Distance sweep's `sp.len` check, never a claim about what a
+    // Distance→Time FLIP deviates by (that bound stays refused per the locked decision; a
+    // `Time`-domain track authored directly, with no flip anywhere in the picture, is what this
+    // isolates). A `Time`-domain track's force sections author duration directly (no geo
+    // sections, no conversion), so DT_NOMINAL replaces DS_NOMINAL as the nominal step swept.
+    test("a Time-domain section's sectionSpans duration equals its authored duration, off-grid durations × dt", () => {
+        const dtList = [DT_NOMINAL, DT_NOMINAL / 2, DT_NOMINAL / 5];
+        const durations = [
+            1.2345, 2.37, 0.813, 4.007, 0.5555, 10.0001, 0.2222, 6.161, 0.39, 1.7017,
+        ];
+        for (const dt of dtList) {
+            for (const duration of durations) {
+                if (onGrid(duration, dt)) continue;
+                const edges = Math.max(1, Math.round(duration / dt));
+                const state = new State();
+                state.addSystem(BakeSystem);
+                const eid = createTrack(state);
+                setTrackDomain(state, Domain.Time);
+                const sec = createSection(state, 0, SectionKind.Force, duration, dt);
+                state.step(0);
+                const spans = sectionSpans(state, eid);
+                const sp = spans.find((x) => x.id === sec);
+                if (!sp) throw new Error("section missing from spans");
+                const tol = accumTol(edges, duration);
+                expect(Math.abs(sp.lenU - duration)).toBeLessThan(tol);
             }
         }
     });

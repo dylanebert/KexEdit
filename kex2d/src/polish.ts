@@ -12,7 +12,7 @@
 
 import { bandFactor, bandSolve, bandStore } from "./banded";
 import { V_FLOOR } from "./forward";
-import { type ForcePoint, forceProfile, type Offset, sampleForce } from "./profile";
+import { type ForcePoint, forceProfile, type Offset, resolveStep, sampleForce } from "./profile";
 import type { Entry } from "./section";
 
 const G = 9.80665;
@@ -213,8 +213,7 @@ export function spine(bake: Bake, dsNominal: number): Spine {
             throw new Error(`spine: bake theta ${i} is not finite`);
     }
     const length = sigma[eb];
-    const edges = Math.max(1, Math.round(length / dsNominal));
-    const ds = length / edges;
+    const { edges, ds } = resolveStep(length, dsNominal);
     const x = new Float64Array(edges + 1);
     const y = new Float64Array(edges + 1);
     const theta = new Float64Array(edges + 1);

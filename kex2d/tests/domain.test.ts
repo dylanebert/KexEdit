@@ -371,9 +371,11 @@ describe("round trip", () => {
     //
     // The conversion itself is an exact inverse: both directions interpolate the SAME
     // piecewise-linear table, so `timeToArc(arcToTime(d)) === d` in exact arithmetic. What
-    // moves is the table. Flipping to Seconds re-bakes the section with a time march
-    // (`Δt = DT_NOMINAL`) where the distance bake used `Δs = DS_NOMINAL`, and the flip back
-    // converts through THAT table. So
+    // moves is the table. Flipping to Seconds re-bakes the section at its own EXACT step
+    // (`length/edges`, the `kex2d-section-extent` conforming rule — never the nominal
+    // `DT_NOMINAL` quantum, which would leave the Time-domain march short of the converted
+    // duration) where the distance bake used its own exact `Δs`, and the flip back converts
+    // through THAT table. So
     //
     //     s' − s  =  timeToArc_B(t) − timeToArc_A(t),   t = arcToTime_A(s)
     //
@@ -386,21 +388,45 @@ describe("round trip", () => {
     // where the θ/v system amplifies the two marches' first-order difference. So the assertion
     // is the equality above (the conversion adds nothing of its own), never an absolute number.
 
-    test("a level 1g ride round-trips EXACTLY — the analytic anchor", () => {
-        // level + 1g ⇒ dθ = (1 − cos 0)·… = 0, so θ ≡ 0 and v ≡ v0 for both marches: each
-        // table represents t = s/v0 exactly, so there is no disagreement to absorb.
-        const { state, sec } = forceTrack(40, [
+    test("a level 1g ride round-trips within the two bakes' own disagreement — the analytic anchor", () => {
+        // level + 1g ⇒ dθ = (1 − cos 0)·… = 0, so θ ≡ 0 and v ≡ v0 for both marches: there is
+        // no PHYSICS disagreement to absorb (unlike the varying-speed ride below, where the
+        // θ/v system itself amplifies a first-order difference). What's left is a pure
+        // quantization one — the forward bake's arc→time table is built from the exact
+        // `Δs = length/edges`, the reverse bake's time→arc table from the exact `Δt =
+        // duration/edges` conforming to the FLOATED (not bit-exact) converted duration — a
+        // scheme difference between the two exact steps, not a physics one, so it stays far
+        // below the varying-speed ride's bound even though it's no longer exactly zero.
+        const { state, eid, sec } = forceTrack(40, [
             [0, 1],
             [40, 1],
         ]);
         const before = kfs(state, sec);
+        const tabA = table(eid);
         const h = createHistory();
         expect(convertDomain(h, state, Domain.Time)).toBe(true);
         // the forward value is t = s/v0 to the bake's own f32 arclength accumulation.
         expect(kfs(state, sec)[1]).toBeCloseTo(40 / V0, 5);
         state.step(0);
+        const tabB = table(eid);
+
+        let disagree = 0;
+        for (const t of [...kfs(state, sec), extent(state, sec)])
+            disagree = Math.max(
+                disagree,
+                Math.abs(interp(tabB.t, tabB.arc, t) - interp(tabA.t, tabA.arc, t)),
+            );
+        const arcTotal = tabA.arc[tabA.arc.length - 1];
+        const tol = disagree + 4 * 2 ** -24 * arcTotal;
+
         expect(convertDomain(h, state, Domain.Distance)).toBe(true);
-        expect(kfs(state, sec)).toEqual(before);
+        const after = kfs(state, sec);
+        for (let i = 0; i < before.length; i++)
+            expect(Math.abs(after[i] - before[i])).toBeLessThanOrEqual(tol);
+
+        // no PHYSICS disagreement: the quantization-only gap stays orders below the
+        // varying-speed ride's (which also bounds it under one bake quantum).
+        expect(disagree).toBeLessThan(1e-3);
     });
 
     test("a varying-speed ride round-trips within the two bakes' own disagreement", () => {

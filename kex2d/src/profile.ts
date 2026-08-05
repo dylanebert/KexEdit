@@ -335,12 +335,32 @@ export function sampleForce(points: readonly ForcePoint[], s: number): number {
     return bez(seg.g0, seg.p1g, seg.p2g, seg.g1, t);
 }
 
+/** the ONE seam that pairs a force section's realized edge count with its per-edge step:
+ *  `edges = max(1, round(length/step))`, floored at 1 so a zero-length section still
+ *  integrates one step, and `ds = length/edges` is the EXACT per-edge step that closes the
+ *  section's authored `length` bit-for-bit (`edges·ds === length` to f32 accumulation) —
+ *  never `step` itself, whose rounding residual is what left `forceProfile`'s σ grid and
+ *  `evalForce`'s march disagreeing with the authored extent (`kex2d-section-extent`, locked
+ *  decision). The conformed `ds` is a FIXED POINT of this same rounding — re-resolving an
+ *  already-conforming step (a converted section's stored `Section.ds`) reproduces the same
+ *  `edges` and leaves `ds` unchanged, so calling this on an already-exact pair is a no-op.
+ *  Every production pairing of a force section's edge count with its step goes through this
+ *  ONE seam — never its own local `round(length/step)` — so `forceProfile`'s σ grid and
+ *  `evalForce`'s march always agree on the same `ds`. */
+export function resolveStep(length: number, step: number): { edges: number; ds: number } {
+    const edges = Math.max(1, Math.round(length / step));
+    return { edges, ds: length / edges };
+}
+
 /** the dense per-edge force over a section of `length` meters at edge step `ds`:
  *  edge `i` is driven by the force at its leading sample `σ_i = i·ds` (the source-σ
  *  convention `section.evalForce` / the forward integrator use). `edges =
  *  round(length/ds)`, floored at 1 so a zero-length section still integrates one
- *  step. `points` sorted by s. marches the bezier `t` monotonically per segment as
- *  σ ascends (warm-started root solve), never Newton-from-scratch per sample. */
+ *  step — a NO-OP when `ds` already comes from {@link resolveStep} (its fixed-point
+ *  property), which every production caller is expected to have already applied; this
+ *  function does not conform `ds` itself; see the module header. `points` sorted by s.
+ *  marches the bezier `t` monotonically per segment as σ ascends (warm-started root
+ *  solve), never Newton-from-scratch per sample. */
 export function forceProfile(
     points: readonly ForcePoint[],
     length: number,
