@@ -110,6 +110,10 @@ interface ContinuousFields {
     length: number;
     ds: number;
     feasibility: number;
+    exit: { dx: number; dy: number; dtheta: number; dist: number };
+    peakG: number;
+    maxDg: number;
+    deviations: number[];
     points: { s: number; g: number }[];
 }
 
@@ -120,6 +124,10 @@ function continuousFields(result: RefineResult): ContinuousFields {
         length: result.final.length,
         ds: result.final.ds,
         feasibility: result.final.feasibility,
+        exit: { ...result.final.exit },
+        peakG: result.final.peakG,
+        maxDg: result.final.maxDg,
+        deviations: Array.from(result.final.deviations),
         points: result.final.points.map((p) => ({ s: p.s, g: p.g })),
     };
 }
@@ -168,6 +176,10 @@ function spreadReport(trials: ContinuousFields[]): {
     length: number;
     ds: number;
     feasibility: number;
+    exit: { dx: number; dy: number; dtheta: number; dist: number };
+    peakG: number;
+    maxDg: number;
+    maxDeviationsSpread: number;
     perPoint: { s: number; g: number }[];
 } {
     const spread = (values: number[]) => Math.max(...values) - Math.min(...values);
@@ -176,12 +188,32 @@ function spreadReport(trials: ContinuousFields[]): {
         s: spread(trials.map((t) => t.points[k].s)),
         g: spread(trials.map((t) => t.points[k].g)),
     }));
+    // `deviations` is the per-sample profile (length edges+1) — only comparable across trials
+    // that share an edge count (structure held), which is 3a''''s only caller of this on
+    // heterogeneous input; a length mismatch reads as 0 rather than throwing, since a caller
+    // that filtered to structure-held trials already guarantees equal length.
+    const deviationsLen = trials[0]?.deviations.length ?? 0;
+    const uniformDeviationsLen = trials.every((t) => t.deviations.length === deviationsLen);
+    const maxDeviationsSpread = uniformDeviationsLen
+        ? Array.from({ length: deviationsLen }, (_, k) =>
+              spread(trials.map((t) => t.deviations[k])),
+          ).reduce((acc, v) => Math.max(acc, v), 0)
+        : 0;
     return {
         floor: spread(trials.map((t) => t.floor)),
         deviation: spread(trials.map((t) => t.deviation)),
         length: spread(trials.map((t) => t.length)),
         ds: spread(trials.map((t) => t.ds)),
         feasibility: spread(trials.map((t) => t.feasibility)),
+        exit: {
+            dx: spread(trials.map((t) => t.exit.dx)),
+            dy: spread(trials.map((t) => t.exit.dy)),
+            dtheta: spread(trials.map((t) => t.exit.dtheta)),
+            dist: spread(trials.map((t) => t.exit.dist)),
+        },
+        peakG: spread(trials.map((t) => t.peakG)),
+        maxDg: spread(trials.map((t) => t.maxDg)),
+        maxDeviationsSpread,
         perPoint,
     };
 }
@@ -591,4 +623,319 @@ test("3a‴ hypot-only arm — perturb ONLY Math.hypot at 3a''s measured real ra
         `\n  total: ${flips}/${trials} flips under hypot-only perturbation at the measured ` +
             "real rate.",
     );
+}, 300_000);
+
+/** `kex2d-golden-reproducibility` 3a''''. 3a''' modeled libm difference as per-call NOISE —
+ *  `wrapAllPerturbed`/`wrapHypotOnly` draw a fresh random sign each call — and that noise model
+ *  is refuted by an observation already in the spec: Mac and WSL agree exactly on
+ *  straight-fillet's knots, where the noise model predicted a 75% flip at the realistic rate.
+ *  The modeling error: a real alternate libm is a DIFFERENT DETERMINISTIC FUNCTION — `hypot(a,b)`
+ *  returns the same answer for the same `(a,b)` every time — not a coin re-flipped per call. A
+ *  deterministic perturbation lets the split/prune loop's near-tie comparisons and the solve's
+ *  fixed-point iteration converge the way they do against a real alternate libm; a re-randomized
+ *  one keeps moving the target underneath them.
+ *
+ *  `wrapArgKeyed` replaces the per-call coin with a hash of the ARGUMENT's own bit pattern mixed
+ *  with a per-instance `seed`: the decision (and the bump's sign) is a pure function of
+ *  `(seed, args)`, so the SAME argument always gets the SAME alternate answer, and a different
+ *  `seed` draws a different hypothetical alternate-libm instance over the same argument
+ *  population. Same magnitude (1 ulp) and same rate (3a''s measured 17.09% of `hypot` calls) as
+ *  every prior instrument in this unit — only the STRUCTURE of the perturbation changes.
+ *
+ *  THE CONTROL RUNS FIRST AND IS MANDATORY (Locked decision, 3a''''; Residue's "an instrument is
+ *  evidence only once you've seen it reproduce"). No instrument in this unit — 1c, 3a', 3a''' —
+ *  was ever asked to reproduce the one real cross-machine difference this whole investigation
+ *  exists to explain, though it was measured, committed, and sitting in the spec throughout. This
+ *  test reproduces it or says plainly that it doesn't, and only computes the structural
+ *  question + the ⧗ bound cells if the control passes — per the spec's explicit instruction to
+ *  report predictions as not counting rather than reporting them anyway. */
+
+/** MurmurHash3's 64-bit finalizer (fmix64) — a small, well-mixed avalanche function, used here
+ *  only as a deterministic bit-mixer (not for its collision-resistance properties, which this
+ *  application doesn't need). */
+function fmix64(hIn: bigint): bigint {
+    let h = BigInt.asUintN(64, hIn);
+    h ^= h >> 33n;
+    h = BigInt.asUintN(64, h * 0xff51afd7ed558ccdn);
+    h ^= h >> 33n;
+    h = BigInt.asUintN(64, h * 0xc4ceb9fe1a85ec53n);
+    h ^= h >> 33n;
+    return h;
+}
+
+/** hashes a `seed` + a call's argument bit pattern(s) to a uniform value in [0, 1). Deterministic
+ *  — the SAME `(seed, args)` always yields the SAME value, which is the whole point: a real
+ *  alternate libm decides per-argument, not per-call. `salt` draws a second, independent stream
+ *  off the same `(seed, args)` pair (used for the bump's sign) without re-hashing the seed. */
+function hashArgsToUnit(seed: number, args: readonly number[], salt = 0): number {
+    const view = new DataView(new ArrayBuffer(8));
+    let h = fmix64(BigInt(seed >>> 0) ^ (BigInt(salt >>> 0) << 32n) ^ 0x9e3779b97f4a7c15n);
+    for (const a of args) {
+        view.setFloat64(0, a);
+        h = fmix64(h ^ view.getBigUint64(0));
+    }
+    return Number(BigInt.asUintN(64, h) >> 11n) / Number(1n << 53n); // top 53 bits -> [0, 1)
+}
+
+/** wraps ONE `Math` fn (`hypot`, per 3a'' — every real Mac<->WSL divergence found was `hypot`) so
+ *  a call whose ARGUMENT hashes below `rate` (keyed on `seed`) returns its true result bumped by
+ *  a `magnitudeUlps`-ulp perturbation whose SIGN is also argument-keyed (so the same argument
+ *  perturbs the same way every time it recurs within one `seed`'s "alternate libm"). `zero`'s
+ *  same-value convention as `wrapAllPerturbed`: a true `0` result always bumps toward +Infinity
+ *  (no lower bit-pattern neighbor to subtract toward). */
+function wrapArgKeyed(fn: WrappedFn, seed: number, rate: number, magnitudeUlps = 1): AllPerturbed {
+    let count = 0;
+    const original = Math[fn];
+    const patched = Math as unknown as Record<WrappedFn, (...args: number[]) => number>;
+    patched[fn] = (...args: number[]) => {
+        const raw = (original as (...a: number[]) => number)(...args);
+        count++;
+        if (hashArgsToUnit(seed, args) >= rate) return raw;
+        const sign = raw === 0 ? 1 : hashArgsToUnit(seed, args, 1) < 0.5 ? -1 : 1;
+        return bumpBy(raw, sign * magnitudeUlps);
+    };
+    return {
+        restore: () => {
+            patched[fn] = original;
+        },
+        count: () => count,
+    };
+}
+
+/** the signed ulp distance `b − a` for two same-sign finite doubles (both `floor`/`deviation`
+ *  values here are positive) — IEEE-754's bit pattern is monotonic in value for a fixed sign, so
+ *  a bare `BigInt64` subtraction of the reinterpreted bits is exact. */
+function ulpDistance(a: number, b: number): number {
+    const view = new DataView(new ArrayBuffer(8));
+    view.setFloat64(0, a);
+    const bitsA = view.getBigInt64(0);
+    view.setFloat64(0, b);
+    const bitsB = view.getBigInt64(0);
+    return Number(bitsB - bitsA);
+}
+
+/** the seed count for BOTH the control and (if it passes) the structural/bound reading below —
+ *  one N=40 run serves both questions, since they're the same experiment read two ways: does
+ *  argument-keyed hypot at the real rate reproduce the known signature, and (only if so) how
+ *  often does structure flip and what do the continuous fields spread to. Matches 3a'''s
+ *  `SWEEP_TRIALS` and the spec's stated floor of N >= 40. */
+const HASH_SEED_COUNT = 40;
+
+/** per-seed grading against the known Mac<->WSL refine signature (Locked decision: `floor` ~1
+ *  ulp, `deviation` ~1.7e-9 m, three `points[].g` ~4e-10, on `circular-arc` — `OBSERVED_DRIFT`
+ *  above — with structure holding on ALL THREE MINI scenarios, per stage 2's assertion read). A
+ *  different `seed` is a different hypothetical libm and won't land the exact observed number, so
+ *  "reproduces" is graded to within one decade of the observed magnitude on each continuous
+ *  field — the property a faithful model should get right on every draw, not the exact value. */
+function reproducesSignature(
+    structuralHeld: boolean,
+    floorUlps: number,
+    deviationDelta: number,
+    maxPointsGDelta: number,
+): { pass: boolean; reason: string } {
+    if (!structuralHeld) return { pass: false, reason: "structure flipped on some scenario" };
+    if (floorUlps === 0) return { pass: false, reason: "floor did not move" };
+    if (Math.abs(floorUlps) > 10) {
+        return { pass: false, reason: `floor moved ${floorUlps} ulps, too far from ~1` };
+    }
+    if (deviationDelta < 1e-10 || deviationDelta > 1e-8) {
+        return { pass: false, reason: `deviation Δ ${deviationDelta} outside [1e-10, 1e-8]` };
+    }
+    if (maxPointsGDelta < 1e-11 || maxPointsGDelta > 1e-9) {
+        return {
+            pass: false,
+            reason: `max |Δ points[].g| ${maxPointsGDelta} outside [1e-11, 1e-9]`,
+        };
+    }
+    return { pass: true, reason: "reproduced" };
+}
+
+test("3a'''' argument-keyed hypot perturbation — control first (mandatory); structural question + ⧗ bound cells only if it passes", () => {
+    const native: Record<string, RefineResult> = {};
+    for (const name of MINI) native[name] = driveRefine(name);
+
+    console.log(
+        `\n=== 3a'''' control: argument-keyed hypot at the real rate ` +
+            `(${(HYPOT_REAL_RATE * 100).toFixed(2)}%), N=${HASH_SEED_COUNT} seeds ===`,
+    );
+
+    interface SeedRow {
+        seed: number;
+        structuralHeld: boolean;
+        floorUlps: number;
+        deviationDelta: number;
+        maxPointsGDelta: number;
+        reproduced: boolean;
+        reason: string;
+    }
+    const rows: SeedRow[] = [];
+    const scenarioFlipCount: Record<string, number> = {};
+    for (const name of MINI) scenarioFlipCount[name] = 0;
+    // per-scenario continuous fields from seeds where THAT scenario's structure held — the
+    // "conditional on structure matching" restriction the Locked decision's contract requires
+    // (3a''s straight-fillet lesson: an unconditioned continuous bound has to swallow a
+    // structural change, which is not a bound at all).
+    const heldContinuousByScenario: Record<string, ContinuousFields[]> = {};
+    for (const name of MINI) heldContinuousByScenario[name] = [];
+
+    for (let seed = 0; seed < HASH_SEED_COUNT; seed++) {
+        const wrapped = wrapArgKeyed("hypot", 0xc0de0000 + seed, HYPOT_REAL_RATE);
+        const results: Record<string, RefineResult> = {};
+        try {
+            for (const name of MINI) results[name] = driveRefine(name);
+        } finally {
+            wrapped.restore();
+        }
+
+        let structuralHeld = true;
+        for (const name of MINI) {
+            const diff = discreteDiff(discreteFields(results[name]), discreteFields(native[name]));
+            const moved =
+                diff.knots ||
+                diff.probes ||
+                diff.keys ||
+                diff.edges ||
+                diff.outcome ||
+                diff.converged;
+            if (moved) {
+                structuralHeld = false;
+                scenarioFlipCount[name]++;
+            } else {
+                heldContinuousByScenario[name].push(continuousFields(results[name]));
+            }
+        }
+
+        const arcNative = continuousFields(native["circular-arc"]);
+        const arcPerturbed = continuousFields(results["circular-arc"]);
+        const floorUlps = ulpDistance(arcNative.floor, arcPerturbed.floor);
+        const deviationDelta = Math.abs(arcPerturbed.deviation - arcNative.deviation);
+        const maxPointsGDelta = Math.max(
+            0,
+            ...arcPerturbed.points.map((p, i) => Math.abs(p.g - arcNative.points[i].g)),
+        );
+
+        const { pass, reason } = reproducesSignature(
+            structuralHeld,
+            floorUlps,
+            deviationDelta,
+            maxPointsGDelta,
+        );
+        rows.push({
+            seed,
+            structuralHeld,
+            floorUlps,
+            deviationDelta,
+            maxPointsGDelta,
+            reproduced: pass,
+            reason,
+        });
+    }
+
+    console.table(
+        rows.map((r) => ({
+            seed: r.seed,
+            "structure held": r.structuralHeld,
+            "floor Δulp": r.floorUlps,
+            "deviation Δ": r.deviationDelta,
+            "max |Δ points[].g|": r.maxPointsGDelta,
+            reproduced: r.reproduced,
+            reason: r.reason,
+        })),
+    );
+
+    const reproducedCount = rows.filter((r) => r.reproduced).length;
+    const totalStructuralFlips = MINI.reduce((acc, name) => acc + scenarioFlipCount[name], 0);
+    const seedsWithAnyFlip = rows.filter((r) => !r.structuralHeld).length;
+    console.log(
+        `\n  ${reproducedCount}/${HASH_SEED_COUNT} seeds reproduce the known signature ` +
+            "(structure held on all three scenarios + floor/deviation/points[].g within a " +
+            `decade of observed). ${seedsWithAnyFlip}/${HASH_SEED_COUNT} seeds broke structure ` +
+            "on at least one scenario.",
+    );
+    for (const name of MINI) {
+        console.log(
+            `  ${name}: structure moved on ${scenarioFlipCount[name]}/${HASH_SEED_COUNT} seeds`,
+        );
+    }
+    const missReasons = rows.filter((r) => !r.reproduced).map((r) => r.reason);
+    if (missReasons.length > 0) {
+        const tally = new Map<string, number>();
+        for (const reason of missReasons) {
+            const bucket =
+                reason.split(" ")[0] + (reason.includes("structure") ? " (structural)" : "");
+            tally.set(bucket, (tally.get(bucket) ?? 0) + 1);
+        }
+        console.log(
+            `  miss directions: ${Array.from(tally.entries())
+                .map(([k, v]) => `${k} x${v}`)
+                .join(", ")}`,
+        );
+    }
+
+    // The gate: majority magnitude-reproduction AND zero structural flips anywhere, on any
+    // scenario, at any seed. Both load-bearing — a single structural flip reopens the fork this
+    // control exists to close for `knots` (Locked decision), and sub-majority magnitude
+    // reproduction means the instrument's rate/magnitude model, however faithfully KEYED, isn't
+    // landing where the one real pair we have landed.
+    const controlPassed = totalStructuralFlips === 0 && reproducedCount >= HASH_SEED_COUNT / 2;
+    console.log(
+        `\n=== CONTROL VERDICT: ${controlPassed ? "REPRODUCED" : "DID NOT REPRODUCE"} ` +
+            `(${totalStructuralFlips} structural flips across ${HASH_SEED_COUNT * MINI.length} ` +
+            `scenario-seeds, ${reproducedCount}/${HASH_SEED_COUNT} magnitude-reproducing) ===`,
+    );
+
+    if (!controlPassed) {
+        console.log(
+            "\nThe control did not reproduce the known Mac<->WSL signature. Per this stage's " +
+                "mandate, NONE of the structural question or the ⧗ bound cells are computed or " +
+                "reported below — they would not count even if printed.",
+        );
+        return;
+    }
+
+    console.log(
+        "\nThe control reproduced the known signature. The structural question and the ⧗ bound " +
+            "cells below are read off the SAME N=40-seed run (structure-conditional, per scenario).",
+    );
+
+    console.log(
+        `\n=== structural flip rate at the real rate (N=${HASH_SEED_COUNT} seeds x ` +
+            `${MINI.length} scenarios = ${HASH_SEED_COUNT * MINI.length} scenario-seeds) ===`,
+    );
+    if (totalStructuralFlips === 0) {
+        const upperBound95 = 3 / (HASH_SEED_COUNT * MINI.length); // rule of three
+        console.log(
+            `  0/${HASH_SEED_COUNT * MINI.length} flips observed. Rule-of-three 95% upper bound ` +
+                `on the per-scenario-seed flip probability: ${(upperBound95 * 100).toFixed(3)}%.`,
+        );
+    } else {
+        console.log(
+            `  ${totalStructuralFlips}/${HASH_SEED_COUNT * MINI.length} flips observed — ` +
+                "NONZERO under the faithful, argument-keyed instrument.",
+        );
+    }
+
+    console.log("\n=== ⧗ bound cells: structure-conditional spread, per scenario ===");
+    for (const name of MINI) {
+        const held = heldContinuousByScenario[name];
+        if (held.length === 0) {
+            console.log(`  ${name}: N/A — 0/${HASH_SEED_COUNT} seeds held structure`);
+            continue;
+        }
+        const spread = spreadReport(held);
+        const maxPointG = Math.max(0, ...spread.perPoint.map((p) => p.g));
+        console.log(`\n  -- ${name} (${held.length}/${HASH_SEED_COUNT} seeds held structure) --`);
+        console.table({
+            deviation: { spread: spread.deviation },
+            "points[].g (max)": { spread: maxPointG },
+            deviations: { spread: spread.maxDeviationsSpread },
+            feasibility: { spread: spread.feasibility },
+            "exit.dx": { spread: spread.exit.dx },
+            "exit.dy": { spread: spread.exit.dy },
+            "exit.dtheta": { spread: spread.exit.dtheta },
+            "exit.dist": { spread: spread.exit.dist },
+            peakG: { spread: spread.peakG },
+            maxDg: { spread: spread.maxDg },
+        });
+    }
 }, 300_000);
