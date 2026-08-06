@@ -1,16 +1,27 @@
-/** The one comparison seam for a cross-machine golden fixture (`kex2d-golden-reproducibility`
- *  stage 3b). Structure is exact and a hard fail; continuous fields are bounded, and the bound
- *  is only ever checked once structure has already matched — never two tolerance levels on one
- *  comparison. Each fixture declares its own `FieldRegistry` (the buckets are genuinely
- *  different per fixture); this file is generic over the registry, not a shared schema. */
+/** The one comparison seam for a golden fixture (`kex2d-golden-reproducibility` stage 3b).
+ *  Structure is exact and a hard fail; a bound is only ever checked once structure has already
+ *  matched — never two tolerance levels on one comparison. A bucket is a claim about the
+ *  COMPARISON a field runs, not about the field itself: own-stamp against a deterministic solve
+ *  presents zero spread (`exact`), a fixture genuinely shared across platforms presents the
+ *  measured envelope (`ulp`/a bound). Stage 4 collapsed every own-stamp bounded/mixed field to
+ *  `exact` for exactly this reason — `forcegeo-golden.json`'s `deviation` is the one field left
+ *  non-exact, because it is the one field actually compared cross-machine. Each fixture declares
+ *  its own `FieldRegistry` (the buckets are genuinely different per fixture); this file is
+ *  generic over the registry, not a shared schema. */
 
 export type Bucket =
     | { kind: "structural" }
     | { kind: "exact" }
-    | { kind: "bounded"; rel: number }
-    | { kind: "mixed"; atol: number; rel: number }
     | { kind: "ulp" }
     | { kind: "digest" };
+
+/** every `Bucket` variant EXCEPT `structural` — what a member of an `{ array }`/`{ vector }`/
+ *  `{ object }` field may declare. Structure is a whole-field question (an array's length, a
+ *  member's presence), checked once ahead of any per-member comparison (`compareGolden`'s pass
+ *  1); a MEMBER declaring its own bucket `structural` would ask the same question twice, at the
+ *  wrong granularity, so it's excluded from the type rather than left to a comment
+ *  (`kex2d-golden-reproducibility` 4: "a `{array}` member declared structural is a type error"). */
+export type MemberBucket = Exclude<Bucket, { kind: "structural" }>;
 
 /** a field registry for one golden fixture's per-scenario record shape. A bare `Bucket` covers
  *  a scalar (or a whole array compared as one unit, e.g. `knots`); `{ array }` covers a field
@@ -20,14 +31,14 @@ export type Bucket =
  *  an array of plain SCALARS, every element sharing one bucket (`polish.oracle.ts`'s
  *  `deviations` — the sha256 it replaces covered this element-wise and the replacement must
  *  too); `{ object }` covers a field that is itself a single nested record with per-key buckets,
- *  never an array (`polish.oracle.ts`'s `exit: {dx,dy,dtheta,dist}`, whose four members carry two
- *  different bounds and so can't ride the whole-object `exact` bucket the way `spine` does). */
+ *  never an array (`polish.oracle.ts`'s `exit: {dx,dy,dtheta,dist}`, whose four members compare
+ *  independently and so can't ride the whole-object `exact` bucket the way `spine` does). */
 export type FieldRegistry = Record<
     string,
     | Bucket
-    | { array: Record<string, Bucket | { object: Record<string, Bucket> }> }
-    | { vector: Bucket }
-    | { object: Record<string, Bucket> }
+    | { array: Record<string, MemberBucket | { object: Record<string, MemberBucket> }> }
+    | { vector: MemberBucket }
+    | { object: Record<string, MemberBucket> }
 >;
 
 export type FieldResult =
@@ -40,8 +51,8 @@ export type FieldResult =
           structural: boolean;
           got: unknown;
           want: unknown;
-          /** present only for a `bounded`/`ulp` miss — the tolerance and the measured error
-           *  that exceeded it. Absent for a `structural`/`exact` mismatch, which has no bound. */
+          /** present only for a `ulp` miss — the tolerance and the measured error that exceeded
+           *  it. Absent for a `structural`/`exact`/`digest` mismatch, which has no bound. */
           bound?: number;
           error?: number;
       };
@@ -95,24 +106,10 @@ function checkScalar(field: string, bucket: Bucket, got: unknown, want: unknown)
     }
     const g = got as number;
     const w = want as number;
-    if (bucket.kind === "bounded") {
-        const error = Math.abs(g - w) / Math.abs(w);
-        return error <= bucket.rel
-            ? { field, ok: true }
-            : { field, ok: false, structural: false, got: g, want: w, bound: bucket.rel, error };
-    }
-    if (bucket.kind === "mixed") {
-        // `|got - want| <= atol + rel*|want|` — the standard `isclose` shape. A plain relative
-        // bound is ill-conditioned wherever `want` can approach zero (`points[].g`,
-        // `kex2d-golden-reproducibility` 3g); `atol` is the measured absolute spread's own
-        // bound, so it carries the comparison exactly where a relative denominator can't.
-        const error = Math.abs(g - w);
-        const bound = bucket.atol + bucket.rel * Math.abs(w);
-        return error <= bound
-            ? { field, ok: true }
-            : { field, ok: false, structural: false, got: g, want: w, bound, error };
-    }
-    // ulp: an absolute bound on the field's own magnitude, not a relative one.
+    // ulp: an absolute bound on the field's own magnitude, not a relative one. The only
+    // remaining non-exact numeric bucket — `forcegeo-golden.json`'s `deviation`, the one field
+    // this unit's close left bounded (`kex2d-golden-reproducibility` 4: a shared fixture
+    // presents a real cross-machine spread; every own-stamp field above collapsed to `exact`).
     const bound = ulpOf(w);
     const error = Math.abs(g - w);
     return error <= bound
@@ -128,7 +125,7 @@ function checkScalar(field: string, bucket: Bucket, got: unknown, want: unknown)
  *  case, compared per sub-key). This function never itself decides a presence mismatch. */
 function checkMember(
     field: string,
-    spec: Bucket | { object: Record<string, Bucket> },
+    spec: MemberBucket | { object: Record<string, MemberBucket> },
     got: unknown,
     want: unknown,
 ): FieldResult[] {
@@ -144,7 +141,7 @@ function checkMember(
 /** Compare one fixture record (`got`) against its frozen golden (`want`) through `registry`.
  *  Structural fields are checked FIRST and the function returns the instant one fails — the
  *  contract's ordering, not two independent passes. Only once every structural field matches do
- *  the exact and bounded fields get read at all. */
+ *  the exact/`ulp`/`digest` fields get read at all. */
 export function compareGolden(got: object, want: object, registry: FieldRegistry): CompareOutcome {
     const g = fields(got);
     const w = fields(want);
@@ -223,7 +220,7 @@ export function compareGolden(got: object, want: object, registry: FieldRegistry
         }
     }
 
-    // pass 2 — exact + bounded scalars, only reached once structure holds.
+    // pass 2 — exact/ulp/digest scalars, only reached once structure holds.
     for (const [field, spec] of Object.entries(registry)) {
         if ("array" in spec || "vector" in spec || "object" in spec) continue;
         if (spec.kind === "structural") continue;

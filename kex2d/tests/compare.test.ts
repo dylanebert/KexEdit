@@ -1,11 +1,12 @@
 // The comparison seam's own tests (`kex2d-golden-reproducibility` stage 3b), not the physics'.
 // Three claims, each per the spec's Validation section: the field registry is closed both
-// directions against the REAL fixtures (never a hand-typed key list), the bounded comparison
-// actually discriminates (red at 10x its bound, green at 0.1x), and a structural mismatch hard
-// fails before any bounded field is even read.
+// directions against the REAL fixtures (never a hand-typed key list), a bounded comparison
+// actually discriminates (red at 10x its bound, green at 0.1x — `forcegeo-golden.json`'s `ulp`
+// bucket is the one field left non-exact, stage 4), and a structural mismatch hard fails before
+// any value comparison is even made.
 import { describe, expect, test } from "bun:test";
 import type { Bucket, FieldRegistry } from "./helpers/compare";
-import { compareGolden, digestOf, registryClosure, setClosure } from "./helpers/compare";
+import { compareGolden, digestOf, registryClosure, setClosure, ulpOf } from "./helpers/compare";
 import convertGolden from "./fixtures/convert-golden.json";
 import forcegeoGolden from "./fixtures/forcegeo-golden.json";
 import {
@@ -124,12 +125,12 @@ describe("field registry closure — declared-registry law", () => {
     });
 
     test("an orphan points[] member declaration fails closure", () => {
-        const withOrphan: Record<string, Bucket | { array: Record<string, Bucket> }> = {
+        const withOrphan: FieldRegistry = {
             ...CONVERT_REGISTRY,
             points: {
                 array: {
                     s: { kind: "exact" },
-                    g: { kind: "bounded", rel: 1e-8 },
+                    g: { kind: "exact" },
                     ghost: { kind: "exact" },
                 },
             },
@@ -175,10 +176,10 @@ describe("field registry closure — declared-registry law", () => {
             ...POLISH_REGISTRY,
             exit: {
                 object: {
-                    dx: { kind: "mixed", atol: 1e-12, rel: 1e-6 },
-                    dy: { kind: "mixed", atol: 1e-12, rel: 1e-6 },
-                    dtheta: { kind: "mixed", atol: 1e-14, rel: 0 },
-                    dist: { kind: "mixed", atol: 1e-12, rel: 1e-6 },
+                    dx: { kind: "exact" },
+                    dy: { kind: "exact" },
+                    dtheta: { kind: "exact" },
+                    dist: { kind: "exact" },
                     ghost: { kind: "exact" },
                 },
             },
@@ -188,136 +189,14 @@ describe("field registry closure — declared-registry law", () => {
     });
 });
 
-/** perturb one top-level field of a real golden record by `factor` × its declared relative
- *  bound — additive, not multiplicative, so the delta stays well above the field's own ulp at
- *  every factor this file uses and the measured error tracks `factor * rel` cleanly. */
-function perturbRel(name: string, field: string): (factor: number) => Record<string, unknown> {
-    const want = GOLDEN(name) as unknown as Record<string, unknown>;
-    const bucket = CONVERT_REGISTRY[field] as { kind: "bounded"; rel: number };
-    const base = want[field] as number;
-    return (factor: number) => ({ ...want, [field]: base + bucket.rel * factor * Math.abs(base) });
-}
-
-const G_BUCKET = (CONVERT_REGISTRY.points as { array: Record<string, Bucket> }).array.g as {
-    kind: "mixed";
-    atol: number;
-    rel: number;
-};
-
-/** perturb `circular-arc`'s first point's `g` (≈1.9, well away from zero) by `factor` × its
- *  declared REL bound — at this magnitude `atol` is negligible next to `rel * |g|`, so this
- *  exercises the mixed form's rel-dominated limb (the same limb `perturbRel` above exercises
- *  for `floor`/`deviation`). */
-function perturbPointG(name: string, factor: number): Record<string, unknown> {
-    const want = GOLDEN(name) as unknown as Record<string, unknown>;
-    const points = want.points as { s: number; g: number }[];
-    const perturbed = points.map((p, i) =>
-        i === 0 ? { ...p, g: p.g + G_BUCKET.rel * factor * Math.abs(p.g) } : p,
-    );
-    return { ...want, points: perturbed };
-}
-
-/** the mixed form's OTHER limb: a `g` near zero, where `rel * |want|` is negligible and `atol`
- *  alone carries the comparison — the exact shape `double-hump`/`valley-explicit`'s
- *  zero-crossing points broke the plain-relative bound on (3e). `withPointG` swaps only
- *  `circular-arc`'s first point's `g`, keeping every structural field (knots, outcome, …)
- *  untouched so only the bounded comparison is under test. */
-function withPointG(g: number): Record<string, unknown> {
-    const want = GOLDEN("circular-arc") as unknown as Record<string, unknown>;
-    const points = (want.points as { s: number; g: number }[]).map((p, i) =>
-        i === 0 ? { ...p, g } : p,
-    );
-    return { ...want, points };
-}
-
 describe("the bounded comparison discriminates — red at 10x, green at 0.1x", () => {
-    for (const field of ["floor", "deviation"] as const) {
-        test(`convert-golden.json's ${field} fails at 10x its bound`, () => {
-            const perturb = perturbRel("circular-arc", field);
-            const outcome = compareGolden(perturb(10), GOLDEN("circular-arc"), CONVERT_REGISTRY);
-            expect(outcome.ok).toBe(false);
-        });
-
-        test(`convert-golden.json's ${field} passes at 0.1x its bound`, () => {
-            const perturb = perturbRel("circular-arc", field);
-            const outcome = compareGolden(perturb(0.1), GOLDEN("circular-arc"), CONVERT_REGISTRY);
-            expect(outcome.ok).toBe(true);
-        });
-    }
-
-    test("convert-golden.json's points[].g fails at 10x its bound", () => {
-        const outcome = compareGolden(
-            perturbPointG("circular-arc", 10),
-            GOLDEN("circular-arc"),
-            CONVERT_REGISTRY,
-        );
-        expect(outcome.ok).toBe(false);
-    });
-
-    test("convert-golden.json's points[].g passes at 0.1x its bound", () => {
-        const outcome = compareGolden(
-            perturbPointG("circular-arc", 0.1),
-            GOLDEN("circular-arc"),
-            CONVERT_REGISTRY,
-        );
-        expect(outcome.ok).toBe(true);
-    });
-
-    // the mixed form's `atol` limb — a `g` near zero, so `rel * |want|` contributes nothing and
-    // `atol` alone must gate it (kex2d-golden-reproducibility 3g's re-derivation).
-    test("convert-golden.json's points[].g (near zero) fails at 10x atol", () => {
-        const want = withPointG(1e-12);
-        const got = withPointG(1e-12 + G_BUCKET.atol * 10);
-        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(false);
-    });
-
-    test("convert-golden.json's points[].g (near zero) passes at 0.1x atol", () => {
-        const want = withPointG(1e-12);
-        const got = withPointG(1e-12 + G_BUCKET.atol * 0.1);
-        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(true);
-    });
-
-    // the mixed form's `rel` limb, isolated at a magnitude where `atol` is negligible by
-    // construction (rel*|want| >> atol) — the same claim `perturbPointG` above makes at
-    // circular-arc's own scale, restated at a scale where the dominance is unambiguous.
-    test("convert-golden.json's points[].g (large) fails at 10x its rel-implied error", () => {
-        const want = withPointG(1e6);
-        const got = withPointG(1e6 + G_BUCKET.rel * 1e6 * 10);
-        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(false);
-    });
-
-    test("convert-golden.json's points[].g (large) passes at 0.1x its rel-implied error", () => {
-        const want = withPointG(1e6);
-        const got = withPointG(1e6 + G_BUCKET.rel * 1e6 * 0.1);
-        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(true);
-    });
-
-    // The two limbs must ADD, not compete. Every test above isolates one limb by making the
-    // other negligible, so at those points `atol + rel*|want|` and `max(atol, rel*|want|)` are
-    // numerically indistinguishable and a `+` → `Math.max` mutation survives all of them
-    // (measured: the mutant passed 26/26). The discriminating point is the crossover, where the
-    // two terms are exactly equal — derived, not chosen: `rel*|want| == atol` at
-    // `|want| == atol/rel`. There the additive bound is `2*atol` and the max bound is `atol`, so
-    // an error of 1.5x atol separates them. Both directions, so neither case is vacuous.
-    const crossover = G_BUCKET.atol / G_BUCKET.rel;
-
-    test("convert-golden.json's points[].g passes at 1.5x atol where the two limbs are equal", () => {
-        const want = withPointG(crossover);
-        const got = withPointG(crossover + G_BUCKET.atol * 1.5);
-        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(true);
-    });
-
-    test("convert-golden.json's points[].g fails at 2.5x atol where the two limbs are equal", () => {
-        const want = withPointG(crossover);
-        const got = withPointG(crossover + G_BUCKET.atol * 2.5);
-        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(false);
-    });
-
     // `forcegeo-golden.json`'s `deviation` is bounded at 1 ULP of its own magnitude, not a
     // relative spread — a quantized, not continuous, tolerance. 10 ulps off is 10x the bound and
     // must fail; a fractional ulp is not representable in a double (it rounds back to the exact
     // value), so the 0.1x case degenerates to the zero-error identity — the strictest possible
-    // instance of "well inside the bound", and it must pass.
+    // instance of "well inside the bound", and it must pass. The one field left non-exact after
+    // stage 4 (`kex2d-golden-reproducibility` 4): the deliberately-shared fixture, the one
+    // comparison that genuinely runs cross-machine.
     test("forcegeo-golden.json's deviation fails at 10 ulps", () => {
         const want = FORCEGEO_GOLDEN("circular-arc");
         const buf = new Float64Array([want.deviation]);
@@ -336,99 +215,9 @@ describe("the bounded comparison discriminates — red at 10x, green at 0.1x", (
         expect(outcome.ok).toBe(true);
     });
 
-    // `POLISH_REGISTRY`'s own plain-`bounded` fields — each a DIFFERENT declared rel, so each
-    // must be shown to discriminate on its own number, not just inherit the mechanism proof
-    // `points[].g` already gave the shared `checkScalar` code path.
-    for (const field of ["feasibility", "peakG", "maxDg"] as const) {
-        test(`polish-golden.json's ${field} fails at 10x its bound`, () => {
-            const want = POLISH_SAMPLE;
-            const bucket = (POLISH_REGISTRY as Record<string, { kind: "bounded"; rel: number }>)[
-                field
-            ];
-            const base = want[field] as number;
-            const got = { ...want, [field]: base + bucket.rel * 10 * Math.abs(base) };
-            expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(false);
-        });
-
-        test(`polish-golden.json's ${field} passes at 0.1x its bound`, () => {
-            const want = POLISH_SAMPLE;
-            const bucket = (POLISH_REGISTRY as Record<string, { kind: "bounded"; rel: number }>)[
-                field
-            ];
-            const base = want[field] as number;
-            const got = { ...want, [field]: base + bucket.rel * 0.1 * Math.abs(base) };
-            expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(true);
-        });
-    }
-
-    // the new `{ vector }` bucket kind, mechanism + POLISH_REGISTRY's own `deviations` bound.
-    // Perturbed at an interior index away from 0 (index 0 is the pinned entry, always exactly 0
-    // — perturbing it would trip the `atol` limb instead of the `rel` limb this pair isolates).
-    const DeviationsBucket = (
-        POLISH_REGISTRY.deviations as { vector: { kind: "mixed"; atol: number; rel: number } }
-    ).vector;
-
-    // circular-arc's own `deviations[]` entries (~1e-4 corpus-wide, per the full-free family's
-    // own scale) sit BELOW the atol/rel crossover (`atol/rel` = 1), where `atol` dominates — so
-    // isolating the rel limb needs a synthetic magnitude above it, the same move the `exit.*`
-    // tests below make.
-    const DeviationsRelBase = 10 * (DeviationsBucket.atol / DeviationsBucket.rel);
-
-    test("polish-golden.json's deviations[] fails at 10x its rel-implied error", () => {
-        const deviations = POLISH_SAMPLE.deviations as number[];
-        const want = {
-            ...POLISH_SAMPLE,
-            deviations: deviations.map((v, k) => (k === 1 ? DeviationsRelBase : v)),
-        };
-        const got = {
-            ...want,
-            deviations: (want.deviations as number[]).map((v, k) =>
-                k === 1 ? v + DeviationsBucket.rel * 10 * v : v,
-            ),
-        };
-        expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(false);
-    });
-
-    test("polish-golden.json's deviations[] passes at 0.1x its rel-implied error", () => {
-        const deviations = POLISH_SAMPLE.deviations as number[];
-        const want = {
-            ...POLISH_SAMPLE,
-            deviations: deviations.map((v, k) => (k === 1 ? DeviationsRelBase : v)),
-        };
-        const got = {
-            ...want,
-            deviations: (want.deviations as number[]).map((v, k) =>
-                k === 1 ? v + DeviationsBucket.rel * 0.1 * v : v,
-            ),
-        };
-        expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(true);
-    });
-
-    // and the `atol` limb, isolated at a near-zero entry the way `withPointG` does for
-    // `points[].g` — index 0 is always exactly 0 (the pinned entry), so it's the corpus's own
-    // near-zero row rather than a synthetic one.
-    test("polish-golden.json's deviations[] (near zero) fails at 10x atol", () => {
-        const want = POLISH_SAMPLE;
-        const got = {
-            ...want,
-            deviations: (want.deviations as number[]).map((v, k) =>
-                k === 0 ? v + DeviationsBucket.atol * 10 : v,
-            ),
-        };
-        expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(false);
-    });
-
-    test("polish-golden.json's deviations[] (near zero) passes at 0.1x atol", () => {
-        const want = POLISH_SAMPLE;
-        const got = {
-            ...want,
-            deviations: (want.deviations as number[]).map((v, k) =>
-                k === 0 ? v + DeviationsBucket.atol * 0.1 : v,
-            ),
-        };
-        expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(true);
-    });
-
+    // a `vector` field's length is structural regardless of its element bucket — unaffected by
+    // stage 4's bounded/mixed→exact re-bucketing, kept here as the `{ vector }` kind's own
+    // length-mismatch coverage (`compareGolden`'s structural pass 1).
     test("polish-golden.json's deviations[] length mismatch fails as structure, ahead of any bound", () => {
         const want = POLISH_SAMPLE;
         const got = { ...want, deviations: [...(want.deviations as number[]), 0] };
@@ -440,82 +229,97 @@ describe("the bounded comparison discriminates — red at 10x, green at 0.1x", (
             field: "deviations.length",
         });
     });
+});
 
-    // the new `{ object }` bucket kind, mechanism + POLISH_REGISTRY's `exit` members. `dx`/`dy`/
-    // `dist` share one atol+rel pair; `dtheta` is the pure-absolute instance (`rel: 0`).
-    for (const field of ["dx", "dy", "dist"] as const) {
-        const bucket = (
-            POLISH_REGISTRY.exit as {
-                object: Record<string, { kind: "mixed"; atol: number; rel: number }>;
-            }
-        ).object[field];
-
-        // circular-arc's own exit.* values sit orders of magnitude below the atol/rel crossover
-        // (~1e-6), where atol would dominate — isolate the rel limb the way `perturbPointG` does
-        // for `points[].g`: build a synthetic want/got PAIR at a magnitude well above the
-        // crossover, so `atol` is negligible next to `rel * |want|` on both sides.
-        const base = 10 * (bucket.atol / bucket.rel);
-
-        test(`polish-golden.json's exit.${field} fails at 10x its rel-implied error`, () => {
-            const want = {
-                ...POLISH_SAMPLE,
-                exit: { ...(POLISH_SAMPLE.exit as object), [field]: base },
-            };
-            const got = {
-                ...want,
-                exit: { ...(want.exit as object), [field]: base + bucket.rel * 10 * base },
-            };
-            expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(false);
-        });
-
-        test(`polish-golden.json's exit.${field} passes at 0.1x its rel-implied error`, () => {
-            const want = {
-                ...POLISH_SAMPLE,
-                exit: { ...(POLISH_SAMPLE.exit as object), [field]: base },
-            };
-            const got = {
-                ...want,
-                exit: { ...(want.exit as object), [field]: base + bucket.rel * 0.1 * base },
-            };
-            expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(true);
+// Stage 4 (`kex2d-golden-reproducibility`): every field these two registries declared `bounded`/
+// `mixed` re-buckets to `exact` — own-stamp against a deterministic solve presents zero spread,
+// so no bound belongs there. The `.dg` tests below (unaffected by this stage — `.dg` was already
+// exact since 3c) are the template: an `exact` field's discrimination evidence is "ANY drift
+// fails," not a 10x/0.1x pair, because there is no bound left to scale against. One test per
+// re-bucketed field, an ulp-scale mutation via the SAME `ulpOf` the `ulp` bucket itself uses —
+// under the OLD bounded/mixed buckets every one of these mutations was many orders of magnitude
+// inside the declared tolerance and passed; that's the red this stage's fix turns green.
+describe("stage 4's re-bucketed fields — exact, any drift fails (no bound left to scale)", () => {
+    for (const field of ["floor", "deviation"] as const) {
+        test(`convert-golden.json's ${field} fails on an ulp-scale drift (now exact)`, () => {
+            const want = GOLDEN("circular-arc") as unknown as Record<string, unknown>;
+            const base = want[field] as number;
+            const got = { ...want, [field]: base + ulpOf(base) };
+            expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(false);
         });
     }
 
-    // `exit.dtheta`'s `rel: 0` — a pure-absolute bound, atol alone must carry the whole
-    // comparison the way `forcegeo-golden.json`'s `ulp` bucket does.
-    test("polish-golden.json's exit.dtheta fails at 10x its atol (rel: 0, pure absolute)", () => {
+    test("convert-golden.json's points[].g fails on an ulp-scale drift (now exact)", () => {
+        const want = GOLDEN("circular-arc") as unknown as Record<string, unknown>;
+        const points = want.points as { s: number; g: number }[];
+        const got = {
+            ...want,
+            points: points.map((p, i) => (i === 0 ? { ...p, g: p.g + ulpOf(p.g) } : p)),
+        };
+        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(false);
+    });
+
+    for (const field of ["feasibility", "peakG", "maxDg", "deviation"] as const) {
+        test(`polish-golden.json's ${field} fails on an ulp-scale drift (now exact)`, () => {
+            const want = POLISH_SAMPLE;
+            const base = want[field] as number;
+            const got = { ...want, [field]: base + ulpOf(base) };
+            expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(false);
+        });
+    }
+
+    // index 1 (interior, not the structurally-zero pinned entry at index 0 — perturbing that
+    // would still be a valid drift, but this picks the row every prior mixed-form derivation
+    // called out as the rel-dominated case, so the same row now proves the exact bucket).
+    test("polish-golden.json's deviations[] fails on an ulp-scale drift (now exact)", () => {
         const want = POLISH_SAMPLE;
-        const exit = want.exit as Record<string, number>;
-        const got = { ...want, exit: { ...exit, dtheta: exit.dtheta + 1e-14 * 10 } };
+        const deviations = want.deviations as number[];
+        const got = {
+            ...want,
+            deviations: deviations.map((v, k) => (k === 1 ? v + ulpOf(v) : v)),
+        };
         expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(false);
     });
 
-    test("polish-golden.json's exit.dtheta passes at 0.1x its atol (rel: 0, pure absolute)", () => {
+    for (const field of ["dx", "dy", "dtheta", "dist"] as const) {
+        test(`polish-golden.json's exit.${field} fails on an ulp-scale drift (now exact)`, () => {
+            const want = POLISH_SAMPLE;
+            const exit = want.exit as Record<string, number>;
+            const got = { ...want, exit: { ...exit, [field]: exit[field] + ulpOf(exit[field]) } };
+            expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(false);
+        });
+    }
+
+    test("polish-golden.json's points[].g fails on an ulp-scale drift (now exact)", () => {
         const want = POLISH_SAMPLE;
-        const exit = want.exit as Record<string, number>;
-        const got = { ...want, exit: { ...exit, dtheta: exit.dtheta + 1e-14 * 0.1 } };
-        expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(true);
+        const points = want.points as { s: number; g: number }[];
+        const got = {
+            ...want,
+            points: points.map((p, i) => (i === 0 ? { ...p, g: p.g + ulpOf(p.g) } : p)),
+        };
+        expect(compareGolden(got, want, POLISH_REGISTRY).ok).toBe(false);
     });
 });
 
-/** the fields `compareGolden` may have looked at before it hit `field` in registry order —
- *  every registry key up to and including `field`, since pass 1 walks structural fields in
- *  declaration order and returns the instant one fails. Used to prove the bounded fields never
- *  got read: their names must not appear among the results at all. */
-const BOUNDED_FIELDS = ["floor", "deviation", "points"];
+/** the non-structural fields `compareGolden` must never reach while a structural field has
+ *  already failed — pass 1 walks structural fields in declaration order and returns the instant
+ *  one fails, so these names must not appear among the results at all. `exact` since stage 4
+ *  (`kex2d-golden-reproducibility`), but the ordering claim under test doesn't care what bucket
+ *  they carry — only that structure gates them. */
+const CONTINUOUS_FIELDS = ["floor", "deviation", "points"];
 
 describe("a structural mismatch hard-fails ahead of any bound", () => {
-    test("a changed knot set fails as structure, before any bounded field is read", () => {
+    test("a changed knot set fails as structure, before any value field is read", () => {
         const want = GOLDEN("circular-arc");
         const got = { ...want, knots: [...want.knots, 999] };
         const outcome = compareGolden(got, want, CONVERT_REGISTRY);
         expect(outcome.ok).toBe(false);
         // the ordering claim: `compareGolden` returns the instant a structural field fails, so
-        // none of the bounded fields (`floor`, `deviation`, `points[].g`) ever get compared —
+        // none of the continuous fields (`floor`, `deviation`, `points[].g`) ever get compared —
         // a coincidentally-in-bound continuous field can't paper over a structural break.
-        expect(outcome.results.some((r) => BOUNDED_FIELDS.some((f) => r.field.startsWith(f)))).toBe(
-            false,
-        );
+        expect(
+            outcome.results.some((r) => CONTINUOUS_FIELDS.some((f) => r.field.startsWith(f))),
+        ).toBe(false);
         expect(outcome.results.at(-1)).toMatchObject({
             ok: false,
             structural: true,
@@ -528,9 +332,9 @@ describe("a structural mismatch hard-fails ahead of any bound", () => {
         const got = { ...want, outcome: "diverged" as const };
         const outcome = compareGolden(got, want, CONVERT_REGISTRY);
         expect(outcome.ok).toBe(false);
-        expect(outcome.results.some((r) => BOUNDED_FIELDS.some((f) => r.field.startsWith(f)))).toBe(
-            false,
-        );
+        expect(
+            outcome.results.some((r) => CONTINUOUS_FIELDS.some((f) => r.field.startsWith(f))),
+        ).toBe(false);
         expect(outcome.results.at(-1)).toMatchObject({
             ok: false,
             structural: true,
@@ -538,7 +342,7 @@ describe("a structural mismatch hard-fails ahead of any bound", () => {
         });
     });
 
-    test("polish-golden.json: a flipped converged fails as structure, before any bounded field is read", () => {
+    test("polish-golden.json: a flipped converged fails as structure, before any value field is read", () => {
         const want = POLISH_SAMPLE;
         const got = { ...want, converged: !want.converged };
         const outcome = compareGolden(got, want, POLISH_REGISTRY);
@@ -656,11 +460,11 @@ describe("points[].in / points[].out — optional nested object member", () => {
     });
 
     // the ordering claim, same shape as `converged`/`outcome`'s below: a presence mismatch must
-    // hard-fail AHEAD of any bounded field (`compare.ts`'s own header: "returns the instant one
-    // fails… never two independent passes"). `points[0]` is the first bounded field
+    // hard-fail AHEAD of any value comparison (`compare.ts`'s own header: "returns the instant one
+    // fails… never two independent passes"). `points[0]` is the first value field
     // `Object.entries` would reach if the presence check ran in pass 3 (after feasibility/peakG/
     // maxDg/deviation/exit are already computed) instead of the structural pass.
-    test("a points[].in presence mismatch hard-fails ahead of any bounded field", () => {
+    test("a points[].in presence mismatch hard-fails ahead of any value comparison", () => {
         const points = POLISH_SAMPLE.points as Record<string, unknown>[];
         const want = POLISH_SAMPLE;
         const got = {
@@ -687,7 +491,9 @@ describe("points[].in / points[].out — optional nested object member", () => {
     // `POLISH_GOLDEN` compares own-stamp only and the solve is deterministic (measured: 3 runs
     // byte-identical, a live run matches the committed golden on every field including every
     // `.dg`), so a cross-machine noise-model bound was deciding a same-machine question the
-    // Residue already names unsafe. Provisional pending 3f (see `POLISH_REGISTRY`'s own doc).
+    // Residue already names unsafe. 3f then ran and DID measure `.dg` drifting cross-machine
+    // (4.5e-3 rel) — the bucket stood anyway, because this fixture never makes that comparison,
+    // and stage 4 extended the same argument to every field on both own-stamp registries.
     test("points[].in.dg passes when unchanged (the own-stamp, deterministic case)", () => {
         const outcome = compareGolden(POLISH_SAMPLE, POLISH_SAMPLE, POLISH_REGISTRY);
         expect(outcome.ok).toBe(true);

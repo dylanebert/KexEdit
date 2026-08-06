@@ -60,16 +60,26 @@ interface RawConvertRecord {
 
 type ConvertGoldenFile = Record<string, Record<string, RawConvertRecord> | undefined>;
 
-/** `convert-golden.json[stamp][name]`, hard-failing and naming the mint command when `stamp`
- *  has no entry at all — never silently skipping a gate a missing golden can't run
- *  (`kex2d-golden-reproducibility` 3g). */
-function convertAt(stamp: string, name: string) {
+/** `convert-golden.json[stamp]`, hard-failing and naming the mint command when `stamp` has no
+ *  entry at all — never silently skipping a gate a missing golden can't run
+ *  (`kex2d-golden-reproducibility` 3g). The one place that null-check lives: `convertAt` calls
+ *  through it for a single scenario, and `refine.oracle.ts`'s corpus-membership check calls it
+ *  directly for the whole record's key set — before this it read `convertGolden[stamp]` raw and
+ *  died as `Object.keys(undefined)` on an unminted stamp instead of this named error
+ *  (`kex2d-golden-reproducibility` 4). */
+export function convertRecordAt(stamp: string): Record<string, RawConvertRecord> {
     const platforms = convertGolden as unknown as ConvertGoldenFile;
     const record = platforms[stamp];
     if (!record)
         throw new Error(
             `convert-golden.json has no entry for platform "${stamp}" — mint one with \`${MINT_COMMAND}\`.`,
         );
+    return record;
+}
+
+/** `convert-golden.json[stamp][name]` — `convertRecordAt` plus the per-scenario lookup. */
+function convertAt(stamp: string, name: string) {
+    const record = convertRecordAt(stamp);
     const want = record[name];
     if (!want) throw new Error(`convert-golden.json["${stamp}"] is missing scenario "${name}"`);
     return { ...want, outcome: want.outcome as RefineOutcome };
@@ -134,31 +144,24 @@ export function nominalMissAt(stamp: string): NominalMissRecord {
     return record;
 }
 
-/** `convert-golden.json`'s per-scenario field → bucket → bound contract
+/** `convert-golden.json`'s per-scenario field → bucket contract
  *  (`kex2d-golden-reproducibility.md`, "The contract"). `knots`/`outcome`/`probes`/`keys`/
- *  `edges` are structural — a different answer, not a drifted one. `length`/`ds`/`points[].s`
- *  are exact but not structural: they are inherited from the f32 barrier (bit-identical on this
- *  machine pair) rather than authored, so they carry no bound of their own. `floor`/`deviation`/
- *  `points[].g` are the fields whose producer crosses an implementation-defined `Math` call with
- *  nothing quantizing it afterward — `floor`/`deviation` bounded at the max measured
- *  structure-conditional cross-machine spread (relative, rounded to the next decade);
- *  `points[].g` in the MIXED form (`atol + rtol·|want|`, 3g), since it can approach zero.
+ *  `edges` are structural — a different answer, not a drifted one.
  *
- *  Each limb of the mixed form is derived over the population that limb gates, and the two
- *  populations genuinely differ. Measured on the full corpus (`darwin arm64` fresh solve vs the
- *  `linux x64` golden): 10 scenarios visited, 3 skipped as structurally divergent, 55 point rows.
- *  `rel` = 1e-8, the next decade above the 5.328e-9 max relative error over the 51 rows whose
- *  `|want|` is not near zero — near-zero rows are excluded because a relative error against a
- *  degenerate denominator is undefined, not merely large, which is the whole reason for the
- *  mixed form. `atol` = 1e-9, the next decade above the 6.262e-10 max ABSOLUTE error over the 4
- *  near-zero rows, which are the rows `atol` actually governs. The limbs ADD, so `atol` never has
- *  to cover a large-magnitude row on its own: `valley-explicit[2]` carries the corpus-max absolute
- *  error of 6.793e-9 at `|want|` = 14.1, where `rel·|want|` alone is 1.41e-7, over 20× the error.
- *  Deriving `atol` from that row instead gives 1e-8 and was measured to hold, but it is a decade
- *  looser than its own population supports and leaves the two limbs at wildly different margins
- *  (16× against 1.9×); at 1e-9 both sit near 1.7–1.9×, which is the declared rule applied
- *  consistently. Verified by sweep: `atol` at 1e-8 and 1e-9 both give 0 violations across all 55
- *  rows, 1e-10 gives 2 — so 1e-9 is the tightest decade the corpus admits. */
+ *  **Every other field is `exact`, derived from the COMPARISON this fixture runs, not from an
+ *  observed spread.** `GOLDEN` resolves through `PLATFORM_STAMP` (`convertAt`), so every
+ *  comparison here is own-stamp against a deterministic solve, which presents zero spread — a
+ *  bucket is a claim about the comparison, not the field (`kex2d-golden-reproducibility` 4, "The
+ *  close's verdict"). `length`/`ds`/`points[].s` were always exact this way (inherited from the
+ *  f32 quantization barrier, never authored). `floor`/`deviation`/`points[].g` shipped
+ *  bounded/mixed through 3g, derived against a cross-machine spread the own-stamp comparison
+ *  never runs — 3f then measured the real cross-machine pair and found the bound wrong in BOTH
+ *  directions at once (unfirable where it ran: own-stamp difference always zero; invalid where it
+ *  was aimed: `deviation` at 4.9× its declared 1e-8 bound, `points[].g` five decades past its
+ *  declared `atol`/`rel`), which is what forces the re-derivation rather than merely permits it.
+ *  The superseded relative-spread and mixed-limb derivations aren't repeated here — they're the
+ *  spec's contract-table record, kept for whoever re-derives a bound after a future decision
+ *  reintroduces a genuinely shared comparison for one of these fields. */
 export const CONVERT_REGISTRY: FieldRegistry = {
     knots: { kind: "structural" },
     outcome: { kind: "structural" },
@@ -167,9 +170,9 @@ export const CONVERT_REGISTRY: FieldRegistry = {
     edges: { kind: "structural" },
     length: { kind: "exact" },
     ds: { kind: "exact" },
-    floor: { kind: "bounded", rel: 1e-14 },
-    deviation: { kind: "bounded", rel: 1e-8 },
-    points: { array: { s: { kind: "exact" }, g: { kind: "mixed", atol: 1e-9, rel: 1e-8 } } },
+    floor: { kind: "exact" },
+    deviation: { kind: "exact" },
+    points: { array: { s: { kind: "exact" }, g: { kind: "exact" } } },
 };
 
 /** the frozen force→geo fit answer for a scenario, in `forcegeo-golden.json`'s own shape (not
@@ -185,7 +188,9 @@ export const FORCEGEO_GOLDEN = (name: string) => {
  *  f32-sourced values) behind the f32 quantization barrier. `outcome` is structural. `deviation`
  *  is the one field with no store after it: a single `hypot` over a bit-identical f32 table, so
  *  the bound is tight-by-construction at 1 ulp of its own magnitude rather than a measured
- *  relative spread — an ABSOLUTE bound, unlike every `bounded` row above. */
+ *  relative spread. It is an ABSOLUTE bound, and after stage 4 it is the unit's ONLY bound: every
+ *  row on the two own-stamp registries is `exact`, because a bound belongs where a fixture is
+ *  genuinely shared and nowhere else (`kex2d-golden-reproducibility` 4, "The close's verdict"). */
 export const FORCEGEO_REGISTRY: FieldRegistry = {
     outcome: { kind: "structural" },
     forceError: { kind: "exact" },
@@ -304,7 +309,7 @@ function polishAt(stamp: string, name: string): PolishRecord {
  *  hard-fail-naming-the-mint-command discipline as `GOLDEN` above, never a silent skip. */
 export const POLISH_GOLDEN = (name: string) => polishAt(PLATFORM_STAMP, name);
 
-/** `polish.oracle.ts`'s field → bucket → bound contract
+/** `polish.oracle.ts`'s field → bucket contract
  *  (`kex2d-golden-reproducibility.md`, "polish.oracle.ts's record"). `keys`/`edges`/`length`/
  *  `ds`/`points[].s`/`points[].g` mirror `CONVERT_REGISTRY` exactly — same producers.
  *  `converged` is structural (hard fail): `feas < TOL_FEAS`, never flipped across N=24
@@ -317,8 +322,8 @@ export const POLISH_GOLDEN = (name: string) => polishAt(PLATFORM_STAMP, name);
  *  sha256 this file replaced hashed the WHOLE 19-field record — a knot flip, a bounded
  *  `deviation` drift, and a trajectory change were all the same one bit, so nothing could be
  *  loosened without losing everything. A `digest` bucket scoped to ONE declared-`exact` field
- *  blocks nothing else in the record: every other field still rides its own bucket, bounded
- *  fields still loosen independently, and only the two fields whose own contract already says
+ *  blocks nothing else in the record: every other field still rides its own bucket, any field
+ *  could still be loosened independently, and only the two fields whose own contract already says
  *  EXACT (no bound to loosen in the first place) collapse to 64 hex chars each instead of their
  *  raw form. `spine` (`.x`/`.y`/`.theta`, one entry per baked edge — 151 KiB of the record, 67.5%
  *  of its committed content even with `snapshots` fixed) is a pure lerp over the f32 bake with no
@@ -336,77 +341,43 @@ export const POLISH_GOLDEN = (name: string) => polishAt(PLATFORM_STAMP, name);
  *  `points[].ease` is exact (a discrete tag, always `undefined` for the full-free family's own
  *  fit — `fit.ts` never stores one). `points[].in`/`.out` are OPTIONAL nested objects
  *  (`{ds, dg}`) — absent on the two `ForcePoint`s at either end of the chain, present on every
- *  interior point; a presence mismatch is checked in the STRUCTURAL pass, ahead of any bounded
- *  field (`compare.ts`'s `compareGolden`, corrected from 3c's first pass — see that file's own
+ *  interior point; a presence mismatch is checked in the STRUCTURAL pass, ahead of any value
+ *  comparison (`compare.ts`'s `compareGolden`, corrected from 3c's first pass — see that file's own
  *  header note). `.ds` is exact (a cumulative sum of `bake.ds`, the f32-barrier argument —
  *  measured 0 spread).
  *
  *  **`.dg` is EXACT, not the `mixed` bound 3c first shipped, and the correction is upstream of
- *  the arithmetic.** 3c derived `rel = 1e-1` from the closed 3a' aggregate probe (a worst-case
- *  synthetic ±1-ulp-on-every-call model), the same class of evidence that produced `floor`/
- *  `deviation`/`points[].g` before 3g tightened THOSE against a real cross-machine fixture. The
- *  architectural review found the derivation sound but the METHOD wrong for this field: 3a' models
- *  cross-machine libm drift, and 3e's per-platform verdict already established `polish-golden.json`
- *  is compared ONLY own-stamp (`POLISH_GOLDEN` resolves through `PLATFORM_STAMP`) — there is no
- *  cross-machine comparison for this bound to protect against. The reviewer measured the
- *  question that actually matters: the full corpus solved three times is byte-identical, and a
- *  live run matches the committed golden on EVERY field, 0 mismatches across all 10 scenarios,
- *  including every `.dg` — the difference this bound is ever evaluated against is exactly zero,
- *  always. Applying a cross-machine noise model to decide a same-machine, deterministic
+ *  the arithmetic — it's the general derivation every other continuous field in this file now
+ *  follows.** 3c derived `rel = 1e-1` from the closed 3a' aggregate probe (a worst-case synthetic
+ *  ±1-ulp-on-every-call model), the same class of evidence that produced `floor`/`deviation`/
+ *  `points[].g` before 3g tightened THOSE against a real cross-machine fixture. The architectural
+ *  review found the derivation sound but the METHOD wrong for this field: 3a' models cross-machine
+ *  libm drift, and 3e's per-platform verdict already established `polish-golden.json` is compared
+ *  ONLY own-stamp (`POLISH_GOLDEN` resolves through `PLATFORM_STAMP`) — there is no cross-machine
+ *  comparison for this bound to protect against. The full corpus solved three times is
+ *  byte-identical, and a live run matches the committed golden on EVERY field, 0 mismatches
+ *  across all 10 scenarios — the difference `.dg`'s bound is ever evaluated against is exactly
+ *  zero, always. Applying a cross-machine noise model to decide a same-machine, deterministic
  *  bucket is exactly what Residue already names as unsafe: *"safe for magnitudes, unsafe for
  *  decisions."* So the bucket is DERIVED, not observed: own-stamp comparison + a deterministic
- *  solve ⟹ exact, full stop — no measured spread enters it.
+ *  solve ⟹ exact, full stop — no measured spread enters it. At `rel = 1e-1` the bound was so loose
+ *  it passed a uniform 5% error on every interior handle's `dg`, all 10 scenarios (`dg * 1.05`
+ *  mutated into `polish.ts`'s return path) — `polish.oracle.ts` stayed 2/0. It takes ×1.5 to fail.
+ *  `exact` catches the ×1.05 mutation (`compare.test.ts`).
  *
- *  At `rel = 1e-1` the bound was so loose it passed a uniform 5% error on every interior handle's
- *  `dg`, all 10 scenarios (`dg * 1.05` mutated into `polish.ts`'s return path) — `polish.oracle.ts`
- *  stayed 2/0. It takes ×1.5 to fail. `exact` catches the ×1.05 mutation (verified below).
- *
- *  **Provisional pending 3f.** 3f mints the `linux x64` stamp — the first real cross-machine data
- *  point this fixture will ever have. If it finds genuine drift on `.dg` (plausible: `.dg` is a
- *  segment TANGENT derivative, one differentiation more sensitive to a libm difference than the
- *  keyframe value itself, and `loop-explicit`'s dense near-singular Jacobian blocks are
- *  independently flagged elsewhere in this unit — 3e's structural-divergence inventory — as the
- *  corpus's worst-conditioned scenario), 3f re-buckets `.dg` to a MEASURED mixed bound the way 3g
- *  re-derived `points[].g` against the real `linux x64` pair, rather than trusting a synthetic
- *  probe again. **The identical argument applies to every bounded field on both stamp-matched
- *  fixtures** (`convert-golden.json`'s `floor`/`deviation`/`points[].g`, this file's `feasibility`/
- *  `peakG`/`maxDg`/`deviations`/`exit.*`) — left un-re-derived here on the orchestrator's explicit
- *  instruction, filed for the architectural pass as a contract-table-wide question, not a
- *  per-field fix. The inconsistency (this one field re-argued, the rest not) is deliberate and
- *  visible, not an oversight.
- *
- *  The six ⧗ cells this stage owns, derived by re-running the CLOSED 3a' instrument
- *  (`wrapAllPerturbed`, `tests/helpers/libm.ts`) against THIS record's own producer — the
- *  full-free `fit`+`polish` path, not the flat-family `refine` path 3a' measured — over the
- *  FULL 10-scenario corpus (N=24 trials/scenario, every implementation-defined call bumped a
- *  random ±1 ulp). Structure (`keys`, `converged`) never flipped in any trial on any scenario,
- *  so every scenario's continuous spread is admissible with no conditioning exclusion needed.
- *  This is the same worst-case-aggregate-probe class of evidence 3a' produced for `floor`/
- *  `deviation`/`points[].g` before those were later tightened at 3g against a REAL cross-machine
- *  fixture; no such fixture exists yet for `polish.oracle.ts` (this is its first stamped
- *  golden), so the aggregate probe is the derivation of record, not a placeholder — deliberately
- *  conservative, all rounded to the next decade above the measured max:
- *
- *  - `feasibility` — **bounded**, rel 1e-5. Max relative spread 6.450e-6 (valley-explicit).
- *    Never near zero (native range 1.07e-7–9.83e-7 across the corpus), so a plain relative bound
- *    is well-conditioned.
- *  - `peakG` — **bounded**, rel 1e-6. Max relative spread 5.565e-7 (hill-auto); zero on 8/10
- *    scenarios (an argmax the perturbation didn't reach), nonzero on 2 — genuinely bounded, not
- *    exact, so it doesn't get the barrier's zero-spread promotion.
- *  - `maxDg` — **bounded**, rel 1e-4. Max relative spread 1.211e-5 (loop-explicit).
- *  - `deviations` — **mixed** (vector), atol 1e-8 + rel 1e-8. Same underlying `hypot` reduction
- *    as the scalar `deviation` before its max is taken (`devProfile` in `polish.ts`), so it
- *    inherits `deviation`'s own reused rel bound; `atol` covers the array's structurally-zero
- *    entry (index 0, the pinned entry) and any sample near the spine, derived from the measured
- *    max absolute spread 2.225e-9 (loop-explicit), next decade.
- *  - `exit.dx`/`.dy`/`.dist` — **mixed**, atol 1e-12 + rel 1e-6. Position-equivalent residuals
- *    that can sit near zero at a well-pinned exit (three corpus rows have `|want| < 1e-9`); atol
- *    from the max absolute spread on those near-zero rows (1.025e-13, next decade), rel from the
- *    max relative spread elsewhere (7.14e-7, next decade).
- *  - `exit.dtheta` — **mixed**, atol 1e-14 + rel 0 (a pure absolute bound — `rel: 0` collapses
- *    the mixed form to `atol` alone). Every corpus row's native value already sits at
- *    1e-11–1e-16 — the heading pin's own noise floor — so no row supports a meaningful relative
- *    reading; atol from the max absolute spread (2.665e-15), next decade. */
+ *  **Stage 4 extends the identical argument to every other bounded/mixed field on both
+ *  stamp-matched fixtures** (`convert-golden.json`'s `floor`/`deviation`/`points[].g`; this
+ *  file's `feasibility`/`peakG`/`maxDg`/`deviations`/`exit.*`/`deviation`/`points[].g`) — filed
+ *  provisionally at 3c pending 3f's real cross-machine pair, then taken at the architectural
+ *  pass on that pair's own measurement (`kex2d-golden-reproducibility` 4, "The close's verdict").
+ *  3f's pair split three ways and the split doesn't matter to the verdict: `exit.*`, `deviations`,
+ *  `feasibility`, `peakG`, and `maxDg` all measured WITHIN their declared bound (six derivations
+ *  made without a pair, surviving one), while scalar `deviation` (4.9× its declared 1e-8) and
+ *  `points[].g` (five decades past `atol`/`rel`) measured outside it — but a bound holding on one
+ *  measured pair doesn't validate it as a general claim, and a bound this fixture's own comparison
+ *  never evaluates against anything but zero can't be validated OR invalidated by a comparison it
+ *  doesn't run. Every one of the eight fields is `exact` for the same reason `.dg` is: own-stamp
+ *  comparison + a deterministic solve. */
 export const POLISH_REGISTRY: FieldRegistry = {
     name: { kind: "exact" },
     family: { kind: "exact" },
@@ -421,23 +392,23 @@ export const POLISH_REGISTRY: FieldRegistry = {
     rho: { kind: "exact" },
     at: { kind: "exact" },
     snapshots: { kind: "digest" },
-    feasibility: { kind: "bounded", rel: 1e-5 },
-    peakG: { kind: "bounded", rel: 1e-6 },
-    maxDg: { kind: "bounded", rel: 1e-4 },
-    deviations: { vector: { kind: "mixed", atol: 1e-8, rel: 1e-8 } },
+    feasibility: { kind: "exact" },
+    peakG: { kind: "exact" },
+    maxDg: { kind: "exact" },
+    deviations: { vector: { kind: "exact" } },
     exit: {
         object: {
-            dx: { kind: "mixed", atol: 1e-12, rel: 1e-6 },
-            dy: { kind: "mixed", atol: 1e-12, rel: 1e-6 },
-            dtheta: { kind: "mixed", atol: 1e-14, rel: 0 },
-            dist: { kind: "mixed", atol: 1e-12, rel: 1e-6 },
+            dx: { kind: "exact" },
+            dy: { kind: "exact" },
+            dtheta: { kind: "exact" },
+            dist: { kind: "exact" },
         },
     },
-    deviation: { kind: "bounded", rel: 1e-8 },
+    deviation: { kind: "exact" },
     points: {
         array: {
             s: { kind: "exact" },
-            g: { kind: "mixed", atol: 1e-9, rel: 1e-8 },
+            g: { kind: "exact" },
             ease: { kind: "exact" },
             in: { object: { ds: { kind: "exact" }, dg: { kind: "exact" } } },
             out: { object: { ds: { kind: "exact" }, dg: { kind: "exact" } } },

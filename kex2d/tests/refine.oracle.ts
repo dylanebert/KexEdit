@@ -8,9 +8,14 @@ import { custom, forceProfile } from "../src/profile";
 import { authoringFloor, CONVERT_STEP, narrow, refine } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
-import golden from "./fixtures/convert-golden.json";
 import { assertGolden } from "./helpers/compare";
-import { CONVERT_REGISTRY, GOLDEN, nominalMissAt, PLATFORM_STAMP } from "./helpers/golden";
+import {
+    CONVERT_REGISTRY,
+    convertRecordAt,
+    GOLDEN,
+    nominalMissAt,
+    PLATFORM_STAMP,
+} from "./helpers/golden";
 
 const started = performance.now();
 const CORPUS = scenarios.map((scenario) => {
@@ -149,6 +154,13 @@ describe("flat split → exhaustive prune: the corpus", () => {
     });
 
     test("the corpus settles at 80 keys, below the rejected 94-key pipeline", () => {
+        // `80` is the ONE platform-independent authoring lock in this file — the corpus-wide key
+        // total, not a solve residual (`kex2d-golden-reproducibility` 4, "the informative
+        // per-scenario `keys` assert against the stamp-matched golden runs earlier in the same
+        // test and would fail first naming the scenario"). Deriving it from the fixture instead
+        // would be vacuous (`coding.md`'s "re-derives its own rule"); a stamp whose per-scenario
+        // counts each match their own golden but sum differently should stop and take that
+        // verdict fresh rather than have this assert silently absorb it.
         let total = 0;
         for (const { scenario, result } of CORPUS) {
             // `keys`/`probes` are structural fields the golden already declares
@@ -182,12 +194,13 @@ describe("flat split → exhaustive prune: the corpus", () => {
     // The golden gate for every performance change to the conversion core. The stage-6b human
     // check approved these SPECIFIC outputs as an authoring surface, so a faster solve that
     // moves structure — a key, a knot — has silently re-opened that verdict; that half stays a
-    // hard fail. The continuous half (`floor`, `deviation`, `points[].g`) is bounded, not
-    // bit-compared, through the declared registry (`helpers/compare.ts`): this machine's libm
-    // doesn't reproduce the frozen dump's implementation-defined `Math` calls bit-for-bit, and a
-    // `toBe` there would fail on drift the contract doesn't own (`kex2d-golden-reproducibility`).
+    // hard fail. The name is now literally true, not aspirational: every field in
+    // `CONVERT_REGISTRY` is `exact` (`kex2d-golden-reproducibility` 4, "The close's verdict" —
+    // this comparison is own-stamp against a deterministic solve, which presents zero spread), so
+    // the whole record is bit-compared through the declared registry (`helpers/compare.ts`), not
+    // just its structural half.
     test("every corpus conversion is bit-identical to the frozen dump", () => {
-        const platform = golden[PLATFORM_STAMP as keyof typeof golden];
+        const platform = convertRecordAt(PLATFORM_STAMP);
         expect(Object.keys(platform).sort()).toEqual(CORPUS.map((c) => c.scenario.name).sort());
         for (const { scenario, result } of CORPUS)
             assertGolden(narrow(result), GOLDEN(scenario.name), CONVERT_REGISTRY, scenario.name);

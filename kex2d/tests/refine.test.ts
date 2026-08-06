@@ -58,9 +58,9 @@ describe("flat split → exhaustive prune", () => {
     // The fast half of the golden gate: the same fixture, the same declared-registry comparator
     // (`helpers/compare.ts`), over the mini corpus — so a kernel edit that moves structure (a
     // key count, a knot) still fails here in seconds, not only at the full-tier golden
-    // (`refine.oracle.ts`). Continuous fields (`floor`, `deviation`, `points[].g`) are bounded,
-    // not bit-compared: they cross an implementation-defined `Math` call this machine's libm
-    // doesn't reproduce bit-for-bit against the frozen dump.
+    // (`refine.oracle.ts`). Every field, continuous or structural, is bit-compared: this
+    // comparison is own-stamp against a deterministic solve, so it presents zero spread
+    // (`kex2d-golden-reproducibility` 4).
     test("every mini-corpus conversion is bit-identical to the frozen dump", () => {
         for (const { scenario, result } of CORPUS)
             assertGolden(narrow(result), GOLDEN(scenario.name), CONVERT_REGISTRY, scenario.name);

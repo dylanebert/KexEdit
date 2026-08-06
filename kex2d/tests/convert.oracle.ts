@@ -14,8 +14,9 @@ describe("pooled conversion: the corpus", () => {
     // bake, so anything that copied wrong — a truncated array, a float that went through a
     // string, a bake field silently dropped — moves the answer. Compared against the frozen
     // golden through the declared field registry (`helpers/compare.ts`): structure exact and a
-    // hard fail, continuous fields bounded — a same-machine copy bug still fails, an
-    // implementation-defined `Math` ulp does not. The whole corpus, because "the pool reproduces
+    // hard fail, and every continuous field is exact too (`kex2d-golden-reproducibility` 4 —
+    // this comparison is own-stamp against a deterministic solve, so any copy bug that moves the
+    // answer at all fails, cross-machine or not). The whole corpus, because "the pool reproduces
     // the shipping conversion" is the claim, not "it reproduced one of them".
     test("every corpus conversion crosses the pool bit-identical", async () => {
         for (const { name } of scenarios) {
