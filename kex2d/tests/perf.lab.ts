@@ -18,7 +18,7 @@ import { polish } from "../src/polish";
 import { refine, type RefineResult } from "../src/refine";
 import { type Scenario, scenarios } from "../src/scenarios";
 import { evalGeo } from "../src/section";
-import golden from "./fixtures/convert-golden.json";
+import { GOLDEN } from "./helpers/golden";
 import { stress } from "./helpers/stress";
 
 interface Row {
@@ -120,7 +120,7 @@ measure(scenarios[0]);
 const corpus = scenarios.map((scenario) => {
     const { row, result } = measure(scenario);
     // the instrumented run must BE the shipping conversion, not a lookalike of it.
-    const want = golden[scenario.name as keyof typeof golden];
+    const want = GOLDEN(scenario.name);
     const same =
         result.knots.join() === want.knots.join() &&
         result.final.points.length === want.points.length &&

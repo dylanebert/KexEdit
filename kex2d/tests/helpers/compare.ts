@@ -8,6 +8,7 @@ export type Bucket =
     | { kind: "structural" }
     | { kind: "exact" }
     | { kind: "bounded"; rel: number }
+    | { kind: "mixed"; atol: number; rel: number }
     | { kind: "ulp" };
 
 /** a field registry for one golden fixture's per-scenario record shape. A bare `Bucket` covers
@@ -65,6 +66,17 @@ function checkScalar(field: string, bucket: Bucket, got: unknown, want: unknown)
         return error <= bucket.rel
             ? { field, ok: true }
             : { field, ok: false, structural: false, got: g, want: w, bound: bucket.rel, error };
+    }
+    if (bucket.kind === "mixed") {
+        // `|got - want| <= atol + rel*|want|` — the standard `isclose` shape. A plain relative
+        // bound is ill-conditioned wherever `want` can approach zero (`points[].g`,
+        // `kex2d-golden-reproducibility` 3g); `atol` is the measured absolute spread's own
+        // bound, so it carries the comparison exactly where a relative denominator can't.
+        const error = Math.abs(g - w);
+        const bound = bucket.atol + bucket.rel * Math.abs(w);
+        return error <= bound
+            ? { field, ok: true }
+            : { field, ok: false, structural: false, got: g, want: w, bound, error };
     }
     // ulp: an absolute bound on the field's own magnitude, not a relative one.
     const bound = ulpOf(w);
@@ -142,6 +154,23 @@ export function assertGolden(got: object, want: object, registry: FieldRegistry,
     if (outcome.ok) return;
     const failure = outcome.results.find((r) => !r.ok);
     throw new Error(`golden mismatch${label ? ` (${label})` : ""}: ${JSON.stringify(failure)}`);
+}
+
+/** The declared-registry law (`editor-ui.md`), applied to a flat key set rather than a
+ *  `FieldRegistry` — every actual key must be declared and every declared key must be present,
+ *  both directions. Used for `convert-golden.json`'s top-level platform-stamp namespace, one
+ *  level above `registryClosure`'s per-scenario field check (`helpers/golden.ts`
+ *  `KNOWN_STAMPS`). */
+export function setClosure(
+    actual: readonly string[],
+    declared: readonly string[],
+): { missing: string[]; orphan: string[] } {
+    const a = new Set(actual);
+    const d = new Set(declared);
+    return {
+        missing: [...a].filter((key) => !d.has(key)),
+        orphan: [...d].filter((key) => !a.has(key)),
+    };
 }
 
 /** The declared-registry law (`editor-ui.md`), applied to a golden's field set: every key on a

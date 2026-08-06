@@ -5,8 +5,7 @@ import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import { withThetas } from "./helpers/chain";
 import { assertGolden } from "./helpers/compare";
-import { FORCEGEO_GOLDEN, FORCEGEO_REGISTRY } from "./helpers/golden";
-import golden from "./fixtures/convert-golden.json";
+import { FORCEGEO_GOLDEN, FORCEGEO_REGISTRY, FORCEGEO_SOURCE } from "./helpers/golden";
 
 function bakeOf(
     x: ArrayLike<number>,
@@ -107,12 +106,8 @@ describe("geofit", () => {
     });
 
     describe("corpus: the 10 golden-derived force sections", () => {
-        const Golden = golden as Record<
-            string,
-            { points: { s: number; g: number }[]; length: number; ds: number }
-        >;
         const Corpus = scenarios.map((scenario) => {
-            const g = Golden[scenario.name];
+            const g = FORCEGEO_SOURCE(scenario.name);
             const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
             const profile = forceProfile(g.points, g.length, g.ds);
             const bake = evalForce(entry, profile, g.ds);

@@ -9,7 +9,7 @@ import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import { sampleChain } from "../src/spline";
 import { DS_NOMINAL, MAX_SAMPLES } from "../src/track";
-import golden from "./fixtures/convert-golden.json";
+import { FORCEGEO_SOURCE } from "./helpers/golden";
 import { hausdorff, posDrift, posStations, drift, stations } from "./helpers/stations";
 
 // ── the corpus-wide document-metric oracle ───────────────────────────────────
@@ -24,14 +24,9 @@ import { hausdorff, posDrift, posStations, drift, stations } from "./helpers/sta
 // the track start is exactly `evalGeo(entry, nodes, DS_NOMINAL, MAX_SAMPLES)` — the same call,
 // without ten worker spawns. The ECS pins are what tie that equality to the real path.
 describe("document-layer fidelity: the whole corpus", () => {
-    const Golden = golden as Record<
-        string,
-        { points: { s: number; g: number }[]; length: number; ds: number }
-    >;
-
     for (const scenario of scenarios) {
         test(scenario.name, () => {
-            const g = Golden[scenario.name];
+            const g = FORCEGEO_SOURCE(scenario.name);
             const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
             const bake = evalForce(entry, forceProfile(g.points, g.length, g.ds), g.ds);
             const target: GeofitBake = {
@@ -95,13 +90,9 @@ describe("document-layer fidelity: the whole corpus", () => {
 // nearest-point metric here keeps the triangle bound conservative rather than mixing two
 // alignments that were never defined against each other.
 describe("round-trip: geo scenario → shipped geo→force convert → this fit → the scenario's shape", () => {
-    const Golden = golden as Record<
-        string,
-        { points: { s: number; g: number }[]; length: number; ds: number; floor: number }
-    >;
     for (const scenario of scenarios) {
         test(scenario.name, () => {
-            const g = Golden[scenario.name];
+            const g = FORCEGEO_SOURCE(scenario.name);
             const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
 
             // leg 0 — the original shape, the trip's own reference.

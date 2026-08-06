@@ -10,7 +10,7 @@ import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import golden from "./fixtures/convert-golden.json";
 import { assertGolden } from "./helpers/compare";
-import { CONVERT_REGISTRY, GOLDEN } from "./helpers/golden";
+import { CONVERT_REGISTRY, GOLDEN, nominalMissAt, PLATFORM_STAMP } from "./helpers/golden";
 
 const started = performance.now();
 const CORPUS = scenarios.map((scenario) => {
@@ -99,7 +99,7 @@ describe("flat split → exhaustive prune: the corpus", () => {
         }
     });
 
-    test("realized replay holds the corpus floor; nominal replay has one measured miss", () => {
+    test("realized replay holds the corpus floor; nominal replay matches this platform's measured miss record", () => {
         const rows = CORPUS.map((item) => {
             const realized = lockedDeviation(item, item.result.final.ds);
             const nominal = lockedDeviation(item, item.scenario.ds);
@@ -114,17 +114,15 @@ describe("flat split → exhaustive prune: the corpus", () => {
         expect(rows.filter(({ floor, realized }) => realized > floor)).toEqual([]);
         const misses = rows.filter(({ floor, nominal }) => nominal > floor);
         const ratios = misses.map(({ ratio }) => ratio);
+        // which scenarios miss the nominal-replay floor is a discrete structural fact about the
+        // fresh solve on THIS platform (refine's knot placement diverges cross-machine, 3e), not
+        // a continuous quantity a shared literal can hold — declared per-stamp in helpers/golden.ts.
         expect({
             count: misses.length,
             scenarios: misses.map(({ name }) => name),
             minRatio: Math.min(...ratios),
             maxRatio: Math.max(...ratios),
-        }).toEqual({
-            count: 1,
-            scenarios: ["loop-explicit"],
-            minRatio: 1.0762891844739062,
-            maxRatio: 1.0762891844739062,
-        });
+        }).toEqual(nominalMissAt(PLATFORM_STAMP));
 
         const item = CORPUS.find(({ scenario }) => scenario.name === "loop-explicit");
         if (!item) throw new Error("missing loop-explicit");
@@ -189,7 +187,8 @@ describe("flat split → exhaustive prune: the corpus", () => {
     // doesn't reproduce the frozen dump's implementation-defined `Math` calls bit-for-bit, and a
     // `toBe` there would fail on drift the contract doesn't own (`kex2d-golden-reproducibility`).
     test("every corpus conversion is bit-identical to the frozen dump", () => {
-        expect(Object.keys(golden).sort()).toEqual(CORPUS.map((c) => c.scenario.name).sort());
+        const platform = golden[PLATFORM_STAMP as keyof typeof golden];
+        expect(Object.keys(platform).sort()).toEqual(CORPUS.map((c) => c.scenario.name).sort());
         for (const { scenario, result } of CORPUS)
             assertGolden(narrow(result), GOLDEN(scenario.name), CONVERT_REGISTRY, scenario.name);
     });

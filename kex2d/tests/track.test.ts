@@ -99,7 +99,7 @@ import { LENGTH_MIN } from "../src/magnet";
 import { Domain, evalGeo } from "../src/section";
 import { editTangent, type Node, sampleChain, type Tangent, TangentMode } from "../src/spline";
 import { dToU } from "../src/timeline";
-import golden from "./fixtures/convert-golden.json";
+import { GOLDEN } from "./helpers/golden";
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
 // computeTime, syncs each geo node's sample index, and records the per-section
@@ -1928,7 +1928,7 @@ describe("per-section step (Section.ds)", () => {
         // (roadmap follow-up, not this unit's).
         const scenario = scenarios.find((s) => s.name === "loop-explicit");
         if (!scenario) throw new Error("missing loop-explicit scenario");
-        const solved = golden["loop-explicit"];
+        const solved = GOLDEN("loop-explicit");
         const target = evalGeo(
             { x: 0, y: 0, theta: 0, v: scenario.v0 },
             scenario.nodes,

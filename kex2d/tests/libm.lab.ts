@@ -6,9 +6,9 @@ import { forceProfile } from "../src/profile";
 import { refine, type RefineResult } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
-import golden from "./fixtures/convert-golden.json";
 import headReference from "./fixtures/libm-head-reference.json";
 import { bumpBy, WRAPPED, type WrappedFn } from "./helpers/libm";
+import { FORCEGEO_SOURCE } from "./helpers/golden";
 
 /** Cross-machine libm diffing lab (`kex2d-golden-reproducibility` 1a). ECMAScript pins the
  *  arithmetic operators and `sqrt` to exact IEEE-754 results but leaves the transcendentals
@@ -176,11 +176,6 @@ function hillExplicit() {
     return { scenario, entry };
 }
 
-const Golden = golden as Record<
-    string,
-    { points: { s: number; g: number }[]; length: number; ds: number }
->;
-
 /** the refine path's own drive: `section.evalGeo` → `refine`. Returns the result (not just runs
  *  it) so 1c's amplification harness can read `floor`/`final.deviation`/`final.points[k].g` off
  *  the SAME call the wrap-table tests already drive — one drive body, not two spellings of the
@@ -198,7 +193,7 @@ function driveRefine(): RefineResult {
  *  asserts on `geofit`'s output over exactly this input. */
 function driveGeofit(): GeofitResult {
     const { scenario, entry } = hillExplicit();
-    const g = Golden[scenario.name];
+    const g = FORCEGEO_SOURCE(scenario.name);
     const profile = forceProfile(g.points, g.length, g.ds);
     const bake = evalForce(entry, profile, g.ds);
     const target: GeofitBake = {

@@ -10,7 +10,7 @@ import { convert, liveWorkers } from "../src/convert";
 import { narrow, refine } from "../src/refine";
 import { type Scenario, scenarios } from "../src/scenarios";
 import { evalGeo } from "../src/section";
-import golden from "./fixtures/convert-golden.json";
+import { GOLDEN } from "./helpers/golden";
 import { stress } from "./helpers/stress";
 
 const CORES = navigator.hardwareConcurrency;
@@ -45,7 +45,7 @@ async function row(scenario: Scenario, checkGolden: boolean) {
     if (!same(pooled, plain))
         throw new Error(`${scenario.name}: pooled answer differs from the in-process one`);
     if (checkGolden) {
-        const want = golden[scenario.name as keyof typeof golden];
+        const want = GOLDEN(scenario.name);
         if (!same(pooled, want))
             throw new Error(`${scenario.name}: pooled answer differs from the golden`);
     }

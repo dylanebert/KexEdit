@@ -18,7 +18,7 @@ import { forceProfile } from "../src/profile";
 import { narrow, refine } from "../src/refine";
 import { type Scenario, scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
-import golden from "./fixtures/convert-golden.json";
+import { FORCEGEO_SOURCE } from "./helpers/golden";
 import { stress } from "./helpers/stress";
 
 interface Row {
@@ -42,7 +42,7 @@ function bakeOf(
 
 /** the corpus target: the golden-derived force section (`geofit.test.ts`'s oracle), unchanged. */
 function corpusTarget(scenario: Scenario): { bake: GeofitBake; v0: number } {
-    const g = golden[scenario.name as keyof typeof golden];
+    const g = FORCEGEO_SOURCE(scenario.name);
     const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
     const profile = forceProfile(g.points, g.length, g.ds);
     const bake = evalForce(entry, profile, g.ds);

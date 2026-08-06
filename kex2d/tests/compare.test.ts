@@ -5,13 +5,73 @@
 // fails before any bounded field is even read.
 import { describe, expect, test } from "bun:test";
 import type { Bucket } from "./helpers/compare";
-import { compareGolden, registryClosure } from "./helpers/compare";
+import { compareGolden, registryClosure, setClosure } from "./helpers/compare";
 import convertGolden from "./fixtures/convert-golden.json";
 import forcegeoGolden from "./fixtures/forcegeo-golden.json";
-import { CONVERT_REGISTRY, FORCEGEO_GOLDEN, FORCEGEO_REGISTRY, GOLDEN } from "./helpers/golden";
+import {
+    CONVERT_REGISTRY,
+    FORCEGEO_GOLDEN,
+    FORCEGEO_REGISTRY,
+    FORCEGEO_SOURCE_STAMP,
+    GOLDEN,
+    KNOWN_STAMPS,
+    NOMINAL_MISS,
+} from "./helpers/golden";
 
-const CONVERT_SAMPLE = convertGolden["circular-arc"];
+const CONVERT_SAMPLE = convertGolden[FORCEGEO_SOURCE_STAMP]["circular-arc"];
 const FORCEGEO_SAMPLE = forcegeoGolden["circular-arc"];
+
+describe("platform stamp closure — convert-golden.json's top-level namespace", () => {
+    // every stamp the fixture actually carries is declared, and every declared stamp is
+    // present — the declared-registry law (`editor-ui.md`) one level above `registryClosure`'s
+    // per-scenario field check, since 3g's platform stamp is a new key at the fixture's TOP
+    // level, not inside any one scenario's record.
+    test("convert-golden.json's stamps are exactly the declared KNOWN_STAMPS", () => {
+        expect(setClosure(Object.keys(convertGolden), KNOWN_STAMPS)).toEqual({
+            missing: [],
+            orphan: [],
+        });
+    });
+
+    // positive control, direction 1: an undeclared stamp key must be caught.
+    test("an undeclared stamp key fails closure", () => {
+        const { missing } = setClosure([...Object.keys(convertGolden), "bogus os"], KNOWN_STAMPS);
+        expect(missing).toContain("bogus os");
+    });
+
+    // positive control, direction 2: a declared stamp missing from the fixture must be caught.
+    test("a declared stamp missing from the fixture fails closure", () => {
+        const remaining = Object.keys(convertGolden).filter((key) => key !== "linux x64");
+        const { orphan } = setClosure(remaining, KNOWN_STAMPS);
+        expect(orphan).toContain("linux x64");
+    });
+});
+
+describe("platform stamp closure — NOMINAL_MISS", () => {
+    // `NOMINAL_MISS` (`helpers/golden.ts`) is a second stamp-keyed registry, same discipline as
+    // `convert-golden.json`'s top-level namespace: every stamp it declares must be a known one,
+    // and every known stamp must have a record (`refine.oracle.ts`'s nominal-replay claim
+    // hard-fails, never skips, on a platform with no recorded miss data).
+    test("NOMINAL_MISS's stamps are exactly the declared KNOWN_STAMPS", () => {
+        expect(setClosure(Object.keys(NOMINAL_MISS), KNOWN_STAMPS)).toEqual({
+            missing: [],
+            orphan: [],
+        });
+    });
+
+    // positive control, direction 1: an undeclared stamp key must be caught.
+    test("an undeclared NOMINAL_MISS stamp key fails closure", () => {
+        const { missing } = setClosure([...Object.keys(NOMINAL_MISS), "bogus os"], KNOWN_STAMPS);
+        expect(missing).toContain("bogus os");
+    });
+
+    // positive control, direction 2: a declared stamp missing from NOMINAL_MISS must be caught.
+    test("a declared stamp missing from NOMINAL_MISS fails closure", () => {
+        const remaining = Object.keys(NOMINAL_MISS).filter((key) => key !== "darwin arm64");
+        const { orphan } = setClosure(remaining, KNOWN_STAMPS);
+        expect(orphan).toContain("darwin arm64");
+    });
+});
 
 describe("field registry closure — declared-registry law", () => {
     // every real fixture key resolves to exactly one bucket, read via `Object.keys` on the
@@ -86,17 +146,36 @@ function perturbRel(name: string, field: string): (factor: number) => Record<str
     return (factor: number) => ({ ...want, [field]: base + bucket.rel * factor * Math.abs(base) });
 }
 
+const G_BUCKET = (CONVERT_REGISTRY.points as { array: Record<string, Bucket> }).array.g as {
+    kind: "mixed";
+    atol: number;
+    rel: number;
+};
+
+/** perturb `circular-arc`'s first point's `g` (≈1.9, well away from zero) by `factor` × its
+ *  declared REL bound — at this magnitude `atol` is negligible next to `rel * |g|`, so this
+ *  exercises the mixed form's rel-dominated limb (the same limb `perturbRel` above exercises
+ *  for `floor`/`deviation`). */
 function perturbPointG(name: string, factor: number): Record<string, unknown> {
     const want = GOLDEN(name) as unknown as Record<string, unknown>;
     const points = want.points as { s: number; g: number }[];
-    const bucket = (CONVERT_REGISTRY.points as { array: Record<string, Bucket> }).array.g as {
-        kind: "bounded";
-        rel: number;
-    };
     const perturbed = points.map((p, i) =>
-        i === 0 ? { ...p, g: p.g + bucket.rel * factor * Math.abs(p.g) } : p,
+        i === 0 ? { ...p, g: p.g + G_BUCKET.rel * factor * Math.abs(p.g) } : p,
     );
     return { ...want, points: perturbed };
+}
+
+/** the mixed form's OTHER limb: a `g` near zero, where `rel * |want|` is negligible and `atol`
+ *  alone carries the comparison — the exact shape `double-hump`/`valley-explicit`'s
+ *  zero-crossing points broke the plain-relative bound on (3e). `withPointG` swaps only
+ *  `circular-arc`'s first point's `g`, keeping every structural field (knots, outcome, …)
+ *  untouched so only the bounded comparison is under test. */
+function withPointG(g: number): Record<string, unknown> {
+    const want = GOLDEN("circular-arc") as unknown as Record<string, unknown>;
+    const points = (want.points as { s: number; g: number }[]).map((p, i) =>
+        i === 0 ? { ...p, g } : p,
+    );
+    return { ...want, points };
 }
 
 describe("the bounded comparison discriminates — red at 10x, green at 0.1x", () => {
@@ -130,6 +209,56 @@ describe("the bounded comparison discriminates — red at 10x, green at 0.1x", (
             CONVERT_REGISTRY,
         );
         expect(outcome.ok).toBe(true);
+    });
+
+    // the mixed form's `atol` limb — a `g` near zero, so `rel * |want|` contributes nothing and
+    // `atol` alone must gate it (kex2d-golden-reproducibility 3g's re-derivation).
+    test("convert-golden.json's points[].g (near zero) fails at 10x atol", () => {
+        const want = withPointG(1e-12);
+        const got = withPointG(1e-12 + G_BUCKET.atol * 10);
+        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(false);
+    });
+
+    test("convert-golden.json's points[].g (near zero) passes at 0.1x atol", () => {
+        const want = withPointG(1e-12);
+        const got = withPointG(1e-12 + G_BUCKET.atol * 0.1);
+        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(true);
+    });
+
+    // the mixed form's `rel` limb, isolated at a magnitude where `atol` is negligible by
+    // construction (rel*|want| >> atol) — the same claim `perturbPointG` above makes at
+    // circular-arc's own scale, restated at a scale where the dominance is unambiguous.
+    test("convert-golden.json's points[].g (large) fails at 10x its rel-implied error", () => {
+        const want = withPointG(1e6);
+        const got = withPointG(1e6 + G_BUCKET.rel * 1e6 * 10);
+        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(false);
+    });
+
+    test("convert-golden.json's points[].g (large) passes at 0.1x its rel-implied error", () => {
+        const want = withPointG(1e6);
+        const got = withPointG(1e6 + G_BUCKET.rel * 1e6 * 0.1);
+        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(true);
+    });
+
+    // The two limbs must ADD, not compete. Every test above isolates one limb by making the
+    // other negligible, so at those points `atol + rel*|want|` and `max(atol, rel*|want|)` are
+    // numerically indistinguishable and a `+` → `Math.max` mutation survives all of them
+    // (measured: the mutant passed 26/26). The discriminating point is the crossover, where the
+    // two terms are exactly equal — derived, not chosen: `rel*|want| == atol` at
+    // `|want| == atol/rel`. There the additive bound is `2*atol` and the max bound is `atol`, so
+    // an error of 1.5x atol separates them. Both directions, so neither case is vacuous.
+    const crossover = G_BUCKET.atol / G_BUCKET.rel;
+
+    test("convert-golden.json's points[].g passes at 1.5x atol where the two limbs are equal", () => {
+        const want = withPointG(crossover);
+        const got = withPointG(crossover + G_BUCKET.atol * 1.5);
+        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(true);
+    });
+
+    test("convert-golden.json's points[].g fails at 2.5x atol where the two limbs are equal", () => {
+        const want = withPointG(crossover);
+        const got = withPointG(crossover + G_BUCKET.atol * 2.5);
+        expect(compareGolden(got, want, CONVERT_REGISTRY).ok).toBe(false);
     });
 
     // `forcegeo-golden.json`'s `deviation` is bounded at 1 ULP of its own magnitude, not a
