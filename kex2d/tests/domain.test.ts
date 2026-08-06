@@ -235,12 +235,14 @@ describe("guards", () => {
     });
 
     test("a force section past the sample cap blocks the whole conversion", () => {
-        // the flat SoA is capped at `MAX_SAMPLES`, and a chain that overruns it reports its
-        // would-be count anyway, so a section placed past the cap carries a sample range that was
-        // never written — the arc↔time table reads NaN there. Converting through it would write
-        // NaN into every one of that section's keyframes, so the op rejects the WHOLE track (a
-        // partial conversion would leave metres and seconds side by side in one store) and the
-        // menu row grays on the same reading.
+        // the flat SoA is capped at `MAX_SAMPLES`. Post `kex2d-correctness-fixes` stage 2c,
+        // `chain` clips a force section's copy at the buffer's end (never reporting a would-be
+        // count past it), so a section placed past the cap carries an EMPTY sample range clamped
+        // at the buffer's last index — `windowOf`'s `end <= start` rejects it exactly as it did
+        // when the range was merely out of bounds instead of empty. Converting through it would
+        // otherwise write NaN into every one of that section's keyframes, so the op rejects the
+        // WHOLE track (a partial conversion would leave metres and seconds side by side in one
+        // store) and the menu row grays on the same reading.
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
@@ -252,7 +254,10 @@ describe("guards", () => {
         state.step(0);
         const info = sectionInfo.get(tail);
         if (!info) throw new Error("no bake for the tail section");
-        expect(info.startSample).toBeGreaterThan(MAX_SAMPLES); // it really is off the buffer
+        // an EMPTY range at the buffer's last index — it really is off the buffer, never a start
+        // past `MAX_SAMPLES`.
+        expect(info.startSample).toBe(info.endSample);
+        expect(info.startSample).toBe(MAX_SAMPLES - 1);
         expect(Track.count.get(eid)).toBe(MAX_SAMPLES); // …which the published count stops at
 
         const h = createHistory();

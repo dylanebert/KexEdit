@@ -358,8 +358,17 @@ export interface Step {
  *  from a stored f32 step by up to one f32 ulp, a strict improvement over the stored value, not a
  *  no-op. Every production pairing of a force section's edge count with its step goes through
  *  this ONE seam — never its own local `round(length/step)`. `forceProfile`/`evalForce` take the
- *  returned {@link Step} as a single argument, so the pair travels together by construction. */
+ *  returned {@link Step} as a single argument, so the pair travels together by construction.
+ *
+ *  Throws on a non-finite `length`/`step` or a `step ≤ 0`: the floor's `round(…)`/`max(1, …)`
+ *  above silently propagates a `NaN` quotient, or produces an `Infinity` edge count for a
+ *  zero/negative step, baking a garbage-edge `Float32Array` far downstream instead of failing at
+ *  the seam that produced the bad pair. `length === 0` is unguarded — the floor's own case
+ *  above, resolving to `{edges: 1, ds: 0}` rather than a thrown error. */
 export function resolveStep(length: number, step: number): Step {
+    if (!Number.isFinite(length)) throw new Error(`resolveStep: length must be finite (${length})`);
+    if (!Number.isFinite(step)) throw new Error(`resolveStep: step must be finite (${step})`);
+    if (step <= 0) throw new Error(`resolveStep: step must be > 0 (${step})`);
     const edges = Math.max(1, Math.round(length / step));
     return { edges, ds: length / edges };
 }

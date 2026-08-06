@@ -768,12 +768,18 @@ describe("coordinate lens (s ↔ d)", () => {
 // indices that were never written otherwise.
 describe("the sample budget", () => {
     test("a section past the budget leaves the published SoA finite, its own range outside it", () => {
-        // `chain` keeps counting edges past the buffer (its overflow writes are dropped), so
-        // `BakeSystem` publishes the BUDGET as the count. Publishing the would-be count instead
-        // handed every consumer indices that were never written: the arc↔time table, `forceCurve`,
-        // and the chart's own axis total all read `undefined` and went NaN, which unmounted the
-        // whole timeline. The section left outside keeps its `sectionInfo` range out there, which
-        // is what a domain conversion rejects on (`tests/domain.test.ts`).
+        // `BakeSystem` publishes the BUDGET as the count, never a would-be one. Before
+        // `kex2d-correctness-fixes` stage 2c, `chain` kept counting a force section's edges past
+        // the buffer (its overflow writes silently dropped, a typed-array write past its length
+        // being a no-op), so a section left outside carried a `sectionInfo` range whose start
+        // ballooned arbitrarily far past `MAX_SAMPLES` — publishing the would-be count instead
+        // would have handed every consumer indices that were never written: the arc↔time table,
+        // `forceCurve`, and the chart's own axis total all read `undefined` and went NaN, which
+        // unmounted the whole timeline. `chain` now clips the copy at the budget (stage 2c), so
+        // the section left outside instead gets an EMPTY range clamped at the buffer's last
+        // index (`start === end`, never a start past `MAX_SAMPLES`) — still zero baked samples,
+        // still what a domain conversion rejects on (`tests/domain.test.ts`), just expressed as
+        // an empty range rather than an out-of-range one.
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
@@ -795,10 +801,12 @@ describe("the sample budget", () => {
         // the spans stay finite too — the lens is what the chart's axis total derives from.
         for (const sp of sectionSpans(state, eid))
             expect(Number.isFinite(sp.entryU + sp.lenU + sp.offset + sp.len)).toBe(true);
-        // …and the tail section really is off the buffer, not merely short.
+        // …and the tail section really is off the buffer, not merely short: an EMPTY range at
+        // the buffer's last index, never a start past `MAX_SAMPLES`.
         const info = sectionInfo.get(tail);
         if (!info) throw new Error("no bake for the tail section");
-        expect(info.startSample).toBeGreaterThanOrEqual(MAX_SAMPLES);
+        expect(info.startSample).toBe(info.endSample);
+        expect(info.startSample).toBe(MAX_SAMPLES - 1);
     });
 
     // `forceBake` re-runs `evalForce` for the fit — geofit's own input, not the chain's — so the
@@ -2038,9 +2046,44 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
         return { state, eid, sec };
     }
 
-    /** the f32-accumulation bound over `edges` edges totaling `extent` — DERIVED, never an
-     *  absolute number (`coding.md` "Tolerance discipline"). */
-    function accumTol(edges: number, extent: number): number {
+    /** the DISTANCE-domain f32-accumulation bound, DERIVED, never an absolute number
+     *  (`coding.md` "Tolerance discipline"). `sectionSpans`'s `cum` accumulates in f64
+     *  (`let cum = 0`) over `edges` copies of ONE narrowed-to-f32 per-edge `ds`
+     *  (`resolveStep`'s `ds = length/edges`, `Float32Array.fill`ed once into the section's
+     *  march, then read back — Distance's own step is uniform across the march). Each edge's
+     *  rounding is the SAME f32 quantization of the same `ds`, so it doesn't accumulate
+     *  independently: `edges · |fl32(ds) − ds| ≤ edges · 2^-24 · ds = 2^-24 · (edges·ds) ≈
+     *  2^-24 · extent` — the `edges` factor cancels against `ds` rather than compounding it,
+     *  unlike an independent per-edge rounding walk. Plus one more `2^-24 · extent` for
+     *  `extent` itself: `Section.length`/`.ds` are `sparse(f32)` (`kex2d-map.md`), so the
+     *  `length` this bound is measured against already differs from the f64 value the test
+     *  authored it with by up to one f32 ulp before the bake even runs. Total: `2 · 2^-24 ·
+     *  extent`, with NO `edges` factor — the previous `edges * 2 ** -24 * extent` was loose by
+     *  up to `edges` (4096×), because it charged the single shared rounding once per edge
+     *  instead of once total. Verified over the full ds × length sweep below (worst observed
+     *  ratio to this bound ~0.49, so the derivation holds with margin, not just on average).
+     *
+     *  This bound is for `sectionSpans`'s Distance-native reading (`sp.len`, and `lenU` when
+     *  `Track.domain` is `Distance` — both read off the same `cum`) ONLY. It does NOT cover
+     *  `sp.lenU` in the `Time` domain, whose accumulation is a genuinely different recurrence
+     *  (below, `marchTol`) — `sectionSpans` does not accumulate that reading the way this
+     *  derivation describes, so installing this same bound there is wrong, not merely loose:
+     *  measured up to ~47× this bound on the Time-domain sweep. */
+    function accumTol(extent: number): number {
+        return 2 * 2 ** -24 * extent;
+    }
+
+    /** the TIME-domain f32-accumulation bound. Unlike `accumTol` above, `sp.lenU` in `Time`
+     *  reads `out.t` (`track.computeTime`), whose recurrence rounds the RUNNING sum itself at
+     *  every step (`out.t[i+1] = out.t[i] + dt` written into a `Float32Array`, so each addition
+     *  is rounded before the next reads it back) rather than summing `edges` copies of one
+     *  pre-narrowed constant in f64. That is the textbook repeated-summation forward-error
+     *  bound: `|computed − exact| ≲ (edges−1) · u · Σ|dt_i| ≈ edges · 2^-24 · extent` (`u` =
+     *  f32 unit roundoff). The `edges` factor is genuinely load-bearing here — it doesn't cancel
+     *  the way it does against `accumTol`'s single shared rounding, because every step both
+     *  contributes a term AND re-rounds the accumulator carrying all the prior ones. Verified
+     *  over the Time-domain sweep below (worst observed ratio to this bound ~0.23). */
+    function marchTol(edges: number, extent: number): number {
         return edges * 2 ** -24 * extent;
     }
 
@@ -2058,12 +2101,11 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
         for (const ds of dsList) {
             for (const length of lengths) {
                 if (onGrid(length, ds)) continue;
-                const edges = Math.max(1, Math.round(length / ds));
                 const { state, eid, sec } = extentTrack(length, ds);
                 const spans = sectionSpans(state, eid);
                 const sp = spans.find((x) => x.id === sec);
                 if (!sp) throw new Error("section missing from spans");
-                const tol = accumTol(edges, length);
+                const tol = accumTol(length);
                 expect(Math.abs(sp.len - length)).toBeLessThan(tol);
             }
         }
@@ -2073,7 +2115,6 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
         for (const ds of dsList) {
             for (const length of lengths) {
                 if (onGrid(length, ds)) continue;
-                const edges = Math.max(1, Math.round(length / ds));
                 const cut = length * 0.4137; // an off-grid interior split position
                 const { state, eid, sec } = extentTrack(length, ds, [
                     { s: 0, g: 1 },
@@ -2086,7 +2127,7 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
                 const headU = toGlobalU(spans, sec, cut);
                 const tailEntryU = toGlobalU(spans, tail, 0);
                 if (headU === null || tailEntryU === null) throw new Error("section off the bake");
-                const tol = accumTol(edges, length);
+                const tol = accumTol(length);
                 expect(Math.abs(headU - tailEntryU)).toBeLessThan(tol);
             }
         }
@@ -2096,7 +2137,6 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
         for (const ds of dsList) {
             for (const length of lengths) {
                 if (onGrid(length, ds)) continue;
-                const edges = Math.max(1, Math.round(length / ds));
                 const { state, eid, sec } = extentTrack(length, ds, [
                     { s: 0, g: 1 },
                     { s: length, g: 1 }, // the section's own seed key at its authored end — no cut
@@ -2110,7 +2150,7 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
                 const authoredEnd = toGlobalU(spans, sec, length);
                 if (authoredEnd === null) throw new Error("section off the bake");
                 const bakedExit = sp.entryU + sp.lenU;
-                const tol = accumTol(edges, length);
+                const tol = accumTol(length);
                 expect(Math.abs(authoredEnd - bakedExit)).toBeLessThan(tol);
             }
         }
@@ -2143,7 +2183,7 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
                 const spans = sectionSpans(state, eid);
                 const sp = spans.find((x) => x.id === sec);
                 if (!sp) throw new Error("section missing from spans");
-                const tol = accumTol(edges, duration);
+                const tol = marchTol(edges, duration);
                 expect(Math.abs(sp.lenU - duration)).toBeLessThan(tol);
             }
         }
@@ -2387,7 +2427,11 @@ test("freeze with no downstream budget publishes empty ranges, never stale prior
     state.step(0);
     const stale = sectionInfo.get(secB);
     if (!stale) throw new Error("no pre-freeze info");
-    expect(stale.startSample).toBeGreaterThan(MAX_SAMPLES); // the would-be past-budget range
+    // post `kex2d-correctness-fixes` stage 2c, `chain` clips a force section's copy at the
+    // buffer's end rather than ballooning `off` past `MAX_SAMPLES` — so the past-budget range is
+    // an EMPTY one clamped at the buffer's last index, never a start past `MAX_SAMPLES`.
+    expect(stale.startSample).toBe(stale.endSample);
+    expect(stale.startSample).toBe(MAX_SAMPLES - 1);
 
     const entry = sectionInfo.get(secA)?.entry ?? { x: 0, y: 0, theta: 0, v: 10 };
     setBakeFreeze({ section: secA, entry: { ...entry } });

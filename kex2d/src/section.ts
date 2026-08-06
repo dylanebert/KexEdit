@@ -330,24 +330,62 @@ export function chain(entry0: Entry, sections: readonly Section[], maxSamples = 
                 ? evalGeo(entry, sec.nodes, sec.ds, maxSamples - off)
                 : evalForce(entry, sec.fN, sec.step, sec.domain);
         const start = off;
-        // copy points 1..edges; point 0 duplicates the shared boundary already
+        // bound the COPY at the flat buffers' remaining room. `evalGeo` already respects it —
+        // it was handed `maxSamples - off` as its own budget, so `r.edges` never exceeds what's
+        // left here — but `evalForce` has no budget parameter (its `fN`/`step` pair is already
+        // dense and must match `step.edges` exactly, the pairing invariant this substrate closed
+        // in stage 1), so a force section's realized `edges` can outrun the chain's remaining
+        // room. Clipping the copy (never softening `evalForce`'s own strict length check into a
+        // `min()`) is what keeps a force chain past `MAX_SAMPLES` truncating instead of writing
+        // past the flat SoA's end — a typed-array write past its length is silently dropped, so
+        // the old code advanced `off` by the FULL `r.edges` regardless, leaving `ranges`/`count`
+        // describing samples that were never actually written.
+        const budget = Math.max(0, maxSamples - 1 - off);
+        const copy = Math.min(r.edges, budget);
+        // copy points 1..copy; point 0 duplicates the shared boundary already
         // written by the prior section (or the seed), so leave it — it carries the
         // prior section's exit state, which is exactly this section's placement.
-        for (let k = 1; k <= r.edges; k++) {
+        for (let k = 1; k <= copy; k++) {
             posX[off + k] = r.posX[k];
             posY[off + k] = r.posY[k];
             theta[off + k] = r.theta[k];
             v[off + k] = r.v[k];
         }
-        for (let k = 0; k < r.edges; k++) {
+        for (let k = 0; k < copy; k++) {
             fN[off + k] = r.fN[k];
             ds[off + k] = r.ds[k];
         }
-        off += r.edges;
+        const clipped = copy < r.edges;
+        // the clipped exit is the last sample actually copied — the section's own arrays are
+        // still the full (unclipped) march, so read the cut point straight off them rather than
+        // off `r.exit`, which describes edges this chain never wrote.
+        const exit: Entry = clipped
+            ? { x: r.posX[copy], y: r.posY[copy], theta: r.theta[copy], v: r.v[copy] }
+            : r.exit;
+        off += copy;
         ranges.push({ start, end: off });
-        exits.push(r.exit);
-        results.push(r);
-        entry = r.exit;
+        exits.push(exit);
+        // a clipped result is re-sliced, never just re-stamped with a smaller `edges`: a
+        // `{...r, edges: copy}` spread is the same split-value shape stage 1 closed, an edge
+        // count disagreeing with the arrays travelling beside it.
+        results.push(
+            clipped
+                ? {
+                      ...r,
+                      posX: r.posX.slice(0, copy + 1),
+                      posY: r.posY.slice(0, copy + 1),
+                      theta: r.theta.slice(0, copy + 1),
+                      v: r.v.slice(0, copy + 1),
+                      fN: r.fN.slice(0, copy),
+                      ds: r.ds.slice(0, copy),
+                      edges: copy,
+                      exit,
+                      offsets: r.offsets.filter((o) => o <= copy),
+                      truncated: true,
+                  }
+                : r,
+        );
+        entry = exit;
     }
 
     const count = Math.min(off + 1, maxSamples);

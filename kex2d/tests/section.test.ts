@@ -381,4 +381,65 @@ describe("chain", () => {
         expect(c.ds[0]).toBeCloseTo(V0 * dt, 5);
         expect(c.ds[0]).not.toBeCloseTo(dt, 3);
     });
+
+    test("clips a force section's copy at the sample budget, never writing past the flat SoA", () => {
+        // `evalForce` has no budget parameter — its `fN`/`step` pair is already dense and
+        // must match `step.edges` exactly (the pairing invariant), so a force section's realized
+        // edge count can outrun the room `chain` has left. Unlike `evalGeo` (handed its own
+        // budget), `chain` must clip the COPY itself (the locked decision, stage 2c). A
+        // `maxSamples` far smaller than the section's edges forces the overflow.
+        const maxSamples = 20;
+        const edges = 50;
+        const fN = new Float32Array(edges).fill(1.2);
+        const sections: Section[] = [{ kind: "force", fN, step: { edges, ds: 0.5 } }];
+        const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections, maxSamples);
+
+        // the range must describe exactly what got written into the flat buffers — never a
+        // sample index the buffer doesn't have room for.
+        expect(c.ranges[0].end).toBeLessThanOrEqual(maxSamples - 1);
+        expect(c.count).toBeLessThanOrEqual(maxSamples);
+        expect(c.results[0].edges).toBe(c.ranges[0].end);
+        expect(c.results[0].truncated).toBe(true);
+
+        // every written sample is the real march, not a zero-filled gap from an OOB write that
+        // silently dropped.
+        for (let i = 1; i <= c.ranges[0].end; i++) {
+            expect(c.posX[i]).not.toBe(0);
+        }
+    });
+
+    test("a clipped result's arrays match its own edge count", () => {
+        // the clipped `SectionResult` is re-sliced, not re-stamped: `{...r, edges: copy}` would
+        // hand a consumer an edge count disagreeing with the arrays beside it — the same
+        // split-value shape the `Step` pairing closes at the other seam.
+        const maxSamples = 20;
+        const edges = 50;
+        const fN = new Float32Array(edges).fill(1.2);
+        const sections: Section[] = [{ kind: "force", fN, step: { edges, ds: 0.5 } }];
+        const r = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections, maxSamples).results[0];
+
+        expect(r.truncated).toBe(true);
+        expect(r.edges).toBeLessThan(edges);
+        expect(r.posX.length).toBe(r.edges + 1);
+        expect(r.posY.length).toBe(r.edges + 1);
+        expect(r.theta.length).toBe(r.edges + 1);
+        expect(r.v.length).toBe(r.edges + 1);
+        expect(r.fN.length).toBe(r.edges);
+        expect(r.ds.length).toBe(r.edges);
+        // the exit is the last sample the clip actually kept, and every offset addresses a
+        // sample the sliced arrays still have.
+        expect(r.exit.x).toBe(r.posX[r.edges]);
+        expect(r.exit.y).toBe(r.posY[r.edges]);
+        for (const o of r.offsets) expect(o).toBeLessThanOrEqual(r.edges);
+    });
+
+    test("a force section within budget stays untruncated (positive control)", () => {
+        const maxSamples = 4096;
+        const edges = 50;
+        const fN = new Float32Array(edges).fill(1.2);
+        const sections: Section[] = [{ kind: "force", fN, step: { edges, ds: 0.5 } }];
+        const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections, maxSamples);
+        expect(c.ranges[0].end).toBe(edges);
+        expect(c.results[0].truncated).toBe(false);
+    });
 });

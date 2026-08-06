@@ -539,6 +539,31 @@ describe("resolveStep — the ONE seam pairing a force section's edge count with
         expect(edges).toBe(48);
         expect(ds).toBe(0.5);
     });
+
+    test("a zero length still integrates one edge (the max(1,…) floor's own claim, not the round-then-max byproduct)", () => {
+        // the floor's own justification (`profile.ts:350`): "floored at 1 so a zero-length
+        // section still integrates one step" — one edge spanning zero length (ds === 0), the
+        // shape `bake.forces`'/`evalForce`'s degenerate Δs===0 stationary-cart branch expects,
+        // not merely "edges is a number".
+        const { edges, ds } = resolveStep(0, 0.5);
+        expect(edges).toBe(1);
+        expect(ds).toBe(0);
+    });
+
+    test("throws on a non-finite length or step rather than baking NaN edges", () => {
+        // `Math.max(1, Math.round(length / step))` silently produces `NaN` for a non-finite
+        // input (`Math.max` propagates any `NaN` argument), which then bakes a zero-edge
+        // `Float32Array` downstream instead of failing loudly at the seam that produced it.
+        expect(() => resolveStep(Number.NaN, 0.5)).toThrow();
+        expect(() => resolveStep(Number.POSITIVE_INFINITY, 0.5)).toThrow();
+        expect(() => resolveStep(10, Number.NaN)).toThrow();
+        expect(() => resolveStep(10, Number.POSITIVE_INFINITY)).toThrow();
+    });
+
+    test("throws on a non-positive step", () => {
+        expect(() => resolveStep(10, 0)).toThrow();
+        expect(() => resolveStep(10, -0.5)).toThrow();
+    });
 });
 
 // `kex2d-section-extent` stage 3 — the source pin: no production module builds a force
