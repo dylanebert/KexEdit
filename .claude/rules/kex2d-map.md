@@ -280,7 +280,11 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `ds`, and `points[].s` — is **exact**, because the fixture is stamp-matched: **a bucket is a
   claim about a comparison, not about a field**, and own-stamp against a deterministic solve
   presents zero spread, so the derived bound is zero. A bound belongs where a fixture is genuinely
-  shared, which here is `forcegeo-golden.json` alone (below) at 1 ulp — the unit's only one. That golden is the gate on any change that claims
+  shared, which here is `forcegeo-golden.json` alone (below) at 1 ulp, the unit's only one. Every
+  golden here is **field-wise**, because a golden pinned as a single hash cannot be loosened
+  without a structural rewrite; a *per-field* digest is the loosenable form of the same primitive,
+  and pinning one already-exact field that way (`polish-golden.json`'s 7 MiB `snapshots`) blocks
+  nothing else from moving. That golden is the gate on any change that claims
   to leave conversion output alone (a perf change above all). What the human check approved was
   the `linux x64` output as an authoring surface; a stamped golden minted on another machine is a
   regression tripwire, not an inherited authoring verdict, and leaning on one as a verdict means
@@ -996,7 +1000,7 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 
 ## Test tiers
 
-`bun test` is the whole default gate (~12 s, 1281 tests) and it runs every time. The corpus-scale
+`bun test` is the whole default gate (~14 s, 1454 tests) and it runs every time. The corpus-scale
 `.oracle.ts` files sit outside it and are **run explicitly by path, exactly like the labs** — no
 `package.json` script, no composite. Run the one whose kernel you touched:
 
@@ -1011,7 +1015,7 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 
 The `./` prefix is load-bearing — a bare path is a name filter to bun and silently matches nothing.
 
-All six cost ~74 s against the default gate's 12 s, so they are never a routine pre-commit sweep.
+All six cost ~74 s against the default gate's 14 s, so they are never a routine pre-commit sweep.
 **Every oracle has a fast-tier sentinel sibling** (`convert.test.ts`, `refine.test.ts`,
 `roundtrip.test.ts`, …) hitting the same kernel on a mini-corpus against the same frozen fixture, so
 a kernel edit still fails in seconds without the oracle; the oracle confirms the corpus-wide claim,
