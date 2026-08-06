@@ -19,20 +19,41 @@
  *  against. Measured directly: minting on `darwin arm64` moved `hill-explicit.deviation` by
  *  exactly 1 ulp relative to the committed `linux x64`-derived value.
  *
+ *  `polish-golden.json` is a PER-PLATFORM artifact, own-stamp rule (same as `convert-golden.json`
+ *  — 3c). Its `spine` and `snapshots` fields are hashed to sha256 digests before writing
+ *  (`digestOf`, `helpers/compare.ts`), never the raw data: `snapshots` alone is ~7 MB per
+ *  platform (`Snapshot[]`, each carrying a `Float32Array` `fN` + a full `ForcePoint[]`), `spine`
+ *  another ~150 KiB (one `{x,y,theta}` entry per baked edge), and the fixture is committed. This
+ *  script is the ONE place that hashes either field — `narrowPolish` itself leaves both raw,
+ *  since a live comparison's `got` side hashes on the fly against the already-hashed `want`
+ *  (`compare.ts`'s `digest` bucket kind).
+ *
  *  Minting over a clean tree must leave `git diff` empty — that's the gate this script owes
- *  (`kex2d-golden-reproducibility` Validation). On the reference stamp this holds for both
- *  files; on any other platform it holds for `convert-golden.json` alone, `forcegeo-golden.json`
- *  never touched. */
+ *  (`kex2d-golden-reproducibility` Validation). On the reference stamp this holds for all three
+ *  files; on any other platform it holds for `convert-golden.json`/`polish-golden.json`,
+ *  `forcegeo-golden.json` never touched. One command mints every golden for the current
+ *  platform (Locked decision, C's cost 1) — a second, fixture-specific mint script was tried at
+ *  3c and folded back in here on review: two commands is the same standing tax C's cost was
+ *  supposed to close. */
 
+import { digestOf } from "./helpers/compare";
 import { geofit, type GeofitBake, type GeofitNode, type GeofitOutcome } from "../src/geofit";
+import { fit } from "../src/fit";
 import { forceProfile } from "../src/profile";
+import { polish } from "../src/polish";
 import { narrow, refine } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
-import { FORCEGEO_SOURCE_STAMP, KNOWN_STAMPS, PLATFORM_STAMP } from "./helpers/golden";
+import {
+    FORCEGEO_SOURCE_STAMP,
+    KNOWN_STAMPS,
+    narrowPolish,
+    PLATFORM_STAMP,
+} from "./helpers/golden";
 
 const CONVERT_PATH = new URL("./fixtures/convert-golden.json", import.meta.url);
 const FORCEGEO_PATH = new URL("./fixtures/forcegeo-golden.json", import.meta.url);
+const POLISH_PATH = new URL("./fixtures/polish-golden.json", import.meta.url);
 
 type Json = Record<string, unknown>;
 
@@ -108,4 +129,25 @@ if (PLATFORM_STAMP !== FORCEGEO_SOURCE_STAMP) {
     console.log(`minted forcegeo-golden.json (this platform is the reference stamp)`);
 }
 
+// -- polish-golden.json: this platform's own full-free corpus (fit + polish, default family
+// "free"), merged under its own stamp key — same own-stamp rule as convert-golden.json.
+// `snapshots` is replaced with its own sha256 digest before writing (see file header).
+const polishGolden = await readJson(POLISH_PATH);
+const platformPolish: Json = {};
+for (const scenario of scenarios) {
+    const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
+    const bake = evalGeo(entry, scenario.nodes, scenario.ds);
+    const fitted = fit(bake.fN, bake.ds, 0.05);
+    const result = polish({ bake, entry, points: fitted.points, ds: scenario.ds });
+    const record = narrowPolish(scenario.name, result);
+    platformPolish[scenario.name] = {
+        ...record,
+        spine: digestOf(record.spine),
+        snapshots: digestOf(record.snapshots),
+    };
+}
+polishGolden[PLATFORM_STAMP] = platformPolish;
+await writeJson(POLISH_PATH, polishGolden);
+
 console.log(`minted convert-golden.json["${PLATFORM_STAMP}"]`);
+console.log(`minted polish-golden.json["${PLATFORM_STAMP}"]`);

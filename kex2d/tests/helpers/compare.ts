@@ -9,12 +9,26 @@ export type Bucket =
     | { kind: "exact" }
     | { kind: "bounded"; rel: number }
     | { kind: "mixed"; atol: number; rel: number }
-    | { kind: "ulp" };
+    | { kind: "ulp" }
+    | { kind: "digest" };
 
 /** a field registry for one golden fixture's per-scenario record shape. A bare `Bucket` covers
  *  a scalar (or a whole array compared as one unit, e.g. `knots`); `{ array }` covers a field
- *  that is itself an array of records, bucketed per member key (`points[].s`/`points[].g`). */
-export type FieldRegistry = Record<string, Bucket | { array: Record<string, Bucket> }>;
+ *  that is itself an array of records, bucketed per member key (`points[].s`/`points[].g`) — a
+ *  member's own spec may itself be `{ object }` for a nested optional sub-record
+ *  (`points[].in`/`.out`, `kex2d-golden-reproducibility` 3c); `{ vector }` covers a field that is
+ *  an array of plain SCALARS, every element sharing one bucket (`polish.oracle.ts`'s
+ *  `deviations` — the sha256 it replaces covered this element-wise and the replacement must
+ *  too); `{ object }` covers a field that is itself a single nested record with per-key buckets,
+ *  never an array (`polish.oracle.ts`'s `exit: {dx,dy,dtheta,dist}`, whose four members carry two
+ *  different bounds and so can't ride the whole-object `exact` bucket the way `spine` does). */
+export type FieldRegistry = Record<
+    string,
+    | Bucket
+    | { array: Record<string, Bucket | { object: Record<string, Bucket> }> }
+    | { vector: Bucket }
+    | { object: Record<string, Bucket> }
+>;
 
 export type FieldResult =
     | { field: string; ok: true }
@@ -54,11 +68,31 @@ export function ulpOf(x: number): number {
     return buf[0] - mag;
 }
 
+/** hashes `value`'s canonical JSON to a sha256 hex digest — UNLESS `value` already IS a string,
+ *  in which case it's treated as an already-computed digest and returned verbatim. That
+ *  asymmetry is what lets a `digest` bucket compare a live record's raw field (hashed here) to a
+ *  committed golden's field (pre-hashed at mint time, so the FIXTURE never carries the raw data
+ *  — `kex2d-golden-reproducibility` 3c, the `snapshots` field that was 99% of a 17.7 MB fixture).
+ *  Exported so `mint-goldens.ts` hashes with the exact function a live comparison will use. */
+export function digestOf(value: unknown): string {
+    if (typeof value === "string") return value;
+    const hasher = new Bun.CryptoHasher("sha256");
+    hasher.update(JSON.stringify(value));
+    return hasher.digest("hex");
+}
+
 function checkScalar(field: string, bucket: Bucket, got: unknown, want: unknown): FieldResult {
     if (bucket.kind === "structural" || bucket.kind === "exact")
         return Bun.deepEquals(got, want, true)
             ? { field, ok: true }
             : { field, ok: false, structural: bucket.kind === "structural", got, want };
+    if (bucket.kind === "digest") {
+        const gotHash = digestOf(got);
+        const wantHash = digestOf(want);
+        return gotHash === wantHash
+            ? { field, ok: true }
+            : { field, ok: false, structural: false, got: gotHash, want: wantHash };
+    }
     const g = got as number;
     const w = want as number;
     if (bucket.kind === "bounded") {
@@ -86,6 +120,27 @@ function checkScalar(field: string, bucket: Bucket, got: unknown, want: unknown)
         : { field, ok: false, structural: false, got: g, want: w, bound, error };
 }
 
+/** one array member's check, dispatched on whether its own spec is a plain `Bucket` or a nested
+ *  `{ object }` (`points[].in`/`.out`: OPTIONAL nested records — absent for a chain endpoint).
+ *  PRESENCE is a structural question, checked earlier in `compareGolden`'s structural pass (ahead
+ *  of any bounded field) — so by the time this runs, `got`/`want` are guaranteed to agree on
+ *  presence: both absent (the endpoint case, nothing to compare) or both present (the interior
+ *  case, compared per sub-key). This function never itself decides a presence mismatch. */
+function checkMember(
+    field: string,
+    spec: Bucket | { object: Record<string, Bucket> },
+    got: unknown,
+    want: unknown,
+): FieldResult[] {
+    if (!("object" in spec)) return [checkScalar(field, spec, got, want)];
+    if (got === undefined && want === undefined) return [{ field, ok: true }];
+    const g = got as Record<string, unknown>;
+    const w = want as Record<string, unknown>;
+    return Object.entries(spec.object).map(([sub, subSpec]) =>
+        checkScalar(`${field}.${sub}`, subSpec, g[sub], w[sub]),
+    );
+}
+
 /** Compare one fixture record (`got`) against its frozen golden (`want`) through `registry`.
  *  Structural fields are checked FIRST and the function returns the instant one fails — the
  *  contract's ordering, not two independent passes. Only once every structural field matches do
@@ -97,7 +152,7 @@ export function compareGolden(got: object, want: object, registry: FieldRegistry
 
     // pass 1 — structure, hard fail.
     for (const [field, spec] of Object.entries(registry)) {
-        if ("array" in spec) continue;
+        if ("array" in spec || "vector" in spec || "object" in spec) continue;
         if (spec.kind !== "structural") continue;
         const result = checkScalar(field, spec, g[field], w[field]);
         results.push(result);
@@ -119,12 +174,71 @@ export function compareGolden(got: object, want: object, registry: FieldRegistry
             return { ok: false, results };
         }
     }
+    // a `vector` field's length mismatch is structural too, ahead of any bound, same reasoning
+    // as an `array` field's — a shorter/longer profile is a different answer, not a drifted one.
+    for (const [field, spec] of Object.entries(registry)) {
+        if (!("vector" in spec)) continue;
+        const gotArr = g[field] as unknown[] | undefined;
+        const wantArr = w[field] as unknown[] | undefined;
+        if (gotArr?.length !== wantArr?.length) {
+            const result: FieldResult = {
+                field: `${field}.length`,
+                ok: false,
+                structural: true,
+                got: gotArr?.length,
+                want: wantArr?.length,
+            };
+            results.push(result);
+            return { ok: false, results };
+        }
+    }
+    // an array member's PRESENCE, where its own spec is `{ object }` (`points[].in`/`.out`:
+    // optional per element — absent at exactly one end of the chain), is structural too, ahead of
+    // any bound — a different DOF shape, not a drifted value. Checked here, in the structural
+    // pass, not inside `checkMember` in pass 3: that ordering bug let a presence mismatch's
+    // verdict come back correct (`ok: false`) while `feasibility`/`peakG`/`maxDg`/`deviation`/
+    // `exit.*` were already computed first, contradicting this function's own "returns the
+    // instant one fails" contract and the spec's "a structural mismatch hard-fails ahead of any
+    // bound" — caught on architectural review of `kex2d-golden-reproducibility` 3c.
+    for (const [field, spec] of Object.entries(registry)) {
+        if (!("array" in spec)) continue;
+        const gotArr = (g[field] as Record<string, unknown>[]) ?? [];
+        const wantArr = (w[field] as Record<string, unknown>[]) ?? [];
+        for (const [sub, subSpec] of Object.entries(spec.array)) {
+            if (!("object" in subSpec)) continue;
+            for (let i = 0; i < wantArr.length; i++) {
+                const gv = gotArr[i]?.[sub];
+                const wv = wantArr[i]?.[sub];
+                if ((gv === undefined) === (wv === undefined)) continue;
+                const result: FieldResult = {
+                    field: `${field}[${i}].${sub}`,
+                    ok: false,
+                    structural: true,
+                    got: gv,
+                    want: wv,
+                };
+                results.push(result);
+                return { ok: false, results };
+            }
+        }
+    }
 
     // pass 2 — exact + bounded scalars, only reached once structure holds.
     for (const [field, spec] of Object.entries(registry)) {
-        if ("array" in spec) continue;
+        if ("array" in spec || "vector" in spec || "object" in spec) continue;
         if (spec.kind === "structural") continue;
         results.push(checkScalar(field, spec, g[field], w[field]));
+    }
+
+    // pass 2b — single nested-object fields, per member key (never an array: `exit`, not
+    // `points[]`). A registry never declares a sub-bucket `structural` here — every object field
+    // is reached only after every top-level structural field above already matched.
+    for (const [field, spec] of Object.entries(registry)) {
+        if (!("object" in spec)) continue;
+        const gotObj = (g[field] as Record<string, unknown>) ?? {};
+        const wantObj = (w[field] as Record<string, unknown>) ?? {};
+        for (const [sub, subSpec] of Object.entries(spec.object))
+            results.push(checkScalar(`${field}.${sub}`, subSpec, gotObj[sub], wantObj[sub]));
     }
 
     // pass 3 — per-member array fields.
@@ -135,13 +249,22 @@ export function compareGolden(got: object, want: object, registry: FieldRegistry
         for (let i = 0; i < wantArr.length; i++)
             for (const [sub, subSpec] of Object.entries(spec.array))
                 results.push(
-                    checkScalar(
+                    ...checkMember(
                         `${field}[${i}].${sub}`,
                         subSpec,
                         gotArr[i]?.[sub],
                         wantArr[i][sub],
                     ),
                 );
+    }
+
+    // pass 3b — vector fields, per element, one shared bucket.
+    for (const [field, spec] of Object.entries(registry)) {
+        if (!("vector" in spec)) continue;
+        const gotArr = (g[field] as unknown[]) ?? [];
+        const wantArr = (w[field] as unknown[]) ?? [];
+        for (let i = 0; i < wantArr.length; i++)
+            results.push(checkScalar(`${field}[${i}]`, spec.vector, gotArr[i], wantArr[i]));
     }
 
     return { ok: results.every((r) => r.ok), results };
@@ -189,13 +312,43 @@ export function registryClosure(
     const orphan = [...declared].filter((key) => !actual.has(key));
 
     for (const [field, spec] of Object.entries(registry)) {
+        if ("object" in spec) {
+            const obj = s[field] as Record<string, unknown> | undefined;
+            if (!obj) continue;
+            const elemDeclared = new Set(Object.keys(spec.object));
+            const elemActual = new Set(Object.keys(obj));
+            for (const key of elemActual)
+                if (!elemDeclared.has(key)) missing.push(`${field}.${key}`);
+            for (const key of elemDeclared)
+                if (!elemActual.has(key)) orphan.push(`${field}.${key}`);
+            continue;
+        }
         if (!("array" in spec)) continue;
         const arr = s[field] as Record<string, unknown>[] | undefined;
         if (!arr || arr.length === 0) continue;
         const elemDeclared = new Set(Object.keys(spec.array));
-        const elemActual = new Set(Object.keys(arr[0]));
+        // the UNION of keys across every element, not just `arr[0]` — a member key may be
+        // OPTIONAL per element (`points[].in`/`.out`, absent at a chain endpoint), so a single
+        // element's own keys under-report what the array actually carries.
+        const elemActual = new Set(arr.flatMap((el) => Object.keys(el)));
         for (const key of elemActual) if (!elemDeclared.has(key)) missing.push(`${field}[].${key}`);
         for (const key of elemDeclared) if (!elemActual.has(key)) orphan.push(`${field}[].${key}`);
+        // a member that is itself `{ object }` (`points[].in`/`.out`) is OPTIONAL per element —
+        // close it against whichever element actually carries a value, not just `arr[0]` (the
+        // first/last point in the free-family corpus always lacks one side).
+        for (const [sub, subSpec] of Object.entries(spec.array)) {
+            if (!("object" in subSpec)) continue;
+            const sample = arr.find((el) => el[sub] !== undefined)?.[sub] as
+                | Record<string, unknown>
+                | undefined;
+            if (!sample) continue;
+            const subDeclared = new Set(Object.keys(subSpec.object));
+            const subActual = new Set(Object.keys(sample));
+            for (const key of subActual)
+                if (!subDeclared.has(key)) missing.push(`${field}[].${sub}.${key}`);
+            for (const key of subDeclared)
+                if (!subActual.has(key)) orphan.push(`${field}[].${sub}.${key}`);
+        }
     }
 
     return { missing, orphan };

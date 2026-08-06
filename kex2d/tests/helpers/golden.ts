@@ -1,9 +1,11 @@
 import type { GeofitOutcome } from "../../src/geofit";
+import type { PolishResult } from "../../src/polish";
 import type { RefineOutcome } from "../../src/refine";
 import { scenarios } from "../../src/scenarios";
 import { evalGeo } from "../../src/section";
 import convertGolden from "../fixtures/convert-golden.json";
 import forcegeoGolden from "../fixtures/forcegeo-golden.json";
+import polishGolden from "../fixtures/polish-golden.json";
 import type { FieldRegistry } from "./compare";
 
 /** a corpus scenario's bake input by name — the same call `BakeSystem` makes. */
@@ -190,5 +192,255 @@ export const FORCEGEO_REGISTRY: FieldRegistry = {
     deviation: { kind: "ulp" },
     nodes: {
         array: { x: { kind: "exact" }, y: { kind: "exact" }, theta: { kind: "exact" } },
+    },
+};
+
+const POLISH_MINT_COMMAND = "bun run tests/mint-goldens.ts";
+
+/** `polish.oracle.ts`'s frozen full-free-family record — 19 fields, stamp-keyed like
+ *  `convert-golden.json` (the same solve's structural half is not cross-machine reproducible;
+ *  `kex2d-golden-reproducibility` 3c). `narrowPolish` is the one place a live `PolishResult`
+ *  becomes this JSON-safe shape: every typed array (`deviations`, `snapshots[].fN`,
+ *  `spine.x`/`.y`/`.theta`) round-trips through `JSON.stringify`/`parse`, the same
+ *  normalization the committed fixture itself already went through, so `got` and `want` compare
+ *  as the same concrete types. `points` carries all five `ForcePoint` members
+ *  (`src/profile.ts:135-141`): `ease` (never set by the full-free family's own fit — `fit.ts`
+ *  never stores it, every side carries an explicit handle instead — but declared for closure
+ *  regardless of what today's corpus happens to exercise), `in`/`out` (the free family's OWN
+ *  solved DOF: `readDof`/`applyDof`, `polish.ts:251-252`, read/write `.dg` as solver state
+ *  — this IS what makes it the full-free oracle rather than the flat-family `refine` path, so
+ *  dropping them was wrong; corrected from 3c's first pass, which called them
+ *  "solver-internal bookkeeping" and was not). `snapshots` carries a SHA256 DIGEST of its own
+ *  subtree (`compare.ts`'s `digest` bucket + `digestOf`), not the raw trajectory — see
+ *  `POLISH_REGISTRY`'s own doc for why that isn't the single-hash relapse it resembles. */
+export interface PolishRecord {
+    name: string;
+    family: string;
+    keys: number;
+    edges: number;
+    length: number;
+    ds: number;
+    spine: unknown;
+    converged: boolean;
+    iters: number;
+    outers: number;
+    rho: number;
+    at: number;
+    snapshots: unknown;
+    feasibility: number;
+    deviation: number;
+    peakG: number;
+    maxDg: number;
+    deviations: number[];
+    exit: { dx: number; dy: number; dtheta: number; dist: number };
+    points: {
+        s: number;
+        g: number;
+        ease: number | null;
+        in?: { ds: number; dg: number };
+        out?: { ds: number; dg: number };
+    }[];
+}
+
+/** `PolishResult` → the JSON-safe `PolishRecord`. `snapshots` is left as the RAW trajectory here
+ *  (not yet a digest) — a live comparison's `got` side hashes it on the fly through
+ *  `compare.ts`'s `digest` bucket, and `mint-goldens.ts` is the one place that pre-hashes it
+ *  before writing the fixture, so the committed JSON never carries the raw 7 MB subtree. */
+export function narrowPolish(name: string, result: PolishResult): PolishRecord {
+    return JSON.parse(
+        JSON.stringify({
+            name,
+            family: result.family,
+            keys: result.keys,
+            edges: result.edges,
+            length: result.length,
+            ds: result.ds,
+            spine: result.spine,
+            converged: result.converged,
+            iters: result.iters,
+            outers: result.outers,
+            rho: result.rho,
+            at: result.at,
+            snapshots: result.snapshots,
+            feasibility: result.feasibility,
+            deviation: result.deviation,
+            peakG: result.peakG,
+            maxDg: result.maxDg,
+            deviations: Array.from(result.deviations),
+            exit: result.exit,
+            points: result.points.map((p) => ({
+                s: p.s,
+                g: p.g,
+                // `?? null`, not bare `p.ease`: JSON.stringify DROPS an `undefined` property
+                // entirely, and the full-free family's own fit never stores an ease tag
+                // (`fit.ts`'s own docs: "no easing tag is stored… every side… carries an explicit
+                // handle") — so a bare `p.ease` would leave `ease` absent as a KEY on every real
+                // record, permanently orphaning its registry declaration (`registryClosure`'s
+                // per-element check reads real keys, and there would never be one). `null` keeps
+                // the key present and closure-checkable while still meaning "no tag stored".
+                ease: p.ease ?? null,
+                in: p.in,
+                out: p.out,
+            })),
+        }),
+    ) as PolishRecord;
+}
+
+type PolishGoldenFile = Record<string, Record<string, PolishRecord> | undefined>;
+
+function polishAt(stamp: string, name: string): PolishRecord {
+    const platforms = polishGolden as unknown as PolishGoldenFile;
+    const record = platforms[stamp];
+    if (!record)
+        throw new Error(
+            `polish-golden.json has no entry for platform "${stamp}" — mint one with \`${POLISH_MINT_COMMAND}\`.`,
+        );
+    const want = record[name];
+    if (!want) throw new Error(`polish-golden.json["${stamp}"] is missing scenario "${name}"`);
+    return want;
+}
+
+/** the frozen full-free polish answer for a scenario, on THIS platform's own stamp — same
+ *  hard-fail-naming-the-mint-command discipline as `GOLDEN` above, never a silent skip. */
+export const POLISH_GOLDEN = (name: string) => polishAt(PLATFORM_STAMP, name);
+
+/** `polish.oracle.ts`'s field → bucket → bound contract
+ *  (`kex2d-golden-reproducibility.md`, "polish.oracle.ts's record"). `keys`/`edges`/`length`/
+ *  `ds`/`points[].s`/`points[].g` mirror `CONVERT_REGISTRY` exactly — same producers.
+ *  `converged` is structural (hard fail): `feas < TOL_FEAS`, never flipped across N=24
+ *  aggregate-libm trials on any of the 10 corpus scenarios (measured 2026-08-06, this platform).
+ *  `iters`/`outers`/`rho`/`at` are diagnostic members pinned EXACT on a stamp-matched run
+ *  (same-machine trajectory facts — iteration count itself diverges cross-machine).
+ *
+ *  **`spine`/`snapshots` are `digest`, not `exact`, and that is NOT the single-hash relapse this
+ *  unit's own Residue warns about ("a golden pinned as a single hash cannot be loosened").** The
+ *  sha256 this file replaced hashed the WHOLE 19-field record — a knot flip, a bounded
+ *  `deviation` drift, and a trajectory change were all the same one bit, so nothing could be
+ *  loosened without losing everything. A `digest` bucket scoped to ONE declared-`exact` field
+ *  blocks nothing else in the record: every other field still rides its own bucket, bounded
+ *  fields still loosen independently, and only the two fields whose own contract already says
+ *  EXACT (no bound to loosen in the first place) collapse to 64 hex chars each instead of their
+ *  raw form. `spine` (`.x`/`.y`/`.theta`, one entry per baked edge — 151 KiB of the record, 67.5%
+ *  of its committed content even with `snapshots` fixed) is a pure lerp over the f32 bake with no
+ *  implementation-defined call in `spine()`, so it was already asserted bit-for-bit; hashing it
+ *  changes nothing about what's checked. `snapshots` (`Snapshot[]`, each carrying a
+ *  `Float32Array` `fN` plus a full `ForcePoint[]` per accepted LM step) is the dominant cost by
+ *  two orders of magnitude — 3c's first pass minted `polish-golden.json` at 17.7 MB before this
+ *  was caught, 99% of it `snapshots` alone. `mint-goldens.ts` hashes both fields (via `digestOf`,
+ *  `helpers/compare.ts`) before writing the fixture; `narrowPolish` leaves them raw so a live
+ *  comparison's `got` side hashes on the fly against the pre-hashed `want`. Final committed size:
+ *  156,852 bytes / ~153 KiB (down from 17.7 MB pre-fix, 449,609 bytes with `snapshots` alone
+ *  fixed) — under the ~250 KiB target. The remainder is mostly `points`/`deviations` — real
+ *  per-scenario numeric data with no bulk-trajectory shape to hash away.
+ *
+ *  `points[].ease` is exact (a discrete tag, always `undefined` for the full-free family's own
+ *  fit — `fit.ts` never stores one). `points[].in`/`.out` are OPTIONAL nested objects
+ *  (`{ds, dg}`) — absent on the two `ForcePoint`s at either end of the chain, present on every
+ *  interior point; a presence mismatch is checked in the STRUCTURAL pass, ahead of any bounded
+ *  field (`compare.ts`'s `compareGolden`, corrected from 3c's first pass — see that file's own
+ *  header note). `.ds` is exact (a cumulative sum of `bake.ds`, the f32-barrier argument —
+ *  measured 0 spread).
+ *
+ *  **`.dg` is EXACT, not the `mixed` bound 3c first shipped, and the correction is upstream of
+ *  the arithmetic.** 3c derived `rel = 1e-1` from the closed 3a' aggregate probe (a worst-case
+ *  synthetic ±1-ulp-on-every-call model), the same class of evidence that produced `floor`/
+ *  `deviation`/`points[].g` before 3g tightened THOSE against a real cross-machine fixture. The
+ *  architectural review found the derivation sound but the METHOD wrong for this field: 3a' models
+ *  cross-machine libm drift, and 3e's per-platform verdict already established `polish-golden.json`
+ *  is compared ONLY own-stamp (`POLISH_GOLDEN` resolves through `PLATFORM_STAMP`) — there is no
+ *  cross-machine comparison for this bound to protect against. The reviewer measured the
+ *  question that actually matters: the full corpus solved three times is byte-identical, and a
+ *  live run matches the committed golden on EVERY field, 0 mismatches across all 10 scenarios,
+ *  including every `.dg` — the difference this bound is ever evaluated against is exactly zero,
+ *  always. Applying a cross-machine noise model to decide a same-machine, deterministic
+ *  bucket is exactly what Residue already names as unsafe: *"safe for magnitudes, unsafe for
+ *  decisions."* So the bucket is DERIVED, not observed: own-stamp comparison + a deterministic
+ *  solve ⟹ exact, full stop — no measured spread enters it.
+ *
+ *  At `rel = 1e-1` the bound was so loose it passed a uniform 5% error on every interior handle's
+ *  `dg`, all 10 scenarios (`dg * 1.05` mutated into `polish.ts`'s return path) — `polish.oracle.ts`
+ *  stayed 2/0. It takes ×1.5 to fail. `exact` catches the ×1.05 mutation (verified below).
+ *
+ *  **Provisional pending 3f.** 3f mints the `linux x64` stamp — the first real cross-machine data
+ *  point this fixture will ever have. If it finds genuine drift on `.dg` (plausible: `.dg` is a
+ *  segment TANGENT derivative, one differentiation more sensitive to a libm difference than the
+ *  keyframe value itself, and `loop-explicit`'s dense near-singular Jacobian blocks are
+ *  independently flagged elsewhere in this unit — 3e's structural-divergence inventory — as the
+ *  corpus's worst-conditioned scenario), 3f re-buckets `.dg` to a MEASURED mixed bound the way 3g
+ *  re-derived `points[].g` against the real `linux x64` pair, rather than trusting a synthetic
+ *  probe again. **The identical argument applies to every bounded field on both stamp-matched
+ *  fixtures** (`convert-golden.json`'s `floor`/`deviation`/`points[].g`, this file's `feasibility`/
+ *  `peakG`/`maxDg`/`deviations`/`exit.*`) — left un-re-derived here on the orchestrator's explicit
+ *  instruction, filed for the architectural pass as a contract-table-wide question, not a
+ *  per-field fix. The inconsistency (this one field re-argued, the rest not) is deliberate and
+ *  visible, not an oversight.
+ *
+ *  The six ⧗ cells this stage owns, derived by re-running the CLOSED 3a' instrument
+ *  (`wrapAllPerturbed`, `tests/helpers/libm.ts`) against THIS record's own producer — the
+ *  full-free `fit`+`polish` path, not the flat-family `refine` path 3a' measured — over the
+ *  FULL 10-scenario corpus (N=24 trials/scenario, every implementation-defined call bumped a
+ *  random ±1 ulp). Structure (`keys`, `converged`) never flipped in any trial on any scenario,
+ *  so every scenario's continuous spread is admissible with no conditioning exclusion needed.
+ *  This is the same worst-case-aggregate-probe class of evidence 3a' produced for `floor`/
+ *  `deviation`/`points[].g` before those were later tightened at 3g against a REAL cross-machine
+ *  fixture; no such fixture exists yet for `polish.oracle.ts` (this is its first stamped
+ *  golden), so the aggregate probe is the derivation of record, not a placeholder — deliberately
+ *  conservative, all rounded to the next decade above the measured max:
+ *
+ *  - `feasibility` — **bounded**, rel 1e-5. Max relative spread 6.450e-6 (valley-explicit).
+ *    Never near zero (native range 1.07e-7–9.83e-7 across the corpus), so a plain relative bound
+ *    is well-conditioned.
+ *  - `peakG` — **bounded**, rel 1e-6. Max relative spread 5.565e-7 (hill-auto); zero on 8/10
+ *    scenarios (an argmax the perturbation didn't reach), nonzero on 2 — genuinely bounded, not
+ *    exact, so it doesn't get the barrier's zero-spread promotion.
+ *  - `maxDg` — **bounded**, rel 1e-4. Max relative spread 1.211e-5 (loop-explicit).
+ *  - `deviations` — **mixed** (vector), atol 1e-8 + rel 1e-8. Same underlying `hypot` reduction
+ *    as the scalar `deviation` before its max is taken (`devProfile` in `polish.ts`), so it
+ *    inherits `deviation`'s own reused rel bound; `atol` covers the array's structurally-zero
+ *    entry (index 0, the pinned entry) and any sample near the spine, derived from the measured
+ *    max absolute spread 2.225e-9 (loop-explicit), next decade.
+ *  - `exit.dx`/`.dy`/`.dist` — **mixed**, atol 1e-12 + rel 1e-6. Position-equivalent residuals
+ *    that can sit near zero at a well-pinned exit (three corpus rows have `|want| < 1e-9`); atol
+ *    from the max absolute spread on those near-zero rows (1.025e-13, next decade), rel from the
+ *    max relative spread elsewhere (7.14e-7, next decade).
+ *  - `exit.dtheta` — **mixed**, atol 1e-14 + rel 0 (a pure absolute bound — `rel: 0` collapses
+ *    the mixed form to `atol` alone). Every corpus row's native value already sits at
+ *    1e-11–1e-16 — the heading pin's own noise floor — so no row supports a meaningful relative
+ *    reading; atol from the max absolute spread (2.665e-15), next decade. */
+export const POLISH_REGISTRY: FieldRegistry = {
+    name: { kind: "exact" },
+    family: { kind: "exact" },
+    keys: { kind: "exact" },
+    edges: { kind: "exact" },
+    length: { kind: "exact" },
+    ds: { kind: "exact" },
+    spine: { kind: "digest" },
+    converged: { kind: "structural" },
+    iters: { kind: "exact" },
+    outers: { kind: "exact" },
+    rho: { kind: "exact" },
+    at: { kind: "exact" },
+    snapshots: { kind: "digest" },
+    feasibility: { kind: "bounded", rel: 1e-5 },
+    peakG: { kind: "bounded", rel: 1e-6 },
+    maxDg: { kind: "bounded", rel: 1e-4 },
+    deviations: { vector: { kind: "mixed", atol: 1e-8, rel: 1e-8 } },
+    exit: {
+        object: {
+            dx: { kind: "mixed", atol: 1e-12, rel: 1e-6 },
+            dy: { kind: "mixed", atol: 1e-12, rel: 1e-6 },
+            dtheta: { kind: "mixed", atol: 1e-14, rel: 0 },
+            dist: { kind: "mixed", atol: 1e-12, rel: 1e-6 },
+        },
+    },
+    deviation: { kind: "bounded", rel: 1e-8 },
+    points: {
+        array: {
+            s: { kind: "exact" },
+            g: { kind: "mixed", atol: 1e-9, rel: 1e-8 },
+            ease: { kind: "exact" },
+            in: { object: { ds: { kind: "exact" }, dg: { kind: "exact" } } },
+            out: { object: { ds: { kind: "exact" }, dg: { kind: "exact" } } },
+        },
     },
 };
