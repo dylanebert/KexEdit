@@ -51,6 +51,32 @@ function bits(x: number): string {
     return view.getBigUint64(0).toString(16).padStart(16, "0");
 }
 
+/** the exact per-row string the running hasher feeds on — factored out so the ladder computes
+ *  from the SAME serialization the whole-table hash uses, never a second spelling of a row
+ *  (`kex2d-golden-reproducibility` 1a: two spellings would make a machine's ladder incomparable
+ *  with the whole-table hash already frozen in the spec's live log). */
+function rowString(call: Call): string {
+    return `${call.index}|${call.fn}|${call.site}|${call.args.join(",")}|${call.result}\n`;
+}
+
+/** a sha256 over the first `n` recorded rows, using `rowString` — the ONE row serialization the
+ *  streaming hasher also feeds on. */
+function prefixHash(calls: Call[], n: number): string {
+    const hasher = new Bun.CryptoHasher("sha256");
+    for (let i = 0; i < n; i++) hasher.update(rowString(calls[i]));
+    return hasher.digest("hex") as string;
+}
+
+/** the geometric ladder of prefix lengths: 1, 2, 4, 8, ... doubling up to the largest power of
+ *  two below `count`, plus `count` itself as the final rung — dense at the front, since a
+ *  divergence propagates and the first one is expected early. */
+function ladderRungs(count: number): number[] {
+    const rungs: number[] = [];
+    for (let n = 1; n < count; n *= 2) rungs.push(n);
+    rungs.push(count);
+    return rungs;
+}
+
 /** `x`, bumped by exactly one ulp toward +Infinity — the smallest possible perturbation,
  *  matching the "1 ulp" language the diagnosis measures in. */
 function bump(x: number): number {
@@ -114,9 +140,7 @@ function wrapMath(collect: boolean): Wrapped {
                 args: args.map(bits),
                 result: bits(result),
             };
-            hasher.update(
-                `${call.index}|${call.fn}|${call.site}|${call.args.join(",")}|${call.result}\n`,
-            );
+            hasher.update(rowString(call));
             counts[fn] = (counts[fn] ?? 0) + 1;
             if (firstByFn[fn] === undefined) firstByFn[fn] = call;
             if (collect) calls.push(call);
@@ -262,6 +286,20 @@ for (const path of PATHS) {
             }),
         );
         console.table(first.counts);
+
+        // Validation criterion (kex2d-golden-reproducibility 1a, resequenced): the whole-table
+        // .jsonl doesn't travel between the two machines, so emit a small pasteable ladder + the
+        // first 32 rows verbatim, both stamped, both to stdout.
+        const rungs = ladderRungs(first.count());
+        console.log(
+            `\n=== prefix-hash ladder — ${path.name} (${stamp.platform} ${stamp.arch} | bun ${stamp.bun}) ===`,
+        );
+        for (const n of rungs) console.log(`  N=${n}\t${prefixHash(first.calls, n)}`);
+
+        console.log(
+            `\n=== first 32 rows verbatim — ${path.name} (${stamp.platform} ${stamp.arch} | bun ${stamp.bun}) ===`,
+        );
+        for (const call of first.calls.slice(0, 32)) console.log(JSON.stringify(call));
     }, 60_000);
 
     test(`red-first control — perturbing one wrapped call moves the ${path.name} table`, () => {
