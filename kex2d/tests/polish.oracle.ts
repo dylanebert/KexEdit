@@ -24,10 +24,11 @@ function full(name: string) {
 }
 
 describe("polish families: the corpus", () => {
-    // Structure (`converged`) hard-fails ahead of any bound; the continuous fields ride the
-    // declared registry's derived bounds; the five diagnostic members (`iters`, `outers`, `rho`,
-    // `at`, `snapshots`) stay pinned EXACT on this stamp-matched run — the sha256's trajectory
-    // coverage, preserved rather than dropped.
+    // Structure (`converged`) hard-fails ahead of any bound; every other field, continuous or
+    // diagnostic, is exact on this own-stamp comparison (`kex2d-golden-reproducibility` 4 —
+    // own-stamp against a deterministic solve presents zero spread, so no bound belongs there).
+    // The five diagnostic members (`iters`, `outers`, `rho`, `at`, `snapshots`) staying pinned
+    // exact is the sha256's trajectory coverage, preserved rather than dropped.
     test("the full-free oracle field-wise matches the frozen stamp-matched golden", () => {
         for (const scenario of scenarios)
             assertGolden(

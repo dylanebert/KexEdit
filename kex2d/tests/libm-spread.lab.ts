@@ -347,7 +347,9 @@ test("3a' aggregate-libm sensitivity probe — every wrapped call perturbed by a
         if (ratio > 0.9) {
             console.log(
                 `  *** ${name} converges within 10% of TOL_FEAS — converged sits on a thin ` +
-                    "margin over a drifting float and cannot be bucketed exact. ***",
+                    "margin over a drifting float. Still bucketed exact (own-stamp comparison " +
+                    "against a deterministic solve never presents this margin); the thin margin " +
+                    "is recorded, not hidden. ***",
             );
         }
     }
