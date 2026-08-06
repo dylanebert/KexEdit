@@ -273,11 +273,29 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   **A converted section must carry the solve's own `ds`** (`length/edges`, what `spine` chose so
   the section spans the bake exactly) — a force section stores its own step. Marching
   loop-explicit's same profile at nominal 0.5 m misses the pinned exit by 0.247 m, while the
-  realized step closes within 3.1e-5 m (`refine.test.ts`). The locked corpus is 80 keys, and
-  its exact output — knots, `{s,g}` points, realized `ds`, deviation, probe count — is frozen
-  in `tests/fixtures/convert-golden.json` and compared with `toBe`. That golden is the gate on
-  any change that claims to leave conversion output alone (a perf change above all): the human
-  check approved these specific outputs, so a one-ulp drift re-opens it.
+  realized step closes within 3.1e-5 m (`refine.test.ts`). The locked corpus is 80 keys, and its
+  structural output — knots, outcome, probes, keys, edges — is frozen in
+  `tests/fixtures/convert-golden.json` and hard-fails on any mismatch, ahead of any bounded
+  field; `length`, `ds`, and `points[].s` sit behind the f32 quantization barrier below and stay
+  exact, while `floor`, `deviation`, and `points[].g` ride a derived, cross-machine-verified bound
+  conditional on the structural match holding. That golden is the gate on any change that claims
+  to leave conversion output alone (a perf change above all). What the human check approved was
+  the `linux x64` output as an authoring surface; a stamped golden minted on another machine is a
+  regression tripwire, not an inherited authoring verdict, and leaning on one as a verdict means
+  taking that verdict fresh. **Bit-identity itself is a same-machine, stamp-matched property, not
+  a cross-machine one**: ECMAScript leaves `sin`/`cos`/`atan2`/`hypot` implementation-defined and
+  Apple's libm and glibc differ by up to 1 ulp on bit-identical arguments,
+  and the refine solve holds two different fixed points on different platforms, so the fixture
+  carries a platform stamp and the gate runs against the golden for the machine running it,
+  hard-failing and naming the mint command (`bun run tests/mint-goldens.ts`) when none matches —
+  never silently skipping. `tests/fixtures/forcegeo-golden.json` (the geofit path, below) needs
+  none of this: it reproduces structurally exact across platforms and stays single-golden. Same
+  libm dependency, two different outcomes — refine's iteration count itself diverges across
+  machines (measured 583,358 vs 727,614 calls on the two committed reference platforms), while
+  geofit's f32 stores quantize the drift away before it surfaces: every state variable
+  round-trips through a `Float32Array` store once per sample, so a cross-machine difference
+  introduced mid-step either quantizes away there or it doesn't, and either way the next sample
+  starts bit-identical.
   **`ConvertResult` (+ `narrow`) is the boundary payload** — points, realized `ds`, length, edges,
   keys, knots, outcome, floor, deviation, probes, exactly the golden's shape: plain numbers and
   `{s,g}`, so it structured-clones, and ~50× smaller than a `RefineResult` (0.36 KB vs 22 KB on
