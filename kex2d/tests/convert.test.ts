@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { convert, convertPlayback, type ConvertProgress, liveWorkers } from "../src/convert";
 import { narrow } from "../src/refine";
-import { bakeOf, GOLDEN } from "./helpers/golden";
+import { assertGolden } from "./helpers/compare";
+import { bakeOf, CONVERT_REGISTRY, GOLDEN } from "./helpers/golden";
 import { divergingPool, dyingPool, withWorker } from "./helpers/pool";
 
 // pool behavior on cheap scenarios — the fast tier. The corpus-wide pool gates (whole-corpus
@@ -67,7 +68,11 @@ describe("pooled conversion", () => {
         expect(liveWorkers()).toBe(0);
         // the pool is per-conversion, so a failure doesn't poison the module: the next
         // conversion still lands the golden.
-        expect(await convert(bake, entry, scenario.ds)).toEqual(GOLDEN("circular-arc"));
+        assertGolden(
+            await convert(bake, entry, scenario.ds),
+            GOLDEN("circular-arc"),
+            CONVERT_REGISTRY,
+        );
     }, 120_000);
 
     // The other worker failure: one that stops existing mid-probe (an OOM, a host kill). It
@@ -100,7 +105,7 @@ describe("pooled conversion", () => {
     test("the playback variant keeps the freight and the answer", async () => {
         const { scenario, entry, bake } = bakeOf("circular-arc");
         const rich = await convertPlayback(bake, entry, scenario.ds);
-        expect(narrow(rich)).toEqual(GOLDEN("circular-arc"));
+        assertGolden(narrow(rich), GOLDEN("circular-arc"), CONVERT_REGISTRY);
         expect(rich.events.length).toBeGreaterThan(0);
         expect(rich.events[0]).toMatchObject({ kind: "init", knots: [0, bake.edges - 1] });
         expect(rich.final.snapshots.length).toBeGreaterThan(0);

@@ -5,23 +5,12 @@
 import { describe, expect, test } from "bun:test";
 import { chordDeficit, spine } from "../src/polish";
 import { custom, forceProfile } from "../src/profile";
-import { authoringFloor, CONVERT_STEP, refine, type RefineOutcome } from "../src/refine";
+import { authoringFloor, CONVERT_STEP, narrow, refine } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import golden from "./fixtures/convert-golden.json";
-
-const EXPECTED: Record<string, { keys: number; probes: number }> = {
-    "circular-arc": { keys: 3, probes: 3 },
-    "parabola-hill": { keys: 9, probes: 34 },
-    "full-loop": { keys: 7, probes: 35 },
-    "s-curve": { keys: 11, probes: 30 },
-    "straight-fillet": { keys: 5, probes: 12 },
-    "hill-auto": { keys: 7, probes: 35 },
-    "hill-explicit": { keys: 6, probes: 15 },
-    "loop-explicit": { keys: 11, probes: 42 },
-    "double-hump": { keys: 13, probes: 65 },
-    "valley-explicit": { keys: 8, probes: 105 },
-};
+import { assertGolden } from "./helpers/compare";
+import { CONVERT_REGISTRY, GOLDEN } from "./helpers/golden";
 
 const started = performance.now();
 const CORPUS = scenarios.map((scenario) => {
@@ -164,8 +153,11 @@ describe("flat split → exhaustive prune: the corpus", () => {
     test("the corpus settles at 80 keys, below the rejected 94-key pipeline", () => {
         let total = 0;
         for (const { scenario, result } of CORPUS) {
-            expect(result.final.keys).toBe(EXPECTED[scenario.name].keys);
-            expect(result.probes).toBe(EXPECTED[scenario.name].probes);
+            // `keys`/`probes` are structural fields the golden already declares
+            // (`helpers/golden.ts`'s `CONVERT_REGISTRY`) — read off it directly rather than a
+            // second, hand-copied table that can drift from the fixture it restates.
+            expect(result.final.keys).toBe(GOLDEN(scenario.name).keys);
+            expect(result.probes).toBe(GOLDEN(scenario.name).probes);
             expect(result.knots).toHaveLength(result.final.keys);
             total += result.final.keys;
         }
@@ -189,30 +181,16 @@ describe("flat split → exhaustive prune: the corpus", () => {
         expect(CORPUS_MS).toBeLessThan(50_000);
     });
 
-    // The bit-identity gate for every performance change to the conversion core. The
-    // stage-6b human check approved these SPECIFIC outputs as an authoring surface, so a
-    // faster solve that moves a key or a g-value by one ulp has silently re-opened that
-    // verdict. Frozen from the shipping path (`refine` over the corpus) and compared with
-    // `toBe`, never `toBeCloseTo`: an approximate compare would pass exactly the drift
-    // this exists to catch. Proven red by perturbing the LM's initial damping constant.
+    // The golden gate for every performance change to the conversion core. The stage-6b human
+    // check approved these SPECIFIC outputs as an authoring surface, so a faster solve that
+    // moves structure — a key, a knot — has silently re-opened that verdict; that half stays a
+    // hard fail. The continuous half (`floor`, `deviation`, `points[].g`) is bounded, not
+    // bit-compared, through the declared registry (`helpers/compare.ts`): this machine's libm
+    // doesn't reproduce the frozen dump's implementation-defined `Math` calls bit-for-bit, and a
+    // `toBe` there would fail on drift the contract doesn't own (`kex2d-golden-reproducibility`).
     test("every corpus conversion is bit-identical to the frozen dump", () => {
         expect(Object.keys(golden).sort()).toEqual(CORPUS.map((c) => c.scenario.name).sort());
-        for (const { scenario, result } of CORPUS) {
-            const want = golden[scenario.name as keyof typeof golden];
-            expect(result.knots).toEqual(want.knots);
-            expect(result.outcome).toBe(want.outcome as RefineOutcome);
-            expect(result.floor).toBe(want.floor);
-            expect(result.probes).toBe(want.probes);
-            expect(result.final.keys).toBe(want.keys);
-            expect(result.final.edges).toBe(want.edges);
-            expect(result.final.length).toBe(want.length);
-            expect(result.final.ds).toBe(want.ds);
-            expect(result.final.deviation).toBe(want.deviation);
-            expect(result.final.points).toHaveLength(want.points.length);
-            for (let k = 0; k < want.points.length; k++) {
-                expect(result.final.points[k].s).toBe(want.points[k].s);
-                expect(result.final.points[k].g).toBe(want.points[k].g);
-            }
-        }
+        for (const { scenario, result } of CORPUS)
+            assertGolden(narrow(result), GOLDEN(scenario.name), CONVERT_REGISTRY, scenario.name);
     });
 });

@@ -6,20 +6,22 @@ import { describe, expect, test } from "bun:test";
 import { convert, liveWorkers } from "../src/convert";
 import { narrow, refine } from "../src/refine";
 import { scenarios } from "../src/scenarios";
-import { bakeOf, GOLDEN } from "./helpers/golden";
+import { assertGolden } from "./helpers/compare";
+import { bakeOf, CONVERT_REGISTRY, GOLDEN } from "./helpers/golden";
 
 describe("pooled conversion: the corpus", () => {
     // The boundary oracle. A worker probe is `polish` in another VM against a structured-cloned
     // bake, so anything that copied wrong — a truncated array, a float that went through a
     // string, a bake field silently dropped — moves the answer. Compared against the frozen
-    // golden with `toEqual` over plain numbers, which is exact: `toBeCloseTo` would pass exactly
-    // the drift the gate exists to catch. The whole corpus, because "the pool reproduces the
-    // shipping conversion" is the claim, not "it reproduced one of them".
+    // golden through the declared field registry (`helpers/compare.ts`): structure exact and a
+    // hard fail, continuous fields bounded — a same-machine copy bug still fails, an
+    // implementation-defined `Math` ulp does not. The whole corpus, because "the pool reproduces
+    // the shipping conversion" is the claim, not "it reproduced one of them".
     test("every corpus conversion crosses the pool bit-identical", async () => {
         for (const { name } of scenarios) {
             const { scenario, entry, bake } = bakeOf(name);
             const result = await convert(bake, entry, scenario.ds);
-            expect(result, name).toEqual(GOLDEN(name));
+            assertGolden(result, GOLDEN(name), CONVERT_REGISTRY, name);
         }
         // the pool is a resource, not a leak: a completed conversion leaves nothing running.
         expect(liveWorkers()).toBe(0);
@@ -27,8 +29,9 @@ describe("pooled conversion: the corpus", () => {
 
     // Pool size is the one thing a caller's machine changes about a conversion, so it is the one
     // thing that must not change the answer. Size 1 serializes every prune round; size 8 fans it
-    // out and lets it finish in whatever order the OS schedules. Same scenario, same answer, and
-    // both equal to the in-process `refine` the golden was frozen from.
+    // out and lets it finish in whatever order the OS schedules. Same scenario, same answer —
+    // bit-identical, since this is one machine's own live computation compared to itself and to
+    // the in-process `refine` the golden was frozen from, not a cross-machine reading.
     test("the answer is invariant to pool size and completion order", async () => {
         const { scenario, entry, bake } = bakeOf("parabola-hill");
         const serial = await convert(bake, entry, scenario.ds, { workers: 1 });
@@ -36,7 +39,7 @@ describe("pooled conversion: the corpus", () => {
         const sync = narrow(refine({ bake, entry, ds: scenario.ds, playback: false }));
         expect(serial).toEqual(fanned);
         expect(serial).toEqual(sync);
-        expect(serial).toEqual(GOLDEN("parabola-hill"));
+        assertGolden(serial, GOLDEN("parabola-hill"), CONVERT_REGISTRY, "parabola-hill");
     }, 300_000);
 
     // Cancel is pool termination, not "stop asking for probes": a probe in flight is up to a

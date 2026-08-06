@@ -1,17 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import {
-    FORCE_BUDGET,
-    GEO_BUDGET,
-    type GeofitBake,
-    type GeofitOutcome,
-    geofit,
-} from "../src/geofit";
+import { FORCE_BUDGET, GEO_BUDGET, type GeofitBake, geofit } from "../src/geofit";
 import { forceProfile } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import { withThetas } from "./helpers/chain";
+import { assertGolden } from "./helpers/compare";
+import { FORCEGEO_GOLDEN, FORCEGEO_REGISTRY } from "./helpers/golden";
 import golden from "./fixtures/convert-golden.json";
-import forcegeoGolden from "./fixtures/forcegeo-golden.json";
 
 function bakeOf(
     x: ArrayLike<number>,
@@ -144,33 +139,20 @@ describe("geofit", () => {
         });
 
         // the frozen-contract gate any later perf change answers to (mirrors
-        // `convert-golden.json`'s bit-identity role for `refine`/`polish`): every
-        // emitted node, the outcome, and both reported errors, exactly, for every
-        // scenario. `toBe` per number, not `toEqual` on the object — a structural
-        // match that quietly widened a field (an extra key, a reordered array)
-        // would still pass `toEqual`; `toBe` on each leaf can't.
-        const Frozen = forcegeoGolden as Record<
-            string,
-            {
-                nodes: { x: number; y: number; theta: number }[];
-                outcome: GeofitOutcome;
-                deviation: number;
-                forceError: number;
-            }
-        >;
-
+        // `convert-golden.json`'s bit-identity role for `refine`/`polish`): every emitted node
+        // and `outcome`/`forceError` exact and structural where declared, `deviation` bounded to
+        // 1 ulp — the one field with no f32 store after it (`helpers/golden.ts`'s
+        // `FORCEGEO_REGISTRY`, `kex2d-golden-reproducibility`). Routed through the declared
+        // registry comparator rather than a bespoke per-leaf `toBe` loop, so a field a later
+        // golden adds can't land bucketless.
         for (const { scenario, result } of Corpus) {
             test(`${scenario.name} reproduces the frozen golden bit-identically`, () => {
-                const want = Frozen[scenario.name];
-                expect(result.outcome).toBe(want.outcome);
-                expect(result.deviation).toBe(want.deviation);
-                expect(result.forceError).toBe(want.forceError);
-                expect(result.nodes.length).toBe(want.nodes.length);
-                for (let i = 0; i < want.nodes.length; i++) {
-                    expect(result.nodes[i].x).toBe(want.nodes[i].x);
-                    expect(result.nodes[i].y).toBe(want.nodes[i].y);
-                    expect(result.nodes[i].theta).toBe(want.nodes[i].theta);
-                }
+                assertGolden(
+                    result,
+                    FORCEGEO_GOLDEN(scenario.name),
+                    FORCEGEO_REGISTRY,
+                    scenario.name,
+                );
             });
         }
     });

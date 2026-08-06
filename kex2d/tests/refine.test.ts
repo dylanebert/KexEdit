@@ -3,19 +3,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PolishResult } from "../src/polish";
 import type { ForcePoint } from "../src/profile";
-import {
-    type Frame,
-    narrow,
-    readable,
-    refine,
-    type RefineOutcome,
-    residual,
-    siteIn,
-    splitSite,
-} from "../src/refine";
+import { type Frame, narrow, readable, refine, residual, siteIn, splitSite } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalGeo } from "../src/section";
-import golden from "./fixtures/convert-golden.json";
+import { assertGolden } from "./helpers/compare";
+import { CONVERT_REGISTRY, GOLDEN } from "./helpers/golden";
 
 // The seconds-scale slice of the conversion corpus — the three cheapest scenarios, refined
 // through the same shipping path the full corpus takes. The corpus-wide gates (floor hold,
@@ -63,27 +55,15 @@ function reach(entry: string): Set<string> {
 }
 
 describe("flat split → exhaustive prune", () => {
-    // The fast half of the bit-identity gate: the same fixture, the same `toBe` compare, over
-    // the mini corpus — so a kernel edit that moves a key or a g-value by one ulp fails here in
-    // seconds, not only at the full-tier golden (`refine.oracle.ts`).
+    // The fast half of the golden gate: the same fixture, the same declared-registry comparator
+    // (`helpers/compare.ts`), over the mini corpus — so a kernel edit that moves structure (a
+    // key count, a knot) still fails here in seconds, not only at the full-tier golden
+    // (`refine.oracle.ts`). Continuous fields (`floor`, `deviation`, `points[].g`) are bounded,
+    // not bit-compared: they cross an implementation-defined `Math` call this machine's libm
+    // doesn't reproduce bit-for-bit against the frozen dump.
     test("every mini-corpus conversion is bit-identical to the frozen dump", () => {
-        for (const { scenario, result } of CORPUS) {
-            const want = golden[scenario.name as keyof typeof golden];
-            expect(result.knots).toEqual(want.knots);
-            expect(result.outcome).toBe(want.outcome as RefineOutcome);
-            expect(result.floor).toBe(want.floor);
-            expect(result.probes).toBe(want.probes);
-            expect(result.final.keys).toBe(want.keys);
-            expect(result.final.edges).toBe(want.edges);
-            expect(result.final.length).toBe(want.length);
-            expect(result.final.ds).toBe(want.ds);
-            expect(result.final.deviation).toBe(want.deviation);
-            expect(result.final.points).toHaveLength(want.points.length);
-            for (let k = 0; k < want.points.length; k++) {
-                expect(result.final.points[k].s).toBe(want.points[k].s);
-                expect(result.final.points[k].g).toBe(want.points[k].g);
-            }
-        }
+        for (const { scenario, result } of CORPUS)
+            assertGolden(narrow(result), GOLDEN(scenario.name), CONVERT_REGISTRY, scenario.name);
     });
 
     // What a document converts to is a frozen contract, so the conversion quantum is the
@@ -119,10 +99,7 @@ describe("flat split → exhaustive prune", () => {
             });
             expect(quiet.events).toEqual([]);
             expect(quiet.final.snapshots).toEqual([]);
-            // typed as `ConvertResult`, so the fixture and the payload having the same field
-            // set is checked by `tsc`, not just field-by-field at runtime.
-            const want = golden[name as keyof typeof golden];
-            expect(narrow(quiet)).toEqual({ ...want, outcome: want.outcome as RefineOutcome });
+            assertGolden(narrow(quiet), GOLDEN(name), CONVERT_REGISTRY, name);
             // the rich path still records — otherwise the assertions above pass on a seam
             // that stopped doing anything.
             expect(item.result.events.length).toBeGreaterThan(0);
