@@ -63,18 +63,27 @@ interface AllPerturbed {
     count: () => number;
 }
 
-/** wraps every implementation-defined `Math` fn so EVERY call returns its true result bumped by
- *  a randomly-signed `magnitudeUlps`-ulp perturbation, drawn from `rng` in call order (so a fixed
- *  `rng` seed reproduces the exact same per-call sign sequence on rerun). `magnitudeUlps` is 1 by
- *  default (ECMAScript's own declared latitude); the upward probe (below) raises it only if the
- *  1-ulp spread reads exactly zero, per the spec's non-vacuity clause.
+/** wraps every implementation-defined `Math` fn so calls return their true result bumped by a
+ *  randomly-signed `magnitudeUlps`-ulp perturbation, drawn from `rng` in call order (so a fixed
+ *  `rng` seed reproduces the exact same per-call divergence/sign sequence on rerun).
+ *  `magnitudeUlps` is 1 by default (ECMAScript's own declared latitude); the upward probe (below)
+ *  raises it only if the 1-ulp spread reads exactly zero, per the spec's non-vacuity clause.
+ *
+ *  `rate` (3a‴, `kex2d-golden-reproducibility`) is the fraction of calls that actually diverge —
+ *  1c/3a' always perturbed 100% of calls, a worst-case model 3a″ measured to be ~10x the REAL
+ *  Mac↔WSL rate (10.55% of refine's calls). With probability `1 - rate` a call returns its TRUE
+ *  result untouched; with probability `rate` it gets the ±1-ulp bump as before. `rate = 1` (the
+ *  default) takes the ORIGINAL branch-free path with no extra `rng()` draw, so every
+ *  already-committed 3a' trial reproduces bit-for-bit; only `rate < 1` spends the extra draw to
+ *  decide divergence first. A given `(seed, rate)` is exactly reproducible either way, since the
+ *  draw order for a fixed rate is deterministic.
  *
  *  Zero is special-cased: `bumpBy`'s bit-pattern arithmetic underflows a negative BigInt when the
  *  true result is exactly 0 and the drawn sign is −1 (`sin(0)` is a real value on this solve's
  *  entry heading), so a `0` result always bumps toward +Infinity regardless of the draw — the
  *  same "smallest possible perturbation" contract `bumpBy`'s own docs describe, just sign-pinned
  *  at the one value where bit-pattern subtraction has no lower neighbor. */
-function wrapAllPerturbed(rng: () => number, magnitudeUlps = 1): AllPerturbed {
+function wrapAllPerturbed(rng: () => number, magnitudeUlps = 1, rate = 1): AllPerturbed {
     let count = 0;
     const originals = WRAPPED.map((fn) => [fn, Math[fn]] as const);
     const patched = Math as unknown as Record<WrappedFn, (...args: number[]) => number>;
@@ -82,6 +91,7 @@ function wrapAllPerturbed(rng: () => number, magnitudeUlps = 1): AllPerturbed {
         patched[fn] = (...args: number[]) => {
             const raw = (original as (...a: number[]) => number)(...args);
             count++;
+            if (rate < 1 && rng() >= rate) return raw;
             const sign = raw === 0 ? 1 : rng() < 0.5 ? -1 : 1;
             return bumpBy(raw, sign * magnitudeUlps);
         };
@@ -383,3 +393,202 @@ test("3a' aggregate-libm sensitivity probe — every wrapped call perturbed by a
             `| contained: ${arcSpread.floor > 0}`,
     );
 }, 120_000);
+
+/** `kex2d-golden-reproducibility` 3a‴. 3a' perturbed every implementation-defined call at a
+ *  worst-case 100% divergence rate and found straight-fillet's knot set flip. 3a″ then measured
+ *  the REAL Mac↔WSL divergence rate against stage 1b's committed 256-row `linux x64` head
+ *  reference: 10.55% of refine's calls diverge (27/256, ALL of them `hypot`; 27 of the 158 hypot
+ *  calls in that sample, ≈17.09% of hypot calls specifically), 1.56% of geofit's, always exactly
+ *  1 ulp, scattered rather than clustered. So 3a' is saturated roughly 10x relative to reality,
+ *  and the one question this stage answers is whether the flip survives at a realistic rate. */
+
+const HYPOT_REAL_RATE = 27 / 158; // 3a″: 27 of 158 hypot calls diverged in the 256-row head reference
+
+/** wraps ONLY `Math.hypot` at a given divergence `rate` — 3a″'s second arm, since every real
+ *  Mac↔WSL divergence it found was a `hypot` call. Same sign/zero/reproducibility contract as
+ *  `wrapAllPerturbed`. */
+function wrapHypotOnly(rng: () => number, rate: number, magnitudeUlps = 1): AllPerturbed {
+    let count = 0;
+    const original = Math.hypot;
+    Math.hypot = (...args: number[]) => {
+        const raw = original(...args);
+        count++;
+        if (rng() >= rate) return raw;
+        const sign = raw === 0 ? 1 : rng() < 0.5 ? -1 : 1;
+        return bumpBy(raw, sign * magnitudeUlps);
+    };
+    return {
+        restore: () => {
+            Math.hypot = original;
+        },
+        count: () => count,
+    };
+}
+
+/** does EVERY discrete field match native — the "structure held" predicate the conditional
+ *  continuous bound is restricted to (Locked decision, 3a': continuous fields are bounded
+ *  conditional on the structure matching, since an unconditioned bound would have to swallow a
+ *  structural change, which is what straight-fillet's 0.0977 `deviation` spread showed). */
+function structureHeld(diff: ReturnType<typeof discreteDiff>): boolean {
+    return (
+        !diff.knots && !diff.probes && !diff.keys && !diff.edges && !diff.outcome && !diff.converged
+    );
+}
+
+// Cut mid-session on the coordinator's instruction: the full {0.05,0.1,0.2,0.4,0.7,1.0} grid
+// stalled past budget after only rate=0.05 finished (partial data: straight-fillet flipped
+// 28/40 there). Reduced to the three cells that answer the open question — 0.1 (the measured
+// real rate), 0.4 (one intermediate point), 1.0 (the control that must reproduce 3a') — with N
+// held at 40 per `coding.md`'s "cut the rate grid before cutting N." Restore the full grid when
+// runtime budget allows; nothing else about the sweep changed.
+const RATE_SWEEP = [0.1, 0.4, 1.0] as const;
+const SWEEP_TRIALS = 40;
+
+test("3a‴ divergence-rate sweep — structural flip rate at a realistic (not worst-case) rate", () => {
+    const native: Record<string, RefineResult> = {};
+    for (const name of MINI) native[name] = driveRefine(name);
+
+    console.log(`\n=== 3a''' divergence-rate sweep (N=${SWEEP_TRIALS} trials/cell) ===`);
+
+    // rate ≈ 0.1 is what 3a'' measured on the real Mac↔WSL head reference (10.55% of
+    // refine's calls). Flips at THIS rate, pooled across all three scenarios, are the
+    // finding this stage exists to produce — tracked separately from the sweep table below.
+    let flipsAtRealisticRate = 0;
+    let trialsAtRealisticRate = 0;
+
+    for (let rateIndex = 0; rateIndex < RATE_SWEEP.length; rateIndex++) {
+        const rate = RATE_SWEEP[rateIndex];
+        console.log(`\n-- rate=${rate} --`);
+        for (const name of MINI) {
+            const discreteCounts = {
+                knots: 0,
+                probes: 0,
+                keys: 0,
+                edges: 0,
+                outcome: 0,
+                converged: 0,
+            };
+            let anyDiscreteMoved = 0;
+            const heldContinuous: ContinuousFields[] = [];
+
+            for (let trial = 0; trial < SWEEP_TRIALS; trial++) {
+                const rng = mulberry32(0x9a3e0000 + rateIndex * 100_003 + trial * 97 + name.length);
+                const wrapped = wrapAllPerturbed(rng, 1, rate);
+                let result: RefineResult;
+                try {
+                    result = driveRefine(name);
+                } finally {
+                    wrapped.restore();
+                }
+                const diff = discreteDiff(discreteFields(result), discreteFields(native[name]));
+                if (diff.knots) discreteCounts.knots++;
+                if (diff.probes) discreteCounts.probes++;
+                if (diff.keys) discreteCounts.keys++;
+                if (diff.edges) discreteCounts.edges++;
+                if (diff.outcome) discreteCounts.outcome++;
+                if (diff.converged) discreteCounts.converged++;
+                const moved =
+                    diff.knots ||
+                    diff.probes ||
+                    diff.keys ||
+                    diff.edges ||
+                    diff.outcome ||
+                    diff.converged;
+                if (moved) anyDiscreteMoved++;
+                if (structureHeld(diff)) heldContinuous.push(continuousFields(result));
+
+                if (rate === 0.1) {
+                    trialsAtRealisticRate++;
+                    if (moved) flipsAtRealisticRate++;
+                }
+            }
+
+            const conditional =
+                heldContinuous.length > 0 ? spreadReport(heldContinuous) : undefined;
+            console.log(
+                `  ${name}: any-discrete-diff ${anyDiscreteMoved}/${SWEEP_TRIALS} ` +
+                    `(knots ${discreteCounts.knots}, probes ${discreteCounts.probes}, ` +
+                    `keys ${discreteCounts.keys}, edges ${discreteCounts.edges}, ` +
+                    `outcome ${discreteCounts.outcome}, converged ${discreteCounts.converged}) | ` +
+                    `structure held ${heldContinuous.length}/${SWEEP_TRIALS}`,
+            );
+            if (conditional) {
+                const maxPointSpread = conditional.perPoint.reduce(
+                    (acc, p) => Math.max(acc, p.s, p.g),
+                    0,
+                );
+                console.log(
+                    "    conditional (structure-held) spread — " +
+                        `floor ${conditional.floor}, deviation ${conditional.deviation}, ` +
+                        `length ${conditional.length}, ds ${conditional.ds}, ` +
+                        `feasibility ${conditional.feasibility}, ` +
+                        `max |points[].s|/|points[].g| ${maxPointSpread}`,
+                );
+            } else {
+                console.log(
+                    "    conditional (structure-held) spread — N/A, 0 trials held structure",
+                );
+            }
+        }
+    }
+
+    // The stated deliverable: the structural flip rate at rate ≈ 0.1, with a confidence read.
+    console.log(
+        "\n=== finding: structural flip rate at rate=0.1 " +
+            `(N=${trialsAtRealisticRate} pooled across all MINI scenarios) ===`,
+    );
+    if (flipsAtRealisticRate === 0) {
+        const upperBound95 = 3 / trialsAtRealisticRate; // rule of three
+        console.log(
+            `  0/${trialsAtRealisticRate} flips observed. Rule-of-three 95% upper bound on ` +
+                `the per-trial flip probability: ${(upperBound95 * 100).toFixed(2)}%.`,
+        );
+    } else {
+        console.log(
+            `  ${flipsAtRealisticRate}/${trialsAtRealisticRate} flips observed — NONZERO at ` +
+                "a realistic divergence rate. The structural half of the contract cannot " +
+                'claim "any platform" at this rate.',
+        );
+    }
+}, 900_000);
+
+test("3a‴ hypot-only arm — perturb ONLY Math.hypot at 3a''s measured real rate (27/158 ≈ 17.09%)", () => {
+    const native: Record<string, RefineResult> = {};
+    for (const name of MINI) native[name] = driveRefine(name);
+
+    let flips = 0;
+    let trials = 0;
+    console.log(
+        `\n=== 3a''' hypot-only arm (rate=${HYPOT_REAL_RATE.toFixed(4)}, ` +
+            `N=${SWEEP_TRIALS}/scenario) ===`,
+    );
+    for (const name of MINI) {
+        let anyDiscreteMoved = 0;
+        for (let trial = 0; trial < SWEEP_TRIALS; trial++) {
+            const rng = mulberry32(0x11a70000 + trial * 97 + name.length);
+            const wrapped = wrapHypotOnly(rng, HYPOT_REAL_RATE);
+            let result: RefineResult;
+            try {
+                result = driveRefine(name);
+            } finally {
+                wrapped.restore();
+            }
+            const diff = discreteDiff(discreteFields(result), discreteFields(native[name]));
+            const moved =
+                diff.knots ||
+                diff.probes ||
+                diff.keys ||
+                diff.edges ||
+                diff.outcome ||
+                diff.converged;
+            if (moved) anyDiscreteMoved++;
+            flips += moved ? 1 : 0;
+            trials++;
+        }
+        console.log(`  ${name}: any-discrete-diff ${anyDiscreteMoved}/${SWEEP_TRIALS}`);
+    }
+    console.log(
+        `\n  total: ${flips}/${trials} flips under hypot-only perturbation at the measured ` +
+            "real rate.",
+    );
+}, 300_000);
