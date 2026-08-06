@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { geofit, type GeofitBake } from "../src/geofit";
+import { geofit, type GeofitBake, type GeofitResult } from "../src/geofit";
 import { forceProfile } from "../src/profile";
-import { refine } from "../src/refine";
+import { refine, type RefineResult } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import golden from "./fixtures/convert-golden.json";
@@ -183,11 +183,14 @@ const Golden = golden as Record<
     { points: { s: number; g: number }[]; length: number; ds: number }
 >;
 
-/** the refine path's own drive: `section.evalGeo` → `refine`. */
-function driveRefine(): void {
+/** the refine path's own drive: `section.evalGeo` → `refine`. Returns the result (not just runs
+ *  it) so 1c's amplification harness can read `floor`/`final.deviation`/`final.points[k].g` off
+ *  the SAME call the wrap-table tests already drive — one drive body, not two spellings of the
+ *  same solve. */
+function driveRefine(): RefineResult {
     const { scenario, entry } = circularArc();
     const bake = evalGeo(entry, scenario.nodes, scenario.ds);
-    refine({ bake, entry, ds: scenario.ds });
+    return refine({ bake, entry, ds: scenario.ds });
 }
 
 /** the geofit path's own drive, mirroring `geofit.test.ts`'s corpus construction exactly:
@@ -195,7 +198,7 @@ function driveRefine(): void {
  *  `geofit`. Building the target bake is part of the golden-producing call sequence, not
  *  a setup step outside it — `hill-explicit reproduces the frozen golden bit-identically`
  *  asserts on `geofit`'s output over exactly this input. */
-function driveGeofit(): void {
+function driveGeofit(): GeofitResult {
     const { scenario, entry } = hillExplicit();
     const g = Golden[scenario.name];
     const profile = forceProfile(g.points, g.length, g.ds);
@@ -207,7 +210,7 @@ function driveGeofit(): void {
         ds: bake.ds,
         edges: bake.fN.length,
     };
-    geofit(target, entry.v);
+    return geofit(target, entry.v);
 }
 
 /** one wrapped run of `drive`. */
@@ -413,6 +416,209 @@ for (const path of PATHS) {
                 `${ref.rows[divergeAt].trimEnd()}\n` +
                 `  this host (${stamp.platform} ${stamp.arch} | bun ${stamp.bun}):     ` +
                 `${rowString(run.calls[divergeAt]).trimEnd()}`,
+        );
+    }, 60_000);
+}
+
+/** `kex2d-golden-reproducibility` 1c: the amplification chain. Perturbs the SINGLE call 1b
+ *  localized (`hypot` index 14 on `circular-arc-refine`, `sin` index 101 on
+ *  `hill-explicit-geofit`) by a signed ulp count and reads the induced delta in the golden's
+ *  own continuous outputs — the measurement option A's derived tolerance would need, and the
+ *  check that confirms 1b's named site is actually the one that matters (perturbing anything
+ *  else on the same call sequence would show no propagation at all). */
+
+/** `x` bumped by a SIGNED ulp count — `bump`'s general form (0 is a no-op, negative moves
+ *  toward −Infinity). Bit-pattern-monotonic only for positive finite doubles, which is what
+ *  both named call sites produce here (a chord length, a sine of a physically-bounded angle),
+ *  so the ordering assumption holds with no sign-aware branch. */
+function bumpBy(x: number, ulps: number): number {
+    if (ulps === 0) return x;
+    const view = new DataView(new ArrayBuffer(8));
+    view.setFloat64(0, x);
+    view.setBigUint64(0, view.getBigUint64(0) + BigInt(ulps));
+    return view.getFloat64(0);
+}
+
+interface Perturb {
+    fn: WrappedFn;
+    /** the GLOBAL call index — shared across every wrapped fn, matching 1a/1b's `Call.index` —
+     *  not a per-function count. */
+    index: number;
+    ulps: number;
+}
+
+/** wraps every implementation-defined call exactly like `wrapMath`, except the ONE call at
+ *  `perturb.index` has its result bumped by `perturb.ulps` before it's returned, so the
+ *  perturbation is live for whatever the drive computes next rather than a copy taken on the
+ *  side. Throws if `perturb.index` doesn't land on `perturb.fn` — that would mean the global
+ *  call-index tracking has drifted from 1b's own reading, not that the perturbation missed. */
+function wrapPerturbed(perturb: Perturb): { restore: () => void; count: () => number } {
+    let count = 0;
+    const originals = WRAPPED.map((fn) => [fn, Math[fn]] as const);
+    const patched = Math as unknown as Record<WrappedFn, (...args: number[]) => number>;
+    for (const [fn, original] of originals) {
+        patched[fn] = (...args: number[]) => {
+            const raw = (original as (...a: number[]) => number)(...args);
+            const index = count++;
+            if (index !== perturb.index) return raw;
+            if (fn !== perturb.fn) {
+                throw new Error(
+                    `perturbation index ${perturb.index} landed on ${fn}, expected ${perturb.fn}`,
+                );
+            }
+            return bumpBy(raw, perturb.ulps);
+        };
+    }
+    return {
+        restore: () => {
+            for (const [fn, original] of originals) patched[fn] = original;
+        },
+        count: () => count,
+    };
+}
+
+/** the ulp distance between two same-sign, nonzero, finite doubles — the diffable unit the
+ *  Locked decision's amplification table reports in. `NaN` if the two disagree in sign (none of
+ *  the fields perturbed here do, at the magnitudes these scenarios produce). */
+function ulpsBetween(a: number, b: number): number {
+    if (a === 0 || b === 0 || a < 0 !== b < 0) return NaN;
+    const view = new DataView(new ArrayBuffer(8));
+    const raw = (x: number) => {
+        view.setFloat64(0, Math.abs(x));
+        return view.getBigUint64(0);
+    };
+    return Number(raw(b) - raw(a));
+}
+
+interface AmplifySpec {
+    name: string;
+    fn: WrappedFn;
+    index: number;
+    drive: () => RefineResult | GeofitResult;
+    /** the golden's own continuous outputs for this path, named per-field — read off the SAME
+     *  result object `driveRefine`/`driveGeofit` already returns, never a second drive body. */
+    fields: (result: RefineResult | GeofitResult) => Record<string, number>;
+    /** a magnitude, found by direct probe (binary/geometric search on this machine, not tuned
+     *  to a target), verified to move at least one field. NOT part of the ±1..±4 measurement —
+     *  it exists only to prove `wrapPerturbed` can move the drive's output at all, because the
+     *  measurement below reads EXACTLY ZERO on both paths at ±1..±4 raw double ulps (every
+     *  intermediate quantity downstream of both named calls lives at coarser-than-double
+     *  precision: `forward.ts step` stores into `Float32Array` on the geofit path, and
+     *  `spline.ts chainCounts` feeds a discrete `Math.round()` edge-count decision on the
+     *  refine path) — so the red-first control's own non-vacuity check needs a perturbation
+     *  large enough to cross THAT floor, not the ulp count the measurement is expressed in. */
+    sanityUlps: number;
+}
+
+const AMPLIFY: AmplifySpec[] = [
+    {
+        name: "circular-arc-refine",
+        fn: "hypot",
+        index: 14,
+        drive: driveRefine,
+        fields: (r) => {
+            const result = r as RefineResult;
+            const out: Record<string, number> = {
+                floor: result.floor,
+                deviation: result.final.deviation,
+            };
+            result.final.points.forEach((p, i) => {
+                out[`g${i}`] = p.g;
+            });
+            return out;
+        },
+        // the call feeds `chainCounts`'s `Math.round(length / dsNominal)` — a genuinely
+        // discrete decision, insensitive to anything short of an actual ~20% change to the
+        // summed chord length. Probed at 1e2..1e15 ulps: nothing moved below 1e15.
+        sanityUlps: 2_000_000_000_000_000,
+    },
+    {
+        // `GeofitResult` carries no `g` — the force→geo direction's continuous outputs are
+        // `deviation`/`forceError` plus the fitted nodes' own `x`/`y`/`theta`, which stand in
+        // for "each g at the keys" here: geofit's golden vocabulary is nodes, not keyframes.
+        name: "hill-explicit-geofit",
+        fn: "sin",
+        index: 101,
+        drive: driveGeofit,
+        fields: (r) => {
+            const result = r as GeofitResult;
+            const out: Record<string, number> = {
+                deviation: result.deviation,
+                forceError: result.forceError,
+            };
+            result.nodes.forEach((n, i) => {
+                out[`x${i}`] = n.x;
+                out[`y${i}`] = n.y;
+                out[`theta${i}`] = n.theta;
+            });
+            return out;
+        },
+        // the call feeds `forward.ts step`'s `Float32Array` positions — probed at 1e2..1.6e11
+        // ulps: `forceError` first moves at 1e10, `deviation` at 1.6e11, both as discrete
+        // jumps (an f32 rounding boundary crossed), never a smooth ramp.
+        sanityUlps: 200_000_000_000,
+    },
+];
+
+const SWEEP = [-4, -2, -1, 0, 1, 2, 4];
+
+for (const spec of AMPLIFY) {
+    test(`amplification chain — ${spec.name} (${spec.fn} call ${spec.index})`, () => {
+        // the true unperturbed reading — never wrapped at all — is what the zero-perturbation
+        // row must reproduce bit-identically (the red-first control's floor).
+        const native = spec.drive();
+        const nativeFields = spec.fields(native);
+        const nativeCount = runWrapped(false, spec.drive).count();
+
+        const rows = SWEEP.map((ulps) => {
+            const wrapped = wrapPerturbed({ fn: spec.fn, index: spec.index, ulps });
+            let result: RefineResult | GeofitResult;
+            try {
+                result = spec.drive();
+            } finally {
+                wrapped.restore();
+            }
+            return { ulps, count: wrapped.count(), fields: spec.fields(result) };
+        });
+
+        const zero = rows.find((row) => row.ulps === 0);
+        if (!zero) throw new Error("SWEEP must include 0");
+        expect(zero.count).toBe(nativeCount);
+        for (const key of Object.keys(nativeFields)) {
+            expect(zero.fields[key]).toBe(nativeFields[key]);
+        }
+
+        // non-vacuity: the zero-control above is meaningless unless `wrapPerturbed` can move
+        // the output AT ALL (`coding.md`: a check is evidence only if you've seen it fail).
+        // ±1..±4 ulps (this path's actual measurement, below) reads zero on every field, so the
+        // control runs at `sanityUlps` instead — found by direct probe, never the measurement.
+        const sanityWrapped = wrapPerturbed({
+            fn: spec.fn,
+            index: spec.index,
+            ulps: spec.sanityUlps,
+        });
+        let sanityResult: RefineResult | GeofitResult;
+        try {
+            sanityResult = spec.drive();
+        } finally {
+            sanityWrapped.restore();
+        }
+        const sanityFields = spec.fields(sanityResult);
+        const moved = Object.keys(nativeFields).some(
+            (key) => sanityFields[key] !== zero.fields[key],
+        );
+        expect(moved).toBe(true);
+
+        console.log(`\n=== amplification — ${spec.name} (${spec.fn} call ${spec.index}) ===`);
+        console.table(
+            rows.map((row) => {
+                const out: Record<string, number> = { ulps: row.ulps, calls: row.count };
+                for (const key of Object.keys(nativeFields)) {
+                    out[`d_${key}`] = row.fields[key] - zero.fields[key];
+                    out[`${key}_ulps`] = ulpsBetween(zero.fields[key], row.fields[key]);
+                }
+                return out;
+            }),
         );
     }, 60_000);
 }
