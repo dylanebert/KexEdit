@@ -275,10 +275,12 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   loop-explicit's same profile at nominal 0.5 m misses the pinned exit by 0.247 m, while the
   realized step closes within 3.1e-5 m (`refine.test.ts`). The locked corpus is 80 keys, and its
   structural output — knots, outcome, probes, keys, edges — is frozen in
-  `tests/fixtures/convert-golden.json` and hard-fails on any mismatch, ahead of any bounded
-  field; `length`, `ds`, and `points[].s` sit behind the f32 quantization barrier below and stay
-  exact, while `floor`, `deviation`, and `points[].g` ride a derived, cross-machine-verified bound
-  conditional on the structural match holding. That golden is the gate on any change that claims
+  `tests/fixtures/convert-golden.json` and hard-fails on any mismatch, ahead of any value
+  comparison; every continuous field — `floor`, `deviation`, `points[].g` alongside `length`,
+  `ds`, and `points[].s` — is **exact**, because the fixture is stamp-matched: **a bucket is a
+  claim about a comparison, not about a field**, and own-stamp against a deterministic solve
+  presents zero spread, so the derived bound is zero. A bound belongs where a fixture is genuinely
+  shared, which here is `forcegeo-golden.json` alone (below) at 1 ulp — the unit's only one. That golden is the gate on any change that claims
   to leave conversion output alone (a perf change above all). What the human check approved was
   the `linux x64` output as an authoring surface; a stamped golden minted on another machine is a
   regression tripwire, not an inherited authoring verdict, and leaning on one as a verdict means
