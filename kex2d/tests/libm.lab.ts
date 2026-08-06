@@ -8,6 +8,7 @@ import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import golden from "./fixtures/convert-golden.json";
 import headReference from "./fixtures/libm-head-reference.json";
+import { bumpBy, WRAPPED, type WrappedFn } from "./helpers/libm";
 
 /** Cross-machine libm diffing lab (`kex2d-golden-reproducibility` 1a). ECMAScript pins the
  *  arithmetic operators and `sqrt` to exact IEEE-754 results but leaves the transcendentals
@@ -32,9 +33,6 @@ import headReference from "./fixtures/libm-head-reference.json";
  *  The determinism check hashes the table (`polish.oracle.ts`'s sha256-over-the-corpus
  *  convention) instead of holding two full copies for a deep-equal — cheaper, and the same
  *  strength of evidence: bit-for-bit over the whole ordered sequence, not a sample. */
-
-const WRAPPED = ["sin", "cos", "tan", "atan2", "pow", "exp", "log", "hypot", "cbrt"] as const;
-type WrappedFn = (typeof WRAPPED)[number];
 
 interface Call {
     index: number;
@@ -426,18 +424,6 @@ for (const path of PATHS) {
  *  own continuous outputs — the measurement option A's derived tolerance would need, and the
  *  check that confirms 1b's named site is actually the one that matters (perturbing anything
  *  else on the same call sequence would show no propagation at all). */
-
-/** `x` bumped by a SIGNED ulp count — `bump`'s general form (0 is a no-op, negative moves
- *  toward −Infinity). Bit-pattern-monotonic only for positive finite doubles, which is what
- *  both named call sites produce here (a chord length, a sine of a physically-bounded angle),
- *  so the ordering assumption holds with no sign-aware branch. */
-function bumpBy(x: number, ulps: number): number {
-    if (ulps === 0) return x;
-    const view = new DataView(new ArrayBuffer(8));
-    view.setFloat64(0, x);
-    view.setBigUint64(0, view.getBigUint64(0) + BigInt(ulps));
-    return view.getFloat64(0);
-}
 
 interface Perturb {
     fn: WrappedFn;
