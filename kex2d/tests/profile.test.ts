@@ -373,17 +373,20 @@ describe("x-monotonicity clamp — g(s) stays a function under adversarial handl
 });
 
 describe("forceProfile — dense per-edge sampling", () => {
-    test("edge count is round(length/ds), sampled at the source σ_i = i·ds", () => {
+    // edge count itself is `resolveStep`'s own contract (tested above); forceProfile takes the
+    // resolved `Step` as one value and trusts its `edges`/`ds` — these pin the MARCH against
+    // that step, not the rounding.
+    test("marches at the resolved step, sampled at the source σ_i = i·ds", () => {
         const pts: ForcePoint[] = [
             { s: 0, g: 1 },
             { s: 10, g: 3 },
         ];
-        const ds = 0.5;
-        const length = 10;
-        const fN = forceProfile(pts, length, ds);
+        const step = resolveStep(10, 0.5);
+        const fN = forceProfile(pts, step);
         expect(fN.length).toBe(20); // 10 / 0.5
         // the marched profile equals the from-scratch point query at every σ_i.
-        for (let i = 0; i < fN.length; i++) expect(fN[i]).toBeCloseTo(sampleForce(pts, i * ds), 6);
+        for (let i = 0; i < fN.length; i++)
+            expect(fN[i]).toBeCloseTo(sampleForce(pts, i * step.ds), 6);
         expect(fN[0]).toBe(1); // σ = 0 → the first keyframe, held
         expect(fN[10]).toBeCloseTo(2, 5); // σ = 5, the symmetric midpoint of Cubic
     });
@@ -394,21 +397,21 @@ describe("forceProfile — dense per-edge sampling", () => {
             { s: 8, g: 2, in: { ds: -2, dg: 0.3 } },
             { s: 16, g: 0, ease: Easing.Quintic },
         ];
-        const ds = 0.25;
-        const fN = forceProfile(pts, 16, ds);
+        const step = resolveStep(16, 0.25);
+        const fN = forceProfile(pts, step);
         for (let i = 0; i < fN.length; i++) {
-            expect(fN[i]).toBeCloseTo(sampleForce(pts, i * ds), 5);
+            expect(fN[i]).toBeCloseTo(sampleForce(pts, i * step.ds), 5);
         }
     });
 
     test("an empty profile of any length is a flat DEFAULT_G", () => {
-        const fN = forceProfile([], 8, 0.5);
+        const fN = forceProfile([], resolveStep(8, 0.5));
         expect(fN.length).toBe(16);
         for (const v of fN) expect(v).toBe(DEFAULT_G);
     });
 
-    test("a zero-length section still integrates one edge (floored at 1)", () => {
-        expect(forceProfile([], 0, 0.5).length).toBe(1);
+    test("a zero-length section still integrates one edge (floored at 1, resolveStep's own floor)", () => {
+        expect(forceProfile([], resolveStep(0, 0.5)).length).toBe(1);
     });
 });
 
@@ -473,8 +476,9 @@ describe("segmentSeed — the no-jump Custom materialization seed", () => {
         // line as the plain Linear tag (the profile output is unchanged), now with real handles.
         const aCustom: ForcePoint = { ...a, out: seedOut };
         const bCustom: ForcePoint = { ...b, in: seedIn };
-        const linear = forceProfile([a, b], 12, 0.1);
-        const custom = forceProfile([aCustom, bCustom], 12, 0.1);
+        const step = resolveStep(12, 0.1);
+        const linear = forceProfile([a, b], step);
+        const custom = forceProfile([aCustom, bCustom], step);
         expect(custom).toEqual(linear);
     });
 });
@@ -567,11 +571,12 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
     // whose argument contains a bare `/` (no nested call breaking the single-level scan — a
     // structure-free match, editor-ui.md's cursor-allowlist lesson).
     const RoundShape = /Math\.(?:round|ceil|floor|trunc)\([^()]*\/[^()]*\)/;
-    // The whole population, censused against the current tree: 13 sites across 7 files.
-    // `profile.ts` carries the seam itself (351) and `forceProfile`'s internal re-derivation
-    // (369) — a NO-OP once its caller has already conformed (the fixed-point property; see the
-    // module header), never a second independent rounding — so it's excluded from the
-    // outside-profile.ts check below, not the census.
+    // The whole population, censused against the current tree: 12 sites across 7 files.
+    // `profile.ts` carries only the seam itself (`resolveStep`) now — `forceProfile` no longer
+    // re-derives `edges` locally (`kex2d-correctness-fixes` stage 1: it takes the resolved
+    // `Step` as one value and trusts its `edges`), so the module's own hit count dropped from 2
+    // to 1. It's excluded from the outside-profile.ts check below as the seam's own home, not
+    // the census.
     const RoundShapeSites: Record<string, string> = {
         "section.ts":
             "the σ-index lookup `fN[round(σ/ds)]` (the Distance closure) — an index, not a pairing",
@@ -592,7 +597,7 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
     // declared per-file count, closing editor-ui.md's declared-registry law's own lesson (a
     // control that never routes through the real scanner can't catch the scanner going blind).
     const RoundShapeCounts: Record<string, number> = {
-        "profile.ts": 2,
+        "profile.ts": 1,
         "section.ts": 1,
         "spline.ts": 1,
         "magnet.ts": 3,
@@ -604,286 +609,81 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
         const global = new RegExp(RoundShape.source, "g");
         const rawTotal = srcFiles.reduce((sum, f) => sum + (src(f).match(global)?.length ?? 0), 0);
         const declaredTotal = Object.values(RoundShapeCounts).reduce((a, b) => a + b, 0);
-        expect(declaredTotal).toBe(13);
+        expect(declaredTotal).toBe(12);
         expect(rawTotal).toBe(declaredTotal);
     });
 
     // ── direction B: every module that pairs a step with `forceProfile`/`evalForce` (the
     // seam's two consumers) is seamed through `resolveStep` itself, or is a declared exemption
-    // consuming an already-conformed `ds` from upstream. Only `profile.ts` (defines both
-    // `resolveStep` and `forceProfile`) is excluded by construction, as the seam's own home — a
-    // blanket "definition site" exclusion for `section.ts` too was unsound: `section.ts`'s own
-    // `chain()` calls `evalForce(entry, sec.fN, sec.ds, sec.domain)`, a genuine second consumer,
-    // not part of `evalForce`'s own definition. It's declared below with its conformance trace
-    // instead of swept under the blanket.
+    // consuming an already-conformed `Step` from upstream. Only `profile.ts` (defines both
+    // `resolveStep` and `forceProfile`) is excluded by construction, as the seam's own home.
+    //
+    // What used to live below this point — a lexical, per-call-site scanner tracing whether the
+    // THIRD ARGUMENT at each `forceProfile`/`evalForce` call site was a `ds` bound by
+    // `resolveStep` in scope — is now the type system's job. `forceProfile(points, step)` and
+    // `evalForce(entry, fN, step, domain)` (`kex2d-correctness-fixes` stage 1) take the resolved
+    // {@link Step} as ONE argument the callee requires: there is no positional `ds: number` slot
+    // left to hand an unconformed value into, so splitting the pair — destructuring `edges` alone
+    // and marching on some OTHER `ds` — is a type error, not a runtime latent bug a lexical scan
+    // has to catch after the fact. That closes the per-call-site pin's whole reason to exist,
+    // `CrossFunctionConsumers` included: `track.ts`'s `forceDense`, `pin.ts`'s `enterPin`, and
+    // `polish.ts`'s `violence` each existed only because the old scanner couldn't see a `ds`
+    // conformed in one function and threaded as a bare parameter into another — now each of them
+    // takes a `Step`-typed parameter directly, so the exemption is retired, not merely deleted:
+    // the file-level census below is what remains to enumerate, and its `Seamed`/`PairingExempt`
+    // split still records WHY each module touches the seam, since that's a fact the type doesn't
+    // carry on its own.
     const Seamed = ["track.ts", "pin.ts", "optimize.ts", "polish.ts"];
     const PairingExempt: Record<string, string> = {
-        "playback.ts": "consumes an already-conformed `ds` off a landed solve's own answer",
-        "fitlab.ts": "consumes an already-conformed `ds` off a landed solve's own answer",
+        "playback.ts": "consumes an already-conformed `Step` off a landed solve's own answer",
+        "fitlab.ts": "consumes an already-conformed `Step` off a landed solve's own answer",
         "fit.ts":
             "a JSDoc @example only, no runtime call — fit.ts never touches a section's baking step",
         "section.ts":
-            "chain()'s evalForce call consumes sec.ds, which traces through track.ts's forcePayload/forceBake to resolveStep — a conformed step, not a second independent pairing",
+            "chain()'s evalForce call consumes sec.step, which traces through track.ts's forcePayload/forceBake to resolveStep — a conformed Step, not a second independent pairing",
     };
-    test("every caller of forceProfile/evalForce is seamed through resolveStep, or a declared exemption", () => {
-        const callers = srcFiles.filter(
+    // the census logic, factored out so the positive controls below exercise the SAME function
+    // the real test calls (editor-ui.md's declared-registry law: a control must exercise the
+    // scanner, not just re-derive its assertion) — against synthetic input, since faking an
+    // undeclared or orphaned entry in the REAL source tree isn't practical to inject.
+    function unaccountedCallers(
+        files: readonly string[],
+        contents: (file: string) => string,
+        declared: ReadonlySet<string>,
+    ): { undeclared: string[]; orphaned: string[] } {
+        const callers = files.filter(
             (f) =>
                 f !== "profile.ts" &&
-                (src(f).includes("forceProfile(") || src(f).includes("evalForce(")),
+                (contents(f).includes("forceProfile(") || contents(f).includes("evalForce(")),
         );
-        expect(callers.sort()).toEqual([...Seamed, ...Object.keys(PairingExempt)].sort());
+        return {
+            undeclared: callers.filter((f) => !declared.has(f)),
+            orphaned: [...declared].filter((f) => !callers.includes(f)),
+        };
+    }
+    test("every caller of forceProfile/evalForce is seamed through resolveStep, or a declared exemption", () => {
+        const declared = new Set([...Seamed, ...Object.keys(PairingExempt)]);
+        const { undeclared, orphaned } = unaccountedCallers(srcFiles, src, declared);
+        expect(undeclared).toEqual([]);
+        expect(orphaned).toEqual([]);
         // a floor, not the invariant: a module can MENTION resolveStep while still handing
-        // forceProfile/evalForce a `ds` that never went through it — the per-call-site test
-        // below is what actually closes that gap (kex2d-section-extent stage 4).
+        // forceProfile/evalForce a Step that never went through it — the type change (stage 1)
+        // is what actually closes that gap; this floor only proves the module reaches the seam.
         for (const f of Seamed) expect(src(f).includes("resolveStep(")).toBe(true);
     });
-
-    // Per-file presence isn't per-call-site granularity: `optimize.ts` shipped
-    // `const { edges } = resolveStep(length, ds);` at two sites and then marched
-    // `forceProfile`/`evalForce` on the CALLER's raw, unconformed `ds` at six call sites —
-    // `src(f).includes("resolveStep(")` above stayed true throughout. A first per-call-site cut
-    // (flat file-global bound-name set) was ITSELF too loose: the adversarial pass measured it
-    // asserting presence of a SPELLING, not provenance — `bound: ["ds"], args: ["ds","ds"], all
-    // bound? true` on a probe where a second, unrelated function took a raw `ds` param and
-    // marched it straight through, passing purely because the bare spelling `ds` happened to be
-    // bound SOMEWHERE ELSE in the file — the exact reintroduction path this stage exists to
-    // close. It also flipped false on `const ds = resolveStep(length, step).ds;`, a legitimately
-    // conformed member-access binding the destructure-only regex never recognized. Both are
-    // fixed here by making visibility LEXICAL (a binding must be in scope at the call, not merely
-    // present in the file) and by recognizing all three conforming binding forms.
-    //
-    // comments are blanked first (space-for-non-newline-char, so every offset below stays
-    // stable) — `polish.ts` carries `forceProfile(points, length, ds)` inside a JSDoc `@example`
-    // and its own module-header prose, which read as real call sites otherwise.
-    function stripComments(text: string): string {
-        let out = "";
-        let i = 0;
-        while (i < text.length) {
-            if (text[i] === "/" && text[i + 1] === "/") {
-                while (i < text.length && text[i] !== "\n") {
-                    out += " ";
-                    i++;
-                }
-            } else if (text[i] === "/" && text[i + 1] === "*") {
-                out += "  ";
-                i += 2;
-                while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) {
-                    out += text[i] === "\n" ? "\n" : " ";
-                    i++;
-                }
-                if (i < text.length) {
-                    out += "  ";
-                    i += 2;
-                }
-            } else {
-                out += text[i];
-                i++;
-            }
-        }
-        return out;
-    }
-    // the brace-open positions enclosing a given offset, in outer-to-inner order — a binding's
-    // block path must be a PREFIX of a use's block path for the binding to still be in scope
-    // there (every block open when it was declared is still open at the use).
-    type BraceEvent = { pos: number; open: boolean };
-    function blockEvents(text: string): BraceEvent[] {
-        const events: BraceEvent[] = [];
-        for (let i = 0; i < text.length; i++) {
-            if (text[i] === "{") events.push({ pos: i, open: true });
-            else if (text[i] === "}") events.push({ pos: i, open: false });
-        }
-        return events;
-    }
-    function blockPathAt(events: BraceEvent[], pos: number): number[] {
-        const stack: number[] = [];
-        for (const e of events) {
-            if (e.pos >= pos) break;
-            if (e.open) stack.push(e.pos);
-            else stack.pop();
-        }
-        return stack;
-    }
-    type Binding = { name: string; pos: number; blockPath: number[] };
-    type Use = { name: string; pos: number; blockPath: number[] };
-    function visible(binding: Binding, use: Use): boolean {
-        if (binding.pos >= use.pos) return false;
-        if (binding.blockPath.length > use.blockPath.length) return false;
-        return binding.blockPath.every((p, i) => use.blockPath[i] === p);
-    }
-    // the three conforming binding forms, each normalized to the name a CALL SITE would spell —
-    // the same normalization `dsUses` applies to its argument (`.split(".").pop()`), so a
-    // whole-pair bind (form C) registers under the literal name "ds" too: a caller only ever
-    // reads `.ds` off it.
-    function resolveStepBindings(text: string, events: BraceEvent[]): Binding[] {
-        const bindings: Binding[] = [];
-        let m: RegExpExecArray | null;
-        // (A) const { edges, ds } = resolveStep(...) — incl. aliases (`ds: dsC`)
-        const destructure = /\{\s*([\w\s,:]+)\}\s*=\s*resolveStep\(/g;
-        while ((m = destructure.exec(text)) !== null) {
-            for (const field of m[1].split(",")) {
-                const [key, alias] = field.split(":").map((s) => s.trim());
-                if (key === "ds")
-                    bindings.push({
-                        name: alias ?? key,
-                        pos: m.index,
-                        blockPath: blockPathAt(events, m.index),
-                    });
-            }
-        }
-        // (B) const dsVar = resolveStep(...).ds
-        const memberBind = /\bconst\s+(\w+)\s*=\s*resolveStep\([^()]*\)\.ds\b/g;
-        while ((m = memberBind.exec(text)) !== null)
-            bindings.push({ name: m[1], pos: m.index, blockPath: blockPathAt(events, m.index) });
-        // (C) const pair = resolveStep(...) — the whole pair, not immediately narrowed
-        const wholeBind = /\bconst\s+\w+\s*=\s*resolveStep\([^()]*\)(?!\s*\.)/g;
-        while ((m = wholeBind.exec(text)) !== null)
-            bindings.push({ name: "ds", pos: m.index, blockPath: blockPathAt(events, m.index) });
-        return bindings;
-    }
-    // balanced-paren argument splitter — a plain comma split breaks on a nested call
-    // (`dense.subarray(0, avail)`, a ternary) inside an argument.
-    function splitArgs(s: string): string[] {
-        const args: string[] = [];
-        let depth = 0;
-        let cur = "";
-        for (const ch of s) {
-            if (ch === "(" || ch === "[" || ch === "{") depth++;
-            if (ch === ")" || ch === "]" || ch === "}") depth--;
-            if (ch === "," && depth === 0) {
-                args.push(cur);
-                cur = "";
-            } else cur += ch;
-        }
-        if (cur.trim()) args.push(cur);
-        return args;
-    }
-    function callArgs(text: string, name: string): Array<{ args: string[]; pos: number }> {
-        const calls: Array<{ args: string[]; pos: number }> = [];
-        const marker = `${name}(`;
-        let i = text.indexOf(marker);
-        while (i !== -1) {
-            let depth = 1;
-            let j = i + marker.length;
-            while (j < text.length && depth > 0) {
-                if (text[j] === "(") depth++;
-                else if (text[j] === ")") depth--;
-                j++;
-            }
-            calls.push({ args: splitArgs(text.slice(i + marker.length, j - 1)), pos: i });
-            i = text.indexOf(marker, j);
-        }
-        return calls;
-    }
-    // `ds` is the third positional argument of both `forceProfile(points, length, ds)` and
-    // `evalForce(entry, dense, ds, domain)` — the two seam consumers this whole population is
-    // about.
-    function dsUses(text: string, events: BraceEvent[]): Use[] {
-        const uses: Use[] = [];
-        for (const name of ["forceProfile", "evalForce"]) {
-            for (const { args, pos } of callArgs(text, name)) {
-                const raw = args[2]?.trim();
-                if (raw)
-                    uses.push({
-                        name: raw.split(".").pop()?.trim() ?? raw,
-                        pos,
-                        blockPath: blockPathAt(events, pos),
-                    });
-            }
-        }
-        return uses;
-    }
-    // the nearest preceding top-level `function NAME(` — a cheap enclosing-function reader, only
-    // used to key the cross-function exemption below.
-    function enclosingFunctionName(text: string, pos: number): string | null {
-        const decl = /\bfunction\s+(\w+)\s*\(/g;
-        let m: RegExpExecArray | null;
-        let name: string | null = null;
-        while ((m = decl.exec(text)) !== null) {
-            if (m.index > pos) break;
-            name = m[1];
-        }
-        return name;
-    }
-    // What a LEXICAL scanner still cannot see: cross-function dataflow, where a function takes
-    // `ds` as a bare parameter (or a field off another function's return) that every one of ITS
-    // OWN callers already conformed before passing in. That is a real, load-bearing shape in this
-    // codebase (`kex2d-map.md`'s `profile.ts` entry: `track.ts`'s `forceDense` is a declared
-    // CONSUMER, not a pairing site) — proving it requires following the argument across a call
-    // boundary, which this file-local scan doesn't do (and is exactly the gap the structural fix,
-    // `forceProfile` taking the resolved pair as a type the callee requires, closes for good —
-    // Residue, `kex2d-section-extent`). Declared, not swept, keyed by enclosing function name so
-    // a NEW function taking the same shape does NOT inherit the exemption for free — the
-    // coordinator's `evil` probe below is what the declared registry must still catch.
-    const CrossFunctionConsumers: Record<string, string[]> = {
-        "track.ts": ["forceDense"],
-        "pin.ts": ["enterPin"],
-        "polish.ts": ["violence"],
-    };
-    function unboundUses(text: string, file: string): Use[] {
-        const stripped = stripComments(text);
-        const events = blockEvents(stripped);
-        const bindings = resolveStepBindings(stripped, events);
-        return dsUses(stripped, events).filter((u) => {
-            if (bindings.some((b) => b.name === u.name && visible(b, u))) return false;
-            const fn = enclosingFunctionName(stripped, u.pos);
-            return !(fn && CrossFunctionConsumers[file]?.includes(fn));
-        });
-    }
-    test("every forceProfile/evalForce call site in a Seamed module consumes a ds bound by resolveStep in its own lexical scope (or a declared cross-function consumer)", () => {
-        for (const f of Seamed) expect(unboundUses(src(f), f)).toEqual([]);
+    // positive control, direction 1: a caller not in the declared set is flagged undeclared.
+    test("positive control: an undeclared caller is caught", () => {
+        const { undeclared } = unaccountedCallers(
+            ["mystery.ts"],
+            () => "forceProfile(points, step)",
+            new Set(),
+        );
+        expect(undeclared).toEqual(["mystery.ts"]);
     });
-    // positive controls: exercise the SCANNER end to end (`unboundUses`), not just a set
-    // comparison — the cursor-allowlist lesson, same file (editor-ui.md Menus). Every one of
-    // these is graded against "not in `Seamed`" (file `"probe.ts"`), so the cross-function
-    // exemption table — keyed per file — never accidentally covers them.
-    test("positive control: an unrouted ds argument at a call site is caught", () => {
-        const unrouted = `
-            function f(length, ds) {
-                const { edges } = resolveStep(length, ds);
-                return forceProfile(points, length, ds);
-            }
-        `;
-        expect(unboundUses(unrouted, "probe.ts").length).toBeGreaterThan(0);
-    });
-    test("positive control: a properly paired ds argument passes", () => {
-        const routed = `
-            function f(length, step) {
-                const { edges, ds } = resolveStep(length, step);
-                return forceProfile(points, length, ds);
-            }
-        `;
-        expect(unboundUses(routed, "probe.ts")).toEqual([]);
-    });
-    // the coordinator's two probes (adversarial pass on this stage's diff), reproduced verbatim.
-    test("positive control: a spelling bound in ONE function doesn't leak into a sibling that never conformed (evasion)", () => {
-        const evasion = `
-            function legit(length, step) {
-                const { edges, ds } = resolveStep(length, step);
-                return forceProfile(points, length, ds);
-            }
-            function evil(length, ds) {
-                return forceProfile(points, length, ds);
-            }
-        `;
-        expect(unboundUses(evasion, "probe.ts").length).toBeGreaterThan(0);
-    });
-    test("positive control: a member-access binding (const ds = resolveStep(...).ds) is recognized, not just a destructure (false positive)", () => {
-        const memberBound = `
-            function f(length, step) {
-                const ds = resolveStep(length, step).ds;
-                return forceProfile(points, length, ds);
-            }
-        `;
-        expect(unboundUses(memberBound, "probe.ts")).toEqual([]);
-    });
-    test("positive control: a whole-pair binding (const pair = resolveStep(...); pair.ds) is recognized", () => {
-        const pairBound = `
-            function f(length, step) {
-                const pair = resolveStep(length, step);
-                return forceProfile(points, length, pair.ds);
-            }
-        `;
-        expect(unboundUses(pairBound, "probe.ts")).toEqual([]);
+    // positive control, direction 2: a declared entry with no real call is flagged orphaned.
+    test("positive control: an orphaned declaration is caught", () => {
+        const { orphaned } = unaccountedCallers([], () => "", new Set(["ghost.ts"]));
+        expect(orphaned).toEqual(["ghost.ts"]);
     });
     // F4: aliased-import evasion. A raw substring scan for `forceProfile(`/`evalForce(` is
     // blind to `import { forceProfile as fp } from "./profile"` followed by `fp(...)`, or a

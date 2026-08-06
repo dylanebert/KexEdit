@@ -273,8 +273,8 @@ function step(
  * // the shift — never compare `dense` against `r.fN` element-wise. A production caller
  * // conforms its step through `resolveStep` before `forceProfile` ever sees it — never
  * // the nominal step directly (`kex2d-section-extent`, Locked decision).
- * const { ds } = resolveStep(f.length, 0.5);
- * const dense = forceProfile(f.points, f.length, ds);
+ * const step = resolveStep(f.length, 0.5);
+ * const dense = forceProfile(f.points, step);
  */
 export function fit(fN: ArrayLike<number>, ds: ArrayLike<number>, tol: number): Fit {
     if (fN.length !== ds.length)

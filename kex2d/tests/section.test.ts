@@ -115,7 +115,7 @@ describe("evalForce", () => {
         const ds = 0.5;
         const edges = 30;
         const fN = Float32Array.from({ length: edges }, (_, i) => 1 + 0.4 * Math.sin(i / 5));
-        const r = evalForce(entry, fN, ds);
+        const r = evalForce(entry, fN, { edges, ds });
 
         const n = edges + 1;
         const rx = new Float32Array(n);
@@ -141,7 +141,7 @@ describe("evalForce", () => {
             const len = 32;
             const edges = Math.round(len / ds);
             const fN = Float32Array.from({ length: edges }, (_, i) => authored(i * ds));
-            const r = evalForce(entry, fN, ds);
+            const r = evalForce(entry, fN, { edges, ds });
             let mx = 0;
             for (let i = 2; i < edges - 2; i++)
                 mx = Math.max(mx, Math.abs(r.fN[i] - authored(i * ds)));
@@ -162,8 +162,9 @@ describe("evalForce — time domain", () => {
         const entry: Entry = { x: 3, y: 1, theta: 0.2, v: 12 };
         const ds = 0.5;
         const fN = Float32Array.from({ length: 20 }, (_, i) => 1 + 0.3 * Math.sin(i / 4));
-        const withDefault = evalForce(entry, fN, ds);
-        const withExplicit = evalForce(entry, fN, ds, Domain.Distance);
+        const step = { edges: fN.length, ds };
+        const withDefault = evalForce(entry, fN, step);
+        const withExplicit = evalForce(entry, fN, step, Domain.Distance);
         for (let i = 0; i <= 20; i++) {
             expect(withDefault.posX[i]).toBe(withExplicit.posX[i]);
             expect(withDefault.posY[i]).toBe(withExplicit.posY[i]);
@@ -183,7 +184,7 @@ describe("evalForce — time domain", () => {
         const gap = (dt: number): number => {
             const edges = Math.round(duration / dt);
             const fN = Float32Array.from({ length: edges }, (_, i) => authored(i * dt));
-            const r = evalForce(entry, fN, dt, Domain.Time);
+            const r = evalForce(entry, fN, { edges, ds: dt }, Domain.Time);
             const ref = rk4Time(entry.x, entry.y, entry.theta, entry.v, edges + 1, dt, authored);
             const last = ref[edges];
             return Math.hypot(r.posX[edges] - last[0], r.posY[edges] - last[1]);
@@ -216,7 +217,7 @@ describe("evalForce — time domain", () => {
         const dsFine = 0.01;
         const edgesFine = Math.round(length / dsFine);
         const fNFine = new Float32Array(edgesFine).fill(F);
-        const refFine = evalForce(entry, fNFine, dsFine);
+        const refFine = evalForce(entry, fNFine, { edges: edgesFine, ds: dsFine });
         let duration = 0;
         for (let i = 0; i < refFine.edges; i++) {
             const vMid = 0.5 * (refFine.v[i] + refFine.v[i + 1]);
@@ -226,11 +227,11 @@ describe("evalForce — time domain", () => {
         const gap = (ds: number): number => {
             const edges = Math.round(length / ds);
             const fND = new Float32Array(edges).fill(F);
-            const rD = evalForce(entry, fND, ds);
+            const rD = evalForce(entry, fND, { edges, ds });
 
             const dt = duration / edges;
             const fNT = new Float32Array(edges).fill(F);
-            const rT = evalForce(entry, fNT, dt, Domain.Time);
+            const rT = evalForce(entry, fNT, { edges, ds: dt }, Domain.Time);
 
             return Math.hypot(rD.exit.x - rT.exit.x, rD.exit.y - rT.exit.y);
         };
@@ -258,13 +259,13 @@ describe("evalForce — time domain", () => {
         const fine = 0.001;
         const edgesFine = Math.round(duration / fine);
         const fNFine = Float32Array.from({ length: edgesFine }, (_, i) => authored(i * fine));
-        const ref = evalForce(entry, fNFine, fine, Domain.Time);
+        const ref = evalForce(entry, fNFine, { edges: edgesFine, ds: fine }, Domain.Time);
         const refExit = { x: ref.exit.x, y: ref.exit.y };
 
         const gap = (dt: number): number => {
             const edges = Math.round(duration / dt);
             const fN = Float32Array.from({ length: edges }, (_, i) => authored(i * dt));
-            const r = evalForce(entry, fN, dt, Domain.Time);
+            const r = evalForce(entry, fN, { edges, ds: dt }, Domain.Time);
             return Math.hypot(r.exit.x - refExit.x, r.exit.y - refExit.y);
         };
 
@@ -285,7 +286,7 @@ describe("chain", () => {
         const force = Float32Array.from({ length: 30 }, () => 1.2);
         const sections: Section[] = [
             { kind: "geo", nodes: geo, ds: 0.5 },
-            { kind: "force", fN: force, ds: 0.5 },
+            { kind: "force", fN: force, step: { edges: force.length, ds: 0.5 } },
             { kind: "geo", nodes: geo, ds: 0.5 },
         ];
         const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections);
@@ -360,10 +361,17 @@ describe("chain", () => {
         const dt = 0.02;
         const edges = 40;
         const fN = new Float32Array(edges).fill(1.2);
-        const sections: Section[] = [{ kind: "force", fN, ds: dt, domain: Domain.Time }];
+        const sections: Section[] = [
+            { kind: "force", fN, step: { edges, ds: dt }, domain: Domain.Time },
+        ];
         const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections);
 
-        const direct = evalForce({ x: 0, y: 0, theta: 0, v: V0 }, fN, dt, Domain.Time);
+        const direct = evalForce(
+            { x: 0, y: 0, theta: 0, v: V0 },
+            fN,
+            { edges, ds: dt },
+            Domain.Time,
+        );
         for (let i = 0; i <= edges; i++) {
             expect(c.posX[i]).toBe(direct.posX[i]);
             expect(c.posY[i]).toBe(direct.posY[i]);

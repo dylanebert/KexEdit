@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { geofit, type GeofitBake, type GeofitResult } from "../src/geofit";
-import { forceProfile } from "../src/profile";
+import { forceProfile, resolveStep } from "../src/profile";
 import { refine, type RefineResult } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
@@ -194,8 +194,9 @@ function driveRefine(): RefineResult {
 function driveGeofit(): GeofitResult {
     const { scenario, entry } = hillExplicit();
     const g = FORCEGEO_SOURCE(scenario.name);
-    const profile = forceProfile(g.points, g.length, g.ds);
-    const bake = evalForce(entry, profile, g.ds);
+    const step = resolveStep(g.length, g.ds);
+    const profile = forceProfile(g.points, step);
+    const bake = evalForce(entry, profile, step);
     const target: GeofitBake = {
         x: bake.posX,
         y: bake.posY,

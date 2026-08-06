@@ -40,7 +40,7 @@ import {
 import type { OptimizeOpts, OptimizeResult } from "./optimize";
 import { type OptimizeRunOpts, runOptimize } from "./optimize-async";
 import { Domain, type Entry, evalForce } from "./section";
-import { forceProfile, type ForcePoint, resolveStep } from "./profile";
+import { forceProfile, type ForcePoint, resolveStep, type Step } from "./profile";
 import {
     authoredHash,
     bakeLive,
@@ -62,7 +62,7 @@ import {
 interface SectionSpec {
     entry: Entry;
     length: number;
-    ds: number;
+    step: Step;
     domain: Domain;
 }
 
@@ -74,13 +74,13 @@ function sectionSpec(ecs: State, sectionId: number): SectionSpec | null {
     const domain = trackDomain(ecs);
     const nominal = domain === Domain.Time ? DT_NOMINAL : trackDs(ecs);
     const length = Section.length.get(eid);
-    const step = sectionStep(Section.ds.get(eid), nominal);
-    // the pairing seam: conform once here so every downstream use of this spec's `ds`
+    const nominalStep = sectionStep(Section.ds.get(eid), nominal);
+    // the pairing seam: conform once here so every downstream use of this spec's `step`
     // (this module's own `forceProfile`/`evalForce` call below, and `optimize.ts`'s kernel,
-    // which reads `spec.ds` through `OptimizeOpts`) marches at the same exact step the mode
-    // stamped its exit at.
-    const { ds } = resolveStep(length, step);
-    return { entry: info.entry, length, ds, domain };
+    // which reads `spec.step.ds` through `OptimizeOpts`) marches at the same exact step the
+    // mode stamped its exit at.
+    const step = resolveStep(length, nominalStep);
+    return { entry: info.entry, length, step, domain };
 }
 
 /** the section's authored keyframes as `ForcePoint`s, sorted by `s` (`sectionForces`'s own
@@ -111,8 +111,8 @@ export function enterPin(ecs: State, sectionId: number): PinSession | null {
     const spec = sectionSpec(ecs, sectionId);
     if (!spec) return null;
     const { points } = sectionPoints(ecs, sectionId);
-    const dense = forceProfile(points, spec.length, spec.ds);
-    const r = evalForce(spec.entry, dense, spec.ds, spec.domain);
+    const dense = forceProfile(points, spec.step);
+    const r = evalForce(spec.entry, dense, spec.step, spec.domain);
     // the session carries only the stamp + ghost + the downstream freeze seed (all frozen at
     // mode entry); the section's baking parameters are NOT cached here — `runPinSection`
     // re-reads them live off `sectionSpec` at every invoke, same as any other invoked command
@@ -242,7 +242,7 @@ export async function runPinSection(
         points,
         locked: lockedIdx,
         length: spec.length,
-        ds: spec.ds,
+        ds: spec.step.ds,
         domain: spec.domain,
         stamp: session.stamp,
     };

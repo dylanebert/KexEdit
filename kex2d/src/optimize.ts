@@ -99,7 +99,7 @@
  *  ever executes. */
 
 import { G } from "./forward";
-import { forceProfile, type ForcePoint, resolveStep } from "./profile";
+import { forceProfile, type ForcePoint, resolveStep, type Step } from "./profile";
 import { type Domain, type Entry, evalForce } from "./section";
 
 /** the section's exit anchor a stamp addresses. `v` is STAMPED, not PINNED: energy conservation
@@ -139,11 +139,10 @@ const F32_EPS = 2 ** -24;
 export function derivedTol(
     stamp: OptimizeStamp,
     length: number,
-    ds: number,
+    step: Step,
 ): { pos: number; angle: number } {
-    const { edges } = resolveStep(length, ds);
     const scale = Math.max(Math.abs(stamp.x), Math.abs(stamp.y), length);
-    const pos = 3 * F32_EPS * Math.sqrt(edges) * scale;
+    const pos = 3 * F32_EPS * Math.sqrt(step.edges) * scale;
     return { pos, angle: pos / length };
 }
 
@@ -252,9 +251,9 @@ export function computeExit(
     step: number,
     domain?: Domain,
 ): OptimizeStamp {
-    const { ds } = resolveStep(length, step);
-    const dense = forceProfile(points, length, ds);
-    const exit = evalForce(entry, dense, ds, domain);
+    const resolved = resolveStep(length, step);
+    const dense = forceProfile(points, resolved);
+    const exit = evalForce(entry, dense, resolved, domain);
     return { x: exit.exit.x, y: exit.exit.y, theta: exit.exit.theta, v: exit.exit.v };
 }
 
@@ -316,13 +315,14 @@ function choleskySolve(L: Float64Array, n: number, b: ArrayLike<number>): Float6
  * if (r.outcome === "solved") landPin(history, ecs, section, r.points);
  */
 export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
-    const { entry, points, locked, length, ds: step, domain, stamp } = opts;
+    const { entry, points, locked, length, ds: rawStep, domain, stamp } = opts;
     const maxIters = opts.maxIters ?? MAX_ITERS;
     // conform once (the pairing seam) so every downstream forceProfile/evalForce call below
     // marches at the SAME exact step (`kex2d-section-extent` stage 4) — never the caller's raw
     // `step`, whose rounding residual would otherwise disagree with `profile.ts`'s own σ grid.
-    const { edges, ds } = resolveStep(length, step);
-    const tolD = derivedTol(stamp, length, ds);
+    const step = resolveStep(length, rawStep);
+    const { edges, ds } = step;
+    const tolD = derivedTol(stamp, length, step);
     const tol = opts.tol ?? tolD.pos;
     const angleTol = opts.angleTol ?? tolD.angle;
     // the θ row's weight (metres per radian): a heading error δθ displaces the downstream track
@@ -359,8 +359,8 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     // the exit's full state — including `v`, the landed-energy gate's own reading — read through
     // the SAME production integrator call the residual rows use (module header).
     const exitAt = (g: ArrayLike<number>): Entry => {
-        const dense = forceProfile(withG(points, g), length, ds);
-        return evalForce(entry, dense, ds, domain).exit;
+        const dense = forceProfile(withG(points, g), step);
+        return evalForce(entry, dense, step, domain).exit;
     };
 
     const e0 = exitAt(g0);
@@ -373,11 +373,11 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     // the Gram matrix M (P×P): each free key's unit-g-bump response, ds-weighted inner product.
     // exact globally (not a linearization) — the dense profile is affine in g with s frozen.
     // `edges`/`ds` are the SAME conformed pair resolved once at function entry.
-    const base = forceProfile(points, length, ds);
+    const base = forceProfile(points, step);
     const cols: Float64Array[] = freeIdx.map((k) => {
         const gPert = Float64Array.from(g0);
         gPert[k] += 1;
-        const prof = forceProfile(withG(points, gPert), length, ds);
+        const prof = forceProfile(withG(points, gPert), step);
         const col = new Float64Array(edges);
         for (let e = 0; e < edges; e++) col[e] = prof[e] - base[e];
         return col;

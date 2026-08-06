@@ -36,7 +36,12 @@ function liveDeviation(
     edges: number;
 } {
     const { result, entry, bake } = item;
-    const out = evalForce(entry, forceProfile(result.final.points, result.final.length, ds), ds);
+    // deliberately NOT `resolveStep` — this reads the march at the caller's raw `ds` (the
+    // nominal-vs-realized comparison this function exists for), never the conformed step, which
+    // would silently absorb the very rounding gap the nominal-replay miss measures.
+    const edges = Math.max(1, Math.round(result.final.length / ds));
+    const step = { edges, ds };
+    const out = evalForce(entry, forceProfile(result.final.points, step), step);
     const sigma = [0];
     for (let i = 0; i < bake.edges; i++) sigma.push(sigma[i] + bake.ds[i]);
     let deviation = 0;
@@ -63,7 +68,9 @@ function liveDeviation(
 
 function lockedDeviation(item: (typeof CORPUS)[number], ds: number): number {
     const { result, entry } = item;
-    const out = evalForce(entry, forceProfile(result.final.points, result.final.length, ds), ds);
+    const edges = Math.max(1, Math.round(result.final.length / ds));
+    const step = { edges, ds };
+    const out = evalForce(entry, forceProfile(result.final.points, step), step);
     expect(out.edges).toBe(result.final.spine.edges);
     let deviation = 0;
     for (let index = 0; index <= out.edges; index++)

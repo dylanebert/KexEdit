@@ -4,7 +4,7 @@
 // cases; the corpus-wide claims live here.
 import { describe, expect, test } from "bun:test";
 import { FORCE_BUDGET, GEO_BUDGET, geofit, type GeofitBake } from "../src/geofit";
-import { forceProfile } from "../src/profile";
+import { forceProfile, resolveStep } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import { sampleChain } from "../src/spline";
@@ -28,7 +28,8 @@ describe("document-layer fidelity: the whole corpus", () => {
         test(scenario.name, () => {
             const g = FORCEGEO_SOURCE(scenario.name);
             const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
-            const bake = evalForce(entry, forceProfile(g.points, g.length, g.ds), g.ds);
+            const step = resolveStep(g.length, g.ds);
+            const bake = evalForce(entry, forceProfile(g.points, step), step);
             const target: GeofitBake = {
                 x: bake.posX,
                 y: bake.posY,
@@ -99,7 +100,8 @@ describe("round-trip: geo scenario → shipped geo→force convert → this fit 
             const origin = evalGeo(entry, scenario.nodes, scenario.ds);
 
             // leg 1 — the shipped geo→force convert, replayed off its frozen golden.
-            const bake = evalForce(entry, forceProfile(g.points, g.length, g.ds), g.ds);
+            const step = resolveStep(g.length, g.ds);
+            const bake = evalForce(entry, forceProfile(g.points, step), step);
             const target: GeofitBake = {
                 x: bake.posX,
                 y: bake.posY,

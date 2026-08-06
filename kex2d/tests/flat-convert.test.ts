@@ -38,8 +38,8 @@ describe("flat conversion regressions", () => {
 
     test("every converted segment is the default named Cubic", () => {
         for (const result of cases.values()) {
-            const { points, length, ds } = result.final;
-            expect(forceProfile(points, length, ds).length).toBe(result.final.edges);
+            const { points, edges, ds } = result.final;
+            expect(forceProfile(points, { edges, ds }).length).toBe(result.final.edges);
             for (let k = 0; k + 1 < points.length; k++) {
                 expect(points[k].ease).toBeUndefined();
                 expect(custom(points[k], points[k + 1])).toBe(false);

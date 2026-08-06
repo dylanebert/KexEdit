@@ -14,7 +14,7 @@
 // Run: bun tests/forcegeo.lab.ts
 
 import { FORCE_BUDGET, GEO_BUDGET, type GeofitBake, geofit } from "../src/geofit";
-import { forceProfile } from "../src/profile";
+import { forceProfile, resolveStep } from "../src/profile";
 import { narrow, refine } from "../src/refine";
 import { type Scenario, scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
@@ -44,8 +44,9 @@ function bakeOf(
 function corpusTarget(scenario: Scenario): { bake: GeofitBake; v0: number } {
     const g = FORCEGEO_SOURCE(scenario.name);
     const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
-    const profile = forceProfile(g.points, g.length, g.ds);
-    const bake = evalForce(entry, profile, g.ds);
+    const step = resolveStep(g.length, g.ds);
+    const profile = forceProfile(g.points, step);
+    const bake = evalForce(entry, profile, step);
     return { bake: bakeOf(bake.posX, bake.posY, bake.fN, bake.ds), v0: entry.v };
 }
 
@@ -57,8 +58,9 @@ function stressTarget(scenario: Scenario): { bake: GeofitBake; v0: number } {
     const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
     const geoBake = evalGeo(entry, scenario.nodes, scenario.ds);
     const converted = narrow(refine({ bake: geoBake, entry, ds: scenario.ds, playback: false }));
-    const profile = forceProfile(converted.points, converted.length, converted.ds);
-    const bake = evalForce(entry, profile, converted.ds);
+    const step = resolveStep(converted.length, converted.ds);
+    const profile = forceProfile(converted.points, step);
+    const bake = evalForce(entry, profile, step);
     return { bake: bakeOf(bake.posX, bake.posY, bake.fN, bake.ds), v0: entry.v };
 }
 

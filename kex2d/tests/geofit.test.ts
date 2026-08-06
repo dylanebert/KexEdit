@@ -109,8 +109,9 @@ describe("geofit", () => {
         const Corpus = scenarios.map((scenario) => {
             const g = FORCEGEO_SOURCE(scenario.name);
             const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
-            const profile = forceProfile(g.points, g.length, g.ds);
-            const bake = evalForce(entry, profile, g.ds);
+            const step = { edges: g.edges, ds: g.ds };
+            const profile = forceProfile(g.points, step);
+            const bake = evalForce(entry, profile, step);
             const target = bakeOf(bake.posX, bake.posY, bake.fN, bake.ds);
             return { scenario, result: geofit(target, entry.v) };
         });

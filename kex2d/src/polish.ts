@@ -12,7 +12,14 @@
 
 import { bandFactor, bandSolve, bandStore } from "./banded";
 import { V_FLOOR } from "./forward";
-import { type ForcePoint, forceProfile, type Offset, resolveStep, sampleForce } from "./profile";
+import {
+    type ForcePoint,
+    forceProfile,
+    type Offset,
+    resolveStep,
+    sampleForce,
+    type Step,
+} from "./profile";
 import type { Entry } from "./section";
 
 const G = 9.80665;
@@ -68,7 +75,7 @@ export interface Snapshot {
 
 export interface PolishResult {
     /** the polished sparse profile — load it as a force section with
-     *  `forceProfile(points, length, ds)` + `evalForce(entry, …, ds)`. */
+     *  `forceProfile(points, { edges, ds })` + `evalForce(entry, …, { edges, ds })`. */
     points: ForcePoint[];
     length: number;
     /** the uniform edge step the profile was solved at (`length/edges`). */
@@ -176,10 +183,9 @@ export function chordDeficit(sp: Spine): number {
  *  them reaches 40 g, invisible in the diamonds. */
 export function violence(
     points: readonly ForcePoint[],
-    length: number,
-    ds: number,
+    step: Step,
 ): { peakG: number; maxDg: number } {
-    const fN = forceProfile(points, length, ds);
+    const fN = forceProfile(points, step);
     let peakG = 0;
     for (let j = 0; j < fN.length; j++) peakG = Math.max(peakG, Math.abs(fN[j]));
     let maxDg = 0;
@@ -312,7 +318,10 @@ export function forceMatrix(
  * const r = evalGeo(entry, nodes, 0.5);
  * const f = fit(r.fN, r.ds, 0.05);
  * const p = polish({ bake: r, entry, points: f.points, ds: 0.5 });
- * const out = evalForce(entry, forceProfile(p.points, p.length, p.ds), p.ds);
+ * const out = evalForce(entry, forceProfile(p.points, { edges: p.edges, ds: p.ds }), {
+ *     edges: p.edges,
+ *     ds: p.ds,
+ * });
  */
 export function polish(opts: PolishOpts): PolishResult {
     const { bake, entry } = opts;
@@ -866,7 +875,7 @@ export function polish(opts: PolishOpts): PolishResult {
     feas = constrain(z).feas;
     const { dev, at } = deviate(z);
     const points = profile();
-    const { peakG, maxDg } = violence(points, L, h);
+    const { peakG, maxDg } = violence(points, { edges: E, ds: h });
     // playback must end on the answer. Normally the loop leaves room (it decimates AT the
     // cap, so it exits below it), but at `maxSnapshots` = 1 there is no room — then the
     // final frame REPLACES the last recorded one rather than overflowing the cap.

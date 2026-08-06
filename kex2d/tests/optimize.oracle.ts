@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { V_FLOOR } from "../src/forward";
 import { computeExit, derivedTol, solveOptimize } from "../src/optimize";
-import { forceProfile, type ForcePoint } from "../src/profile";
+import { forceProfile, type ForcePoint, resolveStep } from "../src/profile";
 import { type Entry, evalForce } from "../src/section";
 
 // the corpus-scale optimize gate (`kex2d-optimize-mode` stage 3, run explicitly): the universal
@@ -60,7 +60,8 @@ function corpus(): Scenario[] {
 }
 
 function vMin(sc: Scenario, points: ForcePoint[]): number {
-    const r = evalForce(sc.entry, forceProfile(points, sc.length, DS), DS, undefined);
+    const step = resolveStep(sc.length, DS);
+    const r = evalForce(sc.entry, forceProfile(points, step), step, undefined);
     let m = Infinity;
     for (let i = 0; i < r.v.length; i++) m = Math.min(m, r.v[i]);
     return m;
@@ -79,7 +80,7 @@ describe("optimize corpus: every single-key ±0.2 g edit resolves honestly", () 
     for (const sc of corpus()) {
         test(sc.name, () => {
             const stamp = computeExit(sc.entry, sc.points, sc.length, DS);
-            const floor = derivedTol(stamp, sc.length, DS);
+            const floor = derivedTol(stamp, sc.length, resolveStep(sc.length, DS));
             for (let k = 0; k < sc.points.length; k++) {
                 for (const sign of [1, -1]) {
                     const edited = sc.points.map((p, i) => ({
@@ -129,7 +130,7 @@ describe("optimize corpus: the continuation ladder holds the measured drift ramp
     for (const sc of corpus().slice(0, 2)) {
         test(sc.name, () => {
             const stamp = computeExit(sc.entry, sc.points, sc.length, DS);
-            const floor = derivedTol(stamp, sc.length, DS);
+            const floor = derivedTol(stamp, sc.length, resolveStep(sc.length, DS));
             for (const dg of [0.5, 1, 2, 3, 4, 6]) {
                 const edited = sc.points.map((p, i) => ({
                     ...p,

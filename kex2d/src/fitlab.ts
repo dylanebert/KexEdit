@@ -245,11 +245,8 @@ function geometryFrame(solve: Solve, selectedFrame: Frame): void {
         { x: solve.bake.posX, y: solve.bake.posY, color: BLUE },
     ];
     if (selectedFrame.points) {
-        const out = evalForce(
-            solve.entry,
-            forceProfile(selectedFrame.points, solve.out.length, solve.out.ds),
-            solve.out.ds,
-        );
+        const step = { edges: solve.out.edges, ds: solve.out.ds };
+        const out = evalForce(solve.entry, forceProfile(selectedFrame.points, step), step);
         paths.push({ x: out.posX, y: out.posY, color: GOLD });
     }
     const xs = paths.flatMap((path) => Array.from(path.x));
@@ -291,7 +288,8 @@ function forceFrame(solve: Solve, selectedFrame: Frame): void {
     draw(solve.bake.fN, solve.sigma, BLUE);
     if (!selectedFrame.points) return;
     const dense =
-        selectedFrame.fN ?? forceProfile(selectedFrame.points, solve.out.length, solve.out.ds);
+        selectedFrame.fN ??
+        forceProfile(selectedFrame.points, { edges: solve.out.edges, ds: solve.out.ds });
     draw(dense, uniformAbscissa(dense.length, solve.out.ds), GOLD);
     context.fillStyle = GOLD;
     for (const point of selectedFrame.points) {

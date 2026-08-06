@@ -166,7 +166,11 @@ describe("sparse init — the corpus fit", () => {
             test("the dense array a force section loads matches the point evaluator", () => {
                 const { s, r } = bakeOf(scenario.name);
                 const f = fit(r.fN, r.ds, TOL);
-                const arr = forceProfile(f.points, f.length, s.ds);
+                // NOT `resolveStep` here — this pins the march at the exact nominal `s.ds` the
+                // assertion below samples at, never the conformed (re-derived) step, which would
+                // drift the comparison cumulatively over the march.
+                const edges = Math.max(1, Math.round(f.length / s.ds));
+                const arr = forceProfile(f.points, { edges, ds: s.ds });
                 expect(arr.length).toBe(Math.round(f.length / s.ds));
                 for (let i = 0; i < arr.length; i++) {
                     expect(Math.abs(arr[i] - sampleForce(f.points, i * s.ds))).toBeLessThanOrEqual(

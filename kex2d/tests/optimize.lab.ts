@@ -23,7 +23,7 @@
 // Run: bun tests/optimize.lab.ts
 
 import { derivedTol, exitTol, type OptimizeOpts, solveOptimize } from "../src/optimize";
-import { forceProfile, type ForcePoint } from "../src/profile";
+import { forceProfile, type ForcePoint, resolveStep } from "../src/profile";
 import { type Entry, evalForce } from "../src/section";
 
 const ENTRY: Entry = { x: 0, y: 0, theta: 0, v: 20 };
@@ -83,8 +83,9 @@ function exitAt(
     points: ForcePoint[],
 ): { x: number; y: number; theta: number; v: number } {
     const entry = sc.entry ?? ENTRY;
-    const dense = forceProfile(points, sc.length, DS);
-    const e = evalForce(entry, dense, DS, undefined).exit;
+    const step = resolveStep(sc.length, DS);
+    const dense = forceProfile(points, step);
+    const e = evalForce(entry, dense, step, undefined).exit;
     return { x: e.x, y: e.y, theta: e.theta, v: e.v };
 }
 
@@ -99,8 +100,9 @@ function scaleOf(sc: Scenario): number {
 
 function minSpeed(sc: Scenario, points: ForcePoint[]): number {
     const entry = sc.entry ?? ENTRY;
-    const dense = forceProfile(points, sc.length, DS);
-    const r = evalForce(entry, dense, DS, undefined);
+    const step = resolveStep(sc.length, DS);
+    const dense = forceProfile(points, step);
+    const r = evalForce(entry, dense, step, undefined);
     let m = Infinity;
     for (let i = 0; i < r.v.length; i++) m = Math.min(m, r.v[i]);
     return m;
@@ -298,9 +300,10 @@ function stallRead(
 ): { fires: boolean; maxRatio: number; maxCapRatio: number } {
     const L = sc.length;
     const base = exitAt(sc, points);
-    const dense0 = forceProfile(points, L, DS);
+    const step = resolveStep(L, DS);
+    const dense0 = forceProfile(points, step);
     const entry = sc.entry ?? ENTRY;
-    const march = evalForce(entry, dense0, DS, undefined);
+    const march = evalForce(entry, dense0, step, undefined);
     const scale = Math.max(Math.abs(base.x), Math.abs(base.y), L);
     const noise = (F32_EPS * scale) / JAC_H;
     let fires = false;
@@ -314,7 +317,7 @@ function stallRead(
         const bwd = (L * (base.theta - eM.theta)) / JAC_H;
         if (fwd * bwd < 0 && Math.min(Math.abs(fwd), Math.abs(bwd)) > noise) fires = true;
         maxRatio = Math.max(maxRatio, Math.abs(fwd - bwd) / Math.max(Math.abs(cen), noise));
-        const bump = forceProfile(withBump(points, k, 1), L, DS);
+        const bump = forceProfile(withBump(points, k, 1), step);
         let cap = 0;
         for (let e = 0; e < dense0.length; e++) {
             const vs = Math.max(Math.abs(march.v[e]), 0.01);
@@ -541,8 +544,9 @@ console.log(
         points: ForcePoint[],
         length: number,
     ): { x: number; y: number; theta: number; v: number } {
-        const dense = forceProfile(points, length, DS);
-        return evalForce(entry, dense, DS, undefined).exit;
+        const step = resolveStep(length, DS);
+        const dense = forceProfile(points, step);
+        return evalForce(entry, dense, step, undefined).exit;
     }
 
     let breaches = 0;
@@ -573,7 +577,7 @@ console.log(
         const vmin = minSpeed({ name: label, points: edited, length, entry }, edited);
         const landedExit = fullExit(entry, r.points, length);
         const gapSq = Math.abs(landedExit.v * landedExit.v - stampExit.v * stampExit.v);
-        const tolD = derivedTol(stamp, length, DS);
+        const tolD = derivedTol(stamp, length, resolveStep(length, DS));
         const bound = exitTol(tolD.pos);
         const breach = r.outcome === "solved" && gapSq > bound;
         if (breach) breaches++;

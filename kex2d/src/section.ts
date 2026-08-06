@@ -22,7 +22,8 @@
  *  (`bake.forces`), not the f64 solver atoms (`force.ts`). */
 
 import { forces } from "./bake";
-import { integrate, step } from "./forward";
+import { integrate, step as stepForward } from "./forward";
+import type { Step } from "./profile";
 import { type Node, sampleChain, type Tangent } from "./spline";
 
 /** default sample-buffer ceiling — mirrors `track.MAX_SAMPLES`. */
@@ -92,7 +93,7 @@ export interface SectionResult {
  *  for `Time`). */
 export type Section =
     | { kind: "geo"; nodes: readonly Node[]; ds: number }
-    | { kind: "force"; fN: ArrayLike<number>; ds: number; domain?: Domain };
+    | { kind: "force"; fN: ArrayLike<number>; step: Step; domain?: Domain };
 
 /** rotate a tangent's in/out vectors by the rotation `(c, s) = (cos φ, sin φ)`.
  *  an explicit tangent is stored in the node's local frame, so re-expressing the node
@@ -203,11 +204,14 @@ export function evalGeo(
  * (one display path). the recovered force overwrites the integrator's
  * `theta`/`v`, so the exit and the chart match a geo section's recovery exactly.
  *
+ * `fN.length` must equal `step.edges` (thrown otherwise) — the pairing invariant
+ * `resolveStep` produces and the caller must not have split.
+ *
  * `domain` is a step rule, not a rework: **Distance** (default, byte-identical
- * to the original path) steps `Δs = ds` and samples `fN` at the source
+ * to the original path) steps `Δs = step.ds` and samples `fN` at the source
  * convention `σ_i = i·ds`, so every forward step advances exactly `ds` along
  * its mid-angle (the per-edge chord IS `ds`, the recovery's `dsArr`).
- * **Time** steps `Δt = ds` and samples `fN` at `t_i = i·Δt` (the same source
+ * **Time** steps `Δt = step.ds` and samples `fN` at `t_i = i·Δt` (the same source
  * convention, time's twin); each edge advances `ds_i = v_i·Δt` along
  * arclength — a *variable* per-edge chord, read off the live integrator `v`
  * before it is overwritten by the recovery below (`forces` already accepts a
@@ -226,10 +230,13 @@ export function evalGeo(
 export function evalForce(
     entry: Entry,
     fN: ArrayLike<number>,
-    ds: number,
+    step: Step,
     domain: Domain = Domain.Distance,
 ): SectionResult {
-    const edges = fN.length;
+    const { edges, ds } = step;
+    if (fN.length !== edges) {
+        throw new Error(`evalForce: fN.length (${fN.length}) does not match step.edges (${edges})`);
+    }
     const n = edges + 1;
     const posX = new Float32Array(n);
     const posY = new Float32Array(n);
@@ -245,7 +252,7 @@ export function evalForce(
         for (let i = 0; i < edges; i++) {
             const dsi = v[i] * ds; // ds_i = v_i · Δt
             dsArr[i] = dsi;
-            step(posX, posY, theta, v, i, i + 1, fN[i], dsi);
+            stepForward(posX, posY, theta, v, i, i + 1, fN[i], dsi);
         }
     } else {
         integrate(posX, posY, theta, v, n, ds, (sigma) => fN[Math.round(sigma / ds)]);
@@ -321,7 +328,7 @@ export function chain(entry0: Entry, sections: readonly Section[], maxSamples = 
         const r =
             sec.kind === "geo"
                 ? evalGeo(entry, sec.nodes, sec.ds, maxSamples - off)
-                : evalForce(entry, sec.fN, sec.ds, sec.domain);
+                : evalForce(entry, sec.fN, sec.step, sec.domain);
         const start = off;
         // copy points 1..edges; point 0 duplicates the shared boundary already
         // written by the prior section (or the seed), so leave it — it carries the

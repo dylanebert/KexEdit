@@ -39,7 +39,7 @@
 import { digestOf } from "./helpers/compare";
 import { geofit, type GeofitBake, type GeofitNode, type GeofitOutcome } from "../src/geofit";
 import { fit } from "../src/fit";
-import { forceProfile } from "../src/profile";
+import { forceProfile, resolveStep } from "../src/profile";
 import { polish } from "../src/polish";
 import { narrow, refine } from "../src/refine";
 import { scenarios } from "../src/scenarios";
@@ -107,7 +107,8 @@ if (PLATFORM_STAMP !== FORCEGEO_SOURCE_STAMP) {
     for (const scenario of scenarios) {
         const g = sourceConvert[scenario.name];
         const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
-        const bake = evalForce(entry, forceProfile(g.points, g.length, g.ds), g.ds);
+        const step = resolveStep(g.length, g.ds);
+        const bake = evalForce(entry, forceProfile(g.points, step), step);
         const target: GeofitBake = {
             x: bake.posX,
             y: bake.posY,

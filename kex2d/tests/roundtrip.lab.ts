@@ -38,7 +38,7 @@
 // Run: bun tests/roundtrip.lab.ts
 
 import { geofit } from "../src/geofit";
-import { forceProfile } from "../src/profile";
+import { forceProfile, resolveStep } from "../src/profile";
 import { narrow, refine } from "../src/refine";
 import { type Scenario, scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
@@ -62,8 +62,9 @@ function measure(scenario: Scenario): Row {
     // geo→force: the exact call `geoforce.convertGeo` makes.
     const geoBake = evalGeo(entry, scenario.nodes, scenario.ds);
     const converted = narrow(refine({ bake: geoBake, entry, ds: scenario.ds, playback: false }));
-    const profile = forceProfile(converted.points, converted.length, converted.ds);
-    const forceBake = evalForce(entry, profile, converted.ds);
+    const step = resolveStep(converted.length, converted.ds);
+    const profile = forceProfile(converted.points, step);
+    const forceBake = evalForce(entry, profile, step);
 
     // force→geo: the exact call `forcegeo.convertForce` makes.
     const fit = geofit(bakeOf(forceBake), entry.v);

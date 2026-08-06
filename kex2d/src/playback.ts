@@ -151,7 +151,7 @@ export function baseline(steps: readonly FitStep[], out: PolishResult): Frame[] 
                     ? `fit · first piece · ${step.knots.length} keys`
                     : `fit · ${step.phase} ${index} · ${step.knots.length} keys`,
             points: step.points,
-            fN: forceProfile(step.points, out.length, out.ds),
+            fN: forceProfile(step.points, { edges: out.edges, ds: out.ds }),
             snap: null,
             step,
             event: null,
@@ -168,7 +168,7 @@ export function pipeline(result: RefineResult, sigma: ArrayLike<number>): Frame[
             phase: "refine",
             label: eventLabel(event, sigma),
             points: event.points,
-            fN: forceProfile(event.points, result.final.length, result.final.ds),
+            fN: forceProfile(event.points, { edges: result.final.edges, ds: result.final.ds }),
             snap: null,
             step: null,
             event,

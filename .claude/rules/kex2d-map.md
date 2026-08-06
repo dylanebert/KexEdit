@@ -20,9 +20,11 @@ point IS the next section's entry. Two atomic idioms wrap the oracle-gated physi
   local origin, heading 0) are placed **rigidly** at the entry frame (rotate by entry θ, translate
   to entry position), sampled to a Hermite curve (`sampleChain`), then the physical force is
   recovered from the geometry (`forces`, `v0 = entry.v`).
-- **`evalForce(entry, fN, ds)`** — force → geometry. Seed sample 0 from the entry, `integrate` the
-  authored per-edge F_n into the swept geometry, then **re-recover** the display force from that
-  geometry.
+- **`evalForce(entry, fN, step, domain)`** — force → geometry. Takes `profile.ts`'s resolved
+  `Step` (`{edges, ds}`) as one value — never a bare `ds` — and throws if `fN.length !== step.edges`
+  (the pair-as-one-value law, `kex2d-correctness-fixes` stage 1). Seed sample 0 from the entry,
+  `integrate` the authored per-edge F_n into the swept geometry, then **re-recover** the display
+  force from that geometry.
 - **`chain(entry0, sections)`** — thread the sections: each is placed at the prior section's exit,
   its samples appended to one flat SoA, sharing the boundary point (a section's last sample IS the
   next's first). Returns the flat buffers + per-section index `ranges` + `exits`.
@@ -187,50 +189,58 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `edges = max(1, round(length/step))`, `ds = length/edges`. So `edges·ds === length` to f32
   accumulation instead of leaving a rounding-residual gap between the authored extent and the
   realized one — within the sample budget: a
-  `MAX_SAMPLES`-clipped chain, and `forceBake` (`track.ts:2523`, which clips deliberately),
+  `MAX_SAMPLES`-clipped chain, and `forceBake` (`track.ts:2532`, which clips deliberately),
   truncate the march short of `edges`, so the identity is conditional on nothing having clipped.
   The conformed `ds` is a fixed point of this same rounding, so re-resolving an already-conforming
   step (a converted section's stored `Section.ds`) preserves the same `edges` — what survives
   re-resolution is the EDGE COUNT, not the `ds` value bit-for-bit: the returned `ds` is re-derived
   in f64 and may differ from a stored f32 step by up to one f32 ulp, a strict improvement over the
-  stored value rather than a no-op. `forceProfile` itself still takes a pre-resolved `ds` and
-  computes `edges = round(length/ds)` locally: recovers the SAME edge count once its caller has
-  already conformed via `resolveStep` (the fixed-point property), never a second, independent
-  rounding.
+  stored value rather than a no-op.
 
-  **Pairing is a source-of-truth law, not a per-call convention: a value produced in pairs must
-  travel in pairs.** `resolveStep`'s `{edges, ds}` is one seam producing two values a caller must
-  use TOGETHER; a caller that destructures `edges` alone and later hands `forceProfile`/
-  `evalForce` some OTHER, unconformed `ds` has split the pair — `optimize.ts` shipped exactly this
-  latently, for a whole stage — and no per-file registry pin can see it, since the
-  file still mentions `resolveStep` truthfully. The source pin below asserts at the invariant's
-  own granularity (per call site: does THIS `forceProfile`/`evalForce` call consume a `ds` bound
-  by `resolveStep` in the same module), not per-file presence. The structural fix — `forceProfile`
-  taking the resolved pair as a single value the callee REQUIRES, deleting its own second
-  rounding — would make the split a type error instead of a latent bug; deferred pending that
-  signature change (roadmap), so the per-call-site pin carries the invariant until then.
+  **Pairing is a source-of-truth law, enforced structurally, not by convention.** `resolveStep`
+  returns a `Step` interface (`{edges, ds}`) — one value, not two — and `forceProfile(points,
+  step)` / `evalForce(entry, fN, step, domain)` take it as their ONE argument, never a bare `ds`
+  positional. There is no signature left to hand a caller's own, unconformed `ds` into: splitting
+  the pair (destructuring `edges` alone and marching on some OTHER `ds`, the way `optimize.ts`
+  shipped it latently for a whole stage, `kex2d-section-extent`) is a type error at the call site,
+  not a runtime latent bug a lexical scan has to catch after the fact — demonstrated by handing
+  `forceProfile`/`evalForce` a destructured `ds: number` directly: `tsc` refuses with "Argument of
+  type 'number' is not assignable to parameter of type 'Step'." `evalForce` additionally throws at
+  runtime when `fN.length !== step.edges`, closing the half the type alone can't: a caller handing
+  a matched `Step` alongside a STALE dense array (built against a different, earlier step).
+  `section.ts` reaches `Step` by a type-only import, so the substrate's runtime module graph gains
+  no edge to `profile.ts`.
 
   Every production pairing of a force section's edge count with its step goes through
-  `resolveStep` — six sites in four modules: `track.ts` `forcePayload` + `forceBake`, `pin.ts`
-  `sectionSpec`, `optimize.ts` `derivedTol` + the Gram matrix build, `polish.ts` `spine`.
-  `track.ts`'s `forceDense` is a CONSUMER of an already-conformed `ds`, not a pairing site of its
-  own: its `ds` parameter is conformed once upstream, by `forcePayload`/`forceBake`, each of which
-  calls `resolveStep` before passing it in. A recursive source-tree walk in
-  `tests/profile.test.ts` holds the six-site population closed, asserted both directions (a
-  declared site missing from source, and a source site building its own `(edges, ds)` pair
-  outside `resolveStep` with no declaration), against an explicit exemption table for
-  `playback.ts`/`fitlab.ts` (consume an already-conformed `ds` from upstream), `section.ts` (its
-  `chain()` calls `evalForce` with a step traced through `resolveStep` upstream), and
-  `spline.ts:432` (the geo variable-chord rule: a different domain, not a force pairing).
-  **The pin's visibility is LEXICAL and FILE-LOCAL** — a `ds` counts as conformed at a call site
-  only if a `resolveStep` binding is open there (its block path a prefix of the use's), across all
-  three conforming forms (destructure with alias, member access, whole pair), comments stripped
-  first because `polish.ts` carries a `forceProfile(...)` call inside a JSDoc `@example`. So what
-  it cannot see is **cross-function dataflow**: a function taking `ds` as a bare parameter whose
-  every caller conformed upstream. Those are a declared, name-keyed exemption, not something the
-  scan proves — `track.ts` `forceDense`, `pin.ts` `enterPin`, `polish.ts` `violence`. The
-  structural fix above (the callee requiring the resolved pair) is what closes that gap for good;
-  a smarter scanner isn't.
+  `resolveStep` — seven sites in four modules: `track.ts` `forcePayload` + `forceBake`, `pin.ts`
+  `sectionSpec`, `optimize.ts` `computeExit` + `derivedTol` + the Gram matrix build, `polish.ts`
+  `spine`. `track.ts`'s `forceDense`, `pin.ts`'s `enterPin`, and `polish.ts`'s `violence` are
+  CONSUMERS of an already-conformed `Step`, not pairing sites of their own — each takes `Step` as
+  a typed parameter, conformed once upstream by its own caller. Before the signature change these
+  three needed a declared, name-keyed exemption in `tests/profile.test.ts` (`CrossFunctionConsumers`)
+  because a lexical, per-call-site scanner couldn't trace `ds` across a function boundary; the
+  signature now makes that boundary-crossing unrepresentable — `forceProfile`/`evalForce` take the
+  pair as one argument, so there is no call site left where `edges` and `ds` could have arrived
+  from two different resolutions — so the exemption table — and the whole per-call-site
+  scanning apparatus it existed for (`unboundUses`, block-scope binding visibility, three
+  conforming-form regexes) — is retired, not merely deleted. **What the type does NOT enforce:**
+  internal `edges`↔`ds` consistency within one `Step` value. TypeScript is structural, so a
+  hand-built `{edges, ds}` literal typechecks anywhere a `Step` is expected regardless of whether
+  `ds` actually equals `length/edges` — `evalForce`'s only runtime check is `fN.length ===
+  step.edges`, which says nothing about `ds`. That gap is real, not closable by branding `Step`
+  nominal: `track.forceBake`'s `clippedStep` (`{edges: clipped.length, ds: resolved.ds}`) is a
+  legitimate constructor outside `resolveStep` — carrying the same per-edge `ds` over a truncated
+  edge count is correct, not a violation — and a nominal escape hatch for that one site would
+  reopen the hole everywhere else while claiming to have closed it. What remains in
+  `tests/profile.test.ts` is a file-level census (a recursive source-tree walk asserting, both
+  directions with a positive control per direction, that no module outside `profile.ts`
+  hand-rolls the rounded-quotient edge-count shape, and that every caller of
+  `forceProfile`/`evalForce` is one of `track.ts`/`pin.ts`/`optimize.ts`/`polish.ts` — which call
+  `resolveStep` themselves — or a declared exemption consuming an already-conformed `Step`:
+  `playback.ts`/`fitlab.ts` (off a landed solve's answer), `fit.ts` (a JSDoc `@example` only), and
+  `section.ts` (`chain()`'s `evalForce` call consumes `sec.step`, traced through
+  `forcePayload`/`forceBake` to `resolveStep` upstream — a conformed `Step`, not a second
+  independent pairing).
   Opinion-free: the substrate consumes dense F_n, this builds it from authored points.
   Unit-tested in `tests/profile.test.ts`.
 

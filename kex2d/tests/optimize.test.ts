@@ -270,7 +270,7 @@ describe("solveOptimize — actually restores the stamped exit", () => {
                     // the production integrator and demand the exit meet the DERIVED floor —
                     // the two mechanisms' own disagreement (f32 replay noise over the section's
                     // step count), never an absolute number.
-                    const floor = derivedTol(stamp, length, DS);
+                    const floor = derivedTol(stamp, length, resolveStep(length, DS));
                     const back = computeExit(ENTRY, r.points, length, DS);
                     expect(Math.abs(back.x - stamp.x)).toBeLessThan(floor.pos);
                     expect(Math.abs(back.y - stamp.y)).toBeLessThan(floor.pos);
@@ -410,7 +410,7 @@ describe("solveOptimize — stage-3 refusal taxonomy + continuation (kex2d-optim
             stamp,
         });
         expect(r.outcome).toBe("solved");
-        const floor = derivedTol(stamp, length, DS);
+        const floor = derivedTol(stamp, length, resolveStep(length, DS));
         const back = computeExit(ENTRY, r.points, length, DS);
         expect(Math.abs(back.x - stamp.x)).toBeLessThan(floor.pos);
         expect(Math.abs(back.y - stamp.y)).toBeLessThan(floor.pos);
@@ -489,7 +489,7 @@ describe("solveOptimize — stage-3 refusal taxonomy + continuation (kex2d-optim
             stamp,
         });
         expect(r.outcome).toBe("solved");
-        const floor = derivedTol(stamp, 400, DS);
+        const floor = derivedTol(stamp, 400, resolveStep(400, DS));
         const back = computeExit(entry, r.points, 400, DS);
         expect(Math.abs(back.x - stamp.x)).toBeLessThan(floor.pos);
         expect(Math.abs(back.y - stamp.y)).toBeLessThan(floor.pos);
@@ -601,7 +601,7 @@ describe("solveOptimize — landed-energy gate (kex2d-gate-hardening 1b, exact b
     test("a stamp whose v disagrees with the converged (x, y, θ) refuses as diverged, not solved", () => {
         const { points, length } = corpus()[0];
         const trueStamp = computeExit(ENTRY, points, length, DS);
-        const tol = derivedTol(trueStamp, length, DS).pos;
+        const tol = derivedTol(trueStamp, length, resolveStep(length, DS)).pos;
         const bound = exitTol(tol);
         // a clearly-breaching displacement: 100x the bound expressed in Δv terms, floored at
         // 0.5 m/s so a tiny bound (a short section) still perturbs enough to survive solve noise.
@@ -616,7 +616,7 @@ describe("solveOptimize — landed-energy gate (kex2d-gate-hardening 1b, exact b
             ds: DS,
             stamp: badStamp,
         });
-        const floor = derivedTol(badStamp, length, DS);
+        const floor = derivedTol(badStamp, length, resolveStep(length, DS));
         // the (x, y, θ) rows converge — the certificate that fires is the v² gap alone, never a
         // fourth residual row.
         expect(r.residual).toBeLessThan(floor.pos);
@@ -638,7 +638,7 @@ describe("solveOptimize — landed-energy gate (kex2d-gate-hardening 1b, exact b
     test("a v-displacement that breaches the squared bound but not its own value unsquared still refuses (discriminates squaring)", () => {
         const { points, length } = corpus()[0];
         const trueStamp = computeExit(ENTRY, points, length, DS);
-        const tol = derivedTol(trueStamp, length, DS).pos;
+        const tol = derivedTol(trueStamp, length, resolveStep(length, DS)).pos;
         const bound = exitTol(tol);
         // aim the squared gap at 1.5x the bound (clearly past it), then invert to the linear Δv
         // that produces it (Δ(v²) ≈ 2·v·Δv for small Δv against the corpus's v ≈ 18 m/s).
@@ -656,7 +656,7 @@ describe("solveOptimize — landed-energy gate (kex2d-gate-hardening 1b, exact b
             ds: DS,
             stamp: badStamp,
         });
-        const floor = derivedTol(badStamp, length, DS);
+        const floor = derivedTol(badStamp, length, resolveStep(length, DS));
         expect(r.residual).toBeLessThan(floor.pos);
         expect(r.angleResidual).toBeLessThan(floor.angle);
         expect(r.vSqResidual).toBeGreaterThan(exitTol(floor.pos)); // the real (squared) gate fires
@@ -676,7 +676,9 @@ describe("solveOptimize — landed-energy gate (kex2d-gate-hardening 1b, exact b
             stamp,
         });
         expect(r.outcome).toBe("solved");
-        expect(r.vSqResidual).toBeLessThan(exitTol(derivedTol(stamp, length, DS).pos));
+        expect(r.vSqResidual).toBeLessThan(
+            exitTol(derivedTol(stamp, length, resolveStep(length, DS)).pos),
+        );
     });
 });
 
@@ -698,8 +700,8 @@ describe("computeExit/solveOptimize conform ds at an off-grid length (kex2d-sect
         // forceProfile/evalForce the caller's raw ds (0.5) directly (`:255`/`:256`); the
         // document's own bake (profile.ts's ONE seam, `resolveStep`) marches at the conformed
         // step instead.
-        const { ds: conformed } = resolveStep(OffLength, DS);
-        const documentBake = forceProfile(offPoints, OffLength, conformed);
+        const conformed = resolveStep(OffLength, DS);
+        const documentBake = forceProfile(offPoints, conformed);
         const exit = evalForce(ENTRY, documentBake, conformed, undefined).exit;
         const stamp = computeExit(ENTRY, offPoints, OffLength, DS);
         expect(stamp.x).toBeCloseTo(exit.x, 12);
@@ -714,8 +716,8 @@ describe("computeExit/solveOptimize conform ds at an off-grid length (kex2d-sect
         // `stamp` and the exact `c0 === 0` short-circuit missed, falling through into the
         // Gram-matrix build (`:371`/`:375`/`:385`) at the raw, unconformed step too — this
         // failed with a nonzero iters/residual rather than the exact zero-drift identity.
-        const { ds: conformed } = resolveStep(OffLength, DS);
-        const documentBake = forceProfile(offPoints, OffLength, conformed);
+        const conformed = resolveStep(OffLength, DS);
+        const documentBake = forceProfile(offPoints, conformed);
         const exit = evalForce(ENTRY, documentBake, conformed, undefined).exit;
         const stamp = { x: exit.x, y: exit.y, theta: exit.theta, v: exit.v };
         const r = solveOptimize({

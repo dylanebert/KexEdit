@@ -86,7 +86,7 @@ export function buildGeoSection(scenario: Scenario | { name: string; nodes: Node
 }
 
 /** build a force section from a landed `{s, g}` profile — the document-layer twin of
- *  `evalForce(entry, forceProfile(points, length, ds), ds)`: `createForcePoint` spawns each key
+ *  `evalForce(entry, forceProfile(points, step), step)`: `createForcePoint` spawns each key
  *  at the default ease with no explicit tangent, exactly what `applyConvert`'s own landing
  *  spawns (kex2d-map.md: "spawn its `{s,g}` keys — all default-Cubic by construction"). */
 function buildForceSection(

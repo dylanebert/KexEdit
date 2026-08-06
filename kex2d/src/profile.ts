@@ -335,6 +335,17 @@ export function sampleForce(points: readonly ForcePoint[], s: number): number {
     return bez(seg.g0, seg.p1g, seg.p2g, seg.g1, t);
 }
 
+/** the resolved pairing `resolveStep` produces and `forceProfile`/`evalForce` REQUIRE as one
+ *  value — a caller can no longer destructure `edges` alone and march `forceProfile`/
+ *  `evalForce` on some OTHER `ds` (`kex2d-section-extent` stage 4's latent defect: `optimize.ts`
+ *  did exactly that for a whole stage), because there is no signature that accepts `ds` without
+ *  its `edges`. See the module header and `kex2d-map.md`'s `profile.ts` entry (the pair-as-
+ *  one-value law, `coding.md`). */
+export interface Step {
+    edges: number;
+    ds: number;
+}
+
 /** the ONE seam that pairs a force section's realized edge count with its per-edge step:
  *  `edges = max(1, round(length/step))`, floored at 1 so a zero-length section still
  *  integrates one step, and `ds = length/edges` is the EXACT per-edge step that closes the
@@ -346,30 +357,19 @@ export function sampleForce(points: readonly ForcePoint[], s: number): number {
  *  `edges`, the quantity that actually survives; `ds` itself is re-derived in f64 and may differ
  *  from a stored f32 step by up to one f32 ulp, a strict improvement over the stored value, not a
  *  no-op. Every production pairing of a force section's edge count with its step goes through
- *  this ONE seam — never its own local `round(length/step)`, and never split (destructuring
- *  `edges` alone and marching `forceProfile`/`evalForce` on some OTHER `ds` defeats the pairing
- *  as surely as skipping the seam — `kex2d-section-extent` stage 4) — so `forceProfile`'s σ grid
- *  and `evalForce`'s march always agree on the same `ds`. */
-export function resolveStep(length: number, step: number): { edges: number; ds: number } {
+ *  this ONE seam — never its own local `round(length/step)`. `forceProfile`/`evalForce` take the
+ *  returned {@link Step} as a single argument, so the pair travels together by construction. */
+export function resolveStep(length: number, step: number): Step {
     const edges = Math.max(1, Math.round(length / step));
     return { edges, ds: length / edges };
 }
 
-/** the dense per-edge force over a section of `length` meters at edge step `ds`:
- *  edge `i` is driven by the force at its leading sample `σ_i = i·ds` (the source-σ
- *  convention `section.evalForce` / the forward integrator use). `edges =
- *  round(length/ds)`, floored at 1 so a zero-length section still integrates one
- *  step — a NO-OP when `ds` already comes from {@link resolveStep} (its fixed-point
- *  property), which every production caller is expected to have already applied; this
- *  function does not conform `ds` itself; see the module header. `points` sorted by s.
- *  marches the bezier `t` monotonically per segment as σ ascends (warm-started root
- *  solve), never Newton-from-scratch per sample. */
-export function forceProfile(
-    points: readonly ForcePoint[],
-    length: number,
-    ds: number,
-): Float32Array {
-    const edges = Math.max(1, Math.round(length / ds));
+/** the dense per-edge force over a section at the resolved {@link Step}: edge `i` is driven by
+ *  the force at its leading sample `σ_i = i·step.ds` (the source-σ convention `section.evalForce`
+ *  / the forward integrator use). `points` sorted by s. marches the bezier `t` monotonically per
+ *  segment as σ ascends (warm-started root solve), never Newton-from-scratch per sample. */
+export function forceProfile(points: readonly ForcePoint[], step: Step): Float32Array {
+    const { edges, ds } = step;
     const fN = new Float32Array(edges);
     const n = points.length;
     if (n === 0) {
