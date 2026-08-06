@@ -7,6 +7,7 @@ import { refine } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { evalForce, evalGeo } from "../src/section";
 import golden from "./fixtures/convert-golden.json";
+import headReference from "./fixtures/libm-head-reference.json";
 
 /** Cross-machine libm diffing lab (`kex2d-golden-reproducibility` 1a). ECMAScript pins the
  *  arithmetic operators and `sqrt` to exact IEEE-754 results but leaves the transcendentals
@@ -328,4 +329,90 @@ for (const path of PATHS) {
         expect(mutatedFirstCos?.args).toEqual(baseFirstCos?.args);
         expect(mutatedFirstCos?.result).not.toBe(baseFirstCos?.result);
     }, 30_000);
+}
+
+/** `kex2d-golden-reproducibility` 1a amendment: the ladder above brackets the first divergent
+ *  index but can't localize it — the bracket on `circular-arc-refine` spans rows 9–15, and on
+ *  `hill-explicit-geofit` rows 65–127 (past the existing verbatim-32 block entirely). A committed
+ *  256-row HEAD reference, minted on the WSL host (this repo's reference machine — 1b's first
+ *  answer confirmed all eleven gates reproduce there), covers both brackets with margin. Rows
+ *  serialize through `rowString`, the SAME serialization the whole-table hash and the ladder use
+ *  — never a second spelling. */
+interface HeadReferencePath {
+    count: number;
+    headCount: number;
+    rows: string[];
+}
+
+interface HeadReference {
+    platform: string;
+    arch: string;
+    bun: string;
+    paths: Record<string, HeadReferencePath>;
+}
+
+const HeadRef = headReference as HeadReference;
+
+/** whether this run's stamp is the reference's own — the reference is a same-process
+ *  determinism oracle on the host that minted it, and a divergence report everywhere else. */
+function sameStamp(): boolean {
+    return (
+        process.platform === HeadRef.platform &&
+        process.arch === HeadRef.arch &&
+        Bun.version === HeadRef.bun
+    );
+}
+
+for (const path of PATHS) {
+    test(`head reference — first divergence against the committed table, ${path.name} path`, () => {
+        const run = runWrapped(true, path.drive);
+        const ref = HeadRef.paths[path.name];
+        const overlap = Math.min(ref.rows.length, run.calls.length);
+
+        if (run.calls.length < ref.rows.length) {
+            console.log(
+                `${path.name}: this host emits only ${run.calls.length} calls, fewer than the ` +
+                    `reference's ${ref.rows.length}-row head — comparing the ${overlap}-row ` +
+                    "overlap",
+            );
+        }
+
+        let divergeAt = -1;
+        for (let i = 0; i < overlap; i++) {
+            if (rowString(run.calls[i]) !== ref.rows[i]) {
+                divergeAt = i;
+                break;
+            }
+        }
+
+        const stamp = { platform: process.platform, arch: process.arch, bun: Bun.version };
+
+        if (sameStamp()) {
+            // On the reference's own host this is a determinism pin, now across a fresh
+            // process rather than just within this one — same shape as the whole-table
+            // determinism check above, at the head only.
+            expect(divergeAt).toBe(-1);
+            expect(run.calls.length).toBe(ref.count);
+            return;
+        }
+
+        // A differing host is the measurement this test exists to report, never a failure —
+        // the whole point of the diagnosis is that a second platform legitimately diverges
+        // here (Locked decision). The red-first control below covers non-vacuity.
+        if (divergeAt === -1) {
+            console.log(
+                `${path.name}: no divergence in the ${overlap}-row overlap against the ` +
+                    `${HeadRef.platform} ${HeadRef.arch} | bun ${HeadRef.bun} reference`,
+            );
+            return;
+        }
+
+        console.log(
+            `\n=== first divergent call — ${path.name}: index ${divergeAt} ===\n` +
+                `  reference (${HeadRef.platform} ${HeadRef.arch} | bun ${HeadRef.bun}): ` +
+                `${ref.rows[divergeAt].trimEnd()}\n` +
+                `  this host (${stamp.platform} ${stamp.arch} | bun ${stamp.bun}):     ` +
+                `${rowString(run.calls[divergeAt]).trimEnd()}`,
+        );
+    }, 60_000);
 }
