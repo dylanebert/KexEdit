@@ -59,6 +59,9 @@ export const BINDINGS = {
     remove: { keys: ["Delete", "Backspace"], hint: "Del" },
     append: { keys: ["Enter"], hint: "Enter" },
     exitMode: { keys: ["Escape"], hint: "Esc" },
+    // the one named exemption to the derived map: the mnemonic law gives Lock `L`, and pin mode's
+    // feel round 6 re-keyed it to `Q` for reachability while the other hand holds the pointer. A
+    // feel verdict outranks a derivation, so it's recorded here rather than re-keyed.
     lock: { keys: ["q", "Q"], hint: "Q" },
     cut: { keys: ["c", "C"], hint: "C" },
     join: { keys: ["j", "J"], hint: "J" },
