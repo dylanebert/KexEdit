@@ -86,9 +86,10 @@ export const GEO_BUDGET = 0.5;
 /** the force-fidelity budget (g). */
 export const FORCE_BUDGET = 0.5;
 
-/** the nominal step the LANDED geo section bakes at — mirrors `track.DS_NOMINAL`. a convert
- *  resets a section's own step to the sentinel (the standing convert rule), so the fitted chain
- *  always re-bakes at the track nominal; a caller that knows the live track passes it. */
+/** the nominal step the LANDED geo section bakes at — mirrors `track.DS_NOMINAL`. every section
+ *  bakes at the track nominal unconditionally (no per-section step exists,
+ *  `kex2d-correctness-fixes` stage 5), so the fitted chain does too; a caller that knows the live
+ *  track passes it. */
 const DS_NOMINAL = 0.5;
 /** default sample-buffer ceiling — mirrors `track.MAX_SAMPLES` (and `section.MAX`). the landed
  *  section's real budget is what's left at its place in the chain; the invoking command passes
