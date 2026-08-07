@@ -526,6 +526,13 @@ describe("single flip", () => {
     // ride's own numbers, checking disagreement only at the keyframe stations gives 0.20437…,
     // which the measured exit deviation of 0.20438… already exceeds. The keys land almost exactly
     // right; the reshape between them is what only the swept sweep catches.
+    //
+    // What this bound does NOT guard: it's measured on the same bake pair as the deviation it
+    // bounds, and the exit's own equal-time disagreement is a member of the swept set — so a
+    // conversion defect that corrupts key placement inflates both sides together and this test
+    // stays green through it. That's fine here (the property under test IS the consistency
+    // between the two, not key placement), but key placement is a separate claim, pinned instead
+    // by the round-trip test above against an independently-rebuilt table.
 
     test("a single flip's exit deviation stays inside the two-bakes-at-equal-time bound", () => {
         const { state, eid, sec } = forceTrack(40, [

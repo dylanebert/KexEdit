@@ -410,8 +410,8 @@ describe("forceProfile — dense per-edge sampling", () => {
         for (const v of fN) expect(v).toBe(DEFAULT_G);
     });
 
-    test("a zero-length section still integrates one edge (floored at 1, resolveStep's own floor)", () => {
-        expect(forceProfile([], resolveStep(0, 0.5)).length).toBe(1);
+    test("a length shorter than step still integrates one edge (floored at 1, resolveStep's own floor)", () => {
+        expect(forceProfile([], resolveStep(0.3, 2.0)).length).toBe(1);
     });
 });
 
@@ -537,14 +537,17 @@ describe("resolveStep — the ONE seam pairing a force section's edge count with
         expect(ds).toBe(0.5);
     });
 
-    test("a zero length still integrates one edge (the max(1,…) floor's own claim, not the round-then-max byproduct)", () => {
-        // the floor's own justification (`profile.ts:350`): "floored at 1 so a zero-length
-        // section still integrates one step" — one edge spanning zero length (ds === 0), the
-        // shape `bake.forces`'/`evalForce`'s degenerate Δs===0 stationary-cart branch expects,
-        // not merely "edges is a number".
-        const { edges, ds } = resolveStep(0, 0.5);
-        expect(edges).toBe(1);
-        expect(ds).toBe(0);
+    test("throws on a non-positive length rather than baking a ds === 0 edge", () => {
+        // `resolveStep(0, step)` used to float to `{edges: 1, ds: 0}` on the `max(1, …)` floor's
+        // own case. That shape is not what `evalForce`'s Distance path can consume: its σ-lookup
+        // closure divides `sigma / ds`, so a `ds === 0` step NaNs the march before it ever reaches
+        // `bake.forces`'s degenerate-chord (stationary-cart) branch, which is a per-edge recovery
+        // case, not a resolveStep case (verified: `evalForce(entry, [g], {edges: 1, ds: 0})` on
+        // Distance yields `exit = {NaN, NaN, θ, NaN}`). No production caller can pass 0 anyway
+        // (`MIN_FORCE_LEN`, `minForceExtent` floor every write path), so the loud failure costs
+        // nothing reachable.
+        expect(() => resolveStep(0, 0.5)).toThrow();
+        expect(() => resolveStep(-1, 0.5)).toThrow();
     });
 
     test("throws on a non-finite length or step rather than baking NaN edges", () => {

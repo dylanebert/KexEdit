@@ -226,11 +226,13 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   internal `edges`↔`ds` consistency within one `Step` value. TypeScript is structural, so a
   hand-built `{edges, ds}` literal typechecks anywhere a `Step` is expected regardless of whether
   `ds` actually equals `length/edges` — `evalForce`'s only runtime check is `fN.length ===
-  step.edges`, which says nothing about `ds`. That gap is real, not closable by branding `Step`
-  nominal: `track.forceBake`'s `clippedStep` (`{edges: clipped.length, ds: resolved.ds}`) is a
+  step.edges`, which says nothing about `ds`. That gap is real, but not worth a brand:
+  `track.forceBake`'s `clippedStep` (`{edges: clipped.length, ds: resolved.ds}`) is a
   legitimate constructor outside `resolveStep` — carrying the same per-edge `ds` over a truncated
-  edge count is correct, not a violation — and a nominal escape hatch for that one site would
-  reopen the hole everywhere else while claiming to have closed it. What remains in
+  edge count is correct, not a violation — so a branded `Step` would need its own blessed escape
+  (a `clipStep(step, edges)` owned by `profile.ts`) just to keep that site typechecking, and the
+  runtime `fN.length !== step.edges` throw already covers every reachable corrupted-pair mode.
+  What remains in
   `tests/profile.test.ts` is a file-level census (a recursive source-tree walk asserting, both
   directions with a positive control per direction, that no module outside `profile.ts`
   hand-rolls the rounded-quotient edge-count shape, and that every caller of
@@ -388,7 +390,7 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `chain(startEntry(v0), payloads)` → the `samples`/`bakeOut` SoA + the `sectionInfo` map; skips on a
   `bakeHash` match (over every section, ds + v0 + the track domain). Components: `Track` (`count`, `ds`,
   `v0`, `domain`), `Section` (`id` stable,
-  `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent, `ds` = its own baking step), `Handle` (`section`, per-section
+  `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent), `Handle` (`section`, per-section
   `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`).
   `bakeOut`: per-edge `fN`+`ds`, per-sample `t`/`feasible`, `firstInfeasible`, `hash`. `sectionInfo`
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
@@ -424,14 +426,14 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `resetToForce`/`resetToGeo` bodies, so flip and Reset can't drift apart) with `sectionResettable`
   its enablement predicate (exactly one section; force additionally wants a live bake, since its
   seed's entry force is bake-recovered — a geo reset reads no bake), `applyConvert` (land an
-  invoked solve: destroy the nodes, flip the kind, take the answer's extent + step, spawn its
+  invoked solve: destroy the nodes, flip the kind, take the answer's extent, spawn its
   `{s,g}` keys — all default-Cubic by construction; typed on the structural `SolvedForce`, so the
   invoked tier stays off this module's graph. Its numbers arrive in the TRACK DOMAIN's unit, so a
   distance-internal solve is converted first, above this module, at `domain.convertSolve`) and its reverse `applyConvertGeo` (land an
   invoked force→geo fit: destroy both row kinds, flip the kind, `localize` the fit's world nodes
-  into the section's own entry frame with node 0 pinned at `{0,0,0}` exactly, step back to the
-  nominal sentinel; typed on `SolvedGeo`), `forceBake` (a force section's dense bake as `geofit`
-  reads it — `evalForce` at the section's own step, clipped to the sample budget `chain` leaves it,
+  into the section's own entry frame with node 0 pinned at `{0,0,0}` exactly;
+  typed on `SolvedGeo`), `forceBake` (a force section's dense bake as `geofit`
+  reads it — `evalForce` at the track-nominal step, clipped to the sample budget `chain` leaves it,
   so the fit's input is the displayed prefix),
   `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection`, `snapshotSection`/`restoreSection`
   + whole-track `snapshotAll`/`restoreAll`. **Cut's position resolvers** sit one layer above the

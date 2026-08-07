@@ -163,7 +163,7 @@ setters, each wrapped in a `history` gesture. That's the purity contract, and it
 future authoring agent drives — the same one the capture harness pokes through `__kex`.
 
 **The authored components (the one source of truth):** `Track` (`count`, `ds`, `v0`, `domain`), `Section`
-(`id`, `order`, `kind`, `length`, `ds`), `Handle` (geo node: `section`, `order`, section-local
+(`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local
 `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`). Everything else is
 derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never
 authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom,

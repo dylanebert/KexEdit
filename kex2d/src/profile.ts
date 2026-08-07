@@ -347,8 +347,8 @@ export interface Step {
 }
 
 /** the ONE seam that pairs a force section's realized edge count with its per-edge step:
- *  `edges = max(1, round(length/step))`, floored at 1 so a zero-length section still
- *  integrates one step, and `ds = length/edges` is the EXACT per-edge step that closes the
+ *  `edges = max(1, round(length/step))`, floored at 1 so a section shorter than the nominal
+ *  step still integrates one edge, and `ds = length/edges` is the EXACT per-edge step that closes the
  *  section's authored `length` bit-for-bit (`edges·ds === length` to f32 accumulation) —
  *  never `step` itself, whose rounding residual is what left `forceProfile`'s σ grid and
  *  `evalForce`'s march disagreeing with the authored extent (`kex2d-section-extent`, locked
@@ -360,15 +360,22 @@ export interface Step {
  *  `forceProfile`/`evalForce` take the returned {@link Step} as a single argument, so the pair
  *  travels together by construction.
  *
- *  Throws on a non-finite `length`/`step` or a `step ≤ 0`: the floor's `round(…)`/`max(1, …)`
- *  above silently propagates a `NaN` quotient, or produces an `Infinity` edge count for a
- *  zero/negative step, baking a garbage-edge `Float32Array` far downstream instead of failing at
- *  the seam that produced the bad pair. `length === 0` is unguarded — the floor's own case
- *  above, resolving to `{edges: 1, ds: 0}` rather than a thrown error. */
+ *  Throws on a non-finite `length`/`step`, a `step ≤ 0`, or a `length ≤ 0`: the floor's
+ *  `round(…)`/`max(1, …)` above silently propagates a `NaN` quotient, or produces an `Infinity`
+ *  edge count for a zero/negative step, baking a garbage-edge `Float32Array` far downstream
+ *  instead of failing at the seam that produced the bad pair. `length === 0` used to float to
+ *  `{edges: 1, ds: 0}` on the same floor, which reads as the degenerate-chord shape
+ *  `bake.forces`'s stationary-cart branch expects — it isn't: that branch is a per-edge recovery
+ *  case reached through a realized `dsArr`, not through `ds` itself, and `evalForce`'s Distance
+ *  march divides `sigma / ds` in its σ-lookup closure before recovery ever runs, so `ds === 0`
+ *  NaNs the integration instead (verified by execution, `kex2d-correctness-fixes`). No production
+ *  caller can pass `length ≤ 0` (`MIN_FORCE_LEN`, `minForceExtent` floor every write path), so
+ *  the throw costs nothing reachable. */
 export function resolveStep(length: number, step: number): Step {
     if (!Number.isFinite(length)) throw new Error(`resolveStep: length must be finite (${length})`);
     if (!Number.isFinite(step)) throw new Error(`resolveStep: step must be finite (${step})`);
     if (step <= 0) throw new Error(`resolveStep: step must be > 0 (${step})`);
+    if (length <= 0) throw new Error(`resolveStep: length must be > 0 (${length})`);
     const edges = Math.max(1, Math.round(length / step));
     return { edges, ds: length / edges };
 }
