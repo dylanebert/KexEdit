@@ -50,8 +50,9 @@ export type Binding = {
  * the playhead does (`editor-ui.md` Menus, `editor-ui.md`'s transport-read clause), so the
  * clip-strip's cursor-anchored Cut row now advertises the same key its playhead-exact keyboard
  * twin fires. `join` — `controls.ts`, the bulk section-set rung beside `remove`'s own multi
- * branch (Blender/Audacity's own key): unlike Cut it needs no cursor position, only the live
- * selected set, so it's wired directly rather than deferred.
+ * branch (the mnemonic pick — Blender's and Audacity's own Join is Ctrl+J, not attested bare in
+ * either camp, but `J` stays: no rival mnemonic candidate exists): unlike Cut it needs no cursor
+ * position, only the live selected set, so it's wired directly rather than deferred.
  * `convert`/`pin` — `App.svelte`'s own permanent listener (`kex2d-shortcuts` stage 3): the section
  * menu's remaining single-subject rows, dispatched through the MERGED chrome + document acts
  * record (`solve`/`solveShape`/`pinEnter` are chrome — `editor-ui.md` Menus, the act-BODY seam's
@@ -135,9 +136,11 @@ export type Reserved = {
  *
  * Homes: `snap` — `controls.ts` (the AE magnet toggle; Ctrl/Cmd is guarded off in the handler as
  * the browser-save reflex, not reserved here — it never reaches this table). `frame` —
- * `controls.ts` + `Timeline.svelte` (Unity/Blender `F`, routed by `editor.hover` so it frames
- * exactly one surface). `playback` — `Timeline.svelte`, the one `code`-form entry (no printable
- * `key` worth branching on, `Space`'s pre-existing `code` exemption). `nudge` — `controls.ts`
+ * `controls.ts` + `Timeline.svelte` (Unity's `F`, frame selected — Blender's frame-selected is
+ * Numpad Period, its bare `F` is Make Edge/Face; Unity alone is the precedent), routed by
+ * `editor.hover` so it frames exactly one surface. `playback` — `Timeline.svelte`, the one
+ * `code`-form entry (no printable `key` worth branching on, `Space`'s pre-existing `code`
+ * exemption). `nudge` — `controls.ts`
  * (node manipulator) + `Timeline.svelte` (force keyframe + playhead step), routed by
  * `editor.hover` / the live selection so one arrow press is one action. `undo`/`redo` —
  * `Timeline.svelte`'s permanent listener, the shared `history` stack, guarded off

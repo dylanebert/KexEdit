@@ -856,6 +856,69 @@ describe("sectionKeyAct — the whole-section Delete + bulk-Join rungs", () => {
         expect(sectionKeyAct("j", { opsAllowed: true, multi: true, joinable: false })).toBeNull();
         expect(sectionKeyAct("j", { opsAllowed: true, multi: false, joinable: false })).toBeNull();
     });
+    test("`V` fires solve when canSolve is true", () => {
+        expect(
+            sectionKeyAct("v", { opsAllowed: true, multi: false, joinable: false, canSolve: true }),
+        ).toBe("solve");
+        expect(
+            sectionKeyAct("V", {
+                opsAllowed: true,
+                multi: false,
+                joinable: false,
+                canSolve: false,
+            }),
+        ).toBeNull();
+    });
+    test("Convert's own two-way fork: `V` fires solveShape when canSolveShape is true, winning over canSolve", () => {
+        expect(
+            sectionKeyAct("v", {
+                opsAllowed: true,
+                multi: false,
+                joinable: false,
+                canSolveShape: true,
+                canSolve: true,
+            }),
+        ).toBe("solveShape");
+        expect(
+            sectionKeyAct("V", {
+                opsAllowed: true,
+                multi: false,
+                joinable: false,
+                canSolveShape: false,
+                canSolve: true,
+            }),
+        ).toBe("solve");
+        expect(
+            sectionKeyAct("v", {
+                opsAllowed: true,
+                multi: false,
+                joinable: false,
+                canSolveShape: false,
+                canSolve: false,
+            }),
+        ).toBeNull();
+    });
+    test("`P` fires pinEnter only when canPin is true", () => {
+        expect(
+            sectionKeyAct("p", { opsAllowed: true, multi: false, joinable: false, canPin: true }),
+        ).toBe("pinEnter");
+        expect(
+            sectionKeyAct("P", { opsAllowed: true, multi: false, joinable: false, canPin: false }),
+        ).toBeNull();
+    });
+    test("`R` fires reset only when canReset is true", () => {
+        expect(
+            sectionKeyAct("r", { opsAllowed: true, multi: false, joinable: false, canReset: true }),
+        ).toBe("reset");
+        expect(
+            sectionKeyAct("R", {
+                opsAllowed: true,
+                multi: false,
+                joinable: false,
+                canReset: false,
+            }),
+        ).toBeNull();
+    });
 });
 
 describe("nodeKeyAct — the node Enter/Delete rungs (chain-end trim + multi node-set trim)", () => {
@@ -864,10 +927,16 @@ describe("nodeKeyAct — the node Enter/Delete rungs (chain-end trim + multi nod
         expect(
             nodeKeyAct("Enter", { editable: false, multi: false, endSelected: true }),
         ).toBeNull();
+        // Reset applies to every node, but not through the editing lockdown either.
+        expect(nodeKeyAct("r", { editable: false, multi: false, endSelected: true })).toBeNull();
     });
     test("a multi node-set only fires removeSet, never add", () => {
         expect(nodeKeyAct("Delete", { editable: true, multi: true })).toBe("removeSet");
         expect(nodeKeyAct("Enter", { editable: true, multi: true })).toBeNull();
+    });
+    test("a multi node-set fires resetSet", () => {
+        expect(nodeKeyAct("r", { editable: true, multi: true })).toBe("resetSet");
+        expect(nodeKeyAct("R", { editable: true, multi: true })).toBe("resetSet");
     });
     test("single-subject: off the chain end, neither add nor remove fires", () => {
         expect(
@@ -876,6 +945,14 @@ describe("nodeKeyAct — the node Enter/Delete rungs (chain-end trim + multi nod
         expect(
             nodeKeyAct("Delete", { editable: true, multi: false, endSelected: false }),
         ).toBeNull();
+    });
+    // unlike Add/Remove/Cut, Reset applies to EVERY node — node 0, interior, and chain end alike
+    // — so it's checked BEFORE the chain-end guard (`!s.endSelected`) rather than gated by it.
+    test("Reset fires on an interior (non-chain-end) node — checked before the chain-end guard", () => {
+        expect(nodeKeyAct("r", { editable: true, multi: false, endSelected: false })).toBe("reset");
+    });
+    test("Reset also fires on the chain end, same as an interior node", () => {
+        expect(nodeKeyAct("R", { editable: true, multi: false, endSelected: true })).toBe("reset");
     });
     test("single-subject on the chain end: Enter adds, Delete removes", () => {
         expect(nodeKeyAct("Enter", { editable: true, multi: false, endSelected: true })).toBe(

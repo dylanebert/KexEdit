@@ -1338,9 +1338,11 @@ describe("the menu grammar — every builder, every state", () => {
     // `modeKeyAct`'s `modeOpen` are driven independently here, where production keeps them
     // mutually exclusive: a geo node is never editable while any pin session is open). `Acts` is
     // built independently of this driver (from the corpus/menu rows), so reading it here is a
-    // cross-check, not a re-derivation of the rule under test — and `bound()` still asserts the
-    // literal that fired is genuinely a member of the binding `Acts` names, so a decider firing an
-    // act off a key its OWN binding never declares still fails.
+    // cross-check, not a re-derivation of the rule under test — and every one of the three checks
+    // below is a hard failure, never a skip: an emitted act with no `Acts` entry (`undefined`), an
+    // emitted act `Acts` maps to `null` (declared keyboard-unreachable), or an emitted act whose
+    // firing key isn't a member of its own binding's `keys` — each is a decider defect the driver
+    // must surface, not silently drop from the collected pairs.
     function driveKeyAct<S>(fn: (key: string, s: S) => string | null, matrix: S[]) {
         const pairs: { binding: keyof typeof BINDINGS; act: string }[] = [];
         for (const key of keySpace())
@@ -1348,8 +1350,18 @@ describe("the menu grammar — every builder, every state", () => {
                 const act = fn(key, s);
                 if (act === null) continue;
                 const binding = Acts[act];
-                if (binding === null || binding === undefined) continue;
-                if (!bound(BINDINGS[binding], key)) continue;
+                if (binding === undefined)
+                    throw new Error(
+                        `driveKeyAct: "${act}" (key ${JSON.stringify(key)}, state ${JSON.stringify(s)}) has no Acts census entry`,
+                    );
+                if (binding === null)
+                    throw new Error(
+                        `driveKeyAct: "${act}" (key ${JSON.stringify(key)}, state ${JSON.stringify(s)}) is declared keyboard-unreachable in Acts, but a decider emitted it`,
+                    );
+                if (!bound(BINDINGS[binding], key))
+                    throw new Error(
+                        `driveKeyAct: "${act}" fired on key ${JSON.stringify(key)}, which BINDINGS.${String(binding)} (its own Acts-declared binding) never declares (state ${JSON.stringify(s)})`,
+                    );
                 pairs.push({ binding, act });
             }
         return pairs;
@@ -2001,6 +2013,45 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
         // direct `.key`/`.code` shapes.
         expect(pop).toContainEqual({ form: "key", value: "z", file: "Timeline.svelte" });
         expect(pop).toContainEqual({ form: "key", value: "y", file: "Timeline.svelte" });
+    });
+
+    // `literals()`'s own blind spot (Validation, `kex2d-shortcuts`): it reads a direct `.key`/
+    // `.code` compare and the one derived-local shape (`e.key.toLowerCase()`), but a destructured
+    // `const { key } = e` compared afterward exits the population silently — the destructured
+    // local is compared bare, a form neither regex recognizes (the derived-local one is keyed on
+    // the `.toLowerCase()` call, not any assignment). Closing that generically means parsing
+    // rather than matching, so this is a TRIPWIRE rather than a closed hole: it fails loudly the
+    // moment the shape appears anywhere in `src/`, forcing the author toward a decider (`keys.ts`)
+    // or a direct `e.key`/`e.code` compare instead of silently taking a key out of the registry.
+    function destructureHits(text: string, file: string): string[] {
+        const out: string[] = [];
+        for (const m of text.matchAll(
+            /\bconst\s*\{\s*(?:key|code)\s*(?::\s*\w+)?\s*\}\s*=\s*[\w.]+/g,
+        ))
+            out.push(
+                `${file}: "${m[0]}" destructures a KeyboardEvent — the literal scanner can't see ` +
+                    `a destructured key/code; use a decider (keys.ts) or a direct e.key/e.code compare instead`,
+            );
+        return out;
+    }
+
+    test("no file destructures `{ key }`/`{ code }` off a KeyboardEvent — the literal scanner can't see it", () => {
+        expect(reservedSrcFiles.flatMap((f) => destructureHits(reservedSrc(f), f))).toEqual([]);
+    });
+
+    test("positive control: the destructure scanner actually matches the shape it exists to catch", () => {
+        // proves the negative test above passing means "no file does this," not "the scanner
+        // can't see it" — drives the same regex against synthetic text bearing the exact shape.
+        expect(
+            destructureHits('const { key } = e;\nif (key === "z") {}', "<synthetic>").length,
+        ).toBeGreaterThan(0);
+        expect(destructureHits("const { code } = e;", "<synthetic>").length).toBeGreaterThan(0);
+        // a direct compare and the existing derived-local shape are NOT flagged by this scanner —
+        // those are `literals()`'s job, not this tripwire's.
+        expect(destructureHits('if (e.key === "z") {}', "<synthetic>")).toEqual([]);
+        expect(
+            destructureHits('const k = e.key.toLowerCase();\nif (k === "z") {}', "<synthetic>"),
+        ).toEqual([]);
     });
 
     // the resolver, over any (population, table) pair — pure, so the positive controls below can
