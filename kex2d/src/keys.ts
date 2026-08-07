@@ -52,25 +52,31 @@ export type SectionKeyState = {
      *  above (`sectionOpsAllowed(editor.pinning)`), which this decider checks first and returns
      *  `null` before `canPin` is ever read. */
     canPin?: boolean;
+    /** Reset's own enablement (`track.sectionResettable`) — exactly one section, and a live
+     *  bake on a force section only (the seed's entry force is bake-recovered; a geo reset reads
+     *  no bake). OPTIONAL, the `canSolve` shape: an existing caller driving only
+     *  remove/join/cut/convert/pin keeps compiling. */
+    canReset?: boolean;
 };
 
-/** whole-section Delete/`J`/`C`/`V`/`P`: `remove` for a single section, `removeSet` for a
+/** whole-section Delete/`J`/`C`/`V`/`P`/`R`: `remove` for a single section, `removeSet` for a
  *  multi-selection (`BINDINGS.remove`), `join` for a valid multi-set run (`BINDINGS.join`),
  *  `cutAt` on a cuttable single section (`BINDINGS.cut`, playhead-exact — the clip strip's
  *  keyboard twin of its cursor-anchored menu row, `SectionMenuActions.cutAt` itself unchanged:
  *  only the resolved `position` argument differs by caller), `solve`/`solveShape` on `V`
  *  (`BINDINGS.convert` — the section's kind picks the direction, `menus.ts convertRow`'s own
  *  fork, mirrored here rather than re-derived from a `kind` field this decider would otherwise
- *  need to import for), `pinEnter` on `P` (`BINDINGS.pin`) — `null` off every binding or while
- *  the consent boundary bars structural ops. Typed off `SectionMenuActions`' own keys —
- *  `menus.ts`'s reverse-direction check — rather than a restated literal, so a rename in the
- *  actions record fails here at compile time. */
+ *  need to import for), `pinEnter` on `P` (`BINDINGS.pin`), `reset` on `R` (`BINDINGS.reset`,
+ *  a plain document act — no chrome merge needed, unlike Convert/Pin/Solve) — `null` off every
+ *  binding or while the consent boundary bars structural ops. Typed off `SectionMenuActions`'
+ *  own keys — `menus.ts`'s reverse-direction check — rather than a restated literal, so a rename
+ *  in the actions record fails here at compile time. */
 export function sectionKeyAct(
     key: string,
     s: SectionKeyState,
 ): Extract<
     keyof SectionMenuActions,
-    "remove" | "removeSet" | "join" | "cutAt" | "solve" | "solveShape" | "pinEnter"
+    "remove" | "removeSet" | "join" | "cutAt" | "solve" | "solveShape" | "pinEnter" | "reset"
 > | null {
     if (!s.opsAllowed) return null;
     if (bound(BINDINGS.remove, key)) return s.multi ? "removeSet" : "remove";
@@ -79,6 +85,7 @@ export function sectionKeyAct(
     if (bound(BINDINGS.convert, key))
         return s.canSolveShape === true ? "solveShape" : s.canSolve === true ? "solve" : null;
     if (bound(BINDINGS.pin, key)) return s.canPin === true ? "pinEnter" : null;
+    if (bound(BINDINGS.reset, key)) return s.canReset === true ? "reset" : null;
     return null;
 }
 
@@ -94,28 +101,40 @@ export type NodeKeyState =
     | { editable: boolean; multi: true }
     | { editable: boolean; multi: false; endSelected: boolean; cuttable?: boolean };
 
-type NodeAct = Extract<keyof NodeMenuActions, "remove" | "removeSet" | "add" | "cut">;
+type NodeAct = Extract<
+    keyof NodeMenuActions,
+    "remove" | "removeSet" | "add" | "cut" | "reset" | "resetSet"
+>;
 
-/** node Enter/Delete/`C`: `add` on the chain end (`BINDINGS.append`), `remove` to trim it
+/** node Enter/Delete/`C`/`R`: `add` on the chain end (`BINDINGS.append`), `remove` to trim it
  *  (`BINDINGS.remove`, single), `removeSet` to trim a selected suffix run (`BINDINGS.remove`,
  *  multi), `cut` on a cuttable interior node (`BINDINGS.cut`, single only — the landmark path,
- *  `editor-ui.md`'s shortcut asymmetry) — `null` off every binding, off the lockdown, or (single,
- *  non-cut) off the chain end. Overloaded on `NodeKeyState`'s discriminant so a multi-subject call
- *  site sees only `"removeSet" | null` and a single-subject call site only
- *  `"remove" | "add" | "cut" | null` — the caller's dispatch record never has to guard the
- *  unreachable branch. */
+ *  `editor-ui.md`'s shortcut asymmetry), `reset`/`resetSet` on `R` (`BINDINGS.reset` — unlike
+ *  Add/Remove/Cut, Reset applies to EVERY node, node 0 and the chain end alike (`nodeMenu`'s own
+ *  `enabled: s.ok`, no `isEnd`/`cuttable` gate), so it's checked before the chain-end guard below,
+ *  the same rung `cut` already sits on; node 0's tangent-clear delegation is invisible here —
+ *  `track.resetNode` picks it, this decider only names the act) — `null` off every binding, off
+ *  the lockdown, or (single, non-cut, non-reset) off the chain end. Overloaded on `NodeKeyState`'s
+ *  discriminant so a multi-subject call site sees only `"removeSet" | "resetSet" | null` and a
+ *  single-subject call site only `"remove" | "add" | "cut" | "reset" | null` — the caller's
+ *  dispatch record never has to guard the unreachable branch. */
 export function nodeKeyAct(
     key: string,
     s: { editable: boolean; multi: true },
-): Extract<NodeAct, "removeSet"> | null;
+): Extract<NodeAct, "removeSet" | "resetSet"> | null;
 export function nodeKeyAct(
     key: string,
     s: { editable: boolean; multi: false; endSelected: boolean; cuttable?: boolean },
-): Extract<NodeAct, "remove" | "add" | "cut"> | null;
+): Extract<NodeAct, "remove" | "add" | "cut" | "reset"> | null;
 export function nodeKeyAct(key: string, s: NodeKeyState): NodeAct | null {
     if (!s.editable) return null;
-    if (s.multi) return bound(BINDINGS.remove, key) ? "removeSet" : null;
+    if (s.multi) {
+        if (bound(BINDINGS.remove, key)) return "removeSet";
+        if (bound(BINDINGS.reset, key)) return "resetSet";
+        return null;
+    }
     if (bound(BINDINGS.cut, key)) return s.cuttable === true ? "cut" : null;
+    if (bound(BINDINGS.reset, key)) return "reset";
     if (!s.endSelected) return null;
     if (bound(BINDINGS.append, key)) return "add";
     if (bound(BINDINGS.remove, key)) return "remove";

@@ -194,7 +194,13 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
             action: a.join,
         });
     }
-    items.push({ label: "Reset", group: "lifecycle", enabled: s.canReset, action: a.reset });
+    items.push({
+        label: "Reset",
+        group: "lifecycle",
+        shortcut: BINDINGS.reset.hint,
+        enabled: s.canReset,
+        action: a.reset,
+    });
     items.push({
         label: "Delete",
         group: "lifecycle",
@@ -293,7 +299,13 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
             // Cut is single-subject (a cut lands at ONE node) — a multi-set grays it
             // unconditionally, the same shape as Add/Handles above (`canCut` isn't even read).
             { label: "Cut", group: "structure", shortcut: BINDINGS.cut.hint, enabled: false },
-            { label: "Reset", group: "lifecycle", enabled: s.ok, action: a.resetSet },
+            {
+                label: "Reset",
+                group: "lifecycle",
+                shortcut: BINDINGS.reset.hint,
+                enabled: s.ok,
+                action: a.resetSet,
+            },
             {
                 label: "Delete",
                 group: "lifecycle",
@@ -313,7 +325,13 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
                 enabled: s.ok,
                 action: a.toggleHandles,
             },
-            { label: "Reset", group: "lifecycle", enabled: s.ok, action: a.reset },
+            {
+                label: "Reset",
+                group: "lifecycle",
+                shortcut: BINDINGS.reset.hint,
+                enabled: s.ok,
+                action: a.reset,
+            },
         ];
     }
     return [
@@ -363,7 +381,13 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
             enabled: s.ok && s.canCut === true,
             action: a.cut,
         },
-        { label: "Reset", group: "lifecycle", enabled: s.ok, action: a.reset },
+        {
+            label: "Reset",
+            group: "lifecycle",
+            shortcut: BINDINGS.reset.hint,
+            enabled: s.ok,
+            action: a.reset,
+        },
         {
             label: "Delete",
             group: "lifecycle",

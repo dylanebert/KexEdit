@@ -175,6 +175,35 @@ test("geo authoring flow", async ({ page, boot }) => {
     expect(dragAngle).not.toBeNull();
     expect(restAngle).toBe(dragAngle); // drag == rest, exactly — no 25→25.5 drift on release
 
+    // ── 3d. `R` — Reset, keyboard-fired (`kex2d-shortcuts` stage 4): the tip node (order 6,
+    // still selected from the angle-knob drag above, plain selection — no menu open, no tangent
+    // edit) re-creates at the default-chord continuation past its predecessor, moving off the
+    // hand-rotated incline the drag just landed. This is the real-DOM proof `nodeKeyAct`'s
+    // `reset` branch reaches the document act on a plain node selection, the only class of
+    // wiring bug a source census can't see (`kex2d-map.md`'s tick-lag/wiring caveat). ──
+    const beforeReset = (await poses())[6];
+    const undoBeforeReset = await undoDepth();
+    await page.keyboard.press("r");
+    await expect
+        .poll(async () => {
+            const p = (await poses())[6];
+            return Math.hypot(p[0] - beforeReset[0], p[1] - beforeReset[1]);
+        })
+        .toBeGreaterThan(0.1); // the reset moved the tip off its rotated spot
+    expect(await nodeCount()).toBe(7); // reset re-creates, it doesn't delete
+    expect(await undoDepth()).toBeGreaterThan(undoBeforeReset); // a real diff, one undo entry
+    // undo back to the authored hill (byte-identical, `history`'s own guarantee) — the rest of
+    // this flow's steps assume the pre-reset geometry, the same "test the effect, then undo"
+    // idiom step 1 already uses for Extend.
+    await page.keyboard.press("Control+z");
+    await expect.poll(undoDepth).toBe(undoBeforeReset);
+    await expect
+        .poll(async () => {
+            const p = (await poses())[6];
+            return Math.hypot(p[0] - beforeReset[0], p[1] - beforeReset[1]);
+        })
+        .toBeLessThan(1e-3);
+
     // ── 4. Append (feel round 12 — extend restored to the ring): a PLAIN click never appends; the
     // ring's extend button (a real `.rbtn` at the chain end) appends, Enter's twin; and the node menu
     // carries Delete + Add, in that order. double-click now enters tangent edit (the tangent flow),
@@ -213,7 +242,7 @@ test("geo authoring flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Add Enter", "Handles", "Tangents ▸", "Cut C", "Reset", "Delete Del"]); // ▸ = the submenu affix; Reset top-level (the Reset idiom law)
+        .toEqual(["Add Enter", "Handles", "Tangents ▸", "Cut C", "Reset R", "Delete Del"]); // ▸ = the submenu affix; Reset top-level (the Reset idiom law), `R` (kex2d-shortcuts stage 4)
     // …and the RENDERED rows are the real `nodeMenu` builder's rows for THIS node's live state,
     // taxonomy and derived dividers included, checked at the root and inside `Tangents ▸`. The
     // expectation is computed from `src/menus.ts` in the page, so a builder reorder can't be

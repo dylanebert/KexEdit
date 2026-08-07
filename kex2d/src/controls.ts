@@ -57,6 +57,7 @@ import { editHandleSets, localTipAt, type TangentSide } from "./tangents";
 import {
     exitWorld,
     forceMarkers,
+    bakeLive,
     Handle,
     handleAt,
     handleTangent,
@@ -67,6 +68,7 @@ import {
     sectionCutAt,
     sectionHandles,
     sectionInfo,
+    sectionResettable,
     sections,
     sectionSpans,
     seedTangent,
@@ -1565,6 +1567,17 @@ export function attachControls(
                 multi: editor.sections.ids.size > 1,
                 joinable: sectionsJoinable([...editor.sections.ids], sections(ecs)),
                 cuttable: position !== null,
+                // Reset (`R`) is a plain document act (`acts.sectionActs` already returns it), so
+                // — unlike Convert/Pin — it's computed fresh HERE, off the keydown's own subject
+                // (`editor.section`), never off a menu's tick-derived reading: the exact shape
+                // `computeCanSolve`/`computeCanSolveShape`/`computeCanPin` (`App.svelte`) landed
+                // for stage 3, after the stage-3 defect where the menu's `ctx.section`-derived
+                // enablement silently starved the keyboard path.
+                canReset: sectionResettable(
+                    editor.sections.ids.size,
+                    sections(ecs).find((s) => s.id === section)?.kind ?? null,
+                    bakeLive(ecs),
+                ),
                 // Convert/Pin never reach this decider call — no `canSolve`/`canSolveShape`/
                 // `canPin` supplied, so `V`/`P` fall through as `null` here; App.svelte's own
                 // permanent listener owns them (`solve`/`solveShape`/`pinEnter` are chrome, and

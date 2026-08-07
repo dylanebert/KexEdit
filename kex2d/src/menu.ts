@@ -59,6 +59,14 @@ export type Binding = {
  * `solve` — the mode-scoped `Enter` exception (Locked decision 1's law 3): `Enter` is `append`
  * everywhere else, but pin mode's editing lockdown already bars geo append, so nothing collides in
  * fact; the same permanent listener reads `editor.pinning` to know which claim is live.
+ * `reset` — `controls.ts` alone (`kex2d-shortcuts` stage 4): unlike Convert/Pin, `reset` is a plain
+ * document act on BOTH `SectionMenuActions` and `NodeMenuActions` (`acts.ts sectionActs`/`nodeActs`
+ * already return it — no modal, no `AbortController`), so it never needs the chrome-act merge;
+ * `controls.ts`'s existing section/node keydown rungs dispatch it exactly like `remove`/`join`/`cut`.
+ * One key, two subject kinds, per law 3: a section (`sectionKeyAct`) or a node/node-set
+ * (`nodeKeyAct`, `resetSet` on a multi selection) — node 0's tangent-clear delegation lives inside
+ * `track.resetNode` itself, invisible at this seam. Keyframes carry no Reset row and no binding
+ * (the Easing-subsumes-Reset law, `kex2d-shortcuts` Locked decision), so `forceKeyAct` never reads it.
  * `Escape` and `Delete` also drive dismissal/guard rungs that are nobody's menu row; those stay
  * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one.
  */
@@ -80,6 +88,10 @@ export const BINDINGS = {
     // mode-scoped: `Enter` also fires `append` (unscoped) everywhere outside pin mode. Law 3's
     // one exception — see the doc comment above.
     solve: { keys: ["Enter"], hint: "Enter", scope: "pin" },
+    // mnemonic-exact, left-hand (Locked decision 1). The registry's one two-subject binding
+    // (section `reset`, node `reset`/`resetSet`) — law 3's cross-surface case, plain document
+    // acts on both menus, so it needs no `scope`.
+    reset: { keys: ["r", "R"], hint: "R" },
 } as const satisfies Record<string, Binding>;
 
 /** whether a `KeyboardEvent.key` fires this binding.

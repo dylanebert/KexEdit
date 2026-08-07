@@ -1169,18 +1169,22 @@ test("pin mode flow", async ({ page, boot }) => {
     expect(await undoDepth()).toBe(base + 2); // the second experiment is one more outer entry
 });
 
-// Convert (`V`), Pin (`P`), and Solve (`Enter`, mode-scoped) — the section menu's own remaining
-// keyboard bindings (`kex2d-shortcuts` stage 3), fired through the real DOM rather than a menu
-// click: `V`/`P` dispatch through `App.svelte`'s own permanent listener (the merged chrome +
-// document acts record, Locked decision 2 — `solve`/`solveShape`/`pinEnter` are chrome, so a
+// Convert (`V`), Pin (`P`), Solve (`Enter`, mode-scoped), and Reset (`R`) — the section menu's own
+// remaining keyboard bindings (`kex2d-shortcuts` stages 3 + 4), fired through the real DOM rather
+// than a menu click: `V`/`P` dispatch through `App.svelte`'s own permanent listener (the merged
+// chrome + document acts record, Locked decision 2 — `solve`/`solveShape`/`pinEnter` are chrome, so a
 // source census alone can't prove the wiring reaches them; only the real keydown can). `Enter`
 // reuses `BINDINGS.append`'s own literal outside the mode — the mode-scoped exception (law 3)
 // only claims it once `editor.pinning` is actually open, which is what makes it unambiguous in
-// fact (the lockdown bars geo append the whole time a session is live). The click-driven paths
-// for the same three acts are covered elsewhere ("invoked solve flow", "pin mode flow"); this
+// fact (the lockdown bars geo append the whole time a session is live). `R` is a plain document act
+// (`controls.ts`, no chrome merge needed) — its own enablement is computed FRESH off the keydown's
+// own subject (`editor.section`), never off the menu's tick-derived reading (the exact shape stage
+// 3's own defect took: `canSolve`/`canSolveShape`/`canPin` read `ctx.section`, the open context
+// menu's subject, so they stayed `null` on every keyboard-only path — Live log). The click-driven
+// paths for the same acts are covered elsewhere ("invoked solve flow", "pin mode flow"); this
 // flow's own job is proving the KEYBOARD path reaches the identical acts, not re-proving what
 // they do once invoked.
-test("Convert/Pin/Solve keyboard bindings flow", async ({ page, boot }) => {
+test("Convert/Pin/Solve/Reset keyboard bindings flow", async ({ page, boot }) => {
     await boot();
 
     const kinds = () => kexCall(page, "sectionKinds");
@@ -1225,6 +1229,20 @@ test("Convert/Pin/Solve keyboard bindings flow", async ({ page, boot }) => {
     await page.keyboard.press("Enter");
     await expect.poll(pinning, { timeout: 30_000 }).toBe(false);
     expect(await undoDepth()).toBe(base + 1);
+
+    // ── `R` — Reset, on the SAME force section, no menu open: re-selecting it fresh (the mode
+    // just closed) and pressing `R` reseeds it kind-held to its own default — the two
+    // continuation keyframes — collapsing `seedForceBump`'s airtime bump straight back down. This
+    // is the keyboard path stage 3's own defect took (Live log): `sectionKeyAct`'s `canReset` is
+    // computed fresh off `editor.section` in `controls.ts`, never off a context menu's own
+    // tick-derived reading, so this step is dead on arrival if that wiring regresses. ──
+    const forceCounts = () => kexCall(page, "sectionForceCounts");
+    await page.locator(".clip").first().click();
+    await expect.poll(selected).not.toBeNull();
+    const beforeReset = (await forceCounts())[0];
+    expect(beforeReset).toBeGreaterThan(2); // seedForceBump's bump: more than the 2-key default
+    await page.keyboard.press("r");
+    await expect.poll(async () => (await forceCounts())[0]).toBe(2);
 });
 
 // Cut is ABSENT on the VIEWPORT surface (kex2d-structural-editing stage 7a) — the surface stage

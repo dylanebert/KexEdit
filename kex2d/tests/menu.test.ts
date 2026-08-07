@@ -219,7 +219,7 @@ describe("sectionMenu — the section context menu's rows", () => {
         expect(shape(sectionMenu(base, acts()))).toEqual([
             { label: "Convert", group: "modify", shortcut: "V", enabled: true },
             cut(true),
-            { label: "Reset", group: "lifecycle", enabled: true },
+            { label: "Reset", group: "lifecycle", shortcut: "R", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
@@ -235,7 +235,7 @@ describe("sectionMenu — the section context menu's rows", () => {
             { label: "Convert", group: "modify", shortcut: "V", enabled: true },
             { label: "Pin", group: "modify", shortcut: "P", enabled: true },
             cut(true),
-            { label: "Reset", group: "lifecycle", enabled: true },
+            { label: "Reset", group: "lifecycle", shortcut: "R", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
@@ -251,7 +251,7 @@ describe("sectionMenu — the section context menu's rows", () => {
         expect(rows.find((r) => r.label === "Cut")).toBeUndefined();
         expect(rows).toEqual([
             { label: "Convert", group: "modify", shortcut: "V", enabled: true },
-            { label: "Reset", group: "lifecycle", enabled: true },
+            { label: "Reset", group: "lifecycle", shortcut: "R", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
@@ -290,7 +290,7 @@ describe("sectionMenu — the section context menu's rows", () => {
         expect(shape(sectionMenu(s, acts()))).toEqual([
             { label: "Convert", group: "modify", shortcut: "V", enabled: false },
             join(false),
-            { label: "Reset", group: "lifecycle", enabled: false },
+            { label: "Reset", group: "lifecycle", shortcut: "R", enabled: false },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
     });
@@ -489,7 +489,12 @@ describe("nodeMenu — the node context menu's rows", () => {
         shortcut: "Enter",
         enabled,
     });
-    const reset = (enabled: boolean): Row => ({ label: "Reset", group: "lifecycle", enabled });
+    const reset = (enabled: boolean): Row => ({
+        label: "Reset",
+        group: "lifecycle",
+        shortcut: "R",
+        enabled,
+    });
 
     test("an INTERIOR node: Add + Delete both gated off, Handles / Tangents / Cut / Reset between", () => {
         expect(shape(nodeMenu(base, acts()))).toEqual([
@@ -1268,14 +1273,14 @@ describe("the menu grammar — every builder, every state", () => {
         pinSolve: "solve",
         pinExit: "exitMode",
         pinEnter: "pin",
-        reset: null,
+        reset: "reset",
         remove: "remove",
         removeSet: "remove",
         add: "append",
         toggleHandles: null,
         pickMode: null,
         pickModeSet: null,
-        resetSet: null,
+        resetSet: "reset",
         toggleLock: "lock",
         setEase: null,
         chooseCustom: null,
@@ -1357,6 +1362,7 @@ describe("the menu grammar — every builder, every state", () => {
         canSolve: bool,
         canSolveShape: bool,
         canPin: bool,
+        canReset: bool,
     });
     // `NodeKeyState` is a discriminated union on `multi` (`keys.ts`) — the multi branch carries no
     // `endSelected` field, so its full state space is the two branches' matrices driven
@@ -1433,6 +1439,8 @@ describe("the menu grammar — every builder, every state", () => {
                 "convert:solveShape",
                 "pin:pinEnter",
                 "solve:pinSolve",
+                "reset:reset",
+                "reset:resetSet",
             ].sort(),
         );
     });
@@ -1598,6 +1606,7 @@ describe("the menu grammar — every builder, every state", () => {
         convert: ["App.svelte", "keys.ts"],
         pin: ["App.svelte", "keys.ts"],
         solve: ["App.svelte", "keys.ts"],
+        reset: ["keys.ts"],
     };
     // a bound key also drives presses that are NOBODY's menu row — dismissal rungs, a field's
     // commit-and-blur. Those stay raw literals, and this is exactly which files may hold one; any
@@ -1623,6 +1632,8 @@ describe("the menu grammar — every builder, every state", () => {
         V: { files: [], why: "the Convert binding only" },
         p: { files: [], why: "the Pin binding only" },
         P: { files: [], why: "the Pin binding only" },
+        r: { files: [], why: "the Reset binding only" },
+        R: { files: [], why: "the Reset binding only" },
     };
     const src = (file: string): string =>
         readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
