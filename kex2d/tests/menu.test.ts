@@ -12,6 +12,9 @@ import {
     type MenuItem,
     menuFit,
     menuRows,
+    type Modifier,
+    RESERVED,
+    type Reserved,
 } from "../src/menu";
 import {
     forceKeyAct,
@@ -1755,6 +1758,247 @@ describe("the menu grammar — every builder, every state", () => {
                 row("Reset", "lifecycle"),
             ]);
         });
+    });
+});
+
+// ── kex2d-shortcuts stage 1: the closed key registry over `BINDINGS` + `RESERVED` together.
+// `RawKeys`/`Handlers` above already census every raw comparison of a `BINDINGS` key (Escape,
+// Enter, Delete, Backspace, `q`/`Q`, `c`/`C`, `j`/`J`) — this block is the OTHER half: `S`, `F`,
+// `Space`, the arrows, Ctrl+Z/Y, and `F3` never had a table at all, so nothing stopped a new
+// binding from colliding with one of them (Locked decision 3, `kex2d-shortcuts`). Two mechanisms
+// at two granularities, per the declared-registry law (`editor-ui.md` Menus): a SOURCE population
+// scan (is every literal claimed, exactly once) and a TABLE-only pairwise check (do two declared
+// entries claim the same key at an overlapping scope) — the second exists because a collision is
+// a property of the two DECLARATIONS, checkable even before either key is ever exercised raw in
+// `src/`, which a source scan alone could never see.
+describe("the closed key registry — BINDINGS + RESERVED collision oracle", () => {
+    type Literal = { form: "key" | "code"; value: string; file: string };
+    type Declared = {
+        form: "key" | "code";
+        value: string;
+        name: string;
+        mod?: Modifier;
+        scope?: string;
+    };
+
+    const reservedSrcRoot = join(import.meta.dir, "..", "src");
+    const reservedSrc = (file: string): string => readFileSync(join(reservedSrcRoot, file), "utf8");
+
+    // recursive — a flat `readdirSync` sees only the top level, matching the walk this file
+    // already uses twice (`acts.ts source census`, `menu source pins`) rather than inventing a
+    // second shape: a future nested module would be invisible to the population scan below while
+    // it stayed green, the same drift those two pins exist to catch.
+    function collectSrcFiles(dir: string, prefix = ""): string[] {
+        return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) return collectSrcFiles(join(dir, entry.name), rel);
+            return entry.name.endsWith(".ts") || entry.name.endsWith(".svelte") ? [rel] : [];
+        });
+    }
+    const reservedSrcFiles = collectSrcFiles(reservedSrcRoot).filter((f) => f !== "menu.ts");
+
+    // the raw population, read from source TEXT — never a restatement of the tables. Two shapes
+    // cover every comparison in `src/` today: a direct `.key`/`.code` member compare, and the one
+    // derived-local form (`e.key.toLowerCase()` assigned to a variable, then compared — the
+    // undo/redo rung) keyed on that DERIVATION shape, never the variable's own name (the
+    // `editor-ui.md` matcher law: "key the matcher on the shape... never on a variable name").
+    function literals(file: string): Literal[] {
+        const text = reservedSrc(file);
+        const out: Literal[] = [];
+        for (const m of text.matchAll(/\.key\s*[!=]==\s*"([^"]+)"/g))
+            out.push({ form: "key", value: m[1], file });
+        for (const m of text.matchAll(/\.code\s*[!=]==\s*"([^"]+)"/g))
+            out.push({ form: "code", value: m[1], file });
+        for (const dm of text.matchAll(/\bconst\s+(\w+)\s*=\s*[\w.]*\.key\.toLowerCase\(\);/g)) {
+            const re = new RegExp(`\\b${dm[1]}\\s*[!=]==\\s*"([^"]+)"`, "g");
+            for (const m of text.matchAll(re)) out.push({ form: "key", value: m[1], file });
+        }
+        return out;
+    }
+
+    function population(): Literal[] {
+        return reservedSrcFiles.flatMap(literals);
+    }
+
+    // the registry side: every key/code BOTH tables declare, each carrying which entry it came
+    // from (for the collision message), its required chord (`mod`), and its mode `scope`, if any.
+    // `Binding` and `Reserved` share `scope`'s name and meaning by design (Locked decision 1's
+    // law-3 exception is a MENU row — Solve's `Enter` — so it has to be representable in
+    // `BINDINGS`, not just `RESERVED`); `mod` is `Reserved`-only today (no `BINDINGS` entry needs
+    // a chord), so a `Binding` always reads as `mod: undefined` here.
+    function declared(
+        bindings: Record<string, Binding>,
+        reserved: Record<string, Reserved>,
+    ): Declared[] {
+        const out: Declared[] = [];
+        for (const [name, b] of Object.entries<Binding>(bindings))
+            for (const key of b.keys)
+                out.push({ form: "key", value: key, name: `BINDINGS.${name}`, scope: b.scope });
+        for (const [name, r] of Object.entries(reserved))
+            for (const key of r.keys)
+                out.push({
+                    form: r.form ?? "key",
+                    value: key,
+                    name: `RESERVED.${name}`,
+                    mod: r.mod,
+                    scope: r.scope,
+                });
+        return out;
+    }
+
+    // pure — takes the declared table as a parameter, so the positive controls below can drive it
+    // against a synthetic table without touching the production one.
+    function collisions(table: Declared[]): string[] {
+        const bad: string[] = [];
+        for (let i = 0; i < table.length; i++) {
+            for (let j = i + 1; j < table.length; j++) {
+                const a = table[i];
+                const b = table[j];
+                if (a.form !== b.form || a.value !== b.value || a.name === b.name) continue;
+                // a required chord is part of the press, not a note beside it: Ctrl+Z and a
+                // hypothetical bare Z are two different presses, so a differing `mod` (including
+                // one side undefined — a bare key) is never a collision (Locked decision 1: "the
+                // registry has to say `z` is reserved only under Ctrl or a future bare `Z` would
+                // read as a collision it isn't").
+                if (a.mod !== b.mod) continue;
+                // two entries at the SAME key+chord collide UNLESS their scopes differ — and
+                // "differ" includes one side unscoped: Locked decision 1's law-3 exception is
+                // exactly `BINDINGS.append`'s unscoped `Enter` coexisting with a pin-mode-scoped
+                // `Enter` for Solve, not two distinct named scopes. Only an EQUAL scope (both
+                // unscoped, or both the same named mode) is a real collision.
+                if (a.scope !== b.scope) continue;
+                bad.push(`${a.form} "${a.value}": ${a.name} vs ${b.name}`);
+            }
+        }
+        return bad;
+    }
+
+    // pure — same shape, over a synthetic RESERVED-only table, so the orphan direction is also
+    // testable without mutating the production table.
+    function orphans(reserved: Record<string, Reserved>, pop: Literal[]): string[] {
+        const bad: string[] = [];
+        for (const [name, r] of Object.entries(reserved)) {
+            const form = r.form ?? "key";
+            for (const key of r.keys) {
+                if (!pop.some((l) => l.form === form && l.value === key))
+                    bad.push(`RESERVED.${name}: "${key}" (${form}) never appears in src`);
+            }
+        }
+        return bad;
+    }
+
+    test("positive control: the population scanner reaches real files", () => {
+        // proves the scanner isn't vacuously empty (the "registry ships empty" trap,
+        // `editor-ui.md` Menus) — it must find the real snap toggle in controls.ts among
+        // everything else it scans.
+        const pop = population();
+        expect(pop.length).toBeGreaterThan(10);
+        expect(pop).toContainEqual({ form: "key", value: "s", file: "controls.ts" });
+        expect(pop).toContainEqual({ form: "code", value: "Space", file: "Timeline.svelte" });
+        // the derived-local (`.toLowerCase()`) shape — undo/redo — is reachable too, not just the
+        // direct `.key`/`.code` shapes.
+        expect(pop).toContainEqual({ form: "key", value: "z", file: "Timeline.svelte" });
+        expect(pop).toContainEqual({ form: "key", value: "y", file: "Timeline.svelte" });
+    });
+
+    test("every key/code literal in src resolves to exactly one declared entry", () => {
+        const table = declared(BINDINGS, RESERVED);
+        const bad: string[] = [];
+        for (const lit of population()) {
+            const matches = table.filter((d) => d.form === lit.form && d.value === lit.value);
+            if (matches.length === 0)
+                bad.push(`${lit.file}: ${lit.form} "${lit.value}" claimed by no entry`);
+            else if (matches.length > 1)
+                bad.push(
+                    `${lit.file}: ${lit.form} "${lit.value}" claimed by ${matches.length} entries (${matches.map((m) => m.name).join(", ")})`,
+                );
+        }
+        expect(bad).toEqual([]);
+    });
+
+    test("positive control: the resolver actually flags an unclaimed literal", () => {
+        // an isolated table missing the real `frame` entry must leave `f`/`F` unresolved — proves
+        // the loop above can fail, not just that it happens not to.
+        const { frame: _frame, ...withoutFrame } = RESERVED;
+        const table = declared(BINDINGS, withoutFrame);
+        const bad = population()
+            .filter((lit) => lit.form === "key" && (lit.value === "f" || lit.value === "F"))
+            .filter(
+                (lit) =>
+                    table.filter((d) => d.form === lit.form && d.value === lit.value).length !== 1,
+            );
+        expect(bad.length).toBeGreaterThan(0);
+    });
+
+    test("no two declared entries claim the same key at an overlapping scope", () => {
+        expect(collisions(declared(BINDINGS, RESERVED))).toEqual([]);
+    });
+
+    test("positive control: the collision detector actually flags a duplicate claim", () => {
+        const synthetic: Record<string, Reserved> = {
+            a: { keys: ["Tab"], why: "synthetic — control only" },
+            b: { keys: ["Tab"], why: "synthetic collision — control only" },
+        };
+        expect(collisions(declared(BINDINGS, synthetic))).toEqual([
+            'key "Tab": RESERVED.a vs RESERVED.b',
+        ]);
+        // two DIFFERENT named scopes on the same key must NOT collide.
+        const scoped: Record<string, Reserved> = {
+            a: { keys: ["Tab"], why: "control only", scope: "modeA" },
+            b: { keys: ["Tab"], why: "control only", scope: "modeB" },
+        };
+        expect(collisions(declared(BINDINGS, scoped))).toEqual([]);
+        // the shape law-3 actually needs (Locked decision 1: `BINDINGS.append`'s unscoped `Enter`
+        // coexisting with Solve's pin-mode-scoped `Enter`, stage 3) — one side carries NO scope at
+        // all, not a second named one. `Binding.scope` is what makes this representable in
+        // `BINDINGS` itself, so the control drives a real `Binding`, not a `Reserved` stand-in.
+        const unscopedVsScoped: Record<string, Binding> = {
+            append: BINDINGS.append, // unscoped Enter, unchanged
+            solve: { keys: ["Enter"], hint: "Enter", scope: "pin" }, // stand-in for stage 3's row
+        };
+        expect(collisions(declared(unscopedVsScoped, {}))).toEqual([]);
+        // and the SAME scope on both sides is still a real collision — the exception is narrow,
+        // not "any scoped entry is exempt".
+        const sameScopeTwice: Record<string, Binding> = {
+            append: BINDINGS.append,
+            solveDup: { keys: ["Enter"], hint: "Enter", scope: "pin" },
+            solveDup2: { keys: ["Enter"], hint: "Enter", scope: "pin" },
+        };
+        expect(collisions(declared(sameScopeTwice, {}))).toEqual([
+            'key "Enter": BINDINGS.solveDup vs BINDINGS.solveDup2',
+        ]);
+    });
+
+    test("positive control: a required chord (`mod`) keeps two same-key entries apart", () => {
+        // a synthetic BARE `z` must NOT collide with the real `RESERVED.undo` (Ctrl+`z`) — the
+        // exact shape Locked decision 1 names: "a future bare `Z` would read as a collision it
+        // isn't."
+        const bareZ: Record<string, Reserved> = {
+            ...RESERVED,
+            bareZ: { keys: ["z"], why: "synthetic — control only, no chord" },
+        };
+        expect(collisions(declared(BINDINGS, bareZ))).toEqual([]);
+        // but a SECOND Ctrl+`z` entry — same key, same chord — really does collide.
+        const dupCtrlZ: Record<string, Reserved> = {
+            ...RESERVED,
+            undo2: { keys: ["z"], mod: "ctrl", why: "synthetic collision — control only" },
+        };
+        expect(collisions(declared(BINDINGS, dupCtrlZ))).toEqual([
+            'key "z": RESERVED.undo vs RESERVED.undo2',
+        ]);
+    });
+
+    test("every RESERVED key is exercised somewhere in src (no orphan declaration)", () => {
+        expect(orphans(RESERVED, population())).toEqual([]);
+    });
+
+    test("positive control: the orphan detector actually flags a dead declaration", () => {
+        const synthetic: Record<string, Reserved> = {
+            dead: { keys: ["Tab"], why: "synthetic — control only, never compared anywhere" },
+        };
+        expect(orphans(synthetic, population())).toEqual([
+            'RESERVED.dead: "Tab" (key) never appears in src',
+        ]);
     });
 });
 

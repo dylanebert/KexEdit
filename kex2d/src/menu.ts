@@ -19,8 +19,16 @@ export const GROUPS = ["create", "modify", "structure", "lifecycle"] as const;
 export type MenuGroup = (typeof GROUPS)[number];
 
 /** a keyboard binding: the `KeyboardEvent.key` values that fire it, and the hint a menu row
- *  advertising the same action prints. */
-export type Binding = { readonly keys: readonly string[]; readonly hint: string };
+ *  advertising the same action prints. `scope` narrows the claim to one named mode (`Reserved`'s
+ *  own field, mirrored here rather than duplicated under a second name) — a menu row IS how
+ *  Locked decision 1's law-3 exception lands: Solve is an advertised row with a `shortcut` hint,
+ *  so it belongs in `BINDINGS`, not `RESERVED`, and needs the same field to coexist with
+ *  `append`'s unscoped `Enter`. No entry uses it yet. */
+export type Binding = {
+    readonly keys: readonly string[];
+    readonly hint: string;
+    readonly scope?: string;
+};
 
 /**
  * The keyboard bindings a menu row may advertise — the ONE place a key and its menu hint are
@@ -63,6 +71,84 @@ export const BINDINGS = {
 export function bound(binding: Binding, key: string): boolean {
     return binding.keys.includes(key);
 }
+
+/** a chord requirement on a `Reserved` press — today's only occupant is `ctrl` (Ctrl or Cmd,
+ *  `ctrlKey || metaKey`), earned by undo/redo: kex2d's bare-letters law (Locked decision 1,
+ *  `kex2d-shortcuts`) keeps `Z`/`Y` unclaimed on their own, so the modifier is what makes them
+ *  representable as a distinct reserved press rather than a collision with a future bare one. */
+export type Modifier = "ctrl";
+
+/** a reserved, non-advertised keyboard press — the raw population `BINDINGS` doesn't cover: no
+ *  menu row invokes it, so it carries no `hint`, only a `why`. `keys` compares against
+ *  `KeyboardEvent.key` unless `form` is `"code"` (today's one instance, `Space` — no printable
+ *  `key` worth branching on). `mod` narrows to a required chord (earned by undo/redo). `scope`
+ *  narrows the claim to one named mode, so a later entry may reuse the SAME key inside a mode
+ *  whose own lockdown makes the unscoped press unreachable there (Locked decision 1's law-3
+ *  exception — `Enter` inside pin mode for Solve) without reading as a collision with the
+ *  unscoped claim; no entry uses it yet, so the field ships ahead of its first occupant, the
+ *  same shape the declared-registry law sanctions for an empty registry (`editor-ui.md` Menus:
+ *  "a registry that ships empty... makes the positive controls the whole deliverable"). */
+export type Reserved = {
+    readonly keys: readonly string[];
+    readonly why: string;
+    readonly form?: "code";
+    readonly mod?: Modifier;
+    readonly scope?: string;
+};
+
+/**
+ * Every non-menu key/code literal `src/` compares, closing the hole `kex2d-shortcuts` stage 1
+ * names: `menu.test.ts` used to census raw comparisons only for keys `BINDINGS` already declares
+ * (plus one `code` exemption, `Space`), so nothing stopped a new binding from colliding with `S`
+ * or `F`. This table is the other half of the closed registry — `tests/menu.test.ts`'s collision
+ * oracle reads BOTH tables, never re-derives either.
+ *
+ * Homes: `snap` — `controls.ts` (the AE magnet toggle; Ctrl/Cmd is guarded off in the handler as
+ * the browser-save reflex, not reserved here — it never reaches this table). `frame` —
+ * `controls.ts` + `Timeline.svelte` (Unity/Blender `F`, routed by `editor.hover` so it frames
+ * exactly one surface). `playback` — `Timeline.svelte`, the one `code`-form entry (no printable
+ * `key` worth branching on, `Space`'s pre-existing `code` exemption). `nudge` — `controls.ts`
+ * (node manipulator) + `Timeline.svelte` (force keyframe + playhead step), routed by
+ * `editor.hover` / the live selection so one arrow press is one action. `undo`/`redo` —
+ * `Timeline.svelte`'s permanent listener, the shared `history` stack, guarded off
+ * `editor.dragging` (never mid-gesture) and off a focused field; both compare a `.toLowerCase()`
+ * local, so only the lowercase form is a real literal (`Z`/`Y` never appear raw — a Shift+Z also
+ * redoes, folded into `why` rather than a second key). `debug` — `main.ts`'s `F3`, shallot's own
+ * HUD toggle, not this app's vocabulary.
+ */
+export const RESERVED = {
+    snap: {
+        keys: ["s", "S"],
+        why: "toggles the persistent snap magnet (editor-ui.md Snapping)",
+    },
+    frame: {
+        keys: ["f", "F"],
+        why: "frames the hovered surface — the whole track (viewport) or the whole timeline",
+    },
+    playback: {
+        keys: ["Space"],
+        form: "code",
+        why: "toggles cart playback",
+    },
+    nudge: {
+        keys: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"],
+        why: "steps the selected node, force keyframe, or scrubbed playhead by a fixed increment",
+    },
+    undo: {
+        keys: ["z"],
+        mod: "ctrl",
+        why: "undo, the shared history stack",
+    },
+    redo: {
+        keys: ["y"],
+        mod: "ctrl",
+        why: "redo (Ctrl+Y, or Shift+Ctrl+Z through the same lowered-key branch)",
+    },
+    debug: {
+        keys: ["F3"],
+        why: "shallot's own debug HUD toggle — not part of this app's key vocabulary",
+    },
+} as const satisfies Record<string, Reserved>;
 
 /**
  * A row in the shared menu language (`Menu.svelte`, rendered inside the `.menu` look). The
