@@ -39,7 +39,6 @@ import {
     sectionAt,
     sectionInfo,
     SectionKind,
-    sectionStep,
     trackDs,
 } from "./track";
 
@@ -89,7 +88,7 @@ function tryRestore(
     }));
     return {
         points,
-        ds: payload.ds,
+        ds: 0, // no solve ran — nothing here computed a realized step, matching `edges: 0`
         length: payload.length,
         edges: 0,
         keys: points.length,
@@ -123,9 +122,10 @@ const converting = new Set<number>();
  * and nothing the stamp covers has moved since, its exact pre-fit force payload lands verbatim,
  * no worker pool — the outcome reads `"restored"`.
  *
- * Otherwise resolves with the solve's `ConvertResult` — points/length/`ds` are already in the
- * document, and the rest (outcome, floor, deviation, probes) is the caller's transient readout,
- * never stored. A `"diverged"` answer resolves too, but writes nothing: the caller surfaces it.
+ * Otherwise resolves with the solve's `ConvertResult` — points/length are already in the
+ * document, and the rest (outcome, floor, deviation, probes, ds) is the caller's transient
+ * readout, never stored. A `"diverged"` answer resolves too, but writes nothing: the caller
+ * surfaces it.
  *
  * Rejects, having written nothing, when: the section is missing, isn't geo, or has no live bake
  * (the enablement the invoking surface should already be gating on); a conversion is already
@@ -169,7 +169,7 @@ export async function convertGeo(
     const restored = tryRestore(h, ecs, sectionId, info.entry);
     if (restored) return restored;
 
-    const step = sectionStep(Section.ds.get(eid), trackDs(ecs));
+    const step = trackDs(ecs);
     const authored = authoredHash(ecs);
     converting.add(sectionId);
     try {

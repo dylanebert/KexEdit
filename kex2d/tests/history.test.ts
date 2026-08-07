@@ -509,19 +509,12 @@ test("joinSections: a contiguous same-kind SET joins into ONE entry; undo restor
     expect(sections(state).map((s) => s.id)).toEqual([a, b, c]);
     // the stable (non-eid) fields — `restoreAll` respawns fresh eids on undo (the allocator
     // recycles LIFO), so `eid` itself is never part of a byte-identity claim; `id`/`order`/`kind`/
-    // `length`/`ds` are the authored payload the restore must reproduce exactly.
-    const stable = (s: {
-        id: number;
-        order: number;
-        kind: SectionKind;
-        length: number;
-        ds: number;
-    }) => ({
+    // `length` are the authored payload the restore must reproduce exactly.
+    const stable = (s: { id: number; order: number; kind: SectionKind; length: number }) => ({
         id: s.id,
         order: s.order,
         kind: s.kind,
         length: s.length,
-        ds: s.ds,
     });
     const beforeSnapshot = sections(state).map(stable);
 
@@ -756,7 +749,6 @@ test("a solve landing does NOT update the sticky value", () => {
             { s: 77, g: 1 },
         ],
         length: 77,
-        ds: 0.3,
     });
     expect(sections(state).find((s) => s.id === geo)?.length).toBe(77); // the solve DID land
     expect(stickyLen(SectionKind.Force)).toBe(EXTEND_DIST); // but the sticky default is untouched
@@ -778,7 +770,6 @@ test("solveForce stamps provenance: payload is the pre-solve section, token matc
             { s: 77, g: 1 },
         ],
         length: 77,
-        ds: 0.3,
     });
 
     const prov = readProvenance(geo);
@@ -803,7 +794,6 @@ test("a section edit after a solve landing breaks its stamped token", () => {
             { s: 77, g: 1 },
         ],
         length: 77,
-        ds: 0.3,
     });
     const stamped = readProvenance(geo)?.token;
 
@@ -822,7 +812,6 @@ test("a Track.domain flip after a solve landing breaks its stamped token", () =>
             { s: 77, g: 1 },
         ],
         length: 77,
-        ds: 0.3,
     });
     const stamped = readProvenance(geo)?.token;
 
@@ -841,7 +830,6 @@ test("solveForce's stamp never changes authoredHash — no-churn", () => {
             { s: 77, g: 1 },
         ],
         length: 77,
-        ds: 0.3,
     });
     const withStamp = authoredHash(state);
 
@@ -855,7 +843,6 @@ test("solveForce's stamp never changes authoredHash — no-churn", () => {
             { s: 77, g: 1 },
         ],
         length: 77,
-        ds: 0.3,
     });
     // section/point ids are per-run allocator artifacts (`nextSectionId`/`nextForceId`), not
     // authored content — normalize them out before comparing, same as the bake-hash pin above.

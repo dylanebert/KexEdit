@@ -69,11 +69,8 @@ export const Track = {
  *  is the `SectionKind`. `length` is a FORCE section's extent — the span the force
  *  profile covers, in the TRACK-GLOBAL domain's own unit (`Track.domain`: meters of
  *  arclength, or seconds); unused (0) for a geo section, whose extent is its node chain.
- *  `ds` is the section's own baking step (in that same domain unit), **0 = bake at the
- *  domain's nominal quantum** — the sentinel every hand-authored section carries. An invoked solve
- *  writes its realized step here (`length/edges`) so the section spans its solve
- *  exactly; replaying that profile at the nominal quantum misses the pinned exit
- *  (`refine.ts`, and the ECS pin in `tests/track.test.ts`).
+ *  Every section bakes at the domain's nominal quantum (the per-section step resolver
+ *  removed, `kex2d-correctness-fixes` stage 5) — there is no per-section step to carry.
  *  a section's entry anchor is derived (the prior section's exit, or `START` for the
  *  first); it is never stored. */
 export const Section = {
@@ -81,7 +78,6 @@ export const Section = {
     order: sparse(u32),
     kind: sparse(u32),
     length: sparse(f32),
-    ds: sparse(f32),
 };
 
 /** a node on a geo section. `section` is the owning section's stable id. `order`
@@ -295,8 +291,7 @@ export const sectionInfo = new Map<number, SectionInfo>();
 
 export const MAX_SAMPLES = 4096;
 
-/** the track's nominal sampling step (m) — what every section bakes at unless it
- *  carries its own (`Section.ds`). */
+/** the track's nominal sampling step (m) — what every section bakes at. */
 export const DS_NOMINAL = 0.5;
 
 /** the DEFAULT initial speed (m/s) a fresh track's start anchor gets. it's now
@@ -309,9 +304,8 @@ export const V0 = 10;
  *  is never zero/negative (which would make a level track take infinite time). */
 const MIN_V0 = 0.1;
 
-/** the nominal sampling step (s) a force section bakes at in the `Time` domain when it
- *  carries no step of its own — `Section.ds`'s sentinel-0 contract in the domain's own
- *  unit. derived, not tuned: `ds = v·dt`, so at the DEFAULT entry speed `V0` a time
+/** the nominal sampling step (s) every force section bakes at in the `Time` domain.
+ *  derived, not tuned: `ds = v·dt`, so at the DEFAULT entry speed `V0` a time
  *  section samples at the same spatial density a distance section does at `DS_NOMINAL`
  *  (`dt = ds/v`).
  *
@@ -442,15 +436,14 @@ export function createTrack(ecs: State): number {
 // with a restorable one (the eid-recycling bug one level up).
 let nextSectionId = 0;
 
-/** a section read off the ECS: eid + its stable id, chain order, kind, force
- *  extent, and its own baking step (0 = the track-nominal `Track.ds`). */
+/** a section read off the ECS: eid + its stable id, chain order, kind, and force
+ *  extent. */
 export interface SectionRow {
     eid: number;
     id: number;
     order: number;
     kind: SectionKind;
     length: number;
-    ds: number;
 }
 
 /** every section, sorted by chain order — the sequence the bake threads and the
@@ -464,7 +457,6 @@ export function sections(ecs: State): SectionRow[] {
             order: Section.order.get(eid),
             kind: Section.kind.get(eid) as SectionKind,
             length: Section.length.get(eid),
-            ds: Section.ds.get(eid),
         });
     }
     rows.sort((a, b) => a.order - b.order);
@@ -682,15 +674,12 @@ export function forceMarkers(ecs: State): ForceMarker[] {
 }
 
 /** create a section at `order` with a fresh stable id — the append/seed path.
- *  `ds` is its baking step, defaulting to the track-nominal sentinel 0 (only an
- *  invoked solve's output carries its own step).
  *  returns the id (undo/redo, membership, and selection address by id). */
 export function createSection(
     ecs: State,
     order: number,
     kind: SectionKind,
     length: number,
-    ds = 0,
 ): number {
     const eid = ecs.create();
     ecs.add(eid, Section);
@@ -699,7 +688,6 @@ export function createSection(
     Section.order.set(eid, order);
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
-    Section.ds.set(eid, ds);
     return id;
 }
 
@@ -712,7 +700,6 @@ function spawnSection(
     order: number,
     kind: SectionKind,
     length: number,
-    ds: number,
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Section);
@@ -720,7 +707,6 @@ function spawnSection(
     Section.order.set(eid, order);
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
-    Section.ds.set(eid, ds);
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -1375,7 +1361,6 @@ export interface SectionSnapshot {
     order: number;
     kind: SectionKind;
     length: number;
-    ds: number;
     nodes: NodeState[];
     points: { id: number; s: number; g: number; ease: Easing; tangent?: ForceTangent }[];
 }
@@ -1390,7 +1375,6 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
         order: Section.order.get(eid),
         kind: Section.kind.get(eid) as SectionKind,
         length: Section.length.get(eid),
-        ds: Section.ds.get(eid),
         nodes: nodeSnapshot(ecs, sectionId),
         points: sectionForces(ecs, sectionId).map((p) => ({
             id: p.id,
@@ -1414,7 +1398,6 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.order.set(eid, snap.order);
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
-    Section.ds.set(eid, snap.ds);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
 }
@@ -1451,7 +1434,7 @@ const provenance = new Map<number, Provenance>();
 /** stamp a section's provenance at an invoked solve's landing. `payload` is the caller's own
  *  pre-solve `snapshotSection` (the same one `history.landSolve` already captures as the undo
  *  "before" — this is its second consumer, not a new capture); the token is computed over the
- *  LANDED (post-solve) section's own content (`sectionToken` — kind + length + ds + rows, NOT
+ *  LANDED (post-solve) section's own content (`sectionToken` — kind + length + rows, NOT
  *  `order`, plus `Track.domain`) and the entry is the section's own entry anchor at landing
  *  (`sectionInfo.entry`, f32-exact reproduction on an unchanged upstream). No-ops when the section
  *  hasn't baked yet (no `sectionInfo` entry to read an anchor from, or no live `Section` row) —
@@ -1477,8 +1460,8 @@ export function readProvenance(sectionId: number): Provenance | undefined {
     return provenance.get(sectionId);
 }
 
-/** write a domain conversion's converted force store in place: each force section's extent and
- *  step, and each keyframe's position and explicit handles, addressed by stable id. Deliberately
+/** write a domain conversion's converted force store in place: each force section's extent,
+ *  and each keyframe's position and explicit handles, addressed by stable id. Deliberately
  *  narrow — **no entity is created or destroyed**, so a live selection (which addresses a geo node
  *  by eid) survives a domain flip, and geo payloads are never touched. Everything a conversion
  *  leaves alone (`g`, the easing tag, orders, identities) is simply not written. Its input is
@@ -1490,7 +1473,6 @@ export function applyDomain(ecs: State, snaps: readonly SectionSnapshot[]): void
         const eid = sectionAt(ecs, snap.id);
         if (eid === null) continue;
         Section.length.set(eid, snap.length);
-        Section.ds.set(eid, snap.ds);
         for (const p of snap.points) {
             const pointEid = forceAt(ecs, p.id);
             if (pointEid === null) continue;
@@ -1603,16 +1585,13 @@ function seedForceKeyframes(ecs: State, sectionId: number, length: number, g: nu
 
 /** reset a section's payload to the FORCE default: both row kinds cleared, the two
  *  continuation keyframes seeded at the recovered entry force (a flat continuation over the
- *  default extent), the baking step back to the nominal sentinel — a stored step belongs to
- *  the solve that produced the payload, and this discards that payload. the ONE body behind
- *  `convertSection`'s geo → force flip and `resetSection`'s force-held reset, so the two
- *  seeds can't drift apart. */
+ *  default extent). the ONE body behind `convertSection`'s geo → force flip and
+ *  `resetSection`'s force-held reset, so the two seeds can't drift apart. */
 function resetToForce(ecs: State, eid: number, sectionId: number): void {
     // recover the entry force from the current bake before the reset — the seed continues
     // the incoming force, stamped at creation.
     const info = sectionInfo.get(sectionId);
     const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
-    Section.ds.set(eid, 0);
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Force);
@@ -1624,10 +1603,9 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
 }
 
 /** reset a section's payload to the GEO default: both row kinds cleared, the flat two-node
- *  seed, step back to the nominal sentinel. `resetToForce`'s twin — one body behind
- *  `convertSection`'s force → geo flip and `resetSection`'s geo-held reset. */
+ *  seed. `resetToForce`'s twin — one body behind `convertSection`'s force → geo flip and
+ *  `resetSection`'s geo-held reset. */
 function resetToGeo(ecs: State, eid: number, sectionId: number): void {
-    Section.ds.set(eid, 0);
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Geo);
@@ -1727,10 +1705,10 @@ export function sectionSolvable(
     );
 }
 
-/** an invoked solve's authored output: the keyframes it emitted, and the extent + step they
- *  were solved for. the conversion tier's `ConvertResult` (`refine.ts`) satisfies this
- *  structurally, so the document layer reads a solve without depending on the solver — the
- *  invoked atoms stay off this module's graph.
+/** an invoked solve's authored output: the keyframes it emitted, and the extent they were
+ *  solved for. the conversion tier's `ConvertResult` (`refine.ts`) satisfies this structurally,
+ *  so the document layer reads a solve without depending on the solver — the invoked atoms stay
+ *  off this module's graph.
  *
  *  **In the track's active domain unit**, like every other authored number here. Solves run
  *  distance-internal, so the landing seam converts before it reaches `applyConvert`
@@ -1739,21 +1717,19 @@ export function sectionSolvable(
 export interface SolvedForce {
     points: readonly { s: number; g: number }[];
     length: number;
-    ds: number;
 }
 
 /** land an invoked geo→force solve's output on its section — the conversion's whole document
  *  write. the shape nodes go, the kind flips, and the section takes the solve's REALIZED
- *  extent and step (`length/edges`, the march that closes the exit the solve pinned —
- *  `refine.ts`), then its `{s, g}` keyframes spawn: every one default-Cubic with no handles,
- *  which is the narrow dialect the conversion emits by construction. nothing else of a solve
- *  persists — outcome/floor/deviation/probes are the caller's transient readout, never
- *  document state.
+ *  extent (the march that closes the exit the solve pinned — `refine.ts`), then its `{s, g}`
+ *  keyframes spawn: every one default-Cubic with no handles, which is the narrow dialect the
+ *  conversion emits by construction. nothing else of a solve persists — outcome/floor/deviation/
+ *  probes are the caller's transient readout, never document state.
  *
  *  distinct from `convertSection`: that one is the destructive *reset* to the kind's default
- *  (the two continuation keyframes at the default extent, step back to the sentinel); this one
- *  replaces the section with a solved shape-preserving profile. does not itself record history
- *  — `history.solveForce` wraps it. */
+ *  (the two continuation keyframes at the default extent); this one replaces the section with a
+ *  solved shape-preserving profile. does not itself record history — `history.solveForce`
+ *  wraps it. */
 export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`applyConvert: no section ${sectionId}`);
@@ -1761,7 +1737,6 @@ export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce)
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Force);
     Section.length.set(eid, solved.length);
-    Section.ds.set(eid, solved.ds);
     for (const p of solved.points) createForcePoint(ecs, sectionId, p.s, p.g);
 }
 
@@ -1785,10 +1760,8 @@ export interface SolvedGeo {
  *  itself, but its recovered heading is a geometry-derived tangent, not necessarily bit-identical
  *  to `entry.theta` (the same source-vs-centered gap `section.ts` documents), and a stray local
  *  theta on node 0 would reopen an O(ds) heading kink at the join `place` is meant to close
- *  exactly. every emitted node is Auto (no explicit tangent) — the locked output dialect. the
- *  step resets to the nominal sentinel (the standing convert rule: geo bakes adaptively, there is
- *  no realized-`ds` carry in this direction). does not itself record history — `history.solveGeo`
- *  wraps it. */
+ *  exactly. every emitted node is Auto (no explicit tangent) — the locked output dialect. does
+ *  not itself record history — `history.solveGeo` wraps it. */
 export function applyConvertGeo(
     ecs: State,
     sectionId: number,
@@ -1804,7 +1777,6 @@ export function applyConvertGeo(
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Geo);
     Section.length.set(eid, 0);
-    Section.ds.set(eid, 0);
     solved.nodes.forEach((n, i) => {
         if (i === 0) {
             spawnNode(ecs, sectionId, 0, 0, 0, 0);
@@ -1850,7 +1822,7 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
     for (const e of [...ecs.query([Handle])]) ecs.destroy(e);
     for (const e of [...ecs.query([Force])]) ecs.destroy(e);
     for (const snap of snaps) {
-        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length, snap.ds);
+        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length);
         for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
     }
@@ -1929,7 +1901,7 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
     const frame = headExit(ecs, handles, k);
     const order = Section.order.get(secEid);
     bumpOrders(ecs, order + 1, +1);
-    const bId = createSection(ecs, order + 1, SectionKind.Geo, 0, Section.ds.get(secEid));
+    const bId = createSection(ecs, order + 1, SectionKind.Geo, 0);
     for (let i = k; i <= n; i++) {
         const bl = localize(frame, {
             x: Handle.pos.x.get(handles[i]),
@@ -2126,9 +2098,7 @@ export function sectionCutAt(
 /** split a force section at `s` (0 < s < length), in the track domain's unit
  *  (meters of arclength, or seconds of section-local time): the head keeps extent
  *  [0, s] and its points there; a new section takes extent [s, length] with the
- *  remaining points rebased to its entry (a lossless partition). **both halves
- *  inherit the baking step** (as a geo split does): a split partitions the profile at
- *  its own density, it doesn't re-solve it.
+ *  remaining points rebased to its entry (a lossless partition).
  *
  *  a bare partition leaves the head flat to its new end — its curve toward whatever
  *  moved to the tail is lost. so the cut also **plants a boundary keyframe at `s`,
@@ -2151,7 +2121,7 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     const points = sectionForces(ecs, sectionId);
     const order = Section.order.get(secEid);
     bumpOrders(ecs, order + 1, +1);
-    const bId = createSection(ecs, order + 1, SectionKind.Force, len - s, Section.ds.get(secEid));
+    const bId = createSection(ecs, order + 1, SectionKind.Force, len - s);
 
     // an exact-match keyframe (p.s === s) already IS the shared boundary and stays
     // with the head; everything strictly downstream moves to the tail, rebased. `a` =
@@ -2310,10 +2280,7 @@ function mergeTangent(
 /** join a section with the next one in the chain (same-kind only). geo appends the
  *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
  *  geo split); force concatenates the extents and rebases the neighbor's points. the
- *  neighbor is removed and downstream orders close up. **the upstream baking step
- *  wins** — the joined section spans neither solve any more, so the neighbor's step
- *  has no claim on it (the head keeps its own; nothing to write). returns true when
- *  joined. */
+ *  neighbor is removed and downstream orders close up. returns true when joined. */
 export function joinNext(ecs: State, sectionId: number): boolean {
     const aEid = sectionAt(ecs, sectionId);
     const b = nextSection(ecs, sectionId);
@@ -2444,15 +2411,7 @@ function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
     return { kind: "geo", nodes: geoNodes(ecs, sectionId), ds };
 }
 
-/** the step a section bakes at: its own when set, else the track-nominal `ds` (0 is
- *  the sentinel every hand-authored section carries). an invoked solve stores its
- *  realized step, and the profile only spans the section — closing the exit the solve
- *  pinned — when it's replayed at that step, not at the nominal quantum. */
-export function sectionStep(stored: number, nominal: number): number {
-    return stored > 0 ? stored : nominal;
-}
-
-/** the nominal step a force section's sentinel-0 `ds` resolves to, in the track's active
+/** the nominal step a force section bakes at, in the track's active
  *  domain unit: the track-nominal `trackDs` for `Distance`, `DT_NOMINAL` for `Time` — a time
  *  march's nominal is never the track's meters quantum (`trackDs` is a distance scalar, not a
  *  step in seconds). geo is position-authored in either domain, so its callers pass `trackDs`
@@ -2518,7 +2477,7 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
         throw new Error(`forceBake: section ${sectionId} is not force`);
     const domain = trackDomain(ecs);
     const length = Section.length.get(eid);
-    const step = sectionStep(Section.ds.get(eid), forceNominal(domain, trackDs(ecs)));
+    const step = forceNominal(domain, trackDs(ecs));
     // conform once (the pairing seam) so the dense profile's σ grid and evalForce's march
     // below agree on the same exact step, exactly what `forcePayload` does for the live bake.
     const resolved = resolveStep(length, step);
@@ -2533,15 +2492,14 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     return { x: r.posX, y: r.posY, fN: r.fN, ds: r.ds, edges: r.edges };
 }
 
-/** one section's OWN content — kind, its own baking step, and its authored payload (a geo
- *  section's node poses, a force section's extent + points). Deliberately excludes `order`:
- *  chain position isn't content, so a reorder (a split/join, a reindex) doesn't change it.
- *  Factored out of `bakeHash`'s per-section loop so the bake gate and the provenance token
- *  (`sectionToken`, below) read this ONE reading of "has this section's own content changed" —
- *  `bakeHash` folds `order` back in itself, since a reorder still has to force a re-bake. */
+/** one section's OWN content — kind, and its authored payload (a geo section's node poses, a
+ *  force section's extent + points). Deliberately excludes `order`: chain position isn't
+ *  content, so a reorder (a split/join, a reindex) doesn't change it. Factored out of
+ *  `bakeHash`'s per-section loop so the bake gate and the provenance token (`sectionToken`,
+ *  below) read this ONE reading of "has this section's own content changed" — `bakeHash` folds
+ *  `order` back in itself, since a reorder still has to force a re-bake. */
 function sectionContentHash(ecs: State, sec: SectionRow): string {
     let h = `${sec.kind}`;
-    if (sec.ds > 0) h += `@${sec.ds}`;
     if (sec.kind === SectionKind.Force) {
         h += `:L${sec.length}`;
         for (const p of sectionForces(ecs, sec.id)) {
@@ -2564,12 +2522,11 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
 }
 
 /** input-state hash that gates the bake: the shared ds + initial speed, then every
- *  section in order — its id/order/kind, its own baking step when it carries one, and
- *  its authored payload (a geo section's node poses, a force section's extent +
- *  points). BakeSystem re-bakes on a miss (anything moved, added, removed, converted,
- *  reordered, restepped, re-domained, or the v0 retimed), skips otherwise. the step is
- *  written only when set, and the track `domain` only when it isn't the default `Distance`,
- *  so every existing authored track's hash stays byte-identical. */
+ *  section in order — its id/order/kind, and its authored payload (a geo section's
+ *  node poses, a force section's extent + points). BakeSystem re-bakes on a miss (anything
+ *  moved, added, removed, converted, reordered, re-domained, or the v0 retimed), skips
+ *  otherwise. the track `domain` is written only when it isn't the default `Distance`, so
+ *  every existing authored track's hash stays byte-identical. */
 function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
     const domain = Track.domain.get(trackEid) as Domain;
     let h = `ds${Track.ds.get(trackEid)}v0${Track.v0.get(trackEid)}`;
@@ -2707,8 +2664,8 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     // — geo, and every Distance-domain force section). `computeTime` reads the latter.
     const marchedStep = new Float64Array(secs.length);
     const payloads = secs.map((sec, k) => {
-        if (sec.kind === SectionKind.Geo) return geoPayload(ecs, sec.id, sectionStep(sec.ds, ds));
-        const step = sectionStep(sec.ds, forceNominal(domain, ds));
+        if (sec.kind === SectionKind.Geo) return geoPayload(ecs, sec.id, ds);
+        const step = forceNominal(domain, ds);
         const payload = forcePayload(ecs, sec.id, sec.length, step, domain);
         // `payload.step.ds` is the CONFORMED step (`forcePayload`'s own `resolveStep` seam) — the
         // exact value `evalForce`/`chain` marches this section at below, so `computeTime` must

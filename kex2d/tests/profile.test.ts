@@ -519,9 +519,6 @@ describe("resolveStep — the ONE seam pairing a force section's edge count with
                 const second = resolveStep(length, first.ds);
                 expect(second.edges).toBe(first.edges);
                 expect(second.ds).toBe(first.ds); // bit-identical, not just close
-                // crosses the f32 `Section.ds` column the fixed-point claim is actually about
-                // (a converted section's stored step) — `first.ds` alone never leaves f64.
-                expect(resolveStep(length, Math.fround(first.ds)).edges).toBe(first.edges);
                 count++;
             }
         }

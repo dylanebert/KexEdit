@@ -20,9 +20,8 @@
  *
  * **The OUTPUT's sampling is passed in too.** `geofit` scores a candidate on the bake the landed
  * geo section will produce, so it needs the step and the budget that section will bake at: the
- * track nominal (a convert resets `Section.ds` to the sentinel) and the same remaining-buffer
- * budget. Left to the kernel's mirrored defaults the fit would score a sampling the document
- * doesn't use. */
+ * track nominal (every geo section bakes at it) and the same remaining-buffer budget. Left to
+ * the kernel's mirrored defaults the fit would score a sampling the document doesn't use. */
 
 import type { State } from "@dylanebert/shallot";
 import { type GeofitOpts, runGeofit } from "./geofit-async";

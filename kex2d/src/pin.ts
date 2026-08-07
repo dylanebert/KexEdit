@@ -52,7 +52,6 @@ import {
     SectionKind,
     sectionForces,
     sectionInfo,
-    sectionStep,
     trackDomain,
     trackDs,
 } from "./track";
@@ -74,12 +73,11 @@ function sectionSpec(ecs: State, sectionId: number): SectionSpec | null {
     const domain = trackDomain(ecs);
     const nominal = domain === Domain.Time ? DT_NOMINAL : trackDs(ecs);
     const length = Section.length.get(eid);
-    const nominalStep = sectionStep(Section.ds.get(eid), nominal);
     // the pairing seam: conform once here so every downstream use of this spec's `step`
     // (this module's own `forceProfile`/`evalForce` call below, and `optimize.ts`'s kernel,
     // which reads `spec.step.ds` through `OptimizeOpts`) marches at the same exact step the
-    // mode stamped its exit at.
-    const step = resolveStep(length, nominalStep);
+    // mode stamps its exit at.
+    const step = resolveStep(length, nominal);
     return { entry: info.entry, length, step, domain };
 }
 

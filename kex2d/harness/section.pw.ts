@@ -323,8 +323,8 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
 
 // Drive the INVOKED GEO→FORCE SOLVE end to end (kex2d-geoforce-editor stage 3): the section
 // menu's Convert to force row → the modal (progress climbing, all other input blocked, Cancel and
-// Escape) → the real solve → the document (kind flipped, keyframes landed, the realized step
-// stored) → one undo back to the authored shape, byte-identical.
+// Escape) → the real solve → the document (kind flipped, keyframes landed) → one undo back to
+// the authored shape, byte-identical.
 //
 // This is the ONE gate that proves the WORKER BUNDLING ships. `convert.ts` spawns its pool with
 // `new Worker(new URL("./convert-worker.ts", import.meta.url))` — the exact shape the bundler
@@ -335,7 +335,6 @@ test("invoked solve flow", async ({ page, boot }) => {
 
     const kinds = () => kexCall(page, "sectionKinds");
     const forceCounts = () => kexCall(page, "sectionForceCounts");
-    const steps = () => kexCall(page, "sectionSteps");
     const lengths = () => kexCall(page, "sectionLengths");
     const poses = () => kexCall(page, "poses");
     const undoDepth = () => kexCall(page, "undoDepth");
@@ -465,12 +464,10 @@ test("invoked solve flow", async ({ page, boot }) => {
     expect(log.frames, "the progress spinner was never on screen").toBeGreaterThan(0);
     await expect(scrim).toHaveCount(0); // the gate closed with the answer
 
-    // ── 7. What landed: the section is force, carrying the solve's keyframes, its realized
-    // extent, and its realized step (`Section.ds`, 0 = the track-nominal sentinel — only an
-    // invoked solve ever writes one). One undo entry, on top of the append's. ──
+    // ── 7. What landed: the section is force, carrying the solve's keyframes and its realized
+    // extent. One undo entry, on top of the append's. ──
     expect((await forceCounts())[0]).toBeGreaterThan(1);
     expect((await lengths())[0]).toBeGreaterThan(0);
-    expect((await steps())[0]).toBeGreaterThan(0);
     expect(await undoDepth()).toBe(appended + 1);
 
     // the transient readout: outcome + keys + how far off it landed. Nothing of it is stored.

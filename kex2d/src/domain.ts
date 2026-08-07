@@ -30,11 +30,10 @@
  * `history.landDomain` applies the result in a single `restoreAll` and records the entry. So a
  * conversion that throws part-way writes nothing, and there is no partial state to roll back.
  *
- * Solves stay distance-internal (`refine.ts` / `geofit.ts` work in arclength), so an invoked
- * conversion's realized step (`Section.ds`) belongs to the distance march. A domain flip releases it
- * back to the sentinel: under a time march the profile no longer spans the same arclength, so the
- * solve's exit-pinning claim — the only reason the step is stored — no longer holds (the same
- * reasoning that makes a join take the upstream step). */
+ * Solves stay distance-internal (`refine.ts` / `geofit.ts` work in arclength). No per-section
+ * baking step is stored (`kex2d-correctness-fixes` stage 4/5): a solved section's step was
+ * always `resolveStep(length, nominal)` by construction, so nothing here needs releasing one on
+ * a flip. */
 
 import type { State } from "@dylanebert/shallot";
 import { V_FLOOR } from "./bake";
@@ -220,9 +219,8 @@ export function pickable(ecs: State, target: Domain): boolean {
 
 /** flip the track-global domain and convert the whole force store into the target unit, as ONE
  * undoable entry: every force keyframe's position, every force section's extent, and every explicit
- * easing handle's Δs (scaled by the local slope `dt/ds = 1/v` at its keyframe). A converted section
- * releases its solved step back to the nominal sentinel. Geo sections pass through untouched — they
- * are position-authored in either domain.
+ * easing handle's Δs (scaled by the local slope `dt/ds = 1/v` at its keyframe). Geo sections pass
+ * through untouched — they are position-authored in either domain.
  *
  * Returns false, having written nothing and recorded nothing, when the target domain is already
  * active (the ruler menu's active row is a no-op) or when `convertible` reads false. Otherwise
@@ -266,7 +264,6 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
         return {
             ...snap,
             length: Math.max(floor, at(m, w, snap.length).value),
-            ds: 0, // the solved step belonged to the distance march
             points: snap.points.map((p) => {
                 const { value, slope } = at(m, w, p.s);
                 // an explicit handle's Δs rides the axis: dt/ds = 1/v to time, ds/dt = v back.
@@ -287,9 +284,7 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
  * Solves run in meters (`refine.ts` / `geofit.ts` work in arclength, and their goldens are frozen
  * there), so a landing into a `Time`-domain track would otherwise write meters into a seconds
  * store. It converts through the section's OWN window on the live table — the section is still
- * the geo shape the solve reproduced, so its arc↔time window IS the ride the answer describes —
- * and releases the realized step to the sentinel for the same reason a flip does: the step pins
- * the solve's exit under the distance march, a claim a time march no longer carries.
+ * the geo shape the solve reproduced, so its arc↔time window IS the ride the answer describes.
  *
  * A `Distance`-domain track gets `solved` back by identity, with no bake required — the landing
  * path there is byte-identical to before this seam existed. Returns null, having computed
@@ -313,6 +308,5 @@ export function convertSolve(
     return {
         points: solved.points.map((p) => ({ s: toTime(m, w, p.s).value, g: p.g })),
         length: Math.max(minForceExtent(Domain.Time), toTime(m, w, solved.length).value),
-        ds: 0,
     };
 }

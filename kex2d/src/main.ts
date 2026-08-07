@@ -390,10 +390,6 @@ if (import.meta.env.DEV) {
             const s = sections(ecs)[i];
             if (s) setSectionLength(ecs, s.id, len);
         },
-        // the per-section baking step (`Section.ds`, 0 = the track-nominal sentinel) — only an
-        // invoked solve writes one, so the solve flow asserts the realized step landed with the
-        // rest of the answer.
-        sectionSteps: (): number[] => sections(ecs).map((x) => x.ds),
         sectionForceCounts: (): number[] =>
             sections(ecs).map((x) => sectionForces(ecs, x.id).length),
         selectedSection: (): number | null => editor.section,

@@ -65,9 +65,9 @@ export function docState(state: State, eid: number): DocState {
  *  node's already-computed `theta`/`tangent` directly (node 0 pinned at the local origin, the
  *  rigid entry-frame law), rather than replaying `addNode`'s live-inference walk, since the
  *  corpus's nodes are already in that final, bake-ready form. Every corpus scenario's `ds` is
- *  `DS_NOMINAL` (0.5), so leaving `Section.ds` at its sentinel (0, resolving to `DS_NOMINAL`) —
- *  exactly what every other document-layer test does — reproduces `scenario.ds` exactly; the
- *  hill seed's `ds: 0` is the same sentinel by construction. */
+ *  `DS_NOMINAL` (0.5), and every geo section bakes at the track-nominal quantum (no per-section
+ *  step exists to override it, stage 5) — exactly what every other document-layer test does —
+ *  so this reproduces `scenario.ds` exactly. */
 export function buildGeoSection(scenario: Scenario | { name: string; nodes: Node[]; v0: number }): {
     state: State;
     eid: number;
@@ -88,18 +88,21 @@ export function buildGeoSection(scenario: Scenario | { name: string; nodes: Node
 /** build a force section from a landed `{s, g}` profile — the document-layer twin of
  *  `evalForce(entry, forceProfile(points, step), step)`: `createForcePoint` spawns each key
  *  at the default ease with no explicit tangent, exactly what `applyConvert`'s own landing
- *  spawns (kex2d-map.md: "spawn its `{s,g}` keys — all default-Cubic by construction"). */
+ *  spawns (kex2d-map.md: "spawn its `{s,g}` keys — all default-Cubic by construction"). every
+ *  section bakes at the track's own nominal quantum (no per-section step exists to override it,
+ *  stage 5): the nominal replay closes a solve's pinned exit bit-identically to the old
+ *  per-section-step replay (`track.test.ts`), so dropping the solve's own realized `ds` here
+ *  changes nothing. */
 function buildForceSection(
     points: readonly { s: number; g: number }[],
     length: number,
-    ds: number,
     v0: number,
 ): { state: State; eid: number; sec: number } {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
     setTrackV0(eid, v0);
-    const sec = createSection(state, 0, SectionKind.Force, length, ds);
+    const sec = createSection(state, 0, SectionKind.Force, length);
     for (const p of points) createForcePoint(state, sec, p.s, p.g);
     state.step(0);
     return { state, eid, sec };
@@ -162,12 +165,7 @@ export async function sweepForceLeg(scenario: Scenario): Promise<{ scenario: str
         );
     }
 
-    const { state, eid, sec } = buildForceSection(
-        derived.points,
-        derived.length,
-        derived.ds,
-        scenario.v0,
-    );
+    const { state, eid, sec } = buildForceSection(derived.points, derived.length, scenario.v0);
     const h = createHistory();
     const before = docState(state, eid);
 

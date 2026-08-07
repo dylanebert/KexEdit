@@ -353,12 +353,12 @@ export interface Step {
  *  never `step` itself, whose rounding residual is what left `forceProfile`'s σ grid and
  *  `evalForce`'s march disagreeing with the authored extent (`kex2d-section-extent`, locked
  *  decision). The conformed `ds` is a FIXED POINT of this same rounding — re-resolving an
- *  already-conforming step (a converted section's stored `Section.ds`) reproduces the same
- *  `edges`, the quantity that actually survives; `ds` itself is re-derived in f64 and may differ
- *  from a stored f32 step by up to one f32 ulp, a strict improvement over the stored value, not a
- *  no-op. Every production pairing of a force section's edge count with its step goes through
- *  this ONE seam — never its own local `round(length/step)`. `forceProfile`/`evalForce` take the
- *  returned {@link Step} as a single argument, so the pair travels together by construction.
+ *  already-conforming step reproduces the same `edges`, the quantity that actually survives;
+ *  `ds` itself is re-derived in f64 and may differ from an f32 step by up to one f32 ulp, a
+ *  strict improvement, not a no-op. Every production pairing of a force section's edge count
+ *  with its step goes through this ONE seam — never its own local `round(length/step)`.
+ *  `forceProfile`/`evalForce` take the returned {@link Step} as a single argument, so the pair
+ *  travels together by construction.
  *
  *  Throws on a non-finite `length`/`step` or a `step ≤ 0`: the floor's `round(…)`/`max(1, …)`
  *  above silently propagates a `NaN` quotient, or produces an `Infinity` edge count for a

@@ -154,7 +154,6 @@ export interface Kex {
     sectionIds(): number[];
     sectionKinds(): number[];
     sectionLengths(): number[];
-    sectionSteps(): number[];
     seedForceBump(): void;
     seedForceStress(): void;
     seedHill(): void;

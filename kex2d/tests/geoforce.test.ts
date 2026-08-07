@@ -99,10 +99,8 @@ describe("convertGeo", () => {
         const secEid = sectionAt(state, sec);
         if (secEid === null) throw new Error("section missing");
         expect(Section.kind.get(secEid)).toBe(SectionKind.Force);
-        // the solve's realized extent and step, exactly — not the nominal quantum, and not the
-        // destructive convert's default extent + sentinel step.
+        // the solve's realized extent, exactly — not the destructive convert's default extent.
         expect(Section.length.get(secEid)).toBe(result.length);
-        expect(Section.ds.get(secEid)).toBe(result.ds);
         // the shape nodes are gone and the answer's keyframes are all that's there.
         expect(sectionHandles(state, sec)).toHaveLength(0);
         expect(sectionForces(state, sec).map(({ s, g }) => ({ s, g }))).toEqual(result.points);
@@ -238,8 +236,6 @@ describe("convertGeo", () => {
         // ~0.5 m length floor over the ride's ~18 m/s (≈0.03 s) plus one march step.
         expect(Math.abs(landed - dur)).toBeLessThan(0.05);
         expect(landed).toBeLessThan(result.length / 5);
-        // the realized step lapses to the sentinel — it pinned the exit under the distance march.
-        expect(Section.ds.get(secEid)).toBe(0);
         // every keyframe converted with it: inside the duration, ordered, and none left in metres.
         const stored = sectionForces(state, sec).map((p) => p.s);
         expect(stored.length).toBe(result.points.length);

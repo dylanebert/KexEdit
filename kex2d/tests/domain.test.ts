@@ -375,22 +375,6 @@ describe("forward conversion", () => {
         expect(kfs(state, a)[1]).toBeCloseTo(interp(tab.arc, tab.t, 30), 6);
     });
 
-    test("a solved section releases its step back to the nominal sentinel", () => {
-        const { state, sec } = forceTrack(40, [
-            [0, 1],
-            [40, 1],
-        ]);
-        const eid = sectionAt(state, sec);
-        if (eid === null) throw new Error("no section");
-        Section.ds.set(eid, 0.37); // an invoked solve's realized ARCLENGTH step
-        state.step(0);
-
-        expect(convertDomain(createHistory(), state, Domain.Time)).toBe(true);
-        // the step's only job is pinning the solve's exit under the distance march; a time march
-        // no longer spans that arclength, so the claim lapses (the join-step rule's reasoning).
-        expect(Section.ds.get(eid)).toBe(0);
-    });
-
     test("geo sections are untouched — they stay position-authored in either domain", () => {
         const state = new State();
         state.addSystem(BakeSystem);
@@ -593,7 +577,6 @@ describe("undo", () => {
                 order: s.order,
                 kind: s.kind,
                 length: s.length,
-                ds: s.ds,
                 points: sectionForces(state, s.id).map((p) => ({
                     id: p.id,
                     s: p.s,
@@ -955,7 +938,7 @@ describe("solve landings", () => {
         expect(convertSolve(state, sec, answer)).toBe(answer);
     });
 
-    test("a Time track converts positions, extent, and releases the realized step", () => {
+    test("a Time track converts positions and extent", () => {
         const { state, eid, sec } = timeGeoTrack();
         const tab = table(eid);
         const answer = solved(24, [
@@ -975,9 +958,6 @@ describe("solve landings", () => {
         expect(landed.length).toBeCloseTo(interp(tab.arc, tab.t, 24), 9);
         // seconds, not meters — the whole point of the seam.
         expect(landed.length).toBeLessThan(answer.length / 5);
-        // the realized step pinned the exit under the DISTANCE march; a time march no longer
-        // spans that arclength, so the claim lapses to the nominal sentinel (the flip's rule).
-        expect(landed.ds).toBe(0);
     });
 
     test("a Time track floors a collapsed extent at the domain's own minimum", () => {
@@ -1054,7 +1034,6 @@ describe("window boundaries", () => {
         const landed = convertSolve(state, a, {
             points: [{ s: exit.d, g: 1 }],
             length: exit.d,
-            ds: 0.5,
         });
         if (!landed) throw new Error("convertSolve rejected a live track");
         expect(landed.length).toBe(exit.t);

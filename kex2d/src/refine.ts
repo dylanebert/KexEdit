@@ -156,8 +156,10 @@ export interface ConvertResult {
     /** The section's force keyframes, `{s, g}` only — every segment default Cubic. */
     points: ForcePoint[];
     /** The REALIZED edge step, `length/edges` — never the nominal step the caller passed.
-     *  A force section stores its own step, and marching loop-explicit's profile at nominal
-     *  0.5 m misses the pinned exit by 0.247 m (`refine.test.ts`). */
+     *  Marching loop-explicit's profile at the un-conformed nominal 0.5 m misses the pinned
+     *  exit by 0.247 m (`tests/track.test.ts`'s shortfall pin); the document layer conforms
+     *  every replay through `profile.resolveStep` instead of storing this value
+     *  (`kex2d-correctness-fixes` stage 5). */
     ds: number;
     /** The section's extent (m): the bake's arclength, which the exit is pinned at. */
     length: number;

@@ -192,10 +192,9 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `MAX_SAMPLES`-clipped chain, and `forceBake` (`track.ts:2532`, which clips deliberately),
   truncate the march short of `edges`, so the identity is conditional on nothing having clipped.
   The conformed `ds` is a fixed point of this same rounding, so re-resolving an already-conforming
-  step (a converted section's stored `Section.ds`) preserves the same `edges` — what survives
-  re-resolution is the EDGE COUNT, not the `ds` value bit-for-bit: the returned `ds` is re-derived
-  in f64 and may differ from a stored f32 step by up to one f32 ulp, a strict improvement over the
-  stored value rather than a no-op.
+  step preserves the same `edges` — what survives re-resolution is the EDGE COUNT, not the `ds`
+  value bit-for-bit: the returned `ds` is re-derived in f64 and may differ from an f32 step by up
+  to one f32 ulp, a strict improvement, not a no-op.
 
   **Pairing is a source-of-truth law, enforced structurally, not by convention.** `resolveStep`
   returns a `Step` interface (`{edges, ds}`) — one value, not two — and `forceProfile(points,
@@ -280,10 +279,12 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   its actual failed knots/profile are logged. `"budget"` instead means no admissible split site
   remains, the sanctioned narrow-feature outcome. Each `RefineEvent` carries the flat probe
   profile of the state it reports, so playback never re-solves a decision.
-  **A converted section must carry the solve's own `ds`** (`length/edges`, what `spine` chose so
-  the section spans the bake exactly) — a force section stores its own step. Marching
-  loop-explicit's same profile at nominal 0.5 m misses the pinned exit by 0.247 m, while the
-  realized step closes within 3.1e-5 m (`refine.test.ts`). The locked corpus is 80 keys, and its
+  `ConvertResult.ds` is the solve's own realized step (`length/edges`, what `spine` chose so the
+  section spans the bake exactly) — transient readout only; no section stores it
+  (`kex2d-correctness-fixes` stage 5). Every force section bakes at the track's nominal quantum,
+  and `profile.resolveStep`'s conforming rule makes that nominal replay close a solve's pinned
+  exit bit-identically to the realized step's own replay (`tests/track.test.ts`). The locked
+  corpus is 80 keys, and its
   structural output — knots, outcome, probes, keys, edges — is frozen in
   `tests/fixtures/convert-golden.json` and hard-fails on any mismatch, ahead of any value
   comparison; every continuous field — `floor`, `deviation`, `points[].g` alongside `length`,
@@ -454,23 +455,15 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `bakeLive` (whether the current bake IS that state) — what anything treating `sectionInfo` as
   truth checks first, since a never-run, invalidated (`hash === ""`), or two-node-floor-skipped
   bake leaves it describing a shape that is no longer on screen.
-  **The per-section step** (`Section.ds`, resolved by `sectionStep`): a section bakes at its own
-  step, `0` meaning the track-nominal `DS_NOMINAL`. Only an invoked solve writes one — a converted
-  section carries the solve's realized `length/edges` so its profile spans the section exactly.
-  **What that carry buys is now an open question.** It used to be what closed the pinned exit:
-  replaying at the nominal quantum missed by metres-scale fractions, because the nominal replay
-  wasn't conformed. Under `resolveStep` both replays conform to the same exact step and land
-  **bit-identical** (`tests/track.test.ts` pins the identity, still
-  guarding the old `shortfall > 0.2` so it can't go vacuous). The step's remaining unique claim is
-  recording the solve's *chosen edge count* against a `length` or nominal step that later drifts out
-  from under it. Re-justify it on that basis or remove it; until then the carry is unexplained, not
-  load-bearing. It's authored
-  input, so it's in `bakeHash` (written only when set, so the sentinel leaves an authored track's
-  hash byte-identical) and in `snapshotSection`/`restoreSection`/`spawnSection`. Three op rules:
-  **a convert resets it** (the destructive reset discards the payload the step belonged to), **a
-  split gives both halves the step** (the partition keeps each half's density; it doesn't re-solve),
-  and **a join takes the upstream's** — the joined section spans neither solve any more, so the
-  neighbor's step has no claim on it. Pinned in `tests/ops.test.ts`.
+  **There is no per-section baking step.** Every section bakes at the track-nominal quantum
+  (`DS_NOMINAL`, or `DT_NOMINAL` in the `Time` domain) — removed at `kex2d-correctness-fixes`
+  stage 5, after the stage-2 conforming rule made it redundant: a solved section's step was
+  always `resolveStep(length, nominal)` by construction, so the nominal replay closes a solve's
+  pinned exit **bit-identically** to the old stored-step replay (`tests/track.test.ts`, still
+  guarding the old `shortfall > 0.2` so it can't go vacuous) and storing the step carried no
+  information beyond the solve-time length — the one production path that drifted a length
+  without releasing a stored step, `setSectionLength`'s extent trim, had already voided the
+  solve's exit pin by moving the endpoint.
   **The provenance sidecar** (an untouched conversion round trip is the identity — restore, never
   re-fit): a module-level `Map<sectionId, {payload, token, entry}>`, deliberately NOT in
   `bakeHash`/`authoredHash`, snapshots, or serialization — a droppable cache of previously authored
@@ -479,7 +472,7 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `readProvenance` / `consultProvenance` — the ONE certification core both invoked converts call: a
   fresh `sectionToken` must equal the stamp's, and the live `sectionInfo.entry` must match
   **bit-exact** on all four fields (`entryExact`, plain `!==`, NaN fails closed). `sectionToken` =
-  `sectionContentHash` (kind + own ds + rows, NOT `order` — factored out of `bakeHash`, which folds
+  `sectionContentHash` (kind + rows, NOT `order` — factored out of `bakeHash`, which folds
   `order` back in itself) + `Track.domain` (a ruler pick converts a force store without touching
   rows — the one silent-corruption path). Global `Track.ds` is deliberately excluded: a first
   section's entry is ds-invariant, so it restores across a global ds change — benign, the restore
@@ -622,14 +615,13 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   flip is two independent marches of one authored ride, not a defect of its own. `convertSolve(ecs,
   sectionId, solved)` is the landing seam for the same math: invoked solves stay
   distance-internal (their goldens are frozen in meters), so `geoforce.convertGeo` passes its answer
-  through it inside the landing entry, releasing the realized step to the sentinel the way a flip
-  does. Device-free tests in `tests/domain.test.ts` (guards, the forward conversion against an
+  through it inside the landing entry. Device-free tests in `tests/domain.test.ts` (guards, the forward conversion against an
   independently rebuilt table, the derived round-trip bound, the single-flip bound against the same
   swept disagreement, undo byte-identity, the plateau and past-span degeneracies, the window
   boundaries).
 - `geoforce.ts` — the **invoked geo→force command**, and the only place the conversion tier and
   the document meet: `convertGeo(history, ecs, sectionId, opts)` drives `convert.ts`'s façade with
-  the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), sectionStep(…), MAX_SAMPLES −
+  the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), trackDs(ecs), MAX_SAMPLES −
   startSample)` — the same call `BakeSystem` makes, budget included, so the solve targets exactly
   what's displayed) and lands the answer through `history.solveForce`. **The document is written
   once, at resolution**: the façade is pure, so a cancel, a `"diverged"` answer, or a stale one
@@ -639,7 +631,7 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   output as their "before") and re-reads `authoredHash` before writing (a mid-solve edit rejects as
   `StaleConvert`, its own type so a UI tells it from a cancel). The caller is modal; the guards are
   the backstop, not a license to author underneath a running solve. Nothing of `ConvertResult`
-  persists past points / length / realized `ds` — outcome, floor, deviation, probes are transient
+  persists past points / length — outcome, floor, deviation, probes, realized `ds` are transient
   readout. `tryRestore` runs the provenance short-circuit inline before the façade ever spawns
   (`track.consultProvenance` → `history.restoreProvenance`, a `"restored"` outcome on
   `ConvertGeoResult`); a verbatim restore is already in the track domain's unit, so it never

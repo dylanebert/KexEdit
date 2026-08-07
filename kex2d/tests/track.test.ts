@@ -1392,7 +1392,6 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
             order: 0,
             kind: SectionKind.Geo,
             length: 0,
-            ds: 0,
             nodes: [],
             points: [],
         });
@@ -1891,136 +1890,43 @@ describe("force easing + seeding (stage B)", () => {
     });
 });
 
-// the per-section step (kex2d-geoforce-editor stage 1): `Section.ds` is the step a section
-// bakes at, 0 = the track-nominal `Track.ds`. an invoked geo→force solve writes its realized
-// step (`length/edges`) so the converted profile spans its solve exactly.
-describe("per-section step (Section.ds)", () => {
-    /** a one-force-section track carrying `points` over `length`, baked at `ds` (0 =
-     *  track-nominal). returns its baked exit — the last sample of the chain. */
-    function forceExit(
-        v0: number,
-        length: number,
-        ds: number,
-        points: readonly { s: number; g: number }[],
-    ): { x: number; y: number } {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        setTrackV0(eid, v0);
-        const sec = createSection(state, 0, SectionKind.Force, length, ds);
-        for (const p of points) createForcePoint(state, sec, p.s, p.g);
-        state.step(0);
-        const s = samples.get(eid);
-        if (!s) throw new Error("samples missing");
-        const last = Track.count.get(eid) - 1;
-        return { x: s.posX[last], y: s.posY[last] };
-    }
+// the per-section baking step is removed (kex2d-correctness-fixes stage 5): a solved
+// section's step was always `resolveStep(length, nominal)` by construction, so it carried no
+// information beyond the solve-time length. The one test worth keeping from the retired
+// "per-section step" describe block is the nominal replay's own closing
+// bound — every force section now bakes at the nominal quantum, and `profile.resolveStep`'s
+// conforming rule (`edges = max(1, round(length/step))`, `ds = length/edges`) is what makes that
+// replay close a solve's pinned exit exactly, not merely approximately.
+test("the nominal replay closes a solve's pinned exit — the conforming rule (kex2d-section-extent stage 2)", () => {
+    // the conversion tier's own oracle, at the document layer: replay a shipped conversion (the
+    // frozen golden for loop-explicit) as an authored force section and measure where it lands
+    // against the geo shape it was solved from.
+    const scenario = scenarios.find((s) => s.name === "loop-explicit");
+    if (!scenario) throw new Error("missing loop-explicit scenario");
+    const solved = GOLDEN("loop-explicit");
+    const target = evalGeo({ x: 0, y: 0, theta: 0, v: scenario.v0 }, scenario.nodes, scenario.ds);
+    const pinned = { x: target.posX[target.edges], y: target.posY[target.edges] };
 
-    test("the stored step and the nominal replay both close the pinned exit — the conforming rule generalizes (kex2d-section-extent stage 2)", () => {
-        // the conversion tier's own oracle, at the document layer: replay a shipped
-        // conversion (the frozen golden for loop-explicit) as an authored force section and
-        // measure where it lands against the geo shape it was solved from.
-        //
-        // Pre-stage-2, only the solve's OWN stored step (`Section.ds`, `length/edges`) closed
-        // this exit — the nominal quantum's un-conformed march stopped short by the section's
-        // rounding residual (`refine.ts`; `refine.test.ts`'s atom-layer pin). Stage 2 made the
-        // pairing seam (`profile.resolveStep`) universal: EVERY force section's replay now
-        // conforms `edges = max(1, round(length/step))` / `ds = length/edges`, stored step or
-        // sentinel-0 nominal alike. For an UNCHANGED length that seam is a fixed point of the
-        // solve's own edge count (the stage-2 locked decision's own measurement: 0 edge-count
-        // drift re-resolving an already-conforming pair), so the nominal replay now reproduces
-        // the exact same `(edges, ds)` the solve chose and closes the exit too — the two
-        // replays land BIT-IDENTICAL, not just both-close. `Section.ds`'s carry is no longer
-        // what keeps this exit closed; what it still uniquely records is the solve's CHOSEN
-        // edge count against a length or nominal step that later moves out from under it
-        // (roadmap follow-up, not this unit's).
-        const scenario = scenarios.find((s) => s.name === "loop-explicit");
-        if (!scenario) throw new Error("missing loop-explicit scenario");
-        const solved = GOLDEN("loop-explicit");
-        const target = evalGeo(
-            { x: 0, y: 0, theta: 0, v: scenario.v0 },
-            scenario.nodes,
-            scenario.ds,
-        );
-        const pinned = { x: target.posX[target.edges], y: target.posY[target.edges] };
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    setTrackV0(eid, scenario.v0);
+    const sec = createSection(state, 0, SectionKind.Force, solved.length);
+    for (const p of solved.points) createForcePoint(state, sec, p.s, p.g);
+    state.step(0);
+    const s = samples.get(eid);
+    if (!s) throw new Error("samples missing");
+    const last = Track.count.get(eid) - 1;
+    const nominal = { x: s.posX[last], y: s.posY[last] };
 
-        const realized = forceExit(scenario.v0, solved.length, solved.ds, solved.points);
-        const nominal = forceExit(scenario.v0, solved.length, 0, solved.points);
-        const missRealized = Math.hypot(realized.x - pinned.x, realized.y - pinned.y);
-        const missNominal = Math.hypot(nominal.x - pinned.x, nominal.y - pinned.y);
-
-        // both close within the same 1e-3 m contract `refine.test.ts` holds the atom layer to
-        // (measured ~1.9e-5 m through the f32 ECS columns) — the shape this test used to pin
-        // as the stored step's exclusive privilege.
-        expect(missRealized).toBeLessThan(1e-3);
-        expect(missNominal).toBeLessThan(1e-3);
-        // not merely both-close: the seam resolves both replays to the identical conformed
-        // step, so they land on the identical f32 exit.
-        expect(nominal).toEqual(realized);
-        // the residual the pre-stage-2 nominal path used to stop short by, kept as evidence
-        // the two steps genuinely differ in VALUE even though they now agree in effect.
-        const shortfall = Math.abs(solved.length - solved.edges * DS_NOMINAL);
-        expect(shortfall).toBeGreaterThan(0.2);
-    });
-
-    test("changing the stored step re-bakes the section at it", () => {
-        // the step is authored input, so it belongs in `bakeHash` — otherwise the gate skips
-        // and the track keeps rendering the previous step's samples.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 40, 0);
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, 40, 1);
-        state.step(0);
-        expect(Track.count.get(eid)).toBe(40 / DS_NOMINAL + 1); // 80 edges at the nominal step
-
-        const secEid = sectionAt(state, sec);
-        if (secEid === null) throw new Error("section missing");
-        Section.ds.set(secEid, 2);
-        state.step(0);
-        expect(Track.count.get(eid)).toBe(40 / 2 + 1); // 20 edges at the stored step
-    });
-
-    test("the stored step round-trips through snapshot/restore", () => {
-        // 0.25 is f32-exact, so the round-trip is byte-identical, not just close.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 40, 0.25);
-        const stepOf = (id: number): number => {
-            const eid = sectionAt(state, id);
-            if (eid === null) throw new Error("section missing");
-            return Section.ds.get(eid);
-        };
-
-        const perSection = snapshotSection(state, sec);
-        const whole = snapshotAll(state);
-
-        Section.ds.set(sectionAt(state, sec) as number, 0); // lose it
-        restoreSection(state, perSection); // the convert-undo unit
-        expect(stepOf(sec)).toBe(0.25);
-
-        Section.ds.set(sectionAt(state, sec) as number, 0);
-        restoreAll(state, whole); // the structural-op unit (respawns the section entity)
-        expect(stepOf(sec)).toBe(0.25);
-    });
-
-    test("a destructive convert resets the step to the nominal sentinel", () => {
-        // a convert resets the section to its kind's default; the step is a solve output, and
-        // the reset section is not one.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 40, 0.25);
-        createForcePoint(state, sec, 0, 1);
-        state.step(0);
-
-        convertSection(state, sec); // → geo
-        const secEid = sectionAt(state, sec);
-        if (secEid === null) throw new Error("section missing");
-        expect(Section.ds.get(secEid)).toBe(0);
-    });
+    const missNominal = Math.hypot(nominal.x - pinned.x, nominal.y - pinned.y);
+    // the same 1e-3 m contract `refine.test.ts` holds the atom layer to (measured ~1.9e-5 m
+    // through the f32 ECS columns).
+    expect(missNominal).toBeLessThan(1e-3);
+    // the residual an un-conformed march would have stopped short by, kept as evidence the
+    // conforming rule is doing real work here, not passing vacuously on an already-round length.
+    const shortfall = Math.abs(solved.length - solved.edges * DS_NOMINAL);
+    expect(shortfall).toBeGreaterThan(0.2);
 });
 
 // `specs/kex2d-section-extent.md` stage 1 — red-first oracles for the extent-identity defect:
@@ -2030,8 +1936,9 @@ describe("per-section step (Section.ds)", () => {
 // two disagree by the rounding residual whenever `length` isn't a whole multiple of `ds`.
 // Expected RED until stage 2 makes the bake conform to the authored length.
 describe("section extent identity (kex2d-section-extent stage 1)", () => {
-    /** a one-force-section track at `(length, ds)` — its OWN step, never the nominal sentinel
-     *  (`ds = 0` would resolve to the track-nominal quantum, defeating the sweep). */
+    /** a one-force-section track at `(length, ds)` — every section bakes at the TRACK's own
+     *  nominal quantum (there is no per-section step, `kex2d-correctness-fixes` stage 5), so the
+     *  sweep drives `Track.ds` directly rather than a per-section override. */
     function extentTrack(
         length: number,
         ds: number,
@@ -2040,7 +1947,8 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, length, ds);
+        Track.ds.set(eid, ds);
+        const sec = createSection(state, 0, SectionKind.Force, length);
         for (const p of points) createForcePoint(state, sec, p.s, p.g);
         state.step(0);
         return { state, eid, sec };
@@ -2165,27 +2073,27 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
     // `Time`-domain track authored directly, with no flip anywhere in the picture, is what this
     // isolates). A `Time`-domain track's force sections author duration directly (no geo
     // sections, no conversion), so DT_NOMINAL replaces DS_NOMINAL as the nominal step swept.
-    test("a Time-domain section's sectionSpans duration equals its authored duration, off-grid durations × dt", () => {
-        const dtList = [DT_NOMINAL, DT_NOMINAL / 2, DT_NOMINAL / 5];
+    // a Time-domain force section always bakes at `DT_NOMINAL` — there is no per-section
+    // step to override it away from (removed, stage 5), so this covers the
+    // off-grid case across authored durations at the one march step the domain has.
+    test("a Time-domain section's sectionSpans duration equals its authored duration, off-grid durations", () => {
         const durations = [
             1.2345, 2.37, 0.813, 4.007, 0.5555, 10.0001, 0.2222, 6.161, 0.39, 1.7017,
         ];
-        for (const dt of dtList) {
-            for (const duration of durations) {
-                if (onGrid(duration, dt)) continue;
-                const edges = Math.max(1, Math.round(duration / dt));
-                const state = new State();
-                state.addSystem(BakeSystem);
-                const eid = createTrack(state);
-                setTrackDomain(state, Domain.Time);
-                const sec = createSection(state, 0, SectionKind.Force, duration, dt);
-                state.step(0);
-                const spans = sectionSpans(state, eid);
-                const sp = spans.find((x) => x.id === sec);
-                if (!sp) throw new Error("section missing from spans");
-                const tol = marchTol(edges, duration);
-                expect(Math.abs(sp.lenU - duration)).toBeLessThan(tol);
-            }
+        for (const duration of durations) {
+            if (onGrid(duration, DT_NOMINAL)) continue;
+            const edges = Math.max(1, Math.round(duration / DT_NOMINAL));
+            const state = new State();
+            state.addSystem(BakeSystem);
+            const eid = createTrack(state);
+            setTrackDomain(state, Domain.Time);
+            const sec = createSection(state, 0, SectionKind.Force, duration);
+            state.step(0);
+            const spans = sectionSpans(state, eid);
+            const sp = spans.find((x) => x.id === sec);
+            if (!sp) throw new Error("section missing from spans");
+            const tol = marchTol(edges, duration);
+            expect(Math.abs(sp.lenU - duration)).toBeLessThan(tol);
         }
     });
 });
@@ -2471,7 +2379,6 @@ describe("section reset (kex2d-idioms stage 2)", () => {
         const got = snapshotSection(state, sec);
         expect(got.kind).toBe(SectionKind.Geo);
         expect(got.nodes.length).toBe(2);
-        expect(got.ds).toBe(0); // step back to the nominal sentinel
         expect(got).toEqual(refSeed);
     });
 

@@ -1572,47 +1572,6 @@ describe("split → join round-trips", () => {
     });
 });
 
-// the per-section step (kex2d-geoforce-editor stage 1): a converted section carries the
-// solve's realized step (`Section.ds`, 0 = the track-nominal `Track.ds`). the structural ops
-// have one rule each — a split inherits it into both halves, a join takes the upstream's.
-describe("per-section step through split / join", () => {
-    /** a two-force-section chain with the given steps, ready to join. */
-    function twoForce(dsA: number, dsB: number): { state: State; a: number } {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20, dsA);
-        createSection(state, 1, SectionKind.Force, 20, dsB);
-        return { state, a };
-    }
-
-    test("a force split gives both halves the step", () => {
-        // both halves still span their own solve at the same density — the split partitions
-        // the profile, it doesn't re-solve it. 0.25 is f32-exact.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 40, 0.25);
-        createForcePoint(state, a, 10, 1);
-        createForcePoint(state, a, 30, 2);
-
-        expect(splitForce(state, a, 20)).not.toBeNull();
-        expect(sections(state).map((s) => s.ds)).toEqual([0.25, 0.25]);
-    });
-
-    test("a join keeps the upstream step", () => {
-        // the joined section is no longer either solve's output, so the downstream step has no
-        // claim on it: upstream wins, whichever way round the pair carries one.
-        const kept = twoForce(0.25, 0);
-        expect(joinNext(kept.state, kept.a)).toBe(true);
-        expect(sections(kept.state).map((s) => s.ds)).toEqual([0.25]);
-
-        const dropped = twoForce(0, 0.25);
-        expect(joinNext(dropped.state, dropped.a)).toBe(true);
-        expect(sections(dropped.state).map((s) => s.ds)).toEqual([0]);
-    });
-});
-
 describe("upstream edits carry downstream rigidly", () => {
     test("moving a lead-in node leaves the downstream section's local shape untouched", () => {
         const { state, eid, a, b } = twoGeo();

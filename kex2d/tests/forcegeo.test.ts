@@ -100,8 +100,7 @@ describe("convertForce", () => {
         const secEid = sectionAt(state, sec);
         if (secEid === null) throw new Error("section missing");
         expect(Section.kind.get(secEid)).toBe(SectionKind.Geo);
-        // the destructive-convert sentinels: no realized step carries over in this direction.
-        expect(Section.ds.get(secEid)).toBe(0);
+        // the destructive-convert sentinel: no extent carries over in this direction.
         expect(Section.length.get(secEid)).toBe(0);
         // the force points are gone and the fit's node chain is all that's there.
         expect(sectionForces(state, sec)).toHaveLength(0);
@@ -267,7 +266,6 @@ describe("convertForce", () => {
         if (secEid === null) throw new Error("section missing");
         expect(Section.kind.get(secEid)).toBe(SectionKind.Geo);
         expect(Section.length.get(secEid)).toBe(0); // the seconds extent is gone with the store
-        expect(Section.ds.get(secEid)).toBe(0);
         expect(sectionForces(state, sec)).toHaveLength(0);
         expect(sectionHandles(state, sec)).toHaveLength(result.nodes.length);
         // the shape the time march produced is what landed — same exit, the geoforce bound.
