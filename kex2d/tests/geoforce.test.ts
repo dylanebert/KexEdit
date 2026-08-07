@@ -274,7 +274,7 @@ describe("convertGeo", () => {
 // other direction.
 
 describe("provenance short-circuit (reverse)", () => {
-    test("an untouched trip restores the force section content-hash-identical, easing + explicit handle + extent + step included", async () => {
+    test("an untouched trip restores the force section content-hash-identical, easing + explicit handle + extent included", async () => {
         const { state, eid, sec } = hillForceTrack();
         const h = createHistory();
         const before = docState(state, eid);
