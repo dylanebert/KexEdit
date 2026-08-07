@@ -189,7 +189,7 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `edges = max(1, round(length/step))`, `ds = length/edges`. So `edges·ds === length` to f32
   accumulation instead of leaving a rounding-residual gap between the authored extent and the
   realized one — within the sample budget: a
-  `MAX_SAMPLES`-clipped chain, and `forceBake` (`track.ts:2532`, which clips deliberately),
+  `MAX_SAMPLES`-clipped chain, and `forceBake` (`track.ts:2471`, which clips deliberately),
   truncate the march short of `edges`, so the identity is conditional on nothing having clipped.
   The conformed `ds` is a fixed point of this same rounding, so re-resolving an already-conforming
   step preserves the same `edges` — what survives re-resolution is the EDGE COUNT, not the `ds`
@@ -211,12 +211,16 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   no edge to `profile.ts`.
 
   Every production pairing of a force section's edge count with its step goes through
-  `resolveStep` — seven sites in four modules: `track.ts` `forcePayload` + `forceBake`, `pin.ts`
-  `sectionSpec`, `optimize.ts` `computeExit` + `derivedTol` + the Gram matrix build, `polish.ts`
-  `spine`. `track.ts`'s `forceDense`, `pin.ts`'s `enterPin`, and `polish.ts`'s `violence` are
-  CONSUMERS of an already-conformed `Step`, not pairing sites of their own — each takes `Step` as
-  a typed parameter, conformed once upstream by its own caller. Before the signature change these
-  three needed a declared, name-keyed exemption in `tests/profile.test.ts` (`CrossFunctionConsumers`)
+  `resolveStep` — six sites in four modules: `track.ts` `forcePayload` + `forceBake`, `pin.ts`
+  `sectionSpec`, `optimize.ts` `computeExit` + the Gram matrix build (`solveOptimize`'s own
+  `resolveStep` call, reused for both the Gram build and `derivedTol`'s input), `polish.ts`
+  `spine`. `track.ts`'s `forceDense`, `pin.ts`'s `enterPin`, `polish.ts`'s `violence`, and
+  `optimize.ts`'s `derivedTol` are CONSUMERS of an already-conformed `Step`, not pairing sites of
+  their own — each takes `Step` as a typed parameter, conformed once upstream by its own caller
+  (`derivedTol` used to resolve its own `ds` internally; the signature change moved that call to
+  its one caller, `solveOptimize`, which now resolves once and hands the same `Step` to both
+  `derivedTol` and the Gram build). Before the signature change `forceDense`/`enterPin`/`violence`
+  needed a declared, name-keyed exemption in `tests/profile.test.ts` (`CrossFunctionConsumers`)
   because a lexical, per-call-site scanner couldn't trace `ds` across a function boundary; the
   signature now makes that boundary-crossing unrepresentable — `forceProfile`/`evalForce` take the
   pair as one argument, so there is no call site left where `edges` and `ds` could have arrived
@@ -1013,7 +1017,7 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 
 ## Test tiers
 
-`bun test` is the whole default gate (~14 s, 1454 tests) and it runs every time. The corpus-scale
+`bun test` is the whole default gate (~14 s, 1451 tests) and it runs every time. The corpus-scale
 `.oracle.ts` files sit outside it and are **run explicitly by path, exactly like the labs** — no
 `package.json` script, no composite. Run the one whose kernel you touched:
 
