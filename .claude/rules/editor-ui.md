@@ -386,11 +386,15 @@ value that pins each act that stays, so the next author can tell a real boundary
 controller, a chart-pixel coupling) from an un-hoisted derivation. **Spread the factory last**
 where a component adds its chrome keys — spread-first lets a re-forked sibling key silently shadow
 the hoisted body with nothing to catch it. And a factory **closes over, it computes nothing at
-construction**: it is called per menu rebuild and per keypress.
+construction**: it is called per menu rebuild and per keypress. A compile pin reaching only part of
+a dispatch record gets a runtime twin censused from the record's own `Pick<>` return-type
+annotation — both directions, a control per direction, never a second hand-typed set.
 
 One limit survives the hoist. Wiring is still gated by the capture flows alone: a source census
-proves a home *mentions* its factory, never that it dispatches through it or keeps no private twin
-beside it.
+proves a home *mentions* its factory — never that it dispatches through it, keeps no private twin,
+or resolves enablement against the keydown's own subject rather than a menu's (enablement inputs
+are wiring, not naming: a fully-censused seam once shipped green with dead keys, reading the open
+context menu's section on every keyboard-only path).
 
 **A descriptor field costing a full-document walk is a getter, and the gate asserts the cheap fork
 reads none of them.** The pure-builder lift replaces a closure that could read the live document
@@ -493,6 +497,24 @@ a declared list of the walking fields, and an assert that the fork not needing t
   `SectionMenuActions.cutAt` — but for the seam's reason, not boundness: one English verb, two
   acts, so the key-act seam's `Acts` table can tell them apart. (`append` / `add` remain the
   bound-vs-unbound instance of the same naming rule.)
+
+  **Which rows earn a key is derived, not picked — four laws, priority order.** (1) **Frequency
+  earns the key**: bound iff the row fires repeatedly inside an authoring loop; once-per-section
+  picks stay on the mouse (refuses the `Easing ▸` presets, `Tangents ▸` modes, the append flyout,
+  the ruler toggle). (2) **Position must be nameable** — the clause above. (3) **One key, one verb,
+  everywhere**, dispatched by live selection kind, then hovered surface — with one exception: a
+  sandbox mode may reuse a key its own lockdown makes unreachable there (pin mode's `Enter` is
+  Solve), recorded as a mode-scoped registry entry so the collision oracle stays sighted.
+  (4) **Mnemonic first, left-hand reach as tiebreaker** — reach never overrides a mnemonic-exact
+  letter (Blender `P`, Premiere `N`/`Y`/`P`: right-hand, mnemonic), and a mnemonic letter never
+  collides: ours derives from our vocabulary as Figma's derives from its own (`P` pin/pen, `C`
+  cut/comment), so a user learns the pair. **A letter reached through the tiebreaker alone must
+  additionally be unclaimed across the camp** — with no meaning to derive from, what the finger
+  learned is the keystroke, and it travels (Figma and Rive both spend bare `V` on the base select
+  tool, which is why Convert is `D`). Bare letters are the whole vocabulary — modifiers stay on
+  document ops, though the registry still represents them (`z` is reserved only under Ctrl). A feel
+  verdict that moves a letter lands as a law amendment or a named exemption at its registry entry
+  (`BINDINGS.lock`'s `Q`), never a hand-edit of the map.
 - **Gray a row whose preconditions fail; omit one its subject rules out.** Graying keeps an
   applicable-but-blocked row discoverable (no live bake, a multi-set — the bulk-row law above). A
   row that could never fire on this subject is different: a section is exactly one kind, so the
