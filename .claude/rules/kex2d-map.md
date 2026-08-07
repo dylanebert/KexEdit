@@ -612,12 +612,21 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   no-op or a NaN store. A round
   trip is NOT bit-identical — sub-quantum on a gentle ride, tens of percent on a sensitive one, and
   a stall collapses distinct times onto one arclength by construction; undo is the only way back.
-  `convertSolve(ecs, sectionId, solved)` is the landing seam for the same math: invoked solves stay
+  **A SINGLE flip moves the exit too, by the same mechanism and inside the same bound**
+  (`kex2d-correctness-fixes` stage 3): every keyframe lands exactly — the conversion IS the table
+  lookup, so a converted position can't miss it — while the authored curve *between* keys genuinely
+  reshapes, because a cubic bezier authored in `(s, g)` is not carried to a cubic bezier in `(t, g)`
+  by the nonlinear arc↔time map; an explicit handle's Δs scaling by the local slope is only that
+  map's first-order term, not a full carry. Measured on a 40 m dive-and-recover section: the exit
+  moves 0.20 m, inside the 0.25 m two-bakes-at-equal-time bound the round trip already derives — a
+  flip is two independent marches of one authored ride, not a defect of its own. `convertSolve(ecs,
+  sectionId, solved)` is the landing seam for the same math: invoked solves stay
   distance-internal (their goldens are frozen in meters), so `geoforce.convertGeo` passes its answer
   through it inside the landing entry, releasing the realized step to the sentinel the way a flip
   does. Device-free tests in `tests/domain.test.ts` (guards, the forward conversion against an
-  independently rebuilt table, the derived round-trip bound, undo byte-identity, the plateau and
-  past-span degeneracies, the window boundaries).
+  independently rebuilt table, the derived round-trip bound, the single-flip bound against the same
+  swept disagreement, undo byte-identity, the plateau and past-span degeneracies, the window
+  boundaries).
 - `geoforce.ts` — the **invoked geo→force command**, and the only place the conversion tier and
   the document meet: `convertGeo(history, ecs, sectionId, opts)` drives `convert.ts`'s façade with
   the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), sectionStep(…), MAX_SAMPLES −

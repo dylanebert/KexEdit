@@ -238,6 +238,18 @@ export function pickable(ecs: State, target: Domain): boolean {
  * lossier still, and by construction: the cart doesn't move, so every keyframe inside a stalled
  * stretch converts to the SAME arclength. Undo is the byte-identical way back, and the only one.
  *
+ * **A SINGLE flip moves the exit too, by the same mechanism and inside the same bound.** Every
+ * keyframe lands exactly where the table says it should — the conversion IS that table, so a
+ * converted position is only ever a lookup. What moves is the authored curve BETWEEN keys: a cubic
+ * bezier authored in `(s, g)` is not carried to a cubic bezier in `(t, g)` by this nonlinear
+ * arc↔time map, so the segment genuinely reshapes across a flip, by an amount growing with segment
+ * span and with the map's curvature over that span. The Δs scale on an explicit handle above is
+ * only the map's first-order correction to that reshape, not a full carry of it. Measured on a
+ * 40 m dive-and-recover section (`tests/domain.test.ts`'s "single flip" suite): the exit moves
+ * 0.20 m, and the two-bakes-at-equal-time disagreement this same section's round trip already
+ * derives bounds it at 0.25 m — the flip is two independent marches of one authored ride, landing
+ * inside a bound the round trip already accepts, not a defect of its own.
+ *
  * @example convertDomain(history, ecs, Domain.Time) // → true, one undo entry
  */
 export function convertDomain(h: History, ecs: State, target: Domain): boolean {

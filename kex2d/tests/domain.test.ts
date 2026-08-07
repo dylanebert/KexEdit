@@ -133,6 +133,57 @@ const extent = (state: State, sec: number): number => {
     return Section.length.get(eid);
 };
 
+// ── single-flip world-position snapshot — `describe("single flip")` below ────────────────────
+
+interface Pos {
+    x: number;
+    y: number;
+}
+
+interface WorldBake {
+    t: number[];
+    x: number[];
+    y: number[];
+}
+
+/** a plain-array COPY of the bake's own per-sample time + world position — never the live
+ *  `samples`/`bakeOut` typed arrays, which the next re-bake mutates in place (the same buffer is
+ *  reused for the whole track's lifetime), so a reference captured before a flip would silently
+ *  read the POST-flip values by the time it's compared against them. */
+function bakeSnapshot(eid: number): WorldBake {
+    const s = samples.get(eid);
+    const out = bakeOut.get(eid);
+    if (!s || !out) throw new Error("no bake");
+    const n = Track.count.get(eid);
+    return {
+        t: Array.from(out.t.subarray(0, n)),
+        x: Array.from(s.posX.subarray(0, n)),
+        y: Array.from(s.posY.subarray(0, n)),
+    };
+}
+
+/** world position at elapsed time `t`, linear-interpolated over a bake's own per-sample march
+ *  clock — `domain.lab.ts`'s `worldAtTime`, re-derived here over a plain-array snapshot instead
+ *  of the lab's live typed-array references. */
+function worldAtTime(b: WorldBake, t: number): Pos {
+    const { t: ts, x, y } = b;
+    const n = ts.length;
+    if (t <= ts[0]) return { x: x[0], y: y[0] };
+    if (t >= ts[n - 1]) return { x: x[n - 1], y: y[n - 1] };
+    let lo = 0;
+    let hi = n - 1;
+    while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (ts[mid] <= t) lo = mid;
+        else hi = mid;
+    }
+    const span = ts[hi] - ts[lo];
+    const f = span > 0 ? (t - ts[lo]) / span : 0;
+    return { x: x[lo] + f * (x[hi] - x[lo]), y: y[lo] + f * (y[hi] - y[lo]) };
+}
+
+const worldDist = (a: Pos, b: Pos): number => Math.hypot(a.x - b.x, a.y - b.y);
+
 describe("guards", () => {
     test("no live bake rejects: nothing written, nothing recorded", () => {
         const state = new State();
@@ -471,6 +522,64 @@ describe("round trip", () => {
         // bake quantum on a 40 m section.
         expect(disagree).toBeGreaterThan(0);
         expect(disagree).toBeLessThan(DS_NOMINAL);
+    });
+});
+
+describe("single flip", () => {
+    // Stage 3b's verdict (`kex2d-correctness-fixes`, Locked decision): a SINGLE flip moves the
+    // exit too, by the same mechanism and inside the same bound the round trip above already
+    // derives — the two-bakes-at-equal-time disagreement. Every key lands exactly (the round
+    // trip's own converted-keyframe assertion already covers that); what moves is the authored
+    // curve BETWEEN keys, because a cubic bezier authored in (s, g) is not carried to a cubic
+    // bezier in (t, g) by the nonlinear arc↔time map — an explicit handle's Δs scaling by the
+    // local slope is only that map's first-order term, so the segment genuinely reshapes across a
+    // flip. The round-trip test above never samples between keyframes, which is exactly where the
+    // reshape hides.
+    //
+    // Computed the way `domain.lab.ts` computes it (world Euclidean distance at the force
+    // section's exit; the disagreement swept over the section's WHOLE sample range at equal
+    // elapsed time, not just the keyframe stations) — a keyframe-only probe under-reads: at this
+    // ride's own numbers, checking disagreement only at the keyframe stations gives 0.20437…,
+    // which the measured exit deviation of 0.20438… already exceeds. The keys land almost exactly
+    // right; the reshape between them is what only the swept sweep catches.
+
+    test("a single flip's exit deviation stays inside the two-bakes-at-equal-time bound", () => {
+        const { state, eid, sec } = forceTrack(40, [
+            [0, 1],
+            [20, 0.4],
+            [40, 1],
+        ]);
+        const infoBefore = sectionInfo.get(sec);
+        if (!infoBefore) throw new Error("no bake for section");
+        const bakeA = bakeSnapshot(eid);
+        const exitBefore = { x: bakeA.x[infoBefore.endSample], y: bakeA.y[infoBefore.endSample] };
+
+        const h = createHistory();
+        expect(convertDomain(h, state, Domain.Time)).toBe(true);
+        state.step(0);
+
+        const infoAfter = sectionInfo.get(sec);
+        if (!infoAfter) throw new Error("no bake for section");
+        const bakeB = bakeSnapshot(eid);
+        const exitAfter = { x: bakeB.x[infoAfter.endSample], y: bakeB.y[infoAfter.endSample] };
+        const exitDeviation = worldDist(exitBefore, exitAfter);
+
+        // the honest bound: how far the two independent marches (Δs-nominal, then Δt-nominal)
+        // disagree at equal elapsed time, swept over the section's whole sample range — not just
+        // its keyframe stations, per the comment above.
+        let twoBakeDisagreement = 0;
+        for (let idx = infoAfter.startSample; idx <= infoAfter.endSample; idx++) {
+            const t = bakeB.t[idx];
+            const a = worldAtTime(bakeA, t);
+            const b = { x: bakeB.x[idx], y: bakeB.y[idx] };
+            twoBakeDisagreement = Math.max(twoBakeDisagreement, worldDist(a, b));
+        }
+
+        // not vacuous: the flip really does move the exit, and the assertion is the derived
+        // inequality alone — never an absolute number (measured ratio ~0.81 on this section, and
+        // 0.82–0.88 on stage 3a's own sweep, so a bare `<=` needs no fudge factor).
+        expect(exitDeviation).toBeGreaterThan(0);
+        expect(exitDeviation).toBeLessThanOrEqual(twoBakeDisagreement);
     });
 });
 
