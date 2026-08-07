@@ -914,11 +914,19 @@ describe("forceKeyAct — the force-keyframe Delete/Lock rungs", () => {
     });
 });
 
-describe("modeKeyAct — the pin-mode Escape rung", () => {
-    const open = { modeOpen: true, menuOpen: false, editing: false, selected: false };
-    test("off BINDINGS.exitMode, or the mode not open: null", () => {
+describe("modeKeyAct — the pin-mode Escape/Solve rung", () => {
+    const open = {
+        modeOpen: true,
+        menuOpen: false,
+        editing: false,
+        selected: false,
+        solvable: true,
+        solving: false,
+    };
+    test("off BINDINGS.exitMode/solve, or the mode not open: null", () => {
         expect(modeKeyAct("a", open)).toBeNull();
         expect(modeKeyAct("Escape", { ...open, modeOpen: false })).toBeNull();
+        expect(modeKeyAct("Enter", { ...open, modeOpen: false })).toBeNull();
     });
     test("every inner dismissal layer yields first — a summoned menu, an edit sub-mode, a live selection", () => {
         expect(modeKeyAct("Escape", { ...open, menuOpen: true })).toBeNull();
@@ -927,6 +935,22 @@ describe("modeKeyAct — the pin-mode Escape rung", () => {
     });
     test("every inner layer yielded: Escape fires pinExit", () => {
         expect(modeKeyAct("Escape", open)).toBe("pinExit");
+    });
+    // Solve reads NONE of Escape's dismissal-ladder fields — it's the mode's primary action, not
+    // a dismissal, matching the docked panel's own Solve button (`App.svelte`'s
+    // `pinSolvable`/`disabled`), its keyboard twin (`BINDINGS.solve`, the mode-scoped `Enter`
+    // exception, `kex2d-shortcuts` Locked decision 1's law 3).
+    test("Solve fires regardless of a summoned menu, edit sub-mode, or live selection", () => {
+        expect(modeKeyAct("Enter", { ...open, menuOpen: true })).toBe("pinSolve");
+        expect(modeKeyAct("Enter", { ...open, editing: true })).toBe("pinSolve");
+        expect(modeKeyAct("Enter", { ...open, selected: true })).toBe("pinSolve");
+    });
+    test("Solve refuses without headroom or mid-solve", () => {
+        expect(modeKeyAct("Enter", { ...open, solvable: false })).toBeNull();
+        expect(modeKeyAct("Enter", { ...open, solving: true })).toBeNull();
+    });
+    test("every condition met: Enter fires pinSolve", () => {
+        expect(modeKeyAct("Enter", open)).toBe("pinSolve");
     });
 });
 

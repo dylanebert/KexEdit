@@ -45,13 +45,13 @@ import {
 } from "./editor";
 import { convertForce } from "./forcegeo";
 import { convertGeo } from "./geoforce";
-import { modeKeyAct } from "./keys";
+import { modeKeyAct, sectionKeyAct } from "./keys";
 import { MIN_FREE } from "./optimize";
 import { enterPinMode, exitPinMode, runPinSection } from "./pin";
 import { beginV0, commit, history } from "./history";
 import Menu from "./Menu.svelte";
 import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
-import { nodeMenu, sectionMenu } from "./menus";
+import { nodeMenu, sectionMenu, type SectionMenuActions } from "./menus";
 import { RADIAL_R, RadialSlot, ringBase, ringSlot } from "./radial";
 import { TangentMode } from "./spline";
 import Timeline from "./Timeline.svelte";
@@ -163,51 +163,98 @@ onMount(() => {
 
 // pin mode's OWN permanent listener — the `editor.converting` key-swallow precedent
 // extended to "mode open" (`editor.pinning !== null`), not just mid-solve: Escape is the
-// mode's dismissal rung, and Delete/Backspace on a section selection is swallowed here too —
+// mode's dismissal rung, Enter is Solve (the mode-scoped exception, `BINDINGS.solve` — Locked
+// decision 1's law 3), and Delete/Backspace on a section selection is swallowed here too —
 // defense in depth alongside `controls.ts`'s own guard, since convert/delete/join aren't
 // available inside the mode (the locked decision's consent-boundary law). Gated on the live
-// field, not a tick-derived read (the dismissal standard every menu here wears).
+// field, not a tick-derived read (the dismissal standard every menu here wears) — `solvable`
+// reads `computePinSolvable()` fresh rather than the tick-derived `pinSolvable`, same reason.
 //
 // Escape is the OUTERMOST rung (root ui.md: dismissal peels one layer): the mode exits only
-// when no inner transient is open. This listener registers before the menus' capture handlers,
-// so it can't rely on ordering — it yields by GUARD instead: a focused field, an open menu, an
-// edit sub-mode, or any live selection all pass the key through to its own layer's handler.
+// when no inner transient is open. Solve reads none of that ladder — it's the mode's primary
+// action, not a dismissal, so it fires whenever headroom holds, matching the docked panel's own
+// button. This listener registers before the menus' capture handlers, so it can't rely on
+// ordering — it yields by GUARD instead: a focused field, an open menu, an edit sub-mode, or any
+// live selection all pass Escape through to its own layer's handler (Solve reads none of them).
 onMount(() => {
     const onKey = (e: KeyboardEvent): void => {
         if (editor.pinning === null) return;
-        if (bound(BINDINGS.exitMode, e.key)) {
-            const t = e.target as HTMLElement | null;
-            if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
-                return; // the focused field reverts first
-            // routed through `keys.ts`'s `modeKeyAct` (the keyboard twin of `menus.sectionMenu`'s
-            // in-mode `Exit` row) — the dismissal-ladder guards stay here, the decider only reads
-            // their results.
-            const act = modeKeyAct(e.key, {
-                modeOpen: editor.pinning !== null,
-                menuOpen:
-                    editor.context !== null ||
-                    editor.nodeMenu !== null ||
-                    editor.forceMenu !== null ||
-                    editor.rulerMenu !== null,
-                editing: editor.tangentEdit !== null || editor.forceEdit !== null,
-                selected:
-                    editor.selection !== null ||
-                    editor.force !== null ||
-                    editor.section !== null ||
-                    editor.start,
-            });
-            if (act !== null && editor.pinning !== null) {
-                e.stopImmediatePropagation();
-                // the session's own section, never a sentinel: `pinExit` ignores the subject, but a
-                // record built on a placeholder id leaves `remove`/`reset` bound to a section that
-                // doesn't exist, live the moment this rung grows a second act.
-                sectionActs(ecs, editor.pinning.section)[act]();
-            }
+        if (!bound(BINDINGS.exitMode, e.key) && !bound(BINDINGS.solve, e.key)) return;
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
+            // the focused field reverts (Escape) or commits-and-blurs (Enter) first — neither is
+            // the mode's own act (`RawKeys`' own precedent for the popover fields' raw `Enter`).
+            return;
+        // routed through `keys.ts`'s `modeKeyAct` (the keyboard twin of `menus.sectionMenu`'s
+        // in-mode Exit/Solve rows) — the dismissal-ladder guards and the headroom read stay here,
+        // the decider only reads their results.
+        const act = modeKeyAct(e.key, {
+            modeOpen: editor.pinning !== null,
+            menuOpen:
+                editor.context !== null ||
+                editor.nodeMenu !== null ||
+                editor.forceMenu !== null ||
+                editor.rulerMenu !== null,
+            editing: editor.tangentEdit !== null || editor.forceEdit !== null,
+            selected:
+                editor.selection !== null ||
+                editor.force !== null ||
+                editor.section !== null ||
+                editor.start,
+            solvable: computePinSolvable(),
+            solving: editor.pinSolving,
+        });
+        if (act !== null && editor.pinning !== null) {
+            e.stopImmediatePropagation();
+            // the session's own section, never a sentinel: `pinExit`/`pinSolve` ignore the
+            // subject, but a record built on a placeholder id leaves `remove`/`reset` bound to a
+            // section that doesn't exist, live the moment this rung grows a third document act.
+            const section = editor.pinning.section;
+            const acts = { ...chromeActs(section), ...sectionActs(ecs, section) };
+            acts[act]();
             return;
         }
         if (bound(BINDINGS.remove, e.key) && editor.section !== null) {
             e.stopImmediatePropagation();
         }
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+});
+
+// Convert (`V`) and Pin (`P`) — the section context menu's own remaining shortcuts
+// (`kex2d-shortcuts` stage 3): routed through `keys.ts`'s `sectionKeyAct`, the same decider
+// `controls.ts` drives for remove/join/cutAt, but dispatched through the MERGED chrome + document
+// acts record (`chromeActs` + `sectionActs`, Locked decision 2): `solve`/`solveShape`/`pinEnter`
+// are chrome (`editor-ui.md` Menus, the act-BODY seam's residual clause 2), so `controls.ts` —
+// which only reaches `acts.ts` — can't be their home; this permanent listener is, since the
+// chrome bodies live in this component. Filtered to the two OWN keys FIRST (`bound`, not a raw
+// compare) so this listener never re-handles remove/join/cut — those stay `controls.ts`'s alone.
+onMount(() => {
+    const onKey = (e: KeyboardEvent): void => {
+        const section = editor.section;
+        if (section === null) return;
+        if (!bound(BINDINGS.convert, e.key) && !bound(BINDINGS.pin, e.key)) return;
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
+            return;
+        // fresh off `editor`/ECS against the keydown's OWN subject (`editor.section`) — never the
+        // menu's tick-derived `canSolve`/`canSolveShape`/`canPin`, which read `ctx.section` (the
+        // open context menu's subject) and stay `null` on a keyboard-only path, per
+        // `computeSectionKind`'s comment above.
+        const act = sectionKeyAct(e.key, {
+            opsAllowed: sectionOpsAllowed(editor.pinning),
+            multi: editor.sections.ids.size > 1,
+            joinable: false,
+            canSolve: computeCanSolve(section),
+            canSolveShape: computeCanSolveShape(section),
+            canPin: computeCanPin(section),
+        });
+        if (act === null) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const acts = { ...chromeActs(section), ...sectionActs(ecs, section) };
+        acts[act]();
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
@@ -311,11 +358,37 @@ async function solveShape(section: number): Promise<void> {
 // would couple two independent modal surfaces.
 let pinAbort: AbortController | null = null;
 
-function ctxPinEnter(): void {
-    if (ctx === null) return;
-    const section = ctx.section;
-    closeContext();
-    enterPinMode(ecs, section);
+// the chrome half of the section menu's acts record — `solve`/`solveShape`/`pinSolve`/`pinEnter`
+// each close over the modal gate + this component's own `AbortController` (`editor-ui.md` Menus,
+// the act-BODY seam's residual clause 2), so they stay HERE rather than crossing into `acts.ts`.
+// ONE factory, parameterized on `section` like `sectionActs` itself, spread FIRST wherever a
+// merged record is built (`{...chromeActs(section), ...sectionActs(ecs, section)}`,
+// `kex2d-shortcuts` Locked decision 2 — the factory's document half spreads LAST, the spread-last
+// law): the section context menu's own actions (`ctxItems`, below) and the two keydown homes
+// (Convert/Pin, and pin mode's own Solve) all read this ONE definition, so a chrome key can't
+// drift between hand-typed copies the way `ctxSolve`/`ctxSolveShape`/`ctxPinSolve`/`ctxPinEnter`
+// used to be, one per call site.
+function chromeActs(
+    section: number,
+): Pick<SectionMenuActions, "solve" | "solveShape" | "pinSolve" | "pinEnter"> {
+    return {
+        solve: () => {
+            closeContext();
+            void solve(section);
+        },
+        solveShape: () => {
+            closeContext();
+            void solveShape(section);
+        },
+        pinSolve: () => {
+            closeContext();
+            void pinSolve();
+        },
+        pinEnter: () => {
+            closeContext();
+            enterPinMode(ecs, section);
+        },
+    };
 }
 
 // Exit/Esc: discard the sandbox — every in-mode edit reverts, the outer history is untouched
@@ -402,11 +475,6 @@ onMount(() => {
     };
 });
 
-function ctxPinSolve(): void {
-    closeContext();
-    void pinSolve();
-}
-
 function cancelPinSolve(): void {
     pinAbort?.abort(new Error("cancelled"));
 }
@@ -433,14 +501,21 @@ const modeChrome = $derived.by((): boolean => {
     return modeChromeSection() !== null;
 });
 const settling = $derived(modeChrome && !pinOpen);
-const pinSolvable = $derived.by((): boolean => {
-    void tick;
+// the raw computation `pinSolvable` (below) wraps for display — factored out so the Solve
+// keydown (`keys.ts modeKeyAct`'s `solvable`) reads the SAME headroom count directly off
+// `editor`/ECS, never the tick-derived value: a tick-derived read lags a real state change by up
+// to a frame (`kex2d-map.md` Hard gotchas), which a keyboard gate can't afford to inherit.
+function computePinSolvable(): boolean {
     const s = editor.pinning;
     if (s === null) return false;
     const rows = sectionForces(ecs, s.section);
     let locked = 0;
     for (const r of rows) if (editor.locked.has(r.id)) locked++;
     return rows.length - locked >= MIN_FREE;
+}
+const pinSolvable = $derived.by((): boolean => {
+    void tick;
+    return computePinSolvable();
 });
 // the docked panel's one conditional line (tick-derived primitive): the starved reason, shown
 // subtly only while Solve is disabled — refusals ride the shared transient notice instead.
@@ -771,10 +846,20 @@ $effect(() => {
     // clear the dangling target so a later reappearance of the id doesn't re-open the menu.
     if (editor.context !== null && ctx === null) closeContext();
 });
+// factored to a section-id parameter, the `computePinSolvable()` precedent (above): the menu's
+// `$derived`s read it off `ctx.section` (the open context menu's subject), while the Convert/Pin
+// keydown listener below reads it off `editor.section` (the click-selected subject) directly,
+// fresh, never through this tick-derived wrapper — the two subjects are NOT the same field, and
+// handing the keydown listener the menu's own deriveds was the stage-3 defect (`kex2d-shortcuts`
+// Live log): they read `null` on any keyboard-only path, since no menu need be open for `V`/`P`
+// to fire.
+function computeSectionKind(secId: number | null): SectionKind | null {
+    if (secId === null) return null;
+    return sections(ecs).find((s) => s.id === secId)?.kind ?? null;
+}
 const ctxKind = $derived.by((): SectionKind | null => {
     void tick;
-    if (ctx === null) return null;
-    return sections(ecs).find((s) => s.id === ctx.section)?.kind ?? null;
+    return computeSectionKind(ctx?.section ?? null);
 });
 // Cut's own enablement — the resolved cursor position (`ctx.cut`, resolved by `Timeline.svelte`'s
 // `clipMenu` — Cut's sole surface; the canvas span and the graph never resolve one at all,
@@ -831,40 +916,63 @@ const canJoin = $derived.by((): boolean => {
 // bulk-row law), so the row is discoverable on a force section and on a multi-set alike.
 // `sectionOpsAllowed` is the consent boundary: NO section converts while an pin session is
 // open (a convert would land a track rewrite inside the open session).
+// section-id-parameterized, per `computeSectionKind` above — the Convert/Pin keydown listener
+// calls this directly against `editor.section`, never through the tick-derived `canSolve` below.
+function computeCanSolve(secId: number | null): boolean {
+    return (
+        sectionSolvable(
+            editor.sections.ids.size,
+            computeSectionKind(secId),
+            bakeLive(ecs),
+            SectionKind.Geo,
+        ) && sectionOpsAllowed(editor.pinning)
+    );
+}
 const canSolve = $derived.by((): boolean => {
     void tick;
-    return (
-        sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Geo) &&
-        sectionOpsAllowed(editor.pinning)
-    );
+    return computeCanSolve(ctx?.section ?? null);
 });
 // the force→geo twin (target `Force`): one force section with a live bake, dense enough for the
 // fit to hold its modal budget (`sectionSolvable`'s `edges` guard, `track.MAX_FIT_EDGES`) — a
 // section's own bake edge count, cheap off `sectionInfo` (no fit invoked to check).
+function computeSectionEdges(secId: number | null): number {
+    if (secId === null) return 0;
+    const info = sectionInfo.get(secId);
+    return info ? info.endSample - info.startSample : 0;
+}
 const ctxEdges = $derived.by((): number => {
     void tick;
-    if (ctx === null) return 0;
-    const info = sectionInfo.get(ctx.section);
-    return info ? info.endSample - info.startSample : 0;
+    return computeSectionEdges(ctx?.section ?? null);
 });
-const canSolveShape = $derived.by((): boolean => {
-    void tick;
+function computeCanSolveShape(secId: number | null): boolean {
     return (
         sectionSolvable(
             editor.sections.ids.size,
-            ctxKind,
+            computeSectionKind(secId),
             bakeLive(ecs),
             SectionKind.Force,
-            ctxEdges,
+            computeSectionEdges(secId),
         ) && sectionOpsAllowed(editor.pinning)
     );
+}
+const canSolveShape = $derived.by((): boolean => {
+    void tick;
+    return computeCanSolveShape(ctx?.section ?? null);
 });
 // pin-mode entry: one force section with a live bake. deliberately NOT `canSolveShape` —
 // the `MAX_FIT_EDGES` density cap is the force→geo fit's own runaway guard; the pin stamp
 // is one `evalForce` read, dense sections included.
+function computeCanPin(secId: number | null): boolean {
+    return sectionSolvable(
+        editor.sections.ids.size,
+        computeSectionKind(secId),
+        bakeLive(ecs),
+        SectionKind.Force,
+    );
+}
 const canPin = $derived.by((): boolean => {
     void tick;
-    return sectionSolvable(editor.sections.ids.size, ctxKind, bakeLive(ecs), SectionKind.Force);
+    return computeCanPin(ctx?.section ?? null);
 });
 // the Reset row (the Reset idiom law, editor-ui.md Menus): return the section to the state a
 // fresh author would get, kind held — no confirm, byte-identical undo is the safety. gated
@@ -927,30 +1035,11 @@ const ctxItems = $derived.by((): MenuItem[] => {
             // the chrome keys first, the factory spread LAST: a sibling key re-forked here is then
             // overridden by the hoisted body instead of shadowing it, so the drift this seam
             // deletes can't be re-created by an ordinary-looking edit (`editor-ui.md` Menus).
-            solve: ctxSolve,
-            solveShape: ctxSolveShape,
-            pinSolve: ctxPinSolve,
-            pinEnter: ctxPinEnter,
+            ...chromeActs(ctx.section),
             ...sectionActs(ecs, ctx.section, ctx.cut),
         },
     );
 });
-// convert this geo shape into the force section that reproduces it (`geoforce.ts`) — the
-// conversion row's geo→force half. the menu closes first: the convert is modal, and its own
-// surface owns the screen from here.
-function ctxSolve(): void {
-    if (ctx === null) return;
-    const section = ctx.section;
-    closeContext();
-    void solve(section);
-}
-// the force→geo half: fit this force section's shape into geo nodes (`forcegeo.ts`).
-function ctxSolveShape(): void {
-    if (ctx === null) return;
-    const section = ctx.section;
-    closeContext();
-    void solveShape(section);
-}
 // dismiss the menu on any outside press or Escape (clicks on the menu itself pass through
 // so its items can act before it closes). Escape peels just this menu layer (capture + stop,
 // so controls.ts doesn't also clear the section selection the menu was summoned on) — root

@@ -52,6 +52,13 @@ export type Binding = {
  * twin fires. `join` — `controls.ts`, the bulk section-set rung beside `remove`'s own multi
  * branch (Blender/Audacity's own key): unlike Cut it needs no cursor position, only the live
  * selected set, so it's wired directly rather than deferred.
+ * `convert`/`pin` — `App.svelte`'s own permanent listener (`kex2d-shortcuts` stage 3): the section
+ * menu's remaining single-subject rows, dispatched through the MERGED chrome + document acts
+ * record (`solve`/`solveShape`/`pinEnter` are chrome — `editor-ui.md` Menus, the act-BODY seam's
+ * residual clause 2 — so `controls.ts`, which only reaches `acts.ts`, can't be their home).
+ * `solve` — the mode-scoped `Enter` exception (Locked decision 1's law 3): `Enter` is `append`
+ * everywhere else, but pin mode's editing lockdown already bars geo append, so nothing collides in
+ * fact; the same permanent listener reads `editor.pinning` to know which claim is live.
  * `Escape` and `Delete` also drive dismissal/guard rungs that are nobody's menu row; those stay
  * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one.
  */
@@ -65,6 +72,14 @@ export const BINDINGS = {
     lock: { keys: ["q", "Q"], hint: "Q" },
     cut: { keys: ["c", "C"], hint: "C" },
     join: { keys: ["j", "J"], hint: "J" },
+    // `C` is taken by Cut, so law 4's tiebreaker decides: `V` is free, left-hand, adjacent
+    // (`kex2d-shortcuts` Locked decision 1).
+    convert: { keys: ["v", "V"], hint: "V" },
+    // mnemonic-exact (Locked decision 1).
+    pin: { keys: ["p", "P"], hint: "P" },
+    // mode-scoped: `Enter` also fires `append` (unscoped) everywhere outside pin mode. Law 3's
+    // one exception — see the doc comment above.
+    solve: { keys: ["Enter"], hint: "Enter", scope: "pin" },
 } as const satisfies Record<string, Binding>;
 
 /** whether a `KeyboardEvent.key` fires this binding.

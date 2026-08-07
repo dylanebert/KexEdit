@@ -6,6 +6,7 @@ import { keyframeActs, nodeActs, sectionActs } from "../src/acts";
 import {
     BINDINGS,
     type Binding,
+    bound,
     flyoutFit,
     GROUPS,
     type MenuGroup,
@@ -216,7 +217,7 @@ describe("sectionMenu — the section context menu's rows", () => {
 
     test("a single GEO section: Convert, Cut, Reset, Delete", () => {
         expect(shape(sectionMenu(base, acts()))).toEqual([
-            { label: "Convert", group: "modify", enabled: true },
+            { label: "Convert", group: "modify", shortcut: "V", enabled: true },
             cut(true),
             { label: "Reset", group: "lifecycle", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
@@ -231,8 +232,8 @@ describe("sectionMenu — the section context menu's rows", () => {
             canPin: true,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Convert", group: "modify", enabled: true },
-            { label: "Pin", group: "modify", enabled: true },
+            { label: "Convert", group: "modify", shortcut: "V", enabled: true },
+            { label: "Pin", group: "modify", shortcut: "P", enabled: true },
             cut(true),
             { label: "Reset", group: "lifecycle", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
@@ -249,7 +250,7 @@ describe("sectionMenu — the section context menu's rows", () => {
         const rows = shape(sectionMenu(s, acts()));
         expect(rows.find((r) => r.label === "Cut")).toBeUndefined();
         expect(rows).toEqual([
-            { label: "Convert", group: "modify", enabled: true },
+            { label: "Convert", group: "modify", shortcut: "V", enabled: true },
             { label: "Reset", group: "lifecycle", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
@@ -287,7 +288,7 @@ describe("sectionMenu — the section context menu's rows", () => {
             canJoin: false,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Convert", group: "modify", enabled: false },
+            { label: "Convert", group: "modify", shortcut: "V", enabled: false },
             join(false),
             { label: "Reset", group: "lifecycle", enabled: false },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
@@ -302,6 +303,7 @@ describe("sectionMenu — the section context menu's rows", () => {
         expect(shape(sectionMenu(s, acts()))[1]).toEqual({
             label: "Pin",
             group: "modify",
+            shortcut: "P",
             enabled: false,
         });
     });
@@ -314,7 +316,7 @@ describe("sectionMenu — the section context menu's rows", () => {
             pinSolvable: true,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Solve", group: "modify", enabled: true },
+            { label: "Solve", group: "modify", shortcut: "Enter", enabled: true },
             { label: "Exit", group: "modify", shortcut: "Esc" },
         ]);
         expect(shape(sectionMenu({ ...s, solving: true }, acts()))[0].enabled).toBe(false);
@@ -1261,11 +1263,11 @@ describe("the menu grammar — every builder, every state", () => {
     // that fires the `append` BINDING) collide only in ENGLISH, not in the table — two acts, kept
     // apart by name, one bound and one not.
     const Acts: Record<string, keyof typeof BINDINGS | null> = {
-        solve: null,
-        solveShape: null,
-        pinSolve: null,
+        solve: "convert",
+        solveShape: "convert",
+        pinSolve: "solve",
         pinExit: "exitMode",
-        pinEnter: null,
+        pinEnter: "pin",
         reset: null,
         remove: "remove",
         removeSet: "remove",
@@ -1305,25 +1307,45 @@ describe("the menu grammar — every builder, every state", () => {
     // driver). `MenulessBindings` then covers only a binding no decider ever emits.
     const MenulessBindings: Partial<Record<keyof typeof BINDINGS, { why: string }>> = {};
 
-    // every `key` any `BINDINGS` entry declares, paired with the binding it belongs to — the
-    // production table, not a hand-typed copy, so a rebind moves this census with it.
-    function keySpace(): { binding: keyof typeof BINDINGS; key: string }[] {
-        const out: { binding: keyof typeof BINDINGS; key: string }[] = [];
-        for (const [name, b] of Object.entries<Binding>(BINDINGS))
-            for (const key of b.keys) out.push({ binding: name as keyof typeof BINDINGS, key });
-        return out;
+    // every DISTINCT `key` any `BINDINGS` entry declares — the production table, not a hand-typed
+    // copy, so a rebind moves this census with it. Deduplicated by literal value, not by
+    // (binding, key) pair: `kex2d-shortcuts` stage 3 introduces the first key TWO bindings share
+    // (`BINDINGS.append`'s unscoped `Enter`, `BINDINGS.solve`'s pin-scoped one), and a decider `fn`
+    // only ever sees the bare string — it can't tell which named binding "caused" a call, so
+    // iterating the same literal twice under two different labels would drive every decider twice
+    // over an identical input for no reason.
+    function keySpace(): string[] {
+        const out = new Set<string>();
+        for (const b of Object.values<Binding>(BINDINGS)) for (const key of b.keys) out.add(key);
+        return [...out];
     }
     // drives ONE decider over every declared key × every state in its matrix (`states`, above —
     // the same cartesian-product helper the grammar oracle drives a menu builder with), recording
     // each (binding, act) pair it actually emits. This IS the driver the positive control below
     // exercises — a decider gone silent on every input still passes a hand-fabricated pair, but
     // fails here (the reachability assert two tests down goes red with nothing collected).
+    //
+    // `binding` is read off `Acts[act]` (the forward-direction census above), never off which
+    // `keySpace` entry the caller happened to iterate: once a key is shared between an unscoped
+    // and a scoped binding, attributing by iteration order would mislabel a real `append`-caused
+    // "add" as `solve`-caused (or the reverse) purely because the two bindings' literal happens to
+    // collide — an artifact of the test's own free state matrix (`nodeKeyAct`'s `editable` and
+    // `modeKeyAct`'s `modeOpen` are driven independently here, where production keeps them
+    // mutually exclusive: a geo node is never editable while any pin session is open). `Acts` is
+    // built independently of this driver (from the corpus/menu rows), so reading it here is a
+    // cross-check, not a re-derivation of the rule under test — and `bound()` still asserts the
+    // literal that fired is genuinely a member of the binding `Acts` names, so a decider firing an
+    // act off a key its OWN binding never declares still fails.
     function driveKeyAct<S>(fn: (key: string, s: S) => string | null, matrix: S[]) {
         const pairs: { binding: keyof typeof BINDINGS; act: string }[] = [];
-        for (const { binding, key } of keySpace())
+        for (const key of keySpace())
             for (const s of matrix) {
                 const act = fn(key, s);
-                if (act !== null) pairs.push({ binding, act });
+                if (act === null) continue;
+                const binding = Acts[act];
+                if (binding === null || binding === undefined) continue;
+                if (!bound(BINDINGS[binding], key)) continue;
+                pairs.push({ binding, act });
             }
         return pairs;
     }
@@ -1332,6 +1354,9 @@ describe("the menu grammar — every builder, every state", () => {
         multi: bool,
         joinable: bool,
         cuttable: bool,
+        canSolve: bool,
+        canSolveShape: bool,
+        canPin: bool,
     });
     // `NodeKeyState` is a discriminated union on `multi` (`keys.ts`) — the multi branch carries no
     // `endSelected` field, so its full state space is the two branches' matrices driven
@@ -1374,6 +1399,8 @@ describe("the menu grammar — every builder, every state", () => {
         menuOpen: bool,
         editing: bool,
         selected: bool,
+        solvable: bool,
+        solving: bool,
     });
 
     function keyActPairs(): { binding: keyof typeof BINDINGS; act: string }[] {
@@ -1402,6 +1429,10 @@ describe("the menu grammar — every builder, every state", () => {
                 "cut:cut",
                 "cut:cutAt",
                 "join:join",
+                "convert:solve",
+                "convert:solveShape",
+                "pin:pinEnter",
+                "solve:pinSolve",
             ].sort(),
         );
     });
@@ -1438,15 +1469,61 @@ describe("the menu grammar — every builder, every state", () => {
     // literal) fails here even though `bun check` would have caught the source. Reuses
     // `driveKeyAct` — the proven driver, not a fabricated pair — over the SAME per-surface state
     // matrices the reachability assert above already builds.
-    test("every emitted act names a key of its surface's PRODUCTION factory record (acts.ts)", () => {
+    //
+    // `kex2d-shortcuts` stage 3 widens the census into a UNION: `sectionKeyAct` now also emits
+    // `solve`/`solveShape`/`pinEnter`, and `modeKeyAct` emits `pinSolve` — none a key of
+    // `sectionActs`'s record, because they're `App.svelte`'s own CHROME acts (a modal gate + an
+    // `AbortController`, `editor-ui.md` Menus' act-BODY seam, residual clause 2). `App.svelte`
+    // can't be `import`ed by `bun test` (a `.svelte` file, no plain module export), so the chrome
+    // set is read from its `chromeActs` factory's OWN declared return type by a SOURCE PARSE —
+    // never a hand-typed second list (the declared-registry law; the deleted `menu ▸ label` map is
+    // precedent for exactly this drift) — and driven BOTH directions with a positive control per
+    // direction, below.
+    function appSvelteSrc(): string {
+        return readFileSync(join(import.meta.dir, "..", "src", "App.svelte"), "utf8");
+    }
+    // reads `chromeActs`'s declared `Pick<SectionMenuActions, "a" | "b" | …>` return type — the
+    // annotation IS the record's own declared keys: `bun check` fails if the annotation ever
+    // drifts from what the function actually returns (too narrow, too wide), so parsing it is
+    // reading the factory's own keys, not restating them by hand.
+    function chromeActNames(src: string): Set<string> {
+        const m = src.match(/function chromeActs\([^)]*\):\s*Pick<SectionMenuActions,\s*([^>]+)>/);
+        if (!m) return new Set();
+        return new Set(m[1].split("|").map((s) => s.trim().replace(/^"(.*)"$/, "$1")));
+    }
+    test("positive control: the chrome-act scanner reaches the real chromeActs declaration", () => {
+        // proves the regex isn't vacuously empty against the real file — the exact production
+        // names, not a synthetic stand-in.
+        expect([...chromeActNames(appSvelteSrc())].sort()).toEqual(
+            ["pinEnter", "pinSolve", "solve", "solveShape"].sort(),
+        );
+    });
+    test("positive control: the chrome-act scanner reflects what it's handed, not just the real file", () => {
+        // a SYNTHETIC declaration, never seen in production — proves the scanner reads the text
+        // rather than returning a hardcoded set that happens to match today's four names.
+        const synthetic =
+            'function chromeActs(section: number): Pick<SectionMenuActions, "foo" | "bar"> {';
+        expect([...chromeActNames(synthetic)].sort()).toEqual(["bar", "foo"]);
+        expect(chromeActNames("no such function here")).toEqual(new Set());
+    });
+    test("every emitted act names a key of its surface's PRODUCTION factory record (acts.ts), or a declared chrome act", () => {
         const dummy = new State();
         const sectionKeys = new Set(Object.keys(sectionActs(dummy, -1)));
         const nodeKeysSet = new Set(Object.keys(nodeActs(dummy, -1)));
         const keyframeKeys = new Set(Object.keys(keyframeActs(dummy)));
+        const chromeSet = chromeActNames(appSvelteSrc());
+        const chromeEmitted = new Set<string>();
         let checked = 0;
         const assertIn = (act: string, keys: Set<string>, factory: string): void => {
             checked++;
-            expect(keys.has(act), `"${act}" is not a key of ${factory}'s record`).toBe(true);
+            if (chromeSet.has(act)) {
+                chromeEmitted.add(act);
+                return;
+            }
+            expect(
+                keys.has(act),
+                `"${act}" is not a key of ${factory}'s record or the declared chrome set`,
+            ).toBe(true);
         };
         for (const { act } of driveKeyAct(sectionKeyAct, sectionKeyStates))
             assertIn(act, sectionKeys, "sectionActs");
@@ -1461,6 +1538,13 @@ describe("the menu grammar — every builder, every state", () => {
         // the positive control every driver in this suite carries: proves the loop above actually
         // walked live pairs rather than vacuously passing over zero.
         expect(checked, "no decider ever emitted an act to check").toBeGreaterThan(0);
+        // the REVERSE direction: every declared chrome act is actually reachable from SOME
+        // decider — an orphan declaration (a name in `chromeActs`'s return type no decider ever
+        // emits) would sit undetected by the forward loop above, which only ever narrows the set.
+        expect(
+            [...chromeSet].filter((a) => !chromeEmitted.has(a)),
+            "chromeActs names with no reachable decider",
+        ).toEqual([]);
     });
 
     test("`shortcut` is present iff a keyboard binding invokes that row's action", () => {
@@ -1511,6 +1595,9 @@ describe("the menu grammar — every builder, every state", () => {
         lock: ["keys.ts"],
         cut: ["keys.ts"],
         join: ["keys.ts"],
+        convert: ["App.svelte", "keys.ts"],
+        pin: ["App.svelte", "keys.ts"],
+        solve: ["App.svelte", "keys.ts"],
     };
     // a bound key also drives presses that are NOBODY's menu row — dismissal rungs, a field's
     // commit-and-blur. Those stay raw literals, and this is exactly which files may hold one; any
@@ -1532,6 +1619,10 @@ describe("the menu grammar — every builder, every state", () => {
         C: { files: [], why: "the Cut binding only (landmark or playhead, by surface)" },
         j: { files: [], why: "the bulk Join binding only" },
         J: { files: [], why: "the bulk Join binding only" },
+        v: { files: [], why: "the Convert binding only" },
+        V: { files: [], why: "the Convert binding only" },
+        p: { files: [], why: "the Pin binding only" },
+        P: { files: [], why: "the Pin binding only" },
     };
     const src = (file: string): string =>
         readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
@@ -1901,19 +1992,65 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
         expect(pop).toContainEqual({ form: "key", value: "y", file: "Timeline.svelte" });
     });
 
-    test("every key/code literal in src resolves to exactly one declared entry", () => {
-        const table = declared(BINDINGS, RESERVED);
+    // the resolver, over any (population, table) pair — pure, so the positive controls below can
+    // drive it against synthetic input without mutating the production tables.
+    //
+    // `kex2d-shortcuts` stage 3's own known blind spot (Validation table, row 1): source text alone
+    // can't say which SCOPE a press site sits under, so the moment a scoped binding (`Solve`'s
+    // `Enter`) joins an unscoped one already claiming the same literal (`Append`'s `Enter`), the
+    // count-must-be-1 form starts flagging every innocent `Enter` comparison, not just a real
+    // collision. The scope-aware rule: more than one match is legal PRECISELY when the matched
+    // entries don't collide with EACH OTHER either — `collisions()` above already carries the
+    // exact rule for "two entries at the same key are a real collision unless their scopes
+    // differ" (Locked decision 1's law-3 exception), so reading it here is reuse, never a second
+    // hand-written relaxation, and it's the SAME rule the table-level collision test enforces —
+    // never a matcher loosened just for the resolver.
+    function resolverBad(pop: Literal[], table: Declared[]): string[] {
         const bad: string[] = [];
-        for (const lit of population()) {
+        for (const lit of pop) {
             const matches = table.filter((d) => d.form === lit.form && d.value === lit.value);
-            if (matches.length === 0)
+            if (matches.length === 0) {
                 bad.push(`${lit.file}: ${lit.form} "${lit.value}" claimed by no entry`);
-            else if (matches.length > 1)
+                continue;
+            }
+            if (matches.length > 1 && collisions(matches).length > 0)
                 bad.push(
-                    `${lit.file}: ${lit.form} "${lit.value}" claimed by ${matches.length} entries (${matches.map((m) => m.name).join(", ")})`,
+                    `${lit.file}: ${lit.form} "${lit.value}" claimed by ${matches.length} colliding entries (${matches.map((m) => m.name).join(", ")})`,
                 );
         }
-        expect(bad).toEqual([]);
+        return bad;
+    }
+
+    test("every key/code literal in src resolves to exactly one declared entry (or a scope-legal sibling set)", () => {
+        expect(resolverBad(population(), declared(BINDINGS, RESERVED))).toEqual([]);
+    });
+
+    test("positive control: the real `Enter` literal genuinely hits the ambiguous, scope-legal branch", () => {
+        // proves the relaxation isn't dead code exercised only by a synthetic table: `Enter`
+        // really is claimed by TWO production entries (`BINDINGS.append`, unscoped;
+        // `BINDINGS.solve`, pin-scoped) and really is compared raw in `src/` (App.svelte's and
+        // Timeline.svelte's popover-field blur, `RawKeys.Enter`).
+        const table = declared(BINDINGS, RESERVED);
+        const matches = table.filter((d) => d.form === "key" && d.value === "Enter");
+        expect(matches.length).toBeGreaterThan(1);
+        expect(collisions(matches)).toEqual([]); // the two don't collide (differing scope)
+        expect(
+            population().filter((l) => l.form === "key" && l.value === "Enter").length,
+        ).toBeGreaterThan(0);
+    });
+
+    test("positive control: the resolver still flags a literal claimed by entries that DO collide, even inside a larger match set", () => {
+        // three declared entries share "Enter": the real unscoped `append`, plus two SAME-scoped
+        // "pin" entries that collide with EACH OTHER. The scope-aware relaxation above must not
+        // read "more than one match" as blanket-fine — it has to keep checking pairwise.
+        const synthetic: Record<string, Binding> = {
+            ...BINDINGS,
+            solveDup: { keys: ["Enter"], hint: "Enter", scope: "pin" },
+            solveDup2: { keys: ["Enter"], hint: "Enter", scope: "pin" },
+        };
+        const table = declared(synthetic, {});
+        const lit: Literal = { form: "key", value: "Enter", file: "synthetic" };
+        expect(resolverBad([lit], table).length).toBeGreaterThan(0);
     });
 
     test("positive control: the resolver actually flags an unclaimed literal", () => {
@@ -2074,6 +2211,50 @@ test("App.svelte's canJoin derivation calls the same sectionsJoinable the key de
     expect(controlsSrc.includes("joinable: sectionsJoinable(")).toBe(true); // the key's own read
     expect(appSrc.includes("sectionsJoinable(")).toBe(true); // the row's read — the finding's gap
     expect(appSrc.includes("canJoin")).toBe(true); // and the descriptor actually carries it
+});
+
+// ── Convert/Pin keydown subject parity (kex2d-shortcuts stage 3, the defect stage 3 shipped
+// with): `V`/`P` must resolve `canSolve`/`canSolveShape`/`canPin` against the KEYDOWN's own
+// subject (`editor.section`, the click-selected section), never the section context MENU's
+// subject (`ctx.section`) — the two are only equal while a menu happens to be open. The shipped
+// defect handed `sectionKeyAct` the module-scope `canSolve`/`canSolveShape`/`canPin` `$derived`s,
+// which all resolve `ctxKind` off `ctx.section`; `ctx` is `null` on every keyboard-only path (no
+// menu need be open to press `V`), so the three enablements were always `false` and `V`/`P` were
+// dead keys — `bun run capture` caught it, no unit test did, because `sectionKeyAct` itself only
+// ever saw hand-passed booleans. Same shape as the `canJoin` parity test above: a source sentinel
+// is the reachable check here, since whether the listener's OWN `section` local (not `ctx`) feeds
+// the enablement is wiring a unit test can't drive without a live DOM (`editor-ui.md`'s
+// source-census limit) — `bun run capture`'s "Convert/Pin/Solve keyboard bindings flow" is the
+// capture-flow half that actually exercises it. Isolated to the Convert/Pin listener's own block
+// (not the whole file) so a `canSolve` read anywhere else — the menu's own `$derived`, which
+// legitimately reads `ctx.section` — can't hide inside a whole-file match.
+test("App.svelte's Convert/Pin keydown listener resolves canSolve/canSolveShape/canPin against its OWN subject, not the context menu's", () => {
+    const appSrc = readFileSync(join(import.meta.dir, "..", "src", "App.svelte"), "utf8");
+    const start = appSrc.indexOf("// Convert (`V`) and Pin (`P`) — the section context menu's");
+    const end = appSrc.indexOf("// cancel the live solve", start);
+    expect(start, "Convert/Pin listener comment landmark").toBeGreaterThan(-1);
+    expect(end, "next-listener comment landmark").toBeGreaterThan(start);
+    const listener = appSrc.slice(start, end);
+
+    // the listener resolves its own subject fresh, never the module-scope ctx-derived value.
+    expect(listener).toContain("const section = editor.section");
+
+    // `sectionKeyAct`'s three optional fields are each computed from THAT subject — never passed
+    // as a bare identifier, which is exactly how the defect read the tick-derived,
+    // ctx.section-scoped `$derived`s straight through.
+    expect(listener).toMatch(/canSolve:\s*computeCanSolve\(section\)/);
+    expect(listener).toMatch(/canSolveShape:\s*computeCanSolveShape\(section\)/);
+    expect(listener).toMatch(/canPin:\s*computeCanPin\(section\)/);
+    expect(listener).not.toMatch(/canSolve:\s*canSolve\b/);
+    expect(listener).not.toMatch(/canSolveShape:\s*canSolveShape\b/);
+    expect(listener).not.toMatch(/canPin:\s*canPin\b/);
+    // property shorthand (`canSolve,`) is the same bug in its most common shipped shape (the
+    // module-scope `$derived` and the descriptor field share a name) — the canSolve object-key
+    // regex above wouldn't catch shorthand, so it's asserted separately.
+    for (const field of ["canSolve", "canSolveShape", "canPin"])
+        expect(listener, `${field} must not be passed as bare shorthand`).not.toMatch(
+            new RegExp(`\\b${field},`),
+        );
 });
 
 // `menuRows` is a public seam other menus will call, so its edge cases are pinned directly rather

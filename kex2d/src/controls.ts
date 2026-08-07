@@ -1565,7 +1565,14 @@ export function attachControls(
                 multi: editor.sections.ids.size > 1,
                 joinable: sectionsJoinable([...editor.sections.ids], sections(ecs)),
                 cuttable: position !== null,
+                // Convert/Pin never reach this decider call — no `canSolve`/`canSolveShape`/
+                // `canPin` supplied, so `V`/`P` fall through as `null` here; App.svelte's own
+                // permanent listener owns them (`solve`/`solveShape`/`pinEnter` are chrome, and
+                // this module reaches only `acts.ts` — `editor-ui.md` Menus, no act crosses a
+                // module boundary). The narrow below is a static reflection of that split, not a
+                // runtime branch this call site can actually take.
             });
+            if (act === "solve" || act === "solveShape" || act === "pinEnter") return;
             if (act !== null) {
                 e.preventDefault();
                 const acts = sectionActs(ecs, section, position);

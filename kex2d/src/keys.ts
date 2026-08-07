@@ -40,24 +40,45 @@ export type SectionKeyState = {
      *  it OMITS the menu row). OPTIONAL, the same shape as its siblings — an existing caller
      *  driving only remove/join keeps compiling. */
     cuttable?: boolean;
+    /** Convert's own geo→force enablement (`canSolve`, `menus.ts convertRow`) — the same reading
+     *  `App.svelte` hands the menu builder. OPTIONAL, the `cuttable` shape: an existing caller
+     *  driving only remove/join/cut keeps compiling. */
+    canSolve?: boolean;
+    /** Convert's own force→geo enablement (`canSolveShape`). */
+    canSolveShape?: boolean;
+    /** Pin's own enablement (`canPin`) — a single force section with a live bake
+     *  (`track.sectionSolvable`); it reads no pinning state, so it stays true while a session is
+     *  open on this OR another section. What actually bars `P` mid-session is `opsAllowed`
+     *  above (`sectionOpsAllowed(editor.pinning)`), which this decider checks first and returns
+     *  `null` before `canPin` is ever read. */
+    canPin?: boolean;
 };
 
-/** whole-section Delete/`J`/`C`: `remove` for a single section, `removeSet` for a
+/** whole-section Delete/`J`/`C`/`V`/`P`: `remove` for a single section, `removeSet` for a
  *  multi-selection (`BINDINGS.remove`), `join` for a valid multi-set run (`BINDINGS.join`),
  *  `cutAt` on a cuttable single section (`BINDINGS.cut`, playhead-exact — the clip strip's
  *  keyboard twin of its cursor-anchored menu row, `SectionMenuActions.cutAt` itself unchanged:
- *  only the resolved `position` argument differs by caller) — `null` off every binding or while
+ *  only the resolved `position` argument differs by caller), `solve`/`solveShape` on `V`
+ *  (`BINDINGS.convert` — the section's kind picks the direction, `menus.ts convertRow`'s own
+ *  fork, mirrored here rather than re-derived from a `kind` field this decider would otherwise
+ *  need to import for), `pinEnter` on `P` (`BINDINGS.pin`) — `null` off every binding or while
  *  the consent boundary bars structural ops. Typed off `SectionMenuActions`' own keys —
  *  `menus.ts`'s reverse-direction check — rather than a restated literal, so a rename in the
  *  actions record fails here at compile time. */
 export function sectionKeyAct(
     key: string,
     s: SectionKeyState,
-): Extract<keyof SectionMenuActions, "remove" | "removeSet" | "join" | "cutAt"> | null {
+): Extract<
+    keyof SectionMenuActions,
+    "remove" | "removeSet" | "join" | "cutAt" | "solve" | "solveShape" | "pinEnter"
+> | null {
     if (!s.opsAllowed) return null;
     if (bound(BINDINGS.remove, key)) return s.multi ? "removeSet" : "remove";
     if (bound(BINDINGS.join, key)) return s.joinable ? "join" : null;
     if (bound(BINDINGS.cut, key)) return !s.multi && s.cuttable === true ? "cutAt" : null;
+    if (bound(BINDINGS.convert, key))
+        return s.canSolveShape === true ? "solveShape" : s.canSolve === true ? "solve" : null;
+    if (bound(BINDINGS.pin, key)) return s.canPin === true ? "pinEnter" : null;
     return null;
 }
 
@@ -135,30 +156,43 @@ export function forceKeyAct(
     return null;
 }
 
-/** the pin-mode Escape rung's state (`App.svelte`'s permanent mode listener) — the dismissal
- *  ladder's yield conditions: a summoned menu, an edit sub-mode, or a live selection each peel
- *  before the mode itself (root `ui.md`: dismissal peels one layer). */
+/** the pin-mode Escape/Solve rung's state (`App.svelte`'s permanent mode listener). Escape's own
+ *  dismissal ladder: a summoned menu, an edit sub-mode, or a live selection each peel before the
+ *  mode itself (root `ui.md`: dismissal peels one layer). Solve reads none of those three — it's
+ *  the mode's primary action, not a dismissal, so it fires whenever the mode is open and headroom
+ *  holds, matching the docked panel's own Solve button (`App.svelte`'s `pinSolvable`/`disabled`),
+ *  its keyboard twin (`BINDINGS.solve`, the mode-scoped `Enter` exception, Locked decision 1's
+ *  law 3). */
 export type ModeKeyState = {
-    /** a pin session is open — Exit has nothing to do otherwise. */
+    /** a pin session is open — Exit and Solve both have nothing to do otherwise. */
     modeOpen: boolean;
-    /** a summoned menu (context/node/force/ruler) is open — it peels first. */
+    /** a summoned menu (context/node/force/ruler) is open — it peels first. Escape only. */
     menuOpen: boolean;
-    /** an edit sub-mode (tangent edit, force handle edit) is open — it peels first. */
+    /** an edit sub-mode (tangent edit, force handle edit) is open — it peels first. Escape only. */
     editing: boolean;
     /** a live selection (node, force, section, or the START anchor) — it clears first
-     *  (`controls.ts` / `Timeline.svelte` own that rung). */
+     *  (`controls.ts` / `Timeline.svelte` own that rung). Escape only. */
     selected: boolean;
+    /** Solve's own headroom gate — `MIN_FREE` free keys (`optimize.ts`, `App.svelte`'s
+     *  `pinSolvable`). Unread by Escape. */
+    solvable: boolean;
+    /** the mode's own blocking gate (`editor.pinSolving`) — Solve is inert mid-solve, matching
+     *  the panel button's own `disabled`. Unread by Escape. */
+    solving: boolean;
 };
 
-/** pin-mode Escape: `pinExit` only when the mode is open and every inner layer has already
- *  yielded, `null` otherwise (including off `BINDINGS.exitMode`). Typed off `SectionMenuActions`'
- *  own `pinExit` key, per `sectionKeyAct` above — the mode's Escape and the section menu's Exit
- *  row invoke the same act. */
+/** pin-mode Escape/Enter: `pinExit` when the mode is open, `BINDINGS.exitMode` is pressed, and
+ *  every inner layer has already yielded; `pinSolve` when the mode is open, `BINDINGS.solve` is
+ *  pressed (mode-scoped `Enter`), not mid-solve, and headroom holds; `null` otherwise. Typed off
+ *  `SectionMenuActions`' own `pinExit`/`pinSolve` keys, per `sectionKeyAct` above — the mode's
+ *  Escape/Enter and the in-mode section menu's Exit/Solve rows invoke the same acts. */
 export function modeKeyAct(
     key: string,
     s: ModeKeyState,
-): Extract<keyof SectionMenuActions, "pinExit"> | null {
-    if (!s.modeOpen || !bound(BINDINGS.exitMode, key)) return null;
-    if (s.menuOpen || s.editing || s.selected) return null;
-    return "pinExit";
+): Extract<keyof SectionMenuActions, "pinExit" | "pinSolve"> | null {
+    if (!s.modeOpen) return null;
+    if (bound(BINDINGS.exitMode, key))
+        return s.menuOpen || s.editing || s.selected ? null : "pinExit";
+    if (bound(BINDINGS.solve, key)) return !s.solving && s.solvable ? "pinSolve" : null;
+    return null;
 }

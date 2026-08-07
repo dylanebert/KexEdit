@@ -1169,6 +1169,64 @@ test("pin mode flow", async ({ page, boot }) => {
     expect(await undoDepth()).toBe(base + 2); // the second experiment is one more outer entry
 });
 
+// Convert (`V`), Pin (`P`), and Solve (`Enter`, mode-scoped) — the section menu's own remaining
+// keyboard bindings (`kex2d-shortcuts` stage 3), fired through the real DOM rather than a menu
+// click: `V`/`P` dispatch through `App.svelte`'s own permanent listener (the merged chrome +
+// document acts record, Locked decision 2 — `solve`/`solveShape`/`pinEnter` are chrome, so a
+// source census alone can't prove the wiring reaches them; only the real keydown can). `Enter`
+// reuses `BINDINGS.append`'s own literal outside the mode — the mode-scoped exception (law 3)
+// only claims it once `editor.pinning` is actually open, which is what makes it unambiguous in
+// fact (the lockdown bars geo append the whole time a session is live). The click-driven paths
+// for the same three acts are covered elsewhere ("invoked solve flow", "pin mode flow"); this
+// flow's own job is proving the KEYBOARD path reaches the identical acts, not re-proving what
+// they do once invoked.
+test("Convert/Pin/Solve keyboard bindings flow", async ({ page, boot }) => {
+    await boot();
+
+    const kinds = () => kexCall(page, "sectionKinds");
+    const pinning = () => kexCall(page, "pinning");
+    const undoDepth = () => kexCall(page, "undoDepth");
+    const scrim = page.locator(".scrim");
+    const panel = page.locator(".pinpanel");
+
+    await kexCall(page, "seedForceBump"); // the boot section: force, 5 keys, all free (≥ MIN_FREE)
+    await kexCall(page, "append", 0); // SectionKind.Geo — `V` needs a live Convert target too
+    await expect.poll(async () => (await kinds()).join(",")).toBe("1,0");
+    await frameTimeline(page);
+    await frames(page, 2); // let the appended section's bake catch up (`canSolve` needs `bakeLive`)
+
+    // ── `V` — Convert on the geo section: select it, press `V`, the same modal a click on the
+    // row opens (`invoked solve flow`'s own step 2) comes up; Escape cancels, the row's own
+    // dismissal. ──
+    const selected = () => kexCall(page, "selectedSection");
+
+    await page.locator(".clip").nth(1).click(); // the appended geo section
+    await expect.poll(selected).not.toBeNull(); // wait for the selection to actually land
+    const geoId = await selected();
+    await page.keyboard.press("v");
+    await expect(scrim).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(scrim).toHaveCount(0);
+
+    // ── `P` — Pin, on the force section: select it, press `P`, the docked panel comes up —
+    // the same mode a click on the row opens (`pin mode flow`'s own step 1). ──
+    await page.locator(".clip").first().click();
+    await expect.poll(async () => (await selected()) !== geoId).toBe(true); // selection settled
+    await page.keyboard.press("p");
+    await expect(panel).toBeVisible();
+    await expect.poll(pinning).toBe(true);
+
+    // ── `Enter` — Solve, mode-scoped: fires the mode's own Solve action, never the unscoped
+    // `append` binding it shares the literal with (nothing here is even geo, so `add` has no
+    // live target regardless — the belt, not the buckle: the mode itself is the buckle). Nothing
+    // was edited, so this is a zero-drift Solve — it still lands as ONE outer entry (the mode's
+    // own law: a zero-drift Solve still closes and the transition sits on the stack). ──
+    const base = await undoDepth();
+    await page.keyboard.press("Enter");
+    await expect.poll(pinning, { timeout: 30_000 }).toBe(false);
+    expect(await undoDepth()).toBe(base + 1);
+});
+
 // Cut is ABSENT on the VIEWPORT surface (kex2d-structural-editing stage 7a) — the surface stage
 // 4 shipped grayed, stage 6 resolved a real cursor position for, and stage 7 took away entirely
 // (`pickSectionArc`/`pickCut` deleted; "cutting would be too imprecise" — the round-7 verdict).

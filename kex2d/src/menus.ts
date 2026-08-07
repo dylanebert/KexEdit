@@ -109,6 +109,7 @@ function convertRow(s: SectionMenuState, a: SectionMenuActions): MenuItem {
         // section, so the label carries the verb alone.
         label: "Convert",
         group: "modify",
+        shortcut: BINDINGS.convert.hint,
         enabled: toGeo ? s.canSolveShape : s.canSolve,
         action: toGeo ? a.solveShape : a.solve,
     };
@@ -133,6 +134,7 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
             {
                 label: "Solve",
                 group: "modify",
+                shortcut: BINDINGS.solve.hint,
                 action: a.pinSolve,
                 enabled: !s.solving && s.pinSolvable,
             },
@@ -155,6 +157,7 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
         items.push({
             label: "Pin",
             group: "modify",
+            shortcut: BINDINGS.pin.hint,
             enabled: s.canPin && !s.modeOpen,
             action: a.pinEnter,
         });
