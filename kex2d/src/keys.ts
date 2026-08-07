@@ -59,11 +59,11 @@ export type SectionKeyState = {
     canReset?: boolean;
 };
 
-/** whole-section Delete/`J`/`C`/`V`/`P`/`R`: `remove` for a single section, `removeSet` for a
+/** whole-section Delete/`J`/`C`/`D`/`P`/`R`: `remove` for a single section, `removeSet` for a
  *  multi-selection (`BINDINGS.remove`), `join` for a valid multi-set run (`BINDINGS.join`),
  *  `cutAt` on a cuttable single section (`BINDINGS.cut`, playhead-exact — the clip strip's
  *  keyboard twin of its cursor-anchored menu row, `SectionMenuActions.cutAt` itself unchanged:
- *  only the resolved `position` argument differs by caller), `solve`/`solveShape` on `V`
+ *  only the resolved `position` argument differs by caller), `solve`/`solveShape` on `D`
  *  (`BINDINGS.convert` — the section's kind picks the direction, `menus.ts convertRow`'s own
  *  fork, mirrored here rather than re-derived from a `kind` field this decider would otherwise
  *  need to import for), `pinEnter` on `P` (`BINDINGS.pin`), `reset` on `R` (`BINDINGS.reset`,

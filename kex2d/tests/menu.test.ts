@@ -217,7 +217,7 @@ describe("sectionMenu — the section context menu's rows", () => {
 
     test("a single GEO section: Convert, Cut, Reset, Delete", () => {
         expect(shape(sectionMenu(base, acts()))).toEqual([
-            { label: "Convert", group: "modify", shortcut: "V", enabled: true },
+            { label: "Convert", group: "modify", shortcut: "D", enabled: true },
             cut(true),
             { label: "Reset", group: "lifecycle", shortcut: "R", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
@@ -232,7 +232,7 @@ describe("sectionMenu — the section context menu's rows", () => {
             canPin: true,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Convert", group: "modify", shortcut: "V", enabled: true },
+            { label: "Convert", group: "modify", shortcut: "D", enabled: true },
             { label: "Pin", group: "modify", shortcut: "P", enabled: true },
             cut(true),
             { label: "Reset", group: "lifecycle", shortcut: "R", enabled: true },
@@ -250,7 +250,7 @@ describe("sectionMenu — the section context menu's rows", () => {
         const rows = shape(sectionMenu(s, acts()));
         expect(rows.find((r) => r.label === "Cut")).toBeUndefined();
         expect(rows).toEqual([
-            { label: "Convert", group: "modify", shortcut: "V", enabled: true },
+            { label: "Convert", group: "modify", shortcut: "D", enabled: true },
             { label: "Reset", group: "lifecycle", shortcut: "R", enabled: true },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
         ]);
@@ -288,7 +288,7 @@ describe("sectionMenu — the section context menu's rows", () => {
             canJoin: false,
         };
         expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Convert", group: "modify", shortcut: "V", enabled: false },
+            { label: "Convert", group: "modify", shortcut: "D", enabled: false },
             join(false),
             { label: "Reset", group: "lifecycle", shortcut: "R", enabled: false },
             { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
@@ -1640,8 +1640,8 @@ describe("the menu grammar — every builder, every state", () => {
         C: { files: [], why: "the Cut binding only (landmark or playhead, by surface)" },
         j: { files: [], why: "the bulk Join binding only" },
         J: { files: [], why: "the bulk Join binding only" },
-        v: { files: [], why: "the Convert binding only" },
-        V: { files: [], why: "the Convert binding only" },
+        d: { files: [], why: "the Convert binding only" },
+        D: { files: [], why: "the Convert binding only" },
         p: { files: [], why: "the Pin binding only" },
         P: { files: [], why: "the Pin binding only" },
         r: { files: [], why: "the Reset binding only" },
@@ -2276,12 +2276,12 @@ test("App.svelte's canJoin derivation calls the same sectionsJoinable the key de
 });
 
 // ── Convert/Pin keydown subject parity (kex2d-shortcuts stage 3, the defect stage 3 shipped
-// with): `V`/`P` must resolve `canSolve`/`canSolveShape`/`canPin` against the KEYDOWN's own
+// with): `D`/`P` must resolve `canSolve`/`canSolveShape`/`canPin` against the KEYDOWN's own
 // subject (`editor.section`, the click-selected section), never the section context MENU's
 // subject (`ctx.section`) — the two are only equal while a menu happens to be open. The shipped
 // defect handed `sectionKeyAct` the module-scope `canSolve`/`canSolveShape`/`canPin` `$derived`s,
 // which all resolve `ctxKind` off `ctx.section`; `ctx` is `null` on every keyboard-only path (no
-// menu need be open to press `V`), so the three enablements were always `false` and `V`/`P` were
+// menu need be open to press `D`), so the three enablements were always `false` and `D`/`P` were
 // dead keys — `bun run capture` caught it, no unit test did, because `sectionKeyAct` itself only
 // ever saw hand-passed booleans. Same shape as the `canJoin` parity test above: a source sentinel
 // is the reachable check here, since whether the listener's OWN `section` local (not `ctx`) feeds
@@ -2292,7 +2292,7 @@ test("App.svelte's canJoin derivation calls the same sectionsJoinable the key de
 // legitimately reads `ctx.section` — can't hide inside a whole-file match.
 test("App.svelte's Convert/Pin keydown listener resolves canSolve/canSolveShape/canPin against its OWN subject, not the context menu's", () => {
     const appSrc = readFileSync(join(import.meta.dir, "..", "src", "App.svelte"), "utf8");
-    const start = appSrc.indexOf("// Convert (`V`) and Pin (`P`) — the section context menu's");
+    const start = appSrc.indexOf("// Convert (`D`) and Pin (`P`) — the section context menu's");
     const end = appSrc.indexOf("// cancel the live solve", start);
     expect(start, "Convert/Pin listener comment landmark").toBeGreaterThan(-1);
     expect(end, "next-listener comment landmark").toBeGreaterThan(start);

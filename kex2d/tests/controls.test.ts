@@ -856,12 +856,12 @@ describe("sectionKeyAct — the whole-section Delete + bulk-Join rungs", () => {
         expect(sectionKeyAct("j", { opsAllowed: true, multi: true, joinable: false })).toBeNull();
         expect(sectionKeyAct("j", { opsAllowed: true, multi: false, joinable: false })).toBeNull();
     });
-    test("`V` fires solve when canSolve is true", () => {
+    test("`D` fires solve when canSolve is true", () => {
         expect(
-            sectionKeyAct("v", { opsAllowed: true, multi: false, joinable: false, canSolve: true }),
+            sectionKeyAct("d", { opsAllowed: true, multi: false, joinable: false, canSolve: true }),
         ).toBe("solve");
         expect(
-            sectionKeyAct("V", {
+            sectionKeyAct("D", {
                 opsAllowed: true,
                 multi: false,
                 joinable: false,
@@ -869,9 +869,9 @@ describe("sectionKeyAct — the whole-section Delete + bulk-Join rungs", () => {
             }),
         ).toBeNull();
     });
-    test("Convert's own two-way fork: `V` fires solveShape when canSolveShape is true, winning over canSolve", () => {
+    test("Convert's own two-way fork: `D` fires solveShape when canSolveShape is true, winning over canSolve", () => {
         expect(
-            sectionKeyAct("v", {
+            sectionKeyAct("d", {
                 opsAllowed: true,
                 multi: false,
                 joinable: false,
@@ -880,7 +880,7 @@ describe("sectionKeyAct — the whole-section Delete + bulk-Join rungs", () => {
             }),
         ).toBe("solveShape");
         expect(
-            sectionKeyAct("V", {
+            sectionKeyAct("D", {
                 opsAllowed: true,
                 multi: false,
                 joinable: false,
@@ -889,7 +889,7 @@ describe("sectionKeyAct — the whole-section Delete + bulk-Join rungs", () => {
             }),
         ).toBe("solve");
         expect(
-            sectionKeyAct("v", {
+            sectionKeyAct("d", {
                 opsAllowed: true,
                 multi: false,
                 joinable: false,

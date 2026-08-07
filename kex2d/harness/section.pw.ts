@@ -1169,9 +1169,9 @@ test("pin mode flow", async ({ page, boot }) => {
     expect(await undoDepth()).toBe(base + 2); // the second experiment is one more outer entry
 });
 
-// Convert (`V`), Pin (`P`), Solve (`Enter`, mode-scoped), and Reset (`R`) — the section menu's own
+// Convert (`D`), Pin (`P`), Solve (`Enter`, mode-scoped), and Reset (`R`) — the section menu's own
 // remaining keyboard bindings (`kex2d-shortcuts` stages 3 + 4), fired through the real DOM rather
-// than a menu click: `V`/`P` dispatch through `App.svelte`'s own permanent listener (the merged
+// than a menu click: `D`/`P` dispatch through `App.svelte`'s own permanent listener (the merged
 // chrome + document acts record, Locked decision 2 — `solve`/`solveShape`/`pinEnter` are chrome, so a
 // source census alone can't prove the wiring reaches them; only the real keydown can). `Enter`
 // reuses `BINDINGS.append`'s own literal outside the mode — the mode-scoped exception (law 3)
@@ -1194,12 +1194,12 @@ test("Convert/Pin/Solve/Reset keyboard bindings flow", async ({ page, boot }) =>
     const panel = page.locator(".pinpanel");
 
     await kexCall(page, "seedForceBump"); // the boot section: force, 5 keys, all free (≥ MIN_FREE)
-    await kexCall(page, "append", 0); // SectionKind.Geo — `V` needs a live Convert target too
+    await kexCall(page, "append", 0); // SectionKind.Geo — `D` needs a live Convert target too
     await expect.poll(async () => (await kinds()).join(",")).toBe("1,0");
     await frameTimeline(page);
     await frames(page, 2); // let the appended section's bake catch up (`canSolve` needs `bakeLive`)
 
-    // ── `V` — Convert on the geo section: select it, press `V`, the same modal a click on the
+    // ── `D` — Convert on the geo section: select it, press `D`, the same modal a click on the
     // row opens (`invoked solve flow`'s own step 2) comes up; Escape cancels, the row's own
     // dismissal. ──
     const selected = () => kexCall(page, "selectedSection");
@@ -1207,7 +1207,7 @@ test("Convert/Pin/Solve/Reset keyboard bindings flow", async ({ page, boot }) =>
     await page.locator(".clip").nth(1).click(); // the appended geo section
     await expect.poll(selected).not.toBeNull(); // wait for the selection to actually land
     const geoId = await selected();
-    await page.keyboard.press("v");
+    await page.keyboard.press("d");
     await expect(scrim).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(scrim).toHaveCount(0);

@@ -81,9 +81,11 @@ export const BINDINGS = {
     lock: { keys: ["q", "Q"], hint: "Q" },
     cut: { keys: ["c", "C"], hint: "C" },
     join: { keys: ["j", "J"], hint: "J" },
-    // `C` is taken by Cut, so law 4's tiebreaker decides: `V` is free, left-hand, adjacent
-    // (`kex2d-shortcuts` Locked decision 1).
-    convert: { keys: ["v", "V"], hint: "V" },
+    // mnemonic `C` is taken by Cut. `V` was the derived pick (law 4's tiebreaker) but is refused:
+    // Figma/Rive bind bare `V` to the base select/move tool, an arbitrary letter their camp
+    // standardized — exactly the reflex kex2d must not collide with. `D` is free across both
+    // camps and wins law 4's left-hand-reach tiebreaker (`kex2d-shortcuts` stage 5 feel verdict).
+    convert: { keys: ["d", "D"], hint: "D" },
     // mnemonic-exact (Locked decision 1).
     pin: { keys: ["p", "P"], hint: "P" },
     // mode-scoped: `Enter` also fires `append` (unscoped) everywhere outside pin mode. Law 3's

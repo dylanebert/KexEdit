@@ -1579,7 +1579,7 @@ export function attachControls(
                     bakeLive(ecs),
                 ),
                 // Convert/Pin never reach this decider call — no `canSolve`/`canSolveShape`/
-                // `canPin` supplied, so `V`/`P` fall through as `null` here; App.svelte's own
+                // `canPin` supplied, so `D`/`P` fall through as `null` here; App.svelte's own
                 // permanent listener owns them (`solve`/`solveShape`/`pinEnter` are chrome, and
                 // this module reaches only `acts.ts` — `editor-ui.md` Menus, no act crosses a
                 // module boundary). The narrow below is a static reflection of that split, not a

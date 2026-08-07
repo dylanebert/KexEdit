@@ -222,7 +222,7 @@ onMount(() => {
     return () => window.removeEventListener("keydown", onKey, { capture: true });
 });
 
-// Convert (`V`) and Pin (`P`) — the section context menu's own remaining shortcuts
+// Convert (`D`) and Pin (`P`) — the section context menu's own remaining shortcuts
 // (`kex2d-shortcuts` stage 3): routed through `keys.ts`'s `sectionKeyAct`, the same decider
 // `controls.ts` drives for remove/join/cutAt, but dispatched through the MERGED chrome + document
 // acts record (`chromeActs` + `sectionActs`, Locked decision 2): `solve`/`solveShape`/`pinEnter`
@@ -851,7 +851,7 @@ $effect(() => {
 // keydown listener below reads it off `editor.section` (the click-selected subject) directly,
 // fresh, never through this tick-derived wrapper — the two subjects are NOT the same field, and
 // handing the keydown listener the menu's own deriveds was the stage-3 defect (`kex2d-shortcuts`
-// Live log): they read `null` on any keyboard-only path, since no menu need be open for `V`/`P`
+// Live log): they read `null` on any keyboard-only path, since no menu need be open for `D`/`P`
 // to fire.
 function computeSectionKind(secId: number | null): SectionKind | null {
     if (secId === null) return null;
