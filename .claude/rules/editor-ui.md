@@ -1,17 +1,15 @@
 ---
 paths:
     - "**/*.svelte"
-    - "**/*.css"
-    - "app/**/*.ts"
     - "kex2d/**/*.ts"
 ---
 
 # Editor UI
 
 Applies to all editor UI in kexedit, wherever it lives — today the kex2d prototype, migrating into
-`app/` and beyond. The `.svelte`/`.css` globs catch components anywhere; as the editor frontend
-grows into a new TS root, add it to the `paths` above so its controllers and stores pick this up
-too. The posture, gates, surface, field, and motion laws are the kex root ruleset
+`app/` and beyond. The `.svelte` glob catches components anywhere; as the editor frontend grows into
+a new TS root, or starts shipping standalone stylesheets, add it to the `paths` above so this rule
+picks it up too. The posture, gates, surface, field, and motion laws are the kex root ruleset
 (`kex/.claude/rules/ui.md`); this file is its kexedit child — it adds the project's earned bends
 and worked examples, never restates root. kex2d is the worked model of root gate 3 (on the object
 first): no tools, no modes — click a node to select it, move it through the polar length/angle

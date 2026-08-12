@@ -13,10 +13,9 @@ Roller coaster editor using Force Vector Design (FVD).
 
 `.claude/rules/` holds the per-area conventions, all path-scoped. Globs match the path from the repo root, not your cwd:
 
-- `app/**/*` → `.claude/rules/app.md`
 - `plugins/blender/**/*` → `.claude/rules/blender.md`
 - `packages/core/**/*` → `.claude/rules/core.md`
-- `**/*.svelte`, `**/*.css`, `app/**/*.ts`, `kex2d/**/*.ts` → `.claude/rules/editor-ui.md`
+- `**/*.svelte`, `kex2d/**/*.ts` → `.claude/rules/editor-ui.md`
 - `kex2d/harness/**/*`, `kex2d/tests/harness.test.ts` → `.claude/rules/kex2d-harness.md`
 - `kex2d/src/**/*`, `kex2d/tests/**/*` → `.claude/rules/kex2d-map.md`
 
