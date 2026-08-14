@@ -510,7 +510,7 @@ const hook = {
     },
     events: (): { kind: string; keys: number; frame: number }[] => {
         const solve = current();
-        if (!solve || solve.mode !== "convert") return [];
+        if (solve?.mode !== "convert") return [];
         return solve.frames.flatMap((item, index) =>
             item.event
                 ? [{ kind: item.event.kind, keys: item.event.knots.length, frame: index }]
@@ -553,7 +553,7 @@ const hook = {
     progress: (): ConvertProgress => progress,
     metrics: (): Metrics | null => {
         const solve = current();
-        if (!solve || solve.mode !== "convert") return null;
+        if (solve?.mode !== "convert") return null;
         return {
             name: solve.scenario.name,
             keys: solve.out.keys,

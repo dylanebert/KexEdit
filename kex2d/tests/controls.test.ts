@@ -492,7 +492,7 @@ test("angle drag: the snapped incline shown equals the resting exit heading (no 
     const s = samples.get(trackOf(state));
     if (!s) throw new Error("no samples");
     const nf = nodeFrame(state, s, TX, tip);
-    if (!nf || nf.kind !== "polar") throw new Error("the tip must carry a polar frame");
+    if (nf?.kind !== "polar") throw new Error("the tip must carry a polar frame");
     const f = nf.frame;
     // drag to a raw chord; snap on quantizes the exit incline to a 5° grid multiple.
     const raw = angleToPoint(f, 0.42);
@@ -511,7 +511,7 @@ test("length drag: the snapped metres shown equal the resting chord (5 m rests a
     const s = samples.get(trackOf(state));
     if (!s) throw new Error("no samples");
     const nf = nodeFrame(state, s, TX, tip);
-    if (!nf || nf.kind !== "polar") throw new Error("the tip must carry a polar frame");
+    if (nf?.kind !== "polar") throw new Error("the tip must carry a polar frame");
     const f = nf.frame;
     const raw = lengthToPoint(f, 5.02); // a raw pointer near 5 m
     const res = lengthControl(f, raw.x, raw.y, true);
@@ -542,7 +542,7 @@ test("an INTERIOR node's frame is the neighbor-chord frame, not polar (no angle 
     const s = samples.get(trackOf(state));
     if (!s) throw new Error("no samples");
     const nf = nodeFrame(state, s, TX, interior);
-    if (!nf || nf.kind !== "chord") throw new Error("an interior node must carry a chord frame"); // the retired law: no more polar frame on an interior node
+    if (nf?.kind !== "chord") throw new Error("an interior node must carry a chord frame"); // the retired law: no more polar frame on an interior node
     const f = nf.frame;
 
     // slide: a whole-metre grid, snap-writes-what-lands (the readout invariant, same shape as the
