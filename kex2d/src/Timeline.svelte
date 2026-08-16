@@ -128,6 +128,7 @@ import {
     setForcePoint,
     setForceTangent,
     setSectionLength,
+    stationTaken,
     toGlobalU,
     trackDomain,
     V0,
@@ -776,12 +777,26 @@ $effect(() => {
 // moving magnet — the playhead. no ruler ticks: they're the zoom-dependent 1-2-5 raster,
 // display not content. the caller excludes the dragged point and picks whether its own
 // moving edge (the track end) is a target.
-function sTargets(opts: { exclude?: Set<number>; playhead: boolean; trackEnd: boolean }): number[] {
+// `sameSection` names the dragged anchor's own section: its keys are dropped from the pool
+// because a station one of them occupies is a landing the write refuses (`track.stationTaken`),
+// and a gesture never snaps to a target it can't reach (editor-ui.md Snapping — the same law
+// that keeps the extent trim off its own moving edge). Keys in OTHER sections stay: a boundary
+// coincidence is legal and is exactly what a cut plants, so they remain reachable landmarks.
+function sTargets(opts: {
+    exclude?: Set<number>;
+    sameSection?: number | null;
+    playhead: boolean;
+    trackEnd: boolean;
+}): number[] {
     const v = clamped;
     const out: number[] = [uToPx(v, 0)];
     for (const b of bounds) out.push(uToPx(v, b));
     if (opts.trackEnd) out.push(uToPx(v, uTotal));
-    for (const p of forcePts) if (!opts.exclude?.has(p.id)) out.push(uToPx(v, p.u));
+    for (const p of forcePts) {
+        if (opts.exclude?.has(p.id)) continue;
+        if (opts.sameSection != null && p.section === opts.sameSection) continue;
+        out.push(uToPx(v, p.u));
+    }
     // the cart rides in arclength, so the playhead is the one landmark here that projects.
     if (opts.playhead && paused && cartS !== null) out.push(uToPx(v, uOf(cartS)));
     return out;
@@ -847,6 +862,7 @@ let dragForce: number | null = $state(null); // the ANCHOR point id (snap resolv
 // axis, so the arithmetic is exact: there is no projection to lose an ulp in.
 let dragU0 = 0;
 let dragStartU = 0; // the ANCHOR's section entry on the axis (fixed during the drag)
+let dragSection = -1; // the ANCHOR's section — the scope its own keys are unreachable within
 let dragLen = 0; // the ANCHOR's section extent (the anchor's own s clamp domain)
 let dragCx = 0; // last cursor, canvas-local px
 let dragCy = 0;
@@ -856,7 +872,10 @@ let dragG0 = 0;
 // the dragged SET, captured at gesture start: every selected member's start s/g + its own section
 // extent (the rigid-clamp bounds). single-select is the size-1 case (just the anchor). the whole
 // set moves by ONE shared (Δs, Δg) — relative offsets preserved exactly — resolved on the anchor.
-let dragMembers: { id: number; s0: number; g0: number; len: number }[] = [];
+let dragMembers: { id: number; s0: number; g0: number; len: number; section: number }[] = [];
+// the last shared Δs that LANDED — what the block holds at when the next step would put a member
+// on an occupied station, so the group stops as one instead of tearing (the rigid-clamp law).
+let dragLastDs = 0;
 let dragMemberSet: Set<number> = new Set(); // the member ids, so the snap excludes every moving point
 function applyDrag(): void {
     if (dragForce === null) return;
@@ -877,7 +896,12 @@ function applyDrag(): void {
         // domain's own (`GRID` — metres of arclength, or `T_GRID` seconds), and the winning value
         // is already in the store's unit: `− startU` is the whole write path.
         const uAnchor = dragStartU + sAnchor;
-        const targets = sTargets({ exclude: dragMemberSet, playhead: true, trackEnd: true });
+        const targets = sTargets({
+            exclude: dragMemberSet,
+            sameSection: dragSection,
+            playhead: true,
+            trackEnd: true,
+        });
         const startPx = uToPx(clamped, dragStartU + dragS0); // gesture-start landmark
         const r = snapAxis(active, uToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
             pxToU(clamped, px), startPx);
@@ -919,8 +943,19 @@ function applyDrag(): void {
         dsRaw,
     );
     if (ds !== dsRaw) snapX = null;
+    // the station refusal, applied to the BLOCK: `setForcePoint` refuses a taken station per key,
+    // which would tear a multi-drag apart (one member holding while the rest move breaks the
+    // offsets-preserved-exactly law). So the whole step is tested first and the block holds at the
+    // last landed Δs — the tightest member stops the block, exactly as the rigid clamp does. A
+    // single-member drag degenerates to the same thing: its one member IS the tightest.
+    const landed = dragMembers.every(
+        (m) => !stationTaken(ecs, m.section, clamp(m.s0 + ds, 0, m.len), m.id),
+    );
+    if (landed) dragLastDs = ds;
+    else snapX = null; // the block is against an occupied slot, not on a landmark
+    const dsWrite = landed ? ds : dragLastDs;
     for (const m of dragMembers)
-        setForcePoint(ecs, m.id, clamp(m.s0 + ds, 0, m.len), m.g0 + dg);
+        setForcePoint(ecs, m.id, clamp(m.s0 + dsWrite, 0, m.len), m.g0 + dg);
 }
 // double-press detection for the diamond summon: a keyframe drag captures the pointer on
 // pointerdown, which retargets the compatibility `dblclick` off the diamond (onto the canvas),
@@ -958,7 +993,14 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     // the drag set: every selected member's start s/g + its own extent (size-1 for a single drag).
     const set = editor.forces.ids;
     const members = set.size > 1 ? forcePts.filter((fp) => set.has(fp.id)) : [p];
-    dragMembers = members.map((fp) => ({ id: fp.id, s0: fp.s, g0: fp.g, len: fp.len }));
+    dragMembers = members.map((fp) => ({
+        id: fp.id,
+        s0: fp.s,
+        g0: fp.g,
+        len: fp.len,
+        section: fp.section,
+    }));
+    dragLastDs = 0;
     dragMemberSet = new Set(dragMembers.map((m) => m.id));
     const rect = canvas.getBoundingClientRect();
     dragCx = e.clientX - rect.left;
@@ -967,6 +1009,7 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     dragS0 = p.s; // the anchor's start s/g — each axis's gesture-start magnet
     dragG0 = p.g;
     dragStartU = p.startU; // the anchor's section is fixed while its s is dragged inside it
+    dragSection = p.section;
     dragLen = p.len;
     // the grab origin: the cursor's axis coordinate read through the SAME chart clamp `applyDrag`
     // resolves against, so returning to the grab pixel subtracts one value from itself exactly —

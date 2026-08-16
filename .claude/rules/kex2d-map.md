@@ -418,7 +418,12 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   the default flow stores no tangents (`exitHeading` still resolves the append/reflect seed against
   an explicit tip's out-vector). Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
-  `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. Where a keyframe lands on the
+  `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. `stationTaken` is the
+  one-property-one-station guard `setForcePoint` reads (`editor-ui.md` Keyframe conventions):
+  section-scoped, exact at the stored f32 width, self-excluding; a taken station drops the `s`
+  write and keeps the `g` write, so a drag skips the occupied slot instead of stacking on it. The
+  restore writers (`spawnForce`/`restoreForcePoint`) bypass it, so an already-coincident pair
+  round-trips undo byte-identical. Where a keyframe lands on the
   baked track: `forceSample` (a stored native-axis `s` → flat sample index + fraction, walked over
   the bake's own tables within the section's published range — per-edge `out.ds` on Distance, the
   per-sample march clock `out.t` on Time; the ds-convention law's newest consumer, so a zero-length

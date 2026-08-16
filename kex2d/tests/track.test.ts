@@ -57,6 +57,8 @@ import {
     sections,
     sectionSolvable,
     sectionSpans,
+    spawnForce,
+    stationTaken,
     splitForce,
     seedTangent,
     setForceEase,
@@ -601,6 +603,87 @@ describe("BakeSystem", () => {
         createForcePoint(state, sec, 5, 2);
         state.step(0);
         expect(out.fN[0]).not.toBe(999); // a new point → re-baked
+    });
+
+    // one property, one station — the invariant AE/Premiere/Unity all hold, and the one
+    // `chartCreate`'s snap pool already read ("an occupied s is degenerate") while the write path
+    // let a drag land right on top. Two keys at one station span a zero-width segment that
+    // `profile.segment` resolves as a vertical step, and their diamonds draw at one point so only
+    // the later-painted one is clickable.
+    describe("one station, one keyframe", () => {
+        /** a force section carrying keys at the given stations. */
+        function forceTrack(stations: readonly number[]): {
+            state: State;
+            sec: number;
+            ids: number[];
+        } {
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            const sec = createSection(state, 0, SectionKind.Force, 20);
+            const ids = stations.map((s) => createForcePoint(state, sec, s, 1));
+            state.step(0);
+            return { state, sec, ids };
+        }
+
+        test("stationTaken is self-excluding and exact on the value the store will hold", () => {
+            const { state, sec, ids } = forceTrack([5, 10]);
+            expect(stationTaken(state, sec, 10, ids[0])).toBe(true); // the neighbour's station
+            expect(stationTaken(state, sec, 5, ids[0])).toBe(false); // its own — never a collision
+            expect(stationTaken(state, sec, 7, ids[0])).toBe(false); // free
+            // `Force.s` is f32, so a candidate that would ROUND onto the neighbour's stored
+            // station is that station once written — the comparison runs at the stored width.
+            expect(stationTaken(state, sec, Math.fround(10) + 1e-9, ids[0])).toBe(true);
+        });
+
+        test("setForcePoint refuses a taken station and still lands the g write", () => {
+            const { state, sec, ids } = forceTrack([5, 10]);
+            setForcePoint(state, ids[0], 10, 2.5); // drag key 0 onto key 1's station
+            const rows = sectionForces(state, sec);
+            const moved = rows.find((r) => r.id === ids[0]);
+            if (!moved) throw new Error("key missing");
+            expect(moved.s).toBe(5); // s held: the slot is occupied
+            expect(moved.g).toBe(2.5); // g still landed — a diagonal drag isn't frozen by it
+            expect(new Set(rows.map((r) => r.s)).size).toBe(rows.length); // stations stay distinct
+        });
+
+        test("a drag passes THROUGH an occupied station rather than stopping at it", () => {
+            const { state, sec, ids } = forceTrack([5, 10]);
+            // the frames of one continuous drag of key 0 rightward across key 1
+            for (const s of [8, 9, 10, 11, 12]) setForcePoint(state, ids[0], s, 1);
+            const moved = sectionForces(state, sec).find((r) => r.id === ids[0]);
+            expect(moved?.s).toBe(12); // landed past it; only the s = 10 frame was refused
+        });
+
+        test("two sections may share a station — that pair is what a cut plants", () => {
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            const a = createSection(state, 0, SectionKind.Force, 20);
+            const b = createSection(state, 1, SectionKind.Force, 20);
+            const ka = createForcePoint(state, a, 20, 1); // a's tail
+            const kb = createForcePoint(state, b, 0, 1); // b's head, the same track station
+            state.step(0);
+            // section-scoped, so neither sees the other; a track-global check would refuse the
+            // document's own structural op.
+            expect(stationTaken(state, a, 20, ka)).toBe(false);
+            expect(stationTaken(state, b, 0, kb)).toBe(false);
+            setForcePoint(state, kb, 0, 3); // and the write still lands
+            expect(sectionForces(state, b).find((r) => r.id === kb)?.g).toBe(3);
+        });
+
+        test("the restore path bypasses the guard — a coincident pair round-trips undo", () => {
+            // a document that already holds a coincident pair (authored before this guard, or
+            // planted by a structural op) must restore byte-identical, not be silently repaired
+            // mid-history. `spawnForce`/`restoreForcePoint` are the restore writers.
+            const { state, sec } = forceTrack([5]);
+            spawnForce(state, sec, 999, 5, 4); // exactly on the existing key (id supplied)
+            state.step(0);
+            const rows = sectionForces(state, sec);
+            expect(rows.length).toBe(2);
+            expect(rows.filter((r) => r.s === 5).length).toBe(2);
+            expect(rows.find((r) => r.id === 999)?.g).toBe(4);
+        });
     });
 
     test("a coincident interior node orphans the trailing nodes", () => {

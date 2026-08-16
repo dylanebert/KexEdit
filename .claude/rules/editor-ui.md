@@ -652,6 +652,25 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   screen-space grabs — guarded on the *one* live-gesture flag (kex2d `editor.dragging`) so the
   rule can't go stale as gestures are added. Wheel and `F` are both closed. The 3D `app/`
   viewport faces the identical hazard.
+- **One property, one station — refuse the second, don't stack it.** Two keyframes of one property
+  at the same position is degenerate and every camp refuses it (AE, Premiere, and Unity all
+  overwrite or clamp rather than stack): the pair spans a zero-width segment the profile resolves
+  as a vertical step, and the two glyphs draw at one point so only the later-painted one is
+  clickable. **We refuse rather than overwrite** — overwriting silently destroys an authored
+  keyframe, and undo is a worse remedy than a drag that simply doesn't land there. The refusal is
+  **per-axis and non-sticky**: the position write is dropped while the value write lands, so a drag
+  crossing a neighbour slides in value, pauses on the occupied slot, and resumes past it. It never
+  becomes an ordering clamp — keys reorder freely, only the exact collision is refused. Two
+  consequences that are the same law and get missed separately: the guard lives **inside the write
+  op**, so every surface (drag, nudge, typed field) inherits it rather than each carrying its own
+  (the consent-boundary law, Menus); and the occupied station **leaves the snap pool for that
+  gesture**, since a gesture never snaps to a target it can't reach (Snapping) — a magnet pulling
+  into a landing the write refuses is the defect that made the collision the common case rather
+  than a rare one. Scope it to the property, never the surface: on a whole-track chart, keys in
+  *different* sections may share a station, and a cut plants exactly that pair at the boundary by
+  design. The restore path bypasses the guard whole — a document that already holds a coincident
+  pair round-trips undo byte-identical instead of being repaired mid-history. (kex2d
+  `track.stationTaken`, `tests/track.test.ts` "one station, one keyframe".)
 - **Arrow cursor over keyframes** (AE/Unity/Blender) — the shared law, Affordance typing. Hover
   affordance is the marker's fill change.
 - **Numeric fields are summoned at the object.** A selected keyframe's fields float in a popover

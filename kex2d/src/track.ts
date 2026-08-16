@@ -1222,12 +1222,53 @@ export function forcePointState(ecs: State, id: number): ForcePointState | undef
     };
 }
 
+/** whether another keyframe in `sectionId` already occupies the station `s` — `exceptId` being
+ *  the key asking (a key never collides with itself).
+ *
+ *  **Two keyframes of one property at one station are degenerate**, the invariant every keyframe
+ *  editor holds (AE / Premiere / Unity all refuse it): the pair spans a zero-width segment, which
+ *  `profile.segment` resolves as a vertical step in the authored profile, and the two diamonds
+ *  draw at one point so only the later-painted one is clickable. The INSERT path has always read
+ *  it this way — `Timeline.svelte`'s `chartCreate` drops force points from its snap pool because
+ *  "an occupied s is degenerate" — and this is the same rule on the WRITE path, so the drag, the
+ *  arrow nudge, and the popover's typed field inherit it by construction rather than each carrying
+ *  its own guard (`editor-ui.md`'s consent-boundary law).
+ *
+ *  **Section-scoped, never track-global.** Two keys in DIFFERENT sections may share a station: a
+ *  cut plants exactly that pair at the boundary by design and `joinNext`'s collapse is what makes
+ *  the round trip lossless, so a track-global check would refuse the document's own structural op.
+ *
+ *  Equality is exact, on the value as the store will hold it (`Force.s` is `sparse(f32)`, so the
+ *  candidate is compared at f32 — an `s` that would round onto a neighbour's stored station IS
+ *  that station once written). That is what "the same station" means, and it is the reachable
+ *  collision rather than a sub-ulp coincidence: `S_GRID`/`T_GRID` quantize a snapped drag onto the
+ *  same grid its neighbours already sit on. A continuous (Ctrl-bypassed) drag can still park a key
+ *  arbitrarily close to a neighbour without landing on it — near-coincidence is legal, distinct
+ *  under a fine drag, and not what this refuses. */
+export function stationTaken(ecs: State, sectionId: number, s: number, exceptId: number): boolean {
+    const want = Math.fround(s);
+    for (const row of sectionForces(ecs, sectionId))
+        if (row.id !== exceptId && Math.fround(row.s) === want) return true;
+    return false;
+}
+
 /** write a force point's `s`/`g` (live drag preview + gesture restore). the position
- *  writer only — easing/handles are untouched (a position drag leaves them). */
+ *  writer only — easing/handles are untouched (a position drag leaves them).
+ *
+ *  A station another key in this section already holds is REFUSED ({@link stationTaken}): the key
+ *  keeps its current `s` and the `g` write still lands, so a drag crossing a neighbour slides in g
+ *  while s pauses on the occupied slot and resumes past it — the drag passes through naturally
+ *  instead of stacking. The refusal is per-axis deliberately; refusing the whole write would
+ *  freeze a diagonal drag against a neighbour it isn't trying to land on.
+ *
+ *  This is the live-authoring writer only. `restoreForcePoint`/`spawnForce` bypass it on purpose:
+ *  a snapshot restore must be byte-identical, and a document that already holds a coincident pair
+ *  (authored before this guard, or planted by a structural op) has to round-trip through undo
+ *  unchanged rather than being silently repaired mid-history. */
 export function setForcePoint(ecs: State, id: number, s: number, g: number): void {
     const eid = forceAt(ecs, id);
     if (eid === null) return;
-    Force.s.set(eid, s);
+    if (!stationTaken(ecs, Force.section.get(eid), s, id)) Force.s.set(eid, s);
     Force.g.set(eid, g);
 }
 
