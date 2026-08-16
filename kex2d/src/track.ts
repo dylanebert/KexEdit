@@ -304,17 +304,32 @@ export const V0 = 10;
  *  is never zero/negative (which would make a level track take infinite time). */
 const MIN_V0 = 0.1;
 
-/** the nominal sampling step (s) every force section bakes at in the `Time` domain.
- *  derived, not tuned: `ds = v·dt`, so at the DEFAULT entry speed `V0` a time
- *  section samples at the same spatial density a distance section does at `DS_NOMINAL`
- *  (`dt = ds/v`).
+/** the nominal step a force section bakes at, in `domain`'s own unit: the track's own
+ *  `trackDs` quantum for `Distance`, its time twin `trackDs / V0` for `Time` — a time march's
+ *  nominal is never the track's meters quantum (`trackDs` is a distance scalar, not a step in
+ *  seconds). derived, not tuned: `ds = v·dt`, so at the DEFAULT entry speed `V0` a time section
+ *  samples at the same spatial density a distance section does at the same `trackDs`.
  *
- *  it is deliberately derived from the `V0` **constant**, not from the track's authored
- *  `Track.v0`, matching `DS_NOMINAL`'s own constancy: an authored-v0-dependent quantum
- *  would make a section's edge count move whenever v0 is scrubbed. Accepted cost: a time
- *  section's realized SPATIAL density scales with the ride's actual speed, so a fast
- *  stretch samples coarser than `DS_NOMINAL` and a slow one finer. */
-export const DT_NOMINAL = DS_NOMINAL / V0;
+ *  **Both branches read the ONE authored `trackDs`**, so the two domains' quanta are a single
+ *  value with one derivation between them: a non-default `Track.ds` moves both or neither. A
+ *  Time nominal pinned to `DS_NOMINAL` instead desynced the domains the moment `Track.ds` left
+ *  its default (`kex2d-correctness-fixes`).
+ *
+ *  What it is deliberately NOT derived from is the track's authored `Track.v0`, matching
+ *  `DS_NOMINAL`'s own constancy: an authored-v0-dependent quantum would make a section's edge
+ *  count move whenever v0 is scrubbed. Accepted cost: a time section's realized SPATIAL density
+ *  scales with the ride's actual speed, so a fast stretch samples coarser than the nominal and a
+ *  slow one finer.
+ *
+ *  geo is position-authored in either domain, so its callers pass `trackDs` straight through
+ *  without this. */
+export function forceNominal(domain: Domain, trackDs: number): number {
+    return domain === Domain.Time ? trackDs / V0 : trackDs;
+}
+
+/** the nominal sampling step (s) a force section bakes at in the `Time` domain at the DEFAULT
+ *  `Track.ds` — {@link forceNominal}'s own reading there, never a second derivation beside it. */
+export const DT_NOMINAL = forceNominal(Domain.Time, DS_NOMINAL);
 
 /** how far `extend` lays the next node past the chain end, along the last edge's
  *  direction. it's a starting point you then drag, not a fixed length. */
@@ -2409,15 +2424,6 @@ export function geoNodes(ecs: State, sectionId: number): Node[] {
  *  bakes at. the substrate places them rigidly at the running chain entry. */
 function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
     return { kind: "geo", nodes: geoNodes(ecs, sectionId), ds };
-}
-
-/** the nominal step a force section bakes at, in the track's active
- *  domain unit: the track-nominal `trackDs` for `Distance`, `DT_NOMINAL` for `Time` — a time
- *  march's nominal is never the track's meters quantum (`trackDs` is a distance scalar, not a
- *  step in seconds). geo is position-authored in either domain, so its callers pass `trackDs`
- *  straight through without this. */
-function forceNominal(domain: Domain, trackDs: number): number {
-    return domain === Domain.Time ? DT_NOMINAL : trackDs;
 }
 
 /** a force section's authored points gathered into the dense per-edge F_n(σ) profile over its

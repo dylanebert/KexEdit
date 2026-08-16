@@ -229,7 +229,8 @@ export function pickable(ecs: State, target: Domain): boolean {
  * A round trip (Meters → Seconds → Meters) is **never** bit-identical, and how close it lands is a
  * property of the ride, not of this op. The conversion itself is an exact inverse — both directions
  * interpolate the same piecewise-linear table — but flipping re-bakes each force section under the
- * other march (`Δt = DT_NOMINAL` where the distance bake used `Δs = DS_NOMINAL`), so the flip back
+ * other march (`Δt = trackDs/V0` where the distance bake used `Δs = trackDs` — the two readings of
+ * the one `track.forceNominal` seam), so the flip back
  * converts through a table that moved. The drift is exactly the two marches' disagreement at equal
  * time: sub-quantum on a gentle ride (measured 0.12 m over a 40 m dive-and-recover section), but
  * tens of percent on a ride whose θ/v system is sensitive — a sustained multi-g pull. A stall is

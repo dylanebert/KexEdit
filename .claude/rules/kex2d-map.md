@@ -461,8 +461,14 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `bakeLive` (whether the current bake IS that state) — what anything treating `sectionInfo` as
   truth checks first, since a never-run, invalidated (`hash === ""`), or two-node-floor-skipped
   bake leaves it describing a shape that is no longer on screen.
-  **There is no per-section baking step.** Every section bakes at the track-nominal quantum
-  (`DS_NOMINAL`, or `DT_NOMINAL` in the `Time` domain) — removed at `kex2d-correctness-fixes`
+  **There is no per-section baking step.** Every section bakes at the track-nominal quantum —
+  `trackDs` on `Distance`, its time twin `trackDs / V0` on `Time`, both read off the ONE
+  `forceNominal(domain, trackDs)` seam (`DT_NOMINAL` is that seam's own reading at the default
+  `Track.ds`, not a second derivation beside it, and `pin.ts`'s `sectionSpec` calls the same
+  function rather than re-forking the domain). Pairing the two domains on one authored value is
+  `kex2d-correctness-fixes`: a Time nominal pinned to the `DS_NOMINAL` module constant desynced
+  the domains' sampling densities the moment `Track.ds` left its default. The per-section step
+  was removed at `kex2d-correctness-fixes`
   stage 5, after the stage-2 conforming rule made it redundant: a solved section's step was
   always `resolveStep(length, nominal)` by construction, so the nominal replay closes a solve's
   pinned exit **bit-identically** to the old stored-step replay (`tests/track.test.ts`, still

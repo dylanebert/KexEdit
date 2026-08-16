@@ -39,13 +39,13 @@ import {
 } from "./history";
 import type { OptimizeOpts, OptimizeResult } from "./optimize";
 import { type OptimizeRunOpts, runOptimize } from "./optimize-async";
-import { Domain, type Entry, evalForce } from "./section";
+import { type Domain, type Entry, evalForce } from "./section";
 import { forceProfile, type ForcePoint, resolveStep, type Step } from "./profile";
 import {
     authoredHash,
     bakeLive,
-    DT_NOMINAL,
     forceEase,
+    forceNominal,
     forceTangent,
     Section,
     sectionAt,
@@ -71,7 +71,7 @@ function sectionSpec(ecs: State, sectionId: number): SectionSpec | null {
     const info = sectionInfo.get(sectionId);
     if (!info) return null;
     const domain = trackDomain(ecs);
-    const nominal = domain === Domain.Time ? DT_NOMINAL : trackDs(ecs);
+    const nominal = forceNominal(domain, trackDs(ecs));
     const length = Section.length.get(eid);
     // the pairing seam: conform once here so every downstream use of this spec's `step`
     // (this module's own `forceProfile`/`evalForce` call below, and `optimize.ts`'s kernel,

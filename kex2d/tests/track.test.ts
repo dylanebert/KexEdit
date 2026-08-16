@@ -22,6 +22,7 @@ import {
     forceBake,
     forceEase,
     forceMarkers,
+    forceNominal,
     forcePointState,
     forceSample,
     type ForceTangent,
@@ -2156,6 +2157,45 @@ describe("Track.domain (document layer)", () => {
         expect(expected).toBeCloseTo(DS_NOMINAL, 10);
         for (let i = 0; i < count - 1; i++) expect(out.ds[i]).toBeCloseTo(expected, 5);
         expect(count - 1).toBe(Math.round(duration / DT_NOMINAL)); // edges = round(dur / Δt)
+    });
+
+    // `kex2d-correctness-fixes` — the Time nominal used to be the module constant `DT_NOMINAL`
+    // while Distance's was the per-track `Track.ds` knob, so a non-default `Track.ds` moved one
+    // domain's sampling density and left the other pinned. Nothing authors `Track.ds` today, so
+    // nothing was observable; these two arms are what make the pairing checkable at all.
+    test("forceNominal derives BOTH domains' quanta from the one authored trackDs", () => {
+        for (const ds of [DS_NOMINAL, 0.25, 1, 2.5]) {
+            expect(forceNominal(Domain.Distance, ds)).toBe(ds);
+            // the time twin of the SAME quantum: `ds = v·dt` at the V0 constant
+            expect(forceNominal(Domain.Time, ds)).toBeCloseTo(ds / V0, 12);
+        }
+        expect(forceNominal(Domain.Time, DS_NOMINAL)).toBe(DT_NOMINAL);
+    });
+
+    test("a non-default Track.ds moves the Time march's step, not just the Distance one", () => {
+        // the pairing's observable: a flat 1g profile over a level track holds v at the entry
+        // speed, so every realized Time edge is exactly `v·Δt = V0·(trackDs/V0) = trackDs` — a
+        // Time-domain section at `trackDs` samples at the same SPATIAL density a Distance one
+        // does at the same `trackDs`, which is the whole claim `ds = v·dt` makes. Under the old
+        // module-constant nominal the edges stayed at `DS_NOMINAL` and the count at
+        // `round(duration / DT_NOMINAL)` no matter what `Track.ds` said.
+        const ds = 1; // ×2 the default, and off `DS_NOMINAL`'s grid in the derived Δt
+        const duration = 2; // seconds
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        Track.ds.set(eid, ds);
+        setTrackDomain(state, Domain.Time);
+        const sec = createSection(state, 0, SectionKind.Force, duration);
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, duration, 1);
+        state.step(0);
+
+        const out = bakeOut.get(eid);
+        const count = Track.count.get(eid);
+        if (!out) throw new Error("bakeOut missing");
+        expect(count - 1).toBe(Math.round(duration / (ds / V0)));
+        for (let i = 0; i < count - 1; i++) expect(out.ds[i]).toBeCloseTo(ds, 5);
     });
 
     test("a stalled Time-domain section bakes finite force and seeds finite keyframes", () => {
