@@ -87,8 +87,8 @@ shortens):
 
 ## Snapping
 
-The AE magnet model. kex2d stage E (2026-07-19) is the worked example; any later editor surface
-copies this shape:
+The AE magnet model. kex2d's timeline snapping (2026-07-19) is the worked example; any later editor
+surface copies this shape:
 
 - Persistent toggle, default **on**; `S` toggles; holding Ctrl/Cmd inverts while held (the
   AE/Figma temporary bypass — XOR with the toggle, not a plain disable).

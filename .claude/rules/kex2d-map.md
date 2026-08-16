@@ -52,7 +52,7 @@ entry before evaluating. `place(entry, localize(entry, p)) === p`.
 f32 throughout — these atoms ARE the realized-track display path, so they use the display recovery
 (`bake.forces`), not the f64 solver atoms (`force.ts`).
 
-**Wiring status (stage D):** `track.BakeSystem` walks `sections()` (sorted by `Section.order`),
+**Wiring:** `track.BakeSystem` walks `sections()` (sorted by `Section.order`),
 builds a per-section payload (geo: its section-local nodes; force: `profile.forceProfile` over its
 points + extent), and threads them through ONE `chain(START, payloads)` call. It writes the flat
 `samples`/`bakeOut` SoA + a per-section `sectionInfo` map (entry, sample range, arclength, orphan
