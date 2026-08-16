@@ -8,7 +8,10 @@ paths:
 
 Model internals + per-file map for `kex2d/`: the section substrate, the physics, what each module
 owns, its per-module hazards, the test tiers + labs, and the external references. The behavioral
-contract (authoring models, authoring API, editing model) is `kex2d/AGENTS.md` — read it first.
+contract (authoring models, authoring API, editing model) is `kex2d/AGENTS.md` — read it first. The
+  entry-doc chain (`AGENTS.md` → `kex2d/AGENTS.md`) sits under the 32768 B Codex project-doc budget,
+  checked by hand with `wc -c` at the point of edit; past it Codex silently drops the deeper file and
+  the kex2d contract vanishes, so fold additions into path-scoped rules here.
 
 ## The section substrate
 
@@ -558,7 +561,9 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `hoverForce` is the force-marker twin, written by the same sweep and mutually exclusive with both.
   `hoverKnob` (`{eid, side}` or null) is the tangent-knob twin, live only in tangent edit and
   written FIRST in the sweep — a summoned knob over its own node reads as the knob, the priority a
-  click takes. All four land through one seam, `editor.writeHover`/`clearHover` — a caller can't
+  click takes. A summoned tangent handle wins over a keyframe diamond beneath it by declared priority,
+  not by SVG group order; a reorder of the paint groups (`fmarkers` before `thandles`) must not
+  change that. All four land through one seam, `editor.writeHover`/`clearHover` — a caller can't
   write three of the four fields and miss the fourth — and clear together at three sites: pointer
   leave, remount teardown, and `beginDrag` for the whole of any gesture.
   The invoked-solve gate lives here too: `converting` (`{phase, keys, probes}` or
