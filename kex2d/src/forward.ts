@@ -17,6 +17,15 @@ export const V_FLOOR = 0.01;
  * advance one sample by Δs along arclength, reading from `src` and writing to
  * `dst`. force-driven via `fN` (units of g). semi-implicit: angle updates
  * first, position uses midpoint angle, velocity from energy delta.
+ *
+ * `vSqOverride`, when given, REPLACES the naturally-conserved `v²` for this
+ * edge — the per-edge v²-modification channel an authored speed control (or a
+ * future friction/drag term, `kex2d-map.md`'s conservative-energy law) rides.
+ * `undefined` (the default) takes the natural value, so an uncontrolled march
+ * is byte-identical to before the channel existed. Geometry (θ, x, y) is
+ * unaffected — only the velocity this edge lands on is substituted, mirroring
+ * the original core's `update_velocity` folding a known energy term into
+ * exactly this line (`kexedit/packages/core/src/sim/physics.rs:49`).
  */
 export function step(
     posX: Float32Array,
@@ -29,6 +38,7 @@ export function step(
     ds: number,
     g: number = G,
     vMin: number = V_FLOOR,
+    vSqOverride?: number,
 ): void {
     const px = posX[src];
     const py = posY[src];
@@ -42,7 +52,7 @@ export function step(
     const xNext = px + ds * Math.cos(midT);
     const yNext = py + ds * Math.sin(midT);
     const dy = yNext - py;
-    const vSq = vs * vs - 2 * g * dy;
+    const vSq = vSqOverride !== undefined ? vSqOverride : vs * vs - 2 * g * dy;
     const vNext = Math.sqrt(Math.max(vSq, 0));
 
     posX[dst] = xNext;
@@ -54,7 +64,10 @@ export function step(
 /**
  * walk `count` samples along arclength. index 0 is assumed pre-set; writes
  * indices `1 .. count−1` in place. F_n is sampled at `σ_i = i · ds`
- * (source convention, driving step i → i+1).
+ * (source convention, driving step i → i+1). `vSqOverride(i)`, when it
+ * returns a number, substitutes edge `i`'s natural v² (`step`'s channel,
+ * above) — `undefined` per-edge or omitted entirely leaves that edge/march
+ * byte-identical to the unmodified integrator.
  */
 export function integrate(
     posX: Float32Array,
@@ -66,8 +79,9 @@ export function integrate(
     fNCurve: (sigma: number) => number,
     g: number = G,
     vMin: number = V_FLOOR,
+    vSqOverride?: (i: number) => number | undefined,
 ): void {
     for (let i = 0; i < count - 1; i++) {
-        step(posX, posY, theta, v, i, i + 1, fNCurve(i * ds), ds, g, vMin);
+        step(posX, posY, theta, v, i, i + 1, fNCurve(i * ds), ds, g, vMin, vSqOverride?.(i));
     }
 }

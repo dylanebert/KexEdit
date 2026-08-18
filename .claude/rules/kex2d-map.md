@@ -122,8 +122,17 @@ dependent with the `y` row, it would make a well-posed problem read as rank-defi
 The identity survives *authored* energy input. A launch or brake at a fixed station adds a known
 term, and `v_exit` stays a function of `y_exit` plus constants no DOF reaches. What breaks it is
 **path-dependent dissipation** — friction, drag, or a control acting over a time window — where
-the loss integrates `F_n` along the path and the DOF finally couples to the energy. Until that
-exists, a speed row is chrome for a state that doesn't exist.
+the loss integrates `F_n` along the path and the DOF finally couples to the energy.
+
+**The authored-control exception, landed** (`kex2d-speed-substrate` stage 1): a per-section
+`speed: { target }` control prescribes `v²` directly as a linear ramp on the span's own domain
+coordinate (arclength for geo/Distance-force, time for Time-force) from entry `v²` to `target²` —
+the per-edge v²-modification channel threaded through `forward.step`/`integrate` and
+`bake.forces` (`section.ts`'s `evalGeo`/`evalForce`). This is the launch/brake case above, not
+path-dependent dissipation: the ramp is a known function of the domain coordinate alone, not of
+the path `F_n` sweeps, so it doesn't couple a solver DOF to the energy and doesn't unlock the pin
+fourth row — a pinned station's speed is a stamped constant either way. Friction/drag remains the
+one thing that actually breaks `v = f(y)`, and stays out (`kex2d-speed-substrate`'s Out of scope).
 
 **The one breach today is the velocity clamp.** `step` and `forces` both take
 `v = sqrt(max(v², 0))`, so a march that runs out of energy has energy *injected* at the clamp and
