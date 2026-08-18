@@ -163,15 +163,17 @@ export function localize(
 
 /** the speed-control ramp for a UNIFORM-step domain coordinate (force
  *  sections, both `Distance` and `Time` — each edge advances the same `du`,
- *  so the fraction is the edge count itself). `override(edges − 1)` divides
+ *  so the fraction is the edge count itself). `override(edges − 1, …)` divides
  *  `edges` by itself, landing exactly `1` and so exactly `target²` at exit
  *  (IEEE754 division of a value by itself is exact) — the exit-target oracle
- *  reads through this. */
+ *  reads through this. Takes (and ignores) the channel's `natural` argument:
+ *  a prescribed ramp overrides unconditionally, it doesn't compose with the
+ *  conserved value the way an additive consumer (friction) would. */
 function uniformSpeedRamp(
     vSq0: number,
     target: number,
     edges: number,
-): ((i: number) => number) | undefined {
+): ((i: number, natural: number) => number) | undefined {
     if (edges <= 0) return undefined;
     const vSq1 = target * target;
     return (i: number) => vSq0 + (vSq1 - vSq0) * ((i + 1) / edges);
@@ -179,13 +181,14 @@ function uniformSpeedRamp(
 
 /** the speed-control ramp for geo's NON-uniform domain coordinate (actual
  *  cumulative arclength — adaptive sampling spaces edges unevenly). same
- *  exactness at exit: `cum[edges] / total` is `total / total`, exactly `1`. */
+ *  exactness at exit: `cum[edges] / total` is `total / total`, exactly `1`.
+ *  Ignores `natural` for the same reason as `uniformSpeedRamp`, above. */
 function arclengthSpeedRamp(
     vSq0: number,
     target: number,
     dsArr: Float32Array,
     edges: number,
-): ((i: number) => number) | undefined {
+): ((i: number, natural: number) => number) | undefined {
     if (edges <= 0) return undefined;
     const cum = new Float64Array(edges + 1);
     for (let k = 0; k < edges; k++) cum[k + 1] = cum[k] + dsArr[k];
@@ -330,7 +333,19 @@ export function evalForce(
         for (let i = 0; i < edges; i++) {
             const dsi = v[i] * ds; // ds_i = v_i · Δt
             dsArr[i] = dsi;
-            stepForward(posX, posY, theta, v, i, i + 1, fN[i], dsi, G, V_FLOOR, vSqOverride?.(i));
+            stepForward(
+                posX,
+                posY,
+                theta,
+                v,
+                i,
+                i + 1,
+                fN[i],
+                dsi,
+                G,
+                V_FLOOR,
+                vSqOverride && ((natural) => vSqOverride(i, natural)),
+            );
         }
     } else {
         integrate(

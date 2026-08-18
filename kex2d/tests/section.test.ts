@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { replay } from "../src/bake";
+import { forces, replay } from "../src/bake";
 import {
     chain,
     Domain,
@@ -441,6 +441,50 @@ describe("chain", () => {
         const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections, maxSamples);
         expect(c.ranges[0].end).toBe(edges);
         expect(c.results[0].truncated).toBe(false);
+    });
+});
+
+describe("the v²-modification channel — additive-consumer capability", () => {
+    // the Locked decision names this per-edge channel as the seam a future
+    // friction/drag consumer rides, and friction is ADDITIVE and path-dependent
+    // (`v²_new = v²_natural − loss`), not a bare replace. `natural − k` (a
+    // constant per-edge loss, a pure-substitution stand-in — no friction
+    // semantics landed here) pins that the callback receives the naturally-
+    // conserved v², not just an edge index: a REPLACE-only signature can't
+    // express this consumer at all.
+    test("an additive override (natural − k) lands natural − k, not a bare replace", () => {
+        const N = 6;
+        const posX = new Float32Array(N);
+        const posY = new Float32Array(N); // flat: Δy = 0 every edge, so natural v² = v[i]²
+        for (let i = 0; i < N; i++) posX[i] = i * 0.5;
+        const theta = new Float32Array(N);
+        const v = new Float32Array(N);
+        const fN = new Float32Array(N - 1);
+        const dsArr = new Float32Array(N - 1).fill(0.5);
+        const v0 = 10;
+        const k = 3;
+
+        forces(
+            posX,
+            posY,
+            theta,
+            v,
+            fN,
+            dsArr,
+            0,
+            N - 1,
+            v0,
+            0,
+            G,
+            undefined,
+            (_i, natural) => natural - k,
+        );
+
+        let expected = v0 * v0;
+        for (let i = 0; i < N - 1; i++) {
+            expected -= k;
+            expect(v[i + 1] * v[i + 1]).toBeCloseTo(expected, 4);
+        }
     });
 });
 
