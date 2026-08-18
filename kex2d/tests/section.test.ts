@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { replay } from "../src/bake";
+import { forces, replay } from "../src/bake";
 import {
     chain,
     Domain,
@@ -441,5 +441,155 @@ describe("chain", () => {
         const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections, maxSamples);
         expect(c.ranges[0].end).toBe(edges);
         expect(c.results[0].truncated).toBe(false);
+    });
+});
+
+describe("the v²-modification channel — additive-consumer capability", () => {
+    // the Locked decision names this per-edge channel as the seam a future
+    // friction/drag consumer rides, and friction is ADDITIVE and path-dependent
+    // (`v²_new = v²_natural − loss`), not a bare replace. `natural − k` (a
+    // constant per-edge loss, a pure-substitution stand-in — no friction
+    // semantics landed here) pins that the callback receives the naturally-
+    // conserved v², not just an edge index: a REPLACE-only signature can't
+    // express this consumer at all.
+    test("an additive override (natural − k) lands natural − k, not a bare replace", () => {
+        const N = 6;
+        const posX = new Float32Array(N);
+        const posY = new Float32Array(N); // flat: Δy = 0 every edge, so natural v² = v[i]²
+        for (let i = 0; i < N; i++) posX[i] = i * 0.5;
+        const theta = new Float32Array(N);
+        const v = new Float32Array(N);
+        const fN = new Float32Array(N - 1);
+        const dsArr = new Float32Array(N - 1).fill(0.5);
+        const v0 = 10;
+        const k = 3;
+
+        forces(
+            posX,
+            posY,
+            theta,
+            v,
+            fN,
+            dsArr,
+            0,
+            N - 1,
+            v0,
+            0,
+            G,
+            undefined,
+            (_i, natural) => natural - k,
+        );
+
+        let expected = v0 * v0;
+        for (let i = 0; i < N - 1; i++) {
+            expected -= k;
+            expect(v[i + 1] * v[i + 1]).toBeCloseTo(expected, 4);
+        }
+    });
+});
+
+describe("speed control", () => {
+    // `kex2d-speed-substrate` stage 1: an authored `speed: { target }` prescribes
+    // the exit v² as a linear ramp (entry v² → target²) over the section's own
+    // domain coordinate — arclength for geo/Distance-force, time for
+    // Time-force. The span is the section, so exit v lands on the target
+    // exactly (f32) regardless of kind.
+
+    test("exit v equals the target exactly (f32) on a geo section", () => {
+        const local = withThetas([
+            { x: 0, y: 0 },
+            { x: 20, y: 3 },
+            { x: 44, y: 0 },
+        ]);
+        const r = evalGeo({ x: 0, y: 0, theta: 0, v: 10 }, local, 0.5, undefined, { target: 20 });
+        expect(r.exit.v).toBe(20);
+    });
+
+    test("exit v equals the target exactly (f32) on a Distance-force section", () => {
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 12 };
+        const edges = 30;
+        const ds = 0.5;
+        const fN = Float32Array.from({ length: edges }, (_, i) => 1 + 0.3 * Math.sin(i / 5));
+        const r = evalForce(entry, fN, { edges, ds }, Domain.Distance, { target: 18 });
+        expect(r.exit.v).toBe(18);
+    });
+
+    test("exit v equals the target exactly (f32) on a Time-force section", () => {
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 12 };
+        const edges = 40;
+        const dt = 0.02;
+        const fN = new Float32Array(edges).fill(1.1);
+        const r = evalForce(entry, fN, { edges, ds: dt }, Domain.Time, { target: 16 });
+        expect(r.exit.v).toBe(16);
+    });
+
+    test("downstream sections resume conservation from the target", () => {
+        // mirrors "energy is conserved across section boundaries" — a controlled
+        // section followed by a plain hill: the hill's exit must telescope from
+        // the CONTROL's target, not from the natural (uncontrolled) exit v.
+        const lead: Node[] = withThetas([
+            { x: 0, y: 0 },
+            { x: 24, y: 0 },
+        ]);
+        const hill: Node[] = withThetas([
+            { x: 0, y: 0 },
+            { x: 20, y: 1 },
+            { x: 44, y: 2 },
+        ]);
+        const sections: Section[] = [
+            { kind: "geo", nodes: lead, ds: 0.5, speed: { target: 20 } },
+            { kind: "geo", nodes: hill, ds: 0.5 },
+        ];
+        const c = chain({ x: 0, y: 0, theta: 0, v: 10 }, sections);
+        const last = c.count - 1;
+        // the lead's exit is exactly the target (the shared boundary sample).
+        expect(c.exits[0].v).toBe(20);
+        const expected = Math.sqrt(Math.max(0, 20 * 20 - 2 * G * (c.posY[last] - c.exits[0].y)));
+        expect(c.v[last]).toBeCloseTo(expected, 3);
+    });
+
+    test("a control on a stalled Time-domain span un-stalls it", () => {
+        // entry v = 0 (already stalled): without a control every subsequent edge
+        // stays frozen forever (ds_i = v_i·Δt = 0·Δt = 0). the control's ramp
+        // lands a nonzero v after edge 0 (a fraction of target², not the full
+        // target — the ramp spans the WHOLE section), which un-freezes ds from
+        // edge 1 onward, and the exit still lands on the target exactly.
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 0 };
+        const edges = 10;
+        const dt = 0.05;
+        const fN = new Float32Array(edges).fill(1);
+        const r = evalForce(entry, fN, { edges, ds: dt }, Domain.Time, { target: 15 });
+        expect(r.ds[0]).toBe(0); // edge 0 still frozen — its ds reads the stalled entry v
+        expect(r.ds[1]).toBeGreaterThan(0); // un-stalled from edge 1 on
+        expect(r.exit.v).toBe(15);
+    });
+
+    test("control-absent byte-identity: omitting `speed` matches the pre-substrate SoA", () => {
+        // frozen from the pre-speed-control kernel (`kex2d-speed-substrate` stage
+        // 1's gate floor commit) — proves the additive-substrate law: an
+        // unauthored section's flat SoA is untouched by the channel's existence.
+        const geo: Node[] = withThetas([
+            { x: 0, y: 0 },
+            { x: 20, y: 3 },
+            { x: 44, y: 0 },
+        ]);
+        const force = Float32Array.from({ length: 30 }, () => 1.2);
+        const sections: Section[] = [
+            { kind: "geo", nodes: geo, ds: 0.5 },
+            { kind: "force", fN: force, step: { edges: force.length, ds: 0.5 } },
+        ];
+        const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections);
+        const golden = require("./fixtures/speed-absent-golden.json") as {
+            posX: number[];
+            posY: number[];
+            theta: number[];
+            v: number[];
+        };
+        for (let i = 0; i < c.count; i++) {
+            expect(c.posX[i]).toBe(golden.posX[i]);
+            expect(c.posY[i]).toBe(golden.posY[i]);
+            expect(c.theta[i]).toBe(golden.theta[i]);
+            expect(c.v[i]).toBe(golden.v[i]);
+        }
     });
 });

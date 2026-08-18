@@ -45,6 +45,16 @@ function wrap(a: number): number {
  *
  * writes theta[offset..offset+M], v[offset..offset+M], fN[offset..offset+M−1]
  * given posX/posY[offset..offset+M] already laid out and a per-edge `dsArr`.
+ *
+ * `vSqOverride(k, natural)`, when it returns a number for local edge `k`,
+ * REPLACES the naturally-conserved v² this edge lands on — `forward.step`'s
+ * channel, mirrored here because the recovery recomputes v from scratch
+ * rather than trusting a march's own (an authored control must land the same
+ * exit v whether the caller re-derives it from geometry or reads the march).
+ * `natural` is that edge's unmodified conserved value, handed through so an
+ * ADDITIVE consumer (friction: `natural − loss`) doesn't have to re-derive it.
+ * Omitted or returning `undefined` per-edge leaves that edge byte-identical to
+ * the unmodified recovery.
  */
 export function forces(
     posX: Float32Array,
@@ -59,6 +69,7 @@ export function forces(
     theta0 = 0,
     g: number = G,
     vMin: number = V_FLOOR,
+    vSqOverride?: (k: number, natural: number) => number | undefined,
 ): void {
     /** edge `k`'s chord angle, or NaN where it has no chord. */
     const chord = (k: number): number => {
@@ -107,11 +118,13 @@ export function forces(
     }
 
     // velocity from energy conservation — same form as the forward step.
+    // `vSqOverride`, when present, substitutes the natural value (the channel).
     v[offset] = v0;
     for (let k = 0; k < M; k++) {
         const i = offset + k;
-        const vSq = v[i] * v[i] - 2 * g * (posY[i + 1] - posY[i]);
-        v[i + 1] = Math.sqrt(Math.max(vSq, 0));
+        const natural = v[i] * v[i] - 2 * g * (posY[i + 1] - posY[i]);
+        const override = vSqOverride?.(k, natural);
+        v[i + 1] = Math.sqrt(Math.max(override !== undefined ? override : natural, 0));
     }
 
     for (let k = 0; k < M; k++) {
