@@ -593,3 +593,125 @@ describe("speed control", () => {
         }
     });
 });
+
+describe("energy propagation into a downstream force section", () => {
+    // The property an author meets as "resizing a section upstream doesn't reshape what follows."
+    // It is the conservative-energy law's emergent form (`kex2d-map.md`): the integrator advances
+    // `v² −= 2g·Δy` per edge, which telescopes, so exit `v` depends on the entry, the exit HEIGHT,
+    // and nothing else — not on the arclength travelled to get there. A force section's shape is a
+    // function of its entry `(y, θ, v)` and its own curve, so an upstream edit preserving all three
+    // cannot reshape it; it can only place it elsewhere.
+    //
+    // These arms are the baseline a friction/drag term must BREAK: friction's loss integrates along
+    // the path, so arm 1 is exactly the assertion that goes red when path-dependence lands.
+
+    /** the force section's samples in its own entry frame — translation-invariant, so a pure
+     *  placement change reads as congruent and a real reshape reads as moved. NOT rotation-
+     *  invariant, deliberately: force integration is not frame-invariant (gravity picks a world
+     *  frame, `kex2d-map.md` rigid-placement law), so a differing entry θ SHOULD read as moved. */
+    function shapeOf(c: ReturnType<typeof chain>, k: number): number[] {
+        const r = c.ranges[k];
+        const out: number[] = [];
+        for (let i = r.start; i <= r.end; i++)
+            out.push(c.posX[i] - c.posX[r.start], c.posY[i] - c.posY[r.start]);
+        return out;
+    }
+
+    function arclen(c: ReturnType<typeof chain>, k: number): number {
+        let acc = 0;
+        for (let i = c.ranges[k].start; i < c.ranges[k].end; i++) acc += c.ds[i];
+        return acc;
+    }
+
+    function maxDelta(a: number[], b: number[]): number {
+        let m = 0;
+        for (let i = 0; i < a.length; i++) m = Math.max(m, Math.abs(b[i] - a[i]));
+        return m;
+    }
+
+    const forceCurve = Float32Array.from({ length: 30 }, () => 1.2);
+    const forceSection: Section = {
+        kind: "force",
+        fN: forceCurve,
+        step: { edges: forceCurve.length, ds: 0.5 },
+    };
+    const entry0: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+
+    test("exit v is path-INDEPENDENT: same endpoint, longer route, same speed", () => {
+        const direct = withThetas([
+            { x: 0, y: 0 },
+            { x: 44, y: -8 },
+        ]);
+        // the detour dips rather than humps: at V0 = 10 m/s the cart carries v² = 100 m²/s², so a
+        // hump above y ≈ +5 exceeds the budget and STALLS (v² clamps at 0), which would compare two
+        // physically different rides rather than two routes to one endpoint.
+        const detour = withThetas([
+            { x: 0, y: 0 },
+            { x: 10, y: -16 },
+            { x: 34, y: -16 },
+            { x: 44, y: -8 },
+        ]);
+        const a = chain(entry0, [{ kind: "geo", nodes: direct, ds: 0.5 }, forceSection]);
+        const b = chain(entry0, [{ kind: "geo", nodes: detour, ds: 0.5 }, forceSection]);
+
+        // the control's size is derived from what it must discriminate: under the reference core's
+        // friction term (`packages/core/src/sim/physics.rs`, `G·μ·Δs` with μ~0.03) an extra Δs of 10
+        // costs ~2·G·μ·Δs ≈ 6 m²/s² of v² — order 0.2 m/s at these speeds, well outside the 1e-3
+        // tolerance below. So this pair WOULD separate once path-dependence lands, which is what
+        // makes the equality assertion meaningful rather than vacuous.
+        expect(arclen(b, 0) - arclen(a, 0)).toBeGreaterThan(10);
+        expect(b.exits[0].y).toBeCloseTo(a.exits[0].y, 4); // …to the same height
+
+        // therefore the same speed. tolerance: f32 accumulation over ~O(100) edges at v≈14 is
+        // ~sqrt(N)·eps·v ≈ 2e-5; 1e-3 sits above that and far below any physical effect.
+        expect(b.exits[0].v).toBeCloseTo(a.exits[0].v, 3);
+    });
+
+    test("a pure LENGTH change upstream places the force section without reshaping it", () => {
+        // the author's actual gesture: extend a level run. entry y, θ and v are all preserved, so
+        // the downstream march is identical and only its placement moves — which on screen is
+        // indistinguishable from "it didn't update", and is the physics being right.
+        const short = withThetas([
+            { x: 0, y: 0 },
+            { x: 44, y: 0 },
+        ]);
+        const long = withThetas([
+            { x: 0, y: 0 },
+            { x: 64, y: 0 },
+        ]);
+        const a = chain(entry0, [{ kind: "geo", nodes: short, ds: 0.5 }, forceSection]);
+        const b = chain(entry0, [{ kind: "geo", nodes: long, ds: 0.5 }, forceSection]);
+
+        expect(arclen(b, 0) - arclen(a, 0)).toBeGreaterThan(10); // control: really longer
+        expect(b.exits[0].x - a.exits[0].x).toBeGreaterThan(10); // …and really displaced
+        expect(b.exits[0].y).toBeCloseTo(a.exits[0].y, 5);
+        expect(b.exits[0].theta).toBeCloseTo(a.exits[0].theta, 5);
+        expect(b.exits[0].v).toBeCloseTo(a.exits[0].v, 5);
+
+        // congruent to f32 noise — same shape, placed elsewhere.
+        expect(maxDelta(shapeOf(a, 1), shapeOf(b, 1))).toBeLessThan(1e-3);
+    });
+
+    test("exit v IS height-dependent, and downstream reshapes when it moves", () => {
+        const shallow = withThetas([
+            { x: 0, y: 0 },
+            { x: 44, y: -8 },
+        ]);
+        const deep = withThetas([
+            { x: 0, y: 0 },
+            { x: 44, y: -20 },
+        ]);
+        const a = chain(entry0, [{ kind: "geo", nodes: shallow, ds: 0.5 }, forceSection]);
+        const b = chain(entry0, [{ kind: "geo", nodes: deep, ds: 0.5 }, forceSection]);
+
+        // the marched exit matches the closed form v² = v0² − 2g·Δy — the numerical integrator
+        // against the analytical solution, not a restatement of the per-edge update.
+        for (const c of [a, b])
+            expect(c.exits[0].v).toBeCloseTo(Math.sqrt(V0 * V0 - 2 * G * c.exits[0].y), 3);
+        expect(b.exits[0].v).toBeGreaterThan(a.exits[0].v + 3);
+
+        // a real energy change reshapes downstream: higher entry v at the same fN means a larger
+        // radius, so the arc flattens measurably in its own frame.
+        expect(maxDelta(shapeOf(a, 1), shapeOf(b, 1))).toBeGreaterThan(0.1);
+    });
+});
