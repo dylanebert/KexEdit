@@ -2,12 +2,13 @@ import { describe, expect, test } from "bun:test";
 import {
     computeExit,
     derivedTol,
-    exitTol,
+    injectionTol,
     MIN_FREE,
     type OptimizeOpts,
     solveOptimize,
 } from "../src/optimize";
 import optimizeGolden from "./fixtures/optimize-golden.json";
+import { G } from "../src/forward";
 import { Easing, type ForcePoint, forceProfile, resolveStep } from "../src/profile";
 import { Domain, type Entry, evalForce } from "../src/section";
 
@@ -86,9 +87,11 @@ describe("solveOptimize — zero-drift identity", () => {
             expect(r.iters).toBe(0);
             expect(r.residual).toBe(0);
             expect(r.angleResidual).toBe(0);
-            // the landed-energy gate (kex2d-gate-hardening 1b/6) never touches this path: same
-            // g-vector, same march, same v — exempt by construction, not by a redundant check.
-            expect(r.vSqResidual).toBe(0);
+            // the injection gate (`kex2d-friction` stage 3) never DOWNGRADES this path: same
+            // g-vector, same march, so its own injection is whatever the untouched draft
+            // already carries — reported, not gated. On this corpus it's 0 (no key touches the
+            // sqrt clamp), matching every other exact-zero field above.
+            expect(r.injection).toBe(0);
             expect(r.deltaG).toEqual(new Array(points.length).fill(0));
             expect(r.points).toEqual(points);
         });
@@ -581,7 +584,7 @@ describe("solveOptimize — golden fixture (bit identity)", () => {
         expect(r.iters).toBe(optimizeGolden.iters);
         expect(r.residual).toBe(optimizeGolden.residual);
         expect(r.angleResidual).toBe(optimizeGolden.angleResidual);
-        expect(r.vSqResidual).toBe(optimizeGolden.vSqResidual);
+        expect(r.injection).toBe(optimizeGolden.injection);
         for (let k = 0; k < r.points.length; k++) {
             expect(r.points[k].g).toBe(optimizeGolden.g[k]);
             expect(r.deltaG[k]).toBe(optimizeGolden.deltaG[k]);
@@ -589,81 +592,83 @@ describe("solveOptimize — golden fixture (bit identity)", () => {
     });
 });
 
-describe("solveOptimize — landed-energy gate (kex2d-gate-hardening 1b, exact bound stage 6)", () => {
-    // RED FIRST, by stamp perturbation (per 1a's finding: the swept corpus carries no breach —
-    // 110 drafts, 0 crossing the gate — so no draft reproduces the gate for its own reason).
-    // Before `finalize` gated the v² gap, this asserted `outcome === "diverged"` and failed with
-    // `"solved"`: the (x, y, θ) residual converges cleanly (real drift on g, no clamp involved),
-    // and nothing checked the landed v against the stamp at all. The stamp here is displaced past
-    // `exitTol(tol)` from what the energy identity produces for the SAME (x, y, θ) — a landed
-    // state disagreeing with the stamped v is exactly the failure the gate exists to catch, even
-    // though it never occurs on an authored draft.
-    test("a stamp whose v disagrees with the converged (x, y, θ) refuses as diverged, not solved", () => {
-        const { points, length } = corpus()[0];
-        const trueStamp = computeExit(ENTRY, points, length, DS);
-        const tol = derivedTol(trueStamp, length, resolveStep(length, DS)).pos;
-        const bound = exitTol(tol);
-        // a clearly-breaching displacement: 100x the bound expressed in Δv terms, floored at
-        // 0.5 m/s so a tiny bound (a short section) still perturbs enough to survive solve noise.
-        const delta = Math.max(0.5, (100 * bound) / (2 * trueStamp.v));
-        const badStamp = { ...trueStamp, v: trueStamp.v + delta };
-        const edited = points.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.6 : p.g }));
+describe("solveOptimize — injection gate (kex2d-friction stage 3)", () => {
+    // The path-energy pin consequence (`kex2d-map.md`): once a pin's own march runs coefficients
+    // away from 0, a stamped `v` is no longer implied by the converged (x, y, θ) rows, so the old
+    // `exitTol`/`vSqResidual` stamp comparison retires. The gate now reads the defect at its own
+    // site — `SectionResult.injection` (`bake.forces`'s `Σ −min(v²_pre-clamp, 0)`), surfaced as
+    // `OptimizeResult.injection` — and downgrades a `"solved"` outcome whose landed injection
+    // exceeds `injectionTol` to `"diverged"`.
+
+    // the additive-substrate law (`kex2d-friction`'s Locked decision): an unauthored track
+    // (μ = c = 0, the kernel's own default) must stay byte-identical to before friction/resistance
+    // existed as OptimizeOpts fields at all — no injection anywhere on the ordinary optimize
+    // corpus, and passing the defaults explicitly must change nothing.
+    test("injection is 0 across the optimize corpus at μ = c = 0, and explicit zero coefficients are inert", () => {
+        for (const { points, length } of corpus()) {
+            const stamp = computeExit(ENTRY, points, length, DS);
+            const bare: OptimizeOpts = {
+                entry: ENTRY,
+                points,
+                locked: new Set(),
+                length,
+                ds: DS,
+                stamp,
+            };
+            const rBare = solveOptimize(bare);
+            expect(rBare.outcome).toBe("solved");
+            expect(rBare.injection).toBe(0);
+
+            // explicit μ = c = 0 must reproduce the bare (coefficient-less) call bit-for-bit —
+            // the byte-identity floor the substrate's additive law promises.
+            const rExplicit = solveOptimize({ ...bare, friction: 0, resistance: 0 });
+            expect(rExplicit).toEqual(rBare);
+        }
+    });
+
+    // RED FIRST, by construction: a caller-loosened `opts.tol`/`opts.angleTol` lets the SQP accept
+    // a geometrically-converged-enough (x, y, θ) that sits at a real, physical march stall — the
+    // exact scenario the gate exists to catch, since the three residual rows never read `v` at
+    // all (module header) and so cannot see it on their own. Before the gate existed this asserted
+    // `outcome === "diverged"` and failed with `"solved"`: the loosened tolerance alone accepted
+    // the iterate. Found by sweeping a climb profile's stall neighborhood (`tests/optimize.lab.ts`
+    // §6) for a case whose (x, y, θ) residual clears a realistic caller tolerance while its landed
+    // march still injects — v0 = 12 m/s under a steep climb, key 1 bumped by 1.525 g.
+    test("a caller-loosened tolerance that accepts a march-stalled landing refuses as diverged, not solved", () => {
+        const climb: ForcePoint[] = [
+            { s: 0, g: 1 },
+            { s: 10, g: 2.2 },
+            { s: 20, g: 0.4 },
+            { s: 30, g: 1 },
+            { s: 40, g: 1 },
+        ];
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 12 };
+        const stamp = computeExit(entry, climb, 40, DS);
+        const edited = climb.map((p, i) => (i === 1 ? { ...p, g: p.g + 1.525 } : p));
+        const tol = 1;
+        const angleTol = 1;
         const r = solveOptimize({
-            entry: ENTRY,
+            entry,
             points: edited,
             locked: new Set(),
-            length,
+            length: 40,
             ds: DS,
-            stamp: badStamp,
+            stamp,
+            tol,
+            angleTol,
         });
-        const floor = derivedTol(badStamp, length, resolveStep(length, DS));
-        // the (x, y, θ) rows converge — the certificate that fires is the v² gap alone, never a
-        // fourth residual row.
-        expect(r.residual).toBeLessThan(floor.pos);
-        expect(r.angleResidual).toBeLessThan(floor.angle);
-        expect(r.vSqResidual).toBeGreaterThan(exitTol(floor.pos));
+        // the (x, y, θ) rows really did converge inside the caller's own (loosened) tolerance —
+        // the certificate that fires is the injection alone, never a fourth residual row.
+        expect(r.residual).toBeLessThan(tol);
+        expect(r.angleResidual).toBeLessThan(angleTol);
+        const bound = injectionTol(entry.v, 40, resolveStep(40, DS).edges);
+        expect(r.injection).toBeGreaterThan(bound);
         expect(r.outcome).toBe("diverged");
         // a landing read is a state read, not a Jacobian-read certificate — never "unreachable".
         expect(r.reason).toBeUndefined();
     });
 
-    // Discriminates the SQUARED gate from a plausible "forgot to square" mutant: comparing the
-    // linear `|e.v − stamp.v|` gap directly against `exitTol(tol)` instead of the squared gap
-    // against the same bound. At any speed well above the derived bound's own scale, a linear Δv
-    // that clears the exact SQUARED bound (`e.v² − stamp.v² ≈ 2·v·Δv > bound`) is itself far
-    // SMALLER than the bound (`Δv ≪ bound` whenever `v ≫ 1`), so a mutant reading the unsquared
-    // gap against the same threshold would call this converged — the menu-oracle failure mode
-    // (coding.md): an assert must discriminate the field/shape the code actually reads, not just
-    // clear every tolerance by the same margin.
-    test("a v-displacement that breaches the squared bound but not its own value unsquared still refuses (discriminates squaring)", () => {
-        const { points, length } = corpus()[0];
-        const trueStamp = computeExit(ENTRY, points, length, DS);
-        const tol = derivedTol(trueStamp, length, resolveStep(length, DS)).pos;
-        const bound = exitTol(tol);
-        // aim the squared gap at 1.5x the bound (clearly past it), then invert to the linear Δv
-        // that produces it (Δ(v²) ≈ 2·v·Δv for small Δv against the corpus's v ≈ 18 m/s).
-        const delta = (1.5 * bound) / (2 * trueStamp.v);
-        const badStamp = { ...trueStamp, v: trueStamp.v - delta };
-        // sanity: the linear displacement itself sits well BELOW the bound (the band a
-        // forgot-to-square mutant would read as still-converged), while the squared gap clears it.
-        expect(delta).toBeLessThan(bound);
-        const edited = points.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.6 : p.g }));
-        const r = solveOptimize({
-            entry: ENTRY,
-            points: edited,
-            locked: new Set(),
-            length,
-            ds: DS,
-            stamp: badStamp,
-        });
-        const floor = derivedTol(badStamp, length, resolveStep(length, DS));
-        expect(r.residual).toBeLessThan(floor.pos);
-        expect(r.angleResidual).toBeLessThan(floor.angle);
-        expect(r.vSqResidual).toBeGreaterThan(exitTol(floor.pos)); // the real (squared) gate fires
-        expect(r.outcome).toBe("diverged");
-    });
-
-    test("a stamp whose v agrees with the converged (x, y, θ) solves normally (the gate isn't trigger-happy)", () => {
+    test("a stamp whose (x, y, θ) converges cleanly with no stall solves normally (the gate isn't trigger-happy)", () => {
         const { points, length } = corpus()[0];
         const stamp = computeExit(ENTRY, points, length, DS);
         const edited = points.map((p, i) => ({ ...p, g: i === 2 ? p.g + 0.6 : p.g }));
@@ -676,9 +681,35 @@ describe("solveOptimize — landed-energy gate (kex2d-gate-hardening 1b, exact b
             stamp,
         });
         expect(r.outcome).toBe("solved");
-        expect(r.vSqResidual).toBeLessThan(
-            exitTol(derivedTol(stamp, length, resolveStep(length, DS)).pos),
-        );
+        expect(r.injection).toBe(0);
+    });
+
+    // the tolerance's own valid-window guard (`injectionTol`'s docblock; `Residue`'s derived-
+    // tolerance shape): construct a march that grazes v² = 0 EXACTLY in exact arithmetic (a
+    // straight incline at μ = c = 0, so the recurrence is the closed affine form
+    // `v²_{i+1} = v²_i − F0·ds`, `F0 = 2·G·sin(alpha)` — the same closed form
+    // `friction.test.ts`'s incline arm derives) — chosen so `F0·edges·ds = V0²` exactly, i.e. the
+    // TRUE injection is 0. What the f32 kernel reads back is pure rounding noise around that
+    // true 0; the model's own regime assumption is that this noise stays a minor fraction of
+    // `scale` — measured directly here, never asserted by fiat.
+    test("a true (analytic) graze reads back within the tolerance's own noise model", () => {
+        const V0 = 10;
+        const ds = 0.5;
+        const edges = 100; // measured to land on the negative side of the true 0 (a nonzero
+        // f32 noise reading, not a vacuous 0 < anything check — 40 edges reads exactly 0)
+        const length = edges * ds;
+        const F0 = (V0 * V0) / (edges * ds); // exact: F0·edges·ds = V0²
+        const alpha = Math.asin(F0 / (2 * G));
+        const entry: Entry = { x: 0, y: 0, theta: alpha, v: V0 };
+        const fN = new Float32Array(edges).fill(Math.cos(alpha));
+        const r = evalForce(entry, fN, { edges, ds }, Domain.Distance, undefined, 0, 0);
+        const scale = Math.max(V0 * V0, 2 * G * length);
+        // the measured f32 noise (the kernel's own injection reading, since the true value is 0
+        // by construction) stays a small fraction of `scale` — the regime `injectionTol` assumes.
+        expect(r.injection).toBeGreaterThan(0); // a real (if tiny) noise reading, not a vacuous 0
+        expect(r.injection).toBeLessThan(scale / 1e3);
+        // and it clears the production tolerance itself: a genuine graze reads "no stall".
+        expect(r.injection).toBeLessThanOrEqual(injectionTol(V0, length, edges));
     });
 });
 

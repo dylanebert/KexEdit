@@ -63,6 +63,13 @@ function wrap(a: number): number {
  * `v[k+1]`: only `v[k]` (already known) and θ (already fully recovered
  * above), so `fN[k]` can be read off before `v[k+1]` is derived from it (the
  * loss term needs `fN[k]`'s magnitude, so it must land first).
+ *
+ * returns the accumulated sqrt-clamp energy injection over `[offset,
+ * offset+M)` — `Σ −min(vSq_k, 0)` (v² units, the pin consequence,
+ * `kex2d-map.md`): 0 wherever the march never drives a pre-clamp v²
+ * negative, the case that holds everywhere but a genuine stall. The
+ * defect's own site, measured directly rather than inferred from an exit-v
+ * stamp — `optimize.ts`'s `finalize` gates on it (`kex2d-friction` stage 3).
  */
 export function forces(
     posX: Float32Array,
@@ -80,7 +87,7 @@ export function forces(
     friction: number = 0,
     resistance: number = 0,
     vSqOverride?: (k: number, natural: number) => number | undefined,
-): void {
+): number {
     /** edge `k`'s chord angle, or NaN where it has no chord. */
     const chord = (k: number): number => {
         const dx = posX[offset + k + 1] - posX[offset + k];
@@ -131,6 +138,7 @@ export function forces(
     // step, minus this edge's dissipative loss. `vSqOverride`, when present,
     // substitutes the (dissipative) natural value (the channel).
     v[offset] = v0;
+    let injection = 0;
     for (let k = 0; k < M; k++) {
         const i = offset + k;
         const ds = dsArr[i];
@@ -146,8 +154,15 @@ export function forces(
         const conserved = v[i] * v[i] - 2 * g * (posY[i + 1] - posY[i]);
         const natural = conserved - loss(fN[i], v[i] * v[i], ds, friction, resistance);
         const override = vSqOverride?.(k, natural);
-        v[i + 1] = Math.sqrt(Math.max(override !== undefined ? override : natural, 0));
+        const vSq = override !== undefined ? override : natural;
+        // the sqrt clamp's own energy injection, measured at its own site (the pin
+        // consequence, `kex2d-map.md`): a physically non-stalling march never drives
+        // `vSq` negative, so this is 0 by construction everywhere but a genuine clamp
+        // event — `-min(vSq, 0)`, accumulated in v² units, the same units `loss` uses.
+        if (vSq < 0) injection -= vSq;
+        v[i + 1] = Math.sqrt(Math.max(vSq, 0));
     }
+    return injection;
 }
 
 /**

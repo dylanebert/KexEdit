@@ -85,6 +85,10 @@ export interface SectionResult {
     /** geo only: every segment landed (no degenerate/truncated). force is always valid. */
     valid: boolean;
     truncated: boolean;
+    /** the recovery's sqrt-clamp energy injection, accumulated over the section
+     *  (`bake.forces`'s return, v² units) — 0 on a non-stalling march, the pin
+     *  consequence's own measurement (`kex2d-map.md`, `kex2d-friction` stage 3). */
+    injection: number;
 }
 
 /** a speed control: the exit speed (m/s) a section is authored to land on.
@@ -241,7 +245,7 @@ export function evalGeo(
     const vSqOverride = speed
         ? arclengthSpeedRamp(entry.v * entry.v, speed.target, dsArr, edges)
         : undefined;
-    forces(
+    const injection = forces(
         posX,
         posY,
         theta,
@@ -270,6 +274,7 @@ export function evalGeo(
         offsets: r.offsets,
         valid: r.valid,
         truncated: r.truncated,
+        injection,
     };
 }
 
@@ -383,7 +388,7 @@ export function evalForce(
     }
 
     const outF = new Float32Array(edges);
-    forces(
+    const injection = forces(
         posX,
         posY,
         theta,
@@ -412,6 +417,7 @@ export function evalForce(
         offsets: [0, edges],
         valid: true,
         truncated: false,
+        injection,
     };
 }
 

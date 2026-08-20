@@ -54,15 +54,23 @@ import {
     sectionInfo,
     trackDomain,
     trackDs,
+    trackFriction,
+    trackResistance,
 } from "./track";
 
 /** the section's own realized baking parameters — the same reading `BakeSystem`'s `forcePayload`
- *  and `forceBake` derive, so the mode targets exactly what's on screen. */
+ *  and `forceBake` derive, so the mode targets exactly what's on screen. `friction`/`resistance`
+ *  are the track's own authored coefficients (`kex2d-friction` stage 3): the stamp/ghost and
+ *  every solve must run the SAME dissipation the live document bakes with, or the stamp disagrees
+ *  with what's on screen the moment either coefficient is nonzero (the substrate's own residue
+ *  class, `kex2d-friction`'s Locked decision). */
 interface SectionSpec {
     entry: Entry;
     length: number;
     step: Step;
     domain: Domain;
+    friction: number;
+    resistance: number;
 }
 
 function sectionSpec(ecs: State, sectionId: number): SectionSpec | null {
@@ -78,7 +86,14 @@ function sectionSpec(ecs: State, sectionId: number): SectionSpec | null {
     // which reads `spec.step.ds` through `OptimizeOpts`) marches at the same exact step the
     // mode stamps its exit at.
     const step = resolveStep(length, nominal);
-    return { entry: info.entry, length, step, domain };
+    return {
+        entry: info.entry,
+        length,
+        step,
+        domain,
+        friction: trackFriction(ecs),
+        resistance: trackResistance(ecs),
+    };
 }
 
 /** the section's authored keyframes as `ForcePoint`s, sorted by `s` (`sectionForces`'s own
@@ -110,7 +125,15 @@ export function enterPin(ecs: State, sectionId: number): PinSession | null {
     if (!spec) return null;
     const { points } = sectionPoints(ecs, sectionId);
     const dense = forceProfile(points, spec.step);
-    const r = evalForce(spec.entry, dense, spec.step, spec.domain);
+    const r = evalForce(
+        spec.entry,
+        dense,
+        spec.step,
+        spec.domain,
+        undefined,
+        spec.friction,
+        spec.resistance,
+    );
     // the session carries only the stamp + ghost + the downstream freeze seed (all frozen at
     // mode entry); the section's baking parameters are NOT cached here — `runPinSection`
     // re-reads them live off `sectionSpec` at every invoke, same as any other invoked command
@@ -243,6 +266,8 @@ export async function runPinSection(
         ds: spec.step.ds,
         domain: spec.domain,
         stamp: session.stamp,
+        friction: spec.friction,
+        resistance: spec.resistance,
     };
 
     const authored = authoredHash(ecs);
