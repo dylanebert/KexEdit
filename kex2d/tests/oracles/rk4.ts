@@ -19,13 +19,19 @@ export interface RK4Options {
  *   dx/dt = v · cos θ
  *   dy/dt = v · sin θ
  *   dθ/dt = (F_n(σ) − cos θ) · g / v
- *   dv/dt = −g · sin θ
+ *   dv/dt = −g · sin θ − μ·g·|F_n(σ)| − c·v²    (continuum form of `forward.loss`)
  *   dσ/dt = v
  *
  * with substeps of `dt`, shrinking the last substep before each σ = i · Δs
  * crossing to land on the grid (σ snapped to suppress drift). Independent
- * cross-validation for `src/forward.ts`. Caller must keep v strictly positive
- * — no v_min clamp; throws via `maxSubsteps` if the regime breaks.
+ * cross-validation for `src/forward.ts`, extended with `friction`/`resistance`
+ * (both defaulted 0 — byte-identical to the pre-friction oracle) for
+ * `kex2d-friction`'s convergence-order arm: `dv/dt` gains the dissipative
+ * terms directly (not `dv²/dt`, since this oracle integrates `v`, not `v²`;
+ * `d(v²)/dt = 2v·dv/dt`, so `2v·(−μg|F_n|−cv²)/v = −2μg|F_n| − 2cv²` matches
+ * `forward.loss`'s v² form exactly once the chain rule is undone). Caller
+ * must keep v strictly positive — no v_min clamp; throws via `maxSubsteps` if
+ * the regime breaks.
  */
 export function rk4(
     x0: number,
@@ -37,6 +43,8 @@ export function rk4(
     fN: (sigma: number) => number,
     g: number = G,
     options: RK4Options = {},
+    friction = 0,
+    resistance = 0,
 ): SampleState[] {
     const dt = options.dt ?? 1e-4;
     const maxSubsteps = options.maxSubsteps ?? 10_000_000;
@@ -54,7 +62,9 @@ export function rk4(
     const deriv = (th: number, vv: number, sg: number) => {
         const c = Math.cos(th);
         const s = Math.sin(th);
-        return [vv * c, vv * s, ((fN(sg) - c) * g) / vv, -g * s, vv] as const;
+        const fMag = Math.abs(fN(sg));
+        const dv = -g * s - friction * g * fMag - resistance * vv * vv;
+        return [vv * c, vv * s, ((fN(sg) - c) * g) / vv, dv, vv] as const;
     };
 
     const rk4Step = (h: number): void => {
@@ -103,8 +113,9 @@ export function rk4(
  * argument: time already IS the ODE's independent variable, so the query at
  * any RK4 sub-stage is just the elapsed time plus that sub-stage's own time
  * offset (`sigma` needed its own `dσ/dt = v` integration; elapsed time does
- * not). Caller must keep v strictly positive — no v_min clamp; throws via
- * `maxSubsteps` if the regime breaks.
+ * not). `friction`/`resistance` (both defaulted 0) extend `dv/dt` the same
+ * way as `rk4`. Caller must keep v strictly positive — no v_min clamp; throws
+ * via `maxSubsteps` if the regime breaks.
  */
 export function rk4Time(
     x0: number,
@@ -116,6 +127,8 @@ export function rk4Time(
     fN: (t: number) => number,
     g: number = G,
     options: RK4Options = {},
+    friction = 0,
+    resistance = 0,
 ): SampleState[] {
     const subDt = options.dt ?? 1e-4;
     const maxSubsteps = options.maxSubsteps ?? 10_000_000;
@@ -133,7 +146,9 @@ export function rk4Time(
     const deriv = (th: number, vv: number, t: number) => {
         const c = Math.cos(th);
         const s = Math.sin(th);
-        return [vv * c, vv * s, ((fN(t) - c) * g) / vv, -g * s] as const;
+        const fMag = Math.abs(fN(t));
+        const dv = -g * s - friction * g * fMag - resistance * vv * vv;
+        return [vv * c, vv * s, ((fN(t) - c) * g) / vv, dv] as const;
     };
 
     const rk4Step = (h: number): void => {

@@ -70,6 +70,52 @@ mod tests {
 
     const TOLERANCE: f32 = 1e-4;
 
+    /// Mints `kex2d/tests/fixtures/friction-rust-cross-check.json` from THIS crate's
+    /// own `update_velocity` — never a TS transliteration (`checks.md`'s one-author
+    /// agreement trap). Flat-straight (`delta_y = 0` every step, kex2d's `fN = 1`
+    /// exactly) is the ONE config where this crate's Coulomb-at-N=mg model and
+    /// kex2d's `|fN|`-based model provably coincide (`kex2d-friction`'s Locked
+    /// decision) — everywhere else they deliberately disagree (this crate still
+    /// charges friction in kex2d's fN=0 vertical-drop discriminator case). Time-
+    /// stepped at the crate's own `DT`/`HZ` to match kex2d's `Domain.Time` march
+    /// (`ds_i = v_i·Δt`), the shape `resistance`'s `v³·DT` term needs to equal
+    /// kex2d's `c·v²·ds`. `#[ignore]`d — a fixture-minting run, not a standing gate;
+    /// `kex2d`'s own suite is what asserts against the frozen output.
+    ///
+    /// Regenerate: `cargo test --package kexedit-core mint_friction_cross_check_fixture -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn mint_friction_cross_check_fixture() {
+        let v0: f32 = 20.0;
+        let friction: f32 = 0.021;
+        let resistance: f32 = 2.5e-4;
+        let steps: usize = 200;
+
+        let mut v = v0;
+        let mut vs = Vec::with_capacity(steps + 1);
+        vs.push(v);
+        for _ in 0..steps {
+            let delta_distance = v * DT; // ds_i = v_i · Δt — kex2d's Domain.Time convention
+            v = update_velocity(v, 0.0, delta_distance, friction, resistance);
+            vs.push(v);
+        }
+
+        let fixture = serde_json::json!({
+            "generatedBy": "cargo test --package kexedit-core mint_friction_cross_check_fixture -- --ignored --nocapture (packages/core/src/sim/physics.rs)",
+            "v0": v0,
+            "friction": friction,
+            "resistance": resistance,
+            "dt": DT,
+            "steps": steps,
+            "v": vs,
+        });
+        std::fs::write(
+            "../../kex2d/tests/fixtures/friction-rust-cross-check.json",
+            serde_json::to_string_pretty(&fixture).unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn dt_equals_one_over_hz() {
         assert_relative_eq!(DT, 1.0 / HZ, epsilon = TOLERANCE);

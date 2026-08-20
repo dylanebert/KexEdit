@@ -510,7 +510,8 @@ for (const sc of [corpus()[0], corpus()[1]]) {
 
 // ── 6. LANDED-V BREACH ──────────────────────────────────────────────────────────────
 // (kex2d-gate-hardening stage 1a; tolerance corrected + wired to the production seam stage 6)
-// The conservative-energy law (kex2d-map.md) says exit v is a strict function of exit y — a
+// The path-energy law (kex2d-map.md), at the μ = c = 0 optimize still runs at (kex2d-friction's
+// kernel-only stage 1), says exit v is a strict function of exit y — a
 // converged 3-row residual should already bound v. The one breach is the velocity clamp
 // (`sqrt(max(v², 0))` in forward.ts): a march that runs out of energy has energy INJECTED there,
 // and a "solved" draft whose march touches the floor mid-run can land with v off the

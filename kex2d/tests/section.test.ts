@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { forces, replay } from "../src/bake";
+import { loss } from "../src/forward";
 import {
     chain,
     Domain,
@@ -477,6 +478,8 @@ describe("the v²-modification channel — additive-consumer capability", () => 
             0,
             G,
             undefined,
+            0,
+            0,
             (_i, natural) => natural - k,
         );
 
@@ -591,19 +594,33 @@ describe("speed control", () => {
             expect(c.theta[i]).toBe(golden.theta[i]);
             expect(c.v[i]).toBe(golden.v[i]);
         }
+
+        // `kex2d-friction` stage 1: extends the SAME golden rather than duplicating it —
+        // explicit 0s for `friction`/`resistance` must be byte-identical to omitting them
+        // entirely (the additive-substrate law holds at the zero-coefficient boundary too).
+        const explicit = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections, undefined, 0, 0);
+        for (let i = 0; i < explicit.count; i++) {
+            expect(explicit.posX[i]).toBe(golden.posX[i]);
+            expect(explicit.posY[i]).toBe(golden.posY[i]);
+            expect(explicit.theta[i]).toBe(golden.theta[i]);
+            expect(explicit.v[i]).toBe(golden.v[i]);
+        }
     });
 });
 
 describe("energy propagation into a downstream force section", () => {
     // The property an author meets as "resizing a section upstream doesn't reshape what follows."
-    // It is the conservative-energy law's emergent form (`kex2d-map.md`): the integrator advances
-    // `v² −= 2g·Δy` per edge, which telescopes, so exit `v` depends on the entry, the exit HEIGHT,
-    // and nothing else — not on the arclength travelled to get there. A force section's shape is a
-    // function of its entry `(y, θ, v)` and its own curve, so an upstream edit preserving all three
-    // cannot reshape it; it can only place it elsewhere.
+    // Frictionless, this was the conservative-energy law's emergent form (`kex2d-map.md`, now the
+    // path-energy law): the integrator advances `v² −= 2g·Δy` per edge, which telescopes, so exit
+    // `v` depended on the entry, the exit HEIGHT, and nothing else — not on the arclength travelled.
     //
-    // These arms are the baseline a friction/drag term must BREAK: friction's loss integrates along
-    // the path, so arm 1 is exactly the assertion that goes red when path-dependence lands.
+    // These arms were this stage's red-first signal: with `μ > 0` the loss integrates ALONG the
+    // path (`2·(μ·g·|fN| + c·v²)·ds` per edge, `forward.loss`), so exit v is no longer a strict
+    // function of height alone — a longer route between the same two points now genuinely costs
+    // more speed. Converted to their dissipative form below: the exact discrete identity
+    // `v²_exit = v0² − 2g·Δy − Σ loss_i` (the recursion's own telescoping sum, true for ANY route)
+    // replaces the frictionless equality, and the third arm (originally an inert length change) now
+    // asserts the user's originating symptom directly — a pure ΔL costs `2μg·cosθ·ΔL` downstream.
 
     /** the force section's samples in its own entry frame — translation-invariant, so a pure
      *  placement change reads as congruent and a real reshape reads as moved. NOT rotation-
@@ -629,6 +646,21 @@ describe("energy propagation into a downstream force section", () => {
         return m;
     }
 
+    /** the exact discrete identity `forward.step`'s recursion telescopes to, for ANY route: each
+     *  edge subtracts `2g·Δy_i` (gravity) and `loss(fN_i, v_i², ds_i, μ, c)` (`forward.loss`) from
+     *  the running v², so summing the per-edge losses off the chain's OWN recorded `fN`/`ds`/`v`
+     *  reproduces the section's exit v² exactly (to f32 accumulation) regardless of path shape. */
+    function sumLoss(c: ReturnType<typeof chain>, k: number, mu: number, resistance = 0): number {
+        let s = 0;
+        const r = c.ranges[k];
+        for (let i = r.start; i < r.end; i++)
+            s += loss(c.fN[i], c.v[i] * c.v[i], c.ds[i], mu, resistance);
+        return s;
+    }
+
+    const Eps = 2 ** -23;
+    const Kf32 = 40; // same generous f32-accumulation constant `friction.test.ts` derives
+
     const forceCurve = Float32Array.from({ length: 30 }, () => 1.2);
     const forceSection: Section = {
         kind: "force",
@@ -636,8 +668,9 @@ describe("energy propagation into a downstream force section", () => {
         step: { edges: forceCurve.length, ds: 0.5 },
     };
     const entry0: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+    const Mu = 0.03; // ~ the incumbent core's own default (`packages/core/track/dispatch.rs`)
 
-    test("exit v is path-INDEPENDENT: same endpoint, longer route, same speed", () => {
+    test("exit v is no longer path-independent: the exact loss identity holds on both routes", () => {
         const direct = withThetas([
             { x: 0, y: 0 },
             { x: 44, y: -8 },
@@ -651,26 +684,39 @@ describe("energy propagation into a downstream force section", () => {
             { x: 34, y: -16 },
             { x: 44, y: -8 },
         ]);
-        const a = chain(entry0, [{ kind: "geo", nodes: direct, ds: 0.5 }, forceSection]);
-        const b = chain(entry0, [{ kind: "geo", nodes: detour, ds: 0.5 }, forceSection]);
+        const a = chain(
+            entry0,
+            [{ kind: "geo", nodes: direct, ds: 0.5 }, forceSection],
+            undefined,
+            Mu,
+        );
+        const b = chain(
+            entry0,
+            [{ kind: "geo", nodes: detour, ds: 0.5 }, forceSection],
+            undefined,
+            Mu,
+        );
 
-        // the control's size is derived from what it must discriminate: under the reference core's
-        // friction term (`packages/core/src/sim/physics.rs`, `G·μ·Δs` with μ~0.03) an extra Δs of 10
-        // costs ~2·G·μ·Δs ≈ 6 m²/s² of v² — order 0.2 m/s at these speeds, well outside the 1e-3
-        // tolerance below. So this pair WOULD separate once path-dependence lands, which is what
-        // makes the equality assertion meaningful rather than vacuous.
         expect(arclen(b, 0) - arclen(a, 0)).toBeGreaterThan(10);
-        expect(b.exits[0].y).toBeCloseTo(a.exits[0].y, 4); // …to the same height
+        expect(b.exits[0].y).toBeCloseTo(a.exits[0].y, 4); // …still the same height (friction drains speed, not position)
 
-        // therefore the same speed. tolerance: f32 accumulation over ~O(100) edges at v≈14 is
-        // ~sqrt(N)·eps·v ≈ 2e-5; 1e-3 sits above that and far below any physical effect.
-        expect(b.exits[0].v).toBeCloseTo(a.exits[0].v, 3);
+        // the exact telescoping identity, both routes, section 0 (the geo section):
+        for (const c of [a, b]) {
+            const expected = V0 * V0 - 2 * G * (c.exits[0].y - entry0.y) - sumLoss(c, 0, Mu);
+            const tol = Kf32 * c.ranges[0].end * Eps * (V0 * V0);
+            expect(Math.abs(c.exits[0].v * c.exits[0].v - expected)).toBeLessThan(tol);
+        }
+
+        // the longer, more-dissipative route now measurably trails: the equality this arm asserted
+        // frictionless is exactly what breaks — deliberately.
+        expect(b.exits[0].v).toBeLessThan(a.exits[0].v - 0.05);
     });
 
-    test("a pure LENGTH change upstream places the force section without reshaping it", () => {
-        // the author's actual gesture: extend a level run. entry y, θ and v are all preserved, so
-        // the downstream march is identical and only its placement moves — which on screen is
-        // indistinguishable from "it didn't update", and is the physics being right.
+    test("a pure LENGTH change upstream now costs downstream entry v² by 2μg·cosθ·ΔL", () => {
+        // the user's originating symptom, flipped from inert to predicted (Goal, `kex2d-friction`):
+        // entry y and θ are preserved (level, straight — θ = 0 throughout, so cos θ = 1 exactly),
+        // but a longer run now genuinely dissipates more, so downstream entry v² drops measurably —
+        // and the force section that follows, whose own curvature depends on entry v, reshapes.
         const short = withThetas([
             { x: 0, y: 0 },
             { x: 44, y: 0 },
@@ -679,20 +725,38 @@ describe("energy propagation into a downstream force section", () => {
             { x: 0, y: 0 },
             { x: 64, y: 0 },
         ]);
-        const a = chain(entry0, [{ kind: "geo", nodes: short, ds: 0.5 }, forceSection]);
-        const b = chain(entry0, [{ kind: "geo", nodes: long, ds: 0.5 }, forceSection]);
+        const a = chain(
+            entry0,
+            [{ kind: "geo", nodes: short, ds: 0.5 }, forceSection],
+            undefined,
+            Mu,
+        );
+        const b = chain(
+            entry0,
+            [{ kind: "geo", nodes: long, ds: 0.5 }, forceSection],
+            undefined,
+            Mu,
+        );
 
-        expect(arclen(b, 0) - arclen(a, 0)).toBeGreaterThan(10); // control: really longer
+        const deltaL = arclen(b, 0) - arclen(a, 0);
+        expect(deltaL).toBeGreaterThan(10); // control: really longer
         expect(b.exits[0].x - a.exits[0].x).toBeGreaterThan(10); // …and really displaced
-        expect(b.exits[0].y).toBeCloseTo(a.exits[0].y, 5);
+        expect(b.exits[0].y).toBeCloseTo(a.exits[0].y, 5); // level — friction never moves y
         expect(b.exits[0].theta).toBeCloseTo(a.exits[0].theta, 5);
-        expect(b.exits[0].v).toBeCloseTo(a.exits[0].v, 5);
 
-        // congruent to f32 noise — same shape, placed elsewhere.
-        expect(maxDelta(shapeOf(a, 1), shapeOf(b, 1))).toBeLessThan(1e-3);
+        // the closed form named in `kex2d-friction`'s Validation: ΔL · 2μg·cosθ (θ = 0 here).
+        const predicted = 2 * Mu * G * 1 * deltaL;
+        const actual = a.exits[0].v * a.exits[0].v - b.exits[0].v * b.exits[0].v;
+        const tol = Kf32 * b.ranges[0].end * Eps * (V0 * V0);
+        expect(Math.abs(actual - predicted)).toBeLessThan(tol);
+
+        // downstream (the force section) now reshapes: entry v differs, and the force march's own
+        // curvature depends on v (`dθ = (fN − cosθ)·g·ds/vSafe²`) — the exact inertness this arm
+        // used to pin is what friction breaks.
+        expect(maxDelta(shapeOf(a, 1), shapeOf(b, 1))).toBeGreaterThan(0.01);
     });
 
-    test("exit v IS height-dependent, and downstream reshapes when it moves", () => {
+    test("exit v IS height-dependent, and downstream reshapes when it moves (dissipative form)", () => {
         const shallow = withThetas([
             { x: 0, y: 0 },
             { x: 44, y: -8 },
@@ -701,13 +765,26 @@ describe("energy propagation into a downstream force section", () => {
             { x: 0, y: 0 },
             { x: 44, y: -20 },
         ]);
-        const a = chain(entry0, [{ kind: "geo", nodes: shallow, ds: 0.5 }, forceSection]);
-        const b = chain(entry0, [{ kind: "geo", nodes: deep, ds: 0.5 }, forceSection]);
+        const a = chain(
+            entry0,
+            [{ kind: "geo", nodes: shallow, ds: 0.5 }, forceSection],
+            undefined,
+            Mu,
+        );
+        const b = chain(
+            entry0,
+            [{ kind: "geo", nodes: deep, ds: 0.5 }, forceSection],
+            undefined,
+            Mu,
+        );
 
-        // the marched exit matches the closed form v² = v0² − 2g·Δy — the numerical integrator
-        // against the analytical solution, not a restatement of the per-edge update.
-        for (const c of [a, b])
-            expect(c.exits[0].v).toBeCloseTo(Math.sqrt(V0 * V0 - 2 * G * c.exits[0].y), 3);
+        // the marched exit matches the exact discrete loss identity — the numerical integrator
+        // against its own telescoping sum, not a restatement of the per-edge update in isolation.
+        for (const c of [a, b]) {
+            const expected = V0 * V0 - 2 * G * (c.exits[0].y - entry0.y) - sumLoss(c, 0, Mu);
+            const tol = Kf32 * c.ranges[0].end * Eps * (V0 * V0);
+            expect(Math.abs(c.exits[0].v * c.exits[0].v - expected)).toBeLessThan(tol);
+        }
         expect(b.exits[0].v).toBeGreaterThan(a.exits[0].v + 3);
 
         // a real energy change reshapes downstream: higher entry v at the same fN means a larger
