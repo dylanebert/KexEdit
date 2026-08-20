@@ -11,7 +11,7 @@ Roller coaster editor using Force Vector Design (FVD).
 
 ## Rules
 
-`.claude/rules/` holds the per-area conventions, all path-scoped. Globs match the path from the repo root, not your cwd:
+`.claude/rules/` holds the per-area conventions. `fidelity.md` carries no `paths:` and is always in force — the modeling law: what must be physically accurate (anything touching rider forces or track shape), what collapses into game-simple representations, and the independent-models-converging verification standard. The rest are path-scoped; globs match the path from the repo root, not your cwd:
 
 - `plugins/blender/**/*` → `.claude/rules/blender.md`
 - `packages/core/**/*` → `.claude/rules/core.md`
