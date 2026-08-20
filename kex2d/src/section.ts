@@ -91,24 +91,13 @@ export interface SectionResult {
     injection: number;
 }
 
-/** a speed control: the exit speed (m/s) a section is authored to land on.
- *  `v²` is prescribed as a linear ramp on the section's own domain coordinate
- *  (arclength for geo/Distance-force, time for Time-force) from the entry
- *  `v²` to `target²` — the span is the section (the authored-control exception,
- *  `kex2d-map.md`), so the ramp spans the whole result and the exit lands on
- *  `target` exactly. Outside the span (downstream, or a section with no
- *  control), conservation resumes from there — no override needed. */
-export interface SpeedControl {
-    target: number;
-}
-
 /** a section's authored payload. geo carries local nodes (node 0 at the local
  *  origin, heading 0) + nominal spacing (m); force carries a per-edge F_n
  *  profile (g) + its edge step in its `domain`'s own unit (m for `Distance`, s
- *  for `Time`). both kinds may carry an authored `speed` control. */
+ *  for `Time`). */
 export type Section =
-    | { kind: "geo"; nodes: readonly Node[]; ds: number; speed?: SpeedControl }
-    | { kind: "force"; fN: ArrayLike<number>; step: Step; domain?: Domain; speed?: SpeedControl };
+    | { kind: "geo"; nodes: readonly Node[]; ds: number }
+    | { kind: "force"; fN: ArrayLike<number>; step: Step; domain?: Domain };
 
 /** rotate a tangent's in/out vectors by the rotation `(c, s) = (cos φ, sin φ)`.
  *  an explicit tangent is stored in the node's local frame, so re-expressing the node
@@ -165,43 +154,6 @@ export function localize(
     return out;
 }
 
-/** the speed-control ramp for a UNIFORM-step domain coordinate (force
- *  sections, both `Distance` and `Time` — each edge advances the same `du`,
- *  so the fraction is the edge count itself). `override(edges − 1, …)` divides
- *  `edges` by itself, landing exactly `1` and so exactly `target²` at exit
- *  (IEEE754 division of a value by itself is exact) — the exit-target oracle
- *  reads through this. Takes (and ignores) the channel's `natural` argument:
- *  a prescribed ramp overrides unconditionally, it doesn't compose with the
- *  conserved value the way an additive consumer (friction) would. */
-function uniformSpeedRamp(
-    vSq0: number,
-    target: number,
-    edges: number,
-): ((i: number, natural: number) => number) | undefined {
-    if (edges <= 0) return undefined;
-    const vSq1 = target * target;
-    return (i: number) => vSq0 + (vSq1 - vSq0) * ((i + 1) / edges);
-}
-
-/** the speed-control ramp for geo's NON-uniform domain coordinate (actual
- *  cumulative arclength — adaptive sampling spaces edges unevenly). same
- *  exactness at exit: `cum[edges] / total` is `total / total`, exactly `1`.
- *  Ignores `natural` for the same reason as `uniformSpeedRamp`, above. */
-function arclengthSpeedRamp(
-    vSq0: number,
-    target: number,
-    dsArr: Float32Array,
-    edges: number,
-): ((i: number, natural: number) => number) | undefined {
-    if (edges <= 0) return undefined;
-    const cum = new Float64Array(edges + 1);
-    for (let k = 0; k < edges; k++) cum[k + 1] = cum[k] + dsArr[k];
-    const total = cum[edges];
-    if (!(total > 0)) return undefined;
-    const vSq1 = target * target;
-    return (i: number) => vSq0 + (vSq1 - vSq0) * (cum[i + 1] / total);
-}
-
 function exitOf(
     posX: Float32Array,
     posY: Float32Array,
@@ -217,19 +169,16 @@ function exitOf(
  * recover the physical force from the geometry (`v0 = entry.v`). the exit is the
  * recovered last-sample state. `maxSamples` caps the sampling (`chain` passes the
  * remaining buffer). a degenerate/truncated chain returns its partial prefix
- * with `valid`/`truncated` set (mirrors `sampleChain`). `speed`, when given,
- * rides the recovery's v²-modification channel as the linear-in-arclength ramp
- * to `speed.target` (the authored-control exception, `kex2d-map.md`). `friction`/
- * `resistance` (both defaulted 0, trailing — the substrate's positional-last
- * convention) thread to the recovery's dissipative loss (the additive-substrate
- * law, `kex2d-map.md`).
+ * with `valid`/`truncated` set (mirrors `sampleChain`). `friction`/`resistance`
+ * (both defaulted 0, trailing — the substrate's positional-last convention)
+ * thread to the recovery's dissipative loss (the additive-substrate law,
+ * `kex2d-map.md`).
  */
 export function evalGeo(
     entry: Entry,
     nodes: readonly Node[],
     dsNominal: number,
     maxSamples = MAX,
-    speed?: SpeedControl,
     friction = 0,
     resistance = 0,
 ): SectionResult {
@@ -242,9 +191,6 @@ export function evalGeo(
     const theta = new Float32Array(edges + 1);
     const v = new Float32Array(edges + 1);
     const fN = new Float32Array(edges);
-    const vSqOverride = speed
-        ? arclengthSpeedRamp(entry.v * entry.v, speed.target, dsArr, edges)
-        : undefined;
     const injection = forces(
         posX,
         posY,
@@ -260,7 +206,6 @@ export function evalGeo(
         V_FLOOR,
         friction,
         resistance,
-        vSqOverride,
     );
     return {
         posX: posX.slice(0, edges + 1),
@@ -307,26 +252,14 @@ export function evalGeo(
  * term with no centripetal demand (`bake.forces`). The entry heading is passed
  * for the case where a whole section marches frozen and no chord exists at all.
  *
- * `speed`, when given, rides the march's AND the recovery's v²-modification
- * channel as the same linear-in-domain-coordinate ramp to `speed.target`
- * (uniform edge steps here, both domains — the authored-control exception,
- * decision). Riding the march too (not just the recovery) is what un-stalls a
- * frozen Time-domain span: `ds_i = v_i·Δt` reads the PRIOR edge's (possibly
- * ramped) `v`, so overriding edge 0's landed `v` off a zero entry un-freezes
- * every edge after it.
- *
  * `friction`/`resistance` (both defaulted 0, trailing) thread to BOTH the
- * march (`stepForward`/`integrate`) and the re-recovery (`forces`) — inside a
- * `speed`-controlled span the ramp overrides the dissipative value
- * unconditionally (prescription beats dissipation, the additive-substrate
- * law, `kex2d-map.md`), so the two never double-count losses.
+ * march (`stepForward`/`integrate`) and the re-recovery (`forces`).
  */
 export function evalForce(
     entry: Entry,
     fN: ArrayLike<number>,
     step: Step,
     domain: Domain = Domain.Distance,
-    speed?: SpeedControl,
     friction = 0,
     resistance = 0,
 ): SectionResult {
@@ -343,10 +276,6 @@ export function evalForce(
     posY[0] = entry.y;
     theta[0] = entry.theta;
     v[0] = entry.v;
-
-    const vSqOverride = speed
-        ? uniformSpeedRamp(entry.v * entry.v, speed.target, edges)
-        : undefined;
 
     const dsArr = new Float32Array(edges);
     if (domain === Domain.Time) {
@@ -366,7 +295,6 @@ export function evalForce(
                 V_FLOOR,
                 friction,
                 resistance,
-                vSqOverride && ((natural) => vSqOverride(i, natural)),
             );
         }
     } else {
@@ -382,7 +310,6 @@ export function evalForce(
             V_FLOOR,
             friction,
             resistance,
-            vSqOverride,
         );
         dsArr.fill(ds);
     }
@@ -403,7 +330,6 @@ export function evalForce(
         V_FLOOR,
         friction,
         resistance,
-        vSqOverride,
     );
     return {
         posX,
@@ -478,16 +404,8 @@ export function chain(
     for (const sec of sections) {
         const r =
             sec.kind === "geo"
-                ? evalGeo(
-                      entry,
-                      sec.nodes,
-                      sec.ds,
-                      maxSamples - off,
-                      sec.speed,
-                      friction,
-                      resistance,
-                  )
-                : evalForce(entry, sec.fN, sec.step, sec.domain, sec.speed, friction, resistance);
+                ? evalGeo(entry, sec.nodes, sec.ds, maxSamples - off, friction, resistance)
+                : evalForce(entry, sec.fN, sec.step, sec.domain, friction, resistance);
         const start = off;
         // bound the COPY at the flat buffers' remaining room. `evalGeo` already respects it —
         // it was handed `maxSamples - off` as its own budget, so `r.edges` never exceeds what's

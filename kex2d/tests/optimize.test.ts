@@ -704,7 +704,7 @@ describe("solveOptimize — injection gate", () => {
         const alpha = Math.asin(F0 / (2 * G));
         const entry: Entry = { x: 0, y: 0, theta: alpha, v: V0 };
         const fN = new Float32Array(edges).fill(Math.cos(alpha));
-        const r = evalForce(entry, fN, { edges, ds }, Domain.Distance, undefined, 0, 0);
+        const r = evalForce(entry, fN, { edges, ds }, Domain.Distance, 0, 0);
         const scale = Math.max(V0 * V0, 2 * G * length);
         // the measured f32 noise (the kernel's own injection reading, since the true value is 0
         // by construction) stays a small fraction of `scale` — the regime `injectionTol` assumes.

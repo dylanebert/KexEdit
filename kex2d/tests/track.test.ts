@@ -57,8 +57,6 @@ import {
     sections,
     sectionSolvable,
     sectionSpans,
-    sectionSpeed,
-    speedEditable,
     spawnForce,
     stationTaken,
     splitForce,
@@ -67,7 +65,6 @@ import {
     setForcePoint,
     setForceTangent,
     setSectionLength,
-    setSectionSpeed,
     setStickyLen,
     setTangent,
     setTrackDomain,
@@ -100,7 +97,6 @@ import {
     beginForceTangent,
     beginFriction,
     beginResistance,
-    beginSpeed,
     commit,
     createHistory,
     extendTrack as extendTrackCmd,
@@ -1497,7 +1493,6 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
             order: 0,
             kind: SectionKind.Geo,
             length: 0,
-            speed: undefined,
             nodes: [],
             points: [],
         });
@@ -2985,157 +2980,6 @@ describe("landing display override (kex2d-idioms stage 4)", () => {
     });
 });
 
-// the authored speed control threaded through the ECS + history
-// layer — a `Speed` component beside `Section` (membership IS the `SpeedControl | undefined`
-// presence, no separate "has" flag), a scrub/field gesture mirroring `beginLength`, bake
-// payload + `bakeHash` coverage, snapshot/restore, and the in-mode editing lockdown.
-describe("section speed control", () => {
-    /** a lone force section with two flat continuation keys — the fixture every test here
-     *  starts from. baked once so `bakeOut`/`samples` are populated. */
-    function forceSection(): { state: State; eid: number; sec: number } {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 20);
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, 20, 1);
-        state.step(0);
-        return { state, eid, sec };
-    }
-
-    /** the bake's live per-sample speed, sliced to what was actually written — the
-     *  byte-identity comparator the undo/redo tests below share. */
-    function bakedV(eid: number): number[] {
-        const s = samples.get(eid);
-        if (!s) throw new Error("no bake");
-        return Array.from(s.v.subarray(0, Track.count.get(eid)));
-    }
-
-    test("setSectionSpeed attaches the control — ECS membership carries the presence, no sentinel — and clears it back to absent", () => {
-        const { state, sec } = forceSection();
-        expect(sectionSpeed(state, sec)).toBeUndefined();
-        setSectionSpeed(state, sec, 24);
-        expect(sectionSpeed(state, sec)).toEqual({ target: 24 });
-        setSectionSpeed(state, sec, undefined);
-        expect(sectionSpeed(state, sec)).toBeUndefined();
-    });
-
-    test("bakeHash invalidates on a target change and holds otherwise", () => {
-        const { state, eid, sec } = forceSection();
-        const before = bakeOut.get(eid)?.hash;
-        if (!before) throw new Error("no bake");
-
-        setSectionSpeed(state, sec, 24);
-        state.step(0);
-        const withSpeed = bakeOut.get(eid)?.hash;
-        if (!withSpeed) throw new Error("no bake");
-        expect(withSpeed).not.toBe(before); // authoring the control busts the hash
-
-        state.step(0); // nothing authored changed since — the gate must SKIP
-        expect(bakeOut.get(eid)?.hash).toBe(withSpeed);
-
-        setSectionSpeed(state, sec, 30);
-        state.step(0);
-        expect(bakeOut.get(eid)?.hash).not.toBe(withSpeed); // a target change busts it again
-    });
-
-    test("undo round-trips a speed edit byte-identical, redo lands it again", () => {
-        const { state, eid, sec } = forceSection();
-        const before = bakedV(eid);
-        const h = createHistory();
-
-        beginSpeed(state, sec);
-        setSectionSpeed(state, sec, 24); // the live preview write a scrub would make
-        commit(h);
-        expect(h.undo.length).toBe(1);
-        state.step(0);
-        const withSpeed = bakedV(eid);
-        expect(withSpeed).not.toEqual(before); // positive control: the exit speed actually moved
-
-        undo(h, state);
-        state.step(0);
-        expect(bakedV(eid)).toEqual(before); // byte-identical to the pre-edit bake
-        expect(sectionSpeed(state, sec)).toBeUndefined();
-
-        redo(h, state);
-        state.step(0);
-        expect(bakedV(eid)).toEqual(withSpeed);
-        expect(sectionSpeed(state, sec)).toEqual({ target: 24 });
-    });
-
-    test("a no-change gesture (scrub back to the same value) records nothing", () => {
-        const { state, sec } = forceSection();
-        const h = createHistory();
-        beginSpeed(state, sec);
-        setSectionSpeed(state, sec, 24);
-        setSectionSpeed(state, sec, undefined); // scrub away — no control, same as the start
-        commit(h);
-        expect(h.undo.length).toBe(0);
-    });
-
-    test("snapshotSection/restoreSection carry the control through a destructive reset's undo", () => {
-        const { state, sec } = forceSection();
-        setSectionSpeed(state, sec, 24);
-        const before = snapshotSection(state, sec);
-        expect(before.speed).toEqual({ target: 24 });
-
-        resetSection(state, sec); // the Reset idiom's own default: no speed control
-        expect(sectionSpeed(state, sec)).toBeUndefined();
-
-        restoreSection(state, before);
-        expect(sectionSpeed(state, sec)).toEqual({ target: 24 });
-    });
-
-    test("snapshotAll/restoreAll (the structural-op undo unit) carry the control too", () => {
-        const { state, sec } = forceSection();
-        setSectionSpeed(state, sec, 24);
-        const before = snapshotAll(state);
-
-        setSectionSpeed(state, sec, 40); // mutate after the snapshot — restoreAll respawns fresh
-        restoreAll(state, before); // (`spawnSection`'s own speed param, not `restoreSection`'s)
-        expect(sectionSpeed(state, sec)).toEqual({ target: 24 });
-    });
-
-    test("convertSection preserves an authored control across the kind flip (Speed rides the Section eid, not the geo/force payload)", () => {
-        const { state, sec } = forceSection();
-        setSectionSpeed(state, sec, 24);
-        convertSection(state, sec); // force → geo, the default reset body
-        expect(sections(state).find((s) => s.id === sec)?.kind).toBe(SectionKind.Geo);
-        expect(sectionSpeed(state, sec)).toBeUndefined(); // convert resets to "the default" too
-    });
-
-    test("an in-pin-mode speed edit on a DIFFERENT section is refused — the same per-subject rule sectionEditable applies elsewhere", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20);
-        createForcePoint(state, a, 0, 1);
-        createForcePoint(state, a, 20, 1);
-        const b = createSection(state, 1, SectionKind.Force, 20);
-        createForcePoint(state, b, 0, 1);
-        createForcePoint(state, b, 20, 1);
-        state.step(0);
-
-        const entry = sectionInfo.get(a)?.entry ?? { x: 0, y: 0, theta: 0, v: 10 };
-        setBakeFreeze({ section: a, entry: { ...entry } }); // simulates pin mode open on `a`
-        expect(speedEditable(b)).toBe(false);
-        expect(speedEditable(a)).toBe(true); // the pinning section's own edits stay live
-
-        const h = createHistory();
-        setSectionSpeed(state, b, 24); // the write-side belt
-        expect(sectionSpeed(state, b)).toBeUndefined();
-        beginSpeed(state, b); // the gesture-open suspenders
-        expect(h.undo.length).toBe(0);
-        commit(h); // nothing was open — a no-op
-        expect(h.undo.length).toBe(0);
-
-        setSectionSpeed(state, a, 24); // the pinning section's own control is still editable
-        expect(sectionSpeed(state, a)).toEqual({ target: 24 });
-
-        setBakeFreeze(null);
-    });
-});
-
 // `Track.friction`/`Track.resistance` threaded through the ECS +
 // history layer — the `Track.v0` gesture pattern (`beginV0`), `bakeHash` coverage,
 // absent-in-a-document restoring the kernel's own 0 (never the new-track authoring default),
@@ -3143,7 +2987,7 @@ describe("section speed control", () => {
 describe("track friction/drag coefficients", () => {
     /** a lone flat force section, baked — mirrors `forceSection()` above (kept local: friction
      *  needs a section long enough, and with enough curvature-free ds, to show a measurable v
-     *  drop without duplicating the speed-substrate suite's fixture). */
+     *  drop). */
     function forceSection(): { state: State; eid: number; sec: number } {
         const state = new State();
         state.addSystem(BakeSystem);

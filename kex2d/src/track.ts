@@ -22,7 +22,6 @@ import {
     place,
     type Section as SectionSpec,
     SectionKind,
-    type SpeedControl,
 } from "./section";
 import {
     autoTangent,
@@ -86,16 +85,6 @@ export const Section = {
     order: sparse(u32),
     kind: sparse(u32),
     length: sparse(f32),
-};
-
-/** a section's optional authored SPEED CONTROL — a per-edge v²-modification channel prescribing
- *  a linear ramp from entry v² to `target²` over the span's own domain coordinate —
- *  attached to the SAME eid as `Section`, not a sub-entity like `Handle`/`Force`: one target
- *  per section, so ECS membership itself carries the `SpeedControl | undefined` presence
- *  `section.ts`'s `Section.speed?` type already names, with no separate "has" flag that could
- *  drift from it (one source of truth). `target` is the authored exit speed (m/s). */
-export const Speed = {
-    target: sparse(f32),
 };
 
 /** a node on a geo section. `section` is the owning section's stable id. `order`
@@ -746,16 +735,15 @@ export function createSection(
     return id;
 }
 
-/** re-create a section at an *exact* id / order / kind / length (+ optional speed control) —
- *  undo of a delete, redo of a create, or a snapshot restore. no id allocation, so it
- *  round-trips byte-identical. its nodes/points are respawned separately. */
+/** re-create a section at an *exact* id / order / kind / length — undo of a delete, redo of
+ *  a create, or a snapshot restore. no id allocation, so it round-trips byte-identical.
+ *  its nodes/points are respawned separately. */
 function spawnSection(
     ecs: State,
     id: number,
     order: number,
     kind: SectionKind,
     length: number,
-    speed?: SpeedControl,
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Section);
@@ -763,10 +751,6 @@ function spawnSection(
     Section.order.set(eid, order);
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
-    if (speed !== undefined) {
-        ecs.add(eid, Speed);
-        Speed.target.set(eid, speed.target);
-    }
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -1406,68 +1390,6 @@ export function setSectionLength(ecs: State, id: number, length: number): void {
     Section.length.set(eid, Math.max(minForceExtent(trackDomain(ecs)), length));
 }
 
-// ── section speed control ────────────────────────────────────────────────────────
-
-/** a section's authored speed control, or undefined when it carries none — the pure
- *  ECS-column reader `geoPayload`/`forcePayload`/`forceBake`/`sectionContentHash` and
- *  `snapshotSection` all share, so the bake, the hash, and undo read the SAME projection of
- *  ECS membership onto `SpeedControl | undefined`. `undefined` for a stale id too (mirrors
- *  `sectionLengthState`'s "gone" reading). */
-export function sectionSpeed(ecs: State, id: number): SpeedControl | undefined {
-    const eid = sectionAt(ecs, id);
-    if (eid === null || !ecs.has(eid, Speed)) return undefined;
-    return { target: Speed.target.get(eid) };
-}
-
-/** whether a section's speed control may be EDITED right now — the same per-subject rule
- *  `sectionEditable` (`acts.ts`) applies to every other non-subject edit surface (geo nodes,
- *  other sections' force keys/extents): editable with no pin session open, or when `section`
- *  IS the pinning section — pin's editing lockdown covers speed edits like every other
- *  non-subject edit: a speed target isn't what a pin solve touches, but it rides the same
- *  per-section consent `sectionEditable` grants its section. Reimplemented off `bakeFreeze`
- *  rather than importing `sectionEditable` —
- *  `acts.ts`/`editor.ts` sit ABOVE track.ts in the dependency graph (they import FROM here),
- *  so track.ts can't reach back up without a cycle. `bakeFreeze` is the same in-mode signal,
- *  set at the same `editor.beginPin`/`endPin` choke points `sectionEditable`'s `pinning`
- *  argument reads. */
-export function speedEditable(section: number): boolean {
-    return bakeFreeze === null || bakeFreeze.section === section;
-}
-
-/** a section's undoable speed-control state, keyed by stable id — the scrub/field edit
- *  gesture snapshots this. `target: undefined` means "no control" (distinct from the snapshot
- *  ITSELF being undefined, which `begin` reads as "open nothing" — `sectionSpeedState` reserves
- *  that for a gone or currently un-editable section, mirroring `sectionLengthState`'s "gone"
- *  reading plus the in-mode lockdown). */
-export interface SectionSpeedState {
-    id: number;
-    target: number | undefined;
-}
-
-/** snapshot a section's speed-control state, or undefined if it's gone OR not editable right
- *  now (the in-mode lockdown, `speedEditable`) — the gesture-open guard: `beginSpeed` refuses
- *  to open at all when this reads undefined. */
-export function sectionSpeedState(ecs: State, id: number): SectionSpeedState | undefined {
-    if (sectionAt(ecs, id) === null || !speedEditable(id)) return undefined;
-    return { id, target: sectionSpeed(ecs, id)?.target };
-}
-
-/** set (or clear, `undefined`) a section's speed-control target (m/s) — the field/scrub write
- *  + gesture restore. Refuses (no-op) on a stale id or under the in-mode lockdown
- *  (`speedEditable`) — the write-side belt to `beginSpeed`'s gesture-open suspenders, so a
- *  direct call can't slip the guard either. Re-bakes on the next tick (the control rides
- *  `bakeHash` via `sectionContentHash`). */
-export function setSectionSpeed(ecs: State, id: number, target: number | undefined): void {
-    const eid = sectionAt(ecs, id);
-    if (eid === null || !speedEditable(id)) return;
-    if (target === undefined) {
-        if (ecs.has(eid, Speed)) ecs.remove(eid, Speed);
-        return;
-    }
-    if (!ecs.has(eid, Speed)) ecs.add(eid, Speed);
-    Speed.target.set(eid, target);
-}
-
 // ── track initial speed (v0) ───────────────────────────────────────────────────
 
 /** the track's undoable initial speed (m/s) — the START handle's scrub/type gesture
@@ -1494,8 +1416,8 @@ export function setTrackV0(trackEid: number, v0: number): void {
  *  surface, at its track-global sentinel (`acts.ts`'s `section: -1`, the same reading v0 is
  *  documented against): editable with no pin session open, never editable once one is (a
  *  track-global write has no "the pinning section" case to except). Reimplemented off
- *  `bakeFreeze` rather than importing `sectionEditable` — `speedEditable`'s own reasoning,
- *  `acts.ts` sits above `track.ts` in the dependency graph. */
+ *  `bakeFreeze` rather than importing `sectionEditable` — `acts.ts` sits above `track.ts`
+ *  in the dependency graph. */
 export function trackEditable(): boolean {
     return bakeFreeze === null;
 }
@@ -1591,15 +1513,14 @@ export function setTrackDomain(ecs: State, domain: Domain): void {
 
 // ── per-section kind + conversion ─────────────────────────────────────────────
 
-/** one section's full undoable state: its identity/order, kind, force extent, its speed
- *  control, its geo nodes, and its force points. a destructive convert (or a structural op)
- *  snapshots this before/after so undo is byte-identical. */
+/** one section's full undoable state: its identity/order, kind, force extent, its geo
+ *  nodes, and its force points. a destructive convert (or a structural op) snapshots
+ *  this before/after so undo is byte-identical. */
 export interface SectionSnapshot {
     id: number;
     order: number;
     kind: SectionKind;
     length: number;
-    speed: SpeedControl | undefined;
     nodes: NodeState[];
     points: { id: number; s: number; g: number; ease: Easing; tangent?: ForceTangent }[];
 }
@@ -1614,7 +1535,6 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
         order: Section.order.get(eid),
         kind: Section.kind.get(eid) as SectionKind,
         length: Section.length.get(eid),
-        speed: sectionSpeed(ecs, sectionId),
         nodes: nodeSnapshot(ecs, sectionId),
         points: sectionForces(ecs, sectionId).map((p) => ({
             id: p.id,
@@ -1629,10 +1549,7 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
 /** clear a section's payload and rebuild it verbatim from a snapshot — restores a
  *  convert (either direction) or a structural op byte-identical. the Section entity
  *  is assumed to exist (its order/kind/length are rewritten); nodes respawn by
- *  order, points by id, so eids recycle but identities don't. the speed control is written
- *  directly (not through `setSectionSpeed`), bypassing the in-mode lockdown on purpose —
- *  mirrors `restoreForcePoint`'s precedent: a snapshot restore must be byte-identical
- *  regardless of the CURRENT pin state, since undo/redo isn't a live edit. */
+ *  order, points by id, so eids recycle but identities don't. */
 export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     const eid = sectionAt(ecs, snap.id);
     if (eid === null) throw new Error(`restoreSection: no section ${snap.id}`);
@@ -1641,12 +1558,6 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.order.set(eid, snap.order);
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
-    if (snap.speed !== undefined) {
-        if (!ecs.has(eid, Speed)) ecs.add(eid, Speed);
-        Speed.target.set(eid, snap.speed.target);
-    } else if (ecs.has(eid, Speed)) {
-        ecs.remove(eid, Speed);
-    }
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
 }
@@ -1835,10 +1746,7 @@ function seedForceKeyframes(ecs: State, sectionId: number, length: number, g: nu
 /** reset a section's payload to the FORCE default: both row kinds cleared, the two
  *  continuation keyframes seeded at the recovered entry force (a flat continuation over the
  *  default extent). the ONE body behind `convertSection`'s geo → force flip and
- *  `resetSection`'s force-held reset, so the two seeds can't drift apart. clears any speed
- *  control too — "the default" (both callers' own docs) is the state a fresh section gets,
- *  and a fresh section never carries one; undo restores it from the pre-reset snapshot like
- *  everything else the reset clears. */
+ *  `resetSection`'s force-held reset, so the two seeds can't drift apart. */
 function resetToForce(ecs: State, eid: number, sectionId: number): void {
     // recover the entry force from the current bake before the reset — the seed continues
     // the incoming force, stamped at creation.
@@ -1846,7 +1754,6 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
     const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    if (ecs.has(eid, Speed)) ecs.remove(eid, Speed);
     Section.kind.set(eid, SectionKind.Force);
     // the default extent in the TRACK's active domain — a literal meters constant would be
     // a 24-second, 480-edge section on a Time-domain track.
@@ -1857,12 +1764,10 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
 
 /** reset a section's payload to the GEO default: both row kinds cleared, the flat two-node
  *  seed. `resetToForce`'s twin — one body behind `convertSection`'s force → geo flip and
- *  `resetSection`'s geo-held reset. clears any speed control too, same reasoning as
- *  `resetToForce`. */
+ *  `resetSection`'s geo-held reset. */
 function resetToGeo(ecs: State, eid: number, sectionId: number): void {
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    if (ecs.has(eid, Speed)) ecs.remove(eid, Speed);
     Section.kind.set(eid, SectionKind.Geo);
     Section.length.set(eid, 0);
     addNode(ecs, sectionId, 0, 0);
@@ -2077,7 +1982,7 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
     for (const e of [...ecs.query([Handle])]) ecs.destroy(e);
     for (const e of [...ecs.query([Force])]) ecs.destroy(e);
     for (const snap of snaps) {
-        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length, snap.speed);
+        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length);
         for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
     }
@@ -2672,7 +2577,6 @@ function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
         kind: "geo",
         nodes: geoNodes(ecs, sectionId),
         ds,
-        speed: sectionSpeed(ecs, sectionId),
     };
 }
 
@@ -2718,7 +2622,6 @@ function forcePayload(
         fN: forceDense(ecs, sectionId, resolved),
         step: resolved,
         domain,
-        speed: sectionSpeed(ecs, sectionId),
     };
 }
 
@@ -2755,7 +2658,6 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
         clipped,
         clippedStep,
         domain,
-        sectionSpeed(ecs, sectionId),
         trackFriction(ecs),
         trackResistance(ecs),
     );
@@ -2788,10 +2690,6 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
             }
         }
     }
-    // the speed control: folded in for BOTH kinds, off the same
-    // membership-is-presence reading `sectionSpeed` projects — absent contributes nothing, so a
-    // track with no speed control anywhere stays byte-identical to the pre-substrate hash.
-    if (ecs.has(sec.eid, Speed)) h += `^v${Speed.target.get(sec.eid)}`;
     return h;
 }
 
@@ -3102,7 +3000,7 @@ export const BakeSystem: System = {
 
 export const TrackPlugin: Plugin = {
     name: "Track",
-    components: { Track, Section, Handle, Force, Speed },
+    components: { Track, Section, Handle, Force },
     traits: {
         Track: {
             defaults: () => ({
@@ -3119,7 +3017,6 @@ export const TrackPlugin: Plugin = {
             }),
         },
         Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0, ds: 0 }) },
-        Speed: { defaults: () => ({ target: 0 }) },
         Handle: {
             defaults: () => ({
                 section: 0,
