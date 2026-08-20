@@ -1168,8 +1168,14 @@ function v0ScrubStart(e: PointerEvent): void {
 function onV0Field(e: Event): void {
     if (trackEid === null) return;
     if (editor.pinning !== null) return; // the lockdown (the field is disabled too)
-    const val = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    if (!Number.isFinite(val)) return; // guard a cleared field
+    const input = e.currentTarget as HTMLInputElement;
+    const val = Number.parseFloat(input.value);
+    if (!Number.isFinite(val)) {
+        // a refused write never changes v0, so the `value={vText}` binding never re-fires —
+        // force the stale/cleared text back to the committed reading (v0Keydown's Escape shape).
+        input.value = v0.toFixed(1);
+        return;
+    }
     beginV0(trackEid);
     setTrackV0(trackEid, val);
     commit(history);
@@ -1217,8 +1223,15 @@ function frictionScrubStart(e: PointerEvent): void {
 function onFrictionField(e: Event): void {
     if (trackEid === null) return;
     if (editor.pinning !== null) return;
-    const val = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    if (!validCoefficient(val)) return; // refusal: NaN or negative commits nothing
+    const input = e.currentTarget as HTMLInputElement;
+    const val = Number.parseFloat(input.value);
+    if (!validCoefficient(val)) {
+        // refusal: NaN or negative commits nothing — and a no-op write never re-fires the
+        // `value={muText}` binding, so the refused text would otherwise sit on screen forever
+        // (v0Keydown's Escape branch is the shape that already handles this; onchange didn't).
+        input.value = friction.toFixed(3);
+        return;
+    }
     beginFriction(trackEid);
     setTrackFriction(trackEid, val);
     commit(history);
@@ -1249,8 +1262,13 @@ function resistanceScrubStart(e: PointerEvent): void {
 function onResistanceField(e: Event): void {
     if (trackEid === null) return;
     if (editor.pinning !== null) return;
-    const val = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    if (!validCoefficient(val)) return; // refusal: NaN or negative commits nothing
+    const input = e.currentTarget as HTMLInputElement;
+    const val = Number.parseFloat(input.value);
+    if (!validCoefficient(val)) {
+        // refusal: NaN or negative commits nothing — restore the displayed text (`onFrictionField`'s twin).
+        input.value = resistance.toFixed(5);
+        return;
+    }
     beginResistance(trackEid);
     setTrackResistance(trackEid, val);
     commit(history);
