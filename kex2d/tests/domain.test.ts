@@ -662,18 +662,22 @@ describe("explicit easing handles", () => {
 
 describe("degeneracies", () => {
     test("a plateau where the ride stalls: keyframes inside it collapse, by construction", () => {
-        // 1.2 g sustained over 40 m drains the energy: v reaches zero and the cart never moves
-        // again. In the Distance bake time runs away (ds/v̄ at the V_FLOOR clamp), so the
-        // section's converted duration is enormous; the Time bake then MARCHES that duration at
-        // Δt with the cart frozen, so its arclength plateaus EXACTLY (ds_i = v_i·Δt, v_i == 0).
+        // 1.2 g sustained over 30 m drains the energy: v reaches zero — a TRUE stall
+        // (`forward.step`'s v²≤0 freeze, `kex2d-map.md`) — and the cart never moves again. In the
+        // Distance bake time runs away (ds/v̄ at the V_FLOOR clamp), so the section's converted
+        // duration is enormous; the Time bake then MARCHES that duration at Δt with the cart
+        // frozen, so its arclength plateaus EXACTLY (ds_i = v_i·Δt, v_i == 0). The section length
+        // is kept short enough past the stall that the converted duration stays inside
+        // `MAX_SAMPLES` — the freeze makes the frozen dwell time honest (and hence bigger than
+        // the pre-freeze creep's), so a 40 m section here would overrun the sample budget.
         //
         // Converting back is therefore LOSSY on purpose: two keyframes at different times inside
         // a frozen stretch are at the same PLACE, so they must convert to the same arclength.
         // That's the documented data-loss-on-flip semantic, and undo is the way back.
-        const { state, eid, sec } = forceTrack(40, [
+        const { state, eid, sec } = forceTrack(30, [
             [0, 1],
-            [20, 1.2],
-            [40, 1],
+            [15, 1.2],
+            [30, 1],
         ]);
         const out = bakeOut.get(eid);
         if (!out) throw new Error("no bake");
@@ -799,11 +803,13 @@ describe("the time march the document threads", () => {
         // `computeTime` derives t = Σ ds/v̄ wherever a section has no marched time. A Time-domain
         // force section HAS one, and a keyframe's stored t is that accumulated march time by
         // construction, so the table must carry it: deriving instead is a second truth that
-        // diverges without bound at a stall (measured 155.45 s marched vs 3.77 s derived).
-        const { state, eid, sec } = forceTrack(40, [
+        // diverges without bound at a stall (measured 154.24 s marched vs derived a fraction of
+        // it — the section shortened to 30 m, the same fixture as the "plateau" test above, to
+        // keep the TRUE-stall-freeze's honest dwell time inside `MAX_SAMPLES`).
+        const { state, eid, sec } = forceTrack(30, [
             [0, 1],
-            [20, 1.2], // stalls: v reaches zero and the derived time runs away
-            [40, 1],
+            [15, 1.2], // stalls: v reaches zero and the derived time runs away
+            [30, 1],
         ]);
         expect(convertDomain(createHistory(), state, Domain.Time)).toBe(true);
         const duration = extent(state, sec);

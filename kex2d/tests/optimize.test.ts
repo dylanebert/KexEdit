@@ -633,7 +633,9 @@ describe("solveOptimize — injection gate", () => {
     // `outcome === "diverged"` and failed with `"solved"`: the loosened tolerance alone accepted
     // the iterate. Found by sweeping a climb profile's stall neighborhood (`tests/optimize.lab.ts`
     // §6) for a case whose (x, y, θ) residual clears a realistic caller tolerance while its landed
-    // march still injects — v0 = 12 m/s under a steep climb, key 1 bumped by 1.525 g.
+    // march still injects — v0 = 12 m/s under a steep climb, key 1 bumped by 1.0 g (`kex2d-map.md`'s
+    // true-stall freeze changed the boundary this bump sits at from the previously-swept 1.525 g,
+    // re-swept against the freeze).
     test("a caller-loosened tolerance that accepts a march-stalled landing refuses as diverged, not solved", () => {
         const climb: ForcePoint[] = [
             { s: 0, g: 1 },
@@ -644,7 +646,7 @@ describe("solveOptimize — injection gate", () => {
         ];
         const entry: Entry = { x: 0, y: 0, theta: 0, v: 12 };
         const stamp = computeExit(entry, climb, 40, DS);
-        const edited = climb.map((p, i) => (i === 1 ? { ...p, g: p.g + 1.525 } : p));
+        const edited = climb.map((p, i) => (i === 1 ? { ...p, g: p.g + 1.0 } : p));
         const tol = 1;
         const angleTol = 1;
         const r = solveOptimize({
