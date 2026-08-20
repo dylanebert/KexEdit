@@ -133,6 +133,7 @@ export interface Kex {
     })[];
     forceMarkerAt(i: number): { x: number; y: number } | null;
     forces(): { s: number; g: number }[];
+    friction(): number;
     gRange(): [number, number];
     hoverForceId(): number | null;
     guides(): { ray: boolean; angle: string | null; length: string | null };
@@ -149,6 +150,7 @@ export interface Kex {
     parked(): boolean;
     placeForce(s: number, g: number): number;
     poses(): number[][];
+    resistance(): number;
     sectionCount(): number;
     sectionForceCounts(): number[];
     sectionIds(): number[];

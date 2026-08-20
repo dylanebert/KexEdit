@@ -658,6 +658,60 @@ test("v0 authoring flow", async ({ page, boot }) => {
     await expect.poll(v0).toBeCloseTo(v0Default, 3);
 });
 
+// Drive the START popover's REFUSAL path across all three fields (v0, μ, c): type an invalid
+// value, press Enter (blur fires onchange) — the handler refuses the write (`validCoefficient`
+// for μ/c, a finite-number guard for v0), so the model is untouched. What this pins beyond that:
+// the DISPLAYED input text is also corrected back to the committed value, not left showing the
+// refused text — a defect adversarial review caught (KexEdit PR #11 finding 1) because
+// `value={muText}` is a Svelte prop binding that only writes the DOM on a computed-value change,
+// and a refused write never changes the computed value. Witnessed red before the fix (this
+// arm's own first run, `App.svelte` still un-repaired): "Timed out … expect(locator).toHaveValue
+// … Expected string: \"0.021\" … Received string: \"-1\"" on the μ field — model-half
+// (`friction`) already passed at that point, confirming the failure was the display half alone,
+// not the refusal itself. Same shape for c (negative) and v0 (NaN, the only guard v0's field
+// carries — negative v0 is floored, not refused, by `setTrackV0`, a different mechanism this
+// arm does not cover).
+test("coefficient field refusal flow", async ({ page, boot }) => {
+    await boot();
+
+    const v0 = () => kexCall(page, "v0");
+    const friction = () => kexCall(page, "friction");
+    const resistance = () => kexCall(page, "resistance");
+
+    const canvas = page.locator("canvas.viewport");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    await page.mouse.click(cb.x + cb.width / 2, cb.y + (cb.height - DOCK_RESERVE) / 2);
+    await expect(page.locator(".vtip")).toBeVisible();
+
+    const v0Before = await v0();
+    const frictionBefore = await friction();
+    const resistanceBefore = await resistance();
+
+    // ── μ: type a negative value → refused (model untouched), and the field snaps back to the
+    // committed text rather than showing the typed "-1" forever. ──
+    const muInput = page.locator(".vtip .fld.mu input");
+    await muInput.fill("-1");
+    await page.keyboard.press("Enter");
+    await expect.poll(friction).toBeCloseTo(frictionBefore, 6);
+    await expect(muInput).toHaveValue(frictionBefore.toFixed(3));
+
+    // ── c: same shape, a negative drag coefficient. ──
+    const cInput = page.locator(".vtip .fld.c input");
+    await cInput.fill("-0.001");
+    await page.keyboard.press("Enter");
+    await expect.poll(resistance).toBeCloseTo(resistanceBefore, 6);
+    await expect(cInput).toHaveValue(resistanceBefore.toFixed(5));
+
+    // ── v0: its one refusal path is a cleared/non-numeric field (NaN) — negative v0 is floored,
+    // not refused, so it's not this class. ──
+    const v0Input = page.locator(".vtip .fld.v0 input");
+    await v0Input.fill("");
+    await page.keyboard.press("Enter");
+    await expect.poll(v0).toBeCloseTo(v0Before, 6);
+    await expect(v0Input).toHaveValue(v0Before.toFixed(1));
+});
+
 // Drive the MIXED-LAYOUT DOGFOOD (section-editor stage 5): compose the whole chain the
 // spec set out to author — a geo lead-in, a force airtime hill appended after it, then a
 // geo turnaround appended after that — end to end through the REAL affordances (the `+`

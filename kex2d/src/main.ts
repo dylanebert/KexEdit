@@ -96,6 +96,10 @@ if (import.meta.env.DEV) {
         // are indistinguishable), and the popover itself is already driven pointer-true by the v0
         // flow.
         setV0: (v: number): void => setTrackV0(track, v),
+        // v0's two dissipation-coefficient siblings — the refusal flow asserts a refused typed
+        // commit leaves the model untouched (read-only, like v0()).
+        friction: (): number => Track.friction.get(track),
+        resistance: (): number => Track.resistance.get(track),
         // section-local pose signature — the flow asserts an undo reverts geometry.
         poses: (): number[][] =>
             sectionHandles(ecs, sec()).map((eid) => [
