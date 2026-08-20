@@ -230,6 +230,30 @@ describe("RK4 (independent numerical model, convergence order)", () => {
         const sMax = 20;
         const fN = () => Math.cos(alpha);
 
+        // fN ≡ cos(theta0) makes theta a discrete FIXED POINT (dtheta = (fN −
+        // cosθ)·g·ds/v² = 0 exactly, same trick as "incline (Coulomb,
+        // exact-discrete)" above), so the kernel's OWN v² recurrence is the
+        // exact affine map `u_{n+1} = (1 − 2c·ds)·u_n − F0·ds`, F0 = 2g(sinα +
+        // μcosα), whose continuum limit is the linear ODE du/ds = −2c·u − F0,
+        // closed form u(s) = (V0² − u*)e^{−2c·s} + u*, u* = −F0/2c. This gives
+        // an exact f64 target — no RK4 needed to derive it — which lets the
+        // ratio bound be DERIVED rather than fitted: the affine map's Taylor
+        // deviation from the closed form (below) is the true O(ds) → O(ds²)
+        // structure; comparing it to the SAME recurrence run in f32 isolates
+        // f32 rounding noise from that true discretization term.
+        const F0 = 2 * G * (Math.sin(alpha) + mu * Math.cos(alpha));
+        const uStar = -F0 / (2 * c);
+        const vTrue = Math.sqrt((V0 * V0 - uStar) * Math.exp(-2 * c * sMax) + uStar);
+
+        const f64ExitV = (ds: number): number => {
+            const N = Math.round(sMax / ds);
+            const decay = 1 - 2 * c * ds;
+            let u = V0 * V0;
+            for (let i = 0; i < N; i++) u = decay * u - F0 * ds;
+            return Math.sqrt(u);
+        };
+        const gapExact = (ds: number): number => Math.abs(f64ExitV(ds) - vTrue);
+
         const gapAt = (ds: number): number => {
             const N = Math.round(sMax / ds);
             const entry: Entry = { x: 0, y: 0, theta: alpha, v: V0 };
@@ -245,21 +269,50 @@ describe("RK4 (independent numerical model, convergence order)", () => {
             const ref = rk4(0, 0, alpha, V0, N + 1, ds, fN, G, {}, mu, c);
             return Math.abs(kernel.exit.v - ref[N][3]);
         };
+        // f32 noise isolated directly: kernel (f32) minus the same recurrence
+        // at f64 — not a bound, a measurement, since the recurrence is exact.
+        const f32Noise = (ds: number): number => {
+            const N = Math.round(sMax / ds);
+            const entry: Entry = { x: 0, y: 0, theta: alpha, v: V0 };
+            const kernel = evalForce(
+                entry,
+                new Float32Array(N).fill(Math.cos(alpha)),
+                { edges: N, ds },
+                Domain.Distance,
+                undefined,
+                mu,
+                c,
+            );
+            return kernel.exit.v - f64ExitV(ds);
+        };
 
         const dsCoarse = 0.2;
+        const dsFine = dsCoarse / 2;
         const gapCoarse = gapAt(dsCoarse);
-        const gapFine = gapAt(dsCoarse / 2);
+        const gapFine = gapAt(dsFine);
+
+        // guard: this arm's premise (ratio tracks the true O(ds) term) holds
+        // only while f32 rounding stays a minor fraction of that term — the
+        // exact failure the reviewer swept into at ds ≤ 0.025, where the noise
+        // and the shrinking signal cross. M = 10 caps the worst-case ratio
+        // distortion at (1−1/M)/(1+1/M) ≈ 0.82×, i.e. loud failure margin, not
+        // silent nonsense, if a future edit refines ds past this window.
+        const M = 10;
+        for (const ds of [dsCoarse, dsFine]) {
+            expect(Math.abs(f32Noise(ds))).toBeLessThan(gapExact(ds) / M);
+        }
 
         // both the kernel (semi-implicit Euler-ish, midpoint-angle) and the RK4
-        // oracle are convergent methods, so as ds → 0 the gap between them
-        // shrinks at (at least) the kernel's own first order: halving ds should
-        // roughly halve the gap. Assert the ORDER (a ratio band), not a point
-        // tolerance — the exact ratio wanders with higher-order terms at finite
-        // ds, but stays well clear of "no improvement" (ratio ≈ 1) or divergence.
+        // oracle are convergent methods, so as ds → 0 the gap shrinks at the
+        // kernel's own first order (ratio → 2). predictedRatio is the TRUE
+        // (noise-free) ratio, computed from the exact affine recurrence above;
+        // worst-case f32 noise (bounded by the guard just above) can only pull
+        // the measured ratio down to predictedRatio·(1−1/M)/(1+1/M).
         expect(gapCoarse).toBeGreaterThan(0);
+        const predictedRatio = gapExact(dsCoarse) / gapExact(dsFine);
+        const lowerBound = predictedRatio * ((1 - 1 / M) / (1 + 1 / M));
         const ratio = gapCoarse / gapFine;
-        expect(ratio).toBeGreaterThan(1.5);
-        expect(ratio).toBeLessThan(3.0);
+        expect(ratio).toBeGreaterThan(lowerBound);
     });
 
     test("Time domain: rk4Time converges at the same first order with friction/drag", () => {
@@ -268,6 +321,33 @@ describe("RK4 (independent numerical model, convergence order)", () => {
         const c = 5e-4;
         const tMax = 1.2;
         const fN = () => 1; // flat-ish authored force (level entry)
+
+        // theta0 = 0, fN ≡ 1 = cos(0) is the same discrete fixed point as the
+        // incline arm above (dtheta = 0 exactly), so dy = 0 always and the
+        // continuum ODE reduces to the separable dv/dt = −μg − c·v², solved in
+        // closed form (standard arctan integral of a Riccati with no linear
+        // term): v(t) = √(μg/c)·tan(atan(V0·√(c/μg)) − t·√(μg·c)). Domain.Time's
+        // per-edge step is ds_i = v_i·Δt (variable, not constant, since v
+        // changes each edge) so unlike the incline arm the discrete recurrence
+        // isn't a closed affine map — f64ExitV below re-runs the SAME per-edge
+        // formula (`loss`, dy = 0) at full double precision as a faithful
+        // noise-isolation reference, not the pass/fail oracle (rk4Time stays
+        // that).
+        const k = Math.sqrt(mu * G * c);
+        const s = Math.sqrt(c / (mu * G));
+        const vTrue = Math.sqrt((mu * G) / c) * Math.tan(Math.atan(V0 * s) - k * tMax);
+
+        const f64ExitV = (dt: number): number => {
+            const N = Math.round(tMax / dt);
+            let v = V0;
+            for (let i = 0; i < N; i++) {
+                const vSq = v * v;
+                const lossVal = 2 * (mu * G + c * vSq) * (v * dt);
+                v = Math.sqrt(Math.max(vSq - lossVal, 0));
+            }
+            return v;
+        };
+        const gapExact = (dt: number): number => Math.abs(f64ExitV(dt) - vTrue);
 
         const gapAt = (dt: number): number => {
             const edges = Math.round(tMax / dt);
@@ -284,15 +364,36 @@ describe("RK4 (independent numerical model, convergence order)", () => {
             const ref = rk4Time(0, 0, 0, V0, edges + 1, dt, fN, G, {}, mu, c);
             return Math.abs(kernel.exit.v - ref[edges][3]);
         };
+        const f32Noise = (dt: number): number => {
+            const edges = Math.round(tMax / dt);
+            const entry: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+            const kernel = evalForce(
+                entry,
+                new Float32Array(edges).fill(1),
+                { edges, ds: dt },
+                Domain.Time,
+                undefined,
+                mu,
+                c,
+            );
+            return kernel.exit.v - f64ExitV(dt);
+        };
 
         const dtCoarse = 0.02;
+        const dtFine = dtCoarse / 2;
         const gapCoarse = gapAt(dtCoarse);
-        const gapFine = gapAt(dtCoarse / 2);
+        const gapFine = gapAt(dtFine);
+
+        const M = 10;
+        for (const dt of [dtCoarse, dtFine]) {
+            expect(Math.abs(f32Noise(dt))).toBeLessThan(gapExact(dt) / M);
+        }
 
         expect(gapCoarse).toBeGreaterThan(0);
+        const predictedRatio = gapExact(dtCoarse) / gapExact(dtFine);
+        const lowerBound = predictedRatio * ((1 - 1 / M) / (1 + 1 / M));
         const ratio = gapCoarse / gapFine;
-        expect(ratio).toBeGreaterThan(1.5);
-        expect(ratio).toBeLessThan(3.0);
+        expect(ratio).toBeGreaterThan(lowerBound);
     });
 });
 
