@@ -270,7 +270,7 @@ export function computeExit(
 ): OptimizeStamp {
     const resolved = resolveStep(length, step);
     const dense = forceProfile(points, resolved);
-    const exit = evalForce(entry, dense, resolved, domain, undefined, friction, resistance);
+    const exit = evalForce(entry, dense, resolved, domain, friction, resistance);
     return { x: exit.exit.x, y: exit.exit.y, theta: exit.exit.theta, v: exit.exit.v };
 }
 
@@ -385,7 +385,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     // matters too (the invoke-time reading below, and `finalize`).
     const landAt = (g: ArrayLike<number>): SectionResult => {
         const dense = forceProfile(withG(points, g), step);
-        return evalForce(entry, dense, step, domain, undefined, friction, resistance);
+        return evalForce(entry, dense, step, domain, friction, resistance);
     };
     const exitAt = (g: ArrayLike<number>): Entry => landAt(g).exit;
 

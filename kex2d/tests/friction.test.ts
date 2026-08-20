@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { forces } from "../src/bake";
 import { G, integrate, loss, step, V_FLOOR } from "../src/forward";
-import { Domain, evalForce, evalGeo, type Entry } from "../src/section";
-import { withThetas } from "./helpers/chain";
+import { Domain, evalForce, type Entry } from "../src/section";
 import { rk4, rk4Time } from "./oracles/rk4";
 
 // `kex2d-friction` stage 1: the loss law is `2·(μ·g·|fN| + c·v²)·ds`, in v²
@@ -43,7 +42,6 @@ describe("incline (Coulomb, exact-discrete)", () => {
             new Float32Array(N).fill(fN),
             { edges: N, ds },
             Domain.Distance,
-            undefined,
             mu,
             0,
         );
@@ -78,7 +76,6 @@ describe("flat drag (exact-discrete)", () => {
             new Float32Array(N).fill(1),
             { edges: N, ds },
             Domain.Distance,
-            undefined,
             0,
             c,
         );
@@ -123,7 +120,6 @@ describe("terminal velocity (fixed point)", () => {
             new Float32Array(N).fill(0),
             { edges: N, ds },
             Domain.Distance,
-            undefined,
             mu,
             c,
         );
@@ -140,7 +136,6 @@ describe("terminal velocity (fixed point)", () => {
             new Float32Array(N).fill(0),
             { edges: N, ds },
             Domain.Distance,
-            undefined,
             0,
             c,
         );
@@ -262,7 +257,6 @@ describe("RK4 (independent numerical model, convergence order)", () => {
                 new Float32Array(N).fill(Math.cos(alpha)),
                 { edges: N, ds },
                 Domain.Distance,
-                undefined,
                 mu,
                 c,
             );
@@ -279,7 +273,6 @@ describe("RK4 (independent numerical model, convergence order)", () => {
                 new Float32Array(N).fill(Math.cos(alpha)),
                 { edges: N, ds },
                 Domain.Distance,
-                undefined,
                 mu,
                 c,
             );
@@ -357,7 +350,6 @@ describe("RK4 (independent numerical model, convergence order)", () => {
                 new Float32Array(edges).fill(1),
                 { edges, ds: dt },
                 Domain.Time,
-                undefined,
                 mu,
                 c,
             );
@@ -372,7 +364,6 @@ describe("RK4 (independent numerical model, convergence order)", () => {
                 new Float32Array(edges).fill(1),
                 { edges, ds: dt },
                 Domain.Time,
-                undefined,
                 mu,
                 c,
             );
@@ -420,7 +411,6 @@ describe("Rust cross-check (demoted, coincidence only)", () => {
             new Float32Array(fixture.steps).fill(1),
             { edges: fixture.steps, ds: fixture.dt },
             Domain.Time,
-            undefined,
             fixture.friction,
             fixture.resistance,
         );
@@ -482,7 +472,7 @@ describe("march-vs-recovery exit-v agreement", () => {
                 c,
             );
 
-            const r = evalForce(entry, fNArr, { edges: N, ds }, Domain.Distance, undefined, mu, c);
+            const r = evalForce(entry, fNArr, { edges: N, ds }, Domain.Distance, mu, c);
             let mx = 0;
             for (let i = 2; i < N - 2; i++)
                 mx = Math.max(mx, Math.abs(marchV[i] * marchV[i] - r.v[i] * r.v[i]));
@@ -494,36 +484,6 @@ describe("march-vs-recovery exit-v agreement", () => {
         expect(fine).toBeGreaterThan(0);
         expect(fine).toBeLessThan(coarse); // it shrinks
         expect(fine).toBeLessThan(0.65 * coarse); // ~halving → O(ds), section.test.ts's own bound
-    });
-});
-
-describe("exit-target exactness composes with friction (prescription beats dissipation)", () => {
-    test("a speed control still lands exactly on target with μ, c > 0 inside its span", () => {
-        const edges = 24;
-        const ds = 0.5;
-        const mu = 0.03;
-        const c = 1e-3;
-        const entry: Entry = { x: 0, y: 0, theta: 0.1, v: 12 };
-        const fN = new Float32Array(edges).fill(1.05);
-        const r = evalForce(entry, fN, { edges, ds }, Domain.Distance, { target: 22 }, mu, c);
-        expect(r.exit.v).toBe(22);
-    });
-
-    test("evalGeo's arclength ramp lands exactly on target with μ, c > 0 too", () => {
-        const nodes = withThetas([
-            { x: 0, y: 0 },
-            { x: 30, y: -4 },
-        ]);
-        const r = evalGeo(
-            { x: 0, y: 0, theta: 0, v: 10 },
-            nodes,
-            0.5,
-            undefined,
-            { target: 18 },
-            0.04,
-            2e-3,
-        );
-        expect(r.exit.v).toBe(18);
     });
 });
 

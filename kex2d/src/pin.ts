@@ -125,15 +125,7 @@ export function enterPin(ecs: State, sectionId: number): PinSession | null {
     if (!spec) return null;
     const { points } = sectionPoints(ecs, sectionId);
     const dense = forceProfile(points, spec.step);
-    const r = evalForce(
-        spec.entry,
-        dense,
-        spec.step,
-        spec.domain,
-        undefined,
-        spec.friction,
-        spec.resistance,
-    );
+    const r = evalForce(spec.entry, dense, spec.step, spec.domain, spec.friction, spec.resistance);
     // the session carries only the stamp + ghost + the downstream freeze seed (all frozen at
     // mode entry); the section's baking parameters are NOT cached here — `runPinSection`
     // re-reads them live off `sectionSpec` at every invoke, same as any other invoked command

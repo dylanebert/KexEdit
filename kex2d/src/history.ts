@@ -53,13 +53,10 @@ import {
     setTangent,
     type SectionLengthState,
     sectionLengthState,
-    type SectionSpeedState,
-    sectionSpeedState,
     setForceEase as writeForceEase,
     setForcePoint,
     setForceTangent,
     setSectionLength,
-    setSectionSpeed,
     setStickyLen,
     snapshotAll,
     snapshotSection,
@@ -668,20 +665,6 @@ export function beginLength(ecs: State, id: number): void {
         () => sectionLengthState(ecs, id),
         (st: SectionLengthState) => setSectionLength(ecs, st.id, st.length),
         (a: SectionLengthState, b: SectionLengthState) => a.length === b.length,
-    );
-}
-
-/** open a gesture on a section's speed-control field/scrub (`kex2d-speed-substrate`).
- *  `sectionSpeedState` reads `undefined` both for a gone section and an un-editable one (the
- *  in-mode lockdown, `track.speedEditable`), so `begin` refuses to open on either — the
- *  gesture-open suspenders to `setSectionSpeed`'s own write-side belt. commit coalesces the
- *  live writes into one entry; a no-change release (including clearing back to no control)
- *  records nothing. */
-export function beginSpeed(ecs: State, id: number): void {
-    begin(
-        () => sectionSpeedState(ecs, id),
-        (st: SectionSpeedState) => setSectionSpeed(ecs, st.id, st.target),
-        (a: SectionSpeedState, b: SectionSpeedState) => a.target === b.target,
     );
 }
 
