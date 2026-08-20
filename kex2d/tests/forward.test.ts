@@ -119,6 +119,53 @@ describe("step", () => {
         step(b.posX, b.posY, b.theta, b.v, 0, 1, 1.0, 1.0, G);
         expect(b.v[1]).toBe(0);
     });
+
+    // A true stall (v² ≤ 0 at the edge's entry) must freeze the frame rather
+    // than march through V_FLOOR — the same shape `bake.forces`' degenerate
+    // (ds == 0) branch already carries a stationary cart's frame across with
+    // no arc traversed. WITNESSED RED (before this fix, `vSafe = max(|v|,
+    // V_FLOOR)` at forward.ts:90 made a truly-stopped edge indistinguishable
+    // from a barely-crawling one, both driven by the same V_FLOOR = 0.01
+    // clamp), run via `bun run <scratch>/red_witness.ts` against this exact
+    // (θ=0.3, F_n=2.0, ds=0.5) case:
+    //   V=0    -> { x: 2.9552972316741943, y: 4.497997760772705, theta: 51223.546875, v: 0 }
+    //   V=0.01 -> { x: 2.9552972316741943, y: 4.497997760772705, theta: 51223.546875, v: 0 }
+    // bit-identical, including the invented ~51223 rad of accumulated
+    // curvature — a stopped ride's own march.
+    test("true stall (v²≤0) freezes the frame: no dθ, position/theta carried, distinct from a sub-V_WARN crawl", () => {
+        const stalled = makeBuf();
+        setSample(stalled, 0, 3, 4, 0.3, 0);
+        step(stalled.posX, stalled.posY, stalled.theta, stalled.v, 0, 1, 2.0, 0.5, G);
+
+        expect(stalled.posX[1]).toBe(3);
+        expect(stalled.posY[1]).toBe(4);
+        expect(stalled.theta[1]).toBeCloseTo(0.3, 6);
+        expect(stalled.v[1]).toBe(0);
+
+        // distinct from a merely sub-V_WARN crawl: v=0.01 is a real, if tiny,
+        // positive speed — not a true stall — so it marches normally and
+        // diverges from the frozen frame above.
+        const crawling = makeBuf();
+        setSample(crawling, 0, 3, 4, 0.3, 0.01);
+        step(crawling.posX, crawling.posY, crawling.theta, crawling.v, 0, 1, 2.0, 0.5, G);
+
+        expect(readSample(crawling, 1)).not.toEqual(readSample(stalled, 1));
+    });
+
+    test("a negative entry v² (already over-clamped upstream) counts as a true stall too", () => {
+        const b = makeBuf();
+        // v itself is stored non-negative (sqrt(max(vSq,0))), but a caller
+        // handing step() a genuinely stalled edge always does so at v=0 —
+        // v²≤0 and v===0 coincide once v is real-valued. This arm pins the
+        // boundary reads exactly zero, not "very small".
+        setSample(b, 0, 1, 1, -0.6, 0);
+        step(b.posX, b.posY, b.theta, b.v, 0, 1, -3.0, 2.0, G);
+        const next = readSample(b, 1);
+        expect(next.x).toBe(1);
+        expect(next.y).toBe(1);
+        expect(next.theta).toBeCloseTo(-0.6, 6);
+        expect(next.v).toBe(0);
+    });
 });
 
 describe("integrate", () => {

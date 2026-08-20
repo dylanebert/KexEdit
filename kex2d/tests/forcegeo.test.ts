@@ -609,13 +609,18 @@ describe("document-layer fidelity", () => {
         expect(result.forceError).toBeLessThanOrEqual(FORCE_BUDGET);
     }, 60_000);
 
-    test("a shape the dialect cannot hold is reported as such, not as a floor", async () => {
+    test("a shape that used to be hypersensitive near a stall is now honestly reported, in agreement with the document", async () => {
         // the reviewer's literal geometry — a 24 m force section entered at ~11 m/s after an
-        // 18 m climb. the physics there is near-infeasible (the recovered force is hypersensitive
-        // as v falls), so NO node count in the pure-Auto dialect holds the force budget: the
-        // honest answer is the saturated `"budget"` outcome, which the readout tags. under the
-        // frozen-count scoring this same input reported `"floor"` at 0.39 g while the document
-        // displayed 6.06 g — a claim of success on a shape that isn't reproduced.
+        // 18 m climb — used to march past a true stall on invented curvature (the pre-freeze
+        // `vSafe = max(|v|, V_FLOOR)` bug, `kex2d-map.md`): the recovered force went
+        // hypersensitive as v crept near zero, so no node count in the pure-Auto dialect held
+        // the force budget and the honest answer was the saturated `"budget"` outcome. The
+        // true-stall freeze (`forward.step`) removes that hypersensitivity at its root: v hits
+        // exactly 0 partway through this section and the geometry freezes flat from there, which
+        // the pure-Auto dialect represents trivially. The two readings — the fit's own
+        // `forceError` and the document's own re-baked `drift` — still have to AGREE (the same
+        // consistency this test always pinned; only the outcome and its sign flipped with the
+        // physics).
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
@@ -631,13 +636,13 @@ describe("document-layer fidelity", () => {
 
         const before = sectionStations(eid, sec);
         const result = await convertForce(createHistory(), state, sec);
-        expect(result.outcome).toBe("budget");
+        expect(result.outcome).toBe("floor");
         state.step(0);
 
-        // and the DOCUMENT agrees the budget is blown — the honest positive assertion. (an
-        // earlier version bounded |drift − forceError| by a tuned `1`, which held only because
-        // the alignment defect happened to sit under it on this one input.)
-        expect(result.forceError).toBeGreaterThan(FORCE_BUDGET);
-        expect(drift(before, sectionStations(eid, sec))).toBeGreaterThan(FORCE_BUDGET);
+        // the DOCUMENT agrees the budget holds — the honest positive assertion, same shape as
+        // the sibling test above (drift and the fit's own reading track each other, never
+        // diverge).
+        expect(result.forceError).toBeLessThanOrEqual(FORCE_BUDGET);
+        expect(drift(before, sectionStations(eid, sec))).toBeLessThanOrEqual(FORCE_BUDGET);
     }, 60_000);
 });
