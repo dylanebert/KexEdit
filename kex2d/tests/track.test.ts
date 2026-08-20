@@ -71,6 +71,8 @@ import {
     setStickyLen,
     setTangent,
     setTrackDomain,
+    setTrackFriction,
+    setTrackResistance,
     setTrackV0,
     snapshotAll,
     snapshotSection,
@@ -82,12 +84,21 @@ import {
     toLocalU,
     Track,
     trackDomain,
+    DEFAULT_FRICTION,
+    DEFAULT_RESISTANCE,
+    trackEditable,
+    trackEntity,
+    trackFriction,
+    trackResistance,
+    TrackPlugin,
     V0,
 } from "../src/track";
 import {
     appendSection as appendSectionCmd,
     beginForceMove,
     beginForceTangent,
+    beginFriction,
+    beginResistance,
     beginSpeed,
     commit,
     createHistory,
@@ -1402,11 +1413,16 @@ describe("tangent model (feel round 2)", () => {
     // per-run allocator artifact (`nextSectionId`), not part of the default geometry, so it's
     // normalized out before the compare. the pin goes red if the default geo bake path ever changes
     // (a node pose, ds, v0, the hash format, or a node-0 tangent leaking in) — the guard.
+    // `mu`/`c` moved into the literal at `kex2d-friction` stage 2: `bakeHash` now folds the
+    // coefficients in unconditionally, beside `v0`. `createTrack` (this fixture's own builder)
+    // stays at the kernel's neutral 0/0 — `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE` are `seed`'s
+    // (the app-boot document, not this raw ECS entity) — so the literal grows the `mu0c0`
+    // segment and nothing else.
     test("the default flat track bakes to the pinned hash (no node-0 tangents = byte-identical)", () => {
         const { state, eid } = track(); // node 0 (0,0), node 1 (EXTEND_DIST=24, 0); default ds/v0
         state.step(0);
         const hash = (bakeOut.get(eid)?.hash ?? "").replace(/\|S\d+:/g, "|S:"); // drop the allocator id
-        expect(hash).toBe("ds0.5v010|S:0:0,0:0:0,24:0:0");
+        expect(hash).toBe("ds0.5v010mu0c0|S:0:0,0:0:0,24:0:0");
     });
 });
 
@@ -3116,5 +3132,174 @@ describe("section speed control (kex2d-speed-substrate stage 2)", () => {
         expect(sectionSpeed(state, a)).toEqual({ target: 24 });
 
         setBakeFreeze(null);
+    });
+});
+
+// kex2d-friction stage 2: `Track.friction`/`Track.resistance` threaded through the ECS +
+// history layer — the `Track.v0` gesture pattern (`beginV0`), `bakeHash` coverage,
+// absent-in-a-document restoring the kernel's own 0 (never the new-track authoring default),
+// undo byte-identity, and the in-mode editing lockdown at the track-global sentinel.
+describe("track friction/drag coefficients (kex2d-friction stage 2)", () => {
+    /** a lone flat force section, baked — mirrors `forceSection()` above (kept local: friction
+     *  needs a section long enough, and with enough curvature-free ds, to show a measurable v
+     *  drop without duplicating the speed-substrate suite's fixture). */
+    function forceSection(): { state: State; eid: number; sec: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 20);
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, 20, 1);
+        state.step(0);
+        return { state, eid, sec };
+    }
+
+    test("createTrack seeds friction/resistance at the kernel's neutral 0 — every test fixture (and the raw ECS entity) stays byte-identical to before the coefficient existed", () => {
+        const { eid } = forceSection();
+        expect(Track.friction.get(eid)).toBe(0);
+        expect(Track.resistance.get(eid)).toBe(0);
+    });
+
+    test("a NEW authored document (TrackPlugin's own seed) gets the physically-grounded nonzero defaults", async () => {
+        const state = new State();
+        await TrackPlugin.initialize?.(state);
+        const eid = trackEntity(state);
+        expect(eid).not.toBeNull();
+        if (eid === null) throw new Error("no track");
+        expect(Track.friction.get(eid)).toBe(DEFAULT_FRICTION);
+        expect(Track.resistance.get(eid)).toBe(DEFAULT_RESISTANCE);
+    });
+
+    test("an absent-in-a-document Track restores friction/resistance to 0 (the kernel default), never the new-track authoring default", () => {
+        // the document-load fallback (`shallot`'s scene codec: `merged = {...defaults(), ...fields}`)
+        // reads `TrackPlugin.traits.Track.defaults()` for every field a saved document doesn't
+        // carry — an old save predating this feature never authored friction/resistance, so it
+        // must restore 0 (a byte-identical march), never `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`
+        // (the NEW-track authoring default, `seed`'s alone). Mirrors `ds`'s own 0-vs-`DS_NOMINAL`
+        // split already in this same trait record.
+        const defaults = TrackPlugin.traits?.Track?.defaults?.();
+        expect(defaults).toMatchObject({ friction: 0, resistance: 0 });
+    });
+
+    test("bakeHash moves on a coefficient change and holds otherwise", () => {
+        const { state, eid } = forceSection();
+        const before = bakeOut.get(eid)?.hash;
+        if (!before) throw new Error("no bake");
+
+        setTrackFriction(eid, 0.05);
+        state.step(0);
+        const withFriction = bakeOut.get(eid)?.hash;
+        if (!withFriction) throw new Error("no bake");
+        expect(withFriction).not.toBe(before); // authoring friction busts the hash
+
+        state.step(0); // nothing authored changed since — the gate must SKIP
+        expect(bakeOut.get(eid)?.hash).toBe(withFriction);
+
+        setTrackResistance(eid, 0.001);
+        state.step(0);
+        const withResistance = bakeOut.get(eid)?.hash;
+        expect(withResistance).not.toBe(withFriction); // a resistance change busts it again
+
+        state.step(0); // nothing authored changed since — holds again
+        expect(bakeOut.get(eid)?.hash).toBe(withResistance);
+    });
+
+    test("undo round-trips a friction edit byte-identical, redo lands it again", () => {
+        // the fixture is a flat 1g force section (dθ = 0 throughout, so the RECOVERED F_n stays
+        // cos θ = 1 regardless of v — friction never shows there for a straight span). Read the
+        // sample v table instead, which friction directly reduces — the positive control that
+        // proves the round trip actually moved something, not just the stored coefficient.
+        const { state, eid } = forceSection();
+        const v = () => Array.from(samples.get(eid)?.v.subarray(0, Track.count.get(eid)) ?? []);
+        const before = v();
+        const h = createHistory();
+
+        beginFriction(eid);
+        setTrackFriction(eid, 0.1); // the live preview write a scrub would make
+        commit(h);
+        expect(h.undo.length).toBe(1);
+        state.step(0);
+        const withFriction = v();
+        expect(withFriction[withFriction.length - 1]).toBeLessThan(before[before.length - 1]); // positive control
+
+        undo(h, state);
+        state.step(0);
+        expect(v()).toEqual(before);
+        expect(Track.friction.get(eid)).toBe(0);
+
+        redo(h, state);
+        state.step(0);
+        expect(v()).toEqual(withFriction);
+        expect(Track.friction.get(eid)).toBe(0.1);
+    });
+
+    test("undo round-trips a resistance edit byte-identical, redo lands it again", () => {
+        const { state, eid } = forceSection();
+        const h = createHistory();
+
+        beginResistance(eid);
+        setTrackResistance(eid, 0.002);
+        commit(h);
+        expect(h.undo.length).toBe(1);
+        expect(Track.resistance.get(eid)).toBe(0.002);
+
+        undo(h, state);
+        expect(Track.resistance.get(eid)).toBe(0);
+
+        redo(h, state);
+        expect(Track.resistance.get(eid)).toBe(0.002);
+    });
+
+    test("a no-change gesture (scrub back to the same value) records nothing, for both coefficients", () => {
+        const { eid } = forceSection();
+        const h = createHistory();
+        beginFriction(eid);
+        setTrackFriction(eid, 0.05);
+        setTrackFriction(eid, 0); // scrub back to the start
+        commit(h);
+        expect(h.undo.length).toBe(0);
+
+        beginResistance(eid);
+        setTrackResistance(eid, 0.001);
+        setTrackResistance(eid, 0);
+        commit(h);
+        expect(h.undo.length).toBe(0);
+    });
+
+    test("trackFriction/trackResistance read 0 off an empty world — the kernel's own neutral default, not the authoring one", () => {
+        const state = new State();
+        expect(trackFriction(state)).toBe(0);
+        expect(trackResistance(state)).toBe(0);
+    });
+
+    test("an in-pin-mode coefficient edit is refused at the track-global sentinel — the same per-subject rule sectionEditable applies elsewhere (trackEditable's own reading)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20);
+        createForcePoint(state, a, 0, 1);
+        createForcePoint(state, a, 20, 1);
+        state.step(0);
+
+        expect(trackEditable()).toBe(true);
+        const entry = sectionInfo.get(a)?.entry ?? { x: 0, y: 0, theta: 0, v: 10 };
+        setBakeFreeze({ section: a, entry: { ...entry } }); // simulates pin mode open on `a`
+        expect(trackEditable()).toBe(false); // v0/friction/resistance are ALWAYS locked in-mode
+
+        const h = createHistory();
+        setTrackFriction(eid, 0.1); // the write-side belt
+        expect(Track.friction.get(eid)).toBe(0);
+        beginFriction(eid); // the gesture-open suspenders
+        expect(h.undo.length).toBe(0);
+        commit(h); // nothing was open — a no-op
+        expect(h.undo.length).toBe(0);
+
+        setTrackResistance(eid, 0.01);
+        expect(Track.resistance.get(eid)).toBe(0);
+
+        setBakeFreeze(null);
+        expect(trackEditable()).toBe(true);
+        setTrackFriction(eid, 0.1); // editable again once the mode closes
+        expect(Track.friction.get(eid)).toBe(0.1);
     });
 });

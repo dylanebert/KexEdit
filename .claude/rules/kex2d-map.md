@@ -121,10 +121,14 @@ stated below): speed is a function of the PATH the march sweeps, not of height a
 `loss`'s own `|F_n|` and `v²` terms integrated along the way. **At the kernel's own default,
 `μ = c = 0`, the law collapses to exactly its old form**: `v²_{i+1} = v²_i − 2g·Δy`, `F_n` reaching
 `v` only through `dθ → y`, normal force doing no work — a property of the physics, not of any
-solver. Every pin/optimize/ECS caller runs at `μ = c = 0` today (the kernel supports friction as of
-stage 1; `Track.friction`/`Track.resistance` — the authoring surface, and the optimize/pin wiring
-that would actually drive a live caller's coefficients away from 0 — are `kex2d-friction` stages
-2–4), so the zero-coefficient consequences below are UNCHANGED for now:
+solver. Every pin/optimize caller still runs at `μ = c = 0` today: the kernel supports friction as
+of stage 1, and `Track.friction`/`Track.resistance` — the authoring surface, threaded through
+`BakeSystem`'s live bake and every `evalGeo`/`evalForce` caller including the invoked converters
+(`geoforce.ts`/`forcegeo.ts`) — landed `kex2d-friction` stage 2 (new-track default nonzero,
+`seed`'s own; an unauthored/absent-field track stays at the kernel's 0). Pin and optimize
+themselves stay unwired — the wiring that would actually drive a LIVE pin/optimize caller's
+coefficients away from 0 is `kex2d-friction` stage 3 — so the zero-coefficient consequences below
+are UNCHANGED for now:
 
 **an optimizer whose DOF are force ordinates cannot move exit `v` except by moving exit `y`** (at
 `μ = c = 0`). Pin mode's three-row exit stamp is therefore already a full four-state pin (measured

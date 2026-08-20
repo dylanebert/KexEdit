@@ -28,6 +28,8 @@ import {
     setForceEase,
     setForceTangent,
     setTrackDomain,
+    setTrackFriction,
+    setTrackResistance,
     setTrackV0,
     snapshotAll,
     trackDomain,
@@ -254,6 +256,34 @@ describe("convertGeo", () => {
         state.step(0);
         expect(docState(state, eid)).toEqual(before);
         expect(trackDomain(state)).toBe(Domain.Time); // a landing never flips the domain itself
+    }, 60_000);
+
+    test("a convert-fit on a track with friction targets the dissipative force curve — closes the geoforce sectionSpeed-shaped residue gap for the friction channel too (kex2d-friction stage 2)", async () => {
+        // the solve's target is `evalGeo`'s own recovered force curve. geometry is unchanged
+        // between the two tracks below, but the RECOVERED v (and so fN = κ·v²/g + cosθ) differs
+        // once the march dissipates energy along an identical path. Before threading,
+        // `convertGeo` called `evalGeo` with friction/resistance defaulted to 0 regardless of the
+        // track's own authored coefficients — the exact shape of the substrate's own sectionSpeed
+        // gap (`geoforce.ts`'s evalGeo call never threaded `speed` either) — so authoring
+        // `Track.friction` had NO effect on what the fit targeted. Run the identical geo shape
+        // twice, coefficients zero vs a physically-plausible nonzero pair, and the landed fits
+        // must differ: a threaded caller sees a different target; an unthreaded one always sees
+        // the same frictionless one regardless of what's authored.
+        const frictionless = humpTrack();
+        setTrackFriction(frictionless.eid, 0);
+        setTrackResistance(frictionless.eid, 0);
+        frictionless.state.step(0);
+        const zero = await convertAndBake(createHistory(), frictionless.state, frictionless.sec);
+        expect(zero.outcome).not.toBe("diverged");
+
+        const dissipative = humpTrack();
+        setTrackFriction(dissipative.eid, 0.1);
+        setTrackResistance(dissipative.eid, 0.002);
+        dissipative.state.step(0);
+        const lossy = await convertAndBake(createHistory(), dissipative.state, dissipative.sec);
+        expect(lossy.outcome).not.toBe("diverged");
+
+        expect(lossy.points).not.toEqual(zero.points);
     }, 60_000);
 
     test("a section that isn't geo is refused", async () => {

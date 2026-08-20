@@ -61,6 +61,13 @@ export const Track = {
     ds: sparse(f32),
     v0: sparse(f32),
     domain: sparse(u32),
+    /** Coulomb friction coefficient (`kex2d-friction`), threaded to `forward.loss` beside
+     *  `resistance`. New-track default `DEFAULT_FRICTION`; an absent field (an old save)
+     *  restores 0, the kernel's own neutral default (`TrackPlugin.traits`). */
+    friction: sparse(f32),
+    /** quadratic-drag coefficient [1/m] (`kex2d-friction`), threaded to `forward.loss` beside
+     *  `friction`. New-track default `DEFAULT_RESISTANCE`; an absent field restores 0. */
+    resistance: sparse(f32),
 };
 
 /** one section in the track's chain. `id` is the stable identity undo/redo and
@@ -314,6 +321,22 @@ export const V0 = 10;
  *  is never zero/negative (which would make a level track take infinite time). */
 const MIN_V0 = 0.1;
 
+/** a fresh track's default Coulomb friction coefficient — ported verbatim from the incumbent
+ *  core's `DEFAULT_FRICTION` (`packages/core/src/track/dispatch.rs`), independently grounded:
+ *  0.021 sits mid-range for polyurethane wheels on steel rail (~0.01–0.03), the actual coaster
+ *  contact pair (`kex2d-friction`'s Locked decision). Nonzero and physical, unlike the
+ *  kernel's own zero-coefficient default (`forward.ts`'s `friction`/`resistance` params) — the
+ *  kernel default is what an ABSENT `Track.friction` restores to (`TrackPlugin.traits`,
+ *  below), never this. */
+export const DEFAULT_FRICTION = 0.021;
+
+/** a fresh track's default quadratic-drag coefficient (1/m), derived (not ported) from
+ *  `c = ρ·C_d·A/2m` with ρ = 1.225, C_d = 1.0, A = 2.5 m², m = 6000 kg — a 24-rider train's
+ *  open bluff-body drag, rounded up from 2.55e-4 (`kex2d-friction`'s Locked decision; erring
+ *  high is the safe direction). ~13× the incumbent core's undocumented `2e-5`, whose implied
+ *  terminal velocity (700 m/s) has no physical grounding. */
+export const DEFAULT_RESISTANCE = 2.5e-4;
+
 /** the nominal step a force section bakes at, in `domain`'s own unit: the track's own
  *  `trackDs` quantum for `Distance`, its time twin `trackDs / V0` for `Time` — a time march's
  *  nominal is never the track's meters quantum (`trackDs` is a distance scalar, not a step in
@@ -427,8 +450,12 @@ export function setStickyLen(
 }
 
 /** allocate an empty track entity + its sample / bake-output buffers, sized once
- *  to MAX_SAMPLES. no sections — callers (the demo seed, tests) add their own.
- *  returns the track eid. */
+ *  to MAX_SAMPLES. no sections — callers (the demo seed, tests) add their own. friction/
+ *  resistance start at the kernel's own neutral 0 (an unauthored track's march is
+ *  byte-identical to before the coefficient existed, the same law `forward.ts`'s own
+ *  defaulted params hold) — `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE` are `seed`'s to apply, the
+ *  one place a genuinely NEW authored track (as opposed to this bare entity every test also
+ *  builds on) comes from. returns the track eid. */
 export function createTrack(ecs: State): number {
     const trackEid = ecs.create();
     ecs.add(trackEid, Track);
@@ -436,6 +463,8 @@ export function createTrack(ecs: State): number {
     Track.ds.set(trackEid, DS_NOMINAL);
     Track.v0.set(trackEid, V0);
     Track.domain.set(trackEid, Domain.Distance);
+    Track.friction.set(trackEid, 0);
+    Track.resistance.set(trackEid, 0);
     samples.set(trackEid, {
         posX: new Float32Array(MAX_SAMPLES),
         posY: new Float32Array(MAX_SAMPLES),
@@ -1455,6 +1484,73 @@ export function trackV0State(trackEid: number): TrackV0State {
  *  gesture restore. re-bakes on the next tick (v0 is in the bake hash). */
 export function setTrackV0(trackEid: number, v0: number): void {
     Track.v0.set(trackEid, Math.max(MIN_V0, v0));
+}
+
+// ── friction / drag (kex2d-friction) ─────────────────────────────────────────────
+
+/** whether the track-global coefficients (friction/resistance) may be EDITED right now — the
+ *  same per-subject rule `sectionEditable` (`acts.ts`) applies to every other non-subject edit
+ *  surface, at its track-global sentinel (`acts.ts`'s `section: -1`, the same reading v0 is
+ *  documented against): editable with no pin session open, never editable once one is (a
+ *  track-global write has no "the pinning section" case to except). Reimplemented off
+ *  `bakeFreeze` rather than importing `sectionEditable` — `speedEditable`'s own reasoning,
+ *  `acts.ts` sits above `track.ts` in the dependency graph. */
+export function trackEditable(): boolean {
+    return bakeFreeze === null;
+}
+
+/** the track's authored Coulomb friction coefficient, or 0 for an empty world — the kernel's
+ *  own neutral default, never `DEFAULT_FRICTION` (that's a NEW-track authoring default, read
+ *  only at `createTrack`). */
+export function trackFriction(ecs: State): number {
+    const t = trackEntity(ecs);
+    return t === null ? 0 : Track.friction.get(t);
+}
+
+/** the track's authored quadratic-drag coefficient, or 0 for an empty world (`trackFriction`'s
+ *  twin). */
+export function trackResistance(ecs: State): number {
+    const t = trackEntity(ecs);
+    return t === null ? 0 : Track.resistance.get(t);
+}
+
+/** the track's undoable friction coefficient — the START handle's scrub/type gesture
+ *  snapshots this. `undefined` when the track is gone or the in-mode lockdown is up
+ *  (`trackEditable`) — the gesture-open guard `beginFriction` refuses to open on. */
+export interface TrackFrictionState {
+    friction: number;
+}
+
+export function trackFrictionState(trackEid: number): TrackFrictionState | undefined {
+    if (!trackEditable()) return undefined;
+    return { friction: Track.friction.get(trackEid) };
+}
+
+/** set the track's friction coefficient — the field/scrub write + gesture restore. refuses
+ *  (no-op) under the in-mode lockdown (`trackEditable`) — the write-side belt to
+ *  `beginFriction`'s gesture-open suspenders. no floor: the kernel's own no-guard convention
+ *  (`forward.loss` takes `|fMag|`, never validates its coefficients), so a negative/NaN
+ *  refusal is the field's own job (stage 4), not this write. re-bakes on the next tick
+ *  (friction is in the bake hash). */
+export function setTrackFriction(trackEid: number, friction: number): void {
+    if (!trackEditable()) return;
+    Track.friction.set(trackEid, friction);
+}
+
+/** `TrackFrictionState`'s drag-coefficient twin. */
+export interface TrackResistanceState {
+    resistance: number;
+}
+
+export function trackResistanceState(trackEid: number): TrackResistanceState | undefined {
+    if (!trackEditable()) return undefined;
+    return { resistance: Track.resistance.get(trackEid) };
+}
+
+/** `setTrackFriction`'s drag-coefficient twin. */
+export function setTrackResistance(trackEid: number, resistance: number): void {
+    if (!trackEditable()) return;
+    Track.resistance.set(trackEid, resistance);
 }
 
 // ── track domain ───────────────────────────────────────────────────────────────
@@ -2532,7 +2628,12 @@ export function deleteSection(ecs: State, sectionId: number): boolean {
 }
 
 function seed(ecs: State): void {
-    createTrack(ecs);
+    const trackEid = createTrack(ecs);
+    // a genuinely NEW authored track gets the physically-grounded nonzero coefficients
+    // (`kex2d-friction`'s Locked decision) — `createTrack` itself stays at the kernel's neutral
+    // 0 (every test's own fixture), so this is the one place the authoring default applies.
+    Track.friction.set(trackEid, DEFAULT_FRICTION);
+    Track.resistance.set(trackEid, DEFAULT_RESISTANCE);
     // one geo section: node 0 at the local origin (the fixed start anchor) + a flat
     // extension-length shape node. the whole track launches level from `START`.
     const id = createSection(ecs, 0, SectionKind.Geo, 0);
@@ -2640,7 +2741,15 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     // actually handed in, `resolved.ds` unchanged (the same per-edge step, fewer edges).
     const clipped = dense.length > avail ? dense.subarray(0, avail) : dense;
     const clippedStep: Step = { edges: clipped.length, ds: resolved.ds };
-    const r = evalForce(info.entry, clipped, clippedStep, domain, sectionSpeed(ecs, sectionId));
+    const r = evalForce(
+        info.entry,
+        clipped,
+        clippedStep,
+        domain,
+        sectionSpeed(ecs, sectionId),
+        trackFriction(ecs),
+        trackResistance(ecs),
+    );
     return { x: r.posX, y: r.posY, fN: r.fN, ds: r.ds, edges: r.edges };
 }
 
@@ -2677,15 +2786,19 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
     return h;
 }
 
-/** input-state hash that gates the bake: the shared ds + initial speed, then every
- *  section in order — its id/order/kind, and its authored payload (a geo section's
+/** input-state hash that gates the bake: the shared ds + initial speed + coefficients, then
+ *  every section in order — its id/order/kind, and its authored payload (a geo section's
  *  node poses, a force section's extent + points). BakeSystem re-bakes on a miss (anything
- *  moved, added, removed, converted, reordered, re-domained, or the v0 retimed), skips
- *  otherwise. the track `domain` is written only when it isn't the default `Distance`, so
- *  every existing authored track's hash stays byte-identical. */
+ *  moved, added, removed, converted, reordered, re-domained, the v0 retimed, or a
+ *  coefficient edited), skips otherwise. `friction`/`resistance` fold in unconditionally,
+ *  beside `v0` (`kex2d-friction` stage 2) — every hand-authored track carries a nonzero
+ *  `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE` from `createTrack` already, so there is no
+ *  zero-coefficient case to keep byte-identical the way `domain`'s conditional suffix does.
+ *  the track `domain` is written only when it isn't the default `Distance`, so an existing
+ *  authored track's DOMAIN suffix stays byte-identical. */
 function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
     const domain = Track.domain.get(trackEid) as Domain;
-    let h = `ds${Track.ds.get(trackEid)}v0${Track.v0.get(trackEid)}`;
+    let h = `ds${Track.ds.get(trackEid)}v0${Track.v0.get(trackEid)}mu${Track.friction.get(trackEid)}c${Track.resistance.get(trackEid)}`;
     if (domain !== Domain.Distance) h += `^${domain}`;
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sectionContentHash(ecs, sec)}`;
@@ -2809,6 +2922,8 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     const v0 = Track.v0.get(trackEid);
     const domain = Track.domain.get(trackEid) as Domain;
     const start = startEntry(v0);
+    const friction = Track.friction.get(trackEid);
+    const resistance = Track.resistance.get(trackEid);
 
     // a geo section needs ≥2 nodes to bake; if any is short, keep the prior bake
     // rather than half-render the chain.
@@ -2857,15 +2972,15 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     }
     const parts: Part[] = [];
     if (split < 0) {
-        const c = chain(start, payloads, MAX_SAMPLES);
+        const c = chain(start, payloads, MAX_SAMPLES, friction, resistance);
         parts.push({ at: 0, entry: start, c, count: Math.min(c.count, MAX_SAMPLES), offset: 0 });
     } else if (fz !== null) {
-        const cA = chain(start, payloads.slice(0, split), MAX_SAMPLES);
+        const cA = chain(start, payloads.slice(0, split), MAX_SAMPLES, friction, resistance);
         const countA = Math.min(cA.count, MAX_SAMPLES);
         parts.push({ at: 0, entry: start, c: cA, count: countA, offset: 0 });
         const budget = MAX_SAMPLES - countA;
         if (budget >= 2) {
-            const cB = chain(fz.entry, payloads.slice(split), budget);
+            const cB = chain(fz.entry, payloads.slice(split), budget, friction, resistance);
             parts.push({
                 at: split,
                 entry: fz.entry,
@@ -2975,7 +3090,20 @@ export const TrackPlugin: Plugin = {
     name: "Track",
     components: { Track, Section, Handle, Force, Speed },
     traits: {
-        Track: { defaults: () => ({ count: 0, ds: 0, v0: V0, domain: Domain.Distance }) },
+        Track: {
+            defaults: () => ({
+                count: 0,
+                ds: 0,
+                v0: V0,
+                domain: Domain.Distance,
+                // absent-in-a-document restores the KERNEL default (0, `forward.ts`'s own
+                // `friction`/`resistance` params), never `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`
+                // (a NEW-track authoring default, `createTrack` only) — an old save with no
+                // coefficients authored never changes shape (`kex2d-friction`'s Locked decision).
+                friction: 0,
+                resistance: 0,
+            }),
+        },
         Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0, ds: 0 }) },
         Speed: { defaults: () => ({ target: 0 }) },
         Handle: {

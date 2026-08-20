@@ -11,10 +11,13 @@
  * both ways: one conversion per section at a time, and a re-read of the authored state before
  * the write.
  *
- * **The input is the bake's own call.** `evalGeo(entry, geoNodes, step, budget)` with the
- * section's live entry frame, the step it bakes at, and the sample budget left at its place in
- * the chain — the same four arguments `BakeSystem`'s `geoPayload` threads through `chain`, so
- * the solve targets exactly the shape on screen, truncation included.
+ * **The input is the bake's own call.** `evalGeo(entry, geoNodes, step, budget, speed, friction,
+ * resistance)` with the section's live entry frame, the step it bakes at, the sample budget left
+ * at its place in the chain, and the section's/track's own authored speed control and dissipative
+ * coefficients — the same arguments `BakeSystem`'s `geoPayload` threads through `chain`, so the
+ * solve targets exactly the shape on screen, truncation included (`kex2d-friction` stage 2 closed
+ * this call's own gap — `speed`/`friction`/`resistance` were silently dropped here, so authoring
+ * any of the three had no effect on what a conversion targeted).
  *
  * **The solve stays distance-internal; the landing converts.** The conversion tier works in
  * meters (its goldens are frozen there), so on a `Time`-domain track the answer passes through
@@ -39,7 +42,10 @@ import {
     sectionAt,
     sectionInfo,
     SectionKind,
+    sectionSpeed,
     trackDs,
+    trackFriction,
+    trackResistance,
 } from "./track";
 
 /** `convertGeo`'s own outcome vocabulary: `refine.RefineOutcome` plus `"restored"`
@@ -174,7 +180,15 @@ export async function convertGeo(
     converting.add(sectionId);
     try {
         const result = await convert(
-            evalGeo(info.entry, geoNodes(ecs, sectionId), step, MAX_SAMPLES - info.startSample),
+            evalGeo(
+                info.entry,
+                geoNodes(ecs, sectionId),
+                step,
+                MAX_SAMPLES - info.startSample,
+                sectionSpeed(ecs, sectionId),
+                trackFriction(ecs),
+                trackResistance(ecs),
+            ),
             info.entry,
             step,
             opts,
