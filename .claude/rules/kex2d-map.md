@@ -77,8 +77,15 @@ dθ       = (F_n(σ_i) − cos θ_i) · g · Δs / v_i²
 midθ     = ½(θ_i + θ_{i+1})
 x_{i+1}  = x_i + Δs · cos(midθ)
 y_{i+1}  = y_i + Δs · sin(midθ)
-v_{i+1}² = v_i² − 2g · (y_{i+1} − y_i)
+v_{i+1}² = v_i² − 2g · (y_{i+1} − y_i) − loss(F_n(σ_i), v_i², Δs, μ, c)
 ```
+
+`loss` (`forward.ts`, beside `step`) is the per-edge dissipative term landed `kex2d-friction` stage
+1: `2·(μ·g·|F_n| + c·v²)·ds` — Coulomb friction on the actual normal-force magnitude plus quadratic
+drag, in v² units. `μ`/`c` (`friction`/`resistance`) default 0 everywhere they're threaded
+(`step`/`integrate`, `bake.forces`, `section.evalGeo`/`evalForce`/`chain`), so an unauthored track's
+march is byte-identical to before the term existed — the path-energy law below is a strict
+generalization, not a rewrite of the μ = c = 0 case.
 
 Velocity uses the energy-delta (squared) form to avoid catastrophic cancellation. Clamps:
 `vSafe = max(|v|, V_FLOOR)` in the dθ formula, `v_next = sqrt(max(v_next², 0))`.
@@ -88,7 +95,8 @@ Velocity uses the energy-delta (squared) form to avoid catastrophic cancellation
 - `m_i = atan2(y_{i+1} − y_i, x_{i+1} − x_i)` — edge (chord) angle, accumulated *continuously*
   (unwrapped) so θ stays continuous across the ±π branch cut (the cart lerps θ for its orientation)
 - `θ_i = ½(m_{i−1} + m_i)` — the curve's local tangent; free ends extrapolate the bisector trend
-- `v_i² = v_0² − 2g·(y_i − y_0)` — energy conservation; `v_i = sqrt(max(0, v_i²))`
+- `v_i² = v_0² − 2g·(y_i − y_0) − Σ loss_k` (`k < i`) — the path-energy identity (the recursion's
+  own telescoping sum); at `μ = c = 0` this is exactly energy conservation. `v_i = sqrt(max(0, v_i²))`
 - `F_n[i] = (θ_{i+1} − θ_i)·vSafe_i² / (g·Δs) + cos(θ_i)` = κ·v²/g + cos θ
 - **a degenerate (Δs == 0) edge is the stationary cart**: it has no chord, so it carries `m_{i−1}`
   across (a frozen cart's orientation doesn't change) and its `F_n` is `cos(θ_i)` — no arc is
@@ -107,22 +115,37 @@ stall certificate is the **θ-row one-sided sign opposition** read off the invok
 (a smooth map's one-sided slopes stay same-signed; the clamp cliff flips them), measured to
 separate every floor-touching corpus draft from every smooth one, threshold-free.
 
-**The conservative-energy law**: speed is a strict function of height. The integrator advances
-`v²_{i+1} = v²_i − 2g·Δy` and the recovery reads `v²_i = v²_0 − 2g·(y_i − y_0)`, so `F_n` reaches
-`v` only through `dθ` → `y`. Normal force does no work, and that is a property of the physics
-rather than of any solver: **an optimizer whose DOF are force ordinates cannot move exit `v`
-except by moving exit `y`.** Pin mode's three-row exit stamp is therefore already a full
-four-state pin (measured 2026-08-01: landed `exit.v` matches the energy-derived value to
-1e-5 m/s across flat / gentle-hill / airtime-dip / steep-climb drafts, and a length change
-doesn't touch it — stamped at L = 60 and re-solved at 65 / 75 it holds, while short lengths
-refuse on geometric reach instead). A fourth residual row on `v` is refused for cause: linearly
-dependent with the `y` row, it would make a well-posed problem read as rank-deficient under the
-`"conditioning"` certificate.
+**The path-energy law** (`kex2d-friction` stage 1, superseding the old conservative-energy law
+stated below): speed is a function of the PATH the march sweeps, not of height alone, whenever
+`μ > 0` or `c > 0` — `F_n` reaches `v` both through `dθ → y` (as before) AND directly, through
+`loss`'s own `|F_n|` and `v²` terms integrated along the way. **At the kernel's own default,
+`μ = c = 0`, the law collapses to exactly its old form**: `v²_{i+1} = v²_i − 2g·Δy`, `F_n` reaching
+`v` only through `dθ → y`, normal force doing no work — a property of the physics, not of any
+solver. Every pin/optimize/ECS caller runs at `μ = c = 0` today (the kernel supports friction as of
+stage 1; `Track.friction`/`Track.resistance` — the authoring surface, and the optimize/pin wiring
+that would actually drive a live caller's coefficients away from 0 — are `kex2d-friction` stages
+2–4), so the zero-coefficient consequences below are UNCHANGED for now:
 
-The identity survives *authored* energy input. A launch or brake at a fixed station adds a known
-term, and `v_exit` stays a function of `y_exit` plus constants no DOF reaches. What breaks it is
-**path-dependent dissipation** — friction, drag, or a control acting over a time window — where
-the loss integrates `F_n` along the path and the DOF finally couples to the energy.
+**an optimizer whose DOF are force ordinates cannot move exit `v` except by moving exit `y`** (at
+`μ = c = 0`). Pin mode's three-row exit stamp is therefore already a full four-state pin (measured
+2026-08-01: landed `exit.v` matches the energy-derived value to 1e-5 m/s across flat / gentle-hill /
+airtime-dip / steep-climb drafts, and a length change doesn't touch it — stamped at L = 60 and
+re-solved at 65 / 75 it holds, while short lengths refuse on geometric reach instead). A fourth
+residual row on `v` is refused for cause: linearly dependent with the `y` row, it would make a
+well-posed problem read as rank-deficient under the `"conditioning"` certificate. **This
+four-state-pin reasoning dies once a pin's own march runs with `μ > 0` or `c > 0`** — the loss
+integral couples a force-ordinate DOF to exit `v` directly, so the fourth-row refusal's premise no
+longer holds; re-grounding that refusal, retiring `exitTol`/`vSqResidual`, and rewriting this
+pin-consequence paragraph for real is `kex2d-friction` stage 3's job, once pin/optimize actually
+run coefficients away from 0.
+
+The identity survives *authored* energy input even with friction/drag landed. A launch or brake at
+a fixed station adds a known term, and — at `μ = c = 0` — `v_exit` stays a function of `y_exit`
+plus constants no DOF reaches. What breaks it in general is **path-dependent dissipation** —
+friction, drag, or a control acting over a time window — where the loss integrates `F_n` along the
+path and the DOF finally couples to the energy. Friction/drag (`forward.loss`) is no longer the
+one thing kept out to preserve this identity: it is landed in the kernel, deliberately, and the
+identity's zero-coefficient special case is what every current caller still relies on.
 
 **The authored-control exception, landed** (`kex2d-speed-substrate` stage 1): a per-section
 `speed: { target }` control prescribes `v²` directly as a linear ramp on the span's own domain
@@ -131,8 +154,10 @@ the per-edge v²-modification channel threaded through `forward.step`/`integrate
 `bake.forces` (`section.ts`'s `evalGeo`/`evalForce`). This is the launch/brake case above, not
 path-dependent dissipation: the ramp is a known function of the domain coordinate alone, not of
 the path `F_n` sweeps, so it doesn't couple a solver DOF to the energy and doesn't unlock the pin
-fourth row — a pinned station's speed is a stamped constant either way. Friction/drag remains the
-one thing that actually breaks `v = f(y)`, and stays out (`kex2d-speed-substrate`'s Out of scope).
+fourth row on its own. Composition with friction/drag: **prescription beats dissipation** — the
+loss lands inside the natural (now-dissipative) per-edge computation, and a `speed` control's ramp
+unconditionally overrides it, so inside a controlled span the actuator absorbs the losses and a
+pinned station's speed stays a stamped constant either way (`kex2d-friction`'s Locked decision).
 
 **The one breach today is the velocity clamp.** `step` and `forces` both take
 `v = sqrt(max(v², 0))`, so a march that runs out of energy has energy *injected* at the clamp and

@@ -47,7 +47,9 @@
  *
  *  **The landed-energy gate (stage 1b, `kex2d-gate-hardening`; tolerance corrected stage 6) is the
  *  same taxonomy's fourth member, and it's `"diverged"`, not `"unreachable"`.** The
- *  conservative-energy law (`kex2d-map.md`) makes exit `v` a strict function of exit `y` — so the
+ *  path-energy law (`kex2d-map.md`), at the `μ = c = 0` every optimize call still runs at today
+ *  (`kex2d-friction`'s kernel-only stage 1; wiring coefficients into optimize is a later stage),
+ *  makes exit `v` a strict function of exit `y` — so the
  *  3-row `(x, y, θ)` pin already pins `v` too, EXCEPT through the one breach the physics itself
  *  carries: the forward integrator's `sqrt(max(v², 0))` clamp injects energy when a march runs out
  *  of it, and that injection survives convergence — a `"solved"` answer's landed `v` can still
@@ -148,7 +150,8 @@ export function derivedTol(
 
 /** the landed-energy gate's tolerance (`kex2d-gate-hardening` stage 6; module header): the EXACT
  *  acceptance bound on the squared-speed gap `|v_land² − v_stamp²|`, derived algebraically from
- *  the conservative-energy law rather than by differentiating it. `v² = v₀² − 2g(y−y₀)` for a
+ *  the path-energy law (at `μ = c = 0`, `kex2d-map.md`) rather than by differentiating it.
+ *  `v² = v₀² − 2g(y−y₀)` for a
  *  fixed entry speed gives `|v_land² − v_stamp²| = 2g·|Δy|`, and the position row's own converged
  *  bound is `|Δy| ≤ tol` (the EFFECTIVE tol the solve actually converges to — `opts.tol` if the
  *  caller overrides it, else `derivedTol(...).pos`) — so the bound is `2 · G · tol`. No `V_FLOOR`:

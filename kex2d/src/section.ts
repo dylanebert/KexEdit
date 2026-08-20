@@ -215,7 +215,10 @@ function exitOf(
  * remaining buffer). a degenerate/truncated chain returns its partial prefix
  * with `valid`/`truncated` set (mirrors `sampleChain`). `speed`, when given,
  * rides the recovery's v²-modification channel as the linear-in-arclength ramp
- * to `speed.target` (`kex2d-speed-substrate`'s locked decision).
+ * to `speed.target` (`kex2d-speed-substrate`'s locked decision). `friction`/
+ * `resistance` (both defaulted 0, trailing — the substrate's positional-last
+ * convention) thread to the recovery's dissipative loss (`kex2d-friction`'s
+ * Locked decision).
  */
 export function evalGeo(
     entry: Entry,
@@ -223,6 +226,8 @@ export function evalGeo(
     dsNominal: number,
     maxSamples = MAX,
     speed?: SpeedControl,
+    friction = 0,
+    resistance = 0,
 ): SectionResult {
     const world = nodes.map((n) => place(entry, n));
     const posX = new Float32Array(maxSamples);
@@ -249,6 +254,8 @@ export function evalGeo(
         entry.theta,
         G,
         V_FLOOR,
+        friction,
+        resistance,
         vSqOverride,
     );
     return {
@@ -302,6 +309,12 @@ export function evalGeo(
  * frozen Time-domain span: `ds_i = v_i·Δt` reads the PRIOR edge's (possibly
  * ramped) `v`, so overriding edge 0's landed `v` off a zero entry un-freezes
  * every edge after it.
+ *
+ * `friction`/`resistance` (both defaulted 0, trailing) thread to BOTH the
+ * march (`stepForward`/`integrate`) and the re-recovery (`forces`) — inside a
+ * `speed`-controlled span the ramp overrides the dissipative value
+ * unconditionally (prescription beats dissipation, `kex2d-friction`'s Locked
+ * decision), so the two never double-count losses.
  */
 export function evalForce(
     entry: Entry,
@@ -309,6 +322,8 @@ export function evalForce(
     step: Step,
     domain: Domain = Domain.Distance,
     speed?: SpeedControl,
+    friction = 0,
+    resistance = 0,
 ): SectionResult {
     const { edges, ds } = step;
     if (fN.length !== edges) {
@@ -344,6 +359,8 @@ export function evalForce(
                 dsi,
                 G,
                 V_FLOOR,
+                friction,
+                resistance,
                 vSqOverride && ((natural) => vSqOverride(i, natural)),
             );
         }
@@ -358,6 +375,8 @@ export function evalForce(
             (sigma) => fN[Math.round(sigma / ds)],
             G,
             V_FLOOR,
+            friction,
+            resistance,
             vSqOverride,
         );
         dsArr.fill(ds);
@@ -377,6 +396,8 @@ export function evalForce(
         entry.theta,
         G,
         V_FLOOR,
+        friction,
+        resistance,
         vSqOverride,
     );
     return {
@@ -422,7 +443,13 @@ export interface ChainResult {
  * `Section {start_index, end_index}` overlap). returns the flat buffers, the
  * per-section ranges, and the exits. an empty chain returns just the seed point.
  */
-export function chain(entry0: Entry, sections: readonly Section[], maxSamples = MAX): ChainResult {
+export function chain(
+    entry0: Entry,
+    sections: readonly Section[],
+    maxSamples = MAX,
+    friction = 0,
+    resistance = 0,
+): ChainResult {
     const posX = new Float32Array(maxSamples);
     const posY = new Float32Array(maxSamples);
     const theta = new Float32Array(maxSamples);
@@ -445,8 +472,16 @@ export function chain(entry0: Entry, sections: readonly Section[], maxSamples = 
     for (const sec of sections) {
         const r =
             sec.kind === "geo"
-                ? evalGeo(entry, sec.nodes, sec.ds, maxSamples - off, sec.speed)
-                : evalForce(entry, sec.fN, sec.step, sec.domain, sec.speed);
+                ? evalGeo(
+                      entry,
+                      sec.nodes,
+                      sec.ds,
+                      maxSamples - off,
+                      sec.speed,
+                      friction,
+                      resistance,
+                  )
+                : evalForce(entry, sec.fN, sec.step, sec.domain, sec.speed, friction, resistance);
         const start = off;
         // bound the COPY at the flat buffers' remaining room. `evalGeo` already respects it —
         // it was handed `maxSamples - off` as its own budget, so `r.edges` never exceeds what's
