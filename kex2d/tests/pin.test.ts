@@ -33,6 +33,8 @@ import {
     type SectionSnapshot,
     SectionKind,
     setForcePoint,
+    setTrackFriction,
+    setTrackResistance,
     setTrackV0,
     snapshotAll,
 } from "../src/track";
@@ -41,11 +43,19 @@ import {
 // contract, the landing, the downstream freeze, and the paced landing's display override. The
 // masked exit-restore KERNEL the mode invokes is a separate unit — `tests/optimize.test.ts`.
 
-function forceTrack(): { state: State; eid: number; sec: number } {
+function forceTrack(coeffs?: { friction: number; resistance: number }): {
+    state: State;
+    eid: number;
+    sec: number;
+} {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
     setTrackV0(eid, 20);
+    if (coeffs) {
+        setTrackFriction(eid, coeffs.friction);
+        setTrackResistance(eid, coeffs.resistance);
+    }
     const sec = createSection(state, 0, SectionKind.Force, 40);
     createForcePoint(state, sec, 0, 1);
     createForcePoint(state, sec, 10, 1.5);
@@ -109,6 +119,51 @@ describe("runPinSection — the document seam", () => {
         const rowsAfterUndo = sectionForces(state, sec);
         expect(rowsAfterUndo.find((r) => r.s === rows[2].s)?.g).toBe(rows[2].g + 0.6);
         expect(editor.pinning).not.toBeNull();
+        endPin();
+    });
+
+    // `sectionSpec` (`pin.ts`) reads the track's own authored
+    // `friction`/`resistance` and threads them into `enterPin`'s stamp — RED FIRST (seen failing
+    // pre-wiring: the stamp read the kernel's own μ = c = 0 default regardless of the track's
+    // authored coefficients, so this equality held for every track). A discriminating check, not
+    // a smoke test: the same section on a zero-coefficient track and a real-coefficient track
+    // must stamp DIFFERENT exits, or the wiring below (injection === 0) can't tell "friction
+    // reached the solve" from "friction was silently dropped and both sides agree at 0 anyway".
+    test("enterPin's stamp reads the track's own authored friction/drag, not the kernel default", () => {
+        skipLanding(); // clear a prior test's still-live paced landing, same as `endPin()` above
+        // one track, not two: `bakeOut`'s live-bake map is keyed by entity id, and two
+        // independent `State()`s each start their own id counter at 0, so two separate tracks
+        // would collide in that shared map. Reading the SAME track's stamp before and after
+        // authoring its coefficients sidesteps that entirely.
+        const { state, eid, sec } = forceTrack();
+        const zeroStamp = enterPin(state, sec)?.stamp;
+        if (!zeroStamp) throw new Error("no session");
+        setTrackFriction(eid, 0.021);
+        setTrackResistance(eid, 2.5e-4);
+        state.step(0);
+        const nonzeroStamp = enterPin(state, sec)?.stamp;
+        if (!nonzeroStamp) throw new Error("no session");
+        expect(nonzeroStamp.v).not.toBe(zeroStamp.v);
+        expect(nonzeroStamp.y).not.toBe(zeroStamp.y);
+    });
+
+    // A non-stalling section under the locked-decision defaults still solves cleanly and lands no
+    // injection — the pin consequence (`kex2d-map.md`): exit `v` is a derived output of the
+    // landed path, never a constraint row, so a real μ/c on a smooth march changes nothing about
+    // the mode's own acceptance.
+    test("a pin solve on a track with authored friction/drag lands within tol at injection 0", async () => {
+        const { state, sec } = forceTrack({ friction: 0.021, resistance: 2.5e-4 });
+        if (!enterPinMode(state, sec)) throw new Error("no session");
+        const session = editor.pinning;
+        if (!session) throw new Error("no session");
+        const rows = sectionForces(state, sec);
+        setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.6);
+        state.step(0);
+        const locked = new Set([rows[0].id, rows[4].id]);
+        const h = createHistory();
+        const result = await runPinSection(h, state, session, locked);
+        expect(result.outcome).toBe("solved");
+        expect(result.injection).toBe(0);
         endPin();
     });
 

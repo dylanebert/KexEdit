@@ -45,40 +45,31 @@
  *  leave the caller free to retry with a different lock set — nothing here writes to the
  *  document; that's the caller's job, once, on a `"solved"` answer.
  *
- *  **The landed-energy gate (stage 1b, `kex2d-gate-hardening`; tolerance corrected stage 6) is the
- *  same taxonomy's fourth member, and it's `"diverged"`, not `"unreachable"`.** The
- *  path-energy law (`kex2d-map.md`), at the `μ = c = 0` every optimize call still runs at today
- *  (`kex2d-friction`'s kernel-only stage 1; wiring coefficients into optimize is a later stage),
- *  makes exit `v` a strict function of exit `y` — so the
- *  3-row `(x, y, θ)` pin already pins `v` too, EXCEPT through the one breach the physics itself
- *  carries: the forward integrator's `sqrt(max(v², 0))` clamp injects energy when a march runs out
- *  of it, and that injection survives convergence — a `"solved"` answer's landed `v` can still
- *  disagree with what the stamped `(x, y, θ)` implies. (`vSafe`, the OTHER forward clamp, floors
- *  only the `dθ` denominator — it injects no energy and carries no bound on this gate.) Every
- *  certificate above is a JACOBIAN READ at invoke, before any solving; the landing gate is a STATE
- *  READ after convergence, and a local method has no Jacobian-shaped certificate for "the clamp
- *  fired somewhere along this particular march" — it can only compare the two states it has in
- *  hand. So the gate is honest non-convergence (the iterate the solver landed on is not the
- *  fixpoint it reports), never a diagnosis, and it downgrades `"solved"` → `"diverged"` in
- *  `finalize` — the ONE seam both the direct solve and the continuation loop's early return
- *  already route through, so there is nowhere else the gate needs to live.
+ *  **The injection gate is the same taxonomy's fourth member, and it's
+ *  `"diverged"`, not `"unreachable"`.** An earlier form of this gate read the stamp comparison
+ *  off a stamped `v`: at `μ = c = 0` energy conservation makes exit `v` a strict function of
+ *  exit `y`, so the 3-row `(x, y, θ)` pin pinned `v` too, except through the forward integrator's
+ *  `sqrt(max(v², 0))` clamp injecting energy the stamp comparison could only infer. That reasoning
+ *  is retired along with `μ = c = 0`: `OptimizeOpts.friction`/`.resistance` (the section's own
+ *  authored `Track.friction`/`.resistance`, threaded to every `evalForce` call below) put a real
+ *  pin solve on the path-energy law's general form (`kex2d-map.md`), where the loss integral
+ *  couples a force-ordinate DOF to `v` directly through the path swept, not only through `y` — so
+ *  a stamped `v` is no longer implied by the three geometric rows and carries none here (the pin
+ *  consequence: exit `v` is a *derived output* of the landed path, never a constraint row,
+ *  residual row, or solver DOF). The one thing an authored `v` could never speak to anyway is
+ *  the clamp: the three residual rows never read `v` at all, so a march that clamps mid-solve
+ *  converges its `(x, y, θ)` clean while quietly injecting energy nothing downstream can see.
  *
- *  Its tolerance is `exitTol(tol)`, and the bound is EXACT, not a linearization. The energy law is
- *  algebraic — `v² = v₀² − 2g(y−y₀)` for a fixed entry speed — so `|v_land² − v_stamp²| =
- *  2g·|Δy|`, and the position row's own converged bound asserts `|Δy| ≤ tol` (the EFFECTIVE
- *  position tolerance the solve actually converges to, `opts.tol` if the caller overrides it, else
- *  the derived default — an override that loosens what the solve converges to must loosen what the
- *  gate accepts, or the gate refuses answers the caller's own tolerance calls converged). So
- *  `|v_land² − v_stamp²| ≤ 2 · G · tol`, exactly — `exitTol`. Differentiating `v·dv = −g·dy` to
- *  `dv = G·dy/v` was the earlier (stage 1b) derivation, and it agrees with the exact form to first
- *  order at speed (so no converged answer moves), but it diverges exactly where the breach lives:
- *  at a stalled exit the differentiated form (evaluated at the integrator's own `V_FLOOR` to dodge
- *  its division by zero) admits a Δv the exact bound doesn't, and it grows without bound as `1/v`
- *  as speed keeps falling — `V_FLOOR` drops out of the exact derivation entirely, because `v²` is
- *  the quantity the physics actually conserves and squaring has no pole at `v = 0`. `finalize`
- *  compares the squared gap (`OptimizeResult.vSqResidual`) against `exitTol(tol)`, never a linear
- *  `v` gap against a linear tolerance. The zero-drift identity path never reaches this gate: same
- *  g-vector, same march, same `v`, so it's exempt by construction rather than by a redundant check.
+ *  So the gate reads the defect at its own site instead of inferring it two derivatives away:
+ *  `bake.forces` accumulates `Σ −min(v²_pre-clamp, 0)` per edge (v² units) while it recovers the
+ *  march, surfaced as `SectionResult.injection` — 0 wherever no edge's pre-clamp `v²` goes
+ *  negative, the case that holds on every physically non-stalling march regardless of `μ`/`c`.
+ *  `finalize` reads the landed draft's own injection and downgrades a `"solved"` answer whose
+ *  injection exceeds `injectionTol` (below) to `"diverged"` — the ONE seam both the direct solve
+ *  and the continuation loop's early return already route through, so there is nowhere else the
+ *  gate needs to live. The zero-drift identity path never reaches it: same g-vector, same march,
+ *  so its injection is whatever the untouched draft's own march already carries, reported but
+ *  never gated (module invariant: the identity path never downgrades — the caller made no edit).
  *
  *  **Continuation (stage 3).** Large drift puts the stamp outside the direct SQP's basin (a
  *  ±3 g edit converges, slowly, only past the 30-iteration budget). When the direct solve
@@ -102,13 +93,14 @@
 
 import { G } from "./forward";
 import { forceProfile, type ForcePoint, resolveStep, type Step } from "./profile";
-import { type Domain, type Entry, evalForce } from "./section";
+import { type Domain, type Entry, evalForce, type SectionResult } from "./section";
 
-/** the section's exit anchor a stamp addresses. `v` is STAMPED, not PINNED: energy conservation
- *  makes it a derived function of `y` given the fixed entry speed, so the 3-row `(x, y, θ)`
- *  residual already determines it — carrying it here is what lets `finalize`'s landed-energy gate
- *  (module header) compare the solve's own landed `v` against it without a fourth residual row,
- *  which would read linearly dependent with `y` under the `"conditioning"` certificate. */
+/** the section's exit anchor a stamp addresses — `(x, y, θ)` are the solve's three residual rows;
+ *  `v` is carried for readout only (the session's frozen ghost, `pin.ts`), never a fourth row: the
+ *  pin consequence (`kex2d-map.md`) is that exit `v` is a *derived output* of the landed path,
+ *  never a constraint row, residual row, or solver DOF — `finalize`'s injection gate (module
+ *  header) reads the defect at its own site (`SectionResult.injection`), not by comparing a
+ *  stamped `v` against the landed one. */
 export interface OptimizeStamp {
     x: number;
     y: number;
@@ -123,44 +115,57 @@ export const MIN_FREE = 3;
 
 const F32_EPS = 2 ** -24;
 
+/** the shared random-walk coverage factor both f32-noise floors below convert a 1σ scatter
+ *  estimate into a reliable single-read bound: a 1σ floor rejects a true fixpoint ~1 time in 3
+ *  (measured, `derivedTol`'s own case: a converged 400 m case grinding at 1.1σ), so both floors
+ *  size the accepted band at `SIGMA` standard deviations instead. */
+const SIGMA = 3;
+
 /** the derived f32 replay floor (`kex2d-optimize-mode` locked decision): the tolerance below
  *  which "restored" is meaningless, because the f32 production integrator itself can't replay an
  *  exit more precisely. Each of the march's N steps commits a rounding error of order
  *  `ε_f32 · scale` (the state is stored f32 at the exit's own magnitude), and the stamp and the
  *  replay follow different g-vectors, so their roundings are independent — a random walk whose
  *  accumulated disagreement is a walk with σ = `ε_f32 · scale · √N`. The tolerance asserts a
- *  single residual READ, which scatters with that same σ even at the true fixpoint, so the
- *  floor carries the standard 3σ coverage factor — a true solution reads "restored" reliably,
- *  where a 1σ floor rejects it ~1 time in 3 (measured: a converged 400 m case grinding at
- *  1.1σ). Never an absolute number: at exit x ≈ 400 m over 800 steps the floor is ~2e-3 (the
- *  stage-1 fixed 1e-4 sat far below it and refused honest solves), at 40 m over 80 steps ~6e-5.
- *  Measured against the mechanism in `tests/optimize.lab.ts` §2–3: the per-read RMS scatter is
- *  ≤1 ulp of scale and the SQP loop reliably converges under this floor across the corpus.
- *  The angle floor is the same length in the scaled-row frame: `pos / length` (a heading error
- *  δθ displaces the downstream by ~L·δθ, the same lever the θ residual row is weighted by). */
+ *  single residual READ, which scatters with that same σ even at the true fixpoint, so the floor
+ *  carries the `SIGMA`-σ coverage factor above. Never an absolute number: at exit x ≈ 400 m over
+ *  800 steps the floor is ~2e-3 (the stage-1 fixed 1e-4 sat far below it and refused honest
+ *  solves), at 40 m over 80 steps ~6e-5. Measured against the mechanism in
+ *  `tests/optimize.lab.ts` §2–3: the per-read RMS scatter is ≤1 ulp of scale and the SQP loop
+ *  reliably converges under this floor across the corpus. The angle floor is the same length in
+ *  the scaled-row frame: `pos / length` (a heading error δθ displaces the downstream by ~L·δθ,
+ *  the same lever the θ residual row is weighted by). */
 export function derivedTol(
     stamp: OptimizeStamp,
     length: number,
     step: Step,
 ): { pos: number; angle: number } {
     const scale = Math.max(Math.abs(stamp.x), Math.abs(stamp.y), length);
-    const pos = 3 * F32_EPS * Math.sqrt(step.edges) * scale;
+    const pos = SIGMA * F32_EPS * Math.sqrt(step.edges) * scale;
     return { pos, angle: pos / length };
 }
 
-/** the landed-energy gate's tolerance (`kex2d-gate-hardening` stage 6; module header): the EXACT
- *  acceptance bound on the squared-speed gap `|v_land² − v_stamp²|`, derived algebraically from
- *  the path-energy law (at `μ = c = 0`, `kex2d-map.md`) rather than by differentiating it.
- *  `v² = v₀² − 2g(y−y₀)` for a
- *  fixed entry speed gives `|v_land² − v_stamp²| = 2g·|Δy|`, and the position row's own converged
- *  bound is `|Δy| ≤ tol` (the EFFECTIVE tol the solve actually converges to — `opts.tol` if the
- *  caller overrides it, else `derivedTol(...).pos`) — so the bound is `2 · G · tol`. No `V_FLOOR`:
- *  the exact form has no division by `v` to guard, unlike the differentiated `dv = G·dy/v` shape
- *  it replaces (module header). A caller comparing `OptimizeResult.vSqResidual` against `tol`
- *  itself, or against a linear `v` gap, is reading the wrong quantity — this is the one function
- *  that derives the right one, so `finalize` and every test/lab reading this bound call it. */
-export function exitTol(tol: number): number {
-    return 2 * G * tol;
+/** the injection gate's tolerance (module header above): the f32 rounding
+ *  floor below which a nonzero injection accumulator (`bake.forces`'s `Σ −min(v²_pre-clamp, 0)`,
+ *  `SectionResult.injection`) reads as noise, not a real stall. On a non-stalling march the
+ *  accumulator is IDENTICALLY 0 in exact arithmetic — every pre-clamp v² along such a march stays
+ *  ≥ 0, so nothing is ever subtracted from 0, for any `μ`/`c`. In f32 the running `v[i]²` the
+ *  march computes accumulates rounding error as a random walk — the SAME model `derivedTol` uses
+ *  for the position floor, read in v² units instead of position: each of the march's `edges`
+ *  steps commits an error of order `ε_f32 · scale` (`scale` the v² magnitude the subtraction
+ *  chain `conserved − loss` operates at — `entryV²` at the march's own start, or `2·G·length` the
+ *  total potential-energy swing the path can convert, whichever's larger), so a graze at the
+ *  worst-case (last) edge scatters with σ = `ε_f32 · scale · √edges`, and a single accumulator
+ *  READ carries that same σ even where the true injection is 0 — the SAME `SIGMA`-σ coverage
+ *  factor makes a genuine graze (v² touching 0 without truly going negative) read "no stall"
+ *  reliably rather than false-positive ~1 time in 3. Guard: the model assumes the walk's error
+ *  stays a MINOR fraction of `scale` itself — `tests/optimize.test.ts`'s injection-gate suite
+ *  measures the f32-vs-f64 noise directly on a genuine-graze case and asserts that margin holds,
+ *  so a future edit that leaves the regime (e.g. `edges` large enough for the walk to rival
+ *  `scale`) fails loudly there instead of silently mis-gating here. */
+export function injectionTol(entryV: number, length: number, edges: number): number {
+    const scale = Math.max(entryV * entryV, 2 * G * length);
+    return SIGMA * F32_EPS * Math.sqrt(edges) * scale;
 }
 
 const MAX_ITERS = 30;
@@ -220,12 +225,12 @@ export interface OptimizeResult {
     residual: number;
     /** final |θ| exit gap (rad). */
     angleResidual: number;
-    /** final `|v² − stamp.v²|` (m²/s²) — the landed-energy gate's own reading (module header): a
-     *  squared-speed gap, not a speed tolerance, because the exact energy identity bounds `Δ(v²)`
-     *  directly (`exitTol`). What `finalize` compares against `exitTol(tol)` to decide the
-     *  `"solved"` → `"diverged"` downgrade. Reported on every outcome, not just `"solved"`, the
-     *  same way `residual`/`angleResidual` are. */
-    vSqResidual: number;
+    /** the LANDED draft's own sqrt-clamp energy injection (m²/s², v² units) — the defect's own
+     *  site (`SectionResult.injection`, module header), not a stamp comparison. What `finalize`
+     *  compares against `injectionTol` to decide the `"solved"` → `"diverged"` downgrade.
+     *  Reported on every outcome, not just `"solved"`, the same way `residual`/`angleResidual`
+     *  are. */
+    injection: number;
 }
 
 export interface OptimizeOpts {
@@ -242,21 +247,30 @@ export interface OptimizeOpts {
     maxIters?: number;
     tol?: number;
     angleTol?: number;
+    /** the section's authored Coulomb/drag coefficients (`Track.friction`/`.resistance`), threaded
+     *  to every `evalForce` call the solve makes — both defaulted 0, so an unauthored track's
+     *  solve stays byte-identical to before the kernel supported friction (the additive-substrate
+     *  law, `kex2d-map.md`). */
+    friction?: number;
+    resistance?: number;
 }
 
 /** the section's own recovered exit for a keyframe set — the same call the document bakes
  *  (`section.evalForce`), so a stamp taken here and a residual checked here are the identical
- *  computation the live bake would produce. */
+ *  computation the live bake would produce. `friction`/`resistance` (both defaulted 0, trailing —
+ *  the substrate's positional-last convention) thread straight to `evalForce`'s own. */
 export function computeExit(
     entry: Entry,
     points: readonly ForcePoint[],
     length: number,
     step: number,
     domain?: Domain,
+    friction = 0,
+    resistance = 0,
 ): OptimizeStamp {
     const resolved = resolveStep(length, step);
     const dense = forceProfile(points, resolved);
-    const exit = evalForce(entry, dense, resolved, domain);
+    const exit = evalForce(entry, dense, resolved, domain, undefined, friction, resistance);
     return { x: exit.exit.x, y: exit.exit.y, theta: exit.exit.theta, v: exit.exit.v };
 }
 
@@ -319,6 +333,8 @@ function choleskySolve(L: Float64Array, n: number, b: ArrayLike<number>): Float6
  */
 export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     const { entry, points, locked, length, ds: rawStep, domain, stamp } = opts;
+    const friction = opts.friction ?? 0;
+    const resistance = opts.resistance ?? 0;
     const maxIters = opts.maxIters ?? MAX_ITERS;
     // conform once (the pairing seam) so every downstream forceProfile/evalForce call below
     // marches at the SAME exact step (`kex2d-section-extent` stage 4) — never the caller's raw
@@ -328,6 +344,9 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     const tolD = derivedTol(stamp, length, step);
     const tol = opts.tol ?? tolD.pos;
     const angleTol = opts.angleTol ?? tolD.angle;
+    // the injection gate's own tolerance (module header) — a function of the march's own scale
+    // (entry speed, potential-energy swing) and edge count, independent of the position tol.
+    const injTol = injectionTol(entry.v, length, edges);
     // the θ row's weight (metres per radian): a heading error δθ displaces the downstream track
     // by ~L·δθ, so the scaled frame [x, y, W·θ] compares all three residual rows in metres.
     // Without it the radian row sits ~20× below the metre rows and the backtrack's max-norm
@@ -345,7 +364,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         iters: number,
         res: number,
         ang: number,
-        vSq: number,
+        injection: number,
     ): OptimizeResult => ({
         points: points.map((p) => ({ ...p })),
         deltaG: new Array(K).fill(0),
@@ -354,24 +373,32 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         iters,
         residual: res,
         angleResidual: ang,
-        vSqResidual: vSq,
+        injection,
     });
 
     if (P < MIN_FREE) return zeroResult("unreachable", "free-count", 0, NaN, NaN, NaN);
 
-    // the exit's full state — including `v`, the landed-energy gate's own reading — read through
-    // the SAME production integrator call the residual rows use (module header).
-    const exitAt = (g: ArrayLike<number>): Entry => {
+    // the exit's full recovered state — including the injection gate's own reading
+    // (`SectionResult.injection`) — read through the SAME production integrator call the
+    // residual rows use (module header). `exitAt` is the cheap projection every Jacobian/
+    // iteration read below only needs the exit for; `landAt` is spent where the injection
+    // matters too (the invoke-time reading below, and `finalize`).
+    const landAt = (g: ArrayLike<number>): SectionResult => {
         const dense = forceProfile(withG(points, g), step);
-        return evalForce(entry, dense, step, domain).exit;
+        return evalForce(entry, dense, step, domain, undefined, friction, resistance);
     };
+    const exitAt = (g: ArrayLike<number>): Entry => landAt(g).exit;
 
-    const e0 = exitAt(g0);
+    const land0 = landAt(g0);
+    const e0 = land0.exit;
+    const inj0 = land0.injection;
     const c0 = residualOf(e0, stamp);
-    // the zero-drift identity is exempt from the landed-energy gate BY CONSTRUCTION, not by a
-    // redundant check: the same g-vector through the same march produces the same `v`.
+    // the zero-drift identity NEVER downgrades: same g-vector, same march, so `inj0` is
+    // whatever the untouched draft's own march already carries — reported (the same "every
+    // outcome" convention `residual`/`angleResidual` follow), not gated. Gating an edit the
+    // caller never made would refuse a Solve on a document defect already sitting on screen.
     if (c0[0] === 0 && c0[1] === 0 && c0[2] === 0)
-        return zeroResult("solved", undefined, 0, 0, 0, 0);
+        return zeroResult("solved", undefined, 0, 0, 0, inj0);
 
     // the Gram matrix M (P×P): each free key's unit-g-bump response, ds-weighted inner product.
     // exact globally (not a linearization) — the dense profile is affine in g with s frozen.
@@ -403,7 +430,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
             0,
             Math.max(Math.abs(c0[0]), Math.abs(c0[1])),
             Math.abs(c0[2]),
-            Math.abs(e0.v * e0.v - stamp.v * stamp.v),
+            inj0,
         );
 
     // full g-vector scattering a free-index iterate `z` over the locked baseline.
@@ -437,7 +464,6 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     // ── the at-invoke Jacobian-read certificates (one FD pass, J0 reused below) ──
     const res0 = Math.max(Math.abs(c0[0]), Math.abs(c0[1]));
     const ang0 = Math.abs(c0[2]);
-    const vSq0 = Math.abs(e0.v * e0.v - stamp.v * stamp.v);
 
     // (stall) the θ-row derivative-consistency read: the same eP/eM probes the central
     // difference is built from also give the two one-sided differences. On a smooth map both
@@ -471,7 +497,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         const bwd = (length * (e0.theta - eM.theta)) / JAC_H;
         if (fwd * bwd < 0 && Math.min(Math.abs(fwd), Math.abs(bwd)) > noiseSlope) cliff = true;
     }
-    if (cliff) return zeroResult("unreachable", "stall", 0, res0, ang0, vSq0);
+    if (cliff) return zeroResult("unreachable", "stall", 0, res0, ang0, inj0);
 
     // (conditioning) σmin/σmax of the scaled Jacobian, read exactly off the 3×3 J·Jᵀ
     // eigenvalues (cyclic Jacobi): below COND_FLOOR the smallest pin direction is inside the
@@ -490,7 +516,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     const eigs = sym3Eigs(A0);
     const lamMax = Math.max(...eigs);
     if (lamMax <= 0 || Math.sqrt(Math.max(0, Math.min(...eigs)) / lamMax) < COND_FLOOR)
-        return zeroResult("unreachable", "conditioning", 0, res0, ang0, vSq0);
+        return zeroResult("unreachable", "conditioning", 0, res0, ang0, inj0);
 
     // ── one damped-SQP stage toward `target`, warm-started at `zStart` ──
     // The objective reference stays the global draft `z0` regardless of stage: minimize
@@ -612,21 +638,21 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
         return { z, solved: false, iters: maxIters };
     };
 
-    // the ONE seam the landed-energy gate lives at (module header) — both the direct solve's
-    // return and the continuation loop's early return route through here, so a `"solved"`
-    // outcome whose landed `v²` disagrees with the stamped `v²` beyond `exitTol(tol)` (the exact
-    // bound, module header) downgrades to `"diverged"` in exactly one place, never a fourth
-    // residual row.
+    // the ONE seam the injection gate lives at (module header) — both the direct solve's return
+    // and the continuation loop's early return route through here, so a `"solved"` outcome whose
+    // landed injection exceeds `injTol` (the defect read at its own site, module header)
+    // downgrades to `"diverged"` in exactly one place, never a stamp comparison.
     const finalize = (z: Float64Array, outcome: OptimizeOutcome, iters: number): OptimizeResult => {
         const gFinal = scatter(z);
-        const e = exitAt(gFinal);
+        const landed = landAt(gFinal);
+        const e = landed.exit;
         const c = residualOf(e, stamp);
         const outPoints = points.map((p, k) => ({ ...p, g: gFinal[k] }));
         const deltaG = new Array(K).fill(0);
         for (const k of freeIdx) deltaG[k] = gFinal[k] - g0[k];
-        const vSqResidual = Math.abs(e.v * e.v - stamp.v * stamp.v);
+        const injection = landed.injection;
         const gated: OptimizeOutcome =
-            outcome === "solved" && vSqResidual > exitTol(tol) ? "diverged" : outcome;
+            outcome === "solved" && injection > injTol ? "diverged" : outcome;
         return {
             points: outPoints,
             deltaG,
@@ -634,7 +660,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
             iters,
             residual: Math.max(Math.abs(c[0]), Math.abs(c[1])),
             angleResidual: Math.abs(c[2]),
-            vSqResidual,
+            injection,
         };
     };
 

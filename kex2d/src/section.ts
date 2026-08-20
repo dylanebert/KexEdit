@@ -85,13 +85,17 @@ export interface SectionResult {
     /** geo only: every segment landed (no degenerate/truncated). force is always valid. */
     valid: boolean;
     truncated: boolean;
+    /** the recovery's sqrt-clamp energy injection, accumulated over the section
+     *  (`bake.forces`'s return, v² units) — 0 on a non-stalling march, the pin
+     *  consequence's own measurement (`kex2d-map.md`). */
+    injection: number;
 }
 
 /** a speed control: the exit speed (m/s) a section is authored to land on.
  *  `v²` is prescribed as a linear ramp on the section's own domain coordinate
  *  (arclength for geo/Distance-force, time for Time-force) from the entry
- *  `v²` to `target²` — the span is the section (`kex2d-speed-substrate`'s
- *  locked decision), so the ramp spans the whole result and the exit lands on
+ *  `v²` to `target²` — the span is the section (the authored-control exception,
+ *  `kex2d-map.md`), so the ramp spans the whole result and the exit lands on
  *  `target` exactly. Outside the span (downstream, or a section with no
  *  control), conservation resumes from there — no override needed. */
 export interface SpeedControl {
@@ -215,10 +219,10 @@ function exitOf(
  * remaining buffer). a degenerate/truncated chain returns its partial prefix
  * with `valid`/`truncated` set (mirrors `sampleChain`). `speed`, when given,
  * rides the recovery's v²-modification channel as the linear-in-arclength ramp
- * to `speed.target` (`kex2d-speed-substrate`'s locked decision). `friction`/
+ * to `speed.target` (the authored-control exception, `kex2d-map.md`). `friction`/
  * `resistance` (both defaulted 0, trailing — the substrate's positional-last
- * convention) thread to the recovery's dissipative loss (`kex2d-friction`'s
- * Locked decision).
+ * convention) thread to the recovery's dissipative loss (the additive-substrate
+ * law, `kex2d-map.md`).
  */
 export function evalGeo(
     entry: Entry,
@@ -241,7 +245,7 @@ export function evalGeo(
     const vSqOverride = speed
         ? arclengthSpeedRamp(entry.v * entry.v, speed.target, dsArr, edges)
         : undefined;
-    forces(
+    const injection = forces(
         posX,
         posY,
         theta,
@@ -270,6 +274,7 @@ export function evalGeo(
         offsets: r.offsets,
         valid: r.valid,
         truncated: r.truncated,
+        injection,
     };
 }
 
@@ -304,7 +309,7 @@ export function evalGeo(
  *
  * `speed`, when given, rides the march's AND the recovery's v²-modification
  * channel as the same linear-in-domain-coordinate ramp to `speed.target`
- * (uniform edge steps here, both domains — `kex2d-speed-substrate`'s locked
+ * (uniform edge steps here, both domains — the authored-control exception,
  * decision). Riding the march too (not just the recovery) is what un-stalls a
  * frozen Time-domain span: `ds_i = v_i·Δt` reads the PRIOR edge's (possibly
  * ramped) `v`, so overriding edge 0's landed `v` off a zero entry un-freezes
@@ -313,8 +318,8 @@ export function evalGeo(
  * `friction`/`resistance` (both defaulted 0, trailing) thread to BOTH the
  * march (`stepForward`/`integrate`) and the re-recovery (`forces`) — inside a
  * `speed`-controlled span the ramp overrides the dissipative value
- * unconditionally (prescription beats dissipation, `kex2d-friction`'s Locked
- * decision), so the two never double-count losses.
+ * unconditionally (prescription beats dissipation, the additive-substrate
+ * law, `kex2d-map.md`), so the two never double-count losses.
  */
 export function evalForce(
     entry: Entry,
@@ -383,7 +388,7 @@ export function evalForce(
     }
 
     const outF = new Float32Array(edges);
-    forces(
+    const injection = forces(
         posX,
         posY,
         theta,
@@ -412,6 +417,7 @@ export function evalForce(
         offsets: [0, edges],
         valid: true,
         truncated: false,
+        injection,
     };
 }
 

@@ -22,7 +22,7 @@
 //
 // Run: bun tests/optimize.lab.ts
 
-import { derivedTol, exitTol, type OptimizeOpts, solveOptimize } from "../src/optimize";
+import { injectionTol, type OptimizeOpts, solveOptimize } from "../src/optimize";
 import { forceProfile, type ForcePoint, resolveStep } from "../src/profile";
 import { type Entry, evalForce } from "../src/section";
 
@@ -508,26 +508,22 @@ for (const sc of [corpus()[0], corpus()[1]]) {
     console.log(`${sc.name}: ${marks.join("  ")}`);
 }
 
-// ── 6. LANDED-V BREACH ──────────────────────────────────────────────────────────────
-// (kex2d-gate-hardening stage 1a; tolerance corrected + wired to the production seam stage 6)
-// The path-energy law (kex2d-map.md), at the μ = c = 0 optimize still runs at (kex2d-friction's
-// kernel-only stage 1), says exit v is a strict function of exit y — a
-// converged 3-row residual should already bound v. The one breach is the velocity clamp
-// (`sqrt(max(v², 0))` in forward.ts): a march that runs out of energy has energy INJECTED there,
-// and a "solved" draft whose march touches the floor mid-run can land with v off the
-// energy-derived curve. Sweeps the stall neighborhood: the climb profile (§4/§4b) across length
-// neighbors of L = 90 and entry v0 in the floor-graze/deep-stall band, plus the named §4b
+// ── 6. INJECTION BREACH ─────────────────────────────────────────────────────────────
+// (retired to the injection gate at its own site.) The old form of this sweep compared the landed
+// draft's v² against the stamp's v² (`exitTol`) — a comparison that only made sense at μ = c = 0,
+// where the path-energy law made exit v a strict function of exit y. The injection gate retires
+// that comparison: the gate
+// now reads `SectionResult.injection` — the sqrt-clamp's own accumulated energy injection — off
+// the LANDED draft directly (`bake.forces`'s `Σ −min(v²_pre-clamp, 0)`, surfaced as
+// `OptimizeResult.injection`), never a stamp comparison, so it reads correctly whether or not the
+// section carries friction/drag. Sweeps the stall neighborhood: the climb profile (§4/§4b) across
+// length neighbors of L = 90 and entry v0 in the floor-graze/deep-stall band, plus the named §4b
 // floor-touching drafts run through the ACTUAL solve (not just the Jacobian-read stall
 // certificate at invoke — this reads the LANDED state, which no invoke-time certificate covers).
-// The bound is `exitTol` — `optimize.ts`'s own exported production seam, not a re-derivation:
-// an earlier version of this sweep computed its own `G·tolD.pos/max(landedExit.v, V_FLOOR)`,
-// the differentiated (and looser) form production no longer ships, denominated on the LANDED
-// exit speed rather than production's stamped one — the two differ precisely in the
-// energy-losing direction, the breach direction, so that sweep measured a looser gate than
-// ships. The exact bound has no denominator at all (module header, `exitTol`), so that whole
-// class of drift is gone by construction.
+// The bound is `injectionTol` — `optimize.ts`'s own exported production seam, not a
+// re-derivation (module header).
 console.log(
-    "\n── 6. landed-v breach sweep (solved drafts whose landed v² strays from the energy-derived stamp v² beyond exitTol) ──",
+    "\n── 6. injection breach sweep (solved drafts whose landed march injects energy beyond injectionTol) ──",
 );
 {
     const climbBase: ForcePoint[] = [
@@ -540,22 +536,12 @@ console.log(
     const climbScaled = (L: number): ForcePoint[] =>
         climbBase.map((p) => ({ ...p, s: (p.s * L) / 40 }));
 
-    function fullExit(
-        entry: Entry,
-        points: ForcePoint[],
-        length: number,
-    ): { x: number; y: number; theta: number; v: number } {
-        const step = resolveStep(length, DS);
-        const dense = forceProfile(points, step);
-        return evalForce(entry, dense, step, undefined).exit;
-    }
-
     let breaches = 0;
     let total = 0;
     let bestSolvedRatio = 0;
     let bestSolvedRow = "";
-    let worstGapOverall = 0;
-    let worstGapRow = "";
+    let worstInjectionOverall = 0;
+    let worstInjectionRow = "";
 
     function runCase(
         label: string,
@@ -565,8 +551,9 @@ console.log(
         edited: ForcePoint[],
     ): void {
         total++;
-        const stampExit = fullExit(entry, base, length);
-        const stamp = { x: stampExit.x, y: stampExit.y, theta: stampExit.theta, v: stampExit.v };
+        const step = resolveStep(length, DS);
+        const dense = forceProfile(base, step);
+        const stamp = evalForce(entry, dense, step, undefined).exit;
         const r = solveOptimize({
             entry,
             points: edited,
@@ -576,23 +563,20 @@ console.log(
             stamp,
         });
         const vmin = minSpeed({ name: label, points: edited, length, entry }, edited);
-        const landedExit = fullExit(entry, r.points, length);
-        const gapSq = Math.abs(landedExit.v * landedExit.v - stampExit.v * stampExit.v);
-        const tolD = derivedTol(stamp, length, resolveStep(length, DS));
-        const bound = exitTol(tolD.pos);
-        const breach = r.outcome === "solved" && gapSq > bound;
+        const bound = injectionTol(entry.v, length, step.edges);
+        const breach = r.outcome === "solved" && r.injection > bound;
         if (breach) breaches++;
-        if (r.outcome === "solved" && gapSq / bound > bestSolvedRatio) {
-            bestSolvedRatio = gapSq / bound;
+        if (r.outcome === "solved" && r.injection / bound > bestSolvedRatio) {
+            bestSolvedRatio = r.injection / bound;
             bestSolvedRow = label;
         }
-        if (gapSq > worstGapOverall) {
-            worstGapOverall = gapSq;
-            worstGapRow = label;
+        if (r.injection > worstInjectionOverall) {
+            worstInjectionOverall = r.injection;
+            worstInjectionRow = label;
         }
         console.log(
             `${label}: outcome=${r.outcome} vmin=${vmin.toFixed(3)} residual=${r.residual.toExponential(2)} ` +
-                `angleResidual=${r.angleResidual.toExponential(2)} vGapSq=${gapSq.toExponential(3)} bound=${bound.toExponential(3)}` +
+                `angleResidual=${r.angleResidual.toExponential(2)} injection=${r.injection.toExponential(3)} bound=${bound.toExponential(3)}` +
                 `${breach ? " BREACH" : ""}`,
         );
     }
@@ -649,8 +633,8 @@ console.log(
     }
 
     console.log(
-        `\n${breaches} breaches over ${total} drafts swept. Largest solved gap/bound ratio: ` +
-            `${bestSolvedRatio.toFixed(3)} (${bestSolvedRow}). Largest v² gap overall (any outcome): ` +
-            `${worstGapOverall.toExponential(3)} (${worstGapRow}).`,
+        `\n${breaches} breaches over ${total} drafts swept. Largest solved injection/bound ratio: ` +
+            `${bestSolvedRatio.toFixed(3)} (${bestSolvedRow}). Largest injection overall (any outcome): ` +
+            `${worstInjectionOverall.toExponential(3)} (${worstInjectionRow}).`,
     );
 }

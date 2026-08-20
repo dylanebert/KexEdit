@@ -80,8 +80,8 @@ y_{i+1}  = y_i + Δs · sin(midθ)
 v_{i+1}² = v_i² − 2g · (y_{i+1} − y_i) − loss(F_n(σ_i), v_i², Δs, μ, c)
 ```
 
-`loss` (`forward.ts`, beside `step`) is the per-edge dissipative term landed `kex2d-friction` stage
-1: `2·(μ·g·|F_n| + c·v²)·ds` — Coulomb friction on the actual normal-force magnitude plus quadratic
+`loss` (`forward.ts`, beside `step`) is the per-edge dissipative term:
+`2·(μ·g·|F_n| + c·v²)·ds` — Coulomb friction on the actual normal-force magnitude plus quadratic
 drag, in v² units. `μ`/`c` (`friction`/`resistance`) default 0 everywhere they're threaded
 (`step`/`integrate`, `bake.forces`, `section.evalGeo`/`evalForce`/`chain`), so an unauthored track's
 march is byte-identical to before the term existed — the path-energy law below is a strict
@@ -115,33 +115,37 @@ stall certificate is the **θ-row one-sided sign opposition** read off the invok
 (a smooth map's one-sided slopes stay same-signed; the clamp cliff flips them), measured to
 separate every floor-touching corpus draft from every smooth one, threshold-free.
 
-**The path-energy law** (`kex2d-friction` stage 1, superseding the old conservative-energy law
-stated below): speed is a function of the PATH the march sweeps, not of height alone, whenever
-`μ > 0` or `c > 0` — `F_n` reaches `v` both through `dθ → y` (as before) AND directly, through
-`loss`'s own `|F_n|` and `v²` terms integrated along the way. **At the kernel's own default,
-`μ = c = 0`, the law collapses to exactly its old form**: `v²_{i+1} = v²_i − 2g·Δy`, `F_n` reaching
-`v` only through `dθ → y`, normal force doing no work — a property of the physics, not of any
-solver. Every pin/optimize caller still runs at `μ = c = 0` today: the kernel supports friction as
-of stage 1, and `Track.friction`/`Track.resistance` — the authoring surface, threaded through
-`BakeSystem`'s live bake and every `evalGeo`/`evalForce` caller including the invoked converters
-(`geoforce.ts`/`forcegeo.ts`) — landed `kex2d-friction` stage 2 (new-track default nonzero,
-`seed`'s own; an unauthored/absent-field track stays at the kernel's 0). Pin and optimize
-themselves stay unwired — the wiring that would actually drive a LIVE pin/optimize caller's
-coefficients away from 0 is `kex2d-friction` stage 3 — so the zero-coefficient consequences below
-are UNCHANGED for now:
+**The path-energy law** (superseding the old conservative-energy law):
+speed is a function of the PATH the march sweeps, not of height alone, whenever `μ > 0` or `c > 0`
+— `F_n` reaches `v` both through `dθ → y` (as before) AND directly, through `loss`'s own `|F_n|`
+and `v²` terms integrated along the way. **At the kernel's own default, `μ = c = 0`, the law
+collapses to exactly its old form**: `v²_{i+1} = v²_i − 2g·Δy`, `F_n` reaching `v` only through
+`dθ → y`, normal force doing no work — a property of the physics, not of any solver.
+`Track.friction`/`Track.resistance` — the authoring surface, threaded through `BakeSystem`'s live
+bake and every `evalGeo`/`evalForce` caller including the invoked converters
+(`geoforce.ts`/`forcegeo.ts`) — landed with the loss term (new-track default nonzero,
+`seed`'s own; an unauthored/absent-field track stays at the kernel's 0). **Pin and optimize are
+wired too**: `sectionSpec` (`pin.ts`) reads the track's own
+`Track.friction`/`.resistance` and threads them through both `enterPin`'s stamp and
+`runPinSection`'s live solve, and `OptimizeOpts.friction`/`.resistance` (defaulted 0, the
+additive-substrate law — an unauthored track's solve stays byte-identical) thread through every
+`evalForce` call `solveOptimize` makes, so the mode's stamp/ghost and its solve target exactly the
+same dissipation the document bakes with.
 
-**an optimizer whose DOF are force ordinates cannot move exit `v` except by moving exit `y`** (at
-`μ = c = 0`). Pin mode's three-row exit stamp is therefore already a full four-state pin (measured
-2026-08-01: landed `exit.v` matches the energy-derived value to 1e-5 m/s across flat / gentle-hill /
-airtime-dip / steep-climb drafts, and a length change doesn't touch it — stamped at L = 60 and
-re-solved at 65 / 75 it holds, while short lengths refuse on geometric reach instead). A fourth
-residual row on `v` is refused for cause: linearly dependent with the `y` row, it would make a
-well-posed problem read as rank-deficient under the `"conditioning"` certificate. **This
-four-state-pin reasoning dies once a pin's own march runs with `μ > 0` or `c > 0`** — the loss
-integral couples a force-ordinate DOF to exit `v` directly, so the fourth-row refusal's premise no
-longer holds; re-grounding that refusal, retiring `exitTol`/`vSqResidual`, and rewriting this
-pin-consequence paragraph for real is `kex2d-friction` stage 3's job, once pin/optimize actually
-run coefficients away from 0.
+**Pin's exit stamp is a three-row `(x, y, θ)` pin, and `v` is never a fourth.** At `μ = c = 0` this
+used to be provable as a full four-state pin BY DERIVATION — an optimizer whose DOF are force
+ordinates cannot move exit `v` except by moving exit `y` (measured 2026-08-01: landed `exit.v`
+matched the energy-derived value to 1e-5 m/s across flat / gentle-hill / airtime-dip / steep-climb
+drafts). **That derivation dies once a pin's own march runs with `μ > 0` or `c > 0`**: the loss
+integral couples a force-ordinate DOF to exit `v` directly (through the path swept, not only
+through `y`), so a stamped `v` is no longer implied by the three geometric rows at all. The pin
+consequence stands regardless: **exit `v` is a *derived output* of the landed path, never a
+constraint row, residual row, or solver DOF** — refused for the SAME cause as before (linearly
+dependent with the `y` row at `μ = c = 0`; simply un-derivable in general once `μ`/`c` are real),
+just no longer provable as redundant. The one thing an authored `v` could never speak to anyway is
+the clamp: the three residual rows never read `v` at all, so a march that clamps mid-solve
+converges its `(x, y, θ)` clean while quietly injecting energy nothing downstream can see — the gate
+below, not a fourth row, is what has to catch that.
 
 The identity survives *authored* energy input even with friction/drag landed. A launch or brake at
 a fixed station adds a known term, and — at `μ = c = 0` — `v_exit` stays a function of `y_exit`
@@ -149,36 +153,39 @@ plus constants no DOF reaches. What breaks it in general is **path-dependent dis
 friction, drag, or a control acting over a time window — where the loss integrates `F_n` along the
 path and the DOF finally couples to the energy. Friction/drag (`forward.loss`) is no longer the
 one thing kept out to preserve this identity: it is landed in the kernel, deliberately, and the
-identity's zero-coefficient special case is what every current caller still relies on.
+identity's zero-coefficient special case is what an unauthored track still relies on.
 
-**The authored-control exception, landed** (`kex2d-speed-substrate` stage 1): a per-section
+**The authored-control exception**: a per-section
 `speed: { target }` control prescribes `v²` directly as a linear ramp on the span's own domain
 coordinate (arclength for geo/Distance-force, time for Time-force) from entry `v²` to `target²` —
 the per-edge v²-modification channel threaded through `forward.step`/`integrate` and
 `bake.forces` (`section.ts`'s `evalGeo`/`evalForce`). This is the launch/brake case above, not
 path-dependent dissipation: the ramp is a known function of the domain coordinate alone, not of
-the path `F_n` sweeps, so it doesn't couple a solver DOF to the energy and doesn't unlock the pin
+the path `F_n` sweeps, so it doesn't couple a solver DOF to the energy and doesn't unlock a pin
 fourth row on its own. Composition with friction/drag: **prescription beats dissipation** — the
 loss lands inside the natural (now-dissipative) per-edge computation, and a `speed` control's ramp
 unconditionally overrides it, so inside a controlled span the actuator absorbs the losses and a
-pinned station's speed stays a stamped constant either way (`kex2d-friction`'s Locked decision).
+pinned station's speed stays a stamped constant either way (the additive-substrate law, above).
 
-**The one breach today is the velocity clamp.** `step` and `forces` both take
-`v = sqrt(max(v², 0))`, so a march that runs out of energy has energy *injected* at the clamp and
-`v_exit` stops following `y_exit` (measured 1.4–5.1 m/s above the derived value). Invoke-time
-certificates do not cover the landed state: a draft that passes the stall certificate can still
-wander into a stalled iterate mid-solve (measured at L = 90, `vmin` 0, `vErr` 0.45 m/s, refused
-as `"diverged"`). The landed state is covered by an **acceptance gate, not a fourth residual row**:
-`finalize` (`optimize.ts`) compares `|v_land² − v_stamp²|` — reported as `OptimizeResult.vSqResidual`
-— against `exitTol(tol)` and downgrades `"solved"` → `"diverged"`. The bound is exact, not a
-linearization: `v² = v₀² − 2g(y−y₀)` and `|Δy| ≤ tol` give `exitTol = 2·G·tol` algebraically, so
-`V_FLOOR` never enters it. Read the tolerance through `exitTol`; a caller comparing `vSqResidual`
-against `tol` is comparing a squared gap to a linear one. The gate is a **belt, and its evidence is
-empirical**: a 110-draft stall-neighborhood sweep found 0 breaches (closest solved `gap/exitTol`
-0.795), so the corpus cannot currently produce a user-visible one. That is a measurement, not a
-proof — there is no bound on the injection. `vSafe` floors only the `dθ` denominator; the energy
-update clamps `sqrt(max(v², 0))` with no floor at all, so the injection is `−min(v²,0)/2` per
-clamped sample and unbounded above.
+**The one breach is the velocity clamp, and the gate reads it at its own site.** `step` and
+`forces` both take `v = sqrt(max(v², 0))`, so a march that runs out of energy has energy
+*injected* at the clamp — `bake.forces` accumulates it directly, `Σ −min(v²_pre-clamp, 0)` in v²
+units over the section (`SectionResult.injection`, surfaced through `evalGeo`/`evalForce`): 0
+wherever no edge's pre-clamp v² goes negative, the case that holds on every physically
+non-stalling march regardless of `μ`/`c`. Invoke-time certificates do not cover the landed state: a
+draft that passes the stall certificate can still wander into a stalled iterate mid-solve. The
+landed state is covered by an **acceptance gate, not a fourth residual row**: `finalize`
+(`optimize.ts`) reads the landed draft's own injection (`OptimizeResult.injection`) against
+`injectionTol` and downgrades `"solved"` → `"diverged"` when it's exceeded — the `vSqResidual`/
+`exitTol` stamp comparison this replaces only ever made sense at `μ = c = 0`, where exit `v` was a
+derived function of exit `y`; the injection reading works unconditionally, since it never compares
+against a stamp at all. `injectionTol` is the f32 rounding floor below which a nonzero reading is
+noise, not a real stall (`SIGMA`-σ coverage over the march's own random-walk accumulation error,
+the same model `derivedTol` uses for the position floor) — real injection from an actual stall runs
+orders of magnitude above it, so the floor only ever excludes sub-ulp graze noise. `vSafe` floors
+only the `dθ` denominator; the energy update's `sqrt(max(v², 0))` carries no floor at all, so the
+injection is unbounded above and the corpus is not observed to produce a `"solved"`-outcome breach
+naturally (the certificates catch it first) — that is a measurement, not a proof.
 
 **The ds-convention law**: anything needing arclength sums the bake's own per-edge `out.ds`,
 never re-derives from chord distance. The two agree to f32 rounding on a normal chain, but the
