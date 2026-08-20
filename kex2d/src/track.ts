@@ -2791,11 +2791,16 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
  *  node poses, a force section's extent + points). BakeSystem re-bakes on a miss (anything
  *  moved, added, removed, converted, reordered, re-domained, the v0 retimed, or a
  *  coefficient edited), skips otherwise. `friction`/`resistance` fold in unconditionally,
- *  beside `v0` (`kex2d-friction` stage 2) — every hand-authored track carries a nonzero
- *  `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE` from `createTrack` already, so there is no
- *  zero-coefficient case to keep byte-identical the way `domain`'s conditional suffix does.
- *  the track `domain` is written only when it isn't the default `Distance`, so an existing
- *  authored track's DOMAIN suffix stays byte-identical. */
+ *  beside `v0` (`kex2d-friction` stage 2) — unlike `domain`'s conditional suffix, NOT because
+ *  every track is nonzero (`createTrack` itself stays at the kernel's neutral 0; only `seed`'s
+ *  genuinely NEW documents get `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`, so a zero-coefficient
+ *  track is still the common case, every test fixture included). Unconditional is safe because
+ *  this string crosses no restore or session boundary: `out.hash`/`authoredHash` are same-session
+ *  runtime cache keys over the live `bakeOut`/`samples` maps, never serialized, and the
+ *  provenance sidecar's own comparison key (`sectionToken`) is built from `sectionContentHash`
+ *  alone — it never calls this function, so a shape change here can't desync a stamped restore.
+ *  the track `domain` stays conditional purely to keep its own literal narrower, not for any
+ *  compatibility this function's shape doesn't equally have. */
 function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
     const domain = Track.domain.get(trackEid) as Domain;
     let h = `ds${Track.ds.get(trackEid)}v0${Track.v0.get(trackEid)}mu${Track.friction.get(trackEid)}c${Track.resistance.get(trackEid)}`;
