@@ -155,17 +155,19 @@ path and the DOF finally couples to the energy. Friction/drag (`forward.loss`) i
 one thing kept out to preserve this identity: it is landed in the kernel, deliberately, and the
 identity's zero-coefficient special case is what an unauthored track still relies on.
 
-**The authored-control exception**: a per-section
-`speed: { target }` control prescribes `v²` directly as a linear ramp on the span's own domain
-coordinate (arclength for geo/Distance-force, time for Time-force) from entry `v²` to `target²` —
-the per-edge v²-modification channel threaded through `forward.step`/`integrate` and
-`bake.forces` (`section.ts`'s `evalGeo`/`evalForce`). This is the launch/brake case above, not
-path-dependent dissipation: the ramp is a known function of the domain coordinate alone, not of
-the path `F_n` sweeps, so it doesn't couple a solver DOF to the energy and doesn't unlock a pin
-fourth row on its own. Composition with friction/drag: **prescription beats dissipation** — the
-loss lands inside the natural (now-dissipative) per-edge computation, and a `speed` control's ramp
-unconditionally overrides it, so inside a controlled span the actuator absorbs the losses and a
-pinned station's speed stays a stamped constant either way (the additive-substrate law, above).
+**The authored-control exception** — stated as the law; its carrier is currently absent. An
+authored control prescribes `v²` over a span directly, as a known function of the span's own
+domain coordinate (arclength for geo/Distance-force, time for Time-force). This is the
+launch/brake case above, not path-dependent dissipation: the prescription reads the domain
+coordinate alone, never the path `F_n` sweeps, so it doesn't couple a solver DOF to the energy and
+doesn't unlock a pin fourth row on its own. Composition with friction/drag: **prescription beats
+dissipation** — the loss lands inside the natural (now-dissipative) per-edge computation and the
+prescription overrides it unconditionally, so inside a controlled span the actuator absorbs the
+losses and a pinned station's speed stays a stamped constant either way (the additive-substrate
+law, above). The concrete carrier that used to implement this — a per-section `speed: { target }`
+linear ramp threaded through `evalGeo`/`evalForce` — was deleted unbuilt-upon (`kex2d-substrate`
+A5); no code implements the exception today. `kex2d-substrate` C2 rebuilds it as stored-curve
+velocity strips, and rewrites this passage to that form with the DOF-independence invariant named.
 
 **The one breach is the velocity clamp, and the gate reads it at its own site.** `step` and
 `forces` both take `v = sqrt(max(v², 0))`, so a march that runs out of energy has energy
