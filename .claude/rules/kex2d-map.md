@@ -80,8 +80,8 @@ y_{i+1}  = y_i + Δs · sin(midθ)
 v_{i+1}² = v_i² − 2g · (y_{i+1} − y_i) − loss(F_n(σ_i), v_i², Δs, μ, c)
 ```
 
-`loss` (`forward.ts`, beside `step`) is the per-edge dissipative term landed `kex2d-friction` stage
-1: `2·(μ·g·|F_n| + c·v²)·ds` — Coulomb friction on the actual normal-force magnitude plus quadratic
+`loss` (`forward.ts`, beside `step`) is the per-edge dissipative term:
+`2·(μ·g·|F_n| + c·v²)·ds` — Coulomb friction on the actual normal-force magnitude plus quadratic
 drag, in v² units. `μ`/`c` (`friction`/`resistance`) default 0 everywhere they're threaded
 (`step`/`integrate`, `bake.forces`, `section.evalGeo`/`evalForce`/`chain`), so an unauthored track's
 march is byte-identical to before the term existed — the path-energy law below is a strict
@@ -115,7 +115,7 @@ stall certificate is the **θ-row one-sided sign opposition** read off the invok
 (a smooth map's one-sided slopes stay same-signed; the clamp cliff flips them), measured to
 separate every floor-touching corpus draft from every smooth one, threshold-free.
 
-**The path-energy law** (`kex2d-friction` stage 1, superseding the old conservative-energy law):
+**The path-energy law** (superseding the old conservative-energy law):
 speed is a function of the PATH the march sweeps, not of height alone, whenever `μ > 0` or `c > 0`
 — `F_n` reaches `v` both through `dθ → y` (as before) AND directly, through `loss`'s own `|F_n|`
 and `v²` terms integrated along the way. **At the kernel's own default, `μ = c = 0`, the law
@@ -123,9 +123,9 @@ collapses to exactly its old form**: `v²_{i+1} = v²_i − 2g·Δy`, `F_n` reac
 `dθ → y`, normal force doing no work — a property of the physics, not of any solver.
 `Track.friction`/`Track.resistance` — the authoring surface, threaded through `BakeSystem`'s live
 bake and every `evalGeo`/`evalForce` caller including the invoked converters
-(`geoforce.ts`/`forcegeo.ts`) — landed `kex2d-friction` stage 2 (new-track default nonzero,
+(`geoforce.ts`/`forcegeo.ts`) — landed with the loss term (new-track default nonzero,
 `seed`'s own; an unauthored/absent-field track stays at the kernel's 0). **Pin and optimize are
-wired too** (`kex2d-friction` stage 3): `sectionSpec` (`pin.ts`) reads the track's own
+wired too**: `sectionSpec` (`pin.ts`) reads the track's own
 `Track.friction`/`.resistance` and threads them through both `enterPin`'s stamp and
 `runPinSection`'s live solve, and `OptimizeOpts.friction`/`.resistance` (defaulted 0, the
 additive-substrate law — an unauthored track's solve stays byte-identical) thread through every
@@ -155,7 +155,7 @@ path and the DOF finally couples to the energy. Friction/drag (`forward.loss`) i
 one thing kept out to preserve this identity: it is landed in the kernel, deliberately, and the
 identity's zero-coefficient special case is what an unauthored track still relies on.
 
-**The authored-control exception, landed** (`kex2d-speed-substrate` stage 1): a per-section
+**The authored-control exception**: a per-section
 `speed: { target }` control prescribes `v²` directly as a linear ramp on the span's own domain
 coordinate (arclength for geo/Distance-force, time for Time-force) from entry `v²` to `target²` —
 the per-edge v²-modification channel threaded through `forward.step`/`integrate` and
@@ -165,7 +165,7 @@ the path `F_n` sweeps, so it doesn't couple a solver DOF to the energy and doesn
 fourth row on its own. Composition with friction/drag: **prescription beats dissipation** — the
 loss lands inside the natural (now-dissipative) per-edge computation, and a `speed` control's ramp
 unconditionally overrides it, so inside a controlled span the actuator absorbs the losses and a
-pinned station's speed stays a stamped constant either way (`kex2d-friction`'s Locked decision).
+pinned station's speed stays a stamped constant either way (the additive-substrate law, above).
 
 **The one breach is the velocity clamp, and the gate reads it at its own site.** `step` and
 `forces` both take `v = sqrt(max(v², 0))`, so a march that runs out of energy has energy

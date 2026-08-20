@@ -122,7 +122,7 @@ describe("runPinSection — the document seam", () => {
         endPin();
     });
 
-    // `kex2d-friction` stage 3: `sectionSpec` now reads the track's own authored
+    // `sectionSpec` (`pin.ts`) reads the track's own authored
     // `friction`/`resistance` and threads them into `enterPin`'s stamp — RED FIRST (seen failing
     // pre-wiring: the stamp read the kernel's own μ = c = 0 default regardless of the track's
     // authored coefficients, so this equality held for every track). A discriminating check, not

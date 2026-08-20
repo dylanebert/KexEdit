@@ -509,10 +509,10 @@ for (const sc of [corpus()[0], corpus()[1]]) {
 }
 
 // ── 6. INJECTION BREACH ─────────────────────────────────────────────────────────────
-// (kex2d-gate-hardening stage 1a; retired to the injection gate at its own site, `kex2d-friction`
-// stage 3.) The old form of this sweep compared the landed draft's v² against the stamp's v²
-// (`exitTol`) — a comparison that only made sense at μ = c = 0, where the path-energy law made
-// exit v a strict function of exit y. `kex2d-friction` stage 3 retires that comparison: the gate
+// (retired to the injection gate at its own site.) The old form of this sweep compared the landed
+// draft's v² against the stamp's v² (`exitTol`) — a comparison that only made sense at μ = c = 0,
+// where the path-energy law made exit v a strict function of exit y. The injection gate retires
+// that comparison: the gate
 // now reads `SectionResult.injection` — the sqrt-clamp's own accumulated energy injection — off
 // the LANDED draft directly (`bake.forces`'s `Σ −min(v²_pre-clamp, 0)`, surfaced as
 // `OptimizeResult.injection`), never a stamp comparison, so it reads correctly whether or not the

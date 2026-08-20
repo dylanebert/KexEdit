@@ -45,9 +45,9 @@
  *  leave the caller free to retry with a different lock set — nothing here writes to the
  *  document; that's the caller's job, once, on a `"solved"` answer.
  *
- *  **The injection gate (`kex2d-friction` stage 3) is the same taxonomy's fourth member, and it's
- *  `"diverged"`, not `"unreachable"`.** Earlier stages (1b/6, `kex2d-gate-hardening`) read this
- *  gate off a stamped `v`: at `μ = c = 0` energy conservation makes exit `v` a strict function of
+ *  **The injection gate is the same taxonomy's fourth member, and it's
+ *  `"diverged"`, not `"unreachable"`.** An earlier form of this gate read the stamp comparison
+ *  off a stamped `v`: at `μ = c = 0` energy conservation makes exit `v` a strict function of
  *  exit `y`, so the 3-row `(x, y, θ)` pin pinned `v` too, except through the forward integrator's
  *  `sqrt(max(v², 0))` clamp injecting energy the stamp comparison could only infer. That reasoning
  *  is retired along with `μ = c = 0`: `OptimizeOpts.friction`/`.resistance` (the section's own
@@ -145,7 +145,7 @@ export function derivedTol(
     return { pos, angle: pos / length };
 }
 
-/** the injection gate's tolerance (`kex2d-friction` stage 3, module header): the f32 rounding
+/** the injection gate's tolerance (module header above): the f32 rounding
  *  floor below which a nonzero injection accumulator (`bake.forces`'s `Σ −min(v²_pre-clamp, 0)`,
  *  `SectionResult.injection`) reads as noise, not a real stall. On a non-stalling march the
  *  accumulator is IDENTICALLY 0 in exact arithmetic — every pre-clamp v² along such a march stays
@@ -249,8 +249,8 @@ export interface OptimizeOpts {
     angleTol?: number;
     /** the section's authored Coulomb/drag coefficients (`Track.friction`/`.resistance`), threaded
      *  to every `evalForce` call the solve makes — both defaulted 0, so an unauthored track's
-     *  solve stays byte-identical to before the kernel supported friction (`kex2d-friction`'s
-     *  Locked decision, the additive-substrate law). */
+     *  solve stays byte-identical to before the kernel supported friction (the additive-substrate
+     *  law, `kex2d-map.md`). */
     friction?: number;
     resistance?: number;
 }

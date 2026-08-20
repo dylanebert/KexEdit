@@ -87,7 +87,7 @@ describe("solveOptimize — zero-drift identity", () => {
             expect(r.iters).toBe(0);
             expect(r.residual).toBe(0);
             expect(r.angleResidual).toBe(0);
-            // the injection gate (`kex2d-friction` stage 3) never DOWNGRADES this path: same
+            // the injection gate never DOWNGRADES this path: same
             // g-vector, same march, so its own injection is whatever the untouched draft
             // already carries — reported, not gated. On this corpus it's 0 (no key touches the
             // sqrt clamp), matching every other exact-zero field above.
@@ -592,7 +592,7 @@ describe("solveOptimize — golden fixture (bit identity)", () => {
     });
 });
 
-describe("solveOptimize — injection gate (kex2d-friction stage 3)", () => {
+describe("solveOptimize — injection gate", () => {
     // The path-energy pin consequence (`kex2d-map.md`): once a pin's own march runs coefficients
     // away from 0, a stamped `v` is no longer implied by the converged (x, y, θ) rows, so the old
     // `exitTol`/`vSqResidual` stamp comparison retires. The gate now reads the defect at its own
@@ -600,7 +600,7 @@ describe("solveOptimize — injection gate (kex2d-friction stage 3)", () => {
     // `OptimizeResult.injection` — and downgrades a `"solved"` outcome whose landed injection
     // exceeds `injectionTol` to `"diverged"`.
 
-    // the additive-substrate law (`kex2d-friction`'s Locked decision): an unauthored track
+    // the additive-substrate law (`kex2d-map.md`): an unauthored track
     // (μ = c = 0, the kernel's own default) must stay byte-identical to before friction/resistance
     // existed as OptimizeOpts fields at all — no injection anywhere on the ordinary optimize
     // corpus, and passing the defaults explicitly must change nothing.

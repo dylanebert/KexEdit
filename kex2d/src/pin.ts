@@ -60,10 +60,10 @@ import {
 
 /** the section's own realized baking parameters — the same reading `BakeSystem`'s `forcePayload`
  *  and `forceBake` derive, so the mode targets exactly what's on screen. `friction`/`resistance`
- *  are the track's own authored coefficients (`kex2d-friction` stage 3): the stamp/ghost and
+ *  are the track's own authored coefficients (threaded into `enterPin`'s stamp): the stamp/ghost and
  *  every solve must run the SAME dissipation the live document bakes with, or the stamp disagrees
  *  with what's on screen the moment either coefficient is nonzero (the substrate's own residue
- *  class, `kex2d-friction`'s Locked decision). */
+ *  class, the additive-substrate law, `kex2d-map.md`). */
 interface SectionSpec {
     entry: Entry;
     length: number;

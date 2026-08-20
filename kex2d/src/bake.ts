@@ -69,7 +69,7 @@ function wrap(a: number): number {
  * `kex2d-map.md`): 0 wherever the march never drives a pre-clamp v²
  * negative, the case that holds everywhere but a genuine stall. The
  * defect's own site, measured directly rather than inferred from an exit-v
- * stamp — `optimize.ts`'s `finalize` gates on it (`kex2d-friction` stage 3).
+ * stamp — `optimize.ts`'s `finalize` gates on it (the injection gate, below).
  */
 export function forces(
     posX: Float32Array,
@@ -174,7 +174,7 @@ export function forces(
  * `loss` (`friction`/`resistance`, both defaulted 0).
  *
  * **`invertRange` mirrors the loss rather than pinning its round-trip oracle
- * to μ=c=0** (`kex2d-friction` stage 1's executor call): the θ-recovery and
+ * to μ=c=0** (a deliberate choice, not an oversight — `kex2d-map.md`): the θ-recovery and
  * the F_n-solve above never reference `friction`/`resistance` at all — they
  * are the exact algebraic inverse of the forward step's `dtheta` equation,
  * which the loss term does not touch — so the recovered F_n is EXACTLY the
