@@ -1071,12 +1071,20 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     await expect(fpt.nth(3)).toHaveClass(/sel/);
     await expect(fpt.nth(3)).toHaveClass(/active/); // re-added → active again
 
-    // ── 3. MULTI-DRAG, RIGID CLAMP: grab the CREST (a member, but NOT the active one — a plain
-    // click on a set member drags the whole block without collapsing it) and drag it FAR right —
-    // past the tightest member's own room. the shared Δs clamps to that member's own [0, len]: the
-    // s=0.8·len shoulder has the least room (0.2·len), so it lands EXACTLY at the section's extent
-    // while every member's OFFSET from the others is preserved (the AE comp-start block); the two
-    // unselected seeds never move. ──
+    // ── 3. MULTI-DRAG, RIGID CLAMP + THE STATION REFUSAL: grab the CREST (a member, but NOT the
+    // active one — a plain click on a set member drags the whole block without collapsing it) and
+    // drag it FAR right — past the tightest member's own room. `clampDelta` alone would bind the
+    // shared Δs to that member's own [0, len] exactly: the s=0.8·len shoulder has the least room
+    // (0.2·len), so the bare clamp math lands it EXACTLY at the section's extent — precisely where
+    // the untouched trailing seed already sits. But `setForcePoint` refuses a taken station PER KEY
+    // (`track.ts stationTaken`, "refuse rather than overwrite"), and the block tests the whole
+    // shared step together before committing it (`Timeline.svelte applyDrag`'s own comment: "which
+    // would tear a multi-drag apart… the block holds at the last landed Δs") — so this drag
+    // exercises the refusal APPLIED TO THE BLOCK, not just the raw clamp: the shoulder never
+    // reaches the occupied station, and the group holds one step short instead (every member's
+    // OFFSET from the others still preserved, the AE comp-start block); the two unselected seeds
+    // never move. (Was asserted the other way — exact coincidence, "no auto-merge" — before the
+    // station refusal was generalized to the block path; that premise no longer holds.) ──
     const before = await forces();
     const clipBox = await page.locator(".clip").first().boundingBox();
     if (!clipBox) throw new Error("force clip not laid out");
@@ -1092,17 +1100,17 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     expect(ds).toBeGreaterThan(2); // a real, clamped-but-substantial shift
     expect(after[2].s - before[2].s).toBeCloseTo(ds, 5); // the crest — the SAME shared offset
     const len = before[4].s; // the section's own extent, read off the pre-drag (unambiguous) snapshot
-    // the clamp binds EXACTLY at the tightest member's own room: its pre-drag distance to the
-    // extent equals the shared delta (the definition of "the tightest member bounds the group").
-    // asserted algebraically, not by re-reading a POST-drag index — the clamped member now sits at
-    // s = len, tied with the untouched trailing seed (also at len), so `after`'s sort order between
-    // that pair is no longer determined by identity (a stable sort ties on the ORIGINAL entity
-    // order, not which one is "the seed") — exactly the spec's accepted "no auto-merge, coincident
-    // points keep current engine behavior".
-    expect(before[3].s + ds).toBeCloseTo(len, 3);
+    const room = len - before[3].s; // the tightest member's own room — what the bare clamp math allows
+    // the refusal holds the block STRICTLY short of the room the clamp alone would grant: landing
+    // exactly on `room` is exactly the collision `stationTaken` exists to refuse, so a landed Δs
+    // that reached it would mean the refusal never fired. Qualitative, not a captured pixel-derived
+    // number — the discrete mouse-move sampling picks WHICH pre-collision Δs the block holds at,
+    // never whether it holds short (that's the write-path law, not an artifact of the drive).
+    expect(ds).toBeLessThan(room);
+    expect(before[3].s + ds).toBeLessThan(len); // never reaches the occupied station…
     const atLen = after.filter((p) => Math.abs(p.s - len) < 1e-3);
-    expect(atLen.length).toBe(2); // the seed AND the clamped member now coincide — no auto-merge
-    expect(atLen.some((p) => Math.abs(p.g - before[4].g) < 1e-6)).toBe(true); // the seed's g survived
+    expect(atLen.length).toBe(1); // …so only the untouched trailing seed sits there — no coincidence
+    expect(atLen[0]).toEqual(before[4]); // …and it's byte-identical to its pre-drag self
     await page.keyboard.press("Control+z"); // one entry reverts the whole group
     await expect.poll(async () => (await forces())[3].s).toBeCloseTo(before[3].s, 3);
     // …and the DIAMONDS are back where the cached boxes say. The undo writes authored `s` in place
