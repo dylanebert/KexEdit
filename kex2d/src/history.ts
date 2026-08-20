@@ -74,6 +74,12 @@ import {
     type TrackV0State,
     trackV0State,
     setTrackV0,
+    type TrackFrictionState,
+    trackFrictionState,
+    setTrackFriction,
+    type TrackResistanceState,
+    trackResistanceState,
+    setTrackResistance,
 } from "./track";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { retargetMode } from "./timeline";
@@ -731,6 +737,30 @@ export function beginV0(trackEid: number): void {
         () => trackV0State(trackEid),
         (st: TrackV0State) => setTrackV0(trackEid, st.v0),
         (a: TrackV0State, b: TrackV0State) => a.v0 === b.v0,
+    );
+}
+
+// ── friction / drag (kex2d-friction) ─────────────────────────────────────────────
+
+/** open a gesture on the track's friction field (scrub or typed edit), snapshotting
+ *  `Track.friction`. `trackFrictionState` reads `undefined` both for a gone track and the
+ *  in-mode lockdown (`track.trackEditable`), so `begin` refuses to open on either — the
+ *  gesture-open suspenders to `setTrackFriction`'s own write-side belt. commit coalesces the
+ *  live writes into one entry; a no-change release records nothing. */
+export function beginFriction(trackEid: number): void {
+    begin(
+        () => trackFrictionState(trackEid),
+        (st: TrackFrictionState) => setTrackFriction(trackEid, st.friction),
+        (a: TrackFrictionState, b: TrackFrictionState) => a.friction === b.friction,
+    );
+}
+
+/** `beginFriction`'s drag-coefficient twin. */
+export function beginResistance(trackEid: number): void {
+    begin(
+        () => trackResistanceState(trackEid),
+        (st: TrackResistanceState) => setTrackResistance(trackEid, st.resistance),
+        (a: TrackResistanceState, b: TrackResistanceState) => a.resistance === b.resistance,
     );
 }
 
