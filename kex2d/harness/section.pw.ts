@@ -631,7 +631,7 @@ test("v0 authoring flow", async ({ page, boot }) => {
     await page.screenshot({ path: join(OUT, "v0-1-selected.png") });
 
     // ── 2. Scrub the v₀ label to the right → the speed rises, one undo entry. ──
-    const key = page.locator(".vtip .key");
+    const key = page.locator(".vtip .fld.v0 .key");
     const kb = await key.boundingBox();
     if (!kb) throw new Error("v0 scrub handle not laid out");
     await page.mouse.move(kb.x + kb.width / 2, kb.y + kb.height / 2);
@@ -647,7 +647,7 @@ test("v0 authoring flow", async ({ page, boot }) => {
     await expect.poll(undoDepth).toBe(0);
 
     // ── 3. Type an exact speed in the field → it commits verbatim, one undo entry. ──
-    await page.locator(".vtip input").fill("25");
+    await page.locator(".vtip .fld.v0 input").fill("25");
     await page.keyboard.press("Enter");
     await expect.poll(v0).toBeCloseTo(25, 3);
     expect(await undoDepth()).toBe(1);

@@ -1134,7 +1134,7 @@ test("viewport infeasible shot", async ({ page, boot }) => {
     const cy = cb.y + (cb.height - DOCK_RESERVE) / 2;
     await page.mouse.click(cx, cy);
     await expect(page.locator(".vtip")).toBeVisible();
-    await page.locator(".vtip input").fill("16");
+    await page.locator(".vtip .fld.v0 input").fill("16");
     await page.keyboard.press("Enter");
     await expect.poll(v0).toBeCloseTo(16, 3);
 
