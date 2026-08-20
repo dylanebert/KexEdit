@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { DIM_WASH, hexToOklch, hovered, selected } from "../src/colors";
+import { COLOR_VELOCITY, DIM_WASH, hexToOklch, hovered, selected } from "../src/colors";
 import { easeOut } from "../src/editor";
 
 // an independent sRGB #rrggbb reader (not the module under test).
@@ -16,6 +16,20 @@ function whiteMix(hex: string): string {
     const [r, g, b] = rgb(hex);
     return `#${((up(r) << 16) | (up(g) << 8) | up(b)).toString(16).padStart(6, "0")}`;
 }
+
+describe("COLOR_VELOCITY — the timeline's own velocity-channel hue (editor-ui.md Mode vocabulary)", () => {
+    // a new channel's whole point is to be its own meaning, not a re-hue of an existing one
+    // (geo blue, force gold) — collision would read as "this is a force curve" or "this is
+    // a geo section", which is exactly the drift the mode-vocabulary rule exists to catch.
+    test("hue is distinct from both kind colors", () => {
+        const v = hexToOklch(COLOR_VELOCITY).h;
+        const geo = hexToOklch("#78a5d6").h;
+        const force = hexToOklch("#d49560").h;
+        const HueMin = 0.3; // radians — comfortably past perceptual hue-confusion range
+        expect(Math.abs(v - geo)).toBeGreaterThan(HueMin);
+        expect(Math.abs(v - force)).toBeGreaterThan(HueMin);
+    });
+});
 
 describe("selected — OKLCH tone variant", () => {
     // the two kind colors the selection derives from (geo blue, force gold).

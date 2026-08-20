@@ -446,7 +446,10 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   `v0`, `domain`), `Section` (`id` stable,
   `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent), `Handle` (`section`, per-section
   `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`).
-  `bakeOut`: per-edge `fN`+`ds`, per-sample `t`/`feasible`, `firstInfeasible`, `hash`. `sectionInfo`
+  `bakeOut`: per-edge `fN`+`ds`, per-sample `v`+`t`/`feasible`, `firstInfeasible`, `hash` — `v` is the
+  recovered speed (`ChainResult.v`, `forces`' own output threaded through `chain()`), the timeline's
+  velocity channel (`cart.velocityCurve`, `Timeline.svelte`) and `computeTime`'s own read, both off
+  this one array; `Samples` (posX/posY/theta) carries no `v` of its own. `sectionInfo`
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
   `sections`/`sectionAt`/`createSection`, plus the session's per-kind **sticky append length**
   (`stickyLen`/`setStickyLen`: a force section's extent, a geo section's `extend` chord — module
@@ -572,7 +575,9 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   the window instead of reading a contaminated bake as authored state.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
-  `(s, f)` over cumulative arclength — the chart's distance x-axis), `loopTime`, and **`trackMapping`**
+  `(s, f)` over cumulative arclength — the chart's distance x-axis), `velocityCurve` (`forceCurve`'s
+  twin: baked `v` as per-sample `(s, v)` over the same axis — no leading-sample repeat needed, `v` is
+  already per-sample unlike `fN`), `loopTime`, and **`trackMapping`**
   (the per-sample arclength↔time table over the display bake — the cart's `t`↔chart-`s` projection;
   the cart rides in time, the chart is distance). `cartArc` reads the playhead's own arclength off
   the current bake; `playheadPosition` wraps it with the SAME axis pair (`d` and the track's
@@ -867,7 +872,10 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   Unit-tested in `timeline.test.ts`.
 - `Timeline.svelte` — the always-present bottom dock (a flex row: a thin **tool rail** on the left
   edge, then the timeline content column): the **F_n force-curve readout + scrub +
-  zoom/pan navigation**, the floating **media player**, and the **section clip strip** in the marker
+  zoom/pan navigation**, the **recovered-speed channel** (`vCurve`/`velocityCurve`, C1
+  `kex2d-substrate`: one hue `COLOR_VELOCITY`, always dashed, own auto-fit `vView`/`vTarget` scale
+  over the same shared document x-axis as the force curve — display-only, no drag, no toggle), the
+  floating **media player**, and the **section clip strip** in the marker
   lane (one clip per section, kind-colored/labeled; click selects `editor.section`; a `+` tail flyout
   appends geo/force; a force clip's right edge is its **extent trim**; right-click a clip opens the
   context menu). A geo clip also carries **read-only interior-node ticks** (small circles via pure

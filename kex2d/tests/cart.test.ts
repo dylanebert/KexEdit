@@ -11,6 +11,7 @@ import {
     parkAtArc,
     playheadPosition,
     trackMapping,
+    velocityCurve,
 } from "../src/cart";
 import {
     addNode,
@@ -54,12 +55,13 @@ function baked(): { eid: number; tTotal: number } {
     return { eid, tTotal: out.tTotal };
 }
 
-test("cartPose + forceCurve are null before the bake has a chain", () => {
+test("cartPose + forceCurve + velocityCurve are null before the bake has a chain", () => {
     // a fresh track with no nodes baked: Track.count is 0, so nothing to ride or sample.
     const state = new State();
     const eid = createTrack(state);
     expect(cartPose(eid, 0)).toBeNull();
     expect(forceCurve(eid)).toBeNull();
+    expect(velocityCurve(eid)).toBeNull();
 });
 
 test("loopTime is the full track time when the whole chain is feasible", () => {
@@ -97,6 +99,48 @@ test("forceCurve reads per-sample ~1g over the flat chain's arclength [0, 32]", 
     expect(c.s[c.n - 1]).toBeCloseTo(32, 2); // total arclength = the chord span
     for (let i = 1; i < c.n; i++) expect(c.s[i]).toBeGreaterThan(c.s[i - 1]); // monotone
     for (let i = 0; i < c.n; i++) expect(c.f[i]).toBeCloseTo(1, 3);
+});
+
+test("velocityCurve is forceCurve's twin — same axis, per-sample v straight off bakeOut.v", () => {
+    // origin → node (32,0): flat, so speed barely changes (friction=resistance=0 by default).
+    const { eid } = baked();
+    const out = bakeOut.get(eid);
+    if (!out) throw new Error("no bake");
+    const c = velocityCurve(eid);
+    if (!c) throw new Error("velocityCurve returned null after bake");
+    expect(c.n).toBeGreaterThan(2);
+    expect(c.s[0]).toBe(0);
+    expect(c.s[c.n - 1]).toBeCloseTo(32, 2); // the same cumulative arclength forceCurve reads
+    // published straight off the bake's own `v` — no leading-sample repeat (unlike `fN`, `v` is
+    // already per-sample), so this is byte-identical, not just close.
+    for (let i = 0; i < c.n; i++) expect(c.v[i]).toBe(out.v[i]);
+});
+
+test("velocityCurve's range genuinely differs from forceCurve's — the case for its own scale", () => {
+    // a climb that sheds real speed: v drops well below its entry value while F_n swings through
+    // its own separate g-range — the two channels have no common unit, so a shared axis would
+    // either crush one or clip the other. Auto-fit must be per-channel.
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 16, 12); // a real climb, well short of stalling
+    state.step(0);
+    const f = forceCurve(eid);
+    const v = velocityCurve(eid);
+    if (!f || !v) throw new Error("no bake");
+    const vLo = Math.min(...v.v.subarray(0, v.n));
+    const vHi = Math.max(...v.v.subarray(0, v.n));
+    let fLo = f.f[0];
+    let fHi = f.f[0];
+    for (let i = 0; i < f.n; i++) {
+        if (f.f[i] < fLo) fLo = f.f[i];
+        if (f.f[i] > fHi) fHi = f.f[i];
+    }
+    // the velocity range's SPREAD is an order of magnitude past the force range's — a shared
+    // axis would flatten the force curve to a hairline or clip the velocity curve entirely.
+    expect(vHi - vLo).toBeGreaterThan((fHi - fLo) * 5);
 });
 
 test("cartPose rides the baked track flat, anchor to end", () => {

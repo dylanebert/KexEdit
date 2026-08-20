@@ -837,8 +837,8 @@ describe("the time march the document threads", () => {
         // stops advancing entirely and would report a fraction of the real duration.
         let derived = 0;
         for (let i = 0; i < edges; i++) {
-            const vA = Math.max(Math.abs(samples.get(eid)?.v[i] ?? 0), V_FLOOR);
-            const vB = Math.max(Math.abs(samples.get(eid)?.v[i + 1] ?? 0), V_FLOOR);
+            const vA = Math.max(Math.abs(out.v[i] ?? 0), V_FLOOR);
+            const vB = Math.max(Math.abs(out.v[i + 1] ?? 0), V_FLOOR);
             derived += out.ds[i] / (0.5 * (vA + vB));
         }
         expect(derived).toBeLessThan(out.tTotal / 10);
@@ -853,12 +853,11 @@ describe("the time march the document threads", () => {
             [40, 1],
         ]);
         const out = bakeOut.get(eid);
-        const s = samples.get(eid);
-        if (!out || !s) throw new Error("no bake");
+        if (!out) throw new Error("no bake");
         let derived = 0;
         for (let i = 0; i + 1 < Track.count.get(eid); i++) {
-            const vA = Math.max(Math.abs(s.v[i]), V_FLOOR);
-            const vB = Math.max(Math.abs(s.v[i + 1]), V_FLOOR);
+            const vA = Math.max(Math.abs(out.v[i]), V_FLOOR);
+            const vB = Math.max(Math.abs(out.v[i + 1]), V_FLOOR);
             derived = Math.fround(derived + out.ds[i] / (0.5 * (vA + vB)));
             expect(out.t[i + 1]).toBe(derived);
         }
