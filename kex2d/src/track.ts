@@ -61,11 +61,11 @@ export const Track = {
     ds: sparse(f32),
     v0: sparse(f32),
     domain: sparse(u32),
-    /** Coulomb friction coefficient (`kex2d-friction`), threaded to `forward.loss` beside
+    /** Coulomb friction coefficient, threaded to `forward.loss` beside
      *  `resistance`. New-track default `DEFAULT_FRICTION`; an absent field (an old save)
      *  restores 0, the kernel's own neutral default (`TrackPlugin.traits`). */
     friction: sparse(f32),
-    /** quadratic-drag coefficient [1/m] (`kex2d-friction`), threaded to `forward.loss` beside
+    /** quadratic-drag coefficient [1/m], threaded to `forward.loss` beside
      *  `friction`. New-track default `DEFAULT_RESISTANCE`; an absent field restores 0. */
     resistance: sparse(f32),
 };
@@ -88,7 +88,8 @@ export const Section = {
     length: sparse(f32),
 };
 
-/** a section's optional authored SPEED CONTROL (`kex2d-speed-substrate`'s locked decision) —
+/** a section's optional authored SPEED CONTROL — a per-edge v²-modification channel prescribing
+ *  a linear ramp from entry v² to `target²` over the span's own domain coordinate —
  *  attached to the SAME eid as `Section`, not a sub-entity like `Handle`/`Force`: one target
  *  per section, so ECS membership itself carries the `SpeedControl | undefined` presence
  *  `section.ts`'s `Section.speed?` type already names, with no separate "has" flag that could
@@ -324,7 +325,7 @@ const MIN_V0 = 0.1;
 /** a fresh track's default Coulomb friction coefficient — ported verbatim from the incumbent
  *  core's `DEFAULT_FRICTION` (`packages/core/src/track/dispatch.rs`), independently grounded:
  *  0.021 sits mid-range for polyurethane wheels on steel rail (~0.01–0.03), the actual coaster
- *  contact pair (`kex2d-friction`'s Locked decision). Nonzero and physical, unlike the
+ *  contact pair. Nonzero and physical, unlike the
  *  kernel's own zero-coefficient default (`forward.ts`'s `friction`/`resistance` params) — the
  *  kernel default is what an ABSENT `Track.friction` restores to (`TrackPlugin.traits`,
  *  below), never this. */
@@ -332,8 +333,8 @@ export const DEFAULT_FRICTION = 0.021;
 
 /** a fresh track's default quadratic-drag coefficient (1/m), derived (not ported) from
  *  `c = ρ·C_d·A/2m` with ρ = 1.225, C_d = 1.0, A = 2.5 m², m = 6000 kg — a 24-rider train's
- *  open bluff-body drag, rounded up from 2.55e-4 (`kex2d-friction`'s Locked decision; erring
- *  high is the safe direction). ~13× the incumbent core's undocumented `2e-5`, whose implied
+ *  open bluff-body drag, rounded up from 2.55e-4 (erring high is the safe direction — a layout
+ *  that clears in the sim clears in reality). ~13× the incumbent core's undocumented `2e-5`, whose implied
  *  terminal velocity (700 m/s) has no physical grounding. */
 export const DEFAULT_RESISTANCE = 2.5e-4;
 
@@ -1405,7 +1406,7 @@ export function setSectionLength(ecs: State, id: number, length: number): void {
     Section.length.set(eid, Math.max(minForceExtent(trackDomain(ecs)), length));
 }
 
-// ── section speed control (kex2d-speed-substrate) ──────────────────────────────
+// ── section speed control ────────────────────────────────────────────────────────
 
 /** a section's authored speed control, or undefined when it carries none — the pure
  *  ECS-column reader `geoPayload`/`forcePayload`/`forceBake`/`sectionContentHash` and
@@ -1421,10 +1422,10 @@ export function sectionSpeed(ecs: State, id: number): SpeedControl | undefined {
 /** whether a section's speed control may be EDITED right now — the same per-subject rule
  *  `sectionEditable` (`acts.ts`) applies to every other non-subject edit surface (geo nodes,
  *  other sections' force keys/extents): editable with no pin session open, or when `section`
- *  IS the pinning section (`kex2d-speed-substrate`'s locked decision: "Pin's editing lockdown
- *  covers speed edits like every other non-subject edit" — a speed target isn't what a pin
- *  solve touches, but it rides the same per-section consent `sectionEditable` grants its
- *  section). Reimplemented off `bakeFreeze` rather than importing `sectionEditable` —
+ *  IS the pinning section — pin's editing lockdown covers speed edits like every other
+ *  non-subject edit: a speed target isn't what a pin solve touches, but it rides the same
+ *  per-section consent `sectionEditable` grants its section. Reimplemented off `bakeFreeze`
+ *  rather than importing `sectionEditable` —
  *  `acts.ts`/`editor.ts` sit ABOVE track.ts in the dependency graph (they import FROM here),
  *  so track.ts can't reach back up without a cycle. `bakeFreeze` is the same in-mode signal,
  *  set at the same `editor.beginPin`/`endPin` choke points `sectionEditable`'s `pinning`
@@ -1486,7 +1487,7 @@ export function setTrackV0(trackEid: number, v0: number): void {
     Track.v0.set(trackEid, Math.max(MIN_V0, v0));
 }
 
-// ── friction / drag (kex2d-friction) ─────────────────────────────────────────────
+// ── friction / drag ────────────────────────────────────────────────────────────
 
 /** whether the track-global coefficients (friction/resistance) may be EDITED right now — the
  *  same per-subject rule `sectionEditable` (`acts.ts`) applies to every other non-subject edit
@@ -1526,12 +1527,20 @@ export function trackFrictionState(trackEid: number): TrackFrictionState | undef
     return { friction: Track.friction.get(trackEid) };
 }
 
+/** whether a typed coefficient is one the field may commit — finite and non-negative. the
+ *  kernel itself carries no such guard (`forward.loss` takes `|fMag|` unvalidated), so this is
+ *  purely the field's own refusal, shared by both coefficient fields'
+ *  onchange handlers (`App.svelte`) rather than duplicated per field. */
+export function validCoefficient(v: number): boolean {
+    return Number.isFinite(v) && v >= 0;
+}
+
 /** set the track's friction coefficient — the field/scrub write + gesture restore. refuses
  *  (no-op) under the in-mode lockdown (`trackEditable`) — the write-side belt to
  *  `beginFriction`'s gesture-open suspenders. no floor: the kernel's own no-guard convention
  *  (`forward.loss` takes `|fMag|`, never validates its coefficients), so a negative/NaN
- *  refusal is the field's own job (stage 4), not this write. re-bakes on the next tick
- *  (friction is in the bake hash). */
+ *  refusal is `validCoefficient`'s job, checked by the field before this write is ever called,
+ *  not this write. re-bakes on the next tick (friction is in the bake hash). */
 export function setTrackFriction(trackEid: number, friction: number): void {
     if (!trackEditable()) return;
     Track.friction.set(trackEid, friction);
@@ -2629,8 +2638,8 @@ export function deleteSection(ecs: State, sectionId: number): boolean {
 
 function seed(ecs: State): void {
     const trackEid = createTrack(ecs);
-    // a genuinely NEW authored track gets the physically-grounded nonzero coefficients
-    // (`kex2d-friction`'s Locked decision) — `createTrack` itself stays at the kernel's neutral
+    // a genuinely NEW authored track gets the physically-grounded nonzero coefficients —
+    // `createTrack` itself stays at the kernel's neutral
     // 0 (every test's own fixture), so this is the one place the authoring default applies.
     Track.friction.set(trackEid, DEFAULT_FRICTION);
     Track.resistance.set(trackEid, DEFAULT_RESISTANCE);
@@ -2779,7 +2788,7 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
             }
         }
     }
-    // the speed control (`kex2d-speed-substrate`): folded in for BOTH kinds, off the same
+    // the speed control: folded in for BOTH kinds, off the same
     // membership-is-presence reading `sectionSpeed` projects — absent contributes nothing, so a
     // track with no speed control anywhere stays byte-identical to the pre-substrate hash.
     if (ecs.has(sec.eid, Speed)) h += `^v${Speed.target.get(sec.eid)}`;
@@ -2791,7 +2800,7 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
  *  node poses, a force section's extent + points). BakeSystem re-bakes on a miss (anything
  *  moved, added, removed, converted, reordered, re-domained, the v0 retimed, or a
  *  coefficient edited), skips otherwise. `friction`/`resistance` fold in unconditionally,
- *  beside `v0` (`kex2d-friction` stage 2) — unlike `domain`'s conditional suffix, NOT because
+ *  beside `v0` — unlike `domain`'s conditional suffix, NOT because
  *  every track is nonzero (`createTrack` itself stays at the kernel's neutral 0; only `seed`'s
  *  genuinely NEW documents get `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`, so a zero-coefficient
  *  track is still the common case, every test fixture included). Unconditional is safe because
@@ -3104,7 +3113,7 @@ export const TrackPlugin: Plugin = {
                 // absent-in-a-document restores the KERNEL default (0, `forward.ts`'s own
                 // `friction`/`resistance` params), never `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`
                 // (a NEW-track authoring default, `createTrack` only) — an old save with no
-                // coefficients authored never changes shape (`kex2d-friction`'s Locked decision).
+                // coefficients authored never changes shape.
                 friction: 0,
                 resistance: 0,
             }),

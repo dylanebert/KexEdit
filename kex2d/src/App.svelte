@@ -48,7 +48,7 @@ import { convertGeo } from "./geoforce";
 import { modeKeyAct, sectionKeyAct } from "./keys";
 import { MIN_FREE } from "./optimize";
 import { enterPinMode, exitPinMode, runPinSection } from "./pin";
-import { beginV0, commit, history } from "./history";
+import { beginFriction, beginResistance, beginV0, commit, history } from "./history";
 import Menu from "./Menu.svelte";
 import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { nodeMenu, sectionMenu, type SectionMenuActions } from "./menus";
@@ -72,8 +72,11 @@ import {
     sectionResettable,
     sections,
     sectionSolvable,
+    setTrackFriction,
+    setTrackResistance,
     setTrackV0,
     Track,
+    validCoefficient,
 } from "./track";
 import {
     attachCanvas2D,
@@ -1113,6 +1116,20 @@ const v0 = $derived.by((): number => {
     void tick;
     return trackEid === null ? 0 : Track.v0.get(trackEid);
 });
+// the coefficient fields: the START popover's v0-field siblings, authoring
+// `Track.friction`/`Track.resistance` — the dissipation kernel's own authoring surface
+// (`kex2d-map.md`'s path-energy law). Same row shape as v0 (scrub key + typed field), but unlike
+// v0 (which floors at MIN_V0 in the model) the model applies NO floor here — a negative/NaN
+// commit is refused at the field, never clamped, since the kernel's own coefficients carry no
+// sign convention to clamp toward.
+const friction = $derived.by((): number => {
+    void tick;
+    return trackEid === null ? 0 : Track.friction.get(trackEid);
+});
+const resistance = $derived.by((): number => {
+    void tick;
+    return trackEid === null ? 0 : Track.resistance.get(trackEid);
+});
 const startPos = $derived.by((): { x: number; y: number } | null => {
     void tick;
     if (!canvas || trackEid === null) return null;
@@ -1166,6 +1183,77 @@ function v0Keydown(e: KeyboardEvent, reset: string): void {
         input.value = reset;
         input.blur();
     }
+}
+
+const FRICTION_SCRUB = 0.001; // μ per px — three decades finer than v0's (μ lives near 0.02)
+const RESISTANCE_SCRUB = 0.00005; // c per px — c lives near 2.5e-4
+// friction/resistance scrub + field: v0's gestures, retargeted at the two coefficients. the
+// scrub accumulator clamps at 0 (never negative, `v0ScrubStart`'s own shape); the typed field
+// REFUSES instead of clamping — NaN or negative leaves `Track.friction`/`.resistance` untouched,
+// since the model layer (`setTrackFriction`/`setTrackResistance`) applies no floor of its own.
+function frictionScrubStart(e: PointerEvent): void {
+    if (trackEid === null) return;
+    if (editor.pinning !== null) return;
+    const te = trackEid;
+    e.preventDefault();
+    const label = e.currentTarget as HTMLElement;
+    beginDrag(label, e.pointerId);
+    beginFriction(te);
+    let acc = Track.friction.get(te);
+    const move = (ev: PointerEvent): void => {
+        acc = Math.max(0, acc + ev.movementX * FRICTION_SCRUB);
+        setTrackFriction(te, acc);
+    };
+    const up = (): void => {
+        label.removeEventListener("pointermove", move);
+        label.removeEventListener("pointerup", up);
+        label.removeEventListener("pointercancel", up);
+        commit(history);
+    };
+    label.addEventListener("pointermove", move);
+    label.addEventListener("pointerup", up);
+    label.addEventListener("pointercancel", up);
+}
+function onFrictionField(e: Event): void {
+    if (trackEid === null) return;
+    if (editor.pinning !== null) return;
+    const val = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
+    if (!validCoefficient(val)) return; // refusal: NaN or negative commits nothing
+    beginFriction(trackEid);
+    setTrackFriction(trackEid, val);
+    commit(history);
+}
+function resistanceScrubStart(e: PointerEvent): void {
+    if (trackEid === null) return;
+    if (editor.pinning !== null) return;
+    const te = trackEid;
+    e.preventDefault();
+    const label = e.currentTarget as HTMLElement;
+    beginDrag(label, e.pointerId);
+    beginResistance(te);
+    let acc = Track.resistance.get(te);
+    const move = (ev: PointerEvent): void => {
+        acc = Math.max(0, acc + ev.movementX * RESISTANCE_SCRUB);
+        setTrackResistance(te, acc);
+    };
+    const up = (): void => {
+        label.removeEventListener("pointermove", move);
+        label.removeEventListener("pointerup", up);
+        label.removeEventListener("pointercancel", up);
+        commit(history);
+    };
+    label.addEventListener("pointermove", move);
+    label.addEventListener("pointerup", up);
+    label.addEventListener("pointercancel", up);
+}
+function onResistanceField(e: Event): void {
+    if (trackEid === null) return;
+    if (editor.pinning !== null) return;
+    const val = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
+    if (!validCoefficient(val)) return; // refusal: NaN or negative commits nothing
+    beginResistance(trackEid);
+    setTrackResistance(trackEid, val);
+    commit(history);
 }
 // dismiss the v0 popover on an outside press. canvas clicks route through controls (which
 // re-picks the START or deselects); popover clicks keep it open.
@@ -1336,13 +1424,17 @@ $effect(() => {
         </div>
     {/if}
 
-    <!-- the track START anchor's initial-speed field: a popover summoned AT the diamond (on
-         the object). one row — the v₀ label doubles as a scrub handle, the input types it;
-         each edit is one undo entry. -->
+    <!-- the track START anchor's field popover: summoned AT the diamond (on the object). three
+         rows — initial speed (v₀) plus its two dissipation-coefficient siblings, each a
+         scrub-handle key + typed input; every edit is one undo entry. Each `.fld`
+         carries a second class (`v0` / `mu` / `c`) so the capture harness can address one row —
+         `.vtip .key`/`.vtip input` alone are ambiguous across three rows. -->
     {#if startSel && startPos}
         {@const vText = v0.toFixed(1)}
+        {@const muText = friction.toFixed(3)}
+        {@const cText = resistance.toFixed(5)}
         <div class="vtip" style="left: {startPos.x}px; top: {startPos.y}px">
-            <div class="fld">
+            <div class="fld v0">
                 <span class="key" onpointerdown={v0ScrubStart} role="presentation">v₀</span>
                 <input
                     type="number"
@@ -1356,6 +1448,36 @@ $effect(() => {
                     aria-label="Initial speed (m/s)"
                 />
                 <span class="unit">m/s</span>
+            </div>
+            <div class="fld mu">
+                <span class="key" onpointerdown={frictionScrubStart} role="presentation">μ</span>
+                <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    value={muText}
+                    disabled={pinOpen}
+                    onchange={onFrictionField}
+                    onfocus={(e) => e.currentTarget.select()}
+                    onkeydown={(e) => v0Keydown(e, muText)}
+                    aria-label="Friction coefficient"
+                />
+                <span class="unit"></span>
+            </div>
+            <div class="fld c">
+                <span class="key" onpointerdown={resistanceScrubStart} role="presentation">c</span>
+                <input
+                    type="number"
+                    step="0.00005"
+                    min="0"
+                    value={cText}
+                    disabled={pinOpen}
+                    onchange={onResistanceField}
+                    onfocus={(e) => e.currentTarget.select()}
+                    onkeydown={(e) => v0Keydown(e, cText)}
+                    aria-label="Drag coefficient (1/m)"
+                />
+                <span class="unit">1/m</span>
             </div>
         </div>
     {/if}
@@ -1850,9 +1972,10 @@ $effect(() => {
         }
     }
 
-    /* the START anchor's initial-speed popover: the same floating-field surface as the
-       timeline point popover (opaque, one row — scrub-handle key · value · unit, no boxed
-       input), anchored above the START diamond. */
+    /* the START anchor's field popover: the same floating-field surface as the timeline point
+       popover (opaque, one row per field — scrub-handle key · value · unit, no boxed input),
+       anchored above the START diamond. v0 plus its two coefficient siblings stack as separate
+       `.fld` rows in the column flex. */
     .vtip {
         position: absolute;
         z-index: 3;

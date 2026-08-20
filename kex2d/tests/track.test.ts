@@ -92,6 +92,7 @@ import {
     trackResistance,
     TrackPlugin,
     V0,
+    validCoefficient,
 } from "../src/track";
 import {
     appendSection as appendSectionCmd,
@@ -1413,7 +1414,7 @@ describe("tangent model (feel round 2)", () => {
     // per-run allocator artifact (`nextSectionId`), not part of the default geometry, so it's
     // normalized out before the compare. the pin goes red if the default geo bake path ever changes
     // (a node pose, ds, v0, the hash format, or a node-0 tangent leaking in) — the guard.
-    // `mu`/`c` moved into the literal at `kex2d-friction` stage 2: `bakeHash` now folds the
+    // `mu`/`c` are in the literal because `bakeHash` folds the
     // coefficients in unconditionally, beside `v0`. `createTrack` (this fixture's own builder)
     // stays at the kernel's neutral 0/0 — `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE` are `seed`'s
     // (the app-boot document, not this raw ECS entity) — so the literal grows the `mu0c0`
@@ -2984,11 +2985,11 @@ describe("landing display override (kex2d-idioms stage 4)", () => {
     });
 });
 
-// kex2d-speed-substrate stage 2: the authored control threaded through the ECS + history
+// the authored speed control threaded through the ECS + history
 // layer — a `Speed` component beside `Section` (membership IS the `SpeedControl | undefined`
 // presence, no separate "has" flag), a scrub/field gesture mirroring `beginLength`, bake
 // payload + `bakeHash` coverage, snapshot/restore, and the in-mode editing lockdown.
-describe("section speed control (kex2d-speed-substrate stage 2)", () => {
+describe("section speed control", () => {
     /** a lone force section with two flat continuation keys — the fixture every test here
      *  starts from. baked once so `bakeOut`/`samples` are populated. */
     function forceSection(): { state: State; eid: number; sec: number } {
@@ -3135,11 +3136,11 @@ describe("section speed control (kex2d-speed-substrate stage 2)", () => {
     });
 });
 
-// kex2d-friction stage 2: `Track.friction`/`Track.resistance` threaded through the ECS +
+// `Track.friction`/`Track.resistance` threaded through the ECS +
 // history layer — the `Track.v0` gesture pattern (`beginV0`), `bakeHash` coverage,
 // absent-in-a-document restoring the kernel's own 0 (never the new-track authoring default),
 // undo byte-identity, and the in-mode editing lockdown at the track-global sentinel.
-describe("track friction/drag coefficients (kex2d-friction stage 2)", () => {
+describe("track friction/drag coefficients", () => {
     /** a lone flat force section, baked — mirrors `forceSection()` above (kept local: friction
      *  needs a section long enough, and with enough curvature-free ds, to show a measurable v
      *  drop without duplicating the speed-substrate suite's fixture). */
@@ -3301,5 +3302,29 @@ describe("track friction/drag coefficients (kex2d-friction stage 2)", () => {
         expect(trackEditable()).toBe(true);
         setTrackFriction(eid, 0.1); // editable again once the mode closes
         expect(Track.friction.get(eid)).toBe(0.1);
+    });
+});
+
+// the two coefficient FIELDS beside v0 in the START popover refuse a
+// negative or NaN commit at the field, since `setTrackFriction`/`setTrackResistance` apply no
+// floor of their own (the kernel takes `|fMag|` unvalidated) — `validCoefficient` is the shared
+// predicate both fields' onchange handlers gate on before ever calling the setter.
+describe("validCoefficient — the coefficient fields' negative/NaN refusal", () => {
+    test("accepts zero and any positive finite value", () => {
+        expect(validCoefficient(0)).toBe(true);
+        expect(validCoefficient(0.021)).toBe(true);
+        expect(validCoefficient(2.5e-4)).toBe(true);
+        expect(validCoefficient(1e6)).toBe(true);
+    });
+
+    test("refuses negative values, however small", () => {
+        expect(validCoefficient(-0.0001)).toBe(false);
+        expect(validCoefficient(-1)).toBe(false);
+    });
+
+    test("refuses NaN and both infinities", () => {
+        expect(validCoefficient(Number.NaN)).toBe(false);
+        expect(validCoefficient(Number.POSITIVE_INFINITY)).toBe(false);
+        expect(validCoefficient(Number.NEGATIVE_INFINITY)).toBe(false);
     });
 });

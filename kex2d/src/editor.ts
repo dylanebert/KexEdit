@@ -101,7 +101,8 @@ interface EditorState {
      *  re-selecting the keyframe (or Esc) clears it back. NOT a mutually-exclusive selection. */
     forceHandle: "in" | "out" | null;
     /** whether the track START anchor is selected. there's one START per track, so a
-     *  boolean; selecting it summons the initial-speed (v0) field popover. */
+     *  boolean; selecting it summons the field popover — initial speed (v0) plus the
+     *  friction/drag coefficients (`Track.friction`/`.resistance`'s own authoring surface). */
     start: boolean;
     /** the section right-click menu (Convert / Delete): screen position + target
      *  section id, or null when closed. shared so the clip strip and the viewport span both
