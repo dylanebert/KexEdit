@@ -26,6 +26,7 @@ import {
     bakeOut,
     createForcePoint,
     createSection,
+    createStrip,
     createTrack,
     samples,
     sectionForces,
@@ -37,7 +38,9 @@ import {
     setTrackResistance,
     setTrackV0,
     snapshotAll,
+    stripsForStep,
 } from "../src/track";
+import { resolveStep } from "../src/profile";
 
 // Pin mode's document seam (`pin.ts`) over the real ECS + history substrate: the sandbox
 // contract, the landing, the downstream freeze, and the paced landing's display override. The
@@ -1017,5 +1020,71 @@ describe("the Pin/solver boundary — grep sentinel", () => {
                 if (hit) found.push(`${p}: ${hit[0]}`);
             }
         expect(found.sort()).toEqual([]);
+    });
+});
+
+// C3: the pin invariant — a strip on a pinned section's track. `enterPin`'s stamp/ghost
+// construction (`pin.ts`'s own `evalForce` call) must read the strip's stored
+// {start,end,value} DIRECTLY off ECS state, never through `sectionInfo`/`bakeOut`/any
+// other bake-derived read — checked STRUCTURALLY, not just by outcome.
+describe("velocity strips — the pin invariant (C3)", () => {
+    test("stripsForStep resolves a section's strips at a caller-supplied Step with zero reads of bakeOut/sectionInfo — structural", () => {
+        // red before `pin.ts` threaded `stripsForStep`: `enterPin`'s own `evalForce` call
+        // carried no strips argument at all, so a strip on the pinning section was silently
+        // ignored by the stamp/ghost (verified by reverting `pin.ts`'s `strips` argument and
+        // observing the stamp arm below fail — see the next test).
+        const { state, eid, sec } = forceTrack();
+        createStrip(state, sec, 15, 25, 6);
+        state.step(0);
+
+        // corrupt the two bake-derived maps this construction path could reach — proving the
+        // strip resolution below cannot be reading through either of them (a mistaken read
+        // would throw on the deleted `sectionInfo` entry or see the poisoned hash). Restored
+        // after, since both are module-level and outlive this test.
+        const savedInfo = sectionInfo.get(sec);
+        const savedOut = bakeOut.get(eid);
+        if (!savedInfo || !savedOut) throw new Error("no bake");
+        sectionInfo.delete(sec);
+        bakeOut.set(eid, { ...savedOut, hash: "__corrupted__" });
+
+        const step = resolveStep(40, 20 / 40); // an independently-resolved step (ds = 0.5)
+        const specs = stripsForStep(state, sec, step);
+        expect(specs).toBeDefined();
+        expect(specs?.[0].start).toBe(Math.round(15 / step.ds));
+        expect(specs?.[0].end).toBe(Math.round(25 / step.ds));
+        expect(specs?.[0].value).toBe(6);
+
+        sectionInfo.set(sec, savedInfo);
+        bakeOut.set(eid, savedOut);
+    });
+
+    test("enterPin's stamp/ghost reflect a strip reaching the section's exit — the construction actually threads it", () => {
+        const { state, sec } = forceTrack(); // length 40, entry v0 = 20
+        // reaches the section's own exit, so the stamp's v is exactly the strip's value —
+        // the exit is the ONE state `enterPin`'s stamp exposes directly.
+        createStrip(state, sec, 30, 40, 7);
+        state.step(0);
+        const session = enterPin(state, sec);
+        expect(session).not.toBeNull();
+        if (!session) return;
+        expect(session.stamp.v).toBeCloseTo(7, 4);
+        endPin();
+    });
+
+    test("a strip on a pinned section's track: the solve still lands", async () => {
+        const { state, sec } = forceTrack();
+        createStrip(state, sec, 15, 25, 9);
+        state.step(0);
+        if (!enterPinMode(state, sec)) throw new Error("no session");
+        const session = editor.pinning;
+        if (!session) throw new Error("no session");
+        const rows = sectionForces(state, sec);
+        setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.4);
+        state.step(0);
+        const h = createHistory();
+        const locked = new Set([rows[0].id, rows[4].id]);
+        const result = await runPinSection(h, state, session, locked);
+        expect(result.outcome).toBe("solved");
+        expect(editor.pinning).toBeNull(); // Solve closed the mode
     });
 });

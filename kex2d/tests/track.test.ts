@@ -10,7 +10,19 @@ import {
     convertSection,
     createForcePoint,
     createSection,
+    createStrip,
     createTrack,
+    destroyStrip,
+    edgeStrips,
+    restoreStrip,
+    sectionStrips,
+    spawnStrip,
+    Strip,
+    stripAt,
+    stripOverlapped,
+    stripState,
+    setStrip,
+    stripsForStep,
     setBakeFreeze,
     setBakeLanding,
     deleteSection,
@@ -1495,6 +1507,7 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
             length: 0,
             nodes: [],
             points: [],
+            strips: [],
         });
         expect(readProvenance(sec)).toBeUndefined();
     });
@@ -3170,5 +3183,239 @@ describe("validCoefficient — the coefficient fields' negative/NaN refusal", ()
         expect(validCoefficient(Number.NaN)).toBe(false);
         expect(validCoefficient(Number.POSITIVE_INFINITY)).toBe(false);
         expect(validCoefficient(Number.NEGATIVE_INFINITY)).toBe(false);
+    });
+});
+
+// ── velocity strips (the section substrate's ECS layer) ────────────────────────
+// the ECS layer for `section.Strip`: child entities on the `sectionForces` pattern
+// (`kex2d-map.md`'s Velocity strips locked decision). `Strip` component + CRUD +
+// the overlap guard are pure ECS reads/writes (mirrors `Force`'s own shape); the
+// bake-time edge-index conversion (`edgeStrips`/`stripsForStep`) is the seam
+// between the ECS's domain-coordinate storage and the kernel's edge addressing.
+describe("velocity strips — ECS layer (C3)", () => {
+    test("createStrip refuses an overlapping span; a non-overlapping write at the neighbour's boundary still lands", () => {
+        // red before the guard existed: an overlapping createStrip silently succeeded, landing
+        // a second strip whose interval intersected the first — verified by removing the
+        // `stripOverlapped` check inline and observing both calls return non-null ids.
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, default extent EXTEND_DIST = 24
+        const a = createStrip(state, sec, 5, 15, 8);
+        expect(a).not.toBeNull();
+        // strictly overlaps [5, 15): refused, nothing written.
+        expect(createStrip(state, sec, 10, 20, 6)).toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(1);
+        // abuts at the boundary (starts exactly where the first ends): legal.
+        const c = createStrip(state, sec, 15, 20, 6);
+        expect(c).not.toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(2);
+        // abuts on the other side too (ends exactly where the first starts): legal.
+        const d = createStrip(state, sec, 0, 5, 4);
+        expect(d).not.toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(3);
+    });
+
+    test("a point strip strictly inside another strip overlaps; one at its boundary does not", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        createStrip(state, sec, 5, 15, 8);
+        expect(stripOverlapped(state, sec, 10, 10, -1)).toBe(true); // strictly interior point
+        expect(stripOverlapped(state, sec, 5, 5, -1)).toBe(false); // at the start boundary
+        expect(stripOverlapped(state, sec, 15, 15, -1)).toBe(false); // at the end boundary
+        expect(stripOverlapped(state, sec, 20, 20, -1)).toBe(false); // free
+    });
+
+    test("setStrip refuses an overlapping move (keeps start/end) and still lands the value write; a non-colliding move lands both", () => {
+        // red before the guard existed: setStrip unconditionally wrote start/end, so dragging
+        // one strip onto another silently produced two overlapping ranges.
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const a = createStrip(state, sec, 0, 5, 4) as number;
+        createStrip(state, sec, 10, 15, 8);
+        setStrip(state, a, 8, 12, 9); // would overlap [10, 15)
+        let row = sectionStrips(state, sec).find((r) => r.id === a);
+        expect(row?.start).toBe(0); // refused — position unchanged
+        expect(row?.end).toBe(5);
+        expect(row?.value).toBe(9); // value still lands
+
+        setStrip(state, a, 5.5, 9.5, 3); // clear of the neighbour
+        row = sectionStrips(state, sec).find((r) => r.id === a);
+        expect(row?.start).toBe(5.5);
+        expect(row?.end).toBe(9.5);
+        expect(row?.value).toBe(3);
+    });
+
+    test("stripOverlapped is self-excluding (a strip never collides with itself)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const a = createStrip(state, sec, 5, 15, 8) as number;
+        expect(stripOverlapped(state, sec, 5, 15, a)).toBe(false);
+        expect(stripOverlapped(state, sec, 5, 15, -1)).toBe(true); // any OTHER caller collides
+    });
+
+    test("sectionStrips sorts by start; stripAt resolves by stable id", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const b = createStrip(state, sec, 10, 15, 1) as number;
+        const a = createStrip(state, sec, 0, 5, 2) as number;
+        const rows = sectionStrips(state, sec);
+        expect(rows.map((r) => r.id)).toEqual([a, b]);
+        expect(Strip.id.get(stripAt(state, a) as number)).toBe(a);
+    });
+
+    test("destroyStrip removes it; a stripState snapshot round-trips through restoreStrip byte-identical", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const id = createStrip(state, sec, 2, 6, 5) as number;
+        const st = stripState(state, id);
+        if (!st) throw new Error("no strip state");
+        destroyStrip(state, id);
+        expect(sectionStrips(state, sec).length).toBe(0);
+        spawnStrip(state, st.section, st.id, st.start, st.end, st.value);
+        expect(stripState(state, id)).toEqual(st);
+        restoreStrip(state, { ...st, start: 3, end: 7, value: 9 });
+        const after = stripState(state, id);
+        expect(after?.start).toBe(3);
+        expect(after?.end).toBe(7);
+        expect(after?.value).toBe(9);
+    });
+
+    test("snapshotSection/restoreSection round-trip strips byte-identical", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        createStrip(state, sec, 0, 5, 4);
+        createStrip(state, sec, 10, 15, 8);
+        const snap = snapshotSection(state, sec);
+        expect(snap.strips.length).toBe(2);
+        for (const st of sectionStrips(state, sec)) destroyStrip(state, st.id);
+        expect(sectionStrips(state, sec).length).toBe(0);
+        restoreSection(state, snap);
+        const restored = sectionStrips(state, sec).map((r) => ({
+            id: r.id,
+            start: r.start,
+            end: r.end,
+            value: r.value,
+        }));
+        expect(restored).toEqual(snap.strips.map((s) => ({ ...s })));
+    });
+
+    test("a strip participates in bakeHash/authoredHash — a value edit forces a re-bake", () => {
+        // red before the hash included strips: `bakeOut.hash` stayed unchanged after
+        // `setStrip`, so `bakeLive`-gated re-bakes never fired.
+        const { state, eid, sec } = track();
+        convertSection(state, sec);
+        state.step(0);
+        const id = createStrip(state, sec, 2, 6, 5) as number;
+        state.step(0);
+        const withStrip = bakeOut.get(eid)?.hash;
+        setStrip(state, id, 2, 6, 9); // value edit only
+        state.step(0);
+        const afterEdit = bakeOut.get(eid)?.hash;
+        expect(afterEdit).not.toBe(withStrip);
+        // undoing the edit (byte-identical restore) reproduces the earlier hash exactly.
+        restoreStrip(state, { section: sec, id, start: 2, end: 6, value: 5 });
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).toBe(withStrip);
+    });
+
+    test("edgeStrips resolves a station to its nearest edge boundary, both endpoints, an interior span", () => {
+        // a uniform 10-edge grid at ds = 1 (edges 0..10, cum = [0,1,...,10]).
+        const ds = new Float32Array(10).fill(1);
+        const out = edgeStrips(ds, 10, [{ start: 3.4, end: 7.6, value: 5 }]);
+        expect(out).toBeDefined();
+        expect(out?.[0].start).toBe(3); // nearest boundary to 3.4
+        expect(out?.[0].end).toBe(8); // nearest boundary to 7.6
+        // a point resolves both its own start and end to the same boundary.
+        const point = edgeStrips(ds, 10, [{ start: 5, end: 5, value: 1 }]);
+        expect(point?.[0].start).toBe(5);
+        expect(point?.[0].end).toBe(5);
+        // out-of-range clamps to the section's own edges.
+        const clamp = edgeStrips(ds, 10, [{ start: -3, end: 50, value: 1 }]);
+        expect(clamp?.[0].start).toBe(0);
+        expect(clamp?.[0].end).toBe(10);
+        expect(edgeStrips(ds, 10, [])).toBeUndefined();
+    });
+
+    // ── the wrong-granularity headline: an INTERIOR-start, INTERIOR-end strip on a force
+    // section, both Distance and Time. a whole-section-spanning strip would pass even a
+    // broken edge-index conversion, since a boundary landing at 0 or `edges` is a degenerate
+    // case every off-by-one bug also gets right.
+    for (const domain of [Domain.Distance, Domain.Time] as const) {
+        test(`an interior force strip forces v to its stored value across its own edge range, ${Domain[domain]} domain`, () => {
+            const state = new State();
+            state.addSystem(BakeSystem);
+            const eid = createTrack(state);
+            setTrackDomain(state, domain);
+            const length = domain === Domain.Time ? 4 : 20; // both land on the nominal grid
+            const sec = createSection(state, 0, SectionKind.Force, length);
+            // a non-flat authored profile — F_n = 1.3g curves the path, so v naturally
+            // DIFFERS from the strip's stamped value; without the override it wouldn't hold.
+            createForcePoint(state, sec, 0, 1.3);
+            createForcePoint(state, sec, length, 1.3);
+            const start = length * 0.25;
+            const end = length * 0.75;
+            const value = 4; // well off the entry speed (V0 = 10) and off the natural march
+            createStrip(state, sec, start, end, value);
+            state.step(0);
+
+            const info = sectionInfo.get(sec);
+            if (!info) throw new Error("no bake");
+            const out = bakeOut.get(eid);
+            if (!out) throw new Error("no bakeOut");
+            const step = domain === Domain.Time ? DT_NOMINAL : DS_NOMINAL;
+            const startEdge = Math.round(start / step);
+            const endEdge = Math.round(end / step);
+            // an edge's override lands on the SAMPLE it exits into (edge k forces v at
+            // sample k + 1) — `startEdge` itself is still the entering (natural) sample.
+            for (let i = startEdge + 1; i <= endEdge; i++) {
+                expect(out.v[info.startSample + i]).toBeCloseTo(value, 4);
+            }
+            // outside the strip (entry sample), v is NOT forced to `value` — the strip is
+            // interior, not whole-section, so the natural march still governs there.
+            expect(out.v[info.startSample]).not.toBeCloseTo(value, 2);
+        });
+    }
+
+    test("an interior geo strip forces v to its stored value across its own edge range", () => {
+        // geo's own axis is arclength — edge-index resolution runs through `geoChordDs`'s
+        // fresh chord sample rather than a uniform step (the geo/force asymmetry this stage
+        // has to bridge).
+        const { state, eid, sec } = track(); // flat 2-node, length EXTEND_DIST = 24
+        addNode(state, sec, EXTEND_DIST, 10); // a bend, off-axis — v would naturally curve
+        const value = 3;
+        createStrip(state, sec, 8, 16, value); // interior, well off both node endpoints
+        state.step(0);
+        const info = sectionInfo.get(sec);
+        const out = bakeOut.get(eid);
+        if (!info || !out) throw new Error("no bake");
+        // walk the section's own baked samples and confirm every one inside [8, 16) reads
+        // the strip's value — read off the section's own arclength via cumulative `out.ds`.
+        let cum = 0;
+        let sawInside = false;
+        let sawOutside = false;
+        for (let i = info.startSample; i < info.endSample; i++) {
+            const mid = cum + out.ds[i] / 2;
+            if (mid >= 8 && mid < 16) {
+                expect(out.v[i + 1]).toBeCloseTo(value, 3);
+                sawInside = true;
+            } else if (mid < 6) {
+                expect(out.v[i + 1]).not.toBeCloseTo(value, 1);
+                sawOutside = true;
+            }
+            cum += out.ds[i];
+        }
+        expect(sawInside).toBe(true);
+        expect(sawOutside).toBe(true);
+    });
+
+    test("stripsForStep resolves the section's own strips at an already-resolved Step, purely (no bake read)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, extent EXTEND_DIST
+        createStrip(state, sec, 6, 18, 5);
+        const step = { edges: 48, ds: EXTEND_DIST / 48 };
+        const specs = stripsForStep(state, sec, step);
+        expect(specs).toBeDefined();
+        expect(specs?.[0].start).toBe(Math.round(6 / step.ds));
+        expect(specs?.[0].end).toBe(Math.round(18 / step.ds));
+        expect(specs?.[0].value).toBe(5);
     });
 });

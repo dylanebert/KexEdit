@@ -74,8 +74,8 @@ mod tests {
     /// own `update_velocity` — never a TS transliteration (`checks.md`'s one-author
     /// agreement trap). Flat-straight (`delta_y = 0` every step, kex2d's `fN = 1`
     /// exactly) is the ONE config where this crate's Coulomb-at-N=mg model and
-    /// kex2d's `|fN|`-based model provably coincide (`kex2d-friction`'s Locked
-    /// decision) — everywhere else they deliberately disagree (this crate still
+    /// kex2d's `|fN|`-based model provably coincide (the Coulomb-loss-plus-quadratic-drag
+    /// law) — everywhere else they deliberately disagree (this crate still
     /// charges friction in kex2d's fN=0 vertical-drop discriminator case). Time-
     /// stepped at the crate's own `DT`/`HZ` to match kex2d's `Domain.Time` march
     /// (`ds_i = v_i·Δt`), the shape `resistance`'s `v³·DT` term needs to equal

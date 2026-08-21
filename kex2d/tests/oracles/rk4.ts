@@ -26,7 +26,7 @@ export interface RK4Options {
  * crossing to land on the grid (σ snapped to suppress drift). Independent
  * cross-validation for `src/forward.ts`, extended with `friction`/`resistance`
  * (both defaulted 0 — byte-identical to the pre-friction oracle) for
- * `kex2d-friction`'s convergence-order arm: `dv/dt` gains the dissipative
+ * the loss law's own convergence-order arm: `dv/dt` gains the dissipative
  * terms directly (not `dv²/dt`, since this oracle integrates `v`, not `v²`;
  * `d(v²)/dt = 2v·dv/dt`, so `2v·(−μg|F_n|−cv²)/v = −2μg|F_n| − 2cv²` matches
  * `forward.loss`'s v² form exactly once the chain rule is undone). Caller

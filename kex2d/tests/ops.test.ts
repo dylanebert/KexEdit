@@ -16,8 +16,10 @@ import {
     convertSection,
     createForcePoint,
     createSection,
+    createStrip,
     createTrack,
     deleteSection,
+    DS_NOMINAL,
     EXTEND_DIST,
     bakeOut,
     exitWorld,
@@ -39,6 +41,7 @@ import {
     sectionInfo,
     sections,
     sectionSpans,
+    sectionStrips,
     seedTangent,
     setTangent,
     setTrackDomain,
@@ -530,6 +533,81 @@ describe("split", () => {
         const after = forcePoints(state, a);
         for (let s = 0; s <= 40; s += 2)
             expect(sampleForce(after, s)).toBeCloseTo(sampleForce(before, s), 5);
+    });
+
+    // C3: Cut is lossless for a velocity strip — the pre-op v² samples across the WHOLE
+    // extent (natural march AND the strip-covered edges) reproduce across both post-cut
+    // halves. The cut lands exactly on the nominal grid (a multiple of `DS_NOMINAL`), so
+    // both halves resolve their own `resolveStep` with no rounding residue and every
+    // sample lines up index-for-index with the pre-cut bake (`profile.resolveStep`'s own
+    // fixed-point law) — the same shape the force-profile exactness oracle above uses,
+    // read off `bakeOut.v` instead of the sampled g profile.
+    test("Cut is lossless for a velocity strip: pre-cut v samples across the whole extent reproduce across both post-cut halves", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const trackEid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20);
+        // a non-flat profile — F_n = 1.3g curves the path, so v naturally VARIES outside the
+        // strip; a broken split would either lose that variation or the strip's own hold.
+        createForcePoint(state, a, 0, 1.3);
+        createForcePoint(state, a, 20, 1.3);
+        // the strip straddles the cut point (5, 15) ⊃ 10 — the case a boundary-aligned strip
+        // (start/end exactly on the cut) can't exercise: the split half's own strip.
+        const stripId = createStrip(state, a, 5, 15, 6);
+        expect(stripId).not.toBeNull();
+        state.step(0);
+
+        const infoBefore = sectionInfo.get(a);
+        if (!infoBefore) throw new Error("no pre-cut bake");
+        const outBefore = bakeOut.get(trackEid);
+        if (!outBefore) throw new Error("no pre-cut bakeOut");
+        const preV = Array.from(
+            { length: infoBefore.endSample - infoBefore.startSample + 1 },
+            (_, i) => outBefore.v[infoBefore.startSample + i],
+        );
+
+        const b = splitForce(state, a, 10); // on the DS_NOMINAL grid — no rounding residue
+        expect(b).not.toBeNull();
+        if (b === null) return;
+        state.step(0);
+
+        // the strip itself split: head keeps [5, 10), a new strip on the tail opens at
+        // [0, 5) — both holding the SAME constant value.
+        const headStrips = sectionStrips(state, a);
+        const tailStrips = sectionStrips(state, b);
+        expect(headStrips.length).toBe(1);
+        expect(headStrips[0]).toMatchObject({ start: 5, end: 10, value: 6 });
+        expect(tailStrips.length).toBe(1);
+        expect(tailStrips[0]).toMatchObject({ start: 0, end: 5, value: 6 });
+
+        const infoHead = sectionInfo.get(a);
+        const infoTail = sectionInfo.get(b);
+        if (!infoHead || !infoTail) throw new Error("no post-cut bake");
+        const outAfter = bakeOut.get(trackEid);
+        if (!outAfter) throw new Error("no post-cut bakeOut");
+
+        const headCount = infoHead.endSample - infoHead.startSample; // exactly 20 edges (10 m / DS_NOMINAL)
+        expect(headCount).toBe(Math.round(10 / DS_NOMINAL));
+        for (let i = 0; i <= headCount; i++) {
+            expect(outAfter.v[infoHead.startSample + i]).toBeCloseTo(preV[i], 4);
+        }
+        // the tail marches FRESH from head's own recovered exit (`evalForce` re-recovers v
+        // at the boundary, then the tail sums its OWN Σloss from there) rather than continuing
+        // the pre-cut chain's single unbroken Σ — floating-point summation is non-associative,
+        // so the two independent marches agree to a re-entry tolerance, not bit-for-bit (the
+        // same "two independent marches of one authored ride" shape `domain.ts`'s single-flip
+        // bound documents for the analogous re-entry at a domain conversion). The disagreement
+        // GROWS across the tail's own edges (a genuine forward-accumulating divergence, not a
+        // fixed re-entry offset): measured ~0.012% at the boundary sample, ~0.2% by the far
+        // end. Bounded relative (1%), comfortably above the measured growth yet far tighter
+        // than a vacuous check — a genuinely broken split (dropped strip, wrong rebase) misses
+        // by orders of magnitude more than this.
+        const tailCount = infoTail.endSample - infoTail.startSample;
+        for (let i = 0; i <= tailCount; i++) {
+            const want = preV[headCount + i];
+            const got = outAfter.v[infoTail.startSample + i];
+            expect(Math.abs(got - want)).toBeLessThan(1e-2 * Math.max(1, Math.abs(want)));
+        }
     });
 });
 
