@@ -12,12 +12,14 @@ import {
     selectStart,
 } from "../src/editor";
 import {
+    addStrip,
     appendSection,
     beginForceMove,
     beginForceMoves,
     beginLength,
     beginMove,
     beginMoves,
+    beginStripMove,
     beginV0,
     commit,
     commitChord,
@@ -26,6 +28,7 @@ import {
     createForce,
     createHistory,
     deleteForces,
+    deleteStrips,
     extendTrack,
     joinSections,
     redo,
@@ -51,6 +54,7 @@ beforeEach(() => {
     selectSection(null);
     selectStart(false);
     editor.force = null;
+    editor.strip = null;
     editor.nodeMenu = null;
 });
 import { stitchNode } from "../src/tangents";
@@ -79,10 +83,12 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
+    sectionStrips,
     seedTangent,
     setForcePoint,
     setSectionLength,
     setStickyLen,
+    setStrip,
     setTangent,
     setTrackV0,
     snapshotSection,
@@ -389,6 +395,118 @@ test("setForcesEase on an all-terminal set records nothing (no applicable keyfra
     setForcesEase(h, state, [only], Easing.Linear);
     expect(h.undo.length).toBe(1); // only the create; nothing to ease
     expect(forceEase(state, only)).toBe(Easing.Cubic);
+});
+
+// ── velocity strips — the same undo substrate as force points (`addStrip`/`deleteStrips`/
+// `beginStripMove`, C3's shape), driven directly rather than only through `domain.test.ts`'s
+// indirect undo byte-identity arm (the Residue: real gestures are exactly when these wrappers
+// first get driven by something other than a test calling them straight).
+
+test("addStrip: undo removes it, redo re-spawns it verbatim", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const id = addStrip(h, state, sec, 5, 10, 12) as number;
+    expect(id).not.toBeNull();
+    expect(sectionStrips(state, sec)).toEqual([
+        { eid: expect.any(Number), section: sec, id, start: 5, end: 10, value: 12 },
+    ]);
+
+    undo(h, state);
+    expect(sectionStrips(state, sec)).toEqual([]);
+
+    redo(h, state);
+    expect(
+        sectionStrips(state, sec).map((r) => ({
+            id: r.id,
+            start: r.start,
+            end: r.end,
+            value: r.value,
+        })),
+    ).toEqual([{ id, start: 5, end: 10, value: 12 }]);
+});
+
+test("addStrip refuses an overlapping span — no record, nothing lands", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    addStrip(h, state, sec, 5, 15, 8);
+    const before = h.undo.length;
+    const refused = addStrip(h, state, sec, 10, 20, 4); // overlaps [5, 15)
+    expect(refused).toBeNull();
+    expect(h.undo.length).toBe(before); // nothing recorded for the refusal
+    expect(sectionStrips(state, sec).length).toBe(1);
+});
+
+test("deleteStrips: a size-1 set undoes re-spawning the removed strip verbatim", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const id = addStrip(h, state, sec, 2, 6, 7) as number;
+    deleteStrips(h, state, [id]);
+    expect(sectionStrips(state, sec)).toEqual([]);
+
+    undo(h, state);
+    expect(
+        sectionStrips(state, sec).map((r) => ({
+            id: r.id,
+            start: r.start,
+            end: r.end,
+            value: r.value,
+        })),
+    ).toEqual([{ id, start: 2, end: 6, value: 7 }]);
+});
+
+test("deleteStrips: the whole set deletes in ONE entry; undo restores every strip", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const a = addStrip(h, state, sec, 0, 4, 3) as number;
+    const b = addStrip(h, state, sec, 6, 10, 5) as number;
+    deleteStrips(h, state, [a, b]);
+    expect(sectionStrips(state, sec)).toEqual([]);
+    expect(h.undo.length).toBe(3); // two adds + ONE bulk delete
+
+    undo(h, state);
+    const rows = sectionStrips(state, sec).map((r) => ({
+        id: r.id,
+        start: r.start,
+        end: r.end,
+        value: r.value,
+    }));
+    expect(rows).toEqual([
+        { id: a, start: 0, end: 4, value: 3 },
+        { id: b, start: 6, end: 10, value: 5 },
+    ]);
+});
+
+test("deleteStrips on an empty set records nothing", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    deleteStrips(h, state, []);
+    expect(h.undo.length).toBe(0);
+});
+
+test("beginStripMove: a drag (resize + reposition) collapses to one entry; undo restores start/end/value", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const id = addStrip(h, state, sec, 5, 10, 8) as number;
+
+    beginStripMove(state, id);
+    setStrip(state, id, 6, 11, 9); // live preview frame — not recorded on its own
+    setStrip(state, id, 7, 12, 10);
+    commit(h);
+
+    expect(h.undo.length).toBe(2); // the add + the whole drag → one entry
+    expect(sectionStrips(state, sec)[0]).toMatchObject({ start: 7, end: 12, value: 10 });
+
+    undo(h, state);
+    expect(sectionStrips(state, sec)[0]).toMatchObject({ start: 5, end: 10, value: 8 });
+});
+
+test("a no-move strip-gesture release records nothing", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const id = addStrip(h, state, sec, 5, 10, 8) as number;
+    beginStripMove(state, id);
+    commit(h); // released without moving
+    expect(h.undo.length).toBe(1); // only the add
 });
 
 test("convert geo→force undoes byte-identical to the shaped geo track", () => {

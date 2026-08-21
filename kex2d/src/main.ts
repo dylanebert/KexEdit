@@ -33,6 +33,7 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
+    sectionStrips,
     setSectionLength,
     setTrackV0,
     Track,
@@ -453,6 +454,22 @@ if (import.meta.env.DEV) {
         // of the same arithmetic agree, not that the op landed where the click showed). read-only,
         // like cam()/guides().
         ctxCut: (): { at: number; t?: number } | null => editor.context?.cut ?? null,
+        // ── velocity strips (C5): the header band's own authoring surface. `stripsOf` reads
+        // section `i`'s strips (start-sorted, `sectionStrips`' own order) — the flow drives the
+        // real create-drag/resize/body-drag through pointer events and asserts the landed
+        // station/value here; `selectedStrip` is the popover's own subject. read-only, like
+        // `sectionForceCounts`. ──
+        stripsOf: (i: number): { id: number; start: number; end: number; value: number }[] => {
+            const s = sections(ecs)[i];
+            if (!s) return [];
+            return sectionStrips(ecs, s.id).map((r) => ({
+                id: r.id,
+                start: r.start,
+                end: r.end,
+                value: r.value,
+            }));
+        },
+        selectedStrip: (): number | null => editor.strip,
     };
 }
 

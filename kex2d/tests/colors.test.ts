@@ -218,6 +218,7 @@ const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "Timeline.svelte", selector: ".nav-window:active", value: "grabbing" },
     { file: "Timeline.svelte", selector: ".clip", value: "pointer" },
     { file: "Timeline.svelte", selector: ".clip-add", value: "pointer" },
+    { file: "Timeline.svelte", selector: ".hbandzone", value: "pointer" },
     { file: "Timeline.svelte", selector: ".play", value: "pointer" },
     { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
     { file: "controls.ts", selector: "canvas.style.cursor", value: "grabbing" },

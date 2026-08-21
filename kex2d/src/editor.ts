@@ -3,9 +3,9 @@
  *  it via the per-RAF tick pattern in App.
  *
  *  there are no tools or modes: you select a node and drag it in the viewport, a
- *  force point on the timeline curve, a whole section, or the track START anchor —
- *  four mutually-exclusive selections (below), so a contextual action never fights
- *  over its target. */
+ *  force point on the timeline curve, a whole section, a velocity strip in the header
+ *  band, or the track START anchor — five mutually-exclusive selections (below), so a
+ *  contextual action never fights over its target. */
 
 import type { State } from "@dylanebert/shallot";
 import { createHistory, type History, redirectHistory } from "./history";
@@ -74,6 +74,12 @@ interface EditorState {
     forces: Selection;
     /** the selected sections (set + active), addressed by stable `Section.id`. */
     sections: Selection;
+    /** the selected velocity strips (set + active), addressed by stable `Strip.id` — the strip
+     *  kind's own `forces`. Single-select only in practice today (C5 builds no strip marquee),
+     *  but carried as a full `Selection` for the same reason `forces` is: `deleteStrips` already
+     *  takes a set, and a strip's own Cut/Join (`kex2d-map.md`'s Locked decision) is section-scoped
+     *  bulk work a future stage may want to drive off a multi-set the same shape gives for free. */
+    strips: Selection;
     /** the active geo node eid, or null — the single-subject accessor over `nodes` (its active
      *  member). reading it is "the one subject" (readout, ring, manipulator, snap); assigning it is
      *  a replace-select (`select`). readers wanting the whole set read `nodes` directly. */
@@ -82,6 +88,9 @@ interface EditorState {
     force: number | null;
     /** the active section id, or null — the single-subject accessor over `sections`. */
     section: number | null;
+    /** the active velocity strip id, or null — the single-subject accessor over `strips`;
+     *  non-null summons the header band's value popover (`Timeline.svelte`). */
+    strip: number | null;
     /** eid of the node in tangent-edit mode (its handles are summoned), or null — a
      *  sub-mode layered on node selection: `tangentEdit !== null` implies the node set is exactly
      *  `{tangentEdit}` with it active. entered by double-clicking a node (Figma vector edit);
@@ -344,6 +353,7 @@ export const editor: EditorState = {
     nodes: emptySel(),
     forces: emptySel(),
     sections: emptySel(),
+    strips: emptySel(),
     get selection(): number | null {
         return this.nodes.active;
     },
@@ -361,6 +371,12 @@ export const editor: EditorState = {
     },
     set section(v: number | null) {
         selectSection(v);
+    },
+    get strip(): number | null {
+        return this.strips.active;
+    },
+    set strip(v: number | null) {
+        selectStrip(v);
     },
     tangentEdit: null,
     forceEdit: null,
@@ -800,6 +816,7 @@ export type SelectMode = "replace" | "toggle";
 function exclusiveNode(): void {
     clearSel(editor.forces);
     clearSel(editor.sections);
+    clearSel(editor.strips);
     editor.forceEdit = null;
     editor.forceHandle = null;
     editor.start = false;
@@ -808,6 +825,7 @@ function exclusiveNode(): void {
 function exclusiveForce(): void {
     clearSel(editor.nodes);
     clearSel(editor.sections);
+    clearSel(editor.strips);
     editor.tangentEdit = null;
     editor.start = false;
 }
@@ -815,6 +833,17 @@ function exclusiveForce(): void {
 function exclusiveSection(): void {
     clearSel(editor.nodes);
     clearSel(editor.forces);
+    clearSel(editor.strips);
+    editor.tangentEdit = null;
+    editor.forceEdit = null;
+    editor.forceHandle = null;
+    editor.start = false;
+}
+
+function exclusiveStrip(): void {
+    clearSel(editor.nodes);
+    clearSel(editor.forces);
+    clearSel(editor.sections);
     editor.tangentEdit = null;
     editor.forceEdit = null;
     editor.forceHandle = null;
@@ -947,6 +976,20 @@ export function selectSection(id: number | null, mode: SelectMode = "replace"): 
     }
 }
 
+/** select a velocity strip by stable id. "replace" (default) collapses the strip set to `id`
+ *  (or clears it when null); "toggle" adds/removes it (shift-click, unused by C5's own gestures
+ *  today but kept for the same reason `selectForces`' set shape is — a future Cut/Join bulk
+ *  action). either non-clearing form sweeps the other kinds, mirroring `selectSection`. */
+export function selectStrip(id: number | null, mode: SelectMode = "replace"): void {
+    if (id === null || mode === "replace") {
+        setMember(editor.strips, id);
+        if (id !== null) exclusiveStrip();
+    } else {
+        exclusiveStrip();
+        toggleMember(editor.strips, id);
+    }
+}
+
 /** select (or clear) the track START anchor — the initial-speed handle. */
 export function selectStart(on: boolean): void {
     editor.start = on;
@@ -954,6 +997,7 @@ export function selectStart(on: boolean): void {
         clearSel(editor.nodes);
         clearSel(editor.forces);
         clearSel(editor.sections);
+        clearSel(editor.strips);
         editor.tangentEdit = null;
         editor.forceEdit = null;
         editor.forceHandle = null;

@@ -19,10 +19,13 @@ import {
     spawnStrip,
     Strip,
     stripAt,
+    stripBoundsAt,
     stripOverlapped,
+    stripSeedValue,
     stripState,
     setStrip,
     stripsForStep,
+    validStripValue,
     setBakeFreeze,
     setBakeLanding,
     deleteSection,
@@ -3473,5 +3476,50 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(specs?.[0].start).toBe(Math.round(6 / step.ds));
         expect(specs?.[0].end).toBe(Math.round(18 / step.ds));
         expect(specs?.[0].value).toBe(5);
+    });
+
+    // ── C5's own additions: the field refusal, the neighbour-clamp bounds, and the
+    // creation-time seed read off the live bake.
+    test("validStripValue refuses non-finite and non-positive; accepts strictly positive", () => {
+        expect(validStripValue(5)).toBe(true);
+        expect(validStripValue(0)).toBe(false); // a held 0 is a stall, not a controlled span
+        expect(validStripValue(-1)).toBe(false);
+        expect(validStripValue(Number.NaN)).toBe(false);
+        expect(validStripValue(Number.POSITIVE_INFINITY)).toBe(false);
+    });
+
+    test("stripBoundsAt: no neighbours bounds to [0, sectionLength]", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        expect(stripBoundsAt(state, sec, -1, 20, 10)).toEqual({ lo: 0, hi: 20 });
+    });
+
+    test("stripBoundsAt: bounded by the nearest neighbour on each side, self-excluded", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const a = createStrip(state, sec, 0, 5, 4) as number;
+        createStrip(state, sec, 15, 20, 8);
+        // querying between the two neighbours (excluding neither): bounded by both.
+        expect(stripBoundsAt(state, sec, -1, 20, 10)).toEqual({ lo: 5, hi: 15 });
+        // excluding `a` (as when resizing it FROM its own original position) drops its own
+        // bound but keeps the other neighbour's.
+        expect(stripBoundsAt(state, sec, a, 20, 3)).toEqual({ lo: 0, hi: 15 });
+    });
+
+    test("stripSeedValue reads the live bake's v at the given station, lerped between samples", () => {
+        const { state, eid, sec } = track();
+        state.step(0); // level track: v stays ~V0 everywhere (no loss, no climb)
+        const out = bakeOut.get(eid);
+        if (!out) throw new Error("no bakeOut");
+        expect(stripSeedValue(state, sec, 0)).toBeCloseTo(out.v[0], 3);
+        expect(stripSeedValue(state, sec, 0)).toBeCloseTo(V0, 1);
+    });
+
+    test("stripSeedValue falls back to V0 with no live bake", () => {
+        const state = new State();
+        const eid = createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        void eid;
+        expect(stripSeedValue(state, sec, 0)).toBe(V0);
     });
 });

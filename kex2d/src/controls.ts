@@ -23,6 +23,7 @@ import {
     selectNodes,
     selectSection,
     selectStart,
+    selectStrip,
     snapActive,
     toggleSnap,
     writeHover,
@@ -861,6 +862,7 @@ function finishMarquee(ecs: State, canvas: HTMLCanvasElement): void {
             selectForce(null); // markers select in the viewport now, so empty-click clears them too
             selectSection(null);
             selectStart(false);
+            selectStrip(null); // the header band's own selection, cleared by every other surface's empty-click
         }
         return;
     }
@@ -877,6 +879,7 @@ function finishMarquee(ecs: State, canvas: HTMLCanvasElement): void {
         selectForce(null); // an empty plain marquee deselects all, like an empty click
         selectSection(null);
         selectStart(false);
+        selectStrip(null);
     } else {
         selectNodes(res.ids, res.active);
     }

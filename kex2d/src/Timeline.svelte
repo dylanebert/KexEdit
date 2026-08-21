@@ -34,25 +34,30 @@ import {
     selectForceHandle,
     selectForces,
     selectSection,
+    selectStrip,
     snapActive,
     toggleSnap,
 } from "./editor";
 import {
+    addStrip,
     appendSection,
     beginForceMove,
     beginForceMoves,
     beginForceTangent,
     beginLength,
+    beginStripMove,
     cancel,
     commit,
     commitLength,
     createForce,
+    deleteStrips,
     history,
     materializeCustom,
     setForcesEase,
     setForceTangentMode,
 } from "./history";
 import { forceKeyAct } from "./keys";
+import { classifyStripHit, type StripHitCandidate } from "./strip-hit";
 import { redoRouted, undoRouted } from "./pin";
 import { convertDomain, pickable } from "./domain";
 import { Domain } from "./section";
@@ -127,12 +132,18 @@ import {
     sectionInfo,
     sections,
     sectionSpans,
+    sectionStrips,
     setForcePoint,
     setForceTangent,
     setSectionLength,
+    setStrip,
     stationTaken,
+    stripBoundsAt,
+    stripSeedValue,
     toGlobalU,
+    toLocalU,
     trackDomain,
+    validStripValue,
     V0,
 } from "./track";
 import { DOCK_HEIGHT, DOCK_INSET, PLAYER_GAP, PLAYER_H, resize } from "./view";
@@ -701,6 +712,89 @@ const forcePts = $derived.by((): ForcePt[] => {
         }
     }
     return res;
+});
+// ── velocity strips (C5, the header band's own authoring surface): every strip on every
+// section, flattened across the whole track like `forcePts` — the header band claims the
+// EXTENT of a controlled span (Locked decision, "header carries extent, chart carries
+// value"), so it lives here rather than gated to force sections the way `forcePts` is (a strip
+// can attach to a geo section too — a geo lift authored at a flat speed is exactly the shape
+// the substrate exists for). `u0`/`u1` are the strip's `start`/`end` projected onto the SAME
+// global chart axis every other native-axis subject on this chart uses (`toGlobalU`).
+interface BandStrip {
+    id: number;
+    section: number;
+    start: number; // section-local, the track domain's own unit — `setStrip`'s own coordinate
+    end: number;
+    value: number;
+    u0: number; // global chart axis
+    u1: number;
+    startU: number; // the section's entry on that axis — the drag arithmetic's own base
+    // the section's own SPAN on the native axis (`c.u1 − c.u0`) — the clamp domain's outer
+    // bound. NOT `Clip.len` (`Section.length`): that field is the FORCE kind's own authored
+    // extent and reads 0 on a geo section (`kex2d-map.md`), and a strip attaches to either
+    // kind (Locked decision) — using it here silently floored every geo-section create-drag
+    // to a zero-width clamp, caught by the capture flow's own create-drag arm going straight
+    // to a zero-length point on a geo section (witnessed: every drag clamped to station 0).
+    len: number;
+}
+const bandStrips = $derived.by((): BandStrip[] => {
+    void tick;
+    if (eid === null) return [];
+    const res: BandStrip[] = [];
+    for (const c of clips) {
+        for (const st of sectionStrips(ecs, c.id)) {
+            const u0 = toGlobalU(spans, c.id, st.start);
+            const u1 = toGlobalU(spans, c.id, st.end);
+            if (u0 === null || u1 === null) continue; // a stale span, `forcePts`' own guard
+            res.push({
+                id: st.id,
+                section: c.id,
+                start: st.start,
+                end: st.end,
+                value: st.value,
+                u0,
+                u1,
+                startU: c.u0,
+                len: c.u1 - c.u0,
+            });
+        }
+    }
+    return res;
+});
+// boundary ticks: the disambiguator for two abutting strips (Locked decision) — a strip's start
+// exactly equal to its section-mate's end, drawn as a small notch so the shared boundary reads
+// as two controlled spans meeting, not one. `sectionStrips` is already start-sorted, so adjacent
+// members are adjacent in station order.
+const stripTicks = $derived.by((): number[] => {
+    void tick;
+    if (eid === null) return [];
+    const res: number[] = [];
+    for (const c of clips) {
+        const strips = sectionStrips(ecs, c.id);
+        for (let i = 1; i < strips.length; i++) {
+            if (strips[i].start !== strips[i - 1].end) continue;
+            const u = toGlobalU(spans, c.id, strips[i].start);
+            if (u !== null) res.push(uPx(u));
+        }
+    }
+    return res;
+});
+// the selected strip, its position live for the popover — `selPoint`'s own shape.
+const selStrip = $derived.by((): BandStrip | null => {
+    void tick;
+    const id = editor.strip;
+    if (id === null) return null;
+    return bandStrips.find((s) => s.id === id) ?? null;
+});
+// the popover lives only as long as its subject, `selPoint`'s own law: an undo/redo restoring
+// the same id can't resurrect a dangling selection. `void tick` first (not `selPoint`'s own
+// shape): `editor.strip` is a plain, untracked property read, so a bare `editor.strip !== null
+// && …` short-circuits away the ONE tracked read (`selStrip`) whenever the effect's most recent
+// run started from a null selection — leaving the effect with no tracked dependency at all,
+// permanently dormant. Reading `tick` unconditionally re-runs it every frame regardless.
+$effect(() => {
+    void tick;
+    if (editor.strip !== null && selStrip === null) selectStrip(null);
 });
 // the whole selected section SET (membership, for the clip highlight) — single-select is the
 // size-1 case. read through the tick like the rest of `editor`; the per-frame `clips` rebuild
@@ -2016,6 +2110,230 @@ $effect(() => {
     });
 });
 
+// ── velocity strips: the header band's own authoring surface (C5). Endpoint drag (resize),
+// body drag, and create-drag all clamp at the neighbour's boundary — `track.stripBoundsAt`
+// computed once at gesture start, never re-derived per move, so a drag can't tunnel through a
+// neighbour it's already found the edge of. The pure hit classifier (`strip-hit.ts`) decides
+// what a press means; ONE band-wide hit rect below routes through it instead of one DOM element
+// per strip per affordance — the classifier's whole point is that it doesn't need SVG's own
+// hit-testing to answer "endpoint, body, or empty".
+const STRIP_HIT_R = 6; // px — the endpoint-vs-body split radius
+
+function bandCandidates(): StripHitCandidate[] {
+    return bandStrips.map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
+}
+
+interface StripDrag {
+    id: number;
+    mode: "start" | "end" | "body";
+    section: number;
+    entryU: number; // the strip's section entry on the chart axis — station = uAtPx(px) − entryU
+    lo: number; // the neighbour-clamp bounds, section-local (`stripBoundsAt`)
+    hi: number;
+    origStart: number;
+    origEnd: number;
+    origValue: number;
+    grabStation: number; // body drag only: the station grabbed, for the translate delta
+}
+let stripDrag: StripDrag | null = $state(null);
+
+function bandMove(e: PointerEvent): void {
+    if (stripDrag === null) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const station = uAtPx(px) - stripDrag.entryU;
+    const { mode, lo, hi, origStart, origEnd, origValue, id } = stripDrag;
+    if (mode === "start") {
+        setStrip(ecs, id, clamp(station, lo, hi), origEnd, origValue);
+    } else if (mode === "end") {
+        setStrip(ecs, id, origStart, clamp(station, lo, hi), origValue);
+    } else {
+        const width = origEnd - origStart;
+        const delta = station - stripDrag.grabStation;
+        const ns = clamp(origStart + delta, lo, hi - width);
+        setStrip(ecs, id, ns, ns + width, origValue);
+    }
+}
+function bandUp(): void {
+    if (stripDrag === null) return;
+    stripDrag = null;
+    window.removeEventListener("pointermove", bandMove);
+    window.removeEventListener("pointerup", bandUp);
+    window.removeEventListener("pointercancel", bandUp);
+    commit(history); // a no-move release records nothing (`beginStripMove`'s own no-op test)
+}
+
+// create-drag: an empty-band press that's still a plain click on release deselects (the chart
+// marquee's own "empty click deselects" law); armed past DRAG_PX it creates a span strip on
+// release, clamped to the neighbour bounds read once at press. No live ECS write while dragging
+// — the span is a local preview (`bandCreate` itself), committed once so a discarded drag
+// (Escape/cancel) leaves nothing to undo.
+interface BandCreate {
+    section: number;
+    entryU: number;
+    lo: number;
+    hi: number;
+    x0: number; // press-point screen px — the dead-zone origin
+    anchor: number; // press-point station
+    cur: number; // live station, clamped
+    armed: boolean;
+}
+let bandCreate: BandCreate | null = $state(null);
+
+function bandCreateDown(e: PointerEvent, px: number): void {
+    if (eid === null) return;
+    const loc = toLocalU(spans, uAtPx(px));
+    if (loc === null) return;
+    const c = clips.find((x) => x.id === loc.section);
+    if (!c) return;
+    if (!sectionEditable(editor.pinning, loc.section)) return;
+    const bounds = stripBoundsAt(ecs, loc.section, -1, c.u1 - c.u0, loc.s);
+    bandCreate = {
+        section: loc.section,
+        entryU: c.u0,
+        lo: bounds.lo,
+        hi: bounds.hi,
+        x0: px,
+        anchor: loc.s,
+        cur: loc.s,
+        armed: false,
+    };
+    // NOT `beginDrag` here — a plain click (no move) must leave native `click`/`dblclick`
+    // reaching `.hbandzone` undisturbed. Pointer capture retargets a click's compat mouse
+    // events to the capturing element, so claiming it on every pointerdown silently ate
+    // `bandCreatePoint`'s double-click (`marqueeDown`'s own shape: capture is claimed only
+    // once a move proves it's really a drag, in `bandCreateMove` below).
+    window.addEventListener("pointermove", bandCreateMove);
+    window.addEventListener("pointerup", bandCreateUp);
+    window.addEventListener("pointercancel", bandCreateCancel);
+}
+function bandCreateMove(e: PointerEvent): void {
+    if (bandCreate === null) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const armed = armDrag(bandCreate.armed, px - bandCreate.x0, 0);
+    if (armed && !bandCreate.armed) beginDrag(canvas, e.pointerId); // capture, only now it's a drag
+    const station = clamp(uAtPx(px) - bandCreate.entryU, bandCreate.lo, bandCreate.hi);
+    bandCreate = { ...bandCreate, armed, cur: station };
+}
+function bandCreateUp(): void {
+    if (bandCreate === null) return;
+    window.removeEventListener("pointermove", bandCreateMove);
+    window.removeEventListener("pointerup", bandCreateUp);
+    window.removeEventListener("pointercancel", bandCreateCancel);
+    const { section, anchor, cur, armed } = bandCreate;
+    bandCreate = null;
+    if (!armed) {
+        selectStrip(null); // a plain click on empty band deselects, like the chart's own marquee
+        return;
+    }
+    const start = Math.min(anchor, cur);
+    const end = Math.max(anchor, cur);
+    const value = stripSeedValue(ecs, section, start); // creation seed: the published bake's v
+    const id = addStrip(history, ecs, section, start, end, value);
+    if (id !== null) selectStrip(id);
+}
+function bandCreateCancel(): void {
+    window.removeEventListener("pointermove", bandCreateMove);
+    window.removeEventListener("pointerup", bandCreateUp);
+    window.removeEventListener("pointercancel", bandCreateCancel);
+    bandCreate = null;
+}
+// double-click empty band: a point strip (the degenerate zero-length case) at the click's own
+// station — `chartCreate`'s own idiom for a force keyframe, mirrored here rather than requiring
+// a drag for the one-station case.
+function bandCreatePoint(e: MouseEvent): void {
+    if (eid === null) return;
+    const rect = canvas.getBoundingClientRect();
+    const loc = toLocalU(spans, uAtPx(e.clientX - rect.left));
+    if (loc === null) return;
+    if (!sectionEditable(editor.pinning, loc.section)) return;
+    const value = stripSeedValue(ecs, loc.section, loc.s);
+    const id = addStrip(history, ecs, loc.section, loc.s, loc.s, value);
+    if (id !== null) selectStrip(id);
+}
+function bandDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    if (eid === null) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
+    if (hit.kind === "empty") {
+        bandCreateDown(e, px);
+        return;
+    }
+    const s = bandStrips.find((b) => b.id === hit.id);
+    if (!s) return;
+    if (!sectionEditable(editor.pinning, s.section)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    selectStrip(s.id);
+    if (hit.kind === "endpoint") {
+        const at = hit.edge === "start" ? s.start : s.end;
+        const b = stripBoundsAt(ecs, s.section, s.id, s.len, at);
+        stripDrag = {
+            id: s.id,
+            mode: hit.edge,
+            section: s.section,
+            entryU: s.startU,
+            lo: hit.edge === "start" ? b.lo : s.start,
+            hi: hit.edge === "end" ? b.hi : s.end,
+            origStart: s.start,
+            origEnd: s.end,
+            origValue: s.value,
+            grabStation: at,
+        };
+    } else {
+        const loB = stripBoundsAt(ecs, s.section, s.id, s.len, s.start);
+        const hiB = stripBoundsAt(ecs, s.section, s.id, s.len, s.end);
+        stripDrag = {
+            id: s.id,
+            mode: "body",
+            section: s.section,
+            entryU: s.startU,
+            lo: loB.lo,
+            hi: hiB.hi,
+            origStart: s.start,
+            origEnd: s.end,
+            origValue: s.value,
+            grabStation: uAtPx(px) - s.startU,
+        };
+    }
+    beginStripMove(ecs, s.id);
+    beginDrag(canvas, e.pointerId);
+    window.addEventListener("pointermove", bandMove);
+    window.addEventListener("pointerup", bandUp);
+    window.addEventListener("pointercancel", bandUp);
+}
+// the strip value field: the popover's own single row, `validStripValue`'s refusal shape
+// (`onFrictionField`'s own — A2's template, "refusal at the field").
+function stripFieldEdit(v: number): void {
+    const s = selStrip;
+    if (s === null) return;
+    if (!sectionEditable(editor.pinning, s.section)) return;
+    beginStripMove(ecs, s.id);
+    setStrip(ecs, s.id, s.start, s.end, v);
+    commit(history);
+}
+function onStripValueField(e: Event): void {
+    const input = e.currentTarget as HTMLInputElement;
+    const val = Number.parseFloat(input.value);
+    const s = selStrip;
+    if (s === null) return;
+    if (!validStripValue(val)) {
+        input.value = fmt(s.value, 2); // refusal: restore the committed reading, `onFrictionField`'s shape
+        return;
+    }
+    stripFieldEdit(val);
+}
+// Delete removes the selected strip; Escape clears the selection — the force selection's own
+// two-key vocabulary, minus the sub-modes forces carry (a strip has no handle/tangent edit).
+function deleteSelectedStrip(): void {
+    if (editor.strip === null) return;
+    if (!sectionEditable(editor.pinning, selStrip?.section ?? -1)) return;
+    deleteStrips(history, ecs, [...editor.strips.ids]);
+}
+
 // ── the selected point's typed s/g fields ──
 // each field commits one undo entry through the drag gesture (begin → set → commit).
 function fieldEdit(s: number, g: number): void {
@@ -2686,7 +3004,20 @@ function cancelAll(): void {
     cancelTanDrag(); // and any in-flight handle drag
     cancelLenDrag(); // and any in-flight extent drag
     cancelLabelScrub(); // and any in-flight label scrub (its listeners live on the label, not window)
+    cancelStripDrag(); // and any in-flight strip resize/body drag
+    bandCreateCancel(); // and any in-flight strip create-drag (no undo entry either way)
     endDragGesture(); // clear the drag flag (no release event tore it down)
+}
+// a blur/unmount teardown for an in-flight strip resize/body drag — restores the gesture's
+// snapshot (`cancel`, `beginStripMove`'s own bracket) rather than leaving the live write stuck
+// mid-drag, `cancelLenDrag`'s own shape.
+function cancelStripDrag(): void {
+    if (stripDrag === null) return;
+    stripDrag = null;
+    window.removeEventListener("pointermove", bandMove);
+    window.removeEventListener("pointerup", bandUp);
+    window.removeEventListener("pointercancel", bandUp);
+    cancel();
 }
 onMount(() => {
     // a no-op while a gesture is live — the viewport's rule, on this surface (`controls.ts`
@@ -2775,6 +3106,18 @@ onMount(() => {
         if (snapPop && e.key === "Escape") {
             e.preventDefault();
             snapPop = null;
+            return;
+        }
+        // velocity-strip select/delete — Escape/Delete only (a strip has no handle/tangent
+        // sub-mode to peel, unlike a force keyframe's Escape ladder above).
+        if (editor.strip !== null) {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                selectStrip(null);
+            } else if (bound(BINDINGS.remove, e.key)) {
+                e.preventDefault();
+                deleteSelectedStrip();
+            }
             return;
         }
         // force-point select/delete/nudge — guarded on a live force selection so geo-node
@@ -2968,6 +3311,16 @@ onMount(() => {
                 <clipPath id="laneclip">
                     <rect x={LEFT_GUT} y={RULER_H} width={Math.max(0, w - LEFT_GUT)} height={GAP_H} />
                 </clipPath>
+                <!-- clip the velocity-strip header band's own row (C5) — the same reasoning
+                     as `laneclip`, one row up. -->
+                <clipPath id="hbandclip">
+                    <rect
+                        x={LEFT_GUT}
+                        y={RULER_H + GAP_H}
+                        width={Math.max(0, w - LEFT_GUT)}
+                        height={STRIP_H}
+                    />
+                </clipPath>
                 <!-- the pin-mode stripes: the diagonal hatch the pinned section's clip
                      wears while the mode is open (kex2d-optimize-mode stage 5 — the salient
                      in-mode treatment; the old guide ring read as a mystery glyph). -->
@@ -3082,6 +3435,69 @@ onMount(() => {
                         {/if}
                     {/each}
                 </g>
+            {/if}
+            <!-- the velocity-strip header band (C5): "header carries extent, chart carries
+                 value" (Locked decision) — the strip's own body/resize/create surface. ONE
+                 band-wide hit rect routes every press through the pure hit classifier
+                 (`bandDown`, `strip-hit.ts`) rather than per-strip DOM hit-testing; the visual
+                 strip rects beneath it are display-only (`pointer-events: none`). Endpoint
+                 caps and boundary ticks are drawn, not hit — the classifier already answers
+                 "which edge", so there's nothing for a second hit surface to add. -->
+            {#if eid !== null && sTotal > 0}
+                <g class="strips" clip-path="url(#hbandclip)">
+                    {#each bandStrips as s (s.id)}
+                        {@const x0 = uPx(s.u0)}
+                        {@const x1 = uPx(s.u1)}
+                        {@const sw = Math.max(1, x1 - x0)}
+                        {#if x1 >= LEFT_GUT && x0 <= w}
+                            <rect
+                                class="vstrip"
+                                class:sel={editor.strip === s.id}
+                                x={x0}
+                                y={RULER_H + GAP_H}
+                                width={sw}
+                                height={STRIP_H}
+                            />
+                        {/if}
+                    {/each}
+                    <!-- boundary ticks: the abutment disambiguator between two same-section
+                         strips sharing an edge. -->
+                    {#each stripTicks as tx, i (i)}
+                        {#if tx >= LEFT_GUT && tx <= w}
+                            <line
+                                class="vstrip-tick"
+                                x1={tx}
+                                x2={tx}
+                                y1={RULER_H + GAP_H}
+                                y2={RULER_H + GAP_H + STRIP_H}
+                            />
+                        {/if}
+                    {/each}
+                    <!-- the create-drag preview: no ECS write in flight (see `bandCreate`
+                         above), so this is the only place the pending span is visible. -->
+                    {#if bandCreate !== null && bandCreate.armed}
+                        {@const x0 = uPx(bandCreate.entryU + Math.min(bandCreate.anchor, bandCreate.cur))}
+                        {@const x1 = uPx(bandCreate.entryU + Math.max(bandCreate.anchor, bandCreate.cur))}
+                        <rect
+                            class="vstrip-preview"
+                            x={x0}
+                            y={RULER_H + GAP_H}
+                            width={Math.max(1, x1 - x0)}
+                            height={STRIP_H}
+                        />
+                    {/if}
+                </g>
+                <rect
+                    class="hbandzone"
+                    x={LEFT_GUT}
+                    y={RULER_H + GAP_H}
+                    width={Math.max(0, w - LEFT_GUT)}
+                    height={STRIP_H}
+                    onpointerdown={bandDown}
+                    ondblclick={bandCreatePoint}
+                    role="presentation"
+                    aria-label="Velocity strips"
+                />
             {/if}
             <!-- geo node ticks: a small read-only circle per interior node, over the
                  clip strip. no hit-testing (pointer-events off in CSS) — display +
@@ -3345,6 +3761,36 @@ onMount(() => {
                     </div>
                 </div>
             {/if}
+        {/if}
+        <!-- the selected strip's typed value field (C5): the popover surface `A2` templated
+             (`validCoefficient`/the friction field) retargeted at `validStripValue` — one row,
+             "v", no scrub handle (a strip's value has no natural drag axis distinct from its
+             extent, unlike a force keyframe's g). Anchored at the strip's own midpoint, always
+             below the band (there's no room to flip above it, unlike the chart's own ptip). -->
+        {#if selStrip !== null}
+            {@const mx = (uPx(selStrip.u0) + uPx(selStrip.u1)) / 2}
+            {@const ax = clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
+            <!-- `.ptip`'s DEFAULT transform floats it ABOVE its anchor (`translate(-50%,
+                 calc(-100% - 12px))`) — over the band itself, not below it. `.below` is the
+                 variant that floats it under the anchor instead (`translate(-50%, 12px)`), so
+                 the anchor is the band's own BOTTOM edge, not a pre-offset point. -->
+            {@const ay = RULER_H + GAP_H + STRIP_H}
+            <div class="ptip striptip below" style="left: {ax}px; top: {ay}px">
+                <div class="fld">
+                    <span class="key">v</span>
+                    <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        value={fmt(selStrip.value, 2)}
+                        onchange={onStripValueField}
+                        onfocus={(e) => e.currentTarget.select()}
+                        onkeydown={(e) => fieldKeydown(e, fmt(selStrip?.value ?? 0, 2))}
+                        aria-label="Strip velocity (m/s)"
+                    />
+                    <span class="unit">m/s</span>
+                </div>
+            </div>
         {/if}
         <!-- the append tail: a `+` just past the last clip. clicking opens a two-choice
              geo/force flyout — the one append affordance. hidden when the track end scrolls
@@ -4077,6 +4523,47 @@ onMount(() => {
     .clip-trim:hover,
     .clip-trim.active {
         fill: color-mix(in srgb, var(--accent) 40%, transparent);
+    }
+
+    /* the velocity-strip header band (C5): the strip's own kind color (`--velocity`, mirrors
+       `colors.ts COLOR_VELOCITY` — the timeline curve's own color, "one mechanism, three named
+       things"). Display-only — `pointer-events: none` — the band-wide `.hbandzone` rect owns
+       every gesture, routed through the pure hit classifier (`bandDown`). */
+    .vstrip {
+        fill: color-mix(in srgb, var(--velocity) 55%, transparent);
+        stroke: transparent;
+        stroke-width: 1;
+        pointer-events: none;
+    }
+    .vstrip.sel {
+        fill: color-mix(in srgb, var(--velocity) 85%, transparent);
+        stroke: var(--velocity);
+    }
+    /* the create-drag preview: no entity exists yet (the span is a local-only `bandCreate`
+       reading), so a dashed outline distinguishes it from a landed strip's solid fill. */
+    .vstrip-preview {
+        fill: color-mix(in srgb, var(--velocity) 30%, transparent);
+        stroke: var(--velocity);
+        stroke-width: 1;
+        stroke-dasharray: 3 2;
+        pointer-events: none;
+    }
+    /* the boundary tick: the disambiguator for two abutting strips sharing an edge. */
+    .vstrip-tick {
+        stroke: var(--bg-solid);
+        stroke-width: 1.4;
+        pointer-events: none;
+    }
+    .hbandzone {
+        fill: transparent;
+        pointer-events: all;
+        cursor: pointer;
+    }
+    /* the strip value popover: the same opaque floating surface as the chart's `.ptip`, just
+       one field row (no `s`/`g` pair — a strip's extent is the band's own drag, not a typed
+       field). */
+    .striptip {
+        min-width: 0;
     }
 
     /* the append tail: a small `+` past the last clip that opens a two-choice geo/force

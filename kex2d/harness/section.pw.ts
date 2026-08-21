@@ -712,6 +712,114 @@ test("coefficient field refusal flow", async ({ page, boot }) => {
     await expect(v0Input).toHaveValue(v0Before.toFixed(1));
 });
 
+// Drive the VELOCITY-STRIP HEADER BAND flow (kex2d-substrate C5): create-drag a span strip,
+// resize its endpoint, body-drag it, refuse then land a typed value through the popover, and
+// delete it — every affordance through the real pointer/keyboard, `__kex.stripsOf`/
+// `selectedStrip` read only for assertions. The band (`.hbandzone`) sits directly under the
+// clip lane, `HBAND_TOP`/`HBAND_H` (`./flow`).
+test("velocity strip band flow", async ({ page, boot }) => {
+    await boot();
+
+    const stripsOf0 = () => kexCall(page, "stripsOf", 0);
+    const selectedStrip = () => kexCall(page, "selectedStrip");
+
+    await seedHill(page);
+    await frameTimeline(page);
+    expect(await stripsOf0()).toEqual([]);
+
+    const band = page.locator(".hbandzone");
+    const bb = await band.boundingBox();
+    if (!bb) throw new Error("header band not laid out");
+    const y = bb.y + bb.height / 2;
+    // the band's own rect stretches past the section's own extent (the trailing lead-out margin,
+    // `marginArc`), so a fraction of ITS width can land off the section entirely — pick fractions
+    // of the geo clip's own box instead (the exact [0, sectionLength] pixel span, `.clip`'s own).
+    const clipBb = await page.locator(".clip").boundingBox();
+    if (!clipBb) throw new Error("clip not laid out");
+    const x0 = clipBb.x + clipBb.width * 0.3;
+    const x1 = clipBb.x + clipBb.width * 0.55;
+
+    // ── 1. double-click empty band → a point strip (the degenerate zero-length case,
+    // `chartCreate`'s own idiom). undo it — the span create-drag below is the main subject. ──
+    await page.mouse.dblclick(x0, y);
+    await expect.poll(async () => (await stripsOf0()).length).toBe(1);
+    const point = (await stripsOf0())[0];
+    expect(point.start).toBeCloseTo(point.end, 6);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await stripsOf0()).length).toBe(0);
+
+    // ── 2. create-drag: press on empty band, drag past the dead zone, release → a span
+    // strip lands clamped to [x0, x1]'s stations, seeded from the live bake's v. ──
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    await page.mouse.move(x1, y, { steps: 10 });
+    await page.mouse.up();
+    await expect.poll(async () => (await stripsOf0()).length).toBe(1);
+    const created = (await stripsOf0())[0];
+    expect(created.end).toBeGreaterThan(created.start);
+    expect(created.value).toBeGreaterThan(0);
+    await expect.poll(selectedStrip).toBe(created.id);
+    await expect(page.locator(".vstrip.sel")).toHaveCount(1);
+    await expect(page.locator(".striptip")).toBeVisible();
+    const strip = page.locator(".vstrip");
+    await page.waitForTimeout(SHOT_MS);
+    const bandStrip = dockStrip(page);
+    if (bandStrip)
+        await page.screenshot({ path: join(OUT, "strip-1-create.png"), clip: bandStrip });
+
+    // ── 3. resize: drag the strip's right edge further right — the endpoint classifies as
+    // an endpoint hit within STRIP_HIT_R of it, so a press right at `x1` grabs it, not the body. ──
+    const beforeResize = (await stripsOf0())[0];
+    const sb = await strip.boundingBox();
+    if (!sb) throw new Error("strip not laid out");
+    const rightEdge = sb.x + sb.width;
+    await page.mouse.move(rightEdge, y);
+    await page.mouse.down();
+    await page.mouse.move(rightEdge + 40, y, { steps: 10 });
+    await page.mouse.up();
+    await expect.poll(async () => (await stripsOf0())[0].end).toBeGreaterThan(beforeResize.end);
+    expect((await stripsOf0())[0].start).toBeCloseTo(beforeResize.start, 3); // the other edge held
+
+    // ── 4. body drag: press well inside the (now wider) strip's body and drag it right —
+    // both edges translate by the same delta, the value untouched. ──
+    const beforeBody = (await stripsOf0())[0];
+    const sb2 = await strip.boundingBox();
+    if (!sb2) throw new Error("strip not laid out");
+    const bodyX = sb2.x + sb2.width * 0.5;
+    await page.mouse.move(bodyX, y);
+    await page.mouse.down();
+    await page.mouse.move(bodyX + 15, y, { steps: 10 });
+    await page.mouse.up();
+    const afterBody = (await stripsOf0())[0];
+    const widthBefore = beforeBody.end - beforeBody.start;
+    expect(afterBody.end - afterBody.start).toBeCloseTo(widthBefore, 3); // width preserved
+    expect(afterBody.start).toBeGreaterThan(beforeBody.start); // it moved
+    expect(afterBody.value).toBeCloseTo(beforeBody.value, 6); // value untouched by a position drag
+
+    // ── 5. the popover value field: a non-positive typed value refuses (model untouched,
+    // field text snaps back — `validStripValue`'s own shape, A2's `onFrictionField` template). ──
+    const valueBefore = (await stripsOf0())[0].value;
+    const valueInput = page.locator(".striptip input");
+    await valueInput.fill("-2");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await stripsOf0())[0].value).toBeCloseTo(valueBefore, 6);
+    await expect(valueInput).toHaveValue(valueBefore.toFixed(2));
+
+    // a valid positive value lands.
+    await valueInput.fill("7.5");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await stripsOf0())[0].value).toBeCloseTo(7.5, 3);
+
+    // ── 6. Delete removes the selected strip. ──
+    await page.keyboard.press("Delete");
+    await expect.poll(async () => (await stripsOf0()).length).toBe(0);
+    await expect.poll(selectedStrip).toBeNull();
+
+    // undo restores the delete, one entry.
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await stripsOf0()).length).toBe(1);
+});
+
 // Drive the MIXED-LAYOUT DOGFOOD (section-editor stage 5): compose the whole chain the
 // spec set out to author — a geo lead-in, a force airtime hill appended after it, then a
 // geo turnaround appended after that — end to end through the REAL affordances (the `+`

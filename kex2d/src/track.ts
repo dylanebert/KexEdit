@@ -442,6 +442,63 @@ export function setStrip(ecs: State, id: number, start: number, end: number, val
     Strip.value.set(eid, value);
 }
 
+/** whether a typed strip value is one the field may commit — finite and STRICTLY positive (a
+ *  held speed of 0 is not a controlled span, it's a stall — `validCoefficient`'s own shape,
+ *  `>` rather than `>=`). C5's own refusal, shared by every write surface a strip's value
+ *  reaches (the popover field, a future typed nudge) rather than duplicated per caller. */
+export function validStripValue(v: number): boolean {
+    return Number.isFinite(v) && v > 0;
+}
+
+/** the neighbour-clamp bounds a strip's `start`/`end` may not cross, read at a reference
+ *  station `at` (the edge being moved, or the create-drag anchor) — C5's own gesture-side half
+ *  of the Locked decision's "drags clamp at the neighbour's boundary": `track.setStrip`'s own
+ *  guard only ever REFUSES an overlapping write (`kex2d-map.md`), so every drag/nudge/typed-
+ *  field write computes its target through this first and calls `setStrip` with an already-
+ *  legal span — the refusal never fires in practice, it's the safety net. `lo` is the nearest
+ *  OTHER strip's `end` at or before `at` (default 0, the section's own start); `hi` is the
+ *  nearest OTHER strip's `start` at or after `at` (default `sectionLength`, the section's own
+ *  exit). `excludeId` is the strip being moved (-1 for a create, nothing to exclude). Two calls
+ *  — one at the moving strip's original `start`, one at its original `end` — cover a body drag
+ *  (which needs both ends' bounds at once); a single call at the moved edge's own original
+ *  position covers a resize; a call at the anchor covers create. */
+export function stripBoundsAt(
+    ecs: State,
+    sectionId: number,
+    excludeId: number,
+    sectionLength: number,
+    at: number,
+): { lo: number; hi: number } {
+    let lo = 0;
+    let hi = sectionLength;
+    for (const row of sectionStrips(ecs, sectionId)) {
+        if (row.id === excludeId) continue;
+        if (row.end <= at && row.end > lo) lo = row.end;
+        if (row.start >= at && row.start < hi) hi = row.start;
+    }
+    return { lo, hi };
+}
+
+/** a new strip's seed value — "seeded at creation from the published bake's `v` at its first
+ *  station" (Locked decision), a UI act reading the CURRENT bake, never a kernel mechanism. Reads
+ *  `bakeOut.v` at the section-local native-axis station `s` (`forceSample`'s own address, the
+ *  same seam a force keyframe's world position reads), lerped between the bracketing samples.
+ *  Falls back to `V0` when there's no live bake to read (an empty track, a placed-past-budget
+ *  section) — the same neutral default an unauthored track's initial speed carries. */
+export function stripSeedValue(ecs: State, sectionId: number, s: number): number {
+    const trackEid = trackEntity(ecs);
+    if (trackEid === null) return V0;
+    const out = bakeOut.get(trackEid);
+    const info = sectionInfo.get(sectionId);
+    if (!out || !info) return V0;
+    const time = (Track.domain.get(trackEid) as Domain) === Domain.Time;
+    const last = Math.max(0, Track.count.get(trackEid) - 1);
+    const addr = forceSample(out, info, last, time, s);
+    if (!addr) return V0;
+    const j = Math.min(addr.index + 1, last);
+    return out.v[addr.index] + addr.frac * (out.v[j] - out.v[addr.index]);
+}
+
 /** convert a section's authored strips from its own domain coordinate into the kernel's
  *  edge-index coordinate (`section.Strip`, "the SAME indexing `fN`/`ds` already carry") —
  *  the ONE seam between the ECS's domain-coordinate storage and the substrate's edge

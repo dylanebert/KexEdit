@@ -1606,6 +1606,7 @@ $effect(() => {
         --neutral-soft: rgba(255, 255, 255, 0.1);
         --danger: #e26d5c;
         --danger-soft: rgba(226, 109, 92, 0.16);
+        --velocity: #7fb08a; /* mirrors colors.ts COLOR_VELOCITY — the timeline curve's own kind color, reused by the header band's own strips (C5) */
         --guide: #9aa0a6; /* snap-guide neutral gray (timeline + viewport); mirrors colors.ts COLOR_GUIDE_RAY */
         --dim: rgba(22, 20, 19, 0.55); /* out-of-scope dim wash under a mode, both surfaces (editor-ui.md Mode vocabulary); mirrors colors.ts DIM_WASH */
         --ease-out: cubic-bezier(0.33333, 1, 0.66667, 1); /* the one easing token (ui.md Motion) — the exact bezier of 1 − (1 − t)³; JS twin editor.ts easeOut */
