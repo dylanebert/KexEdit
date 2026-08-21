@@ -298,7 +298,7 @@ const curve = $derived.by((): { s: Float64Array; f: Float32Array; n: number } | 
     void tick;
     return eid === null ? null : forceCurve(eid);
 });
-// the baked recovered-speed curve — `curve`'s twin (C1, `kex2d-substrate`). Always
+// the baked recovered-speed curve — `curve`'s twin. Always
 // present alongside `curve` (both come from the same bake), drawn on its OWN auto-fit
 // value scale (`vTarget`/`vView` below) over the same shared document x-axis — never the
 // force axis, whose g-range means nothing for m/s.
@@ -2430,14 +2430,15 @@ function render(ctx: CanvasRenderingContext2D): void {
         }
     }
 
-    // the recovered-speed curve (C1, `kex2d-substrate`) — one hue, always dashed: it is
-    // never authored (`editor-ui.md` Mode vocabulary's dashed-inferred meaning), so unlike
-    // the force curve above it carries no kind-color split and no toggle. Own auto-fit
-    // scale (`vOf`/`vView`), same shared document x-axis (`markerX`).
+    // the recovered-speed curve — one hue, always dashed and faded: it is
+    // never authored (`editor-ui.md` Mode vocabulary's dashed + faded, shown-but-not-authored
+    // meaning), so unlike the force curve above it carries no kind-color split and no toggle.
+    // Own auto-fit scale (`vOf`/`vView`), same shared document x-axis (`markerX`).
     if (vCurve) {
         ctx.lineWidth = 1.4;
         ctx.strokeStyle = COLOR_VELOCITY;
         ctx.setLineDash([5, 4]);
+        ctx.globalAlpha = 0.25;
         ctx.beginPath();
         for (let i = 0; i < vCurve.n; i++) {
             const x = markerX(vCurve.s[i]);
@@ -2446,6 +2447,7 @@ function render(ctx: CanvasRenderingContext2D): void {
             else ctx.lineTo(x, y);
         }
         ctx.stroke();
+        ctx.globalAlpha = 1;
         ctx.setLineDash([]);
     }
 

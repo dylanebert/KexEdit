@@ -872,8 +872,8 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   Unit-tested in `timeline.test.ts`.
 - `Timeline.svelte` — the always-present bottom dock (a flex row: a thin **tool rail** on the left
   edge, then the timeline content column): the **F_n force-curve readout + scrub +
-  zoom/pan navigation**, the **recovered-speed channel** (`vCurve`/`velocityCurve`, C1
-  `kex2d-substrate`: one hue `COLOR_VELOCITY`, always dashed, own auto-fit `vView`/`vTarget` scale
+  zoom/pan navigation**, the **recovered-speed channel** (`vCurve`/`velocityCurve`:
+  one hue `COLOR_VELOCITY`, always dashed, own auto-fit `vView`/`vTarget` scale
   over the same shared document x-axis as the force curve — display-only, no drag, no toggle), the
   floating **media player**, and the **section clip strip** in the marker
   lane (one clip per section, kind-colored/labeled; click selects `editor.section`; a `+` tail flyout

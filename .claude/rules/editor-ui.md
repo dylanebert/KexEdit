@@ -613,7 +613,7 @@ and viewport had drifted to different dialects of the same states.
 
 - **Velocity hue** (kex2d `COLOR_VELOCITY`) = the recovered-speed channel, timeline chart only — a
   third meaning distinct from kind color's geo/force split, since the curve it hues spans every
-  section kind at once. Always dashed (never authored, C1 `kex2d-substrate`), so it's the dash
+  section kind at once. Always dashed (never authored), so it's the dash
   law's channel too, not a new one: color says *which quantity*, dash says *not authored truth*.
 - **Kind color** = section kind, everywhere (Kind color, above). Selection brightens it, hover is
   the rung below — one channel (color), calibrated per element class: areas lift fill, point
