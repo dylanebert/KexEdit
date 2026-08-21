@@ -783,7 +783,7 @@ describe("byte-identity floor", () => {
             expect(c.v[i]).toBe(golden.v[i]);
         }
 
-        // `kex2d-friction` stage 1: extends the SAME golden rather than duplicating it —
+        // Coulomb-friction closed form: extends the SAME golden rather than duplicating it —
         // explicit 0s for `friction`/`resistance` must be byte-identical to omitting them
         // entirely (the additive-substrate law holds at the zero-coefficient boundary too).
         const explicit = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections, undefined, 0, 0);
@@ -925,7 +925,7 @@ describe("energy propagation into a downstream force section", () => {
     });
 
     test("a pure LENGTH change upstream now costs downstream entry v² by 2μg·cosθ·ΔL", () => {
-        // the user's originating symptom, flipped from inert to predicted (Goal, `kex2d-friction`):
+        // the Coulomb-friction closed form, flipped from inert to predicted:
         // entry y and θ are preserved (level, straight — θ = 0 throughout, so cos θ = 1 exactly),
         // but a longer run now genuinely dissipates more, so downstream entry v² drops measurably —
         // and the force section that follows, whose own curvature depends on entry v, reshapes.
@@ -956,7 +956,7 @@ describe("energy propagation into a downstream force section", () => {
         expect(b.exits[0].y).toBeCloseTo(a.exits[0].y, 5); // level — friction never moves y
         expect(b.exits[0].theta).toBeCloseTo(a.exits[0].theta, 5);
 
-        // the closed form named in `kex2d-friction`'s Validation: ΔL · 2μg·cosθ (θ = 0 here).
+        // the Coulomb-friction closed form: ΔL · 2μg·cosθ (θ = 0 here).
         const predicted = 2 * Mu * G * 1 * deltaL;
         const actual = a.exits[0].v * a.exits[0].v - b.exits[0].v * b.exits[0].v;
         const tol = Kf32 * b.ranges[0].end * Eps * (V0 * V0);
