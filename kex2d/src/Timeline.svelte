@@ -8,8 +8,9 @@ import {
     parkFromTime,
     playheadPosition,
     trackMapping,
+    velocityCurve,
 } from "./cart";
-import { kindSegments } from "./colors";
+import { COLOR_VELOCITY, kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
 import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { appendMenu, keyframeMenu, rulerMenu } from "./menus";
@@ -197,6 +198,11 @@ const LABEL_HALF = 5; // px; half a g-label's height — hide a label nearer tha
 // value axis's RESTING frame: the window the view sits in whenever the data fits inside it (the
 // seed before any data arrives, and the minimum `yFit` expands from). One constant, no ladder.
 const BAND: [number, number] = [-2, 6];
+// the velocity channel's own resting frame: 0 is always shown (a coaster's speed floor,
+// the m/s twin of the g-axis's 1g baseline) up to a comfortable cruise ceiling; `yFit`
+// grows it past this whenever the baked curve's range needs more.
+const V_BAND: [number, number] = [0, 20];
+const V_BASE = 0; // the velocity axis's always-shown baseline (0 m/s), not `Y_BASE`'s 1g
 // the ceiling on edge-drag growth: the band with 1 g of headroom on each side — the original
 // bound, restored after uncapped growth proved unusable (compounding per-frame growth runs to
 // extreme g almost instantly). Derived from BAND, so the band stays the one authored constant.
@@ -291,6 +297,14 @@ function handleTip(
 const curve = $derived.by((): { s: Float64Array; f: Float32Array; n: number } | null => {
     void tick;
     return eid === null ? null : forceCurve(eid);
+});
+// the baked recovered-speed curve — `curve`'s twin. Always
+// present alongside `curve` (both come from the same bake), drawn on its OWN auto-fit
+// value scale (`vTarget`/`vView` below) over the same shared document x-axis — never the
+// force axis, whose g-range means nothing for m/s.
+const vCurve = $derived.by((): { s: Float64Array; v: Float32Array; n: number } | null => {
+    void tick;
+    return eid === null ? null : velocityCurve(eid);
 });
 // total track arclength (m) — the chart's X-axis domain.
 const sTotal = $derived(curve ? curve.s[curve.n - 1] : 0);
@@ -438,6 +452,41 @@ $effect(() => {
     });
 });
 
+// the velocity channel's own auto-fit target — `yTarget`'s twin, scanning `vCurve` instead
+// of `curve`, resting on `V_BAND`/`V_BASE`. Display-only (no keyframes, no drag), so unlike
+// `yTarget` it has no handle-endpoint accommodation to fold in.
+const vTarget = $derived.by((): YFit => {
+    void tick;
+    let lo = V_BASE;
+    let hi = V_BASE;
+    const c = vCurve;
+    if (c) {
+        for (let i = 0; i < c.n; i++) {
+            if (c.v[i] < lo) lo = c.v[i];
+            if (c.v[i] > hi) hi = c.v[i];
+        }
+    }
+    return yFit(lo, hi, V_BASE, V_BAND);
+});
+// the *displayed* velocity range — `yView`'s twin. No drag ever holds it (the channel is
+// display-only, never authored), so it always eases straight toward `vTarget`, at the same
+// asymmetric grow-fast/shrink-lazy rates as the g-axis.
+let vView: YFit = $state({ lo: V_BAND[0], hi: V_BAND[1], step: 1 });
+let vInit = false;
+$effect(() => {
+    void tick;
+    untrack(() => {
+        const t = vTarget;
+        if (!vInit) {
+            vView = t;
+            vInit = true;
+            return;
+        }
+        const eased = yEase(vView, t, Y_OUT, Y_IN);
+        if (eased !== vView) vView = eased;
+    });
+});
+
 // pick the track domain (the ruler menu's Meters/Seconds rows — no keyboard twin, the second feel
 // check-in's call). This is a DOCUMENT conversion, not a view change: `convertDomain` converts every
 // force keyframe, extent, and handle Δs into the target unit as one undoable entry, and a round trip
@@ -503,6 +552,11 @@ function growValueAxis(cy: number, reapply: () => void): void {
 
 const yOf = (val: number): number =>
     TOP + (1 - (val - yView.lo) / (yView.hi - yView.lo)) * (h - BOT_PAD - TOP);
+// the velocity channel's own value→pixel projection, over `vView` — the same chart rows
+// (TOP..h-BOT_PAD) as `yOf`, a DIFFERENT scale (m/s, not g). Never fed a g value or vice
+// versa: the two axes share only the x-axis and the pixel band, not a unit.
+const vOf = (val: number): number =>
+    TOP + (1 - (val - vView.lo) / (vView.hi - vView.lo)) * (h - BOT_PAD - TOP);
 // the inverse of yOf — a chart-local pixel y back to a g value, for placing/dragging
 // force points against the displayed axis.
 const yToG = (py: number): number => {
@@ -2374,6 +2428,27 @@ function render(ctx: CanvasRenderingContext2D): void {
             }
             ctx.stroke();
         }
+    }
+
+    // the recovered-speed curve — one hue, always dashed and faded: it is
+    // never authored (`editor-ui.md` Mode vocabulary's dashed + faded, shown-but-not-authored
+    // meaning), so unlike the force curve above it carries no kind-color split and no toggle.
+    // Own auto-fit scale (`vOf`/`vView`), same shared document x-axis (`markerX`).
+    if (vCurve) {
+        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = COLOR_VELOCITY;
+        ctx.setLineDash([5, 4]);
+        ctx.globalAlpha = 0.25;
+        ctx.beginPath();
+        for (let i = 0; i < vCurve.n; i++) {
+            const x = markerX(vCurve.s[i]);
+            const y = vOf(vCurve.v[i]);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.setLineDash([]);
     }
 
     ctx.restore();

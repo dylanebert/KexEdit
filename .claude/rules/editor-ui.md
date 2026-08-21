@@ -611,6 +611,10 @@ and viewport had drifted to different dialects of the same states.
   is a *means*: a DOF the solver may not move (kex2d `Q`, per keyframe). Goal versus frozen
   variable. Two words because they are two things; don't collapse them.
 
+- **Velocity hue** (kex2d `COLOR_VELOCITY`) = the recovered-speed channel, timeline chart only — a
+  third meaning distinct from kind color's geo/force split, since the curve it hues spans every
+  section kind at once. Always dashed (never authored), so it's the dash
+  law's channel too, not a new one: color says *which quantity*, dash says *not authored truth*.
 - **Kind color** = section kind, everywhere (Kind color, above). Selection brightens it, hover is
   the rung below — one channel (color), calibrated per element class: areas lift fill, point
   glyphs lift their ink outline (and their fill where they have one) — states modulate the

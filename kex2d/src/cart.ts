@@ -228,6 +228,23 @@ export function forceCurve(
     return { s, f, n: count };
 }
 
+/** the baked recovered-speed curve as per-sample points over arclength — `forceCurve`'s
+ *  twin, same shape: `s[i]` is sample i's cumulative arclength (Σ ds, the ds-convention
+ *  law), `v[i]` its speed. Unlike `fN` (per-edge), `v` is already per-sample (`bakeOut.v`,
+ *  `ChainResult.v` threaded through `chain()`), so no leading-sample repeat is needed.
+ *  Always-inferred, never authored — the timeline draws it dashed unconditionally, no
+ *  toggle (`editor-ui.md` Mode vocabulary). null before the bake has a chain. */
+export function velocityCurve(
+    trackEid: number,
+): { s: Float64Array; v: Float32Array; n: number } | null {
+    const out = bakeOut.get(trackEid);
+    const count = Track.count.get(trackEid);
+    if (!out || count < 2) return null;
+    const s = new Float64Array(count);
+    for (let i = 1; i < count; i++) s[i] = s[i - 1] + out.ds[i - 1];
+    return { s, v: out.v.subarray(0, count), n: count };
+}
+
 /** the per-sample arclength↔time table over the display bake (`samples` +
  *  `bakeOut`, the realized track the timeline draws). the chart's x-axis is
  *  distance, but the cart rides the track in time, so the playhead projects the

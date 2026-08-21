@@ -248,7 +248,6 @@ type Samples = {
     posX: Float32Array;
     posY: Float32Array;
     theta: Float32Array;
-    v: Float32Array;
 };
 
 /** SoA sample buffers per track, sized once to MAX_SAMPLES. only indices
@@ -256,18 +255,23 @@ type Samples = {
 export const samples = new Map<number, Samples>();
 
 /** baked per-edge state for each track. `fN` is force in g (per-edge, length
- *  MAX_SAMPLES − 1). `ds` is per-edge actual spacing. `t` is per-sample
- *  cumulative time `t[i] = Σ_{k<i} ds_k / v_safe_k`, length MAX_SAMPLES —
- *  the cart and the timeline read from it. `tTotal = t[count − 1]`.
- *  `feasible[i]` is 1 when `|v[i]| ≥ V_WARN`, 0 otherwise — drives the red
- *  track / red handle / warning banner UX. `firstInfeasible` is the first
- *  sample below V_WARN, or -1 if the whole chain is feasible. `hash` is the
- *  input state that produced the current bake; a miss triggers a full re-bake. */
+ *  MAX_SAMPLES − 1). `ds` is per-edge actual spacing. `v` is the recovered
+ *  speed (m/s, per-sample, length MAX_SAMPLES) — `forces`' own output,
+ *  `ChainResult.v` threaded straight through `chain()`; the timeline's
+ *  velocity channel reads it (`cart.velocityCurve`), `cart.forceCurve`'s
+ *  twin. `t` is per-sample cumulative time `t[i] = Σ_{k<i} ds_k / v_safe_k`,
+ *  length MAX_SAMPLES — the cart and the timeline read from it. `tTotal =
+ *  t[count − 1]`. `feasible[i]` is 1 when `|v[i]| ≥ V_WARN`, 0 otherwise —
+ *  drives the red track / red handle / warning banner UX. `firstInfeasible`
+ *  is the first sample below V_WARN, or -1 if the whole chain is feasible.
+ *  `hash` is the input state that produced the current bake; a miss triggers
+ *  a full re-bake. */
 export const bakeOut = new Map<
     number,
     {
         fN: Float32Array;
         ds: Float32Array;
+        v: Float32Array;
         t: Float32Array;
         tTotal: number;
         feasible: Uint8Array;
@@ -459,11 +463,11 @@ export function createTrack(ecs: State): number {
         posX: new Float32Array(MAX_SAMPLES),
         posY: new Float32Array(MAX_SAMPLES),
         theta: new Float32Array(MAX_SAMPLES),
-        v: new Float32Array(MAX_SAMPLES),
     });
     bakeOut.set(trackEid, {
         fN: new Float32Array(MAX_SAMPLES - 1),
         ds: new Float32Array(MAX_SAMPLES - 1),
+        v: new Float32Array(MAX_SAMPLES),
         t: new Float32Array(MAX_SAMPLES),
         tTotal: 0,
         feasible: new Uint8Array(MAX_SAMPLES),
@@ -2802,19 +2806,19 @@ type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
  *
  *  `feasible[i] = |v[i]| ≥ V_WARN` drives the red-track UX (warning threshold above the
  *  numerical floor). */
-function computeTime(s: Samples, out: BakeOut, count: number, marched: Float64Array): void {
+function computeTime(out: BakeOut, count: number, marched: Float64Array): void {
     out.t[0] = 0;
-    out.feasible[0] = Math.abs(s.v[0]) >= V_WARN ? 1 : 0;
+    out.feasible[0] = Math.abs(out.v[0]) >= V_WARN ? 1 : 0;
     let firstBad = out.feasible[0] === 0 ? 0 : -1;
     for (let i = 0; i < count - 1; i++) {
         let dt = marched[i];
         if (!(dt > 0)) {
-            const vA = Math.max(Math.abs(s.v[i]), V_FLOOR);
-            const vB = Math.max(Math.abs(s.v[i + 1]), V_FLOOR);
+            const vA = Math.max(Math.abs(out.v[i]), V_FLOOR);
+            const vB = Math.max(Math.abs(out.v[i + 1]), V_FLOOR);
             dt = out.ds[i] / (0.5 * (vA + vB));
         }
         out.t[i + 1] = out.t[i] + dt;
-        const f = Math.abs(s.v[i + 1]) >= V_WARN ? 1 : 0;
+        const f = Math.abs(out.v[i + 1]) >= V_WARN ? 1 : 0;
         out.feasible[i + 1] = f;
         if (firstBad < 0 && f === 0) firstBad = i + 1;
     }
@@ -2959,7 +2963,7 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         s.posX.set(p.c.posX.subarray(0, p.count), p.offset);
         s.posY.set(p.c.posY.subarray(0, p.count), p.offset);
         s.theta.set(p.c.theta.subarray(0, p.count), p.offset);
-        s.v.set(p.c.v.subarray(0, p.count), p.offset);
+        out.v.set(p.c.v.subarray(0, p.count), p.offset);
         out.fN.set(p.c.fN.subarray(0, Math.max(0, p.count - 1)), p.offset);
         out.ds.set(p.c.ds.subarray(0, Math.max(0, p.count - 1)), p.offset);
     }
@@ -2974,7 +2978,7 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     }
     out.hash = bakeHash(ecs, trackEid, secs);
     Track.count.set(trackEid, count);
-    computeTime(s, out, count, marched);
+    computeTime(out, count, marched);
 }
 
 export const BakeSystem: System = {

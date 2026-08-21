@@ -3055,7 +3055,7 @@ describe("track friction/drag coefficients", () => {
         // sample v table instead, which friction directly reduces — the positive control that
         // proves the round trip actually moved something, not just the stored coefficient.
         const { state, eid } = forceSection();
-        const v = () => Array.from(samples.get(eid)?.v.subarray(0, Track.count.get(eid)) ?? []);
+        const v = () => Array.from(bakeOut.get(eid)?.v.subarray(0, Track.count.get(eid)) ?? []);
         const before = v();
         const h = createHistory();
 

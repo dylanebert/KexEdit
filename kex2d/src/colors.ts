@@ -19,6 +19,13 @@ export const COLOR_FORCE = COLOR_ACCENT;
  *  off the `--fg` token), so no canvas label color lives here. */
 export const COLOR_GUIDE_RAY = "#9aa0a6";
 
+/** the velocity channel's hue (`editor-ui.md` Mode vocabulary: a new channel earns a row
+ *  before it ships) — a third kind color would collide with geo's blue or force's gold, so
+ *  the recovered-speed curve gets its own: muted green, distinct from both and from the
+ *  guide gray. One meaning: this hue IS the velocity channel, on the timeline chart alone
+ *  (`Timeline.svelte`) — no viewport twin exists to keep it consistent with. */
+export const COLOR_VELOCITY = "#7fb08a"; // rgb(127, 176, 138)
+
 /** the out-of-scope dim wash (`editor-ui.md` Mode vocabulary): while a mode is open,
  *  everything outside its subject steps back one rung under this wash — one meaning, both
  *  surfaces. Mirrors App.svelte's `--dim` CSS custom property (Timeline.svelte's `.mode-dim`
