@@ -1698,7 +1698,7 @@ describe("the carry's resolution-floor guard (D1)", () => {
         // The map is affine at every probe (constant slope, so `Δv/v = 0`: the premise READS as held)
         // and jumps 5 s between two of them, which is the only shape that reaches this branch.
         const spike = (s: number) => ({ value: s <= 0.5 ? s : s + 5, slope: 1 });
-        expect(() => carryForce(floorPair, spike, Domain.Time, 0.19, 1)).toThrow(
+        expect(() => carryForce(floorPair, floorPair, spike, Domain.Time, 0.19, 1)).toThrow(
             /partial fit at the march resolution floor/,
         );
     });
@@ -1718,7 +1718,7 @@ describe("the carry's resolution-floor guard (D1)", () => {
         const swing3x = (u: number) => ({ value: u <= 0.5 ? u : u + 5, slope: u <= 0.5 ? 9 : 3 });
         expect(V_FLOOR).toBeLessThan(3 / 100); // the fixture is nowhere near the stall…
         expect(V_WARN).toBeLessThan(3); // …nor inside the band the document flags infeasible
-        expect(() => carryForce(floorPair, swing3x, Domain.Time, 0.19, 1)).toThrow(
+        expect(() => carryForce(floorPair, floorPair, swing3x, Domain.Time, 0.19, 1)).toThrow(
             /partial fit at the march resolution floor/,
         );
     });
@@ -1734,9 +1734,9 @@ describe("the carry's resolution-floor guard (D1)", () => {
         expect(frozen).toBeGreaterThan(V_FLOOR); // the bare comparison misses…
         const stalled = (u: number) => ({ value: u <= 0.5 ? u : u + 5, slope: frozen });
         // …and reading it at the store's own precision does not: this is the stall, and it is silenced.
-        expect(carryForce(floorPair, stalled, Domain.Time, 0.19, 1).map((q) => q.id)).toEqual([
-            1, 2,
-        ]);
+        expect(
+            carryForce(floorPair, floorPair, stalled, Domain.Time, 0.19, 1).map((q) => q.id),
+        ).toEqual([1, 2]);
     });
 
     test("a MIXED-slope map throws — one frozen probe does not excuse a residual in the healthy stretch", () => {
@@ -1756,7 +1756,7 @@ describe("the carry's resolution-floor guard (D1)", () => {
             slope: u < 0.2 ? FrozenSlope : 9,
         });
         expect(mixed(0).slope).toBeLessThan(V_FLOOR * (1 + 16 * 2 ** -24)); // the frozen endpoint is real
-        expect(() => carryForce(floorPair, mixed, Domain.Time, 0.19, 1)).toThrow(
+        expect(() => carryForce(floorPair, floorPair, mixed, Domain.Time, 0.19, 1)).toThrow(
             /partial fit at the march resolution floor/,
         );
         // and the mirror image: the jump inside the frozen stretch, the moving part carrying the
@@ -1765,7 +1765,7 @@ describe("the carry's resolution-floor guard (D1)", () => {
             value: u <= 0.5 ? u : u + 5,
             slope: u <= 0.5 ? 9 : FrozenSlope,
         });
-        expect(() => carryForce(floorPair, mirrored, Domain.Time, 0.19, 1)).toThrow(
+        expect(() => carryForce(floorPair, floorPair, mirrored, Domain.Time, 0.19, 1)).toThrow(
             /partial fit at the march resolution floor/,
         );
     });
@@ -1774,7 +1774,7 @@ describe("the carry's resolution-floor guard (D1)", () => {
         // the grant direction, which `checks.md` says nobody writes: a locally affine map carries
         // exactly (the Δs scale IS the whole map there), so the floor is reached with nothing to fix.
         const affine = (s: number) => ({ value: 2 * s, slope: 0.5 });
-        const out = carryForce(floorPair, affine, Domain.Time, 0.19, 1);
+        const out = carryForce(floorPair, floorPair, affine, Domain.Time, 0.19, 1);
         expect(out.map((p) => p.id)).toEqual([1, 2]);
         expect(out.every((p) => !p.carried)).toBe(true);
     });
@@ -1790,7 +1790,7 @@ describe("the carry's resolution-floor guard (D1)", () => {
         const spike = (s: number) => ({ value: s <= 0.5 ? s : s + 5, slope: 1 });
         let thrown: unknown;
         try {
-            carryForce(floorPair, spike, Domain.Time, 0.19, 1);
+            carryForce(floorPair, floorPair, spike, Domain.Time, 0.19, 1);
         } catch (e) {
             thrown = e;
         }
@@ -1899,6 +1899,299 @@ describe("bezier vs linear key counts (D1)", () => {
             const bezier = sectionForces(state, sec).length;
             const linear = linearProxyCount(len, pts);
             expect(bezier).toBeLessThan(linear);
+        }
+    });
+});
+
+// BL-2 — the fit reference is the section's VISIBLE curve, not the authored-only set.
+// § Locked decision > Domain fidelity: `convertDomain` conflated two sets — the output key set
+// (carried keys dropped — correct) and the fit reference (the authored-only bezier — the defect).
+// Separating them is the repair: the reverse flip now fits against the full visible curve the carry
+// exists to preserve, and the drop survives untouched on the output alone. The Residue lesson is
+// that one expression serving two roles is how this stayed hidden through two adversarial passes.
+describe("the fit reference (BL-2)", () => {
+    /** KeySnap[] from the ECS state — structurally compatible with `SectionSnapshot["points"][number]`. */
+    function keySnaps(state: State, sec: number) {
+        return sectionForces(state, sec).map((p) => {
+            const tan = forceTangent(state, p.id);
+            const snap: {
+                id: number;
+                s: number;
+                g: number;
+                ease: Easing;
+                tangent?: ForceTangent;
+                carried: boolean;
+            } = {
+                id: p.id,
+                s: p.s,
+                g: p.g,
+                ease: forceEase(state, p.id),
+                carried: forceCarried(state, p.id),
+            };
+            if (tan) snap.tangent = tan;
+            return snap;
+        });
+    }
+
+    /** KeySnap[] -> ForcePoint[] (same as domain.ts's internal `asPoint`). */
+    function toForcePoints(
+        keys: { s: number; g: number; ease: Easing; tangent?: ForceTangent }[],
+    ): ForcePoint[] {
+        return keys.map((k) => {
+            const p: ForcePoint = { s: k.s, g: k.g, ease: k.ease };
+            if (k.tangent?.in) p.in = k.tangent.in;
+            if (k.tangent?.out) p.out = k.tangent.out;
+            return p;
+        });
+    }
+
+    /** speed (dArc/dt) at global distance `d` from the independent table. */
+    function slopeAtDist(tab: { arc: number[]; t: number[] }, d: number): number {
+        const last = tab.arc.length - 1;
+        if (d <= tab.arc[0] || d >= tab.arc[last]) return V_FLOOR;
+        let lo = 0;
+        while (lo + 1 < tab.arc.length && tab.arc[lo + 1] <= d) lo++;
+        const dt = tab.t[lo + 1] - tab.t[lo];
+        return Math.max(dt > 0 ? (tab.arc[lo + 1] - tab.arc[lo]) / dt : 0, V_FLOOR);
+    }
+
+    /** speed (dArc/dt) at global time `t` from the independent table. */
+    function slopeAtTime(tab: { arc: number[]; t: number[] }, t: number): number {
+        const last = tab.t.length - 1;
+        if (t <= tab.t[0] || t >= tab.t[last]) return V_FLOOR;
+        let lo = 0;
+        while (lo + 1 < tab.t.length && tab.t[lo + 1] <= t) lo++;
+        const dt = tab.t[lo + 1] - tab.t[lo];
+        return Math.max(dt > 0 ? (tab.arc[lo + 1] - tab.arc[lo]) / dt : 0, V_FLOOR);
+    }
+
+    /** (a) the reverse-flip (Seconds->Metres) shape delta: the force curve sampled at every nominal
+     *  march station before and after the flip, at the same ride position through the source bake's
+     *  table. This is the same measurement `flipDelta` makes in the forward direction. */
+    function reverseFlipShape(
+        len: number,
+        pts: readonly [number, number][],
+    ): { worst: number; tol: number; ratio: number } {
+        const { state, eid, sec } = forceTrack(len, pts);
+        const h = createHistory();
+        // M->S: forward flip inserts carried keys
+        expect(convertDomain(h, state, Domain.Time)).toBe(true);
+        state.step(0);
+
+        const before = profilePts(state, sec); // visible curve in Time (authored + carried)
+        const tab = table(eid); // Time bake's arc<->time table
+        const duration = extent(state, sec);
+        const step = resolveStep(duration, DT_NOMINAL);
+        const tol = resolutionFloor(before, step);
+
+        // S->M: reverse flip (uses the fix — visible as reference)
+        expect(convertDomain(h, state, Domain.Distance)).toBe(true);
+        const after = profilePts(state, sec);
+
+        // measure: sample at time stations, map to distance through the Time bake's table
+        let worst = 0;
+        for (let i = 0; i <= step.edges; i++) {
+            const t = Math.min(duration, i * step.ds);
+            const s = interp(tab.t, tab.arc, t);
+            worst = Math.max(worst, Math.abs(sampleForce(after, s) - sampleForce(before, t)));
+        }
+        return { worst, tol, ratio: worst / tol };
+    }
+
+    /** (b) the M->S->M round-trip: the reverse flip's carry shape preservation (the same
+     *  measurement as (a)), plus the witness that the carry inserts NOTHING on the way back —
+     *  the "exact" reading the probe recorded. The round trip reads exact because the authored
+     *  stations round-trip through the table by lookup and the reference already sits inside
+     *  the floor, so the carry inserts nothing on the way back (§ Locked decision). */
+    function roundTripShape(
+        len: number,
+        pts: readonly [number, number][],
+    ): { worst: number; tol: number; ratio: number; carriedBack: number } {
+        const { state, eid, sec } = forceTrack(len, pts);
+        const h = createHistory();
+        // M->S: forward flip inserts carried keys
+        expect(convertDomain(h, state, Domain.Time)).toBe(true);
+        state.step(0);
+
+        const before = profilePts(state, sec); // visible curve in Time
+        const tab = table(eid);
+        const duration = extent(state, sec);
+        const step = resolveStep(duration, DT_NOMINAL);
+        const tol = resolutionFloor(before, step);
+
+        // S->M: reverse flip
+        expect(convertDomain(h, state, Domain.Distance)).toBe(true);
+        const after = profilePts(state, sec);
+        const carriedBack = sectionForces(state, sec).filter((p) => p.carried).length;
+
+        // measure the carry's shape preservation: returned Distance vs visible Time at mapped positions
+        let worst = 0;
+        for (let i = 0; i <= step.edges; i++) {
+            const t = Math.min(duration, i * step.ds);
+            const s = interp(tab.t, tab.arc, t);
+            worst = Math.max(worst, Math.abs(sampleForce(after, s) - sampleForce(before, t)));
+        }
+        return { worst, tol, ratio: worst / tol, carriedBack };
+    }
+
+    // (a) seconds->metres shape arm on both fixtures, delta within the section's runtime-derived
+    // floor. Probe readings to beat: 0.116x / 0.727x against a baseline of 1.395x / 2.454x.
+    test("(a) seconds->metres shape: dive-and-recover within the floor", () => {
+        const r = reverseFlipShape(...DIVE_AND_RECOVER);
+        expect(r.worst).toBeLessThanOrEqual(r.tol);
+        expect(r.worst).toBeGreaterThan(0); // the flip is real, not a no-op
+        // measured reading: 0.096x (worst / tol) — within the floor
+    });
+
+    test("(a) seconds->metres shape: multi-g pull within the floor", () => {
+        const r = reverseFlipShape(...MULTI_G_PULL);
+        expect(r.worst).toBeLessThanOrEqual(r.tol);
+        expect(r.worst).toBeGreaterThan(0);
+        // measured reading: 0.592x (worst / tol) — within the floor
+    });
+
+    // (b) M->S->M round-trip arm on both fixtures, asserting within the floor. The probe read it
+    // exact, so the reading is recorded in the docblock rather than pinned as the property —
+    // § Locked decision says exactness is a consequence (the reference sits inside the floor, so
+    // the carry inserts nothing on the way back), not a promise (the baked world exit still moves).
+    test("(b) M->S->M round-trip: dive-and-recover — carry inserts nothing on the way back", () => {
+        const r = roundTripShape(...DIVE_AND_RECOVER);
+        expect(r.carriedBack).toBe(0); // the "exact" reading: the carry inserted zero keys back
+        expect(r.worst).toBeLessThanOrEqual(r.tol); // shape preservation within the floor
+    });
+
+    test("(b) M->S->M round-trip: multi-g pull — carry inserts nothing on the way back", () => {
+        const r = roundTripShape(...MULTI_G_PULL);
+        expect(r.carriedBack).toBe(0); // the "exact" reading
+        expect(r.worst).toBeLessThanOrEqual(r.tol);
+    });
+
+    // (c) red-first witness on the reference itself. Reverting the fit reference to the authored-only
+    // set reds (a) and (b) — witnessed by temporarily reverting the fix in domain.ts (changing
+    // `carryForce(visible, authored, ...)` back to `carryForce(authored, authored, ...)` and
+    // `resolutionFloor(visible, ...)` back to `resolutionFloor(authored, ...)`) and running the
+    // arms above. The witnessed readings (delta / visible-floor, the floor (a) asserts against):
+    //   (a) dive-and-recover: 1.32x  (defect) vs 0.096x (fix)  — defect reds, fix passes
+    //   (a) multi-g pull:     2.11x  (defect) vs 0.592x (fix)  — defect reds, fix passes
+    //   (b) dive-and-recover: 1 carried key back (defect) vs 0 (fix)  — defect reds, fix passes
+    //   (b) multi-g pull:     2 carried keys back (defect) vs 0 (fix) — defect reds, fix passes
+    // The spec's probe recorded 1.395x / 2.454x for (a) against the authored-only floor (smaller
+    // than the visible floor, so the ratio is higher); this test asserts against the visible floor
+    // (the correct one), so the defect ratios are 1.32x / 2.11x — both still > 1, which is the red.
+    // Without (c) the other two are satisfiable by the defect, which is how BL-2 stayed hidden
+    // under a green D1 gate through two adversarial passes — D1's own gate was green in the
+    // forward direction throughout.
+    test("(c) reverting the fit reference to authored-only reds (a) and (b) — witnessed", () => {
+        for (const [len, pts] of [DIVE_AND_RECOVER, MULTI_G_PULL]) {
+            const { state, eid, sec } = forceTrack(len, pts);
+            const h = createHistory();
+            // M->S: forward flip inserts carried keys
+            expect(convertDomain(h, state, Domain.Time)).toBe(true);
+            state.step(0);
+
+            const before = profilePts(state, sec); // visible curve in Time
+            const tab = table(eid);
+            const duration = extent(state, sec);
+            const step = resolveStep(duration, DT_NOMINAL);
+            const correctFloor = resolutionFloor(before, step); // floor from the visible set
+
+            const snaps = keySnaps(state, sec);
+            const authored = snaps.filter((p) => !p.carried);
+            const visible = snaps;
+
+            // the defect: authored-only as both reference AND output, tol from authored-only
+            const defectTol = resolutionFloor(toForcePoints(authored), step);
+            const mapToDist = (t: number) => ({
+                value: interp(tab.t, tab.arc, t),
+                slope: slopeAtTime(tab, t),
+            });
+            const defectKeys = carryForce(
+                authored,
+                authored,
+                mapToDist,
+                Domain.Distance,
+                defectTol,
+                step.ds,
+            );
+            const defectAfter = toForcePoints(defectKeys);
+
+            // measure the defect's shape delta the same way (a) does
+            let defectWorst = 0;
+            for (let i = 0; i <= step.edges; i++) {
+                const t = Math.min(duration, i * step.ds);
+                const s = interp(tab.t, tab.arc, t);
+                defectWorst = Math.max(
+                    defectWorst,
+                    Math.abs(sampleForce(defectAfter, s) - sampleForce(before, t)),
+                );
+            }
+            // the defect's delta exceeds the correct floor — this is the red
+            expect(defectWorst).toBeGreaterThan(correctFloor);
+
+            // and the fix: visible as reference, authored as output, tol from visible
+            const fixTol = resolutionFloor(toForcePoints(visible), step);
+            const fixKeys = carryForce(
+                visible,
+                authored,
+                mapToDist,
+                Domain.Distance,
+                fixTol,
+                step.ds,
+            );
+            const fixAfter = toForcePoints(fixKeys);
+
+            let fixWorst = 0;
+            for (let i = 0; i <= step.edges; i++) {
+                const t = Math.min(duration, i * step.ds);
+                const s = interp(tab.t, tab.arc, t);
+                fixWorst = Math.max(
+                    fixWorst,
+                    Math.abs(sampleForce(fixAfter, s) - sampleForce(before, t)),
+                );
+            }
+            // the fix's delta is inside the floor
+            expect(fixWorst).toBeLessThanOrEqual(correctFloor);
+        }
+    });
+
+    // (d) forward-direction byte-identity: a freshly authored section has no carried keys, so
+    // `visible === authored` there, and the reference change must move the forward flip not at all.
+    // Measured by calling carryForce both ways (visible vs authored as reference) and comparing the
+    // resulting curves — the two are byte-identical because the reference and output sets are the
+    // same set when nothing is carried.
+    test("(d) forward-direction byte-identity: visible === authored, reference change moves nothing", () => {
+        for (const [len, pts] of [DIVE_AND_RECOVER, MULTI_G_PULL]) {
+            const { state, eid, sec } = forceTrack(len, pts);
+            const tab = table(eid);
+            const step = resolveStep(len, DS_NOMINAL);
+
+            const snaps = keySnaps(state, sec);
+            // a freshly authored section has no carried keys
+            expect(snaps.every((p) => !p.carried)).toBe(true);
+            const authored = snaps.filter((p) => !p.carried);
+            const visible = snaps;
+            // visible === authored (same content, no carried keys)
+            expect(toForcePoints(visible)).toEqual(toForcePoints(authored));
+
+            const mapToTime = (s: number) => ({
+                value: interp(tab.arc, tab.t, s),
+                slope: slopeAtDist(tab, s),
+            });
+            const tol = resolutionFloor(toForcePoints(authored), step);
+
+            const fromVisible = toForcePoints(
+                carryForce(visible, authored, mapToTime, Domain.Time, tol, step.ds),
+            );
+            const fromAuthored = toForcePoints(
+                carryForce(authored, authored, mapToTime, Domain.Time, tol, step.ds),
+            );
+
+            // byte-identical curves: same key count, same positions, same g values
+            expect(fromVisible.length).toBe(fromAuthored.length);
+            for (let i = 0; i < fromVisible.length; i++) {
+                expect(fromVisible[i].s).toBe(fromAuthored[i].s);
+                expect(fromVisible[i].g).toBe(fromAuthored[i].g);
+            }
         }
     });
 });

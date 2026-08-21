@@ -701,7 +701,7 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   a stall collapses distinct times onto one arclength by construction; undo is the only way back.
   **The keys are converted; the curve BETWEEN them is CARRIED.** Every keyframe lands exactly — the
   conversion IS the table lookup, so a converted position can't miss it — but a cubic bezier
-  authored in `(s, g)` is not a cubic bezier in `(t, g)` under the nonlinear arc↔time map, and an
+  in `(s, g)` is not a cubic bezier in `(t, g)` under the nonlinear arc↔time map, and an
   explicit handle's Δs scaling by the local slope is only that map's first-order term. `carryForce`
   completes it: each segment is subdivided until the target-unit shape matches the source-unit shape
   inside the march's own **resolution floor** — `resolutionFloor`, the largest |Δg| between two

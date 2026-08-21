@@ -27,7 +27,7 @@
  * the row on the same reading.
  *
  * **The keys are converted; the curve between them is CARRIED.** The table places every keyframe
- * exactly, but a cubic bezier authored in `(s, g)` is not a cubic bezier in `(t, g)` under a
+ * exactly, but a cubic bezier in `(s, g)` is not a cubic bezier in `(t, g)` under a
  * nonlinear map, so the shape between keys would reshape. `carryForce` subdivides each segment until
  * the target-unit shape matches the source-unit shape inside the march's own resolution floor
  * (`resolutionFloor`: the largest |Δg| one nominal march edge carries — computed per section at
@@ -266,11 +266,13 @@ function carriedTangent(slope: number, spanIn: number, spanOut: number): ForceTa
 
 /** carry an authored force curve across a domain flip by tagged subdivision.
  *
- *  `points` are the AUTHORED keys in the source unit (the caller has already dropped the previous
- *  flip's carried ones); `map` is the source→target station map plus the local `dArc/dt` there;
- *  `tol` the resolution-floor bound the shape must land inside; `edge` one nominal march edge in
- *  the source unit. Returns the target-unit key list — the converted authored keys plus the
- *  inserted ones, each tagged `carried`.
+ *  `reference` is the section's VISIBLE key set in the source unit (authored keys plus any the
+ *  previous flip's carry inserted) — the curve the subdivision fits against. `output` is the
+ *  AUTHORED keys alone (the caller has already dropped the previous flip's carried ones) — the
+ *  key set the target unit's own subdivision is written into. `map` is the source→target station
+ *  map plus the local `dArc/dt` there; `tol` the resolution-floor bound the shape must land inside,
+ *  derived from `reference`; `edge` one nominal march edge in the source unit. Returns the
+ *  target-unit key list — the converted authored keys plus the inserted ones, each tagged `carried`.
  *
  *  Every segment is measured on its own final geometry: the error is the target curve's g at the
  *  mapped station against the source curve's g at the source station, probed at march resolution.
@@ -332,15 +334,16 @@ function carriedTangent(slope: number, spanIn: number, spanOut: number): ForceTa
  *  table holds it in ({@link STALL_SLACK}), which is the rule `track.stationTaken` already applies to
  *  a station equality: compare on the value as the store holds it, not as f64 computes it. */
 export function carryForce(
-    points: readonly KeySnap[],
+    reference: readonly KeySnap[],
+    output: readonly KeySnap[],
     map: (s: number) => Converted,
     target: Domain,
     tol: number,
     edge: number,
 ): KeySnap[] {
-    const source = points.map(asPoint);
+    const source = reference.map(asPoint);
     const bound = tol + storeQuantum(source);
-    const nodes: Node[] = points.map((key) => {
+    const nodes: Node[] = output.map((key) => {
         const { value, slope } = map(key.s);
         // an explicit handle's Δs rides the axis: dt/ds = 1/v to time, ds/dt = v back.
         const scale = target === Domain.Time ? 1 / slope : slope;
@@ -555,7 +558,7 @@ export function convertFailed(e: unknown): { notice: string; detail: string } {
  *
  * **The authored curve is CARRIED across the flip, not merely re-addressed.** Every keyframe lands
  * exactly where the table says it should — the conversion IS that table, so a converted position is
- * only ever a lookup — but a cubic bezier authored in `(s, g)` is not carried to a cubic bezier in
+ * only ever a lookup — but a cubic bezier in `(s, g)` is not carried to a cubic bezier in
  * `(t, g)` by this nonlinear arc↔time map, so the curve BETWEEN keys would reshape (measured before
  * this carry: 0.0497 g on a 40 m dive-and-recover, 2.2× what the march can resolve). `carryForce`
  * closes that: the segment is subdivided until the target-unit shape matches the source-unit shape
@@ -584,15 +587,17 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
     const converted: SectionSnapshot[] = snaps.map((snap) => {
         const w = windows.get(snap.id);
         if (!w) return snap;
-        // the previous flip's inserted keys are dropped rather than re-carried: the authored set is
-        // what the target unit's own subdivision is computed from.
+        // the previous flip's inserted keys are dropped from the OUTPUT rather than re-carried;
+        // the VISIBLE set (authored + carried) is the fit REFERENCE the subdivision is computed
+        // against — separating the two roles is the BL-2 repair (§ Locked decision › Domain fidelity).
         const authored = snap.points.filter((p) => !p.carried);
+        const visible = snap.points;
         const step = resolveStep(snap.length, sourceNominal);
-        const tol = resolutionFloor(authored.map(asPoint), step);
+        const tol = resolutionFloor(visible.map(asPoint), step);
         return {
             ...snap,
             length: Math.max(floor, at(m, w, snap.length).value),
-            points: carryForce(authored, (s) => at(m, w, s), target, tol, step.ds),
+            points: carryForce(visible, authored, (s) => at(m, w, s), target, tol, step.ds),
             // a strip's `start`/`end` are positions on the same axis a keyframe's `s` is —
             // each endpoint converts independently through the section's own window, same as a
             // keyframe. `value` (m/s) is domain-independent and rides through unconverted.
