@@ -82,6 +82,7 @@ export const HBAND_TOP = 46;
 export const HBAND_H = 8;
 export const CHART_TOP = HBAND_TOP + HBAND_H; // Timeline.svelte
 export const CHART_BOT_PAD = 8; // BOT_PAD — Timeline.svelte
+export const LEFT_GUT = 44; // Timeline.svelte — the chart's left inset, s=0's own screen x
 // The viewport's default framing centers the world origin in the region above the dock, not in the
 // canvas — src/view.ts DOCK_RESERVE = DOCK_HEIGHT (240) + DOCK_INSET (16), read by App.svelte.
 export const DOCK_RESERVE = 256;
