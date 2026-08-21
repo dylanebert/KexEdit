@@ -116,6 +116,14 @@ test("tool rail shot", async ({ page, boot }) => {
     await angleField.fill("0.4");
     await angleField.press("Enter");
     await expect(angleField).toHaveValue(SNAP_DEG_MIN);
+    // one frame between the two clamps: the field is CONTROLLED, so the correction above is a
+    // store write the per-RAF projection paints back into the input. `toHaveValue` proves the
+    // write-back arrived once, not that another flush isn't pending — and a pending flush lands
+    // ON TOP of the next `fill`, so the Enter after it commits the OLD value. Measured once in 9
+    // full runs at `KEX_WORKERS=1` (0 in 10 isolated): the ceiling assert read "1", the floor's
+    // own clamped value, with "400" never in the field at all. Awaiting frames in the page is the
+    // sanctioned wait for a tick-projected value (`kex2d-harness.md`, the settle idiom).
+    await frames(page, 1);
     await angleField.fill("400");
     await angleField.press("Enter");
     await expect(angleField).toHaveValue(SNAP_DEG_MAX);

@@ -1132,8 +1132,21 @@ test("pin mode flow", async ({ page, boot }) => {
     await page.keyboard.press("ArrowUp");
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
     expect(await sandboxDepth()).toBe(3); // one press = one sandbox entry
+    // …and the SECOND press needs a frame between it and the first, because the force nudge
+    // resolves its base value from `forcePts` — the per-RAF PROJECTION, not the authored `Force`
+    // component (`Timeline.svelte`'s `onKey`, the `nudgeForces(members, ds, dg)` arm). Back to back,
+    // press 2 reads press 1's pre-value, rounds to the same grid point, writes the value already
+    // there, and `commit` records a no-op: measured g held at 0.05 with `sandboxDepth` stuck at 3
+    // for 40 further frames (never late — absorbed), 1-in-4 to 7-in-8 of runs depending on pace,
+    // at `KEX_WORKERS=1`. That is the same class the GEO nudge already fixed by resolving from
+    // authored state (kex2d/AGENTS.md, Append/Delete: "back-to-back presses no longer need a settle
+    // between them to land correctly") and it is a PRODUCT defect on the force side, reported not
+    // repaired here — this flow's subject is the sandbox, so it waits the frame the app needs and
+    // then PINS the second entry, which is the positive control the vacuous
+    // `g !== preMode[2].g` poll below never was (it is already true from press 1).
+    await frames(page, 1);
     await page.keyboard.press("ArrowUp");
-    await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
+    await expect.poll(sandboxDepth).toBe(4); // two presses = two entries — press 2 really landed
     await solveBtn.click();
     await expect.poll(pinning, { timeout: 30_000 }).toBe(false); // Solve confirms AND closes
     await expect.poll(landing).toBe(true); // the paced landing raised — the feedback
@@ -1244,14 +1257,24 @@ test("Convert/Pin/Solve/Reset keyboard bindings flow", async ({ page, boot }) =>
     const kinds = () => kexCall(page, "sectionKinds");
     const pinning = () => kexCall(page, "pinning");
     const undoDepth = () => kexCall(page, "undoDepth");
+    const tTotal = () => kexCall(page, "tTotal");
     const scrim = page.locator(".scrim");
     const panel = page.locator(".pinpanel");
 
     await kexCall(page, "seedForceBump"); // the boot section: force, 5 keys, all free (≥ MIN_FREE)
+    const tSeeded = await tTotal();
     await kexCall(page, "append", 0); // SectionKind.Geo — `D` needs a live Convert target too
     await expect.poll(async () => (await kinds()).join(",")).toBe("1,0");
     await frameTimeline(page);
-    await frames(page, 2); // let the appended section's bake catch up (`canSolve` needs `bakeLive`)
+    // every key below is gated on `bakeLive` (`track.ts`: the bake's hash equals the AUTHORED
+    // hash), which the append invalidates until the bake actually re-runs — and a key that arrives
+    // before it is a silent no-op, not a late one: `D` simply opens no modal. A fixed frame count
+    // stood here and read as enough at ~700 ms per isolated run, but the appended section being IN
+    // the bake is a CONDITION (`kex2d-harness.md`: a count is never bake-readiness, and the honest
+    // wait is the bake output changing) — the same `tTotal` condition the wash flow's own append
+    // uses. Measured once in 9 full runs at `KEX_WORKERS=1`: `.scrim` never appeared after `d`.
+    await expect.poll(tTotal).not.toBe(tSeeded); // the appended section is IN the bake
+    await frames(page, 1);
 
     // ── `D` — Convert on the geo section: select it, press `D`, the same modal a click on the
     // row opens (`invoked solve flow`'s own step 2) comes up; Escape cancels, the row's own
@@ -1418,7 +1441,22 @@ test("force cut flow", async ({ page, boot }) => {
     // every ORIGINAL keyframe survives with its exact authored value: unchanged on the head,
     // rebased (s -= cut.at) on the tail — a corrupted, dropped, or repositioned point fails
     // this even though sectionCount/undoDepth alone would have passed it.
-    const post = await forceU();
+    //
+    // `forceU` reads `forcePts` — the timeline's per-RAF PROJECTION of the keyframes, not the
+    // authored components — so it lags the Cut that `sectionCount`, `sectionLengths` and
+    // `undoDepth` (direct ECS reads, all polled above) already report landed. Measured inside a
+    // full run at `KEX_WORKERS=1`: `sectionCount` 2 and `lens` [8.3937, 15.6063] with `forceU`
+    // still answering the five PRE-cut keys, every one on the head section and no boundary key at
+    // all — 2 of 3 full runs, 0 of 6 in isolation, so a bare read here is a pace lottery rather
+    // than load. Poll the projection (the settle idiom: a condition, never a sleep) and assert on
+    // exactly the value the poll accepted.
+    let post: Awaited<ReturnType<typeof forceU>> = [];
+    await expect
+        .poll(async () => {
+            post = await forceU();
+            return post.length;
+        })
+        .toBe(pre.length + 2); // every original keyframe, plus the two new boundary keys
     const head = bySVal(post.filter((p) => p.section === headId));
     const tail = bySVal(post.filter((p) => p.section === tailId));
     const headOriginal = pre.filter((p) => p.s < cut.at);

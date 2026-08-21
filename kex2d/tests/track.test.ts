@@ -3,6 +3,7 @@ import { State } from "@dylanebert/shallot";
 import {
     addNode,
     appendSection,
+    applyDomain,
     authoredHash,
     BakeSystem,
     bakeLive,
@@ -48,6 +49,10 @@ import {
     MIN_FORCE_LEN,
     minForceExtent,
     nextForce,
+    clearForceTangentSide,
+    destroyForce,
+    forceCarried,
+    restoreForcePoint,
     readProvenance,
     reheadOnDrag,
     removeTrailingHandle,
@@ -73,6 +78,7 @@ import {
     stationTaken,
     splitForce,
     seedTangent,
+    setForceCarried,
     setForceEase,
     setForcePoint,
     setForceTangent,
@@ -3473,5 +3479,336 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(specs?.[0].start).toBe(Math.round(6 / step.ds));
         expect(specs?.[0].end).toBe(Math.round(18 / step.ds));
         expect(specs?.[0].value).toBe(5);
+    });
+});
+
+// `Force.carried` — the domain-carry provenance bit (D1). A conversion-inserted keyframe is tagged
+// so the reverse flip can DROP it exactly instead of simplifying the denser store heuristically,
+// and every live-authoring writer clears the bit, so a key the person has edited is authored and
+// survives the next flip. The carry itself is `domain.ts`'s (`tests/domain.test.ts`); what lives
+// here is the per-key field's own threading: the row read, the snapshot pair, the content hash,
+// `applyDomain`'s plant/drop, and the writers that clear — live-authoring AND structural. A Cut or a
+// Join that writes a key's station, handles or easing tag is an edit under the same law, so it
+// promotes that key to authored instead of leaving a tagged key holding the document's own new
+// structure; the keys a Cut merely REBASES onto the tail's axis keep their bit, since a rebase
+// re-expresses one station in a new frame and writes no shape.
+describe("force keyframe provenance (Force.carried, D1)", () => {
+    /** a force section with two authored keys, baked. */
+    function forceSec(): { state: State; eid: number; sec: number } {
+        const { state, eid, sec } = track();
+        convertSection(state, sec); // → force, extent EXTEND_DIST
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, EXTEND_DIST, 0.8);
+        state.step(0);
+        return { state, eid, sec };
+    }
+
+    test("an authored key reads carried false; a planted one reads true", () => {
+        const { state, sec } = forceSec();
+        const authored = sectionForces(state, sec);
+        expect(authored.length).toBeGreaterThan(1);
+        expect(authored.some((p) => p.carried)).toBe(false);
+        expect(authored.every((p) => !forceCarried(state, p.id))).toBe(true);
+
+        spawnForce(state, sec, 9001, 5, 0.9, undefined, undefined, true);
+        expect(forceCarried(state, 9001)).toBe(true);
+        expect(sectionForces(state, sec).find((p) => p.id === 9001)?.carried).toBe(true);
+    });
+
+    test("the snapshot pair round-trips the bit byte-identically, both values", () => {
+        const { state, sec } = forceSec();
+        spawnForce(state, sec, 9002, 5, 0.9, undefined, undefined, true);
+        const snap = snapshotSection(state, sec);
+        expect(snap.points.filter((p) => p.carried).map((p) => p.id)).toEqual([9002]);
+        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
+        restoreSection(state, snap);
+        expect(sectionForces(state, sec).map((p) => ({ id: p.id, carried: p.carried }))).toEqual(
+            snap.points.map((p) => ({ id: p.id, carried: p.carried })),
+        );
+    });
+
+    test("the bit rides the content hash like any other per-key field", () => {
+        // red before the hash carried it: clearing a tag left `bakeOut.hash` unchanged, so a
+        // provenance stamp taken before the edit would certify a document whose next reverse flip
+        // behaves differently (it keeps the key instead of dropping it).
+        const { state, eid, sec } = forceSec();
+        spawnForce(state, sec, 9003, 5, 0.9, undefined, undefined, true);
+        state.step(0);
+        const tagged = bakeOut.get(eid)?.hash;
+        const authoredTagged = authoredHash(state);
+        // the bit ALONE moves: `setForceCarried` writes no station, value, easing tag or handle, so
+        // the hash movement below is attributable to nothing else. (This arm used to clear through
+        // `setForcePoint(9003, 5, 0.9)` — the same numbers — which is exactly the zero-geometry
+        // promotion that writer no longer performs.)
+        setForceCarried(state, 9003, false);
+        expect(forceCarried(state, 9003)).toBe(false);
+        expect(authoredHash(state)).not.toBe(authoredTagged);
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).not.toBe(tagged);
+        // restoring the bit reproduces the earlier hash exactly.
+        restoreForcePoint(state, {
+            section: sec,
+            id: 9003,
+            s: 5,
+            g: 0.9,
+            ease: forceEase(state, 9003),
+            carried: true,
+        });
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).toBe(tagged);
+    });
+
+    test("every live-authoring writer clears the bit; the snapshot restore does not", () => {
+        const { state, sec } = forceSec();
+        const plant = (id: number): void => {
+            destroyForce(state, id);
+            spawnForce(
+                state,
+                sec,
+                id,
+                5,
+                0.9,
+                undefined,
+                { mode: TangentMode.Aligned, in: { ds: -1, dg: 0 }, out: { ds: 1, dg: 0 } },
+                true,
+            );
+            expect(forceCarried(state, id)).toBe(true);
+        };
+        plant(9010);
+        setForcePoint(state, 9010, 6, 0.9);
+        expect(forceCarried(state, 9010)).toBe(false);
+
+        plant(9010);
+        setForceEase(state, 9010, Easing.Linear);
+        expect(forceCarried(state, 9010)).toBe(false);
+
+        plant(9010);
+        setForceTangent(state, 9010, null);
+        expect(forceCarried(state, 9010)).toBe(false);
+
+        plant(9010);
+        clearForceTangentSide(state, 9010, "out");
+        expect(forceCarried(state, 9010)).toBe(false);
+
+        // the byte-identical paths must NOT clear it: undo of an edit has to put the bit back.
+        plant(9010);
+        const st = forcePointState(state, 9010);
+        if (!st) throw new Error("no point state");
+        expect(st.carried).toBe(true);
+        setForcePoint(state, 9010, 6, 0.9);
+        restoreForcePoint(state, st);
+        expect(forceCarried(state, 9010)).toBe(true);
+    });
+
+    test("a ZERO-GEOMETRY write promotes nothing — only a write that moves the key clears the bit", () => {
+        // Red before this repair, on every arm below: each writer cleared `Force.carried`
+        // unconditionally, and `forceMove`→`applyDrag` writes on EVERY pointermove — so pointer
+        // jitter inside one quantized station, or a click that lands a single no-move write,
+        // promoted a carried key. The recorded entry's only content was the provenance bit
+        // (`sameForcePoint` sees the bit move and correctly records), so the person's undo stack grew
+        // an entry that undoes a change they never made, and the next reverse flip kept an invented
+        // key. The comparison is at the store's own f32 precision, on the write that will LAND.
+        const { state, sec } = forceSec();
+        const plant = (id: number, s: number, g: number): void => {
+            destroyForce(state, id);
+            spawnForce(
+                state,
+                sec,
+                id,
+                s,
+                g,
+                Easing.Linear,
+                { mode: TangentMode.Aligned, in: { ds: -1, dg: 0 }, out: { ds: 1, dg: 0 } },
+                true,
+            );
+            expect(forceCarried(state, id)).toBe(true);
+        };
+
+        plant(9030, 5, 0.9);
+        setForcePoint(state, 9030, 5, 0.9); // the identical numbers — a jitter frame
+        expect(forceCarried(state, 9030)).toBe(true);
+        setForcePoint(state, 9030, 5.5, 0.9); // a real move, in `s` alone
+        expect(forceCarried(state, 9030)).toBe(false);
+
+        plant(9031, 5, 0.9);
+        setForcePoint(state, 9031, 5, 0.95); // a real move, in `g` alone
+        expect(forceCarried(state, 9031)).toBe(false);
+
+        // an `s` the station guard REFUSES cannot clear the bit either: the write does not land, so
+        // there is no geometry in it (the `g` half is unchanged here, or it would be a real move).
+        plant(9032, 5, 0.9);
+        plant(9033, 7, 0.9);
+        setForcePoint(state, 9033, 5, 0.9); // 5 is taken by 9032 — refused per-axis
+        expect(sectionForces(state, sec).find((p) => p.id === 9033)?.s).toBe(7);
+        expect(forceCarried(state, 9033)).toBe(true);
+
+        // the three sibling writers, treated the same way for the same reason.
+        plant(9034, 5, 0.9);
+        setForceEase(state, 9034, Easing.Linear); // the tag it already carries
+        expect(forceCarried(state, 9034)).toBe(true);
+        setForceEase(state, 9034, Easing.Cubic);
+        expect(forceCarried(state, 9034)).toBe(false);
+
+        plant(9035, 5, 0.9);
+        setForceTangent(state, 9035, {
+            mode: TangentMode.Aligned,
+            in: { ds: -1, dg: 0 },
+            out: { ds: 1, dg: 0 },
+        }); // the handles it already holds — a drag back to its origin
+        expect(forceCarried(state, 9035)).toBe(true);
+        setForceTangent(state, 9035, null);
+        expect(forceCarried(state, 9035)).toBe(false);
+
+        plant(9036, 5, 0.9);
+        clearForceTangentSide(state, 9036, "out");
+        expect(forceCarried(state, 9036)).toBe(false); // the side WAS explicit — a real clear
+        plant(9037, 5, 0.9);
+        clearForceTangentSide(state, 9037, "out");
+        clearForceTangentSide(state, 9037, "in"); // the in side is still explicit here
+        expect(forceCarried(state, 9037)).toBe(false);
+        spawnForce(
+            state,
+            sec,
+            9038,
+            9,
+            0.9,
+            Easing.Cubic,
+            { mode: TangentMode.Aligned, in: { ds: -1, dg: 0 } },
+            true,
+        );
+        clearForceTangentSide(state, 9038, "out"); // already derived: nothing to write
+        expect(forceCarried(state, 9038)).toBe(true);
+    });
+
+    test("setForceCarried is the one writer that changes droppability without writing shape", () => {
+        // the law's non-writer arm needs a writer of its own: `history.deleteForces` promotes the
+        // surviving carried keys of a section whose AUTHORED set it just changed, and its undo puts
+        // the bits back — neither direction writes a station, a value, an easing tag or a handle.
+        const { state, sec } = forceSec();
+        spawnForce(state, sec, 9040, 5, 0.9, Easing.Linear, undefined, true);
+        const before = forcePointState(state, 9040);
+        setForceCarried(state, 9040, false);
+        expect(forceCarried(state, 9040)).toBe(false);
+        setForceCarried(state, 9040, true);
+        expect(forcePointState(state, 9040)).toEqual(before); // every other column untouched
+        setForceCarried(state, 999999, false); // a gone id is a no-op, not a throw
+    });
+
+    test("applyDomain plants the snapshot's new keys and drops the ones it omits", () => {
+        // the carry's write path: `domain.convertDomain` computes a converted key SET (the authored
+        // keys plus the inserted ones, minus the previous flip's), so `applyDomain` is no longer a
+        // position-only write. What survives of its narrow claim is that no GEO entity is touched.
+        const { state, sec } = forceSec();
+        const before = snapshotSection(state, sec);
+        const planted = {
+            ...before,
+            points: [
+                ...before.points.map((p) => ({ ...p, s: p.s / 2 })),
+                { id: 9020, s: 3, g: 0.95, ease: Easing.Cubic, carried: true },
+            ],
+        };
+        const ids = (): number[] =>
+            sectionForces(state, sec)
+                .map((p) => p.id)
+                .sort((x, y) => x - y);
+        applyDomain(state, [planted]);
+        expect(ids()).toEqual([...before.points.map((p) => p.id), 9020].sort((x, y) => x - y));
+        expect(forceCarried(state, 9020)).toBe(true);
+
+        applyDomain(state, [before]); // the omitted key is dropped, not left behind
+        expect(ids()).toEqual(before.points.map((p) => p.id).sort((x, y) => x - y));
+        expect(sectionForces(state, sec).every((p) => !p.carried)).toBe(true);
+    });
+
+    // ── the structural writers ─────────────────────────────────────────────────────────────
+    //
+    // Witnessed RED before this repair, on all four arms below: every one of these keys came out of
+    // the op still tagged, and the end-to-end consequence is in `tests/domain.test.ts` ("a Cut at a
+    // carried key's station…") — flip, Cut, flip back, and the head was left holding a single
+    // keyframe with the authored dive flattened to 1 g while the tail kept an invented key that
+    // nothing can ever drop.
+
+    /** a bare force section of `len` carrying the given keys; `carried` keys are planted through
+     *  `spawnForce` (the conversion's own writer), authored ones through `createForcePoint`. Ids are
+     *  the caller's so an arm can name the key it is about after the op has renumbered sections. */
+    function keyed(
+        len: number,
+        keys: readonly { id: number; s: number; g: number; carried: boolean }[],
+    ): { state: State; sec: number } {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
+        setSectionLength(state, sec, len);
+        for (const k of keys)
+            spawnForce(state, sec, k.id, k.s, k.g, undefined, undefined, k.carried);
+        return { state, sec };
+    }
+
+    /** every live key's `(id, carried)` across the whole track, ascending by id. */
+    const tags = (state: State): [number, boolean][] =>
+        sections(state)
+            .flatMap((sec) => sectionForces(state, sec.id))
+            .map((p): [number, boolean] => [p.id, p.carried])
+            .sort((x, y) => x[0] - y[0]);
+
+    test("a Cut ON a carried key promotes it, and the boundary key it duplicates is authored", () => {
+        const { state, sec } = keyed(24, [
+            { id: 8001, s: 0, g: 1, carried: false },
+            { id: 8002, s: 12, g: 0.4, carried: true }, // the landmark the cut lands on
+            { id: 8003, s: 24, g: 1, carried: false },
+        ]);
+        const tail = splitForce(state, sec, 12);
+        if (tail === null) throw new Error("split refused");
+        // the landmark is authored now — the cut promoted the boundary it cut on — and so is the
+        // duplicate planted at the tail's entry (`createForcePoint` tags 0).
+        expect(forceCarried(state, 8002)).toBe(false);
+        expect(sectionForces(state, tail).map((p) => p.carried)).toEqual([false, false]);
+        expect(tags(state).filter(([, c]) => c)).toEqual([]);
+    });
+
+    test("a mid-segment Cut promotes the two keys whose handles it rewrites, and only those", () => {
+        const { state, sec } = keyed(24, [
+            { id: 8011, s: 0, g: 1, carried: false },
+            { id: 8012, s: 6, g: 0.6, carried: true }, // brackets the cut — handles rewritten
+            { id: 8013, s: 12, g: 0.5, carried: true }, // …and the other side
+            { id: 8014, s: 18, g: 0.9, carried: true }, // purely REBASED onto the tail's axis
+        ]);
+        const tail = splitForce(state, sec, 9);
+        if (tail === null) throw new Error("split refused");
+        expect(forceCarried(state, 8012)).toBe(false);
+        expect(forceCarried(state, 8013)).toBe(false);
+        // the rebase carve-out: 8014's station changed frame, its shape did not, and it is exactly
+        // as droppable as it was. A blanket "any station write clears" would author it here.
+        expect(forceCarried(state, 8014)).toBe(true);
+        expect(sectionForces(state, tail).find((p) => p.s === 9)?.carried).toBe(true); // 8014 at 18-9
+    });
+
+    test("either flat Cut branch promotes the key its planted boundary value comes from", () => {
+        // past the last keyframe: the tail opens on the held value, which is `a`'s.
+        const past = keyed(24, [
+            { id: 8021, s: 0, g: 1, carried: false },
+            { id: 8022, s: 6, g: 0.5, carried: true },
+        ]);
+        expect(splitForce(past.state, past.sec, 12)).not.toBeNull();
+        expect(forceCarried(past.state, 8022)).toBe(false);
+
+        // before the first keyframe: the head is flat at `b`'s value up to the boundary.
+        const before = keyed(24, [{ id: 8031, s: 12, g: 0.5, carried: true }]);
+        expect(splitForce(before.state, before.sec, 6)).not.toBeNull();
+        expect(forceCarried(before.state, 8031)).toBe(false);
+    });
+
+    test("a Join that MERGES a coincident boundary pair authors the surviving key", () => {
+        const { state, sec } = keyed(12, [
+            { id: 8041, s: 0, g: 1, carried: false },
+            { id: 8042, s: 12, g: 0.7, carried: true }, // A's tail — survives the merge, rewritten
+        ]);
+        const b = createSection(state, 1, SectionKind.Force, 12);
+        spawnForce(state, b, 8043, 0, 0.7, undefined, undefined, true); // B's head — destroyed
+        spawnForce(state, b, 8044, 12, 1, undefined, undefined, true); // rebased only
+        expect(joinNext(state, sec)).toBe(true);
+        expect(forceCarried(state, 8042)).toBe(false); // ease + both handles rewritten by the merge
+        expect(sectionForces(state, sec).map((p) => p.id)).not.toContain(8043);
+        expect(forceCarried(state, 8044)).toBe(true); // rebased only, still droppable
     });
 });

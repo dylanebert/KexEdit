@@ -159,7 +159,13 @@ function writeTangent(eid: number, tan: Tangent | undefined): void {
  *  stored state" convention). `tmode` mirrors geo's `Handle.tmode`: 0 = no explicit
  *  handles (derive from `ease`), else a `TangentMode` for the summoned inner layer, in
  *  which case `tin`/`tout` hold the explicit in/out handle **offsets** ((Δs, Δg) as
- *  x/y) the bake substitutes for the derived tangents. */
+ *  x/y) the bake substitutes for the derived tangents. `carried` is the provenance
+ *  bit: 1 marks a keyframe a **domain conversion inserted** to carry the authored
+ *  curve's shape into the other unit, 0 an authored one. It is what makes the reverse
+ *  flip exact — `domain.convertDomain` drops every carried key before converting,
+ *  instead of simplifying the denser store heuristically — and every live-authoring
+ *  writer clears it, so a key the person edits becomes authored and stops being
+ *  droppable. */
 export const Force = {
     section: sparse(u32),
     id: sparse(u32),
@@ -169,6 +175,7 @@ export const Force = {
     tmode: sparse(u32),
     tin: sparse(vec2),
     tout: sparse(vec2),
+    carried: sparse(u32),
 };
 
 /** the easing tag a fresh force keyframe gets — the FVD++/Planet-Coaster S-transition
@@ -1403,6 +1410,8 @@ export interface ForceRow {
     id: number;
     s: number;
     g: number;
+    /** whether a domain conversion inserted this keyframe (`Force.carried`). */
+    carried: boolean;
 }
 
 /** every force point on a section, sorted by arclength — the order `forceProfile`
@@ -1417,6 +1426,7 @@ export function sectionForces(ecs: State, sectionId: number): ForceRow[] {
             id: Force.id.get(eid),
             s: Force.s.get(eid),
             g: Force.g.get(eid),
+            carried: Force.carried.get(eid) !== 0,
         });
     }
     rows.sort((a, b) => a.s - b.s);
@@ -1435,6 +1445,16 @@ export function forceAt(ecs: State, id: number): number | null {
 // monotone id source — never reused, even after a delete (the section-id rationale).
 let nextForceId = 0;
 
+/** mint a force-keyframe id without creating the entity — what a PURE transform that has to
+ *  name the keyframes it is about to plant needs (`domain.convertDomain` computes the whole
+ *  converted store, carried keys included, before anything is written). Ids are monotone and
+ *  never reused, so an id minted for a transform that then rejects is simply skipped.
+ *
+ * @example const id = allocForceId(); // then plant it through `applyDomain`'s snapshot */
+export function allocForceId(): number {
+    return nextForceId++;
+}
+
 /** author a new force point on a section at `(s, g)` with a fresh stable id — the
  *  create path. returns the id (undo/redo addresses points by id, not eid). `ease`/
  *  `tan` default to the "no stored state" convention (a fresh keyframe); `splitForce`
@@ -1449,13 +1469,14 @@ export function createForcePoint(
 ): number {
     const eid = ecs.create();
     ecs.add(eid, Force);
-    const id = nextForceId++;
+    const id = allocForceId();
     Force.section.set(eid, sectionId);
     Force.id.set(eid, id);
     Force.s.set(eid, s);
     Force.g.set(eid, g);
     Force.ease.set(eid, ease);
     writeForceTangent(eid, tan);
+    Force.carried.set(eid, 0);
     return id;
 }
 
@@ -1471,6 +1492,7 @@ export function spawnForce(
     g: number,
     ease: Easing = FORCE_EASE_DEFAULT,
     tan?: ForceTangent,
+    carried = false,
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Force);
@@ -1480,6 +1502,7 @@ export function spawnForce(
     Force.g.set(eid, g);
     Force.ease.set(eid, ease);
     writeForceTangent(eid, tan);
+    Force.carried.set(eid, carried ? 1 : 0);
 }
 
 /** destroy a force point by stable id (no-op if already gone). */
@@ -1500,6 +1523,13 @@ export interface ForcePointState {
     g: number;
     ease: Easing;
     tangent?: ForceTangent;
+    /** the conversion-provenance bit (`Force.carried`) — restored verbatim, since a gesture
+     *  restore must be byte-identical and undoing an edit must put the droppable bit back. Every
+     *  consumer of this row threads it: `restoreForcePoint` writes it, `history.deleteForces`'s
+     *  undo passes it to `spawnForce` (a carried key deleted and undone comes back carried, so the
+     *  next reverse flip still drops it and `authoredHash` still matches the pre-delete document),
+     *  and {@link sameForcePoint} compares it. */
+    carried: boolean;
 }
 
 /** snapshot one force point by id, or undefined if it's gone (the gesture opens
@@ -1514,7 +1544,70 @@ export function forcePointState(ecs: State, id: number): ForcePointState | undef
         g: Force.g.get(eid),
         ease: Force.ease.get(eid) as Easing,
         tangent: readForceTangent(eid),
+        carried: Force.carried.get(eid) !== 0,
     };
+}
+
+/** field-wise equality on a force keyframe's undoable state — the gesture no-op test for every
+ *  surface that writes a force point, `sameNodes`'s per-key twin.
+ *
+ *  **Exhaustive by type, deliberately.** The comparator is a table keyed on `keyof ForcePointState`,
+ *  so adding a column to that interface without deciding how the gesture compares it fails
+ *  `bun check` rather than silently widening the no-op class. That is the defect this shape exists
+ *  to prevent: the predicate was hand-written as `a.s === b.s && a.g === b.g` while `setForcePoint`
+ *  mutated a third field (`carried`), so a drag returning to its origin cleared the provenance bit,
+ *  moved `authoredHash`, and recorded NOTHING — an un-undoable document mutation.
+ *
+ * @example if (sameForcePoint(prev, next)) return; // a click, or a nudge back to start */
+export function sameForcePoint(a: ForcePointState, b: ForcePointState): boolean {
+    for (const eq of Object.values(FORCE_POINT_EQ)) if (!eq(a, b)) return false;
+    return true;
+}
+
+/** one predicate per `ForcePointState` column — see {@link sameForcePoint} for why it is a keyed
+ *  table rather than a conjunction. `section` is compared too: a point changes section only inside a
+ *  structural op, so a gesture seeing it move is a real change, never a no-op. */
+const FORCE_POINT_EQ: {
+    [K in keyof Required<ForcePointState>]: (a: ForcePointState, b: ForcePointState) => boolean;
+} = {
+    section: (a, b) => a.section === b.section,
+    id: (a, b) => a.id === b.id,
+    s: (a, b) => a.s === b.s,
+    g: (a, b) => a.g === b.g,
+    ease: (a, b) => a.ease === b.ease,
+    tangent: (a, b) => sameForceTangent(a.tangent, b.tangent),
+    carried: (a, b) => a.carried === b.carried,
+};
+
+/** whether a domain conversion inserted this keyframe (`Force.carried`), by stable id — false
+ *  for an authored key and for an id that is gone.
+ *
+ * @example if (forceCarried(ecs, id)) // the reverse flip will drop it */
+export function forceCarried(ecs: State, id: number): boolean {
+    const eid = forceAt(ecs, id);
+    return eid !== null && Force.carried.get(eid) !== 0;
+}
+
+/** write a force keyframe's provenance bit by stable id — the one writer that changes
+ *  DROPPABILITY without writing any shape.
+ *
+ *  It exists for the law's non-writer arm: provenance is a claim about reconstructibility from the
+ *  AUTHORED set (`carryForce` fits the authored keys alone and derives its tolerance from them), so
+ *  an op that changes a section's authored set invalidates the carried keys fitted to it even when it
+ *  writes none of their columns. `history.deleteForces` is that op — destroying an authored key
+ *  leaves every carried key around it fitted to a curve the document no longer holds — and its undo
+ *  is what needs the other direction, which is why this takes a boolean instead of clearing.
+ *
+ *  Authored INSERTION is deliberately not in that class and `createForce` does not call this:
+ *  measured, an authored key added among carried ones round-trips with the curve's min/max preserved
+ *  (0.4/3.5 g both sides), because a new key constrains the curve it is added to rather than
+ *  removing the constraints the carry was fitted under.
+ *
+ * @example setForceCarried(ecs, id, false) // this key is authored data from here on */
+export function setForceCarried(ecs: State, id: number, carried: boolean): void {
+    const eid = forceAt(ecs, id);
+    if (eid === null) return;
+    Force.carried.set(eid, carried ? 1 : 0);
 }
 
 /** whether another keyframe in `sectionId` already occupies the station `s` — `exceptId` being
@@ -1556,6 +1649,21 @@ export function stationTaken(ecs: State, sectionId: number, s: number, exceptId:
  *  instead of stacking. The refusal is per-axis deliberately; refusing the whole write would
  *  freeze a diagonal drag against a neighbour it isn't trying to land on.
  *
+ *  **Editing a conversion-inserted key clears its provenance bit** (`Force.carried`, the locked
+ *  domain-carry decision): once the person has moved it, it is authored, and the next reverse flip
+ *  must keep it instead of dropping it. Every live-authoring writer below does the same.
+ *
+ *  **Only a write that actually MOVES the key clears it.** `forceMove`→`applyDrag` writes on every
+ *  pointermove, so an unconditional clear promoted a carried key on pointer jitter inside one
+ *  quantized station — zero geometry, provenance changed, and the recorded entry's only content the
+ *  bit itself. The comparison is against the columns as they are STORED (`Force.s`/`Force.g` keep the
+ *  number they were handed; {@link stationTaken} reads at f32 because it asks the different question
+ *  of whether two keys share one station) and only over the write that will actually LAND, so an `s`
+ *  the station guard refuses cannot clear the bit either. A no-move write is then a real no-op
+ *  recording nothing, which is the meaning {@link sameForcePoint}'s grant arm already claims. A drag
+ *  that really did move the key and came back still promotes it — the intermediate write moved it, and
+ *  putting the bit back at release is the gesture's question, not this writer's.
+ *
  *  This is the live-authoring writer only. `restoreForcePoint`/`spawnForce` bypass it on purpose:
  *  a snapshot restore must be byte-identical, and a document that already holds a coincident pair
  *  (authored before this guard, or planted by a structural op) has to round-trip through undo
@@ -1563,8 +1671,11 @@ export function stationTaken(ecs: State, sectionId: number, s: number, exceptId:
 export function setForcePoint(ecs: State, id: number, s: number, g: number): void {
     const eid = forceAt(ecs, id);
     if (eid === null) return;
-    if (!stationTaken(ecs, Force.section.get(eid), s, id)) Force.s.set(eid, s);
+    const lands = !stationTaken(ecs, Force.section.get(eid), s, id);
+    const moved = (lands && s !== Force.s.get(eid)) || g !== Force.g.get(eid);
+    if (lands) Force.s.set(eid, s);
     Force.g.set(eid, g);
+    if (moved) Force.carried.set(eid, 0);
 }
 
 /** write a force point's full state back — position, easing tag, and explicit handles
@@ -1576,6 +1687,7 @@ export function restoreForcePoint(ecs: State, st: ForcePointState): void {
     Force.g.set(eid, st.g);
     Force.ease.set(eid, st.ease);
     writeForceTangent(eid, st.tangent);
+    Force.carried.set(eid, st.carried ? 1 : 0);
 }
 
 /** a force keyframe's explicit handles by stable id, or undefined when it derives
@@ -1592,10 +1704,17 @@ export function forceEase(ecs: State, id: number): Easing {
 }
 
 /** set a force keyframe's easing tag (the convenient middle layer). the raw writer a
- *  history one-shot wraps; does not itself record history. */
+ *  history one-shot wraps; does not itself record history.
+ *
+ *  Clears `Force.carried` only when the tag actually changes — `setForcePoint`'s rule on this column,
+ *  for the same reason: re-picking the easing a key already carries writes no shape, so it must not
+ *  promote a carried key. */
 export function setForceEase(ecs: State, id: number, ease: Easing): void {
     const eid = forceAt(ecs, id);
-    if (eid !== null) Force.ease.set(eid, ease);
+    if (eid === null) return;
+    if (Force.ease.get(eid) === ease) return; // the tag it already carries: nothing written
+    Force.ease.set(eid, ease);
+    Force.carried.set(eid, 0);
 }
 
 /** set (or clear, with null) a force keyframe's explicit handles — the summon / handle-
@@ -1603,22 +1722,32 @@ export function setForceEase(ecs: State, id: number, ease: Easing): void {
  *  history (a gesture wraps it; `forcePointState` captures the handles for undo). */
 export function setForceTangent(ecs: State, id: number, tan: ForceTangent | null): void {
     const eid = forceAt(ecs, id);
-    if (eid !== null) writeForceTangent(eid, tan ?? undefined);
+    if (eid === null) return;
+    // `setForcePoint`'s rule on this column: a handle drag back to its origin, or a summon of the
+    // handles the key already holds, writes no shape and must not promote a carried key. The columns
+    // are still rewritten either way, so this is the provenance rule alone.
+    const moved = !sameForceTangent(readForceTangent(eid), tan ?? undefined);
+    writeForceTangent(eid, tan ?? undefined);
+    if (moved) Force.carried.set(eid, 0);
 }
 
 /** clear ONE side (in/out) of a force keyframe's explicit handles back to derived,
  *  keeping the other side. the segment-scoped Reset: choosing a preset on the leading
  *  keyframe clears the addressed segment's two bounding sides — this keyframe's out and
  *  the next keyframe's in — never the far sides, which belong to the neighbouring
- *  segments. no-op when the side is already derived. */
+ *  segments. no-op when the side is already derived — which now includes a keyframe holding the
+ *  OTHER side only, so clearing an already-derived side writes no shape and cannot promote a carried
+ *  key (`setForcePoint`'s rule on this column). */
 export function clearForceTangentSide(ecs: State, id: number, side: "in" | "out"): void {
     const eid = forceAt(ecs, id);
     if (eid === null) return;
     const tan = readForceTangent(eid);
     if (!tan) return;
+    if (tan[side] === undefined) return; // already derived: nothing written, nothing promoted
     if (side === "in") tan.in = undefined;
     else tan.out = undefined;
     writeForceTangent(eid, tan);
+    Force.carried.set(eid, 0);
 }
 
 /** the next force keyframe after `id` in its own section (ascending s), or null when
@@ -1788,7 +1917,14 @@ export interface SectionSnapshot {
     kind: SectionKind;
     length: number;
     nodes: NodeState[];
-    points: { id: number; s: number; g: number; ease: Easing; tangent?: ForceTangent }[];
+    points: {
+        id: number;
+        s: number;
+        g: number;
+        ease: Easing;
+        tangent?: ForceTangent;
+        carried: boolean;
+    }[];
     strips: { id: number; start: number; end: number; value: number }[];
 }
 
@@ -1810,6 +1946,7 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
             g: p.g,
             ease: Force.ease.get(p.eid) as Easing,
             tangent: readForceTangent(p.eid),
+            carried: p.carried,
         })),
         strips: sectionStrips(ecs, sectionId).map((st) => ({
             id: st.id,
@@ -1834,7 +1971,8 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
-    for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
+    for (const p of snap.points)
+        spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent, p.carried);
     for (const st of snap.strips) spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
 }
 
@@ -1896,24 +2034,38 @@ export function readProvenance(sectionId: number): Provenance | undefined {
     return provenance.get(sectionId);
 }
 
-/** write a domain conversion's converted force store in place: each force section's extent,
- *  and each keyframe's position and explicit handles, addressed by stable id. Deliberately
- *  narrow — **no entity is created or destroyed**, so a live selection (which addresses a geo node
- *  by eid) survives a domain flip, and geo payloads are never touched. Everything a conversion
- *  leaves alone (`g`, the easing tag, orders, identities) is simply not written. Its input is
- *  already fully computed, so the write cannot fail part-way; `history.landDomain` is the one
- *  caller, and undo/redo goes back through the whole-track `restoreAll` pair instead. */
+/** write a domain conversion's converted force store in place: each force section's extent, each
+ *  keyframe's position and explicit handles addressed by stable id, plus the keyframe set itself
+ *  — the carry **plants** the conversion-inserted keys the target unit needs and **drops** the ones
+ *  the source unit's own flip planted (`domain.convertDomain`, the tagged-subdivision carry). Geo
+ *  payloads are still never touched and no geo node entity is created or destroyed, so a live
+ *  selection **of a geo node** (which addresses it by eid) survives a domain flip. That promise is
+ *  scoped to geo deliberately, and the carry is why: it DESTROYS force keyframes, so a selected
+ *  CARRIED key the reverse flip drops leaves `editor.forces.ids` naming an id no entity holds.
+ *  Measured as inert rather than repaired — every consumer resolves an id through `forceAt` and skips
+ *  a miss, so a Delete on the phantom records 0 entries and nothing renders — and disclosed here
+ *  because "a live selection survives" read as a whole-document claim before the carry existed.
+ *  Everything a conversion leaves alone on a surviving key (`g`, the easing tag, orders, identities)
+ *  is simply not written.
+ *  Its input is already fully computed, so the write cannot fail part-way; `history.landDomain` is
+ *  the one caller, and undo/redo goes back through the whole-track `restoreAll` pair instead. */
 export function applyDomain(ecs: State, snaps: readonly SectionSnapshot[]): void {
     for (const snap of snaps) {
         if (snap.kind !== SectionKind.Force) continue;
         const eid = sectionAt(ecs, snap.id);
         if (eid === null) continue;
         Section.length.set(eid, snap.length);
+        const keep = new Set(snap.points.map((p) => p.id));
+        for (const row of sectionForces(ecs, snap.id)) if (!keep.has(row.id)) ecs.destroy(row.eid);
         for (const p of snap.points) {
             const pointEid = forceAt(ecs, p.id);
-            if (pointEid === null) continue;
+            if (pointEid === null) {
+                spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent, p.carried);
+                continue;
+            }
             Force.s.set(pointEid, p.s);
             writeForceTangent(pointEid, p.tangent);
+            Force.carried.set(pointEid, p.carried ? 1 : 0);
         }
         // strips' `start`/`end` ride the same conversion as a keyframe's `s`; `value` (m/s) is
         // domain-independent and is left untouched.
@@ -2273,7 +2425,8 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
     for (const snap of snaps) {
         spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length);
         for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
-        for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
+        for (const p of snap.points)
+            spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent, p.carried);
         for (const st of snap.strips) spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
     }
 }
@@ -2591,7 +2744,25 @@ export function sectionCutAt(
  *  (their old derived-from-`ease` sizing was scaled to the FULL span). Both new
  *  boundary keys read Custom (`profile.custom`): the visible cost of an exact
  *  mid-segment cut. no-op outside the interior. returns the new (tail) section id,
- *  or null. */
+ *  or null.
+ *
+ *  **A cut is an edit of the keys whose geometry it writes, so it CLEARS their provenance bit**
+ *  (`Force.carried`, the locked domain-carry law — the same law that makes editing an inserted key
+ *  authored), and it promotes every key that DEFINES the boundary value it plants: the two
+ *  bracketing keys of a mid-segment cut (whose handles this rewrites), the landmark key the cut
+ *  lands ON, and the single held key either flat branch copies its planted value from. Leaving any
+ *  of them tagged makes the
+ *  reverse flip drop a key the document's structure now depends on — measured: cutting at a
+ *  carried key's station and flipping back left the head with one keyframe (a 4 g dive gone flat)
+ *  while the tail kept an invented authored key. The keys merely REBASED onto the tail's axis keep
+ *  their bit: a rebase re-expresses the same station in the new section's own frame, writes no
+ *  shape, and stays exactly as droppable as it was. **That carve-out is stated here for the Cut and
+ *  covers {@link joinNext} verbatim** — the Join performs the identical untagged rebase (`Force.s =
+ *  p.s + aLen`) on every key of the section it absorbs, for the identical reason, and writes no shape
+ *  on any of them; the two are one law with two call sites, not a Cut-only exception. Every key this
+ *  plants is authored by construction (`createForcePoint` tags 0), which is what makes a person's Cut
+ *  promote the boundary it cut on into authored data — the intended consequence of the law, not a
+ *  leak. */
 export function splitForce(ecs: State, sectionId: number, s: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null || Section.kind.get(secEid) !== SectionKind.Force) return null;
@@ -2624,6 +2795,8 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
         // landmark: `a` is already the exact boundary value — duplicate it into the
         // tail's opening keyframe, carrying its own `out` half forward (its `in` stays
         // with the head, governing the segment arriving at it); no subdivision needed.
+        // the cut promotes `a` into that shared boundary, so it is authored from here on.
+        Force.carried.set(a.eid, 0);
         const tan = readForceTangent(a.eid);
         createForcePoint(
             ecs,
@@ -2653,8 +2826,12 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
         };
         const sub = subdivide(aPoint, bPoint, s);
 
+        // both bracketing keys get their handles rewritten by the subdivision — an edit, so the
+        // provenance bit goes with it (the docblock's law).
         writeForceTangent(a.eid, { mode: TangentMode.Free, in: aTan?.in, out: sub.outA });
+        Force.carried.set(a.eid, 0);
         writeForceTangent(b.eid, { mode: TangentMode.Free, in: sub.inB, out: bTan?.out });
+        Force.carried.set(b.eid, 0);
         createForcePoint(ecs, sectionId, s, sub.g, Easing.Cubic, {
             mode: TangentMode.Free,
             in: sub.inMid,
@@ -2666,12 +2843,16 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     } else if (a !== null && b === null) {
         // the cut lands past the last keyframe: the head keeps the whole (flat-tailed)
         // shape, the tail opens on that same held value (`sampleForce`'s hold-flat rule,
-        // extended across the new boundary).
+        // extended across the new boundary). `a` is the key that DEFINES that planted
+        // boundary value, so the cut promotes it too — the law's other half.
+        Force.carried.set(a.eid, 0);
         createForcePoint(ecs, bId, 0, a.g);
     } else if (a === null && b !== null) {
         // the cut lands before the first keyframe: the head is flat at that keyframe's
         // value up to the boundary; the tail carries the (unshifted-at-this-point)
-        // authored points unchanged.
+        // authored points unchanged. `b` defines the planted boundary value, so it is
+        // promoted for the same reason.
+        Force.carried.set(b.eid, 0);
         createForcePoint(ecs, sectionId, s, b.g);
     }
 
@@ -2782,7 +2963,22 @@ function mergeTangent(
 /** join a section with the next one in the chain (same-kind only). geo appends the
  *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
  *  geo split); force concatenates the extents and rebases the neighbor's points. the
- *  neighbor is removed and downstream orders close up. returns true when joined. */
+ *  neighbor is removed and downstream orders close up. returns true when joined.
+ *
+ *  **Provenance** (`Force.carried`, the domain-carry law — argued in {@link splitForce}'s docblock):
+ *  the merge of a coincident boundary pair rewrites the surviving key's easing tag and both handles,
+ *  so that key is authored from here on. Every OTHER key of the absorbed section is rebased onto the
+ *  head's axis (`Force.s = p.s + aLen`) and **keeps its bit** — the same rebase carve-out the Cut
+ *  states, for the same reason: a rebase re-expresses one station in a new frame and writes no shape.
+ *
+ *  **"Collapsing to one keyframe is lossless" now carries a second meaning, and it is not lossless in
+ *  that one** (disclosed, not repaired): the sentence is about the sampled PROFILE, which the collapse
+ *  does preserve. It says nothing about provenance, and a Cut followed by a Join at a carried key's
+ *  station is geometry-identical to the original while provenance-changed — the key comes back
+ *  AUTHORED (the Cut promoted it), `authoredHash` differs from the pre-Cut document, and the next
+ *  reverse flip keeps a key the carry invented instead of dropping it. That is the law working as
+ *  locked (a Cut promotes the boundary it cut on), so the round trip is lossless in shape and
+ *  one-way in droppability. */
 export function joinNext(ecs: State, sectionId: number): boolean {
     const aEid = sectionAt(ecs, sectionId);
     const b = nextSection(ecs, sectionId);
@@ -2870,6 +3066,11 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             // explicit handle.
             Force.ease.set(aTail.eid, Force.ease.get(bHead.eid) as Easing);
             writeForceTangent(aTail.eid, { mode: TangentMode.Free, in: aTan?.in, out: bTan?.out });
+            // the merge REWRITES the surviving key's easing tag and both handles, so it is an edit
+            // under the domain-carry law and the merged key is authored from here on (`splitForce`'s
+            // own docblock carries the law). A merged key the reverse flip could still drop would
+            // take the join's own reconciliation with it.
+            Force.carried.set(aTail.eid, 0);
             ecs.destroy(bHead.eid);
         }
         for (const p of bForces) {
@@ -3095,6 +3296,11 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
         h += `:L${sec.length}`;
         for (const p of sectionForces(ecs, sec.id)) {
             h += `,${p.id}=${p.s}:${p.g}:${Force.ease.get(p.eid)}`;
+            // the conversion-provenance bit rides the content hash like any other per-key field:
+            // a key whose bit an edit cleared is a different document (the next reverse flip keeps
+            // it instead of dropping it), so a stamp taken before that edit must not certify the
+            // state after it. Suffixed only when set, keeping the literal narrow.
+            if (p.carried) h += "+";
             const mode = Force.tmode.get(p.eid);
             if (mode !== 0) {
                 h += `~${mode}:${Force.tin.x.get(p.eid)}:${Force.tin.y.get(p.eid)}:${Force.tout.x.get(p.eid)}:${Force.tout.y.get(p.eid)}`;

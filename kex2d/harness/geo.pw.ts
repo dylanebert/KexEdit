@@ -105,6 +105,17 @@ test("geo authoring flow", async ({ page, boot }) => {
     // is awaited after it anywhere in this file: `frameViewport` writes the camera singleton
     // synchronously, and every screen point below (`__kex.nodeAt`/`startAt`) reads that same
     // singleton — not a projected DOM value.
+    //
+    // But `f` frames the SAMPLES, and step 2's undo respawns this section's nodes, so the bake it
+    // frames is one frame behind `nodeCount` (`kex2d-harness.md`: a count is never bake-readiness).
+    // Pressing it on that evidence framed the still-EXTENDED 8-node bake and, since the camera is
+    // persistent (`view.ts` — only `f`/pan/zoom write it), that wrong framing then held for the
+    // whole flow: measured two stable cameras across runs, zoom 28.0195 (stale, 8 nodes) vs 51.8571
+    // (settled, 7), which is why one screen-space failure below reported 596.15 px in one run and
+    // 1096.02 px in another — the SAME px defect, read through two different cameras. Every shot
+    // this flow takes was flipping between the two framings with it. Wait the respawn's bake out
+    // first: `nodePoint`'s off-origin predicate is exactly that condition after a respawn.
+    await nodePoint(page, 6);
     await page.keyboard.press("f");
 
     const canvas = page.locator("canvas.viewport");
@@ -186,6 +197,11 @@ test("geo authoring flow", async ({ page, boot }) => {
     // wiring bug a source census can't see (`kex2d-map.md`'s tick-lag/wiring caveat). ──
     const beforeReset = (await poses())[6];
     const undoBeforeReset = await undoDepth();
+    // the tip's SCREEN point before the reset — the bake-landed condition the undo below is waited
+    // on (a pose poll cannot supply it; see there).
+    const tipScreenBeforeReset = await kexCall(page, "nodeAt", 6);
+    if (!tipScreenBeforeReset)
+        throw new Error("the tip has no screen point — the bake never landed");
     await page.keyboard.press("r");
     await expect
         .poll(async () => {
@@ -206,12 +222,30 @@ test("geo authoring flow", async ({ page, boot }) => {
             return Math.hypot(p[0] - beforeReset[0], p[1] - beforeReset[1]);
         })
         .toBeLessThan(1e-3);
+    // …and the BAKE came back with it, which the pose poll above does NOT establish: a reset undo
+    // restores nodes IN PLACE (`restoreNodes`), so the poses are written synchronously (that poll is
+    // true on its first evaluation) while `Handle.sample` still indexes the RESET track for a frame
+    // — and `nodePoint`'s off-origin predicate is vacuously true against it, so the next screen read
+    // hands back the reset tip's point. Measured: pose6 back to (23.0770, 0.7216) with `nodeAt(6)`
+    // still answering (1204.22, 889.95), the post-reset (38.6951, −13.7270) node's point, 596.15 px
+    // away from the (766.61, 485.11) it settles to. Poll the screen point back onto its cached
+    // pre-reset value instead — `kex2d-harness.md`'s own in-place-restore idiom, and the camera is
+    // persistent so a restored geometry restores this point exactly.
+    await expect
+        .poll(async () => {
+            const p = await kexCall(page, "nodeAt", 6);
+            return p
+                ? Math.hypot(p.x - tipScreenBeforeReset.x, p.y - tipScreenBeforeReset.y)
+                : Number.POSITIVE_INFINITY;
+        })
+        .toBeLessThan(1);
 
     // ── 4. Append (feel round 12 — extend restored to the ring): a PLAIN click never appends; the
     // ring's extend button (a real `.rbtn` at the chain end) appends, Enter's twin; and the node menu
     // carries Delete + Add, in that order. double-click now enters tangent edit (the tangent flow),
     // not append. the chain end is order 6 (7 nodes). ──
     const chainEnd = await nodePoint(page, 6);
+    const chainEndLocal = (await poses())[6];
     // a plain click selects the chain end but does NOT append.
     await page.mouse.click(cb.x + chainEnd.x, cb.y + chainEnd.y);
     await expect.poll(selectedOrder).toBe(6);
@@ -228,7 +262,21 @@ test("geo authoring flow", async ({ page, boot }) => {
     // the undo RESPAWNS this section's nodes, so re-locate the chain end instead of reusing the
     // pre-append point: `nodeCount` is satisfied by the synchronous restore, a frame before the
     // re-bake rebuilds the node→sample map the pointer picks through (`nodePoint`). It has to land
-    // back where it was — the undo restores the geometry byte-identical — so assert that too.
+    // back where it was — the undo restores the geometry byte-identical — so assert that in BOTH
+    // frames, because they claim different things:
+    //   · section-local (`poses`) is the AUTHORED claim, camera-free — the undo's own guarantee;
+    //   · the SCREEN point is the pointer's claim, and it is the only one that sees a stale
+    //     `Handle.sample` — the defect class the reset arm above documents. It is a legitimate
+    //     invariance here and not a camera assertion in disguise: the camera is a persistent
+    //     singleton written only by `f`/pan/zoom (`view.ts`), a content edit never re-frames it,
+    //     and none of those run between the two reads (measured `cam()` bit-identical across the
+    //     append and the undo).
+    await expect
+        .poll(async () => {
+            const p = (await poses())[6];
+            return Math.hypot(p[0] - chainEndLocal[0], p[1] - chainEndLocal[1]);
+        })
+        .toBeLessThan(1e-3);
     const chainEndBack = await nodePoint(page, 6);
     expect(Math.hypot(chainEndBack.x - chainEnd.x, chainEndBack.y - chainEnd.y)).toBeLessThan(1);
     // the node menu (right-click the chain end) carries the structural ops (delete stays off-ring),
