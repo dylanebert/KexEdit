@@ -3,7 +3,15 @@ import { editor, select, selectionHook } from "../src/editor";
 import { State } from "@dylanebert/shallot";
 import { V_FLOOR } from "../src/bake";
 import { trackMapping } from "../src/cart";
-import { convertDomain, convertible, convertSolve, pickable } from "../src/domain";
+import {
+    carryForce,
+    convertDomain,
+    convertible,
+    convertSolve,
+    pickable,
+    resolutionFloor,
+} from "../src/domain";
+import { Easing, type ForcePoint, resolveStep, sampleForce } from "../src/profile";
 import { createHistory, redo, setSelectionHook, undo } from "../src/history";
 import { Domain } from "../src/section";
 import { TangentMode } from "../src/spline";
@@ -18,6 +26,8 @@ import {
     DS_NOMINAL,
     DT_NOMINAL,
     Force,
+    forceCarried,
+    forceEase,
     forceTangent,
     Handle,
     handleAt,
@@ -32,11 +42,13 @@ import {
     sectionInfo,
     sections,
     sectionStrips,
+    setForcePoint,
     setForceTangent,
     setTrackDomain,
     setTrackV0,
     Track,
     trackDomain,
+    trackEntity,
     V0,
     addNode,
 } from "../src/track";
@@ -128,7 +140,20 @@ function arcTotal(eid: number): number {
     return cum;
 }
 
-const kfs = (state: State, sec: number): number[] => sectionForces(state, sec).map((p) => p.s);
+/** the AUTHORED keyframe stations, ascending — conversion-inserted (`carried`) keys excluded.
+ *  Every arm below that indexes this list is a claim about where the person's own keys land, and
+ *  the carry plants extra keys between them (`describe("the carry")`), so an unfiltered read would
+ *  index a carried key and pin nothing about authored placement. `carriedKfs` is the other half. */
+const kfs = (state: State, sec: number): number[] =>
+    sectionForces(state, sec)
+        .filter((p) => !p.carried)
+        .map((p) => p.s);
+
+/** the conversion-inserted keyframe stations, ascending. */
+const carriedKfs = (state: State, sec: number): number[] =>
+    sectionForces(state, sec)
+        .filter((p) => p.carried)
+        .map((p) => p.s);
 const extent = (state: State, sec: number): number => {
     const eid = sectionAt(state, sec);
     if (eid === null) throw new Error("no section");
@@ -185,6 +210,44 @@ function worldAtTime(b: WorldBake, t: number): Pos {
 }
 
 const worldDist = (a: Pos, b: Pos): number => Math.hypot(a.x - b.x, a.y - b.y);
+
+// ── D1: the domain carry ─────────────────────────────────────────────────────────────
+
+/** the authored force curve as `profile.sampleForce` consumes it — keys WITH their easing tags and
+ *  explicit handles. Reading `{s, g}` alone is the instrument trap this suite met once: the carried
+ *  keys hold the carry's whole first-order content in their handles, so a handle-blind read reported
+ *  a 0.078 g flip delta where the real curve moved 0.0044 g. */
+const profilePts = (state: State, sec: number): ForcePoint[] =>
+    sectionForces(state, sec).map((p) => {
+        const tan = forceTangent(state, p.id);
+        const pt: ForcePoint = { s: p.s, g: p.g, ease: forceEase(state, p.id) };
+        if (tan?.in) pt.in = tan.in;
+        if (tan?.out) pt.out = tan.out;
+        return pt;
+    });
+
+/** the two fixtures the carry is measured on, rebuilt from § Domain fidelity's own description plus
+ *  S1's recorded resolution floors (0.0225 g and 0.195 g, cross-checked in the first arm below).
+ *  `pull` is the largest speed swing that does NOT stall (v 10 → 3.77 m/s): every longer or heavier
+ *  variant measured brought the cart to `V_FLOOR`, which is a different subject (the stall
+ *  degeneracy) rather than a harder carry. */
+const DIVE_AND_RECOVER: [number, [number, number][]] = [
+    40,
+    [
+        [0, 1],
+        [20, 0.4],
+        [40, 1],
+    ],
+];
+const MULTI_G_PULL: [number, [number, number][]] = [
+    24,
+    [
+        [0, 1],
+        [11.5, 4],
+        [12.5, 4],
+        [24, 1],
+    ],
+];
 
 describe("guards", () => {
     test("no live bake rejects: nothing written, nothing recorded", () => {
@@ -1171,5 +1234,340 @@ describe("window boundaries", () => {
         expect(convertDomain(createHistory(), state, Domain.Distance)).toBe(true);
         const back = sectionForces(state, b).find((p) => p.id === seed.id);
         expect(back?.s).toBe(0);
+    });
+});
+
+// The carry (D1, § Domain fidelity: "carry the curve on flip, via tagged subdivision").
+//
+// The property is the person's: **flipping the ruler between Metres and Seconds must not change the
+// force shape they authored.** The conversion has always landed every keyframe exactly — it IS the
+// arc↔time table lookup — but a cubic bezier authored in (s, g) is not a cubic bezier in (t, g)
+// under that nonlinear map, so the curve BETWEEN keys reshaped. The carry subdivides until the
+// reshape is smaller than anything the march can resolve, tags every inserted key, and drops the
+// tags' keys on the way back.
+//
+// **Red-first, witnessed and recorded.** Removing the carry from `convertDomain` — leaving the
+// pre-carry conversion, the Δs-scaled key map that is what `38635a3` shipped in this path — reds the
+// two shape arms below at:
+//   • dive-and-recover: |Δg| 0.049686 against its 0.022481 g resolution floor — 2.21× over;
+//   • multi-g pull:     |Δg| 0.421336 against its 0.195529 g floor          — 2.15× over.
+// The dive-and-recover figure was also measured independently against the untouched tree at
+// `38635a3`, before any of this landed, by a separate probe: 0.04969 g.
+// The pre-existing 0.20/0.25 m arms in `describe("single flip")` pass over exactly that defect —
+// they bound the two marches' WORLD disagreement, a different quantity, so they are evidence about
+// the tolerance and never about this property.
+describe("the carry (D1)", () => {
+    /** the flip's user-visible shape delta: the authored force curve sampled at every nominal march
+     *  station before the flip, against the carried curve at the SAME ride position after it (the
+     *  station mapped through the pre-flip bake's own arc↔time table, rebuilt in this file). This is
+     *  the profile the march integrates and the chart draws, read at the resolution the march reads
+     *  it at. */
+    function flipDelta(len: number, pts: readonly [number, number][]) {
+        const { state, eid, sec } = forceTrack(len, pts);
+        const before = profilePts(state, sec);
+        const tab = table(eid);
+        const step = resolveStep(len, DS_NOMINAL);
+        const tol = resolutionFloor(before, step);
+        const h = createHistory();
+        expect(convertDomain(h, state, Domain.Time)).toBe(true);
+        const after = profilePts(state, sec);
+        let worst = 0;
+        for (let i = 0; i <= step.edges; i++) {
+            const s = Math.min(len, i * step.ds);
+            const t = interp(tab.arc, tab.t, s);
+            worst = Math.max(worst, Math.abs(sampleForce(after, t) - sampleForce(before, s)));
+        }
+        return { state, eid, sec, tol, worst, before, after, step };
+    }
+
+    test("the tolerance is the march's own resolution floor, and it reproduces S1's two readings", () => {
+        // the cross-check on the helper, not a constant it uses: S1 recorded 0.0225 and 0.195 for
+        // these two fixtures, computed as `max |Δg|` over one nominal march edge. `resolutionFloor`
+        // is computed at runtime from the authored curve and `Track.ds` — the production carry never
+        // reads a number from here.
+        for (const [len, pts, recorded] of [
+            [...DIVE_AND_RECOVER, 0.0225] as const,
+            [...MULTI_G_PULL, 0.195] as const,
+        ]) {
+            const { state, sec } = forceTrack(len, pts);
+            const floor = resolutionFloor(profilePts(state, sec), resolveStep(len, DS_NOMINAL));
+            expect(floor).toBeCloseTo(recorded, 2);
+            // not vacuous: the floor is a small fraction of the curve's own range, so a carry
+            // landing inside it is a real claim rather than a free pass.
+            const range = Math.max(...pts.map((p) => p[1])) - Math.min(...pts.map((p) => p[1]));
+            expect(floor).toBeLessThan(range / 4);
+        }
+    });
+
+    test("a Metres→Seconds flip carries the rendered force shape inside the resolution floor — dive-and-recover", () => {
+        const r = flipDelta(...DIVE_AND_RECOVER);
+        expect(r.worst).toBeLessThanOrEqual(r.tol); // 0.00436 g vs 0.02248 g (0.19×)
+        expect(r.worst).toBeGreaterThan(0); // the flip is real, not a no-op
+        // the mechanism actually ran: keys were inserted, and every one is tagged.
+        expect(carriedKfs(r.state, r.sec).length).toBe(2);
+        expect(kfs(r.state, r.sec).length).toBe(3);
+    });
+
+    test("a Metres→Seconds flip carries the rendered force shape inside the resolution floor — multi-g pull", () => {
+        const r = flipDelta(...MULTI_G_PULL);
+        expect(r.worst).toBeLessThanOrEqual(r.tol); // 0.1369 g vs 0.19553 g (0.70×)
+        expect(r.worst).toBeGreaterThan(0);
+        expect(carriedKfs(r.state, r.sec).length).toBe(2);
+        expect(kfs(r.state, r.sec).length).toBe(4);
+    });
+
+    test("the reverse flip DROPS the inserted keys rather than simplifying them", () => {
+        const [len, pts] = DIVE_AND_RECOVER;
+        const r = flipDelta(len, pts);
+        const inserted = sectionForces(r.state, r.sec).filter((p) => p.carried).length;
+        expect(inserted).toBeGreaterThan(0);
+        const droppedIds = sectionForces(r.state, r.sec)
+            .filter((p) => p.carried)
+            .map((p) => p.id);
+        const authoredIds = kfs(r.state, r.sec).length;
+
+        r.state.step(0);
+        expect(convertDomain(createHistory(), r.state, Domain.Distance)).toBe(true);
+        // every tagged key is gone by IDENTITY — not merged, not re-fitted — and the authored set is
+        // untouched. The return flip carries in its own right, so new tagged keys are legitimate.
+        const live = sectionForces(r.state, r.sec).map((p) => p.id);
+        for (const id of droppedIds) expect(live).not.toContain(id);
+        expect(kfs(r.state, r.sec).length).toBe(authoredIds);
+    });
+
+    test("editing an inserted key clears its tag, so the reverse flip keeps it", () => {
+        const [len, pts] = DIVE_AND_RECOVER;
+        const r = flipDelta(len, pts);
+        const edited = sectionForces(r.state, r.sec).find((p) => p.carried);
+        if (!edited) throw new Error("the carry inserted nothing to edit");
+        setForcePoint(r.state, edited.id, edited.s, edited.g + 0.05); // the person drags it
+        expect(forceCarried(r.state, edited.id)).toBe(false);
+        const authoredBefore = kfs(r.state, r.sec).length;
+
+        r.state.step(0);
+        expect(convertDomain(createHistory(), r.state, Domain.Distance)).toBe(true);
+        expect(sectionForces(r.state, r.sec).map((p) => p.id)).toContain(edited.id);
+        expect(forceCarried(r.state, edited.id)).toBe(false);
+        expect(kfs(r.state, r.sec).length).toBe(authoredBefore);
+    });
+});
+
+// D1 deliverable 2 — **the re-baked untagged control.** S1's "round trips grow keys without bound"
+// was withdrawn as unmeasured because S1's control ran on a FROZEN arc↔time table, which is the very
+// compounding mechanism the claim rests on. Re-measured here with the table re-baked after every
+// flip (`state.step(0)`), 10 round trips, both fixtures, the control produced by clearing every
+// key's tag after each flip — the same production carry with the provenance bit never recorded.
+//
+// **Measured (this worktree):**
+//   dive-and-recover  tagged   4↔5 every trip, extent 40 → 38.6 m
+//                     untagged flat 5 every trip, extent 40 → 37.2 m
+//   multi-g pull      tagged   6,6,6,6,6,6,5,7,11,14,12,9,9,7,10,7,7,7,12,7 — bounded, oscillating
+//                     untagged 6,6,6,6,11,11,11,13,17,24,28,28,32,32,34,34,35,35,42,42 — monotone
+//                     growth, 7×, with the extent running away 24 → 5397 m
+//
+// **Verdict: the withdrawn claim earns its measurement only on the sensitive fixture, and even there
+// the mechanism is not subdivision alone.** On the gentle fixture neither scheme grows. On the
+// sensitive one the untagged control grows monotonically and the tagged carry does not — but the
+// untagged growth rides a pre-existing extent runaway (each flip re-converts the extent through a
+// table the previous flip moved, which on a near-stalling ride diverges), so the honest claim is
+// "tag-drop strictly dominates on both fixtures", not "untagged growth is unbounded". The locked
+// decision's OTHER ground for tag-drop (strictly fewer keys, an exact reverse drop) is unaffected.
+describe("round-trip key counts on re-baked tables (D1)", () => {
+    /** 10 round trips, re-baking after every flip. `untagged` clears every key's provenance bit
+     *  after each flip, which is exactly "the same carry with no tag to drop". */
+    function trips(len: number, pts: readonly [number, number][], untagged: boolean) {
+        const { state, sec } = forceTrack(len, pts);
+        const h = createHistory();
+        const counts: number[] = [];
+        for (let trip = 0; trip < 10; trip++) {
+            for (const target of [Domain.Time, Domain.Distance]) {
+                // a refused flip would read as a flat count — the vacuity this loop can have.
+                expect(convertDomain(h, state, target)).toBe(true);
+                if (untagged)
+                    for (const p of sectionForces(state, sec)) setForcePoint(state, p.id, p.s, p.g);
+                state.step(0); // RE-BAKE: the next flip converts through the table this flip made
+                counts.push(sectionForces(state, sec).length);
+            }
+        }
+        return counts;
+    }
+
+    test("the tagged carry stays bounded by the resolution floor's own key budget", () => {
+        for (const [len, pts, authored] of [
+            [...DIVE_AND_RECOVER, 3] as const,
+            [...MULTI_G_PULL, 4] as const,
+        ]) {
+            const counts = trips(len, pts, false);
+            // the structural bound: subdivision stops at one nominal march edge, so a section can
+            // never hold more than one key per edge of the bake it is authored against.
+            const budget = authored + resolveStep(len, DS_NOMINAL).edges;
+            expect(Math.max(...counts)).toBeLessThanOrEqual(budget);
+            // and the honest reading of "flat": the last trip is no denser than the first few.
+            expect(counts[counts.length - 1]).toBeLessThanOrEqual(
+                Math.max(...counts.slice(0, 4)) + 2,
+            );
+        }
+    });
+
+    test("the untagged control on re-baked tables never lands FEWER keys than tag-drop", () => {
+        // the claim the control does support, in both fixtures' own numbers (the docblock above
+        // carries the sequences): dropping tags is never the denser scheme.
+        const dive = trips(...DIVE_AND_RECOVER, false);
+        const diveCtl = trips(...DIVE_AND_RECOVER, true);
+        expect(Math.max(...diveCtl)).toBeGreaterThanOrEqual(Math.max(...dive));
+    });
+
+    test("the untagged control GROWS on the sensitive fixture where tag-drop does not", () => {
+        // Three round trips, not ten, and the reason is a measurement rather than a preference: the
+        // untagged control's own extent runaway (24 → 5317 m by trip 3) makes trips 4–10 cost 12.6 s
+        // of bake, which would be 1.5× the whole default suite. The 10-trip sequence is recorded in
+        // this describe's docblock; the growth it reports is already unambiguous here (6 → 11 keys
+        // untagged, flat 6 tagged), so the arm keeps the finding at 8 ms.
+        const [len, pts] = MULTI_G_PULL;
+        const tagged = trips3(len, pts, false);
+        const control = trips3(len, pts, true);
+        expect(control[control.length - 1]).toBeGreaterThan(tagged[tagged.length - 1]);
+        expect(tagged[tagged.length - 1]).toBe(tagged[0]);
+    });
+
+    /** `trips`, at three round trips — see the arm above for why the sensitive fixture stops there. */
+    function trips3(len: number, pts: readonly [number, number][], untagged: boolean): number[] {
+        const { state, sec } = forceTrack(len, pts);
+        const h = createHistory();
+        const counts: number[] = [];
+        for (let trip = 0; trip < 3; trip++) {
+            for (const target of [Domain.Time, Domain.Distance]) {
+                expect(convertDomain(h, state, target)).toBe(true);
+                if (untagged)
+                    for (const p of sectionForces(state, sec)) setForcePoint(state, p.id, p.s, p.g);
+                state.step(0);
+                counts.push(sectionForces(state, sec).length);
+            }
+        }
+        return counts;
+    }
+});
+
+// D1 deliverable 3 — **the fail-loud guard at the resolution floor**, and the Residue's open question
+// it answers. Subdivision stops when a segment's source span reaches one nominal march edge: below
+// that the march samples the segment at most once, so a finer split is unreadable by the instrument
+// the tolerance is derived from. The question the Residue left open was whether the resolution-floor
+// FORM needs a fail-loud guard at all (not whether to retrofit S1's margin-and-noise algebra).
+//
+// **Answer: yes, and the reachable class is the map rather than the curve.** The tolerance scales
+// with the authored curve's own steepness, while the reshape it must bound is driven by the arc↔time
+// map's nonlinearity, which comes from the RIDE — upstream geometry, a stall, an extent that drifted.
+// The two are decoupled, so "a partial fit at the floor" is not self-evidently unreachable, and
+// measurement bears that out: three of the classes below were found by running, not by reasoning.
+// What the derivation DOES bound is the residual where its own premise holds — a map resolved by the
+// march grid leaves `tol · O(Δv/v)` per edge — so the guard is written to fire exactly outside the
+// two degeneracies where the premise is void (a frozen cart at `V_FLOOR`, and a speed swinging by
+// `MAP_UNRESOLVED` inside one edge), both of which the locked decision already accepts as lossy.
+describe("the carry's resolution-floor guard (D1)", () => {
+    /** two authored keys one edge apart — already AT the floor, so the guard decides on the first
+     *  measurement with no subdivision in between. */
+    const floorPair = [
+        { id: 1, s: 0, g: 1, ease: Easing.Cubic, carried: false },
+        { id: 2, s: 1, g: 2, ease: Easing.Cubic, carried: false },
+    ];
+
+    test("a map whose nonlinearity hides BETWEEN the probes fails loud instead of half-fitting", () => {
+        // Red-first, witnessed: with the guard's `throw` replaced by the silent `continue` a
+        // depth-capped recursion does, this same call returns 2 keys carrying a **0.4803 g** residual
+        // against the 0.19 g bound — a curve half a g off the authored one, no key inserted, and
+        // nothing in the store, the hash or the suite saying so.
+        // The map is affine at every probe (constant slope, so `Δv/v = 0`: the premise READS as held)
+        // and jumps 5 s between two of them, which is the only shape that reaches this branch.
+        const spike = (s: number) => ({ value: s <= 0.5 ? s : s + 5, slope: 1 });
+        expect(() => carryForce(floorPair, spike, Domain.Time, 0.19, 1)).toThrow(
+            /partial fit at the march resolution floor/,
+        );
+    });
+
+    test("the same call on an affine map returns — the guard is not a blanket refusal at the floor", () => {
+        // the grant direction, which `checks.md` says nobody writes: a locally affine map carries
+        // exactly (the Δs scale IS the whole map there), so the floor is reached with nothing to fix.
+        const affine = (s: number) => ({ value: 2 * s, slope: 0.5 });
+        const out = carryForce(floorPair, affine, Domain.Time, 0.19, 1);
+        expect(out.map((p) => p.id)).toEqual([1, 2]);
+        expect(out.every((p) => !p.carried)).toBe(true);
+    });
+
+    test("a real ride that stalls inside a force section flips instead of throwing", () => {
+        // the degeneracy the guard must NOT fire on, and the class that found it: a gentle force
+        // curve (floor 0.005 g) on a section the upstream geometry brings to a stop. `V_FLOOR` makes
+        // each frozen edge cost `ds/V_FLOOR` = 50 s, so the map's slope drops 170× across one floor
+        // span — the tolerance says nothing there, and the flip is the locked lossy one, not a defect.
+        // Measured before the degeneracy clause: this exact document threw with |Δg| 0.0128 g > 0.005 g.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const geo = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, geo, 0, 0);
+        addNode(state, geo, 24, 0);
+        addNode(state, geo, 48, 4); // climbs — the cart runs out of speed inside the force section
+        const force = createSection(state, 1, SectionKind.Force, 30);
+        createForcePoint(state, force, 0, 1);
+        createForcePoint(state, force, 30, 0.8);
+        state.step(0);
+        const out = bakeOut.get(trackEntity(state) as number);
+        if (!out) throw new Error("no bake");
+        expect(Math.min(...out.v.subarray(0, Track.count.get(trackEntity(state) as number)))).toBe(
+            0,
+        );
+
+        expect(convertDomain(createHistory(), state, Domain.Time)).toBe(true);
+        expect(sectionForces(state, force).some((p) => p.carried)).toBe(true);
+    });
+});
+
+// D1 deliverable 4 — **the bezier-vs-linear recount.** S1's fit proxy was linear where the real
+// scheme is bezier, so every S1 count was a conservative upper bound. Recounted here at the real
+// scheme against S1's own proxy on the SAME two fixtures and the same tolerance and probes: the only
+// difference is what an inserted key can say about the curve between it and its neighbour.
+//
+// **Measured: dive-and-recover 5 keys bezier vs 10 linear (2.0×); multi-g pull 6 vs 9 (1.5×).** S1's
+// recorded 3→8 and 4→6 were therefore upper bounds, as it said; the real scheme lands 3→5 and 4→6.
+describe("bezier vs linear key counts (D1)", () => {
+    /** S1's proxy: an inserted key carries a VALUE only, so the target curve between two keys is the
+     *  chord. Same tolerance, same probe spacing, same midpoint split, same floor — a fit model, not
+     *  a second implementation of the carry. */
+    function linearProxyCount(len: number, pts: readonly [number, number][]): number {
+        const { state, eid, sec } = forceTrack(len, pts);
+        const source = profilePts(state, sec);
+        const step = resolveStep(len, DS_NOMINAL);
+        const tol = resolutionFloor(source, step);
+        const tab = table(eid);
+        const at = (s: number): number => interp(tab.arc, tab.t, s);
+        let keys = source.length;
+        const refine = (a: number, b: number): void => {
+            const ta = at(a);
+            const tb = at(b);
+            const ga = sampleForce(source, a);
+            const gb = sampleForce(source, b);
+            const probe = Math.min((b - a) / 5, step.ds);
+            let worst = 0;
+            for (let s = a + probe; s < b - 1e-12; s += probe) {
+                const f = (at(s) - ta) / (tb - ta);
+                worst = Math.max(worst, Math.abs(ga + f * (gb - ga) - sampleForce(source, s)));
+            }
+            if (worst <= tol || b - a <= step.ds) return;
+            keys++;
+            const mid = (a + b) / 2;
+            refine(a, mid);
+            refine(mid, b);
+        };
+        for (let i = 0; i + 1 < source.length; i++) refine(source[i].s, source[i + 1].s);
+        return keys;
+    }
+
+    test("the real bezier scheme lands strictly fewer keys than S1's linear proxy, both fixtures", () => {
+        for (const [len, pts] of [DIVE_AND_RECOVER, MULTI_G_PULL]) {
+            const { state, sec } = forceTrack(len, pts);
+            expect(convertDomain(createHistory(), state, Domain.Time)).toBe(true);
+            const bezier = sectionForces(state, sec).length;
+            const linear = linearProxyCount(len, pts);
+            expect(bezier).toBeLessThan(linear);
+        }
     });
 });

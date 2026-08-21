@@ -3,6 +3,7 @@ import { State } from "@dylanebert/shallot";
 import {
     addNode,
     appendSection,
+    applyDomain,
     authoredHash,
     BakeSystem,
     bakeLive,
@@ -48,6 +49,10 @@ import {
     MIN_FORCE_LEN,
     minForceExtent,
     nextForce,
+    clearForceTangentSide,
+    destroyForce,
+    forceCarried,
+    restoreForcePoint,
     readProvenance,
     reheadOnDrag,
     removeTrailingHandle,
@@ -3473,5 +3478,142 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(specs?.[0].start).toBe(Math.round(6 / step.ds));
         expect(specs?.[0].end).toBe(Math.round(18 / step.ds));
         expect(specs?.[0].value).toBe(5);
+    });
+});
+
+// `Force.carried` — the domain-carry provenance bit (D1). A conversion-inserted keyframe is tagged
+// so the reverse flip can DROP it exactly instead of simplifying the denser store heuristically,
+// and every live-authoring writer clears the bit, so a key the person has edited is authored and
+// survives the next flip. The carry itself is `domain.ts`'s (`tests/domain.test.ts`); what lives
+// here is the per-key field's own threading: the row read, the snapshot pair, the content hash,
+// `applyDomain`'s plant/drop, and the writers that clear.
+describe("force keyframe provenance (Force.carried, D1)", () => {
+    /** a force section with two authored keys, baked. */
+    function forceSec(): { state: State; eid: number; sec: number } {
+        const { state, eid, sec } = track();
+        convertSection(state, sec); // → force, extent EXTEND_DIST
+        createForcePoint(state, sec, 0, 1);
+        createForcePoint(state, sec, EXTEND_DIST, 0.8);
+        state.step(0);
+        return { state, eid, sec };
+    }
+
+    test("an authored key reads carried false; a planted one reads true", () => {
+        const { state, sec } = forceSec();
+        const authored = sectionForces(state, sec);
+        expect(authored.length).toBeGreaterThan(1);
+        expect(authored.some((p) => p.carried)).toBe(false);
+        expect(authored.every((p) => !forceCarried(state, p.id))).toBe(true);
+
+        spawnForce(state, sec, 9001, 5, 0.9, undefined, undefined, true);
+        expect(forceCarried(state, 9001)).toBe(true);
+        expect(sectionForces(state, sec).find((p) => p.id === 9001)?.carried).toBe(true);
+    });
+
+    test("the snapshot pair round-trips the bit byte-identically, both values", () => {
+        const { state, sec } = forceSec();
+        spawnForce(state, sec, 9002, 5, 0.9, undefined, undefined, true);
+        const snap = snapshotSection(state, sec);
+        expect(snap.points.filter((p) => p.carried).map((p) => p.id)).toEqual([9002]);
+        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
+        restoreSection(state, snap);
+        expect(sectionForces(state, sec).map((p) => ({ id: p.id, carried: p.carried }))).toEqual(
+            snap.points.map((p) => ({ id: p.id, carried: p.carried })),
+        );
+    });
+
+    test("the bit rides the content hash like any other per-key field", () => {
+        // red before the hash carried it: clearing a tag left `bakeOut.hash` unchanged, so a
+        // provenance stamp taken before the edit would certify a document whose next reverse flip
+        // behaves differently (it keeps the key instead of dropping it).
+        const { state, eid, sec } = forceSec();
+        spawnForce(state, sec, 9003, 5, 0.9, undefined, undefined, true);
+        state.step(0);
+        const tagged = bakeOut.get(eid)?.hash;
+        const authoredTagged = authoredHash(state);
+        setForcePoint(state, 9003, 5, 0.9); // the same numbers — the EDIT clears the bit, nothing else
+        expect(forceCarried(state, 9003)).toBe(false);
+        expect(authoredHash(state)).not.toBe(authoredTagged);
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).not.toBe(tagged);
+        // restoring the bit reproduces the earlier hash exactly.
+        restoreForcePoint(state, {
+            section: sec,
+            id: 9003,
+            s: 5,
+            g: 0.9,
+            ease: forceEase(state, 9003),
+            carried: true,
+        });
+        state.step(0);
+        expect(bakeOut.get(eid)?.hash).toBe(tagged);
+    });
+
+    test("every live-authoring writer clears the bit; the snapshot restore does not", () => {
+        const { state, sec } = forceSec();
+        const plant = (id: number): void => {
+            destroyForce(state, id);
+            spawnForce(
+                state,
+                sec,
+                id,
+                5,
+                0.9,
+                undefined,
+                { mode: TangentMode.Aligned, in: { ds: -1, dg: 0 }, out: { ds: 1, dg: 0 } },
+                true,
+            );
+            expect(forceCarried(state, id)).toBe(true);
+        };
+        plant(9010);
+        setForcePoint(state, 9010, 6, 0.9);
+        expect(forceCarried(state, 9010)).toBe(false);
+
+        plant(9010);
+        setForceEase(state, 9010, Easing.Linear);
+        expect(forceCarried(state, 9010)).toBe(false);
+
+        plant(9010);
+        setForceTangent(state, 9010, null);
+        expect(forceCarried(state, 9010)).toBe(false);
+
+        plant(9010);
+        clearForceTangentSide(state, 9010, "out");
+        expect(forceCarried(state, 9010)).toBe(false);
+
+        // the byte-identical paths must NOT clear it: undo of an edit has to put the bit back.
+        plant(9010);
+        const st = forcePointState(state, 9010);
+        if (!st) throw new Error("no point state");
+        expect(st.carried).toBe(true);
+        setForcePoint(state, 9010, 6, 0.9);
+        restoreForcePoint(state, st);
+        expect(forceCarried(state, 9010)).toBe(true);
+    });
+
+    test("applyDomain plants the snapshot's new keys and drops the ones it omits", () => {
+        // the carry's write path: `domain.convertDomain` computes a converted key SET (the authored
+        // keys plus the inserted ones, minus the previous flip's), so `applyDomain` is no longer a
+        // position-only write. What survives of its narrow claim is that no GEO entity is touched.
+        const { state, sec } = forceSec();
+        const before = snapshotSection(state, sec);
+        const planted = {
+            ...before,
+            points: [
+                ...before.points.map((p) => ({ ...p, s: p.s / 2 })),
+                { id: 9020, s: 3, g: 0.95, ease: Easing.Cubic, carried: true },
+            ],
+        };
+        const ids = (): number[] =>
+            sectionForces(state, sec)
+                .map((p) => p.id)
+                .sort((x, y) => x - y);
+        applyDomain(state, [planted]);
+        expect(ids()).toEqual([...before.points.map((p) => p.id), 9020].sort((x, y) => x - y));
+        expect(forceCarried(state, 9020)).toBe(true);
+
+        applyDomain(state, [before]); // the omitted key is dropped, not left behind
+        expect(ids()).toEqual(before.points.map((p) => p.id).sort((x, y) => x - y));
+        expect(sectionForces(state, sec).every((p) => !p.carried)).toBe(true);
     });
 });
