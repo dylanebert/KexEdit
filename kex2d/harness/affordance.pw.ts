@@ -2,20 +2,30 @@ import { expect, frameTimeline, kexCall, type Page, seedHill, test } from "./flo
 
 // ── AFFORDANCE ARMS ──────────────────────────────────────────────────────────────────────────
 // One axis, one predicate: a surface that PAINTS an interactive cursor must have a handler
-// behind it. Nothing else in this harness reads that axis, and that is the whole reason the C5
+// behind it. Nothing else in this harness reads that axis, and that is the reason the C5
 // band-authoring popover shipped `bun check` 0, `bun test` 1589/0/46 and capture 38/38 while the
-// person's verdict was "the popover is jarring and does not work" (kex2d-substrate, feel gate
-// 2026-08-20, verdict 5).
+// affordance axis stayed invisible to every gate (kex2d-substrate, feel gate 2026-08-20, verdict
+// 5, "the popover is jarring and does not work" — this arm owns the "does not work" half; the
+// "jarring" half is a separate, unmeasured axis this rig cannot see, and so is the strip value's
+// own legibility: its only rendering in C5 is the α-0.25 dashed velocity channel
+// (`Timeline.svelte:2797–2812`, one pass, no authored-span solid split), so a committed edit is
+// near-invisible and a person typing a value and seeing nothing legible reported is also "does
+// not work" — bounded either way by T2's solid-in-graph design, which retires the channel this
+// gap lives in.
 //
 // THE MECHANISM. `.fld .key` is this app's scrub-handle dress — `cursor: ew-resize`,
 // `user-select: none`, `touch-action: none`, a hover wash (`Timeline.svelte`, `.fld .key`).
-// Six `.fld .key` spans exist in that file; five wire `onpointerdown` to a scrub (`handleScrub`
-// ×2, `scrubStart` ×2, `snapScrub` ×2) and the strip popover's `<span class="key">v</span>`
-// wires nothing. Its own comment says so on purpose — "no scrub handle (a strip's value has no
-// natural drag axis…)" — but the decision was taken in the markup and not in the CSS, so the
-// surface still paints the drag cursor, still lights up on hover, and still swallows the drag.
-// It is the one surface in the app that promises a scrub and refuses it, and the promise is the
-// only instruction a person has: the other five taught them the gesture.
+// Seven `.fld .key` spans exist in that file (lines 3671, 3688, 3727, 3746, 3780, 3939, 3954);
+// six wire `onpointerdown` to a scrub (`handleScrub` at 3671/3688, `scrubStart` at 3727/3746,
+// `snapScrub` at 3939/3954) and the strip popover's `<span class="key">v</span>` at 3780 wires
+// nothing. `App.svelte` carries three more under its own `.vtip .key` rule, the identical
+// `ew-resize` dress (`v0ScrubStart`/`frictionScrubStart`/`resistanceScrubStart` at
+// 1456/1471/1486), and all three are wired. Nine wired teachers app-wide, one refuser. The
+// popover's own comment says the omission was deliberate — "no scrub handle (a strip's value
+// has no natural drag axis…)" — but the decision was taken in the markup and not in the CSS, so
+// the surface still paints the drag cursor, still lights up on hover, and still swallows the
+// drag. It is the one surface in the app that promises a scrub and refuses it, and the promise
+// is the only instruction a person has: the other nine taught them the gesture.
 //
 // WHY EVERY GATE WAS GREEN. All of this unit's evidence about the popover is a model read-back.
 // `bun test` never mounts the component. The capture flow reaches the field with
@@ -30,14 +40,18 @@ import { expect, frameTimeline, kexCall, type Page, seedHill, test } from "./flo
 //     expect(received).not.toBeCloseTo(expected, precision)
 //     Expected: not 8.752357558882853
 // — a 60 px pointer drag across the `v` label, whose computed cursor the arm had already
-// asserted is `ew-resize`, left the strip's value bit-identical.
+// asserted is `ew-resize`, left the strip's value bit-identical. What is proven, directly: the
+// rig moves a value on a wired surface (the control below) and does not move one on the
+// unwired popover (the subject). The inverse — that a real handler on the popover would flip
+// the subject's own reading to "Expected to fail, but passed" — is not separately witnessed
+// here; it follows from the control sharing the identical rig and dress.
 //
 // T1/T2 OWN THE FIX, not this arm. When the value surface is rebuilt (T2 retires the popover;
 // T1 rebuilds the band), either honour the dress or stop painting it — then DELETE the
 // `test.fail` annotation below, which reds as "Expected to fail, but passed" the moment the
 // affordance is honoured.
 
-/** the computed cursor a popover key label paints, after a horizontal drag across it */
+/** the computed cursor a popover key label paints, read before a horizontal drag across it */
 async function scrubKey(page: Page, keySel: string, dx: number): Promise<string> {
     const key = page.locator(keySel);
     const cursor = await key.evaluate((e) => getComputedStyle(e).cursor);
@@ -48,7 +62,6 @@ async function scrubKey(page: Page, keySel: string, dx: number): Promise<string>
     await page.mouse.down();
     await page.mouse.move(kb.x + kb.width / 2 + dx, cy, { steps: 10 });
     await page.mouse.up();
-    await page.waitForTimeout(400);
     return cursor;
 }
 
@@ -93,7 +106,9 @@ test("popover key scrub affordance — force keyframe control", async ({ page, b
 
     const cursor = await scrubKey(page, ".ptip .fld:nth-of-type(2) .key", 40);
     expect(cursor, "the g key paints the scrub cursor").toBe("ew-resize");
-    expect(await at(), "a drag on a key painting ew-resize moves the value").not.toBeCloseTo(g0, 6);
+    await expect
+        .poll(at, { message: "a drag on a key painting ew-resize moves the value", timeout: 1000 })
+        .not.toBeCloseTo(g0, 6);
 
     // the inverted arm's setup, asserted where a failure can be read
     await page.keyboard.press("Escape"); // clear the keyframe popover
@@ -115,8 +130,10 @@ test.fail("strip popover key scrub affordance (expected to fail — C5)", async 
 
     const cursor = await scrubKey(page, ".striptip .key", 60);
     expect(cursor, "the v key paints the scrub cursor").toBe("ew-resize");
-    expect(
-        (await kexCall(page, "stripsOf", 0))[0].value,
-        "a drag on a key painting ew-resize moves the value",
-    ).not.toBeCloseTo(v0, 6);
+    await expect
+        .poll(async () => (await kexCall(page, "stripsOf", 0))[0].value, {
+            message: "a drag on a key painting ew-resize moves the value",
+            timeout: 1000,
+        })
+        .not.toBeCloseTo(v0, 6);
 });
