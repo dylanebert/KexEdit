@@ -683,7 +683,8 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
 - `domain.ts` — the **track-global domain conversion**, and the ONE place a force section's stored
   numbers change unit. `convertDomain(history, ecs, target)` is the ruler pick as a document op: a
   pure transform of the whole-track snapshot (every keyframe's position, every extent, every explicit
-  handle's Δs scaled by the local `dt/ds`) landed by `history.landDomain` as one entry, so a
+  handle's Δs scaled by the local `dt/ds`, plus the keyframes the carry below plants and drops)
+  landed by `history.landDomain` as one entry, so a
   conversion that throws part-way writes nothing. The table IS the conversion — `cart.trackMapping`
   windowed per section by `track.sectionInfo` (`entryD`/`exitD`/`entryT`/`exitT` + the boundary
   speeds), so an interior position interpolates and one past the section's own baked span
@@ -697,20 +698,44 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   no-op or a NaN store. A round
   trip is NOT bit-identical — sub-quantum on a gentle ride, tens of percent on a sensitive one, and
   a stall collapses distinct times onto one arclength by construction; undo is the only way back.
-  **A SINGLE flip moves the exit too, by the same mechanism and inside the same bound**
-  (`kex2d-correctness-fixes` stage 3): every keyframe lands exactly — the conversion IS the table
-  lookup, so a converted position can't miss it — while the authored curve *between* keys genuinely
-  reshapes, because a cubic bezier authored in `(s, g)` is not carried to a cubic bezier in `(t, g)`
-  by the nonlinear arc↔time map; an explicit handle's Δs scaling by the local slope is only that
-  map's first-order term, not a full carry. Measured on a 40 m dive-and-recover section: the exit
-  moves 0.20 m, inside the 0.25 m two-bakes-at-equal-time bound the round trip already derives — a
-  flip is two independent marches of one authored ride, not a defect of its own. `convertSolve(ecs,
-  sectionId, solved)` is the landing seam for the same math: invoked solves stay
+  **The keys are converted; the curve BETWEEN them is CARRIED.** Every keyframe lands exactly — the
+  conversion IS the table lookup, so a converted position can't miss it — but a cubic bezier
+  authored in `(s, g)` is not a cubic bezier in `(t, g)` under the nonlinear arc↔time map, and an
+  explicit handle's Δs scaling by the local slope is only that map's first-order term. `carryForce`
+  completes it: each segment is subdivided until the target-unit shape matches the source-unit shape
+  inside the march's own **resolution floor** — `resolutionFloor`, the largest |Δg| between two
+  neighbouring samples one nominal march edge apart, derived per section at runtime from that
+  section's authored curve and `Track.ds` and never a stored literal (plus the g store's own f32
+  quantum as the acceptance bound). Measured on the 40 m dive-and-recover, pre-carry: 0.049686 g of
+  reshape against that section's own 0.022481 g floor, 2.2× over; 0.004363 g after, 0.19× of it.
+  **Each inserted key is tagged** (`Force.carried`), and the reverse flip DROPS the tagged set and
+  re-subdivides from the authored keys rather than simplifying the denser store heuristically — so
+  `applyDomain` now plants and destroys force keyframes, not just rewrites positions. Every
+  live-authoring writer (`setForcePoint`/`setForceEase`/`setForceTangent`/`clearForceTangentSide`)
+  CLEARS the bit: a key the person has touched is authored and stops being droppable. The bit rides
+  `SectionSnapshot` (so undo puts droppability back byte-identically) and the section content hash
+  (suffixed only when set), so a stamp taken before that edit can't certify the state after it.
+  **Subdivision is fail-loud at the floor**: below a source span of one nominal march edge the march
+  samples the segment at most once, so a still-over segment throws and the whole conversion writes
+  nothing — except in the two map degeneracies the floor's own derivation excludes, both already
+  locked as lossy: a frozen cart (`V_FLOOR` is the resolution of a stall, not a speed) and a speed
+  swing of `MAP_UNRESOLVED` = 2× or more inside one edge, where the map isn't resolved by the march
+  grid at all. Without the guard a constructed unresolvable map returned a 0.4803 g residual
+  silently. What the carry does NOT touch is the section's baked WORLD exit: **a SINGLE flip moves
+  it, by the two marches' own mechanism and inside the same bound** (`kex2d-correctness-fixes` stage
+  3) — 0.20 m on that same section, inside the 0.25 m two-bakes-at-equal-time bound the round trip
+  derives, asserted as that derived inequality and never as the literal. That is two independent
+  marches of one authored ride disagreeing, not the curve reshaping. `convertSolve(ecs,
+  sectionId, solved)` is the landing seam for the same table: invoked solves stay
   distance-internal (their goldens are frozen in meters), so `geoforce.convertGeo` passes its answer
-  through it inside the landing entry. Device-free tests in `tests/domain.test.ts` (guards, the forward conversion against an
+  through it inside the landing entry — key stations and the extent only, **with no carry**, so the
+  between-keys reshape survives on that path across the easing-derived segments a solved store
+  carries. Device-free tests in `tests/domain.test.ts` (guards, the forward conversion against an
   independently rebuilt table, the derived round-trip bound, the single-flip bound against the same
   swept disagreement, undo byte-identity, the plateau and past-span degeneracies, the window
-  boundaries).
+  boundaries, and the carry: both fixtures inside their own floor, the reverse drop, an edited key
+  surviving it, key counts bounded over 10 re-baked round trips against an untagged control, and the
+  floor guard throwing on a between-probe map while an affine one and a real stalling ride pass).
 - `geoforce.ts` — the **invoked geo→force command**, and the only place the conversion tier and
   the document meet: `convertGeo(history, ecs, sectionId, opts)` drives `convert.ts`'s façade with
   the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), trackDs(ecs), MAX_SAMPLES −
