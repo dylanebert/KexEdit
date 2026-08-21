@@ -10,7 +10,7 @@ import {
     trackMapping,
     velocityCurve,
 } from "./cart";
-import { COLOR_VELOCITY, kindSegments } from "./colors";
+import { COLOR_INFEASIBLE, COLOR_VELOCITY, kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
 import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { appendMenu, keyframeMenu, rulerMenu } from "./menus";
@@ -110,6 +110,7 @@ import {
     snapSteps,
 } from "./settings";
 import { hits, merge, normRect, type Rect } from "./marquee";
+import { infeasibleSpans } from "./render";
 import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls, segmentSeed } from "./profile";
 import { TangentMode } from "./spline";
 import {
@@ -188,7 +189,12 @@ const posUnit = $derived(timeDomain ? "s" : "m");
 const RULER_H = 26; // top scrub band: ticks, labels, playhead handle
 const GAP_H = 20; // marker lane between ruler and chart — the section clip strip
 const CLIP_PAD = 2; // px; vertical inset of a section clip inside the marker lane
-const TOP = RULER_H + GAP_H; // chart top
+// the velocity-strip HEADER band: extent-only, display-derived — an authored strip's own future
+// body/resize/hit-test surface (C5) draws here too, but this stage draws only the red ghost, no
+// authoring: the strip's existence is what will make the band interactive, not this band alone
+// ("header carries extent, chart carries value"). Height is a bare visual minimum, no chrome.
+const STRIP_H = 8;
+const TOP = RULER_H + GAP_H + STRIP_H; // chart top
 const BOT_PAD = 8; // chart inset, bottom
 const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
 // PLAYER_GAP/PLAYER_H (view.ts) — the player's geometry above the dock, shared with the
@@ -800,6 +806,22 @@ const uAtPx = (px: number): number => pxToU(clamped, px - LEFT_GUT);
 // the cart's park): global distance `d` → canvas x, and back.
 const markerX = (d: number): number => uPx(uOf(d));
 const dAtPx = (px: number): number => dOf(uAtPx(px));
+
+// the red ghost strip's own extents, screen-projected: `render.infeasibleSpans` walks
+// `bakeOut.feasible` (the exact bad-edge test the viewport's dashed-red pass uses) into arclength
+// spans; `markerX` is the SAME arclength→px projection the recovered curve draws through, so the
+// band lands under the exact stretch the chart already reads as infeasible. Render-derived only —
+// no entity, no persistence, no hit-test (C5's authoring surface, not this stage's).
+const ghostSpans = $derived.by((): { x0: number; x1: number }[] => {
+    void tick;
+    if (eid === null || !curve) return [];
+    const out = bakeOut.get(eid);
+    if (!out) return [];
+    return infeasibleSpans(curve.s, out.feasible, curve.n).map((sp) => ({
+        x0: markerX(sp.start),
+        x1: markerX(sp.end),
+    }));
+});
 // a force keyframe's chart x — its global axis coordinate, straight off the lens's affine.
 const ptX = (p: ForcePt): number => uPx(p.u);
 
@@ -2314,6 +2336,27 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.fillRect(0, 0, w, RULER_H);
     ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
     ctx.fillRect(0, RULER_H, w, GAP_H);
+
+    // the velocity-strip HEADER band: a demarcated lane of its own, between the clip strip and
+    // the chart. This stage draws only the red ghost inside it — contiguous infeasible extents
+    // projected off the bake's own `feasible` (`render.infeasibleSpans`, `ghostSpans` above), the
+    // SAME visual register as the viewport's dashed-red pass (`COLOR_INFEASIBLE`, `colors.ts`).
+    // No authored strip exists yet (C5), so an all-feasible bake leaves the band empty.
+    ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
+    ctx.fillRect(0, RULER_H + GAP_H, w, STRIP_H);
+    for (const g of ghostSpans) {
+        const lo = Math.min(g.x0, g.x1);
+        const hi = Math.max(g.x0, g.x1);
+        if (hi < LEFT_GUT - 1 || lo > w) continue; // off-screen past the gutter or the right edge
+        const x0 = Math.max(LEFT_GUT, lo);
+        // a genuine sub-pixel or zero-width extent (S3's disclosed gap; the downstream freeze's
+        // own zero-length gap edge) must still read as PRESENT on screen — clamp the drawn width
+        // to 1px here, in the display only. `infeasibleSpans` itself stays exact.
+        const width = Math.max(1, Math.min(w, hi) - x0);
+        ctx.fillStyle = COLOR_INFEASIBLE;
+        ctx.fillRect(x0, RULER_H + GAP_H, width, STRIP_H);
+    }
+
     ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -2827,6 +2870,10 @@ onMount(() => {
             k.domain = (): string => (domain === Domain.Time ? "time" : "distance");
             k.forceU = (): { id: number; section: number; s: number; g: number; u: number }[] =>
                 forcePts.map((p) => ({ id: p.id, section: p.section, s: p.s, g: p.g, u: p.u }));
+            // the red ghost strip's own screen px, view-projected exactly as drawn (`ghostSpans`
+            // above) — the capture flow's pixel probe reads a point INSIDE one of these rather
+            // than re-deriving the arclength→px projection a second time (the ctxCut precedent).
+            k.ghostPx = (): { x0: number; x1: number }[] => ghostSpans;
         }
     }
     return () => {
@@ -2840,6 +2887,7 @@ onMount(() => {
                 delete k.xView;
                 delete k.domain;
                 delete k.forceU;
+                delete k.ghostPx;
             }
         }
         cancelAll(); // drop any in-flight gesture if we unmount mid-drag
@@ -2902,7 +2950,7 @@ onMount(() => {
         oncontextmenu={(e) => e.preventDefault()}
         role="presentation"
     >
-        <canvas bind:this={canvas}></canvas>
+        <canvas class="chart" bind:this={canvas}></canvas>
         <svg class="overlay" width={w} height={h}>
             <defs>
                 <!-- clip the force diamonds to the inner chart rect so a panned/off-

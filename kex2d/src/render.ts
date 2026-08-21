@@ -4,6 +4,7 @@ import {
     COLOR_ACCENT,
     COLOR_FORCE,
     COLOR_GUIDE_RAY,
+    COLOR_INFEASIBLE,
     DIM_WASH,
     hovered,
     kindSegments,
@@ -29,7 +30,6 @@ const HANDLE_R_SEL = 9;
 const ANCHOR_R = 5;
 const CART_W = 14;
 const CART_H = 7;
-const COLOR_INFEASIBLE = "#e26d5c";
 const COLOR_ANCHOR = "#9aa0a6";
 
 // target on-screen spacing between minor gridlines (px); the world step snaps to a
@@ -126,6 +126,43 @@ function strokeFeasible(
         }
     }
     ctx.stroke();
+}
+
+/** one contiguous infeasible extent on the document's arclength axis: `start`/`end` are the
+ *  bounding samples' own `s` values (never a sample index — the caller projects to a screen or
+ *  document coordinate, never re-derives one). */
+export interface InfeasibleSpan {
+    start: number;
+    end: number;
+}
+
+/** the ghost strip's own reader — the header band's sibling to `strokeFeasible`: same bad-edge
+ *  walk (an edge is bad when either endpoint fails V_WARN), but it returns arclength extents
+ *  instead of stroking a canvas, so it's pure and DOM-free. `s`/`feasible`/`count` are a bake's
+ *  own arrays (`cart.forceCurve`/`velocityCurve`'s `s`, `bakeOut.feasible`) — never re-derived.
+ *  Contiguity is measured, not assumed (S3): a per-edge walk is sufficient, no coalescing rule.
+ *  **A `start === end` span is real, not a bug**: the downstream freeze publishes a zero-length
+ *  gap edge (`ds = 0`) over a real position jump, and a single bad edge landing exactly there
+ *  produces a zero-width extent — the caller is responsible for keeping a degenerate span visible
+ *  on screen (a pixel-space minimum width), since this reader stays exact in document space. */
+export function infeasibleSpans(
+    s: Float64Array,
+    feasible: Uint8Array,
+    count: number,
+): InfeasibleSpan[] {
+    const spans: InfeasibleSpan[] = [];
+    let start = -1;
+    for (let i = 0; i < count - 1; i++) {
+        const bad = feasible[i] === 0 || feasible[i + 1] === 0;
+        if (bad) {
+            if (start === -1) start = i;
+        } else if (start !== -1) {
+            spans.push({ start: s[start], end: s[i] });
+            start = -1;
+        }
+    }
+    if (start !== -1) spans.push({ start: s[start], end: s[count - 1] });
+    return spans;
 }
 
 const TrackDrawSystem: System = {

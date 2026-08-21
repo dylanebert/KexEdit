@@ -25,6 +25,9 @@ import {
     DOCK_RESERVE,
     FORCE_LEN,
     frames,
+    HBAND_H,
+    HBAND_TOP,
+    LEFT_GUT,
 } from "./flow";
 
 // The boot fixture's own pin — the one flow here whose subject is the HARNESS, not the app.
@@ -1215,6 +1218,76 @@ test("viewport infeasible shot", async ({ page, boot }) => {
     await expect.poll(selectedSection).toBe(ids[1]);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "infeasible-selected.png"), clip });
+
+    // ── 7. the timeline's own HEADER BAND ghost strip: the SAME
+    // infeasibility steps 5–6 just reported STRUCTURALLY (span/warning, no viewport pixel read),
+    // now projected into the new band above the chart. `ghostPx()` is the render's INPUT read back
+    // (the screen-projected arclength spans `Timeline.svelte` computed to draw with) — proving the
+    // band actually painted needs a LIVE pixel read off the real canvas, not a second look at the
+    // same derivation. ──
+    const ghostPx = (): Promise<{ x0: number; x1: number }[]> => kexCall(page, "ghostPx");
+    const seenGhost: { x0: number; x1: number }[][] = [];
+    await expect
+        .poll(async () => {
+            seenGhost[0] = await ghostPx();
+            return seenGhost[0].length;
+        })
+        .toBeGreaterThan(0);
+    const ghost = seenGhost[0];
+    if (!ghost[0]) throw new Error("no ghost span reported");
+
+    const bodyBox = await page.locator(".dock .body").boundingBox();
+    if (!bodyBox) throw new Error("timeline body not laid out");
+    const probeChart = (x: number, y: number) =>
+        page.evaluate(
+            ({ x, y }) => {
+                const canvas = document.querySelector<HTMLCanvasElement>("canvas.chart");
+                const ctx = canvas?.getContext("2d");
+                if (!canvas || !ctx) return null;
+                const r = canvas.getBoundingClientRect();
+                const px = Math.round((x * canvas.width) / r.width);
+                const py = Math.round((y * canvas.height) / r.height);
+                if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
+                const d = ctx.getImageData(px, py, 1, 1).data;
+                return [d[0], d[1], d[2]] as [number, number, number];
+            },
+            { x, y },
+        );
+    // mid-span x, vertically centered in the header band — the SAME point Timeline.svelte's own
+    // draw loop fills opaque (`COLOR_INFEASIBLE`, no compositing over the band's own solid fill,
+    // so a tight tolerance — not the composited-alpha ProbeTol elsewhere — is warranted). y and
+    // color are independent of the draw path (y from this file's own hand-mirrored HBAND_TOP/H,
+    // color a hardcoded literal below); x is TRUSTED, not checked here — it comes from `ghostPx()`,
+    // the same `markerX` projection the draw loop itself consumes, so a broken projection moves
+    // both together and this probe alone can't see it. The negative probe below covers the gap: it
+    // catches the band painting solid regardless of `ghostSpans` (e.g. the per-span loop dropped).
+    const gx = (ghost[0].x0 + ghost[0].x1) / 2;
+    const gy = HBAND_TOP + HBAND_H / 2;
+    const pixel = await probeChart(gx, gy);
+    const InfeasibleRgb = [226, 109, 92]; // #e26d5c — `COLOR_INFEASIBLE`, `src/colors.ts`
+    const isInfeasible = (p: readonly number[] | null | undefined) =>
+        !!p && p.every((c, i) => Math.abs(c - InfeasibleRgb[i]) <= 4);
+    expect(pixel).not.toBeNull();
+    expect(isInfeasible(pixel)).toBe(true);
+
+    // negative probe: a point INSIDE the header band row, provably OUTSIDE every ghost span — not
+    // assumed, checked below against the same `ghostPx()` read. `LEFT_GUT + 2` is the chart's own
+    // left edge (a couple px past the axis inset), which after `frameTimeline` above maps to
+    // s≈0 — the very start of the track, i.e. inside the pull-up, well before the ramp's onset.
+    // Without this probe, a draw loop that fills the WHOLE band solid regardless of `ghostSpans`
+    // (e.g. the per-span loop dropped) would still pass the positive probe above.
+    const negX = LEFT_GUT + 2;
+    expect(negX).toBeLessThan(ghost[0].x0); // confirm it really sits left of the first red span
+    const negPixel = await probeChart(negX, gy);
+    expect(negPixel).not.toBeNull();
+    expect(isInfeasible(negPixel)).toBe(false);
+    // witnessed red: with `Timeline.svelte`'s per-span loop replaced by one unconditional
+    // `ctx.fillRect(LEFT_GUT, RULER_H + GAP_H, w - LEFT_GUT, STRIP_H)`, this probe failed
+    // (`isInfeasible(negPixel)` came back `true`) while the positive probe above still passed —
+    // confirming this probe, and only this probe, catches that regression. Reverted after.
+
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "infeasible-ghost-band.png"), clip: bodyBox });
 });
 
 // Drive the VIEWPORT MULTISELECT flow (kex2d-multiselect stage 6): seed a shaped geo track →

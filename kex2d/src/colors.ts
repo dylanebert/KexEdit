@@ -26,6 +26,12 @@ export const COLOR_GUIDE_RAY = "#9aa0a6";
  *  (`Timeline.svelte`) — no viewport twin exists to keep it consistent with. */
 export const COLOR_VELOCITY = "#7fb08a"; // rgb(127, 176, 138)
 
+/** the infeasible register: red = infeasible, one value shared by every surface that reads
+ *  `bakeOut.feasible` — the viewport's dashed-red track pass (`render.ts strokeFeasible`) and the
+ *  timeline header band's ghost strip (`render.ts infeasibleSpans`, `Timeline.svelte`) draw the
+ *  SAME hex, a shared constant rather than two hand-matched hardcodes. */
+export const COLOR_INFEASIBLE = "#e26d5c";
+
 /** the out-of-scope dim wash (`editor-ui.md` Mode vocabulary): while a mode is open,
  *  everything outside its subject steps back one rung under this wash — one meaning, both
  *  surfaces. Mirrors App.svelte's `--dim` CSS custom property (Timeline.svelte's `.mode-dim`
