@@ -25,6 +25,8 @@ import {
     DOCK_RESERVE,
     FORCE_LEN,
     frames,
+    HBAND_H,
+    HBAND_TOP,
 } from "./flow";
 
 // The boot fixture's own pin — the one flow here whose subject is the HARNESS, not the app.
@@ -1215,6 +1217,52 @@ test("viewport infeasible shot", async ({ page, boot }) => {
     await expect.poll(selectedSection).toBe(ids[1]);
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "infeasible-selected.png"), clip });
+
+    // ── 7. the timeline's own HEADER BAND ghost strip: the SAME
+    // infeasibility the viewport just proved red, projected into the new band above the chart.
+    // `ghostPx()` is the render's INPUT read back (the screen-projected arclength spans
+    // `Timeline.svelte` computed to draw with) — proving the band actually painted needs a LIVE
+    // pixel read off the real canvas, not a second look at the same derivation. ──
+    const ghostPx = (): Promise<{ x0: number; x1: number }[]> => kexCall(page, "ghostPx");
+    const seenGhost: { x0: number; x1: number }[][] = [];
+    await expect
+        .poll(async () => {
+            seenGhost[0] = await ghostPx();
+            return seenGhost[0].length;
+        })
+        .toBeGreaterThan(0);
+    const ghost = seenGhost[0];
+    if (!ghost[0]) throw new Error("no ghost span reported");
+
+    const bodyBox = await page.locator(".dock .body").boundingBox();
+    if (!bodyBox) throw new Error("timeline body not laid out");
+    const probeChart = (x: number, y: number) =>
+        page.evaluate(
+            ({ x, y }) => {
+                const canvas = document.querySelector<HTMLCanvasElement>("canvas.chart");
+                const ctx = canvas?.getContext("2d");
+                if (!canvas || !ctx) return null;
+                const r = canvas.getBoundingClientRect();
+                const px = Math.round((x * canvas.width) / r.width);
+                const py = Math.round((y * canvas.height) / r.height);
+                if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
+                const d = ctx.getImageData(px, py, 1, 1).data;
+                return [d[0], d[1], d[2]] as [number, number, number];
+            },
+            { x, y },
+        );
+    // mid-span x, vertically centered in the header band — the SAME point Timeline.svelte's own
+    // draw loop fills opaque (`COLOR_INFEASIBLE`, no compositing over the band's own solid fill,
+    // so a tight tolerance — not the composited-alpha ProbeTol elsewhere — is warranted).
+    const gx = (ghost[0].x0 + ghost[0].x1) / 2;
+    const gy = HBAND_TOP + HBAND_H / 2;
+    const pixel = await probeChart(gx, gy);
+    // #e26d5c = (226, 109, 92) — `COLOR_INFEASIBLE`, `src/colors.ts`, the SAME hex the viewport's
+    // dashed-red pass just proved red above (steps 5–6), reused at the header band's own register.
+    expect(pixel).not.toBeNull();
+    expect(pixel?.every((c, i) => Math.abs(c - [226, 109, 92][i]) <= 4)).toBe(true);
+    await page.waitForTimeout(SHOT_MS);
+    await page.screenshot({ path: join(OUT, "infeasible-ghost-band.png"), clip: bodyBox });
 });
 
 // Drive the VIEWPORT MULTISELECT flow (kex2d-multiselect stage 6): seed a shaped geo track →
