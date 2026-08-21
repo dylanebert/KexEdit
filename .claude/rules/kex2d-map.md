@@ -706,16 +706,20 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   completes it: each segment is subdivided until the target-unit shape matches the source-unit shape
   inside the march's own **resolution floor** — `resolutionFloor`, the largest |Δg| between two
   neighbouring samples one nominal march edge apart, derived per section at runtime from that
-  section's authored curve and `Track.ds` and never a stored literal (plus the g store's own f32
+  section's **visible** curve (its authored keys plus any the previous flip carried — the same set
+  the subdivision fits against) and `Track.ds` and never a stored literal (plus the g store's own f32
   quantum as the acceptance bound). Measured on the 40 m dive-and-recover, pre-carry: 0.049686 g of
   reshape against that section's own 0.022481 g floor, 2.2× over; 0.004363 g after, 0.19× of it.
   **Each inserted key is tagged** (`Force.carried`), and the reverse flip DROPS the tagged set and
   re-subdivides from the authored keys rather than simplifying the denser store heuristically — so
   `applyDomain` now plants and destroys force keyframes, not just rewrites positions.
   **The law is about reconstructibility from the AUTHORED set**, not about who writes a column:
-  `carryForce` fits the authored keys alone and derives its tolerance from them, so **any op that
-  changes a section's authored set invalidates the carried keys fitted to it**, whether or not it
-  writes their columns. Three classes. Every live-authoring writer
+  `carryForce` takes the two sets apart — it *writes* the authored keys (`output`) and *fits against*
+  the visible curve (`reference`), whose carried keys were themselves fitted to that authored set — so
+  **any op that changes a section's authored set invalidates the carried keys fitted to it**, whether
+  or not it writes their columns. (Conflating those two roles in one argument was BL-2: the reverse
+  flip fitted against the authored-only bezier, which is the reshaped curve the carry exists to
+  prevent.) Three classes. Every live-authoring writer
   (`setForcePoint`/`setForceEase`/`setForceTangent`/`clearForceTangentSide`)
   CLEARS the bit: a key the person has touched is authored and stops being droppable — but only when
   the write MOVES something, compared against the stored column, since `forceMove`→`applyDrag` writes
