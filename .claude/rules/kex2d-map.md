@@ -155,19 +155,37 @@ path and the DOF finally couples to the energy. Friction/drag (`forward.loss`) i
 one thing kept out to preserve this identity: it is landed in the kernel, deliberately, and the
 identity's zero-coefficient special case is what an unauthored track still relies on.
 
-**The authored-control exception** — stated as the law; its carrier is currently absent. An
-authored control prescribes `v²` over a span directly, as a known function of the span's own
-domain coordinate (arclength for geo/Distance-force, time for Time-force). This is the
-launch/brake case above, not path-dependent dissipation: the prescription reads the domain
+**The authored-control exception, stored-curve form.** An authored control
+prescribes `v²` over a span directly, as a known function of the span's own domain coordinate
+(arclength for geo/Distance-force, time for Time-force) — never a function of the live march. This
+is the launch/brake case above, not path-dependent dissipation: the prescription reads the domain
 coordinate alone, never the path `F_n` sweeps, so it doesn't couple a solver DOF to the energy and
 doesn't unlock a pin fourth row on its own. Composition with friction/drag: **prescription beats
 dissipation** — the loss lands inside the natural (now-dissipative) per-edge computation and the
 prescription overrides it unconditionally, so inside a controlled span the actuator absorbs the
 losses and a pinned station's speed stays a stamped constant either way (the additive-substrate
-law, above). The concrete carrier that used to implement this — a per-section `speed: { target }`
-linear ramp threaded through `evalGeo`/`evalForce` — was deleted unbuilt-upon (`kex2d-substrate`
-A5); no code implements the exception today. `kex2d-substrate` C2 rebuilds it as stored-curve
-velocity strips, and rewrites this passage to that form with the DOF-independence invariant named.
+law, above).
+
+The carrier is a **velocity strip**: `section.Strip`, `{start, end, value}` in section-local
+edge-index coordinates (the same indexing `fN`/`ds` already carry), threaded to
+`evalGeo`/`evalForce`/`chain` as a trailing, defaulted-`undefined` argument — an unauthored
+section threads no override at all, byte-identical to before strips existed. `section.stripOverride`
+builds the per-edge closure `(k) => value²` (ignoring `natural`, the same shape the old ramp's
+carrier used) that `forward.step`/`forward.integrate`/`bake.forces` already accepted as their
+`vSqOverride` channel. **A point is the degenerate `start === end` case**: an empty edge range
+holds no edge, so it overrides the single edge landing on that station instead, `[start − 1,
+start)` — "a point at station k overrides exactly edge (k−1→k)'s result," IEEE-exact (a stored
+value substituted, no arithmetic).
+
+**DOF-independence, the invariant strips ground:** `start`/`end`/`value` are stored constants in
+the section's own domain coordinate — read at bake time, never derived from the live march's own
+state. A strip's value is seeded once, at creation, from the published bake's `v` at its first
+station (a UI act, C5, not a kernel mechanism) and stored thereafter; the kernel never recaptures
+it mid-march. This is what keeps a strip legible to the same DOF-independence a pin's refusal row
+already relies on: an authored control that read `natural` (the march's own live v²) would make
+`v_exit` a function of whatever DOF the march's own state depends on, exactly the coupling pin's
+three-row refusal exists to rule out — a captured mid-march constant is a function of the prefix
+march, which pins DOF reach in a way a stored constant never does.
 
 **The one breach is the velocity clamp, and the gate reads it at its own site.** `step` and
 `forces` both take `v = sqrt(max(v², 0))`, so a march that runs out of energy has energy

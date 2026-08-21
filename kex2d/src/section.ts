@@ -91,13 +91,65 @@ export interface SectionResult {
     injection: number;
 }
 
+/** an authored velocity control's stored payload — section-local edge-index
+ *  coordinates, the SAME indexing `fN`/`ds` already carry (`edges` wide,
+ *  0-based). overrides the recovery's v² for every edge in the half-open
+ *  `[start, end)` to the constant `value` (m/s, `Entry.v`'s own unit — the
+ *  kernel squares it once, at the override site, so the number stored here
+ *  is the same one a person reads off the channel). A **point** is the
+ *  degenerate `start === end` case: an empty range holds no edge, so it
+ *  overrides the SINGLE edge landing on that station instead —
+ *  `[start − 1, start)`, "a point at station k overrides exactly edge
+ *  (k−1→k)'s result" (`kex2d-map.md`'s "Velocity strips" locked decision).
+ *  DOF-independent: `start`/`end`/`value` are stored constants in the
+ *  section's own domain coordinate, never a function of the live march
+ *  (`kex2d-map.md`'s authored-control exception, the invariant strips
+ *  ground). C2 ships only the constant curve; an editable curve inside a
+ *  strip is C6's `storedCurve(i)`, the same closure shape `stripOverride`
+ *  already generalizes to. */
+export interface Strip {
+    start: number;
+    end: number;
+    value: number;
+}
+
+/** build the per-edge v² override `forward.step`/`forward.integrate`/
+ *  `bake.forces` already accept from a section's strips — pure, ignoring
+ *  `natural` (prescription beats dissipation: inside a controlled span the
+ *  actuator absorbs the losses, `kex2d-map.md`'s path-energy law). Returns
+ *  `undefined` when there are no strips, so an unauthored section threads
+ *  no override at all (byte-identical to before strips existed). Same-type
+ *  strips never overlap by construction (the write op's own guard, C3/C5);
+ *  this reads the first match, defensive only — a well-formed authored
+ *  track never exercises the fallthrough. */
+export function stripOverride(
+    strips: readonly Strip[] | undefined,
+): ((k: number, natural: number) => number | undefined) | undefined {
+    if (!strips || strips.length === 0) return undefined;
+    return (k: number) => {
+        for (const s of strips) {
+            const lo = s.start === s.end ? s.start - 1 : s.start;
+            if (k >= lo && k < s.end) return s.value * s.value;
+        }
+        return undefined;
+    };
+}
+
 /** a section's authored payload. geo carries local nodes (node 0 at the local
  *  origin, heading 0) + nominal spacing (m); force carries a per-edge F_n
  *  profile (g) + its edge step in its `domain`'s own unit (m for `Distance`, s
- *  for `Time`). */
+ *  for `Time`). both kinds carry an optional `strips` — the velocity-control
+ *  channel (above), threaded to the recovery (and, for force, the march too)
+ *  regardless of which authoring idiom produced the geometry. */
 export type Section =
-    | { kind: "geo"; nodes: readonly Node[]; ds: number }
-    | { kind: "force"; fN: ArrayLike<number>; step: Step; domain?: Domain };
+    | { kind: "geo"; nodes: readonly Node[]; ds: number; strips?: readonly Strip[] }
+    | {
+          kind: "force";
+          fN: ArrayLike<number>;
+          step: Step;
+          domain?: Domain;
+          strips?: readonly Strip[];
+      };
 
 /** rotate a tangent's in/out vectors by the rotation `(c, s) = (cos φ, sin φ)`.
  *  an explicit tangent is stored in the node's local frame, so re-expressing the node
@@ -172,7 +224,10 @@ function exitOf(
  * with `valid`/`truncated` set (mirrors `sampleChain`). `friction`/`resistance`
  * (both defaulted 0, trailing — the substrate's positional-last convention)
  * thread to the recovery's dissipative loss (the additive-substrate law,
- * `kex2d-map.md`).
+ * `kex2d-map.md`). `strips` (trailing, defaulted `undefined`) threads to the
+ * SAME recovery via `stripOverride` — geo geometry never depends on v (no
+ * march), so a strip only ever changes `v`/`fN` from its own edges onward,
+ * never the sampled positions.
  */
 export function evalGeo(
     entry: Entry,
@@ -181,6 +236,7 @@ export function evalGeo(
     maxSamples = MAX,
     friction = 0,
     resistance = 0,
+    strips?: readonly Strip[],
 ): SectionResult {
     const world = nodes.map((n) => place(entry, n));
     const posX = new Float32Array(maxSamples);
@@ -206,6 +262,7 @@ export function evalGeo(
         V_FLOOR,
         friction,
         resistance,
+        stripOverride(strips),
     );
     return {
         posX: posX.slice(0, edges + 1),
@@ -254,6 +311,15 @@ export function evalGeo(
  *
  * `friction`/`resistance` (both defaulted 0, trailing) thread to BOTH the
  * march (`stepForward`/`integrate`) and the re-recovery (`forces`).
+ *
+ * `strips` (trailing, defaulted `undefined`) threads to BOTH the march and
+ * the re-recovery too — via `stripOverride`, one closure per call so both
+ * passes agree on the exact same edges. Overriding `v` during the march
+ * matters beyond the recovery: `vSafe` (this integrator's own denominator,
+ * `forward.step`) feeds the NEXT edge's curvature, so a strip changes the
+ * swept geometry downstream of itself, same as an authored F_n would — a
+ * brake or launch curve reshapes the track it authors, not just its speed
+ * channel.
  */
 export function evalForce(
     entry: Entry,
@@ -262,6 +328,7 @@ export function evalForce(
     domain: Domain = Domain.Distance,
     friction = 0,
     resistance = 0,
+    strips?: readonly Strip[],
 ): SectionResult {
     const { edges, ds } = step;
     if (fN.length !== edges) {
@@ -277,6 +344,7 @@ export function evalForce(
     theta[0] = entry.theta;
     v[0] = entry.v;
 
+    const override = stripOverride(strips);
     const dsArr = new Float32Array(edges);
     if (domain === Domain.Time) {
         for (let i = 0; i < edges; i++) {
@@ -295,6 +363,7 @@ export function evalForce(
                 V_FLOOR,
                 friction,
                 resistance,
+                override && ((natural) => override(i, natural)),
             );
         }
     } else {
@@ -310,6 +379,7 @@ export function evalForce(
             V_FLOOR,
             friction,
             resistance,
+            override,
         );
         dsArr.fill(ds);
     }
@@ -330,6 +400,7 @@ export function evalForce(
         V_FLOOR,
         friction,
         resistance,
+        override,
     );
     return {
         posX,
@@ -404,8 +475,16 @@ export function chain(
     for (const sec of sections) {
         const r =
             sec.kind === "geo"
-                ? evalGeo(entry, sec.nodes, sec.ds, maxSamples - off, friction, resistance)
-                : evalForce(entry, sec.fN, sec.step, sec.domain, friction, resistance);
+                ? evalGeo(
+                      entry,
+                      sec.nodes,
+                      sec.ds,
+                      maxSamples - off,
+                      friction,
+                      resistance,
+                      sec.strips,
+                  )
+                : evalForce(entry, sec.fN, sec.step, sec.domain, friction, resistance, sec.strips);
         const start = off;
         // bound the COPY at the flat buffers' remaining room. `evalGeo` already respects it —
         // it was handed `maxSamples - off` as its own budget, so `r.edges` never exceeds what's
