@@ -712,7 +712,7 @@ test("coefficient field refusal flow", async ({ page, boot }) => {
     await expect(v0Input).toHaveValue(v0Before.toFixed(1));
 });
 
-// Drive the VELOCITY-STRIP HEADER BAND flow (kex2d-substrate C5): create-drag a span strip,
+// Drive the VELOCITY-STRIP HEADER BAND flow: create-drag a span strip,
 // resize its endpoint, body-drag it, refuse then land a typed value through the popover, and
 // delete it — every affordance through the real pointer/keyboard, `__kex.stripsOf`/
 // `selectedStrip` read only for assertions. The band (`.hbandzone`) sits directly under the
