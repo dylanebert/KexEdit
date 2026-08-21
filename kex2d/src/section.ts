@@ -119,9 +119,11 @@ export interface Strip {
  *  actuator absorbs the losses, `kex2d-map.md`'s path-energy law). Returns
  *  `undefined` when there are no strips, so an unauthored section threads
  *  no override at all (byte-identical to before strips existed). Same-type
- *  strips never overlap by construction (the write op's own guard, C3/C5);
- *  this reads the first match, defensive only — a well-formed authored
- *  track never exercises the fallthrough. */
+ *  strips never claim the same edge by construction — the write op's own
+ *  guard (`track.stripOverlapped`, C3/C5) is tested at THIS function's own
+ *  edge convention, not station space, so two authored strips can never
+ *  both match a given `k` here; this reads the first match, defensive only
+ *  — a well-formed authored track never exercises the fallthrough. */
 export function stripOverride(
     strips: readonly Strip[] | undefined,
 ): ((k: number, natural: number) => number | undefined) | undefined {

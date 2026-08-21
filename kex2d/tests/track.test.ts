@@ -3214,14 +3214,70 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(sectionStrips(state, sec).length).toBe(3);
     });
 
-    test("a point strip strictly inside another strip overlaps; one at its boundary does not", () => {
+    // GRANT direction, pinned first (`checks.md`: a fail-closed rewrite's own over-refusal
+    // is invisible to every arm the rewrite adds, since those arms all pin refusals) —
+    // every one of these must still land after the edge-convention fix below.
+    test("grant direction: legitimate abutments and disjoint strips all still land", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const span = createStrip(state, sec, 5, 15, 8);
+        expect(span).not.toBeNull();
+        // a point at the span's OWN start: reaches backward to edge [4, 5), the span
+        // claims [5, 15) — disjoint edges, legal (the reverse boundary, verified
+        // genuinely non-colliding — this direction must not break).
+        expect(stripOverlapped(state, sec, 5, 5, -1)).toBe(false);
+        const atStart = createStrip(state, sec, 5, 5, 1);
+        expect(atStart).not.toBeNull();
+        // two spans abutting (one starts exactly where the other ends): legal.
+        const nextSpan = createStrip(state, sec, 15, 20, 6);
+        expect(nextSpan).not.toBeNull();
+        // a point past everything, and a genuinely disjoint span: both legal.
+        const farPoint = createStrip(state, sec, 25, 25, 2);
+        expect(farPoint).not.toBeNull();
+        const disjointSpan = createStrip(state, sec, 30, 35, 3);
+        expect(disjointSpan).not.toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(5);
+    });
+
+    test("a point strip strictly inside another strip overlaps; one at its START boundary does not, one at its END boundary does", () => {
+        // red before the fix: `stripOverlapped` used the symmetric span formula for a point
+        // candidate too, so a point at a span's END read `false` ("no overlap") even though
+        // `stripOverride`'s kernel edge convention (`section.ts`) has the point claim exactly
+        // the span's own last edge — the same edge, not merely an adjacent station. Witnessed
+        // by reverting `stripEdgeRange`'s point branch to the plain `start`/`end` (the old
+        // symmetric test): this line read `false` where it must read `true`.
         const { state, sec } = track();
         convertSection(state, sec);
         createStrip(state, sec, 5, 15, 8);
         expect(stripOverlapped(state, sec, 10, 10, -1)).toBe(true); // strictly interior point
-        expect(stripOverlapped(state, sec, 5, 5, -1)).toBe(false); // at the start boundary
-        expect(stripOverlapped(state, sec, 15, 15, -1)).toBe(false); // at the end boundary
+        expect(stripOverlapped(state, sec, 5, 5, -1)).toBe(false); // at the start boundary — legal
+        expect(stripOverlapped(state, sec, 15, 15, -1)).toBe(true); // at the end boundary — SAME edge, refused
         expect(stripOverlapped(state, sec, 20, 20, -1)).toBe(false); // free
+    });
+
+    test("createStrip refuses a point at a span's END boundary — the collision that used to land dead-on-arrival", () => {
+        // red before the fix, reproduced end to end (not just at the guard): the point used
+        // to be CREATED, then silently shadowed forever — `stripOverride`'s linear scan hits
+        // the span first, so the point's authored value never took effect at bake time.
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, default extent EXTEND_DIST = 24
+        const span = createStrip(state, sec, 5, 15, 4);
+        expect(span).not.toBeNull();
+        const point = createStrip(state, sec, 15, 15, 99); // refused: same kernel edge as the span's end
+        expect(point).toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(1);
+    });
+
+    test("createStrip refuses two point strips at the identical station (a duplicate, not a collision at a boundary)", () => {
+        // red before the fix: both calls returned non-null ids and `sectionStrips` came back
+        // with 2 rows for the same station — the second permanently dead weight.
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const p1 = createStrip(state, sec, 10, 10, 1);
+        expect(p1).not.toBeNull();
+        const p2 = createStrip(state, sec, 10, 10, 2);
+        expect(p2).toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(1);
     });
 
     test("setStrip refuses an overlapping move (keeps start/end) and still lands the value write; a non-colliding move lands both", () => {

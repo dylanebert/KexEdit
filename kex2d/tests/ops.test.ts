@@ -45,6 +45,7 @@ import {
     seedTangent,
     setTangent,
     setTrackDomain,
+    setTrackFriction,
     splitForce,
     splitGeo,
     splitGeoAt,
@@ -609,6 +610,72 @@ describe("split", () => {
             expect(Math.abs(got - want)).toBeLessThan(1e-2 * Math.max(1, Math.abs(want)));
         }
     });
+
+    // C3 review, finding 2: `splitGeo` (reached by `splitGeoAt`) had ZERO strip handling
+    // while `splitForce` correctly split a straddling strip into two — a cut inside a
+    // geo section silently dropped the tail half's authored hold. Red before the fix:
+    // `sectionStrips(b)` came back `[]` and the tail's `v` decayed under friction
+    // (5 → 4.59 → 4.14 → 3.64...) instead of holding the authored 5 through its own
+    // local [0, 4). Witnessed by reverting `splitGeo`'s strip loop and re-running this
+    // test — `tailStrips.length` read 0 and the tail-side `toBeCloseTo` assertions below
+    // failed by the friction-decay magnitude, not float noise.
+    test("Cut is lossless for a velocity strip on a geo section: the tail half holds its value under friction, not decays", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 24, 0); // flat, straight, 24 m
+        setTrackFriction(eid, 0.05);
+        const stripId = createStrip(state, a, 8, 16, 5);
+        expect(stripId).not.toBeNull();
+        state.step(0);
+
+        const infoBefore = sectionInfo.get(a);
+        if (!infoBefore) throw new Error("no pre-cut bake");
+        const outBefore = bakeOut.get(eid);
+        if (!outBefore) throw new Error("no pre-cut bakeOut");
+        const preV = Array.from(
+            { length: infoBefore.endSample - infoBefore.startSample + 1 },
+            (_, i) => outBefore.v[infoBefore.startSample + i],
+        );
+
+        // segment 0 (the section's only segment) at t=0.5: a symmetric straight-line cubic
+        // lands its midpoint parameter at the exact spatial/arclength midpoint (12), inside
+        // the strip [8, 16) — straddling it, the case a boundary-aligned strip can't exercise.
+        const b = splitGeoAt(state, a, 0, 0.5);
+        expect(b).not.toBeNull();
+        if (b === null) return;
+        state.step(0);
+
+        const headStrips = sectionStrips(state, a);
+        const tailStrips = sectionStrips(state, b);
+        expect(headStrips.length).toBe(1);
+        expect(tailStrips.length).toBe(1); // was 0 before the fix
+        expect(headStrips[0].start).toBe(8);
+        expect(headStrips[0].value).toBe(5);
+        expect(headStrips[0].end).toBeGreaterThan(8);
+        expect(headStrips[0].end).toBeLessThan(16);
+        expect(tailStrips[0].start).toBe(0);
+        expect(tailStrips[0].value).toBe(5);
+        expect(tailStrips[0].end).toBeCloseTo(16 - headStrips[0].end, 3);
+        expect(headStrips[0].end).toBeCloseTo(12, 1); // the symmetric-midpoint arclength
+
+        const infoHead = sectionInfo.get(a);
+        const infoTail = sectionInfo.get(b);
+        if (!infoHead || !infoTail) throw new Error("no post-cut bake");
+        const outAfter = bakeOut.get(eid);
+        if (!outAfter) throw new Error("no post-cut bakeOut");
+
+        const headCount = infoHead.endSample - infoHead.startSample;
+        for (let i = 0; i <= headCount; i++) {
+            expect(outAfter.v[infoHead.startSample + i]).toBeCloseTo(preV[i], 3);
+        }
+        const tailCount = infoTail.endSample - infoTail.startSample;
+        for (let i = 0; i <= tailCount; i++) {
+            expect(outAfter.v[infoTail.startSample + i]).toBeCloseTo(preV[headCount + i], 3);
+        }
+    });
 });
 
 describe("join", () => {
@@ -1070,6 +1137,93 @@ describe("join", () => {
         // heading (1, 0) — not the unguarded read's (0, 0).
         expect(merged?.inX).toBeCloseTo(1, 6);
         expect(merged?.inY).toBeCloseTo(0, 6);
+    });
+});
+
+// C3 review, finding 3: `joinNext`'s ~50-line strip merge/rebase (both the geo
+// rebase-only branch and the force merge-on-agreement branch) was reached by NO test
+// anywhere in the suite before this — grep confirmed zero hits for `createStrip` inside
+// a join fixture. Arithmetically correct by hand-inspection (the reviewer's own probe);
+// these arms are the missing gate, not a fix for wrong behavior.
+describe("joinNext — velocity strip merge/rebase (C3 review, coverage)", () => {
+    test("geo join rebases the neighbor's strips past A's own arclength; A's own strips stay put", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 24, 0); // flat, straight — A's own arclength is exactly 24
+        const b = createSection(state, 1, SectionKind.Geo, 0);
+        addNode(state, b, 0, 0);
+        addNode(state, b, 10, 0);
+        createStrip(state, a, 20, 24, 5); // A's own, near its tail
+        createStrip(state, b, 2, 6, 7); // B's own, interior
+        state.step(0);
+
+        expect(joinNext(state, a)).toBe(true);
+
+        const strips = sectionStrips(state, a);
+        expect(strips.length).toBe(2);
+        const aStrip = strips.find((r) => r.value === 5);
+        const bStrip = strips.find((r) => r.value === 7);
+        expect(aStrip?.start).toBeCloseTo(20, 2); // A's own strip: unchanged
+        expect(aStrip?.end).toBeCloseTo(24, 2);
+        expect(bStrip?.start).toBeCloseTo(26, 2); // B's own strip: rebased by A's 24 m
+        expect(bStrip?.end).toBeCloseTo(30, 2);
+    });
+
+    test("force join merges two abutting strips into one when their values agree at the boundary", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20);
+        createStrip(state, a, 15, 20, 5); // touches A's own length — aTailStrip
+        const b = createSection(state, 1, SectionKind.Force, 10);
+        createStrip(state, b, 0, 4, 5); // touches B's own start — bHeadStrip, SAME value
+
+        expect(joinNext(state, a)).toBe(true);
+
+        const strips = sectionStrips(state, a);
+        expect(strips.length).toBe(1); // merged: B's strip destroyed, A's extended
+        expect(strips[0]).toMatchObject({ start: 15, end: 24, value: 5 });
+    });
+
+    test("force join refuses to merge when the abutting strips' values disagree — both survive", () => {
+        // the Locked decision's Cut/Join bullet: "Join merges abutting strips iff values
+        // agree at the boundary" — a positional-only merge would silently overwrite one
+        // author's value with the other's, the same discontinuity-hiding class the
+        // keyframe dedupe guard above already refuses.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20);
+        createStrip(state, a, 15, 20, 5);
+        const b = createSection(state, 1, SectionKind.Force, 10);
+        createStrip(state, b, 0, 4, 9); // disagrees
+
+        expect(joinNext(state, a)).toBe(true);
+
+        const strips = sectionStrips(state, a);
+        expect(strips.length).toBe(2);
+        expect(strips.find((r) => r.value === 5)).toMatchObject({ start: 15, end: 20 });
+        expect(strips.find((r) => r.value === 9)).toMatchObject({ start: 20, end: 24 });
+    });
+
+    test("force join's degenerate-point-survivor case: two disagreeing point strips at the shared boundary both survive, unmerged", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20);
+        createStrip(state, a, 20, 20, 5); // a point exactly at A's own end
+        const b = createSection(state, 1, SectionKind.Force, 10);
+        createStrip(state, b, 0, 0, 9); // a point exactly at B's own start — disagrees
+
+        expect(joinNext(state, a)).toBe(true);
+
+        const strips = sectionStrips(state, a);
+        expect(strips.length).toBe(2);
+        expect(strips.find((r) => r.value === 5)).toMatchObject({ start: 20, end: 20 });
+        expect(strips.find((r) => r.value === 9)).toMatchObject({ start: 20, end: 20 });
     });
 });
 

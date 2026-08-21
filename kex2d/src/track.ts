@@ -303,13 +303,27 @@ export function stripAt(ecs: State, id: number): number | null {
 // monotone id source — never reused, even after a delete (the section/force-id rationale).
 let nextStripId = 0;
 
+/** the edge-index half-open range `[lo, hi)` a strip `[start, end)` claims —
+ *  `stripOverride`'s (`section.ts`) own convention, not the symmetric span math: a
+ *  span claims edges `[start, end)`, but a degenerate point at station `p` reaches
+ *  BACKWARD to the edge arriving at it, `[p−1, p)`, never forward. Overlap has to be
+ *  tested in THIS coordinate, not station space — two candidates overlap iff they'd
+ *  claim the same kernel edge, and a point at a span's `end` claims that span's own
+ *  last edge (the same edge), even though the two stations only abut. */
+function stripEdgeRange(start: number, end: number): [number, number] {
+    return start === end ? [start - 1, start] : [start, end];
+}
+
 /** whether a candidate `[start, end)` span overlaps another strip already on `sectionId` —
- *  the half-open interval intersection the Locked decision names verbatim: `a.start < b.end
- *  && b.start < a.end`, refused; abutment legal. `exceptId` excludes the strip asking (a
+ *  tested at the edge-index level (`stripEdgeRange`), the coordinate `stripOverride`
+ *  (`section.ts`) actually resolves against, not station space: two ranges overlap iff
+ *  `aLo < bHi && bLo < aHi` over their edge ranges. `exceptId` excludes the strip asking (a
  *  strip never collides with itself, `stationTaken`'s own self-exclusion shape) — pass -1
- *  from a create (no existing strip to except). Applies uniformly to a degenerate point
- *  (`start === end`): its own empty interval only overlaps a strip that STRICTLY contains
- *  the point, never one it merely touches at a boundary. */
+ *  from a create (no existing strip to except). A degenerate point (`start === end`) claims
+ *  the single edge arriving at its station, `[start−1, start)` — so it overlaps a span at
+ *  its OWN start boundary (their edge ranges are disjoint: `[start−1,start)` vs
+ *  `[start,end)`) but collides at the span's END boundary (both claim the span's own last
+ *  edge) — one guard, correct in both directions, matching `stripOverride` exactly. */
 export function stripOverlapped(
     ecs: State,
     sectionId: number,
@@ -317,9 +331,11 @@ export function stripOverlapped(
     end: number,
     exceptId: number,
 ): boolean {
+    const [aLo, aHi] = stripEdgeRange(start, end);
     for (const row of sectionStrips(ecs, sectionId)) {
         if (row.id === exceptId) continue;
-        if (start < row.end && row.start < end) return true;
+        const [bLo, bHi] = stripEdgeRange(row.start, row.end);
+        if (aLo < bHi && bLo < aHi) return true;
     }
     return false;
 }
@@ -468,13 +484,26 @@ function geoChordDs(
     ecs: State,
     sectionId: number,
     dsNominal: number,
-): { ds: Float32Array; edges: number } {
+): { ds: Float32Array; edges: number; offsets: number[] } {
     const nodes = geoNodes(ecs, sectionId);
     const posX = new Float32Array(MAX_SAMPLES);
     const posY = new Float32Array(MAX_SAMPLES);
     const dsArr = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
     const r = sampleChain(nodes, dsNominal, posX, posY, dsArr, MAX_SAMPLES);
-    return { ds: dsArr, edges: r.edges };
+    return { ds: dsArr, edges: r.edges, offsets: r.offsets };
+}
+
+/** the arclength (meters) a geo section's own node `k` lands at, from the section's
+ *  entry — sums the section's live chord array (`geoChordDs`) up to node `k`'s landing
+ *  sample. the same station coordinate `Strip.start`/`end` are authored in, so a split
+ *  or join can rebase a geo strip by this value the same way `splitForce` rebases by
+ *  its cut's `s` (`kex2d-map.md`'s Cut/Join bullet drew no force-vs-geo distinction). */
+function geoNodeArc(ecs: State, sectionId: number, dsNominal: number, k: number): number {
+    const { ds, offsets } = geoChordDs(ecs, sectionId, dsNominal);
+    const landing = offsets[k] ?? 0;
+    let arc = 0;
+    for (let i = 0; i < landing; i++) arc += ds[i];
+    return arc;
 }
 
 type Samples = {
@@ -2309,13 +2338,26 @@ function headExit(ecs: State, handles: readonly number[], k: number): Entry {
  *  boundary frame (rigid — its node 0 becomes {0,0,0} at heading 0 only when the
  *  boundary is Auto; an explicit-tangent boundary carries a nonzero node-0 heading
  *  that compensates the recovered-vs-stored gap). node k stays the head's new tip.
- *  no-op at the entry or last node. returns the new (tail) section id, or null. */
+ *  no-op at the entry or last node. returns the new (tail) section id, or null.
+ *
+ *  strips split at the same cut, `splitForce`'s own shape (the Locked decision's
+ *  Cut/Join bullet draws no force-vs-geo distinction): a strip wholly on one side
+ *  just stays put (head) or rebases (tail); a straddling strip splits into two
+ *  strips holding the same value; a point strip AT the cut station stays with the
+ *  HEAD (`section.ts`'s point convention — a point at station `s` overrides the
+ *  edge ARRIVING at `s`, `[s−1, s)`, the head's own last edge, never the tail's
+ *  first). the cut's own arclength is read off the section's LIVE chord array
+ *  (`geoNodeArc`) BEFORE any node is moved or destroyed — a geo section's extent
+ *  is a sampled reading, not an authored constant, so it must be read once, off
+ *  the pre-split geometry, and reused for every strip. */
 export function splitGeo(ecs: State, sectionId: number, k: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return null;
     const handles = sectionHandles(ecs, sectionId);
     const n = handles.length - 1;
     if (k < 1 || k >= n) return null;
+
+    const cutArc = geoNodeArc(ecs, sectionId, trackDs(ecs), k);
 
     // re-frame against the head's RECOVERED exit (the bake's downstream entry), not the
     // boundary node's stored heading — see `headExit`.
@@ -2333,6 +2375,23 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
         spawnNode(ecs, bId, i - k, bl.x, bl.y, bl.theta, bl.tangent);
     }
     for (let i = k + 1; i <= n; i++) ecs.destroy(handles[i]); // trim the head to [0..k]
+
+    for (const st of sectionStrips(ecs, sectionId)) {
+        const point = st.start === st.end;
+        if (point ? st.start <= cutArc : st.end <= cutArc) continue; // wholly head, unchanged
+        if (st.start >= cutArc) {
+            // wholly tail: rebase.
+            Strip.section.set(st.eid, bId);
+            Strip.start.set(st.eid, st.start - cutArc);
+            Strip.end.set(st.eid, st.end - cutArc);
+            continue;
+        }
+        // straddles cutArc (non-degenerate only — a point can't straddle): head keeps
+        // [start, cutArc), a new tail strip opens at [0, end - cutArc), both holding
+        // the same constant.
+        Strip.end.set(st.eid, cutArc);
+        createStrip(ecs, bId, 0, st.end - cutArc, st.value);
+    }
     return bId;
 }
 
