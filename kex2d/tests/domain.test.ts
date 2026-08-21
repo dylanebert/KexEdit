@@ -13,6 +13,7 @@ import {
     bakeOut,
     createForcePoint,
     createSection,
+    createStrip,
     createTrack,
     DS_NOMINAL,
     DT_NOMINAL,
@@ -30,6 +31,7 @@ import {
     sectionForces,
     sectionInfo,
     sections,
+    sectionStrips,
     setForceTangent,
     setTrackDomain,
     setTrackV0,
@@ -405,6 +407,96 @@ describe("forward conversion", () => {
     });
 });
 
+// C3's own seam: a strip's `start`/`end` convert exactly like a keyframe's `s` — each
+// endpoint independently, through the section's own window — while `value` (m/s) is
+// domain-independent and passes through unconverted. The wrong-granularity headline: an
+// INTERIOR-start, INTERIOR-end strip, both directions (Distance→Time and Time→Distance) —
+// a whole-section strip would pass even a broken endpoint conversion, since a boundary
+// landing exactly at 0 or the section's own extent is the one case every off-by-one bug
+// also gets right (the wrong-granularity headline arm).
+describe("velocity strip endpoints (C3)", () => {
+    const f32Tol = (magnitude: number) => 2 ** -24 * Math.max(1, magnitude);
+
+    test("Distance→Time: an interior strip's start/end convert through the section's own window; value is untouched", () => {
+        const { state, eid, sec } = forceTrack(40, [
+            [0, 1],
+            [10, 1.6],
+            [25, 0.6],
+            [40, 1],
+        ]);
+        const stripId = createStrip(state, sec, 12, 28, 7.5) as number; // interior, off any keyframe
+        expect(stripId).not.toBeNull();
+        state.step(0); // the new strip enters the bake hash — re-bake before reading the table
+        const tab = table(eid);
+        const h = createHistory();
+
+        expect(convertDomain(h, state, Domain.Time)).toBe(true);
+        expect(trackDomain(state)).toBe(Domain.Time);
+        const after = sectionStrips(state, sec)[0];
+        const wantStart = interp(tab.arc, tab.t, 12);
+        const wantEnd = interp(tab.arc, tab.t, 28);
+        expect(after.start).toBeCloseTo(wantStart, 6);
+        expect(Math.abs(after.start - wantStart)).toBeLessThanOrEqual(f32Tol(wantStart));
+        expect(after.end).toBeCloseTo(wantEnd, 6);
+        expect(Math.abs(after.end - wantEnd)).toBeLessThanOrEqual(f32Tol(wantEnd));
+        expect(after.value).toBe(7.5); // velocity is not a station — unconverted
+        expect(after.start).toBeGreaterThan(0); // still interior, not collapsed to an endpoint
+        expect(after.end).toBeLessThan(extent(state, sec));
+    });
+
+    test("Time→Distance: an interior strip's start/end convert through the section's own window; value is untouched", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        const sec = createSection(state, 0, SectionKind.Force, 4); // 4 s, off-flat profile
+        createForcePoint(state, sec, 0, 1.3);
+        createForcePoint(state, sec, 1.5, 0.7);
+        createForcePoint(state, sec, 4, 1.3);
+        state.step(0);
+        const stripId = createStrip(state, sec, 1, 3, 6) as number; // interior seconds
+        expect(stripId).not.toBeNull();
+        state.step(0);
+        const tab = table(eid);
+        const h = createHistory();
+
+        expect(convertDomain(h, state, Domain.Distance)).toBe(true);
+        expect(trackDomain(state)).toBe(Domain.Distance);
+        const after = sectionStrips(state, sec)[0];
+        // the inverse table lookup: distance where the bake's own arc↔time table reads t=1/t=3.
+        const wantStart = interp(tab.t, tab.arc, 1);
+        const wantEnd = interp(tab.t, tab.arc, 3);
+        expect(after.start).toBeCloseTo(wantStart, 6);
+        expect(Math.abs(after.start - wantStart)).toBeLessThanOrEqual(f32Tol(wantStart));
+        expect(after.end).toBeCloseTo(wantEnd, 6);
+        expect(Math.abs(after.end - wantEnd)).toBeLessThanOrEqual(f32Tol(wantEnd));
+        expect(after.value).toBe(6);
+        expect(after.start).toBeGreaterThan(0);
+        expect(after.end).toBeLessThan(extent(state, sec));
+    });
+
+    test("a strip on a geo section passes through untouched, like a geo node", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const geo = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, geo, 0, 0);
+        addNode(state, geo, 24, 0);
+        addNode(state, geo, 48, 6);
+        const force = createSection(state, 1, SectionKind.Force, 30);
+        createForcePoint(state, force, 0, 1);
+        createForcePoint(state, force, 30, 1);
+        state.step(0);
+        createStrip(state, geo, 5, 15, 4);
+        state.step(0);
+        const before = sectionStrips(state, geo)[0];
+
+        expect(convertDomain(createHistory(), state, Domain.Time)).toBe(true);
+        const after = sectionStrips(state, geo)[0];
+        expect(after).toEqual(before);
+    });
+});
+
 describe("round trip", () => {
     // Meters → Seconds → Meters is NEAR-identical, never bit-identical, and the bound is
     // derivable exactly.
@@ -593,6 +685,12 @@ describe("undo", () => {
                     tin: [Force.tin.x.get(p.eid), Force.tin.y.get(p.eid)],
                     tout: [Force.tout.x.get(p.eid), Force.tout.y.get(p.eid)],
                 })),
+                strips: sectionStrips(state, s.id).map((r) => ({
+                    id: r.id,
+                    start: r.start,
+                    end: r.end,
+                    value: r.value,
+                })),
             })),
         };
     }
@@ -610,6 +708,7 @@ describe("undo", () => {
             in: { ds: -3, dg: -0.2 },
             out: { ds: 4, dg: 0.3 },
         });
+        createStrip(state, sec, 12, 28, 7.5); // an interior strip rides the undo entry too
         state.step(0);
         const before = document(state);
         const h = createHistory();

@@ -64,8 +64,14 @@ import {
     type SolvedForce,
     type SolvedGeo,
     spawnForce,
+    spawnStrip,
     splitForce,
     splitGeoAt,
+    createStrip as createStripTrack,
+    destroyStrip,
+    type StripState,
+    stripState,
+    restoreStrip,
     setTrackDomain,
     trackDomain,
     type TrackV0State,
@@ -507,6 +513,76 @@ export function beginForceMoves(ecs: State, ids: readonly number[]): void {
     );
 }
 
+// ── velocity strips ────────────────────────────────────────────────────────────
+
+/** author a velocity strip on a section over `[start, end)` at `value`, recording an
+ *  undoable add — `createForce`'s span-shaped twin. The overlap guard lives in
+ *  `track.createStrip` itself, so a refused (overlapping) span records nothing and
+ *  returns `null`. The id is allocated once; undo destroys by it and redo re-spawns
+ *  verbatim. */
+export function addStrip(
+    h: History,
+    ecs: State,
+    section: number,
+    start: number,
+    end: number,
+    value: number,
+): number | null {
+    const pre = selHook?.snapshot(ecs);
+    const id = createStripTrack(ecs, section, start, end, value);
+    if (id === null) return null;
+    record(
+        h,
+        {
+            apply: () => spawnStrip(ecs, section, id, start, end, value),
+            reverse: () => destroyStrip(ecs, id),
+        },
+        pre,
+    );
+    return id;
+}
+
+/** delete a SET of velocity strips by id as ONE undoable entry — `deleteForces`' twin.
+ *  undo re-spawns them all verbatim into their original sections; ids already gone are
+ *  skipped, and nothing records when the set is empty. */
+export function deleteStrips(h: History, ecs: State, ids: readonly number[]): void {
+    const pre = selHook?.snapshot(ecs);
+    const sts: StripState[] = [];
+    for (const id of ids) {
+        const st = stripState(ecs, id);
+        if (st) sts.push(st);
+    }
+    if (sts.length === 0) return;
+    for (const st of sts) destroyStrip(ecs, st.id);
+    record(
+        h,
+        {
+            apply: () => {
+                for (const st of sts) destroyStrip(ecs, st.id);
+            },
+            reverse: () => {
+                for (const st of sts)
+                    spawnStrip(ecs, st.section, st.id, st.start, st.end, st.value);
+            },
+        },
+        pre,
+    );
+}
+
+/** open a gesture on a strip drag (create-drag, resize, body drag, or an inline field
+ *  edit), snapshotting the strip's full state. commit coalesces the live writes into
+ *  one entry; a no-move release records nothing (`beginForceMove`'s span-shaped twin).
+ *  the UI writes through `track.setStrip`, whose own overlap guard applies to every
+ *  live write this gesture makes. */
+export function beginStripMove(ecs: State, id: number): void {
+    begin(
+        () => stripState(ecs, id),
+        (st: StripState) => restoreStrip(ecs, st),
+        (a: StripState, b: StripState) =>
+            a.start === b.start && a.end === b.end && a.value === b.value,
+    );
+}
+
 /** record one undoable entry over the addressed segment's two bounding keyframes — the
  *  leading keyframe `id` and its successor `next` (if any) — after `mutate` has already
  *  run on the live data. the command restores both keyframes, so a single undo reverts
@@ -723,7 +799,7 @@ export function beginV0(trackEid: number): void {
     );
 }
 
-// ── friction / drag (kex2d-friction) ─────────────────────────────────────────────
+// ── friction / drag (Coulomb loss + quadratic drag coefficients) ───────────────
 
 /** open a gesture on the track's friction field (scrub or typed edit), snapshotting
  *  `Track.friction`. `trackFrictionState` reads `undefined` both for a gone track and the

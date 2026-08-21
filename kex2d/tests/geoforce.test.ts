@@ -258,7 +258,7 @@ describe("convertGeo", () => {
         expect(trackDomain(state)).toBe(Domain.Time); // a landing never flips the domain itself
     }, 60_000);
 
-    test("a convert-fit on a track with friction targets the dissipative force curve (kex2d-friction stage 2)", async () => {
+    test("a convert-fit on a track with friction targets the dissipative force curve", async () => {
         // the solve's target is `evalGeo`'s own recovered force curve. geometry is unchanged
         // between the two tracks below, but the RECOVERED v (and so fN = κ·v²/g + cosθ) differs
         // once the march dissipates energy along an identical path. Before threading,

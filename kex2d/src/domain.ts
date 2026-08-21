@@ -271,6 +271,14 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
                 const scale = target === Domain.Time ? 1 / slope : slope;
                 return { ...p, s: value, tangent: scaleHandles(p.tangent, scale) };
             }),
+            // a strip's `start`/`end` are positions on the same axis a keyframe's `s` is —
+            // each endpoint converts independently through the section's own window, same as a
+            // keyframe. `value` (m/s) is domain-independent and rides through unconverted.
+            strips: snap.strips.map((st) => ({
+                ...st,
+                start: at(m, w, st.start).value,
+                end: at(m, w, st.end).value,
+            })),
         };
     });
 

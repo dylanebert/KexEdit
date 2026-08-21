@@ -15,9 +15,8 @@
  * resistance)` with the section's live entry frame, the step it bakes at, the sample budget left
  * at its place in the chain, and the track's own authored dissipative coefficients — the same
  * arguments `BakeSystem`'s `geoPayload` threads through `chain`, so the solve targets exactly
- * the shape on screen, truncation included (`kex2d-friction` stage 2 closed this call's own gap
- * — `friction`/`resistance` were silently dropped here, so authoring either had no effect on
- * what a conversion targeted).
+ * the shape on screen, truncation included — `friction`/`resistance` thread through here too,
+ * so authoring either has the same effect on what a conversion targets as it does on the live bake.
  *
  * **The solve stays distance-internal; the landing converts.** The conversion tier works in
  * meters (its goldens are frozen there), so on a `Time`-domain track the answer passes through

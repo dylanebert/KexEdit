@@ -4,7 +4,7 @@ import { G, integrate, loss, step, V_FLOOR } from "../src/forward";
 import { Domain, evalForce, type Entry } from "../src/section";
 import { rk4, rk4Time } from "./oracles/rk4";
 
-// `kex2d-friction` stage 1: the loss law is `2·(μ·g·|fN| + c·v²)·ds`, in v²
+// the dissipative loss law: `2·(μ·g·|fN| + c·v²)·ds`, in v²
 // units, landed once in `forward.loss` and consumed by both call sites
 // (`forward.step`/`integrate`, `bake.forces`). This file is the Validation
 // spine (`fidelity.md`'s standard): independent models converging — four
@@ -487,8 +487,8 @@ describe("march-vs-recovery exit-v agreement", () => {
     });
 });
 
-// `loss` itself, directly — the named function `kex2d-friction`'s Locked
-// decision requires: `(fMag, vSq, ds, friction, resistance) → loss`.
+// `loss` itself, directly — the named function `forward.ts`'s loss law
+// requires: `(fMag, vSq, ds, friction, resistance) → loss`.
 describe("forward.loss", () => {
     test("zero coefficients, zero ds, or zero fMag+resistance all zero the loss", () => {
         expect(loss(1, 100, 0.5, 0, 0)).toBe(0);
