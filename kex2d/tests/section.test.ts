@@ -10,6 +10,7 @@ import {
     localize,
     place,
     type Section,
+    type Strip,
 } from "../src/section";
 import type { Node } from "../src/spline";
 import { withThetas } from "./helpers/chain";
@@ -445,6 +446,269 @@ describe("chain", () => {
     });
 });
 
+describe("velocity strips — the kernel (section.Strip, stripOverride)", () => {
+    // the strip payload `{start, end, value}` (`section.ts`'s `Strip`): a per-edge
+    // v² override over the CLIPPED index range, section-local, threaded through
+    // `evalGeo`/`evalForce` AND `chain()` (S2 measured prefix causality through
+    // `evalForce`/`evalGeo` alone — the population this file's own arms reach that
+    // S2 did not: composed through `chain()`'s SoA merge/clip, `start=1`/
+    // `start=edges−1` sweeps, the point degenerate case, a Time-domain stall, and
+    // the injection accumulator).
+    //
+    // PER-FIELD prefix convention (`kex2d-map.md`'s Locked decision, the asymmetry
+    // is `bake.forces`'s one-edge-ahead bisector θ recovery): position/θ/v samples
+    // `[0, stripStart]` are bit-identical INCLUSIVE of the boundary sample; `fN`
+    // edges `[0, stripStart)` EXCLUSIVE. `stripStart` is the override's own first
+    // touched edge (`strip.start`, or `strip.start − 1` for a degenerate point).
+    //
+    // RED-FIRST, WITNESSED: widening `stripOverride`'s lower bound by one edge
+    // (`s.start - 1` unconditionally, instead of only on the `start === end`
+    // point case) reds "wrong-granularity trap: interior strip on a force
+    // section — Distance domain" at `theta[27]` — `firstDivergence` caught
+    // the recovered tangent one sample early (the mutation makes edge 26
+    // read as overridden too, so the chord feeding `theta[27]`'s bisector
+    // moves) — confirmed by hand (`bun test -t "wrong-granularity trap:
+    // interior strip on a force section — Distance domain"`), reverted
+    // before committing (`checks.md`: run the perturbation, don't reason it
+    // would fire).
+
+    /** the per-field prefix oracle: point arrays (posX/posY/theta/v) over
+     *  `[0, stripStart]` inclusive, `fN` over `[0, stripStart)` exclusive —
+     *  `===` on the raw f32 arrays, no tolerance — the committed form of the
+     *  prefix-causality detector a throwaway spike measured through
+     *  `evalForce`/`evalGeo` before this file's own arms existed. */
+    function firstDivergence(
+        absent: {
+            posX: Float32Array;
+            posY: Float32Array;
+            theta: Float32Array;
+            v: Float32Array;
+            fN: Float32Array;
+        },
+        present: {
+            posX: Float32Array;
+            posY: Float32Array;
+            theta: Float32Array;
+            v: Float32Array;
+            fN: Float32Array;
+        },
+        stripStart: number,
+    ): { field: string; index: number } | undefined {
+        const points = ["posX", "posY", "theta", "v"] as const;
+        for (const field of points) {
+            for (let i = 0; i <= stripStart; i++) {
+                if (absent[field][i] !== present[field][i]) return { field, index: i };
+            }
+        }
+        for (let i = 0; i < stripStart; i++) {
+            if (absent.fN[i] !== present.fN[i]) return { field: "fN", index: i };
+        }
+        return undefined;
+    }
+
+    // a hilly force profile with real curvature (nonzero fN variation), so a
+    // prefix-leak bug has something to show up against (`checks.md`'s
+    // "narrower than the property" trap — a flat/constant profile can't
+    // discriminate a leak from a coincidence).
+    const forceEntry: Entry = { x: 0, y: 0, theta: 0.05, v: 14 };
+    const ForceEdges = 90;
+    const forceFN = Float32Array.from(
+        { length: ForceEdges },
+        (_, i) => 1 + 0.4 * Math.sin(i / 7) + 0.15 * Math.cos(i / 3),
+    );
+    const Mu = 0.021;
+    const C = 2.5e-4;
+
+    test("wrong-granularity trap: interior strip on a force section — Distance domain", () => {
+        const step = { edges: ForceEdges, ds: 0.5 };
+        const absent = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C);
+        const strips: Strip[] = [{ start: 27, end: 63, value: 8 }];
+        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
+        expect(firstDivergence(absent, present, 27)).toBeUndefined();
+        expect(present.v[63]).toBe(8);
+        expect(present.v[63]).not.toBe(absent.v[63]);
+    });
+
+    test("wrong-granularity trap: interior strip on a force section — Time domain", () => {
+        const step = { edges: ForceEdges, ds: 0.02 };
+        const absent = evalForce(forceEntry, forceFN, step, Domain.Time, Mu, C);
+        const strips: Strip[] = [{ start: 27, end: 63, value: 8 }];
+        const present = evalForce(forceEntry, forceFN, step, Domain.Time, Mu, C, strips);
+        expect(firstDivergence(absent, present, 27)).toBeUndefined();
+        expect(present.v[63]).toBe(8);
+        expect(present.v[63]).not.toBe(absent.v[63]);
+    });
+
+    test("sweep: a strip starting at edge 1, adjacent to the entry", () => {
+        const step = { edges: ForceEdges, ds: 0.5 };
+        const absent = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C);
+        const strips: Strip[] = [{ start: 1, end: 6, value: 9 }];
+        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
+        expect(firstDivergence(absent, present, 1)).toBeUndefined();
+        expect(present.v[6]).toBe(9);
+    });
+
+    test("sweep: a strip ending at the last edge, start = edges − 1", () => {
+        const step = { edges: ForceEdges, ds: 0.5 };
+        const absent = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C);
+        const start = ForceEdges - 1;
+        const strips: Strip[] = [{ start, end: ForceEdges, value: 11 }];
+        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
+        expect(firstDivergence(absent, present, start)).toBeUndefined();
+        expect(present.v[ForceEdges]).toBe(11);
+        expect(present.exit.v).toBe(11);
+    });
+
+    test("point degenerate: a zero-length strip overrides exactly edge (k−1, k), IEEE-exact", () => {
+        const step = { edges: ForceEdges, ds: 0.5 };
+        const absent = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C);
+        const k = 40;
+        const strips: Strip[] = [{ start: k, end: k, value: 9 }];
+        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
+        // the guaranteed prefix is [0, k−1] inclusive — the single overridden
+        // edge is (k−1 → k), so sample k−1 (its entry) is the last untouched one.
+        expect(firstDivergence(absent, present, k - 1)).toBeUndefined();
+        // a stored value substituted, no arithmetic: sqrt(value²) === value.
+        expect(present.v[k]).toBe(9);
+        expect(present.v[k]).not.toBe(absent.v[k]);
+    });
+
+    test("conservation resumes after the strip: the exact telescoping v² identity holds downstream", () => {
+        // the SAME identity `chain`'s "energy propagation" tests pin — v²
+        // recurses as v²_{i+1} = v²_i − 2gΔy_i − loss_i for ANY route — checked
+        // over edges strictly past the strip's own range, off the SAME march's
+        // recorded fN/ds/theta (never a separate re-entrant call: `evalForce`
+        // returns the RECOVERED theta, O(ds) off the march's own raw internal
+        // theta, so re-seeding a second `evalForce` from it is not the identity
+        // this test wants — measured, not assumed).
+        const step = { edges: ForceEdges, ds: 0.5 };
+        const strips: Strip[] = [{ start: 27, end: 63, value: 8 }];
+        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
+        let vsq = present.v[63] * present.v[63];
+        for (let i = 63; i < ForceEdges; i++) {
+            const dy = present.posY[i + 1] - present.posY[i];
+            vsq -=
+                2 * G * dy + loss(present.fN[i], present.v[i] * present.v[i], present.ds[i], Mu, C);
+            expect(present.v[i + 1] * present.v[i + 1]).toBeCloseTo(Math.max(vsq, 0), 3);
+        }
+    });
+
+    test("a Time-domain stall un-stalled by a strip", () => {
+        // steep, sustained fN demand against a modest entry v: the natural
+        // march genuinely stalls (v hits exactly 0 and freezes, A3's own
+        // mechanism) partway through — confirmed as a sanity arm before the
+        // strip is applied at all.
+        const edges = 60;
+        const dt = 0.05;
+        const fN = new Float32Array(edges).fill(1.9);
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 3 };
+        const step = { edges, ds: dt };
+        const absent = evalForce(entry, fN, step, Domain.Time, 0.3, 0.05);
+        expect(absent.v[5]).toBe(0); // sanity: the natural stall is real
+        expect(absent.v[10]).toBe(0); // and it's still frozen five edges later
+
+        const strips: Strip[] = [{ start: 5, end: 20, value: 6 }];
+        const present = evalForce(entry, fN, step, Domain.Time, 0.3, 0.05, strips);
+        expect(firstDivergence(absent, present, 5)).toBeUndefined();
+        for (let i = 6; i <= 20; i++) expect(present.v[i]).toBe(6);
+        expect(present.v[10]).not.toBe(absent.v[10]); // un-stalled — no longer frozen at 0
+    });
+
+    test("the injection accumulator only ever fires outside a strip: covering every edge clears it", () => {
+        // same stalling fixture as the un-stall arm. a strip covering only the
+        // first stall (edges [5, 20)) leaves the SECOND, uncovered natural
+        // stall (further downstream) to still trip the accumulator; widening
+        // the SAME strip to cover every edge from 0 removes every edge the
+        // clamp could ever fire on (`stripOverride`'s value is always ≥ 0, so
+        // an overridden edge's vSq can never go negative) — a differential on
+        // real coverage, not a re-derivation of `forces`'s own arithmetic.
+        const edges = 60;
+        const dt = 0.05;
+        const fN = new Float32Array(edges).fill(1.9);
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: 3 };
+        const step = { edges, ds: dt };
+
+        const partial: Strip[] = [{ start: 5, end: 20, value: 6 }];
+        const whole: Strip[] = [{ start: 0, end: edges, value: 6 }];
+        const partialR = evalForce(entry, fN, step, Domain.Time, 0.3, 0.05, partial);
+        const wholeR = evalForce(entry, fN, step, Domain.Time, 0.3, 0.05, whole);
+        expect(partialR.injection).toBeGreaterThan(0);
+        expect(wholeR.injection).toBe(0);
+    });
+
+    test("evalGeo: a strip changes only v/fN, never the sampled positions (no march to couple through)", () => {
+        const local: Node[] = withThetas([
+            { x: 0, y: 0 },
+            { x: 20, y: 4 },
+            { x: 44, y: 0 },
+        ]);
+        const entry: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+        const absent = evalGeo(entry, local, 0.5);
+        const strips: Strip[] = [{ start: 5, end: 15, value: 20 }];
+        const present = evalGeo(entry, local, 0.5, undefined, 0, 0, strips);
+        expect(present.edges).toBe(absent.edges);
+        for (let i = 0; i <= present.edges; i++) {
+            expect(present.posX[i]).toBe(absent.posX[i]);
+            expect(present.posY[i]).toBe(absent.posY[i]);
+            expect(present.theta[i]).toBe(absent.theta[i]);
+        }
+        expect(present.v[15]).toBe(20);
+        expect(present.v[15]).not.toBe(absent.v[15]);
+    });
+
+    test("threaded through chain(): a strip on a mid-chain force section survives the SoA merge", () => {
+        // the population S2 did not reach — evalForce's OWN return arrays vs.
+        // the flat SoA `chain()` copies them into, past a leading geo section.
+        const geo: Node[] = withThetas([
+            { x: 0, y: 0 },
+            { x: 20, y: 3 },
+            { x: 44, y: 0 },
+        ]);
+        const forceCurve = Float32Array.from({ length: 40 }, (_, i) => 1 + 0.2 * Math.sin(i / 5));
+        const strips: Strip[] = [{ start: 10, end: 25, value: 9 }];
+        const withStrip: Section[] = [
+            { kind: "geo", nodes: geo, ds: 0.5 },
+            { kind: "force", fN: forceCurve, step: { edges: forceCurve.length, ds: 0.5 }, strips },
+        ];
+        const without: Section[] = [
+            { kind: "geo", nodes: geo, ds: 0.5 },
+            { kind: "force", fN: forceCurve, step: { edges: forceCurve.length, ds: 0.5 } },
+        ];
+        const entry0: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+        const cPresent = chain(entry0, withStrip);
+        const cAbsent = chain(entry0, without);
+
+        const forceStart = cPresent.ranges[1].start;
+        const globalStripStart = forceStart + strips[0].start;
+        for (let i = 0; i <= globalStripStart; i++) {
+            expect(cPresent.posX[i]).toBe(cAbsent.posX[i]);
+            expect(cPresent.posY[i]).toBe(cAbsent.posY[i]);
+            expect(cPresent.theta[i]).toBe(cAbsent.theta[i]);
+            expect(cPresent.v[i]).toBe(cAbsent.v[i]);
+        }
+        expect(cPresent.v[forceStart + strips[0].end]).toBe(9);
+    });
+
+    test("threaded through chain(): a strip survives clipping at MAX_SAMPLES (the re-slice path)", () => {
+        // `chain`'s clipped-result branch re-slices EVERY field (never re-
+        // stamps a smaller `edges` over the full-length arrays, stage 2c's
+        // own law) — a strip whose own range straddles the clip boundary
+        // exercises that re-slice with an override still live inside it.
+        const edges = 50;
+        const fN = new Float32Array(edges).fill(1.2);
+        const strips: Strip[] = [{ start: 10, end: 30, value: 7 }];
+        const sections: Section[] = [{ kind: "force", fN, step: { edges, ds: 0.5 }, strips }];
+        const maxSamples = 20; // clips INSIDE the strip's own [10, 30) range
+        const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections, maxSamples);
+        expect(c.results[0].truncated).toBe(true);
+        expect(c.ranges[0].end).toBeLessThan(30);
+        for (let i = strips[0].start + 1; i <= c.ranges[0].end; i++) {
+            expect(c.v[i]).toBe(7);
+        }
+        expect(c.results[0].v[c.results[0].edges]).toBe(7);
+    });
+});
+
 describe("the v²-modification channel — additive-consumer capability", () => {
     // the Locked decision names this per-edge channel as the seam a future
     // friction/drag consumer rides, and friction is ADDITIVE and path-dependent
@@ -529,6 +793,30 @@ describe("byte-identity floor", () => {
             expect(explicit.theta[i]).toBe(golden.theta[i]);
             expect(explicit.v[i]).toBe(golden.v[i]);
         }
+
+        // velocity strips: extends the SAME golden once more (never a new
+        // fixture) — a strip on the force section's tail must leave every
+        // point-field sample through the strip's own entry station bit-
+        // identical to this SAME frozen pre-strip data.
+        const stripped: Section[] = [
+            { kind: "geo", nodes: geo, ds: 0.5 },
+            {
+                kind: "force",
+                fN: force,
+                step: { edges: force.length, ds: 0.5 },
+                strips: [{ start: 10, end: 20, value: 9 }],
+            },
+        ];
+        const withStrip = chain({ x: 0, y: 0, theta: 0, v: V0 }, stripped);
+        const forceStart = withStrip.ranges[1].start;
+        const globalStripStart = forceStart + 10;
+        for (let i = 0; i <= globalStripStart; i++) {
+            expect(withStrip.posX[i]).toBe(golden.posX[i]);
+            expect(withStrip.posY[i]).toBe(golden.posY[i]);
+            expect(withStrip.theta[i]).toBe(golden.theta[i]);
+            expect(withStrip.v[i]).toBe(golden.v[i]);
+        }
+        expect(withStrip.v[forceStart + 20]).toBe(9);
     });
 });
 
