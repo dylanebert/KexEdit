@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { editor, select, selectionHook } from "../src/editor";
 import { State } from "@dylanebert/shallot";
-import { V_FLOOR } from "../src/bake";
+import { V_FLOOR, V_WARN } from "../src/bake";
 import { trackMapping } from "../src/cart";
 import {
     carryForce,
@@ -42,8 +42,10 @@ import {
     sectionInfo,
     sections,
     sectionStrips,
+    type ForceTangent,
     setForcePoint,
     setForceTangent,
+    splitForce,
     setTrackDomain,
     setTrackV0,
     Track,
@@ -667,13 +669,15 @@ describe("round trip", () => {
 describe("single flip", () => {
     // Stage 3b's verdict (`kex2d-correctness-fixes`, Locked decision): a SINGLE flip moves the
     // exit too, by the same mechanism and inside the same bound the round trip above already
-    // derives — the two-bakes-at-equal-time disagreement. Every key lands exactly (the round
-    // trip's own converted-keyframe assertion already covers that); what moves is the authored
-    // curve BETWEEN keys, because a cubic bezier authored in (s, g) is not carried to a cubic
-    // bezier in (t, g) by the nonlinear arc↔time map — an explicit handle's Δs scaling by the
-    // local slope is only that map's first-order term, so the segment genuinely reshapes across a
-    // flip. The round-trip test above never samples between keyframes, which is exactly where the
-    // reshape hides.
+    // derives — the two-bakes-at-equal-time disagreement. **What this describe measures is the baked
+    // WORLD exit, and that is all it ever measured.** The story it used to tell about the curve — that
+    // the segment between keys genuinely reshapes across a flip, since a cubic bezier authored in
+    // (s, g) is not one in (t, g) under the nonlinear arc↔time map and an explicit handle's Δs scaling
+    // is only that map's first-order term — was the pre-carry document. D1 closed it: `carryForce`
+    // subdivides until the reshape sits inside the march's own resolution floor (`describe("the carry
+    // (D1)")`, which is where that property is now pinned). The exit deviation this bound covers is
+    // the two marches disagreeing at equal elapsed time, not the curve, and the carry leaves it
+    // exactly where it was — which is why this arm reads unchanged across D1.
     //
     // Computed the way `domain.lab.ts` computes it (world Euclidean distance at the force
     // section's exit; the disagreement swept over the section's WHOLE sample range at equal
@@ -1262,8 +1266,18 @@ describe("the carry (D1)", () => {
      *  station mapped through the pre-flip bake's own arc↔time table, rebuilt in this file). This is
      *  the profile the march integrates and the chart draws, read at the resolution the march reads
      *  it at. */
-    function flipDelta(len: number, pts: readonly [number, number][]) {
+    function flipDelta(
+        len: number,
+        pts: readonly [number, number][],
+        summon?: (state: State, sec: number) => void,
+    ) {
         const { state, eid, sec } = forceTrack(len, pts);
+        // `summon` is the person's explicit-handle gesture, applied BEFORE the reading is taken: the
+        // tolerance, the table and the carry all have to see the same authored curve.
+        if (summon) {
+            summon(state, sec);
+            state.step(0);
+        }
         const before = profilePts(state, sec);
         const tab = table(eid);
         const step = resolveStep(len, DS_NOMINAL);
@@ -1316,6 +1330,52 @@ describe("the carry (D1)", () => {
         expect(kfs(r.state, r.sec).length).toBe(4);
     });
 
+    test("a section with SUMMONED explicit handles carries too — the class where the carry does LEAST", () => {
+        // The `scaleHandles` path the carry composes with, and the class no other arm reached. An
+        // explicit handle steepens the authored curve, which RAISES the resolution floor while the
+        // map's reshape grows with it — the two are homogeneous of degree 1 in g together, so the
+        // ratio, not the margin, is what the flip has to hold. Measured over a swept handle grid
+        // (6×5×6×5 on dive-and-recover, 2 keys × 4×5×4×5 on the pull, 1000 flips):
+        //
+        //   • the two arms below land at 0.991× and 0.996× of their own tolerance — versus 0.19× and
+        //     0.70× for the same fixtures with derived handles, so the comfortable readings the other
+        //     arms record do NOT generalize to a section the person has shaped by hand;
+        //   • the worst non-stalling configuration in the whole sweep sits at 1.000× (pull, key 1,
+        //     Free (-6,+1)/(+2,+1): 0.279494 g against a 0.279568 g floor) — the carry has no margin
+        //     left in this class, and nothing said so before this arm;
+        //   • the ONLY reading above 1 was 1.351× (pull, key 1, Free (-2,-2)/(+4,-2): 0.575645 g
+        //     against 0.426092 g), and that document STALLS — `vmin` = 0, the frozen tail converting
+        //     at `ds/V_FLOOR`, which the locked decision accepts as lossy in both directions and the
+        //     floor guard's stall clause deliberately does not refuse. Recorded here rather than
+        //     asserted, because asserting it would pin the stall's lossiness as a bound.
+        //   • and dive-and-recover with handles inserts ZERO carried keys at 0.991×: the carry is
+        //     doing nothing there and the flip fits anyway, which is what "does least" means.
+        const free = (state: State, sec: number, key: number, tan: ForceTangent): void => {
+            const rows = sectionForces(state, sec);
+            setForceTangent(state, rows[key].id, tan);
+        };
+        const dive = flipDelta(...DIVE_AND_RECOVER, (state, sec) =>
+            free(state, sec, 1, {
+                mode: TangentMode.Free,
+                in: { ds: -6, dg: 0.6 },
+                out: { ds: 4, dg: -0.3 },
+            }),
+        );
+        expect(dive.worst).toBeLessThanOrEqual(dive.tol); // 0.047927 g vs 0.048340 g (0.991×)
+        expect(dive.worst).toBeGreaterThan(0);
+        expect(forceTangent(dive.state, sectionForces(dive.state, dive.sec)[1].id)).toBeDefined();
+
+        const pull = flipDelta(...MULTI_G_PULL, (state, sec) =>
+            free(state, sec, 2, {
+                mode: TangentMode.Free,
+                in: { ds: -1, dg: 0 },
+                out: { ds: 4, dg: -1 },
+            }),
+        );
+        expect(pull.worst).toBeLessThanOrEqual(pull.tol); // 0.194748 g vs 0.195529 g (0.996×)
+        expect(carriedKfs(pull.state, pull.sec).length).toBeGreaterThan(0); // the carry did run here
+    });
+
     test("the reverse flip DROPS the inserted keys rather than simplifying them", () => {
         const [len, pts] = DIVE_AND_RECOVER;
         const r = flipDelta(len, pts);
@@ -1333,6 +1393,39 @@ describe("the carry (D1)", () => {
         const live = sectionForces(r.state, r.sec).map((p) => p.id);
         for (const id of droppedIds) expect(live).not.toContain(id);
         expect(kfs(r.state, r.sec).length).toBe(authoredIds);
+    });
+
+    test("a Cut at a carried key's station survives the reverse flip: both halves keep the boundary", () => {
+        // The end-to-end witness for the structural-writer half of the law (the per-op arms are in
+        // `tests/track.test.ts`). Cut is two clicks from `acts.ts`'s keyframe-cut act, and a carried
+        // key is a legal station to cut on — nothing renders it differently (T1's, disclosed).
+        //
+        // **Red before the repair**, this exact sequence: `splitForce` left the landmark key tagged,
+        // so the reverse flip DROPPED the boundary the cut had just built both halves around — the
+        // head came back holding ONE keyframe with the authored dive flattened to a constant 1 g,
+        // while the tail kept an authored duplicate of a key the document could no longer justify.
+        const [len, pts] = DIVE_AND_RECOVER;
+        const r = flipDelta(len, pts);
+        const landmark = sectionForces(r.state, r.sec).find((p) => p.carried);
+        if (!landmark) throw new Error("the carry inserted nothing to cut on");
+        const boundaryG = landmark.g;
+
+        const tail = splitForce(r.state, r.sec, landmark.s);
+        if (tail === null) throw new Error("split refused");
+        r.state.step(0);
+        expect(convertDomain(createHistory(), r.state, Domain.Distance)).toBe(true);
+
+        // the head still HAS a curve: its own entry key plus the boundary the cut promoted.
+        const head = sectionForces(r.state, r.sec);
+        expect(head.length).toBeGreaterThan(1);
+        // and the boundary value is the same on both sides of the cut, which is what makes the cut
+        // lossless. f32 tolerance: both halves store the value through `Force.g`.
+        const headLast = head[head.length - 1];
+        const tailFirst = sectionForces(r.state, tail)[0];
+        expect(headLast.g).toBeCloseTo(boundaryG, 5);
+        expect(tailFirst.g).toBeCloseTo(boundaryG, 5);
+        expect(headLast.carried).toBe(false); // nothing can drop the document's own structure
+        expect(tailFirst.carried).toBe(false);
     });
 
     test("editing an inserted key clears its tag, so the reverse flip keeps it", () => {
@@ -1355,96 +1448,118 @@ describe("the carry (D1)", () => {
 // D1 deliverable 2 — **the re-baked untagged control.** S1's "round trips grow keys without bound"
 // was withdrawn as unmeasured because S1's control ran on a FROZEN arc↔time table, which is the very
 // compounding mechanism the claim rests on. Re-measured here with the table re-baked after every
-// flip (`state.step(0)`), 10 round trips, both fixtures, the control produced by clearing every
-// key's tag after each flip — the same production carry with the provenance bit never recorded.
+// flip (`state.step(0)`), 10 round trips (20 flips), both fixtures, the control produced by clearing
+// every key's tag after each flip — the same production carry with the provenance bit never recorded.
 //
-// **Measured (this worktree):**
-//   dive-and-recover  tagged   4↔5 every trip, extent 40 → 38.6 m
-//                     untagged flat 5 every trip, extent 40 → 37.2 m
-//   multi-g pull      tagged   6,6,6,6,6,6,5,7,11,14,12,9,9,7,10,7,7,7,12,7 — bounded, oscillating
-//                     untagged 6,6,6,6,11,11,11,13,17,24,28,28,32,32,34,34,35,35,42,42 — monotone
-//                     growth, 7×, with the extent running away 24 → 5397 m
+// **Measured, both schemes, keys AND extent** (this worktree; the extent column is what an earlier
+// reading of this table omitted, and it is the reading that decides the verdict):
+//   dive-and-recover
+//     tagged   keys 5,4,5,4,5,4,5,4,5,4,4,4,4,4,4,4,5,4,4,4    extent 3.16 → 3.08 s / 39.70 → 38.64 m
+//     untagged keys flat 5 for all 20 flips                     extent 3.16 → 3.02 s / 39.70 → 37.23 m
+//   multi-g pull
+//     tagged   keys 6,6,6,6,6,6,5,7,11,14,12,9,9,7,10,7,7,7,12,7 (peak 14)
+//                                                               extent 3.36 → 5927.96 s / 25.37 → 99.53 m,
+//                                                               `MAX_SAMPLES` truncation firing from flip 9
+//     untagged keys 6,6,6,6,11,11,11,13,17,24,28,28,32,32,34,34,35,35,42,42
+//                                                               extent 3.36 → 535954 s / 25.37 → 5396.90 m
 //
-// **Verdict: the withdrawn claim earns its measurement only on the sensitive fixture, and even there
-// the mechanism is not subdivision alone.** On the gentle fixture neither scheme grows. On the
-// sensitive one the untagged control grows monotonically and the tagged carry does not — but the
-// untagged growth rides a pre-existing extent runaway (each flip re-converts the extent through a
-// table the previous flip moved, which on a near-stalling ride diverges), so the honest claim is
-// "tag-drop strictly dominates on both fixtures", not "untagged growth is unbounded". The locked
-// decision's OTHER ground for tag-drop (strictly fewer keys, an exact reverse drop) is unaffected.
+// **Verdict: the withdrawn claim stays withdrawn, because the two candidate mechanisms are
+// simultaneous and these readings do not order them.** The candidates are subdivision compounding
+// (each flip carries a store the previous flip densified) and extent runaway (each flip re-converts
+// the extent through a table the previous flip moved). Three readings, none of which separates them:
+//   • the untagged control's key jump (6 → 11) lands on the SAME flip as its own extent jump
+//     (3.56 s → 54.37 s) — simultaneous and mutually amplifying, unordered by the data;
+//   • the TAGGED carry carries the same runaway (25.37 → 99.53 m, 3.36 → 5927.96 s, `MAX_SAMPLES`
+//     truncating) while its key count stays bounded — so runaway is not what distinguishes the two
+//     schemes either;
+//   • and the runaway is pre-existing rather than the carry's: the adversarial pass measured trunk
+//     (`38635a3`, carry absent) at 24 → 62 m over 12 flips. That reading is the review pass's, on a
+//     tree this suite cannot construct, and is recorded as attributed rather than re-run.
+// So the ordering claim ("the driver is extent runaway, not subdivision") is not one these numbers
+// can make either. What they DO support is the locked decision's own ground, and only that: tag-drop
+// never lands more keys than the untagged control, lands strictly fewer on the sensitive fixture, and
+// RELEASES keys it inserted (every tagged sequence above steps back down; neither untagged one ever
+// does) instead of simplifying a denser store heuristically.
 describe("round-trip key counts on re-baked tables (D1)", () => {
-    /** 10 round trips, re-baking after every flip. `untagged` clears every key's provenance bit
-     *  after each flip, which is exactly "the same carry with no tag to drop". */
-    function trips(len: number, pts: readonly [number, number][], untagged: boolean) {
-        const { state, sec } = forceTrack(len, pts);
-        const h = createHistory();
-        const counts: number[] = [];
-        for (let trip = 0; trip < 10; trip++) {
-            for (const target of [Domain.Time, Domain.Distance]) {
-                // a refused flip would read as a flat count — the vacuity this loop can have.
-                expect(convertDomain(h, state, target)).toBe(true);
-                if (untagged)
-                    for (const p of sectionForces(state, sec)) setForcePoint(state, p.id, p.s, p.g);
-                state.step(0); // RE-BAKE: the next flip converts through the table this flip made
-                counts.push(sectionForces(state, sec).length);
-            }
-        }
-        return counts;
-    }
-
-    test("the tagged carry stays bounded by the resolution floor's own key budget", () => {
+    test("the tagged carry is BOUNDED, and releases keys rather than accumulating them", () => {
+        // "Flat" was the earlier word and it was wrong. What survives measurement is two properties,
+        // and the arm leans on the second because the first is nearly vacuous at these numbers:
+        //
+        //   1. the DERIVED bound — subdivision stops at one nominal march edge, so a section can
+        //      never hold more than one key per edge of the bake it is authored against. That is the
+        //      only bound this design derives, and it is loose: 52 keys against observed peaks of 14
+        //      (pull) and 5 (dive-and-recover). Kept as the structural claim it is, labelled rather
+        //      than dressed up as a tight one.
+        //   2. the DISCRIMINATING property — the sequence steps back DOWN at least once, i.e. the
+        //      scheme releases keys it inserted. That is tag-drop working, and it is exactly what
+        //      neither untagged control ever does (dive untagged sits flat at 5 for 20 flips, pull
+        //      untagged is monotone non-decreasing to 42), so it separates the two schemes on BOTH
+        //      fixtures with no fitted threshold anywhere.
         for (const [len, pts, authored] of [
             [...DIVE_AND_RECOVER, 3] as const,
             [...MULTI_G_PULL, 4] as const,
         ]) {
-            const counts = trips(len, pts, false);
-            // the structural bound: subdivision stops at one nominal march edge, so a section can
-            // never hold more than one key per edge of the bake it is authored against.
+            const r = untilRefusal(len, pts, false, 20);
+            expect(r.refused).toBeNull(); // neither fixture reaches the floor guard's degeneracy
+            const counts = r.counts;
+            expect(counts.length).toBe(20); // not vacuous: every flip landed
             const budget = authored + resolveStep(len, DS_NOMINAL).edges;
             expect(Math.max(...counts)).toBeLessThanOrEqual(budget);
-            // and the honest reading of "flat": the last trip is no denser than the first few.
-            expect(counts[counts.length - 1]).toBeLessThanOrEqual(
-                Math.max(...counts.slice(0, 4)) + 2,
-            );
+            expect(counts.some((c, i) => i > 0 && c < counts[i - 1])).toBe(true);
         }
     });
 
-    test("the untagged control on re-baked tables never lands FEWER keys than tag-drop", () => {
-        // the claim the control does support, in both fixtures' own numbers (the docblock above
-        // carries the sequences): dropping tags is never the denser scheme.
-        const dive = trips(...DIVE_AND_RECOVER, false);
-        const diveCtl = trips(...DIVE_AND_RECOVER, true);
-        expect(Math.max(...diveCtl)).toBeGreaterThanOrEqual(Math.max(...dive));
+    test("the untagged control never lands FEWER keys, ON THE DISCRIMINATING FIXTURE", () => {
+        // This assertion used to run on dive-and-recover, where both maxima are 5 — satisfied by
+        // equality, and satisfied just as well with the carry absent. It belongs on the fixture where
+        // the two schemes actually part: the pull, at 3 round trips (see the growth arm below for why
+        // the sensitive fixture stops there).
+        const tagged = untilRefusal(...MULTI_G_PULL, false, 6).counts;
+        const control = untilRefusal(...MULTI_G_PULL, true, 6).counts;
+        expect(Math.max(...control)).toBeGreaterThan(Math.max(...tagged)); // strict, not >=
     });
 
     test("the untagged control GROWS on the sensitive fixture where tag-drop does not", () => {
         // Three round trips, not ten, and the reason is a measurement rather than a preference: the
-        // untagged control's own extent runaway (24 → 5317 m by trip 3) makes trips 4–10 cost 12.6 s
-        // of bake, which would be 1.5× the whole default suite. The 10-trip sequence is recorded in
-        // this describe's docblock; the growth it reports is already unambiguous here (6 → 11 keys
+        // untagged control's own extent runaway (25.37 → 5317 m by trip 3) makes the later trips cost
+        // 12.6 s of bake, which would be 1.5× the whole default suite. The full sequences are recorded
+        // in this describe's docblock; the growth is already unambiguous at six flips (6 → 11 keys
         // untagged, flat 6 tagged), so the arm keeps the finding at 8 ms.
         const [len, pts] = MULTI_G_PULL;
-        const tagged = trips3(len, pts, false);
-        const control = trips3(len, pts, true);
+        const tagged = untilRefusal(len, pts, false, 6).counts;
+        const control = untilRefusal(len, pts, true, 6).counts;
         expect(control[control.length - 1]).toBeGreaterThan(tagged[tagged.length - 1]);
         expect(tagged[tagged.length - 1]).toBe(tagged[0]);
     });
 
-    /** `trips`, at three round trips — see the arm above for why the sensitive fixture stops there. */
-    function trips3(len: number, pts: readonly [number, number][], untagged: boolean): number[] {
+    /** flip alternately Time/Distance, re-baking after each, until the resolution-floor guard
+     *  refuses or `flips` flips have landed. Returns the per-flip key counts and the refusal message
+     *  if one came — the guard's throw is a document-level refusal (nothing is written), so a
+     *  sequence that ends in one is a shorter sequence, not a corrupt one. */
+    function untilRefusal(
+        len: number,
+        pts: readonly [number, number][],
+        untagged: boolean,
+        flips: number,
+    ): { counts: number[]; refused: string | null } {
         const { state, sec } = forceTrack(len, pts);
         const h = createHistory();
         const counts: number[] = [];
-        for (let trip = 0; trip < 3; trip++) {
-            for (const target of [Domain.Time, Domain.Distance]) {
-                expect(convertDomain(h, state, target)).toBe(true);
-                if (untagged)
-                    for (const p of sectionForces(state, sec)) setForcePoint(state, p.id, p.s, p.g);
-                state.step(0);
-                counts.push(sectionForces(state, sec).length);
+        for (let i = 0; i < flips; i++) {
+            try {
+                // a refused flip would read as a flat count — the vacuity this loop can have.
+                expect(convertDomain(h, state, i % 2 === 0 ? Domain.Time : Domain.Distance)).toBe(
+                    true,
+                );
+            } catch (e) {
+                return { counts, refused: (e as Error).message };
             }
+            if (untagged)
+                for (const p of sectionForces(state, sec)) setForcePoint(state, p.id, p.s, p.g);
+            state.step(0); // RE-BAKE: the next flip converts through the table this flip made
+            counts.push(sectionForces(state, sec).length);
         }
-        return counts;
+        return { counts, refused: null };
     }
 });
 
@@ -1454,15 +1569,24 @@ describe("round-trip key counts on re-baked tables (D1)", () => {
 // the tolerance is derived from. The question the Residue left open was whether the resolution-floor
 // FORM needs a fail-loud guard at all (not whether to retrofit S1's margin-and-noise algebra).
 //
-// **Answer: yes, and the reachable class is the map rather than the curve.** The tolerance scales
-// with the authored curve's own steepness, while the reshape it must bound is driven by the arc↔time
-// map's nonlinearity, which comes from the RIDE — upstream geometry, a stall, an extent that drifted.
-// The two are decoupled, so "a partial fit at the floor" is not self-evidently unreachable, and
-// measurement bears that out: three of the classes below were found by running, not by reasoning.
+// **Answer: yes, and the reachable class is the map rather than the curve.** Both the tolerance and
+// the reshape it must bound are homogeneous of degree 1 in `g` — double the authored curve's
+// amplitude and both double — so they are NOT decoupled, and an earlier sentence here saying so was
+// false. What is curve-independent is their RATIO: the tolerance is a property of the authored curve,
+// the ratio is a property of the arc↔time map alone, which comes from the RIDE (upstream geometry, a
+// stall, an extent that drifted). That is what carries the reachability conclusion — a map can push
+// the ratio past 1 on any curve, gentle or violent, so "a partial fit at the floor" is not
+// self-evidently unreachable — and measurement bears it out: three of the classes below were found
+// by running, not by reasoning.
+//
 // What the derivation DOES bound is the residual where its own premise holds — a map resolved by the
-// march grid leaves `tol · O(Δv/v)` per edge — so the guard is written to fire exactly outside the
-// two degeneracies where the premise is void (a frozen cart at `V_FLOOR`, and a speed swinging by
-// `MAP_UNRESOLVED` inside one edge), both of which the locked decision already accepts as lossy.
+// march grid leaves `tol · O(Δv/v)` per edge — so the guard fires everywhere except the ONE
+// degeneracy where the premise is void: a frozen cart, `vLo` at `V_FLOOR`, which the locked decision
+// already accepts as lossy both ways and A3 made reachable in Distance. **A speed-swing clause used
+// to sit beside that one and is gone** (`carryForce`'s docblock carries the whole autopsy): it tested
+// `vHi >= 2·vLo` while claiming the stall's regime, and it silenced the guard hardest exactly where
+// residuals are largest — the third arm below is the fixture that shows it, and it is red without the
+// repair.
 describe("the carry's resolution-floor guard (D1)", () => {
     /** two authored keys one edge apart — already AT the floor, so the guard decides on the first
      *  measurement with no subdivision in between. */
@@ -1482,6 +1606,41 @@ describe("the carry's resolution-floor guard (D1)", () => {
         expect(() => carryForce(floorPair, spike, Domain.Time, 0.19, 1)).toThrow(
             /partial fit at the march resolution floor/,
         );
+    });
+
+    test("a NON-STALL map swinging 3× throws — a speed swing is not an excuse", () => {
+        // The reviewer's fixture, and the blocker it carries: the identical hidden station jump as the
+        // arm above, with the map's slope swinging 3× at 9 → 3 m/s. Nothing here is stalled — 3 m/s is
+        // three orders above `V_FLOOR` (0.01) and three times `V_WARN` (1.0), so the document would not
+        // even flag the ride infeasible.
+        //
+        // **Red before the repair, measured:** the retired `vHi >= 2·vLo` clause silenced the guard on
+        // exactly this input, and `carryForce` returned 2 keys carrying a **0.4803 g** residual against
+        // the 0.19 g bound — bit for bit the number the pre-guard silent failure was recorded at. The
+        // clause's docblock justified itself as "the regime of a stall and its approach" while testing
+        // the speed SWING, a different quantity, and swing and residual are correlated through the
+        // map's own nonlinearity, so it fired hardest where the residual was worst.
+        const swing3x = (u: number) => ({ value: u <= 0.5 ? u : u + 5, slope: u <= 0.5 ? 9 : 3 });
+        expect(V_FLOOR).toBeLessThan(3 / 100); // the fixture is nowhere near the stall…
+        expect(V_WARN).toBeLessThan(3); // …nor inside the band the document flags infeasible
+        expect(() => carryForce(floorPair, swing3x, Domain.Time, 0.19, 1)).toThrow(
+            /partial fit at the march resolution floor/,
+        );
+    });
+
+    test("the stall exclusion is read at the TABLE's precision, not f64's", () => {
+        // The repair's other half, and why dropping the swing clause alone turned every stalled
+        // document's flip into a refusal: a frozen interval's slope is two f32 table differences
+        // divided in f64, so it lands a few f32 ulps ABOVE `V_FLOOR` — measured at every throw site in
+        // this suite, `vLo` came back 0.010000000190734867 — and a bare `vLo <= V_FLOOR` is false by
+        // that 1.9e-10. So the stall clause never fired and the swing clause was doing its work.
+        const frozen = 0.010000000190734867; // the measured reading, verbatim
+        expect(frozen).toBeGreaterThan(V_FLOOR); // the bare comparison misses…
+        const stalled = (u: number) => ({ value: u <= 0.5 ? u : u + 5, slope: frozen });
+        // …and reading it at the store's own precision does not: this is the stall, and it is silenced.
+        expect(carryForce(floorPair, stalled, Domain.Time, 0.19, 1).map((q) => q.id)).toEqual([
+            1, 2,
+        ]);
     });
 
     test("the same call on an affine map returns — the guard is not a blanket refusal at the floor", () => {

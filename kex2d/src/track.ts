@@ -1524,7 +1524,11 @@ export interface ForcePointState {
     ease: Easing;
     tangent?: ForceTangent;
     /** the conversion-provenance bit (`Force.carried`) — restored verbatim, since a gesture
-     *  restore must be byte-identical and undoing an edit must put the droppable bit back. */
+     *  restore must be byte-identical and undoing an edit must put the droppable bit back. Every
+     *  consumer of this row threads it: `restoreForcePoint` writes it, `history.deleteForces`'s
+     *  undo passes it to `spawnForce` (a carried key deleted and undone comes back carried, so the
+     *  next reverse flip still drops it and `authoredHash` still matches the pre-delete document),
+     *  and {@link sameForcePoint} compares it. */
     carried: boolean;
 }
 
@@ -1543,6 +1547,37 @@ export function forcePointState(ecs: State, id: number): ForcePointState | undef
         carried: Force.carried.get(eid) !== 0,
     };
 }
+
+/** field-wise equality on a force keyframe's undoable state — the gesture no-op test for every
+ *  surface that writes a force point, `sameNodes`'s per-key twin.
+ *
+ *  **Exhaustive by type, deliberately.** The comparator is a table keyed on `keyof ForcePointState`,
+ *  so adding a column to that interface without deciding how the gesture compares it fails
+ *  `bun check` rather than silently widening the no-op class. That is the defect this shape exists
+ *  to prevent: the predicate was hand-written as `a.s === b.s && a.g === b.g` while `setForcePoint`
+ *  mutated a third field (`carried`), so a drag returning to its origin cleared the provenance bit,
+ *  moved `authoredHash`, and recorded NOTHING — an un-undoable document mutation.
+ *
+ * @example if (sameForcePoint(prev, next)) return; // a click, or a nudge back to start */
+export function sameForcePoint(a: ForcePointState, b: ForcePointState): boolean {
+    for (const eq of Object.values(FORCE_POINT_EQ)) if (!eq(a, b)) return false;
+    return true;
+}
+
+/** one predicate per `ForcePointState` column — see {@link sameForcePoint} for why it is a keyed
+ *  table rather than a conjunction. `section` is compared too: a point changes section only inside a
+ *  structural op, so a gesture seeing it move is a real change, never a no-op. */
+const FORCE_POINT_EQ: {
+    [K in keyof Required<ForcePointState>]: (a: ForcePointState, b: ForcePointState) => boolean;
+} = {
+    section: (a, b) => a.section === b.section,
+    id: (a, b) => a.id === b.id,
+    s: (a, b) => a.s === b.s,
+    g: (a, b) => a.g === b.g,
+    ease: (a, b) => a.ease === b.ease,
+    tangent: (a, b) => sameForceTangent(a.tangent, b.tangent),
+    carried: (a, b) => a.carried === b.carried,
+};
 
 /** whether a domain conversion inserted this keyframe (`Force.carried`), by stable id — false
  *  for an authored key and for an id that is gone.
@@ -2656,7 +2691,21 @@ export function sectionCutAt(
  *  (their old derived-from-`ease` sizing was scaled to the FULL span). Both new
  *  boundary keys read Custom (`profile.custom`): the visible cost of an exact
  *  mid-segment cut. no-op outside the interior. returns the new (tail) section id,
- *  or null. */
+ *  or null.
+ *
+ *  **A cut is an edit of the keys whose geometry it writes, so it CLEARS their provenance bit**
+ *  (`Force.carried`, the locked domain-carry law — the same law that makes editing an inserted key
+ *  authored), and it promotes every key that DEFINES the boundary value it plants: the two
+ *  bracketing keys of a mid-segment cut (whose handles this rewrites), the landmark key the cut
+ *  lands ON, and the single held key either flat branch copies its planted value from. Leaving any
+ *  of them tagged makes the
+ *  reverse flip drop a key the document's structure now depends on — measured: cutting at a
+ *  carried key's station and flipping back left the head with one keyframe (a 4 g dive gone flat)
+ *  while the tail kept an invented authored key. The keys merely REBASED onto the tail's axis keep
+ *  their bit: a rebase re-expresses the same station in the new section's own frame, writes no
+ *  shape, and stays exactly as droppable as it was. Every key this plants is authored by
+ *  construction (`createForcePoint` tags 0), which is what makes a person's Cut promote the
+ *  boundary it cut on into authored data — the intended consequence of the law, not a leak. */
 export function splitForce(ecs: State, sectionId: number, s: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null || Section.kind.get(secEid) !== SectionKind.Force) return null;
@@ -2689,6 +2738,8 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
         // landmark: `a` is already the exact boundary value — duplicate it into the
         // tail's opening keyframe, carrying its own `out` half forward (its `in` stays
         // with the head, governing the segment arriving at it); no subdivision needed.
+        // the cut promotes `a` into that shared boundary, so it is authored from here on.
+        Force.carried.set(a.eid, 0);
         const tan = readForceTangent(a.eid);
         createForcePoint(
             ecs,
@@ -2718,8 +2769,12 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
         };
         const sub = subdivide(aPoint, bPoint, s);
 
+        // both bracketing keys get their handles rewritten by the subdivision — an edit, so the
+        // provenance bit goes with it (the docblock's law).
         writeForceTangent(a.eid, { mode: TangentMode.Free, in: aTan?.in, out: sub.outA });
+        Force.carried.set(a.eid, 0);
         writeForceTangent(b.eid, { mode: TangentMode.Free, in: sub.inB, out: bTan?.out });
+        Force.carried.set(b.eid, 0);
         createForcePoint(ecs, sectionId, s, sub.g, Easing.Cubic, {
             mode: TangentMode.Free,
             in: sub.inMid,
@@ -2731,12 +2786,16 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     } else if (a !== null && b === null) {
         // the cut lands past the last keyframe: the head keeps the whole (flat-tailed)
         // shape, the tail opens on that same held value (`sampleForce`'s hold-flat rule,
-        // extended across the new boundary).
+        // extended across the new boundary). `a` is the key that DEFINES that planted
+        // boundary value, so the cut promotes it too — the law's other half.
+        Force.carried.set(a.eid, 0);
         createForcePoint(ecs, bId, 0, a.g);
     } else if (a === null && b !== null) {
         // the cut lands before the first keyframe: the head is flat at that keyframe's
         // value up to the boundary; the tail carries the (unshifted-at-this-point)
-        // authored points unchanged.
+        // authored points unchanged. `b` defines the planted boundary value, so it is
+        // promoted for the same reason.
+        Force.carried.set(b.eid, 0);
         createForcePoint(ecs, sectionId, s, b.g);
     }
 
@@ -2935,6 +2994,11 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             // explicit handle.
             Force.ease.set(aTail.eid, Force.ease.get(bHead.eid) as Easing);
             writeForceTangent(aTail.eid, { mode: TangentMode.Free, in: aTan?.in, out: bTan?.out });
+            // the merge REWRITES the surviving key's easing tag and both handles, so it is an edit
+            // under the domain-carry law and the merged key is authored from here on (`splitForce`'s
+            // own docblock carries the law). A merged key the reverse flip could still drop would
+            // take the join's own reconciliation with it.
+            Force.carried.set(aTail.eid, 0);
             ecs.destroy(bHead.eid);
         }
         for (const p of bForces) {

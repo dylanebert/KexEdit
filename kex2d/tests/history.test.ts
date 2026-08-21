@@ -62,6 +62,7 @@ import {
     createSection,
     createTrack,
     EXTEND_DIST,
+    forceCarried,
     forceEase,
     Handle,
     handleAt,
@@ -86,6 +87,7 @@ import {
     setTangent,
     setTrackV0,
     snapshotSection,
+    spawnForce,
     stampProvenance,
     stickyLen,
     Track,
@@ -288,6 +290,103 @@ test("a no-move force-point release records nothing", () => {
     beginForceMove(state, id);
     commit(h); // released without moving
     expect(h.undo.length).toBe(1); // only the create
+});
+
+// ── the conversion-provenance bit through the history wrappers (D1) ────────────────────────────
+//
+// `Force.carried` is a document column like `s` and `g` — it rides `authoredHash` and the reverse
+// domain flip drops the keys that carry it — so every wrapper below owes it the same treatment the
+// other columns get. Both arms were witnessed RED on the pre-repair code, each for its own
+// mechanism, and each red is an un-undoable document mutation rather than a cosmetic tag slip.
+
+/** plant a CARRIED force key directly, the way a domain conversion's snapshot land does
+ *  (`spawnForce`'s 8th argument) — the only writer that can produce one, since every authoring
+ *  writer clears the bit. */
+function carriedKey(state: State, sec: number, id: number, s: number, g: number): number {
+    spawnForce(state, sec, id, s, g, undefined, undefined, true);
+    return id;
+}
+
+/** the geo seed plus a real FORCE section, and the force section is the point: `authoredHash`
+ *  hashes a section's force points only for `SectionKind.Force`, so the same arms run over `nodes()`
+ *  alone would assert hash equality that no keyframe column can move — vacuous in exactly the
+ *  direction these arms are about. */
+function forceSec(): { state: State; sec: number } {
+    const { state } = nodes();
+    return { state, sec: createSection(state, 1, SectionKind.Force, 24) };
+}
+
+test("deleteForces: undo re-spawns a CARRIED key carried, hash-identical", () => {
+    // Red before the repair (`spawnForce` called on its 7-arg shape, so the 8th defaulted false):
+    // `forceCarried` read false after the undo and `authoredHash` no longer matched the pre-delete
+    // document — the restored key was authored, so the next reverse flip would KEEP a conversion
+    // artifact and the person's own drop never comes back.
+    const { state, sec } = forceSec();
+    const h = createHistory();
+    const id = carriedKey(state, sec, 9101, 12, 0.7);
+    const before = authoredHash(state);
+
+    deleteForces(h, state, [id]);
+    expect(sectionForces(state, sec).length).toBe(0);
+
+    undo(h, state);
+    expect(forceCarried(state, id)).toBe(true);
+    expect(authoredHash(state)).toBe(before);
+});
+
+test("a force drag returning to its origin still records, because it cleared the carried bit", () => {
+    // Red before the repair (the no-op predicate compared `s`/`g` only, while `setForcePoint` also
+    // clears `Force.carried`): the commit recorded NOTHING, `forceCarried` read false, and
+    // `authoredHash` had moved — a document mutation with no undo entry anywhere on the stack.
+    const { state, sec } = forceSec();
+    const h = createHistory();
+    const id = carriedKey(state, sec, 9102, 12, 0.7);
+    const before = authoredHash(state);
+
+    beginForceMove(state, id);
+    setForcePoint(state, id, 14, 0.9); // a live preview frame
+    setForcePoint(state, id, 12, 0.7); // …and back to the origin: s/g identical, `carried` not
+    commit(h);
+
+    expect(forceCarried(state, id)).toBe(false); // the drag really did author it
+    expect(authoredHash(state)).not.toBe(before);
+    expect(h.undo.length).toBe(1); // and the mutation is on the stack
+
+    undo(h, state);
+    expect(forceCarried(state, id)).toBe(true);
+    expect(authoredHash(state)).toBe(before);
+});
+
+test("a bulk force release back at the origin records for the same reason", () => {
+    const { state, sec } = forceSec();
+    const h = createHistory();
+    const a = carriedKey(state, sec, 9103, 5, 1);
+    const b = carriedKey(state, sec, 9104, 10, 2);
+    const before = authoredHash(state);
+
+    beginForceMoves(state, [a, b]);
+    setForcePoint(state, a, 6, 1.2);
+    setForcePoint(state, b, 11, 2.2);
+    setForcePoint(state, a, 5, 1); // both back where they started
+    setForcePoint(state, b, 10, 2);
+    commit(h);
+
+    expect(h.undo.length).toBe(1);
+    undo(h, state);
+    expect([forceCarried(state, a), forceCarried(state, b)]).toEqual([true, true]);
+    expect(authoredHash(state)).toBe(before);
+});
+
+test("a genuinely untouched force release still records nothing (the grant direction)", () => {
+    // the other half of the widened predicate: nothing written at all, so nothing to record —
+    // otherwise the fix would have bought its red by making every click an undo entry.
+    const { state, sec } = forceSec();
+    const h = createHistory();
+    const id = carriedKey(state, sec, 9105, 12, 0.7);
+    beginForceMove(state, id);
+    commit(h);
+    expect(h.undo.length).toBe(0);
+    expect(forceCarried(state, id)).toBe(true);
 });
 
 // ── force bulk ops (stage 3: timeline multiselect) — the shared-delta move, the one-entry bulk

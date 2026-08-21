@@ -503,8 +503,20 @@ function pickDomain(target: Domain): void {
     // so it can't land inside an open pin session — the rows gray on the same
     // predicate; this is the action-layer half of the pair (delete's belt-and-suspenders shape).
     if (!sectionOpsAllowed(editor.pinning)) return;
-    convertDomain(history, ecs, target); // rejects (writing nothing) on the active row and with
-    // nothing convertible — the same reading the row is grayed on
+    // `convertDomain` rejects (writing nothing) on the active row and with nothing convertible — the
+    // same reading the row is grayed on. It can also THROW: the carry's resolution-floor guard is
+    // fail-loud by design, and its throw is a document-level refusal (the conversion is a pure
+    // transform landed in one entry, so nothing is written when it fires). Refusing is this module's
+    // established answer to a pick that cannot land — every other path here returns false and grays
+    // the row — so the guard is caught HERE rather than softened in `domain.ts`, which would trade a
+    // named fail-loud deliverable for a silent no-op everywhere including the tests. The detail goes
+    // to the console, never to a readout: it names functions and prints g residuals
+    // (`editor.solveFailed`'s own rule for the same class of thrown message).
+    try {
+        convertDomain(history, ecs, target);
+    } catch (e) {
+        console.error(e);
+    }
 }
 // …and the view follows the DOMAIN, not the pick: `view.pan`/`pxPerU` are axis-unit quantities, so
 // whenever the unit changes the window is re-expressed to hold the same stretch of ride — the ruler

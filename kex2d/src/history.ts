@@ -43,6 +43,7 @@ import {
     restoreNodes,
     restoreSection,
     sameForceTangent,
+    sameForcePoint,
     sameNodes,
     Section,
     SectionKind,
@@ -455,7 +456,13 @@ export function createForce(h: History, ecs: State, section: number, s: number, 
 /** delete a SET of force points by id as ONE undoable entry (the bulk delete — force multi-delete
  *  is unconditional). undo re-spawns them all verbatim into their original sections; ids already
  *  gone are skipped, and nothing records when the set is empty. a single-id array (`[id]`) is the
- *  size-1 case — deleting one point. */
+ *  size-1 case — deleting one point.
+ *
+ *  "Verbatim" includes the conversion-provenance bit (`ForcePointState.carried`): deleting a
+ *  conversion-inserted key and undoing puts a CARRIED key back, so the next reverse flip still
+ *  drops it and `authoredHash` still matches the pre-delete document. Passing the 8th `spawnForce`
+ *  argument is what makes that true — its default is `false`, so an omission silently promoted the
+ *  restored key to authored. */
 export function deleteForces(h: History, ecs: State, ids: readonly number[]): void {
     const pre = selHook?.snapshot(ecs); // the selected SET — captured before any point is destroyed
     const sts: ForcePointState[] = [];
@@ -473,7 +480,7 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
             },
             reverse: () => {
                 for (const st of sts)
-                    spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent);
+                    spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent, st.carried);
             },
         },
         pre,
@@ -481,20 +488,25 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
 }
 
 /** open a gesture on a force-point drag (or an inline field edit), snapshotting the
- *  point's full state. commit coalesces the live writes into one entry; a position
- *  drag changes only `s`/`g`, so that's the no-op test. */
+ *  point's full state. commit coalesces the live writes into one entry; the no-op test is
+ *  {@link sameForcePoint}, field-wise over the whole snapshot rather than over the fields this
+ *  gesture is nominally about — `setForcePoint` also clears `Force.carried`, so an `s`/`g`-only
+ *  predicate read a drag returning to its origin as a no-op while the document had really changed,
+ *  and recorded nothing to undo it with. `sameForcePoint` is exhaustive by type, so the next column
+ *  added to `ForcePointState` cannot repeat that. */
 export function beginForceMove(ecs: State, id: number): void {
     begin(
         () => forcePointState(ecs, id),
         (st: ForcePointState) => restoreForcePoint(ecs, st),
-        (a: ForcePointState, b: ForcePointState) => a.s === b.s && a.g === b.g,
+        sameForcePoint,
     );
 }
 
 /** open a gesture on a MULTI force-point move (the shared-delta bulk drag / arrow-nudge),
  *  snapshotting every member's full state in `ids` order. commit coalesces the live writes into
- *  one entry; the no-op test is that no member's `s`/`g` changed, so a click or a nudge back to
- *  start records nothing. the size-1 case is `beginForceMove`. */
+ *  one entry; the no-op test is {@link sameForcePoint} per member (see `beginForceMove` for why it
+ *  is the whole snapshot and not `s`/`g`), so a click or a nudge back to start records nothing while
+ *  a drag that cleared a provenance bit does. the size-1 case is `beginForceMove`. */
 export function beginForceMoves(ecs: State, ids: readonly number[]): void {
     begin(
         () => {
@@ -509,7 +521,7 @@ export function beginForceMoves(ecs: State, ids: readonly number[]): void {
             for (const st of sts) restoreForcePoint(ecs, st);
         },
         (a: ForcePointState[], b: ForcePointState[]) =>
-            a.length === b.length && a.every((s, i) => s.s === b[i].s && s.g === b[i].g),
+            a.length === b.length && a.every((s, i) => sameForcePoint(s, b[i])),
     );
 }
 

@@ -281,16 +281,34 @@ function carriedTangent(slope: number, spanIn: number, spanOut: number): ForceTa
  *
  *  **Fail-loud at the resolution floor.** Subdivision stops at a source span of one nominal march
  *  edge — below that the march samples the segment at most once, so a finer split is unreadable by
- *  the very instrument the tolerance is derived from. What happens at that floor splits on the
- *  derivation's own premise, read off the probes: the resolution-floor tolerance assumes the map is
- *  itself resolved by the march grid, and the residual it then leaves is `tol · O(Δv/v)` over the
- *  segment. So a floor segment whose own speed swing is a factor of two or more (`MAP_UNRESOLVED`)
- *  is the locked stall degeneracy rather than a fit failure — the map is not a map at this
- *  resolution, the tolerance says nothing there, and the residual is accepted exactly as the stall
- *  collapse is. Below that swing the premise holds, so a partial fit is a contradiction in the
- *  derivation rather than a budget to spend quietly: it throws, and the whole conversion writes
- *  nothing (`convertDomain` is a pure transform landed in one entry). The reachable class is a map
- *  whose nonlinearity hides BETWEEN the probes — which is why nothing silent is safe here. */
+ *  the very instrument the tolerance is derived from. A segment still over tolerance there is a
+ *  contradiction in the derivation rather than a budget to spend quietly: it throws, and the whole
+ *  conversion writes nothing (`convertDomain` is a pure transform landed in one entry). The
+ *  reachable class is a map whose nonlinearity hides BETWEEN the probes — which is why nothing
+ *  silent is safe here.
+ *
+ *  **The one exclusion is the stall**, `vLo` at `V_FLOOR`: there the derivation's premise is not
+ *  merely strained but void, because `V_FLOOR` is the RESOLUTION of a stopped cart rather than a
+ *  speed it has, so the map over that segment is not the ride's map at all. A stalled conversion is
+ *  already locked as lossy in both directions (§ Domain fidelity), and A3 made a stalled Distance
+ *  section reachable, so the residual there is the stall's own lossiness. Nothing else is excluded.
+ *
+ *  **A speed-SWING exclusion used to sit beside it and was wrong.** It tested `vHi >= 2·vLo` while
+ *  claiming the stall's regime in its own docblock — two different quantities — and because swing and
+ *  residual are correlated through the map's own nonlinearity, it silenced the guard hardest exactly
+ *  where the residual was largest: measured on a non-stall map swinging 3× at 9 → 3 m/s (three orders
+ *  above `V_FLOOR`, above `V_WARN`), it returned a 0.4803 g residual against a 0.19 g bound with no
+ *  throw — bit for bit the silent failure the guard exists to catch.
+ *
+ *  **Removing it exposed why it had been load-bearing: the stall test as written never fired.** A
+ *  frozen interval's slope is `ds/dt` read off the f32 table, so it lands a few f32 ulps ABOVE
+ *  `V_FLOOR` rather than on it — measured on every throw site in the suite, `vLo` came back
+ *  0.010000000190734867, i.e. `V_FLOOR` + 1.9e-10 — and `vLo <= V_FLOOR` is false by that margin. So
+ *  a real stalling ride (a geo climb that stops the cart inside a force section) was being silenced
+ *  by the SWING clause and never by the stall clause at all, and dropping the swing alone turned
+ *  every stalled document's flip into a refusal. The repair is to read the stall at the precision the
+ *  table holds it in ({@link STALL_SLACK}), which is the rule `track.stationTaken` already applies to
+ *  a station equality: compare on the value as the store holds it, not as f64 computes it. */
 export function carryForce(
     points: readonly KeySnap[],
     map: (s: number) => Converted,
@@ -339,10 +357,11 @@ export function carryForce(
         }
         if (worst <= bound) continue;
         if (span <= edge) {
-            // the two map degeneracies, both outside what the resolution floor claims: a frozen cart
-            // (`V_FLOOR` is the resolution of a stall, not a speed) and a speed that swings by
-            // `MAP_UNRESOLVED` inside one march edge.
-            if (vLo <= V_FLOOR || vHi >= MAP_UNRESOLVED * vLo) continue;
+            // the ONE map degeneracy outside what the resolution floor claims: a frozen cart, where
+            // `V_FLOOR` is the resolution of a stall rather than a speed the ride has (the docblock
+            // carries why a speed-swing conjunct is not a second one, and why this comparison needs
+            // the table's own precision). `vHi`/`vLo` travel into the message as diagnostics.
+            if (vLo <= V_FLOOR * STALL_SLACK) continue;
             throw new Error(
                 `carryForce: partial fit at the march resolution floor — |Δg| ${worst} > ${bound} over a ${span} span (one nominal edge is ${edge}, speed swing ${vHi / vLo})`,
             );
@@ -399,14 +418,14 @@ function curveSlope(points: readonly ForcePoint[], s: number, reach: number): nu
  *  bracket it. Longer segments probe at march resolution instead, which is denser. */
 const PROBES_MIN = 5;
 
-/** the speed ratio across one floor-span segment at which the arc↔time map stops being resolved by
- *  the march grid at all — a factor of two, i.e. the map's own first-order term is as large as the
- *  map. That is the regime of a stall and its approach (`V_FLOOR` makes a stopped cart's edges cost
- *  `ds/V_FLOOR` each), where the resolution-floor tolerance's premise is void, so its residual is
- *  the stall's own lossiness — already locked, already lossy in both directions — rather than a
- *  carry defect. Structural, not tuned: at a ratio below this the residual is bounded by the
- *  tolerance times the swing itself. */
-const MAP_UNRESOLVED = 2;
+/** the relative slack the stall test reads `V_FLOOR` with. A frozen interval's slope is two f32
+ *  table differences divided in f64, so it carries a few f32 ulps of error and lands just off
+ *  `V_FLOOR` (measured: 0.010000000190734867 against `V_FLOOR` = 0.01, a third of one f32 ulp at that
+ *  magnitude). 16 f32 quanta of headroom covers the division's own rounding with room to spare while
+ *  staying eight orders below `V_WARN`, so nothing a person would call a moving ride is inside it —
+ *  this widens the comparison's precision, never the stall condition. */
+const STALL_SLACK = 1 + 16 * 2 ** -24;
+
 const EPS = 1e-12;
 
 /** the live table plus every force section's window on it, or null when the store cannot be

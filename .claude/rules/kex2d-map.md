@@ -712,16 +712,36 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   re-subdivides from the authored keys rather than simplifying the denser store heuristically — so
   `applyDomain` now plants and destroys force keyframes, not just rewrites positions. Every
   live-authoring writer (`setForcePoint`/`setForceEase`/`setForceTangent`/`clearForceTangentSide`)
-  CLEARS the bit: a key the person has touched is authored and stops being droppable. The bit rides
-  `SectionSnapshot` (so undo puts droppability back byte-identically) and the section content hash
-  (suffixed only when set), so a stamp taken before that edit can't certify the state after it.
+  CLEARS the bit: a key the person has touched is authored and stops being droppable. **So does every
+  STRUCTURAL writer, on the keys whose geometry it writes** — `splitForce` clears it on the two
+  bracketing keys of a mid-segment cut (whose handles the de Casteljau split rewrites), on the
+  landmark key a cut lands exactly on, and on the held key either flat branch copies its planted
+  boundary value from; `joinNext` clears it on the surviving key of a merged coincident pair (whose
+  easing tag and both handles the merge rewrites). A Cut therefore PROMOTES the boundary it cut on
+  into authored data — intended, since the document's new structure is built around that value and a
+  reverse flip that dropped it left the head holding one flat keyframe (measured). Keys a Cut merely
+  REBASES onto the tail's axis keep the bit: a rebase re-expresses one station in a new frame and
+  writes no shape. The bit rides `SectionSnapshot` and every writer that consumes one —
+  `restoreSection`/`restoreAll`/`applyDomain` and `history.deleteForces`'s undo, all through
+  `spawnForce`'s 8th argument — so undo puts droppability back byte-identically; and it rides the
+  section content hash (suffixed only when set), so a stamp taken before that edit can't certify the
+  state after it. It is also in the gesture's own no-op test (`track.sameForcePoint`, exhaustive by
+  type over `ForcePointState`): a drag returning to its origin cleared the bit, so it is a document
+  change and records one entry rather than reading as a click.
   **Subdivision is fail-loud at the floor**: below a source span of one nominal march edge the march
   samples the segment at most once, so a still-over segment throws and the whole conversion writes
-  nothing — except in the two map degeneracies the floor's own derivation excludes, both already
-  locked as lossy: a frozen cart (`V_FLOOR` is the resolution of a stall, not a speed) and a speed
-  swing of `MAP_UNRESOLVED` = 2× or more inside one edge, where the map isn't resolved by the march
-  grid at all. Without the guard a constructed unresolvable map returned a 0.4803 g residual
-  silently. What the carry does NOT touch is the section's baked WORLD exit: **a SINGLE flip moves
+  nothing — except in the ONE map degeneracy the floor's own derivation excludes, already locked as
+  lossy: a frozen cart, `vLo` at `V_FLOOR`, which is the resolution of a stall rather than a speed the
+  ride has. Read at the table's own f32 precision (`STALL_SLACK`), because a frozen interval's slope
+  is two f32 differences divided in f64 and lands 1.9e-10 ABOVE `V_FLOOR` — a bare `<=` misses every
+  real stall. **A `vHi >= 2·vLo` speed-swing clause used to sit beside it and is retired**: it tested
+  the swing while its docblock claimed the stall's regime, and since swing and residual are correlated
+  through the map's nonlinearity it silenced the guard hardest where residuals were largest — measured
+  on a non-stall map swinging 3× at 9 → 3 m/s it returned a 0.4803 g residual against a 0.19 g bound
+  with no throw, the same number the pre-guard silent failure was recorded at. The throw reaches the UI
+  as a refusal: `Timeline.pickDomain` catches it and logs the detail, since every other unlandable pick
+  in that module refuses too.
+  What the carry does NOT touch is the section's baked WORLD exit: **a SINGLE flip moves
   it, by the two marches' own mechanism and inside the same bound** (`kex2d-correctness-fixes` stage
   3) — 0.20 m on that same section, inside the 0.25 m two-bakes-at-equal-time bound the round trip
   derives, asserted as that derived inequality and never as the literal. That is two independent
@@ -733,9 +753,12 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   carries. Device-free tests in `tests/domain.test.ts` (guards, the forward conversion against an
   independently rebuilt table, the derived round-trip bound, the single-flip bound against the same
   swept disagreement, undo byte-identity, the plateau and past-span degeneracies, the window
-  boundaries, and the carry: both fixtures inside their own floor, the reverse drop, an edited key
-  surviving it, key counts bounded over 10 re-baked round trips against an untagged control, and the
-  floor guard throwing on a between-probe map while an affine one and a real stalling ride pass).
+  boundaries, and the carry: both fixtures inside their own floor and again with summoned explicit
+  handles — the class where the carry has least margin, 0.99× of tolerance against 0.19×/0.70× with
+  derived handles — the reverse drop, an edited key surviving it, a Cut at a carried key surviving the
+  reverse flip, key counts bounded and RELEASED over 10 re-baked round trips against an untagged
+  control, and the floor guard throwing on a between-probe map and on a non-stall 3× swing while an
+  affine map, a stall read at f32 precision, and a real stalling ride all pass).
 - `geoforce.ts` — the **invoked geo→force command**, and the only place the conversion tier and
   the document meet: `convertGeo(history, ecs, sectionId, opts)` drives `convert.ts`'s façade with
   the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), trackDs(ecs), MAX_SAMPLES −
@@ -1161,9 +1184,11 @@ The ECS + substrate layers are covered device-free — `tests/section.test.ts` (
 device; the unit suite is canvas2D + device-free, with no real-GPU leg. The real-GPU leg is the
 capture harness alone (`.claude/rules/kex2d-harness.md`).
 
-**A test touching a structural or domain op re-resolves its sections by stable `order`, never by a
-held eid.** `convertDomain` lands through a whole-track snapshot restore, so an eid captured before
-it addresses nothing after; a test that held one read `Section.length` as 0 and looked like a physics
+**A test touching a structural or domain op re-resolves its sections by stable `order`/`id`, never by
+a held eid.** `convertDomain`'s forward land is `applyDomain` in place, and its undo/redo is the
+`restoreAll` pair — either way force-point eids churn (the carry plants and destroys keyframes, and
+`restoreAll` destroys and respawns a section's whole payload), so an eid captured before the op
+addresses nothing after; a test that held one read `Section.length` as 0 and looked like a physics
 bug. Same for split/join/delete, which renumber the chain.
 
 `render.ts` is covered the same device-free way through `tests/helpers/recording-ctx.ts` — a
