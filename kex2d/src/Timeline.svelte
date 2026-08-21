@@ -19,6 +19,7 @@ import {
     beginDrag,
     closeForceMenu,
     closeRulerMenu,
+    dismissNotice,
     editor,
     endDrag as endDragGesture,
     enterForceEdit,
@@ -28,6 +29,7 @@ import {
     modeChromeSection,
     openContext,
     skipLanding,
+    notify,
     openForceMenu,
     openRulerMenu,
     selectForce,
@@ -54,7 +56,7 @@ import {
 } from "./history";
 import { forceKeyAct } from "./keys";
 import { redoRouted, undoRouted } from "./pin";
-import { convertDomain, pickable } from "./domain";
+import { convertDomain, convertFailed, pickable } from "./domain";
 import { Domain } from "./section";
 import {
     clampDelta,
@@ -509,15 +511,32 @@ function pickDomain(target: Domain): void {
     // transform landed in one entry, so nothing is written when it fires). Refusing is this module's
     // established answer to a pick that cannot land — every other path here returns false and grays
     // the row — so the guard is caught HERE rather than softened in `domain.ts`, which would trade a
-    // named fail-loud deliverable for a silent no-op everywhere including the tests. The detail goes
-    // to the console, never to a readout: it names functions and prints g residuals
-    // (`editor.solveFailed`'s own rule for the same class of thrown message).
+    // named fail-loud deliverable for a silent no-op everywhere including the tests.
+    //
+    // Refusing VISIBLY is the other half, and it is what every other unlandable pick in this module
+    // does: the rows that cannot land are grayed, so the person is told before they click. This one
+    // cannot be predicted from a predicate — `pickable` would have to run the whole carry — so the
+    // row stays enabled and the refusal has to arrive after the click. It arrives as the app's ONE
+    // status surface, the transient notice (`domain.convertFailed`, `editor.solveFailed`'s shape):
+    // a plain sentence for the person, and the raw message — which names functions and prints g
+    // residuals — to the console, never to the readout. A caught throw with no notice was silent to
+    // the person AND to every gate (it also stopped reaching the capture harness's `pageerror`
+    // watch), which is a fail-loud deliverable spending itself on nothing.
     try {
         convertDomain(history, ecs, target);
     } catch (e) {
-        console.error(e);
+        const { notice, detail } = convertFailed(e);
+        console.error(detail);
+        notify("error", notice);
+        // the transient's own auto-dismiss (root `ui.md`: a transient outcome is a toast). `App`
+        // carries the same timer for the solve readouts it raises; nothing exports one, and the
+        // readout has no other dismissal, so a refusal raised here owns its own.
+        clearTimeout(refusalTimer);
+        refusalTimer = setTimeout(dismissNotice, NOTICE_MS);
     }
 }
+const NOTICE_MS = 6000;
+let refusalTimer: ReturnType<typeof setTimeout> | undefined;
 // …and the view follows the DOMAIN, not the pick: `view.pan`/`pxPerU` are axis-unit quantities, so
 // whenever the unit changes the window is re-expressed to hold the same stretch of ride — the ruler
 // reads as re-labelled rather than jumped. Watching the domain (rather than re-framing inside

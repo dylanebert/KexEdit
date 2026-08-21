@@ -287,11 +287,33 @@ function carriedTangent(slope: number, spanIn: number, spanOut: number): ForceTa
  *  reachable class is a map whose nonlinearity hides BETWEEN the probes — which is why nothing
  *  silent is safe here.
  *
- *  **The one exclusion is the stall**, `vLo` at `V_FLOOR`: there the derivation's premise is not
- *  merely strained but void, because `V_FLOOR` is the RESOLUTION of a stopped cart rather than a
- *  speed it has, so the map over that segment is not the ride's map at all. A stalled conversion is
- *  already locked as lossy in both directions (§ Domain fidelity), and A3 made a stalled Distance
- *  section reachable, so the residual there is the stall's own lossiness. Nothing else is excluded.
+ *  **The one exclusion is the stall**, and what it excuses is the stall's OWN residual: the guard
+ *  measures the same |Δg| a second time over the probes where the cart is MOVING (slope above
+ *  `V_FLOOR` at {@link STALL_SLACK}'s precision) and refuses unless THAT reading is inside the bound.
+ *  Where the cart is frozen the derivation's premise is not merely strained but void, because
+ *  `V_FLOOR` is the RESOLUTION of a stopped cart rather than a speed it has, so the map over that
+ *  stretch is not the ride's map at all; a stalled conversion is already locked as lossy in both
+ *  directions (§ Domain fidelity) and A3 made a stalled Distance section reachable. Nothing else is
+ *  excluded, and a segment with no frozen probe is judged as if the clause did not exist.
+ *
+ *  **Reading the exclusion as a `min` of the segment's SPEED was the retired swing clause's defect one
+ *  level down.** `vLo <= V_FLOOR·STALL_SLACK` excuses a residual living in the segment's healthy
+ *  stretch on the strength of one frozen probe. Measured: a map frozen on `u < 0.2` and running
+ *  9 m/s elsewhere, with the hidden station jump in the MOVING part, returned 2 keys and no throw,
+ *  carrying a **0.4803 g** residual against the 0.19 g bound — bit for bit the number B4's silent
+ *  failure was recorded at, an exclusion silencing the guard precisely where the residual is worst.
+ *  The threshold is untouched; this is the exclusion's EXTENT.
+ *
+ *  **Why not "the segment is frozen THROUGHOUT" (`vHi` at `V_FLOOR`), which is the same repair stated
+ *  on the speed:** measured, it refuses a real stalling ride. A stall's ONSET lands inside one floor
+ *  span, so the segment is genuinely mixed (slopes 0.9438 moving / 0.0100000002 frozen, a 94× swing)
+ *  — and the whole residual there is the frozen part's: 0.012829 g against the 0.004999 g bound at the
+ *  frozen probes, ≤ 2.8e-5 g at the moving ones. Deciding on the residual rather than on the speed
+ *  keeps that flip landing (locked: lossy, not refused) while the mixed fixture above refuses.
+ *  **The disclosed cost:** a frozen stretch shorter than one probe interval, sitting at a segment
+ *  boundary, is attributed to the moving probes and refuses. Nothing in the suite reaches it — the
+ *  20-flip extent-runaway sequences included — and the direction of the error is a refusal, not a
+ *  silent half-fit.
  *
  *  **A speed-SWING exclusion used to sit beside it and was wrong.** It tested `vHi >= 2·vLo` while
  *  claiming the stall's regime in its own docblock — two different quantities — and because swing and
@@ -344,6 +366,9 @@ export function carryForce(
         // probe at march resolution, and at least `PROBES_MIN` times however short the segment is.
         const probe = Math.min(span / PROBES_MIN, edge);
         let worst = 0;
+        // the same residual restricted to the probes where the cart is MOVING — what the stall
+        // exclusion below is decided on, so a frozen stretch can only ever excuse its own residual.
+        let worstMoving = 0;
         // the map's own speed range over the segment, ENDPOINTS INCLUDED: the stall onset lands on a
         // boundary interval, so an interior-only reading sees one constant slope and calls a
         // 170× jump resolved (measured, on a re-carried store whose extent drifted into a stall).
@@ -353,15 +378,19 @@ export function carryForce(
             const at = map(s);
             vLo = Math.min(vLo, at.slope);
             vHi = Math.max(vHi, at.slope);
-            worst = Math.max(worst, Math.abs(sampleForce(seg, at.value) - sampleForce(source, s)));
+            const d = Math.abs(sampleForce(seg, at.value) - sampleForce(source, s));
+            worst = Math.max(worst, d);
+            if (at.slope > V_FLOOR * STALL_SLACK) worstMoving = Math.max(worstMoving, d);
         }
         if (worst <= bound) continue;
         if (span <= edge) {
             // the ONE map degeneracy outside what the resolution floor claims: a frozen cart, where
             // `V_FLOOR` is the resolution of a stall rather than a speed the ride has (the docblock
             // carries why a speed-swing conjunct is not a second one, and why this comparison needs
-            // the table's own precision). `vHi`/`vLo` travel into the message as diagnostics.
-            if (vLo <= V_FLOOR * STALL_SLACK) continue;
+            // the table's own precision). It is decided on the residual the MOVING probes carry, so
+            // the exclusion covers exactly the stall's own lossiness and never a residual living in
+            // the segment's healthy stretch. `vHi`/`vLo` travel into the message as diagnostics.
+            if (worstMoving <= bound) continue;
             throw new Error(
                 `carryForce: partial fit at the march resolution floor — |Δg| ${worst} > ${bound} over a ${span} span (one nominal edge is ${edge}, speed swing ${vHi / vLo})`,
             );
@@ -419,11 +448,18 @@ function curveSlope(points: readonly ForcePoint[], s: number, reach: number): nu
 const PROBES_MIN = 5;
 
 /** the relative slack the stall test reads `V_FLOOR` with. A frozen interval's slope is two f32
- *  table differences divided in f64, so it carries a few f32 ulps of error and lands just off
- *  `V_FLOOR` (measured: 0.010000000190734867 against `V_FLOOR` = 0.01, a third of one f32 ulp at that
- *  magnitude). 16 f32 quanta of headroom covers the division's own rounding with room to spare while
- *  staying eight orders below `V_WARN`, so nothing a person would call a moving ride is inside it —
- *  this widens the comparison's precision, never the stall condition. */
+ *  table differences divided in f64, so it carries a fraction of an f32 ulp of error and lands just
+ *  off `V_FLOOR` (measured: 0.010000000190734867 against `V_FLOOR` = 0.01, an excess of 1.9073e-10).
+ *
+ *  **The arithmetic, re-derived.** 0.01 sits in the f32 binade [2⁻⁷, 2⁻⁶), so one f32 ulp there is
+ *  2⁻³⁰ = 9.3132e-10 and the recorded excess is **0.2048 ulp** — equivalently 0.32·2⁻²⁴ in relative
+ *  terms, which is where an earlier "a third" in this docblock came from: that figure was the
+ *  RELATIVE excess in 2⁻²⁴ units, not a count of ulps, and both readings were stated as one.
+ *  `16·2⁻²⁴` relative is 9.5367e-9 absolute at this magnitude — **10.24 f32 ulps**, not 16 quanta —
+ *  putting the threshold at exactly 0.010000009536743164, i.e. 50× the recorded excess. That covers
+ *  the division's own rounding with room to spare while staying eight orders below `V_WARN`, so
+ *  nothing a person would call a moving ride is inside it — this widens the comparison's precision,
+ *  never the stall condition. */
 const STALL_SLACK = 1 + 16 * 2 ** -24;
 
 const EPS = 1e-12;
@@ -471,6 +507,30 @@ export function convertible(ecs: State): boolean {
  */
 export function pickable(ecs: State, target: Domain): boolean {
     return trackDomain(ecs) === target || convertible(ecs);
+}
+
+/** the readout for a domain pick the carry REFUSED, plus the raw detail for the console —
+ * `editor.solveFailed`'s shape, for this module's one throw.
+ *
+ * The carry's resolution-floor guard is fail-loud by design and its throw is a document-level
+ * refusal (the conversion is a pure transform landed in one entry, so nothing is written when it
+ * fires). A refusal the person cannot see is not a refusal: before this existed the surface caught
+ * the throw and logged it, so the ruler row stayed enabled, the click did nothing, and no readout,
+ * test or capture gate observed it — `harness/geo.pw.ts`'s `pageerror` gate had stopped seeing it
+ * too, since the throw is caught. So the pair is the same one every other thrown refusal in this app
+ * already uses: ONE plain sentence for the person, and the raw message — which names functions and
+ * prints g residuals — for `console.error`.
+ *
+ * Returns a bare sentence rather than an `editor.Notice` deliberately: the editor tier stays off this
+ * module's graph (`track.SolvedForce`'s own precedent), and the caller hands it to `editor.notify`.
+ *
+ * @example const { notice, detail } = convertFailed(e); console.error(detail); notify("error", notice)
+ */
+export function convertFailed(e: unknown): { notice: string; detail: string } {
+    return {
+        notice: "The units could not be switched. Nothing changed.",
+        detail: e instanceof Error ? (e.stack ?? e.message) : String(e),
+    };
 }
 
 /** flip the track-global domain and convert the whole force store into the target unit, as ONE

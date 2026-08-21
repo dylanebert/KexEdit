@@ -78,6 +78,7 @@ import {
     stationTaken,
     splitForce,
     seedTangent,
+    setForceCarried,
     setForceEase,
     setForcePoint,
     setForceTangent,
@@ -3535,7 +3536,11 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
         state.step(0);
         const tagged = bakeOut.get(eid)?.hash;
         const authoredTagged = authoredHash(state);
-        setForcePoint(state, 9003, 5, 0.9); // the same numbers — the EDIT clears the bit, nothing else
+        // the bit ALONE moves: `setForceCarried` writes no station, value, easing tag or handle, so
+        // the hash movement below is attributable to nothing else. (This arm used to clear through
+        // `setForcePoint(9003, 5, 0.9)` — the same numbers — which is exactly the zero-geometry
+        // promotion that writer no longer performs.)
+        setForceCarried(state, 9003, false);
         expect(forceCarried(state, 9003)).toBe(false);
         expect(authoredHash(state)).not.toBe(authoredTagged);
         state.step(0);
@@ -3593,6 +3598,100 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
         setForcePoint(state, 9010, 6, 0.9);
         restoreForcePoint(state, st);
         expect(forceCarried(state, 9010)).toBe(true);
+    });
+
+    test("a ZERO-GEOMETRY write promotes nothing — only a write that moves the key clears the bit", () => {
+        // Red before this repair, on every arm below: each writer cleared `Force.carried`
+        // unconditionally, and `forceMove`→`applyDrag` writes on EVERY pointermove — so pointer
+        // jitter inside one quantized station, or a click that lands a single no-move write,
+        // promoted a carried key. The recorded entry's only content was the provenance bit
+        // (`sameForcePoint` sees the bit move and correctly records), so the person's undo stack grew
+        // an entry that undoes a change they never made, and the next reverse flip kept an invented
+        // key. The comparison is at the store's own f32 precision, on the write that will LAND.
+        const { state, sec } = forceSec();
+        const plant = (id: number, s: number, g: number): void => {
+            destroyForce(state, id);
+            spawnForce(
+                state,
+                sec,
+                id,
+                s,
+                g,
+                Easing.Linear,
+                { mode: TangentMode.Aligned, in: { ds: -1, dg: 0 }, out: { ds: 1, dg: 0 } },
+                true,
+            );
+            expect(forceCarried(state, id)).toBe(true);
+        };
+
+        plant(9030, 5, 0.9);
+        setForcePoint(state, 9030, 5, 0.9); // the identical numbers — a jitter frame
+        expect(forceCarried(state, 9030)).toBe(true);
+        setForcePoint(state, 9030, 5.5, 0.9); // a real move, in `s` alone
+        expect(forceCarried(state, 9030)).toBe(false);
+
+        plant(9031, 5, 0.9);
+        setForcePoint(state, 9031, 5, 0.95); // a real move, in `g` alone
+        expect(forceCarried(state, 9031)).toBe(false);
+
+        // an `s` the station guard REFUSES cannot clear the bit either: the write does not land, so
+        // there is no geometry in it (the `g` half is unchanged here, or it would be a real move).
+        plant(9032, 5, 0.9);
+        plant(9033, 7, 0.9);
+        setForcePoint(state, 9033, 5, 0.9); // 5 is taken by 9032 — refused per-axis
+        expect(sectionForces(state, sec).find((p) => p.id === 9033)?.s).toBe(7);
+        expect(forceCarried(state, 9033)).toBe(true);
+
+        // the three sibling writers, treated the same way for the same reason.
+        plant(9034, 5, 0.9);
+        setForceEase(state, 9034, Easing.Linear); // the tag it already carries
+        expect(forceCarried(state, 9034)).toBe(true);
+        setForceEase(state, 9034, Easing.Cubic);
+        expect(forceCarried(state, 9034)).toBe(false);
+
+        plant(9035, 5, 0.9);
+        setForceTangent(state, 9035, {
+            mode: TangentMode.Aligned,
+            in: { ds: -1, dg: 0 },
+            out: { ds: 1, dg: 0 },
+        }); // the handles it already holds — a drag back to its origin
+        expect(forceCarried(state, 9035)).toBe(true);
+        setForceTangent(state, 9035, null);
+        expect(forceCarried(state, 9035)).toBe(false);
+
+        plant(9036, 5, 0.9);
+        clearForceTangentSide(state, 9036, "out");
+        expect(forceCarried(state, 9036)).toBe(false); // the side WAS explicit — a real clear
+        plant(9037, 5, 0.9);
+        clearForceTangentSide(state, 9037, "out");
+        clearForceTangentSide(state, 9037, "in"); // the in side is still explicit here
+        expect(forceCarried(state, 9037)).toBe(false);
+        spawnForce(
+            state,
+            sec,
+            9038,
+            9,
+            0.9,
+            Easing.Cubic,
+            { mode: TangentMode.Aligned, in: { ds: -1, dg: 0 } },
+            true,
+        );
+        clearForceTangentSide(state, 9038, "out"); // already derived: nothing to write
+        expect(forceCarried(state, 9038)).toBe(true);
+    });
+
+    test("setForceCarried is the one writer that changes droppability without writing shape", () => {
+        // the law's non-writer arm needs a writer of its own: `history.deleteForces` promotes the
+        // surviving carried keys of a section whose AUTHORED set it just changed, and its undo puts
+        // the bits back — neither direction writes a station, a value, an easing tag or a handle.
+        const { state, sec } = forceSec();
+        spawnForce(state, sec, 9040, 5, 0.9, Easing.Linear, undefined, true);
+        const before = forcePointState(state, 9040);
+        setForceCarried(state, 9040, false);
+        expect(forceCarried(state, 9040)).toBe(false);
+        setForceCarried(state, 9040, true);
+        expect(forcePointState(state, 9040)).toEqual(before); // every other column untouched
+        setForceCarried(state, 999999, false); // a gone id is a no-op, not a throw
     });
 
     test("applyDomain plants the snapshot's new keys and drops the ones it omits", () => {

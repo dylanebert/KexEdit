@@ -489,7 +489,8 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   the default flow stores no tangents (`exitHeading` still resolves the append/reflect seed against
   an explicit tip's out-vector). Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
-  `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. `stationTaken` is the
+  `setForcePoint`/`setForceCarried` (the provenance bit alone, no shape — see the domain carry);
+  extent `sectionLengthState`/`setSectionLength`. `stationTaken` is the
   one-property-one-station guard `setForcePoint` reads (`editor-ui.md` Keyframe conventions):
   section-scoped, exact at the stored f32 width, self-excluding; a taken station drops the `s`
   write and keeps the `g` write, so a drag skips the occupied slot instead of stacking on it. The
@@ -710,9 +711,16 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   reshape against that section's own 0.022481 g floor, 2.2× over; 0.004363 g after, 0.19× of it.
   **Each inserted key is tagged** (`Force.carried`), and the reverse flip DROPS the tagged set and
   re-subdivides from the authored keys rather than simplifying the denser store heuristically — so
-  `applyDomain` now plants and destroys force keyframes, not just rewrites positions. Every
-  live-authoring writer (`setForcePoint`/`setForceEase`/`setForceTangent`/`clearForceTangentSide`)
-  CLEARS the bit: a key the person has touched is authored and stops being droppable. **So does every
+  `applyDomain` now plants and destroys force keyframes, not just rewrites positions.
+  **The law is about reconstructibility from the AUTHORED set**, not about who writes a column:
+  `carryForce` fits the authored keys alone and derives its tolerance from them, so **any op that
+  changes a section's authored set invalidates the carried keys fitted to it**, whether or not it
+  writes their columns. Three classes. Every live-authoring writer
+  (`setForcePoint`/`setForceEase`/`setForceTangent`/`clearForceTangentSide`)
+  CLEARS the bit: a key the person has touched is authored and stops being droppable — but only when
+  the write MOVES something, compared against the stored column, since `forceMove`→`applyDrag` writes
+  on every pointermove and a jitter frame carries no geometry (a promotion whose only content is the
+  provenance bit is an undo entry for a change nobody made). **So does every
   STRUCTURAL writer, on the keys whose geometry it writes** — `splitForce` clears it on the two
   bracketing keys of a mid-segment cut (whose handles the de Casteljau split rewrites), on the
   landmark key a cut lands exactly on, and on the held key either flat branch copies its planted
@@ -721,9 +729,27 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   into authored data — intended, since the document's new structure is built around that value and a
   reverse flip that dropped it left the head holding one flat keyframe (measured). Keys a Cut merely
   REBASES onto the tail's axis keep the bit: a rebase re-expresses one station in a new frame and
-  writes no shape. The bit rides `SectionSnapshot` and every writer that consumes one —
-  `restoreSection`/`restoreAll`/`applyDomain` and `history.deleteForces`'s undo, all through
-  `spawnForce`'s 8th argument — so undo puts droppability back byte-identically; and it rides the
+  writes no shape — and **`joinNext` performs that identical untagged rebase** (`Force.s = p.s + aLen`)
+  on every key of the section it absorbs, so the carve-out is one law with two call sites rather than a
+  Cut-only exception. **And the NON-writer: `history.deleteForces` clears the bit on the section's
+  surviving carried keys** (`track.setForceCarried`, the one writer that changes droppability without
+  writing shape), because destroying an authored key leaves the carried ones fitted to a curve the
+  document no longer holds while writing none of their columns. Measured before that reached it:
+  flip dive-and-recover to Seconds, delete the 0.4 g trough key, flip back, and the section came back
+  holding two keys both at 1 g — flat — a 0.41630 g round-trip delta at t = 1.870 against a 0.0225 g
+  floor (18.5×), with the guard blind to it (the surviving authored set is `{1 g, 1 g}`, so
+  `resolutionFloor` is 0.0 and the fit is exact); deleting two of three authored keys left ONE
+  keyframe. Authored **insertion** is deliberately not in this class — `createForce` promotes nothing,
+  and measured, an authored key inserted among carried ones round-trips with min/max preserved
+  (0.4/3.5 g both sides) — because an insert adds a constraint rather than removing one. A Cut then a
+  Join at a carried station is therefore geometry-identical and provenance-CHANGED (the key returns
+  authored, `authoredHash` differs, the next reverse flip keeps an invented key): `joinNext`'s
+  "collapsing to one keyframe is lossless" is about the sampled profile and says nothing about
+  droppability, which is one-way. The bit rides `SectionSnapshot` and every writer that consumes one —
+  `restoreSection`/`restoreAll` and `history.deleteForces`'s undo through `spawnForce`'s 8th argument,
+  `restoreForcePoint` (the gesture-restore row consumer) and `applyDomain`, which spawns a key the
+  section does not yet hold through that same argument and writes `Force.carried` directly on one it
+  does — so undo puts droppability back byte-identically; and it rides the
   section content hash (suffixed only when set), so a stamp taken before that edit can't certify the
   state after it. It is also in the gesture's own no-op test (`track.sameForcePoint`, exhaustive by
   type over `ForcePointState`): a drag returning to its origin cleared the bit, so it is a document
@@ -731,16 +757,32 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   **Subdivision is fail-loud at the floor**: below a source span of one nominal march edge the march
   samples the segment at most once, so a still-over segment throws and the whole conversion writes
   nothing — except in the ONE map degeneracy the floor's own derivation excludes, already locked as
-  lossy: a frozen cart, `vLo` at `V_FLOOR`, which is the resolution of a stall rather than a speed the
-  ride has. Read at the table's own f32 precision (`STALL_SLACK`), because a frozen interval's slope
-  is two f32 differences divided in f64 and lands 1.9e-10 ABOVE `V_FLOOR` — a bare `<=` misses every
-  real stall. **A `vHi >= 2·vLo` speed-swing clause used to sit beside it and is retired**: it tested
+  lossy: a frozen cart, where `V_FLOOR` is the resolution of a stall rather than a speed the ride has.
+  Read at the table's own f32 precision (`STALL_SLACK`), because a frozen interval's slope is two f32
+  differences divided in f64 and lands 1.9073e-10 ABOVE `V_FLOOR` — a bare `<=` misses every real
+  stall. That excess is **0.2048 of one f32 ulp** at 0.01 (the f32 binade [2⁻⁷, 2⁻⁶), so one ulp is
+  2⁻³⁰ = 9.3132e-10) and `STALL_SLACK`'s `16·2⁻²⁴` relative is **10.24 f32 ulps** of headroom, i.e. a
+  threshold of exactly 0.010000009536743164, 50× the recorded excess — the earlier "a third of an ulp"
+  and "16 f32 quanta" were the relative figure and the ulp count conflated, and both are corrected.
+  **The exclusion is decided on the residual the MOVING probes carry**, not on the segment's slowest
+  reading: `vLo <= V_FLOOR·STALL_SLACK` let one frozen probe excuse a residual living in the segment's
+  healthy stretch — measured, a map frozen on `u < 0.2` and running 9 m/s elsewhere with the hidden
+  station jump in the moving part returned 2 keys and no throw at a 0.4803 g residual against the
+  0.19 g bound. Deciding it on the residual rather than on the speed is what keeps a real stalling
+  ride's flip landing (its onset segment is genuinely mixed — a 94× swing inside one floor span — with
+  the whole residual at the frozen probes), which "the segment is frozen throughout" would have
+  refused. **A `vHi >= 2·vLo` speed-swing clause used to sit beside it and is retired**: it tested
   the swing while its docblock claimed the stall's regime, and since swing and residual are correlated
   through the map's nonlinearity it silenced the guard hardest where residuals were largest — measured
   on a non-stall map swinging 3× at 9 → 3 m/s it returned a 0.4803 g residual against a 0.19 g bound
-  with no throw, the same number the pre-guard silent failure was recorded at. The throw reaches the UI
-  as a refusal: `Timeline.pickDomain` catches it and logs the detail, since every other unlandable pick
-  in that module refuses too.
+  with no throw, the same number the pre-guard silent failure was recorded at. **The throw reaches the
+  UI as a VISIBLE refusal**, which is what every other unlandable pick in that module does (the rows
+  that cannot land are grayed, so the person is told before the click): this one cannot be predicted
+  from a predicate — `pickable` would have to run the whole carry — so the row stays enabled and
+  `Timeline.pickDomain` raises the refusal after the click, through `domain.convertFailed`
+  (`editor.solveFailed`'s shape: one plain sentence to `editor.notify`, the thrown detail to the
+  console). Logging alone was silent to the person AND to every gate — catching the throw also took it
+  out of the capture harness's `pageerror` watch.
   What the carry does NOT touch is the section's baked WORLD exit: **a SINGLE flip moves
   it, by the two marches' own mechanism and inside the same bound** (`kex2d-correctness-fixes` stage
   3) — 0.20 m on that same section, inside the 0.25 m two-bakes-at-equal-time bound the round trip
@@ -756,9 +798,12 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
   boundaries, and the carry: both fixtures inside their own floor and again with summoned explicit
   handles — the class where the carry has least margin, 0.99× of tolerance against 0.19×/0.70× with
   derived handles — the reverse drop, an edited key surviving it, a Cut at a carried key surviving the
-  reverse flip, key counts bounded and RELEASED over 10 re-baked round trips against an untagged
-  control, and the floor guard throwing on a between-probe map and on a non-stall 3× swing while an
-  affine map, a stall read at f32 precision, and a real stalling ride all pass).
+  reverse flip, a DELETE of an authored key leaving the shape intact through the reverse flip while an
+  authored insert leaves its neighbours droppable, key counts bounded and RELEASED over 10 re-baked
+  round trips against an untagged control, `convertFailed`'s sentence/detail split with the ruler
+  pick's own catch wiring, and the floor guard throwing on a between-probe map, on a non-stall 3×
+  swing and on a mixed frozen/moving map while an affine map, a wholly frozen segment read at f32
+  precision, and a real stalling ride all pass).
 - `geoforce.ts` — the **invoked geo→force command**, and the only place the conversion tier and
   the document meet: `convertGeo(history, ecs, sectionId, opts)` drives `convert.ts`'s façade with
   the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), trackDs(ecs), MAX_SAMPLES −

@@ -48,12 +48,14 @@ import {
     Section,
     SectionKind,
     sectionAt,
+    sectionForces,
     sections,
     type SectionSnapshot,
     seedTangent,
     setTangent,
     type SectionLengthState,
     sectionLengthState,
+    setForceCarried,
     setForceEase as writeForceEase,
     setForcePoint,
     setForceTangent,
@@ -462,7 +464,25 @@ export function createForce(h: History, ecs: State, section: number, s: number, 
  *  conversion-inserted key and undoing puts a CARRIED key back, so the next reverse flip still
  *  drops it and `authoredHash` still matches the pre-delete document. Passing the 8th `spawnForce`
  *  argument is what makes that true — its default is `false`, so an omission silently promoted the
- *  restored key to authored. */
+ *  restored key to authored.
+ *
+ *  **A delete also PROMOTES the surviving carried keys of every section it touches**
+ *  (`track.setForceCarried`), and that is the provenance law reaching its one NON-writer. `carryForce`
+ *  fits the AUTHORED keys alone and derives its tolerance from them, so a carried key is
+ *  reconstructible only while the authored keys around it still describe the curve it was fitted to.
+ *  This op destroys an authored key and writes no neighbour's station, value, easing or handle, so
+ *  the writers-only reading of the law never reached it — and the invariant broke anyway: measured on
+ *  dive-and-recover, flipping to Seconds, deleting the 0.4 g trough key and flipping back left the
+ *  section holding TWO keys both at 1 g (flat), a 0.41630 g round-trip shape delta at t = 1.870
+ *  against that fixture's 0.0225 g resolution floor (18.5×), with the guard blind to it — with the
+ *  trough gone the authored set is `{1 g, 1 g}`, so `resolutionFloor` is 0.0 and the fit is exact.
+ *  Deleting two of the three authored keys left ONE keyframe, flat at 1 g.
+ *
+ *  Undo puts the bits back with the keys, so the whole entry is still byte-identical either way.
+ *  Authored INSERTION is deliberately NOT in this class — `createForce` promotes nothing (measured:
+ *  an authored key inserted among carried ones round-trips with min/max preserved, 0.4/3.5 g both
+ *  sides), because adding a key constrains the curve rather than removing what the carry was fitted
+ *  under. */
 export function deleteForces(h: History, ecs: State, ids: readonly number[]): void {
     const pre = selHook?.snapshot(ecs); // the selected SET — captured before any point is destroyed
     const sts: ForcePointState[] = [];
@@ -471,16 +491,26 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
         if (st) sts.push(st);
     }
     if (sts.length === 0) return;
-    for (const st of sts) destroyForce(ecs, st.id);
+    // the carried keys this delete invalidates: read BEFORE anything is destroyed, over the whole
+    // authored set of every section losing a key, and excluding the victims themselves.
+    const gone = new Set(sts.map((st) => st.id));
+    const promoted: number[] = [];
+    for (const sec of new Set(sts.map((st) => st.section)))
+        for (const row of sectionForces(ecs, sec))
+            if (!gone.has(row.id) && row.carried) promoted.push(row.id);
+    const drop = (): void => {
+        for (const st of sts) destroyForce(ecs, st.id);
+        for (const id of promoted) setForceCarried(ecs, id, false);
+    };
+    drop();
     record(
         h,
         {
-            apply: () => {
-                for (const st of sts) destroyForce(ecs, st.id);
-            },
+            apply: drop,
             reverse: () => {
                 for (const st of sts)
                     spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent, st.carried);
+                for (const id of promoted) setForceCarried(ecs, id, true);
             },
         },
         pre,

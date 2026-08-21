@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { editor, select, selectionHook } from "../src/editor";
 import { State } from "@dylanebert/shallot";
 import { V_FLOOR, V_WARN } from "../src/bake";
@@ -6,13 +7,21 @@ import { trackMapping } from "../src/cart";
 import {
     carryForce,
     convertDomain,
+    convertFailed,
     convertible,
     convertSolve,
     pickable,
     resolutionFloor,
 } from "../src/domain";
 import { Easing, type ForcePoint, resolveStep, sampleForce } from "../src/profile";
-import { createHistory, redo, setSelectionHook, undo } from "../src/history";
+import {
+    createForce,
+    createHistory,
+    deleteForces,
+    redo,
+    setSelectionHook,
+    undo,
+} from "../src/history";
 import { Domain } from "../src/section";
 import { TangentMode } from "../src/spline";
 import {
@@ -43,6 +52,7 @@ import {
     sections,
     sectionStrips,
     type ForceTangent,
+    setForceCarried,
     setForcePoint,
     setForceTangent,
     splitForce,
@@ -1428,6 +1438,82 @@ describe("the carry (D1)", () => {
         expect(tailFirst.carried).toBe(false);
     });
 
+    test("DELETING an authored key promotes the carried keys fitted to it, so the reverse flip keeps the shape", () => {
+        // The provenance law's NON-writer, end to end and in the person's terms: they flip to
+        // Seconds, delete a keyframe, flip back to Metres, and the curve they were looking at must
+        // still be there. `carryForce` fits the AUTHORED keys alone and derives its tolerance from
+        // them, so every carried key around a destroyed authored key was fitted to a curve the
+        // document no longer holds — `history.deleteForces` therefore promotes them
+        // (`track.setForceCarried`), even though it writes no column of theirs.
+        //
+        // **Red before this repair**, this exact sequence: the 2 carried keys stayed tagged, the
+        // Seconds curve still dipped to 0.5837 g, and the reverse flip dropped both — leaving TWO
+        // keys, both 1 g, FLAT: a 0.41630 g round-trip delta at t = 1.870 against this fixture's
+        // 0.0225 g resolution floor (18.5×). No guard could see it, because with the trough gone the
+        // authored set is {1 g, 1 g}, `resolutionFloor` is 0.0 and the fit is exact. Deleting two of
+        // the three authored keys left ONE keyframe, flat at 1 g — verbatim the witness `882ae1c`
+        // recorded for the Cut, reached through Delete instead.
+        const [len, pts] = DIVE_AND_RECOVER;
+        const r = flipDelta(len, pts);
+        expect(carriedKfs(r.state, r.sec).length).toBe(2);
+        const seconds = profilePts(r.state, r.sec);
+        const tEnd = Math.max(...seconds.map((p) => p.s));
+        const h = createHistory();
+
+        // the person deletes the authored trough — the 0.4 g dip — in Seconds.
+        const trough = sectionForces(r.state, r.sec)
+            .filter((p) => !p.carried)
+            .reduce((lo, p) => (p.g < lo.g ? p : lo));
+        deleteForces(h, r.state, [trough.id]);
+        expect(carriedKfs(r.state, r.sec).length).toBe(0); // nothing droppable is left behind
+        const dipped = profilePts(r.state, r.sec);
+
+        r.state.step(0);
+        expect(convertDomain(h, r.state, Domain.Distance)).toBe(true);
+        const back = profilePts(r.state, r.sec);
+        // the returned curve is not flat, and it still dips: the carried keys became the shape's
+        // carriers when the key they were fitted to went away.
+        expect(back.length).toBeGreaterThan(2);
+        expect(Math.min(...back.map((p) => p.g))).toBeLessThan(0.8);
+
+        // and the round trip holds the SHAPE, read the way the person sees it: the Seconds curve they
+        // were looking at against what came back, both at the same ride position. 0.00355 g at
+        // t = 2.903, 0.2× of the floor — against 0.41630 g / 18.5× before the repair.
+        const tab = table(r.eid);
+        let worst = 0;
+        for (let i = 0; i <= 400; i++) {
+            const t = (i / 400) * tEnd;
+            const s = interp(tab.t, tab.arc, t);
+            worst = Math.max(worst, Math.abs(sampleForce(back, s) - sampleForce(dipped, t)));
+        }
+        expect(worst).toBeLessThanOrEqual(r.tol);
+        expect(worst).toBeGreaterThan(0); // not a vacuous no-op: the flip really ran
+    });
+
+    test("an authored INSERT among carried keys does NOT promote them — the asymmetry, measured", () => {
+        // The law is about reconstructibility from the authored set, and an insert ADDS a constraint
+        // rather than removing one, so the keys around it stay droppable (`history.createForce`
+        // promotes nothing). Measured here rather than argued: the curve's min/max survives the round
+        // trip either way — 0.4/3.5 g in Seconds after the insert, 0.4/3.5 g back in Metres — which is
+        // what makes the delete's promotion a repair and not a blanket rule.
+        const [len, pts] = DIVE_AND_RECOVER;
+        const r = flipDelta(len, pts);
+        const tEnd = Math.max(...sectionForces(r.state, r.sec).map((p) => p.s));
+        const h = createHistory();
+        createForce(h, r.state, r.sec, tEnd * 0.75, 3.5); // the person authors a 3.5 g key
+        expect(carriedKfs(r.state, r.sec).length).toBeGreaterThan(0); // still droppable
+        const dense = (ptsIn: ForcePoint[], end: number): number[] =>
+            Array.from({ length: 401 }, (_, i) => sampleForce(ptsIn, (i / 400) * end));
+        const seconds = dense(profilePts(r.state, r.sec), tEnd);
+
+        r.state.step(0);
+        expect(convertDomain(h, r.state, Domain.Distance)).toBe(true);
+        const back = profilePts(r.state, r.sec);
+        const metres = dense(back, Math.max(...back.map((p) => p.s)));
+        expect(Math.min(...metres)).toBeCloseTo(Math.min(...seconds), 2);
+        expect(Math.max(...metres)).toBeCloseTo(Math.max(...seconds), 2);
+    });
+
     test("editing an inserted key clears its tag, so the reverse flip keeps it", () => {
         const [len, pts] = DIVE_AND_RECOVER;
         const r = flipDelta(len, pts);
@@ -1554,8 +1640,12 @@ describe("round-trip key counts on re-baked tables (D1)", () => {
             } catch (e) {
                 return { counts, refused: (e as Error).message };
             }
+            // the control clears the tags through the bit's own writer. Re-writing each key's own
+            // `s`/`g` back onto it used to do this and no longer does: a write that moves nothing
+            // leaves provenance alone (`track.setForcePoint`), which is the whole point of that
+            // repair — so an untagged control built that way would silently BE the tagged scheme.
             if (untagged)
-                for (const p of sectionForces(state, sec)) setForcePoint(state, p.id, p.s, p.g);
+                for (const p of sectionForces(state, sec)) setForceCarried(state, p.id, false);
             state.step(0); // RE-BAKE: the next flip converts through the table this flip made
             counts.push(sectionForces(state, sec).length);
         }
@@ -1595,6 +1685,11 @@ describe("the carry's resolution-floor guard (D1)", () => {
         { id: 2, s: 1, g: 2, ease: Easing.Cubic, carried: false },
     ];
 
+    /** a frozen interval's slope as the table actually reports it — two f32 differences divided in
+     *  f64, measured at every throw site in this suite, verbatim. `V_FLOOR` + 1.9073e-10, which is
+     *  0.2048 of one f32 ulp at 0.01 (the binade [2⁻⁷, 2⁻⁶), so one ulp is 2⁻³⁰ = 9.3132e-10). */
+    const FrozenSlope = 0.010000000190734867;
+
     test("a map whose nonlinearity hides BETWEEN the probes fails loud instead of half-fitting", () => {
         // Red-first, witnessed: with the guard's `throw` replaced by the silent `continue` a
         // depth-capped recursion does, this same call returns 2 keys carrying a **0.4803 g** residual
@@ -1631,16 +1726,48 @@ describe("the carry's resolution-floor guard (D1)", () => {
     test("the stall exclusion is read at the TABLE's precision, not f64's", () => {
         // The repair's other half, and why dropping the swing clause alone turned every stalled
         // document's flip into a refusal: a frozen interval's slope is two f32 table differences
-        // divided in f64, so it lands a few f32 ulps ABOVE `V_FLOOR` — measured at every throw site in
-        // this suite, `vLo` came back 0.010000000190734867 — and a bare `vLo <= V_FLOOR` is false by
-        // that 1.9e-10. So the stall clause never fired and the swing clause was doing its work.
-        const frozen = 0.010000000190734867; // the measured reading, verbatim
+        // divided in f64, so it lands just ABOVE `V_FLOOR` — measured at every throw site in this
+        // suite, `vLo` came back 0.010000000190734867, an excess of 1.9073e-10, which is 0.2048 of one
+        // f32 ulp at that magnitude — and a bare `vLo <= V_FLOOR` is false by exactly that. So the
+        // stall clause never fired and the swing clause was doing its work.
+        const frozen = FrozenSlope;
         expect(frozen).toBeGreaterThan(V_FLOOR); // the bare comparison misses…
         const stalled = (u: number) => ({ value: u <= 0.5 ? u : u + 5, slope: frozen });
         // …and reading it at the store's own precision does not: this is the stall, and it is silenced.
         expect(carryForce(floorPair, stalled, Domain.Time, 0.19, 1).map((q) => q.id)).toEqual([
             1, 2,
         ]);
+    });
+
+    test("a MIXED-slope map throws — one frozen probe does not excuse a residual in the healthy stretch", () => {
+        // The reviewer's fixture for the exclusion's EXTENT (its threshold is unchanged): the map
+        // reads the frozen slope on `u < 0.2` and 9 m/s everywhere else, with the same hidden 5 s
+        // station jump as the arms above sitting in the MOVING part.
+        //
+        // **Red before this repair, measured:** the clause was `vLo <= V_FLOOR·STALL_SLACK`, a `min`
+        // over the whole segment (endpoints included), so the one frozen endpoint silenced the guard
+        // and `carryForce` returned 2 keys carrying a **0.4803 g** residual against the 0.19 g bound —
+        // bit for bit B4's own silent-failure number, and the retired swing clause's defect one level
+        // down: an exclusion firing precisely where the residual is worst. The repair decides the
+        // exclusion on the residual the MOVING probes carry, so a frozen stretch excuses only its own
+        // lossiness.
+        const mixed = (u: number) => ({
+            value: u <= 0.5 ? u : u + 5,
+            slope: u < 0.2 ? FrozenSlope : 9,
+        });
+        expect(mixed(0).slope).toBeLessThan(V_FLOOR * (1 + 16 * 2 ** -24)); // the frozen endpoint is real
+        expect(() => carryForce(floorPair, mixed, Domain.Time, 0.19, 1)).toThrow(
+            /partial fit at the march resolution floor/,
+        );
+        // and the mirror image: the jump inside the frozen stretch, the moving part carrying the
+        // reshape. Also silenced before, also a refusal now.
+        const mirrored = (u: number) => ({
+            value: u <= 0.5 ? u : u + 5,
+            slope: u <= 0.5 ? 9 : FrozenSlope,
+        });
+        expect(() => carryForce(floorPair, mirrored, Domain.Time, 0.19, 1)).toThrow(
+            /partial fit at the march resolution floor/,
+        );
     });
 
     test("the same call on an affine map returns — the guard is not a blanket refusal at the floor", () => {
@@ -1650,6 +1777,51 @@ describe("the carry's resolution-floor guard (D1)", () => {
         const out = carryForce(floorPair, affine, Domain.Time, 0.19, 1);
         expect(out.map((p) => p.id)).toEqual([1, 2]);
         expect(out.every((p) => !p.carried)).toBe(true);
+    });
+
+    test("the refusal reaches the PERSON: one plain sentence for the readout, the internals to the console", () => {
+        // The fail-loud deliverable's other half. The guard's throw was caught at the surface and
+        // logged only — so the ruler row stayed enabled, the click did nothing, no readout appeared,
+        // and (the throw being caught) the capture harness's `pageerror` watch stopped seeing it too:
+        // no gate anywhere observed the refusal. `convertFailed` is `editor.solveFailed`'s shape for
+        // this module's one throw, and `Timeline.pickDomain` raises the notice beside the log.
+        //
+        // Red before this repair: no notice existed to assert, and this call site did not exist.
+        const spike = (s: number) => ({ value: s <= 0.5 ? s : s + 5, slope: 1 });
+        let thrown: unknown;
+        try {
+            carryForce(floorPair, spike, Domain.Time, 0.19, 1);
+        } catch (e) {
+            thrown = e;
+        }
+        expect(thrown).toBeInstanceOf(Error);
+        const { notice, detail } = convertFailed(thrown);
+        // the sentence is for the person: no function names, no g residuals, and it says the document
+        // is untouched (which the op guarantees — it lands one entry or none).
+        expect(notice).toBe("The units could not be switched. Nothing changed.");
+        expect(notice).not.toContain("carryForce");
+        expect(notice).not.toMatch(/\d/);
+        // and the detail is the thrown message itself, which is what the console is for.
+        expect(detail).toContain("partial fit at the march resolution floor");
+        expect(detail).toContain("carryForce");
+        // a non-Error rejection still yields both halves rather than "undefined".
+        expect(convertFailed("broke").detail).toBe("broke");
+    });
+
+    test("the ruler pick's catch RAISES the notice as well as logging the detail", () => {
+        // The wiring, and this arm is a source-text read because nothing else in this stage's reach
+        // can see it: `pickDomain` is inside a Svelte component, and the capture harness (which is
+        // where a real click could witness the readout) is outside this footprint. So it asserts the
+        // two call expressions inside the catch — not a mention, not a comment — and its own limit is
+        // that it cannot prove a notice ever reaches the DOM. What it does pin is the defect that was
+        // there: a catch holding `console.error` alone, which is silent to the person and to every
+        // gate. Whoever lands a capture flow for the ruler menu should replace this with it.
+        const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        const body = tl.slice(tl.indexOf("function pickDomain"));
+        const cat = body.slice(body.indexOf("} catch (e) {"), body.indexOf("const NOTICE_MS"));
+        expect(cat).toContain("convertFailed(e)");
+        expect(cat).toContain("console.error(detail)");
+        expect(cat).toContain('notify("error", notice)');
     });
 
     test("a real ride that stalls inside a force section flips instead of throwing", () => {
