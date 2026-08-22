@@ -1550,3 +1550,77 @@ test("velocity strip creation flow", async ({ page, boot }) => {
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await stripsOf()).length).toBe(1);
 });
+
+// T2: velocity strip keyframe editing in the graph. A selected strip's velocity curve
+// draws solid over its extent. Double-click over the strip's extent creates a velocity
+// keyframe; the keyframe appears as a diamond in the velocity channel. This flow covers
+// the new editing gesture (a behaviour change owes the capture flow that covers it).
+test("velocity strip keyframe editing flow", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const undoDepth = () => kexCall(page, "undoDepth");
+
+    // create a strip first (right-click on the band → Add velocity strip)
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.3;
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
+
+    // the strip is selected — its solid velocity curve is drawn in the graph.
+    // double-click over the strip's extent in the chart to create a velocity keyframe.
+    const strip = (await stripsOf())[0] as {
+        id: number;
+        start: number;
+        end: number;
+        value: number;
+    };
+    const chartBb = await page.locator("canvas").first().boundingBox();
+    if (!chartBb) throw new Error("canvas not laid out");
+    // the strip's global chart position: its start is at the section's clip offset + strip start
+    // approximate: use the clip's 30% point (where the strip was created)
+    const chartX = clipBb.x + clipBb.width * 0.3;
+    const chartY = chartBb.y + chartBb.height * 0.5; // mid-chart (velocity channel area)
+    await page.mouse.dblclick(chartX, chartY);
+
+    // a keyframe should appear on the strip
+    await expect
+        .poll(
+            async () =>
+                ((await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[])
+                    .length,
+        )
+        .toBe(1);
+
+    // double-click again to create a second keyframe at a different position
+    const chartX2 = clipBb.x + clipBb.width * 0.6;
+    await page.mouse.dblclick(chartX2, chartY);
+    await expect
+        .poll(
+            async () =>
+                ((await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[])
+                    .length,
+        )
+        .toBe(2);
+
+    // undo removes the last keyframe
+    const before = await undoDepth();
+    await page.keyboard.press("Control+z");
+    await expect
+        .poll(
+            async () =>
+                ((await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[])
+                    .length,
+        )
+        .toBe(1);
+    await expect.poll(undoDepth).toBe(before - 1);
+});

@@ -34,6 +34,7 @@ import {
     sectionInfo,
     sections,
     sectionStrips,
+    stripKeyframes,
     setSectionLength,
     setTrackV0,
     Track,
@@ -405,6 +406,12 @@ if (import.meta.env.DEV) {
                 start: s.start,
                 end: s.end,
                 value: s.value,
+            })),
+        stripKeyframesOf: (stripId: number): { id: number; s: number; v: number }[] =>
+            stripKeyframes(ecs, stripId).map((k) => ({
+                id: k.id,
+                s: k.s,
+                v: k.v,
             })),
         // the bake's own infeasibility signal (`bakeOut.feasible`/`firstInfeasible`) — the input
         // the dashed-red track pass and the warning banner both read: the first infeasible sample,
