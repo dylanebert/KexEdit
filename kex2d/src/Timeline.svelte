@@ -45,16 +45,19 @@ import {
 import {
     appendSection,
     addStrip,
+    addStripKeyframe,
     beginForceMove,
     beginForceMoves,
     beginForceTangent,
     beginLength,
     beginStripMove,
+    beginStripKeyframeMove,
     cancel,
     commit,
     commitLength,
     createForce,
     deleteStrips,
+    deleteStripKeyframe,
     history,
     materializeCustom,
     setForcesEase,
@@ -62,6 +65,7 @@ import {
 } from "./history";
 import { forceKeyAct } from "./keys";
 import { classifyStripHit, type StripHitCandidate } from "./strip-hit";
+import { V_FLOOR } from "./bake";
 import { redoRouted, undoRouted } from "./pin";
 import { convertDomain, convertFailed, pickable } from "./domain";
 import { Domain } from "./section";
@@ -141,8 +145,10 @@ import {
     setForceTangent,
     setSectionLength,
     setStrip,
+    setStripKeyframe,
     stationTaken,
     stripBoundsAt,
+    stripKeyframes,
     stripMinExtentAt,
     stripOverlapped,
     stripSeedValue,
@@ -900,6 +906,8 @@ interface BandStrip {
     // NOT `Clip.len` (`Section.length`): that field is the FORCE kind's own authored extent and
     // reads 0 on a geo section, and a strip attaches to either kind (Locked decision).
     len: number;
+    stripStart: number; // the strip's start (section-local, for clip-to-extent)
+    stripEnd: number; // the strip's end (section-local, for clip-to-extent)
 }
 const bandStrips = $derived.by((): BandStrip[] => {
     void tick;
@@ -920,6 +928,8 @@ const bandStrips = $derived.by((): BandStrip[] => {
                 u1,
                 startU: c.u0,
                 len: c.u1 - c.u0,
+                stripStart: st.start,
+                stripEnd: st.end,
             });
         }
     }
@@ -949,6 +959,67 @@ const selStrip = $derived.by((): BandStrip | null => {
     const id = editor.strip;
     if (id === null) return null;
     return bandStrips.find((s) => s.id === id) ?? null;
+});
+// the selected strip's keyframes, projected to screen coordinates — the value-surface
+// diamonds drawn in the velocity channel (T2: value in the graph). Each keyframe carries
+// its section-local `s`, its velocity `v`, and its global chart-axis `u` (for the x pixel).
+interface StripKfPt {
+    id: number;
+    strip: number;
+    section: number;
+    s: number; // section-local, the track domain's own unit
+    v: number; // velocity (m/s)
+    u: number; // global chart axis coordinate
+    startU: number; // the strip's section entry on the axis
+    stripStart: number; // the strip's start (section-local)
+    stripEnd: number; // the strip's end (section-local)
+}
+const stripKfPts = $derived.by((): StripKfPt[] => {
+    void tick;
+    const s = selStrip;
+    if (s === null) return [];
+    const kfs = stripKeyframes(ecs, s.id);
+    return kfs.map((k) => ({
+        id: k.id,
+        strip: s.id,
+        section: s.section,
+        s: k.s,
+        v: k.v,
+        u: toGlobalU(spans, s.section, k.s) ?? s.startU,
+        startU: s.startU,
+        stripStart: s.start,
+        stripEnd: s.end,
+    }));
+});
+// the selected strip's velocity curve, sampled over its extent for the solid draw —
+// either the constant `value` (no keyframes) or the keyframed curve (profile.sampleForce).
+// Returns screen-space points for the canvas render.
+const stripVCurve = $derived.by((): { x: number; y: number }[] | null => {
+    void tick;
+    const s = selStrip;
+    if (s === null) return null;
+    const kfs = stripKeyframes(ecs, s.id);
+    const x0 = uPx(s.u0);
+    const x1 = uPx(s.u1);
+    if (kfs.length === 0) {
+        // no keyframes: one constant across the span (the AE stopwatch reading)
+        const y = vOf(s.value);
+        return [
+            { x: x0, y },
+            { x: x1, y },
+        ];
+    }
+    // keyframed curve: evaluate sampleForce at each pixel across the extent
+    const points = kfs.map((k) => ({ s: k.s, g: k.v }));
+    const res: { x: number; y: number }[] = [];
+    const n = Math.max(2, Math.floor(x1 - x0));
+    for (let i = 0; i <= n; i++) {
+        const frac = i / n;
+        const localS = s.start + frac * (s.end - s.start);
+        const v = sampleForce(points, localS);
+        res.push({ x: x0 + frac * (x1 - x0), y: vOf(v) });
+    }
+    return res;
 });
 // the popover lives only as long as its subject, `selPoint`'s own law: an undo/redo restoring
 // the same id can't resurrect a dangling selection. `void tick` first (not `selStrip`'s own
@@ -1039,6 +1110,20 @@ function chartU(e: MouseEvent): number {
 // (or empty), it's a no-op.
 function chartCreate(e: MouseEvent): void {
     let u = chartU(e);
+    // T2: if a strip is selected and the double-click is over the strip's extent,
+    // create a velocity keyframe on the strip's curve (the force-curve machinery).
+    // The velocity value is read from the cursor's y-position through the velocity
+    // channel's own axis (vOf's inverse), so the new keyframe lands on the curve.
+    const ss = selStrip;
+    if (ss !== null && u >= ss.u0 && u <= ss.u1) {
+        if (!sectionEditable(editor.pinning, ss.section)) return;
+        const rect = canvas.getBoundingClientRect();
+        const cy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
+        const v = vView.lo + (1 - (cy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
+        const sLocal = clamp(u - ss.startU, ss.stripStart, ss.stripEnd);
+        addStripKeyframe(history, ecs, ss.id, sLocal, Math.max(V_FLOOR, v));
+        return;
+    }
     // snap the placement through the same landmark resolver the drags use (toggle, Ctrl/Cmd
     // bypass, and SNAP_PX all apply) — the AE insert-at-CTI idiom — before resolving the value.
     // creation targets exclude force points (an occupied s is degenerate) but keep boundaries,
@@ -1261,6 +1346,64 @@ function forceUp(): void {
     window.removeEventListener("pointermove", forceMove);
     window.removeEventListener("pointerup", forceUp);
     window.removeEventListener("pointercancel", forceUp);
+}
+
+// ── velocity-strip keyframe drag (T2: value in the graph): drag a diamond in both axes
+// (horizontal = s, vertical = v), one undo entry. The drag is clamped to the strip's
+// extent (clip-to-extent). The velocity value is floored at V_FLOOR (a held speed of 0
+// is a stall, not a controlled span — validStripValue's own shape).
+let dragStripKf: number | null = $state(null); // the dragged keyframe's stable id
+let dragStripKfU0 = 0; // the strip's section entry on the axis (fixed during the drag)
+let dragStripKfS0 = 0; // the keyframe's start s
+let dragStripKfV0 = 0; // the keyframe's start v
+let dragStripKfStart = 0; // the strip's start (section-local)
+let dragStripKfEnd = 0; // the strip's end (section-local)
+let dragStripKfCx = 0; // last cursor, canvas-local px
+let dragStripKfCy = 0;
+function stripKfDown(e: PointerEvent, k: StripKfPt): void {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!sectionEditable(editor.pinning, k.section)) return;
+    dragStripKfS0 = k.s;
+    dragStripKfV0 = k.v;
+    dragStripKfU0 = k.startU;
+    dragStripKfStart = k.stripStart;
+    dragStripKfEnd = k.stripEnd;
+    const rect = canvas.getBoundingClientRect();
+    dragStripKfCx = e.clientX - rect.left;
+    dragStripKfCy = e.clientY - rect.top;
+    beginStripKeyframeMove(ecs, k.id);
+    dragStripKf = k.id;
+    beginDrag(canvas, e.pointerId);
+    window.addEventListener("pointermove", stripKfMove);
+    window.addEventListener("pointerup", stripKfUp);
+    window.addEventListener("pointercancel", stripKfUp);
+}
+function stripKfMove(e: PointerEvent): void {
+    if (dragStripKf === null) return;
+    const rect = canvas.getBoundingClientRect();
+    dragStripKfCx = clamp(e.clientX - rect.left, LEFT_GUT, Math.max(LEFT_GUT, w));
+    dragStripKfCy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
+    const ds = uAtPx(dragStripKfCx) - dragStripKfU0;
+    const dv = vView.lo + (1 - (dragStripKfCy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
+    setStripKeyframe(ecs, dragStripKf, clamp(dragStripKfS0 + ds, dragStripKfStart, dragStripKfEnd), Math.max(V_FLOOR, dv));
+}
+function stripKfUp(): void {
+    if (dragStripKf === null) return;
+    dragStripKf = null;
+    commit(history);
+    window.removeEventListener("pointermove", stripKfMove);
+    window.removeEventListener("pointerup", stripKfUp);
+    window.removeEventListener("pointercancel", stripKfUp);
+}
+function cancelStripKfDrag(): void {
+    if (dragStripKf === null) return;
+    dragStripKf = null;
+    cancel();
+    window.removeEventListener("pointermove", stripKfMove);
+    window.removeEventListener("pointerup", stripKfUp);
+    window.removeEventListener("pointercancel", stripKfUp);
 }
 
 // ── marquee (box-select) on the chart: a left-drag begun on empty chart space (the chartzone,
@@ -2897,6 +3040,26 @@ function render(ctx: CanvasRenderingContext2D): void {
         ctx.globalAlpha = 1;
     }
 
+    // the selected strip's AUTHORED velocity curve — solid over its extent (T2: value in
+    // the graph). The recovered-speed channel above is always dashed/faded (display-only);
+    // the authored curve is solid and bright, the same register as the force curve. When the
+    // strip has no keyframes this is a flat line at the strip's constant `value`; with
+    // keyframes it's the evaluated curve. Clipped to the strip's extent by the clip rect.
+    const svc = stripVCurve;
+    if (svc && svc.length > 1) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = COLOR_VELOCITY;
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.85;
+        ctx.beginPath();
+        for (let i = 0; i < svc.length; i++) {
+            if (i === 0) ctx.moveTo(svc[i].x, svc[i].y);
+            else ctx.lineTo(svc[i].x, svc[i].y);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+
     ctx.restore();
 }
 
@@ -3090,6 +3253,7 @@ function cancelAll(): void {
     cancelLenDrag(); // and any in-flight extent drag
     cancelLabelScrub(); // and any in-flight label scrub (its listeners live on the label, not window)
     cancelStripDrag(); // and any in-flight strip resize/body drag
+    cancelStripKfDrag(); // and any in-flight strip-keyframe drag
     endDragGesture(); // clear the drag flag (no release event tore it down)
 }
 onMount(() => {
@@ -3601,6 +3765,33 @@ onMount(() => {
                                 role="button"
                                 tabindex="-1"
                                 aria-label="Force point"
+                            />
+                            <polygon
+                                class="fmarker"
+                                points="{mx},{my - FMARKER_R} {mx + FMARKER_R},{my} {mx},{my + FMARKER_R} {mx - FMARKER_R},{my}"
+                            />
+                        </g>
+                    {/if}
+                {/each}
+            </g>
+            <!-- velocity-strip keyframes (T2: value in the graph): diamonds in the velocity
+                 channel, drawn only for the selected strip. Same diamond idiom as force
+                 keyframes but on the v-axis (vOf, not yOf). Clipped to the chart. -->
+            <g class="fmarkers" clip-path="url(#fclip)">
+                {#each stripKfPts as k (k.id)}
+                    {@const mx = uPx(k.u)}
+                    {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
+                        {@const my = vOf(k.v)}
+                        <g class="fpt sel">
+                            <circle
+                                class="fhit"
+                                cx={mx}
+                                cy={my}
+                                r={FHIT_R}
+                                onpointerdown={(e) => stripKfDown(e, k)}
+                                role="button"
+                                tabindex="-1"
+                                aria-label="Velocity keyframe"
                             />
                             <polygon
                                 class="fmarker"
