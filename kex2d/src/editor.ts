@@ -1212,6 +1212,7 @@ export const selectionHook = {
             clearSel(editor.forces);
             clearSel(editor.sections);
             clearSel(editor.strips);
+            editor.stripKf = null;
             editor.tangentEdit = null;
             editor.forceEdit = null;
             editor.forceHandle = null;
