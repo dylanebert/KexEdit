@@ -595,8 +595,13 @@ export function geoSplitAtStripsRefused(
     // strips (the common case), and a non-straddling strip never reaches the tail
     // check, so both paths pay nothing. Only when a strip straddles the cut AND its
     // head half passes spanCoversOneEdge is the tail sampled. At most one strip can
-    // straddle a cut (createStrip refuses overlap via stripOverlapped), so the tail
-    // is built at most once by construction; the memo is correct and cheap regardless.
+    // straddle a cut, so the tail is built at most once by construction — and that
+    // rests on EVERY live writer, not just one: createStrip and setStrip both refuse
+    // overlap via stripOverlapped, and the domain flip clamps a converted end to the
+    // next strip's converted start (domain.ts, "overlap loses"). spawnStrip bypasses
+    // the guard deliberately, so a pre-guard document restored through it is the only
+    // way two strips share a station. A new strip-extent writer owes its own guard;
+    // the memo is correct and cheap regardless.
     let tailNodes: Node[] | null = null;
     let tPosX: Float32Array | null = null;
     let tPosY: Float32Array | null = null;
