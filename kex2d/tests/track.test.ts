@@ -3660,10 +3660,11 @@ describe("velocity strips — ECS layer (C3)", () => {
     // not at the raw input (30).
     // RED-FIRST WITNESS: before the fix, the redo callback used the unclamped `s` (30), so
     // after redo the keyframe's `s` read 30 instead of 18 — the arm reds at 30 !== 18.
-    // VACUITY: passes at the pre-repair ref (the create path already clamps, so the live
-    // keyframe reads 18 before any undo/redo) and passes with the repaired code deleted
-    // (the create path's clamp is untouched, so the first create still reads 18; the redo
-    // path is what the fix repairs, and deleting the fix reverts to the unclamped redo).
+    // VACUITY (measured, both directions FALSE): the arm FAILS at the pre-repair ref and
+    // FAILS with the repaired code deleted — in both, the redo lands at s=30 where the arm
+    // asserts s=18 (strip start=6 / end=18). It is a proper red-first witness, not vacuous:
+    // the redo path is exactly what the fix repairs, and deleting the fix reverts to the
+    // unclamped redo (re-measured here: redo reads 30, expected 18).
     test("addStripKeyframe redo clamps s to the strip extent (R4: clamp asymmetry)", () => {
         const { state, sec } = track();
         convertSection(state, sec);

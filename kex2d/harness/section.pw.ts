@@ -1606,8 +1606,10 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     // MEASUREMENT: the minimum-extent strip's pixel width. The reviewer priced a
     // ~0.5 m strip as "a few pixels wide" — this reading checks whether a person
     // (or a Playwright double-click) can reliably land inside it.
-    // At DS_NOMINAL=0.5 and the seedHill track (~23 m), pxPerU ≈ 35 px/m after
-    // frameTimeline, so stripWidthPx ≈ 17 px — hittable, not a few-pixel slit.
+    // After frameTimeline the axis fits the whole ADDRESSABLE span, which is
+    // `sTotal + marginArc`: MARGIN_M = 50 (timeline.ts) added to the seedHill track
+    // (~23 m) gives ~74 m, so pxPerU ≈ 16 px/m and a one-edge (~0.5 m) strip is
+    // ≈8 px — hittable, not a few-pixel slit.
     // The unreliable landing was the HARNESS using __kex instead of computing the
     // correct pixel position, not the gesture's hit resolution.
     expect(stripWidthPx).toBeGreaterThan(5);
@@ -1649,9 +1651,17 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
         })
         .not.toBe(kf0.v);
 
-    // DELETE: the keyframe is already selected (the drag selected it); press Delete
+    // DELETE: the keyframe is already selected (the drag selected it); press Delete.
+    // Delete acts on the innermost selection (the keyframe), so the strip must SURVIVE
+    // — the bare `stripKeyframesOf(...).length === 0` below would also pass if Delete
+    // destroyed the whole strip (destroying a strip destroys its keyframes), so the
+    // `stripsOf().length === 1` poll is the discriminating half. Witnessed red: with
+    // the keydown handler perturbed to deleteSelectedStrip() instead of
+    // deleteSelectedStripKf(), this poll reds — the strip is destroyed, so stripsOf()
+    // reads 0, not 1.
     await page.keyboard.press("Delete");
     await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(0);
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
 
     // undo restores the deleted keyframe
     const before = await undoDepth();
