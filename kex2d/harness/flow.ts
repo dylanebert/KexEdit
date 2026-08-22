@@ -171,6 +171,8 @@ export interface Kex {
     setLen(i: number, len: number): void;
     setV0(v: number): void;
     selectedSection(): number | null;
+    selectedStrip(): number | null;
+    stripsOf(i: number): { id: number; start: number; end: number; value: number }[];
     spanMidAt(i: number): { x: number; y: number } | null;
     startAt(): { x: number; y: number } | null;
     tTotal(): number;
