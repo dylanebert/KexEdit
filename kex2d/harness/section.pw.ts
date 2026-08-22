@@ -1576,6 +1576,10 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await expect.poll(async () => (await stripsOf()).length).toBe(1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
 
+    // wait for the per-RAF tick to propagate the selection to the `$derived` reads
+    // (`selStrip`/`bandStrips`) before the double-click reads them
+    await page.waitForTimeout(200);
+
     // the strip is selected — its solid velocity curve is drawn in the graph.
     // double-click over the strip's extent in the chart to create a velocity keyframe.
     const strip = (await stripsOf())[0] as {
