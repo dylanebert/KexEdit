@@ -1550,3 +1550,122 @@ test("velocity strip creation flow", async ({ page, boot }) => {
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await stripsOf()).length).toBe(1);
 });
+
+// T2: velocity strip keyframe editing in the graph. A selected strip's velocity curve
+// draws solid over its extent. Double-click over the strip's extent creates a velocity
+// keyframe; the keyframe appears as a diamond in the velocity channel. The keyframe is
+// draggable in both axes (s, v) and deletable via the Delete key. This flow covers the
+// full editing gesture through REAL POINTER EVENTS (not the __kex hook) — a behaviour
+// change owes the capture flow that performs the interaction (checks.md: an interaction
+// affordance is only visible to an instrument that performs the interaction).
+test("velocity strip keyframe editing flow", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const undoDepth = () => kexCall(page, "undoDepth");
+    const xView = () => kexCall(page, "xView");
+    const vRange = () => kexCall(page, "vRange");
+    const stripKfPx = () => kexCall(page, "stripKfPx");
+
+    // create a strip first (right-click on the band → Add velocity strip)
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.3;
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
+
+    // wait for the per-RAF tick to propagate the selection to the `$derived` reads
+    // (`selStrip`/`bandStrips`) before the double-click reads them
+    await page.waitForTimeout(200);
+
+    // read the strip's extent and the chart view to compute pixel positions
+    const strip = (await stripsOf())[0] as {
+        id: number;
+        start: number;
+        end: number;
+        value: number;
+    };
+    const [, pxPerU] = await xView();
+    const [vLo, vHi] = await vRange();
+
+    // compute the strip's center pixel position on the chart — the clip's pixel extent
+    // maps linearly to the section's arclength (Distance domain, the default), so
+    // stripCenterPx = clipBb.x + ((strip.start + strip.end) / 2) * pxPerU
+    const stripMidS = (strip.start + strip.end) / 2;
+    const stripCenterPx = clipBb.x + stripMidS * pxPerU;
+    const stripWidthPx = (strip.end - strip.start) * pxPerU;
+
+    // MEASUREMENT: the minimum-extent strip's pixel width. The reviewer priced a
+    // ~0.5 m strip as "a few pixels wide" — this reading checks whether a person
+    // (or a Playwright double-click) can reliably land inside it.
+    // After frameTimeline the axis fits the whole ADDRESSABLE span, which is
+    // `sTotal + marginArc`: MARGIN_M = 50 (timeline.ts) added to the seedHill track
+    // (~23 m) gives ~74 m, so pxPerU ≈ 16 px/m and a one-edge (~0.5 m) strip is
+    // ≈8 px — hittable, not a few-pixel slit.
+    // The unreliable landing was the HARNESS using __kex instead of computing the
+    // correct pixel position, not the gesture's hit resolution.
+    expect(stripWidthPx).toBeGreaterThan(5);
+
+    // compute a y pixel for the strip's value (velocity) — the constant-when-no-keyframes
+    // line is drawn at vOf(strip.value), so double-clicking there creates a keyframe at
+    // that velocity
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!dockBb) throw new Error("dock body not laid out");
+    const vToY = (v: number): number =>
+        dockBb.y + (1 - (v - vLo) / (vHi - vLo)) * dockBb.height * 0.7;
+    const stripValueY = vToY(strip.value);
+
+    // CREATE: double-click over the strip's extent to create a velocity keyframe
+    await page.mouse.dblclick(stripCenterPx, stripValueY);
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(1);
+
+    // DRAG: drag the keyframe via real pointer events. Use a Playwright locator on
+    // the keyframe diamond's aria-label to find it, then drag it by a fixed pixel
+    // offset (the v-axis is inverted: down = higher v).
+    let kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
+    const kf0 = kfs[0];
+    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
+    const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const kf0Px = kfPx.find((k) => k.id === kf0.id)!;
+
+    // use the raw pixel position from the hook (projected exactly as drawn)
+    await page.mouse.move(kf0Px.x, kf0Px.y);
+    await page.mouse.down();
+    await page.mouse.move(kf0Px.x, kf0Px.y + 40, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    // verify the drag moved the keyframe (its v should have changed)
+    await expect
+        .poll(async () => {
+            kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
+            return kfs.find((k) => k.id === kf0.id)?.v;
+        })
+        .not.toBe(kf0.v);
+
+    // DELETE: the keyframe is already selected (the drag selected it); press Delete.
+    // Delete acts on the innermost selection (the keyframe), so the strip must SURVIVE
+    // — the bare `stripKeyframesOf(...).length === 0` below would also pass if Delete
+    // destroyed the whole strip (destroying a strip destroys its keyframes), so the
+    // `stripsOf().length === 1` poll is the discriminating half. Witnessed red: with
+    // the keydown handler perturbed to deleteSelectedStrip() instead of
+    // deleteSelectedStripKf(), this poll reds — the strip is destroyed, so stripsOf()
+    // reads 0, not 1.
+    await page.keyboard.press("Delete");
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(0);
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
+
+    // undo restores the deleted keyframe
+    const before = await undoDepth();
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(1);
+    await expect.poll(undoDepth).toBe(before - 1);
+});
