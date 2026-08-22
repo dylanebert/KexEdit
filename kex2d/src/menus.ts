@@ -609,3 +609,54 @@ export function appendMenu(a: { append: (kind: SectionKind) => void }): MenuItem
         },
     ];
 }
+
+/** the velocity-strip band context menu's state. `strip` is the targeted strip's stable id,
+ *  or -1 when the right-click landed on empty band (creation). `canCreate` is whether a
+ *  strip CAN be created at the clicked station — the min-extent span exists and doesn't
+ *  overlap an existing strip — so the "Add" row is grayed (not silently inert) when it
+ *  can't. */
+export type StripMenuState = {
+    /** the targeted strip's stable id, or -1 for creation (empty band). */
+    strip: number;
+    /** whether the section is editable (not under a pin session lockdown). */
+    editable: boolean;
+    /** whether a new strip can be created at the clicked station (min-extent span exists
+     *  and doesn't overlap an existing strip). */
+    canCreate: boolean;
+};
+
+/** the velocity-strip band context menu's actions. */
+export type StripMenuActions = {
+    /** create a velocity strip at the clicked station at minimum extent (creation). */
+    addStrip: () => void;
+    /** delete the targeted strip (deletion). */
+    remove: () => void;
+};
+
+/** the velocity-strip band context menu as data — one instance of the shared menu language.
+ *  On empty band: a single "Add velocity strip" row (the summoned, named creation act —
+ *  Locked decision). On an existing strip: a single "Delete" row (the same menu's deletion
+ *  path). Empty band space is inert — no plain-drag-on-empty, no modifier-drag, no standing
+ *  mode toggle (the rescope that retired C5's rejected idiom). */
+export function stripMenu(s: StripMenuState, a: StripMenuActions): MenuItem[] {
+    if (s.strip < 0) {
+        return [
+            {
+                label: "Add velocity strip",
+                group: "create",
+                enabled: s.editable && s.canCreate,
+                action: a.addStrip,
+            },
+        ];
+    }
+    return [
+        {
+            label: "Delete",
+            group: "lifecycle",
+            danger: true,
+            enabled: s.editable,
+            shortcut: BINDINGS.remove.hint,
+            action: a.remove,
+        },
+    ];
+}

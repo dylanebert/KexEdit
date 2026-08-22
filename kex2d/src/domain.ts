@@ -62,6 +62,7 @@ import {
     sectionInfo,
     sections,
     type SectionSnapshot,
+    spanCoversOneEdge,
     type SolvedForce,
     snapshotAll,
     trackDomain,
@@ -584,6 +585,11 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
     // the source unit's own nominal march edge — the resolution the tolerance is derived at, and
     // the span the carry's fail-loud floor sits on.
     const sourceNominal = forceNominal(trackDomain(ecs), trackDs(ecs));
+    // B2(b): the target domain's own nominal march edge — the minimum a force strip's extent
+    // can cover and still override ≥ 1 edge in the target bake. A Distance strip at minimum
+    // extent (one edge = ds) converts to a Time extent of ds/V, which is sub-edge when V > V0
+    // and goes silently inert without this floor.
+    const targetNominal = forceNominal(target, trackDs(ecs));
     const converted: SectionSnapshot[] = snaps.map((snap) => {
         const w = windows.get(snap.id);
         if (!w) return snap;
@@ -594,18 +600,70 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
         const visible = snap.points;
         const step = resolveStep(snap.length, sourceNominal);
         const tol = resolutionFloor(visible.map(asPoint), step);
+        const convertedLength = Math.max(floor, at(m, w, snap.length).value);
         return {
             ...snap,
-            length: Math.max(floor, at(m, w, snap.length).value),
+            length: convertedLength,
             points: carryForce(visible, authored, (s) => at(m, w, s), target, tol, step.ds),
             // a strip's `start`/`end` are positions on the same axis a keyframe's `s` is —
             // each endpoint converts independently through the section's own window, same as a
             // keyframe. `value` (m/s) is domain-independent and rides through unconverted.
-            strips: snap.strips.map((st) => ({
-                ...st,
-                start: at(m, w, st.start).value,
-                end: at(m, w, st.end).value,
-            })),
+            // B2(b): a force strip's converted extent is floored to one target-domain edge so
+            // a min-extent strip doesn't go silently inert on a flip (a Distance strip at one
+            // edge converts to ds/V seconds, sub-edge above V0). Geo strips are arclength in
+            // both domains, so the conversion is identity and the floor never triggers.
+            //
+            // The floor is clamped against the next strip's converted start and the section's
+            // converted exit — `newEnd = newStart + targetNominal` was unconditional, so two
+            // legally abutting min-extent strips could overlap after a flip (the one state § Locked
+            // decision refuses outright). `landDomain` writes through snapshot/restore, so neither
+            // `createStrip`'s nor `setStrip`'s overlap refusal sees it. When both the floor and
+            // the no-overlap clamp cannot hold, the clamp wins: an overlapping strip is the state
+            // the spec refuses outright, while a sub-edge strip is silently inert but at least
+            // doesn't corrupt the neighbour. The floor is also one-way — strip extents no longer
+            // round-trip M→S→M — because the floor extends a strip that was already at minimum
+            // extent in the source domain, and the reverse flip's conversion does not shrink it
+            // back (the reverse flip sees the floored extent as authored and converts it through
+            // a table that moved).
+            //
+            // RED-FIRST WITNESS: geo drop (30, −40) ahead of a 10 m force section, legally
+            // abutting min-extent strips [2, 2.5)/[2.5, 3), flip Distance→Time →
+            // [0.06654, 0.11654)/[0.09482, 0.18573), 0.02173 s of overlap, 43% of a Time edge,
+            // stripOverlapped true.
+            //
+            // The floor calls the same `spanCoversOneEdge`-on-resolved-`ds` predicate every
+            // other write path calls, computed against the target domain's resolved step
+            // (`resolveStep(convertedLength, targetNominal)`). A span of exactly
+            // `targetNominal` at an unlucky phase can read `spanCoversOneEdge === false`
+            // when `ds > nominal` (the round-down case: `edges = round(length/step)`,
+            // `ds = length/edges > nominal`), so the nominal-size proxy is not a safe
+            // substitute. When the predicate fails, the span is extended to `resolved.ds`
+            // (the actual edge size), which always covers ≥ 1 edge on a uniform grid.
+            //
+            // RED-FIRST WITNESS (floor predicate): force section length 10.045, step 0.5 →
+            // `resolveStep` gives edges 20, ds 0.50225 > 0.5. A strip of length exactly
+            // `targetNominal` (0.5) at phase ≈0.252 reads `spanCoversOneEdge === false`
+            // against the resolved grid (boundary(0.252)=1, boundary(0.752)=1 on
+            // 0.50225-wide edges), a silently-inert sub-edge strip the floor exists to
+            // prevent.
+            strips: snap.strips.map((st, i) => {
+                const newStart = at(m, w, st.start).value;
+                let newEnd = at(m, w, st.end).value;
+                if (snap.kind === SectionKind.Force) {
+                    const targetResolved = resolveStep(convertedLength, targetNominal);
+                    const targetDs = new Float32Array(targetResolved.edges).fill(targetResolved.ds);
+                    if (!spanCoversOneEdge(targetDs, targetResolved.edges, newStart, newEnd)) {
+                        newEnd = newStart + targetResolved.ds;
+                    }
+                }
+                // clamp against the next strip's converted start (abutting strips must not overlap)
+                if (i + 1 < snap.strips.length) {
+                    newEnd = Math.min(newEnd, at(m, w, snap.strips[i + 1].start).value);
+                }
+                // clamp against the section's converted exit
+                newEnd = Math.min(newEnd, at(m, w, snap.length).value);
+                return { ...st, start: newStart, end: newEnd };
+            }),
         };
     });
 

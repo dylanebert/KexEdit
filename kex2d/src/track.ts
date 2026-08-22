@@ -28,6 +28,7 @@ import {
     autoTangent,
     collinearVec,
     COLLINEAR_TOL,
+    type ChainResult,
     type Node,
     reflect,
     sampleChain,
@@ -347,11 +348,309 @@ export function stripOverlapped(
     return false;
 }
 
+/** the section's own per-edge `ds` array — the same edge structure the live bake uses
+ *  (`geoChordDs` for a geo section, the uniform resolved step for a force section), so the
+ *  minimum-extent guard reads exactly the edge boundaries a strip's override would land on.
+ *  Returns null when the section has no resolvable edge structure (no track, an empty geo
+ *  section). */
+function sectionEdgeDs(
+    ecs: State,
+    sectionId: number,
+): { ds: ArrayLike<number>; edges: number } | null {
+    const eid = sectionAt(ecs, sectionId);
+    if (eid === null) return null;
+    const kind = Section.kind.get(eid);
+    const dsNom = trackDs(ecs);
+    if (kind === SectionKind.Force) {
+        const length = Section.length.get(eid);
+        const domain = trackDomain(ecs);
+        const step = forceNominal(domain, dsNom);
+        const resolved = resolveStep(length, step);
+        return { ds: new Float32Array(resolved.edges).fill(resolved.ds), edges: resolved.edges };
+    }
+    return geoChordDs(ecs, sectionId, dsNom);
+}
+
+/** whether a continuous-coordinate span `[start, end)` covers at least one edge of the
+ *  current bake at that station — the minimum-extent floor (Locked decision: "the write-op
+ *  guard must guarantee the stored span covers ≥ 1 edge of the current bake at that
+ *  station, because a continuous-coordinate span smaller than one edge maps to zero
+ *  overridden indices and goes silently inert"). Uses {@link edgeStrips}'s own boundary
+ *  mapping, so the check is against exactly the edge-index resolution the bake would see. */
+/** check whether a span `[start, end)` covers at least one edge, given a raw edge
+ *  structure (the `ds` array + edge count a section's bake resolves to) — the
+ *  min-extent floor's own core, factored so a split can check a *would-be* tail section
+ *  that doesn't exist yet in the ECS. */
+export function spanCoversOneEdge(
+    ds: ArrayLike<number>,
+    edges: number,
+    start: number,
+    end: number,
+): boolean {
+    const specs = edgeStrips(ds, edges, [{ start, end, value: 0 }]);
+    if (!specs || specs.length === 0) return false;
+    return specs[0].end > specs[0].start;
+}
+
+export function stripCoversOneEdge(
+    ecs: State,
+    sectionId: number,
+    start: number,
+    end: number,
+): boolean {
+    const edge = sectionEdgeDs(ecs, sectionId);
+    if (edge === null) return false;
+    return spanCoversOneEdge(edge.ds, edge.edges, start, end);
+}
+
+/** whether a force-section split at `s` would be refused by the strip pre-check —
+ *  any strip (straddling or wholly-tail) that would cover zero edges of its own half's
+ *  resolved post-split bake. Exposed so the menu's `canCut` predicate can gray the Cut
+ *  row before the user clicks it, rather than silently returning null. */
+export function forceSplitStripsRefused(ecs: State, sectionId: number, s: number): boolean {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null) return false;
+    const len = Section.length.get(secEid);
+    if (s <= 0 || s >= len) return false;
+    const dsNom = trackDs(ecs);
+    const nominal = forceNominal(trackDomain(ecs), dsNom);
+    const headResolved = resolveStep(s, nominal);
+    const headDs = new Float32Array(headResolved.edges).fill(headResolved.ds);
+    const tailLen = len - s;
+    const tailResolved = resolveStep(tailLen, nominal);
+    const tailDs = new Float32Array(tailResolved.edges).fill(tailResolved.ds);
+    for (const st of sectionStrips(ecs, sectionId)) {
+        if (st.end <= s) continue;
+        if (st.start >= s) {
+            if (!spanCoversOneEdge(tailDs, tailResolved.edges, st.start - s, st.end - s))
+                return true;
+            continue;
+        }
+        if (!spanCoversOneEdge(headDs, headResolved.edges, st.start, s)) return true;
+        if (!spanCoversOneEdge(tailDs, tailResolved.edges, 0, st.end - s)) return true;
+    }
+    return false;
+}
+
+/** whether a geo-section split at node `k` would be refused by the strip pre-check —
+ *  any straddling strip whose head or tail half would cover zero edges of its own
+ *  resolved post-split bake. Exposed so the menu's `canCut` predicate can gray the
+ *  Cut row before the user clicks it. */
+export function geoSplitStripsRefused(ecs: State, sectionId: number, k: number): boolean {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return false;
+    const handles = sectionHandles(ecs, sectionId);
+    const n = handles.length - 1;
+    if (k < 1 || k >= n) return false;
+    const dsNom = trackDs(ecs);
+    const cutArc = geoNodeArc(ecs, sectionId, dsNom, k);
+    for (const st of sectionStrips(ecs, sectionId)) {
+        if (st.start >= cutArc || st.end <= cutArc) continue;
+        if (!stripCoversOneEdge(ecs, sectionId, st.start, cutArc)) return true;
+        const tailNodes: Node[] = [];
+        for (let i = k; i <= n; i++) {
+            tailNodes.push({
+                x: Handle.pos.x.get(handles[i]),
+                y: Handle.pos.y.get(handles[i]),
+                theta: Handle.theta.get(handles[i]),
+                tangent: readTangent(handles[i]),
+            });
+        }
+        const tPosX = new Float32Array(MAX_SAMPLES);
+        const tPosY = new Float32Array(MAX_SAMPLES);
+        const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+        const tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
+        if (!spanCoversOneEdge(tDs, tR.edges, 0, st.end - cutArc)) return true;
+    }
+    return false;
+}
+
+/** whether a geo-section Cut at bezier parameter `t` of segment `j` would be refused by
+ *  the strip pre-check — the pre-mutation decision for the interior case. `splitGeoAt`
+ *  delegates landmark cases (`t <= 0` → `splitGeo(j)`, `t >= 1` → `splitGeo(j+1)`) to
+ *  {@link geoSplitStripsRefused}; the interior case (`0 < t < 1`) would call `insertGeoNode`
+ *  (mutating: inserts a node, re-parents tangents) and then `splitGeo` at the new node's
+ *  order, whose own strip pre-check may refuse — leaving the mutation to be undone. This
+ *  function computes the same check `splitGeo` would run *after* `insertGeoNode`, without
+ *  mutating: it builds the would-be node array (new node + re-parented tangents, exactly
+ *  as `insertGeoNode` produces), samples it, and runs the same straddling-strip head/tail
+ *  check. Returns `true` when the split would be refused.
+ *
+ *  RED-FIRST WITNESS: select a node in section A, refuse a Cut on unrelated section B
+ *  (24 m geo, strip `[11.9, 12.6)`, `t=0.5`). At `bb9e638` the refusal path calls
+ *  `restoreAll(ecs, before)`, respawning every entity with fresh eids; the selected eid
+ *  still passes `ecs.has(eid, Handle)` but `Handle.section`/`Handle.order` now read
+ *  section B's. After the hoist, `splitSection` calls this function before `splitGeoAt`,
+ *  returns null on refusal without mutating, and the selected eid's `Handle.section`/
+ *  `Handle.order` still read section A's. Mechanism: `restoreAll` destroys and respawns
+ *  every entity track-wide with fresh eids; the selection hook (`selHook.restore`)
+ *  re-resolves by stable `(section, order)` after this churn, but the refusal path was
+ *  unpaired with it — a refusal that never mutates needs neither. */
+export function geoSplitAtStripsRefused(
+    ecs: State,
+    sectionId: number,
+    j: number,
+    t: number,
+): boolean {
+    if (t <= 0) return geoSplitStripsRefused(ecs, sectionId, j);
+    if (t >= 1) return geoSplitStripsRefused(ecs, sectionId, j + 1);
+
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return false;
+    const handles = sectionHandles(ecs, sectionId);
+    const n = handles.length - 1;
+    if (j < 0 || j >= n || !(t > 0 && t < 1)) return false;
+
+    // build the would-be node array exactly as insertGeoNode would produce it
+    const paEid = handles[j];
+    const pbEid = handles[j + 1];
+    const pa: Node = {
+        x: Handle.pos.x.get(paEid),
+        y: Handle.pos.y.get(paEid),
+        theta: Handle.theta.get(paEid),
+        tangent: readTangent(paEid),
+    };
+    const pb: Node = {
+        x: Handle.pos.x.get(pbEid),
+        y: Handle.pos.y.get(pbEid),
+        theta: Handle.theta.get(pbEid),
+        tangent: readTangent(pbEid),
+    };
+    const sub = subdivideGeo(pa, pb, t);
+
+    const aFar = pa.tangent ?? seedTangent(ecs, sectionId, j, TangentMode.Free);
+    const bFar = pb.tangent ?? seedTangent(ecs, sectionId, j + 1, TangentMode.Free);
+    if (aFar === null || bFar === null) return false;
+
+    const allNodes: Node[] = [];
+    for (let i = 0; i < j; i++) {
+        allNodes.push({
+            x: Handle.pos.x.get(handles[i]),
+            y: Handle.pos.y.get(handles[i]),
+            theta: Handle.theta.get(handles[i]),
+            tangent: readTangent(handles[i]),
+        });
+    }
+    // node j with re-parented out-tangent (the split's facing side)
+    allNodes.push({
+        x: pa.x,
+        y: pa.y,
+        theta: pa.theta,
+        tangent: {
+            mode: TangentMode.Free,
+            inX: aFar.inX,
+            inY: aFar.inY,
+            outX: sub.outA[0],
+            outY: sub.outA[1],
+        },
+    });
+    // the new subdivided node
+    allNodes.push({
+        x: sub.x,
+        y: sub.y,
+        theta: Math.atan2(sub.outMid[1], sub.outMid[0]),
+        tangent: {
+            mode: TangentMode.Free,
+            inX: sub.inMid[0],
+            inY: sub.inMid[1],
+            outX: sub.outMid[0],
+            outY: sub.outMid[1],
+        },
+    });
+    // old node j+1 (now j+2) with re-parented in-tangent
+    allNodes.push({
+        x: pb.x,
+        y: pb.y,
+        theta: pb.theta,
+        tangent: {
+            mode: TangentMode.Free,
+            inX: sub.inB[0],
+            inY: sub.inB[1],
+            outX: bFar.outX,
+            outY: bFar.outY,
+        },
+    });
+    // remaining nodes unchanged
+    for (let i = j + 2; i <= n; i++) {
+        allNodes.push({
+            x: Handle.pos.x.get(handles[i]),
+            y: Handle.pos.y.get(handles[i]),
+            theta: Handle.theta.get(handles[i]),
+            tangent: readTangent(handles[i]),
+        });
+    }
+
+    const dsNom = trackDs(ecs);
+    const posX = new Float32Array(MAX_SAMPLES);
+    const posY = new Float32Array(MAX_SAMPLES);
+    const dsArr = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+    const r = sampleChain(allNodes, dsNom, posX, posY, dsArr, MAX_SAMPLES);
+
+    // the new node is at index j+1 in allNodes; its landing sample is r.offsets[j+1]
+    const landing = r.offsets[j + 1] ?? 0;
+    let cutArc = 0;
+    for (let i = 0; i < landing; i++) cutArc += dsArr[i];
+
+    // Tail sample built lazily on first need: a geo section typically carries zero
+    // strips (the common case), and a non-straddling strip never reaches the tail
+    // check, so both paths pay nothing. Only when a strip straddles the cut AND its
+    // head half passes spanCoversOneEdge is the tail sampled. At most one strip can
+    // straddle a cut, so the tail is built at most once by construction — and that
+    // rests on EVERY live writer, not just one: createStrip and setStrip both refuse
+    // overlap via stripOverlapped, and the domain flip clamps a converted end to the
+    // next strip's converted start (domain.ts, "overlap loses"). spawnStrip bypasses
+    // the guard deliberately, so a pre-guard document restored through it is the only
+    // way two strips share a station. A new strip-extent writer owes its own guard;
+    // the memo is correct and cheap regardless.
+    let tailNodes: Node[] | null = null;
+    let tPosX: Float32Array | null = null;
+    let tPosY: Float32Array | null = null;
+    let tDs: Float32Array | null = null;
+    let tR: ChainResult | null = null;
+
+    for (const st of sectionStrips(ecs, sectionId)) {
+        if (st.start >= cutArc || st.end <= cutArc) continue;
+        if (!spanCoversOneEdge(dsArr, r.edges, st.start, cutArc)) return true;
+        if (tailNodes === null) {
+            tailNodes = allNodes.slice(j + 1);
+            tPosX = new Float32Array(MAX_SAMPLES);
+            tPosY = new Float32Array(MAX_SAMPLES);
+            tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+            tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
+        }
+        if (!spanCoversOneEdge(tDs!, tR!.edges, 0, st.end - cutArc)) return true;
+    }
+    return false;
+}
+
+/** the minimum-extent span at a station — the one edge of the current bake that the station
+ *  falls on, in the section's own domain coordinate. Returns null when the section has no
+ *  resolvable edge structure. This is the span the summoned-creation menu creates a strip at:
+ *  the strip appears at the clicked station at minimum extent, selected, curve flattened and
+ *  solid (Locked decision). */
+export function stripMinExtentAt(
+    ecs: State,
+    sectionId: number,
+    s: number,
+): { start: number; end: number } | null {
+    const edge = sectionEdgeDs(ecs, sectionId);
+    if (edge === null) return null;
+    let cum = 0;
+    for (let i = 0; i < edge.edges; i++) {
+        const next = cum + edge.ds[i];
+        if (s < next || i === edge.edges - 1) return { start: cum, end: next };
+        cum = next;
+    }
+    return null;
+}
+
 /** author a new velocity strip on a section over `[start, end)` at `value` — the create
  *  path, guarded by {@link stripOverlapped} (the ONE guard every write inherits: create,
- *  drag, nudge, and typed-field writes all route through this module's writers). Returns
- *  the new strip's stable id, or `null` when the span would overlap an existing strip on
- *  the same section (refused, nothing written). */
+ *  drag, nudge, and typed-field writes all route through this module's writers) and by
+ *  the minimum-extent guard ({@link stripCoversOneEdge}: a continuous-coordinate span smaller
+ *  than one edge of the current bake maps to zero overridden indices and goes silently inert).
+ *  Returns the new strip's stable id, or `null` when the span would overlap an existing strip
+ *  on the same section or when the span covers no edge (refused, nothing written). */
 export function createStrip(
     ecs: State,
     sectionId: number,
@@ -360,6 +659,7 @@ export function createStrip(
     value: number,
 ): number | null {
     if (stripOverlapped(ecs, sectionId, start, end, -1)) return null;
+    if (!stripCoversOneEdge(ecs, sectionId, start, end)) return null;
     const eid = ecs.create();
     ecs.add(eid, Strip);
     const id = nextStripId++;
@@ -442,11 +742,71 @@ export function restoreStrip(ecs: State, st: StripState): void {
 export function setStrip(ecs: State, id: number, start: number, end: number, value: number): void {
     const eid = stripAt(ecs, id);
     if (eid === null) return;
-    if (!stripOverlapped(ecs, Strip.section.get(eid), start, end, id)) {
+    const sec = Strip.section.get(eid);
+    if (!stripOverlapped(ecs, sec, start, end, id) && stripCoversOneEdge(ecs, sec, start, end)) {
         Strip.start.set(eid, start);
         Strip.end.set(eid, end);
     }
     Strip.value.set(eid, value);
+}
+
+/** whether a typed strip value is one the field may commit — finite and STRICTLY positive (a
+ *  held speed of 0 is not a controlled span, it's a stall — `validCoefficient`'s own shape,
+ *  `>` rather than `>=`). The strip value refusal, shared by every write surface a strip's value
+ *  reaches (the popover field, a future typed nudge) rather than duplicated per caller. */
+export function validStripValue(v: number): boolean {
+    return Number.isFinite(v) && v > 0;
+}
+
+/** the neighbour-clamp bounds a strip's `start`/`end` may not cross, read at a reference
+ *  station `at` (the edge being moved, or the create-drag anchor) — the gesture-side half
+ *  of the Locked decision's "drags clamp at the neighbour's boundary": `track.setStrip`'s own
+ *  guard only ever REFUSES an overlapping write (`kex2d-map.md`), so every drag/nudge/typed-
+ *  field write computes its target through this first and calls `setStrip` with an already-
+ *  legal span. `setStrip` also carries the min-extent guard (`stripCoversOneEdge`), which
+ *  `bandMove` does NOT pre-compute — so a trim that crosses the one-edge floor is refused by
+ *  `setStrip` itself, not by the bounds here. `lo` is the nearest OTHER strip's `end` at or
+ *  before `at` (default 0, the section's own start); `hi` is the nearest OTHER strip's `start`
+ *  at or after `at` (default `sectionLength`, the section's own exit). `excludeId` is the strip
+ *  being moved (-1 for a create, nothing to exclude). Two calls — one at the moving strip's
+ *  original `start`, one at its original `end` — cover a body drag (which needs both ends' bounds
+ *  at once); a single call at the moved edge's own original position covers a resize; a call at
+ *  the anchor covers create. */
+export function stripBoundsAt(
+    ecs: State,
+    sectionId: number,
+    excludeId: number,
+    sectionLength: number,
+    at: number,
+): { lo: number; hi: number } {
+    let lo = 0;
+    let hi = sectionLength;
+    for (const row of sectionStrips(ecs, sectionId)) {
+        if (row.id === excludeId) continue;
+        if (row.end <= at && row.end > lo) lo = row.end;
+        if (row.start >= at && row.start < hi) hi = row.start;
+    }
+    return { lo, hi };
+}
+
+/** a new strip's seed value — "seeded at creation from the published bake's `v` at its first
+ *  station" (Locked decision), a UI act reading the CURRENT bake, never a kernel mechanism. Reads
+ *  `bakeOut.v` at the section-local native-axis station `s` (`forceSample`'s own address, the
+ *  same seam a force keyframe's world position reads), lerped between the bracketing samples.
+ *  Falls back to `V0` when there's no live bake to read (an empty track, a placed-past-budget
+ *  section) — the same neutral default an unauthored track's initial speed carries. */
+export function stripSeedValue(ecs: State, sectionId: number, s: number): number {
+    const trackEid = trackEntity(ecs);
+    if (trackEid === null) return V0;
+    const out = bakeOut.get(trackEid);
+    const info = sectionInfo.get(sectionId);
+    if (!out || !info) return V0;
+    const time = (Track.domain.get(trackEid) as Domain) === Domain.Time;
+    const last = Math.max(0, Track.count.get(trackEid) - 1);
+    const addr = forceSample(out, info, last, time, s);
+    if (!addr) return V0;
+    const j = Math.min(addr.index + 1, last);
+    return out.v[addr.index] + addr.frac * (out.v[j] - out.v[addr.index]);
 }
 
 /** convert a section's authored strips from its own domain coordinate into the kernel's
@@ -2510,7 +2870,34 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
     const n = handles.length - 1;
     if (k < 1 || k >= n) return null;
 
-    const cutArc = geoNodeArc(ecs, sectionId, trackDs(ecs), k);
+    const dsNom = trackDs(ecs);
+    const cutArc = geoNodeArc(ecs, sectionId, dsNom, k);
+
+    // B1/B2(a): refuse the cut if it would split any straddling strip into a sub-edge half —
+    // the min-extent law is stated over stored spans under the current bake, and a split
+    // that produces a sub-edge half silently deletes that half's override (the tail's
+    // `createStrip` returns null and the head's `Strip.end.set` is unguarded). Check both
+    // halves BEFORE any modification; the head reads against the current section's own edge
+    // structure (nodes 0..k are unchanged), the tail against the would-be tail's (nodes k..n,
+    // chord-invariant so re-framing doesn't move the edges).
+    for (const st of sectionStrips(ecs, sectionId)) {
+        if (st.start >= cutArc || st.end <= cutArc) continue; // not straddling
+        if (!stripCoversOneEdge(ecs, sectionId, st.start, cutArc)) return null; // head sub-edge
+        const tailNodes: Node[] = [];
+        for (let i = k; i <= n; i++) {
+            tailNodes.push({
+                x: Handle.pos.x.get(handles[i]),
+                y: Handle.pos.y.get(handles[i]),
+                theta: Handle.theta.get(handles[i]),
+                tangent: readTangent(handles[i]),
+            });
+        }
+        const tPosX = new Float32Array(MAX_SAMPLES);
+        const tPosY = new Float32Array(MAX_SAMPLES);
+        const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+        const tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
+        if (!spanCoversOneEdge(tDs, tR.edges, 0, st.end - cutArc)) return null; // tail sub-edge
+    }
 
     // re-frame against the head's RECOVERED exit (the bake's downstream entry), not the
     // boundary node's stored heading — see `headExit`.
@@ -2541,9 +2928,15 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
         }
         // straddles cutArc (non-degenerate only — a point can't straddle): head keeps
         // [start, cutArc), a new tail strip opens at [0, end - cutArc), both holding
-        // the same constant.
+        // the same constant. The pre-check above guarantees both halves cover ≥ 1 edge,
+        // so `createStrip` cannot return null here; the guard is a safety net.
         Strip.end.set(st.eid, cutArc);
-        createStrip(ecs, bId, 0, st.end - cutArc, st.value);
+        const tailId = createStrip(ecs, bId, 0, st.end - cutArc, st.value);
+        if (tailId === null) {
+            // safety net: the pre-check should have refused this split already; if we
+            // reach here, undo the head trim to avoid leaving a sub-edge inert strip.
+            Strip.end.set(st.eid, st.end);
+        }
     }
     return bId;
 }
@@ -2769,6 +3162,45 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     const len = Section.length.get(secEid);
     if (s <= 0 || s >= len) return null;
 
+    // B1/B2(a): refuse the cut if any strip would end up covering zero edges of its own
+    // half's resolved bake. The head's post-split grid is `resolveStep(s, nominal)`, NOT
+    // the pre-split `resolveStep(len, nominal)` — `Section.length.set` four lines below
+    // re-resolves the head at a different `ds`, and the head is written by an unguarded
+    // `Strip.end.set`. The tail's grid is `resolveStep(len - s, nominal)`. Both are checked
+    // BEFORE any modification. A wholly-tail strip is rebased to `[start-s, end-s)` on the
+    // tail's grid — the same mechanism (the tail's `ds` differs from the original's), so it
+    // is checked here too, not left as an unexamined residue.
+    //
+    // RED-FIRST WITNESS: force section len 4.03 (8 edges of 0.50375), strip [1.76, 2.8),
+    // splitForce(…, 2.0) accepted, head strip [1.76, 2.0) read stripCoversOneEdge === false
+    // against the pre-split grid (which has 8 edges of 0.50375) but the post-split head has
+    // resolveStep(2.0, 0.50375) = 4 edges of 0.5 — a stored override covering zero edges,
+    // silently inert, both halves clearing MIN_FORCE_LEN. Fix: resolve the head's post-split
+    // grid and check spanCoversOneEdge against it, mirroring the tail branch.
+    //
+    // WHOLLY-TAIL WITNESS: same section, strip [2.770, 2.771) covers 1 edge on the original
+    // grid (boundary(2.770)=5, boundary(2.771)=6) but after rebase to [0.770, 0.771) on the
+    // tail (4 edges of 0.5075) both endpoints map to edge 2 — zero edges, silently inert.
+    const dsNom = trackDs(ecs);
+    const nominal = forceNominal(trackDomain(ecs), dsNom);
+    const headResolved = resolveStep(s, nominal);
+    const headDs = new Float32Array(headResolved.edges).fill(headResolved.ds);
+    const tailLen = len - s;
+    const tailResolved = resolveStep(tailLen, nominal);
+    const tailDs = new Float32Array(tailResolved.edges).fill(tailResolved.ds);
+    for (const st of sectionStrips(ecs, sectionId)) {
+        if (st.end <= s) continue; // wholly head, unchanged
+        if (st.start >= s) {
+            // wholly tail: check the rebased strip covers ≥ 1 edge on the tail's resolved grid
+            if (!spanCoversOneEdge(tailDs, tailResolved.edges, st.start - s, st.end - s))
+                return null;
+            continue;
+        }
+        // straddling: check both halves against their POST-split grids
+        if (!spanCoversOneEdge(headDs, headResolved.edges, st.start, s)) return null; // head sub-edge
+        if (!spanCoversOneEdge(tailDs, tailResolved.edges, 0, st.end - s)) return null; // tail sub-edge
+    }
+
     const points = sectionForces(ecs, sectionId);
     const order = Section.order.get(secEid);
     bumpOrders(ecs, order + 1, +1);
@@ -2873,9 +3305,16 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
             continue;
         }
         // straddles s (non-degenerate only — a point can't straddle): head keeps [start, s),
-        // a new tail strip opens at [0, end - s), both holding the same constant.
+        // a new tail strip opens at [0, end - s), both holding the same constant. The pre-check
+        // above guarantees both halves cover ≥ 1 edge, so `createStrip` cannot return null
+        // here; the guard is a safety net.
         Strip.end.set(st.eid, s);
-        createStrip(ecs, bId, 0, st.end - s, st.value);
+        const tailId = createStrip(ecs, bId, 0, st.end - s, st.value);
+        if (tailId === null) {
+            // safety net: the pre-check should have refused this split already; if we
+            // reach here, undo the head trim to avoid leaving a sub-edge inert strip.
+            Strip.end.set(st.eid, st.end);
+        }
     }
     return bId;
 }

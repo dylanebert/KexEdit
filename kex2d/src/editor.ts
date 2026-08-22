@@ -3,14 +3,22 @@
  *  it via the per-RAF tick pattern in App.
  *
  *  there are no tools or modes: you select a node and drag it in the viewport, a
- *  force point on the timeline curve, a whole section, or the track START anchor —
- *  four mutually-exclusive selections (below), so a contextual action never fights
- *  over its target. */
+ *  force point on the timeline curve, a whole section, a velocity strip in the header
+ *  band, or the track START anchor — five mutually-exclusive selections (below), so a
+ *  contextual action never fights over its target. */
 
 import type { State } from "@dylanebert/shallot";
 import { createHistory, type History, redirectHistory } from "./history";
 import type { OptimizeOutcome, UnreachableReason } from "./optimize";
-import { forceAt, Handle, handleAt, sectionAt, setBakeFreeze, setBakeLanding } from "./track";
+import {
+    forceAt,
+    Handle,
+    handleAt,
+    sectionAt,
+    setBakeFreeze,
+    setBakeLanding,
+    stripAt,
+} from "./track";
 import type { TangentSide } from "./tangents";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
@@ -74,6 +82,12 @@ interface EditorState {
     forces: Selection;
     /** the selected sections (set + active), addressed by stable `Section.id`. */
     sections: Selection;
+    /** the selected velocity strips (set + active), addressed by stable `Strip.id` — the strip
+     *  kind's own `forces`. Single-select only in practice today (no strip marquee yet),
+     *  but carried as a full `Selection` for the same reason `forces` is: `deleteStrips` already
+     *  takes a set, and a strip's own Cut/Join (`kex2d-map.md`'s Locked decision) is section-scoped
+     *  bulk work a future stage may want to drive off a multi-set the same shape gives for free. */
+    strips: Selection;
     /** the active geo node eid, or null — the single-subject accessor over `nodes` (its active
      *  member). reading it is "the one subject" (readout, ring, manipulator, snap); assigning it is
      *  a replace-select (`select`). readers wanting the whole set read `nodes` directly. */
@@ -82,6 +96,10 @@ interface EditorState {
     force: number | null;
     /** the active section id, or null — the single-subject accessor over `sections`. */
     section: number | null;
+    /** the active velocity strip id, or null — the single-subject accessor over `strips`;
+     *  non-null selects the strip for trim/body-drag/delete (T1). The value surface
+     *  (keyframed curve editing in the graph) is T2's. */
+    strip: number | null;
     /** eid of the node in tangent-edit mode (its handles are summoned), or null — a
      *  sub-mode layered on node selection: `tangentEdit !== null` implies the node set is exactly
      *  `{tangentEdit}` with it active. entered by double-clicking a node (Figma vector edit);
@@ -139,6 +157,15 @@ interface EditorState {
      *  subject, the timeline itself. A row's pick is a document conversion op
      *  (`domain.convertDomain`), not a view write, so no basis state lives here. */
     rulerMenu: { x: number; y: number } | null;
+    /** the velocity-strip band context menu (Add / Delete): screen position + the target
+     *  section id and the clicked station (section-local, in the track domain's own unit), or
+     *  null when closed. Summoned by right-clicking the band — on empty space for creation
+     *  (the row names the thing; the strip appears at the clicked station at minimum extent,
+     *  selected, curve flattened and solid), on an existing strip for deletion. Empty band
+     *  space is inert — no plain-drag-on-empty, no modifier-drag, no standing mode toggle
+     *  (Locked decision, the rescope that retired C5's create-drag). `strip` is the targeted
+     *  strip's stable id, or -1 when the right-click landed on empty band (creation). */
+    stripMenu: { x: number; y: number; section: number; station: number; strip: number } | null;
     /** the snapping magnet toggle (AE model): a persistent editor preference, default
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
@@ -344,6 +371,7 @@ export const editor: EditorState = {
     nodes: emptySel(),
     forces: emptySel(),
     sections: emptySel(),
+    strips: emptySel(),
     get selection(): number | null {
         return this.nodes.active;
     },
@@ -362,6 +390,12 @@ export const editor: EditorState = {
     set section(v: number | null) {
         selectSection(v);
     },
+    get strip(): number | null {
+        return this.strips.active;
+    },
+    set strip(v: number | null) {
+        selectStrip(v);
+    },
     tangentEdit: null,
     forceEdit: null,
     forceHandle: null,
@@ -370,6 +404,7 @@ export const editor: EditorState = {
     nodeMenu: null,
     forceMenu: null,
     rulerMenu: null,
+    stripMenu: null,
     snap: true,
     dragging: false,
     hoverSection: null,
@@ -800,6 +835,7 @@ export type SelectMode = "replace" | "toggle";
 function exclusiveNode(): void {
     clearSel(editor.forces);
     clearSel(editor.sections);
+    clearSel(editor.strips);
     editor.forceEdit = null;
     editor.forceHandle = null;
     editor.start = false;
@@ -808,6 +844,7 @@ function exclusiveNode(): void {
 function exclusiveForce(): void {
     clearSel(editor.nodes);
     clearSel(editor.sections);
+    clearSel(editor.strips);
     editor.tangentEdit = null;
     editor.start = false;
 }
@@ -815,6 +852,17 @@ function exclusiveForce(): void {
 function exclusiveSection(): void {
     clearSel(editor.nodes);
     clearSel(editor.forces);
+    clearSel(editor.strips);
+    editor.tangentEdit = null;
+    editor.forceEdit = null;
+    editor.forceHandle = null;
+    editor.start = false;
+}
+
+function exclusiveStrip(): void {
+    clearSel(editor.nodes);
+    clearSel(editor.forces);
+    clearSel(editor.sections);
     editor.tangentEdit = null;
     editor.forceEdit = null;
     editor.forceHandle = null;
@@ -947,6 +995,20 @@ export function selectSection(id: number | null, mode: SelectMode = "replace"): 
     }
 }
 
+/** select a velocity strip by stable id. "replace" (default) collapses the strip set to `id`
+ *  (or clears it when null); "toggle" adds/removes it (shift-click, unused by today's gestures
+ *  today but kept for the same reason `selectForces`' set shape is — a future Cut/Join bulk
+ *  action). either non-clearing form sweeps the other kinds, mirroring `selectSection`. */
+export function selectStrip(id: number | null, mode: SelectMode = "replace"): void {
+    if (id === null || mode === "replace") {
+        setMember(editor.strips, id);
+        if (id !== null) exclusiveStrip();
+    } else {
+        exclusiveStrip();
+        toggleMember(editor.strips, id);
+    }
+}
+
 /** select (or clear) the track START anchor — the initial-speed handle. */
 export function selectStart(on: boolean): void {
     editor.start = on;
@@ -954,6 +1016,7 @@ export function selectStart(on: boolean): void {
         clearSel(editor.nodes);
         clearSel(editor.forces);
         clearSel(editor.sections);
+        clearSel(editor.strips);
         editor.tangentEdit = null;
         editor.forceEdit = null;
         editor.forceHandle = null;
@@ -1027,6 +1090,24 @@ export function closeRulerMenu(): void {
     editor.rulerMenu = null;
 }
 
+/** open the velocity-strip band context menu at a screen point — `section` is the section
+ *  the click resolved to, `station` the section-local station it landed at, `strip` the
+ *  targeted strip's stable id (-1 for empty band, i.e. creation). */
+export function openStripMenu(
+    x: number,
+    y: number,
+    section: number,
+    station: number,
+    strip: number,
+): void {
+    editor.stripMenu = { x, y, section, station, strip };
+}
+
+/** close the strip band context menu. */
+export function closeStripMenu(): void {
+    editor.stripMenu = null;
+}
+
 // ── history selection hook ────────────────────────────────────────────────────────
 // the editor's snapshot/restore for undo/redo, injected into `history` at boot (`setSelectionHook`)
 // so the coupling points inward — history calls this, never imports editor. the whole selection SET
@@ -1043,6 +1124,7 @@ type SelSnapshot =
     | { kind: "node"; members: NodeRef[]; active: NodeRef; editing: boolean }
     | { kind: "force"; ids: number[]; active: number; editing: boolean }
     | { kind: "section"; ids: number[]; active: number }
+    | { kind: "strip"; ids: number[]; active: number }
     | { kind: "start" }
     | null;
 
@@ -1086,17 +1168,25 @@ export const selectionHook = {
                 ids: [...editor.sections.ids],
                 active: editor.sections.active,
             };
+        if (editor.strips.active !== null)
+            return {
+                kind: "strip",
+                ids: [...editor.strips.ids],
+                active: editor.strips.active,
+            };
         if (editor.start) return { kind: "start" };
         return null;
     },
     restore(ecs: State, snap: unknown): void {
         editor.nodeMenu = null; // its rows (checked mode, enablement) went stale when the document changed
         editor.forceMenu = null; // same — the force keyframe menu's rows go stale on any restore
+        editor.stripMenu = null; // same — the strip menu's rows go stale on any restore
         const s = snap as SelSnapshot;
         if (s === null) {
             clearSel(editor.nodes); // clears the selection + (below) the tangent-edit sub-mode
             clearSel(editor.forces);
             clearSel(editor.sections);
+            clearSel(editor.strips);
             editor.tangentEdit = null;
             editor.forceEdit = null;
             editor.forceHandle = null;
@@ -1137,6 +1227,14 @@ export const selectionHook = {
                     s.active,
                 );
                 exclusiveSection();
+                break;
+            case "strip":
+                rebuild(
+                    editor.strips,
+                    s.ids.filter((id) => stripAt(ecs, id) !== null),
+                    s.active,
+                );
+                exclusiveStrip();
                 break;
             case "start":
                 selectStart(true);

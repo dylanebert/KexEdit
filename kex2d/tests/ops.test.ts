@@ -46,6 +46,7 @@ import {
     setTangent,
     setTrackDomain,
     setTrackFriction,
+    spawnStrip,
     splitForce,
     splitGeo,
     splitGeoAt,
@@ -1214,9 +1215,12 @@ describe("joinNext — velocity strip merge/rebase (C3 review, coverage)", () =>
         state.addSystem(BakeSystem);
         createTrack(state);
         const a = createSection(state, 0, SectionKind.Force, 20);
-        createStrip(state, a, 20, 20, 5); // a point exactly at A's own end
+        // points retire (Locked decision) — `createStrip` now refuses zero-length spans, so
+        // use `spawnStrip` (the restore path, bypassing the guard) to set up the pre-existing
+        // point strips this join scenario tests.
+        spawnStrip(state, a, 1001, 20, 20, 5); // a point exactly at A's own end
         const b = createSection(state, 1, SectionKind.Force, 10);
-        createStrip(state, b, 0, 0, 9); // a point exactly at B's own start — disagrees
+        spawnStrip(state, b, 1002, 0, 0, 9); // a point exactly at B's own start — disagrees
 
         expect(joinNext(state, a)).toBe(true);
 
