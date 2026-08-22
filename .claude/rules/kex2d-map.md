@@ -230,8 +230,8 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
 
 The kernel seam — `section.Strip`, `stripOverride`, DOF-independence, `Strip.values?` —
 is documented in the Physics section above. This section carries the laws the two shipped
-authoring stages (T1 lifecycle, T2 value-in-graph) added that outlive their spec, each already
-argued in the deleted spec's § Locked decision and § Validation and now homeless here.
+authoring stages (strip lifecycle and velocity-value-in-graph) added that outlive their spec, each
+already argued in the deleted spec's § Locked decision and § Validation and now homeless here.
 
 **Per-field prefix-causality convention.** A strip overrides v² for every edge in its
 half-open `[lo, end)` range (the point convention: `lo = start − 1` when `start === end`, else
@@ -240,11 +240,14 @@ capture, so the prefix before the strip is bit-identical to a strip-absent bake.
 per-field: position/θ/v samples `[0, stripStart]` are bit-identical INCLUSIVE of the boundary
 sample; `fN` edges `[0, stripStart)` are EXCLUSIVE. `stripStart` is the override's own first
 touched edge (`strip.start`, or `strip.start − 1` for a degenerate point). The asymmetry is
-`bake.forces`'s one-edge-ahead bisector θ recovery: the recovered tangent at sample `k` reads
-the chord of edge `k → k+1`, so an override on edge `stripStart` moves `θ[stripStart]` (the
-bisector whose chord starts there) but not the position or v at `stripStart` (those are the
-ENTRY state of the overridden edge, computed from the prefix). Tested in `tests/section.test.ts`
-with `===` on raw f32 arrays, no tolerance.
+`bake.forces`'s one-edge-ahead bisector θ recovery: the override at edge `stripStart` changes
+`v[stripStart+1]` (the destination v of that edge), which feeds the next edge's step and moves
+`posX[stripStart+2]` — the first position the chord at sample `stripStart+1` reads — so the first
+moved θ is `θ[stripStart+1]`, not `θ[stripStart]` (whose chord reads only prefix positions), and
+`fN[stripStart]` is the first affected fN because it reads `θ[stripStart+1]`. Tested in
+`tests/section.test.ts` with `===` on raw f32 arrays, no tolerance; reproduced with a strip
+`[27,63)` value 8 through `evalForce` in both Distance and Time: `θ[27]` identical, `θ[28]`
+differs, `fN[27]` differs.
 
 **Minimum-extent floor.** The write-op guard must guarantee the stored span's two ends round
 to DIFFERENT edge boundaries under `edgeStrips`'s round-to-nearest `boundary()` map — i.e. the
@@ -255,7 +258,7 @@ only at station 0 where `lo = −1` (out of range). The guard refuses the collap
 so a stored strip always covers ≥ 1 edge of the current bake. The writer set that carries the
 guard: `createStrip`, `setStrip`, the split head/tail pre-checks (`splitForce`/`splitGeo`, via
 `spanCoversOneEdge` against the would-be post-split grid), the domain flip's next-strip clamp
-(`landDomain` in `domain.ts`), and `joinNext` (the tail's strip rebase). Where the ≥ 1-edge floor
+(`landDomain` in `history.ts`, called from `domain.ts`'s `convertDomain`), and `joinNext` (the tail's strip rebase). Where the ≥ 1-edge floor
 and the no-overlap clamp cannot both hold, **overlap loses** — disclosed in `landDomain`'s
 docblock. Cut refuses inside a minimum-extent strip.
 
@@ -271,9 +274,34 @@ needs its own clamp — the bypass can write a pre-guard document that the guard
 edge-index coordinates, the same indexing `fN`/`ds` carry) and `StripKeyframe` (`strip`, `id`
 stable, `s`, `v` — the strip's own velocity curve on the force-curve machinery). Both
 participate in `sectionContentHash` → `bakeHash` (so adding, moving, or deleting a strip or
-keyframe invalidates the bake and re-marches). `Strip.values?` is the one kernel seam T2 added:
+keyframe invalidates the bake and re-marches). `Strip.values?` is the one kernel seam the velocity-value-in-graph stage added:
 when present, `stripOverride` returns `values[k − lo]` (pre-evaluated v² per edge); when absent,
 it returns `value²` (the constant case — no keyframes means one constant across the span).
+
+**No re-seed on upstream change.** The kernel never recaptures a strip's value mid-march
+(seeded once at creation from the published bake's `v` at its first station, per the
+DOF-independence paragraph in the Physics section above), so the entry jump after an upstream
+edit is the semantics, not a defect — and the creation seed is what makes a new strip visibly
+flatten velocity the moment it exists.
+
+**Same-type overlap refused, abutment legal.** Strips never claim the same edge by construction
+(`section.ts` `stripOverride`'s own comment), and strips attach to sections in section-local
+coordinates, so spanning a boundary is two abutting strips, not one.
+
+**Clamp at the neighbour is the only boundary behaviour that neither destroys nor composes.**
+`stripOverride`'s first-match linear scan makes overlap semantically undefined, ripple rewrites a
+neighbour's authored extent, and replace is destructive — so clamp is the sole legal mode
+(implemented at `track.ts` `stripBoundsAt`, cited in its docblock).
+
+**Band carries extent, graph carries and edits value.** Extent and curve are one object:
+keyframes ride the force-curve machinery, no keyframes means one constant across the span (the
+`Strip.values?` seam above), and creation is a summoned named act with empty band space inert
+(`Timeline.svelte` `STRIP_H` docblock and the band context-menu comment).
+
+**`Track.v0` stays; it is an initial condition, not a strip.** A station-0 point has no preceding
+edge, so v0 was always special-cased inside the uniform design; a mandatory minimum span over
+`[0, edge1]` would force `v[1]` and break byte-identical migration. `beginV0`/`setTrackV0`
+survive as the authoring surface.
 
 ## Code map
 

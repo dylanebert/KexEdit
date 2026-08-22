@@ -194,6 +194,8 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
             action: a.join,
         });
     }
+    // Reset clears an authored velocity control (strip); undo restores it. The label carries
+    // the verb alone and must not imply the control survives a reset.
     items.push({
         label: "Reset",
         group: "lifecycle",

@@ -559,7 +559,8 @@ function pickDomain(target: Domain): void {
         refusalTimer = setTimeout(dismissNotice, NOTICE_MS);
     }
 }
-const NOTICE_MS = 6000;
+const NOTICE_MS = 6000; // OWED: duplicated in `App.svelte`; the clean close exports a raise/dismiss
+// helper from `editor.ts`.
 let refusalTimer: ReturnType<typeof setTimeout> | undefined;
 // …and the view follows the DOMAIN, not the pick: `view.pan`/`pxPerU` are axis-unit quantities, so
 // whenever the unit changes the window is re-expressed to hold the same stretch of ride — the ruler

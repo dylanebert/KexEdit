@@ -85,11 +85,14 @@ mod tests {
     /// NOTE: this crate is currently UNBUILDABLE — `src/sim/mod.rs` declares `keyframe`,
     /// `math`, and `physics_params` modules whose source files do not exist. The
     /// fixture was minted through a `rustc`/`include!` harness against this file
-    /// alone, not through `cargo test`. The frozen JSON is the artifact of record.
+    /// alone, not through `cargo test`; the exact harness command is not recorded
+    /// here and has not been re-verified. The frozen JSON is the artifact of record.
     /// The 3D remake deletes `packages/core`, so re-deriving from a rebuilt crate
     /// without re-freezing is forbidden.
     ///
-    /// Regenerate: `cargo test --package kexedit-core mint_friction_cross_check_fixture -- --ignored --nocapture`
+    /// Regenerate (non-functional while the crate is unbuildable):
+    /// `cargo test --package kexedit-core mint_friction_cross_check_fixture -- --ignored --nocapture`
+    /// — the real path is the `rustc`/`include!` harness above, not this invocation.
     #[test]
     #[ignore]
     fn mint_friction_cross_check_fixture() {

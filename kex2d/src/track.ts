@@ -1070,7 +1070,11 @@ export const samples = new Map<number, Samples>();
  *  drives the red track / red handle / warning banner UX. `firstInfeasible`
  *  is the first sample below V_WARN, or -1 if the whole chain is feasible.
  *  `hash` is the input state that produced the current bake; a miss triggers
- *  a full re-bake. */
+ *  a full re-bake.
+ *
+ *  OWED: this is a module-level `Map` keyed by entity id, so two `State()` instances collide
+ *  — both start id counting at 0, so a test constructing two independent states silently reads
+ *  the wrong bake. Whichever stage next needs two states owns the fix. */
 export const bakeOut = new Map<
     number,
     {
@@ -3998,7 +4002,14 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
  *  content, so a reorder (a split/join, a reindex) doesn't change it. Factored out of
  *  `bakeHash`'s per-section loop so the bake gate and the provenance token (`sectionToken`,
  *  below) read this ONE reading of "has this section's own content changed" — `bakeHash` folds
- *  `order` back in itself, since a reorder still has to force a re-bake. */
+ *  `order` back in itself, since a reorder still has to force a re-bake.
+ *
+ *  OWED: the `carried` provenance bit, strip extents, and strip keyframes all participate here
+ *  → `bakeHash`, so clearing a tag invalidates the bake and re-marches a byte-identical profile.
+ *  This widening of the `bakeHash` race window across every flow (including flows that never
+ *  touch the domain) is UNTESTED — the cheap instrument is a per-flow bake counter before and
+ *  after. Nobody may re-derive the hypothesis (that provenance does not belong in `bakeHash` at
+ *  all) without running that counter. */
 function sectionContentHash(ecs: State, sec: SectionRow): string {
     let h = `${sec.kind}`;
     if (sec.kind === SectionKind.Force) {
