@@ -1114,15 +1114,20 @@ function chartCreate(e: MouseEvent): void {
     // create a velocity keyframe on the strip's curve (the force-curve machinery).
     // The velocity value is read from the cursor's y-position through the velocity
     // channel's own axis (vOf's inverse), so the new keyframe lands on the curve.
-    const ss = selStrip;
-    if (ss !== null && u >= ss.u0 && u <= ss.u1) {
-        if (!sectionEditable(editor.pinning, ss.section)) return;
-        const rect = canvas.getBoundingClientRect();
-        const cy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
-        const v = vView.lo + (1 - (cy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
-        const sLocal = clamp(u - ss.startU, ss.stripStart, ss.stripEnd);
-        addStripKeyframe(history, ecs, ss.id, sLocal, Math.max(V_FLOOR, v));
-        return;
+    // Reads `editor.strip` directly (not the tick-gated `selStrip` `$derived`) so the
+    // double-click fires on the same frame the selection landed, not a frame later.
+    const stripId = editor.strip;
+    if (stripId !== null) {
+        const ss = bandStrips.find((s) => s.id === stripId) ?? null;
+        if (ss !== null && u >= ss.u0 && u <= ss.u1) {
+            if (!sectionEditable(editor.pinning, ss.section)) return;
+            const rect = canvas.getBoundingClientRect();
+            const cy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
+            const v = vView.lo + (1 - (cy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
+            const sLocal = clamp(u - ss.startU, ss.stripStart, ss.stripEnd);
+            addStripKeyframe(history, ecs, ss.id, sLocal, Math.max(V_FLOOR, v));
+            return;
+        }
     }
     // snap the placement through the same landmark resolver the drags use (toggle, Ctrl/Cmd
     // bypass, and SNAP_PX all apply) — the AE insert-at-CTI idiom — before resolving the value.
