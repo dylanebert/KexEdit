@@ -141,6 +141,8 @@ export interface Kex {
     friction(): number;
     ghostPx(): { x0: number; x1: number }[];
     gRange(): [number, number];
+    vRange(): [number, number];
+    stripKfPx(): { id: number; x: number; y: number }[];
     hoverForceId(): number | null;
     guides(): { ray: boolean; angle: string | null; length: string | null };
     infeasibleSpan(): { first: number; count: number; section: number | null; head: number };
@@ -174,7 +176,6 @@ export interface Kex {
     selectedStrip(): number | null;
     stripsOf(i: number): { id: number; start: number; end: number; value: number }[];
     stripKeyframesOf(stripId: number): { id: number; s: number; v: number }[];
-    addStripKf(stripId: number, s: number, v: number): number;
     spanMidAt(i: number): { x: number; y: number } | null;
     startAt(): { x: number; y: number } | null;
     tTotal(): number;

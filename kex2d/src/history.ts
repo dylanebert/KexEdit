@@ -635,7 +635,10 @@ export function beginStripMove(ecs: State, id: number): void {
 
 /** author a new velocity keyframe on a strip, recording an undoable add — `createForce`'s
  *  strip-keyframe twin. The id is allocated once; undo destroys by it and redo re-spawns
- *  verbatim. */
+ *  verbatim. `createStripKeyframe` clamps `s` to the strip's `[start, end]` extent; the
+ *  redo callback must use the SAME clamped value, because `spawnStripKeyframe` does not
+ *  clamp — so the clamped `s` is read back from the created keyframe and used in both
+ *  the live write and the redo path. */
 export function addStripKeyframe(
     h: History,
     ecs: State,
@@ -645,10 +648,12 @@ export function addStripKeyframe(
 ): number {
     const pre = selHook?.snapshot(ecs);
     const id = createStripKf(ecs, stripId, s, v);
+    // read back the clamped s so the redo callback agrees with the create path
+    const cs = stripKeyframeState(ecs, id)?.s ?? s;
     record(
         h,
         {
-            apply: () => spawnStripKeyframe(ecs, stripId, id, s, v),
+            apply: () => spawnStripKeyframe(ecs, stripId, id, cs, v),
             reverse: () => destroyStripKeyframe(ecs, id),
         },
         pre,

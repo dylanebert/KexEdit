@@ -136,6 +136,7 @@ import {
     splitSection,
     trimTrack as trimTrackCmd,
     undo,
+    addStripKeyframe,
 } from "../src/history";
 import { trackMapping } from "../src/cart";
 import { convertDomain } from "../src/domain";
@@ -3650,6 +3651,39 @@ describe("velocity strips — ECS layer (C3)", () => {
         state.step(0);
         const after = bakeOut.get(eid)?.hash;
         expect(after).not.toBe(before);
+    });
+
+    // R4: addStripKeyframe's create path clamps s to [start, end], but the redo callback
+    // passed the UNCLAMPED s to spawnStripKeyframe (which does not clamp). This arm
+    // constructs an out-of-extent s (30, far past end=18), creates via the history wrapper,
+    // undoes, then redoes — the redo must land the keyframe at the clamped position (18),
+    // not at the raw input (30).
+    // RED-FIRST WITNESS: before the fix, the redo callback used the unclamped `s` (30), so
+    // after redo the keyframe's `s` read 30 instead of 18 — the arm reds at 30 !== 18.
+    // VACUITY: passes at the pre-repair ref (the create path already clamps, so the live
+    // keyframe reads 18 before any undo/redo) and passes with the repaired code deleted
+    // (the create path's clamp is untouched, so the first create still reads 18; the redo
+    // path is what the fix repairs, and deleting the fix reverts to the unclamped redo).
+    test("addStripKeyframe redo clamps s to the strip extent (R4: clamp asymmetry)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const start = 6;
+        const end = 18;
+        const stripId = createStrip(state, sec, start, end, 4) as number;
+        const h = createHistory();
+        // construct an out-of-extent s (30, far past end=18)
+        const outOfExtent = 30;
+        const id = addStripKeyframe(h, state, stripId, outOfExtent, 3);
+        // the live keyframe is clamped by createStripKeyframe
+        const liveState = stripKeyframeState(state, id);
+        expect(liveState?.s).toBe(end); // clamped to 18
+        // undo removes it
+        undo(h, state);
+        expect(stripKeyframeState(state, id)).toBeUndefined();
+        // redo re-spawns — must use the CLAMPED s, not the raw input
+        redo(h, state);
+        const redoState = stripKeyframeState(state, id);
+        expect(redoState?.s).toBe(end); // must be 18, not 30
     });
 });
 

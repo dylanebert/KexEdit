@@ -166,11 +166,14 @@ prescription overrides it unconditionally, so inside a controlled span the actua
 losses and a pinned station's speed stays a stamped constant either way (the additive-substrate
 law, above).
 
-The carrier is a **velocity strip**: `section.Strip`, `{start, end, value}` in section-local
+The carrier is a **velocity strip**: `section.Strip`, `{start, end, value, values?}` in section-local
 edge-index coordinates (the same indexing `fN`/`ds` already carry), threaded to
 `evalGeo`/`evalForce`/`chain` as a trailing, defaulted-`undefined` argument — an unauthored
 section threads no override at all, byte-identical to before strips existed. `section.stripOverride`
-builds the per-edge closure `(k) => value²` (ignoring `natural`, the same shape the old ramp's
+builds the per-edge closure `(k) => values[k − lo]` when the strip carries a keyframed curve
+(pre-evaluated v² per edge, T2 on the force-curve machinery), falling back to `(k) => value²`
+when `values` is absent (the constant case — no keyframes means one constant across the span,
+the After Effects stopwatch reading; ignoring `natural`, the same shape the old ramp's
 carrier used) that `forward.step`/`forward.integrate`/`bake.forces` already accepted as their
 `vSqOverride` channel. **A point is the degenerate `start === end` case**: an empty edge range
 holds no edge, so it overrides the single edge landing on that station instead, `[start − 1,

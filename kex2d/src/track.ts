@@ -278,7 +278,7 @@ export const Strip = {
  *  machinery"). `strip` is the owning strip's stable `Strip.id`; `id` is the keyframe's
  *  own stable identity (undo/redo address, eid-recycle safe). `s` is the keyframe's
  *  position in the section's own domain coordinate — the SAME axis `Strip.start`/`end`
- *  and `Force.s` are stored in — clipped to the strip's `[start, end)` extent. `v` is
+ *  and `Force.s` are stored in — clipped to the strip's `[start, end]` extent. `v` is
  *  the velocity (m/s) the curve holds at that station, the same unit `Entry.v` carries.
  *  When a strip has no keyframes, the constant `Strip.value` is used (the After Effects
  *  stopwatch reading: no keyframes means one constant across the span). */
@@ -866,7 +866,7 @@ export function stripKeyframeAt(ecs: State, id: number): number | null {
 let nextStripKfId = 0;
 
 /** author a new velocity keyframe on a strip at section-local `s` with velocity `v`.
- *  The position is clamped to the strip's `[start, end)` extent (clip-to-extent, the
+ *  The position is clamped to the strip's `[start, end]` extent (clip-to-extent, the
  *  Locked decision). Returns the new keyframe's stable id. */
 export function createStripKeyframe(ecs: State, stripId: number, s: number, v: number): number {
     const stripEid = stripAt(ecs, stripId);
@@ -3146,7 +3146,7 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
         } else {
             for (const k of kfs) {
                 if (k.s < cutArc) {
-                    if (k.s > cutArc) StripKeyframe.s.set(k.eid, cutArc);
+                    // head keyframe: already within [start, cutArc), no clip needed
                 } else {
                     spawnStripKeyframe(ecs, tailId, k.id, k.s - cutArc, k.v);
                     ecs.destroy(k.eid);
@@ -3536,8 +3536,7 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
         } else {
             for (const k of kfs) {
                 if (k.s < s) {
-                    // head keyframe: clip to the head's new extent
-                    if (k.s > s) StripKeyframe.s.set(k.eid, s);
+                    // head keyframe: already within [start, s), no clip needed
                 } else {
                     // tail keyframe: rebase to the tail's coordinate
                     spawnStripKeyframe(ecs, tailId, k.id, k.s - s, k.v);

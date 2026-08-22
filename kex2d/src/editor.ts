@@ -105,6 +105,13 @@ interface EditorState {
      *  `{tangentEdit}` with it active. entered by double-clicking a node (Figma vector edit);
      *  any selection change to a different subject (or the set growing past it), Esc, or click-away
      *  exits it. NOT a fifth mutually-exclusive selection — a refinement of the node-selection state. */
+    /** the selected velocity-strip keyframe's stable id, or null — a sub-selection layered
+     *  on strip selection (like `forceEdit` on force selection): `stripKf !== null` implies
+     *  `editor.strip !== null` (the owning strip is selected, so its keyframe diamonds are
+     *  drawn). Clicking a keyframe diamond selects it for Delete; Escape peels it before
+     *  clearing the strip selection (the force keyframe's own Escape ladder). NOT a
+     *  mutually-exclusive selection kind. */
+    stripKf: number | null;
     tangentEdit: number | null;
     /** stable id of the force keyframe in handle-edit sub-mode (its in/out handles are
      *  summoned), or null — the force analogue of `tangentEdit`, layered on force selection:
@@ -396,6 +403,7 @@ export const editor: EditorState = {
     set strip(v: number | null) {
         selectStrip(v);
     },
+    stripKf: null,
     tangentEdit: null,
     forceEdit: null,
     forceHandle: null,
@@ -836,6 +844,7 @@ function exclusiveNode(): void {
     clearSel(editor.forces);
     clearSel(editor.sections);
     clearSel(editor.strips);
+    editor.stripKf = null;
     editor.forceEdit = null;
     editor.forceHandle = null;
     editor.start = false;
@@ -845,6 +854,7 @@ function exclusiveForce(): void {
     clearSel(editor.nodes);
     clearSel(editor.sections);
     clearSel(editor.strips);
+    editor.stripKf = null;
     editor.tangentEdit = null;
     editor.start = false;
 }
@@ -853,6 +863,7 @@ function exclusiveSection(): void {
     clearSel(editor.nodes);
     clearSel(editor.forces);
     clearSel(editor.strips);
+    editor.stripKf = null;
     editor.tangentEdit = null;
     editor.forceEdit = null;
     editor.forceHandle = null;
@@ -863,6 +874,7 @@ function exclusiveStrip(): void {
     clearSel(editor.nodes);
     clearSel(editor.forces);
     clearSel(editor.sections);
+    editor.stripKf = null;
     editor.tangentEdit = null;
     editor.forceEdit = null;
     editor.forceHandle = null;
@@ -1007,6 +1019,18 @@ export function selectStrip(id: number | null, mode: SelectMode = "replace"): vo
         exclusiveStrip();
         toggleMember(editor.strips, id);
     }
+    // clear the strip-keyframe sub-selection when the strip is deselected — the
+    // keyframe diamonds are only drawn for the selected strip, so a stale keyframe
+    // selection is dangling (the force keyframe's own `selPoint` dismissal law).
+    if (editor.strip === null) editor.stripKf = null;
+}
+
+/** select a velocity-strip keyframe by its stable id, or clear it (null). a sub-selection
+ *  layered on strip selection: the owning strip stays selected (its diamonds are drawn),
+ *  and the keyframe becomes the Delete/Escape target. mirrors the force keyframe's own
+ *  selection pattern — selection state in editor, Delete through the history wrapper. */
+export function selectStripKf(id: number | null): void {
+    editor.stripKf = id;
 }
 
 /** select (or clear) the track START anchor — the initial-speed handle. */
@@ -1017,6 +1041,7 @@ export function selectStart(on: boolean): void {
         clearSel(editor.forces);
         clearSel(editor.sections);
         clearSel(editor.strips);
+        editor.stripKf = null;
         editor.tangentEdit = null;
         editor.forceEdit = null;
         editor.forceHandle = null;

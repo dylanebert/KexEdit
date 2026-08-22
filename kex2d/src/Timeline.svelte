@@ -39,6 +39,7 @@ import {
     selectForces,
     selectSection,
     selectStrip,
+    selectStripKf,
     snapActive,
     toggleSnap,
 } from "./editor";
@@ -908,8 +909,6 @@ interface BandStrip {
     // NOT `Clip.len` (`Section.length`): that field is the FORCE kind's own authored extent and
     // reads 0 on a geo section, and a strip attaches to either kind (Locked decision).
     len: number;
-    stripStart: number; // the strip's start (section-local, for clip-to-extent)
-    stripEnd: number; // the strip's end (section-local, for clip-to-extent)
 }
 const bandStrips = $derived.by((): BandStrip[] => {
     void tick;
@@ -930,8 +929,6 @@ const bandStrips = $derived.by((): BandStrip[] => {
                 u1,
                 startU: c.u0,
                 len: c.u1 - c.u0,
-                stripStart: st.start,
-                stripEnd: st.end,
             });
         }
     }
@@ -973,8 +970,8 @@ interface StripKfPt {
     v: number; // velocity (m/s)
     u: number; // global chart axis coordinate
     startU: number; // the strip's section entry on the axis
-    stripStart: number; // the strip's start (section-local)
-    stripEnd: number; // the strip's end (section-local)
+    start: number; // the strip's start (section-local)
+    end: number; // the strip's end (section-local)
 }
 const stripKfPts = $derived.by((): StripKfPt[] => {
     void tick;
@@ -989,8 +986,8 @@ const stripKfPts = $derived.by((): StripKfPt[] => {
         v: k.v,
         u: toGlobalU(spans, s.section, k.s) ?? s.startU,
         startU: s.startU,
-        stripStart: s.start,
-        stripEnd: s.end,
+        start: s.start,
+        end: s.end,
     }));
 });
 // the selected strip's velocity curve, sampled over its extent for the solid draw —
@@ -1033,6 +1030,17 @@ const stripVCurve = $derived.by((): { x: number; y: number }[] | null => {
 $effect(() => {
     void tick;
     if (editor.strip !== null && selStrip === null) selectStrip(null);
+});
+// strip-keyframe dismissal: clear a stale keyframe selection when the keyframe is gone
+// (undo/delete). Uses `void tick` (the strip dismissal's own pattern) to avoid the
+// dormant-`selPoint`-`$effect` defect — `editor.stripKf` is a plain property on a
+// non-reactive singleton, so reading it registers no dependency; `void tick` re-runs
+// every frame regardless, and `stripKfPts` (a `$derived`) provides the tracked read.
+$effect(() => {
+    void tick;
+    if (editor.stripKf !== null && !stripKfPts.some((k) => k.id === editor.stripKf)) {
+        selectStripKf(null);
+    }
 });
 // a force keyframe's chart x — its global axis coordinate, straight off the lens's affine.
 const ptX = (p: ForcePt): number => uPx(p.u);
@@ -1380,11 +1388,12 @@ function stripKfDown(e: PointerEvent, k: StripKfPt): void {
     e.preventDefault();
     e.stopPropagation();
     if (!sectionEditable(editor.pinning, k.section)) return;
+    selectStripKf(k.id);
     dragStripKfS0 = k.s;
     dragStripKfV0 = k.v;
     dragStripKfU0 = k.startU;
-    dragStripKfStart = k.stripStart;
-    dragStripKfEnd = k.stripEnd;
+    dragStripKfStart = k.start;
+    dragStripKfEnd = k.end;
     const rect = canvas.getBoundingClientRect();
     dragStripKfCx = e.clientX - rect.left;
     dragStripKfCy = e.clientY - rect.top;
@@ -2516,6 +2525,16 @@ function deleteSelectedStrip(): void {
     if (!sectionEditable(editor.pinning, s.section)) return;
     deleteStrips(history, ecs, [...editor.strips.ids]);
 }
+// Delete removes the selected strip keyframe; the strip stays selected (the force
+// keyframe's own pattern — Delete acts on the innermost selection, not the strip).
+function deleteSelectedStripKf(): void {
+    if (editor.stripKf === null) return;
+    const s = selStrip;
+    if (s === null) return;
+    if (!sectionEditable(editor.pinning, s.section)) return;
+    deleteStripKeyframe(history, ecs, editor.stripKf);
+    selectStripKf(null);
+}
 
 // ── the selected point's typed s/g fields ──
 // each field commits one undo entry through the drag gesture (begin → set → commit).
@@ -3361,14 +3380,19 @@ onMount(() => {
             return;
         }
         // velocity-strip select/delete — Escape/Delete only (a strip has no handle/tangent
-        // sub-mode to peel, unlike a force keyframe's Escape ladder above).
+        // sub-mode to peel, unlike a force keyframe's Escape ladder above). A selected
+        // strip keyframe (a sub-selection layered on the strip) peels first: Delete removes
+        // the keyframe (not the strip), and Escape clears the keyframe selection before
+        // the strip's — the force keyframe's own Escape ladder.
         if (editor.strip !== null) {
             if (e.key === "Escape") {
                 e.preventDefault();
-                selectStrip(null);
+                if (editor.stripKf !== null) selectStripKf(null);
+                else selectStrip(null);
             } else if (bound(BINDINGS.remove, e.key)) {
                 e.preventDefault();
-                deleteSelectedStrip();
+                if (editor.stripKf !== null) deleteSelectedStripKf();
+                else deleteSelectedStrip();
             }
             return;
         }
@@ -3454,6 +3478,7 @@ onMount(() => {
         const k = (window as unknown as { __kex?: Record<string, unknown> }).__kex;
         if (k) {
             k.gRange = (): [number, number] => [yView.lo, yView.hi];
+            k.vRange = (): [number, number] => [vView.lo, vView.hi];
             k.xView = (): [number, number] => [view.pan, view.pxPerU];
             // the domain the chart READS (`Track.domain`, tick-derived so a flow polls it), and
             // every keyframe's coordinate on that axis — paired with the stored `s` the flow
@@ -3469,6 +3494,16 @@ onMount(() => {
             // above) — the capture flow's pixel probe reads a point INSIDE one of these rather
             // than re-deriving the arclength→px projection a second time (the ctxCut precedent).
             k.ghostPx = (): { x0: number; x1: number }[] => ghostSpans;
+            // the selected strip's keyframe diamonds' screen px, projected exactly as drawn
+            // (the capture flow's pixel probe reads these to drive real pointer events).
+            k.stripKfPx = (): { id: number; x: number; y: number }[] => {
+                const rect = canvas.getBoundingClientRect();
+                return stripKfPts.map((k) => ({
+                    id: k.id,
+                    x: rect.left + uPx(k.u),
+                    y: rect.top + vOf(k.v),
+                }));
+            };
         }
     }
     return () => {
@@ -3479,10 +3514,12 @@ onMount(() => {
             const k = (window as unknown as { __kex?: Record<string, unknown> }).__kex;
             if (k) {
                 delete k.gRange;
+                delete k.vRange;
                 delete k.xView;
                 delete k.domain;
                 delete k.forceU;
                 delete k.ghostPx;
+                delete k.stripKfPx;
             }
         }
         cancelAll(); // drop any in-flight gesture if we unmount mid-drag
