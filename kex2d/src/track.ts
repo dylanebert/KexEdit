@@ -402,6 +402,68 @@ export function stripCoversOneEdge(
     return spanCoversOneEdge(edge.ds, edge.edges, start, end);
 }
 
+/** whether a force-section split at `s` would be refused by the strip pre-check —
+ *  any strip (straddling or wholly-tail) that would cover zero edges of its own half's
+ *  resolved post-split bake. Exposed so the menu's `canCut` predicate can gray the Cut
+ *  row before the user clicks it, rather than silently returning null. */
+export function forceSplitStripsRefused(ecs: State, sectionId: number, s: number): boolean {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null) return false;
+    const len = Section.length.get(secEid);
+    if (s <= 0 || s >= len) return false;
+    const dsNom = trackDs(ecs);
+    const nominal = forceNominal(trackDomain(ecs), dsNom);
+    const headResolved = resolveStep(s, nominal);
+    const headDs = new Float32Array(headResolved.edges).fill(headResolved.ds);
+    const tailLen = len - s;
+    const tailResolved = resolveStep(tailLen, nominal);
+    const tailDs = new Float32Array(tailResolved.edges).fill(tailResolved.ds);
+    for (const st of sectionStrips(ecs, sectionId)) {
+        if (st.end <= s) continue;
+        if (st.start >= s) {
+            if (!spanCoversOneEdge(tailDs, tailResolved.edges, st.start - s, st.end - s))
+                return true;
+            continue;
+        }
+        if (!spanCoversOneEdge(headDs, headResolved.edges, st.start, s)) return true;
+        if (!spanCoversOneEdge(tailDs, tailResolved.edges, 0, st.end - s)) return true;
+    }
+    return false;
+}
+
+/** whether a geo-section split at node `k` would be refused by the strip pre-check —
+ *  any straddling strip whose head or tail half would cover zero edges of its own
+ *  resolved post-split bake. Exposed so the menu's `canCut` predicate can gray the
+ *  Cut row before the user clicks it. */
+export function geoSplitStripsRefused(ecs: State, sectionId: number, k: number): boolean {
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return false;
+    const handles = sectionHandles(ecs, sectionId);
+    const n = handles.length - 1;
+    if (k < 1 || k >= n) return false;
+    const dsNom = trackDs(ecs);
+    const cutArc = geoNodeArc(ecs, sectionId, dsNom, k);
+    for (const st of sectionStrips(ecs, sectionId)) {
+        if (st.start >= cutArc || st.end <= cutArc) continue;
+        if (!stripCoversOneEdge(ecs, sectionId, st.start, cutArc)) return true;
+        const tailNodes: Node[] = [];
+        for (let i = k; i <= n; i++) {
+            tailNodes.push({
+                x: Handle.pos.x.get(handles[i]),
+                y: Handle.pos.y.get(handles[i]),
+                theta: Handle.theta.get(handles[i]),
+                tangent: readTangent(handles[i]),
+            });
+        }
+        const tPosX = new Float32Array(MAX_SAMPLES);
+        const tPosY = new Float32Array(MAX_SAMPLES);
+        const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+        const tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
+        if (!spanCoversOneEdge(tDs, tR.edges, 0, st.end - cutArc)) return true;
+    }
+    return false;
+}
+
 /** the minimum-extent span at a station — the one edge of the current bake that the station
  *  falls on, in the section's own domain coordinate. Returns null when the section has no
  *  resolvable edge structure. This is the span the summoned-creation menu creates a strip at:
@@ -2941,20 +3003,42 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     const len = Section.length.get(secEid);
     if (s <= 0 || s >= len) return null;
 
-    // B1/B2(a): refuse the cut if it would split any straddling strip into a sub-edge half —
-    // the min-extent law is stated over stored spans under the current bake, and a split
-    // that produces a sub-edge half silently deletes that half's override (the tail's
-    // `createStrip` returns null and the head's `Strip.end.set` is unguarded). Check both
-    // halves BEFORE any modification; the head reads against the current section's edge
-    // structure, the tail against the would-be tail's (uniform `forceNominal` grid).
+    // B1/B2(a): refuse the cut if any strip would end up covering zero edges of its own
+    // half's resolved bake. The head's post-split grid is `resolveStep(s, nominal)`, NOT
+    // the pre-split `resolveStep(len, nominal)` — `Section.length.set` four lines below
+    // re-resolves the head at a different `ds`, and the head is written by an unguarded
+    // `Strip.end.set`. The tail's grid is `resolveStep(len - s, nominal)`. Both are checked
+    // BEFORE any modification. A wholly-tail strip is rebased to `[start-s, end-s)` on the
+    // tail's grid — the same mechanism (the tail's `ds` differs from the original's), so it
+    // is checked here too, not left as an unexamined residue.
+    //
+    // RED-FIRST WITNESS: force section len 4.03 (8 edges of 0.50375), strip [1.76, 2.8),
+    // splitForce(…, 2.0) accepted, head strip [1.76, 2.0) read stripCoversOneEdge === false
+    // against the pre-split grid (which has 8 edges of 0.50375) but the post-split head has
+    // resolveStep(2.0, 0.50375) = 4 edges of 0.5 — a stored override covering zero edges,
+    // silently inert, both halves clearing MIN_FORCE_LEN. Fix: resolve the head's post-split
+    // grid and check spanCoversOneEdge against it, mirroring the tail branch.
+    //
+    // WHOLLY-TAIL WITNESS: same section, strip [2.770, 2.771) covers 1 edge on the original
+    // grid (boundary(2.770)=5, boundary(2.771)=6) but after rebase to [0.770, 0.771) on the
+    // tail (4 edges of 0.5075) both endpoints map to edge 2 — zero edges, silently inert.
     const dsNom = trackDs(ecs);
     const nominal = forceNominal(trackDomain(ecs), dsNom);
+    const headResolved = resolveStep(s, nominal);
+    const headDs = new Float32Array(headResolved.edges).fill(headResolved.ds);
+    const tailLen = len - s;
+    const tailResolved = resolveStep(tailLen, nominal);
+    const tailDs = new Float32Array(tailResolved.edges).fill(tailResolved.ds);
     for (const st of sectionStrips(ecs, sectionId)) {
-        if (st.start >= s || st.end <= s) continue; // not straddling
-        if (!stripCoversOneEdge(ecs, sectionId, st.start, s)) return null; // head sub-edge
-        const tailLen = len - s;
-        const tailResolved = resolveStep(tailLen, nominal);
-        const tailDs = new Float32Array(tailResolved.edges).fill(tailResolved.ds);
+        if (st.end <= s) continue; // wholly head, unchanged
+        if (st.start >= s) {
+            // wholly tail: check the rebased strip covers ≥ 1 edge on the tail's resolved grid
+            if (!spanCoversOneEdge(tailDs, tailResolved.edges, st.start - s, st.end - s))
+                return null;
+            continue;
+        }
+        // straddling: check both halves against their POST-split grids
+        if (!spanCoversOneEdge(headDs, headResolved.edges, st.start, s)) return null; // head sub-edge
         if (!spanCoversOneEdge(tailDs, tailResolved.edges, 0, st.end - s)) return null; // tail sub-edge
     }
 

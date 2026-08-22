@@ -128,10 +128,12 @@ import {
     redo,
     setForcesEase,
     setForceTangentMode as setForceTangentModeCmd,
+    splitSection,
     trimTrack as trimTrackCmd,
     undo,
 } from "../src/history";
 import { trackMapping } from "../src/cart";
+import { convertDomain } from "../src/domain";
 import { DEFAULT_G, Easing } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { LENGTH_MIN } from "../src/magnet";
@@ -3999,16 +4001,65 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
     // pre-check was added: `splitForce` would succeed, the head's `Strip.end.set` would
     // write a sub-edge inert span, and the tail's `createStrip` would return null (also
     // sub-edge) with the return discarded — silent data loss of the tail's override.
-    test("splitForce refuses a cut inside a min-extent strip (B1/B2(a))", () => {
+    //
+    // PASS-4 WITNESS: force section len 4.03 (8 edges of 0.50375), strip [1.76, 2.8),
+    // splitForce(…, 2.0) accepted with the old pre-split grid check (stripCoversOneEdge
+    // against 8 edges of 0.50375 read [1.76, 2.0) as covering 1 edge), but the post-split
+    // head has resolveStep(2.0, 0.5) = 4 edges of 0.5, where [1.76, 2.0) maps to edge 4
+    // at both endpoints — zero edges, silently inert. Fix: resolve the head's POST-split
+    // grid and check spanCoversOneEdge against it, mirroring the tail branch.
+    test("splitForce refuses a cut that produces a sub-edge head half against the post-split grid (B1/B2(a))", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
+        setSectionLength(state, sec, 4.03);
+        state.step(0);
+        // strip [1.76, 2.8) covers 3 edges on the pre-split 8-edge grid (edges 3–5)
+        const id = createStrip(state, sec, 1.76, 2.8, 5);
+        expect(id).not.toBeNull();
+        // cut at 2.0 — head [1.76, 2.0) on the post-split head grid (4 edges of 0.5)
+        // maps both endpoints to edge 4 → zero edges → refused
+        expect(splitForce(state, sec, 2.0)).toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(1);
+        expect(sectionStrips(state, sec)[0].start).toBe(1.76);
+        expect(sectionStrips(state, sec)[0].end).toBe(2.8);
+    });
+
+    // PASS-4: every strip stored after a split must cover ≥ 1 edge of its own half's
+    // resolved bake. This arm would fail with the old pre-split grid check (which accepted
+    // the split above, leaving a silently inert head strip).
+    test("every strip after a splitForce covers ≥ 1 edge of its own half's resolved bake", () => {
         const { state, sec } = track();
         convertSection(state, sec);
         state.step(0);
-        const id = createStrip(state, sec, 0, 0.5, 5); // 1-edge strip
+        // a strip that splits cleanly into two valid halves
+        createStrip(state, sec, 0, 2.0, 5); // 4-edge strip on 48-edge grid
+        const tail = splitForce(state, sec, 1.0);
+        expect(tail).not.toBeNull();
+        // head strip [0, 1.0) on resolveStep(1.0, 0.5) = 2 edges of 0.5
+        expect(stripCoversOneEdge(state, sec, 0, 1.0)).toBe(true);
+        // tail strip [0, 1.0) on resolveStep(23.0, 0.5) = 46 edges of 0.5
+        expect(stripCoversOneEdge(state, tail!, 0, 1.0)).toBe(true);
+    });
+
+    // PASS-4: the wholly-tail rebase branch shares the mechanism — a strip wholly in the
+    // tail is rebased to [start-s, end-s) on the tail's resolved grid, which may cover
+    // zero edges if the tail's ds differs from the original's.
+    test("splitForce refuses a cut that would rebase a wholly-tail strip to sub-edge (B1/B2(a))", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
+        setSectionLength(state, sec, 4.03);
+        state.step(0);
+        // strip [2.770, 2.771) covers 1 edge on the pre-split 8-edge grid
+        // (boundary(2.770)=5, boundary(2.771)=6) — a narrow strip straddling an edge midpoint
+        const id = createStrip(state, sec, 2.77, 2.771, 5);
         expect(id).not.toBeNull();
-        expect(splitForce(state, sec, 0.25)).toBeNull(); // both halves sub-edge → refused
+        // cut at 2.0 — strip is wholly tail, rebased to [0.770, 0.771) on the tail's
+        // 4-edge grid (ds=0.5075), where both endpoints map to edge 2 → zero edges → refused
+        expect(splitForce(state, sec, 2.0)).toBeNull();
         expect(sectionStrips(state, sec).length).toBe(1);
-        expect(sectionStrips(state, sec)[0].start).toBe(0);
-        expect(sectionStrips(state, sec)[0].end).toBe(0.5);
+        expect(sectionStrips(state, sec)[0].start).toBe(2.77);
     });
 
     test("splitForce refuses a cut near a strip edge that would produce a sub-edge half (B1)", () => {
@@ -4091,5 +4142,116 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
         state.step(0);
         expect(createStrip(state, sec, 25, 30, 5)).toBeNull();
         expect(createStrip(state, sec, -5, -1, 5)).toBeNull();
+    });
+
+    // ── PASS-4 (2): a refused geo Cut must not permanently alter authored geometry.
+    // WITNESSED RED: 24 m geo section, strip [11.9, 12.6), splitSection(…, 0.5) → null,
+    // node count 2 → 3, undo a no-op, node still there. The refusal fires after
+    // insertGeoNode has already mutated the curve; splitSection returns before record(…).
+    // Fix: restoreAll(ecs, before) on null, undoing the partial mutation.
+    test("a refused splitSection does not alter node count or history (pass-4 deliverable 2)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 24, 0);
+        state.step(0);
+        // strip straddling the mid-segment — a cut at t=0.5 would split it into sub-edge halves
+        createStrip(state, sec, 11.9, 12.6, 5);
+        const h = createHistory();
+        const nodesBefore = sectionHandles(state, sec).length;
+        const entriesBefore = h.undo.length;
+        // splitSection with interior t — insertGeoNode runs, then splitGeo's strip pre-check refuses
+        const result = splitSection(h, state, sec, 0, 0.5);
+        expect(result).toBeNull();
+        // node count unchanged — the inserted node was undone
+        expect(sectionHandles(state, sec).length).toBe(nodesBefore);
+        // no history entry recorded — there was nothing to undo
+        expect(h.undo.length).toBe(entriesBefore);
+        // undo is a no-op because there was nothing to undo
+        undo(h, state);
+        expect(sectionHandles(state, sec).length).toBe(nodesBefore);
+    });
+
+    // ── PASS-4 (3): the min-extent floor on a domain flip must not write overlapping strips.
+    // WITNESSED RED: geo drop (30, −40) ahead of a 10 m force section, legally abutting
+    // min-extent strips [2, 2.5)/[2.5, 3), flip Distance→Time →
+    // [0.06654, 0.11654)/[0.09482, 0.18573), 0.02173 s of overlap, stripOverlapped true.
+    // Fix: clamp newEnd against the next strip's converted start and the section exit.
+    test("domain flip does not produce overlapping strips from abutting min-extent pairs (pass-4 deliverable 3)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
+        setSectionLength(state, sec, 10);
+        state.step(0);
+        // two legally abutting min-extent strips (each 1 edge on the 20-edge Distance grid)
+        const id1 = createStrip(state, sec, 2, 2.5, 5);
+        const id2 = createStrip(state, sec, 2.5, 3, 5);
+        expect(id1).not.toBeNull();
+        expect(id2).not.toBeNull();
+        // flip to Time — the floor extends each strip to targetNominal, which may overlap
+        const h = createHistory();
+        convertDomain(h, state, Domain.Time);
+        state.step(0);
+        // no overlap after the flip
+        expect(
+            stripOverlapped(
+                state,
+                sec,
+                sectionStrips(state, sec)[0].start,
+                sectionStrips(state, sec)[0].end,
+                sectionStrips(state, sec)[0].id,
+            ),
+        ).toBe(false);
+        expect(
+            stripOverlapped(
+                state,
+                sec,
+                sectionStrips(state, sec)[1].start,
+                sectionStrips(state, sec)[1].end,
+                sectionStrips(state, sec)[1].id,
+            ),
+        ).toBe(false);
+        // each strip still covers ≥ 1 edge in the target domain
+        for (const st of sectionStrips(state, sec)) {
+            expect(stripCoversOneEdge(state, sec, st.start, st.end)).toBe(true);
+        }
+        // flip back — still no overlap (the clamp is one-way, but abutting strips stay abutting)
+        convertDomain(h, state, Domain.Distance);
+        state.step(0);
+        expect(
+            stripOverlapped(
+                state,
+                sec,
+                sectionStrips(state, sec)[0].start,
+                sectionStrips(state, sec)[0].end,
+                sectionStrips(state, sec)[0].id,
+            ),
+        ).toBe(false);
+    });
+
+    // PASS-4 (3) sub-item: the floor tests `< targetNominal` rather than spanCoversOneEdge.
+    // An arm starting at a non-zero boundary is owed — this one starts at 2 (not 0).
+    test("domain flip floor holds for strips starting at a non-zero boundary (pass-4 proof gap)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
+        setSectionLength(state, sec, 10);
+        state.step(0);
+        // a single strip starting at a non-zero boundary (2, not 0)
+        createStrip(state, sec, 2, 2.5, 5);
+        const h = createHistory();
+        convertDomain(h, state, Domain.Time);
+        state.step(0);
+        // the strip covers ≥ 1 edge in the target domain
+        expect(
+            stripCoversOneEdge(
+                state,
+                sec,
+                sectionStrips(state, sec)[0].start,
+                sectionStrips(state, sec)[0].end,
+            ),
+        ).toBe(true);
     });
 });

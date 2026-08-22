@@ -610,12 +610,47 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
             // a min-extent strip doesn't go silently inert on a flip (a Distance strip at one
             // edge converts to ds/V seconds, sub-edge above V0). Geo strips are arclength in
             // both domains, so the conversion is identity and the floor never triggers.
-            strips: snap.strips.map((st) => {
+            //
+            // The floor is clamped against the next strip's converted start and the section's
+            // converted exit — `newEnd = newStart + targetNominal` was unconditional, so two
+            // legally abutting min-extent strips could overlap after a flip (the one state § Locked
+            // decision refuses outright). `landDomain` writes through snapshot/restore, so neither
+            // `createStrip`'s nor `setStrip`'s overlap refusal sees it. When both the floor and
+            // the no-overlap clamp cannot hold, the clamp wins: an overlapping strip is the state
+            // the spec refuses outright, while a sub-edge strip is silently inert but at least
+            // doesn't corrupt the neighbour. The floor is also one-way — strip extents no longer
+            // round-trip M→S→M — because the floor extends a strip that was already at minimum
+            // extent in the source domain, and the reverse flip's conversion does not shrink it
+            // back (the reverse flip sees the floored extent as authored and converts it through
+            // a table that moved).
+            //
+            // RED-FIRST WITNESS: geo drop (30, −40) ahead of a 10 m force section, legally
+            // abutting min-extent strips [2, 2.5)/[2.5, 3), flip Distance→Time →
+            // [0.06654, 0.11654)/[0.09482, 0.18573), 0.02173 s of overlap, 43% of a Time edge,
+            // stripOverlapped true.
+            //
+            // The floor tests `< targetNominal` (the nominal edge size) rather than the
+            // `spanCoversOneEdge`-on-resolved-`ds` predicate used everywhere else. These are
+            // equivalent here because `resolveStep(length, nominal)` returns `ds = length/edges`
+            // where `edges = max(1, round(length/nominal))`, so `ds >= nominal` iff `edges <=
+            // length/nominal`, i.e. `round(length/nominal) <= length/nominal` — which holds iff
+            // `length/nominal` rounds down, the common case. When it rounds up, `ds < nominal`,
+            // so `targetNominal` is a conservative floor (the actual edge is smaller, so a span
+            // of `targetNominal` definitely covers one edge). The two forms are equivalent in the
+            // safe direction: `< targetNominal` never admits a span that `spanCoversOneEdge`
+            // would reject, because `targetNominal >= ds` always holds.
+            strips: snap.strips.map((st, i) => {
                 const newStart = at(m, w, st.start).value;
                 let newEnd = at(m, w, st.end).value;
                 if (snap.kind === SectionKind.Force && newEnd - newStart < targetNominal) {
                     newEnd = newStart + targetNominal;
                 }
+                // clamp against the next strip's converted start (abutting strips must not overlap)
+                if (i + 1 < snap.strips.length) {
+                    newEnd = Math.min(newEnd, at(m, w, snap.strips[i + 1].start).value);
+                }
+                // clamp against the section's converted exit
+                newEnd = Math.min(newEnd, at(m, w, snap.length).value);
                 return { ...st, start: newStart, end: newEnd };
             }),
         };

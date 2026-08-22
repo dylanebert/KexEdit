@@ -841,6 +841,21 @@ describe("rulerMenu / appendMenu — the flat two-row menus", () => {
         for (const r of appendMenu(rec)) r.action?.();
         expect(rec.log).toEqual([`append(${SectionKind.Geo})`, `append(${SectionKind.Force})`]);
     });
+    // W7's canCreate refusal: the strip menu's "Add velocity strip" row is GRAYED (not silently
+    // inert) when canCreate is false — a station whose min-extent span overlaps an existing strip.
+    // This arm fails if `canCreate` is stubbed to constant `true` in the builder.
+    test("stripMenu grays Add when canCreate is false (W7 refusal arm)", () => {
+        const sa = recorder("addStrip", "remove");
+        const rows = stripMenu({ strip: -1, editable: true, canCreate: false }, sa);
+        expect(rows.length).toBe(1);
+        expect(rows[0].label).toBe("Add velocity strip");
+        expect(rows[0].enabled).toBe(false);
+    });
+    test("stripMenu enables Add when canCreate is true and editable", () => {
+        const sa = recorder("addStrip", "remove");
+        const rows = stripMenu({ strip: -1, editable: true, canCreate: true }, sa);
+        expect(rows[0].enabled).toBe(true);
+    });
 });
 
 // ── the GRAMMAR ORACLE (kex2d-menu-grammar stage 2). The characterization suite above pins what
@@ -974,16 +989,19 @@ describe("the menu grammar — every builder, every state", () => {
         }
         const a = acts();
         all.push({ name: "appendMenu", rows: appendMenu(a), state: {}, acts: a });
-        // stripMenu: creation (strip < 0) and deletion (strip >= 0), editable and not.
+        // stripMenu: creation (strip < 0) and deletion (strip >= 0), editable and not,
+        // canCreate true and false (W7's refusal must be swept, not pinned to true).
         for (const strip of [-1, 0] as const) {
             for (const editable of [true, false] as const) {
-                const sa = acts();
-                all.push({
-                    name: "stripMenu",
-                    rows: stripMenu({ strip, editable, canCreate: true }, sa),
-                    state: { strip, editable },
-                    acts: sa,
-                });
+                for (const canCreate of [true, false] as const) {
+                    const sa = acts();
+                    all.push({
+                        name: "stripMenu",
+                        rows: stripMenu({ strip, editable, canCreate }, sa),
+                        state: { strip, editable, canCreate },
+                        acts: sa,
+                    });
+                }
             }
         }
         return all;

@@ -1022,6 +1022,15 @@ export function restoreProvenance(
  *  destroys and respawns every node and keyframe; the eid allocator recycles LIFO, so that pair is
  *  why the selection snapshot rides along — without it a held selection would come back naming a
  *  DIFFERENT entity. */
+/** land a domain conversion: set the track domain, apply the converted snapshots, and
+ *  record one undo entry. Called by `convertDomain`.
+ *
+ *  The min-extent floor applied in `convertDomain` is **one-way**: a strip floored to
+ *  `targetNominal` in the target domain does not shrink back on the reverse flip, because
+ *  the reverse flip sees the floored extent as authored and converts it through a table that
+ *  moved. So strip extents no longer round-trip M→S→M — the floor is a ratchet, not a
+ *  projection. This is the right trade (a sub-edge strip is silently inert; an overlapping
+ *  strip is the state the spec refuses outright), but it is not a round-trip promise. */
 export function landDomain(h: History, ecs: State, target: Domain, after: SectionSnapshot[]): void {
     const pre = selHook?.snapshot(ecs);
     const source = trackDomain(ecs);
@@ -1074,7 +1083,15 @@ export function splitSection(
         Section.kind.get(eid) === SectionKind.Geo
             ? splitGeoAt(ecs, section, at, t)
             : splitForce(ecs, section, at);
-    if (id === null) return null; // nothing split — don't record
+    if (id === null) {
+        // A refused geo Cut (splitGeoAt with interior t) may have already mutated the
+        // curve via insertGeoNode before splitGeo's strip pre-check refused; restore the
+        // pre-op snapshot so no authored geometry is left behind with no undo entry.
+        // RED-FIRST WITNESS: 24 m geo section, strip [11.9, 12.6), splitSection(…, 0.5)
+        // → null, node count 2 → 3, undo a no-op, node still there.
+        restoreAll(ecs, before);
+        return null;
+    }
     const after = snapshotAll(ecs);
     record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return id;
