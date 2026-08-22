@@ -537,3 +537,41 @@ describe("forward.step friction default", () => {
         }
     });
 });
+
+// CONSTRAINT: `loss` closes over the module constant `G` while `step` takes `g` as a
+// parameter. Under `g ≠ G` with `friction > 0`, the energy delta uses `g` but the loss
+// term uses `G` — they disagree, and this arm pins that disagreement so a future caller
+// varying `g` cannot silently assume `loss` tracks its `g`. The expected `v[1]` is
+// computed by hand: `conserved = v0² − 2·g·dy`, then `loss(fN, v0², ds, friction, 0)`
+// uses `G` (the module constant, not `g`), so `v1² = conserved − loss`. If `loss` ever
+// takes a `g` parameter this arm must be updated — that is the signature change the
+// docblock forbids.
+describe("forward.loss g-closure under g ≠ G", () => {
+    test("step with g ≠ G and friction > 0: loss uses G, not g", () => {
+        const g = 12.0; // ≠ G (9.80665)
+        const fN = 1.0;
+        const ds = 0.5;
+        const v0 = 15.0;
+        const mu = 0.021;
+        const posX = new Float32Array(2);
+        const posY = new Float32Array(2);
+        const theta = new Float32Array(2);
+        const v = new Float32Array(2);
+        v[0] = v0;
+        step(posX, posY, theta, v, 0, 1, fN, ds, g, V_FLOOR, mu, 0);
+
+        // recompute by hand: step uses `g` for the energy delta, `G` for the loss
+        const dtheta = ((fN - Math.cos(0)) * g * ds) / (v0 * v0);
+        const midT = 0.5 * (0 + dtheta);
+        const dy = ds * Math.sin(midT);
+        const conserved = v0 * v0 - 2 * g * dy;
+        const lossVal = loss(fN, v0 * v0, ds, mu, 0); // uses G internally
+        const expectedV1 = Math.sqrt(Math.max(conserved - lossVal, 0));
+        expect(v[1]).toBeCloseTo(expectedV1, 6);
+
+        // and they genuinely disagree: the loss with `g` would give a different v[1]
+        const lossWithG = 2 * (mu * G * Math.abs(fN)) * ds;
+        const lossWithGAlt = 2 * (mu * g * Math.abs(fN)) * ds;
+        expect(lossWithG).not.toBeCloseTo(lossWithGAlt, 6);
+    });
+});

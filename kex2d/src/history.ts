@@ -529,7 +529,9 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
  *  gesture is nominally about — `setForcePoint` also clears `Force.carried`, so an `s`/`g`-only
  *  predicate read a drag returning to its origin as a no-op while the document had really changed,
  *  and recorded nothing to undo it with. `sameForcePoint` is exhaustive by type, so the next column
- *  added to `ForcePointState` cannot repeat that. */
+ *  added to `ForcePointState` cannot repeat that. OWED: a drag with real intermediate motion
+ *  that returns to its origin still promotes a carried key and records a bit-only entry — closing
+ *  it needs gesture-level restore-on-no-op in `commit`, not just an exhaustive predicate. */
 export function beginForceMove(ecs: State, id: number): void {
     begin(
         () => forcePointState(ecs, id),

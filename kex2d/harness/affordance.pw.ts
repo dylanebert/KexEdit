@@ -4,8 +4,8 @@ import { expect, frameTimeline, kexCall, type Page, seedHill, test } from "./flo
 // One axis, one predicate: a surface that PAINTS an interactive cursor must have a handler
 // behind it. Nothing else in this harness reads that axis, and that is the reason the C5
 // band-authoring popover shipped `bun check` 0, `bun test` 1589/0/46 and capture 38/38 while the
-// affordance axis stayed invisible to every gate (kex2d-substrate, feel gate 2026-08-20, verdict
-// 5, "the popover is jarring and does not work" — this arm owns the "does not work" half; the
+// affordance axis stayed invisible to every gate (the feel gate's "the popover is jarring and
+// does not work" verdict — this arm owns the "does not work" half; the
 // "jarring" half is a separate, unmeasured axis this rig cannot see, and so is the strip value's
 // own legibility: its only rendering in C5 is the α-0.25 dashed velocity channel
 // (`Timeline.svelte:2797–2812`, one pass, no authored-span solid split), so a committed edit is

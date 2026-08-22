@@ -85,7 +85,11 @@ v_{i+1}² = v_i² − 2g · (y_{i+1} − y_i) − loss(F_n(σ_i), v_i², Δs, μ
 drag, in v² units. `μ`/`c` (`friction`/`resistance`) default 0 everywhere they're threaded
 (`step`/`integrate`, `bake.forces`, `section.evalGeo`/`evalForce`/`chain`), so an unauthored track's
 march is byte-identical to before the term existed — the path-energy law below is a strict
-generalization, not a rewrite of the μ = c = 0 case.
+generalization, not a rewrite of the μ = c = 0 case. **`loss` closes over the module constant `G`
+while `step`/`integrate`/`forces` take `g` as a parameter** — latent today (all ~11 callers pass
+`G`), but a 3D kernel varying `g` would be the first caller to break the agreement, and the 3D
+remake copies this signature. Do NOT change the signature; the constraint is documented in
+`loss()`'s docblock and pinned by a test arm under `g ≠ G` with friction > 0.
 
 Velocity uses the energy-delta (squared) form to avoid catastrophic cancellation. Clamps:
 `vSafe = max(|v|, V_FLOOR)` in the dθ formula, `v_next = sqrt(max(v_next², 0))`.
@@ -221,6 +225,93 @@ Constants: `G` = 9.80665 and `V_FLOOR` = 0.01 in `forward.ts` (the integrator ow
 and `optimize.ts` import `G` rather than redeclaring it); `V_WARN` = 1.0 (diagnostic infeasibility
 threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` = 4096 in `track.ts`; `V0` = 10
 (the DEFAULT initial speed — now authored per-track as `Track.v0`) in `track.ts`.
+
+## Velocity strips
+
+The kernel seam — `section.Strip`, `stripOverride`, DOF-independence, `Strip.values?` —
+is documented in the Physics section above. This section carries the laws the two shipped
+authoring stages (strip lifecycle and velocity-value-in-graph) added that outlive their spec, each
+already argued in the deleted spec's § Locked decision and § Validation and now homeless here.
+
+**Per-field prefix-causality convention.** A strip overrides v² for every edge in its
+half-open `[lo, end)` range (the point convention: `lo = start − 1` when `start === end`, else
+`lo = start`). The march is one full-resolution pass with a per-edge override and no mid-march
+capture, so the prefix before the strip is bit-identical to a strip-absent bake. The convention is
+per-field: position/θ/v samples `[0, stripStart]` are bit-identical INCLUSIVE of the boundary
+sample; `fN` edges `[0, stripStart)` are EXCLUSIVE. `stripStart` is the override's own first
+touched edge (`strip.start`, or `strip.start − 1` for a degenerate point). The asymmetry is the
+**march** moving positions, which `bake.forces`'s one-edge-ahead bisector θ recovery then reads:
+the override at edge `stripStart` changes
+`v[stripStart+1]` (the destination v of that edge), which feeds the next edge's step and moves
+`posX[stripStart+2]` — the first position the chord at sample `stripStart+1` reads — so the first
+moved θ is `θ[stripStart+1]`, not `θ[stripStart]` (whose chord reads only prefix positions), and
+`fN[stripStart]` is the first affected fN because it reads `θ[stripStart+1]`. Tested in
+`tests/section.test.ts` with `===` on raw f32 arrays, no tolerance; reproduced with a strip
+`[27,63)` value 8 through `evalForce` in both Distance and Time: `θ[27]` identical, `θ[28]`
+differs, `fN[27]` differs. That chain is the **force** path's; `evalGeo` runs no march (positions
+are inputs), so θ is identical throughout and the first affected fN is `fN[stripStart+1]`, reached
+through `vSafe` rather than through θ. The stated `fN [0, stripStart)` bound holds either way — it
+is a lower bound, tight on force and slack by one edge on geo.
+
+**Minimum-extent floor.** The write-op guard must guarantee the stored span's two ends round
+to DIFFERENT edge boundaries under `edgeStrips`'s round-to-nearest `boundary()` map — i.e. the
+span straddles an edge midpoint, so it maps to at least one overridden edge. A sub-edge span
+whose ends round together collapses to `start === end`, which the point convention re-maps to the
+PRECEDING edge `[start−1, start)` — the override is displaced, not lost; it is genuinely inert
+only at station 0 where `lo = −1` (out of range). The guard refuses the collapse at the write op
+so a stored strip covers ≥ 1 edge of the current bake **on every path that carries the guard**.
+That writer set is: `createStrip`, `setStrip`, the split head/tail pre-checks
+(`splitForce`/`splitGeo`, via `spanCoversOneEdge` against the would-be post-split grid), and the
+domain flip's next-strip clamp (`landDomain` in `history.ts`, called from `domain.ts`'s
+`convertDomain`). **`joinNext` is the one extent writer that does NOT carry it** — it rebases both
+halves' strips onto the joined section's coarser resolved grid with no re-check, so a
+minimum-extent strip can come out of a Join covering zero edges and controlling the *preceding*
+edge instead (measured at close: 2.28 m + 2.26 m force sections, and 0.52% of a swept
+(headLen, tailLen, station) grid). That is a booked defect, not a law; the repair is to reuse
+`landDomain`'s floor in join's rebase loops. Where the ≥ 1-edge floor
+and the no-overlap clamp cannot both hold, **overlap loses** — disclosed in `landDomain`'s
+docblock. Cut refuses inside a minimum-extent strip.
+
+**Guards live inside the writer, not at the call site.** The overlap guard (`stripOverlapped`)
+and the min-extent guard (`stripCoversOneEdge`/`spanCoversOneEdge`) are called from inside
+`createStrip` and `setStrip`, so every caller inherits them structurally rather than by convention.
+The one deliberate bypass is `spawnStrip`/`spawnStripKeyframe` under `restoreAll` (undo/redo and
+the domain flip): a snapshot restore must be byte-identical even for a document authored before
+the guard existed, so the spawn path writes without re-validating. This is why the domain flip
+needs its own clamp — the bypass can write a pre-guard document that the guard would refuse.
+
+**Authored components.** `Strip` (`section`, `id` stable, `start`, `end`, `value` — section-local
+edge-index coordinates, the same indexing `fN`/`ds` carry) and `StripKeyframe` (`strip`, `id`
+stable, `s`, `v` — the strip's own velocity curve on the force-curve machinery). Both
+participate in `sectionContentHash` → `bakeHash` (so adding, moving, or deleting a strip or
+keyframe invalidates the bake and re-marches). `Strip.values?` is the one kernel seam the velocity-value-in-graph stage added:
+when present, `stripOverride` returns `values[k − lo]` (pre-evaluated v² per edge); when absent,
+it returns `value²` (the constant case — no keyframes means one constant across the span).
+
+**No re-seed on upstream change.** The kernel never recaptures a strip's value mid-march
+(seeded once at creation from the published bake's `v` at its first station, per the
+DOF-independence paragraph in the Physics section above), so the entry jump after an upstream
+edit is the semantics, not a defect — and the creation seed is what makes a new strip visibly
+flatten velocity the moment it exists.
+
+**Same-type overlap refused, abutment legal.** Strips never claim the same edge by construction
+(`section.ts` `stripOverride`'s own comment), and strips attach to sections in section-local
+coordinates, so spanning a boundary is two abutting strips, not one.
+
+**Clamp at the neighbour is the only boundary behaviour that neither destroys nor composes.**
+`stripOverride`'s first-match linear scan makes overlap semantically undefined, ripple rewrites a
+neighbour's authored extent, and replace is destructive — so clamp is the sole legal mode
+(implemented at `track.ts` `stripBoundsAt`, cited in its docblock).
+
+**Band carries extent, graph carries and edits value.** Extent and curve are one object:
+keyframes ride the force-curve machinery, no keyframes means one constant across the span (the
+`Strip.values?` seam above), and creation is a summoned named act with empty band space inert
+(`Timeline.svelte` `STRIP_H` docblock and the band context-menu comment).
+
+**`Track.v0` stays; it is an initial condition, not a strip.** A station-0 point has no preceding
+edge, so v0 was always special-cased inside the uniform design; a mandatory minimum span over
+`[0, edge1]` would force `v[1]` and break byte-identical migration. `beginV0`/`setTrackV0`
+survive as the authoring surface.
 
 ## Code map
 
@@ -464,9 +555,12 @@ threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` 
 - `track.ts` — `BakeSystem` walks `sections()` (by `Section.order`) → per-section payload → one
   `chain(startEntry(v0), payloads)` → the `samples`/`bakeOut` SoA + the `sectionInfo` map; skips on a
   `bakeHash` match (over every section, ds + v0 + the track domain). Components: `Track` (`count`, `ds`,
-  `v0`, `domain`), `Section` (`id` stable,
+  `v0`, `domain`, `friction`, `resistance`), `Section` (`id` stable,
   `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent), `Handle` (`section`, per-section
-  `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`).
+  `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`,
+  `carried` the domain-carry provenance bit, `tmode`/`tin`/`tout` the explicit-tangent columns),
+  `Strip` (`section`, `id` stable, `start`/`end`/`value` — the velocity-strip span, § Velocity strips),
+  `StripKeyframe` (`strip`, `id` stable, `s`/`v` — the strip's keyframed velocity curve).
   `bakeOut`: per-edge `fN`+`ds`, per-sample `v`+`t`/`feasible`, `firstInfeasible`, `hash` — `v` is the
   recovered speed (`ChainResult.v`, `forces`' own output threaded through `chain()`), the timeline's
   velocity channel (`cart.velocityCurve`, `Timeline.svelte`) and `computeTime`'s own read, both off
