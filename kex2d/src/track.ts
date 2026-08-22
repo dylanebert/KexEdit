@@ -380,7 +380,7 @@ function sectionEdgeDs(
  *  structure (the `ds` array + edge count a section's bake resolves to) — the
  *  min-extent floor's own core, factored so a split can check a *would-be* tail section
  *  that doesn't exist yet in the ECS. */
-function spanCoversOneEdge(
+export function spanCoversOneEdge(
     ds: ArrayLike<number>,
     edges: number,
     start: number,
@@ -455,6 +455,145 @@ export function geoSplitStripsRefused(ecs: State, sectionId: number, k: number):
                 tangent: readTangent(handles[i]),
             });
         }
+        const tPosX = new Float32Array(MAX_SAMPLES);
+        const tPosY = new Float32Array(MAX_SAMPLES);
+        const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+        const tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
+        if (!spanCoversOneEdge(tDs, tR.edges, 0, st.end - cutArc)) return true;
+    }
+    return false;
+}
+
+/** whether a geo-section Cut at bezier parameter `t` of segment `j` would be refused by
+ *  the strip pre-check — the pre-mutation decision for the interior case. `splitGeoAt`
+ *  delegates landmark cases (`t <= 0` → `splitGeo(j)`, `t >= 1` → `splitGeo(j+1)`) to
+ *  {@link geoSplitStripsRefused}; the interior case (`0 < t < 1`) would call `insertGeoNode`
+ *  (mutating: inserts a node, re-parents tangents) and then `splitGeo` at the new node's
+ *  order, whose own strip pre-check may refuse — leaving the mutation to be undone. This
+ *  function computes the same check `splitGeo` would run *after* `insertGeoNode`, without
+ *  mutating: it builds the would-be node array (new node + re-parented tangents, exactly
+ *  as `insertGeoNode` produces), samples it, and runs the same straddling-strip head/tail
+ *  check. Returns `true` when the split would be refused.
+ *
+ *  RED-FIRST WITNESS: select a node in section A, refuse a Cut on unrelated section B
+ *  (24 m geo, strip `[11.9, 12.6)`, `t=0.5`). At `bb9e638` the refusal path calls
+ *  `restoreAll(ecs, before)`, respawning every entity with fresh eids; the selected eid
+ *  still passes `ecs.has(eid, Handle)` but `Handle.section`/`Handle.order` now read
+ *  section B's. After the hoist, `splitSection` calls this function before `splitGeoAt`,
+ *  returns null on refusal without mutating, and the selected eid's `Handle.section`/
+ *  `Handle.order` still read section A's. Mechanism: `restoreAll` destroys and respawns
+ *  every entity track-wide with fresh eids; the selection hook (`selHook.restore`)
+ *  re-resolves by stable `(section, order)` after this churn, but the refusal path was
+ *  unpaired with it — a refusal that never mutates needs neither. */
+export function geoSplitAtStripsRefused(
+    ecs: State,
+    sectionId: number,
+    j: number,
+    t: number,
+): boolean {
+    if (t <= 0) return geoSplitStripsRefused(ecs, sectionId, j);
+    if (t >= 1) return geoSplitStripsRefused(ecs, sectionId, j + 1);
+
+    const secEid = sectionAt(ecs, sectionId);
+    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return false;
+    const handles = sectionHandles(ecs, sectionId);
+    const n = handles.length - 1;
+    if (j < 0 || j >= n || !(t > 0 && t < 1)) return false;
+
+    // build the would-be node array exactly as insertGeoNode would produce it
+    const paEid = handles[j];
+    const pbEid = handles[j + 1];
+    const pa: Node = {
+        x: Handle.pos.x.get(paEid),
+        y: Handle.pos.y.get(paEid),
+        theta: Handle.theta.get(paEid),
+        tangent: readTangent(paEid),
+    };
+    const pb: Node = {
+        x: Handle.pos.x.get(pbEid),
+        y: Handle.pos.y.get(pbEid),
+        theta: Handle.theta.get(pbEid),
+        tangent: readTangent(pbEid),
+    };
+    const sub = subdivideGeo(pa, pb, t);
+
+    const aFar = pa.tangent ?? seedTangent(ecs, sectionId, j, TangentMode.Free);
+    const bFar = pb.tangent ?? seedTangent(ecs, sectionId, j + 1, TangentMode.Free);
+    if (aFar === null || bFar === null) return false;
+
+    const allNodes: Node[] = [];
+    for (let i = 0; i < j; i++) {
+        allNodes.push({
+            x: Handle.pos.x.get(handles[i]),
+            y: Handle.pos.y.get(handles[i]),
+            theta: Handle.theta.get(handles[i]),
+            tangent: readTangent(handles[i]),
+        });
+    }
+    // node j with re-parented out-tangent (the split's facing side)
+    allNodes.push({
+        x: pa.x,
+        y: pa.y,
+        theta: pa.theta,
+        tangent: {
+            mode: TangentMode.Free,
+            inX: aFar.inX,
+            inY: aFar.inY,
+            outX: sub.outA[0],
+            outY: sub.outA[1],
+        },
+    });
+    // the new subdivided node
+    allNodes.push({
+        x: sub.x,
+        y: sub.y,
+        theta: Math.atan2(sub.outMid[1], sub.outMid[0]),
+        tangent: {
+            mode: TangentMode.Free,
+            inX: sub.inMid[0],
+            inY: sub.inMid[1],
+            outX: sub.outMid[0],
+            outY: sub.outMid[1],
+        },
+    });
+    // old node j+1 (now j+2) with re-parented in-tangent
+    allNodes.push({
+        x: pb.x,
+        y: pb.y,
+        theta: pb.theta,
+        tangent: {
+            mode: TangentMode.Free,
+            inX: sub.inB[0],
+            inY: sub.inB[1],
+            outX: bFar.outX,
+            outY: bFar.outY,
+        },
+    });
+    // remaining nodes unchanged
+    for (let i = j + 2; i <= n; i++) {
+        allNodes.push({
+            x: Handle.pos.x.get(handles[i]),
+            y: Handle.pos.y.get(handles[i]),
+            theta: Handle.theta.get(handles[i]),
+            tangent: readTangent(handles[i]),
+        });
+    }
+
+    const dsNom = trackDs(ecs);
+    const posX = new Float32Array(MAX_SAMPLES);
+    const posY = new Float32Array(MAX_SAMPLES);
+    const dsArr = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+    const r = sampleChain(allNodes, dsNom, posX, posY, dsArr, MAX_SAMPLES);
+
+    // the new node is at index j+1 in allNodes; its landing sample is r.offsets[j+1]
+    const landing = r.offsets[j + 1] ?? 0;
+    let cutArc = 0;
+    for (let i = 0; i < landing; i++) cutArc += dsArr[i];
+
+    for (const st of sectionStrips(ecs, sectionId)) {
+        if (st.start >= cutArc || st.end <= cutArc) continue;
+        if (!spanCoversOneEdge(dsArr, r.edges, st.start, cutArc)) return true;
+        const tailNodes = allNodes.slice(j + 1);
         const tPosX = new Float32Array(MAX_SAMPLES);
         const tPosY = new Float32Array(MAX_SAMPLES);
         const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));

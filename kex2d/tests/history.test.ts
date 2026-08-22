@@ -40,6 +40,7 @@ import {
     setSelectionHook,
     setTangentModes,
     solveForce,
+    splitSection,
     trimSuffix,
     trimTrack,
     undo,
@@ -64,6 +65,7 @@ import {
     BakeSystem,
     createForcePoint,
     createSection,
+    createStrip,
     createTrack,
     EXTEND_DIST,
     forceCarried,
@@ -1727,4 +1729,47 @@ test("bulk tangent-mode: sets every member's mode in one entry; picking Aligned 
     setTangentModes(h2, s2, [{ section: sec2, order: 1 }], TangentMode.Aligned);
     expect(h2.undo.length).toBe(0);
     expect(handleTangent(s2, sec2, 1)).toBeUndefined();
+});
+
+// PASS-5 (1): a refused geo Cut must not corrupt a live node selection on an unrelated section.
+// RED-FIRST WITNESS: at `bb9e638`, the refusal path called `restoreAll(ecs, before)` after
+// `insertGeoNode` had mutated, which respawns every entity track-wide with fresh eids. Unpaired
+// with `selHook.restore`, the selected eid still passes `ecs.has(eid, Handle)` but
+// `Handle.section`/`Handle.order` now read the WRONG section (section B, order 0 instead of
+// section A). After the hoist, `splitSection` calls `geoSplitAtStripsRefused` before
+// `splitGeoAt` — a refusal never mutates, so no `restoreAll`, no eid churn, and the selected
+// eid's `Handle.section`/`Handle.order` still read section A's.
+test("a refused geo Cut does not corrupt a live node selection on an unrelated section (pass-5 deliverable 1)", () => {
+    clearSelection();
+    const state = new State();
+    state.addSystem(BakeSystem);
+    createTrack(state);
+    // section A (order 0): a simple 24 m geo section
+    const secA = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, secA, 0, 0);
+    addNode(state, secA, 24, 0);
+    // section B (order 1): another 24 m geo section with a straddling strip
+    const secB = createSection(state, 1, SectionKind.Geo, 0);
+    addNode(state, secB, 0, 0);
+    addNode(state, secB, 24, 0);
+    state.step(0);
+    // strip straddling the mid-segment of section B — a cut at t=0.5 would split it into sub-edge halves
+    createStrip(state, secB, 11.9, 12.6, 5);
+    state.step(0);
+    // select a node in section A
+    const selectedEid = handleAt(state, secA, 1) as number;
+    select(selectedEid);
+    expect(Handle.section.get(selectedEid)).toBe(secA);
+    expect(Handle.order.get(selectedEid)).toBe(1);
+    const h = createHistory();
+    // refuse a Cut on section B at t=0.5 (interior, straddling the strip)
+    const result = splitSection(h, state, secB, 0, 0.5);
+    expect(result).toBeNull();
+    // the selected eid's Handle.section/Handle.order must still read section A's
+    expect(Handle.section.get(selectedEid)).toBe(secA);
+    expect(Handle.order.get(selectedEid)).toBe(1);
+    // editor.selection is unchanged
+    expect(editor.selection).toBe(selectedEid);
+    // no history entry recorded
+    expect(h.undo.length).toBe(0);
 });

@@ -83,6 +83,8 @@ import {
     stationTaken,
     splitForce,
     splitGeo,
+    geoSplitStripsRefused,
+    geoSplitAtStripsRefused,
     seedTangent,
     setForceCarried,
     setForceEase,
@@ -4254,4 +4256,39 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
             ),
         ).toBe(true);
     });
+});
+
+// PASS-5 (3): App.svelte's canCut geo pre-check must evaluate geoSplitStripsRefused on the
+// `t >= 1` landmark branch (which `splitGeoAt` reduces to `splitGeo(j+1)`), using `j+1` as
+// the node order — not `j`. At `bb9e638` the condition `ctx.cut.t === undefined || ctx.cut.t <= 0`
+// skipped the `t >= 1` branch entirely, and `ctx.cut.at` was `j` (wrong: should be `j+1`).
+// No data loss (the internal guard still refuses), but T1's "grayed before the click" claim
+// was false for that branch. This arm tests the underlying predicate: a cut at `t >= 1`
+// (node `j+1`) that would split a straddling strip into sub-edge halves must read
+// `geoSplitStripsRefused === true` at `j+1` and `geoSplitAtStripsRefused === true` at `(j, 1)`.
+test("geoSplitStripsRefused at j+1 catches a t>=1 landmark cut that the old canCut skipped (pass-5 deliverable 3)", () => {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 12, 0);
+    addNode(state, sec, 24, 0);
+    state.step(0);
+    // strip straddling node 1 (the segment boundary at 12 m) — a cut at node 1 splits it
+    createStrip(state, sec, 11.9, 12.6, 5);
+    state.step(0);
+    // a cut at t >= 1 of segment 0 reduces to splitGeo(j+1) = splitGeo(1)
+    // the old canCut checked geoSplitStripsRefused(ecs, sec, 0) (j, wrong) → false (not refused)
+    expect(geoSplitStripsRefused(state, sec, 0)).toBe(false); // j = 0: not a split point for this strip
+    // the fix checks geoSplitStripsRefused(ecs, sec, 1) (j+1, correct) → true (refused)
+    expect(geoSplitStripsRefused(state, sec, 1)).toBe(true);
+    // geoSplitAtStripsRefused delegates t >= 1 to geoSplitStripsRefused(j+1)
+    expect(geoSplitAtStripsRefused(state, sec, 0, 1)).toBe(true);
+    // and the actual split is refused (no mutation)
+    const nodesBefore = sectionHandles(state, sec).length;
+    const h = createHistory();
+    expect(splitSection(h, state, sec, 0, 1)).toBeNull();
+    expect(sectionHandles(state, sec).length).toBe(nodesBefore);
+    expect(h.undo.length).toBe(0);
 });

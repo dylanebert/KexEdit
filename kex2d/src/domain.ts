@@ -62,6 +62,7 @@ import {
     sectionInfo,
     sections,
     type SectionSnapshot,
+    spanCoversOneEdge,
     type SolvedForce,
     snapshotAll,
     trackDomain,
@@ -599,9 +600,10 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
         const visible = snap.points;
         const step = resolveStep(snap.length, sourceNominal);
         const tol = resolutionFloor(visible.map(asPoint), step);
+        const convertedLength = Math.max(floor, at(m, w, snap.length).value);
         return {
             ...snap,
-            length: Math.max(floor, at(m, w, snap.length).value),
+            length: convertedLength,
             points: carryForce(visible, authored, (s) => at(m, w, s), target, tol, step.ds),
             // a strip's `start`/`end` are positions on the same axis a keyframe's `s` is —
             // each endpoint converts independently through the section's own window, same as a
@@ -629,21 +631,29 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
             // [0.06654, 0.11654)/[0.09482, 0.18573), 0.02173 s of overlap, 43% of a Time edge,
             // stripOverlapped true.
             //
-            // The floor tests `< targetNominal` (the nominal edge size) rather than the
-            // `spanCoversOneEdge`-on-resolved-`ds` predicate used everywhere else. These are
-            // equivalent here because `resolveStep(length, nominal)` returns `ds = length/edges`
-            // where `edges = max(1, round(length/nominal))`, so `ds >= nominal` iff `edges <=
-            // length/nominal`, i.e. `round(length/nominal) <= length/nominal` — which holds iff
-            // `length/nominal` rounds down, the common case. When it rounds up, `ds < nominal`,
-            // so `targetNominal` is a conservative floor (the actual edge is smaller, so a span
-            // of `targetNominal` definitely covers one edge). The two forms are equivalent in the
-            // safe direction: `< targetNominal` never admits a span that `spanCoversOneEdge`
-            // would reject, because `targetNominal >= ds` always holds.
+            // The floor calls the same `spanCoversOneEdge`-on-resolved-`ds` predicate every
+            // other write path calls, computed against the target domain's resolved step
+            // (`resolveStep(convertedLength, targetNominal)`). A span of exactly
+            // `targetNominal` at an unlucky phase can read `spanCoversOneEdge === false`
+            // when `ds > nominal` (the round-down case: `edges = round(length/step)`,
+            // `ds = length/edges > nominal`), so the nominal-size proxy is not a safe
+            // substitute. When the predicate fails, the span is extended to `resolved.ds`
+            // (the actual edge size), which always covers ≥ 1 edge on a uniform grid.
+            //
+            // RED-FIRST WITNESS (floor predicate): force section length 10.045, step 0.5 →
+            // `resolveStep` gives edges 20, ds 0.50225 > 0.5. A strip of length exactly
+            // `targetNominal` (0.5) at phase 0 reads `spanCoversOneEdge === false` against
+            // the resolved grid (boundary(0)=0, boundary(0.5)=0 on 0.50225-wide edges),
+            // a silently-inert sub-edge strip the floor exists to prevent.
             strips: snap.strips.map((st, i) => {
                 const newStart = at(m, w, st.start).value;
                 let newEnd = at(m, w, st.end).value;
-                if (snap.kind === SectionKind.Force && newEnd - newStart < targetNominal) {
-                    newEnd = newStart + targetNominal;
+                if (snap.kind === SectionKind.Force) {
+                    const targetResolved = resolveStep(convertedLength, targetNominal);
+                    const targetDs = new Float32Array(targetResolved.edges).fill(targetResolved.ds);
+                    if (!spanCoversOneEdge(targetDs, targetResolved.edges, newStart, newEnd)) {
+                        newEnd = newStart + targetResolved.ds;
+                    }
                 }
                 // clamp against the next strip's converted start (abutting strips must not overlap)
                 if (i + 1 < snap.strips.length) {

@@ -70,6 +70,7 @@ import {
     spawnStrip,
     splitForce,
     splitGeoAt,
+    geoSplitAtStripsRefused,
     createStrip as createStripTrack,
     destroyStrip,
     type StripState,
@@ -1077,6 +1078,22 @@ export function splitSection(
 ): number | null {
     const eid = sectionAt(ecs, section);
     if (eid === null) return null;
+    // Hoist the geo Cut refusal ABOVE the mutation: `splitGeoAt` with interior `t` calls
+    // `insertGeoNode` (mutating) before `splitGeo`'s strip pre-check may refuse, and the
+    // refusal path previously called `restoreAll(ecs, before)` — which respawns every
+    // entity with fresh eids, unpaired with `selHook.restore`, leaving a selected node's
+    // `Handle.section`/`Handle.order` pointing at a different section. A refusal that
+    // never mutates needs no snapshot, no restore, no selHook pairing. The pre-check
+    // builds the would-be node array (with the subdivided node and re-parented tangents)
+    // and runs the same straddling-strip head/tail check `splitGeo` would, without touching
+    // the ECS.
+    // RED-FIRST WITNESS: select a node in section A, refuse a Cut on unrelated section B
+    // (24 m geo, strip [11.9, 12.6), t=0.5) → at `bb9e638` the selected eid's
+    // Handle.section/Handle.order read section B's after the refusal; after the hoist
+    // they still read section A's.
+    if (Section.kind.get(eid) === SectionKind.Geo && geoSplitAtStripsRefused(ecs, section, at, t)) {
+        return null;
+    }
     const pre = selHook?.snapshot(ecs);
     const before = snapshotAll(ecs);
     const id =
@@ -1084,12 +1101,12 @@ export function splitSection(
             ? splitGeoAt(ecs, section, at, t)
             : splitForce(ecs, section, at);
     if (id === null) {
-        // A refused geo Cut (splitGeoAt with interior t) may have already mutated the
-        // curve via insertGeoNode before splitGeo's strip pre-check refused; restore the
-        // pre-op snapshot so no authored geometry is left behind with no undo entry.
-        // RED-FIRST WITNESS: 24 m geo section, strip [11.9, 12.6), splitSection(…, 0.5)
-        // → null, node count 2 → 3, undo a no-op, node still there.
-        restoreAll(ecs, before);
+        // splitForce refuses without mutating (its strip pre-check is before any write).
+        // splitGeoAt with landmark t (≤0 or ≥1) delegates to splitGeo, which also refuses
+        // without mutating (its strip pre-check is before any write). The interior case
+        // was already guarded by geoSplitAtStripsRefused above, so insertGeoNode never
+        // runs on a refused path. A null here is a non-strip refusal (out-of-range k)
+        // that never mutated, so no restore is needed.
         return null;
     }
     const after = snapshotAll(ecs);
