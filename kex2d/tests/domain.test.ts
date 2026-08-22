@@ -633,10 +633,12 @@ describe("velocity strip endpoints (C3)", () => {
     //
     // RED-FIRST WITNESS: force section length 10.045, step 0.5 → `resolveStep` gives
     // edges 20, ds 0.50225 > 0.5. A strip of length exactly `targetNominal` (0.5) at phase 0
-    // reads `spanCoversOneEdge === false` against the 0.50225-wide resolved grid. At `bb9e638`
-    // the `< targetNominal` proxy did not floor this strip (0.5 is not < 0.5), so the flip
-    // stored a silently-inert sub-edge strip. After the fix, the `spanCoversOneEdge` predicate
-    // catches it and the floor extends to `resolved.ds` (0.50225).
+    // reads `spanCoversOneEdge === true` (boundary(0)=0, boundary(0.5)=1). At phase ≈0.252
+    // it reads `spanCoversOneEdge === false` (boundary(0.252)=1, boundary(0.752)=1 — both
+    // endpoints on edge 1). At `bb9e638` the `< targetNominal` proxy did not floor this
+    // strip (0.5 is not < 0.5), so the flip stored a silently-inert sub-edge strip. After
+    // the fix, the `spanCoversOneEdge` predicate catches it and the floor extends to
+    // `resolved.ds` (0.50225).
     test("the floor uses spanCoversOneEdge, not the nominal-size proxy, at the unlucky phase (pass-5 deliverable 2)", () => {
         // The round-DOWN case: resolveStep(10.045, 0.5) gives edges 20, ds 0.50225 > 0.5.
         // A span of exactly targetNominal (0.5) at the unlucky phase reads spanCoversOneEdge === false
@@ -651,7 +653,9 @@ describe("velocity strip endpoints (C3)", () => {
         // at the unlucky phase (~0.252, near the midpoint of edge 0), the span [0.252, 0.752)
         // has both endpoints round to edge 1 — zero edges, silently inert
         const unluckyStart = 0.252;
-        expect(spanCoversOneEdge(targetDs, resolved.edges, unluckyStart, unluckyStart + DS_NOMINAL)).toBe(false);
+        expect(
+            spanCoversOneEdge(targetDs, resolved.edges, unluckyStart, unluckyStart + DS_NOMINAL),
+        ).toBe(false);
         // the old proxy: 0.5 < 0.5 is false → would NOT floor → silently inert strip
         // the new predicate: spanCoversOneEdge === false → DOES floor → extends to resolved.ds
     });

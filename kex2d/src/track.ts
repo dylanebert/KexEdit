@@ -590,14 +590,15 @@ export function geoSplitAtStripsRefused(
     let cutArc = 0;
     for (let i = 0; i < landing; i++) cutArc += dsArr[i];
 
+    const tailNodes = allNodes.slice(j + 1);
+    const tPosX = new Float32Array(MAX_SAMPLES);
+    const tPosY = new Float32Array(MAX_SAMPLES);
+    const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+    const tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
+
     for (const st of sectionStrips(ecs, sectionId)) {
         if (st.start >= cutArc || st.end <= cutArc) continue;
         if (!spanCoversOneEdge(dsArr, r.edges, st.start, cutArc)) return true;
-        const tailNodes = allNodes.slice(j + 1);
-        const tPosX = new Float32Array(MAX_SAMPLES);
-        const tPosY = new Float32Array(MAX_SAMPLES);
-        const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
-        const tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
         if (!spanCoversOneEdge(tDs, tR.edges, 0, st.end - cutArc)) return true;
     }
     return false;

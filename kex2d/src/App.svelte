@@ -60,6 +60,7 @@ import {
     bakeOut,
     exitWorld,
     forceSplitStripsRefused,
+    geoSplitAtStripsRefused,
     geoSplitStripsRefused,
     Handle,
     handleTangent,
@@ -895,6 +896,8 @@ const canCut = $derived.by((): boolean => {
         if (geoSplitStripsRefused(ecs, ctx.section, ctx.cut.at)) return false;
     } else if (ctx.cut.t >= 1) {
         if (geoSplitStripsRefused(ecs, ctx.section, ctx.cut.at + 1)) return false;
+    } else {
+        if (geoSplitAtStripsRefused(ecs, ctx.section, ctx.cut.at, ctx.cut.t)) return false;
     }
     return true;
 });

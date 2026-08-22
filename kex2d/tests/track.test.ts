@@ -4292,3 +4292,34 @@ test("geoSplitStripsRefused at j+1 catches a t>=1 landmark cut that the old canC
     expect(sectionHandles(state, sec).length).toBe(nodesBefore);
     expect(h.undo.length).toBe(0);
 });
+
+// PASS-5 (3b): App.svelte's canCut geo pre-check must call geoSplitAtStripsRefused on the
+// interior branch (0 < t < 1), not just the landmark branches. At `f1ed612` the interior
+// branch fell through to `return true`, so T1's "grayed before the click" claim was false
+// for the interior case — the one the geoSplitAtStripsRefused pre-check exists for. The
+// testable seam is geoSplitAtStripsRefused itself (canCut is a Svelte $derived, not directly
+// testable). RED-FIRST: before the fix, canCut returned true for interior; after, it calls
+// geoSplitAtStripsRefused and grays.
+test("geoSplitAtStripsRefused catches an interior cut on a straddling strip (pass-5 deliverable 3b)", () => {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 24, 0);
+    state.step(0);
+    // strip straddling the interior cut point at ~12 m — a cut at t=0.5 of segment 0
+    // places the new node at ~12 m, splitting [11.9, 12.6) into a 0.1 m head and a 0.6 m
+    // tail. The head [11.9, 12.0) is sub-edge on the ~0.5 m grid (both endpoints map to
+    // edge 24), so the split is refused.
+    createStrip(state, sec, 11.9, 12.6, 5);
+    state.step(0);
+    // the interior pre-check reads true (refused) — canCut now calls this and grays
+    expect(geoSplitAtStripsRefused(state, sec, 0, 0.5)).toBe(true);
+    // and the actual split is refused (no mutation)
+    const nodesBefore = sectionHandles(state, sec).length;
+    const h = createHistory();
+    expect(splitSection(h, state, sec, 0, 0.5)).toBeNull();
+    expect(sectionHandles(state, sec).length).toBe(nodesBefore);
+    expect(h.undo.length).toBe(0);
+});

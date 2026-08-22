@@ -642,9 +642,10 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
             //
             // RED-FIRST WITNESS (floor predicate): force section length 10.045, step 0.5 →
             // `resolveStep` gives edges 20, ds 0.50225 > 0.5. A strip of length exactly
-            // `targetNominal` (0.5) at phase 0 reads `spanCoversOneEdge === false` against
-            // the resolved grid (boundary(0)=0, boundary(0.5)=0 on 0.50225-wide edges),
-            // a silently-inert sub-edge strip the floor exists to prevent.
+            // `targetNominal` (0.5) at phase ≈0.252 reads `spanCoversOneEdge === false`
+            // against the resolved grid (boundary(0.252)=1, boundary(0.752)=1 on
+            // 0.50225-wide edges), a silently-inert sub-edge strip the floor exists to
+            // prevent.
             strips: snap.strips.map((st, i) => {
                 const newStart = at(m, w, st.start).value;
                 let newEnd = at(m, w, st.end).value;
