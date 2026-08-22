@@ -239,15 +239,19 @@ half-open `[lo, end)` range (the point convention: `lo = start − 1` when `star
 capture, so the prefix before the strip is bit-identical to a strip-absent bake. The convention is
 per-field: position/θ/v samples `[0, stripStart]` are bit-identical INCLUSIVE of the boundary
 sample; `fN` edges `[0, stripStart)` are EXCLUSIVE. `stripStart` is the override's own first
-touched edge (`strip.start`, or `strip.start − 1` for a degenerate point). The asymmetry is
-`bake.forces`'s one-edge-ahead bisector θ recovery: the override at edge `stripStart` changes
+touched edge (`strip.start`, or `strip.start − 1` for a degenerate point). The asymmetry is the
+**march** moving positions, which `bake.forces`'s one-edge-ahead bisector θ recovery then reads:
+the override at edge `stripStart` changes
 `v[stripStart+1]` (the destination v of that edge), which feeds the next edge's step and moves
 `posX[stripStart+2]` — the first position the chord at sample `stripStart+1` reads — so the first
 moved θ is `θ[stripStart+1]`, not `θ[stripStart]` (whose chord reads only prefix positions), and
 `fN[stripStart]` is the first affected fN because it reads `θ[stripStart+1]`. Tested in
 `tests/section.test.ts` with `===` on raw f32 arrays, no tolerance; reproduced with a strip
 `[27,63)` value 8 through `evalForce` in both Distance and Time: `θ[27]` identical, `θ[28]`
-differs, `fN[27]` differs.
+differs, `fN[27]` differs. That chain is the **force** path's; `evalGeo` runs no march (positions
+are inputs), so θ is identical throughout and the first affected fN is `fN[stripStart+1]`, reached
+through `vSafe` rather than through θ. The stated `fN [0, stripStart)` bound holds either way — it
+is a lower bound, tight on force and slack by one edge on geo.
 
 **Minimum-extent floor.** The write-op guard must guarantee the stored span's two ends round
 to DIFFERENT edge boundaries under `edgeStrips`'s round-to-nearest `boundary()` map — i.e. the
@@ -255,10 +259,16 @@ span straddles an edge midpoint, so it maps to at least one overridden edge. A s
 whose ends round together collapses to `start === end`, which the point convention re-maps to the
 PRECEDING edge `[start−1, start)` — the override is displaced, not lost; it is genuinely inert
 only at station 0 where `lo = −1` (out of range). The guard refuses the collapse at the write op
-so a stored strip always covers ≥ 1 edge of the current bake. The writer set that carries the
-guard: `createStrip`, `setStrip`, the split head/tail pre-checks (`splitForce`/`splitGeo`, via
-`spanCoversOneEdge` against the would-be post-split grid), the domain flip's next-strip clamp
-(`landDomain` in `history.ts`, called from `domain.ts`'s `convertDomain`), and `joinNext` (the tail's strip rebase). Where the ≥ 1-edge floor
+so a stored strip covers ≥ 1 edge of the current bake **on every path that carries the guard**.
+That writer set is: `createStrip`, `setStrip`, the split head/tail pre-checks
+(`splitForce`/`splitGeo`, via `spanCoversOneEdge` against the would-be post-split grid), and the
+domain flip's next-strip clamp (`landDomain` in `history.ts`, called from `domain.ts`'s
+`convertDomain`). **`joinNext` is the one extent writer that does NOT carry it** — it rebases both
+halves' strips onto the joined section's coarser resolved grid with no re-check, so a
+minimum-extent strip can come out of a Join covering zero edges and controlling the *preceding*
+edge instead (measured at close: 2.28 m + 2.26 m force sections, and 0.52% of a swept
+(headLen, tailLen, station) grid). That is a booked defect, not a law; the repair is to reuse
+`landDomain`'s floor in join's rebase loops. Where the ≥ 1-edge floor
 and the no-overlap clamp cannot both hold, **overlap loses** — disclosed in `landDomain`'s
 docblock. Cut refuses inside a minimum-extent strip.
 

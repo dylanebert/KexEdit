@@ -77,10 +77,11 @@ export type { Page };
 // (`wsl.ts`) and so can import nothing from `src/`. Each names its source; a change there is a
 // change here. OWED: the cheap close is a test-side drift arm (tests are NOT staged standalone,
 // so a test could import both these constants and the Svelte-side constants and assert
-// equality), but the Svelte-side constants (`RULER_H`/`GAP_H`/`STRIP_H`/`TOP` in
-// `Timeline.svelte`) are not exported and `Timeline.svelte` cannot be imported by `bun test`
-// without a Svelte compiler plugin, so the arm cannot be written without changing how anything
-// is staged. Nobody owns it yet; whoever moves the band's geometry meets it.
+// equality). What actually blocks it is narrower than it looks, measured at close: `bun test` CAN
+// import `Timeline.svelte` (the default export is the raw file text), but the Svelte-side
+// constants (`RULER_H`/`GAP_H`/`STRIP_H`/`TOP`) are module-internal `const`s and not exported, so
+// the arm costs one source change (export them) rather than a staging change or a compiler
+// plugin. Nobody owns it yet; whoever moves the band's geometry meets it.
 // The velocity-strip HEADER band's own row — RULER_H (26) + GAP_H (20) is
 // its top, HBAND_H (8) its height; CHART_TOP is the sum, the chartzone's own top past it.
 export const HBAND_TOP = 46;
