@@ -1510,3 +1510,43 @@ test("join a run flow", async ({ page, boot }) => {
     await page.keyboard.press("Control+z");
     await expect.poll(sectionCount).toBe(3);
 });
+
+// T1's summoned creation: right-click on the velocity-strip header band → context menu →
+// "Add velocity strip" → the strip appears at the clicked station at minimum extent, selected.
+// Empty band space is inert (no create-drag — the rescope that retired C5's rejected idiom).
+// Deletion is the same menu on an existing strip, plus Delete on selection.
+test("velocity strip creation flow", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const undoDepth = () => kexCall(page, "undoDepth");
+
+    // right-click on the band → the strip creation menu
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const y = bandBb.y + bandBb.height / 2;
+    const x = clipBb.x + clipBb.width * 0.3;
+    await page.mouse.click(x, y, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await expect(
+        page.locator(".smenu").getByRole("menuitem", { name: "Add velocity strip" }),
+    ).toBeEnabled();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+
+    // the strip appears at minimum extent, selected
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
+
+    // Delete on selection removes it
+    const before = await undoDepth();
+    await page.keyboard.press("Delete");
+    await expect.poll(async () => (await stripsOf()).length).toBe(0);
+    await expect.poll(undoDepth).toBe(before + 1);
+
+    // undo restores it
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
+});

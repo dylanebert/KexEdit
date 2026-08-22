@@ -609,3 +609,48 @@ export function appendMenu(a: { append: (kind: SectionKind) => void }): MenuItem
         },
     ];
 }
+
+/** the velocity-strip band context menu's state. `strip` is the targeted strip's stable id,
+ *  or -1 when the right-click landed on empty band (creation). */
+export type StripMenuState = {
+    /** the targeted strip's stable id, or -1 for creation (empty band). */
+    strip: number;
+    /** whether the section is editable (not under a pin session lockdown). */
+    editable: boolean;
+};
+
+/** the velocity-strip band context menu's actions. */
+export type StripMenuActions = {
+    /** create a velocity strip at the clicked station at minimum extent (creation). */
+    addStrip: () => void;
+    /** delete the targeted strip (deletion). */
+    remove: () => void;
+};
+
+/** the velocity-strip band context menu as data — one instance of the shared menu language.
+ *  On empty band: a single "Add velocity strip" row (the summoned, named creation act —
+ *  Locked decision). On an existing strip: a single "Delete" row (the same menu's deletion
+ *  path). Empty band space is inert — no plain-drag-on-empty, no modifier-drag, no standing
+ *  mode toggle (the rescope that retired C5's rejected idiom). */
+export function stripMenu(s: StripMenuState, a: StripMenuActions): MenuItem[] {
+    if (s.strip < 0) {
+        return [
+            {
+                label: "Add velocity strip",
+                group: "create",
+                enabled: s.editable,
+                action: a.addStrip,
+            },
+        ];
+    }
+    return [
+        {
+            label: "Delete",
+            group: "lifecycle",
+            danger: true,
+            enabled: s.editable,
+            shortcut: BINDINGS.remove.hint,
+            action: a.remove,
+        },
+    ];
+}

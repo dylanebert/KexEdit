@@ -27,6 +27,8 @@ import {
     setStrip,
     stripsForStep,
     validStripValue,
+    stripCoversOneEdge,
+    stripMinExtentAt,
     setBakeFreeze,
     setBakeLanding,
     deleteSection,
@@ -3231,19 +3233,19 @@ describe("velocity strips — ECS layer (C3)", () => {
         convertSection(state, sec);
         const span = createStrip(state, sec, 5, 15, 8);
         expect(span).not.toBeNull();
-        // a point at the span's OWN start: reaches backward to edge [4, 5), the span
-        // claims [5, 15) — disjoint edges, legal (the reverse boundary, verified
-        // genuinely non-colliding — this direction must not break).
-        expect(stripOverlapped(state, sec, 5, 5, -1)).toBe(false);
-        const atStart = createStrip(state, sec, 5, 5, 1);
+        // a one-edge span abutting the span's OWN start: reaches backward to edge [4.5, 5),
+        // the span claims [5, 15) — abutting, legal (the reverse boundary, verified genuinely
+        // non-colliding — this direction must not break).
+        expect(stripOverlapped(state, sec, 4.5, 5, -1)).toBe(false);
+        const atStart = createStrip(state, sec, 4.5, 5, 1);
         expect(atStart).not.toBeNull();
         // two spans abutting (one starts exactly where the other ends): legal.
         const nextSpan = createStrip(state, sec, 15, 20, 6);
         expect(nextSpan).not.toBeNull();
-        // a point past everything, and a genuinely disjoint span: both legal.
-        const farPoint = createStrip(state, sec, 25, 25, 2);
-        expect(farPoint).not.toBeNull();
-        const disjointSpan = createStrip(state, sec, 30, 35, 3);
+        // a one-edge span past everything, and a genuinely disjoint span: both legal.
+        const farEdge = createStrip(state, sec, 23.5, 24, 2);
+        expect(farEdge).not.toBeNull();
+        const disjointSpan = createStrip(state, sec, 20.5, 23, 3);
         expect(disjointSpan).not.toBeNull();
         expect(sectionStrips(state, sec).length).toBe(5);
     });
@@ -3277,16 +3279,18 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(sectionStrips(state, sec).length).toBe(1);
     });
 
-    test("createStrip refuses two point strips at the identical station (a duplicate, not a collision at a boundary)", () => {
-        // red before the fix: both calls returned non-null ids and `sectionStrips` came back
-        // with 2 rows for the same station — the second permanently dead weight.
+    test("createStrip refuses a zero-length span — the min-extent guard (points retire)", () => {
+        // Points retire (Locked decision): the minimum extent is one overridden edge, so a
+        // zero-length span maps to zero overridden indices and is refused by the min-extent
+        // guard in `createStrip` — not by the overlap check. Two zero-length spans at the
+        // same station are both refused, so no duplicate can land.
         const { state, sec } = track();
         convertSection(state, sec);
         const p1 = createStrip(state, sec, 10, 10, 1);
-        expect(p1).not.toBeNull();
+        expect(p1).toBeNull(); // refused: zero-length span covers no edge
         const p2 = createStrip(state, sec, 10, 10, 2);
-        expect(p2).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(1);
+        expect(p2).toBeNull(); // also refused
+        expect(sectionStrips(state, sec).length).toBe(0);
     });
 
     test("setStrip refuses an overlapping move (keeps start/end) and still lands the value write; a non-colliding move lands both", () => {
@@ -3858,5 +3862,58 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
         const sec = createSection(state, 0, SectionKind.Geo, 0);
         void eid;
         expect(stripSeedValue(state, sec, 0)).toBe(V0);
+    });
+
+    // ── the min-extent kernel arm (Locked decision: "the write-op guard must guarantee the
+    // stored span covers ≥ 1 edge of the current bake at that station, because a
+    // continuous-coordinate span smaller than one edge maps to zero overridden indices and
+    // goes silently inert").
+    //
+    // WITNESSED RED before the guard was added to `createStrip`: a strip with a span of 0.1
+    // on a section baking at ds=0.5 (one edge covers [0, 0.5)) was accepted by `createStrip`,
+    // then mapped by `edgeStrips` to `start_edge === end_edge` — zero overridden indices, a
+    // strip that exists in the ECS but does nothing in the bake. The guard now refuses it at
+    // the write op, so `createStrip` returns null. The same guard in `setStrip` prevents a
+    // trim from shrinking a strip below one edge.
+    test("stripCoversOneEdge: a span covering one full edge is accepted", () => {
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
+        state.step(0); // bake so the edge structure exists
+        // a span of 0.5 covers exactly one edge (edge 0: [0, 0.5))
+        expect(stripCoversOneEdge(state, sec, 0, 0.5)).toBe(true);
+        // a span of 1.0 covers two edges
+        expect(stripCoversOneEdge(state, sec, 0, 1.0)).toBe(true);
+    });
+
+    test("stripCoversOneEdge: a span smaller than one edge is refused", () => {
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
+        state.step(0);
+        // a span of 0.1 on a 0.5-edge bake maps to zero overridden indices
+        expect(stripCoversOneEdge(state, sec, 0, 0.1)).toBe(false);
+        // a zero-length span (the degenerate point) maps to zero edges too
+        expect(stripCoversOneEdge(state, sec, 5, 5)).toBe(false);
+    });
+
+    test("createStrip refuses a span that covers no edge (the min-extent guard)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
+        state.step(0);
+        // a span of 0.1 is smaller than one edge (0.5) — refused
+        expect(createStrip(state, sec, 0, 0.1, 5)).toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(0);
+        // a span of 0.5 covers exactly one edge — accepted
+        expect(createStrip(state, sec, 0, 0.5, 5)).not.toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(1);
+    });
+
+    test("stripMinExtentAt returns the one-edge span at a station", () => {
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
+        state.step(0);
+        // station 0.3 falls on edge 0: [0, 0.5)
+        expect(stripMinExtentAt(state, sec, 0.3)).toEqual({ start: 0, end: 0.5 });
+        // station 1.2 falls on edge 2: [1.0, 1.5)
+        expect(stripMinExtentAt(state, sec, 1.2)).toEqual({ start: 1.0, end: 1.5 });
     });
 });

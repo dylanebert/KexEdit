@@ -37,6 +37,7 @@ import {
     type RulerMenuState,
     sectionMenu,
     type SectionMenuState,
+    stripMenu,
 } from "../src/menus";
 import { Easing } from "../src/profile";
 import { Domain, SectionKind } from "../src/section";
@@ -953,6 +954,7 @@ describe("the menu grammar — every builder, every state", () => {
                 "cut",
                 "cutAt",
                 "join",
+                "addStrip",
             );
         for (const s of sectionStates) {
             const a = acts();
@@ -972,6 +974,18 @@ describe("the menu grammar — every builder, every state", () => {
         }
         const a = acts();
         all.push({ name: "appendMenu", rows: appendMenu(a), state: {}, acts: a });
+        // stripMenu: creation (strip < 0) and deletion (strip >= 0), editable and not.
+        for (const strip of [-1, 0] as const) {
+            for (const editable of [true, false] as const) {
+                const sa = acts();
+                all.push({
+                    name: "stripMenu",
+                    rows: stripMenu({ strip, editable }, sa),
+                    state: { strip, editable },
+                    acts: sa,
+                });
+            }
+        }
         return all;
     }
     // every menu AND every submenu, flattened — a flyout is a menu, so the same laws hold in it.
@@ -1289,6 +1303,7 @@ describe("the menu grammar — every builder, every state", () => {
         cut: "cut",
         cutAt: "cut",
         join: "join",
+        addStrip: null,
     };
 
     test("`Acts` censuses every act name the corpus recorder declares", () => {
@@ -2524,6 +2539,7 @@ describe("Chart inertness — the chart's only right-click subject is a keyframe
         "(e) => e.preventDefault()", // the .body wrapper: blocks the browser menu, opens nothing
         "rulerCtx", // the ruler's Meters/Seconds domain picker
         "(e) => clipMenu(e, c)", // the clip strip — Cut's sole surface
+        "bandContext", // the velocity-strip band — Add/Delete (T1)
         "(e) => forceCtx(e, p)", // the keyframe diamond's own fhit rect
     ];
 

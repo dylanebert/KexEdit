@@ -33,6 +33,7 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
+    sectionStrips,
     setSectionLength,
     setTrackV0,
     Track,
@@ -397,6 +398,14 @@ if (import.meta.env.DEV) {
         sectionForceCounts: (): number[] =>
             sections(ecs).map((x) => sectionForces(ecs, x.id).length),
         selectedSection: (): number | null => editor.section,
+        selectedStrip: (): number | null => editor.strip,
+        stripsOf: (i: number): { id: number; start: number; end: number; value: number }[] =>
+            sectionStrips(ecs, i).map((s) => ({
+                id: s.id,
+                start: s.start,
+                end: s.end,
+                value: s.value,
+            })),
         // the bake's own infeasibility signal (`bakeOut.feasible`/`firstInfeasible`) — the input
         // the dashed-red track pass and the warning banner both read: the first infeasible sample,
         // how many samples are infeasible track-wide, the stable id of the section that OWNS the first one

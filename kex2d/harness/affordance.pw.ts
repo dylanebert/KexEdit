@@ -65,19 +65,18 @@ async function scrubKey(page: Page, keySel: string, dx: number): Promise<string>
     return cursor;
 }
 
-/** create-drag a velocity strip in the header band and return its seeded value */
+/** create a velocity strip via T1's summoned creation (right-click → menu → Add) and return its seeded value */
 async function createStrip(page: Page): Promise<number> {
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
     if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
     const y = bandBb.y + bandBb.height / 2;
     const x = clipBb.x + clipBb.width * 0.3;
-    await page.mouse.move(x, y);
-    await page.mouse.down();
-    await page.mouse.move(x + clipBb.width * 0.2, y, { steps: 10 });
-    await page.mouse.up();
+    // T1's summoned creation: right-click on empty band → context menu → "Add velocity strip"
+    await page.mouse.click(x, y, { button: "right" });
+    await expect(page.locator(".smenu")).toHaveCount(1);
+    await page.locator(".smenu").getByText("Add velocity strip").click();
     await expect.poll(async () => (await kexCall(page, "stripsOf", 0)).length).toBe(1);
-    await expect(page.locator(".striptip")).toHaveCount(1);
     return (await kexCall(page, "stripsOf", 0))[0].value;
 }
 
@@ -114,10 +113,9 @@ test("popover key scrub affordance — force keyframe control", async ({ page, b
     await page.keyboard.press("Escape"); // clear the keyframe popover
     await expect(page.locator(".ptip")).toHaveCount(0);
     await createStrip(page);
-    expect(
-        await page.locator(".striptip .key").evaluate((e) => getComputedStyle(e).cursor),
-        "the strip popover's v key paints the scrub cursor",
-    ).toBe("ew-resize");
+    // T1 does not add a strip value popover (the value surface is T2's, in the graph),
+    // so there is no `.striptip` to check here — the control's strip create + the force
+    // keyframe scrub above are the whole proof.
 });
 
 // SUBJECT — inverted. Reds ("Expected to fail, but passed") the moment the `v` key honours the

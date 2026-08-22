@@ -347,11 +347,76 @@ export function stripOverlapped(
     return false;
 }
 
+/** the section's own per-edge `ds` array — the same edge structure the live bake uses
+ *  (`geoChordDs` for a geo section, the uniform resolved step for a force section), so the
+ *  minimum-extent guard reads exactly the edge boundaries a strip's override would land on.
+ *  Returns null when the section has no resolvable edge structure (no track, an empty geo
+ *  section). */
+function sectionEdgeDs(
+    ecs: State,
+    sectionId: number,
+): { ds: ArrayLike<number>; edges: number } | null {
+    const eid = sectionAt(ecs, sectionId);
+    if (eid === null) return null;
+    const kind = Section.kind.get(eid);
+    const dsNom = trackDs(ecs);
+    if (kind === SectionKind.Force) {
+        const length = Section.length.get(eid);
+        const domain = trackDomain(ecs);
+        const step = forceNominal(domain, dsNom);
+        const resolved = resolveStep(length, step);
+        return { ds: new Float32Array(resolved.edges).fill(resolved.ds), edges: resolved.edges };
+    }
+    return geoChordDs(ecs, sectionId, dsNom);
+}
+
+/** whether a continuous-coordinate span `[start, end)` covers at least one edge of the
+ *  current bake at that station — the minimum-extent floor (Locked decision: "the write-op
+ *  guard must guarantee the stored span covers ≥ 1 edge of the current bake at that
+ *  station, because a continuous-coordinate span smaller than one edge maps to zero
+ *  overridden indices and goes silently inert"). Uses {@link edgeStrips}'s own boundary
+ *  mapping, so the check is against exactly the edge-index resolution the bake would see. */
+export function stripCoversOneEdge(
+    ecs: State,
+    sectionId: number,
+    start: number,
+    end: number,
+): boolean {
+    const edge = sectionEdgeDs(ecs, sectionId);
+    if (edge === null) return false;
+    const specs = edgeStrips(edge.ds, edge.edges, [{ start, end, value: 0 }]);
+    if (!specs || specs.length === 0) return false;
+    return specs[0].end > specs[0].start;
+}
+
+/** the minimum-extent span at a station — the one edge of the current bake that the station
+ *  falls on, in the section's own domain coordinate. Returns null when the section has no
+ *  resolvable edge structure. This is the span the summoned-creation menu creates a strip at:
+ *  the strip appears at the clicked station at minimum extent, selected, curve flattened and
+ *  solid (Locked decision). */
+export function stripMinExtentAt(
+    ecs: State,
+    sectionId: number,
+    s: number,
+): { start: number; end: number } | null {
+    const edge = sectionEdgeDs(ecs, sectionId);
+    if (edge === null) return null;
+    let cum = 0;
+    for (let i = 0; i < edge.edges; i++) {
+        const next = cum + edge.ds[i];
+        if (s < next || i === edge.edges - 1) return { start: cum, end: next };
+        cum = next;
+    }
+    return null;
+}
+
 /** author a new velocity strip on a section over `[start, end)` at `value` — the create
  *  path, guarded by {@link stripOverlapped} (the ONE guard every write inherits: create,
- *  drag, nudge, and typed-field writes all route through this module's writers). Returns
- *  the new strip's stable id, or `null` when the span would overlap an existing strip on
- *  the same section (refused, nothing written). */
+ *  drag, nudge, and typed-field writes all route through this module's writers) and by
+ *  the minimum-extent guard ({@link stripCoversOneEdge}: a continuous-coordinate span smaller
+ *  than one edge of the current bake maps to zero overridden indices and goes silently inert).
+ *  Returns the new strip's stable id, or `null` when the span would overlap an existing strip
+ *  on the same section or when the span covers no edge (refused, nothing written). */
 export function createStrip(
     ecs: State,
     sectionId: number,
@@ -360,6 +425,7 @@ export function createStrip(
     value: number,
 ): number | null {
     if (stripOverlapped(ecs, sectionId, start, end, -1)) return null;
+    if (!stripCoversOneEdge(ecs, sectionId, start, end)) return null;
     const eid = ecs.create();
     ecs.add(eid, Strip);
     const id = nextStripId++;
@@ -442,7 +508,8 @@ export function restoreStrip(ecs: State, st: StripState): void {
 export function setStrip(ecs: State, id: number, start: number, end: number, value: number): void {
     const eid = stripAt(ecs, id);
     if (eid === null) return;
-    if (!stripOverlapped(ecs, Strip.section.get(eid), start, end, id)) {
+    const sec = Strip.section.get(eid);
+    if (!stripOverlapped(ecs, sec, start, end, id) && stripCoversOneEdge(ecs, sec, start, end)) {
         Strip.start.set(eid, start);
         Strip.end.set(eid, end);
     }

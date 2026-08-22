@@ -148,6 +148,15 @@ interface EditorState {
      *  subject, the timeline itself. A row's pick is a document conversion op
      *  (`domain.convertDomain`), not a view write, so no basis state lives here. */
     rulerMenu: { x: number; y: number } | null;
+    /** the velocity-strip band context menu (Add / Delete): screen position + the target
+     *  section id and the clicked station (section-local, in the track domain's own unit), or
+     *  null when closed. Summoned by right-clicking the band — on empty space for creation
+     *  (the row names the thing; the strip appears at the clicked station at minimum extent,
+     *  selected, curve flattened and solid), on an existing strip for deletion. Empty band
+     *  space is inert — no plain-drag-on-empty, no modifier-drag, no standing mode toggle
+     *  (Locked decision, the rescope that retired C5's create-drag). `strip` is the targeted
+     *  strip's stable id, or -1 when the right-click landed on empty band (creation). */
+    stripMenu: { x: number; y: number; section: number; station: number; strip: number } | null;
     /** the snapping magnet toggle (AE model): a persistent editor preference, default
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
@@ -386,6 +395,7 @@ export const editor: EditorState = {
     nodeMenu: null,
     forceMenu: null,
     rulerMenu: null,
+    stripMenu: null,
     snap: true,
     dragging: false,
     hoverSection: null,
@@ -1071,6 +1081,24 @@ export function closeRulerMenu(): void {
     editor.rulerMenu = null;
 }
 
+/** open the velocity-strip band context menu at a screen point — `section` is the section
+ *  the click resolved to, `station` the section-local station it landed at, `strip` the
+ *  targeted strip's stable id (-1 for empty band, i.e. creation). */
+export function openStripMenu(
+    x: number,
+    y: number,
+    section: number,
+    station: number,
+    strip: number,
+): void {
+    editor.stripMenu = { x, y, section, station, strip };
+}
+
+/** close the strip band context menu. */
+export function closeStripMenu(): void {
+    editor.stripMenu = null;
+}
+
 // ── history selection hook ────────────────────────────────────────────────────────
 // the editor's snapshot/restore for undo/redo, injected into `history` at boot (`setSelectionHook`)
 // so the coupling points inward — history calls this, never imports editor. the whole selection SET
@@ -1136,6 +1164,7 @@ export const selectionHook = {
     restore(ecs: State, snap: unknown): void {
         editor.nodeMenu = null; // its rows (checked mode, enablement) went stale when the document changed
         editor.forceMenu = null; // same — the force keyframe menu's rows go stale on any restore
+        editor.stripMenu = null; // same — the strip menu's rows go stale on any restore
         const s = snap as SelSnapshot;
         if (s === null) {
             clearSel(editor.nodes); // clears the selection + (below) the tangent-edit sub-mode
