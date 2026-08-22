@@ -4323,3 +4323,54 @@ test("geoSplitAtStripsRefused catches an interior cut on a straddling strip (pas
     expect(sectionHandles(state, sec).length).toBe(nodesBefore);
     expect(h.undo.length).toBe(0);
 });
+
+// LAZY TAIL: the tail sampleChain in geoSplitAtStripsRefused is built lazily — only
+// when a strip straddles the cut AND its head half passes spanCoversOneEdge. These
+// arms pin the behavioural contract that the lazy form preserves: two straddling
+// strips still refuse identically (the tail is built once and reused), zero strips
+// returns false (no tail work at all), and a non-straddling strip returns false (the
+// continue guard fires before the tail is needed). The laziness itself (one
+// sampleChain call for N straddling strips, zero for the no-strip path) cannot be
+// directly witnessed without a spy on the pure sampleChain import, which would
+// contort production code — the behavioural arms carry it instead.
+test("geoSplitAtStripsRefused with two straddling strips still refuses (lazy tail reuse)", () => {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 24, 0);
+    state.step(0);
+    // two strips straddling the interior cut at ~12 m (t=0.5 of segment 0)
+    createStrip(state, sec, 11.9, 12.6, 5);
+    createStrip(state, sec, 12.6, 13.3, 5);
+    state.step(0);
+    // both strips straddle the cut → both must be checked → refused
+    expect(geoSplitAtStripsRefused(state, sec, 0, 0.5)).toBe(true);
+});
+
+test("geoSplitAtStripsRefused with zero strips returns false for interior t (no tail work)", () => {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 24, 0);
+    state.step(0);
+    // no strips → nothing to refuse
+    expect(geoSplitAtStripsRefused(state, sec, 0, 0.5)).toBe(false);
+});
+
+test("geoSplitAtStripsRefused with a non-straddling strip returns false for interior t", () => {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 24, 0);
+    state.step(0);
+    // strip entirely on one side of the cut at ~12 m — does not straddle
+    createStrip(state, sec, 0, 5, 5);
+    state.step(0);
+    expect(geoSplitAtStripsRefused(state, sec, 0, 0.5)).toBe(false);
+});

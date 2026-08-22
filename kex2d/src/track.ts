@@ -28,6 +28,7 @@ import {
     autoTangent,
     collinearVec,
     COLLINEAR_TOL,
+    type ChainResult,
     type Node,
     reflect,
     sampleChain,
@@ -590,16 +591,28 @@ export function geoSplitAtStripsRefused(
     let cutArc = 0;
     for (let i = 0; i < landing; i++) cutArc += dsArr[i];
 
-    const tailNodes = allNodes.slice(j + 1);
-    const tPosX = new Float32Array(MAX_SAMPLES);
-    const tPosY = new Float32Array(MAX_SAMPLES);
-    const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
-    const tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
+    // Tail sample built lazily on first need: a geo section typically carries zero
+    // strips (the common case), and a non-straddling strip never reaches the tail
+    // check, so both paths pay nothing. Only when a strip straddles the cut AND its
+    // head half passes spanCoversOneEdge is the tail sampled — once, reused for every
+    // later straddling strip, not per-strip.
+    let tailNodes: Node[] | null = null;
+    let tPosX: Float32Array | null = null;
+    let tPosY: Float32Array | null = null;
+    let tDs: Float32Array | null = null;
+    let tR: ChainResult | null = null;
 
     for (const st of sectionStrips(ecs, sectionId)) {
         if (st.start >= cutArc || st.end <= cutArc) continue;
         if (!spanCoversOneEdge(dsArr, r.edges, st.start, cutArc)) return true;
-        if (!spanCoversOneEdge(tDs, tR.edges, 0, st.end - cutArc)) return true;
+        if (tailNodes === null) {
+            tailNodes = allNodes.slice(j + 1);
+            tPosX = new Float32Array(MAX_SAMPLES);
+            tPosY = new Float32Array(MAX_SAMPLES);
+            tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+            tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
+        }
+        if (!spanCoversOneEdge(tDs!, tR!.edges, 0, st.end - cutArc)) return true;
     }
     return false;
 }
