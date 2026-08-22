@@ -51,6 +51,7 @@ import {
     sectionInfo,
     sections,
     sectionStrips,
+    stripCoversOneEdge,
     type ForceTangent,
     setForceCarried,
     setForcePoint,
@@ -569,6 +570,57 @@ describe("velocity strip endpoints (C3)", () => {
         expect(convertDomain(createHistory(), state, Domain.Time)).toBe(true);
         const after = sectionStrips(state, geo)[0];
         expect(after).toEqual(before);
+    });
+
+    // ── B2(b): the min-extent law is stated over stored spans under the current bake, and the
+    // domain flip rewrites strip start/end through the arc↔time map with no floor — three lines
+    // below the same object literal applying `Math.max(floor, …)` to `length`. A min-extent
+    // Distance strip (one edge = ds = 0.5 m) converts to a Time extent of ds/V seconds, which is
+    // sub-edge when V > V0 (10 m/s) — on any drop. The floor ensures the converted extent covers
+    // ≥ 1 edge of the target domain's bake. WITNESSED RED before the floor: a Distance strip at
+    // [0, 0.5) (one edge) flipped to Time at V > V0 produced a sub-edge span that mapped to zero
+    // overridden edges — silently inert.
+    test("B2(b): a min-extent Distance strip's extent is floored on Distance→Time flip", () => {
+        const { state, sec } = forceTrack(40, [
+            [0, 1],
+            [40, 1],
+        ]);
+        state.step(0);
+        // create a min-extent (1-edge) Distance strip: [0, 0.5)
+        const stripId = createStrip(state, sec, 0, DS_NOMINAL, 5) as number;
+        expect(stripId).not.toBeNull();
+        state.step(0);
+        const h = createHistory();
+
+        expect(convertDomain(h, state, Domain.Time)).toBe(true);
+        const after = sectionStrips(state, sec)[0];
+        // the converted extent must be ≥ 1 Time edge (DT_NOMINAL = DS_NOMINAL / V0 = 0.05)
+        expect(after.end - after.start).toBeGreaterThanOrEqual(DT_NOMINAL);
+        // and the strip must still cover one edge in the Time bake
+        expect(stripCoversOneEdge(state, sec, after.start, after.end)).toBe(true);
+    });
+
+    test("B2(b): a min-extent Time strip's extent is floored on Time→Distance flip", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        const sec = createSection(state, 0, SectionKind.Force, 4);
+        createForcePoint(state, sec, 0, 1.3);
+        createForcePoint(state, sec, 4, 1.3);
+        state.step(0);
+        // create a min-extent (1-edge) Time strip: [0, DT_NOMINAL = 0.05)
+        const stripId = createStrip(state, sec, 0, DT_NOMINAL, 5) as number;
+        expect(stripId).not.toBeNull();
+        state.step(0);
+        const h = createHistory();
+
+        expect(convertDomain(h, state, Domain.Distance)).toBe(true);
+        const after = sectionStrips(state, sec)[0];
+        // the converted extent must be ≥ 1 Distance edge (DS_NOMINAL = 0.5)
+        expect(after.end - after.start).toBeGreaterThanOrEqual(DS_NOMINAL);
+        // and the strip must still cover one edge in the Distance bake
+        expect(stripCoversOneEdge(state, sec, after.start, after.end)).toBe(true);
     });
 });
 

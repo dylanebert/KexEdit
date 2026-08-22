@@ -611,12 +611,18 @@ export function appendMenu(a: { append: (kind: SectionKind) => void }): MenuItem
 }
 
 /** the velocity-strip band context menu's state. `strip` is the targeted strip's stable id,
- *  or -1 when the right-click landed on empty band (creation). */
+ *  or -1 when the right-click landed on empty band (creation). `canCreate` is whether a
+ *  strip CAN be created at the clicked station — the min-extent span exists and doesn't
+ *  overlap an existing strip — so the "Add" row is grayed (not silently inert) when it
+ *  can't. */
 export type StripMenuState = {
     /** the targeted strip's stable id, or -1 for creation (empty band). */
     strip: number;
     /** whether the section is editable (not under a pin session lockdown). */
     editable: boolean;
+    /** whether a new strip can be created at the clicked station (min-extent span exists
+     *  and doesn't overlap an existing strip). */
+    canCreate: boolean;
 };
 
 /** the velocity-strip band context menu's actions. */
@@ -638,7 +644,7 @@ export function stripMenu(s: StripMenuState, a: StripMenuActions): MenuItem[] {
             {
                 label: "Add velocity strip",
                 group: "create",
-                enabled: s.editable,
+                enabled: s.editable && s.canCreate,
                 action: a.addStrip,
             },
         ];

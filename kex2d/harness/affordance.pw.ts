@@ -15,17 +15,15 @@ import { expect, frameTimeline, kexCall, type Page, seedHill, test } from "./flo
 //
 // THE MECHANISM. `.fld .key` is this app's scrub-handle dress — `cursor: ew-resize`,
 // `user-select: none`, `touch-action: none`, a hover wash (`Timeline.svelte`, `.fld .key`).
-// Seven `.fld .key` spans exist in that file (lines 3671, 3688, 3727, 3746, 3780, 3939, 3954);
-// six wire `onpointerdown` to a scrub (`handleScrub` at 3671/3688, `scrubStart` at 3727/3746,
-// `snapScrub` at 3939/3954) and the strip popover's `<span class="key">v</span>` at 3780 wires
-// nothing. `App.svelte` carries three more under its own `.vtip .key` rule, the identical
-// `ew-resize` dress (`v0ScrubStart`/`frictionScrubStart`/`resistanceScrubStart` at
-// 1456/1471/1486), and all three are wired. Nine wired teachers app-wide, one refuser. The
-// popover's own comment says the omission was deliberate — "no scrub handle (a strip's value
-// has no natural drag axis…)" — but the decision was taken in the markup and not in the CSS, so
-// the surface still paints the drag cursor, still lights up on hover, and still swallows the
-// drag. It is the one surface in the app that promises a scrub and refuses it, and the promise
-// is the only instruction a person has: the other nine taught them the gesture.
+// Six `.fld .key` spans exist in that file (lines 3668, 3685, 3724, 3743, 3913, 3928);
+// all six wire `onpointerdown` to a scrub (`handleScrub` at 3668/3685, `scrubStart` at
+// 3724/3743, `snapScrub` at 3913/3928). `App.svelte` carries three more under its own
+// `.vtip .key` rule, the identical `ew-resize` dress (`v0ScrubStart`/
+// `frictionScrubStart`/`resistanceScrubStart` at 1456/1471/1486), and all three are wired.
+// Nine wired teachers app-wide, zero refusers. The C5 strip popover's unwired `.striptip
+// .key` span (the refuser this arm originally targeted) does not exist in T1's tree — T1
+// does not add a strip value popover (the value surface is T2's, in the graph) — so the
+// `test.fail` arm that targeted it was permanently vacuous and is retired (see below).
 //
 // WHY EVERY GATE WAS GREEN. All of this unit's evidence about the popover is a model read-back.
 // `bun test` never mounts the component. The capture flow reaches the field with
@@ -118,20 +116,12 @@ test("popover key scrub affordance — force keyframe control", async ({ page, b
     // keyframe scrub above are the whole proof.
 });
 
-// SUBJECT — inverted. Reds ("Expected to fail, but passed") the moment the `v` key honours the
-// cursor it paints, which is T1/T2's repair. See the mechanism and the witnessed red above.
-test.fail("strip popover key scrub affordance (expected to fail — C5)", async ({ page, boot }) => {
-    await boot();
-    await seedHill(page);
-    await frameTimeline(page);
-    const v0 = await createStrip(page);
-
-    const cursor = await scrubKey(page, ".striptip .key", 60);
-    expect(cursor, "the v key paints the scrub cursor").toBe("ew-resize");
-    await expect
-        .poll(async () => (await kexCall(page, "stripsOf", 0))[0].value, {
-            message: "a drag on a key painting ew-resize moves the value",
-            timeout: 1000,
-        })
-        .not.toBeCloseTo(v0, 6);
-});
+// RETIRED: the `test.fail` arm that targeted `.striptip .key` (C5's strip value popover's
+// scrub handle) is gone. T1 does not add a strip value popover — the value surface is T2's,
+// in the graph — so `.striptip .key` does not exist anywhere in T1's tree. A `test.fail`
+// arm whose subject locator times out (15 s) is laundered into a pass by `test.fail` itself,
+// so the arm was permanently vacuous: its stated retirement trigger (the moment T1/T2
+// honours the cursor the popover paints) could never fire, because the popover it targeted
+// was never built. The control arm above (force keyframe scrub) remains the whole proof
+// that the rig moves a value on a wired surface. When T2 rebuilds the value surface in the
+// graph, a new affordance arm should target THAT surface directly — not this retired one.

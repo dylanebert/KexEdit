@@ -10,7 +10,15 @@
 import type { State } from "@dylanebert/shallot";
 import { createHistory, type History, redirectHistory } from "./history";
 import type { OptimizeOutcome, UnreachableReason } from "./optimize";
-import { forceAt, Handle, handleAt, sectionAt, setBakeFreeze, setBakeLanding } from "./track";
+import {
+    forceAt,
+    Handle,
+    handleAt,
+    sectionAt,
+    setBakeFreeze,
+    setBakeLanding,
+    stripAt,
+} from "./track";
 import type { TangentSide } from "./tangents";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
@@ -75,7 +83,7 @@ interface EditorState {
     /** the selected sections (set + active), addressed by stable `Section.id`. */
     sections: Selection;
     /** the selected velocity strips (set + active), addressed by stable `Strip.id` — the strip
-     *  kind's own `forces`. Single-select only in practice today (C5 builds no strip marquee),
+     *  kind's own `forces`. Single-select only in practice today (no strip marquee yet),
      *  but carried as a full `Selection` for the same reason `forces` is: `deleteStrips` already
      *  takes a set, and a strip's own Cut/Join (`kex2d-map.md`'s Locked decision) is section-scoped
      *  bulk work a future stage may want to drive off a multi-set the same shape gives for free. */
@@ -89,7 +97,8 @@ interface EditorState {
     /** the active section id, or null — the single-subject accessor over `sections`. */
     section: number | null;
     /** the active velocity strip id, or null — the single-subject accessor over `strips`;
-     *  non-null summons the header band's value popover (`Timeline.svelte`). */
+     *  non-null selects the strip for trim/body-drag/delete (T1). The value surface
+     *  (keyframed curve editing in the graph) is T2's. */
     strip: number | null;
     /** eid of the node in tangent-edit mode (its handles are summoned), or null — a
      *  sub-mode layered on node selection: `tangentEdit !== null` implies the node set is exactly
@@ -987,7 +996,7 @@ export function selectSection(id: number | null, mode: SelectMode = "replace"): 
 }
 
 /** select a velocity strip by stable id. "replace" (default) collapses the strip set to `id`
- *  (or clears it when null); "toggle" adds/removes it (shift-click, unused by C5's own gestures
+ *  (or clears it when null); "toggle" adds/removes it (shift-click, unused by today's gestures
  *  today but kept for the same reason `selectForces`' set shape is — a future Cut/Join bulk
  *  action). either non-clearing form sweeps the other kinds, mirroring `selectSection`. */
 export function selectStrip(id: number | null, mode: SelectMode = "replace"): void {
@@ -1115,6 +1124,7 @@ type SelSnapshot =
     | { kind: "node"; members: NodeRef[]; active: NodeRef; editing: boolean }
     | { kind: "force"; ids: number[]; active: number; editing: boolean }
     | { kind: "section"; ids: number[]; active: number }
+    | { kind: "strip"; ids: number[]; active: number }
     | { kind: "start" }
     | null;
 
@@ -1158,6 +1168,12 @@ export const selectionHook = {
                 ids: [...editor.sections.ids],
                 active: editor.sections.active,
             };
+        if (editor.strips.active !== null)
+            return {
+                kind: "strip",
+                ids: [...editor.strips.ids],
+                active: editor.strips.active,
+            };
         if (editor.start) return { kind: "start" };
         return null;
     },
@@ -1170,6 +1186,7 @@ export const selectionHook = {
             clearSel(editor.nodes); // clears the selection + (below) the tangent-edit sub-mode
             clearSel(editor.forces);
             clearSel(editor.sections);
+            clearSel(editor.strips);
             editor.tangentEdit = null;
             editor.forceEdit = null;
             editor.forceHandle = null;
@@ -1210,6 +1227,14 @@ export const selectionHook = {
                     s.active,
                 );
                 exclusiveSection();
+                break;
+            case "strip":
+                rebuild(
+                    editor.strips,
+                    s.ids.filter((id) => stripAt(ecs, id) !== null),
+                    s.active,
+                );
+                exclusiveStrip();
                 break;
             case "start":
                 selectStart(true);

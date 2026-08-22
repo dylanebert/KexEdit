@@ -82,6 +82,7 @@ import {
     spawnForce,
     stationTaken,
     splitForce,
+    splitGeo,
     seedTangent,
     setForceCarried,
     setForceEase,
@@ -3915,5 +3916,180 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
         expect(stripMinExtentAt(state, sec, 0.3)).toEqual({ start: 0, end: 0.5 });
         // station 1.2 falls on edge 2: [1.0, 1.5)
         expect(stripMinExtentAt(state, sec, 1.2)).toEqual({ start: 1.0, end: 1.5 });
+    });
+
+    // ── W4: Time-domain and geo min-extent arms. The existing arms above are Distance-force-
+    // only — `sectionEdgeDs` branches on `forceNominal(domain, dsNom)` vs `geoChordDs`, and
+    // the mutation "replace `forceNominal(domain, dsNom)` with `dsNom`" leaves every arm
+    // green because no arm exercises the Time branch (where the edge is `ds/V0`, not `ds`).
+    // These arms pin both branches, and the interior-start/interior-end population the spec
+    // requires of every oracle set, in both Distance and Time.
+    for (const domain of [Domain.Distance, Domain.Time] as const) {
+        const nominal = domain === Domain.Time ? DT_NOMINAL : DS_NOMINAL;
+        const length = domain === Domain.Time ? 4 : 20;
+
+        test(`stripCoversOneEdge: a one-edge span is accepted, a sub-edge span refused, ${Domain[domain]} domain`, () => {
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            setTrackDomain(state, domain);
+            const sec = createSection(state, 0, SectionKind.Force, length);
+            state.step(0);
+            expect(stripCoversOneEdge(state, sec, 0, nominal)).toBe(true);
+            expect(stripCoversOneEdge(state, sec, 0, nominal * 0.4)).toBe(false);
+            expect(stripCoversOneEdge(state, sec, nominal, nominal)).toBe(false);
+        });
+
+        test(`createStrip refuses a sub-edge span and accepts a one-edge span, ${Domain[domain]} domain`, () => {
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            setTrackDomain(state, domain);
+            const sec = createSection(state, 0, SectionKind.Force, length);
+            state.step(0);
+            expect(createStrip(state, sec, 0, nominal * 0.4, 5)).toBeNull();
+            expect(sectionStrips(state, sec).length).toBe(0);
+            expect(createStrip(state, sec, 0, nominal, 5)).not.toBeNull();
+            expect(sectionStrips(state, sec).length).toBe(1);
+        });
+
+        test(`stripMinExtentAt returns the one-edge span at an interior station, ${Domain[domain]} domain`, () => {
+            const state = new State();
+            state.addSystem(BakeSystem);
+            createTrack(state);
+            setTrackDomain(state, domain);
+            const sec = createSection(state, 0, SectionKind.Force, length);
+            state.step(0);
+            const interior = length * 0.4; // well inside, not at a boundary
+            const span = stripMinExtentAt(state, sec, interior);
+            expect(span).not.toBeNull();
+            // the span must contain the station, cover exactly one edge, and be interior
+            expect(span!.start).toBeLessThanOrEqual(interior);
+            expect(span!.end).toBeGreaterThan(interior);
+            expect(span!.end - span!.start).toBeCloseTo(nominal, 6);
+            expect(span!.start).toBeGreaterThan(0); // interior-start
+            expect(span!.end).toBeLessThan(length); // interior-end
+        });
+    }
+
+    test("stripCoversOneEdge: a geo section's non-uniform edges are checked against the chord array", () => {
+        const { state, sec } = track();
+        addNode(state, sec, EXTEND_DIST, 10);
+        state.step(0);
+        const interior = EXTEND_DIST * 0.4;
+        const minSpan = stripMinExtentAt(state, sec, interior);
+        expect(minSpan).not.toBeNull();
+        expect(stripCoversOneEdge(state, sec, minSpan!.start, minSpan!.end)).toBe(true);
+        const subEdge = minSpan!.start + (minSpan!.end - minSpan!.start) * 0.1;
+        expect(stripCoversOneEdge(state, sec, minSpan!.start, subEdge)).toBe(false);
+    });
+
+    test("createStrip refuses a sub-edge span on a geo section", () => {
+        const { state, sec } = track();
+        addNode(state, sec, EXTEND_DIST, 10);
+        state.step(0);
+        const minSpan = stripMinExtentAt(state, sec, EXTEND_DIST * 0.4);
+        expect(minSpan).not.toBeNull();
+        const subEdge = minSpan!.start + (minSpan!.end - minSpan!.start) * 0.1;
+        expect(createStrip(state, sec, minSpan!.start, subEdge, 5)).toBeNull();
+        expect(createStrip(state, sec, minSpan!.start, minSpan!.end, 5)).not.toBeNull();
+    });
+
+    // ── B1/B2(a): Cut refuses inside a minimum-extent strip. WITNESSED RED before the
+    // pre-check was added: `splitForce` would succeed, the head's `Strip.end.set` would
+    // write a sub-edge inert span, and the tail's `createStrip` would return null (also
+    // sub-edge) with the return discarded — silent data loss of the tail's override.
+    test("splitForce refuses a cut inside a min-extent strip (B1/B2(a))", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        state.step(0);
+        const id = createStrip(state, sec, 0, 0.5, 5); // 1-edge strip
+        expect(id).not.toBeNull();
+        expect(splitForce(state, sec, 0.25)).toBeNull(); // both halves sub-edge → refused
+        expect(sectionStrips(state, sec).length).toBe(1);
+        expect(sectionStrips(state, sec)[0].start).toBe(0);
+        expect(sectionStrips(state, sec)[0].end).toBe(0.5);
+    });
+
+    test("splitForce refuses a cut near a strip edge that would produce a sub-edge half (B1)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        state.step(0);
+        createStrip(state, sec, 0, 2.0, 5); // 4-edge strip
+        // cut at 1.8 — head [0, 1.8) covers 4 edges (ok), tail [0, 0.2) is sub-edge → refused
+        expect(splitForce(state, sec, 1.8)).toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(1);
+        expect(sectionStrips(state, sec)[0].end).toBe(2.0);
+    });
+
+    test("splitForce allows a cut that splits a strip into two valid halves", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        state.step(0);
+        createStrip(state, sec, 0, 2.0, 5); // 4-edge strip
+        const tail = splitForce(state, sec, 1.0); // both halves 2 edges → ok
+        expect(tail).not.toBeNull();
+        expect(sectionStrips(state, sec)[0].end).toBe(1.0);
+        expect(sectionStrips(state, tail!).length).toBe(1);
+        expect(sectionStrips(state, tail!)[0].end).toBe(1.0);
+    });
+
+    test("splitGeo refuses a cut inside a min-extent strip (B1/B2(a))", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 12, 0);
+        addNode(state, sec, 24, 0);
+        state.step(0);
+        // a 1-edge strip straddling node 1's arc (12.0): [11.8, 12.3) maps to edge [24, 25)
+        const id = createStrip(state, sec, 11.8, 12.3, 5);
+        expect(id).not.toBeNull();
+        // cut at node 1 — head [11.8, 12.0) maps to [24, 24) = zero edges → refused
+        expect(splitGeo(state, sec, 1)).toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(1);
+        expect(sectionStrips(state, sec)[0].start).toBe(11.8);
+    });
+
+    // ── setStrip min-extent arm: the docblock claims "The same guard in `setStrip` prevents
+    // a trim from shrinking a strip below one edge." This arm pins it.
+    test("setStrip refuses a trim that shrinks a strip below one edge (min-extent guard)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        state.step(0);
+        const id = createStrip(state, sec, 0, 2.0, 5) as number; // 4-edge strip
+        setStrip(state, id, 0.1, 2.0, 5); // span 1.9 — fine
+        expect(sectionStrips(state, sec)[0].start).toBe(0.1);
+        setStrip(state, id, 1.9, 2.0, 5); // span 0.1 — sub-edge → refused
+        expect(sectionStrips(state, sec)[0].start).toBe(0.1); // not moved
+        expect(sectionStrips(state, sec)[0].end).toBe(2.0);
+        setStrip(state, id, 1.9, 2.0, 7); // value still lands
+        expect(sectionStrips(state, sec)[0].value).toBe(7);
+    });
+
+    // ── W5: restored C3 subjects under the new law.
+    test("a point at a span's start boundary is legal (point-vs-span boundary rule, grant direction)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        createStrip(state, sec, 5, 15, 8);
+        expect(stripOverlapped(state, sec, 5, 5, -1)).toBe(false); // disjoint edge ranges
+    });
+
+    test("stripOverlapped catches duplicate point strips spawned outside the create guard (retired C3 subject)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        spawnStrip(state, sec, 100, 10, 10, 5);
+        spawnStrip(state, sec, 101, 10, 10, 6);
+        expect(stripOverlapped(state, sec, 10, 10, 100)).toBe(true);
+        expect(stripOverlapped(state, sec, 10, 10, 101)).toBe(true);
+    });
+
+    test("createStrip refuses a span outside the section's extent (out-of-extent refusal, disclosed)", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        state.step(0);
+        expect(createStrip(state, sec, 25, 30, 5)).toBeNull();
+        expect(createStrip(state, sec, -5, -1, 5)).toBeNull();
     });
 });

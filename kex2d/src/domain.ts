@@ -584,6 +584,11 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
     // the source unit's own nominal march edge — the resolution the tolerance is derived at, and
     // the span the carry's fail-loud floor sits on.
     const sourceNominal = forceNominal(trackDomain(ecs), trackDs(ecs));
+    // B2(b): the target domain's own nominal march edge — the minimum a force strip's extent
+    // can cover and still override ≥ 1 edge in the target bake. A Distance strip at minimum
+    // extent (one edge = ds) converts to a Time extent of ds/V, which is sub-edge when V > V0
+    // and goes silently inert without this floor.
+    const targetNominal = forceNominal(target, trackDs(ecs));
     const converted: SectionSnapshot[] = snaps.map((snap) => {
         const w = windows.get(snap.id);
         if (!w) return snap;
@@ -601,11 +606,18 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
             // a strip's `start`/`end` are positions on the same axis a keyframe's `s` is —
             // each endpoint converts independently through the section's own window, same as a
             // keyframe. `value` (m/s) is domain-independent and rides through unconverted.
-            strips: snap.strips.map((st) => ({
-                ...st,
-                start: at(m, w, st.start).value,
-                end: at(m, w, st.end).value,
-            })),
+            // B2(b): a force strip's converted extent is floored to one target-domain edge so
+            // a min-extent strip doesn't go silently inert on a flip (a Distance strip at one
+            // edge converts to ds/V seconds, sub-edge above V0). Geo strips are arclength in
+            // both domains, so the conversion is identity and the floor never triggers.
+            strips: snap.strips.map((st) => {
+                const newStart = at(m, w, st.start).value;
+                let newEnd = at(m, w, st.end).value;
+                if (snap.kind === SectionKind.Force && newEnd - newStart < targetNominal) {
+                    newEnd = newStart + targetNominal;
+                }
+                return { ...st, start: newStart, end: newEnd };
+            }),
         };
     });
 

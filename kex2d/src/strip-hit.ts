@@ -1,4 +1,4 @@
-/** the velocity-strip header band's pure hit-test classifier — C5's own instrument, "by interval
+/** the velocity-strip header band's pure hit-test classifier — "by interval
  *  membership, never rendered pixels" (Locked decision): given the pointer's band-local x and the
  *  band's strips already projected to screen x (`Timeline.svelte`'s own `uPx` lens does the
  *  projection; this module never touches a coordinate system, a canvas, or the DOM), it answers

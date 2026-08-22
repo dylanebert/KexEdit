@@ -980,7 +980,7 @@ describe("the menu grammar — every builder, every state", () => {
                 const sa = acts();
                 all.push({
                     name: "stripMenu",
-                    rows: stripMenu({ strip, editable }, sa),
+                    rows: stripMenu({ strip, editable, canCreate: true }, sa),
                     state: { strip, editable },
                     acts: sa,
                 });

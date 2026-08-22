@@ -144,6 +144,7 @@ import {
     stationTaken,
     stripBoundsAt,
     stripMinExtentAt,
+    stripOverlapped,
     stripSeedValue,
     toGlobalU,
     toLocalU,
@@ -1858,7 +1859,7 @@ const stripMenuItems = $derived.by((): MenuItem[] => {
     if (editor.stripMenu === null) return [];
     const { section, station, strip } = editor.stripMenu;
     return stripMenu(
-        { strip, editable: sectionEditable(editor.pinning, section) },
+        { strip, editable: sectionEditable(editor.pinning, section), canCreate: canCreateAt(section, station) },
         {
             addStrip: () => {
                 createStripAt(section, station);
@@ -2334,6 +2335,14 @@ function bandDown(e: PointerEvent): void {
 // summoned creation: the menu row's action — a strip appears at the clicked station at minimum
 // extent, selected, curve flattened and solid (Locked decision). The minimum extent is one
 // overridden edge (`stripMinExtentAt`), so the strip is never silently inert.
+// W7: `canCreateAt` gates the menu row's `enabled` — a station whose min-extent span overlaps
+// an existing strip (a neighbour's boundary sits mid-edge) would produce a silently inert
+// `createStrip` return, so the row is grayed instead.
+function canCreateAt(section: number, station: number): boolean {
+    const minExtent = stripMinExtentAt(ecs, section, station);
+    if (minExtent === null) return false;
+    return !stripOverlapped(ecs, section, minExtent.start, minExtent.end, -1);
+}
 function createStripAt(section: number, station: number): void {
     const minExtent = stripMinExtentAt(ecs, section, station);
     if (minExtent === null) return;
@@ -2672,10 +2681,11 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.fillRect(0, RULER_H, w, GAP_H);
 
     // the velocity-strip HEADER band: a demarcated lane of its own, between the clip strip and
-    // the chart. This stage draws only the red ghost inside it — contiguous infeasible extents
-    // projected off the bake's own `feasible` (`render.infeasibleSpans`, `ghostSpans` above), the
-    // SAME visual register as the viewport's dashed-red pass (`COLOR_INFEASIBLE`, `colors.ts`).
-    // No authored strip exists yet (C5), so an all-feasible bake leaves the band empty.
+    // the chart. This stage draws authored strips (solid, below) and the red ghost inside it —
+    // contiguous infeasible extents projected off the bake's own `feasible`
+    // (`render.infeasibleSpans`, `ghostSpans` above), the SAME visual register as the viewport's
+    // dashed-red pass (`COLOR_INFEASIBLE`, `colors.ts`). An all-feasible bake leaves the band
+    // showing only authored strips (no ghost spans).
     ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
     ctx.fillRect(0, RULER_H + GAP_H, w, STRIP_H);
     for (const g of ghostSpans) {
@@ -2701,17 +2711,21 @@ function render(ctx: CanvasRenderingContext2D): void {
     for (const s of bandStrips) {
         const x0 = uPx(s.u0);
         const x1 = uPx(s.u1);
-        const sw = Math.max(1, x1 - x0);
         if (x1 < LEFT_GUT || x0 > w) continue;
+        // clamp the drawn width to ≥ 1px — a min-extent strip (the only kind the menu makes)
+        // can draw sub-pixel or zero-width when zoomed out, the same clamp the ghost loop
+        // above carries (S3's disclosed gap; the downstream freeze's own zero-length edge).
+        const cx0 = Math.max(LEFT_GUT, x0);
+        const cw = Math.max(1, Math.min(w, x1) - cx0);
         const sel = editor.strip === s.id;
         ctx.fillStyle = sel
             ? "color-mix(in srgb, var(--velocity) 85%, transparent)"
             : "color-mix(in srgb, var(--velocity) 55%, transparent)";
-        ctx.fillRect(Math.max(LEFT_GUT, x0), RULER_H + GAP_H, Math.min(w, x1) - Math.max(LEFT_GUT, x0), STRIP_H);
+        ctx.fillRect(cx0, RULER_H + GAP_H, cw, STRIP_H);
         if (sel) {
             ctx.strokeStyle = "var(--velocity)";
             ctx.lineWidth = 1;
-            ctx.strokeRect(Math.max(LEFT_GUT, x0) + 0.5, RULER_H + GAP_H + 0.5, Math.min(w, x1) - Math.max(LEFT_GUT, x0) - 1, STRIP_H - 1);
+            ctx.strokeRect(cx0 + 0.5, RULER_H + GAP_H + 0.5, cw - 1, STRIP_H - 1);
         }
     }
     // boundary ticks: the abutment disambiguator between two same-section strips sharing an edge.
@@ -2799,7 +2813,11 @@ function render(ctx: CanvasRenderingContext2D): void {
     // on-surface naming (N1's identification repair): a person read the 1 g gravity baseline as
     // "an unexplained yellow dotted line at zero" (taste ledger verdict 2). Naming the channels
     // on the surface is the fix — a small label at the line's left end, in the same neutral tone.
-    ctx.font = "9px sans-serif";
+    // Left-aligned (reset from the g-axis loop's `right` above) and in the app's mono face (reset
+    // from the `sans-serif` that replaced it), so the label sits at the line's left end, not
+    // colliding leftward with the g-axis label column.
+    ctx.textAlign = "left";
+    ctx.font = "9px 'JetBrains Mono', ui-monospace, monospace";
     ctx.fillStyle = "rgba(205, 197, 188, 0.6)";
     ctx.textBaseline = "bottom";
     ctx.fillText("1 g", LEFT_GUT + 3, yOf(Y_BASE) - 2);
@@ -2868,6 +2886,10 @@ function render(ctx: CanvasRenderingContext2D): void {
         ctx.globalAlpha = 1;
         ctx.setLineDash([]);
         // on-surface naming: the velocity channel's label, in the same faded tone as the curve.
+        // Left-aligned and in the app's mono face (reset from the g-axis loop's `right` and the
+        // `sans-serif` that replaced it above), matching the 1 g label.
+        ctx.textAlign = "left";
+        ctx.font = "9px 'JetBrains Mono', ui-monospace, monospace";
         ctx.globalAlpha = 0.4;
         ctx.fillStyle = COLOR_VELOCITY;
         ctx.textBaseline = "bottom";
@@ -4501,11 +4523,15 @@ onMount(() => {
     }
 
     /* the velocity-strip header band hit zone (T1): transparent, captures pointer events
-       for the band-wide hit classifier. The visual strips are drawn on the canvas. */
+       for the band-wide hit classifier. The visual strips are drawn on the canvas.
+       Cursor is `default` (not `pointer`) — empty band space is deliberately inert (no
+       create-drag), so a `pointer` cursor would advertise a click that does nothing.
+       Trim/body-drag cursors are set programmatically via `canvas.style.cursor` in the
+       pointermove handler, not here. */
     .hbandzone {
         fill: transparent;
         pointer-events: all;
-        cursor: pointer;
+        cursor: default;
     }
 
     /* the append tail: a small `+` past the last clip that opens a two-choice geo/force
