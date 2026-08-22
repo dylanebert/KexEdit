@@ -890,8 +890,9 @@ const canCut = $derived.by((): boolean => {
     // geo: `ctx.cut` already came back null for a non-interior point; check the strip pre-check
     // for the landmark cases. `splitGeoAt` reduces `t <= 0` to `splitGeo(j)` and `t >= 1` to
     // `splitGeo(j+1)`, so the node order to check is `ctx.cut.at` for `t <= 0` and
-    // `ctx.cut.at + 1` for `t >= 1`. Interior t is handled by splitSection's pre-mutation
-    // check (geoSplitAtStripsRefused) so the refusal never mutates.
+    // `ctx.cut.at + 1` for `t >= 1`. Interior t grays on the same predicate splitSection's
+    // pre-mutation check calls (`geoSplitAtStripsRefused`), so all three branches gray and
+    // none of them mutates — the refusal is decided before `insertGeoNode` in every case.
     if (ctx.cut.t === undefined || ctx.cut.t <= 0) {
         if (geoSplitStripsRefused(ecs, ctx.section, ctx.cut.at)) return false;
     } else if (ctx.cut.t >= 1) {
