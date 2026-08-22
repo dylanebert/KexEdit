@@ -215,10 +215,10 @@ const posUnit = $derived(timeDomain ? "s" : "m");
 const RULER_H = 26; // top scrub band: ticks, labels, playhead handle
 const GAP_H = 20; // marker lane between ruler and chart — the section clip strip
 const CLIP_PAD = 2; // px; vertical inset of a section clip inside the marker lane
-// the velocity-strip HEADER band: extent-only, display-derived — an authored strip's own future
-// body/resize/hit-test surface (C5) draws here too, but this stage draws only the red ghost, no
-// authoring: the strip's existence is what will make the band interactive, not this band alone
-// ("header carries extent, chart carries value"). Height is a bare visual minimum, no chrome.
+// the velocity-strip band: band carries extent, graph carries and edits value (Locked
+// decision, superseding "header carries extent, chart carries value"). Authored strips
+// draw here as solid fills (the velocity hue, selected brightens); the red ghost spans
+// (contiguous infeasible extents) draw inside it too. Height is a bare visual minimum.
 const STRIP_H = 8;
 const TOP = RULER_H + GAP_H + STRIP_H; // chart top
 const BOT_PAD = 8; // chart inset, bottom
@@ -878,7 +878,7 @@ const dAtPx = (px: number): number => dOf(uAtPx(px));
 // `bakeOut.feasible` (the exact bad-edge test the viewport's dashed-red pass uses) into arclength
 // spans; `markerX` is the SAME arclength→px projection the recovered curve draws through, so the
 // band lands under the exact stretch the chart already reads as infeasible. Render-derived only —
-// no entity, no persistence, no hit-test (C5's authoring surface, not this stage's).
+// no entity, no persistence, no hit-test (render-derived only; the authored surface is the band's strip fills, not this).
 const ghostSpans = $derived.by((): { x0: number; x1: number }[] => {
     void tick;
     if (eid === null || !curve) return [];

@@ -162,12 +162,7 @@ only there. The UI reads it through the per-RAF tick and writes it only through 
 setters, each wrapped in a `history` gesture. That's the purity contract, and it's the surface a
 future authoring agent drives — the same one the capture harness pokes through `__kex`.
 
-**The authored components (the one source of truth):** `Track` (`count`, `ds`, `v0`, `domain`), `Section`
-(`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local
-`pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`). Everything else is
-derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never
-authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom,
-drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
+**The authored components (the one source of truth):** `Track` (`count`, `ds`, `v0`, `domain`, `friction`, `resistance`), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `carried`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `section`, `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
 
 **Write only through the setters, only inside a history gesture.** `history` is one undo/redo stack
 (`begin`/`commit`/`cancel`; one gesture at a time, so a live drag collapses to one entry). Two
@@ -177,7 +172,8 @@ disciplines:
   `convertSection`, `extendTrack`, `trimTrack`, `createForce`, `deleteForce`.
 - *Continuous* edits (drags, label scrubs, typed fields) bracket by hand — `begin*` → `set*`
   (repeated) → `commit(history)`, `cancel()` on interrupt: `beginMove`+`Handle.pos.set`,
-  `beginForceMove`+`setForcePoint`, `beginLength`+`setSectionLength`, `beginV0`+`setTrackV0`.
+  `beginForceMove`+`setForcePoint`, `beginLength`+`setSectionLength`, `beginV0`+`setTrackV0`,
+  `beginStripMove`+`setStrip`, `beginStripKeyframeMove`+`setStripKeyframe`.
 
 Never mutate an authored component from a Svelte component or a read/render path — that divorces the
 edit from undo and from the single source of truth. The one deliberate exception is the DEV-only

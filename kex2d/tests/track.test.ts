@@ -3289,9 +3289,10 @@ describe("velocity strips — ECS layer (C3)", () => {
     });
 
     test("createStrip refuses a zero-length span — the min-extent guard (points retire)", () => {
-        // Points retire (Locked decision): the minimum extent is one overridden edge, so a
-        // zero-length span maps to zero overridden indices and is refused by the min-extent
-        // guard in `createStrip` — not by the overlap check. Two zero-length spans at the
+        // Points retire: the minimum extent is one overridden edge, so a
+        // zero-length span collapses to `start === end` (both ends round to the same
+        // edge boundary) and is refused by the min-extent guard in `createStrip` —
+        // not by the overlap check. Two zero-length spans at the
         // same station are both refused, so no duplicate can land.
         const { state, sec } = track();
         convertSection(state, sec);
@@ -4063,17 +4064,20 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
         expect(stripSeedValue(state, sec, 0)).toBe(V0);
     });
 
-    // ── the min-extent kernel arm (Locked decision: "the write-op guard must guarantee the
-    // stored span covers ≥ 1 edge of the current bake at that station, because a
-    // continuous-coordinate span smaller than one edge maps to zero overridden indices and
-    // goes silently inert").
+    // ── the min-extent kernel arm. The property enforced is that the span's two ends
+    // round to DIFFERENT edge boundaries under `edgeStrips`'s round-to-nearest `boundary()`
+    // map (the span straddles an edge midpoint). A sub-edge span whose ends round together
+    // collapses to `start === end`, which the point convention re-maps to the PRECEDING edge
+    // `[start−1, start)` — displaced, not lost; genuinely inert only at station 0 where
+    // `lo = −1`. The guard refuses the collapse so a stored strip always covers ≥ 1 edge.
     //
     // WITNESSED RED before the guard was added to `createStrip`: a strip with a span of 0.1
     // on a section baking at ds=0.5 (one edge covers [0, 0.5)) was accepted by `createStrip`,
-    // then mapped by `edgeStrips` to `start_edge === end_edge` — zero overridden indices, a
-    // strip that exists in the ECS but does nothing in the bake. The guard now refuses it at
-    // the write op, so `createStrip` returns null. The same guard in `setStrip` prevents a
-    // trim from shrinking a strip below one edge.
+    // then mapped by `edgeStrips` to `start_edge === end_edge` — the point convention
+    // displaces this to the preceding edge rather than going inert, but the strip's override
+    // lands on the wrong edge. The guard now refuses it at the write op, so `createStrip`
+    // returns null. The same guard in `setStrip` prevents a trim from collapsing a strip's
+    // two ends onto the same edge boundary.
     test("stripCoversOneEdge: a span covering one full edge is accepted", () => {
         const { state, sec } = track();
         convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
@@ -4088,9 +4092,11 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
         const { state, sec } = track();
         convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
         state.step(0);
-        // a span of 0.1 on a 0.5-edge bake maps to zero overridden indices
+        // a span of 0.1 on a 0.5-edge bake: both ends round to edge 0, collapsing
+        // to start === end — the point convention would displace to [−1, 0), so the
+        // guard refuses the collapse
         expect(stripCoversOneEdge(state, sec, 0, 0.1)).toBe(false);
-        // a zero-length span (the degenerate point) maps to zero edges too
+        // a zero-length span (the degenerate point): both ends round together too
         expect(stripCoversOneEdge(state, sec, 5, 5)).toBe(false);
     });
 
@@ -4202,8 +4208,9 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
     // splitForce(…, 2.0) accepted with the old pre-split grid check (stripCoversOneEdge
     // against 8 edges of 0.50375 read [1.76, 2.0) as covering 1 edge), but the post-split
     // head has resolveStep(2.0, 0.5) = 4 edges of 0.5, where [1.76, 2.0) maps to edge 4
-    // at both endpoints — zero edges, silently inert. Fix: resolve the head's POST-split
-    // grid and check spanCoversOneEdge against it, mirroring the tail branch.
+    // at both endpoints — collapsed, displaced to the preceding edge by the point
+    // convention. Fix: resolve the head's POST-split grid and check spanCoversOneEdge
+    // against it, mirroring the tail branch.
     test("splitForce refuses a cut that produces a sub-edge head half against the post-split grid (B1/B2(a))", () => {
         const { state, sec } = track();
         convertSection(state, sec);
@@ -4223,7 +4230,7 @@ describe("force keyframe provenance (Force.carried, D1)", () => {
 
     // PASS-4: every strip stored after a split must cover ≥ 1 edge of its own half's
     // resolved bake. This arm would fail with the old pre-split grid check (which accepted
-    // the split above, leaving a silently inert head strip).
+    // the split above, leaving a collapsed head strip displaced to the wrong edge).
     test("every strip after a splitForce covers ≥ 1 edge of its own half's resolved bake", () => {
         const { state, sec } = track();
         convertSection(state, sec);

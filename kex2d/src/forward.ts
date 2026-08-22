@@ -22,6 +22,14 @@ export const V_FLOOR = 0.01;
  * call sites today; a booked time-domain ride sim and the 3D kernel this one
  * seeds are its next two, unchanged.
  *
+ * **CONSTRAINT: `loss` closes over the module constant `G` while `step`/`integrate`/
+ * `forces` take `g` as a parameter.** All ~11 callers pass `G` today, so the closure is
+ * latent — but a 3D kernel is the likely first caller to vary `g`, and the 3D remake
+ * copies this signature. Do NOT change the signature (a `g` parameter here would be a
+ * behaviour change booked separately); the constraint is documented here and pinned by a
+ * test arm under `g ≠ G` with friction > 0. A caller varying `g` must thread it through
+ * `loss` too, or the loss term will disagree with the march's own `g`.
+ *
  * `fMag` is the track-perpendicular constraint-force MAGNITUDE in g (`|N| =
  * m·g·fMag`) — deliberately not a signed 2D `fN`: a 3D caller's own frame has
  * more than one perpendicular component (`√(fN² + fLat²)`, side and upstop

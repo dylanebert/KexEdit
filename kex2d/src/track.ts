@@ -397,11 +397,14 @@ function sectionEdgeDs(
 }
 
 /** whether a continuous-coordinate span `[start, end)` covers at least one edge of the
- *  current bake at that station — the minimum-extent floor (Locked decision: "the write-op
- *  guard must guarantee the stored span covers ≥ 1 edge of the current bake at that
- *  station, because a continuous-coordinate span smaller than one edge maps to zero
- *  overridden indices and goes silently inert"). Uses {@link edgeStrips}'s own boundary
- *  mapping, so the check is against exactly the edge-index resolution the bake would see. */
+ *  current bake at that station — the minimum-extent floor. The property enforced is that the
+ *  span's two ends round to DIFFERENT edge boundaries under `edgeStrips`'s round-to-nearest
+ *  `boundary()` map (i.e. the span straddles an edge midpoint), so it maps to at least one
+ *  overridden edge. A sub-edge span whose ends round together collapses to `start === end`,
+ *  which the point convention re-maps to the PRECEDING edge `[start−1, start)` — the override
+ *  is displaced, not lost; it is genuinely inert only at station 0 where `lo = −1`. Uses
+ *  {@link edgeStrips}'s own boundary mapping, so the check is against exactly the edge-index
+ *  resolution the bake would see. */
 /** check whether a span `[start, end)` covers at least one edge, given a raw edge
  *  structure (the `ds` array + edge count a section's bake resolves to) — the
  *  min-extent floor's own core, factored so a split can check a *would-be* tail section
@@ -672,8 +675,10 @@ export function stripMinExtentAt(
 /** author a new velocity strip on a section over `[start, end)` at `value` — the create
  *  path, guarded by {@link stripOverlapped} (the ONE guard every write inherits: create,
  *  drag, nudge, and typed-field writes all route through this module's writers) and by
- *  the minimum-extent guard ({@link stripCoversOneEdge}: a continuous-coordinate span smaller
- *  than one edge of the current bake maps to zero overridden indices and goes silently inert).
+ *  the minimum-extent guard ({@link stripCoversOneEdge}: a span whose two ends round to the
+ *  same edge boundary collapses to `start === end`, which the point convention displaces to
+ *  the preceding edge rather than going inert — the guard refuses this collapse so a stored
+ *  strip always covers ≥ 1 edge of the current bake).
  *  Returns the new strip's stable id, or `null` when the span would overlap an existing strip
  *  on the same section or when the span covers no edge (refused, nothing written). */
 export function createStrip(
@@ -779,8 +784,15 @@ export function setStrip(ecs: State, id: number, start: number, end: number, val
 
 /** whether a typed strip value is one the field may commit — finite and STRICTLY positive (a
  *  held speed of 0 is not a controlled span, it's a stall — `validCoefficient`'s own shape,
- *  `>` rather than `>=`). The strip value refusal, shared by every write surface a strip's value
- *  reaches (the popover field, a future typed nudge) rather than duplicated per caller. */
+ *  `>` rather than `>=`).
+ *
+ *  CALLER NOTE: this predicate has zero callers in `src/` today (an unused `Timeline.svelte`
+ *  import, plus tests). The real writers of a strip's value are `createStrip`'s seed
+ *  (`stripSeedValue`, which returns `bakeOut.v` lerped — unclamped, so exactly 0 at a true
+ *  stall, a value this predicate itself declares "not a controlled span, it's a stall") and
+ *  `setStrip` (which writes `value` unconditionally, without routing through this predicate).
+ *  Routing the writers through `validStripValue` is a behaviour change, not a documentation
+ *  fix — it is reported as owed, not made here. */
 export function validStripValue(v: number): boolean {
     return Number.isFinite(v) && v > 0;
 }
@@ -2150,13 +2162,16 @@ export function setForceCarried(ecs: State, id: number, carried: boolean): void 
  *  cut plants exactly that pair at the boundary by design and `joinNext`'s collapse is what makes
  *  the round trip lossless, so a track-global check would refuse the document's own structural op.
  *
- *  Equality is exact, on the value as the store will hold it (`Force.s` is `sparse(f32)`, so the
- *  candidate is compared at f32 — an `s` that would round onto a neighbour's stored station IS
- *  that station once written). That is what "the same station" means, and it is the reachable
- *  collision rather than a sub-ulp coincidence: `S_GRID`/`T_GRID` quantize a snapped drag onto the
- *  same grid its neighbours already sit on. A continuous (Ctrl-bypassed) drag can still park a key
- *  arbitrarily close to a neighbour without landing on it — near-coincidence is legal, distinct
- *  under a fine drag, and not what this refuses. */
+ *  Equality is at f32 via `Math.fround`, which is COARSER than the store: `Force.s` is
+ *  `sparse(f32)` but the columns do not round on set (a stored 0.9 reads back 0.9, while
+ *  `Math.fround(0.9)` is 0.8999999761581421), so the guard's `Math.fround` comparison is
+ *  slightly wider than exact stored-value equality — two values the store would keep
+ *  distinct can be refused because they f32-round to the same value. That is what "the same
+ *  station" means in practice, and it is the reachable collision rather than a sub-ulp
+ *  coincidence: `S_GRID`/`T_GRID` quantize a snapped drag onto the same grid its neighbours
+ *  already sit on. A continuous (Ctrl-bypassed) drag can still park a key arbitrarily close
+ *  to a neighbour without landing on it — near-coincidence is legal, distinct under a fine
+ *  drag, and not what this refuses. */
 export function stationTaken(ecs: State, sectionId: number, s: number, exceptId: number): boolean {
     const want = Math.fround(s);
     for (const row of sectionForces(ecs, sectionId))
@@ -3390,13 +3405,15 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     // RED-FIRST WITNESS: force section len 4.03 (8 edges of 0.50375), strip [1.76, 2.8),
     // splitForce(…, 2.0) accepted, head strip [1.76, 2.0) read stripCoversOneEdge === false
     // against the pre-split grid (which has 8 edges of 0.50375) but the post-split head has
-    // resolveStep(2.0, 0.50375) = 4 edges of 0.5 — a stored override covering zero edges,
-    // silently inert, both halves clearing MIN_FORCE_LEN. Fix: resolve the head's post-split
-    // grid and check spanCoversOneEdge against it, mirroring the tail branch.
+    // resolveStep(2.0, 0.50375) = 4 edges of 0.5 — a stored override whose two ends round
+    // together, collapsing to the preceding edge by the point convention rather than covering
+    // the intended edge. Fix: resolve the head's post-split grid and check spanCoversOneEdge
+    // against it, mirroring the tail branch.
     //
     // WHOLLY-TAIL WITNESS: same section, strip [2.770, 2.771) covers 1 edge on the original
     // grid (boundary(2.770)=5, boundary(2.771)=6) but after rebase to [0.770, 0.771) on the
-    // tail (4 edges of 0.5075) both endpoints map to edge 2 — zero edges, silently inert.
+    // tail (4 edges of 0.5075) both endpoints map to edge 2 — collapsed, displaced to the
+    // preceding edge by the point convention.
     const dsNom = trackDs(ecs);
     const nominal = forceNominal(trackDomain(ecs), dsNom);
     const headResolved = resolveStep(s, nominal);
@@ -4325,7 +4342,7 @@ export const BakeSystem: System = {
 
 export const TrackPlugin: Plugin = {
     name: "Track",
-    components: { Track, Section, Handle, Force, Strip },
+    components: { Track, Section, Handle, Force, Strip, StripKeyframe },
     traits: {
         Track: {
             defaults: () => ({
@@ -4341,7 +4358,7 @@ export const TrackPlugin: Plugin = {
                 resistance: 0,
             }),
         },
-        Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0, ds: 0 }) },
+        Section: { defaults: () => ({ id: 0, order: 0, kind: 0, length: 0 }) },
         Handle: {
             defaults: () => ({
                 section: 0,
@@ -4364,10 +4381,14 @@ export const TrackPlugin: Plugin = {
                 tmode: 0,
                 tin: [0, 0],
                 tout: [0, 0],
+                carried: 0,
             }),
         },
         Strip: {
             defaults: () => ({ section: 0, id: 0, start: 0, end: 0, value: 0 }),
+        },
+        StripKeyframe: {
+            defaults: () => ({ strip: 0, id: 0, s: 0, v: 0 }),
         },
     },
     initialize(ecs) {
