@@ -594,8 +594,9 @@ export function geoSplitAtStripsRefused(
     // Tail sample built lazily on first need: a geo section typically carries zero
     // strips (the common case), and a non-straddling strip never reaches the tail
     // check, so both paths pay nothing. Only when a strip straddles the cut AND its
-    // head half passes spanCoversOneEdge is the tail sampled — once, reused for every
-    // later straddling strip, not per-strip.
+    // head half passes spanCoversOneEdge is the tail sampled. At most one strip can
+    // straddle a cut (createStrip refuses overlap via stripOverlapped), so the tail
+    // is built at most once by construction; the memo is correct and cheap regardless.
     let tailNodes: Node[] | null = null;
     let tPosX: Float32Array | null = null;
     let tPosY: Float32Array | null = null;

@@ -4325,15 +4325,22 @@ test("geoSplitAtStripsRefused catches an interior cut on a straddling strip (pas
 });
 
 // LAZY TAIL: the tail sampleChain in geoSplitAtStripsRefused is built lazily — only
-// when a strip straddles the cut AND its head half passes spanCoversOneEdge. These
-// arms pin the behavioural contract that the lazy form preserves: two straddling
-// strips still refuse identically (the tail is built once and reused), zero strips
-// returns false (no tail work at all), and a non-straddling strip returns false (the
-// continue guard fires before the tail is needed). The laziness itself (one
-// sampleChain call for N straddling strips, zero for the no-strip path) cannot be
-// directly witnessed without a spy on the pure sampleChain import, which would
-// contort production code — the behavioural arms carry it instead.
-test("geoSplitAtStripsRefused with two straddling strips still refuses (lazy tail reuse)", () => {
+// when a strip straddles the cut AND its head half passes spanCoversOneEdge. Three
+// measured truths frame these arms:
+//
+// (a) At most one strip can straddle a cut, because createStrip refuses overlap
+//     (stripOverlapped, src/track.ts). So the tail is built at most once by
+//     construction, and the "reused for every later straddling strip" path is
+//     reachable only for a pre-guard document restored through spawnStrip (which
+//     bypasses the overlap guard deliberately, for byte-identical undo/redo).
+// (b) What the laziness actually buys is zero tail work on the no-strip,
+//     non-straddling and head-fail paths — the common case, since a geo section
+//     usually carries no strips.
+// (c) These arms pin verdicts, not laziness — they pass at 3f15da1^ too (where the
+//     tail was built unconditionally). The laziness itself (one sampleChain for the
+//     straddling path, zero for the others) is not directly witnessable without a
+//     spy on the pure sampleChain import.
+test("geoSplitAtStripsRefused reaches the tail check when the head half passes (head passes → tail built → tail check)", () => {
     const state = new State();
     state.addSystem(BakeSystem);
     createTrack(state);
@@ -4341,11 +4348,14 @@ test("geoSplitAtStripsRefused with two straddling strips still refuses (lazy tai
     addNode(state, sec, 0, 0);
     addNode(state, sec, 24, 0);
     state.step(0);
-    // two strips straddling the interior cut at ~12 m (t=0.5 of segment 0)
-    createStrip(state, sec, 11.9, 12.6, 5);
-    createStrip(state, sec, 12.6, 13.3, 5);
+    // one strip straddling the interior cut at ~12 m (t=0.5 of segment 0). The head
+    // half [11.0, 12.0) is 1.0 m — wider than the ~0.5 m grid — so spanCoversOneEdge
+    // passes and the tail is genuinely sampled (the lazy build fires). The tail
+    // [0, 0.1) is sub-edge, so the tail check refuses. Measured verdict: true.
+    // This is the branch 3f15da1 changed (head passes → tail built lazily → tail
+    // check runs) and no arm in the suite covered it before.
+    createStrip(state, sec, 11.0, 12.1, 5);
     state.step(0);
-    // both strips straddle the cut → both must be checked → refused
     expect(geoSplitAtStripsRefused(state, sec, 0, 0.5)).toBe(true);
 });
 
