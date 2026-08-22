@@ -9,6 +9,7 @@ import {
     forceProfile,
     type Offset,
     resolveStep,
+    sampleForce,
     type Step,
     subdivide,
 } from "./profile";
@@ -271,6 +272,30 @@ export const Strip = {
     end: sparse(f32),
     value: sparse(f32),
 };
+
+/** a velocity-strip keyframe — a child entity on a strip, the `Force`-to-`Section`
+ *  pattern applied to the strip's own velocity curve (T2, "keyframes on the force-curve
+ *  machinery"). `strip` is the owning strip's stable `Strip.id`; `id` is the keyframe's
+ *  own stable identity (undo/redo address, eid-recycle safe). `s` is the keyframe's
+ *  position in the section's own domain coordinate — the SAME axis `Strip.start`/`end`
+ *  and `Force.s` are stored in — clipped to the strip's `[start, end)` extent. `v` is
+ *  the velocity (m/s) the curve holds at that station, the same unit `Entry.v` carries.
+ *  When a strip has no keyframes, the constant `Strip.value` is used (the After Effects
+ *  stopwatch reading: no keyframes means one constant across the span). */
+export const StripKeyframe = {
+    strip: sparse(u32),
+    id: sparse(u32),
+    s: sparse(f32),
+    v: sparse(f32),
+};
+
+export interface StripKeyframeRow {
+    eid: number;
+    strip: number;
+    id: number;
+    s: number;
+    v: number;
+}
 
 export interface StripRow {
     eid: number;
@@ -692,10 +717,12 @@ export function spawnStrip(
     Strip.value.set(eid, value);
 }
 
-/** destroy a velocity strip by stable id (no-op if already gone). */
+/** destroy a velocity strip by stable id (no-op if already gone). Also destroys
+ *  the strip's keyframes — they are child entities that cannot survive their parent. */
 export function destroyStrip(ecs: State, id: number): void {
     const eid = stripAt(ecs, id);
     if (eid !== null) ecs.destroy(eid);
+    destroyStripKeyframes(ecs, id);
 }
 
 /** a strip's undoable state, keyed by stable id — the drag/nudge/typed-field gesture
@@ -809,6 +836,118 @@ export function stripSeedValue(ecs: State, sectionId: number, s: number): number
     return out.v[addr.index] + addr.frac * (out.v[j] - out.v[addr.index]);
 }
 
+// ── velocity-strip keyframes (T2: value in the graph) ──────────────────────────
+
+/** every keyframe on a strip, sorted by `s` — the order the curve evaluation reads. */
+export function stripKeyframes(ecs: State, stripId: number): StripKeyframeRow[] {
+    const rows: StripKeyframeRow[] = [];
+    for (const eid of ecs.query([StripKeyframe])) {
+        if (StripKeyframe.strip.get(eid) !== stripId) continue;
+        rows.push({
+            eid,
+            strip: stripId,
+            id: StripKeyframe.id.get(eid),
+            s: StripKeyframe.s.get(eid),
+            v: StripKeyframe.v.get(eid),
+        });
+    }
+    rows.sort((a, b) => a.s - b.s);
+    return rows;
+}
+
+/** resolve a strip keyframe by its stable `id` to its eid, or null. */
+export function stripKeyframeAt(ecs: State, id: number): number | null {
+    for (const eid of ecs.query([StripKeyframe])) {
+        if (StripKeyframe.id.get(eid) === id) return eid;
+    }
+    return null;
+}
+
+let nextStripKfId = 0;
+
+/** author a new velocity keyframe on a strip at section-local `s` with velocity `v`.
+ *  The position is clamped to the strip's `[start, end)` extent (clip-to-extent, the
+ *  Locked decision). Returns the new keyframe's stable id. */
+export function createStripKeyframe(ecs: State, stripId: number, s: number, v: number): number {
+    const stripEid = stripAt(ecs, stripId);
+    if (stripEid === null) return -1;
+    const start = Strip.start.get(stripEid);
+    const end = Strip.end.get(stripEid);
+    const cs = Math.max(start, Math.min(end, s));
+    const eid = ecs.create();
+    ecs.add(eid, StripKeyframe);
+    const id = nextStripKfId++;
+    StripKeyframe.strip.set(eid, stripId);
+    StripKeyframe.id.set(eid, id);
+    StripKeyframe.s.set(eid, cs);
+    StripKeyframe.v.set(eid, v);
+    return id;
+}
+
+/** re-create a strip keyframe at an exact strip / id / s / v — undo of a delete, redo
+ *  of a create, or a snapshot restore. No id allocation, so it round-trips byte-identical. */
+export function spawnStripKeyframe(
+    ecs: State,
+    stripId: number,
+    id: number,
+    s: number,
+    v: number,
+): void {
+    const eid = ecs.create();
+    ecs.add(eid, StripKeyframe);
+    StripKeyframe.strip.set(eid, stripId);
+    StripKeyframe.id.set(eid, id);
+    StripKeyframe.s.set(eid, s);
+    StripKeyframe.v.set(eid, v);
+}
+
+/** destroy a strip keyframe by stable id (no-op if already gone). Also destroys all
+ *  keyframes on a strip when the strip itself is destroyed. */
+export function destroyStripKeyframe(ecs: State, id: number): void {
+    const eid = stripKeyframeAt(ecs, id);
+    if (eid !== null) ecs.destroy(eid);
+}
+
+/** destroy all keyframes on a strip (called when the strip is destroyed). */
+export function destroyStripKeyframes(ecs: State, stripId: number): void {
+    for (const eid of [...ecs.query([StripKeyframe])]) {
+        if (StripKeyframe.strip.get(eid) === stripId) ecs.destroy(eid);
+    }
+}
+
+/** a strip keyframe's undoable state, keyed by stable id. */
+export interface StripKeyframeState {
+    strip: number;
+    id: number;
+    s: number;
+    v: number;
+}
+
+/** snapshot one strip keyframe by id, or undefined if it's gone. */
+export function stripKeyframeState(ecs: State, id: number): StripKeyframeState | undefined {
+    const eid = stripKeyframeAt(ecs, id);
+    if (eid === null) return undefined;
+    return {
+        strip: StripKeyframe.strip.get(eid),
+        id,
+        s: StripKeyframe.s.get(eid),
+        v: StripKeyframe.v.get(eid),
+    };
+}
+
+/** write a strip keyframe's position and value (live drag preview + gesture restore). */
+export function setStripKeyframe(ecs: State, id: number, s: number, v: number): void {
+    const eid = stripKeyframeAt(ecs, id);
+    if (eid === null) return;
+    const stripId = StripKeyframe.strip.get(eid);
+    const stripEid = stripAt(ecs, stripId);
+    if (stripEid === null) return;
+    const start = Strip.start.get(stripEid);
+    const end = Strip.end.get(stripEid);
+    StripKeyframe.s.set(eid, Math.max(start, Math.min(end, s)));
+    StripKeyframe.v.set(eid, v);
+}
+
 /** convert a section's authored strips from its own domain coordinate into the kernel's
  *  edge-index coordinate (`section.Strip`, "the SAME indexing `fN`/`ds` already carry") —
  *  the ONE seam between the ECS's domain-coordinate storage and the substrate's edge
@@ -824,7 +963,12 @@ export function stripSeedValue(ecs: State, sectionId: number, s: number): number
 export function edgeStrips(
     ds: ArrayLike<number>,
     edges: number,
-    rows: readonly { start: number; end: number; value: number }[],
+    rows: readonly {
+        start: number;
+        end: number;
+        value: number;
+        keyframes?: { s: number; v: number }[];
+    }[],
 ): StripSpec[] | undefined {
     if (rows.length === 0) return undefined;
     const cum = new Float32Array(edges + 1);
@@ -838,7 +982,27 @@ export function edgeStrips(
         if (i === 0) return 0;
         return s - cum[i - 1] <= cum[i] - s ? i - 1 : i;
     };
-    return rows.map((r) => ({ start: boundary(r.start), end: boundary(r.end), value: r.value }));
+    return rows.map((r) => {
+        const start = boundary(r.start);
+        const end = boundary(r.end);
+        const lo = start === end ? start - 1 : start;
+        if (r.keyframes && r.keyframes.length > 0) {
+            // pre-evaluate the keyframed curve per-edge using the force-curve machinery
+            // (profile.sampleForce): the keyframes are {s, v} in domain coordinates,
+            // evaluated as {s, g: v} ForcePoints with default Cubic easing. The per-edge
+            // v² is stored in `values`, indexed [0, end − lo), so stripOverride is a
+            // lookup, not a curve evaluation.
+            const points = r.keyframes.map((k) => ({ s: k.s, g: k.v }));
+            const values = new Float32Array(end - lo);
+            for (let k = lo; k < end; k++) {
+                const sigma = cum[k];
+                const v = sampleForce(points, sigma);
+                values[k - lo] = v * v;
+            }
+            return { start, end, value: r.value, values };
+        }
+        return { start, end, value: r.value };
+    });
 }
 
 /** the section's own baked per-edge chord array, sampled fresh off its LIVE geo nodes —
@@ -2285,7 +2449,13 @@ export interface SectionSnapshot {
         tangent?: ForceTangent;
         carried: boolean;
     }[];
-    strips: { id: number; start: number; end: number; value: number }[];
+    strips: {
+        id: number;
+        start: number;
+        end: number;
+        value: number;
+        keyframes: { id: number; s: number; v: number }[];
+    }[];
 }
 
 /** capture a section (both kinds' payloads — one is empty). a force point carries its
@@ -2313,6 +2483,11 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
             start: st.start,
             end: st.end,
             value: st.value,
+            keyframes: stripKeyframes(ecs, st.id).map((k) => ({
+                id: k.id,
+                s: k.s,
+                v: k.v,
+            })),
         })),
     };
 }
@@ -2326,6 +2501,7 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     if (eid === null) throw new Error(`restoreSection: no section ${snap.id}`);
     for (const h of sectionHandles(ecs, snap.id)) ecs.destroy(h);
     for (const p of sectionForces(ecs, snap.id)) ecs.destroy(p.eid);
+    for (const st of sectionStrips(ecs, snap.id)) destroyStripKeyframes(ecs, st.id);
     for (const st of sectionStrips(ecs, snap.id)) ecs.destroy(st.eid);
     Section.order.set(eid, snap.order);
     Section.kind.set(eid, snap.kind);
@@ -2333,7 +2509,10 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points)
         spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent, p.carried);
-    for (const st of snap.strips) spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
+    for (const st of snap.strips) {
+        spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
+        for (const k of st.keyframes) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
+    }
 }
 
 // ── provenance sidecar (kex2d-provenance) ──────────────────────────────────────
@@ -2428,12 +2607,27 @@ export function applyDomain(ecs: State, snaps: readonly SectionSnapshot[]): void
             Force.carried.set(pointEid, p.carried ? 1 : 0);
         }
         // strips' `start`/`end` ride the same conversion as a keyframe's `s`; `value` (m/s) is
-        // domain-independent and is left untouched.
+        // domain-independent and is left untouched. Strip keyframes' `s` positions are also
+        // converted (domain.ts already converted them in the snapshot) and clipped to the
+        // converted extent.
         for (const st of snap.strips) {
             const stripEid = stripAt(ecs, st.id);
             if (stripEid === null) continue;
             Strip.start.set(stripEid, st.start);
             Strip.end.set(stripEid, st.end);
+            // update keyframe positions to the converted values
+            const keepKf = new Set(st.keyframes.map((k) => k.id));
+            for (const kf of stripKeyframes(ecs, st.id))
+                if (!keepKf.has(kf.id)) ecs.destroy(kf.eid);
+            for (const k of st.keyframes) {
+                const kfEid = stripKeyframeAt(ecs, k.id);
+                if (kfEid === null) {
+                    spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
+                } else {
+                    StripKeyframe.s.set(kfEid, k.s);
+                    StripKeyframe.v.set(kfEid, k.v);
+                }
+            }
         }
     }
 }
@@ -2550,7 +2744,10 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
     const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    for (const st of sectionStrips(ecs, sectionId)) ecs.destroy(st.eid);
+    for (const st of sectionStrips(ecs, sectionId)) {
+        destroyStripKeyframes(ecs, st.id);
+        ecs.destroy(st.eid);
+    }
     Section.kind.set(eid, SectionKind.Force);
     // the default extent in the TRACK's active domain — a literal meters constant would be
     // a 24-second, 480-edge section on a Time-domain track.
@@ -2565,7 +2762,10 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
 function resetToGeo(ecs: State, eid: number, sectionId: number): void {
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    for (const st of sectionStrips(ecs, sectionId)) ecs.destroy(st.eid);
+    for (const st of sectionStrips(ecs, sectionId)) {
+        destroyStripKeyframes(ecs, st.id);
+        ecs.destroy(st.eid);
+    }
     Section.kind.set(eid, SectionKind.Geo);
     Section.length.set(eid, 0);
     addNode(ecs, sectionId, 0, 0);
@@ -2782,12 +2982,16 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
     for (const e of [...ecs.query([Handle])]) ecs.destroy(e);
     for (const e of [...ecs.query([Force])]) ecs.destroy(e);
     for (const e of [...ecs.query([Strip])]) ecs.destroy(e);
+    for (const e of [...ecs.query([StripKeyframe])]) ecs.destroy(e);
     for (const snap of snaps) {
         spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length);
         for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of snap.points)
             spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent, p.carried);
-        for (const st of snap.strips) spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
+        for (const st of snap.strips) {
+            spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
+            for (const k of st.keyframes) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
+        }
     }
 }
 
@@ -2918,24 +3122,36 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
 
     for (const st of sectionStrips(ecs, sectionId)) {
         const point = st.start === st.end;
+        const kfs = stripKeyframes(ecs, st.id);
         if (point ? st.start <= cutArc : st.end <= cutArc) continue; // wholly head, unchanged
         if (st.start >= cutArc) {
-            // wholly tail: rebase.
+            // wholly tail: rebase strip + keyframes.
             Strip.section.set(st.eid, bId);
             Strip.start.set(st.eid, st.start - cutArc);
             Strip.end.set(st.eid, st.end - cutArc);
+            for (const k of kfs) StripKeyframe.s.set(k.eid, k.s - cutArc);
             continue;
         }
         // straddles cutArc (non-degenerate only — a point can't straddle): head keeps
         // [start, cutArc), a new tail strip opens at [0, end - cutArc), both holding
         // the same constant. The pre-check above guarantees both halves cover ≥ 1 edge,
         // so `createStrip` cannot return null here; the guard is a safety net.
+        // Keyframes at s < cut stay with the head; keyframes at s >= cut move to the tail.
         Strip.end.set(st.eid, cutArc);
         const tailId = createStrip(ecs, bId, 0, st.end - cutArc, st.value);
         if (tailId === null) {
             // safety net: the pre-check should have refused this split already; if we
             // reach here, undo the head trim to avoid leaving a sub-edge inert strip.
             Strip.end.set(st.eid, st.end);
+        } else {
+            for (const k of kfs) {
+                if (k.s < cutArc) {
+                    if (k.s > cutArc) StripKeyframe.s.set(k.eid, cutArc);
+                } else {
+                    spawnStripKeyframe(ecs, tailId, k.id, k.s - cutArc, k.v);
+                    ecs.destroy(k.eid);
+                }
+            }
         }
     }
     return bId;
@@ -3288,32 +3504,46 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
         createForcePoint(ecs, sectionId, s, b.g);
     }
 
-    // strips split at the same cut, per the Locked decision: a constant-valued strip splits
-    // into two strips holding the SAME value (no curve to split yet — strips are constant-only
-    // in this stage). a strip wholly on one side just rebases (or stays put); a point strip
-    // AT the cut station stays with the HEAD (`section.ts`'s point convention: a point at
-    // station k overrides the edge ARRIVING at k, `[k-1, k)` — the head's own last edge, never
-    // the tail's first).
+    // strips split at the same cut, per the Locked decision: a strip splits into two
+    // strips holding the SAME value, and each half inherits the keyframes that fall inside
+    // its own extent (T2: keyframes on the force-curve machinery). a strip wholly on one
+    // side just rebases (or stays put); a point strip AT the cut station stays with the
+    // HEAD (`section.ts`'s point convention: a point at station k overrides the edge
+    // ARRIVING at k, `[k-1, k)` — the head's own last edge, never the tail's first).
     for (const st of sectionStrips(ecs, sectionId)) {
         const point = st.start === st.end;
+        const kfs = stripKeyframes(ecs, st.id);
         if (point ? st.start <= s : st.end <= s) continue; // wholly head, unchanged
         if (st.start >= s) {
-            // wholly tail: rebase.
+            // wholly tail: rebase strip + keyframes.
             Strip.section.set(st.eid, bId);
             Strip.start.set(st.eid, st.start - s);
             Strip.end.set(st.eid, st.end - s);
+            for (const k of kfs) StripKeyframe.s.set(k.eid, k.s - s);
             continue;
         }
         // straddles s (non-degenerate only — a point can't straddle): head keeps [start, s),
         // a new tail strip opens at [0, end - s), both holding the same constant. The pre-check
         // above guarantees both halves cover ≥ 1 edge, so `createStrip` cannot return null
-        // here; the guard is a safety net.
+        // here; the guard is a safety net. Keyframes at s < cut stay with the head (clipped
+        // to [start, s)); keyframes at s >= cut move to the tail (rebased to s - cut).
         Strip.end.set(st.eid, s);
         const tailId = createStrip(ecs, bId, 0, st.end - s, st.value);
         if (tailId === null) {
             // safety net: the pre-check should have refused this split already; if we
             // reach here, undo the head trim to avoid leaving a sub-edge inert strip.
             Strip.end.set(st.eid, st.end);
+        } else {
+            for (const k of kfs) {
+                if (k.s < s) {
+                    // head keyframe: clip to the head's new extent
+                    if (k.s > s) StripKeyframe.s.set(k.eid, s);
+                } else {
+                    // tail keyframe: rebase to the tail's coordinate
+                    spawnStripKeyframe(ecs, tailId, k.id, k.s - s, k.v);
+                    ecs.destroy(k.eid);
+                }
+            }
         }
     }
     return bId;
@@ -3468,6 +3698,7 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             Strip.section.set(st.eid, sectionId);
             Strip.start.set(st.eid, st.start + aArc);
             Strip.end.set(st.eid, st.end + aArc);
+            for (const k of stripKeyframes(ecs, st.id)) StripKeyframe.s.set(k.eid, k.s + aArc);
         }
     } else {
         const aLen = Section.length.get(aEid);
@@ -3533,6 +3764,11 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             aTailStrip.value === bHeadStrip.value;
         if (mergeStrip && aTailStrip !== undefined && bHeadStrip !== undefined) {
             Strip.end.set(aTailStrip.eid, aLen + bHeadStrip.end);
+            // move the absorbed strip's keyframes to the surviving strip, rebased
+            for (const k of stripKeyframes(ecs, bHeadStrip.id)) {
+                spawnStripKeyframe(ecs, aTailStrip.id, k.id, k.s + aLen, k.v);
+                ecs.destroy(k.eid);
+            }
             ecs.destroy(bHeadStrip.eid);
         }
         for (const st of bStrips) {
@@ -3540,6 +3776,7 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             Strip.section.set(st.eid, sectionId);
             Strip.start.set(st.eid, st.start + aLen);
             Strip.end.set(st.eid, st.end + aLen);
+            for (const k of stripKeyframes(ecs, st.id)) StripKeyframe.s.set(k.eid, k.s + aLen);
         }
     }
     ecs.destroy(b.eid);
@@ -3559,7 +3796,10 @@ export function deleteSection(ecs: State, sectionId: number): boolean {
     const order = Section.order.get(secEid);
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    for (const st of sectionStrips(ecs, sectionId)) ecs.destroy(st.eid);
+    for (const st of sectionStrips(ecs, sectionId)) {
+        destroyStripKeyframes(ecs, st.id);
+        ecs.destroy(st.eid);
+    }
     ecs.destroy(secEid);
     provenance.delete(sectionId);
     bumpOrders(ecs, order + 1, -1);
@@ -3605,7 +3845,14 @@ function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
     let edgeSpecs: StripSpec[] | undefined;
     if (strips.length > 0) {
         const { ds: chordDs, edges } = geoChordDs(ecs, sectionId, ds);
-        edgeSpecs = edgeStrips(chordDs, edges, strips);
+        edgeSpecs = edgeStrips(
+            chordDs,
+            edges,
+            strips.map((st) => ({
+                ...st,
+                keyframes: stripKeyframes(ecs, st.id).map((k) => ({ s: k.s, v: k.v })),
+            })),
+        );
     }
     return {
         kind: "geo",
@@ -3672,7 +3919,14 @@ export function stripsForStep(ecs: State, sectionId: number, step: Step): StripS
     const rows = sectionStrips(ecs, sectionId);
     if (rows.length === 0) return undefined;
     const ds = new Float32Array(step.edges).fill(step.ds);
-    return edgeStrips(ds, step.edges, rows);
+    return edgeStrips(
+        ds,
+        step.edges,
+        rows.map((st) => ({
+            ...st,
+            keyframes: stripKeyframes(ecs, st.id).map((k) => ({ s: k.s, v: k.v })),
+        })),
+    );
 }
 
 /** a force section's dense bake, as `geofit` reads it: its own recovered positions + display
@@ -3758,6 +4012,9 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
     // regardless of which authoring idiom the section uses (`kex2d-map.md`'s Velocity strips).
     for (const st of sectionStrips(ecs, sec.id)) {
         h += `,V${st.id}=${st.start}:${st.end}:${st.value}`;
+        for (const k of stripKeyframes(ecs, st.id)) {
+            h += `;${k.id}=${k.s}:${k.v}`;
+        }
     }
     return h;
 }

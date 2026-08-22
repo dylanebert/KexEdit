@@ -662,7 +662,18 @@ export function convertDomain(h: History, ecs: State, target: Domain): boolean {
                 }
                 // clamp against the section's converted exit
                 newEnd = Math.min(newEnd, at(m, w, snap.length).value);
-                return { ...st, start: newStart, end: newEnd };
+                return {
+                    ...st,
+                    start: newStart,
+                    end: newEnd,
+                    // strip keyframes' `s` is on the same axis as the strip's `start`/`end`,
+                    // so each converts independently through the same window. `v` (m/s) is
+                    // domain-independent. Clipped to the converted extent (clip-to-extent).
+                    keyframes: st.keyframes.map((k) => ({
+                        ...k,
+                        s: Math.max(newStart, Math.min(newEnd, at(m, w, k.s).value)),
+                    })),
+                };
             }),
         };
     });

@@ -76,6 +76,11 @@ import {
     type StripState,
     stripState,
     restoreStrip,
+    createStripKeyframe as createStripKf,
+    destroyStripKeyframe,
+    spawnStripKeyframe,
+    stripKeyframeState,
+    type StripKeyframeState,
     setTrackDomain,
     trackDomain,
     type TrackV0State,
@@ -623,6 +628,57 @@ export function beginStripMove(ecs: State, id: number): void {
         (st: StripState) => restoreStrip(ecs, st),
         (a: StripState, b: StripState) =>
             a.start === b.start && a.end === b.end && a.value === b.value,
+    );
+}
+
+// ── velocity-strip keyframes (T2: value in the graph) ──────────────────────────
+
+/** author a new velocity keyframe on a strip, recording an undoable add — `createForce`'s
+ *  strip-keyframe twin. The id is allocated once; undo destroys by it and redo re-spawns
+ *  verbatim. */
+export function addStripKeyframe(
+    h: History,
+    ecs: State,
+    stripId: number,
+    s: number,
+    v: number,
+): number {
+    const pre = selHook?.snapshot(ecs);
+    const id = createStripKf(ecs, stripId, s, v);
+    record(
+        h,
+        {
+            apply: () => spawnStripKeyframe(ecs, stripId, id, s, v),
+            reverse: () => destroyStripKeyframe(ecs, id),
+        },
+        pre,
+    );
+    return id;
+}
+
+/** delete a velocity keyframe by stable id as one undoable entry. */
+export function deleteStripKeyframe(h: History, ecs: State, id: number): void {
+    const pre = selHook?.snapshot(ecs);
+    const st = stripKeyframeState(ecs, id);
+    if (!st) return;
+    destroyStripKeyframe(ecs, id);
+    record(
+        h,
+        {
+            apply: () => destroyStripKeyframe(ecs, id),
+            reverse: () => spawnStripKeyframe(ecs, st.strip, st.id, st.s, st.v),
+        },
+        pre,
+    );
+}
+
+/** open a gesture on a strip-keyframe drag, snapshotting the keyframe's full state.
+ *  commit coalesces the live writes into one entry; a no-move release records nothing. */
+export function beginStripKeyframeMove(ecs: State, id: number): void {
+    begin(
+        () => stripKeyframeState(ecs, id),
+        (st: StripKeyframeState) => spawnStripKeyframe(ecs, st.strip, st.id, st.s, st.v),
+        (a: StripKeyframeState, b: StripKeyframeState) => a.s === b.s && a.v === b.v,
     );
 }
 

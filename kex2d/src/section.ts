@@ -104,13 +104,21 @@ export interface SectionResult {
  *  DOF-independent: `start`/`end`/`value` are stored constants in the
  *  section's own domain coordinate, never a function of the live march
  *  (`kex2d-map.md`'s authored-control exception, the invariant strips
- *  ground). C2 ships only the constant curve; an editable curve inside a
- *  strip is C6's `storedCurve(i)`, the same closure shape `stripOverride`
- *  already generalizes to. */
+ *  ground). T2 generalizes the constant to a per-edge curve: when `values`
+ *  is present it carries pre-evaluated v² (one per edge in `[lo, end)`,
+ *  indexed `k − lo`), evaluated from the strip's keyframes on the force-curve
+ *  machinery (`profile.sampleForce`). When `values` is absent (no keyframes)
+ *  the constant `value` is used — the After Effects stopwatch reading (no
+ *  keyframes means one constant across the span). */
 export interface Strip {
     start: number;
     end: number;
     value: number;
+    /** per-edge v², indexed `[0, end − lo)`. When present, overrides the
+     *  constant `value` for each edge in the strip's range. Pre-evaluated
+     *  from the strip's keyframes at spec-build time (`edgeStrips`), so the
+     *  per-edge closure is a lookup, not a curve evaluation. */
+    values?: Float32Array;
 }
 
 /** build the per-edge v² override `forward.step`/`forward.integrate`/
@@ -131,7 +139,10 @@ export function stripOverride(
     return (k: number) => {
         for (const s of strips) {
             const lo = s.start === s.end ? s.start - 1 : s.start;
-            if (k >= lo && k < s.end) return s.value * s.value;
+            if (k >= lo && k < s.end) {
+                if (s.values) return s.values[k - lo];
+                return s.value * s.value;
+            }
         }
         return undefined;
     };

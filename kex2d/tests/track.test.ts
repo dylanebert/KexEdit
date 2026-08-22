@@ -12,6 +12,7 @@ import {
     createForcePoint,
     createSection,
     createStrip,
+    createStripKeyframe,
     createTrack,
     destroyStrip,
     edgeStrips,
@@ -24,6 +25,8 @@ import {
     stripOverlapped,
     stripSeedValue,
     stripState,
+    stripKeyframeState,
+    stripKeyframes,
     setStrip,
     stripsForStep,
     validStripValue,
@@ -3369,7 +3372,9 @@ describe("velocity strips — ECS layer (C3)", () => {
             end: r.end,
             value: r.value,
         }));
-        expect(restored).toEqual(snap.strips.map((s) => ({ ...s })));
+        expect(restored).toEqual(
+            snap.strips.map((s) => ({ id: s.id, start: s.start, end: s.end, value: s.value })),
+        );
     });
 
     test("a strip participates in bakeHash/authoredHash — a value edit forces a re-bake", () => {
@@ -3491,6 +3496,160 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(specs?.[0].start).toBe(Math.round(6 / step.ds));
         expect(specs?.[0].end).toBe(Math.round(18 / step.ds));
         expect(specs?.[0].value).toBe(5);
+    });
+
+    // ── T2: value in the graph — keyframed velocity curves on strips ─────────────
+
+    test("constant-when-no-keyframes: a strip with no keyframes holds v constant at its value", () => {
+        // RED-FIRST WITNESS: before T2, `stripOverride` returned `value * value` for every
+        // edge — this test pins that the constant path still holds when `values` is absent.
+        // A strip with keyframes would evaluate a curve; without keyframes the constant
+        // `value` is the After Effects stopwatch reading (no keyframes = one constant).
+        const { state, eid, sec } = track();
+        convertSection(state, sec);
+        createForcePoint(state, sec, 0, 1.3);
+        createForcePoint(state, sec, EXTEND_DIST, 1.3);
+        const value = 4;
+        createStrip(state, sec, 6, 18, value);
+        state.step(0);
+        const info = sectionInfo.get(sec);
+        const out = bakeOut.get(eid);
+        if (!info || !out) throw new Error("no bake");
+        const step = DS_NOMINAL;
+        const startEdge = Math.round(6 / step);
+        const endEdge = Math.round(18 / step);
+        for (let i = startEdge + 1; i <= endEdge; i++) {
+            expect(out.v[info.startSample + i]).toBeCloseTo(value, 4);
+        }
+    });
+
+    test("a strip with keyframes evaluates a velocity curve across its extent, Distance domain", () => {
+        // The wrong-granularity headline arm for T2: an interior-start, interior-end strip
+        // on a force section in the Distance domain, WITH keyframes — the curve is evaluated
+        // per-edge from the keyframes on the force-curve machinery (profile.sampleForce).
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const length = 20;
+        const sec = createSection(state, 0, SectionKind.Force, length);
+        createForcePoint(state, sec, 0, 1.3);
+        createForcePoint(state, sec, length, 1.3);
+        const start = 5;
+        const end = 15;
+        const stripId = createStrip(state, sec, start, end, 4) as number;
+        // two keyframes: a ramp from 3 to 7 m/s across the strip
+        createStripKeyframe(state, stripId, start, 3);
+        createStripKeyframe(state, stripId, end, 7);
+        state.step(0);
+        const info = sectionInfo.get(sec);
+        const out = bakeOut.get(eid);
+        if (!info || !out) throw new Error("no bake");
+        const step = DS_NOMINAL;
+        const startEdge = Math.round(start / step);
+        const endEdge = Math.round(end / step);
+        // inside the strip, v should follow the keyframed curve, NOT the constant value
+        // the curve ramps from 3 to 7; check endpoints match keyframe values and the
+        // curve spans a range (not flat at the constant 4)
+        expect(out.v[info.startSample + startEdge + 1]).toBeCloseTo(3, 0);
+        expect(out.v[info.startSample + endEdge]).toBeCloseTo(7, 0);
+        const interiorVs: number[] = [];
+        for (let i = startEdge + 1; i <= endEdge; i++) {
+            interiorVs.push(out.v[info.startSample + i]);
+        }
+        const minV = Math.min(...interiorVs);
+        const maxV = Math.max(...interiorVs);
+        expect(maxV - minV).toBeGreaterThan(2);
+    });
+
+    test("a strip with keyframes evaluates a velocity curve across its extent, Time domain", () => {
+        // The wrong-granularity headline arm for T2: an interior-start, interior-end strip
+        // on a force section in the Time domain, WITH keyframes.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        setTrackDomain(state, Domain.Time);
+        const length = 4; // 4 seconds at DT_NOMINAL
+        const sec = createSection(state, 0, SectionKind.Force, length);
+        createForcePoint(state, sec, 0, 1.3);
+        createForcePoint(state, sec, length, 1.3);
+        const start = 1;
+        const end = 3;
+        const stripId = createStrip(state, sec, start, end, 4) as number;
+        createStripKeyframe(state, stripId, start, 3);
+        createStripKeyframe(state, stripId, end, 7);
+        state.step(0);
+        const info = sectionInfo.get(sec);
+        const out = bakeOut.get(eid);
+        if (!info || !out) throw new Error("no bake");
+        const step = DT_NOMINAL;
+        const startEdge = Math.round(start / step);
+        const endEdge = Math.round(end / step);
+        // the curve ramps from 3 to 7; check that the endpoints match the keyframe values
+        // and that the curve is NOT flat at the constant (it varies across the span)
+        expect(out.v[info.startSample + startEdge + 1]).toBeCloseTo(3, 0);
+        expect(out.v[info.startSample + endEdge]).toBeCloseTo(7, 0);
+        // collect interior velocities and confirm they span a range (not flat at 4)
+        const interiorVs: number[] = [];
+        for (let i = startEdge + 1; i <= endEdge; i++) {
+            interiorVs.push(out.v[info.startSample + i]);
+        }
+        const minV = Math.min(...interiorVs);
+        const maxV = Math.max(...interiorVs);
+        expect(maxV - minV).toBeGreaterThan(2); // the curve spans from ~3 to ~7
+    });
+
+    test("clip-to-extent: a keyframe placed outside the strip's extent is clamped to it", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const start = 6;
+        const end = 18;
+        const stripId = createStrip(state, sec, start, end, 4) as number;
+        // a keyframe before the strip's start should be clamped to `start`
+        const kfBefore = createStripKeyframe(state, stripId, 2, 3);
+        const stBefore = stripKeyframeState(state, kfBefore);
+        expect(stBefore?.s).toBe(start);
+        // a keyframe after the strip's end should be clamped to `end`
+        const kfAfter = createStripKeyframe(state, stripId, 30, 7);
+        const stAfter = stripKeyframeState(state, kfAfter);
+        expect(stAfter?.s).toBe(end);
+        // a keyframe inside the strip stays put
+        const kfInside = createStripKeyframe(state, stripId, 12, 5);
+        const stInside = stripKeyframeState(state, kfInside);
+        expect(stInside?.s).toBe(12);
+    });
+
+    test("strip keyframes round-trip through snapshotSection/restoreSection byte-identical", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const stripId = createStrip(state, sec, 4, 16, 5) as number;
+        createStripKeyframe(state, stripId, 6, 3);
+        createStripKeyframe(state, stripId, 14, 7);
+        const snap = snapshotSection(state, sec);
+        expect(snap.strips[0].keyframes.length).toBe(2);
+        // destroy everything and restore
+        for (const st of sectionStrips(state, sec)) destroyStrip(state, st.id);
+        expect(sectionStrips(state, sec).length).toBe(0);
+        restoreSection(state, snap);
+        const kfs = stripKeyframes(state, stripId);
+        expect(kfs.length).toBe(2);
+        expect(kfs[0].s).toBe(6);
+        expect(kfs[0].v).toBe(3);
+        expect(kfs[1].s).toBe(14);
+        expect(kfs[1].v).toBe(7);
+    });
+
+    test("strip keyframes participate in bakeHash — a keyframe edit forces a re-bake", () => {
+        const { state, eid, sec } = track();
+        convertSection(state, sec);
+        createForcePoint(state, sec, 0, 1.3);
+        createForcePoint(state, sec, EXTEND_DIST, 1.3);
+        const stripId = createStrip(state, sec, 6, 18, 4) as number;
+        state.step(0);
+        const before = bakeOut.get(eid)?.hash;
+        createStripKeyframe(state, stripId, 10, 3);
+        state.step(0);
+        const after = bakeOut.get(eid)?.hash;
+        expect(after).not.toBe(before);
     });
 });
 
