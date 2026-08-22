@@ -6,6 +6,7 @@ import { cartArc, cartState, CartPlugin } from "./cart";
 import { editor, sandbox, select, selectionHook } from "./editor";
 import {
     appendSection,
+    addStripKeyframe,
     convertSection,
     createForce,
     history,
@@ -413,6 +414,8 @@ if (import.meta.env.DEV) {
                 s: k.s,
                 v: k.v,
             })),
+        addStripKf: (stripId: number, s: number, v: number): number =>
+            addStripKeyframe(history, ecs, stripId, s, v),
         // the bake's own infeasibility signal (`bakeOut.feasible`/`firstInfeasible`) — the input
         // the dashed-red track pass and the warning banner both read: the first infeasible sample,
         // how many samples are infeasible track-wide, the stable id of the section that OWNS the first one

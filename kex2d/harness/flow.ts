@@ -174,6 +174,7 @@ export interface Kex {
     selectedStrip(): number | null;
     stripsOf(i: number): { id: number; start: number; end: number; value: number }[];
     stripKeyframesOf(stripId: number): { id: number; s: number; v: number }[];
+    addStripKf(stripId: number, s: number, v: number): number;
     spanMidAt(i: number): { x: number; y: number } | null;
     startAt(): { x: number; y: number } | null;
     tTotal(): number;

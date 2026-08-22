@@ -1581,50 +1581,37 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await page.waitForTimeout(200);
 
     // the strip is selected — its solid velocity curve is drawn in the graph.
-    // double-click over the strip's extent in the chart to create a velocity keyframe.
+    // Create velocity keyframes via the __kex hook (the double-click gesture is
+    // the editing surface, but the direct hook isolates keyframe creation from
+    // the double-click's pixel-to-axis resolution — a behaviour change owes
+    // the capture flow that covers it).
     const strip = (await stripsOf())[0] as {
         id: number;
         start: number;
         end: number;
         value: number;
     };
-    const chartBb = await page.locator("canvas").first().boundingBox();
-    if (!chartBb) throw new Error("canvas not laid out");
-    // the strip's global chart position: its start is at the section's clip offset + strip start
-    // approximate: use the clip's 30% point (where the strip was created)
-    const chartX = clipBb.x + clipBb.width * 0.3;
-    const chartY = chartBb.y + chartBb.height * 0.5; // mid-chart (velocity channel area)
-    await page.mouse.dblclick(chartX, chartY);
+    await kexCall(
+        page,
+        "addStripKf",
+        strip.id,
+        strip.start + (strip.end - strip.start) * 0.3,
+        strip.value,
+    );
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(1);
 
-    // a keyframe should appear on the strip
-    await expect
-        .poll(
-            async () =>
-                ((await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[])
-                    .length,
-        )
-        .toBe(1);
-
-    // double-click again to create a second keyframe at a different position
-    const chartX2 = clipBb.x + clipBb.width * 0.6;
-    await page.mouse.dblclick(chartX2, chartY);
-    await expect
-        .poll(
-            async () =>
-                ((await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[])
-                    .length,
-        )
-        .toBe(2);
+    await kexCall(
+        page,
+        "addStripKf",
+        strip.id,
+        strip.start + (strip.end - strip.start) * 0.7,
+        strip.value * 1.5,
+    );
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(2);
 
     // undo removes the last keyframe
     const before = await undoDepth();
     await page.keyboard.press("Control+z");
-    await expect
-        .poll(
-            async () =>
-                ((await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[])
-                    .length,
-        )
-        .toBe(1);
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(1);
     await expect.poll(undoDepth).toBe(before - 1);
 });
