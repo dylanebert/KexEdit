@@ -161,12 +161,12 @@ interface EditorState {
      *  or null when closed. summoned by right-clicking the ruler scrub zone (the Premiere/
      *  REAPER/Cubase reference: time-display format lives on the ruler's own context menu), the
      *  same shared menu language as `context`/`nodeMenu`/`forceMenu`. No target id — it has one
-     *  subject, the timeline itself. A row's pick is a document conversion op
-     *  (`domain.convertDomain`), not a view write, so no basis state lives here. */
+     *  subject, the timeline itself. A row's pick is a pure view write
+     *  (`domain.convertDomain` writes `Track.domain` alone), so no basis state lives here. */
     rulerMenu: { x: number; y: number } | null;
     /** the velocity-strip band context menu (Add / Delete): screen position + the target
-     *  section id and the clicked station (section-local, in the track domain's own unit), or
-     *  null when closed. Summoned by right-clicking the band — on empty space for creation
+     *  section id and the clicked station (section-local, in meters of arclength — the
+     *  store's unit always), or null when closed. Summoned by right-clicking the band — on empty space for creation
      *  (the row names the thing; the strip appears at the clicked station at minimum extent,
      *  selected, curve flattened and solid), on an existing strip for deletion. Empty band
      *  space is inert — no plain-drag-on-empty, no modifier-drag, no standing mode toggle

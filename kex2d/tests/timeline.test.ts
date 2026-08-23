@@ -1243,4 +1243,27 @@ describe("Timeline.svelte's velocity band is a lane at the clip lane's own heigh
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
         expect(src).toContain("const STRIP_H = GAP_H;");
     });
+
+    // `harness/flow.ts`'s `HBAND_H` hand-mirrors `Timeline.svelte`'s `GAP_H` (S3 residue: the
+    // harness can't import the Svelte module, so it carries its own literal copy of the band
+    // height, with no runtime seam of its own to pin it against). Read both files' own numbers
+    // and assert equality directly, so either side moving independently reds this rather than
+    // silently drifting the two apart — `colors.test.ts`'s cross-file idiom, not a fixed literal
+    // on either side.
+    test("harness/flow.ts's HBAND_H stays equal to Timeline.svelte's GAP_H (no independent drift)", () => {
+        const timelineSrc = readFileSync(
+            new URL("../src/Timeline.svelte", import.meta.url),
+            "utf8",
+        );
+        const gapMatch = timelineSrc.match(/const GAP_H = (\d+(?:\.\d+)?);/);
+        if (!gapMatch) throw new Error("GAP_H literal not found in Timeline.svelte");
+        const gapH = Number(gapMatch[1]);
+
+        const flowSrc = readFileSync(new URL("../harness/flow.ts", import.meta.url), "utf8");
+        const hbandMatch = flowSrc.match(/export const HBAND_H = (\d+(?:\.\d+)?);/);
+        if (!hbandMatch) throw new Error("HBAND_H literal not found in harness/flow.ts");
+        const hbandH = Number(hbandMatch[1]);
+
+        expect(hbandH).toBe(gapH);
+    });
 });
