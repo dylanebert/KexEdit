@@ -634,6 +634,30 @@ export function uToD(mapping: Mapping | null, domain: Domain, u: number): number
     return domain === Domain.Time && mapping ? timeToArc(mapping, u) : u;
 }
 
+/** `uToD`'s twin for the extent trim: past the bake's own end in Time domain, arclength keeps
+ *  advancing at the bake's own EXIT speed (`vExit`) instead of clamping to the last finite
+ *  sample. Lengthening a section's authored extent past what the live profile currently bakes
+ *  is a legitimate author intent (the Locked decision's own lens, S6) — the addressable span's
+ *  lead-out margin sits right there for exactly this — so the trim EXTRAPOLATES
+ *  (`s_end + v_exit·Δt`) where every other Time-view reader stays clamped to the last finite t
+ *  (`uToD`, the stall styling's own clamp — `dToU`/`uToD`'s docblock). Within the bake's own
+ *  covered range this is `uToD` exactly; the divergence only starts past `mapping.t[n-1]`.
+ *  Identity in Distance and with no live bake, matching `uToD`'s own fallbacks. `vExit` is the
+ *  caller's to floor — Timeline.svelte floors it at `V_FLOOR`, the same guard `computeTime`
+ *  marches under, so a near-zero exit speed extrapolates finite-but-slow rather than dividing
+ *  the drag's own Δt by zero. */
+export function uToDExtend(
+    mapping: Mapping | null,
+    domain: Domain,
+    u: number,
+    vExit: number,
+): number {
+    if (domain !== Domain.Time || !mapping) return uToD(mapping, domain, u);
+    const tEnd = mapping.t[mapping.n - 1];
+    if (u <= tEnd) return uToD(mapping, domain, u);
+    return mapping.arc[mapping.n - 1] + vExit * (u - tEnd);
+}
+
 /** the lead-out floor (`marginArc`'s one dimensional constant) on the active chart axis:
  *  `MARGIN_M` metres, or its time twin at the default entry speed (`MARGIN_M / V0`, `T_GRID`'s
  *  derivation), so a short ride frames the same substantial lead-out to build into either way. */

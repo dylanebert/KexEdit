@@ -33,6 +33,7 @@ import {
     timeToArc,
     trimTargets,
     uToD,
+    uToDExtend,
     type View,
     xGrow,
     yEase,
@@ -1113,6 +1114,47 @@ describe("dToU / uToD — arclength → chart-axis projection", () => {
         // plateau's own time span — the tie never leaks into a neighboring segment.
         expect(dToU(stalled, Domain.Time, 1.999999)).toBeCloseTo(1, 4);
         expect(dToU(stalled, Domain.Time, 2.000001)).toBeGreaterThanOrEqual(3);
+    });
+});
+
+describe("uToDExtend — the extent trim's extrapolation past the bake's own end", () => {
+    const m: Mapping = {
+        arc: Float64Array.from([0, 1, 3, 6, 10]),
+        t: Float64Array.from([0, 0.5, 1, 2, 4]),
+        n: 5,
+    };
+
+    test("within the bake's covered range it is uToD exactly, at any vExit", () => {
+        for (const u of [0, 0.5, 1.5, 4]) {
+            expect(uToDExtend(m, Domain.Time, u, 3)).toBeCloseTo(uToD(m, Domain.Time, u), 9);
+            expect(uToDExtend(m, Domain.Time, u, 30)).toBeCloseTo(uToD(m, Domain.Time, u), 9);
+        }
+    });
+
+    test("past the last finite t, arclength advances at vExit — s_end + v_exit·Δt", () => {
+        // t_end = 4, arc_end = 10; 1.5 s past the end at vExit = 4 m/s lands at 10 + 6 = 16.
+        expect(uToDExtend(m, Domain.Time, 5.5, 4)).toBeCloseTo(16, 9);
+        // right at the knot the two formulas agree (Δt = 0).
+        expect(uToDExtend(m, Domain.Time, 4, 4)).toBeCloseTo(10, 9);
+    });
+
+    test("clamped uToD would instead pin to arc_end — the defect this function exists to fix", () => {
+        expect(uToD(m, Domain.Time, 5.5)).toBeCloseTo(10, 9); // the clamp, NOT the extrapolation
+        expect(uToDExtend(m, Domain.Time, 5.5, 4)).not.toBeCloseTo(10, 1);
+    });
+
+    test("Distance is the identity, mapping or vExit notwithstanding", () => {
+        for (const mapping of [m, null]) {
+            expect(uToDExtend(mapping, Domain.Distance, 42, 4)).toBe(42);
+        }
+    });
+
+    test("no-bake fallback reads Distance (identity) even when Time is requested", () => {
+        expect(uToDExtend(null, Domain.Time, 42, 4)).toBe(42);
+    });
+
+    test("a near-zero vExit still extrapolates finite -- the caller's job to floor it, not this function's", () => {
+        expect(uToDExtend(m, Domain.Time, 5, 0)).toBeCloseTo(10, 9);
     });
 });
 

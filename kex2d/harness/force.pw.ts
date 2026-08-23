@@ -1499,6 +1499,7 @@ test("timeline domain flow — Time-view gesture writes arclength through the fr
     const domain = () => kexCall(page, "domain");
     const sectionLengths = () => kexCall(page, "sectionLengths");
     const dOf = (u: number) => kexCall(page, "dOf", u);
+    const dOfTrim = (u: number) => kexCall(page, "dOfTrim", u);
     const uOf = (d: number) => kexCall(page, "uOf", d);
     const xView = () => kexCall(page, "xView");
     const rulerZone = page.locator(".rulerzone");
@@ -1580,7 +1581,10 @@ test("timeline domain flow — Time-view gesture writes arclength through the fr
     const TrimPx = 50;
     const trimUFinal = trimU0 + TrimPx / pxPerU2;
     const dTrimStart = await dOf(lenStartU);
-    const dTrimFinal = await dOf(trimUFinal);
+    // `dOfTrim` (S6b), not `dOf`: the extent trim EXTRAPOLATES past the bake's own end (the
+    // handle's landing here reaches into the ruler's lead-out margin at this zoom) — `dOf`'s own
+    // clamp is what `applyLen` used to read and no longer does.
+    const dTrimFinal = await dOfTrim(trimUFinal);
     const tcy = tb.y + tb.height / 2;
     await trim.hover();
     await page.keyboard.down("Control");
@@ -1590,6 +1594,97 @@ test("timeline domain flow — Time-view gesture writes arclength through the fr
     await page.keyboard.up("Control");
     const expectedLen = dTrimFinal - dTrimStart;
     await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(expectedLen, 0);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(len0, 3);
+});
+
+// S6b: the ruler and every readout (a selected keyframe's typed field here — the extent trim and
+// strip/keyframe positions share the SAME `uOf`-projected fields this flow's S6c sibling already
+// pins, `forceU().u`/`BandStrip.u0`/`StripKfPt.u`) project through the live bake's t(s) table, and
+// an extent trim dragged past the bake's own end EXTRAPOLATES at the exit speed instead of
+// clamping to the last finite sample. RED on the pre-fix tree: `applyLen` read plain `dOf`
+// (`uToD`'s own clamp at `mapping.t[n-1]`), so dragging the trim handle into the ruler's own
+// lead-out margin landed the extent at the bake's CURRENT total arclength no matter how far past
+// it the cursor went — confirmed by temporarily reverting `uToDExtend` to its clamped form and
+// restoring after (`timeline.test.ts`'s own red-first witness pins the pure function; this pins
+// the wiring).
+test("timeline domain flow — Time-view readouts project through t(s), and the extent trim extrapolates past the bake's end (S6b)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    const forceU = () => kexCall(page, "forceU");
+    const forceCount = () => kexCall(page, "forceCount");
+    const domain = () => kexCall(page, "domain");
+    const sectionLengths = () => kexCall(page, "sectionLengths");
+    const dOf = (u: number) => kexCall(page, "dOf", u);
+    const dOfTrim = (u: number) => kexCall(page, "dOfTrim", u);
+    const uOf = (d: number) => kexCall(page, "uOf", d);
+    const tTotal = () => kexCall(page, "tTotal");
+    const xView = () => kexCall(page, "xView");
+    const rulerZone = page.locator(".rulerzone");
+    const openRulerMenu = () => rulerZone.click({ button: "right", position: { x: 40, y: 10 } });
+
+    await kexCall(page, "seedForceBump");
+    await expect.poll(forceCount).toBe(5);
+    await kexCall(page, "setV0", 25); // a non-default speed, S6c's own convention -- v(s) genuinely varies
+    await frameTimeline(page);
+
+    await openRulerMenu();
+    await clickMenuItem(page, ".rmenu", "Seconds");
+    await expect.poll(domain).toBe("time");
+    await frames(page, 2);
+
+    // ── (d), the keyframe readout: the selected point's typed position field shows the
+    // PROJECTED time (`uOf`), never the raw stored arclength -- the same seam the diamond's
+    // drawn x and every gesture writer already read through (S6a). ──
+    const crest = 2;
+    const before = await forceU();
+    const fhit = page.locator(".fhit");
+    const grab = await fhit.nth(crest).boundingBox();
+    if (!grab) throw new Error("the crest diamond is not laid out");
+    await page.mouse.click(grab.x + grab.width / 2, grab.y + grab.height / 2);
+    const posField = page.locator('input[aria-label="Point time (s)"]');
+    await expect(posField).toBeVisible();
+    const expectedU = await uOf(before[crest].s);
+    const shownU = Number(await posField.inputValue());
+    expect(shownU).toBeCloseTo(expectedU, 1);
+    // the positive control: the raw stored arclength (what a pre-S6a display would have shown)
+    // reads far from the projected time at this non-default speed.
+    expect(Math.abs(shownU - before[crest].s)).toBeGreaterThan(0.5);
+    await page.keyboard.press("Escape");
+
+    // ── the extent trim, dragged past the bake's own end. read the projection BOTH ways
+    // (`dOf`'s clamp and `dOfTrim`'s extrapolation) BEFORE the gesture starts -- the same live
+    // table `lenDown` will freeze. ──
+    const lenStartU = (await forceU())[0].u; // the section's own entry (s = 0 seed)
+    const dLenStart = await dOf(lenStartU);
+    const len0 = (await sectionLengths())[0];
+    const trimU0 = await uOf(dLenStart + len0); // the handle's own current axis position
+    const uPastEnd = (await tTotal()) + 2; // 2s past the bake's own end, into the lead-out margin
+    const clampedD = await dOf(uPastEnd); // what the OLD (pre-S6b) clamp would have landed at
+    const extrapolatedD = await dOfTrim(uPastEnd); // what the extrapolation lands at
+    expect(extrapolatedD).toBeGreaterThan(clampedD + 1); // the two genuinely diverge past the end
+
+    const trim = page.locator(".clip-trim");
+    await expect(trim).toHaveCount(1);
+    const tb = await trim.boundingBox();
+    if (!tb) throw new Error("trim handle not laid out");
+    const [, pxPerU] = await xView();
+    const dragPx = (uPastEnd - trimU0) * pxPerU;
+    const tcy = tb.y + tb.height / 2;
+    await trim.hover();
+    await page.keyboard.down("Control"); // bypass the snap magnet -- deterministic px
+    await page.mouse.down();
+    await page.mouse.move(tb.x + tb.width / 2 + dragPx, tcy, { steps: 10 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+
+    const expectedLen = extrapolatedD - dLenStart;
+    await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(expectedLen, 0);
+    // the positive control: the pre-fix clamped formula would have landed far short of this.
+    const landedLen = (await sectionLengths())[0];
+    expect(Math.abs(landedLen - (clampedD - dLenStart))).toBeGreaterThan(0.5);
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(len0, 3);
 });
