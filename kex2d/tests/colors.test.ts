@@ -17,6 +17,64 @@ function whiteMix(hex: string): string {
     return `#${((up(r) << 16) | (up(g) << 8) | up(b)).toString(16).padStart(6, "0")}`;
 }
 
+// canvas 2D `fillStyle`/`strokeStyle` ignores a CSS custom property (`var(--…)`) string — the
+// value is a color-syntax literal resolved once, never against a live stylesheet cascade, so
+// an assignment reading `var(--velocity)` silently paints nothing (the S1 Visibility bug: every
+// unselected strip drew invisible). This is a SOURCE-text arm by design (kex2d's declared-
+// registry law, `editor-ui.md` Menus): CSS custom properties have no cheap behavioral read from
+// a canvas draw call.
+
+/** every `.fillStyle = …` / `.strokeStyle = …` canvas assignment across a text corpus whose
+ *  right-hand side contains a CSS custom property (`var(--…)`), paired with the file it came
+ *  from. Walks each assignment up to its terminating `;` (not a per-line grep — a multi-line
+ *  ternary, the strip band's own selected/unselected fill, spans several lines). Takes the
+ *  corpus as an ARGUMENT (`scannedFiles()`'s own shape, below) rather than reading source
+ *  itself, so the real arm and its positive control run the SAME function over different text —
+ *  the declared-registry law: a control that reconstructs the scan inline proves only the diff
+ *  logic, never the enumerator (a scanner gone blind on a shape it doesn't parse would still
+ *  pass a hand-copied regex run over its own fixture). */
+function styleVarHits(corpus: { file: string; text: string }[]): { file: string; text: string }[] {
+    const hits: { file: string; text: string }[] = [];
+    const re = /\.(fillStyle|strokeStyle)\s*=\s*([\s\S]*?);/g;
+    for (const { file, text } of corpus) {
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(text))) {
+            if (m[2].includes("var(--")) hits.push({ file, text: m[0] });
+        }
+    }
+    return hits;
+}
+
+describe("canvas fillStyle/strokeStyle never carries a CSS custom property (S1 Visibility)", () => {
+    test("no `var(--` assignment anywhere under src/ (svelte + ts, recursive)", () => {
+        // the whole tree (`scannedFiles()`, below — the cursor allowlist's own corpus), not just
+        // Timeline.svelte: a `var(--` assignment landing in any other file must still be caught.
+        expect(styleVarHits(scannedFiles())).toEqual([]);
+    });
+
+    // the positive control (editor-ui.md Menus' source-pin law, both directions): a genuine
+    // `var(--` assignment must be CAUGHT, so the arm above isn't vacuously green over a scanner
+    // that can't see the multi-line ternary shape the real defect took. Calls `styleVarHits`
+    // itself over a hand-built corpus — never a second, hand-copied regex — so a scanner
+    // regression reds BOTH this and the real arm.
+    test("a var(--) assignment is caught (positive control)", () => {
+        const fixture = [
+            {
+                file: "Fake.svelte",
+                text:
+                    "ctx.fillStyle = sel\n" +
+                    '    ? "color-mix(in srgb, var(--velocity) 85%, transparent)"\n' +
+                    '    : "color-mix(in srgb, var(--velocity) 55%, transparent)";\n' +
+                    'ctx.strokeStyle = "var(--velocity)";',
+            },
+        ];
+        const hits = styleVarHits(fixture);
+        expect(hits.length).toBe(2);
+        expect(hits.every((h) => h.file === "Fake.svelte")).toBe(true);
+    });
+});
+
 describe("COLOR_VELOCITY — the timeline's own velocity-channel hue (editor-ui.md Mode vocabulary)", () => {
     // a new channel's whole point is to be its own meaning, not a re-hue of an existing one
     // (geo blue, force gold) — collision would read as "this is a force curve" or "this is
@@ -225,8 +283,8 @@ const CURSOR_ALLOWLIST: CursorSite[] = [
 
 /** every scanned source file's raw text — `.svelte` (CSS) and `.ts` (canvas assignments) alike,
  *  walked recursively (`Bun.Glob`, not `readdirSync` — the source-pin law, editor-ui.md Menus) —
- *  the one text corpus both `cursorSites()` and its scanner-level control (below) read, so the
- *  two can't drift over which files exist. */
+ *  the one text corpus `cursorSites()`, its own scanner-level control, and `styleVarHits`
+ *  (above) all read, so none of the three can drift over which files exist. */
 function scannedFiles(): { file: string; text: string }[] {
     const src = fileURLToPath(new URL("../src", import.meta.url));
     const files = [
