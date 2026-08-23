@@ -2548,6 +2548,22 @@ const bandHit = $derived.by((): StripHit => {
     if (bandHoverX === null) return { kind: "empty" };
     return classifyStripHit(bandHoverX, bandCandidates(), STRIP_HIT_R);
 });
+// removing the unknown state rather than managing it: the theorized failure was a FOREIGN
+// gesture capturing the pointer on `canvas` so `.hbandzone`'s own `onpointermove`/
+// `onpointerleave` never fire when it ends off the band, leaving `bandHoverX` stale at its
+// pre-gesture position to re-derive into a hover the instant `editor.dragging` drops (`bandHit`'s
+// guard above only suppresses WHILE dragging is true). Investigated with a debug hook across two
+// real repros (a force-keyframe drag, and a middle-click pan starting AT the hovered position,
+// both captured on `canvas` via `beginDrag`): in this Chromium/Playwright environment
+// `onpointerleave` fired correctly regardless of capture in both cases, so `bandHoverX` was
+// already `null` well before `editor.dragging` dropped — the theorized staleness window never
+// opened, and no repro was found that leaves it stale. Kept anyway as a zero-cost hardening
+// (nulling on every falling edge, band's-own-drag included, costs nothing visible there: `bandUp`
+// leaves the strip selected, and both hover reads above already gate `!sel`) rather than a
+// demonstrated fix — there is no red-first check for this one.
+$effect(() => {
+    if (!editor.dragging) bandHoverX = null;
+});
 
 interface StripDrag {
     id: number;
@@ -3122,8 +3138,10 @@ function render(ctx: CanvasRenderingContext2D): void {
         // STROKE it takes, never a cursor swap (the S3 premise correction — no `ew-resize` here,
         // `editor-ui.md`'s field-row scrub idiom stays `.fld .key`'s own). A bright edge line at
         // exactly the boundary, the force clip-trim's own hover-brightens-the-handle shape
-        // (`.clip-trim:hover`) read onto a canvas-drawn edge instead of a DOM one.
-        if (bandHit.kind === "endpoint" && bandHit.id === s.id) {
+        // (`.clip-trim:hover`) read onto a canvas-drawn edge instead of a DOM one. `!sel` for the
+        // same reason `bodyHover` carries it: hover is invisible on an already-selected element
+        // (editor-ui.md Kind color) — unconditional, no exemption for the edge case.
+        if (!sel && bandHit.kind === "endpoint" && bandHit.id === s.id) {
             const ex = bandHit.edge === "start" ? cx0 : cx0 + cw;
             ctx.strokeStyle = hovered(COLOR_VELOCITY);
             ctx.lineWidth = 2;

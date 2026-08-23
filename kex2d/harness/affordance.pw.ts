@@ -284,3 +284,63 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
             `empty band space must stay inert under hover: rest ${JSON.stringify(restEmpty)}, hovered ${JSON.stringify(hoverEmpty)}`,
         ).toBeLessThanOrEqual(EmptyTol);
 });
+
+// ── S3 review fixes ──────────────────────────────────────────────────────────────────────────
+// Finding 1 against the S3 diff: the endpoint/resize hover stroke had no `!sel` guard, so
+// hovering a selected strip's edge layered a `hovered()` stroke over the selection outline
+// (`bodyHover` three lines up already carried the guard, citing the same rule). Covered below,
+// red-first.
+//
+// Finding 2 (should-fix, not blocker): a foreign gesture holding pointer capture on `canvas`
+// was theorized to leave `.hbandzone`'s own `onpointermove`/`onpointerleave` unfired, so
+// `bandHoverX` would freeze and re-derive into a stale hover once `editor.dragging` dropped.
+// Investigated with a debug hook (`Timeline.svelte`'s own comment on the fix) across two real
+// repros — a foreign force-keyframe drag, and a middle-click pan starting AT the hovered
+// position — and in this Chromium/Playwright environment `onpointerleave` fired correctly
+// regardless of capture in both cases: `bandHoverX` was already `null` well before
+// `editor.dragging` dropped, so the theorized staleness window never opened. No capture arm
+// exists for this one — a check that stays green with the fix reverted is not evidence, and
+// re-mutating confirmed exactly that (both directions green). The `$effect` guard is still in
+// `Timeline.svelte`, kept as a zero-cost hardening rather than a demonstrated fix.
+
+test("selected strip suppresses the endpoint hover stroke (S3 review finding 1)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+    await createStrip(page); // creation selects the strip — the review's own subject
+
+    const chartBox = await page.locator("canvas.chart").boundingBox();
+    if (!chartBox) throw new Error("chart canvas not laid out");
+    const toPage = (localX: number): [number, number] => [chartBox.x + localX, chartBox.y + bandY];
+
+    await expect.poll(() => kexCall(page, "selectedStrip")).not.toBeNull();
+    const strips = await kexCall(page, "stripPx");
+    expect(strips.length).toBe(1);
+    const { x0 } = strips[0];
+
+    // rest, still selected: no hover anywhere near the band.
+    await page.mouse.move(5, 5);
+    await frames(page, 1);
+    const restSelected = await probeChart(page, x0, bandY);
+    expect(restSelected).not.toBeNull();
+
+    // hover the SELECTED strip's own start edge with a real pointer move.
+    const [edgePageX, edgePageY] = toPage(x0);
+    await page.mouse.move(edgePageX, edgePageY);
+    await frames(page, 1);
+    const hoverSelectedEdge = await probeChart(page, x0, bandY);
+    expect(hoverSelectedEdge).not.toBeNull();
+
+    // the endpoint hover stroke must be invisible on an already-selected element (editor-ui.md
+    // Kind color) — no register above selection, unconditionally, the same law `bodyHover`
+    // already follows.
+    const SelHoverTol = 2;
+    if (restSelected && hoverSelectedEdge)
+        expect(
+            dist(hoverSelectedEdge, restSelected),
+            `a selected strip's edge must ignore hover: at-rest ${JSON.stringify(restSelected)}, hovered ${JSON.stringify(hoverSelectedEdge)}`,
+        ).toBeLessThanOrEqual(SelHoverTol);
+});
