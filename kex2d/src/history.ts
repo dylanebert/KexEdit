@@ -76,13 +76,11 @@ import {
     createStripKeyframe as createStripKf,
     destroyStripKeyframe,
     spawnStripKeyframe,
+    setStripKeyframe,
     stripKeyframeState,
     type StripKeyframeState,
     setTrackDomain,
     trackDomain,
-    type TrackV0State,
-    trackV0State,
-    setTrackV0,
     type TrackFrictionState,
     trackFrictionState,
     setTrackFriction,
@@ -652,11 +650,16 @@ export function deleteStripKeyframe(h: History, ecs: State, id: number): void {
 }
 
 /** open a gesture on a strip-keyframe drag, snapshotting the keyframe's full state.
- *  commit coalesces the live writes into one entry; a no-move release records nothing. */
+ *  commit coalesces the live writes into one entry; a no-move release records nothing.
+ *  Restores through `setStripKeyframe` (the live-write path itself, documented for
+ *  exactly this "gesture restore" use) rather than `spawnStripKeyframe` — the dragged
+ *  keyframe's entity is never destroyed mid-gesture, so re-creating it on undo left a
+ *  duplicate (S5, red-first witnessed: undo produced two rows sharing one stable id,
+ *  and `entrySpeed` read the wrong one off the pair). */
 export function beginStripKeyframeMove(ecs: State, id: number): void {
     begin(
         () => stripKeyframeState(ecs, id),
-        (st: StripKeyframeState) => spawnStripKeyframe(ecs, st.strip, st.id, st.s, st.v),
+        (st: StripKeyframeState) => setStripKeyframe(ecs, st.id, st.s, st.v),
         (a: StripKeyframeState, b: StripKeyframeState) => a.s === b.s && a.v === b.v,
     );
 }
@@ -862,19 +865,6 @@ export function commitChord(h: History, ecs: State, eid: number, armed: boolean)
         }
     }
     commit(h);
-}
-
-// ── track initial speed (v0) ───────────────────────────────────────────────────
-
-/** open a gesture on the track's initial-speed field (scrub or typed edit),
- *  snapshotting v0. commit coalesces the live writes into one entry; a no-change
- *  release records nothing. */
-export function beginV0(trackEid: number): void {
-    begin(
-        () => trackV0State(trackEid),
-        (st: TrackV0State) => setTrackV0(trackEid, st.v0),
-        (a: TrackV0State, b: TrackV0State) => a.v0 === b.v0,
-    );
 }
 
 // ── friction / drag (Coulomb loss + quadratic drag coefficients) ───────────────

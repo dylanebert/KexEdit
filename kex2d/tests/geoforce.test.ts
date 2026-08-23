@@ -30,7 +30,7 @@ import {
     setTrackDomain,
     setTrackFriction,
     setTrackResistance,
-    setTrackV0,
+    setStartSpeed,
     snapshotAll,
     trackDomain,
 } from "../src/track";
@@ -47,29 +47,32 @@ function humpTrack(): { state: State; eid: number; sec: number } {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    setTrackV0(eid, 18);
     const sec = createSection(state, 0, SectionKind.Geo, 0);
     addNode(state, sec, 0, 0);
     addNode(state, sec, 12, 4);
     addNode(state, sec, 24, 0);
+    setStartSpeed(state, 18);
     state.step(0);
     return { state, eid, sec };
 }
 
 /** a track carrying one hand-authored force hill — an easing tag AND an explicit handle, so a
  *  restore that dropped either would be caught — baked. kex2d-provenance stage 3's own oracle
- *  for the reverse trip (force→geo→force), the twin of `forcegeo.test.ts`'s `hillTrack`. */
+ *  for the reverse trip (force→geo→force), the twin of `forcegeo.test.ts`'s `hillTrack`. This
+ *  shape genuinely needs its 18 m/s (a shallower launch diverges the force→geo fit outright) —
+ *  `applyConvert`/`applyConvertGeo`'s own `preserveEntrySpeedAcrossConvert` (S5) is what keeps
+ *  it alive across the round trip below; `setStartSpeed` only has to author it once, here. */
 function hillForceTrack(): { state: State; eid: number; sec: number } {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    setTrackV0(eid, 18);
     const sec = createSection(state, 0, SectionKind.Force, 40);
     const a = createForcePoint(state, sec, 0, 1);
     const b = createForcePoint(state, sec, 20, 1.4);
     createForcePoint(state, sec, 40, 1);
     setForceEase(state, b, Easing.Linear);
     setForceTangent(state, a, { mode: TangentMode.Free, out: { ds: 5, dg: 0.1 } });
+    setStartSpeed(state, 18);
     state.step(0);
     return { state, eid, sec };
 }
@@ -319,8 +322,7 @@ describe("provenance short-circuit (reverse)", () => {
     test("an upstream edit that moves the section's entry falls through to the solve", async () => {
         const state = new State();
         state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        setTrackV0(eid, 18);
+        createTrack(state);
         const upstream = createSection(state, 0, SectionKind.Geo, 0);
         addNode(state, upstream, 0, 0);
         addNode(state, upstream, 15, 0);
@@ -328,6 +330,7 @@ describe("provenance short-circuit (reverse)", () => {
         createForcePoint(state, sec, 0, 1);
         createForcePoint(state, sec, 20, 1.4);
         createForcePoint(state, sec, 40, 1);
+        setStartSpeed(state, 18);
         state.step(0);
         const h = createHistory();
 

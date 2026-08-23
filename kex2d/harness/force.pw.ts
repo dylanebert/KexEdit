@@ -370,7 +370,11 @@ test("force easing menu flow", async ({ page, boot }) => {
     await expect.poll(forceCount).toBeGreaterThanOrEqual(3);
     const nPts = await forceCount();
     await frameTimeline(page); // bring the whole force section into view for the diamond DOM boxes
-    await expect(page.locator(".fpt")).toHaveCount(nPts);
+    // `.fpt` is shared with velocity-strip keyframes (Timeline.svelte draws both under the same
+    // class); `seedForceBump` converts section 0 to force, and `applyConvert`'s own
+    // `preserveEntrySpeedAcrossConvert` (S5) re-authors the launch speed as a DEGENERATE `[0, 0)`
+    // strip across that convert — one keyframe, not `seed()`'s own two.
+    await expect(page.locator(".fpt")).toHaveCount(nPts + 1);
 
     // ── 1. Right-click the leading (first) keyframe → the force keyframe menu, in the grammar's
     // canonical row order Easing ▸ · Delete — modify before lifecycle, the destructive row
@@ -750,8 +754,14 @@ test("force easing menu flow", async ({ page, boot }) => {
         .toBeLessThan(0.01);
 
     // ── 9. The TERMINAL keyframe (the last one, governing no following segment) drops the
-    // Easing ▸ entry entirely — its menu is Delete alone (there is no transition to ease). ──
-    await page.locator(".fpt").last().click({ button: "right" });
+    // Easing ▸ entry entirely — its menu is Delete alone (there is no transition to ease).
+    // `.fpt` is shared with velocity-strip keyframes, rendered AFTER every force point in DOM
+    // order — `.last()` would grab the launch strip's own keyframe instead (S5), so address the
+    // terminal force point by its known index (`nPts - 1`). ──
+    await page
+        .locator(".fpt")
+        .nth(nPts - 1)
+        .click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
     await expect
         .poll(async () =>
@@ -790,7 +800,10 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
     await expect.poll(forceCount).toBeGreaterThanOrEqual(5);
     const nPts = await forceCount();
     await frameTimeline(page);
-    await expect(page.locator(".fpt")).toHaveCount(nPts);
+    // `.fpt` is shared with velocity-strip keyframes; `seedForceBump`'s convert re-authors the
+    // launch speed as a degenerate one-keyframe strip across it (S5, `force easing menu flow`'s
+    // own note).
+    await expect(page.locator(".fpt")).toHaveCount(nPts + 1);
 
     // ── A. Chord-aligned derived-Linear ghost (feature 2). Set kf1's following segment to Linear,
     // enter handle edit (no drag → both sides stay derived ghosts), and assert the OUT ghost knob
@@ -1024,7 +1037,10 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     await frameTimeline(page); // the whole section on-screen for exact diamond boxes
 
     const fpt = page.locator(".fpt");
-    await expect(fpt).toHaveCount(5);
+    // `.fpt` is shared with velocity-strip keyframes; `seedForceBump`'s convert re-authors the
+    // launch speed as a degenerate one-keyframe strip across it (S5) — 5 force points + 1. Force
+    // points still render first in DOM order, so the `fhit.nth(0..4)` indices below stay correct.
+    await expect(fpt).toHaveCount(6);
     const fhit = page.locator(".fhit");
     const fhitCenter = async (i: number): Promise<{ cx: number; cy: number }> => {
         const b = await fhit.nth(i).boundingBox();
@@ -1250,7 +1266,7 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     // ORIGINAL diamond index mapping (`fhitCenter`, established at the top of the test) is valid
     // again before re-locating the crest.
     await frameTimeline(page);
-    await expect(fhit).toHaveCount(5);
+    await expect(fhit).toHaveCount(6); // 5 force points + the degenerate launch-strip keyframe (S5)
     const b2now = await fhitCenter(2);
     await page.mouse.click(b2now.cx, b2now.cy);
     await expect(page.locator(".ptip")).toHaveCount(1);
@@ -1350,11 +1366,14 @@ test("playhead parking flow", async ({ page, boot }) => {
     if (strip) await page.screenshot({ path: join(OUT, "park-1-anchored.png"), clip: strip });
 
     // ── 3. Drag the keyframe's g (vertical drag on its fat hit circle) → the force
-    // profile changes, the bake re-times (tTotal shifts). three points now exist (the two
-    // seeds + the authored one); grab the AUTHORED one — the middle by s (and so by x), sorted
-    // between the entry seed (s=0) and the exit seed (s=length). ──
+    // profile changes, the bake re-times (tTotal shifts). `.fhit` is shared with velocity-
+    // strip keyframes (Timeline.svelte draws force points first, strip keyframes after, in
+    // that DOM order), and `seed()` (S5) always carries its own 2-keyframe start strip on
+    // section 0 — so 5 total, the first 3 still the force points. three points now exist
+    // among them (the two seeds + the authored one); grab the AUTHORED one — the middle by s
+    // (and so by x), sorted between the entry seed (s=0) and the exit seed (s=length). ──
     const fhit = page.locator(".fhit");
-    await expect(fhit).toHaveCount(3);
+    await expect(fhit).toHaveCount(5);
     const hb = await fhit.nth(1).boundingBox();
     if (!hb) throw new Error("force point hit target not laid out");
     await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);

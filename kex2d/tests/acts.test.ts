@@ -33,7 +33,7 @@ import {
     createTrack,
     createForcePoint,
     setTangent,
-    setTrackV0,
+    setStartSpeed,
 } from "../src/track";
 
 // the third member of the menu triple's own coverage (kex2d-act-factory stage 2): drives each
@@ -73,14 +73,14 @@ function threeGeoSections(): { state: State; a: number; b: number; c: number } {
 function forceTrack(): { state: State; sec: number } {
     const state = new State();
     state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    setTrackV0(eid, 20);
+    createTrack(state);
     const sec = createSection(state, 0, SectionKind.Force, 40);
     createForcePoint(state, sec, 0, 1);
     createForcePoint(state, sec, 10, 1.5);
     createForcePoint(state, sec, 20, 1);
     createForcePoint(state, sec, 30, 0.8);
     createForcePoint(state, sec, 40, 1);
+    setStartSpeed(state, 20);
     state.step(0);
     return { state, sec };
 }

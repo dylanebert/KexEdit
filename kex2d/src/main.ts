@@ -35,8 +35,9 @@ import {
     sections,
     sectionStrips,
     stripKeyframes,
+    entrySpeed,
     setSectionLength,
-    setTrackV0,
+    setStartSpeed,
     Track,
     TrackPlugin,
     V0,
@@ -91,13 +92,14 @@ if (import.meta.env.DEV) {
             angle: snapGuides.angleLabel,
             length: snapGuides.lengthLabel,
         }),
-        // the authored initial speed — the flow drives the real v0 popover and asserts it.
-        v0: (): number => Track.v0.get(track),
+        // the DERIVED initial speed (S5): the value of the strip covering station 0, or `V0` —
+        // the flow drives the real strip keyframe drag and asserts it here.
+        v0: (): number => entrySpeed(ecs),
         // author it directly, as test SETUP: the domain flow needs the ride off the default speed
         // (at exactly `V0` metres and seconds are proportional by one constant, so the two units
-        // are indistinguishable), and the popover itself is already driven pointer-true by the v0
-        // flow.
-        setV0: (v: number): void => setTrackV0(track, v),
+        // are indistinguishable), and the strip drag itself is already driven pointer-true by its
+        // own flow.
+        setV0: (v: number): void => setStartSpeed(ecs, v),
         // v0's two dissipation-coefficient siblings — the refusal flow asserts a refused typed
         // commit leaves the model untouched (read-only, like v0()).
         friction: (): number => Track.friction.get(track),
@@ -372,8 +374,8 @@ if (import.meta.env.DEV) {
             const len = 1200;
             const waves = 24;
             const amp = 0.8;
-            setTrackV0(track, 35);
             setSectionLength(ecs, id, len);
+            setStartSpeed(ecs, 35);
             createForcePoint(ecs, id, 0, 1);
             for (let k = 1; k <= waves; k++) {
                 const g = k % 2 === 0 ? 1 : k % 4 === 1 ? 1 + amp : 1 - amp;

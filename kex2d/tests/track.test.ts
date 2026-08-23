@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
@@ -15,6 +17,7 @@ import {
     createTrack,
     destroyStrip,
     destroyStripKeyframes,
+    entrySpeed,
     edgeStrips,
     restoreStrip,
     sectionStrips,
@@ -28,6 +31,7 @@ import {
     stripKeyframeState,
     stripKeyframes,
     setStrip,
+    setStripKeyframe,
     stripsForStep,
     setBakeFreeze,
     setBakeLanding,
@@ -83,12 +87,12 @@ import {
     setForcePoint,
     setForceTangent,
     setSectionLength,
+    setStartSpeed,
     setStickyLen,
     setTangent,
     setTrackDomain,
     setTrackFriction,
     setTrackResistance,
-    setTrackV0,
     snapshotAll,
     snapshotSection,
     stampProvenance,
@@ -106,6 +110,7 @@ import {
     trackFriction,
     trackResistance,
     TrackPlugin,
+    V0,
     validCoefficient,
     validStripValue,
 } from "../src/track";
@@ -483,10 +488,11 @@ describe("BakeSystem", () => {
         expect(out.feasible[count - 1]).toBe(0); // energy-depleted up the climb
     });
 
-    test("the authored v0 threads into the bake: a higher launch clears a climb the default can't", () => {
+    test("the derived entry speed threads into the bake: a higher start strip clears a climb the default can't", () => {
         // the same steep climb the energy-budget test flags infeasible at the default
-        // V0=10; a higher authored v0 carries enough energy to clear it — proving v0
-        // reaches the physics (and that a v0 change is a bake-hash miss → re-bake).
+        // V0=10; a higher start-strip speed carries enough energy to clear it —
+        // proving the derived entry speed reaches the physics (and that authoring it
+        // is a bake-hash miss → re-bake).
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
@@ -496,7 +502,7 @@ describe("BakeSystem", () => {
         state.step(0);
         expect(bakeOut.get(eid)?.firstInfeasible).toBeGreaterThan(0); // default V0 depletes
 
-        setTrackV0(eid, 30); // ½·30² = 450 J/kg clears g·27.7 ≈ 272
+        setStartSpeed(state, 30); // ½·30² = 450 J/kg clears g·27.7 ≈ 272
         state.step(0);
         expect(bakeOut.get(eid)?.firstInfeasible).toBe(-1); // now fully feasible
     });
@@ -1321,17 +1327,18 @@ describe("tangent model (feel round 2)", () => {
     // suffix to the hash; this literal was pinned from the pre-change substrate. the section id is a
     // per-run allocator artifact (`nextSectionId`), not part of the default geometry, so it's
     // normalized out before the compare. the pin goes red if the default geo bake path ever changes
-    // (a node pose, ds, v0, the hash format, or a node-0 tangent leaking in) — the guard.
-    // `mu`/`c` are in the literal because `bakeHash` folds the
-    // coefficients in unconditionally, beside `v0`. `createTrack` (this fixture's own builder)
-    // stays at the kernel's neutral 0/0 — `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE` are `seed`'s
-    // (the app-boot document, not this raw ECS entity) — so the literal grows the `mu0c0`
-    // segment and nothing else.
+    // (a node pose, ds, the hash format, or a node-0 tangent leaking in) — the guard. `mu`/`c` are
+    // in the literal because `bakeHash` folds the coefficients in unconditionally; the initial
+    // speed carries no term of its own (S5) — it is derived from the section's own strip
+    // contribution, which is `0` here since `track()` (this fixture's own builder) authors no
+    // strip. `createTrack` stays at the kernel's neutral 0/0 friction/resistance —
+    // `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE` are `seed`'s (the app-boot document, not this raw
+    // ECS entity) — so the literal grows the `mu0c0` segment and nothing else.
     test("the default flat track bakes to the pinned hash (no node-0 tangents = byte-identical)", () => {
-        const { state, eid } = track(); // node 0 (0,0), node 1 (EXTEND_DIST=24, 0); default ds/v0
+        const { state, eid } = track(); // node 0 (0,0), node 1 (EXTEND_DIST=24, 0); default ds, no strip
         state.step(0);
         const hash = (bakeOut.get(eid)?.hash ?? "").replace(/\|S\d+:/g, "|S:"); // drop the allocator id
-        expect(hash).toBe("ds0.5v010mu0c0|S:0:0,0:0:0,24:0:0");
+        expect(hash).toBe("ds0.5mu0c0|S:0:0,0:0:0,24:0:0");
     });
 });
 
@@ -1928,9 +1935,9 @@ test("the nominal replay closes a solve's pinned exit — the conforming rule (k
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    setTrackV0(eid, scenario.v0);
     const sec = createSection(state, 0, SectionKind.Force, solved.length);
     for (const p of solved.points) createForcePoint(state, sec, p.s, p.g);
+    setStartSpeed(state, scenario.v0);
     state.step(0);
     const s = samples.get(eid);
     if (!s) throw new Error("samples missing");
@@ -1939,7 +1946,10 @@ test("the nominal replay closes a solve's pinned exit — the conforming rule (k
 
     const missNominal = Math.hypot(nominal.x - pinned.x, nominal.y - pinned.y);
     // the same 1e-3 m contract `refine.test.ts` holds the atom layer to (measured ~1.9e-5 m
-    // through the f32 ECS columns).
+    // through the f32 ECS columns). `setStartSpeed` (S5) authors `scenario.v0` through a
+    // DEGENERATE `[0, 0)` point strip, not a real min-extent span — inert on the march by
+    // construction (`entrySpeed`'s own doc), so this reproduces the old `Track.v0` field's
+    // exact scalar-entry behavior and the tolerance is untouched.
     expect(missNominal).toBeLessThan(1e-3);
     // the residual an un-conformed march would have stopped short by, kept as evidence the
     // conforming rule is doing real work here, not passing vacuously on an already-round length.
@@ -2552,11 +2562,11 @@ describe("landing display override (kex2d-idioms stage 4)", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        setTrackV0(eid, 20);
         const sec = createSection(state, 0, SectionKind.Force, 40);
         createForcePoint(state, sec, 0, 1);
         createForcePoint(state, sec, 20, 1.5);
         createForcePoint(state, sec, 40, 1);
+        setStartSpeed(state, 20);
         state.step(0);
         return { state, eid, sec };
     }
@@ -2654,11 +2664,11 @@ describe("landing display override (kex2d-idioms stage 4)", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        setTrackV0(eid, 20);
         const secA = createSection(state, 0, SectionKind.Force, 40);
         createForcePoint(state, secA, 0, 1);
         createForcePoint(state, secA, 20, 1.5);
         createForcePoint(state, secA, 40, 1);
+        setStartSpeed(state, 20);
         const secB = createSection(state, 1, SectionKind.Force, 30);
         createForcePoint(state, secB, 0, 1);
         createForcePoint(state, secB, 30, 1);
@@ -2694,9 +2704,10 @@ describe("landing display override (kex2d-idioms stage 4)", () => {
 });
 
 // `Track.friction`/`Track.resistance` threaded through the ECS +
-// history layer — the `Track.v0` gesture pattern (`beginV0`), `bakeHash` coverage,
-// absent-in-a-document restoring the kernel's own 0 (never the new-track authoring default),
-// undo byte-identity, and the in-mode editing lockdown at the track-global sentinel.
+// history layer — the scrub/typed-field gesture pattern (`beginFriction`/`beginResistance`),
+// `bakeHash` coverage, absent-in-a-document restoring the kernel's own 0 (never the new-track
+// authoring default), undo byte-identity, and the in-mode editing lockdown at the track-global
+// sentinel.
 describe("track friction/drag coefficients", () => {
     /** a lone flat force section, baked — mirrors `forceSection()` above (kept local: friction
      *  needs a section long enough, and with enough curvature-free ds, to show a measurable v
@@ -3517,6 +3528,87 @@ describe("S4: seed keyframes + boundary ride", () => {
         undo(h, state);
         expect(snapshotAll(state)).toEqual(before);
         expect(stripKeyframes(state, id).length).toBe(2);
+    });
+});
+
+describe("initial velocity is the first strip (S5)", () => {
+    /** the same min-extent span `seed()` authors — a real strip, through the ordinary
+     *  create path, so it inherits S4's two seeded boundary keyframes. */
+    function seedStartStrip(state: State, sec: number, value: number): number {
+        const ext = stripMinExtentAt(state, sec, 0);
+        if (!ext) throw new Error("no min extent");
+        const id = createStrip(state, sec, ext.start, ext.end, value);
+        if (id === null) throw new Error("strip refused");
+        return id;
+    }
+
+    test("a start strip valued at V0 bakes byte-identical to the V0 fallback (no strip)", () => {
+        const plain = track();
+        plain.state.step(0);
+        const plainOut = bakeOut.get(plain.eid);
+        if (!plainOut) throw new Error("no bake");
+
+        const seeded = track();
+        seedStartStrip(seeded.state, seeded.sec, V0);
+        seeded.state.step(0);
+        const seededOut = bakeOut.get(seeded.eid);
+        if (!seededOut) throw new Error("no bake");
+
+        expect(entrySpeed(seeded.state)).toBe(V0);
+        expect(Array.from(seededOut.v)).toEqual(Array.from(plainOut.v));
+        expect(Array.from(seededOut.fN)).toEqual(Array.from(plainOut.fN));
+    });
+
+    test("with no strip covering station 0, the derived entry speed falls back to V0", () => {
+        const { state } = track();
+        expect(entrySpeed(state)).toBe(V0);
+    });
+
+    test("editing the start strip's keyframe moves the derived entry speed and v[0]", () => {
+        const { state, eid, sec } = track();
+        const id = seedStartStrip(state, sec, V0);
+        state.step(0);
+        expect(bakeOut.get(eid)?.v[0]).toBe(V0);
+
+        const kf = stripKeyframes(state, id)[0];
+        setStripKeyframe(state, kf.id, kf.s, 18);
+        state.step(0);
+
+        expect(entrySpeed(state)).toBe(18);
+        expect(bakeOut.get(eid)?.v[0]).toBe(18);
+    });
+
+    test("deleting the start strip falls the derived entry speed and v[0] back to V0", () => {
+        const { state, eid, sec } = track();
+        const id = seedStartStrip(state, sec, 18);
+        state.step(0);
+        expect(bakeOut.get(eid)?.v[0]).toBe(18);
+
+        destroyStrip(state, id);
+        state.step(0);
+
+        expect(entrySpeed(state)).toBe(V0);
+        expect(bakeOut.get(eid)?.v[0]).toBe(V0);
+    });
+
+    test("Track.v0 is retired: no reference survives in src/ (grep arm)", () => {
+        const src = fileURLToPath(new URL("../src", import.meta.url));
+        const files = [
+            ...new Bun.Glob("**/*.svelte").scanSync(src),
+            ...new Bun.Glob("**/*.ts").scanSync(src),
+        ];
+        const hits: string[] = [];
+        for (const f of files) {
+            const text = readFileSync(`${src}/${f}`, "utf8");
+            if (
+                /\bTrack\.v0\b|\bsetTrackV0\b|\bTrackV0State\b|\btrackV0State\b|\bbeginV0\b/.test(
+                    text,
+                )
+            ) {
+                hits.push(f);
+            }
+        }
+        expect(hits).toEqual([]);
     });
 });
 

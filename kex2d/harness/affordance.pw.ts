@@ -28,10 +28,10 @@ import {
 // `user-select: none`, `touch-action: none`, a hover wash (`Timeline.svelte`, `.fld .key`).
 // Six `.fld .key` spans exist in that file, all six wiring `onpointerdown` to a scrub:
 // `handleScrub` (two spans, s and g axes), `scrubStart` (two spans, s and g axes),
-// `snapScrub` (two spans, angle and length). `App.svelte` carries three more under its
-// own `.vtip .key` rule, the identical `ew-resize` dress (`v0ScrubStart`,
-// `frictionScrubStart`, `resistanceScrubStart`), and all three are wired. Nine wired
-// teachers app-wide, zero refusers. The C5 strip popover's unwired `.striptip .key` span
+// `snapScrub` (two spans, angle and length). `App.svelte` carries two more under its
+// own `.vtip .key` rule, the identical `ew-resize` dress (`frictionScrubStart`,
+// `resistanceScrubStart`), both wired — the v0 row retired with S5's derived entry
+// speed. Eight wired teachers app-wide, zero refusers. The C5 strip popover's unwired `.striptip .key` span
 // (the refuser this arm originally targeted) does not exist in T1's tree — T1 does not
 // add a strip value popover (the value surface is T2's, in the graph) — so the `test.fail`
 // arm that targeted it was permanently vacuous and is retired (see below).
@@ -76,8 +76,13 @@ async function scrubKey(page: Page, keySel: string, dx: number): Promise<string>
     return cursor;
 }
 
-/** create a velocity strip via T1's summoned creation (right-click → menu → Add) and return its seeded value */
-async function createStrip(page: Page): Promise<number> {
+/** create a velocity strip via T1's summoned creation (right-click → menu → Add) and return its
+ *  stable id + seeded value. `seed()` already carries its own start strip at station 0 (S5), so
+ *  the count goes 1 → 2, not 0 → 1 — every caller addresses the NEW strip by this id, never by
+ *  index or position (the launch strip's own `[0, min extent)` span sorts first in
+ *  `sectionStrips`' `start`-ascending order, and `stripPx`/`stripsOf` follow the same order). */
+async function createStrip(page: Page): Promise<{ id: number; value: number }> {
+    const before = (await kexCall(page, "stripsOf", 0)) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
     if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
@@ -87,8 +92,14 @@ async function createStrip(page: Page): Promise<number> {
     await page.mouse.click(x, y, { button: "right" });
     await expect(page.locator(".smenu")).toHaveCount(1);
     await page.locator(".smenu").getByText("Add velocity strip").click();
-    await expect.poll(async () => (await kexCall(page, "stripsOf", 0)).length).toBe(1);
-    return (await kexCall(page, "stripsOf", 0))[0].value;
+    await expect
+        .poll(async () => (await kexCall(page, "stripsOf", 0)).length)
+        .toBe(before.length + 1);
+    const beforeIds = new Set(before.map((s) => s.id));
+    const strips = (await kexCall(page, "stripsOf", 0)) as { id: number; value: number }[];
+    const created = strips.find((s) => !beforeIds.has(s.id));
+    if (!created) throw new Error("newly-created strip not found");
+    return created;
 }
 
 // CONTROL — green, and it is what makes the inverted arm below non-vacuous in BOTH directions.
@@ -201,7 +212,7 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
     await boot();
     await seedHill(page);
     await frameTimeline(page);
-    await createStrip(page);
+    const created = await createStrip(page);
 
     const chartBox = await page.locator("canvas.chart").boundingBox();
     if (!chartBox) throw new Error("chart canvas not laid out");
@@ -211,9 +222,13 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
     // its own midpoint reads as an ENDPOINT (`classifyStripHit`'s "endpoint beats body"
     // precedence), which would make the body/edge split trivially fail for the wrong reason.
     // Widen it with a REAL end-edge drag (the same gesture `bandDown`'s "end" mode drives) so a
-    // genuine body region — more than `STRIP_HIT_R` from either edge — exists to hover.
-    const created = (await kexCall(page, "stripPx"))[0];
-    const [endPageX, endPageY] = toPage(created.x1);
+    // genuine body region — more than `STRIP_HIT_R` from either edge — exists to hover. `seed()`
+    // (S5) carries its own start strip too, so address the CREATED one by id, never index 0.
+    const createdPx = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === created.id);
+    if (!createdPx) throw new Error("created strip not projected on the band");
+    const [endPageX, endPageY] = toPage(createdPx.x1);
     await page.mouse.move(endPageX, endPageY);
     await page.mouse.down();
     await page.mouse.move(endPageX + 250, endPageY, { steps: 10 });
@@ -225,9 +240,11 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
     await page.keyboard.press("Escape");
     await expect.poll(() => kexCall(page, "selectedStrip")).toBeNull();
 
-    const strips = await kexCall(page, "stripPx");
-    expect(strips.length).toBe(1);
-    const { x0, x1 } = strips[0];
+    const strips = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
+    expect(strips.length).toBe(2);
+    const widened = strips.find((s) => s.id === created.id);
+    if (!widened) throw new Error("widened strip not found");
+    const { x0, x1 } = widened;
     expect(x1 - x0).toBeGreaterThan(4 * STRIP_HIT_R); // wide enough for a genuine body region
     const bodyX = (x0 + x1) / 2;
     const emptyX = x1 + 40; // well past both the strip AND its `STRIP_HIT_R` endpoint radius
@@ -310,16 +327,20 @@ test("selected strip suppresses the endpoint hover stroke (S3 review finding 1)"
     await boot();
     await seedHill(page);
     await frameTimeline(page);
-    await createStrip(page); // creation selects the strip — the review's own subject
+    const created = await createStrip(page); // creation selects the strip — the review's own subject
 
     const chartBox = await page.locator("canvas.chart").boundingBox();
     if (!chartBox) throw new Error("chart canvas not laid out");
     const toPage = (localX: number): [number, number] => [chartBox.x + localX, chartBox.y + bandY];
 
-    await expect.poll(() => kexCall(page, "selectedStrip")).not.toBeNull();
-    const strips = await kexCall(page, "stripPx");
-    expect(strips.length).toBe(1);
-    const { x0 } = strips[0];
+    await expect.poll(() => kexCall(page, "selectedStrip")).toBe(created.id);
+    const strips = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
+    // `seed()` (S5) carries its own start strip too, so the count is 2, not 1; address the
+    // SELECTED (created) one by id.
+    expect(strips.length).toBe(2);
+    const selected = strips.find((s) => s.id === created.id);
+    if (!selected) throw new Error("selected strip not found");
+    const { x0 } = selected;
 
     // rest, still selected: no hover anywhere near the band.
     await page.mouse.move(5, 5);

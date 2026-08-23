@@ -20,7 +20,7 @@ import {
     createTrack,
     type SectionSnapshot,
     SectionKind,
-    setTrackV0,
+    setStartSpeed,
     snapshotAll,
     spawnNode,
 } from "../../src/track";
@@ -67,7 +67,16 @@ export function docState(state: State, eid: number): DocState {
  *  corpus's nodes are already in that final, bake-ready form. Every corpus scenario's `ds` is
  *  `DS_NOMINAL` (0.5), and every geo section bakes at the track-nominal quantum (no per-section
  *  step exists to override it, stage 5) — exactly what every other document-layer test does —
- *  so this reproduces `scenario.ds` exactly. */
+ *  so this reproduces `scenario.ds` exactly. `scenario.v0` is authored via `setStartSpeed`
+ *  (S5): a destructive kind convert already clears a section's strips unconditionally
+ *  (`resetToForce`/`resetToGeo`, pre-S5), and the entry speed is now DERIVED from section 0's
+ *  own strip (`entrySpeed`), so an untouched geo→force→geo round trip would otherwise lose it
+ *  at the first convert and never get it back — `applyConvert`/`applyConvertGeo`'s own
+ *  `preserveEntrySpeedAcrossConvert` (S5) is what keeps it alive instead. The re-authored strip
+ *  DOES get a new id each convert (`nextStripId` never reuses one), but that never reaches
+ *  `before`/`after`'s hash comparison below: the leg that actually restores does so via
+ *  PROVENANCE (`consultProvenance`), a verbatim replay of the pre-convert stamp — id included —
+ *  never a fresh solve landing a fresh strip. */
 export function buildGeoSection(scenario: Scenario | { name: string; nodes: Node[]; v0: number }): {
     state: State;
     eid: number;
@@ -76,11 +85,11 @@ export function buildGeoSection(scenario: Scenario | { name: string; nodes: Node
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    setTrackV0(eid, scenario.v0);
     const sec = createSection(state, 0, SectionKind.Geo, 0);
     scenario.nodes.forEach((n, i) => {
         spawnNode(state, sec, i, n.x, n.y, n.theta, n.tangent);
     });
+    setStartSpeed(state, scenario.v0);
     state.step(0);
     return { state, eid, sec };
 }
@@ -92,7 +101,8 @@ export function buildGeoSection(scenario: Scenario | { name: string; nodes: Node
  *  section bakes at the track's own nominal quantum (no per-section step exists to override it,
  *  stage 5): the nominal replay closes a solve's pinned exit bit-identically to the old
  *  per-section-step replay (`track.test.ts`), so dropping the solve's own realized `ds` here
- *  changes nothing. */
+ *  changes nothing. `v0` is authored through `setStartSpeed`, for the same reason
+ *  `buildGeoSection` does. */
 function buildForceSection(
     points: readonly { s: number; g: number }[],
     length: number,
@@ -101,9 +111,9 @@ function buildForceSection(
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    setTrackV0(eid, v0);
     const sec = createSection(state, 0, SectionKind.Force, length);
     for (const p of points) createForcePoint(state, sec, p.s, p.g);
+    setStartSpeed(state, v0);
     state.step(0);
     return { state, eid, sec };
 }
