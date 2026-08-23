@@ -20,6 +20,7 @@ import {
     spawnStrip,
     Strip,
     stripAt,
+    stripMinExtentAt,
     stripOverlapped,
     stripState,
     stripKeyframeState,
@@ -71,6 +72,7 @@ import {
     sectionSpans,
     spawnForce,
     stationTaken,
+    spanCoversOneEdge,
     splitForce,
     geoSplitStripsRefused,
     geoSplitAtStripsRefused,
@@ -103,6 +105,7 @@ import {
     trackResistance,
     TrackPlugin,
     validCoefficient,
+    validStripValue,
 } from "../src/track";
 import {
     appendSection as appendSectionCmd,
@@ -122,7 +125,7 @@ import {
     undo,
     addStripKeyframe,
 } from "../src/history";
-import { DEFAULT_G, Easing } from "../src/profile";
+import { DEFAULT_G, Easing, resolveStep } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { LENGTH_MIN } from "../src/magnet";
 import { Domain, evalGeo } from "../src/section";
@@ -3361,6 +3364,279 @@ describe("velocity strips — ECS layer (C3)", () => {
         redo(h, state);
         const redoState = stripKeyframeState(state, id);
         expect(redoState?.s).toBe(end); // must be 18, not 30
+    });
+});
+
+describe("extent law: a section trim is non-destructive to strips (S2)", () => {
+    test("trim below a strip's end: the bake clips at the extent, matching a strip authored at exactly that clipped end", () => {
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, default extent EXTEND_DIST = 24
+        const value = 4; // well off V0 = 10 and off the natural march
+        createStrip(state, sec, 5, 20, value);
+        setSectionLength(state, sec, 12); // trim below the strip's own end (20), above its start (5)
+        state.step(0);
+        const eid = trackEntity(state) as number;
+        const out = bakeOut.get(eid);
+        const info = sectionInfo.get(sec);
+        if (!out || !info) throw new Error("no bake");
+        // the strip's own edge range on the CLIPPED 12 m grid — edge k's override lands on the
+        // sample it exits into (`k + 1`), the same convention the interior-strip test above uses.
+        const startEdge = Math.round(5 / DS_NOMINAL);
+        for (let i = info.startSample + startEdge + 1; i < info.endSample; i++) {
+            expect(out.v[i]).toBeCloseTo(value, 3); // still forced, all the way to the clipped end
+        }
+
+        // control: a FRESH section authored directly at the clipped length, same strip start,
+        // end clamped to the trimmed extent — the trimmed track's bake must equal this exactly.
+        const control = new State();
+        control.addSystem(BakeSystem);
+        const cEid = createTrack(control);
+        const cSec = createSection(control, 0, SectionKind.Force, 12);
+        createStrip(control, cSec, 5, 12, value); // end clamped to the control's own extent
+        control.step(0);
+        const cOut = bakeOut.get(cEid);
+        const cInfo = sectionInfo.get(cSec);
+        if (!cOut || !cInfo) throw new Error("no control bake");
+        expect(info.endSample - info.startSample).toBe(cInfo.endSample - cInfo.startSample);
+        for (let i = 0; i < info.endSample - info.startSample; i++) {
+            expect(out.v[info.startSample + i]).toBeCloseTo(cOut.v[cInfo.startSample + i], 4);
+        }
+    });
+
+    test("trim below a strip's start: the strip goes inert, never displaced onto the preceding edge", () => {
+        // RED-FIRST: before the `edgeStrips` fix, a strip wholly past the trimmed extent
+        // collapsed BOTH ends to `edges` under `boundary()`'s clamp — the point convention then
+        // re-mapped that degenerate point onto the section's own LAST live edge (`[edges-1,
+        // edges)`), corrupting the bake within the surviving extent instead of leaving the
+        // strip inert. Confirmed red by reverting `edgeStrips`'s `live` filter (dropping straight
+        // to `rows.map`): `out.v` at the last surviving edge read the strip's stalled value (4)
+        // instead of the natural march (~10, V0-driven on a flat profile).
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, default extent EXTEND_DIST = 24
+        const value = 4;
+        createStrip(state, sec, 18, 22, value);
+        setSectionLength(state, sec, 10); // trim entirely below the strip's own start (18)
+        state.step(0);
+        const eid = trackEntity(state) as number;
+        const out = bakeOut.get(eid);
+        const info = sectionInfo.get(sec);
+        if (!out || !info) throw new Error("no bake");
+
+        // control: the SAME trim, no strip at all — strip-absent, not a displaced override.
+        const control = new State();
+        control.addSystem(BakeSystem);
+        const cEid = createTrack(control);
+        const cSec = createSection(control, 0, SectionKind.Force, 10);
+        control.step(0);
+        const cOut = bakeOut.get(cEid);
+        const cInfo = sectionInfo.get(cSec);
+        if (!cOut || !cInfo) throw new Error("no control bake");
+        expect(info.endSample - info.startSample).toBe(cInfo.endSample - cInfo.startSample);
+        for (let i = 0; i < info.endSample - info.startSample; i++) {
+            expect(out.v[info.startSample + i]).toBeCloseTo(cOut.v[cInfo.startSample + i], 4);
+        }
+        // and NOT the strip's own stalled value, at the last surviving edge — the displaced-
+        // onto-the-preceding-edge bug this test guards against.
+        expect(out.v[info.endSample]).not.toBeCloseTo(value, 2);
+    });
+
+    test("re-lengthening restores the strip byte-identical — the trim never mutates strip data", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        createStrip(state, sec, 5, 20, 4);
+        const before = stripState(state, sectionStrips(state, sec)[0].id);
+        setSectionLength(state, sec, 8); // trim below the strip's own start — goes inert
+        setSectionLength(state, sec, EXTEND_DIST); // re-lengthen back to the original extent
+        const after = stripState(state, sectionStrips(state, sec)[0].id);
+        expect(after).toEqual(before); // never touched — non-destructive by construction
+    });
+});
+
+describe("width floor: the min-extent guard also requires the span's own raw width (S2, roadmap fold)", () => {
+    test("spanCoversOneEdge refuses a narrow span straddling an edge's MIDPOINT, even though its two ends round to different boundaries", () => {
+        // RED-FIRST: before the width conjunct, the straddle test alone (`specs[0].end >
+        // specs[0].start`) accepted this — the two ends round to DIFFERENT edge boundaries
+        // (0 and 1) because they straddle edge 0's own MIDPOINT (0.25), not its own boundary.
+        // Confirmed red by reverting to `return specs[0].end > specs[0].start`: this span passed.
+        const ds = new Float32Array(20).fill(0.5); // 10 m / 0.5 m nominal, uniform
+        expect(spanCoversOneEdge(ds, 20, 0.24, 0.26)).toBe(false); // 0.02 m wide, roadmap's measure
+        expect(spanCoversOneEdge(ds, 20, 0, 0.5)).toBe(true); // the full edge width still passes
+    });
+
+    test("createStrip refuses the roadmap's measured 0.020 m straddle strip; the full edge width at the same station still lands", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 10); // 10 m / 0.5 m nominal -> ds = 0.5 exactly
+        expect(createStrip(state, sec, 0.24, 0.26, 5)).toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(0);
+        expect(createStrip(state, sec, 0, 0.5, 5)).not.toBeNull();
+    });
+});
+
+describe("validStripValue routing: createStrip's seed and setStrip's value (S2, roadmap fold)", () => {
+    test("validStripValue refuses non-finite, zero, and negative; accepts any positive finite", () => {
+        expect(validStripValue(5)).toBe(true);
+        expect(validStripValue(0)).toBe(false); // a stall, not a controlled span
+        expect(validStripValue(-1)).toBe(false);
+        expect(validStripValue(Number.NaN)).toBe(false);
+        expect(validStripValue(Number.POSITIVE_INFINITY)).toBe(false);
+    });
+
+    test("createStrip refuses a stalled (0) or negative seed value — nothing written", () => {
+        // RED-FIRST: before routing, `createStrip` wrote `value` unconditionally
+        // (`Strip.value.set(eid, value)`, no guard) — confirmed red by reverting the
+        // `validStripValue` check: both calls below returned a non-null id.
+        const { state, sec } = track();
+        convertSection(state, sec);
+        expect(createStrip(state, sec, 5, 15, 0)).toBeNull();
+        expect(createStrip(state, sec, 5, 15, -3)).toBeNull();
+        expect(sectionStrips(state, sec).length).toBe(0);
+        expect(createStrip(state, sec, 5, 15, 3)).not.toBeNull();
+    });
+
+    test("setStrip refuses an invalid value write, keeping the strip's current value — position still lands independently", () => {
+        // RED-FIRST: before routing, `setStrip` wrote `Strip.value.set(eid, value)`
+        // unconditionally — confirmed red by reverting the guard: the row's value read 0.
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const id = createStrip(state, sec, 5, 15, 4) as number;
+        setStrip(state, id, 6, 16, 0); // invalid value: refused, old value kept
+        const row = sectionStrips(state, sec).find((r) => r.id === id);
+        expect(row?.value).toBe(4);
+        expect(row?.start).toBe(6); // position still writes independently of the value refusal
+        expect(row?.end).toBe(16);
+    });
+});
+
+/** the roadmap's OWN witness property, decoupled from the width floor's stricter conjunct
+ *  (`spanCoversOneEdge` now ALSO requires the raw width — a separately-tested fix, above): does
+ *  the span straddle two DIFFERENT edge boundaries under `edgeStrips`'s own round-to-nearest map
+ *  — the property whose failure is the degenerate `start === end` the point convention displaces
+ *  onto the preceding edge. Two adjacent min-extent strips can legitimately end up too narrow for
+ *  the STRICTER width floor once a join re-quantizes onto a coarser grid (the same "floor vs.
+ *  no-overlap clamp" tradeoff the deleted `landDomain` code accepted — "the clamp wins"), so the
+ *  join floor's own guarantee is straddle-only: never displaced, not necessarily edge-clean. */
+function coversStraddleOnly(
+    ds: ArrayLike<number>,
+    edges: number,
+    start: number,
+    end: number,
+): boolean {
+    const specs = edgeStrips(ds, edges, [{ start, end, value: 0 }]);
+    return !!specs && specs.length > 0 && specs[0].end > specs[0].start;
+}
+
+describe("joinNext — min-extent strip floor across a coarser joined grid (S2, roadmap fold)", () => {
+    test("RED-FIRST WITNESS: 2.28 m + 2.26 m force sections — join re-floors both halves' min-extent strips instead of collapsing one onto the preceding edge", () => {
+        // measured on the roadmap: joining these two exact lengths, each carrying a min-extent
+        // strip at its own tail/head edge, re-quantizes onto a COARSER joined grid (5 + 5 edges
+        // -> 9, not 10) — B's rebased strip collapses to `start === end` (confirmed directly
+        // against `edgeStrips`: pre-floor, B's [2.28, 2.732) resolves to `{start: 5, end: 5}` on
+        // the joined grid), which the point convention then displaces onto the PRECEDING edge,
+        // landing dead on A's own surviving strip instead of covering nothing. Confirmed red by
+        // reverting the `refloorStrips` calls in `joinNext`.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 2.28);
+        const b = createSection(state, 1, SectionKind.Force, 2.26);
+        state.step(0);
+        const aExtent = stripMinExtentAt(state, a, 2.27); // A's own last edge
+        const bExtent = stripMinExtentAt(state, b, 0.01); // B's own first edge
+        if (!aExtent || !bExtent) throw new Error("no resolvable edge structure");
+        const aId = createStrip(state, a, aExtent.start, aExtent.end, 5);
+        const bId = createStrip(state, b, bExtent.start, bExtent.end, 7);
+        expect(aId).not.toBeNull();
+        expect(bId).not.toBeNull();
+
+        expect(joinNext(state, a)).toBe(true);
+        state.step(0);
+
+        const strips = sectionStrips(state, a).sort((x, y) => x.start - y.start);
+        expect(strips.length).toBe(2);
+        const joinedStep = resolveStep(2.28 + 2.26, DS_NOMINAL);
+        const joinedDs = new Float32Array(joinedStep.edges).fill(joinedStep.ds);
+        for (let i = 0; i < strips.length; i++) {
+            expect(
+                coversStraddleOnly(joinedDs, joinedStep.edges, strips[i].start, strips[i].end),
+            ).toBe(true);
+            if (i + 1 < strips.length)
+                expect(strips[i].end).toBeLessThanOrEqual(strips[i + 1].start); // no overlap
+        }
+        // the floor extends `end`; it never rewrites the authored value.
+        expect(strips.find((r) => r.id === aId)?.value).toBe(5);
+        expect(strips.find((r) => r.id === bId)?.value).toBe(7);
+    });
+
+    test("swept-grid probe: across a (headLen, tailLen, station) grid, a single min-extent strip on B's side survives the join straddling ≥1 edge, never displaced (the roadmap's own red-first witness — 12/400 combos read displaced before the fix, 0/400 after)", () => {
+        // `station` is B's OWN distance from the join boundary — a THIRD swept dimension
+        // independent of the two lengths, matching the roadmap's own (headLen, tailLen,
+        // station) grid. One strip per join (not two abutting ones — that pathological
+        // double-boxed construction runs into the SAME "floor vs. no-overlap clamp" tradeoff
+        // the deleted `landDomain` code accepted for two strips squeezed with zero slack; the
+        // roadmap's own measured witness names "a minimum-extent velocity strip", singular).
+        const headLens = [2.1, 2.28, 3.4, 5.05, 8.02, 1.5, 6.7, 9.9, 12.3, 3.0];
+        const tailLens = [1.9, 2.26, 3.6, 4.95, 7.98, 2.5, 5.1, 10.4, 8.8, 4.0];
+        const stations = [0.01, 0.1, 0.3, 0.7];
+        let checked = 0;
+        for (const headLen of headLens) {
+            for (const tailLen of tailLens) {
+                for (const station of stations) {
+                    if (station >= tailLen) continue;
+                    const state = new State();
+                    state.addSystem(BakeSystem);
+                    createTrack(state);
+                    const a = createSection(state, 0, SectionKind.Force, headLen);
+                    const b = createSection(state, 1, SectionKind.Force, tailLen);
+                    state.step(0);
+                    const bExtent = stripMinExtentAt(state, b, station);
+                    if (!bExtent) continue;
+                    createStrip(state, b, bExtent.start, bExtent.end, 7);
+                    expect(joinNext(state, a)).toBe(true);
+                    state.step(0);
+                    const strips = sectionStrips(state, a);
+                    expect(strips.length).toBe(1);
+                    const joinedStep = resolveStep(headLen + tailLen, DS_NOMINAL);
+                    const joinedDs = new Float32Array(joinedStep.edges).fill(joinedStep.ds);
+                    checked++;
+                    expect(
+                        coversStraddleOnly(
+                            joinedDs,
+                            joinedStep.edges,
+                            strips[0].start,
+                            strips[0].end,
+                        ),
+                    ).toBe(true);
+                }
+            }
+        }
+        expect(checked).toBeGreaterThan(300);
+    });
+
+    test("geo join: an existing straddling min-extent strip and a fresh cross-join one both still cover ≥1 edge of the merged chain (no regression from the force-side floor)", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, a, 0, 0);
+        addNode(state, a, 20, 0);
+        const b = createSection(state, 1, SectionKind.Geo, 0);
+        addNode(state, b, 0, 0);
+        addNode(state, b, 20, 0);
+        state.step(0);
+        const bExtent = stripMinExtentAt(state, b, 0.01);
+        if (!bExtent) throw new Error("no resolvable edge structure");
+        const bId = createStrip(state, b, bExtent.start, bExtent.end, 6);
+        expect(bId).not.toBeNull();
+
+        expect(joinNext(state, a)).toBe(true);
+        state.step(0);
+
+        const strips = sectionStrips(state, a);
+        expect(strips.length).toBe(1);
+        expect(strips[0].end).toBeGreaterThan(strips[0].start);
+        expect(strips[0].value).toBe(6);
     });
 });
 
