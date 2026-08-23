@@ -224,7 +224,7 @@ consumer (and `tests/domain.test.ts`'s independent-table oracle).
 Constants: `G` = 9.80665 and `V_FLOOR` = 0.01 in `forward.ts` (the integrator owns both; `bake.ts`
 and `optimize.ts` import `G` rather than redeclaring it); `V_WARN` = 1.0 (diagnostic infeasibility
 threshold) in `bake.ts`; `MAX_U_PER_EDGE` = π/24 in `spline.ts`; `MAX_SAMPLES` = 4096 in `track.ts`; `V0` = 10
-(the DEFAULT initial speed — now authored per-track as `Track.v0`) in `track.ts`.
+(the fallback entry speed used when no strip covers station 0, `entrySpeed`) in `track.ts`.
 
 ## Velocity strips
 
@@ -260,25 +260,25 @@ whose ends round together collapses to `start === end`, which the point conventi
 PRECEDING edge `[start−1, start)` — the override is displaced, not lost; it is genuinely inert
 only at station 0 where `lo = −1` (out of range). The guard refuses the collapse at the write op
 so a stored strip covers ≥ 1 edge of the current bake **on every path that carries the guard**.
-That writer set is: `createStrip`, `setStrip`, the split head/tail pre-checks
-(`splitForce`/`splitGeo`, via `spanCoversOneEdge` against the would-be post-split grid), and the
-domain flip's next-strip clamp (`landDomain` in `history.ts`, called from `domain.ts`'s
-`convertDomain`). **`joinNext` is the one extent writer that does NOT carry it** — it rebases both
-halves' strips onto the joined section's coarser resolved grid with no re-check, so a
-minimum-extent strip can come out of a Join covering zero edges and controlling the *preceding*
-edge instead (measured at close: 2.28 m + 2.26 m force sections, and 0.52% of a swept
-(headLen, tailLen, station) grid). That is a booked defect, not a law; the repair is to reuse
-`landDomain`'s floor in join's rebase loops. Where the ≥ 1-edge floor
-and the no-overlap clamp cannot both hold, **overlap loses** — disclosed in `landDomain`'s
+That writer set is: `createStrip`, `setStrip`, and the split head/tail pre-checks
+(`splitForce`/`splitGeo`, via `spanCoversOneEdge` against the would-be post-split grid). A domain
+flip carries no strip clamp at all — it is a pure `Track.domain` column write
+(`domain.convertDomain`/`history.landDomain`) and never touches a strip's stored span, so it isn't
+a writer of this floor. `joinNext` re-floors both halves' strips against the joined section's
+resolved grid (`refloorStrips`, called from both the geo and the force branch) rather than
+re-checking a pre-existing guard, so the min-extent half of the old booked defect is repaired.
+The surviving booked defect is the **keyframe-`s` rebase**: a join rebases `Strip.start`/`end`
+(+`aLen`) without moving a boundary `StripKeyframe.s` to match, left for the successor spec —
+the keyframe re-substrate that spec is scoping may moot the riding code. Where the ≥ 1-edge floor
+and the no-overlap clamp cannot both hold, **overlap loses** — disclosed in `refloorStrips`'s
 docblock. Cut refuses inside a minimum-extent strip.
 
 **Guards live inside the writer, not at the call site.** The overlap guard (`stripOverlapped`)
 and the min-extent guard (`stripCoversOneEdge`/`spanCoversOneEdge`) are called from inside
 `createStrip` and `setStrip`, so every caller inherits them structurally rather than by convention.
-The one deliberate bypass is `spawnStrip`/`spawnStripKeyframe` under `restoreAll` (undo/redo and
-the domain flip): a snapshot restore must be byte-identical even for a document authored before
-the guard existed, so the spawn path writes without re-validating. This is why the domain flip
-needs its own clamp — the bypass can write a pre-guard document that the guard would refuse.
+The one deliberate bypass is `spawnStrip`/`spawnStripKeyframe` under `restoreAll` (undo/redo): a
+snapshot restore must be byte-identical even for a document authored before the guard existed, so
+the spawn path writes without re-validating.
 
 **Authored components.** `Strip` (`section`, `id` stable, `start`, `end`, `value` — section-local
 edge-index coordinates, the same indexing `fN`/`ds` carry) and `StripKeyframe` (`strip`, `id`
@@ -308,10 +308,16 @@ keyframes ride the force-curve machinery, no keyframes means one constant across
 `Strip.values?` seam above), and creation is a summoned named act with empty band space inert
 (`Timeline.svelte` `STRIP_H` docblock and the band context-menu comment).
 
-**`Track.v0` stays; it is an initial condition, not a strip.** A station-0 point has no preceding
-edge, so v0 was always special-cased inside the uniform design; a mandatory minimum span over
-`[0, edge1]` would force `v[1]` and break byte-identical migration. `beginV0`/`setTrackV0`
-survive as the authoring surface.
+**Initial speed is the first strip, not a separate field.** `seed()` authors a real,
+section-0 minimum-extent strip (the same object every other strip is), so the entry jump case
+resolves rather than being special-cased: the track's entry speed is DERIVED (`entrySpeed`) —
+the value of the strip covering station 0 in the first section, sampled at its own `s = 0`, or
+`V0` when none exists (the same fallback idiom as an emptied force profile falling to
+`DEFAULT_G`). `Track.v0` and `beginV0`/`setTrackV0` are retired; `setStartSpeed` is the scalar
+authoring surface non-UI callers (test/lab setup, the `__kex` dev hook, a section-0 kind-flip's
+entry-speed preservation) still need — it moves the start strip's keyframes/value, or spawns a
+degenerate `[0, 0)` point strip bypassing the ordinary min-extent guard on purpose, so a scalar
+write carries no march side effect the way a real edge-covering span would.
 
 ## Code map
 
@@ -554,11 +560,12 @@ survive as the authoring surface.
 
 - `track.ts` — `BakeSystem` walks `sections()` (by `Section.order`) → per-section payload → one
   `chain(startEntry(v0), payloads)` → the `samples`/`bakeOut` SoA + the `sectionInfo` map; skips on a
-  `bakeHash` match (over every section, ds + v0 + the track domain). Components: `Track` (`count`, `ds`,
-  `v0`, `domain`, `friction`, `resistance`), `Section` (`id` stable,
+  `bakeHash` match (over every section, ds + the section's own coefficients — `v0` is derived,
+  `entrySpeed`, and `Track.domain` is a view, so neither folds the hash). Components: `Track`
+  (`count`, `ds`, `domain`, `friction`, `resistance`), `Section` (`id` stable,
   `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent), `Handle` (`section`, per-section
   `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`,
-  `carried` the domain-carry provenance bit, `tmode`/`tin`/`tout` the explicit-tangent columns),
+  `tmode`/`tin`/`tout` the explicit-tangent columns),
   `Strip` (`section`, `id` stable, `start`/`end`/`value` — the velocity-strip span, § Velocity strips),
   `StripKeyframe` (`strip`, `id` stable, `s`/`v` — the strip's keyframed velocity curve).
   `bakeOut`: per-edge `fN`+`ds`, per-sample `v`+`t`/`feasible`, `firstInfeasible`, `hash` — `v` is the
@@ -568,13 +575,15 @@ survive as the authoring surface.
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
   `sections`/`sectionAt`/`createSection`, plus the session's per-kind **sticky append length**
   (`stickyLen`/`setStickyLen`: a force section's extent, a geo section's `extend` chord — module
-  state, updated only from `history.commitLength`/`commitChord`, never by a solve or a convert). Coordinate lens (section-local `s` ↔ the track-global axes):
-  `sectionSpans` (the one span table — each section's arclength `offset`/`len` plus its native
-  `entryU`/`lenU`, the latter read off the baked `t` table in the `Time` domain) + `toGlobal`/`toLocal`
-  on arclength and `toGlobalU`/`toLocalU` on the domain's own axis — the single seam every global
-  readout derives from. The force store is addressed on the native axis (`Force.s` and
-  `Section.length` are in `Track.domain`'s unit, converted only at `domain.convertDomain` and at a
-  solve's landing, `domain.convertSolve`); geometry stays on arclength. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
+  state, updated only from `history.commitLength`/`commitChord`, never by a solve or a convert). Coordinate lens (section-local `s` ↔ the track-global axis):
+  `sectionSpans` (the one span table — each section's arclength `offset`/`len`; `entryU`/`lenU`
+  carry the same reading, kept for their call sites' names — there is no second axis to switch
+  between since S6) + `toGlobal`/`toLocal` (`toGlobalU`/`toLocalU` are the same pair under their
+  old names) — the single seam every global readout derives from. `Force.s`, `Section.length`,
+  every strip and strip keyframe are addressed in meters of arclength always; a Time-domain
+  reading is a display projection through the live bake's s↔t table (`timeline.ts`'s
+  `dToU`/`uToD`), never a second address space, and a solve is distance-internal already, so
+  nothing converts its landing. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
   `sectionHandles`/`lastHandle`/`handleAt`/`spawnNode`/`nodeSnapshot`/`restoreNodes`/`sameNodes` +
   `geoNodes` (the ONE projection of a section's ECS columns onto `spline.Node`s — the bake payload
   and an invoked solve's input both read it, so a conversion solves what's displayed).
@@ -586,8 +595,7 @@ survive as the authoring surface.
   the default flow stores no tangents (`exitHeading` still resolves the append/reflect seed against
   an explicit tip's out-vector). Force:
   `sectionForces`/`forceAt`/`createForcePoint`/`spawnForce`/`destroyForce`/`forcePointState`/
-  `setForcePoint`/`setForceCarried` (the provenance bit alone, no shape — see the domain carry);
-  extent `sectionLengthState`/`setSectionLength`. `stationTaken` is the
+  `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. `stationTaken` is the
   one-property-one-station guard `setForcePoint` reads (`editor-ui.md` Keyframe conventions):
   section-scoped, exact at the stored f32 width, self-excluding; a taken station drops the `s`
   write and keeps the `g` write, so a drag skips the occupied slot instead of stacking on it. The
@@ -606,8 +614,8 @@ survive as the authoring surface.
   seed's entry force is bake-recovered — a geo reset reads no bake), `applyConvert` (land an
   invoked solve: destroy the nodes, flip the kind, take the answer's extent, spawn its
   `{s,g}` keys — all default-Cubic by construction; typed on the structural `SolvedForce`, so the
-  invoked tier stays off this module's graph. Its numbers arrive in the TRACK DOMAIN's unit, so a
-  distance-internal solve is converted first, above this module, at `domain.convertSolve`) and its reverse `applyConvertGeo` (land an
+  invoked tier stays off this module's graph. A solve is distance-internal already (its goldens
+  are frozen in meters), so its numbers land directly, with nothing to convert) and its reverse `applyConvertGeo` (land an
   invoked force→geo fit: destroy both row kinds, flip the kind, `localize` the fit's world nodes
   into the section's own entry frame with node 0 pinned at `{0,0,0}` exactly;
   typed on `SolvedGeo`), `forceBake` (a force section's dense bake as `geofit`
@@ -629,7 +637,8 @@ survive as the authoring surface.
   changes which keyframe leads — `aTail`'s ease is inert pre-join (last key of its section, the
   profile holds flat past it) while `bHead`'s governs the tail's opening segment. General form:
   **a structural op that undoes another op must test for the shape, not the position** — position
-  alone is provenance guesswork, and snapping makes the false positive routine. Initial speed: `trackV0State`/`setTrackV0` (`Track.v0`).
+  alone is provenance guesswork, and snapping makes the false positive routine. Initial speed
+  (derived, no stored field): `entrySpeed`/`setStartSpeed` (§ Velocity strips).
   `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`, `DS_NOMINAL`. Bake liveness: `authoredHash`
   (the gate's reading computed from the LIVE authored state, not read off the last bake) +
   `bakeLive` (whether the current bake IS that state) — what anything treating `sectionInfo` as
@@ -713,8 +722,8 @@ survive as the authoring surface.
   toggle, a Tangents ▸ submenu holding the three modes, then Reset and Delete — opened on any
   pickable node, any mode),
   and `rulerMenu` (the ruler's Meters/Seconds domain picker, `openRulerMenu`/`closeRulerMenu` — no
-  target subject, the ruler addresses the whole timeline; a row's pick is a document conversion op,
-  so no basis view-state lives here — the chart reads `Track.domain`) — all `{x, y, …}` or
+  target subject, the ruler addresses the whole timeline; a row's pick is a pure view write
+  (`Track.domain` alone), so no basis state lives here — the chart reads `Track.domain`) — all `{x, y, …}` or
   null, rendered once at the app root. Also the rail's one toggle — `snap` (`toggleSnap`/`snapActive`
   — persistent, default on, `S` toggles, Ctrl/Cmd bypasses per-gesture) — and
   `hover` (`Surface`, `"viewport" | "timeline"`) — the pointer's current
@@ -758,7 +767,9 @@ survive as the authoring surface.
   `document/index.ts`): a `Command {apply, reverse}` dual stack (`MAX_UNDO=256`) + a generic
   `begin`/`commit`/`cancel` snapshot gesture (one at a time, so a live drag collapses to one entry).
   Node: `extendTrack`/`trimTrack`/`beginMove`. Force: `createForce`/`deleteForce`/`beginForceMove` +
-  `beginLength` (the extent drag). Initial speed: `beginV0` (the v0 field gesture). Kind:
+  `beginLength` (the extent drag). Initial speed carries no gesture of its own — it's derived
+  from the start strip, so `addStrip`/`beginStripMove`/`beginStripKeyframeMove`/`deleteStrips`
+  (Strip below) already carry it through undo/redo. Kind:
   `convertSection` (per-section, a `snapshotSection` pair) + the two invoked-solve landings over
   one shared `landSolve` (the same pair, the direction supplying its own write): `solveForce`
   (geo→force, `applyConvert`) and `solveGeo` (force→geo, `applyConvertGeo` — it also takes the
@@ -778,133 +789,39 @@ survive as the authoring surface.
   (the landing: free-key g writes + the mode transition in one outer entry whose reverse restores
   the draft AND reopens the mode via injected enter/exit closures — this module still never
   imports editor). `history` singleton; `createHistory` for tests.
-- `domain.ts` — the **track-global domain conversion**, and the ONE place a force section's stored
-  numbers change unit. `convertDomain(history, ecs, target)` is the ruler pick as a document op: a
-  pure transform of the whole-track snapshot (every keyframe's position, every extent, every explicit
-  handle's Δs scaled by the local `dt/ds`, plus the keyframes the carry below plants and drops)
-  landed by `history.landDomain` as one entry, so a
-  conversion that throws part-way writes nothing. The table IS the conversion — `cart.trackMapping`
-  windowed per section by `track.sectionInfo` (`entryD`/`exitD`/`entryT`/`exitT` + the boundary
-  speeds), so an interior position interpolates and one past the section's own baked span
-  extrapolates on THAT section's exit speed. The two boundaries return their exact stations rather
-  than interpolating: `interpMono` resolves a tie to the last tied index, and a stall plateau
-  reaching past a section's exit sample would otherwise absorb the whole downstream stall.
-  `convertible(ecs)` is that precondition as a predicate — a live bake, a table, and every force
-  section on it (a section past the `MAX_SAMPLES` cap reads NaN stations, so it rejects) — and
-  `pickable(ecs, target)` wraps it as the ruler menu's ONE row-enablement rule (the active row
-  always, a converting row only when it can run), so a blocked pick can't click through to a silent
-  no-op or a NaN store. A round
-  trip is NOT bit-identical — sub-quantum on a gentle ride, tens of percent on a sensitive one, and
-  a stall collapses distinct times onto one arclength by construction; undo is the only way back.
-  **The keys are converted; the curve BETWEEN them is CARRIED.** Every keyframe lands exactly — the
-  conversion IS the table lookup, so a converted position can't miss it — but a cubic bezier
-  in `(s, g)` is not a cubic bezier in `(t, g)` under the nonlinear arc↔time map, and an
-  explicit handle's Δs scaling by the local slope is only that map's first-order term. `carryForce`
-  completes it: each segment is subdivided until the target-unit shape matches the source-unit shape
-  inside the march's own **resolution floor** — `resolutionFloor`, the largest |Δg| between two
-  neighbouring samples one nominal march edge apart, derived per section at runtime from that
-  section's **visible** curve (its authored keys plus any the previous flip carried — the same set
-  the subdivision fits against) and `Track.ds` and never a stored literal (plus the g store's own f32
-  quantum as the acceptance bound). Measured on the 40 m dive-and-recover, pre-carry: 0.049686 g of
-  reshape against that section's own 0.022481 g floor, 2.2× over; 0.004363 g after, 0.19× of it.
-  **Each inserted key is tagged** (`Force.carried`), and the reverse flip DROPS the tagged set and
-  re-subdivides from the authored keys rather than simplifying the denser store heuristically — so
-  `applyDomain` now plants and destroys force keyframes, not just rewrites positions.
-  **The law is about reconstructibility from the AUTHORED set**, not about who writes a column:
-  `carryForce` takes the two sets apart — it *writes* the authored keys (`output`) and *fits against*
-  the visible curve (`reference`), whose carried keys were themselves fitted to that authored set — so
-  **any op that changes a section's authored set invalidates the carried keys fitted to it**, whether
-  or not it writes their columns. (Conflating those two roles in one argument was BL-2: the reverse
-  flip fitted against the authored-only bezier, which is the reshaped curve the carry exists to
-  prevent.) Three classes. Every live-authoring writer
-  (`setForcePoint`/`setForceEase`/`setForceTangent`/`clearForceTangentSide`)
-  CLEARS the bit: a key the person has touched is authored and stops being droppable — but only when
-  the write MOVES something, compared against the stored column, since `forceMove`→`applyDrag` writes
-  on every pointermove and a jitter frame carries no geometry (a promotion whose only content is the
-  provenance bit is an undo entry for a change nobody made). **So does every
-  STRUCTURAL writer, on the keys whose geometry it writes** — `splitForce` clears it on the two
-  bracketing keys of a mid-segment cut (whose handles the de Casteljau split rewrites), on the
-  landmark key a cut lands exactly on, and on the held key either flat branch copies its planted
-  boundary value from; `joinNext` clears it on the surviving key of a merged coincident pair (whose
-  easing tag and both handles the merge rewrites). A Cut therefore PROMOTES the boundary it cut on
-  into authored data — intended, since the document's new structure is built around that value and a
-  reverse flip that dropped it left the head holding one flat keyframe (measured). Keys a Cut merely
-  REBASES onto the tail's axis keep the bit: a rebase re-expresses one station in a new frame and
-  writes no shape — and **`joinNext` performs that identical untagged rebase** (`Force.s = p.s + aLen`)
-  on every key of the section it absorbs, so the carve-out is one law with two call sites rather than a
-  Cut-only exception. **And the NON-writer: `history.deleteForces` clears the bit on the section's
-  surviving carried keys** (`track.setForceCarried`, the one writer that changes droppability without
-  writing shape), because destroying an authored key leaves the carried ones fitted to a curve the
-  document no longer holds while writing none of their columns. Measured before that reached it:
-  flip dive-and-recover to Seconds, delete the 0.4 g trough key, flip back, and the section came back
-  holding two keys both at 1 g — flat — a 0.41630 g round-trip delta at t = 1.870 against a 0.0225 g
-  floor (18.5×), with the guard blind to it (the surviving authored set is `{1 g, 1 g}`, so
-  `resolutionFloor` is 0.0 and the fit is exact); deleting two of three authored keys left ONE
-  keyframe. Authored **insertion** is deliberately not in this class — `createForce` promotes nothing,
-  and measured, an authored key inserted among carried ones round-trips with min/max preserved
-  (0.4/3.5 g both sides) — because an insert adds a constraint rather than removing one. A Cut then a
-  Join at a carried station is therefore geometry-identical and provenance-CHANGED (the key returns
-  authored, `authoredHash` differs, the next reverse flip keeps an invented key): `joinNext`'s
-  "collapsing to one keyframe is lossless" is about the sampled profile and says nothing about
-  droppability, which is one-way. The bit rides `SectionSnapshot` and every writer that consumes one —
-  `restoreSection`/`restoreAll` and `history.deleteForces`'s undo through `spawnForce`'s 8th argument,
-  `restoreForcePoint` (the gesture-restore row consumer) and `applyDomain`, which spawns a key the
-  section does not yet hold through that same argument and writes `Force.carried` directly on one it
-  does — so undo puts droppability back byte-identically; and it rides the
-  section content hash (suffixed only when set), so a stamp taken before that edit can't certify the
-  state after it. It is also in the gesture's own no-op test (`track.sameForcePoint`, exhaustive by
-  type over `ForcePointState`): a drag returning to its origin cleared the bit, so it is a document
-  change and records one entry rather than reading as a click.
-  **Subdivision is fail-loud at the floor**: below a source span of one nominal march edge the march
-  samples the segment at most once, so a still-over segment throws and the whole conversion writes
-  nothing — except in the ONE map degeneracy the floor's own derivation excludes, already locked as
-  lossy: a frozen cart, where `V_FLOOR` is the resolution of a stall rather than a speed the ride has.
-  Read at the table's own f32 precision (`STALL_SLACK`), because a frozen interval's slope is two f32
-  differences divided in f64 and lands 1.9073e-10 ABOVE `V_FLOOR` — a bare `<=` misses every real
-  stall. That excess is **0.2048 of one f32 ulp** at 0.01 (the f32 binade [2⁻⁷, 2⁻⁶), so one ulp is
-  2⁻³⁰ = 9.3132e-10) and `STALL_SLACK`'s `16·2⁻²⁴` relative is **10.24 f32 ulps** of headroom, i.e. a
-  threshold of exactly 0.010000009536743164, 50× the recorded excess — the earlier "a third of an ulp"
-  and "16 f32 quanta" were the relative figure and the ulp count conflated, and both are corrected.
-  **The exclusion is decided on the residual the MOVING probes carry**, not on the segment's slowest
-  reading: `vLo <= V_FLOOR·STALL_SLACK` let one frozen probe excuse a residual living in the segment's
-  healthy stretch — measured, a map frozen on `u < 0.2` and running 9 m/s elsewhere with the hidden
-  station jump in the moving part returned 2 keys and no throw at a 0.4803 g residual against the
-  0.19 g bound. Deciding it on the residual rather than on the speed is what keeps a real stalling
-  ride's flip landing (its onset segment is genuinely mixed — a 94× swing inside one floor span — with
-  the whole residual at the frozen probes), which "the segment is frozen throughout" would have
-  refused. **A `vHi >= 2·vLo` speed-swing clause used to sit beside it and is retired**: it tested
-  the swing while its docblock claimed the stall's regime, and since swing and residual are correlated
-  through the map's nonlinearity it silenced the guard hardest where residuals were largest — measured
-  on a non-stall map swinging 3× at 9 → 3 m/s it returned a 0.4803 g residual against a 0.19 g bound
-  with no throw, the same number the pre-guard silent failure was recorded at. **The throw reaches the
-  UI as a VISIBLE refusal**, which is what every other unlandable pick in that module does (the rows
-  that cannot land are grayed, so the person is told before the click): this one cannot be predicted
-  from a predicate — `pickable` would have to run the whole carry — so the row stays enabled and
-  `Timeline.pickDomain` raises the refusal after the click, through `domain.convertFailed`
-  (`editor.solveFailed`'s shape: one plain sentence to `editor.notify`, the thrown detail to the
-  console). Logging alone was silent to the person AND to every gate — catching the throw also took it
-  out of the capture harness's `pageerror` watch.
-  What the carry does NOT touch is the section's baked WORLD exit: **a SINGLE flip moves
-  it, by the two marches' own mechanism and inside the same bound** (`kex2d-correctness-fixes` stage
-  3) — 0.20 m on that same section, inside the 0.25 m two-bakes-at-equal-time bound the round trip
-  derives, asserted as that derived inequality and never as the literal. That is two independent
-  marches of one authored ride disagreeing, not the curve reshaping. `convertSolve(ecs,
-  sectionId, solved)` is the landing seam for the same table: invoked solves stay
-  distance-internal (their goldens are frozen in meters), so `geoforce.convertGeo` passes its answer
-  through it inside the landing entry — key stations and the extent only, **with no carry**, so the
-  between-keys reshape survives on that path across the easing-derived segments a solved store
-  carries. Device-free tests in `tests/domain.test.ts` (guards, the forward conversion against an
-  independently rebuilt table, the derived round-trip bound, the single-flip bound against the same
-  swept disagreement, undo byte-identity, the plateau and past-span degeneracies, the window
-  boundaries, and the carry: both fixtures inside their own floor and again with summoned explicit
-  handles — the class where the carry has least margin, 0.99× of tolerance against 0.19×/0.70× with
-  derived handles — the reverse drop, an edited key surviving it, a Cut at a carried key surviving the
-  reverse flip, a DELETE of an authored key leaving the shape intact through the reverse flip while an
-  authored insert leaves its neighbours droppable, key counts bounded and RELEASED over 10 re-baked
-  round trips against an untagged control, `convertFailed`'s sentence/detail split with the ruler
-  pick's own catch wiring, and the floor guard throwing on a between-probe map, on a non-stall 3×
-  swing and on a mixed frozen/moving map while an affine map, a wholly frozen segment read at f32
-  precision, and a real stalling ride all pass).
+- `domain.ts` — the **track-global domain lens**, and the ONE place `Track.domain` is written.
+  Every force keyframe, extent, strip and strip keyframe is stored in meters of arclength always
+  (`track.ts`'s `Force`/`Strip`/`StripKeyframe` columns); `Track.domain` says only what unit the
+  ruler, every readout, the chart's x-positions and the Time-view gestures DISPLAY that store in.
+  `convertDomain(history, ecs, target)` is the ruler pick, landed by `history.landDomain` as one
+  undoable entry that writes `Track.domain` and nothing else — no keyframe position, no extent,
+  no explicit handle moves, so a flip changes no authored component and no bake hash, in either
+  direction, forever, and a document conversion that used to be able to throw part-way can't:
+  there's nothing left in it to fail. `convertible(ecs)` is the precondition a Time reading needs
+  something to project THROUGH: a live bake, and every force section on it (a section past the
+  `MAX_SAMPLES` cap has no station to read, so it rejects). `pickable(ecs, target)` wraps it as
+  the ruler menu's ONE row-enablement rule (the active row always — picking it is a no-op — a
+  converting row only when `convertible`), so a blocked pick can't click through to a silent
+  no-op. `convertFailed(e)` is kept as the surface's error-shape contract (`editor.solveFailed`'s
+  own split: one plain sentence to `editor.notify`, the raw detail to the console) even though a
+  flip has nothing left to throw on, so a caller doesn't need two different failure idioms
+  depending on which command it invoked.
+  This replaces the prior document-conversion op — `carryForce`/`resolutionFloor`/
+  `storeQuantum`, the tagged-subdivision carry that rewrote every keyframe's stored number on a
+  flip, and the `Force.carried` provenance column every writer had to clear correctly to keep
+  droppability honest — because a cubic bezier in `(s, g)` is not a cubic bezier in `(t, g)` under
+  the nonlinear arc↔time map, so that scheme subdivided to a resolution-floor tolerance and the
+  extent didn't round-trip at all (25.37 → 99.53 m, 3.36 → 5927.96 s on one tagged flip). Storing
+  one canonical parameter (arclength) and reading the other off the live bake's s↔t table
+  (`timeline.ts`'s `dToU`/`uToD`) is exact by construction instead of exact to a tolerance: a
+  Meters→Seconds→Meters round trip now reads EXACTLY 0 m world-exit deviation (was 0.03–0.53 m
+  under the carry). Device-free tests in `tests/domain.test.ts`: the guards (no live bake, a
+  stale bake, the already-active domain, `convertible`/`pickable`/`convertFailed`), a flip leaves
+  every authored component byte-identical and the bake hash untouched (`§ Validation a`), the
+  M→S→M round trip and a single flip each read exactly 0 deviation (`§ Validation b`), undo
+  byte-identical either direction including a live geo-node selection, and the degeneracies the
+  old carry used to reject on (a stalled ride, a keyframe past a trimmed extent, a strip keyframe)
+  now flip untouched because the flip never reads the table at all.
 - `geoforce.ts` — the **invoked geo→force command**, and the only place the conversion tier and
   the document meet: `convertGeo(history, ecs, sectionId, opts)` drives `convert.ts`'s façade with
   the bake's OWN input (`evalGeo(sectionInfo.entry, geoNodes(…), trackDs(ecs), MAX_SAMPLES −
@@ -920,8 +837,10 @@ survive as the authoring surface.
   persists past points / length — outcome, floor, deviation, probes, realized `ds` are transient
   readout. `tryRestore` runs the provenance short-circuit inline before the façade ever spawns
   (`track.consultProvenance` → `history.restoreProvenance`, a `"restored"` outcome on
-  `ConvertGeoResult`); a verbatim restore is already in the track domain's unit, so it never
-  crosses `domain.convertSolve` — safe by construction, the token folds `Track.domain`.
+  `ConvertGeoResult`); a verbatim restore is already in meters of arclength, the solve's own unit,
+  so there is nothing left to convert — safe by construction, and the provenance token
+  (`sectionToken`) deliberately does NOT fold `Track.domain`, since a display lens plays no part
+  in what "unchanged since the stamp" means.
   Device-free tests in `tests/geoforce.test.ts` (apply+undo byte-identity, downstream
   continuity at the 1e-3 exit bound, cancel / diverged / stale / re-entrant all leaving the
   track byte-identical, and the reverse-direction provenance suite).
@@ -1063,13 +982,14 @@ survive as the authoring surface.
   one home for the section-frame convention so render and controls can't drift apart.
 - `timeline.ts` — pure transform + tick math for the force-curve timeline (no Svelte/DOM/track
   state). The chart's x-axis is a coordinate `u` on one of two global axes (distance `d` in meters,
-  or march time `t` in seconds), and which one is `Track.domain` itself — the chart's axis and the
-  force store's unit are one fact (there is no `Basis` enum and no view copy). So the force store
-  needs no projection at all: it reaches the chart through the lens's affine (`track.toGlobalU`) and
-  every gesture on it resolves in its own unit. `dToU`/`uToD` are the ONE seam for the other kind of
-  subject — a quantity authored in ARCLENGTH shown on a time axis (the recovered force curve, a geo
-  node tick, the cart's park): identity on distance, the live bake's arc↔time table on time,
-  identity again with no live bake. `T_GRID` (= `S_GRID / V0`)
+  or march time `t` in seconds), picked by `Track.domain`. Every force keyframe, extent, strip and
+  strip keyframe is stored in meters of arclength always — `Track.domain` is a display lens, not
+  a second storage unit — so a Time reading always projects through the lens. `dToU`/`uToD` are
+  the ONE seam every such subject goes through (a force keyframe on the chart, the recovered force
+  curve, a geo node tick, the cart's park): identity on distance, the live bake's arc↔time table
+  on time, identity again with no live bake, and FROZEN per gesture (`Timeline.svelte`'s
+  `gestureMapping`, taken at gesture start and released on end) so the table a drag reads doesn't
+  move under it while the drag is live. `T_GRID` (= `S_GRID / V0`)
   and `marginFloor` are the two axis-picked constants (the snap quantum, the lead-out floor), and
   `ticks` picks the unit suffix.
   Everything else reads the resulting coordinate `u` with no further branching: `View`,
@@ -1105,16 +1025,20 @@ survive as the authoring surface.
   picked on the RULER's own context menu** (`rulerCtx` → `openRulerMenu`, right-clicking
   `.rulerzone` — the Premiere/REAPER/Cubase reference: time-display format is the ruler's, not a
   standing rail toggle): flat rows (no `Units ▸` submenu — nothing else lives in this menu),
-  `checked` reading `Track.domain` (the store's own unit, so a lit row can't lie about what the
-  chart reads), the INACTIVE row grayed by `domain.pickable`, no keyboard shortcut (the second
-  feel check-in's call). `pickDomain` lands a row: `convertDomain` converts the store as one
-  undoable entry, and the visible window carries across as a fraction of the addressable span so
-  the ruler reads as re-labelled rather than jumped. Every FORCE path on the chart is native to that
-  axis — keyframe placement (`track.toGlobalU`), the drag (delta-from-grab in the store's own unit,
-  so a returned gesture writes bit-exact zero), the extent trim (a duration trim in the `Time`
-  domain), the popover fields and the label scrub, the `GRID` quantum (`S_GRID` / `T_GRID`) — while
-  arclength-authored subjects (the curve, geo node ticks, the cart's park) project through
-  `dToU`/`uToD`. The chart
+  `checked` reading `Track.domain` (the display lens picked, so a lit row can't lie about what
+  axis the chart reads through), the INACTIVE row grayed by `domain.pickable`, no keyboard
+  shortcut (the second feel check-in's call). `pickDomain` lands a row: `convertDomain` writes
+  `Track.domain` alone as one undoable entry — a pure view flip, no keyframe, extent, or handle
+  moves — and the visible window carries across as a fraction of the addressable span so the
+  ruler reads as re-labelled rather than jumped. Every subject on the chart is authored in
+  arclength always (`Force.s`, `Strip`/`StripKeyframe`, geo node ticks, the cart's park) and
+  projects onto the chart's picked axis through `dToU`/`uToD` — identity on Distance, the live
+  bake's arc↔time table on Time. That includes every FORCE path: keyframe placement
+  (`track.toGlobal`), the drag (delta-from-grab resolved through `dOf`/`uOf`, frozen per gesture
+  by `gestureMapping` so a returned gesture still writes bit-exact zero), the extent trim
+  (`uToDExtend` extrapolates past the bake's end at frozen exit v in Time), the popover fields and
+  the label scrub, the `GRID` quantum (`S_GRID` / `T_GRID`) — none of it is native to Time; the
+  lens is the only reason any of it reads there. The chart
   draws the baked F_n curve + **section boundary guides**
   (dashed verticals); the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator**
   minimap pans/zooms. The chart is a **whole-track force-authoring surface**: it draws every force
@@ -1330,12 +1254,13 @@ The ECS + substrate layers are covered device-free — `tests/section.test.ts` (
 device; the unit suite is canvas2D + device-free, with no real-GPU leg. The real-GPU leg is the
 capture harness alone (`.claude/rules/kex2d-harness.md`).
 
-**A test touching a structural or domain op re-resolves its sections by stable `order`/`id`, never by
-a held eid.** `convertDomain`'s forward land is `applyDomain` in place, and its undo/redo is the
-`restoreAll` pair — either way force-point eids churn (the carry plants and destroys keyframes, and
-`restoreAll` destroys and respawns a section's whole payload), so an eid captured before the op
-addresses nothing after; a test that held one read `Section.length` as 0 and looked like a physics
-bug. Same for split/join/delete, which renumber the chain.
+**A test touching a structural op re-resolves its sections by stable `order`/`id`, never by a
+held eid.** A domain flip no longer churns eids at all — `convertDomain`'s forward land
+(`history.landDomain`) writes `Track.domain` alone, and there is no keyframe to plant, destroy,
+or respawn. Split/join/delete still do: they renumber the chain and `restoreAll` (their undo/
+redo path) destroys and respawns a section's whole payload, so an eid captured before the op
+addresses nothing after; a test that held one read `Section.length` as 0 and looked like a
+physics bug.
 
 `render.ts` is covered the same device-free way through `tests/helpers/recording-ctx.ts` — a
 recording `CanvasRenderingContext2D` double that snapshots `strokeStyle`/`fillStyle`/`lineWidth`/

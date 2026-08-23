@@ -25,10 +25,12 @@ section at an arclength s), join (adjacent same-kind), delete (downstream closes
 rigidly). One open chain — no branching, circuit closure, or mid-chain insertion.
 
 **The track start is a fixed-position anchor**, not a node (`START = {0,0,0,v0}`): what's really
-there is an initial-velocity anchor. Its position is fixed (the origin), but the **initial speed
-`v0` is authored** — the START diamond is selectable and carries a v0 field popover (m/s), stored
-per-track as `Track.v0` (default `V0`, in the bake hash). Not draggable — it draws as a diamond,
-distinct from the gold shape handles.
+there is an initial-velocity anchor. Its position is fixed (the origin), and the **initial speed
+is derived, not a separate field**: `seed()` authors a real, section-0 minimum-extent velocity
+strip, and `entrySpeed` reads the value of whichever strip covers station 0 (or `V0` when none
+does) — authored through the ordinary strip/keyframe gestures, not a popover on the anchor. The
+START diamond is selectable and still carries the dissipation-coefficient (μ/c) popover. Not
+draggable — it draws as a diamond, distinct from the gold shape handles.
 
 **A unified solver is NOT the model.** Three dogfood rounds proved that a solver responsible for
 arbitrating authoring intent almost never does what's intended — the author fights it. The
@@ -146,8 +148,9 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
   rule governs invoked optimization tools, not this). The displayed curve is the
   geometry-RECOVERED force (the one-display-path law), so a diamond sits O(ds) off the curve — the
   authored handle vs the recovered display, expected.
-- **Extent is the section's own authored length** (`Section.length`, in the track domain's unit —
-  meters or seconds), NOT inherited from the geo shape a convert came from: convert **resets** it to
+- **Extent is the section's own authored length** (`Section.length`, in meters of arclength
+  always — `Track.domain` picks only what unit it DISPLAYS as), NOT inherited from the geo shape
+  a convert came from: convert **resets** it to
   the domain's default; append gets its kind's (and domain's) **sticky** length — the last committed
   extent-trim (`track.setStickyLen`; a solve never touches it). Editable via the **force clip's
   right edge** (`ew-resize`, `setSectionLength`, floored at `minForceExtent`, one undo entry via
@@ -162,7 +165,7 @@ only there. The UI reads it through the per-RAF tick and writes it only through 
 setters, each wrapped in a `history` gesture. That's the purity contract, and it's the surface a
 future authoring agent drives — the same one the capture harness pokes through `__kex`.
 
-**The authored components (the one source of truth):** `Track` (`count`, `ds`, `v0`, `domain`, `friction`, `resistance`), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `carried`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `section`, `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
+**The authored components (the one source of truth):** `Track` (`count`, `ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `section`, `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
 
 **Write only through the setters, only inside a history gesture.** `history` is one undo/redo stack
 (`begin`/`commit`/`cancel`; one gesture at a time, so a live drag collapses to one entry). Two
@@ -172,8 +175,10 @@ disciplines:
   `convertSection`, `extendTrack`, `trimTrack`, `createForce`, `deleteForce`.
 - *Continuous* edits (drags, label scrubs, typed fields) bracket by hand — `begin*` → `set*`
   (repeated) → `commit(history)`, `cancel()` on interrupt: `beginMove`+`Handle.pos.set`,
-  `beginForceMove`+`setForcePoint`, `beginLength`+`setSectionLength`, `beginV0`+`setTrackV0`,
-  `beginStripMove`+`setStrip`, `beginStripKeyframeMove`+`setStripKeyframe`.
+  `beginForceMove`+`setForcePoint`, `beginLength`+`setSectionLength`,
+  `beginStripMove`+`setStrip`, `beginStripKeyframeMove`+`setStripKeyframe` (initial speed is
+  authored through these — the start strip's own gestures — with no field-specific pair of its
+  own).
 
 Never mutate an authored component from a Svelte component or a read/render path — that divorces the
 edit from undo and from the single source of truth. The one deliberate exception is the DEV-only
@@ -182,25 +187,27 @@ not authoring.
 
 **Two coordinate frames, one lens.** Position-along-track has two names for two jobs:
 
-- **`s` — section-local** (from the section entry), in the unit of the track-global domain
-  (`Track.domain`: meters of arclength, or seconds of time). The *storage and kernel* frame:
-  `Force.s`, force extents, geo `Handle` locals. Keyframes are addressed relative to their owning
-  section, so they **ride with it** — an upstream edit re-times the ride and shifts everything
-  downstream, but never rewrites a downstream section's stored `s`: the sections-of-atoms
-  self-containment invariant.
-- **track-global** (from the track start, the ruler's axis): distance `d` in meters, or time `t` in
-  seconds — every position readout and the agent contract address.
+- **`s` — section-local** (from the section entry), in meters of arclength ALWAYS — the
+  *storage and kernel* frame: `Force.s`, force extents, `Strip`/`StripKeyframe`, geo `Handle`
+  locals. Keyframes are addressed relative to their owning section, so they **ride with it** — an
+  upstream edit shifts everything downstream, but never rewrites a downstream section's stored
+  `s`: the sections-of-atoms self-containment invariant.
+- **track-global** (from the track start, the ruler's axis): distance `d` in meters, or time `t`
+  in seconds — every position readout and the agent contract address.
 
-The seam is the lens in `track.ts` (`sectionSpans` + `toGlobal`/`toLocal` on arclength,
-`toGlobalU`/`toLocalU` on the domain's axis): a section's `offset` is the cumulative baked arclength
-upstream, `entryU` its baked entry time, `global = entry + local`, inverted back to
-`(section, local)` (a shared boundary resolves **upstream**). Every readout derives here — nothing
-re-walks the baked `ds`. Geo is position-authored in either domain, so it projects for display
-through the timeline's d↔t seam (`dToU`/`uToD`, on a `section.Domain`). **The domain pick is not a
-view change**: it's a document conversion op (`domain.convertDomain`) — one entry converting every
-keyframe, extent, and handle through the live bake's arc↔time table, which makes time-domain editing
-time-CONSTRAINED. A round trip isn't bit-identical; undo is the only way back. Invoked
-solves stay distance-internal and convert at their landing (`domain.convertSolve`).
+The seam is the lens in `track.ts` (`sectionSpans` + `toGlobal`/`toLocal`, on arclength always —
+`toGlobalU`/`toLocalU` are the same pair under their old names, kept for their call sites): a
+section's `offset` is the cumulative baked arclength upstream, `global = entry + local`, inverted
+back to `(section, local)` (a shared boundary resolves **upstream**). Every readout derives here
+— nothing re-walks the baked `ds`. **The domain pick IS a view change, exactly**:
+`domain.convertDomain` writes `Track.domain` alone as one undoable entry — no keyframe, extent, or
+handle write — so a Time reading is a display projection through the live bake's s↔t table
+(`timeline.ts`'s `dToU`/`uToD`, frozen per gesture) rather than a document conversion. A flip
+changes no authored component and no bake hash, in either direction, forever — a round trip IS
+bit-identical, because there's nothing stored to round-trip. Time-domain editing is no longer
+time-constrained (a keyframe held at t=3s when upstream speed changed under the old carry; under
+the lens it stays at its metre — the give-up is recorded, not silently dropped). Invoked solves
+stay distance-internal and land with nothing to convert (their goldens are frozen in meters).
 
 ## Code map
 
@@ -293,8 +300,9 @@ restored; redoing it re-lands and closes. The paced landing that plays after Sol
 **exit transition**: the modal chrome (panel in a disabled settling state, dim wash, subject hatch)
 holds through the window and releases in ONE moment at expiry or skip. A refusal (terse notice,
 top-center) stays in-mode with the draft untouched. While the mode is open the track is under an **editing lockdown** (only the
-pinning section is editable — no section add/remove, convert, domain switch, v0, or
-other-section edits) and **downstream sections freeze** at their mode-entry placement: the
+pinning section is editable — no section add/remove, convert, domain switch, or other-section
+edits — the initial speed is a strip on its own section, so it's covered by that rule, not a
+listed exception) and **downstream sections freeze** at their mode-entry placement: the
 boundary gap that opens while editing IS the residual (the drop-line's truth), and any close
 repropagates. Five modules: `optimize.ts` (the masked exit-restore kernel), `pin.ts` (the
 document seam), `optimize-async.ts`/`optimize-worker.ts` (the one-shot worker façade), the
@@ -327,7 +335,8 @@ sandbox + record-redirect seam (`editor.ts`/`history.ts`), and the downstream fr
   convert continues the entry force, level only when that entry is 1g. Deleting every keyframe
   restores the 1g fallback.
 - **The track start is a fixed-position `startEntry` anchor at the origin** (initial speed
-  `Track.v0`, default `V0`; authored via the selectable START diamond's popover), not a node — a
+  DERIVED, `entrySpeed` — the strip covering station 0, else `V0`; authored through the ordinary
+  strip/keyframe gestures, not the START diamond's own popover), not a node — a
   geo→force convert carries no geo start position (destructive; position is cosmetic). Force
   extent's convert-vs-append default: Model (force authoring), above.
 

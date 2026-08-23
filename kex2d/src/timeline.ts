@@ -3,14 +3,15 @@
  *  the pan/zoom clamp.
  *
  *  The chart's x-axis is a coordinate `u`, one of two global axes: distance `d` (meters) or
- *  march time `t` (seconds). Which one is `Track.domain`, the unit the force store itself is
- *  written in — so the store needs no projection at all: it reaches the chart through the lens's
- *  affine (`track.toGlobalU`), and a gesture on it resolves in the store's own unit. `dToU`/`uToD`
- *  are the ONE seam for the other kind of subject, one authored in ARCLENGTH shown on a time axis
- *  (the recovered force curve, a geo node tick, the cart's park) — identity on distance, the live
- *  bake's arc↔time table on time. `T_GRID` and `marginFloor` are the two axis-picked constants
- *  (snap quantum, lead-out floor) and `ticks` picks the unit suffix; everything else below
- *  (`View`, `uToPx`/`pxToU`, `zoomAt`, `snap`) reads `u` with no further branching.
+ *  march time `t` (seconds), picked by `Track.domain`. Every force keyframe, extent, strip and
+ *  strip keyframe is stored in meters of arclength always — `Track.domain` is a view, not the
+ *  store's unit — so a Time reading always projects through the lens. `dToU`/`uToD` are the ONE
+ *  seam every such subject goes through (a force keyframe on the chart, the recovered force
+ *  curve, a geo node tick, the cart's park): identity on distance, the live bake's arc↔time table
+ *  on time, frozen per gesture (`gestureMapping`) so the table a drag reads doesn't move under
+ *  it. `T_GRID` and `marginFloor` are the two axis-picked constants (snap quantum, lead-out
+ *  floor) and `ticks` picks the unit suffix; everything else below (`View`, `uToPx`/`pxToU`,
+ *  `zoomAt`, `snap`) reads `u` with no further branching.
  *
  *  ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom, _renderTicks,
  *  findGoodStep). */

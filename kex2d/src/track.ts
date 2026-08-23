@@ -51,15 +51,16 @@ export { SectionKind } from "./section";
  *  first section, or `V0` when none exists. the per-section kind + extent live on
  *  `Section`, not here.
  *
- *  `domain` is the track-global `Domain` (`section.ts`) — the unit EVERY force
- *  section's keyframes and extent are stored in: meters of section-local arclength
- *  (`Distance`, the default) or seconds of section-local time (`Time`). It is
- *  authored state, in the bake hash, and one track-global fact — not per-section
- *  (rejected at feel: no per-section flip row). Nothing converts implicitly: the
- *  stored numbers ARE the active domain's unit, and the ONE place they change unit
- *  is the ruler-menu pick, a document conversion op (`domain.convertDomain`). Geo
+ *  `domain` is the track-global `Domain` (`section.ts`) — a VIEW, not a second
+ *  storage unit: every force section's keyframes and extent are stored in meters of
+ *  section-local arclength always (`Distance` or `Time`, whichever is picked, reads
+ *  through the same store). It is authored state, in the bake hash, and one
+ *  track-global fact, not per-section (rejected at feel: no per-section flip row).
+ *  Nothing converts on a flip: `domain.convertDomain` writes this one column and
+ *  nothing else, so a Time reading projects through the live bake's s↔t table
+ *  (`timeline.ts`'s `dToU`/`uToD`) rather than changing any stored number. Geo
  *  sections are position-authored in either domain; only `evalForce`'s step rule and
- *  the force-section extent/keyframe axis read this. */
+ *  the force-section extent/keyframe display axis read this. */
 export const Track = {
     count: sparse(u32),
     ds: sparse(f32),
@@ -78,8 +79,8 @@ export const Track = {
  *  — the `Handle.order` convention). `order` is its position along the chain
  *  (0 = first), reassigned by the structural ops (append/split/join/delete). `kind`
  *  is the `SectionKind`. `length` is a FORCE section's extent — the span the force
- *  profile covers, in the TRACK-GLOBAL domain's own unit (`Track.domain`: meters of
- *  arclength, or seconds); unused (0) for a geo section, whose extent is its node chain.
+ *  profile covers, in METERS OF ARCLENGTH always (`Track.domain` is a display lens, not a
+ *  second unit); unused (0) for a geo section, whose extent is its node chain.
  *  Every section bakes at the domain's nominal quantum (the per-section step resolver
  *  removed, `kex2d-correctness-fixes` stage 5) — there is no per-section step to carry.
  *  a section's entry anchor is derived (the prior section's exit, or `START` for the
@@ -2905,7 +2906,7 @@ export function applyConvertGeo(
 // each mutates the section chain directly; `history` wraps it in a whole-track
 // snapshot pair so undo is byte-identical. geo split/join re-express nodes rigidly
 // in the boundary frame (`place`/`localize`, exact to f32 round-off); force
-// split/join partition + rebase points in the track domain's unit (lossless).
+// split/join partition + rebase points in meters of arclength (lossless).
 
 /** shift every section at or past `threshold` order by `delta` — makes room to
  *  insert (delta +1) or closes a gap after a remove (delta −1). */
@@ -3290,8 +3291,8 @@ export function sectionCutAt(
     return { at: loc.s };
 }
 
-/** split a force section at `s` (0 < s < length), in the track domain's unit
- *  (meters of arclength, or seconds of section-local time): the head keeps extent
+/** split a force section at `s` (0 < s < length), in meters of arclength (the
+ *  store's unit always): the head keeps extent
  *  [0, s] and its points there; a new section takes extent [s, length] with the
  *  remaining points rebased to its entry (a lossless partition).
  *

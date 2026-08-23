@@ -62,20 +62,22 @@ import {
  *  session is open (`editor.pinning`), not just on the session's own section: convert/delete/
  *  cut/join aren't available inside the mode (the locked decision's consent-boundary law).
  *  Deleting the session's own section would strand
- *  `editor.pinning` on a dead id; a convert or a domain switch would land a track rewrite
- *  INSIDE the open session — an upstream convert silently rebases what the stamp means, and a
- *  domain switch is a lossy whole-track rewrite of the very store the session is solving. */
+ *  `editor.pinning` on a dead id; a convert would land a track rewrite INSIDE the open
+ *  session — an upstream convert silently rebases what the stamp means. The domain switch
+ *  stays behind the same gate as mode hygiene even though a flip is a pure view write now
+ *  (arclength canonical, `Track.domain` a lens): the bar is on churn inside the mode, not on
+ *  data loss. */
 export function sectionOpsAllowed(pinning: PinSession | null): boolean {
     return pinning === null;
 }
 
 /** the editing lockdown's per-subject predicate (kex2d-optimize-mode stage 5): while a pin
  *  session is open, ONLY the pinning section is editable — every edit surface addressing any
- *  other section (geo nodes, other force sections' keys/extents, the track v0) grays its
- *  affordance and guards its action on this. `sectionOpsAllowed` (above) stays the stricter
- *  structural gate: add/remove/convert/domain are barred even on the pinning section.
- *  `section` is the subject's own section id; pass -1 for a track-global subject (v0), which no
- *  session id ever equals. */
+ *  other section (geo nodes, other force sections' keys/extents) grays its affordance and
+ *  guards its action on this. `sectionOpsAllowed` (above) stays the stricter structural gate:
+ *  add/remove/convert/domain are barred even on the pinning section. `section` is the
+ *  subject's own section id; the -1 track-global convention retired with the track-global v0 field (entry
+ *  speed is a section-0 strip now, an ordinary per-section subject). */
 export function sectionEditable(pinning: PinSession | null, section: number): boolean {
     return pinning === null || pinning.section === section;
 }

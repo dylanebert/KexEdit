@@ -3559,6 +3559,49 @@ describe("initial velocity is the first strip (S5)", () => {
         expect(Array.from(seededOut.fN)).toEqual(Array.from(plainOut.fN));
     });
 
+    test("a degenerate [0,0) point strip is genuinely march-inert: bake === strip-absent, both directions", () => {
+        // guards the point convention's own station-0 exception (`lo = start - 1 = -1`, out of
+        // range): a curved section, so a broken inertness that let the override reach edge 0
+        // would force v[1] to the strip's value instead of the physically integrated one —
+        // the flat-track fixture above can't see this (F_n = 1g regardless of v). ONE document,
+        // both directions: present → absent, so a stray difference between two separately built
+        // tracks can't be mistaken for the strip's own effect.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, 16, 27.7);
+        state.step(0);
+        const absentBefore = bakeOut.get(eid);
+        if (!absentBefore) throw new Error("no bake");
+        const absentV = Array.from(absentBefore.v);
+        const absentFN = Array.from(absentBefore.fN);
+
+        // setStartSpeed's own spawn path: no strip exists yet, so this authors the
+        // DEGENERATE `[0, 0)` point strip — bypassing the ordinary min-extent guard on
+        // purpose (`setStartSpeed`'s own docblock) — at the same value the fallback already
+        // reads, so entry.v is unchanged and any difference is the override's, not entry's.
+        setStartSpeed(state, V0);
+        expect(sectionStrips(state, sec).length).toBe(1);
+        expect(entrySpeed(state)).toBe(V0);
+        state.step(0);
+        const presentOut = bakeOut.get(eid);
+        if (!presentOut) throw new Error("no bake");
+        expect(Array.from(presentOut.v)).toEqual(absentV);
+        expect(Array.from(presentOut.fN)).toEqual(absentFN);
+
+        // reverse direction, same document: destroy the strip and re-bake.
+        const id = sectionStrips(state, sec)[0].id;
+        destroyStrip(state, id);
+        expect(sectionStrips(state, sec).length).toBe(0);
+        state.step(0);
+        const absentAfter = bakeOut.get(eid);
+        if (!absentAfter) throw new Error("no bake");
+        expect(Array.from(absentAfter.v)).toEqual(absentV);
+        expect(Array.from(absentAfter.fN)).toEqual(absentFN);
+    });
+
     test("with no strip covering station 0, the derived entry speed falls back to V0", () => {
         const { state } = track();
         expect(entrySpeed(state)).toBe(V0);
