@@ -1669,3 +1669,91 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(1);
     await expect.poll(undoDepth).toBe(before - 1);
 });
+
+// S1: the strip keyframe drag ORIGIN. `stripKfMove` subtracted the section entry
+// (`BandStrip.startU`) where `forceDown`'s own pattern subtracts the GRAB POINT (`dragU0`) — so
+// the first move wrote `s ≈ 2·s0` and both clamps (the extent clamp here, `setStripKeyframe`'s
+// own) pinned it to `end`, regardless of how small the actual cursor delta was (the origin error
+// dominates, not the drag distance). This flow drives REAL POINTER EVENTS (checks.md: an
+// interaction affordance is only visible to an instrument that performs the interaction — the
+// `__kex` hook only supplies pixel POSITIONS to drive the pointer at, per its own doc comment,
+// never the drag itself) and asserts the authored `s` moves by the cursor delta, never landing
+// on `end`.
+test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const xView = () => kexCall(page, "xView");
+    const vRange = () => kexCall(page, "vRange");
+    const stripKfPx = () => kexCall(page, "stripKfPx");
+
+    // create a strip (right-click on the band → Add velocity strip), the T1 flow's own idiom
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.3;
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
+    await page.waitForTimeout(200); // let the per-RAF tick propagate selection to `$derived` reads
+
+    const strip = (await stripsOf())[0] as {
+        id: number;
+        start: number;
+        end: number;
+        value: number;
+    };
+    const [, pxPerU] = await xView();
+    const [vLo, vHi] = await vRange();
+    const stripMidS = (strip.start + strip.end) / 2;
+    const stripCenterPx = clipBb.x + stripMidS * pxPerU;
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!dockBb) throw new Error("dock body not laid out");
+    const vToY = (v: number): number =>
+        dockBb.y + (1 - (v - vLo) / (vHi - vLo)) * dockBb.height * 0.7;
+    const stripValueY = vToY(strip.value);
+
+    // create a keyframe at the strip's MIDPOINT — off both edges, so the bug's own jump (s ≈
+    // 2·s0, clamped to `end`) is distinguishable from a correct small move in either direction.
+    await page.mouse.dblclick(stripCenterPx, stripValueY);
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(1);
+    const kf0 = (await stripKeyframesOf(strip.id))[0] as { id: number; s: number; v: number };
+
+    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
+    const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const kf0Px = kfPx.find((k) => k.id === kf0.id);
+    if (!kf0Px) throw new Error("the created keyframe has no drawn diamond");
+
+    // a SMALL horizontal-only drag, held y fixed (the same client y throughout, so v holds and
+    // only s is under test) — small enough that a correct drag stays well inside the strip's
+    // own extent (a min-extent strip is >5 px wide, `stripWidthPx` measured in the sibling flow
+    // above; a 2 px move from the strip's own MIDPOINT clears both edges by construction).
+    const DxPx = 2;
+    await page.mouse.move(kf0Px.x, kf0Px.y);
+    await page.mouse.down();
+    await page.mouse.move(kf0Px.x + DxPx, kf0Px.y, { steps: 3 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    const kfs1 = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
+    const kf1 = kfs1.find((k) => k.id === kf0.id);
+    if (!kf1) throw new Error("the dragged keyframe vanished");
+
+    // the authored s moved by the CURSOR DELTA — `expectedDs`, derived from the same pxPerU
+    // axis scale the app itself reads the drag through — not by the section-entry-sized jump
+    // the bug produced (s ≈ 2·s0). Tolerance: 2 px worth of s, covering the whole-pixel
+    // rounding `page.mouse.move` and `getBoundingClientRect` each contribute (at most 1 px
+    // apiece, on top of and back off the axis).
+    const expectedDs = DxPx / pxPerU;
+    const tol = 2 / pxPerU;
+    expect(Math.abs(kf1.s - kf0.s - expectedDs)).toBeLessThan(tol);
+    // never lands on `end` — the buggy clamp's own tell, independent of the tolerance above.
+    expect(kf1.s).toBeLessThan(strip.end - tol);
+    expect(kf1.s).toBeGreaterThan(strip.start + tol);
+});

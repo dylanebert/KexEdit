@@ -960,9 +960,12 @@ const selStrip = $derived.by((): BandStrip | null => {
     if (id === null) return null;
     return bandStrips.find((s) => s.id === id) ?? null;
 });
-// the selected strip's keyframes, projected to screen coordinates — the value-surface
-// diamonds drawn in the velocity channel (T2: value in the graph). Each keyframe carries
-// its section-local `s`, its velocity `v`, and its global chart-axis `u` (for the x pixel).
+// every strip's keyframes, projected to screen coordinates — the value-surface diamonds
+// drawn in the velocity channel (T2: value in the graph), for every strip (Locked decision
+// "Visibility": solid where a strip AUTHORS it, not where one is selected). Each keyframe
+// carries its section-local `s`, its velocity `v`, and its global chart-axis `u` (for the x
+// pixel), plus the id of the strip it belongs to (`strip`) — the selected strip's own
+// keyframes brighten in the markup below, the same rung force keyframes use.
 interface StripKfPt {
     id: number;
     strip: number;
@@ -976,50 +979,64 @@ interface StripKfPt {
 }
 const stripKfPts = $derived.by((): StripKfPt[] => {
     void tick;
-    const s = selStrip;
-    if (s === null) return [];
-    const kfs = stripKeyframes(ecs, s.id);
-    return kfs.map((k) => ({
-        id: k.id,
-        strip: s.id,
-        section: s.section,
-        s: k.s,
-        v: k.v,
-        u: toGlobalU(spans, s.section, k.s) ?? s.startU,
-        startU: s.startU,
-        start: s.start,
-        end: s.end,
-    }));
+    const out: StripKfPt[] = [];
+    for (const s of bandStrips) {
+        for (const k of stripKeyframes(ecs, s.id)) {
+            out.push({
+                id: k.id,
+                strip: s.id,
+                section: s.section,
+                s: k.s,
+                v: k.v,
+                u: toGlobalU(spans, s.section, k.s) ?? s.startU,
+                startU: s.startU,
+                start: s.start,
+                end: s.end,
+            });
+        }
+    }
+    return out;
 });
-// the selected strip's velocity curve, sampled over its extent for the solid draw —
-// either the constant `value` (no keyframes) or the keyframed curve (profile.sampleForce).
-// Returns screen-space points for the canvas render.
-const stripVCurve = $derived.by((): { x: number; y: number }[] | null => {
+// every strip's own authored velocity curve, sampled over its extent for the solid draw —
+// either the constant `value` (no keyframes) or the keyframed curve (profile.sampleForce),
+// drawn for every strip (Locked decision "Visibility"). `sel` marks the selected strip's own
+// curve so the render can brighten it, the header band's own selected/unselected split
+// (`bandStrips` render, above).
+interface StripCurve {
+    id: number;
+    sel: boolean;
+    points: { x: number; y: number }[];
+}
+const stripCurves = $derived.by((): StripCurve[] => {
     void tick;
-    const s = selStrip;
-    if (s === null) return null;
-    const kfs = stripKeyframes(ecs, s.id);
-    const x0 = uPx(s.u0);
-    const x1 = uPx(s.u1);
-    if (kfs.length === 0) {
-        // no keyframes: one constant across the span (the AE stopwatch reading)
-        const y = vOf(s.value);
-        return [
-            { x: x0, y },
-            { x: x1, y },
-        ];
-    }
-    // keyframed curve: evaluate sampleForce at each pixel across the extent
-    const points = kfs.map((k) => ({ s: k.s, g: k.v }));
-    const res: { x: number; y: number }[] = [];
-    const n = Math.max(2, Math.floor(x1 - x0));
-    for (let i = 0; i <= n; i++) {
-        const frac = i / n;
-        const localS = s.start + frac * (s.end - s.start);
-        const v = sampleForce(points, localS);
-        res.push({ x: x0 + frac * (x1 - x0), y: vOf(v) });
-    }
-    return res;
+    const selId = editor.strip;
+    return bandStrips.map((s) => {
+        const kfs = stripKeyframes(ecs, s.id);
+        const x0 = uPx(s.u0);
+        const x1 = uPx(s.u1);
+        let points: { x: number; y: number }[];
+        if (kfs.length === 0) {
+            // no keyframes: one constant across the span (the AE stopwatch reading)
+            const y = vOf(s.value);
+            points = [
+                { x: x0, y },
+                { x: x1, y },
+            ];
+        } else {
+            // keyframed curve: evaluate sampleForce at each pixel across the extent
+            const pts = kfs.map((k) => ({ s: k.s, g: k.v }));
+            const res: { x: number; y: number }[] = [];
+            const n = Math.max(2, Math.floor(x1 - x0));
+            for (let i = 0; i <= n; i++) {
+                const frac = i / n;
+                const localS = s.start + frac * (s.end - s.start);
+                const v = sampleForce(pts, localS);
+                res.push({ x: x0 + frac * (x1 - x0), y: vOf(v) });
+            }
+            points = res;
+        }
+        return { id: s.id, sel: s.id === selId, points };
+    });
 });
 // the popover lives only as long as its subject, `selPoint`'s own law: an undo/redo restoring
 // the same id can't resurrect a dangling selection. `void tick` first (not `selStrip`'s own
@@ -1377,7 +1394,11 @@ function forceUp(): void {
 // extent (clip-to-extent). The velocity value is floored at V_FLOOR (a held speed of 0
 // is a stall, not a controlled span — validStripValue's own shape).
 let dragStripKf: number | null = $state(null); // the dragged keyframe's stable id
-let dragStripKfU0 = 0; // the strip's section entry on the axis (fixed during the drag)
+// the cursor's axis coordinate at pointerdown — the grab origin the keyframe's s is measured
+// DELTA-FROM (`s = s0 + (u − u0)`), the force keyframe's own pattern (`dragU0`). NOT the strip's
+// section entry (`k.startU`) — that's a different quantity, off by a whole section width, and
+// was the S1 "keyframe drag origin" bug (`s ≈ 2·s0`, both clamps pinning it to `end`).
+let dragStripKfGrabU0 = 0;
 let dragStripKfS0 = 0; // the keyframe's start s
 let dragStripKfV0 = 0; // the keyframe's start v
 let dragStripKfStart = 0; // the strip's start (section-local)
@@ -1389,15 +1410,19 @@ function stripKfDown(e: PointerEvent, k: StripKfPt): void {
     e.preventDefault();
     e.stopPropagation();
     if (!sectionEditable(editor.pinning, k.section)) return;
+    // a keyframe now draws for every strip (S1 Visibility), so grabbing one owned by an
+    // unselected strip must select that strip first — `selectStripKf`'s own invariant is that
+    // the owning strip stays selected (its diamonds are drawn).
+    if (editor.strip !== k.strip) selectStrip(k.strip);
     selectStripKf(k.id);
     dragStripKfS0 = k.s;
     dragStripKfV0 = k.v;
-    dragStripKfU0 = k.startU;
     dragStripKfStart = k.start;
     dragStripKfEnd = k.end;
     const rect = canvas.getBoundingClientRect();
     dragStripKfCx = e.clientX - rect.left;
     dragStripKfCy = e.clientY - rect.top;
+    dragStripKfGrabU0 = uAtPx(clamp(dragStripKfCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
     beginStripKeyframeMove(ecs, k.id);
     dragStripKf = k.id;
     beginDrag(canvas, e.pointerId);
@@ -1410,7 +1435,7 @@ function stripKfMove(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
     dragStripKfCx = clamp(e.clientX - rect.left, LEFT_GUT, Math.max(LEFT_GUT, w));
     dragStripKfCy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
-    const ds = uAtPx(dragStripKfCx) - dragStripKfU0;
+    const ds = uAtPx(dragStripKfCx) - dragStripKfGrabU0;
     const dv = vView.lo + (1 - (dragStripKfCy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
     setStripKeyframe(ecs, dragStripKf, clamp(dragStripKfS0 + ds, dragStripKfStart, dragStripKfEnd), Math.max(V_FLOOR, dv));
 }
@@ -2895,13 +2920,18 @@ function render(ctx: CanvasRenderingContext2D): void {
         // above carries (S3's disclosed gap; the downstream freeze's own zero-length edge).
         const cx0 = Math.max(LEFT_GUT, x0);
         const cw = Math.max(1, Math.min(w, x1) - cx0);
+        // canvas 2D ignores `var(--…)` CSS custom properties — a `fillStyle`/`strokeStyle`
+        // string is resolved once, at the value's own construction, never against a live
+        // cascade, so the CSS token had no effect and every unselected strip drew invisible
+        // (S1 Visibility fix). `COLOR_VELOCITY` + `globalAlpha` is the canvas-side twin of the
+        // same selected/unselected split the CSS token would have driven.
         const sel = editor.strip === s.id;
-        ctx.fillStyle = sel
-            ? "color-mix(in srgb, var(--velocity) 85%, transparent)"
-            : "color-mix(in srgb, var(--velocity) 55%, transparent)";
+        ctx.globalAlpha = sel ? 0.85 : 0.55;
+        ctx.fillStyle = COLOR_VELOCITY;
         ctx.fillRect(cx0, RULER_H + GAP_H, cw, STRIP_H);
+        ctx.globalAlpha = 1;
         if (sel) {
-            ctx.strokeStyle = "var(--velocity)";
+            ctx.strokeStyle = COLOR_VELOCITY;
             ctx.lineWidth = 1;
             ctx.strokeRect(cx0 + 0.5, RULER_H + GAP_H + 0.5, cw - 1, STRIP_H - 1);
         }
@@ -3075,25 +3105,27 @@ function render(ctx: CanvasRenderingContext2D): void {
         ctx.globalAlpha = 1;
     }
 
-    // the selected strip's AUTHORED velocity curve — solid over its extent (T2: value in
-    // the graph). The recovered-speed channel above is always dashed/faded (display-only);
-    // the authored curve is solid and bright, the same register as the force curve. When the
-    // strip has no keyframes this is a flat line at the strip's constant `value`; with
-    // keyframes it's the evaluated curve. Clipped to the strip's extent by the clip rect.
-    const svc = stripVCurve;
-    if (svc && svc.length > 1) {
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = COLOR_VELOCITY;
-        ctx.setLineDash([]);
-        ctx.globalAlpha = 0.85;
+    // every strip's AUTHORED velocity curve — solid over its extent (T2: value in the graph),
+    // drawn for every strip (Locked decision "Visibility"): solid where a strip AUTHORS it,
+    // not where one is selected. The recovered-speed channel above is always dashed/faded
+    // (display-only); an authored curve is solid, selection brightening it exactly as the
+    // header band does (0.55 → 0.85 alpha) rather than a flat accent recolor. When a strip
+    // has no keyframes this is a flat line at its constant `value`; with keyframes it's the
+    // evaluated curve. Clipped to the chart by the clip rect above.
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = COLOR_VELOCITY;
+    ctx.setLineDash([]);
+    for (const sc of stripCurves) {
+        if (sc.points.length < 2) continue;
+        ctx.globalAlpha = sc.sel ? 0.85 : 0.55;
         ctx.beginPath();
-        for (let i = 0; i < svc.length; i++) {
-            if (i === 0) ctx.moveTo(svc[i].x, svc[i].y);
-            else ctx.lineTo(svc[i].x, svc[i].y);
+        for (let i = 0; i < sc.points.length; i++) {
+            if (i === 0) ctx.moveTo(sc.points[i].x, sc.points[i].y);
+            else ctx.lineTo(sc.points[i].x, sc.points[i].y);
         }
         ctx.stroke();
-        ctx.globalAlpha = 1;
     }
+    ctx.globalAlpha = 1;
 
     ctx.restore();
 }
@@ -3828,14 +3860,16 @@ onMount(() => {
                 {/each}
             </g>
             <!-- velocity-strip keyframes (T2: value in the graph): diamonds in the velocity
-                 channel, drawn only for the selected strip. Same diamond idiom as force
-                 keyframes but on the v-axis (vOf, not yOf). Clipped to the chart. -->
+                 channel, drawn for every strip (Locked decision "Visibility"), the selected
+                 strip's own keyframes brightening per the same `.sel` rung force keyframes use.
+                 Same diamond idiom as force keyframes but on the v-axis (vOf, not yOf). Clipped
+                 to the chart. -->
             <g class="fmarkers" clip-path="url(#fclip)">
                 {#each stripKfPts as k (k.id)}
                     {@const mx = uPx(k.u)}
                     {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                         {@const my = vOf(k.v)}
-                        <g class="fpt sel">
+                        <g class="fpt" class:sel={selStrip !== null && k.strip === selStrip.id}>
                             <circle
                                 class="fhit"
                                 cx={mx}
