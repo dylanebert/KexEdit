@@ -831,8 +831,8 @@ export function stripSeedValue(ecs: State, sectionId: number, s: number): number
     const info = sectionInfo.get(sectionId);
     if (!out || !info) return V0;
     const last = Math.max(0, Track.count.get(trackEid) - 1);
-    // `s` is arclength always (S6) — the ds-table branch, never `time`, whatever `Track.domain` reads.
-    const addr = forceSample(out, info, last, false, s);
+    // `s` is arclength always (S6): `forceSample` has one table now, no `time` branch.
+    const addr = forceSample(out, info, last, s);
     if (!addr) return V0;
     const j = Math.min(addr.index + 1, last);
     return out.v[addr.index] + addr.frac * (out.v[j] - out.v[addr.index]);
@@ -1376,37 +1376,22 @@ export function toLocalU(spans: SectionSpan[], u: number): { section: number; s:
     return toLocalOn(arcAxis, spans, u);
 }
 
-/** the baked sample address of a section-local native-axis coordinate — where a force
- *  keyframe's stored `s` lands on the flat SoA. Walks the bake's own tables within the
- *  section's published range (the ds-convention law: per-edge `out.ds` on the Distance
- *  axis, the per-sample march clock `out.t` on Time — never a chord re-derivation, never
- *  the cart's arc↔time detour), so a zero-length edge (a Time-domain stall, the pin
- *  freeze's gap) is stepped over rather than divided by. Returns the flat sample index
- *  plus the fraction toward `index + 1` (an exit landing reads `{endSample, 0}`), clamped
- *  to the section's range at both ends; null when the section published no edges (placed
- *  past the sample budget). */
+/** the baked sample address of a section-local arclength coordinate — where a force
+ *  keyframe's stored `s` lands on the flat SoA. Walks the bake's own per-edge `out.ds` within
+ *  the section's published range (never a chord re-derivation, never the cart's arc↔time
+ *  detour), so a zero-length edge (the pin freeze's gap) is stepped over rather than divided
+ *  by. Returns the flat sample index plus the fraction toward `index + 1` (an exit landing
+ *  reads `{endSample, 0}`), clamped to the section's range at both ends; null when the section
+ *  published no edges (placed past the sample budget). */
 export function forceSample(
-    out: { ds: Float32Array; t: Float32Array },
+    out: { ds: Float32Array },
     info: { startSample: number; endSample: number },
     last: number,
-    time: boolean,
     s: number,
 ): { index: number; frac: number } | null {
     const start = info.startSample;
     const end = Math.min(info.endSample, last);
     if (start >= end) return null; // an empty published range — nothing to place on
-    if (time) {
-        const t0 = out.t[start];
-        for (let i = start; i < end; i++) {
-            const hi = out.t[i + 1] - t0;
-            if (hi >= s) {
-                const lo = out.t[i] - t0;
-                const dt = hi - lo;
-                return { index: i, frac: dt > 0 ? Math.min(Math.max((s - lo) / dt, 0), 1) : 0 };
-            }
-        }
-        return { index: end, frac: 0 };
-    }
     let cum = 0;
     for (let i = start; i < end; i++) {
         const d = out.ds[i];
@@ -1447,8 +1432,8 @@ export function forceMarkers(ecs: State): ForceMarker[] {
         if (!info) continue;
         for (const p of sectionForces(ecs, sec.id)) {
             if (p.s > sec.length) continue; // trimmed past the extent: no track position
-            // `p.s` is arclength always (S6) — the ds-table branch, never `time`.
-            const addr = forceSample(out, info, last, false, p.s);
+            // `p.s` is arclength always (S6): `forceSample` has one table now, no `time` branch.
+            const addr = forceSample(out, info, last, p.s);
             if (!addr) continue;
             const j = Math.min(addr.index + 1, last);
             res.push({

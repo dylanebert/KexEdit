@@ -2378,11 +2378,11 @@ describe("sectionSolvable — invoked-solve enablement", () => {
     });
 });
 
-// ── viewport force markers (kex2d-idioms stage 3): the native-axis arc→sample placement
-// helper + the per-marker world projection the ForceDrawSystem/pickForce read. the helper
-// walks the bake's OWN tables (per-edge `ds` on Distance, the per-sample march clock `t` on
-// Time — the ds-convention law), so the reference here is an INDEPENDENTLY-summed f64 station
-// table built by the test, never the helper's own walk.
+// ── viewport force markers (kex2d-idioms stage 3): the arclength→sample placement helper +
+// the per-marker world projection the ForceDrawSystem/pickForce read. the helper walks the
+// bake's OWN per-edge `ds` (S6: `forceSample` has one table now, no `time` branch), so the
+// reference here is an INDEPENDENTLY-summed f64 station table built by the test, never the
+// helper's own walk.
 describe("forceSample", () => {
     // edges 3..6 of a synthetic bake: stations from the entry are 0, 2, 5, 5 (zero-length
     // edge — the freeze-gap / stall shape), 10.
@@ -2391,7 +2391,6 @@ describe("forceSample", () => {
     ds[4] = 3;
     ds[5] = 0;
     ds[6] = 5;
-    const t = new Float32Array(10);
     const info = { startSample: 3, endSample: 7 };
 
     /** the station a returned address maps back to — the inverse the helper must satisfy. */
@@ -2403,14 +2402,14 @@ describe("forceSample", () => {
 
     test("distance: the address maps back to the clamped station, zero edges skipped", () => {
         // hand table: s=0 → the entry sample; s=1 → half of edge 3; s=6 → 1 m into edge 6.
-        expect(forceSample({ ds, t }, info, 9, false, 0)).toEqual({ index: 3, frac: 0 });
-        expect(forceSample({ ds, t }, info, 9, false, 1)).toEqual({ index: 3, frac: 0.5 });
-        const at6 = forceSample({ ds, t }, info, 9, false, 6);
+        expect(forceSample({ ds }, info, 9, 0)).toEqual({ index: 3, frac: 0 });
+        expect(forceSample({ ds }, info, 9, 1)).toEqual({ index: 3, frac: 0.5 });
+        const at6 = forceSample({ ds }, info, 9, 6);
         expect(at6).not.toBeNull();
         expect(at6?.index).toBe(6); // past the zero edge, never ON it
         expect(station(at6 as { index: number; frac: number })).toBeCloseTo(6, 6);
         // landing exactly at the zero edge's station resolves finite (no divide-by-zero).
-        const at5 = forceSample({ ds, t }, info, 9, false, 5);
+        const at5 = forceSample({ ds }, info, 9, 5);
         expect(at5).not.toBeNull();
         expect(Number.isFinite((at5 as { frac: number }).frac)).toBe(true);
         expect(station(at5 as { index: number; frac: number })).toBeCloseTo(5, 6);
@@ -2431,7 +2430,7 @@ describe("forceSample", () => {
         const total = cum[cum.length - 1];
         for (let k = 0; k <= 20; k++) {
             const s = (k / 20) * total;
-            const addr = forceSample({ ds: rds, t }, rinfo, n - 1, false, s);
+            const addr = forceSample({ ds: rds }, rinfo, n - 1, s);
             expect(addr).not.toBeNull();
             const a = addr as { index: number; frac: number };
             // the independent station of the returned address (f64 partial sums of the table).
@@ -2444,38 +2443,14 @@ describe("forceSample", () => {
     });
 
     test("distance: clamps at both ends", () => {
-        expect(forceSample({ ds, t }, info, 9, false, -1)).toEqual({ index: 3, frac: 0 });
-        expect(forceSample({ ds, t }, info, 9, false, 99)).toEqual({ index: 7, frac: 0 });
-    });
-
-    test("time: the march clock table, stall plateau finite", () => {
-        // per-sample march times at samples 3..7: 1.0, 1.5, 2.5, 2.5 (stall plateau), 4.0.
-        const tt = new Float32Array(10);
-        tt[3] = 1.0;
-        tt[4] = 1.5;
-        tt[5] = 2.5;
-        tt[6] = 2.5;
-        tt[7] = 4.0;
-        expect(forceSample({ ds, t: tt }, info, 9, true, 0)).toEqual({ index: 3, frac: 0 });
-        expect(forceSample({ ds, t: tt }, info, 9, true, 0.25)).toEqual({ index: 3, frac: 0.5 });
-        // landing on the plateau value: finite, at the first sample reaching it.
-        const plateau = forceSample({ ds, t: tt }, info, 9, true, 1.5);
-        expect(plateau).not.toBeNull();
-        expect(Number.isFinite((plateau as { frac: number }).frac)).toBe(true);
-        // 1.5 s local = march clock 2.5 = samples 5 AND 6 — either address draws the same point.
-        const p = plateau as { index: number; frac: number };
-        expect(tt[p.index] + p.frac * (tt[p.index + 1] - tt[p.index])).toBeCloseTo(2.5, 6);
-        // past the plateau, interpolating the following live edge.
-        const after = forceSample({ ds, t: tt }, info, 9, true, 2.0);
-        expect(after).toEqual({ index: 6, frac: (2.0 - 1.5) / 1.5 });
-        // clamped at the exit.
-        expect(forceSample({ ds, t: tt }, info, 9, true, 9)).toEqual({ index: 7, frac: 0 });
+        expect(forceSample({ ds }, info, 9, -1)).toEqual({ index: 3, frac: 0 });
+        expect(forceSample({ ds }, info, 9, 99)).toEqual({ index: 7, frac: 0 });
     });
 
     test("an empty published range (past the sample budget) yields null", () => {
-        expect(forceSample({ ds, t }, { startSample: 8, endSample: 8 }, 9, false, 1)).toBeNull();
+        expect(forceSample({ ds }, { startSample: 8, endSample: 8 }, 9, 1)).toBeNull();
         // a range published past the buffer end too (the budget-less downstream shape).
-        expect(forceSample({ ds, t }, { startSample: 12, endSample: 12 }, 9, false, 1)).toBeNull();
+        expect(forceSample({ ds }, { startSample: 12, endSample: 12 }, 9, 1)).toBeNull();
     });
 });
 

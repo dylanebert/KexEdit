@@ -1479,6 +1479,120 @@ test("timeline domain flow", async ({ page, boot }) => {
     expect(await forces()).toEqual(metres); // …and the store this flow drove is untouched
 });
 
+// S6 criterion (c): the Time-view gesture writes arclength through the GESTURE-FROZEN s↔t table
+// (`s0 + (dOf(u) - dOf(u0))`), never a raw chart-axis delta — and the diamond's drawn x tracks
+// the pointer mid-drag. RED on the pre-fix tree: `applyDrag`/`applyLen` added the chart-axis
+// (seconds-in-Time-view) delta straight to the metres store, so a Time-view drag/trim corrupted
+// `Force.s`/`Section.length` by orders of magnitude (V0's own scale) rather than landing near the
+// pointer at all. The oracle here is `Timeline.svelte`'s own `dOf`/`uOf` (`__kex` DEV bridges),
+// read BEFORE each gesture starts — the same live table the gesture then freezes — so a change to
+// the internal freeze/projection wiring that silently drifted from this contract would fail here
+// even where the numbers still looked plausible.
+test("timeline domain flow — Time-view gesture writes arclength through the frozen table (S6c)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    const forces = () => kexCall(page, "forces");
+    const forceU = () => kexCall(page, "forceU");
+    const forceCount = () => kexCall(page, "forceCount");
+    const domain = () => kexCall(page, "domain");
+    const sectionLengths = () => kexCall(page, "sectionLengths");
+    const dOf = (u: number) => kexCall(page, "dOf", u);
+    const uOf = (d: number) => kexCall(page, "uOf", d);
+    const xView = () => kexCall(page, "xView");
+    const rulerZone = page.locator(".rulerzone");
+    const openRulerMenu = () => rulerZone.click({ button: "right", position: { x: 40, y: 10 } });
+
+    await kexCall(page, "seedForceBump");
+    await expect.poll(forceCount).toBe(5);
+    await kexCall(page, "setV0", 25); // a non-default speed so v(s) is genuinely non-constant
+    await frameTimeline(page);
+
+    // switch to Seconds — the projected axis every gesture below must go through.
+    await openRulerMenu();
+    await clickMenuItem(page, ".rmenu", "Seconds");
+    await expect.poll(domain).toBe("time");
+    await frames(page, 2);
+
+    // ── drag arm: the airtime crest (index 2, s = 0.5·len), a real pointer, Ctrl-held to bypass
+    // the snap magnet — this flow tests the raw delta formula, not snapping (`section.pw.ts`'s
+    // own convention for an extent-trim drag). ──
+    const crest = 2;
+    const before = await forces();
+    const beforeU = await forceU();
+    const s0 = before[crest].s;
+    const u0 = beforeU[crest].u;
+    const [, pxPerU] = await xView();
+    const DragPx = 60; // well past SNAP_PX, so no landmark/gesture-start magnet fires
+    const uFinal = u0 + DragPx / pxPerU;
+    // read the table BOTH values will be checked against — BEFORE the gesture starts, the same
+    // live snapshot `forceDown` freezes into `gestureMapping`.
+    const dU0 = await dOf(u0);
+    const dUFinal = await dOf(uFinal);
+
+    const fhit = page.locator(".fhit");
+    const grab = await fhit.nth(crest).boundingBox();
+    if (!grab) throw new Error("the crest diamond is not laid out");
+    const gx = grab.x + grab.width / 2;
+    const gy = grab.y + grab.height / 2;
+    await page.mouse.move(gx, gy);
+    await page.mouse.down();
+    await page.keyboard.down("Control");
+    // move in two steps so the mid-drag "tracks the pointer" claim is checked WHILE the gesture
+    // is live, not only at release.
+    await page.mouse.move(gx + DragPx / 2, gy, { steps: 6 });
+    await frames(page, 1);
+    const mid = await fhit.nth(crest).boundingBox();
+    if (!mid) throw new Error("the crest diamond vanished mid-drag");
+    expect(Math.abs(mid.x + mid.width / 2 - (gx + DragPx / 2))).toBeLessThan(3);
+    await page.mouse.move(gx + DragPx, gy, { steps: 6 });
+    await frames(page, 1);
+    const end = await fhit.nth(crest).boundingBox();
+    if (!end) throw new Error("the crest diamond vanished mid-drag");
+    expect(Math.abs(end.x + end.width / 2 - (gx + DragPx))).toBeLessThan(3);
+    await page.keyboard.up("Control");
+    await page.mouse.up();
+
+    const len = before[crest] ? (await sectionLengths())[0] : 0;
+    const expectedS = Math.max(0, Math.min(len, s0 + (dUFinal - dU0)));
+    const landed = (await forces())[crest].s;
+    expect(landed).toBeCloseTo(expectedS, 0);
+    // the positive control: the corrupted (pre-fix) formula would have added the RAW seconds
+    // delta (`uFinal - u0`, small at this speed) straight to `s0`, landing far from `expectedS`
+    // whenever the two differ by more than a rounding error.
+    if (Math.abs(dUFinal - dU0 - (uFinal - u0)) > 0.5) {
+        expect(Math.abs(landed - (s0 + (uFinal - u0)))).toBeGreaterThan(0.5);
+    }
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await forces())[crest].s).toBeCloseTo(s0, 6);
+
+    // ── trim arm: the force clip's right-edge extent handle, same table, same convention. ──
+    const lenStartU = (await forceU())[0].u; // the section's own entry (s = 0 seed)
+    const dLenStart = await dOf(lenStartU);
+    const len0 = (await sectionLengths())[0];
+    const trimU0 = await uOf(dLenStart + len0); // the handle's own current axis position
+    const trim = page.locator(".clip-trim");
+    await expect(trim).toHaveCount(1);
+    const tb = await trim.boundingBox();
+    if (!tb) throw new Error("trim handle not laid out");
+    const [, pxPerU2] = await xView();
+    const TrimPx = 50;
+    const trimUFinal = trimU0 + TrimPx / pxPerU2;
+    const dTrimStart = await dOf(lenStartU);
+    const dTrimFinal = await dOf(trimUFinal);
+    const tcy = tb.y + tb.height / 2;
+    await trim.hover();
+    await page.keyboard.down("Control");
+    await page.mouse.down();
+    await page.mouse.move(tb.x + tb.width / 2 + TrimPx, tcy, { steps: 10 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    const expectedLen = dTrimFinal - dTrimStart;
+    await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(expectedLen, 0);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(len0, 3);
+});
 // Viewport force markers (kex2d-idioms stage 3): every force keyframe draws ON the baked track —
 // the timeline's filled-diamond glyph in force gold, same entity on both surfaces — display +
 // select ONLY (s/g authoring stays on the chart; nothing here drags). This flow drives the whole

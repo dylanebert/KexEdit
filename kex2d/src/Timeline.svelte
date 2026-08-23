@@ -155,6 +155,7 @@ import {
     stripMinExtentAt,
     stripOverlapped,
     stripSeedValue,
+    toGlobal,
     toGlobalU,
     toLocalU,
     trackDomain,
@@ -183,16 +184,18 @@ const snapLen = $derived.by((): number => {
     void tick;
     return snapSteps.length;
 });
-// the chart's axis IS the track's own domain (`Track.domain`) — the unit the force store is
-// written in, so there is no view copy to disagree with it and no fallback: whatever unit the
-// keyframes hold is the unit the chart must read. Tick-derived, so it lags the document by a frame
-// — which is why the pick's own re-frame is deferred to the frame this re-derives in (`pickDomain`)
-// instead of writing `view` live.
+// the chart's axis is a LENS over `Track.domain` (S6): every force keyframe, extent, strip and
+// strip keyframe stays in arclength always, so this is a display pick, never a store unit. A
+// gesture in progress (drag/scrub/trim) freezes its OWN s↔t table snapshot (`gestureMapping`)
+// rather than reading this live, so a domain flip mid-gesture is display-only and never rescales
+// an open drag underneath it. Tick-derived, so it lags the document by a frame — which is why the
+// pick's own re-frame is deferred to the frame this re-derives in (`pickDomain`) instead of
+// writing `view` live.
 //
-// The pick flips it (`domain.convertDomain`), converting the store in the same entry, and the bake
-// re-runs on the same frame (`Track.domain` is in `bakeHash`), so a frame drawing the new unit
-// against the pre-flip time table is coherent either way: that table is the one the conversion
-// itself ran through, so every converted keyframe, extent, and section entry agrees with it.
+// The pick flips ONE column (`domain.convertDomain`) — no re-bake needed since `Track.domain`
+// never enters `bakeHash` (S6), and no keyframe/extent/strip moves. What DOES change on this
+// frame is every reader that projects through `uOf`/`dOf` (the ruler, the readouts, every
+// keyframe's drawn x), since `domain` itself just flipped.
 const domain = $derived.by((): Domain => {
     void tick;
     return trackDomain(ecs);
@@ -251,12 +254,10 @@ const TIP_W = 108; // px; the popover's full width — the handle popover's hori
 const TIP_GAP = 12; // px; the popover's offset from its anchor (the same gap the point popover uses vertically)
 const TIP_VHALF = 28; // px; half the popover height — the vertical clamp for a side-dodged handle popover
 const TIP_H = 2 * TIP_VHALF; // px; the popover's full height — the vertical fit test for the above/below default
-// arrow-nudge steps for the selected force point (AE): position in the track domain's unit
-// (metres or seconds — `Force.s` is whatever the store holds), g in g, Shift coarse. The position
-// steps are the same NUMBERS in either domain, deliberately: a nudge steps the popover field's own
-// displayed precision (one decimal, `fmt(…, 1)`), which is what makes every press visible in the
-// readout, and 10× that with Shift. So a fine step is 0.1 m of arclength or 0.1 s — the latter is
-// exactly one `T_GRID` placement quantum, the former a tenth of `S_GRID`'s.
+// arrow-nudge steps for the selected force point (AE): position in ARCLENGTH ALWAYS (S6 --
+// `Force.s`'s own unit, regardless of what the ruler is showing), g in g, Shift coarse. Unlike
+// the chart-axis gestures (drag/scrub/field), a nudge never touches `uOf`/`dOf`: it's a pure
+// arclength step, a tenth of `S_GRID`'s own quantum, 10× that with Shift.
 const NUDGE_S = 0.1;
 const NUDGE_S_COARSE = 1;
 const NUDGE_G = 0.05;
@@ -355,16 +356,27 @@ const mapping = $derived.by((): Mapping | null => {
 });
 
 // ── the axis, and the ONE projection into it (timeline.ts `dToU`/`uToD`) ──
-// the chart's x is the coordinate `u` on the track's own axis: global distance d in
-// `Domain.Distance`, global march time t in `Domain.Time`. The force store is written on THAT
-// axis, so every force path — placement, drag, extent, field — is native here and reads `u`
-// directly through the lens's affine (`track.toGlobalU`, `entryU + s`), with no projection at all.
-// What projects is the other kind of subject: a quantity authored in ARCLENGTH shown on a time
-// axis — the recovered force curve, a geo section's node ticks, the cart's park (`uOf`/`dOf`,
-// identity in the distance domain). Nothing downstream branches on the domain again, bar the
-// sanctioned constant picks (the `GRID` quantum, the `mFloor` lead-out, the unit suffix).
-const uOf = (d: number): number => dToU(mapping, domain, d);
-const dOf = (u: number): number => uToD(mapping, domain, u);
+// the chart's x is the coordinate `u` on the track's own axis: global arclength `d`, always —
+// projected through the live bake's s↔t table into global march time when `Domain.Time` is
+// showing (S6: "arclength is canonical, time is a lens"). `Force.s`/`Section.length`/strip
+// keyframes are stored in arclength ALWAYS (never a second, domain-native unit), so every force
+// path — placement, drag, extent, field — WRITES arclength and must convert a chart-axis (u)
+// quantity back to it through `dOf` before touching the store; nothing here is native to `u`
+// the way it used to claim. `uOf`/`dOf` are identity in the distance domain, and project through
+// `dToU`/`uToD` (the same seam a geo section's node ticks and the cart's park already read)
+// otherwise.
+//
+// **Frozen at gesture start.** A live drag/scrub/trim reads the bake's s↔t table on every
+// pointermove, and that SAME edit changes the bake underneath it (the dragged point's own g/s
+// feeds back into v(s)) — so an unfrozen table would drift under its own gesture, the same
+// class of problem `uFrozen` already solves for the x-pan-clamp span. `gestureMapping` holds
+// the table snapshot taken at gesture start (a `Mapping` object is immutable, so holding the
+// reference IS the freeze); every writer below sets it in its own `*Down`/`begin` and clears it
+// in its own release/cancel path. `uOf`/`dOf` read it first, live `mapping` only when no gesture
+// owns it.
+let gestureMapping: Mapping | null = $state(null);
+const uOf = (d: number): number => dToU(gestureMapping ?? mapping, domain, d);
+const dOf = (u: number): number => uToD(gestureMapping ?? mapping, domain, u);
 // the addressable span's end and the lead-out floor, both in axis units.
 const uTotal = $derived(uOf(sTotal));
 const mFloor = $derived(marginFloor(domain));
@@ -638,14 +650,14 @@ const pyPerG = $derived.by((): number => {
 // and no driving/driven. the chart is a WHOLE-TRACK view: it draws every force section's
 // points at once, and authoring is by cursor position — a double-click over a force
 // section's arc adds a point there (no section pre-selection). all edits route through
-// `history`. force points are authored section-local (s from the section entry, in the track
-// domain's unit), and the chart's x-axis is that same unit whole-track, so a point draws at its
-// section's entry + its local s — the lens's affine (`track.toGlobalU`), never a projection.
+// `history`. force points are authored section-local (s from the section entry, arclength
+// ALWAYS — S6), so a point's chart position is its GLOBAL arclength projected onto the
+// chart's own axis (`uOf`), identity in Distance and through the live s↔t table in Time.
 //
-// the coordinate lens's span table (track.ts): each section's entry + extent on BOTH axes —
-// arclength (the geometry readouts) and the track's native unit (the force store's own). the ONE
-// source for every global readout on the chart — boundaries, clips, and force-keyframe placement
-// all derive from it, none re-walks the baked ds.
+// the coordinate lens's span table (track.ts): each section's entry + extent in arclength
+// (`sectionSpans`, S6 — `entryU`/`lenU` are `offset`/`len` now, no second axis) — the ONE
+// source for every global readout on the chart — boundaries, clips, and force-keyframe
+// placement all derive from it, none re-walks the baked ds.
 const spans = $derived.by(() => {
     void tick;
     return eid === null ? [] : sectionSpans(ecs, eid);
@@ -653,7 +665,7 @@ const spans = $derived.by(() => {
 // the interior section boundaries on the chart's own axis — drawn as chart guides, and the
 // landmarks every s-axis snap resolves against. each non-last span's native exit
 // (`entryU + lenU`), so a boundary needs no projection in either domain.
-const bounds = $derived.by((): number[] => spans.slice(0, -1).map((sp) => sp.entryU + sp.lenU));
+const bounds = $derived.by((): number[] => spans.slice(0, -1).map((sp) => uOf(sp.offset + sp.len)));
 // ── section clip strip (the marker lane): one clip per section over its cumulative
 // arclength span, kind-colored + labeled, selecting `editor.section` — the SAME
 // selection as the viewport span (one object, two surfaces). clip edges align with the
@@ -664,10 +676,10 @@ interface Clip {
     kind: SectionKind;
     s0: number; // cumulative arclength at the section entry (the geometry axis — node ticks, curve)
     s1: number; // cumulative arclength at the section exit
-    u0: number; // the section entry on the CHART's axis (`entryU`) — where its clip and its
-    u1: number; // keyframes are placed, and its exit (`entryU + lenU`)
-    len: number; // authored extent (force `Section.length`, in the track domain's unit) — the
-    // clamp domain for its keyframes and the subject of the extent trim
+    u0: number; // the section entry projected onto the CHART's own axis (`uOf(s0)`) — where its
+    u1: number; // clip and its keyframes draw, and its exit (`uOf(s1)`); identity in Distance
+    len: number; // authored extent (force `Section.length`, arclength ALWAYS) — the clamp domain
+    // for its keyframes and the subject of the extent trim
 }
 const clips = $derived.by((): Clip[] => {
     void tick;
@@ -681,8 +693,8 @@ const clips = $derived.by((): Clip[] => {
             kind: sec.kind,
             s0: sp.offset,
             s1: sp.offset + sp.len,
-            u0: sp.entryU,
-            u1: sp.entryU + sp.lenU,
+            u0: uOf(sp.offset),
+            u1: uOf(sp.offset + sp.len),
             len: sec.length,
         });
     }
@@ -736,11 +748,14 @@ const tickedSections = $derived(new Set(nodeTicks.map((t) => t.sec)));
 interface ForcePt {
     id: number;
     section: number;
-    s: number; // section-local position, in the track domain's unit (metres or seconds)
+    s: number; // section-local position, arclength ALWAYS (`Force.s`'s own unit -- S6)
     g: number;
-    u: number; // its global coordinate on the chart's axis — the lens's own affine
-    startU: number; // the section's entry on that axis (the base the drag/field arithmetic uses)
-    len: number; // the section's authored extent (drag/field clamp domain), same unit as `s`
+    u: number; // its GLOBAL arclength projected onto the chart's axis (`uOf`) -- pixel math
+    // ONLY; never combine with `s`/`len`/`startD` (arclength) without going through `uOf`/`dOf`.
+    startU: number; // the section's entry, likewise projected (`Clip.u0`)
+    startD: number; // the section's entry in arclength (`Clip.s0`) -- the base every WRITE
+    // (drag/field/scrub) adds a `dOf`-converted delta to; never mix with `startU`.
+    len: number; // the section's authored extent, arclength ALWAYS (drag/field clamp domain)
 }
 const forcePts = $derived.by((): ForcePt[] => {
     void tick;
@@ -749,11 +764,20 @@ const forcePts = $derived.by((): ForcePt[] => {
     for (const c of clips) {
         if (c.kind !== SectionKind.Force) continue;
         for (const p of sectionForces(ecs, c.id)) {
-            const u = toGlobalU(spans, c.id, p.s);
+            const d = toGlobal(spans, c.id, p.s);
             // unreachable today (`clips` is built from the same `spans`), but a stale span
             // dropping a point for one frame beats painting it at NaN.
-            if (u === null) continue;
-            res.push({ id: p.id, section: c.id, s: p.s, g: p.g, u, startU: c.u0, len: c.len });
+            if (d === null) continue;
+            res.push({
+                id: p.id,
+                section: c.id,
+                s: p.s,
+                g: p.g,
+                u: uOf(d),
+                startU: c.u0,
+                startD: c.s0,
+                len: c.len,
+            });
         }
     }
     return res;
@@ -895,18 +919,20 @@ const ghostSpans = $derived.by((): { x0: number; x1: number }[] => {
 // section, flattened across the whole track like `forcePts`. The band carries extent (Locked
 // decision: "band carries extent, graph carries and edits value"), so a strip can attach to a
 // geo section too — a geo lift authored at a flat speed is exactly the shape the substrate
-// exists for. `u0`/`u1` are the strip's `start`/`end` projected onto the SAME global chart axis
-// every other native-axis subject on this chart uses (`toGlobalU`).
+// exists for. `u0`/`u1` are the strip's `start`/`end` projected onto the chart's own axis
+// (`uOf`) -- pixel math only; `start`/`end`/`len` stay arclength (`Strip.start`/`.end`'s own
+// unit -- S6), the base every WRITE (`bandMove`) adds a `dOf`-converted delta to.
 interface BandStrip {
     id: number;
     section: number;
-    start: number; // section-local, the track domain's own unit
+    start: number; // section-local, arclength ALWAYS
     end: number;
     value: number;
-    u0: number; // global chart axis
+    u0: number; // global chart axis (pixel math only)
     u1: number;
-    startU: number; // the section's entry on that axis — the drag arithmetic's own base
-    // the section's own SPAN on the native axis (`c.u1 − c.u0`) — the clamp domain's outer bound.
+    startU: number; // the section's entry, likewise projected -- pixel math only
+    startD: number; // the section's entry in arclength (`Clip.s0`) -- the WRITE base
+    // the section's own SPAN in arclength (`c.s1 − c.s0`) — the clamp domain's outer bound.
     // NOT `Clip.len` (`Section.length`): that field is the FORCE kind's own authored extent and
     // reads 0 on a geo section, and a strip attaches to either kind (Locked decision).
     len: number;
@@ -917,19 +943,20 @@ const bandStrips = $derived.by((): BandStrip[] => {
     const res: BandStrip[] = [];
     for (const c of clips) {
         for (const st of sectionStrips(ecs, c.id)) {
-            const u0 = toGlobalU(spans, c.id, st.start);
-            const u1 = toGlobalU(spans, c.id, st.end);
-            if (u0 === null || u1 === null) continue; // a stale span, `forcePts`' own guard
+            const d0 = toGlobal(spans, c.id, st.start);
+            const d1 = toGlobal(spans, c.id, st.end);
+            if (d0 === null || d1 === null) continue; // a stale span, `forcePts`' own guard
             res.push({
                 id: st.id,
                 section: c.id,
                 start: st.start,
                 end: st.end,
                 value: st.value,
-                u0,
-                u1,
+                u0: uOf(d0),
+                u1: uOf(d1),
                 startU: c.u0,
-                len: c.u1 - c.u0,
+                startD: c.s0,
+                len: c.s1 - c.s0,
             });
         }
     }
@@ -947,8 +974,8 @@ const stripTicks = $derived.by((): number[] => {
         const strips = sectionStrips(ecs, c.id);
         for (let i = 1; i < strips.length; i++) {
             if (strips[i].start !== strips[i - 1].end) continue;
-            const u = toGlobalU(spans, c.id, strips[i].start);
-            if (u !== null) res.push(uPx(u));
+            const d = toGlobal(spans, c.id, strips[i].start);
+            if (d !== null) res.push(uPx(uOf(d)));
         }
     }
     return res;
@@ -970,12 +997,12 @@ interface StripKfPt {
     id: number;
     strip: number;
     section: number;
-    s: number; // section-local, the track domain's own unit
+    s: number; // section-local, arclength ALWAYS
     v: number; // velocity (m/s)
-    u: number; // global chart axis coordinate
-    startU: number; // the strip's section entry on the axis
-    start: number; // the strip's start (section-local)
-    end: number; // the strip's end (section-local)
+    u: number; // GLOBAL arclength projected onto the chart's axis (`uOf`) -- pixel math only
+    startU: number; // the strip's section entry, likewise projected -- pixel math only
+    start: number; // the strip's start (section-local, arclength)
+    end: number; // the strip's end (section-local, arclength)
 }
 const stripKfPts = $derived.by((): StripKfPt[] => {
     void tick;
@@ -988,7 +1015,10 @@ const stripKfPts = $derived.by((): StripKfPt[] => {
                 section: s.section,
                 s: k.s,
                 v: k.v,
-                u: toGlobalU(spans, s.section, k.s) ?? s.startU,
+                u: (() => {
+                    const d = toGlobal(spans, s.section, k.s);
+                    return d === null ? s.startU : uOf(d);
+                })(),
                 startU: s.startU,
                 start: s.start,
                 end: s.end,
@@ -1197,12 +1227,14 @@ function chartCreate(e: MouseEvent): void {
 // force-keyframe drag: the per-axis gesture-start magnet is the "change just one axis"
 // affordance, so a dominant-axis lock is redundant here (removed 2026-07-23).
 let dragForce: number | null = $state(null); // the ANCHOR point id (snap resolves on it)
-// the cursor's axis coordinate at pointerdown — the origin the anchor's position is measured
-// DELTA-FROM (`s = s0 + (u − u0)`), so grabbing a diamond off-centre doesn't jump it and a gesture
-// returned to its grab pixel writes its start value back bit-exactly. The store is on this same
-// axis, so the arithmetic is exact: there is no projection to lose an ulp in.
+// the cursor's axis coordinate at pointerdown -- the grab origin the anchor's arclength is
+// measured DELTA-FROM, projected through the GESTURE-FROZEN s↔t table (`s = s0 + (dOf(u) -
+// dOf(u0))`, never a raw axis delta -- that is seconds-scaled in Time view and would corrupt
+// this metres store, S6). `dOf` is identity in Distance, so a return-to-grab-pixel drag still
+// writes its start value back bit-exactly there.
 let dragU0 = 0;
-let dragStartU = 0; // the ANCHOR's section entry on the axis (fixed during the drag)
+let dragStartU = 0; // the ANCHOR's section entry, projected -- pixel/snap-target math only
+let dragStartD = 0; // the ANCHOR's section entry in arclength -- the WRITE base
 let dragSection = -1; // the ANCHOR's section — the scope its own keys are unreachable within
 let dragLen = 0; // the ANCHOR's section extent (the anchor's own s clamp domain)
 let dragCx = 0; // last cursor, canvas-local px
@@ -1227,23 +1259,28 @@ function applyDrag(): void {
     // exactly as a single drag does — the shared delta then derives from where the anchor lands and
     // the OTHER members follow it. the cursor's axis delta from the grab origin IS the anchor's
     // delta (one axis, one unit), clamped to the anchor's own [0, len].
-    let sAnchor = clamp(dragS0 + (uAtPx(cx) - dragU0), 0, dragLen);
+    // the cursor's axis delta from the grab origin, projected through the GESTURE-FROZEN table
+    // into arclength (`dOf`, identity in Distance) -- the store's own axis -- never a raw axis
+    // (pixel) delta, which is seconds-scaled in Time view (S6 fix: this used to add a chart-axis
+    // delta straight to a metres value).
+    let sAnchor = clamp(dragS0 + (dOf(uAtPx(cx)) - dOf(dragU0)), 0, dragLen);
     let gAnchor = yToG(clamp(dragCy, TOP, h - BOT_PAD));
     snapX = null;
     snapY = null;
     const active = snapActive(dragMod);
     {
-        // the candidate and every landmark resolve on the chart's axis, so the grid quantum is the
-        // domain's own (`GRID` — metres of arclength, or `T_GRID` seconds), and the winning value
-        // is already in the store's unit: `− startU` is the whole write path.
-        const uAnchor = dragStartU + sAnchor;
+        // the candidate and every landmark resolve on the chart's own PIXEL axis (`uOf`-projected,
+        // identity in Distance), so the grid quantum is the domain's own (`GRID` — metres of
+        // arclength, or `T_GRID` seconds); `dOf`/`uOf` translate every crossing between that axis
+        // and the arclength store below.
+        const uAnchor = uOf(dragStartD + sAnchor);
         const targets = sTargets({
             exclude: dragMemberSet,
             sameSection: dragSection,
             playhead: true,
             trackEnd: true,
         });
-        const startPx = uToPx(clamped, dragStartU + dragS0); // gesture-start landmark
+        const startPx = uToPx(clamped, uOf(dragStartD + dragS0)); // gesture-start landmark
         const r = snapAxis(active, uToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
             pxToU(clamped, px), startPx);
         if (r.guide !== null) {
@@ -1251,15 +1288,15 @@ function applyDrag(): void {
             // round-trip drops the last ulp, so a gesture returned to its start has to land on
             // exactly the s it began at — else a zero-delta drag writes a difference and records
             // an undo entry.
-            const local = r.guide === startPx ? dragS0 : r.value - dragStartU;
+            const local = r.guide === startPx ? dragS0 : dOf(r.value) - dragStartD;
             // a landmark: only latch one the anchor can actually reach in its own section
             if (local >= 0 && local <= dragLen) {
                 sAnchor = local;
                 snapX = r.guide;
             }
         } else {
-            // grid (or bypass) — quantized in the active domain, kept in the section
-            sAnchor = clamp(r.value - dragStartU, 0, dragLen);
+            // grid (or bypass) — quantized on the chart's own axis, projected back to arclength
+            sAnchor = clamp(dOf(r.value) - dragStartD, 0, dragLen);
         }
     }
     {
@@ -1350,8 +1387,13 @@ function forceDown(e: PointerEvent, p: ForcePt): void {
     dragS0 = p.s; // the anchor's start s/g — each axis's gesture-start magnet
     dragG0 = p.g;
     dragStartU = p.startU; // the anchor's section is fixed while its s is dragged inside it
+    dragStartD = p.startD; // the arclength twin -- the write base
     dragSection = p.section;
     dragLen = p.len;
+    // freeze the s↔t table for the whole gesture (S6): the dragged point's own g/s feeds back
+    // into v(s), so an unfrozen table would drift under its own gesture. Cleared in forceUp /
+    // cancelForceDrag.
+    gestureMapping = mapping;
     // the grab origin: the cursor's axis coordinate read through the SAME chart clamp `applyDrag`
     // resolves against, so returning to the grab pixel subtracts one value from itself exactly —
     // a diamond sitting past the addressable span (its fat hit zone reaches `FHIT_R` outside the
@@ -1383,6 +1425,7 @@ function forceUp(): void {
     dragForce = null;
     snapX = null;
     snapY = null;
+    gestureMapping = null; // release the gesture-frozen table
     commit(history); // one drag → one entry; a no-move click drops via the `same` guard
     window.removeEventListener("pointermove", forceMove);
     window.removeEventListener("pointerup", forceUp);
@@ -1394,10 +1437,11 @@ function forceUp(): void {
 // extent (clip-to-extent). The velocity value is floored at V_FLOOR (a held speed of 0
 // is a stall, not a controlled span — validStripValue's own shape).
 let dragStripKf: number | null = $state(null); // the dragged keyframe's stable id
-// the cursor's axis coordinate at pointerdown — the grab origin the keyframe's s is measured
-// DELTA-FROM (`s = s0 + (u − u0)`), the force keyframe's own pattern (`dragU0`). NOT the strip's
-// section entry (`k.startU`) — that's a different quantity, off by a whole section width, and
-// was the S1 "keyframe drag origin" bug (`s ≈ 2·s0`, both clamps pinning it to `end`).
+// the cursor's axis coordinate at pointerdown -- the grab origin the keyframe's arclength is
+// measured DELTA-FROM through the GESTURE-FROZEN table (`s = s0 + (dOf(u) - dOf(u0))`, the
+// force keyframe's own pattern -- `dragU0`). NOT the strip's section entry (`k.startU`) --
+// that's a different quantity, off by a whole section width, and was the S1 "keyframe drag
+// origin" bug (`s ≈ 2·s0`, both clamps pinning it to `end`).
 let dragStripKfGrabU0 = 0;
 let dragStripKfS0 = 0; // the keyframe's start s
 let dragStripKfV0 = 0; // the keyframe's start v
@@ -1423,6 +1467,8 @@ function stripKfDown(e: PointerEvent, k: StripKfPt): void {
     dragStripKfCx = e.clientX - rect.left;
     dragStripKfCy = e.clientY - rect.top;
     dragStripKfGrabU0 = uAtPx(clamp(dragStripKfCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
+    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
+    gestureMapping = mapping;
     beginStripKeyframeMove(ecs, k.id);
     dragStripKf = k.id;
     beginDrag(canvas, e.pointerId);
@@ -1435,13 +1481,16 @@ function stripKfMove(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
     dragStripKfCx = clamp(e.clientX - rect.left, LEFT_GUT, Math.max(LEFT_GUT, w));
     dragStripKfCy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
-    const ds = uAtPx(dragStripKfCx) - dragStripKfGrabU0;
+    // the same gesture-frozen projection `applyDrag` uses -- `ds` is arclength, never a raw
+    // (seconds-scaled-in-Time-view) axis delta (S6 fix).
+    const ds = dOf(uAtPx(dragStripKfCx)) - dOf(dragStripKfGrabU0);
     const dv = vView.lo + (1 - (dragStripKfCy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
     setStripKeyframe(ecs, dragStripKf, clamp(dragStripKfS0 + ds, dragStripKfStart, dragStripKfEnd), Math.max(V_FLOOR, dv));
 }
 function stripKfUp(): void {
     if (dragStripKf === null) return;
     dragStripKf = null;
+    gestureMapping = null; // release the gesture-frozen table
     commit(history);
     window.removeEventListener("pointermove", stripKfMove);
     window.removeEventListener("pointerup", stripKfUp);
@@ -1450,6 +1499,7 @@ function stripKfUp(): void {
 function cancelStripKfDrag(): void {
     if (dragStripKf === null) return;
     dragStripKf = null;
+    gestureMapping = null; // release the gesture-frozen table
     cancel();
     window.removeEventListener("pointermove", stripKfMove);
     window.removeEventListener("pointerup", stripKfUp);
@@ -2276,7 +2326,8 @@ $effect(() => {
 // undo entry per drag.
 let lenId: number | null = $state(null); // the force section being resized, or null
 const draggingLen = $derived(lenId !== null);
-let lenStartU = 0; // the dragged section's entry on the chart's axis (fixed during the drag)
+let lenStartU = 0; // the dragged section's entry, projected -- pixel/snap-target math only
+let lenStartD = 0; // the dragged section's entry in arclength (fixed during the drag) -- the WRITE base
 let lenCx = 0; // last length-drag cursor, canvas-local px (drives the per-frame edge-pan)
 let lenX0 = 0; // grab-point cursor px (fixed) — the dead-zone origin `lenArmed` measures from
 let lenArmed = false; // the standard DRAG_PX dead-zone latch (`armDrag`) — gates the sticky-commit
@@ -2294,9 +2345,11 @@ const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-e
 // `minForceExtent` floor) skips a snap the floor won't honor, so no guide flashes on an edge
 // that can't get there — matching applyDrag's reach guard.
 //
-// The extent is the section's authored length in the track domain's unit, so in `Domain.Time`
-// this same gesture trims a DURATION: the edge reads the chart's axis directly, with no
-// projection between the cursor and the write.
+// The extent is the section's authored length, arclength ALWAYS (S6) -- so in `Domain.Time`
+// this same gesture reads a cursor position on the PROJECTED (seconds) chart axis and must
+// convert it back through the gesture-frozen table (`dOf`) before writing; the edge no longer
+// reads the chart's axis directly into the store (S6 fix -- that would trim a metres extent by
+// a seconds-scaled amount).
 function applyLen(): void {
     if (lenId === null) return;
     const cv = clampView(view, chartW, uFrozen ?? uTotal, mFloor);
@@ -2309,13 +2362,13 @@ function applyLen(): void {
         const hit = snap(lenCx - LEFT_GUT, targets);
         if (hit !== null) {
             const cand = pxToU(cv, hit);
-            if (cand - lenStartU >= minForceExtent(domain)) {
+            if (dOf(cand) - lenStartD >= minForceExtent(domain)) {
                 cumU = cand; // only latch a target the extent floor will actually honor
                 snapX = hit;
             }
         }
     }
-    setSectionLength(ecs, lenId, cumU - lenStartU); // global edge − section entry → its extent
+    setSectionLength(ecs, lenId, dOf(cumU) - lenStartD); // arclength edge − arclength entry
 }
 function lenDown(e: PointerEvent, c: Clip): void {
     if (e.button !== 0) return;
@@ -2330,10 +2383,13 @@ function lenDown(e: PointerEvent, c: Clip): void {
     lenArmed = false;
     lenMod = e.ctrlKey || e.metaKey;
     lenStartU = c.u0; // upstream is unchanged by this resize, so the entry is fixed
+    lenStartD = c.s0; // the arclength twin -- the write base
     selectSection(c.id); // grabbing the edge selects the section (one object, two surfaces)
     beginLength(ecs, c.id);
     lenId = c.id;
     uFrozen = uTotal; // freeze the pan-clamp span so the view holds still under the drag
+    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
+    gestureMapping = mapping;
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", lenMove);
     window.addEventListener("pointerup", lenUp);
@@ -2355,6 +2411,7 @@ function lenUp(): void {
     lenArmed = false;
     uFrozen = null; // release the in-drag freeze; the zoom never re-fits (no release refit) —
     snapX = null;
+    gestureMapping = null; // release the gesture-frozen table
     // commitLength coalesces the drag (one undo entry) AND, when armed, records the landed
     // extent as the session's new sticky append default — the one call site that updates it. a
     // sub-DRAG_PX click release (armed=false) still commits (a no-move release records nothing
@@ -2370,6 +2427,7 @@ function cancelLenDrag(): void {
     lenArmed = false;
     uFrozen = null;
     snapX = null;
+    gestureMapping = null; // release the gesture-frozen table
     cancel();
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
@@ -2408,7 +2466,8 @@ interface StripDrag {
     id: number;
     mode: "start" | "end" | "body";
     section: number;
-    entryU: number;
+    entryU: number; // projected -- unused for the write now, kept for symmetry with the others
+    entryD: number; // arclength entry -- the write base
     lo: number;
     hi: number;
     origStart: number;
@@ -2422,7 +2481,9 @@ function bandMove(e: PointerEvent): void {
     if (stripDrag === null) return;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
-    const station = uAtPx(px) - stripDrag.entryU;
+    // through the gesture-frozen table -- `station` is arclength, never a raw (seconds-scaled
+    // in Time view) axis delta (S6 fix).
+    const station = dOf(uAtPx(px)) - stripDrag.entryD;
     const { mode, lo, hi, origStart, origEnd, origValue, id } = stripDrag;
     if (mode === "start") {
         setStrip(ecs, id, clamp(station, lo, hi), origEnd, origValue);
@@ -2438,6 +2499,7 @@ function bandMove(e: PointerEvent): void {
 function bandUp(): void {
     if (stripDrag === null) return;
     stripDrag = null;
+    gestureMapping = null; // release the gesture-frozen table
     window.removeEventListener("pointermove", bandMove);
     window.removeEventListener("pointerup", bandUp);
     window.removeEventListener("pointercancel", bandUp);
@@ -2446,6 +2508,7 @@ function bandUp(): void {
 function cancelStripDrag(): void {
     if (stripDrag === null) return;
     stripDrag = null;
+    gestureMapping = null; // release the gesture-frozen table
     window.removeEventListener("pointermove", bandMove);
     window.removeEventListener("pointerup", bandUp);
     window.removeEventListener("pointercancel", bandUp);
@@ -2488,6 +2551,8 @@ function bandDown(e: PointerEvent): void {
     e.preventDefault();
     e.stopPropagation();
     selectStrip(s.id);
+    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
+    gestureMapping = mapping;
     if (hit.kind === "endpoint") {
         const at = hit.edge === "start" ? s.start : s.end;
         const b = stripBoundsAt(ecs, s.section, s.id, s.len, at);
@@ -2496,6 +2561,7 @@ function bandDown(e: PointerEvent): void {
             mode: hit.edge,
             section: s.section,
             entryU: s.startU,
+            entryD: s.startD,
             lo: hit.edge === "start" ? b.lo : s.start,
             hi: hit.edge === "end" ? b.hi : s.end,
             origStart: s.start,
@@ -2511,12 +2577,13 @@ function bandDown(e: PointerEvent): void {
             mode: "body",
             section: s.section,
             entryU: s.startU,
+            entryD: s.startD,
             lo: loB.lo,
             hi: hiB.hi,
             origStart: s.start,
             origEnd: s.end,
             origValue: s.value,
-            grabStation: uAtPx(px) - s.startU,
+            grabStation: dOf(uAtPx(px)) - s.startD,
         };
     }
     beginStripMove(ecs, s.id);
@@ -2575,13 +2642,14 @@ function fieldEdit(s: number, g: number): void {
     setForcePoint(ecs, p.id, clamp(s, 0, p.len), g);
     commit(history);
 }
-// the position field speaks the track's own domain (global d, or global t — label and unit follow,
-// `posLabel`/`posUnit`), the same unit the store holds, so the write is the lens's affine inverted:
-// s = u − the section's entry. fieldEdit clamps into [0, len].
+// the position field speaks the chart's own domain (global d, or global t — label and unit
+// follow, `posLabel`/`posUnit`), never the store's (arclength ALWAYS -- S6), so the write goes
+// through `dOf` (identity in Distance) before subtracting the section's arclength entry.
+// fieldEdit clamps into [0, len].
 function onFieldPos(e: Event): void {
     if (!selPoint) return;
     const u = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    fieldEdit(u - selPoint.startU, selPoint.g);
+    fieldEdit(dOf(u) - selPoint.startD, selPoint.g);
 }
 function onFieldG(e: Event): void {
     if (!selPoint) return;
@@ -2664,6 +2732,7 @@ function labelScrub(e: PointerEvent, opts: ScrubOpts): void {
         label.removeEventListener("pointercancel", up);
         scrubCancel = null;
         if (opts.freeze !== undefined) scrubFreeze = null; // re-anchor to the live subject
+        gestureMapping = null; // release the gesture-frozen table (S6, harmless if unset)
     };
     const up = (): void => {
         detach();
@@ -2694,14 +2763,17 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
     if (axis === "s") {
         // the position scrub slides the value the field DISPLAYS — the active domain, so its rate
         // and its rounding are that domain's own (`SCRUB_T` is `SCRUB_S`'s time twin at the default
-        // entry speed) — and inverts through the lens's affine for the write.
+        // entry speed) — and inverts through the GESTURE-FROZEN table for the write (`dOf`,
+        // identity in Distance; S6 fix -- `v`/`p.startU` are the chart's own axis, never the
+        // metres store directly).
+        gestureMapping = mapping; // freeze -- see `forceDown`'s own note
         labelScrub(e, {
             seed: p.u,
             rate: timeDomain ? SCRUB_T : SCRUB_S,
             lo: p.startU,
-            hi: p.startU + p.len,
+            hi: uOf(p.startD + p.len),
             round: 10,
-            write: (v) => setForcePoint(ecs, p.id, clamp(v - p.startU, 0, p.len), p.g),
+            write: (v) => setForcePoint(ecs, p.id, clamp(dOf(v) - p.startD, 0, p.len), p.g),
             freeze,
             begin: () => beginForceMove(ecs, p.id),
         });
@@ -2788,6 +2860,7 @@ function cancelForceDrag(): void {
     dragForce = null;
     snapX = null;
     snapY = null;
+    gestureMapping = null; // release the gesture-frozen table
     cancel(); // interrupted (unmount mid-drag): revert to the pre-gesture s/g
     window.removeEventListener("pointermove", forceMove);
     window.removeEventListener("pointerup", forceUp);
@@ -3514,15 +3587,20 @@ onMount(() => {
             k.vRange = (): [number, number] => [vView.lo, vView.hi];
             k.xView = (): [number, number] => [view.pan, view.pxPerU];
             // the domain the chart READS (`Track.domain`, tick-derived so a flow polls it), and
-            // every keyframe's coordinate on that axis — paired with the stored `s` the flow
-            // asserts held, since the time-constrained assertion is exactly "every other
-            // keyframe's stored t AND its drawn position unchanged" across an edit. `section` +
-            // `g` (kex2d-structural-editing stage 9) let a multi-section flow read a Cut's TWO
+            // every keyframe's coordinate on that axis — paired with the stored `s` (S6: the
+            // lens read, never a second unit the store holds). `section` + `g`
+            // (kex2d-structural-editing stage 9) let a multi-section flow read a Cut's TWO
             // halves apart — `main.ts`'s `forces()` only ever reads section 0 (`sec()`), so it
             // can't see a split's tail — without re-deriving `forcePts`' own grouping by hand.
             k.domain = (): string => (domain === Domain.Time ? "time" : "distance");
             k.forceU = (): { id: number; section: number; s: number; g: number; u: number }[] =>
                 forcePts.map((p) => ({ id: p.id, section: p.section, s: p.s, g: p.g, u: p.u }));
+            // the chart's axis<->arclength lens, both directions, at the LIVE (or, mid-gesture,
+            // gesture-frozen) s↔t table — S6's own oracle: a capture flow calls these BEFORE
+            // starting a drag to read the table the gesture will freeze, so it can verify a write
+            // landed at `s0 + (dOf(u) - dOf(u0))` against the SAME snapshot the gesture used.
+            k.dOf = (u: number): number => dOf(u);
+            k.uOf = (d: number): number => uOf(d);
             // the red ghost strip's own screen px, view-projected exactly as drawn (`ghostSpans`
             // above) — the capture flow's pixel probe reads a point INSIDE one of these rather
             // than re-deriving the arclength→px projection a second time (the ctxCut precedent).
@@ -3551,6 +3629,8 @@ onMount(() => {
                 delete k.xView;
                 delete k.domain;
                 delete k.forceU;
+                delete k.dOf;
+                delete k.uOf;
                 delete k.ghostPx;
                 delete k.stripKfPx;
             }
