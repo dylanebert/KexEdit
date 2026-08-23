@@ -24,17 +24,26 @@
 import type { State } from "@dylanebert/shallot";
 import { type History, landDomain } from "./history";
 import type { Domain } from "./section";
-import { bakeLive, trackDomain } from "./track";
+import { bakeLive, SectionKind, sectionInfo, sections, trackDomain } from "./track";
 
-/** whether `convertDomain` can run at all. A flip is a pure view write now — it never reads the
- * bake — but the ruler menu still grays a row it cannot honor: with no live bake there is
- * nothing yet to READ the picked domain through (a Time reading before the first bake would
- * have no table), so the row stays disabled until one exists.
+/** whether `convertDomain` can run at all. A flip is a pure view write now — it never touches
+ * the store — but the ruler menu still grays a row it cannot honor: with no live bake, or a
+ * force section placed past the sample budget (its own baked range degenerate, `start === end`),
+ * there is nothing yet to READ the picked domain through (a Time reading needs the live bake's
+ * s↔t table, and a section off the bake has no station on it), so the row stays disabled until
+ * every force section has one. Geo sections are position-authored in either domain and never
+ * gate this.
  *
  * @example if (!convertible(ecs)) return; // nothing to display through yet
  */
 export function convertible(ecs: State): boolean {
-    return bakeLive(ecs);
+    if (!bakeLive(ecs)) return false;
+    for (const sec of sections(ecs)) {
+        if (sec.kind !== SectionKind.Force) continue;
+        const info = sectionInfo.get(sec.id);
+        if (!info || info.endSample <= info.startSample) return false;
+    }
+    return true;
 }
 
 /** whether the ruler menu's row for `target` is enabled — the ONE enablement rule, pure and

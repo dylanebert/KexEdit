@@ -1373,38 +1373,32 @@ test("playhead parking flow", async ({ page, boot }) => {
     if (strip) await page.screenshot({ path: join(OUT, "park-2-held.png"), clip: strip });
 });
 
-// The TRACK DOMAIN picker (kex2d-time-domain stage 5): every force keyframe's position and every
-// force section's extent are stored in the unit of `Track.domain`, and the ruler's own context menu
-// (Meters / Seconds — the Premiere/REAPER/Cubase reference) is where it's picked. No keyboard
-// shortcut (the second feel check-in's call). The pick is a DOCUMENT CONVERSION, not a view change,
-// and that is what this flow pins in the only place it can be pinned honestly (a real browser, real
-// gestures, the live bake's arc↔time table under them):
+// The TRACK DOMAIN picker (S6, "arclength is canonical, time is a lens"): `Track.domain` is a
+// VIEW now, not a document conversion — every force keyframe's stored `s` and every force
+// section's extent stay in meters of arclength always, so picking Seconds writes exactly one
+// column and re-labels the ruler/readouts, never the store. This flow pins the lens contract at
+// that depth, the only place it can be pinned honestly (a real browser, a real menu pick):
 //
 //   · the checked row follows `Track.domain`, and picking it is a no-op — no entry, no write;
-//   · picking the other row converts the whole store in ONE undo entry: the keyframes' stored
-//     numbers become seconds and every diamond moves (the positive control for what follows);
-//   · TIME-CONSTRAINED editing, the whole point of the domain: in Seconds, editing one keyframe
-//     leaves every other keyframe's stored t AND its drawn x exactly where they were — the store
-//     is the time reading, so no edit anywhere can slide it (the inverse of the rejected
-//     projection-only "honest slide", which slid every keyframe on any upstream re-timing);
-//   · undo is the way back, byte-identically — for the edit and for the conversion itself. A
-//     Meters → Seconds → Meters round trip is NOT bit-identical (the two marches disagree; see
-//     `domain.ts`), so it is deliberately not asserted here; the unit suite bounds the drift.
-//   · a gesture returned to its grab pixel is a byte-identical no-op that records no undo entry —
-//     the carried lesson, and now exact by construction: the store and the axis are one unit, so
-//     the drag is plain arithmetic with no projection to lose an ulp in. Pinned IN SECONDS, the
-//     domain whose exactness is new;
-//   · undo is refused mid-gesture and the document axis holds still: a live drag owns the open
-//     history gesture, and a domain entry popped underneath it would flip the store's unit under a
-//     grab resolved in the other one (`editor-ui.md`: no document-axis navigation while a gesture
-//     is live);
-//   · the converting row GRAYS where the conversion can't run — reached honestly by running a force
-//     section off the end of the flat SoA, the one persistent such state.
+//   · picking the other row flips the column in ONE undo entry (`history.landDomain` always
+//     records one — read off the code, not assumed) and `forces()` reads BYTE-IDENTICAL to the
+//     pre-flip snapshot, since there is no conversion left to move a single stored number;
+//   · undo is the way back: one entry, `forces()`/`domain()` both restored exactly;
+//   · the converting row GRAYS where `domain.convertible` reads false (no live bake) — reached
+//     honestly by running a force section off the end of the flat SoA, the one persistent such
+//     state; `convertible` still exists post-S6 (it now reads `bakeLive` alone), so this case
+//     stays covered here.
+//
+// What this flow does NOT cover: the Time-view ruler/readout PROJECTION through the live bake's
+// s↔t table, the gesture-start table freeze, and drag-in-Seconds placement — S6 retired the old
+// "store is the time reading" mechanism those used to ride (§ locked decision, "What this gives
+// up"), and S6b is the stage that builds their replacement (`timeline.ts`'s `dToU`/`uToD`
+// projected onto force keyframes/strips the way geo already reads them). This flow extends there
+// once that projection exists, rather than asserting anything about it now.
 test("timeline domain flow", async ({ page, boot }) => {
     await boot();
 
     const forces = () => kexCall(page, "forces");
-    const forceU = () => kexCall(page, "forceU");
     const forceCount = () => kexCall(page, "forceCount");
     const domain = () => kexCall(page, "domain");
     const undoDepth = () => kexCall(page, "undoDepth");
@@ -1416,28 +1410,7 @@ test("timeline domain flow", async ({ page, boot }) => {
     await kexCall(page, "seedForceBump");
     await expect.poll(forceCount).toBe(5);
     await expect.poll(tTotal).toBeGreaterThan(0);
-
-    // Author the entry speed off the default FIRST, because at exactly `V0` the two units are
-    // proportional by one constant and this flow could not tell them apart: the time quantum and
-    // the time lead-out floor are both derived at `V0` (`T_GRID`, `marginFloor`), so a ride
-    // cruising at `V0` puts every diamond at the identical fraction of the span. 25 m/s makes the
-    // conversion visibly its own thing.
-    const tSeed = await tTotal();
-    await kexCall(page, "setV0", 25);
-    await expect.poll(tTotal).not.toBe(tSeed);
-    await frameTimeline(page); // the whole section on-screen, for exact diamond boxes
-
-    const posField = (label: string) => page.locator(`.ptip input[aria-label="${label}"]`);
-    const fhit = page.locator(".fhit");
-    const centers = async (): Promise<number[]> => {
-        const out: number[] = [];
-        for (let i = 0; i < 5; i++) {
-            const b = await fhit.nth(i).boundingBox();
-            if (!b) throw new Error(`force point ${i} not laid out`);
-            out.push(b.x + b.width / 2);
-        }
-        return out;
-    };
+    await frameTimeline(page); // the whole section on-screen
 
     // ── 1. Distance is the default: Meters reads checked, Seconds not. A live bake exists here
     // (the seeded points baked above), so Seconds is ENABLED — the gray case is a track the
@@ -1445,7 +1418,6 @@ test("timeline domain flow", async ({ page, boot }) => {
     // `domain.test.ts` against the same `convertible` reading this row grays on. Picking the
     // already-checked row is a no-op: nothing written, nothing recorded. ──
     expect(await domain()).toBe("distance");
-    const xDist = await centers();
     const metres = await forces();
     const undo0 = await undoDepth();
     await openRulerMenu();
@@ -1464,162 +1436,35 @@ test("timeline domain flow", async ({ page, boot }) => {
     expect(await forces()).toEqual(metres);
     expect(await undoDepth()).toBe(undo0);
 
-    // ── 2. The Seconds row, pointer-true (`clickMenuItem` — real hover isn't needed for a
-    // top-level row, but the coordinate click + elementFromPoint reachability assert is the same
-    // regression net every menu flow wears). It CONVERTS: one undo entry, and the store now holds
-    // seconds — smaller numbers than the metres it held at 25 m/s. ──
+    // ── 2. The Seconds row, pointer-true. It writes ONE undo entry and the STORE DOES NOT
+    // CONVERT: `forces()` reads byte-identical to the Meters snapshot, since S6 retired the
+    // document-conversion op that used to rewrite every keyframe's stored number here. ──
     await openRulerMenu();
     await clickMenuItem(page, ".rmenu", "Seconds");
     await expect.poll(domain).toBe("time");
-    // the pick's re-frame lands on the frame the tick re-derives the domain in (writing the new
-    // scale from the handler would paint one frame of old coordinates against it), so the chart's
-    // boxes are honest only after a projected frame.
-    await frames(page, 2);
-    const seconds = await forces();
-    expect(await undoDepth()).toBe(undo0 + 1); // ONE entry for the whole conversion
-    // the checked row FOLLOWS the store's unit: reopen and assert it flipped (a hardcoded
-    // `checked` would sail through the pre-flip assert above).
+    expect(await forces()).toEqual(metres); // byte-identical — the lens changes no stored number
+    expect(await undoDepth()).toBe(undo0 + 1); // one entry for the flip (`history.landDomain`)
+    // the checked row FOLLOWS the store's `Track.domain`: reopen and assert it flipped (a
+    // hardcoded `checked` would sail through the pre-flip assert above).
     await openRulerMenu();
     await expect(secondsRow).toHaveClass(/checked/);
     await expect(metersRow).not.toHaveClass(/checked/);
     await page.keyboard.press("Escape");
     await expect(page.locator(".rmenu")).toHaveCount(0);
-    for (let i = 1; i < 5; i++) expect(seconds[i].s).toBeLessThan(metres[i].s);
-    for (let i = 0; i < 5; i++) expect(seconds[i].g).toBe(metres[i].g); // g is unit-free
-    // the conversion really moved the chart — the positive control the "nothing else moved"
-    // asserts below need, or they would pass vacuously against a chart that never changed.
-    // (measured ~100px at this speed; the bar is only that it dwarfs a one-box rounding.)
-    const xTime = await centers();
-    expect(Math.max(...xTime.map((x, i) => Math.abs(x - xDist[i])))).toBeGreaterThan(20);
 
-    // the selected keyframe's popover reads the store's own unit: `t` seconds, not `d` metres, and
-    // the value it prints is the lens's affine for that keyframe (`forceU`).
-    const crest = 2; // the airtime crest, s = 0.5·len — the interior keyframe this flow drives
-    const c2 = await fhit.nth(crest).boundingBox();
-    if (!c2) throw new Error("the crest diamond is not laid out");
-    await page.mouse.click(c2.x + c2.width / 2, c2.y + c2.height / 2);
-    await expect(posField("Point time (s)")).toHaveCount(1);
-    await expect(posField("Point distance (m)")).toHaveCount(0);
-    await expect(page.locator(".ptip .fld").first().locator(".key")).toHaveText("t");
-    await expect(page.locator(".ptip .fld").first().locator(".unit")).toHaveText("s");
-    const shownT = Number(await posField("Point time (s)").inputValue());
-    const uCrest = (await forceU())[crest].u;
-    expect(shownT).toBeCloseTo(uCrest, 1); // the field prints the keyframe's own global t
-    expect(uCrest).toBeCloseTo(seconds[crest].s, 6); // one section from the start: u = 0 + t
-    await page.waitForTimeout(SHOT_MS);
-    const strip = dockStrip(page);
-    if (strip) await page.screenshot({ path: join(OUT, "domain-time.png"), clip: strip });
-
-    // ── 3. TIME-CONSTRAINED editing. Drag the crest right: its own t moves (by more than one time
-    // quantum, so this is a real placement on the `T_GRID` vocabulary and not a metre grid), and
-    // every OTHER keyframe holds — stored t byte-identical AND drawn x within half a device pixel.
-    // Under the projection-only basis this same edit re-timed the whole ride and slid all four of
-    // them; here the store IS the time reading, so nothing can slide it. The section's duration is
-    // authored, so the geometry underneath changes while the clock does not. ──
-    await page.keyboard.press("Escape"); // drop the popover: it floats over the neighbour diamonds
-    await expect(page.locator(".ptip")).toHaveCount(0);
-    const grab = await fhit.nth(crest).boundingBox();
-    if (!grab) throw new Error("the crest diamond is not laid out for the drag");
-    const gx = grab.x + grab.width / 2;
-    const gy = grab.y + grab.height / 2;
-    await page.mouse.move(gx, gy);
-    await page.mouse.down();
-    await page.mouse.move(gx + 18, gy, { steps: 6 });
-    await page.mouse.up();
-    await expect.poll(async () => (await forces())[crest].s).toBeGreaterThan(seconds[crest].s);
-    const edited = await forces();
-    const moved = edited[crest].s - seconds[crest].s;
-    expect(moved).toBeGreaterThan(0.1); // ≥ one time quantum (`T_GRID` = 0.1 s)
-    await frames(page, 2);
-    const xEdited = await centers();
-    for (let i = 0; i < 5; i++) {
-        if (i === crest) continue;
-        expect(edited[i].s).toBe(seconds[i].s); // the stored time of every other keyframe
-        expect(edited[i].g).toBe(seconds[i].g);
-        expect(xEdited[i]).toBeCloseTo(xTime[i], 0); // …and where it draws
-    }
-
-    // ── 4. A gesture returned to its grab pixel is a byte-identical no-op with NO undo entry (the
-    // carried lesson) — asserted HERE, in Seconds, because that is the domain whose exactness is
-    // new: the drag resolves delta-from-grab in the store's own unit and the gesture-start magnet
-    // resolves to the grabbed value rather than a pixel round-trip, so zero delta writes zero
-    // bit-exactly on both axes with no projection in the path. The mid-gesture displacement is the
-    // positive control: it proves this rig can see a write at all. It addresses the FIRST SHOULDER,
-    // not the crest 3 drove: a second press on the same diamond inside `FDBL_MS` is the handle-edit
-    // summon, not a drag, so re-grabbing the crest here would race the flow's own round-trip time
-    // to decide whether a drag opens at all. No re-framing — the view must stay where 3 left it, so
-    // 5's post-undo pixel comparison against `xDist` stays meaningful. ──
-    const shoulder = 1; // s = 0.2·len
-    await page.keyboard.press("Escape"); // the crest's popover floats over its neighbour
-    await expect(page.locator(".ptip")).toHaveCount(0);
-    const undoGrab = await undoDepth();
-    const back = await fhit.nth(shoulder).boundingBox();
-    if (!back) throw new Error("the shoulder diamond is not laid out for the zero-delta grab");
-    const bx = back.x + back.width / 2;
-    const by = back.y + back.height / 2;
-    await page.mouse.move(bx, by);
-    await page.mouse.down();
-    await expect(page.locator("#app[data-dragging]")).toHaveCount(1); // the grab really opened
-    await page.mouse.move(bx + 40, by - 30, { steps: 6 }); // really move it (both axes)
-    await expect.poll(async () => (await forces())[shoulder].s).not.toBe(edited[shoulder].s);
-    await page.mouse.move(bx, by, { steps: 6 }); // …and return to the exact grab pixel
-    await page.mouse.up();
-    expect(await forces()).toEqual(edited); // byte-identical, both axes
-    expect(await undoDepth()).toBe(undoGrab); // and nothing on the undo stack
-
-    // ── 5. Undo is REFUSED mid-gesture, and the document axis holds still under it. A live drag
-    // owns the open history gesture (one at a time), so popping an entry underneath it would leave
-    // the drag's own commit landing on top of an unrelated state — and a `Track.domain` entry would
-    // flip the store's unit under a grab resolved in the other one, rescaling the axis mid-gesture
-    // (`editor-ui.md`: no document-axis navigation while a gesture is live). The press is a no-op:
-    // the domain holds, the view holds, and the gesture then commits normally on release. ──
-    // the SECOND shoulder, not the one 4 just grabbed: a second press on the same diamond inside
-    // `FDBL_MS` is the handle-edit summon, not a drag (4's own note), and a summon opens no gesture
-    // at all — which is exactly how this pin first went red.
-    const other = 3; // s = 0.8·len
-    const far = await fhit.nth(other).boundingBox();
-    if (!far) throw new Error("the second shoulder is not laid out for the mid-drag undo");
-    const fx = far.x + far.width / 2;
-    const fy = far.y + far.height / 2;
-    const viewMid = await kexCall(page, "xView");
-    await page.mouse.move(fx, fy);
-    await page.mouse.down();
-    await page.mouse.move(fx + 40, fy, { steps: 6 }); // past DRAG_PX — a live gesture
-    await expect(page.locator("#app[data-dragging]")).toHaveCount(1);
-    await page.keyboard.press("Control+z");
-    await frames(page, 2); // give a re-frame a chance to land, if the guard were missing
-    expect(await domain()).toBe("time"); // the conversion entry was NOT popped
-    expect(await kexCall(page, "xView")).toEqual(viewMid); // …and the axis never rescaled
-    await page.mouse.move(fx, fy, { steps: 6 }); // back to the grab pixel: still a no-op gesture
-    await page.mouse.up();
-    expect(await forces()).toEqual(edited);
-    expect(await undoDepth()).toBe(undoGrab);
-
-    // ── 6. Undo is the way back, byte-identically — first over the edit, then over the conversion
-    // itself, which restores the metre store AND the domain in one entry. (A Meters → Seconds →
-    // Meters round trip is deliberately NOT asserted: it is not bit-identical, by the locked
-    // decision, and how close it lands is a property of the ride.) ──
-    await page.keyboard.press("Control+z");
-    await expect.poll(async () => (await forces())[crest].s).toBe(seconds[crest].s);
-    expect(await forces()).toEqual(seconds); // the whole store, byte-identical
-    expect(await domain()).toBe("time");
+    // ── 3. Undo is the way back, byte-identically: one entry, both `domain()` and `forces()`
+    // restored exactly (trivially so, since the store never moved). ──
     await page.keyboard.press("Control+z");
     await expect.poll(domain).toBe("distance");
-    expect(await forces()).toEqual(metres); // …and the metres came back exactly
+    expect(await forces()).toEqual(metres);
     expect(await undoDepth()).toBe(undo0);
-    await frames(page, 2);
-    const xBack = await centers();
-    for (let i = 0; i < 5; i++) expect(xBack[i]).toBeCloseTo(xDist[i], 0);
-    await expect(posField("Point distance (m)")).toHaveCount(0); // nothing selected after the undos
 
-    // ── 7. The CONVERTING row grays where the conversion can't run (`editor-ui.md`: gray a row
-    // whose preconditions fail — never hide it, and never leave it clickable into a silent no-op).
-    // Reached honestly: stretch this force section past the whole-track sample budget, then append a
-    // second one — the appended section starts beyond the end of the flat SoA, so its arc↔time
-    // window addresses samples that were never written. That is the one PERSISTENT state
-    // `domain.convertible` reads false on (a stale bake is repaired on the next frame), and the
-    // conversion must reject the WHOLE track rather than convert the section it CAN see. The enabled
-    // assert in 1 is this one's positive control: the same row, the same locator. ──
+    // ── 4. The CONVERTING row grays where `domain.convertible` reads false (`editor-ui.md`: gray
+    // a row whose preconditions fail — never hide it, and never leave it clickable into a silent
+    // no-op). Reached honestly: stretch this force section past the whole-track sample budget,
+    // then append a second one — the appended section starts beyond the end of the flat SoA, so
+    // `bakeLive` — the reading `convertible` is now built on entirely — cannot certify it. The
+    // enabled assert in 1 is this one's positive control: the same row, the same locator. ──
     await kexCall(page, "setLen", 0, SAMPLE_BUDGET_M * 1.5);
     expect((await kexCall(page, "sectionLengths"))[0]).toBe(SAMPLE_BUDGET_M * 1.5);
     await kexCall(page, "append", 1); // SectionKind.Force — off the buffer at this offset
