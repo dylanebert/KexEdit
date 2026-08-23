@@ -97,6 +97,7 @@ import {
     timeToArc,
     trimTargets,
     uToD,
+    uToDExtend,
     type View,
     xGrow,
     yEase,
@@ -377,6 +378,19 @@ const mapping = $derived.by((): Mapping | null => {
 let gestureMapping: Mapping | null = $state(null);
 const uOf = (d: number): number => dToU(gestureMapping ?? mapping, domain, d);
 const dOf = (u: number): number => uToD(gestureMapping ?? mapping, domain, u);
+// the bake's own exit speed — floored at V_FLOOR exactly like `computeTime`'s march — the extent
+// trim's extrapolation rate past the bake's own end (S6b: lengthening a section past its current
+// profile is a legitimate author intent, not a stall, so the trim keeps advancing rather than
+// clamping to the last finite sample). A plain function, not a `$derived`: it reads through
+// `curve`/`bakeOut` at call time, so `lenDown` can snapshot it once at gesture start (`lenVExit`,
+// the same live-feedback hazard `gestureMapping` freezes) and the `dOfTrim` capture-harness bridge
+// can read the identical live value a gesture-about-to-start would freeze — the same convention
+// `dOf`/`uOf` already serve as their own pre-gesture oracle.
+function exitSpeed(): number {
+    if (eid === null || curve === null) return V0;
+    const out = bakeOut.get(eid);
+    return out ? Math.max(Math.abs(out.v[Math.max(0, curve.n - 1)]), V_FLOOR) : V0;
+}
 // the addressable span's end and the lead-out floor, both in axis units.
 const uTotal = $derived(uOf(sTotal));
 const mFloor = $derived(marginFloor(domain));
@@ -2348,6 +2362,10 @@ let lenCx = 0; // last length-drag cursor, canvas-local px (drives the per-frame
 let lenX0 = 0; // grab-point cursor px (fixed) — the dead-zone origin `lenArmed` measures from
 let lenArmed = false; // the standard DRAG_PX dead-zone latch (`armDrag`) — gates the sticky-commit
 let lenMod = false; // Ctrl/Cmd held (live) during the extent drag — snap bypass
+// `exitSpeed()`'s own snapshot, taken at gesture start alongside `gestureMapping` -- this drag's
+// own write extends the bake (a longer section publishes more samples), which would move
+// `curve.n`'s "end" out from under a LIVE read mid-drag.
+let lenVExit = V0;
 const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-eye feel constant
 // resolve the held cursor to a section extent through the *current* view (recomputed
 // inline so an edge-pan this frame is already reflected — the edge never lags the pan).
@@ -2384,7 +2402,12 @@ function applyLen(): void {
             }
         }
     }
-    setSectionLength(ecs, lenId, dOf(cumU) - lenStartD); // arclength edge − arclength entry
+    // the extent trim is the one place a chart-axis cursor legitimately reads PAST the bake's
+    // own end (the lead-out margin sits right there): `uToDExtend`, not `dOf`, so lengthening a
+    // section past its current profile extrapolates at the frozen exit speed instead of pinning
+    // to the bake's last finite sample (S6b).
+    const d = uToDExtend(gestureMapping ?? mapping, domain, cumU, lenVExit);
+    setSectionLength(ecs, lenId, d - lenStartD); // arclength edge − arclength entry
 }
 function lenDown(e: PointerEvent, c: Clip): void {
     if (e.button !== 0) return;
@@ -2406,6 +2429,8 @@ function lenDown(e: PointerEvent, c: Clip): void {
     uFrozen = uTotal; // freeze the pan-clamp span so the view holds still under the drag
     // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
     gestureMapping = mapping;
+    // freeze the extrapolation's own exit speed at the SAME instant -- see `exitSpeed`'s own note.
+    lenVExit = exitSpeed();
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", lenMove);
     window.addEventListener("pointerup", lenUp);
@@ -3618,6 +3643,11 @@ onMount(() => {
             // landed at `s0 + (dOf(u) - dOf(u0))` against the SAME snapshot the gesture used.
             k.dOf = (u: number): number => dOf(u);
             k.uOf = (d: number): number => uOf(d);
+            // the extent trim's own extrapolating projection (S6b) -- `uToDExtend` at the LIVE
+            // exit speed (`exitSpeed`), the value a `lenDown` about to start would freeze into
+            // `lenVExit`. Read BEFORE the trim gesture, same convention as `dOf`/`uOf` above.
+            k.dOfTrim = (u: number): number =>
+                uToDExtend(gestureMapping ?? mapping, domain, u, exitSpeed());
             // the red ghost strip's own screen px, view-projected exactly as drawn (`ghostSpans`
             // above) — the capture flow's pixel probe reads a point INSIDE one of these rather
             // than re-deriving the arclength→px projection a second time (the ctxCut precedent).
@@ -3648,6 +3678,7 @@ onMount(() => {
                 delete k.forceU;
                 delete k.dOf;
                 delete k.uOf;
+                delete k.dOfTrim;
                 delete k.ghostPx;
                 delete k.stripKfPx;
             }

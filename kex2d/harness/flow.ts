@@ -127,6 +127,10 @@ export interface Kex {
     // the chart's arclength->axis lens (`Timeline.svelte`'s `dOf`) -- S6's own oracle: called
     // before a drag to read the table the gesture will freeze.
     dOf(u: number): number;
+    // `dOf`'s extent-trim twin (S6b): EXTRAPOLATES past the bake's own end at the live exit speed,
+    // instead of `dOf`'s own clamp -- called before a trim to read the projection the gesture will
+    // freeze.
+    dOfTrim(u: number): number;
     domain(): string;
     editing(): boolean;
     forceCount(): number;
