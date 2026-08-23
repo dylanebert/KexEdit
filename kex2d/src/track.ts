@@ -388,14 +388,18 @@ function sectionEdgeDs(
 }
 
 /** whether a continuous-coordinate span `[start, end)` covers at least one edge of the
- *  current bake at that station — the minimum-extent floor. The property enforced is that the
- *  span's two ends round to DIFFERENT edge boundaries under `edgeStrips`'s round-to-nearest
- *  `boundary()` map (i.e. the span straddles an edge midpoint), so it maps to at least one
- *  overridden edge. A sub-edge span whose ends round together collapses to `start === end`,
- *  which the point convention re-maps to the PRECEDING edge `[start−1, start)` — the override
- *  is displaced, not lost; it is genuinely inert only at station 0 where `lo = −1`. Uses
- *  {@link edgeStrips}'s own boundary mapping, so the check is against exactly the edge-index
- *  resolution the bake would see. */
+ *  current bake at that station — the minimum-extent floor. Two conjuncts: the span's two
+ *  ends must round to DIFFERENT edge boundaries under `edgeStrips`'s round-to-nearest
+ *  `boundary()` map (i.e. the span straddles an edge midpoint, so it maps to at least one
+ *  overridden edge — a sub-edge span whose ends round together collapses to `start === end`,
+ *  which the point convention re-maps to the PRECEDING edge `[start−1, start)`, genuinely
+ *  inert only at station 0 where `lo = −1`); AND the span's own raw width must be at least
+ *  the edge it lands in (`ds` at that station) — the straddle test alone passes for an
+ *  arbitrarily narrow span sitting near an edge's MIDPOINT (not its boundary), which is a
+ *  legal but unhittable strip (measured 0.020 m wide on a 0.5 m grid) — the width floor
+ *  every existing min-extent call site already satisfies. Uses {@link edgeStrips}'s own
+ *  boundary mapping, so the check is against exactly the edge-index resolution the bake
+ *  would see. */
 /** check whether a span `[start, end)` covers at least one edge, given a raw edge
  *  structure (the `ds` array + edge count a section's bake resolves to) — the
  *  min-extent floor's own core, factored so a split can check a *would-be* tail section
@@ -408,7 +412,8 @@ export function spanCoversOneEdge(
 ): boolean {
     const specs = edgeStrips(ds, edges, [{ start, end, value: 0 }]);
     if (!specs || specs.length === 0) return false;
-    return specs[0].end > specs[0].start;
+    if (specs[0].end <= specs[0].start) return false;
+    return end - start >= ds[Math.min(specs[0].start, edges - 1)];
 }
 
 export function stripCoversOneEdge(
@@ -664,13 +669,16 @@ export function stripMinExtentAt(
 
 /** author a new velocity strip on a section over `[start, end)` at `value` — the create
  *  path, guarded by {@link stripOverlapped} (the ONE guard every write inherits: create,
- *  drag, nudge, and typed-field writes all route through this module's writers) and by
- *  the minimum-extent guard ({@link stripCoversOneEdge}: a span whose two ends round to the
+ *  drag, nudge, and typed-field writes all route through this module's writers), by the
+ *  minimum-extent guard ({@link stripCoversOneEdge}: a span whose two ends round to the
  *  same edge boundary collapses to `start === end`, which the point convention displaces to
  *  the preceding edge rather than going inert — the guard refuses this collapse so a stored
- *  strip always covers ≥ 1 edge of the current bake).
+ *  strip always covers ≥ 1 edge of the current bake), and by {@link validStripValue} (a
+ *  summoned creation's seed reads the live bake's `v` unclamped, exactly 0 at a true stall —
+ *  not a controlled span, so creation there is refused rather than authoring a stalled strip).
  *  Returns the new strip's stable id, or `null` when the span would overlap an existing strip
- *  on the same section or when the span covers no edge (refused, nothing written). */
+ *  on the same section, the span covers no edge, or the value isn't a controlled speed
+ *  (refused, nothing written). */
 export function createStrip(
     ecs: State,
     sectionId: number,
@@ -680,6 +688,7 @@ export function createStrip(
 ): number | null {
     if (stripOverlapped(ecs, sectionId, start, end, -1)) return null;
     if (!stripCoversOneEdge(ecs, sectionId, start, end)) return null;
+    if (!validStripValue(value)) return null;
     const eid = ecs.create();
     ecs.add(eid, Strip);
     const id = nextStripId++;
@@ -756,8 +765,9 @@ export function restoreStrip(ecs: State, st: StripState): void {
 
 /** write a strip's `start`/`end`/`value` (live drag preview + gesture restore) — the
  *  position writer, mirroring {@link setForcePoint}'s per-axis refusal shape: a span that
- *  would overlap a neighbour is REFUSED (the strip keeps its current `start`/`end`), while
- *  `value` still lands unconditionally. The refusal is what "the guard lives inside the
+ *  would overlap a neighbour is REFUSED (the strip keeps its current `start`/`end`), and
+ *  `value` is refused the same way when it isn't a controlled speed ({@link validStripValue}
+ *  — the strip keeps its current value). The refusal is what "the guard lives inside the
  *  write op" (Locked decision) means for C3 — an actual drag CLAMPING at the neighbour's
  *  boundary is C5's gesture, built on top of this refusal (it computes a clamped target
  *  and calls this op with that instead), not a second guard here. */
@@ -769,20 +779,15 @@ export function setStrip(ecs: State, id: number, start: number, end: number, val
         Strip.start.set(eid, start);
         Strip.end.set(eid, end);
     }
-    Strip.value.set(eid, value);
+    if (validStripValue(value)) Strip.value.set(eid, value);
 }
 
 /** whether a typed strip value is one the field may commit — finite and STRICTLY positive (a
  *  held speed of 0 is not a controlled span, it's a stall — `validCoefficient`'s own shape,
- *  `>` rather than `>=`).
- *
- *  CALLER NOTE: this predicate has zero callers in `src/` today (an unused `Timeline.svelte`
- *  import, plus tests). The real writers of a strip's value are `createStrip`'s seed
- *  (`stripSeedValue`, which returns `bakeOut.v` lerped — unclamped, so exactly 0 at a true
- *  stall, a value this predicate itself declares "not a controlled span, it's a stall") and
- *  `setStrip` (which writes `value` unconditionally, without routing through this predicate).
- *  Routing the writers through `validStripValue` is a behaviour change, not a documentation
- *  fix — it is reported as owed, not made here. */
+ *  `>` rather than `>=`). The two real writers of a strip's value route through it:
+ *  {@link createStrip} (whose seed, `stripSeedValue`, returns `bakeOut.v` lerped — unclamped,
+ *  so exactly 0 at a true stall) refuses the whole creation, and {@link setStrip} refuses just
+ *  the value write, keeping the strip's current one. */
 export function validStripValue(v: number): boolean {
     return Number.isFinite(v) && v > 0;
 }
@@ -961,7 +966,17 @@ export function setStripKeyframe(ecs: State, id: number, s: number, v: number): 
  *  Each boundary resolves to its NEAREST edge boundary (ties toward the earlier edge), the
  *  same round-to-nearest reading `evalForce`'s own σ sampling uses for a uniform grid,
  *  generalized to geo's non-uniform one. Returns `undefined` when the section has no strips, so an
- *  unauthored section threads no override (byte-identical to before strips existed). */
+ *  unauthored section threads no override (byte-identical to before strips existed).
+ *
+ *  A row wholly past the current extent (`r.start >= total` — a trim that shrank the section
+ *  below the strip's own start, or a wholly-outside strip surviving a rebase) is dropped before
+ *  the boundary map runs, rather than threaded through it: `boundary` would clamp BOTH its ends
+ *  to `edges`, collapsing to the degenerate `start === end` case the point convention re-maps to
+ *  the PRECEDING edge `[edges−1, edges)` — displacing the inert strip's override onto the
+ *  section's own last live edge instead of leaving it inert (the extent law's non-destructive
+ *  contract: a strip past the extent draws clipped and bakes clipped, never displaced). A row
+ *  straddling the extent (`start < total <= end`) is untouched here — its `end` already clamps to
+ *  `edges` through `boundary`, which is the clip the extent law asks for. */
 export function edgeStrips(
     ds: ArrayLike<number>,
     edges: number,
@@ -976,6 +991,8 @@ export function edgeStrips(
     const cum = new Float32Array(edges + 1);
     for (let i = 0; i < edges; i++) cum[i + 1] = cum[i] + ds[i];
     const total = cum[edges];
+    const live = rows.filter((r) => r.start < total);
+    if (live.length === 0) return undefined;
     const boundary = (s: number): number => {
         if (!(s > 0)) return 0;
         if (s >= total) return edges;
@@ -984,7 +1001,7 @@ export function edgeStrips(
         if (i === 0) return 0;
         return s - cum[i - 1] <= cum[i] - s ? i - 1 : i;
     };
-    return rows.map((r) => {
+    return live.map((r) => {
         const start = boundary(r.start);
         const end = boundary(r.end);
         const lo = start === end ? start - 1 : start;
@@ -3396,6 +3413,45 @@ function mergeTangent(
  *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
  *  geo split); force concatenates the extents and rebases the neighbor's points. the
  *  neighbor is removed and downstream orders close up. returns true when joined. */
+/** re-floor every strip on a section against its OWN just-changed resolved grid — the floor
+ *  `landDomain`'s deleted strip clamp applied on a domain flip (S6a; `domain.ts`'s "the floor is
+ *  clamped against the next strip's converted start and the section's converted exit"), needed
+ *  again wherever a structural op changes a section's resolved grid out from under strips already
+ *  on it. `joinNext` rebases both halves' strips onto the JOINED section's resolved grid, which
+ *  can be coarser than either half's own — a strip that covered ≥ 1 edge on its own half can
+ *  degenerate to a point on the joined grid, and the point convention would then displace it onto
+ *  the PRECEDING edge rather than leaving it covering nothing (measured: 2.28 m + 2.26 m force
+ *  sections, 0.52% of a swept (headLen, tailLen, station) grid). Extends a degenerate strip's
+ *  `end` by the grid's own widest edge (a safe over-cover — the width floor only needs to clear
+ *  the ONE edge the strip's `start` lands in, and the subsequent clamps below trim any excess),
+ *  then clamps against the next strip's `start` and the section's own exit — the no-overlap
+ *  invariant beats the floor exactly as it did in the deleted domain-flip code: an overlap is the
+ *  state § Locked decision refuses outright, a sub-edge strip is merely inert. `strips` reads
+ *  through `sectionStrips`, already sorted by `start`, so the neighbour clamp is just the next
+ *  array entry. */
+function refloorStrips(
+    ecs: State,
+    sectionId: number,
+    ds: ArrayLike<number>,
+    edges: number,
+    sectionLen: number,
+): void {
+    if (edges === 0) return;
+    let maxDs = 0;
+    for (let i = 0; i < edges; i++) if (ds[i] > maxDs) maxDs = ds[i];
+    const strips = sectionStrips(ecs, sectionId);
+    for (let i = 0; i < strips.length; i++) {
+        const st = strips[i];
+        if (st.start === st.end) continue; // an authored POINT — never extend, the point
+        // convention's own preceding-edge override is intentional here, not a degenerate span.
+        let newEnd = st.end;
+        if (!spanCoversOneEdge(ds, edges, st.start, newEnd)) newEnd = st.start + maxDs;
+        if (i + 1 < strips.length) newEnd = Math.min(newEnd, strips[i + 1].start);
+        newEnd = Math.min(newEnd, sectionLen);
+        if (newEnd !== st.end) Strip.end.set(st.eid, newEnd);
+    }
+}
+
 export function joinNext(ecs: State, sectionId: number): boolean {
     const aEid = sectionAt(ecs, sectionId);
     const b = nextSection(ecs, sectionId);
@@ -3448,6 +3504,14 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             Strip.end.set(st.eid, st.end + aArc);
             for (const k of stripKeyframes(ecs, st.id)) StripKeyframe.s.set(k.eid, k.s + aArc);
         }
+        // the join floor: re-resolve the MERGED chain's own chord array (post-append, above)
+        // and re-floor every surviving strip against it, A's own included — the merged
+        // sampling can re-quantize A's own portion too, not just the appended one
+        // (`refloorStrips`; a no-op when the section carries no strips).
+        const merged = geoChordDs(ecs, sectionId, trackDs(ecs));
+        let mergedLen = 0;
+        for (let i = 0; i < merged.edges; i++) mergedLen += merged.ds[i];
+        refloorStrips(ecs, sectionId, merged.ds, merged.edges, mergedLen);
     } else {
         const aLen = Section.length.get(aEid);
         const aForces = sectionForces(ecs, sectionId);
@@ -3521,6 +3585,12 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             Strip.end.set(st.eid, st.end + aLen);
             for (const k of stripKeyframes(ecs, st.id)) StripKeyframe.s.set(k.eid, k.s + aLen);
         }
+        // the join floor: re-resolve the JOINED length's own step (which can be coarser than
+        // either half's own step) and re-floor every surviving strip against it (`refloorStrips`).
+        const joinedLen = aLen + b.length;
+        const joinedStep = resolveStep(joinedLen, trackDs(ecs));
+        const joinedDs = new Float32Array(joinedStep.edges).fill(joinedStep.ds);
+        refloorStrips(ecs, sectionId, joinedDs, joinedStep.edges, joinedLen);
     }
     ecs.destroy(b.eid);
     provenance.delete(b.id);

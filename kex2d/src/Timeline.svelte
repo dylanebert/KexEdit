@@ -934,8 +934,12 @@ const ghostSpans = $derived.by((): { x0: number; x1: number }[] => {
 // decision: "band carries extent, graph carries and edits value"), so a strip can attach to a
 // geo section too — a geo lift authored at a flat speed is exactly the shape the substrate
 // exists for. `u0`/`u1` are the strip's `start`/`end` projected onto the chart's own axis
-// (`uOf`) -- pixel math only; `start`/`end`/`len` stay arclength (`Strip.start`/`.end`'s own
-// unit -- S6), the base every WRITE (`bandMove`) adds a `dOf`-converted delta to.
+// (`uOf`) -- pixel math only, CLAMPED to the section's own extent (below) so a trim draws the
+// strip clipped rather than overflowing into the next clip; `start`/`end`/`len` stay arclength
+// (`Strip.start`/`.end`'s own unit -- S6, unclamped -- the drag gestures need the strip's real
+// authored bounds), the base every WRITE (`bandMove`) adds a `dOf`-converted delta to. A strip
+// wholly past the extent (`st.start >= extent`) is skipped entirely (the extent law's "inert,
+// never displaced onto the preceding edge" — the bake's own `edgeStrips` mirrors this).
 interface BandStrip {
     id: number;
     section: number;
@@ -946,9 +950,13 @@ interface BandStrip {
     u1: number;
     startU: number; // the section's entry, likewise projected -- pixel math only
     startD: number; // the section's entry in arclength (`Clip.s0`) -- the WRITE base
-    // the section's own SPAN in arclength (`c.s1 − c.s0`) — the clamp domain's outer bound.
-    // NOT `Clip.len` (`Section.length`): that field is the FORCE kind's own authored extent and
-    // reads 0 on a geo section, and a strip attaches to either kind (Locked decision).
+    // the clamp domain's outer bound — on a force section this IS `Clip.len` (`Section.length`,
+    // the same authored extent the trim handle writes through `setSectionLength`), so a strip's
+    // trim/drag bound and the section's own trim agree by construction (two values that must
+    // agree travel as one, not read from two places: the baked span `c.s1 − c.s0` can disagree
+    // with `Section.length` when the bake truncates, `forceBake`'s own "what's on screen is the
+    // prefix"). A geo section has no authored extent (`Clip.len` reads 0 there), so a strip on
+    // one still bounds against the baked span, `c.s1 − c.s0`.
     len: number;
 }
 const bandStrips = $derived.by((): BandStrip[] => {
@@ -956,9 +964,11 @@ const bandStrips = $derived.by((): BandStrip[] => {
     if (eid === null) return [];
     const res: BandStrip[] = [];
     for (const c of clips) {
+        const extent = c.kind === SectionKind.Force ? c.len : c.s1 - c.s0;
         for (const st of sectionStrips(ecs, c.id)) {
+            if (st.start >= extent) continue; // wholly past the extent — inert
             const d0 = toGlobal(spans, c.id, st.start);
-            const d1 = toGlobal(spans, c.id, st.end);
+            const d1 = toGlobal(spans, c.id, Math.min(st.end, extent)); // drawn clipped
             if (d0 === null || d1 === null) continue; // a stale span, `forcePts`' own guard
             res.push({
                 id: st.id,
@@ -970,7 +980,7 @@ const bandStrips = $derived.by((): BandStrip[] => {
                 u1: uOf(d1),
                 startU: c.u0,
                 startD: c.s0,
-                len: c.s1 - c.s0,
+                len: extent,
             });
         }
     }
@@ -1058,6 +1068,11 @@ const stripCurves = $derived.by((): StripCurve[] => {
         const kfs = stripKeyframes(ecs, s.id);
         const x0 = uPx(s.u0);
         const x1 = uPx(s.u1);
+        // `u0`/`u1` are already clipped to the section's extent (`bandStrips`); the curve
+        // sample's own `localS` range clips the same way, so the drawn width (x0..x1) and
+        // the sampled station range agree — a raw `s.end` past the extent would otherwise
+        // squish the visible portion of the curve into a fraction of the pixel span.
+        const clippedEnd = Math.min(s.end, s.len);
         let points: { x: number; y: number }[];
         if (kfs.length === 0) {
             // no keyframes: one constant across the span (the AE stopwatch reading)
@@ -1073,7 +1088,7 @@ const stripCurves = $derived.by((): StripCurve[] => {
             const n = Math.max(2, Math.floor(x1 - x0));
             for (let i = 0; i <= n; i++) {
                 const frac = i / n;
-                const localS = s.start + frac * (s.end - s.start);
+                const localS = s.start + frac * (clippedEnd - s.start);
                 const v = sampleForce(pts, localS);
                 res.push({ x: x0 + frac * (x1 - x0), y: vOf(v) });
             }

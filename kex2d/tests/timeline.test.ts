@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { TangentMode } from "../src/spline";
 import { Domain } from "../src/section";
 import {
@@ -1214,5 +1215,19 @@ describe("marginFloor — the lead-out floor in the active domain", () => {
         expect(
             clampView({ pan: 1e6, pxPerU: fitT.pxPerU }, w, 10, marginFloor(Domain.Time)).pan,
         ).toBeCloseTo(0, 6);
+    });
+});
+
+// S2: the strip band's clamp domain and a force section's own trim used to read two DIFFERENT
+// values for the same quantity — the band clamp (`bandStrips`'s `len` field) read the baked
+// span `c.s1 - c.s0`, while the trim itself (`setSectionLength`) writes `Section.length`
+// (`Clip.len`), which can disagree once the bake truncates (`forceBake`'s own "what's on screen
+// is the prefix"). Source-text arm, `colors.test.ts`'s own idiom for a Svelte-only surface with
+// no unit-testable runtime seam: the real invariant (the bake clips a strip past its extent, and
+// a strip wholly past it is inert) is pinned in `track.test.ts` against `edgeStrips` directly.
+describe("Timeline.svelte's strip band clamp reads ONE value for a force section's extent (S2)", () => {
+    test("bandStrips' `len` field derives from `Clip.len` (Section.length) on a force section, not the baked span alone", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(src).toContain("const extent = c.kind === SectionKind.Force ? c.len : c.s1 - c.s0;");
     });
 });
