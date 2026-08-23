@@ -528,7 +528,9 @@ export function beginForceMoves(ecs: State, ids: readonly number[]): void {
  *  undoable add — `createForce`'s span-shaped twin. The overlap guard lives in
  *  `track.createStrip` itself, so a refused (overlapping) span records nothing and
  *  returns `null`. The id is allocated once; undo destroys by it and redo re-spawns
- *  verbatim. */
+ *  verbatim, keyframes included — `track.createStrip` seeds two keyframes at `start`/`end`
+ *  (S4), so a redo has to replant them too, not only the strip row. `destroyStrip` already
+ *  destroys a strip's keyframes as children, so the undo (reverse) side needs no change. */
 export function addStrip(
     h: History,
     ecs: State,
@@ -540,10 +542,14 @@ export function addStrip(
     const pre = selHook?.snapshot(ecs);
     const id = createStripTrack(ecs, section, start, end, value);
     if (id === null) return null;
+    const st = stripState(ecs, id) as StripState;
     record(
         h,
         {
-            apply: () => spawnStrip(ecs, section, id, start, end, value),
+            apply: () => {
+                spawnStrip(ecs, section, id, start, end, value);
+                for (const k of st.kfs) spawnStripKeyframe(ecs, id, k.id, k.s, k.v);
+            },
             reverse: () => destroyStrip(ecs, id),
         },
         pre,
@@ -552,8 +558,10 @@ export function addStrip(
 }
 
 /** delete a SET of velocity strips by id as ONE undoable entry — `deleteForces`' twin.
- *  undo re-spawns them all verbatim into their original sections; ids already gone are
- *  skipped, and nothing records when the set is empty. */
+ *  undo re-spawns them all verbatim into their original sections, keyframes included
+ *  (`StripState.kfs`, S4 — every strip now carries at least its two seeded keyframes, so
+ *  losing them on undo is the common case, not an edge one); ids already gone are skipped,
+ *  and nothing records when the set is empty. */
 export function deleteStrips(h: History, ecs: State, ids: readonly number[]): void {
     const pre = selHook?.snapshot(ecs);
     const sts: StripState[] = [];
@@ -570,8 +578,10 @@ export function deleteStrips(h: History, ecs: State, ids: readonly number[]): vo
                 for (const st of sts) destroyStrip(ecs, st.id);
             },
             reverse: () => {
-                for (const st of sts)
+                for (const st of sts) {
                     spawnStrip(ecs, st.section, st.id, st.start, st.end, st.value);
+                    for (const k of st.kfs) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
+                }
             },
         },
         pre,
@@ -582,7 +592,10 @@ export function deleteStrips(h: History, ecs: State, ids: readonly number[]): vo
  *  edit), snapshotting the strip's full state. commit coalesces the live writes into
  *  one entry; a no-move release records nothing (`beginForceMove`'s span-shaped twin).
  *  the UI writes through `track.setStrip`, whose own overlap guard applies to every
- *  live write this gesture makes. */
+ *  live write this gesture makes, including the boundary-ride keyframe writes (S4) —
+ *  `stripState`/`restoreStrip` carry the strip's `kfs` now, so undo reverts a boundary
+ *  ride along with the edge/body move that caused it; the no-op test stays position/value
+ *  only, since a keyframe rides iff its edge moved (nothing to add to the comparison). */
 export function beginStripMove(ecs: State, id: number): void {
     begin(
         () => stripState(ecs, id),

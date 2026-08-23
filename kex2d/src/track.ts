@@ -676,6 +676,10 @@ export function stripMinExtentAt(
  *  strip always covers ≥ 1 edge of the current bake), and by {@link validStripValue} (a
  *  summoned creation's seed reads the live bake's `v` unclamped, exactly 0 at a true stall —
  *  not a controlled span, so creation there is refused rather than authoring a stalled strip).
+ *  Seeds two keyframes at `start` and `end`, both at `value` (S4, `seedForceKeyframes`'s own
+ *  append/convert idiom) — a bare span offers nothing to grab, so the graph's editability was
+ *  invisible; two equal keys bake identically to the no-key constant path (both derive a flat
+ *  zero-slope tangent, `autoTangent`), so this changes nothing the constant path already drew.
  *  Returns the new strip's stable id, or `null` when the span would overlap an existing strip
  *  on the same section, the span covers no edge, or the value isn't a controlled speed
  *  (refused, nothing written). */
@@ -697,6 +701,8 @@ export function createStrip(
     Strip.start.set(eid, start);
     Strip.end.set(eid, end);
     Strip.value.set(eid, value);
+    createStripKeyframe(ecs, id, start, value);
+    createStripKeyframe(ecs, id, end, value);
     return id;
 }
 
@@ -730,13 +736,17 @@ export function destroyStrip(ecs: State, id: number): void {
 }
 
 /** a strip's undoable state, keyed by stable id — the drag/nudge/typed-field gesture
- *  snapshots this (`ForcePointState`'s own shape). */
+ *  snapshots this (`ForcePointState`'s own shape). `kfs` carries every child keyframe's
+ *  `(id, s, v)` (S4): a strip-move gesture rides boundary keyframes along with the edge it
+ *  moves (`setStrip`), so the gesture's own undo has to restore them too, and a delete/undo
+ *  has to respawn the strip's now-default-seeded keyframes rather than losing them. */
 export interface StripState {
     section: number;
     id: number;
     start: number;
     end: number;
     value: number;
+    kfs: { id: number; s: number; v: number }[];
 }
 
 /** snapshot one strip by id, or undefined if it's gone (the gesture opens nothing). */
@@ -749,18 +759,28 @@ export function stripState(ecs: State, id: number): StripState | undefined {
         start: Strip.start.get(eid),
         end: Strip.end.get(eid),
         value: Strip.value.get(eid),
+        kfs: stripKeyframes(ecs, id).map((k) => ({ id: k.id, s: k.s, v: k.v })),
     };
 }
 
 /** write a strip's full state back (the gesture restore / undo path, symmetric with
  *  {@link stripState}) — bypasses the overlap guard, like {@link spawnStrip}: a restore
- *  reproduces exactly what was there, never re-validated against the live document. */
+ *  reproduces exactly what was there, never re-validated against the live document. Also
+ *  writes back every keyframe named in `kfs` (S4: undoes a boundary-ride side effect) —
+ *  a keyframe id absent from the live document (already deleted by something else) is
+ *  skipped rather than resurrected here; `restoreSection`/`spawnStripKeyframe` own that. */
 export function restoreStrip(ecs: State, st: StripState): void {
     const eid = stripAt(ecs, st.id);
     if (eid === null) return;
     Strip.start.set(eid, st.start);
     Strip.end.set(eid, st.end);
     Strip.value.set(eid, st.value);
+    for (const k of st.kfs) {
+        const kfEid = stripKeyframeAt(ecs, k.id);
+        if (kfEid === null) continue;
+        StripKeyframe.s.set(kfEid, k.s);
+        StripKeyframe.v.set(kfEid, k.v);
+    }
 }
 
 /** write a strip's `start`/`end`/`value` (live drag preview + gesture restore) — the
@@ -770,12 +790,24 @@ export function restoreStrip(ecs: State, st: StripState): void {
  *  — the strip keeps its current value). The refusal is what "the guard lives inside the
  *  write op" (Locked decision) means for C3 — an actual drag CLAMPING at the neighbour's
  *  boundary is C5's gesture, built on top of this refusal (it computes a clamped target
- *  and calls this op with that instead), not a second guard here. */
+ *  and calls this op with that instead), not a second guard here. Boundary ride (S4): a
+ *  keyframe sitting exactly ON the strip's OLD `start` or `end` rides that edge to its NEW
+ *  position — `bandMove`'s edge-resize and body-drag writers both fall through to this one
+ *  op, so both gestures ride for free. An interior keyframe (not sitting on either old
+ *  boundary) holds its station; a boundary that didn't move carries nothing to ride. */
 export function setStrip(ecs: State, id: number, start: number, end: number, value: number): void {
     const eid = stripAt(ecs, id);
     if (eid === null) return;
     const sec = Strip.section.get(eid);
     if (!stripOverlapped(ecs, sec, start, end, id) && stripCoversOneEdge(ecs, sec, start, end)) {
+        const oldStart = Strip.start.get(eid);
+        const oldEnd = Strip.end.get(eid);
+        if (oldStart !== start || oldEnd !== end) {
+            for (const kf of stripKeyframes(ecs, id)) {
+                if (kf.s === oldStart) StripKeyframe.s.set(kf.eid, start);
+                else if (kf.s === oldEnd) StripKeyframe.s.set(kf.eid, end);
+            }
+        }
         Strip.start.set(eid, start);
         Strip.end.set(eid, end);
     }
