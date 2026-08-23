@@ -3418,7 +3418,7 @@ describe("S4: seed keyframes + boundary ride", () => {
         const constantV = Array.from(constantOut.v.slice(info.startSample, info.endSample + 1));
 
         expect(seededV.length).toBe(constantV.length);
-        for (let i = 0; i < seededV.length; i++) expect(seededV[i]).toBeCloseTo(constantV[i], 6);
+        expect(seededV).toEqual(constantV);
     });
 
     test("boundary ride: an edge resize moves the keyframe sitting on that boundary; an interior keyframe holds station", () => {
