@@ -682,8 +682,11 @@ const spans = $derived.by(() => {
 });
 // the interior section boundaries on the chart's own axis — drawn as chart guides, and the
 // landmarks every s-axis snap resolves against. each non-last span's native exit
-// (`entryU + lenU`), so a boundary needs no projection in either domain.
-const bounds = $derived.by((): number[] => spans.slice(0, -1).map((sp) => uOf(sp.offset + sp.len)));
+// (`entryU + lenU`), so a boundary needs no projection in either domain. Reads through `uOfLen`
+// (below `clips`, same reasoning) rather than plain `uOf`: an upstream lengthen crossing the
+// gesture-frozen table's end shifts every downstream boundary exactly like it shifts a downstream
+// clip's edges (finding 9's mechanism gap) — same seam, same fix.
+const bounds = $derived.by((): number[] => spans.slice(0, -1).map((sp) => uOfLen(sp.offset + sp.len)));
 // ── section clip strip (the marker lane): one clip per section over its cumulative
 // arclength span, kind-colored + labeled, selecting `editor.section` — the SAME
 // selection as the viewport span (one object, two surfaces). clip edges align with the
@@ -699,6 +702,21 @@ interface Clip {
     len: number; // authored extent (force `Section.length`, arclength ALWAYS) — the clamp domain
     // for its keyframes and the subject of the extent trim
 }
+// every clip edge, while a lengthen gesture is live, reads through the SAME extrapolating
+// projection `applyLen`'s write used (`uToDExtend`'s inverse, `dToUExtend` — finding 9's fix):
+// once the gesture's frozen table can no longer realize the growing authored extent, plain
+// `dToU` pins a clip edge at the frozen table's last sample while `sectionSpans`' fresh per-tick
+// bake keeps advancing the offset underneath it — the invisible lengthen. That's not only the
+// DRAGGED clip's own exit — `sectionSpans` accumulates every DOWNSTREAM section's `offset` from
+// the same live bake, so a downstream clip's edges cross the frozen table's end too and freeze in
+// lockstep (the mechanism gap the adversarial pass on 0f6335a caught: gating this on `sec.id ===
+// lenId` alone left every downstream clip on the plain, clamping path). So every clip's `u0`/`u1`
+// routes through the gesture's own frozen table + exit speed for the gesture's whole duration —
+// one gesture, one frozen basis, covering every `d` past the table end regardless of which
+// section owns it. Outside a gesture (`lenId === null`) this is `uOf` exactly, since `dToUExtend`
+// coincides with plain `dToU` wherever `d` never exceeds the live bake's own arc range.
+const uOfLen = (d: number): number =>
+    lenId !== null && gestureMapping ? dToUExtend(gestureMapping, domain, d, lenVExit) : uOf(d);
 const clips = $derived.by((): Clip[] => {
     void tick;
     const byId = new Map(spans.map((sp) => [sp.id, sp]));
@@ -706,24 +724,13 @@ const clips = $derived.by((): Clip[] => {
     for (const sec of sections(ecs)) {
         const sp = byId.get(sec.id);
         if (!sp) continue;
-        // the section currently under a lengthen drag reads its OWN exit through the same
-        // extrapolating projection `applyLen`'s write used (`uToDExtend`'s inverse, `dToUExtend`
-        // — finding 9's fix), not the plain clamped `uOf`: once the gesture's frozen table can no
-        // longer realize the growing authored extent, plain `dToU` pins the drawn edge at the
-        // frozen table's last sample while `sp.len` (the fresh per-tick bake) keeps advancing
-        // underneath it — the invisible lengthen. Every other clip, and this one outside a
-        // gesture, stays on plain `uOf` (identical to `dToUExtend` there, S1's own witness).
-        const u1 =
-            sec.id === lenId && gestureMapping
-                ? dToUExtend(gestureMapping, domain, sp.offset + sp.len, lenVExit)
-                : uOf(sp.offset + sp.len);
         res.push({
             id: sec.id,
             kind: sec.kind,
             s0: sp.offset,
             s1: sp.offset + sp.len,
-            u0: uOf(sp.offset),
-            u1,
+            u0: uOfLen(sp.offset),
+            u1: uOfLen(sp.offset + sp.len),
             len: sec.length,
         });
     }
