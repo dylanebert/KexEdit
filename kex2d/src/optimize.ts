@@ -93,7 +93,7 @@
 
 import { G } from "./forward";
 import { forceProfile, type ForcePoint, resolveStep, type Step } from "./profile";
-import { type Domain, type Entry, evalForce, type SectionResult } from "./section";
+import { type Entry, evalForce, type SectionResult } from "./section";
 
 /** the section's exit anchor a stamp addresses — `(x, y, θ)` are the solve's three residual rows;
  *  `v` is carried for readout only (the session's frozen ghost, `pin.ts`), never a fourth row: the
@@ -242,7 +242,6 @@ export interface OptimizeOpts {
     locked: ReadonlySet<number>;
     length: number;
     ds: number;
-    domain?: Domain;
     stamp: OptimizeStamp;
     maxIters?: number;
     tol?: number;
@@ -264,13 +263,12 @@ export function computeExit(
     points: readonly ForcePoint[],
     length: number,
     step: number,
-    domain?: Domain,
     friction = 0,
     resistance = 0,
 ): OptimizeStamp {
     const resolved = resolveStep(length, step);
     const dense = forceProfile(points, resolved);
-    const exit = evalForce(entry, dense, resolved, domain, friction, resistance);
+    const exit = evalForce(entry, dense, resolved, friction, resistance);
     return { x: exit.exit.x, y: exit.exit.y, theta: exit.exit.theta, v: exit.exit.v };
 }
 
@@ -332,7 +330,7 @@ function choleskySolve(L: Float64Array, n: number, b: ArrayLike<number>): Float6
  * if (r.outcome === "solved") landPin(history, ecs, section, r.points);
  */
 export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
-    const { entry, points, locked, length, ds: rawStep, domain, stamp } = opts;
+    const { entry, points, locked, length, ds: rawStep, stamp } = opts;
     const friction = opts.friction ?? 0;
     const resistance = opts.resistance ?? 0;
     const maxIters = opts.maxIters ?? MAX_ITERS;
@@ -385,7 +383,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     // matters too (the invoke-time reading below, and `finalize`).
     const landAt = (g: ArrayLike<number>): SectionResult => {
         const dense = forceProfile(withG(points, g), step);
-        return evalForce(entry, dense, step, domain, friction, resistance);
+        return evalForce(entry, dense, step, friction, resistance);
     };
     const exitAt = (g: ArrayLike<number>): Entry => landAt(g).exit;
 
