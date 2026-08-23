@@ -1,4 +1,15 @@
-import { expect, frameTimeline, kexCall, type Page, seedHill, test } from "./flow";
+import {
+    expect,
+    frames,
+    frameTimeline,
+    HBAND_H,
+    HBAND_TOP,
+    LEFT_GUT,
+    kexCall,
+    type Page,
+    seedHill,
+    test,
+} from "./flow";
 
 // ── AFFORDANCE ARMS ──────────────────────────────────────────────────────────────────────────
 // One axis, one predicate: a surface that PAINTS an interactive cursor must have a handler
@@ -127,3 +138,149 @@ test("popover key scrub affordance — force keyframe control", async ({ page, b
 // was never built. The control arm above (force keyframe scrub) remains the whole proof
 // that the rig moves a value on a wired surface. When T2 rebuilds the value surface in the
 // graph, a new affordance arm should target THAT surface directly — not this retired one.
+
+// ── S3 (Affordances) ─────────────────────────────────────────────────────────────────────────
+// The header band declares its gestures before engagement (root ui.md gate 3, corrected at R):
+// a lane visibly present + NAMED even when empty, and a hover rung — never the cursor, which
+// stays `default` throughout — that reads edge/body/empty apart. Driven with REAL pointer
+// moves (`page.mouse.move`), never `__kex` calls: a hook-driven flow proves the model updated,
+// not that a person could ever land the gesture (T2's own lesson, this file's header comment).
+
+/** a pixel off the real `canvas.chart`, at CANVAS-LOCAL CSS coordinates (device-px scaled) —
+ *  the same idiom `geo.pw.ts`'s `probeChart` uses for the header band's ghost-strip probe. */
+function probeChart(page: Page, x: number, y: number): Promise<[number, number, number] | null> {
+    return page.evaluate(
+        ({ x, y }) => {
+            const canvas = document.querySelector<HTMLCanvasElement>("canvas.chart");
+            const ctx = canvas?.getContext("2d");
+            if (!canvas || !ctx) return null;
+            const r = canvas.getBoundingClientRect();
+            const px = Math.round((x * canvas.width) / r.width);
+            const py = Math.round((y * canvas.height) / r.height);
+            if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
+            const d = ctx.getImageData(px, py, 1, 1).data;
+            return [d[0], d[1], d[2]] as [number, number, number];
+        },
+        { x, y },
+    );
+}
+
+// mirrors Timeline.svelte's own `STRIP_HIT_R` — the endpoint-vs-body split radius (`strip-hit.ts`).
+const STRIP_HIT_R = 6;
+const dist = (a: readonly number[], b: readonly number[]): number =>
+    Math.max(...a.map((v, i) => Math.abs(v - b[i])));
+const bandY = HBAND_TOP + HBAND_H / 2;
+
+test("velocity band names itself even with no strip authored (S3 on-surface naming)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+    // no strip exists yet — the whole band is the plain header-band fill, so ANY pixel past
+    // the gutter is a valid background reading for the differential below.
+    const bg = await probeChart(page, LEFT_GUT + 80, bandY);
+    expect(bg).not.toBeNull();
+    // the label sits in the untouched left gutter (`x < LEFT_GUT`), where a strip or ghost span
+    // never draws (both clamp to `LEFT_GUT`) — sampled at a few x across its glyphs since a
+    // single-pixel probe can land between anti-aliased strokes.
+    const labelXs = [5, 9, 13, 17, 21];
+    const labelPixels = await Promise.all(labelXs.map((x) => probeChart(page, x, bandY)));
+    const LabelTol = 15;
+    expect(
+        labelPixels.some((p) => p !== null && bg !== null && dist(p, bg) > LabelTol),
+        `expected at least one gutter pixel to differ from the plain band background ${JSON.stringify(bg)}, got ${JSON.stringify(labelPixels)}`,
+    ).toBe(true);
+});
+
+test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge/body/empty read apart", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+    await createStrip(page);
+
+    const chartBox = await page.locator("canvas.chart").boundingBox();
+    if (!chartBox) throw new Error("chart canvas not laid out");
+    const toPage = (localX: number): [number, number] => [chartBox.x + localX, chartBox.y + bandY];
+
+    // a min-extent strip at the whole-document zoom `frameTimeline` leaves is a few px wide —
+    // its own midpoint reads as an ENDPOINT (`classifyStripHit`'s "endpoint beats body"
+    // precedence), which would make the body/edge split trivially fail for the wrong reason.
+    // Widen it with a REAL end-edge drag (the same gesture `bandDown`'s "end" mode drives) so a
+    // genuine body region — more than `STRIP_HIT_R` from either edge — exists to hover.
+    const created = (await kexCall(page, "stripPx"))[0];
+    const [endPageX, endPageY] = toPage(created.x1);
+    await page.mouse.move(endPageX, endPageY);
+    await page.mouse.down();
+    await page.mouse.move(endPageX + 250, endPageY, { steps: 10 });
+    await page.mouse.up();
+    await frames(page, 1);
+
+    // deselect — the general (unselected) case, since a selected strip already wears its own
+    // brighter stroke+fill and would make the edge/body split trivial for the wrong reason.
+    await page.keyboard.press("Escape");
+    await expect.poll(() => kexCall(page, "selectedStrip")).toBeNull();
+
+    const strips = await kexCall(page, "stripPx");
+    expect(strips.length).toBe(1);
+    const { x0, x1 } = strips[0];
+    expect(x1 - x0).toBeGreaterThan(4 * STRIP_HIT_R); // wide enough for a genuine body region
+    const bodyX = (x0 + x1) / 2;
+    const emptyX = x1 + 40; // well past both the strip AND its `STRIP_HIT_R` endpoint radius
+    expect(emptyX - x1).toBeGreaterThan(STRIP_HIT_R);
+
+    // move away from the band entirely before any REST read, so no stale hover survives from
+    // `createStrip`'s own right-click (which leaves the pointer wherever the menu row was).
+    await page.mouse.move(5, 5);
+    await frames(page, 1);
+    const restBody = await probeChart(page, bodyX, bandY);
+    const restEmpty = await probeChart(page, emptyX, bandY);
+    expect(restBody).not.toBeNull();
+    expect(restEmpty).not.toBeNull();
+    // body/empty already read apart at rest — the strip's own fill vs the plain band background.
+    const RestTol = 10;
+    if (restBody && restEmpty) expect(dist(restBody, restEmpty)).toBeGreaterThan(RestTol);
+
+    // hover the BODY with a real pointer move — the fill lifts one `hovered()` rung.
+    const [bodyPageX, bodyPageY] = toPage(bodyX);
+    await page.mouse.move(bodyPageX, bodyPageY);
+    await frames(page, 1);
+    const hoverBody = await probeChart(page, bodyX, bandY);
+    expect(hoverBody).not.toBeNull();
+    const HoverTol = 6;
+    if (restBody && hoverBody)
+        expect(
+            dist(hoverBody, restBody),
+            `hover should lift the body fill past rest ${JSON.stringify(restBody)}, got ${JSON.stringify(hoverBody)}`,
+        ).toBeGreaterThan(HoverTol);
+
+    // hover the START EDGE — the resize affordance reads apart from the body-hover fill lift,
+    // by a distinct stroke, never a cursor swap (the S3 premise correction).
+    const [edgePageX, edgePageY] = toPage(x0);
+    await page.mouse.move(edgePageX, edgePageY);
+    await frames(page, 1);
+    const hoverEdge = await probeChart(page, x0, bandY);
+    expect(hoverEdge).not.toBeNull();
+    if (hoverEdge && hoverBody)
+        expect(
+            dist(hoverEdge, hoverBody),
+            `edge hover ${JSON.stringify(hoverEdge)} should read apart from body hover ${JSON.stringify(hoverBody)}`,
+        ).toBeGreaterThan(HoverTol);
+
+    // hover truly EMPTY band space — stays inert: the pixel is unchanged from its rest reading.
+    const [emptyPageX, emptyPageY] = toPage(emptyX);
+    await page.mouse.move(emptyPageX, emptyPageY);
+    await frames(page, 1);
+    const hoverEmpty = await probeChart(page, emptyX, bandY);
+    expect(hoverEmpty).not.toBeNull();
+    const EmptyTol = 2; // tight — empty space must read IDENTICAL, not merely "close"
+    if (hoverEmpty && restEmpty)
+        expect(
+            dist(hoverEmpty, restEmpty),
+            `empty band space must stay inert under hover: rest ${JSON.stringify(restEmpty)}, hovered ${JSON.stringify(hoverEmpty)}`,
+        ).toBeLessThanOrEqual(EmptyTol);
+});

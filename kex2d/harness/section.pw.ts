@@ -18,6 +18,8 @@ import {
     dockStrip,
     DOCK_RESERVE,
     frames,
+    CHART_TOP,
+    CHART_BOT_PAD,
 } from "./flow";
 
 // Drive the MULTI-SECTION chain shape: a geo track → append a section → convert it to
@@ -1616,11 +1618,18 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
 
     // compute a y pixel for the strip's value (velocity) — the constant-when-no-keyframes
     // line is drawn at vOf(strip.value), so double-clicking there creates a keyframe at
-    // that velocity
+    // that velocity. Derived from the chart's own row (`CHART_TOP`/`CHART_BOT_PAD`, `vOf`'s
+    // own formula in Timeline.svelte), never a fractional guess at `dockBb.height` — a
+    // fixed 0.7 heuristic read as "somewhere mid-chart" until S3 grew the header band
+    // (`CHART_TOP`) and pushed that fixed pixel outside the chart's own dblclick zone, missing
+    // the create entirely (`stripKeyframesOf(...).length` stayed 0 — the false-hit-region
+    // read this replaces).
     const dockBb = await page.locator(".dock .body").boundingBox();
     if (!dockBb) throw new Error("dock body not laid out");
+    const chartTop = dockBb.y + CHART_TOP;
+    const chartBot = dockBb.y + dockBb.height - CHART_BOT_PAD;
     const vToY = (v: number): number =>
-        dockBb.y + (1 - (v - vLo) / (vHi - vLo)) * dockBb.height * 0.7;
+        chartTop + (1 - (v - vLo) / (vHi - vLo)) * (chartBot - chartTop);
     const stripValueY = vToY(strip.value);
 
     // CREATE: double-click over the strip's extent to create a velocity keyframe
@@ -1715,8 +1724,13 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     const stripCenterPx = clipBb.x + stripMidS * pxPerU;
     const dockBb = await page.locator(".dock .body").boundingBox();
     if (!dockBb) throw new Error("dock body not laid out");
+    const chartTop = dockBb.y + CHART_TOP;
+    const chartBot = dockBb.y + dockBb.height - CHART_BOT_PAD;
+    // derived from the chart's own row (`vOf`'s formula in Timeline.svelte), not a fractional
+    // guess at `dockBb.height` — the sibling flow above's own note on why the 0.7 heuristic
+    // stopped landing once S3 grew the header band.
     const vToY = (v: number): number =>
-        dockBb.y + (1 - (v - vLo) / (vHi - vLo)) * dockBb.height * 0.7;
+        chartTop + (1 - (v - vLo) / (vHi - vLo)) * (chartBot - chartTop);
     const stripValueY = vToY(strip.value);
 
     // create a keyframe at the strip's MIDPOINT — off both edges, so the bug's own jump (s ≈

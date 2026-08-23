@@ -1231,3 +1231,16 @@ describe("Timeline.svelte's strip band clamp reads ONE value for a force section
         expect(src).toContain("const extent = c.kind === SectionKind.Force ? c.len : c.s1 - c.s0;");
     });
 });
+
+// S3 (Affordances): the velocity band becomes a lane at the clip lane's own height, not a
+// re-tuned literal — pinned as a derivation (`STRIP_H = GAP_H`) rather than a numeric equality,
+// so a future change to either constant can't silently drift the two apart again. Source-text
+// arm, `colors.test.ts`'s own idiom for a Svelte-only numeric layout constant with no
+// unit-testable runtime seam (the real rendered height is the capture flow's own job,
+// `affordance.pw.ts`).
+describe("Timeline.svelte's velocity band is a lane at the clip lane's own height (S3)", () => {
+    test("STRIP_H derives from GAP_H, not an independent literal", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(src).toContain("const STRIP_H = GAP_H;");
+    });
+});
