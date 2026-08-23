@@ -83,9 +83,13 @@ export type { Page };
 // the arm costs one source change (export them) rather than a staging change or a compiler
 // plugin. Nobody owns it yet; whoever moves the band's geometry meets it.
 // The velocity-strip HEADER band's own row — RULER_H (26) + GAP_H (20) is
-// its top, HBAND_H (8) its height; CHART_TOP is the sum, the chartzone's own top past it.
+// its top, HBAND_H (20) its height (S3 (Affordances): `STRIP_H = GAP_H`, a lane at the clip
+// lane's own height, not the prior 8px visual minimum); CHART_TOP is the sum, the chartzone's
+// own top past it. This stage moved the band's geometry and met the OWED note above without
+// discharging it — the drift-arm export still doesn't exist, so the next geometry change meets
+// the same mirrored-literal risk.
 export const HBAND_TOP = 46;
-export const HBAND_H = 8;
+export const HBAND_H = 20;
 export const CHART_TOP = HBAND_TOP + HBAND_H; // Timeline.svelte
 export const CHART_BOT_PAD = 8; // BOT_PAD — Timeline.svelte
 export const LEFT_GUT = 44; // Timeline.svelte — the chart's left inset, s=0's own screen x
@@ -156,6 +160,7 @@ export interface Kex {
     gRange(): [number, number];
     vRange(): [number, number];
     stripKfPx(): { id: number; x: number; y: number }[];
+    stripPx(): { id: number; x0: number; x1: number }[];
     hoverForceId(): number | null;
     guides(): { ray: boolean; angle: string | null; length: string | null };
     infeasibleSpan(): { first: number; count: number; section: number | null; head: number };

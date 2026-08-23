@@ -243,6 +243,20 @@ describe("hovered — the rung below selection", () => {
     });
 });
 
+// S3 (Affordances): the header band's hit zone used to carry a comment claiming the trim/
+// body-drag cursor was "set programmatically via `canvas.style.cursor` in the pointermove
+// handler" — no such handler exists anywhere in the file (`cursorSites()` below finds no
+// `canvas.style.cursor` assignment in `Timeline.svelte`, and the S3 premise correction in the
+// spec's Live log names this as the false claim it is). The hit zone stays `default`
+// throughout; the affordance is the hover-rung fill/stroke lift, never the cursor. Source-text
+// arm, the same idiom as the cursor allowlist below: the claim has no cheap behavioral read.
+describe("Timeline.svelte carries no false cursor-handler claim (S3)", () => {
+    test("the retired `canvas.style.cursor` comment is gone", () => {
+        const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(tl).not.toContain("canvas.style.cursor");
+    });
+});
+
 // ── cursor allowlist (kex2d-followups follow-up 6): `cursor: grab | grabbing | pointer` is a
 // real affordance channel (editor-ui.md Affordance typing — grab hands mean a pannable surface
 // and nothing else; a direct-manipulation glyph keeps the arrow, `.rbtn`/`.thit` shed theirs

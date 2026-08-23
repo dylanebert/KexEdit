@@ -10,7 +10,7 @@ import {
     trackMapping,
     velocityCurve,
 } from "./cart";
-import { COLOR_INFEASIBLE, COLOR_VELOCITY, kindSegments } from "./colors";
+import { COLOR_INFEASIBLE, COLOR_VELOCITY, hovered, kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
 import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { appendMenu, keyframeMenu, rulerMenu, stripMenu } from "./menus";
@@ -65,7 +65,7 @@ import {
     setForceTangentMode,
 } from "./history";
 import { forceKeyAct } from "./keys";
-import { classifyStripHit, type StripHitCandidate } from "./strip-hit";
+import { classifyStripHit, type StripHit, type StripHitCandidate } from "./strip-hit";
 import { V_FLOOR } from "./bake";
 import { redoRouted, undoRouted } from "./pin";
 import { convertDomain, convertFailed, pickable } from "./domain";
@@ -222,8 +222,11 @@ const CLIP_PAD = 2; // px; vertical inset of a section clip inside the marker la
 // the velocity-strip band: band carries extent, graph carries and edits value (Locked
 // decision, superseding "header carries extent, chart carries value"). Authored strips
 // draw here as solid fills (the velocity hue, selected brightens); the red ghost spans
-// (contiguous infeasible extents) draw inside it too. Height is a bare visual minimum.
-const STRIP_H = 8;
+// (contiguous infeasible extents) draw inside it too. S3 (Affordances): a lane at the
+// clip lane's own height, not a bare visual minimum — root ui.md gate 3's "a lane visibly
+// present even when empty" reads as a container, and an 8px sliver under the clip strip
+// didn't earn that read.
+const STRIP_H = GAP_H;
 const TOP = RULER_H + GAP_H + STRIP_H; // chart top
 const BOT_PAD = 8; // chart inset, bottom
 const LEFT_GUT = 44; // left gutter: the g-axis labels live here; the chart insets past it
@@ -2518,6 +2521,50 @@ function bandCandidates(): StripHitCandidate[] {
     return bandStrips.map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
 }
 
+// S3 (Affordances): the band's own hover read, canvas-local like `bandDown`'s own `px` (the
+// same `classifyStripHit` the press path uses, so the affordance and the gesture agree by
+// construction — never a second, hand-tuned hover geometry). Component-local, not the
+// viewport's `editor.hoverForce`/`hoverNode` seam (`editor.ts`): those are the controls'
+// pointermove sweep over VIEWPORT pick targets; the band is a canvas surface with no DOM
+// element per strip for CSS `:hover` to land on, so it needs its own read, the same way
+// `stripDrag` below is this band's own gesture state rather than a viewport one.
+let bandHoverX: number | null = $state(null);
+function bandHoverMove(e: PointerEvent): void {
+    const rect = canvas.getBoundingClientRect();
+    bandHoverX = e.clientX - rect.left;
+}
+function bandHoverLeave(): void {
+    bandHoverX = null;
+}
+// suppressed for the whole of any OTHER gesture (editor-ui.md Kind color: "Hover's boundaries
+// travel with the rung ... suppressed for the whole of any gesture") — a foreign drag captures
+// the pointer on `canvas`, not this band's own hit rect, so `bandHoverX` would otherwise read
+// stale. The band's OWN drag (`stripDrag !== null`) is exempt: `bandMove` keeps `bandHoverX`
+// live during it (below), and showing the active edge/body read while it's being dragged is
+// the affordance, not staleness.
+const bandHit = $derived.by((): StripHit => {
+    if (eid === null) return { kind: "empty" };
+    if (editor.dragging && stripDrag === null) return { kind: "empty" };
+    if (bandHoverX === null) return { kind: "empty" };
+    return classifyStripHit(bandHoverX, bandCandidates(), STRIP_HIT_R);
+});
+// removing the unknown state rather than managing it: the theorized failure was a FOREIGN
+// gesture capturing the pointer on `canvas` so `.hbandzone`'s own `onpointermove`/
+// `onpointerleave` never fire when it ends off the band, leaving `bandHoverX` stale at its
+// pre-gesture position to re-derive into a hover the instant `editor.dragging` drops (`bandHit`'s
+// guard above only suppresses WHILE dragging is true). Investigated with a debug hook across two
+// real repros (a force-keyframe drag, and a middle-click pan starting AT the hovered position,
+// both captured on `canvas` via `beginDrag`): in this Chromium/Playwright environment
+// `onpointerleave` fired correctly regardless of capture in both cases, so `bandHoverX` was
+// already `null` well before `editor.dragging` dropped — the theorized staleness window never
+// opened, and no repro was found that leaves it stale. Kept anyway as a zero-cost hardening
+// (nulling on every falling edge, band's-own-drag included, costs nothing visible there: `bandUp`
+// leaves the strip selected, and both hover reads above already gate `!sel`) rather than a
+// demonstrated fix — there is no red-first check for this one.
+$effect(() => {
+    if (!editor.dragging) bandHoverX = null;
+});
+
 interface StripDrag {
     id: number;
     mode: "start" | "end" | "body";
@@ -2537,6 +2584,10 @@ function bandMove(e: PointerEvent): void {
     if (stripDrag === null) return;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
+    // pointer capture during this drag targets `canvas` (`beginDrag`), not the band's own hit
+    // rect, so its `onpointermove` never fires -- keep the hover read live from here instead
+    // (S3's own edge/body affordance while the gesture is in flight).
+    bandHoverX = px;
     // through the gesture-frozen table -- `station` is arclength, never a raw (seconds-scaled
     // in Time view) axis delta (S6 fix).
     const station = dOf(uAtPx(px)) - stripDrag.entryD;
@@ -3021,6 +3072,19 @@ function render(ctx: CanvasRenderingContext2D): void {
     // showing only authored strips (no ghost spans).
     ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
     ctx.fillRect(0, RULER_H + GAP_H, w, STRIP_H);
+    // on-surface naming (root ui.md gate 3's affordance clause, corrected at R): the lane
+    // names itself the way the "v"/"1 g" chart channels do, quiet and always drawn — gate 2's
+    // quiet governs the lane's CONTENTS (the strips), never its container, so this draws
+    // whether or not a strip exists yet. Confined to the untouched left gutter: every strip and
+    // ghost span below clamps its own draw to `LEFT_GUT`, so the label never collides with one
+    // regardless of playback position.
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.font = "9px 'JetBrains Mono', ui-monospace, monospace";
+    ctx.fillStyle = COLOR_VELOCITY;
+    ctx.globalAlpha = 0.5;
+    ctx.fillText("vel", 4, RULER_H + GAP_H + STRIP_H / 2);
+    ctx.globalAlpha = 1;
     for (const g of ghostSpans) {
         const lo = Math.min(g.x0, g.x1);
         const hi = Math.max(g.x0, g.x1);
@@ -3056,14 +3120,35 @@ function render(ctx: CanvasRenderingContext2D): void {
         // (S1 Visibility fix). `COLOR_VELOCITY` + `globalAlpha` is the canvas-side twin of the
         // same selected/unselected split the CSS token would have driven.
         const sel = editor.strip === s.id;
+        // S3 (Affordances): the hover rung, in kex2d's own channel — color, never the cursor
+        // (editor-ui.md Affordance typing). An AREA lifts its fill one `hovered()` rung
+        // (editor-ui.md Kind color); never on a stronger register (selection already reads
+        // brighter, the same `.fpt:hover:not(.sel)` precedence force keyframes use).
+        const bodyHover = !sel && bandHit.kind === "body" && bandHit.id === s.id;
         ctx.globalAlpha = sel ? 0.85 : 0.55;
-        ctx.fillStyle = COLOR_VELOCITY;
+        ctx.fillStyle = bodyHover ? hovered(COLOR_VELOCITY) : COLOR_VELOCITY;
         ctx.fillRect(cx0, RULER_H + GAP_H, cw, STRIP_H);
         ctx.globalAlpha = 1;
         if (sel) {
             ctx.strokeStyle = COLOR_VELOCITY;
             ctx.lineWidth = 1;
             ctx.strokeRect(cx0 + 0.5, RULER_H + GAP_H + 0.5, cw - 1, STRIP_H - 1);
+        }
+        // the RESIZE affordance: a hovered endpoint reads apart from a hovered body by which
+        // STROKE it takes, never a cursor swap (the S3 premise correction — no `ew-resize` here,
+        // `editor-ui.md`'s field-row scrub idiom stays `.fld .key`'s own). A bright edge line at
+        // exactly the boundary, the force clip-trim's own hover-brightens-the-handle shape
+        // (`.clip-trim:hover`) read onto a canvas-drawn edge instead of a DOM one. `!sel` for the
+        // same reason `bodyHover` carries it: hover is invisible on an already-selected element
+        // (editor-ui.md Kind color) — unconditional, no exemption for the edge case.
+        if (!sel && bandHit.kind === "endpoint" && bandHit.id === s.id) {
+            const ex = bandHit.edge === "start" ? cx0 : cx0 + cw;
+            ctx.strokeStyle = hovered(COLOR_VELOCITY);
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(ex, RULER_H + GAP_H);
+            ctx.lineTo(ex, RULER_H + GAP_H + STRIP_H);
+            ctx.stroke();
         }
     }
     // boundary ticks: the abutment disambiguator between two same-section strips sharing an edge.
@@ -3677,6 +3762,11 @@ onMount(() => {
                     y: rect.top + vOf(k.v),
                 }));
             };
+            // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
+            // page-absolute like `stripKfPx`) — S3's own capture flow reads these to drive a
+            // REAL pointer at a strip's edge/body without re-deriving `uPx`'s projection.
+            k.stripPx = (): { id: number; x0: number; x1: number }[] =>
+                bandStrips.map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
         }
     }
     return () => {
@@ -3696,6 +3786,7 @@ onMount(() => {
                 delete k.dOfTrim;
                 delete k.ghostPx;
                 delete k.stripKfPx;
+                delete k.stripPx;
             }
         }
         cancelAll(); // drop any in-flight gesture if we unmount mid-drag
@@ -3790,14 +3881,18 @@ onMount(() => {
                 </pattern>
             </defs>
             <!-- the scrub zone: the whole ruler + gap band. click/drag anywhere here
-                 moves the playhead (the distance ruler is the scrubber). -->
+                 moves the playhead (the distance ruler is the scrubber). height was `TOP`
+                 (ruler + gap + the velocity band too, a drift from this comment's own stated
+                 scope) until S3 grew the band — a default-centered click then intercepted on
+                 the clip strip underneath, so the rect's height now matches the comment it
+                 already carried. The velocity band has its own hit surface, `.hbandzone`. -->
             {#if eid !== null && sTotal > 0}
                 <rect
                     class="rulerzone"
                     x="0"
                     y="0"
                     width={w}
-                    height={TOP}
+                    height={RULER_H + GAP_H}
                     onpointerdown={startScrub}
                     onkeydown={stepKey}
                     oncontextmenu={rulerCtx}
@@ -3924,6 +4019,8 @@ onMount(() => {
                     width={Math.max(0, w - LEFT_GUT)}
                     height={STRIP_H}
                     onpointerdown={bandDown}
+                    onpointermove={bandHoverMove}
+                    onpointerleave={bandHoverLeave}
                     oncontextmenu={bandContext}
                     role="presentation"
                     aria-label="Velocity strips"
@@ -4944,11 +5041,11 @@ onMount(() => {
     }
 
     /* the velocity-strip header band hit zone (T1): transparent, captures pointer events
-       for the band-wide hit classifier. The visual strips are drawn on the canvas.
-       Cursor is `default` (not `pointer`) — empty band space is deliberately inert (no
-       create-drag), so a `pointer` cursor would advertise a click that does nothing.
-       Trim/body-drag cursors are set programmatically via `canvas.style.cursor` in the
-       pointermove handler, not here. */
+       for the band-wide hit classifier. The visual strips are drawn on the canvas. Cursor
+       is `default`, always — empty band space is deliberately inert (no create-drag), and a
+       trim/body-drag hit stays `default` too (S3's premise correction: the hit zone names the
+       gesture in the hover rung — the canvas-drawn edge/body highlight above — never the
+       cursor; `editor-ui.md` Affordance typing). */
     .hbandzone {
         fill: transparent;
         pointer-events: all;
