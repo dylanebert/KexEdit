@@ -659,6 +659,32 @@ export function uToDExtend(
     return mapping.arc[mapping.n - 1] + vExit * (u - tEnd);
 }
 
+/** `uToDExtend`'s inverse: global distance `d` → the chart's coordinate `u`, extrapolating past
+ *  the bake's own end exactly where `uToDExtend` does (finding 9, kex2d-event-lane S1). The
+ *  clip strip drew its right edge through plain `dToU` even while a lengthen gesture's WRITE went
+ *  through `uToDExtend` — so once the gesture's frozen `mapping` (`gestureMapping`) can't realize
+ *  the growing authored extent, `dToU`'s own clamp (`interpMono`'s `v >= xs[n-1]` branch) pins the
+ *  drawn edge at the frozen table's last sample while `Section.length` keeps advancing underneath
+ *  it: the store moves, the pixel doesn't. The two are the same affine (`d = arc[n-1] + vExit·(u −
+ *  t[n-1])`) read in opposite directions, so a single extrapolating pair keeps them agreeing for
+ *  the gesture's own duration — outside a gesture (no `mapping` growth in flight) this coincides
+ *  with `dToU` exactly, since `d` never exceeds the live bake's own arc range. Landed law: a
+ *  reader watching an in-flight extend past the bake's end reads through the SAME extrapolating
+ *  projection its writer used, never the plain clamped one — `dToU`/`uToD` stay correct for every
+ *  other (non-extending) subject on the chart. @example dToUExtend(m, Domain.Time, uToDExtend(m,
+ *  Domain.Time, 20, 4), 4) === 20 */
+export function dToUExtend(
+    mapping: Mapping | null,
+    domain: Domain,
+    d: number,
+    vExit: number,
+): number {
+    if (domain !== Domain.Time || !mapping) return dToU(mapping, domain, d);
+    const arcEnd = mapping.arc[mapping.n - 1];
+    if (d <= arcEnd) return dToU(mapping, domain, d);
+    return mapping.t[mapping.n - 1] + (d - arcEnd) / vExit;
+}
+
 /** the lead-out floor (`marginArc`'s one dimensional constant) on the active chart axis:
  *  `MARGIN_M` metres, or its time twin at the default entry speed (`MARGIN_M / V0`, `T_GRID`'s
  *  derivation), so a short ride frames the same substantial lead-out to build into either way. */

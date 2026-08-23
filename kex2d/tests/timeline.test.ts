@@ -9,6 +9,7 @@ import {
     composeTangent,
     creationTargets,
     dToU,
+    dToUExtend,
     fmt,
     frameAll,
     G_GRID,
@@ -1156,6 +1157,87 @@ describe("uToDExtend — the extent trim's extrapolation past the bake's own end
 
     test("a near-zero vExit still extrapolates finite -- the caller's job to floor it, not this function's", () => {
         expect(uToDExtend(m, Domain.Time, 5, 0)).toBeCloseTo(10, 9);
+    });
+});
+
+// finding 9 (kex2d-event-lane S1): a force-section lengthen not visualizing in Time view. The
+// architectural pass's suspected mechanism, CONFIRMED by this witness: `Timeline.svelte`'s clip
+// strip drew its right edge through the plain `dToU` (`uOf`) while a lengthen gesture's WRITE
+// (`applyLen`) went through the extrapolating `uToDExtend` — so once the gesture's frozen table
+// can no longer realize the growing authored extent (past `mapping.t[n-1]`), the write keeps
+// landing further out (`Section.length` genuinely grows) while `dToU`'s own clamp pins the SAME
+// frozen table's projection at its last sample forever: the store advances, the pixel doesn't,
+// for the gesture's entire remaining duration (not just one frame — the freeze holds until
+// `gestureMapping` releases at gesture end and a fresh bake runs). Landed law, replacing the
+// story's own working title ("the drawn extent is the bake's, the authored extent is the
+// store's"): an in-flight extend's reader owes the SAME extrapolating projection its writer
+// used — `dToUExtend` is `uToDExtend`'s exact inverse — so store and draw never diverge for the
+// gesture's own duration; outside a gesture (no growing table underfoot) `dToUExtend` coincides
+// with plain `dToU` exactly, since `d` never exceeds the live bake's own arc range there.
+describe("dToUExtend — the drawn edge's own extrapolating projection (finding 9 witness + fix)", () => {
+    const m: Mapping = {
+        arc: Float64Array.from([0, 1, 3, 6, 10]),
+        t: Float64Array.from([0, 0.5, 1, 2, 4]),
+        n: 5,
+    };
+    const vExit = 4;
+
+    test("witness: a store that keeps growing past the frozen table's end draws STATIC through plain dToU", () => {
+        // the write side, exactly as `applyLen` computes it: a cursor held at three increasing
+        // chart positions past the frozen table's own end (u=4) lands at three DISTINCT,
+        // increasing authored extents -- the store genuinely advances.
+        const d1 = uToDExtend(m, Domain.Time, 4.5, vExit);
+        const d2 = uToDExtend(m, Domain.Time, 5.5, vExit);
+        const d3 = uToDExtend(m, Domain.Time, 6.5, vExit);
+        expect(d2).toBeGreaterThan(d1);
+        expect(d3).toBeGreaterThan(d2);
+        // the pre-fix reader (plain dToU, what `clips`' u1 used to compute): all three land on
+        // the SAME clamped pixel -- the invisible lengthen, reproduced.
+        expect(dToU(m, Domain.Time, d1)).toBeCloseTo(4, 9);
+        expect(dToU(m, Domain.Time, d2)).toBeCloseTo(4, 9);
+        expect(dToU(m, Domain.Time, d3)).toBeCloseTo(4, 9);
+    });
+
+    test("the fix: dToUExtend recovers three DISTINCT, increasing chart positions for the same three stores", () => {
+        const d1 = uToDExtend(m, Domain.Time, 4.5, vExit);
+        const d2 = uToDExtend(m, Domain.Time, 5.5, vExit);
+        const d3 = uToDExtend(m, Domain.Time, 6.5, vExit);
+        const u1 = dToUExtend(m, Domain.Time, d1, vExit);
+        const u2 = dToUExtend(m, Domain.Time, d2, vExit);
+        const u3 = dToUExtend(m, Domain.Time, d3, vExit);
+        expect(u2).toBeGreaterThan(u1);
+        expect(u3).toBeGreaterThan(u2);
+        expect(u1).toBeCloseTo(4.5, 9);
+        expect(u2).toBeCloseTo(5.5, 9);
+        expect(u3).toBeCloseTo(6.5, 9);
+    });
+
+    test("law: dToUExtend is uToDExtend's exact inverse, both directions, past the bake's end", () => {
+        for (const u of [4, 4.5, 6, 20]) {
+            const d = uToDExtend(m, Domain.Time, u, vExit);
+            expect(dToUExtend(m, Domain.Time, d, vExit)).toBeCloseTo(u, 9);
+        }
+        for (const d of [10, 12, 16, 40]) {
+            const u = dToUExtend(m, Domain.Time, d, vExit);
+            expect(uToDExtend(m, Domain.Time, u, vExit)).toBeCloseTo(d, 9);
+        }
+    });
+
+    test("within the bake's covered range it is dToU exactly, at any vExit — no gesture in flight", () => {
+        for (const d of [0, 1, 3, 6, 10]) {
+            expect(dToUExtend(m, Domain.Time, d, 3)).toBeCloseTo(dToU(m, Domain.Time, d), 9);
+            expect(dToUExtend(m, Domain.Time, d, 30)).toBeCloseTo(dToU(m, Domain.Time, d), 9);
+        }
+    });
+
+    test("Distance is the identity, mapping or vExit notwithstanding", () => {
+        for (const mapping of [m, null]) {
+            expect(dToUExtend(mapping, Domain.Distance, 42, 4)).toBe(42);
+        }
+    });
+
+    test("no-bake fallback reads Distance (identity) even when Time is requested", () => {
+        expect(dToUExtend(null, Domain.Time, 42, 4)).toBe(42);
     });
 });
 

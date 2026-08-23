@@ -98,6 +98,7 @@ import {
     trimTargets,
     uToD,
     uToDExtend,
+    dToUExtend,
     type View,
     xGrow,
     yEase,
@@ -705,13 +706,24 @@ const clips = $derived.by((): Clip[] => {
     for (const sec of sections(ecs)) {
         const sp = byId.get(sec.id);
         if (!sp) continue;
+        // the section currently under a lengthen drag reads its OWN exit through the same
+        // extrapolating projection `applyLen`'s write used (`uToDExtend`'s inverse, `dToUExtend`
+        // — finding 9's fix), not the plain clamped `uOf`: once the gesture's frozen table can no
+        // longer realize the growing authored extent, plain `dToU` pins the drawn edge at the
+        // frozen table's last sample while `sp.len` (the fresh per-tick bake) keeps advancing
+        // underneath it — the invisible lengthen. Every other clip, and this one outside a
+        // gesture, stays on plain `uOf` (identical to `dToUExtend` there, S1's own witness).
+        const u1 =
+            sec.id === lenId && gestureMapping
+                ? dToUExtend(gestureMapping, domain, sp.offset + sp.len, lenVExit)
+                : uOf(sp.offset + sp.len);
         res.push({
             id: sec.id,
             kind: sec.kind,
             s0: sp.offset,
             s1: sp.offset + sp.len,
             u0: uOf(sp.offset),
-            u1: uOf(sp.offset + sp.len),
+            u1,
             len: sec.length,
         });
     }
