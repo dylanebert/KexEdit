@@ -1593,6 +1593,64 @@ test("timeline domain flow — Time-view gesture writes arclength through the fr
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(len0, 3);
 });
+
+// S6, create-path instance: the double-click chart-insert and the summoned strip-creation
+// station both used to compute a section-local station as a raw chart-axis subtraction
+// (`u − c.u0` / `toLocalU(spans, uAtPx(px))`) — the same corruption class the gesture writers
+// had, on the CREATE path rather than an edit of an existing entity. RED on the pre-fix tree:
+// a double-click in Time view landed the new keyframe at the raw seconds-scaled delta added to
+// the section's own axis-projected entry, not the arclength the click implies.
+test("timeline domain flow — Time-view double-click create writes arclength (S6c2)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    const forceU = () => kexCall(page, "forceU");
+    const forceCount = () => kexCall(page, "forceCount");
+    const domain = () => kexCall(page, "domain");
+    const dOf = (u: number) => kexCall(page, "dOf", u);
+    const xView = () => kexCall(page, "xView");
+    const rulerZone = page.locator(".rulerzone");
+    const openRulerMenu = () => rulerZone.click({ button: "right", position: { x: 40, y: 10 } });
+
+    await kexCall(page, "seedForceBump");
+    await expect.poll(forceCount).toBe(5);
+    await kexCall(page, "setV0", 25); // a non-default speed so v(s) is genuinely non-constant
+    await frameTimeline(page);
+
+    await openRulerMenu();
+    await clickMenuItem(page, ".rmenu", "Seconds");
+    await expect.poll(domain).toBe("time");
+    await frames(page, 2);
+
+    // click 80px right of the s = 0.2·len seed — clear of every existing keyframe (creation
+    // targets exclude them) and the section boundary, no snap magnet in reach.
+    const fhit = page.locator(".fhit");
+    const ref = await fhit.nth(1).boundingBox();
+    if (!ref) throw new Error("the reference diamond is not laid out");
+    const refU = (await forceU())[1].u;
+    const [, pxPerU] = await xView();
+    const OffsetPx = 80;
+    const uTarget = refU + OffsetPx / pxPerU;
+    const sectionEntryD = await dOf((await forceU())[0].u); // s = 0 seed's own global d
+    const expectedS = (await dOf(uTarget)) - sectionEntryD;
+
+    const cx = ref.x + ref.width / 2 + OffsetPx;
+    const cy = ref.y + ref.height / 2;
+    const before = await forceU();
+    await page.keyboard.down("Control"); // bypass the grid/landmark magnet, deterministic px
+    await page.mouse.dblclick(cx, cy);
+    await page.keyboard.up("Control");
+    await expect.poll(forceCount).toBe(6);
+    const after = await forceU();
+    const beforeIds = new Set(before.map((p) => p.id));
+    const created = after.find((p) => !beforeIds.has(p.id));
+    if (!created) throw new Error("no new point found after the double-click");
+    expect(created.s).toBeCloseTo(expectedS, 0);
+
+    await page.keyboard.press("Control+z");
+    await expect.poll(forceCount).toBe(5);
+});
 // Viewport force markers (kex2d-idioms stage 3): every force keyframe draws ON the baked track —
 // the timeline's filled-diamond glyph in force gold, same entity on both surfaces — display +
 // select ONLY (s/g authoring stays on the chart; nothing here drags). This flow drives the whole

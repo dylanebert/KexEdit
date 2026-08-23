@@ -1181,14 +1181,18 @@ function chartCreate(e: MouseEvent): void {
             const stripEnd = Strip.end.get(stripEid);
             const c = clips.find((cl) => cl.id === sectionId);
             if (c) {
-                const u0 = toGlobalU(spans, sectionId, stripStart);
-                const u1 = toGlobalU(spans, sectionId, stripEnd);
+                // a create has no gesture to freeze a table for — `dOf`/`uOf` read the LIVE
+                // mapping here, same as `gestureMapping` would fall back to outside a drag.
+                const d0 = toGlobal(spans, sectionId, stripStart);
+                const d1 = toGlobal(spans, sectionId, stripEnd);
+                const u0 = d0 === null ? null : uOf(d0);
+                const u1 = d1 === null ? null : uOf(d1);
                 if (u0 !== null && u1 !== null && u >= u0 && u <= u1) {
                     if (!sectionEditable(editor.pinning, sectionId)) return;
                     const rect = canvas.getBoundingClientRect();
                     const cy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
                     const v = vView.lo + (1 - (cy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
-                    const sLocal = clamp(u - c.u0, stripStart, stripEnd);
+                    const sLocal = clamp(dOf(u) - c.s0, stripStart, stripEnd);
                     addStripKeyframe(history, ecs, stripId, sLocal, Math.max(V_FLOOR, v));
                     return;
                 }
@@ -1217,7 +1221,9 @@ function chartCreate(e: MouseEvent): void {
     if (!sectionEditable(editor.pinning, c.id)) return;
     // value = the authored profile at the SNAPPED section-local s (insert-on-curve: the new
     // point never bends the curve), so both position and value derive from the snapped place.
-    const s = clamp(u - c.u0, 0, c.len); // (snapped) global → section-local, both native
+    // `u` is the chart's own axis (seconds-scaled in Time view); `dOf` (the live table -- a
+    // create has no gesture to freeze one) projects it back to the arclength the store holds.
+    const s = clamp(dOf(u) - c.s0, 0, c.len);
     selectForce(createForce(history, ecs, c.id, s, sampleForce(sectionForces(ecs, c.id), s)));
 }
 
@@ -1711,6 +1717,9 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
     tanMod = e.ctrlKey || e.metaKey;
     beginForceTangent(ecs, pt.id);
     dragTan = { id: pt.id, side: hnd.side };
+    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note; a handle
+    // reshapes the curve between keys, which feeds back into v(s) same as a keyframe drag does.
+    gestureMapping = mapping;
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", tanMove);
     window.addEventListener("pointerup", tanUp);
@@ -1744,9 +1753,13 @@ function applyTan(cx: number, cy: number): void {
     const latch = latchAngle(cx - kx, cy - ky, tanRayX, tanRayY);
     cx = kx + latch.x;
     cy = ky + latch.y;
-    // the dragged side's raw (Δs, Δg) from the latched cursor, both in OFFSET space (the store's
-    // own position unit and g from the keyframe — the space the readout prints).
-    let ds = uAtPx(clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w))) - pt.u;
+    // the dragged side's raw (Δs, Δg) from the latched cursor, both in OFFSET space (the
+    // store's own arclength unit and g from the keyframe — the space the readout prints). `cx`
+    // is the chart's own axis (seconds-scaled in Time view); `dOf` (the gesture-frozen table)
+    // projects it to arclength before subtracting the keyframe's own global arclength position
+    // (`pt.startD + pt.s`) -- never `pt.u`, which is that SAME position on the chart's axis
+    // (S6 fix: this used to difference two axis-space values and store the result as arclength).
+    let ds = dOf(uAtPx(clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w)))) - (pt.startD + pt.s);
     let dg = yToG(clamp(cy, TOP, h - BOT_PAD)) - pt.g;
     // Δg grid-quantizes to the force vocabulary (G_GRID), so a snapped handle reads as
     // vocabulary ("+0.5 g"); Ctrl/Cmd frees it to continuous. Δs stays CONTINUOUS (F3d): a
@@ -1770,14 +1783,16 @@ function tangentFor(id: number, side: "in" | "out", ds: number, dg: number): For
     const idx = pts.findIndex((p) => p.id === id);
     const prevS = idx > 0 ? pts[idx - 1].s : null;
     const nextS = idx < pts.length - 1 ? pts[idx + 1].s : null;
-    // a handle's Δs is stored in the same unit as the keyframe's own s (the domain conversion
-    // scales it with the axis), so the Aligned/Mirror coupling's screen-collinearity test reads it
-    // through the axis scale itself — no per-keyframe linearization.
+    // a handle's Δs is stored in arclength always (S6, `Force.tin`/`tout`'s own unit — never a
+    // second unit the domain conversion used to scale it into), so the Aligned/Mirror coupling's
+    // screen-collinearity test still needs the axis scale (`pxPerU`) to read it on screen; the
+    // Δs VALUE itself is arclength either way.
     return composeTangent(side, ds, dg, prevS, pt.s, nextS, forceTangent(ecs, id), clamped.pxPerU, pyPerG);
 }
 function tanUp(): void {
     if (dragTan === null) return;
     dragTan = null;
+    gestureMapping = null; // release the gesture-frozen table
     // selection already happened on pointerdown (the Blender rule — any interaction addresses the
     // handle); nothing to decide on release. the popover re-anchors clear of the workspace, so a
     // drag leaving the handle selected no longer overlaps the diamond it addresses.
@@ -1789,6 +1804,7 @@ function tanUp(): void {
 function cancelTanDrag(): void {
     if (dragTan === null) return;
     dragTan = null;
+    gestureMapping = null; // release the gesture-frozen table
     cancel(); // interrupted (unmount mid-drag): revert to the pre-gesture handles
     window.removeEventListener("pointermove", tanMove);
     window.removeEventListener("pointerup", tanUp);
@@ -2525,7 +2541,8 @@ function bandContext(e: MouseEvent): void {
     const px = e.clientX - rect.left;
     const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
     if (hit.kind === "empty") {
-        const loc = toLocalU(spans, uAtPx(px));
+        // a create has no gesture to freeze a table for -- `dOf` reads the live mapping.
+        const loc = toLocalU(spans, dOf(uAtPx(px)));
         if (loc === null) return;
         if (!sectionEditable(editor.pinning, loc.section)) return;
         openStripMenu(e.clientX, e.clientY, loc.section, loc.s, -1);
