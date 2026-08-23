@@ -1588,7 +1588,41 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     // (`selStrip`/`bandStrips`) before the double-click reads them
     await page.waitForTimeout(200);
 
-    // read the strip's extent and the chart view to compute pixel positions
+    // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
+    // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
+    // rather than empty curve. `seededIds` names the two so the CREATE step below can
+    // find the genuinely-new keyframe among the (now three) rows.
+    const stripId0 = (await stripsOf())[0].id as number;
+    const seededIds = new Set(
+        (
+            (await stripKeyframesOf(stripId0)) as {
+                id: number;
+                s: number;
+                v: number;
+            }[]
+        ).map((k) => k.id),
+    );
+    expect(seededIds.size).toBe(2);
+
+    // Widen the strip via a REAL pointer edge-drag on its end (boundary ride carries the
+    // seeded end keyframe along, S4), so the midpoint below clears both diamonds by
+    // construction, not by tuning a smaller hit radius. `stripPx`'s x0/x1 are CANVAS-local
+    // (like `ghostPx`, unlike the page-absolute `stripKfPx`), so the chart canvas's own
+    // rect supplies the page offset.
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const spBefore = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId0);
+    if (!spBefore) throw new Error("created strip has no band px");
+    const edgePx = chartCanvasBb.x + spBefore.x1;
+    await page.mouse.move(edgePx, bandY);
+    await page.mouse.down();
+    await page.mouse.move(edgePx + 80, bandY, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    // read the strip's (now widened) extent and the chart view to compute pixel positions
     const strip = (await stripsOf())[0] as {
         id: number;
         start: number;
@@ -1605,16 +1639,10 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     const stripCenterPx = clipBb.x + stripMidS * pxPerU;
     const stripWidthPx = (strip.end - strip.start) * pxPerU;
 
-    // MEASUREMENT: the minimum-extent strip's pixel width. The reviewer priced a
-    // ~0.5 m strip as "a few pixels wide" — this reading checks whether a person
-    // (or a Playwright double-click) can reliably land inside it.
-    // After frameTimeline the axis fits the whole ADDRESSABLE span, which is
-    // `sTotal + marginArc`: MARGIN_M = 50 (timeline.ts) added to the seedHill track
-    // (~23 m) gives ~74 m, so pxPerU ≈ 16 px/m and a one-edge (~0.5 m) strip is
-    // ≈8 px — hittable, not a few-pixel slit.
-    // The unreliable landing was the HARNESS using __kex instead of computing the
-    // correct pixel position, not the gesture's hit resolution.
-    expect(stripWidthPx).toBeGreaterThan(5);
+    // MEASUREMENT: the widened strip's pixel width, well clear of the ~80 px edge-drag
+    // above plus the min-extent floor it started from — this reading checks the
+    // dblclick's midpoint target lands inside it, not on a seeded diamond's own hit area.
+    expect(stripWidthPx).toBeGreaterThan(60);
 
     // compute a y pixel for the strip's value (velocity) — the constant-when-no-keyframes
     // line is drawn at vOf(strip.value), so double-clicking there creates a keyframe at
@@ -1632,15 +1660,18 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
         chartTop + (1 - (v - vLo) / (vHi - vLo)) * (chartBot - chartTop);
     const stripValueY = vToY(strip.value);
 
-    // CREATE: double-click over the strip's extent to create a velocity keyframe
+    // CREATE: double-click over the strip's extent to create a velocity keyframe — the
+    // strip already carries its two seeded keyframes (S4), so this lands a THIRD row.
     await page.mouse.dblclick(stripCenterPx, stripValueY);
-    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(1);
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(3);
 
-    // DRAG: drag the keyframe via real pointer events. Use a Playwright locator on
-    // the keyframe diamond's aria-label to find it, then drag it by a fixed pixel
-    // offset (the v-axis is inverted: down = higher v).
+    // DRAG: drag the newly-created keyframe (not one of the two seeded ones) via real
+    // pointer events. Use a Playwright locator on the keyframe diamond's aria-label to
+    // find it, then drag it by a fixed pixel offset (the v-axis is inverted: down =
+    // higher v).
     let kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
-    const kf0 = kfs[0];
+    const kf0 = kfs.find((k) => !seededIds.has(k.id));
+    if (!kf0) throw new Error("no newly-created keyframe found");
     await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
     const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
     const kf0Px = kfPx.find((k) => k.id === kf0.id)!;
@@ -1662,20 +1693,20 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
 
     // DELETE: the keyframe is already selected (the drag selected it); press Delete.
     // Delete acts on the innermost selection (the keyframe), so the strip must SURVIVE
-    // — the bare `stripKeyframesOf(...).length === 0` below would also pass if Delete
-    // destroyed the whole strip (destroying a strip destroys its keyframes), so the
-    // `stripsOf().length === 1` poll is the discriminating half. Witnessed red: with
-    // the keydown handler perturbed to deleteSelectedStrip() instead of
+    // — the bare `stripKeyframesOf(...).length === 2` below (back to the two seeded rows)
+    // would also pass if Delete destroyed the whole strip and it got re-seeded some other
+    // way, so the `stripsOf().length === 1` poll is the discriminating half. Witnessed red:
+    // with the keydown handler perturbed to deleteSelectedStrip() instead of
     // deleteSelectedStripKf(), this poll reds — the strip is destroyed, so stripsOf()
     // reads 0, not 1.
     await page.keyboard.press("Delete");
-    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(0);
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(2);
     await expect.poll(async () => (await stripsOf()).length).toBe(1);
 
     // undo restores the deleted keyframe
     const before = await undoDepth();
     await page.keyboard.press("Control+z");
-    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(1);
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(3);
     await expect.poll(undoDepth).toBe(before - 1);
 });
 
@@ -1712,6 +1743,34 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
     await page.waitForTimeout(200); // let the per-RAF tick propagate selection to `$derived` reads
 
+    // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
+    // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
+    // rather than empty curve. `seededIds` names the two so the create step below can find
+    // the genuinely-new keyframe among the (now three) rows. Widen the strip via a REAL
+    // pointer edge-drag on its end (boundary ride carries the seeded end keyframe along,
+    // S4) so the midpoint clears both diamonds by construction.
+    const stripId0 = (await stripsOf())[0].id as number;
+    const seededIds = new Set(
+        ((await stripKeyframesOf(stripId0)) as { id: number; s: number; v: number }[]).map(
+            (k) => k.id,
+        ),
+    );
+    expect(seededIds.size).toBe(2);
+    // `stripPx`'s x0/x1 are CANVAS-local (like `ghostPx`, unlike the page-absolute
+    // `stripKfPx`), so the chart canvas's own rect supplies the page offset.
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const spBefore = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId0);
+    if (!spBefore) throw new Error("created strip has no band px");
+    const edgePx = chartCanvasBb.x + spBefore.x1;
+    await page.mouse.move(edgePx, bandY);
+    await page.mouse.down();
+    await page.mouse.move(edgePx + 80, bandY, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
     const strip = (await stripsOf())[0] as {
         id: number;
         start: number;
@@ -1734,10 +1793,15 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     const stripValueY = vToY(strip.value);
 
     // create a keyframe at the strip's MIDPOINT — off both edges, so the bug's own jump (s ≈
-    // 2·s0, clamped to `end`) is distinguishable from a correct small move in either direction.
+    // 2·s0, clamped to `end`) is distinguishable from a correct small move in either
+    // direction. The strip already carries its two seeded keyframes (S4), so this lands a
+    // THIRD row; `kf0` is the newly-created one, not one of the two seeded ones.
     await page.mouse.dblclick(stripCenterPx, stripValueY);
-    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(1);
-    const kf0 = (await stripKeyframesOf(strip.id))[0] as { id: number; s: number; v: number };
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(3);
+    const kf0 = ((await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[]).find(
+        (k) => !seededIds.has(k.id),
+    );
+    if (!kf0) throw new Error("no newly-created keyframe found");
 
     await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
     const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
@@ -1746,8 +1810,8 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
 
     // a SMALL horizontal-only drag, held y fixed (the same client y throughout, so v holds and
     // only s is under test) — small enough that a correct drag stays well inside the strip's
-    // own extent (a min-extent strip is >5 px wide, `stripWidthPx` measured in the sibling flow
-    // above; a 2 px move from the strip's own MIDPOINT clears both edges by construction).
+    // own extent (widened to >60 px above, `stripWidthPx`'s reading in the sibling flow; a
+    // 2 px move from the strip's own MIDPOINT clears both edges by construction).
     const DxPx = 2;
     await page.mouse.move(kf0Px.x, kf0Px.y);
     await page.mouse.down();

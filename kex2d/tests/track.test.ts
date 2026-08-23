@@ -14,10 +14,12 @@ import {
     createStripKeyframe,
     createTrack,
     destroyStrip,
+    destroyStripKeyframes,
     edgeStrips,
     restoreStrip,
     sectionStrips,
     spawnStrip,
+    spawnStripKeyframe,
     Strip,
     stripAt,
     stripMinExtentAt,
@@ -108,13 +110,17 @@ import {
     validStripValue,
 } from "../src/track";
 import {
+    addStrip,
+    addStripKeyframe,
     appendSection as appendSectionCmd,
     beginForceMove,
     beginForceTangent,
     beginFriction,
     beginResistance,
+    beginStripMove,
     commit,
     createHistory,
+    deleteStrips,
     extendTrack as extendTrackCmd,
     materializeCustom,
     redo,
@@ -123,7 +129,6 @@ import {
     splitSection,
     trimTrack as trimTrackCmd,
     undo,
-    addStripKeyframe,
 } from "../src/history";
 import { DEFAULT_G, Easing, resolveStep } from "../src/profile";
 import { scenarios } from "../src/scenarios";
@@ -3024,7 +3029,11 @@ describe("velocity strips — ECS layer (C3)", () => {
         if (!st) throw new Error("no strip state");
         destroyStrip(state, id);
         expect(sectionStrips(state, sec).length).toBe(0);
+        // spawnStrip is the bare respawn primitive (no children) — its own contract
+        // (S4: StripState.kfs); the caller replants the keyframes separately, exactly as
+        // `addStrip`'s redo does.
         spawnStrip(state, st.section, st.id, st.start, st.end, st.value);
+        for (const k of st.kfs) spawnStripKeyframe(state, st.id, k.id, k.s, k.v);
         expect(stripState(state, id)).toEqual(st);
         restoreStrip(state, { ...st, start: 3, end: 7, value: 9 });
         const after = stripState(state, id);
@@ -3068,7 +3077,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         const afterEdit = bakeOut.get(eid)?.hash;
         expect(afterEdit).not.toBe(withStrip);
         // undoing the edit (byte-identical restore) reproduces the earlier hash exactly.
-        restoreStrip(state, { section: sec, id, start: 2, end: 6, value: 5 });
+        restoreStrip(state, { section: sec, id, start: 2, end: 6, value: 5, kfs: [] });
         state.step(0);
         expect(bakeOut.get(eid)?.hash).toBe(withStrip);
     });
@@ -3216,6 +3225,9 @@ describe("velocity strips — ECS layer (C3)", () => {
         const start = 5;
         const end = 15;
         const stripId = createStrip(state, sec, start, end, 4) as number;
+        // createStrip seeds two flat keyframes at start/end (S4) — clear them so this arm
+        // exercises an isolated two-keyframe ramp, not four stacked at the same stations.
+        destroyStripKeyframes(state, stripId);
         // two keyframes: a ramp from 3 to 7 m/s across the strip
         createStripKeyframe(state, stripId, start, 3);
         createStripKeyframe(state, stripId, end, 7);
@@ -3255,6 +3267,9 @@ describe("velocity strips — ECS layer (C3)", () => {
         const start = 5;
         const end = 15;
         const stripId = createStrip(state, sec, start, end, 4) as number;
+        // createStrip seeds two flat keyframes at start/end (S4) — clear them so this arm
+        // exercises an isolated two-keyframe ramp, not four stacked at the same stations.
+        destroyStripKeyframes(state, stripId);
         createStripKeyframe(state, stripId, start, 3);
         createStripKeyframe(state, stripId, end, 7);
         state.step(0);
@@ -3302,6 +3317,9 @@ describe("velocity strips — ECS layer (C3)", () => {
         const { state, sec } = track();
         convertSection(state, sec);
         const stripId = createStrip(state, sec, 4, 16, 5) as number;
+        // createStrip seeds two flat keyframes at start/end (S4) — clear them so this arm
+        // checks the exact pair it authors, not the seeded pair plus these two.
+        destroyStripKeyframes(state, stripId);
         createStripKeyframe(state, stripId, 6, 3);
         createStripKeyframe(state, stripId, 14, 7);
         const snap = snapshotSection(state, sec);
@@ -3364,6 +3382,141 @@ describe("velocity strips — ECS layer (C3)", () => {
         redo(h, state);
         const redoState = stripKeyframeState(state, id);
         expect(redoState?.s).toBe(end); // must be 18, not 30
+    });
+});
+
+describe("S4: seed keyframes + boundary ride", () => {
+    test("createStrip seeds two keyframes at start/end; two equal keys bake matches the no-key constant path", () => {
+        // RED-FIRST: reverting `createStrip`'s two `createStripKeyframe` calls leaves
+        // `kfs.length` at 0 instead of 2 — witnessed by removing them before writing this
+        // arm and observing the length assertion fail.
+        const { state, eid, sec } = track();
+        convertSection(state, sec); // → force, default extent EXTEND_DIST = 24
+        createForcePoint(state, sec, 0, 1.3);
+        createForcePoint(state, sec, EXTEND_DIST, 1.3);
+        const value = 4;
+        const stripId = createStrip(state, sec, 6, 18, value) as number;
+        const kfs = stripKeyframes(state, stripId);
+        expect(kfs.length).toBe(2);
+        expect(kfs[0].s).toBe(6);
+        expect(kfs[0].v).toBe(value);
+        expect(kfs[1].s).toBe(18);
+        expect(kfs[1].v).toBe(value);
+
+        state.step(0);
+        const info = sectionInfo.get(sec);
+        if (!info) throw new Error("no bake");
+        const seededOut = bakeOut.get(eid);
+        if (!seededOut) throw new Error("no bakeOut");
+        const seededV = Array.from(seededOut.v.slice(info.startSample, info.endSample + 1));
+
+        // the same strip with its keyframes cleared — the no-key constant path.
+        destroyStripKeyframes(state, stripId);
+        state.step(0);
+        const constantOut = bakeOut.get(eid);
+        if (!constantOut) throw new Error("no bakeOut");
+        const constantV = Array.from(constantOut.v.slice(info.startSample, info.endSample + 1));
+
+        expect(seededV.length).toBe(constantV.length);
+        expect(seededV).toEqual(constantV);
+    });
+
+    test("boundary ride: an edge resize moves the keyframe sitting on that boundary; an interior keyframe holds station", () => {
+        // RED-FIRST: reverting `setStrip`'s ride loop leaves the seeded boundary keyframe
+        // at its OLD station after a resize — witnessed by removing the loop and observing
+        // `startKfId`'s `s` stay at 5 instead of moving to 3.
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const stripId = createStrip(state, sec, 5, 15, 8) as number;
+        const seeded = stripKeyframes(state, stripId);
+        const startKfId = seeded[0].id;
+        const endKfId = seeded[1].id;
+        const interiorId = createStripKeyframe(state, stripId, 10, 6);
+
+        setStrip(state, stripId, 3, 15, 8); // resize the start edge inward: 5 → 3
+        expect(stripKeyframeState(state, startKfId)?.s).toBe(3);
+        expect(stripKeyframeState(state, interiorId)?.s).toBe(10); // held station
+        expect(stripKeyframeState(state, endKfId)?.s).toBe(15); // untouched boundary
+
+        setStrip(state, stripId, 3, 20, 8); // resize the end edge outward: 15 → 20
+        expect(stripKeyframeState(state, endKfId)?.s).toBe(20);
+        expect(stripKeyframeState(state, interiorId)?.s).toBe(10); // still holds
+        expect(stripKeyframeState(state, startKfId)?.s).toBe(3); // untouched boundary
+    });
+
+    test("boundary ride: a body drag translates both boundary keyframes with their edges; an interior keyframe holds station", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const stripId = createStrip(state, sec, 5, 15, 8) as number;
+        const seeded = stripKeyframes(state, stripId);
+        const startKfId = seeded[0].id;
+        const endKfId = seeded[1].id;
+        const interiorId = createStripKeyframe(state, stripId, 10, 6);
+
+        setStrip(state, stripId, 8, 18, 8); // body drag, +3
+        expect(stripKeyframeState(state, startKfId)?.s).toBe(8);
+        expect(stripKeyframeState(state, endKfId)?.s).toBe(18);
+        expect(stripKeyframeState(state, interiorId)?.s).toBe(10); // held station (Locked decision)
+    });
+
+    test("undo of a strip-move gesture is byte-identical, boundary ride included", () => {
+        // RED-FIRST: before `StripState`/`restoreStrip` carried `kfs`, undo restored only
+        // `start`/`end`/`value` — witnessed by reverting that widening and observing the
+        // post-undo snapshot still show the ridden keyframe at its POST-drag station.
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const h = createHistory();
+        const id = addStrip(h, state, sec, 5, 15, 8) as number;
+        const before = snapshotAll(state);
+
+        beginStripMove(state, id);
+        setStrip(state, id, 3, 15, 8); // moves the start-boundary keyframe live
+        commit(h);
+        const after = snapshotAll(state);
+        expect(after).not.toEqual(before);
+
+        undo(h, state);
+        expect(snapshotAll(state)).toEqual(before);
+        redo(h, state);
+        expect(snapshotAll(state)).toEqual(after);
+    });
+
+    test("undo of a strip create is byte-identical: the two seeded keyframes are gone, and redo replants them verbatim", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const h = createHistory();
+        const before = snapshotAll(state);
+        const id = addStrip(h, state, sec, 5, 15, 8) as number;
+        const afterCreate = snapshotAll(state);
+        expect(stripKeyframes(state, id).length).toBe(2);
+
+        undo(h, state);
+        expect(snapshotAll(state)).toEqual(before);
+        expect(sectionStrips(state, sec).length).toBe(0);
+
+        redo(h, state);
+        expect(snapshotAll(state)).toEqual(afterCreate);
+        expect(stripKeyframes(state, id).length).toBe(2);
+    });
+
+    test("undo of a delete is byte-identical: a strip's seeded keyframes are respawned too", () => {
+        // RED-FIRST: before `deleteStrips`' reverse replanted `kfs`, undoing a delete lost
+        // the strip's two default-seeded keyframes forever — witnessed by reverting that
+        // spawn loop and observing `stripKeyframes(...).length` read 0 after undo instead
+        // of 2. Pre-S4 this needed a manually-authored keyframe to reach; post-S4 every
+        // strip carries the seeded pair by default, so it's the common path now.
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const h = createHistory();
+        const id = addStrip(h, state, sec, 5, 15, 8) as number;
+        const before = snapshotAll(state);
+
+        deleteStrips(h, state, [id]);
+        expect(sectionStrips(state, sec).length).toBe(0);
+
+        undo(h, state);
+        expect(snapshotAll(state)).toEqual(before);
+        expect(stripKeyframes(state, id).length).toBe(2);
     });
 });
 
