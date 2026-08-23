@@ -213,19 +213,13 @@ describe("convertGeo", () => {
         await expect(convertGeo(h, state, sec)).resolves.toMatchObject({ outcome: "floor" });
     }, 60_000);
 
-    test("landing on a Time-domain track stores SECONDS, in the same one entry", async () => {
-        // the solve is distance-internal (its golden is frozen in meters), so the landing is
-        // where the unit changes: `domain.convertSolve` inside the one entry. Without it the
-        // document would take the answer's metres as seconds — a section ~13× too long in time.
+    test("landing on a Time-domain track still stores METERS (S6: domain is a display lens)", async () => {
+        // the solve is distance-internal (its golden is frozen in meters), and the store never
+        // varies by `Track.domain` (S6 retired `domain.convertSolve` entirely) — so the landing
+        // is the solve's own answer, unconverted, whatever the ruler is showing.
         const { state, eid, sec } = humpTrack();
         setTrackDomain(state, Domain.Time);
         state.step(0);
-        const out = bakeOut.get(eid);
-        const info = sectionInfo.get(sec);
-        if (!out || !info) throw new Error("no bake");
-        // the geo section's own duration on the pre-convert bake: what the solve's arclength
-        // must convert to, since the answer reproduces this exact shape.
-        const dur = out.t[info.endSample] - out.t[info.startSample];
         const before = docState(state, eid);
         const h = createHistory();
 
@@ -234,21 +228,9 @@ describe("convertGeo", () => {
         if (secEid === null) throw new Error("section missing");
 
         const landed = Section.length.get(secEid);
-        // seconds: the shape's own duration, not its 24-odd metres. the bound is the solve's own
-        // ~0.5 m length floor over the ride's ~18 m/s (≈0.03 s) plus one march step.
-        expect(Math.abs(landed - dur)).toBeLessThan(0.05);
-        expect(landed).toBeLessThan(result.length / 5);
-        // every keyframe converted with it: inside the duration, ordered, and none left in metres.
+        expect(landed).toBe(result.length);
         const stored = sectionForces(state, sec).map((p) => p.s);
-        expect(stored.length).toBe(result.points.length);
-        expect(stored[0]).toBeCloseTo(0, 6);
-        for (let i = 1; i < stored.length; i++) expect(stored[i]).toBeGreaterThan(stored[i - 1]);
-        // the whole profile lands inside the converted extent (the solve's last key sits at or
-        // before its own realized length, and the conversion is monotone, so it stays inside).
-        expect(stored[stored.length - 1]).toBeLessThanOrEqual(landed);
-        // and it spans the section: the last key is within the solve's own ~0.5 m floor of the
-        // exit, ≈0.03 s at this ride's ~18 m/s.
-        expect(landed - stored[stored.length - 1]).toBeLessThan(0.05);
+        expect(stored).toEqual(result.points.map((p) => p.s));
 
         // still ONE entry, and undoing it puts the geo shape back byte-identical.
         expect(h.undo).toHaveLength(1);
@@ -361,7 +343,10 @@ describe("provenance short-circuit (reverse)", () => {
         expect(result.outcome).not.toBe("restored");
     }, 60_000);
 
-    test("a Track.domain flip after the fit falls through to the solve", async () => {
+    test("a Track.domain flip after the fit still short-circuits (S6: domain is a display lens)", async () => {
+        // `Track.domain` used to ride the token because a flip converted the section's own
+        // stored numbers — S6 retired that conversion entirely, so a flip changes no authored
+        // component and the stamp still certifies.
         const { state, sec } = hillForceTrack();
         const h = createHistory();
 
@@ -370,10 +355,8 @@ describe("provenance short-circuit (reverse)", () => {
 
         setTrackDomain(state, Domain.Time);
         state.step(0);
-        // the domain flip alone changes what a geo section's own content hashes to (it folds
-        // `Track.domain` in), so the token no longer matches the stamp taken in `Distance`.
         const result = await convertGeo(h, state, sec);
-        expect(result.outcome).not.toBe("restored");
+        expect(result.outcome).toBe("restored");
     }, 60_000);
 
     test("undo after a restore returns the geo section byte-identically", async () => {

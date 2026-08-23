@@ -10,7 +10,7 @@ import {
 import optimizeGolden from "./fixtures/optimize-golden.json";
 import { G } from "../src/forward";
 import { Easing, type ForcePoint, forceProfile, resolveStep } from "../src/profile";
-import { Domain, type Entry, evalForce } from "../src/section";
+import { type Entry, evalForce } from "../src/section";
 
 // the invariant floor for pin mode's masked exit-restore solve (`kex2d-optimize-mode` stage
 // 1, `optimize.ts`): zero-drift identity, the masking invariants (as a property test over
@@ -96,62 +96,6 @@ describe("solveOptimize — zero-drift identity", () => {
             expect(r.points).toEqual(points);
         });
     }
-});
-
-describe("solveOptimize — Time-domain coverage (kex2d-optimize-mode close, item 5)", () => {
-    // the kernel takes `domain` and the stall certificate interacts with the Time march
-    // (`ds_i = v_i·Δt` can be genuinely 0), but no committed case ran it — the invariant floor's
-    // two anchors on a Time-domain profile: seconds for s/length, a Δt step for ds.
-    const timePoints: ForcePoint[] = [
-        { s: 0, g: 1 },
-        { s: 1, g: 1.4 },
-        { s: 2, g: 1 },
-        { s: 3, g: 0.9 },
-        { s: 4, g: 1 },
-    ];
-    const TLen = 4;
-    const Dt = 0.02;
-
-    function timeOpts(points: ForcePoint[], locked: ReadonlySet<number>): OptimizeOpts {
-        const stamp = computeExit(ENTRY, points, TLen, Dt, Domain.Time);
-        return { entry: ENTRY, points, locked, length: TLen, ds: Dt, domain: Domain.Time, stamp };
-    }
-
-    test("zero-drift identity holds on a Time-domain draft", () => {
-        const r = solveOptimize(timeOpts(timePoints, new Set()));
-        expect(r.outcome).toBe("solved");
-        expect(r.iters).toBe(0);
-        expect(r.deltaG).toEqual(new Array(timePoints.length).fill(0));
-        expect(r.points).toEqual(timePoints);
-    });
-
-    test("masking invariants hold on a Time-domain solve (locked g / every s byte-identical)", () => {
-        const locked = new Set([0, 4]); // pin the endpoints, perturb an interior free key
-        const perturbed = timePoints.map((p) => ({ ...p }));
-        perturbed[1].g += 0.3;
-        // the stamp comes from the ORIGINAL draft, so the perturbed one carries real drift to
-        // correct (stamping the perturbed draft's own exit is zero drift by construction).
-        const stamp = computeExit(ENTRY, timePoints, TLen, Dt, Domain.Time);
-        const r = solveOptimize({
-            entry: ENTRY,
-            points: perturbed,
-            locked,
-            length: TLen,
-            ds: Dt,
-            domain: Domain.Time,
-            stamp,
-        });
-        expect(r.outcome).toBe("solved");
-        for (let k = 0; k < perturbed.length; k++) {
-            expect(r.points[k].s).toBe(perturbed[k].s); // s never moves — seconds included
-            if (locked.has(k)) {
-                expect(r.points[k].g).toBe(perturbed[k].g);
-                expect(r.deltaG[k]).toBe(0);
-            }
-        }
-        // and the solve really restored the stamped exit on the Time march (not a no-op).
-        expect(r.deltaG.some((d) => d !== 0)).toBe(true);
-    });
 });
 
 describe("solveOptimize — masking invariants (property test)", () => {
@@ -704,7 +648,7 @@ describe("solveOptimize — injection gate", () => {
         const alpha = Math.asin(F0 / (2 * G));
         const entry: Entry = { x: 0, y: 0, theta: alpha, v: V0 };
         const fN = new Float32Array(edges).fill(Math.cos(alpha));
-        const r = evalForce(entry, fN, { edges, ds }, Domain.Distance, 0, 0);
+        const r = evalForce(entry, fN, { edges, ds }, 0, 0);
         const scale = Math.max(V0 * V0, 2 * G * length);
         // the measured f32 noise (the kernel's own injection reading, since the true value is 0
         // by construction) stays a small fraction of `scale` — the regime `injectionTol` assumes.
@@ -735,7 +679,7 @@ describe("computeExit/solveOptimize conform ds at an off-grid length (kex2d-sect
         // step instead.
         const conformed = resolveStep(OffLength, DS);
         const documentBake = forceProfile(offPoints, conformed);
-        const exit = evalForce(ENTRY, documentBake, conformed, undefined).exit;
+        const exit = evalForce(ENTRY, documentBake, conformed).exit;
         const stamp = computeExit(ENTRY, offPoints, OffLength, DS);
         expect(stamp.x).toBeCloseTo(exit.x, 12);
         expect(stamp.y).toBeCloseTo(exit.y, 12);
@@ -751,7 +695,7 @@ describe("computeExit/solveOptimize conform ds at an off-grid length (kex2d-sect
         // failed with a nonzero iters/residual rather than the exact zero-drift identity.
         const conformed = resolveStep(OffLength, DS);
         const documentBake = forceProfile(offPoints, conformed);
-        const exit = evalForce(ENTRY, documentBake, conformed, undefined).exit;
+        const exit = evalForce(ENTRY, documentBake, conformed).exit;
         const stamp = { x: exit.x, y: exit.y, theta: exit.theta, v: exit.v };
         const r = solveOptimize({
             entry: ENTRY,

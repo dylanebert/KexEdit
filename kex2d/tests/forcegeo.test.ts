@@ -397,7 +397,10 @@ describe("provenance short-circuit", () => {
         expect(result.outcome).not.toBe("restored");
     }, 60_000);
 
-    test("a Track.domain flip after the solve falls through to the fit", async () => {
+    test("a Track.domain flip after the solve still short-circuits (S6: domain is a display lens)", async () => {
+        // `Track.domain` used to ride the token because a flip converted the section's own
+        // stored numbers — S6 retired that conversion entirely, so a flip changes no authored
+        // component and the stamp still certifies.
         const { state, sec } = hillTrack();
         const h = createHistory();
 
@@ -406,10 +409,8 @@ describe("provenance short-circuit", () => {
 
         setTrackDomain(state, Domain.Time);
         state.step(0);
-        // the domain flip alone changes what a force section's own content hashes to (it folds
-        // `Track.domain` in), so the token no longer matches the stamp taken in `Distance`.
         const result = await convertForce(h, state, sec);
-        expect(result.outcome).not.toBe("restored");
+        expect(result.outcome).toBe("restored");
     }, 60_000);
 
     test("a global Track.ds change: first-section restore survives it (ds-invariant entry), a downstream section falls through via its shifted entry", async () => {

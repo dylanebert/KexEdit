@@ -18,14 +18,13 @@
  * the shape on screen, truncation included — `friction`/`resistance` thread through here too,
  * so authoring either has the same effect on what a conversion targets as it does on the live bake.
  *
- * **The solve stays distance-internal; the landing converts.** The conversion tier works in
- * meters (its goldens are frozen there), so on a `Time`-domain track the answer passes through
- * `domain.convertSolve` on its way into the document — inside the one landing entry, through the
- * same table the ruler pick converts the whole store through. */
+ * **The solve stays distance-internal; so does the store.** The conversion tier works in meters
+ * (its goldens are frozen there), and every force keyframe/extent is stored in meters of
+ * arclength always (`Track.domain` is a display lens, `domain.ts`) — so the answer lands
+ * unconverted. */
 
 import type { State } from "@dylanebert/shallot";
 import { convert, type ConvertOpts } from "./convert";
-import { convertSolve } from "./domain";
 import { type History, restoreProvenance, solveForce } from "./history";
 import type { ForcePoint } from "./profile";
 import type { ConvertResult, RefineOutcome } from "./refine";
@@ -64,15 +63,7 @@ export interface ConvertGeoResult extends Omit<ConvertResult, "outcome"> {
  *  shared with `forcegeo.tryRestore`. A miss returns `undefined` (no restore — the caller falls
  *  through to the conversion tier); a hit lands the stamp's own pre-fit payload verbatim
  *  (`history.restoreProvenance`) and returns the caller's result, so the worker pool
- *  (`convert.ts`) never spawns.
- *
- *  **Domain seam**: the payload is a `snapshotSection` taken straight off the live ECS columns
- *  at the force→geo landing, already in whatever unit `Track.domain` was in at that moment — NOT
- *  the conversion tier's distance-internal output that the normal landing passes through
- *  `domain.convertSolve` before it reaches the document. `sectionToken` (inside the consult)
- *  folds `Track.domain` into the stamp, so a restore only ever fires with the domain unchanged
- *  since the stamp — the payload's unit and the live store's unit already agree, and running it
- *  through `convertSolve` a second time would convert an already-native value. */
+ *  (`convert.ts`) never spawns. */
 function tryRestore(
     h: History,
     ecs: State,
@@ -195,16 +186,9 @@ export async function convertGeo(
             throw new StaleConvert(sectionId);
         if (authoredHash(ecs) !== authored) throw new StaleConvert(sectionId);
         if (result.outcome !== "diverged") {
-            // the solve is distance-internal; a Time-domain track stores seconds, so the answer
-            // converts through the section's own window on the live table before it lands
-            // (`domain.convertSolve` — the same seam the ruler pick applies to the whole store).
-            const landed = convertSolve(ecs, sectionId, result);
-            // defense in depth, not a live path: the `bakeLive` gate above and the `authoredHash`
-            // re-read just now already guarantee the table and this section's window exist, so
-            // this branch has never been observed. It stays because the alternative to throwing
-            // is landing metres into a seconds store.
-            if (!landed) throw new StaleConvert(sectionId);
-            solveForce(h, ecs, sectionId, landed);
+            // the solve is distance-internal and so is the store (`Track.domain` is a display
+            // lens, `domain.ts`), so the answer lands as-is.
+            solveForce(h, ecs, sectionId, result);
         }
         return result;
     } finally {

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { forces } from "../src/bake";
 import { G, integrate, loss, step, V_FLOOR } from "../src/forward";
-import { Domain, evalForce, type Entry } from "../src/section";
-import { rk4, rk4Time } from "./oracles/rk4";
+import { evalForce, type Entry } from "../src/section";
+import { rk4 } from "./oracles/rk4";
 
 // the dissipative loss law: `2·(μ·g·|fN| + c·v²)·ds`, in v²
 // units, landed once in `forward.loss` and consumed by both call sites
@@ -37,14 +37,7 @@ describe("incline (Coulomb, exact-discrete)", () => {
         const V0 = 20;
         const fN = Math.cos(alpha);
         const entry: Entry = { x: 0, y: 0, theta: alpha, v: V0 };
-        const r = evalForce(
-            entry,
-            new Float32Array(N).fill(fN),
-            { edges: N, ds },
-            Domain.Distance,
-            mu,
-            0,
-        );
+        const r = evalForce(entry, new Float32Array(N).fill(fN), { edges: N, ds }, mu, 0);
 
         const maxVSq = V0 * V0;
         for (let n = 1; n <= N; n++) {
@@ -71,14 +64,7 @@ describe("flat drag (exact-discrete)", () => {
         const N = 100;
         const V0 = 20;
         const entry: Entry = { x: 0, y: 0, theta: 0, v: V0 };
-        const r = evalForce(
-            entry,
-            new Float32Array(N).fill(1),
-            { edges: N, ds },
-            Domain.Distance,
-            0,
-            c,
-        );
+        const r = evalForce(entry, new Float32Array(N).fill(1), { edges: N, ds }, 0, c);
 
         const factor = 1 - 2 * c * ds;
         const maxVSq = V0 * V0;
@@ -115,14 +101,7 @@ describe("terminal velocity (fixed point)", () => {
         expect(N).toBeGreaterThan(0);
 
         const entry: Entry = { x: 0, y: 0, theta: theta0, v: V0 };
-        const r = evalForce(
-            entry,
-            new Float32Array(N).fill(0),
-            { edges: N, ds },
-            Domain.Distance,
-            mu,
-            c,
-        );
+        const r = evalForce(entry, new Float32Array(N).fill(0), { edges: N, ds }, mu, c);
 
         const contraction = r0 ** N * Math.abs(e0);
         const f32term = K_F32 * N * EPS * Math.max(V0 * V0, vStarSq);
@@ -131,14 +110,7 @@ describe("terminal velocity (fixed point)", () => {
 
         // the discriminator itself: μ = 0 lands the identical answer (fN = 0
         // either way), proving friction had no say in a vertical drop.
-        const rZeroMu = evalForce(
-            entry,
-            new Float32Array(N).fill(0),
-            { edges: N, ds },
-            Domain.Distance,
-            0,
-            c,
-        );
+        const rZeroMu = evalForce(entry, new Float32Array(N).fill(0), { edges: N, ds }, 0, c);
         expect(r.exit.v).toBe(rZeroMu.exit.v);
     });
 });
@@ -256,7 +228,6 @@ describe("RK4 (independent numerical model, convergence order)", () => {
                 entry,
                 new Float32Array(N).fill(Math.cos(alpha)),
                 { edges: N, ds },
-                Domain.Distance,
                 mu,
                 c,
             );
@@ -272,7 +243,6 @@ describe("RK4 (independent numerical model, convergence order)", () => {
                 entry,
                 new Float32Array(N).fill(Math.cos(alpha)),
                 { edges: N, ds },
-                Domain.Distance,
                 mu,
                 c,
             );
@@ -306,123 +276,6 @@ describe("RK4 (independent numerical model, convergence order)", () => {
         const lowerBound = predictedRatio * ((1 - 1 / M) / (1 + 1 / M));
         const ratio = gapCoarse / gapFine;
         expect(ratio).toBeGreaterThan(lowerBound);
-    });
-
-    test("Time domain: rk4Time converges at the same first order with friction/drag", () => {
-        const V0 = 12;
-        const mu = 0.03;
-        const c = 5e-4;
-        const tMax = 1.2;
-        const fN = () => 1; // flat-ish authored force (level entry)
-
-        // theta0 = 0, fN ≡ 1 = cos(0) is the same discrete fixed point as the
-        // incline arm above (dtheta = 0 exactly), so dy = 0 always and the
-        // continuum ODE reduces to the separable dv/dt = −μg − c·v², solved in
-        // closed form (standard arctan integral of a Riccati with no linear
-        // term): v(t) = √(μg/c)·tan(atan(V0·√(c/μg)) − t·√(μg·c)). Domain.Time's
-        // per-edge step is ds_i = v_i·Δt (variable, not constant, since v
-        // changes each edge) so unlike the incline arm the discrete recurrence
-        // isn't a closed affine map — f64ExitV below re-runs the SAME per-edge
-        // formula (`loss`, dy = 0) at full double precision as a faithful
-        // noise-isolation reference, not the pass/fail oracle (rk4Time stays
-        // that).
-        const k = Math.sqrt(mu * G * c);
-        const s = Math.sqrt(c / (mu * G));
-        const vTrue = Math.sqrt((mu * G) / c) * Math.tan(Math.atan(V0 * s) - k * tMax);
-
-        const f64ExitV = (dt: number): number => {
-            const N = Math.round(tMax / dt);
-            let v = V0;
-            for (let i = 0; i < N; i++) {
-                const vSq = v * v;
-                const lossVal = 2 * (mu * G + c * vSq) * (v * dt);
-                v = Math.sqrt(Math.max(vSq - lossVal, 0));
-            }
-            return v;
-        };
-        const gapExact = (dt: number): number => Math.abs(f64ExitV(dt) - vTrue);
-
-        const gapAt = (dt: number): number => {
-            const edges = Math.round(tMax / dt);
-            const entry: Entry = { x: 0, y: 0, theta: 0, v: V0 };
-            const kernel = evalForce(
-                entry,
-                new Float32Array(edges).fill(1),
-                { edges, ds: dt },
-                Domain.Time,
-                mu,
-                c,
-            );
-            const ref = rk4Time(0, 0, 0, V0, edges + 1, dt, fN, G, {}, mu, c);
-            return Math.abs(kernel.exit.v - ref[edges][3]);
-        };
-        const f32Noise = (dt: number): number => {
-            const edges = Math.round(tMax / dt);
-            const entry: Entry = { x: 0, y: 0, theta: 0, v: V0 };
-            const kernel = evalForce(
-                entry,
-                new Float32Array(edges).fill(1),
-                { edges, ds: dt },
-                Domain.Time,
-                mu,
-                c,
-            );
-            return kernel.exit.v - f64ExitV(dt);
-        };
-
-        const dtCoarse = 0.02;
-        const dtFine = dtCoarse / 2;
-        const gapCoarse = gapAt(dtCoarse);
-        const gapFine = gapAt(dtFine);
-
-        const M = 10;
-        for (const dt of [dtCoarse, dtFine]) {
-            expect(Math.abs(f32Noise(dt))).toBeLessThan(gapExact(dt) / M);
-        }
-
-        expect(gapCoarse).toBeGreaterThan(0);
-        const predictedRatio = gapExact(dtCoarse) / gapExact(dtFine);
-        const lowerBound = predictedRatio * ((1 - 1 / M) / (1 + 1 / M));
-        const ratio = gapCoarse / gapFine;
-        expect(ratio).toBeGreaterThan(lowerBound);
-    });
-});
-
-describe("Rust cross-check (demoted, coincidence only)", () => {
-    test("flat-straight config matches packages/core's own update_velocity trace", () => {
-        // frozen from the Rust crate's OWN `update_velocity` (never a TS
-        // transliteration, `checks.md`'s one-author agreement trap) — see the
-        // fixture's `generatedBy` field for the exact regenerate command. Flat
-        // (fN = 1 exactly ⇒ N = mg) and Domain.Time (ds_i = v_i·Δt, matching the
-        // Rust core's own fixed-Δt march) are the ONE config where our
-        // |fN|-based Coulomb model and the old N = mg model provably coincide —
-        // this is a coincidence cross-check, never an authority (`fidelity.md`).
-        const fixture = require("./fixtures/friction-rust-cross-check.json") as {
-            v0: number;
-            friction: number;
-            resistance: number;
-            dt: number;
-            steps: number;
-            v: number[];
-        };
-        const entry: Entry = { x: 0, y: 0, theta: 0, v: fixture.v0 };
-        const r = evalForce(
-            entry,
-            new Float32Array(fixture.steps).fill(1),
-            { edges: fixture.steps, ds: fixture.dt },
-            Domain.Time,
-            fixture.friction,
-            fixture.resistance,
-        );
-
-        // f32-vs-f64-intermediate rounding: both sides compute in f32 storage,
-        // but this kernel's intermediates run in JS f64 before each f32 write,
-        // while Rust's are f32 throughout — a per-step operation-order gap, so
-        // the bound is relative and grows with step count (n·ε).
-        for (let k = 0; k <= fixture.steps; k++) {
-            const tol = Math.max(1e-4, k * EPS) * Math.max(1, Math.abs(fixture.v[k]));
-            expect(Math.abs(r.v[k] - fixture.v[k])).toBeLessThan(tol);
-        }
     });
 });
 
@@ -472,7 +325,7 @@ describe("march-vs-recovery exit-v agreement", () => {
                 c,
             );
 
-            const r = evalForce(entry, fNArr, { edges: N, ds }, Domain.Distance, mu, c);
+            const r = evalForce(entry, fNArr, { edges: N, ds }, mu, c);
             let mx = 0;
             for (let i = 2; i < N - 2; i++)
                 mx = Math.max(mx, Math.abs(marchV[i] * marchV[i] - r.v[i] * r.v[i]));

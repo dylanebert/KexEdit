@@ -22,7 +22,7 @@
  *  (`bake.forces`), not the f64 solver atoms (`force.ts`). */
 
 import { forces } from "./bake";
-import { G, integrate, step as stepForward, V_FLOOR } from "./forward";
+import { G, integrate, V_FLOOR } from "./forward";
 import type { Step } from "./profile";
 import { type Node, sampleChain, type Tangent } from "./spline";
 
@@ -40,14 +40,12 @@ export enum SectionKind {
     Force = 1,
 }
 
-/** the unit a force section's section-local coordinate is authored in: **distance**
- *  (keyframes at arclength s, extent in meters) or **time** (keyframes at time t,
- *  extent in seconds; the swept geometry is emergent). the domain is a *step rule*
- *  on the atom (`evalForce`), never a rework — everything downstream (chain, force
- *  recovery, the flat SoA) already consumes per-edge variable `ds`, so no other code
- *  learns about time. it is one TRACK-GLOBAL fact, stored on `Track.domain` (the ECS
- *  layer) and converted at one seam (`domain.convertDomain`); `Distance` is the
- *  default so every existing caller and track stays byte-identical. */
+/** the unit the ruler, readouts, and Time-view gestures DISPLAY a force section's
+ *  keyframes and extent in — every keyframe, extent, strip and strip keyframe is
+ *  stored in meters of arclength always (`Track.domain` is a view, not a document
+ *  conversion). `Distance` shows the stored meters verbatim; `Time` reads seconds
+ *  off the live bake's s↔t table (`domain.ts`/`timeline.ts`), the same seam geo
+ *  nodes already project through. Stored on `Track.domain` (the ECS layer). */
 export enum Domain {
     Distance = 0,
     Time = 1,
@@ -150,17 +148,16 @@ export function stripOverride(
 
 /** a section's authored payload. geo carries local nodes (node 0 at the local
  *  origin, heading 0) + nominal spacing (m); force carries a per-edge F_n
- *  profile (g) + its edge step in its `domain`'s own unit (m for `Distance`, s
- *  for `Time`). both kinds carry an optional `strips` — the velocity-control
- *  channel (above), threaded to the recovery (and, for force, the march too)
- *  regardless of which authoring idiom produced the geometry. */
+ *  profile (g) + its edge step, always meters of arclength. both kinds carry an
+ *  optional `strips` — the velocity-control channel (above), threaded to the
+ *  recovery (and, for force, the march too) regardless of which authoring
+ *  idiom produced the geometry. */
 export type Section =
     | { kind: "geo"; nodes: readonly Node[]; ds: number; strips?: readonly Strip[] }
     | {
           kind: "force";
           fN: ArrayLike<number>;
           step: Step;
-          domain?: Domain;
           strips?: readonly Strip[];
       };
 
@@ -302,25 +299,11 @@ export function evalGeo(
  * `fN.length` must equal `step.edges` (thrown otherwise) — the pairing invariant
  * `resolveStep` produces and the caller must not have split.
  *
- * `domain` is a step rule, not a rework: **Distance** (default, byte-identical
- * to the original path) steps `Δs = step.ds` and samples `fN` at the source
- * convention `σ_i = i·ds`, so every forward step advances exactly `ds` along
- * its mid-angle (the per-edge chord IS `ds`, the recovery's `dsArr`).
- * **Time** steps `Δt = step.ds` and samples `fN` at `t_i = i·Δt` (the same source
- * convention, time's twin); each edge advances `ds_i = v_i·Δt` along
- * arclength — a *variable* per-edge chord, read off the live integrator `v`
- * before it is overwritten by the recovery below (`forces` already accepts a
- * non-uniform `dsArr`, the geo path's own shape). A stalled `v_i` is EXACTLY 0
- * — the energy form is `sqrt(max(v², 0))`, and `V_FLOOR` floors only the dθ
- * denominator inside `step` — so `ds_i` is exactly 0 and the frozen cart is a
- * fixed point: samples pile on one place and the section's realized arclength
- * collapses. Accepted, no new clamp: the plateau is exact by design, which is
- * what lets `domain.ts` resolve it at one agreed slope in both directions.
- * A zero-length edge has no chord, so the recovery below resolves it as the
- * stationary cart it is — the previous chord angle carried across (a frozen
- * cart's orientation doesn't change) and `F_n = cos θ`, gravity's track-normal
- * term with no centripetal demand (`bake.forces`). The entry heading is passed
- * for the case where a whole section marches frozen and no chord exists at all.
+ * marches `Δs = step.ds`, sampling `fN` at the source convention `σ_i = i·ds`,
+ * so every forward step advances exactly `ds` along its mid-angle (the per-edge
+ * chord IS `ds`, the recovery's `dsArr`). Arclength is the section's one stored
+ * axis — `Track.domain` is a display lens over the live bake's s↔t table
+ * (`timeline.ts`/`domain.ts`), never a second march.
  *
  * `friction`/`resistance` (both defaulted 0, trailing) thread to BOTH the
  * march (`stepForward`/`integrate`) and the re-recovery (`forces`).
@@ -338,7 +321,6 @@ export function evalForce(
     entry: Entry,
     fN: ArrayLike<number>,
     step: Step,
-    domain: Domain = Domain.Distance,
     friction = 0,
     resistance = 0,
     strips?: readonly Strip[],
@@ -359,43 +341,21 @@ export function evalForce(
 
     const override = stripOverride(strips);
     const dsArr = new Float32Array(edges);
-    if (domain === Domain.Time) {
-        for (let i = 0; i < edges; i++) {
-            const dsi = v[i] * ds; // ds_i = v_i · Δt
-            dsArr[i] = dsi;
-            stepForward(
-                posX,
-                posY,
-                theta,
-                v,
-                i,
-                i + 1,
-                fN[i],
-                dsi,
-                G,
-                V_FLOOR,
-                friction,
-                resistance,
-                override && ((natural) => override(i, natural)),
-            );
-        }
-    } else {
-        integrate(
-            posX,
-            posY,
-            theta,
-            v,
-            n,
-            ds,
-            (sigma) => fN[Math.round(sigma / ds)],
-            G,
-            V_FLOOR,
-            friction,
-            resistance,
-            override,
-        );
-        dsArr.fill(ds);
-    }
+    integrate(
+        posX,
+        posY,
+        theta,
+        v,
+        n,
+        ds,
+        (sigma) => fN[Math.round(sigma / ds)],
+        G,
+        V_FLOOR,
+        friction,
+        resistance,
+        override,
+    );
+    dsArr.fill(ds);
 
     const outF = new Float32Array(edges);
     const injection = forces(
@@ -497,7 +457,7 @@ export function chain(
                       resistance,
                       sec.strips,
                   )
-                : evalForce(entry, sec.fN, sec.step, sec.domain, friction, resistance, sec.strips);
+                : evalForce(entry, sec.fN, sec.step, friction, resistance, sec.strips);
         const start = off;
         // bound the COPY at the flat buffers' remaining room. `evalGeo` already respects it —
         // it was handed `maxSamples - off` as its own budget, so `r.edges` never exceeds what's

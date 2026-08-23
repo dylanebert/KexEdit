@@ -124,6 +124,9 @@ export interface Kex {
     convertAt(i: number): void;
     ctxCut(): { at: number; t?: number } | null;
     deleteAt(i: number): boolean;
+    // the chart's arclength->axis lens (`Timeline.svelte`'s `dOf`) -- S6's own oracle: called
+    // before a drag to read the table the gesture will freeze.
+    dOf(u: number): number;
     domain(): string;
     editing(): boolean;
     forceCount(): number;
@@ -188,6 +191,8 @@ export interface Kex {
     tangent(): { mode: number; inX: number; inY: number; outX: number; outY: number } | null;
     tangentHandles(): { side: string; x: number; y: number }[];
     undoDepth(): number;
+    // `dOf`'s inverse -- see its own doc.
+    uOf(d: number): number;
     v0(): number;
     xView(): [number, number];
 }

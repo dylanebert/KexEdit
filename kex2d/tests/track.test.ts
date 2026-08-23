@@ -3,7 +3,6 @@ import { State } from "@dylanebert/shallot";
 import {
     addNode,
     appendSection,
-    applyDomain,
     authoredHash,
     BakeSystem,
     bakeLive,
@@ -21,29 +20,22 @@ import {
     spawnStrip,
     Strip,
     stripAt,
-    stripBoundsAt,
     stripOverlapped,
-    stripSeedValue,
     stripState,
     stripKeyframeState,
     stripKeyframes,
     setStrip,
     stripsForStep,
-    validStripValue,
-    stripCoversOneEdge,
-    stripMinExtentAt,
     setBakeFreeze,
     setBakeLanding,
     deleteSection,
     DS_NOMINAL,
-    DT_NOMINAL,
     EXTEND_DIST,
     exitWorld,
     extend,
     forceBake,
     forceEase,
     forceMarkers,
-    forceNominal,
     forcePointState,
     forceSample,
     type ForceTangent,
@@ -55,12 +47,7 @@ import {
     MAX_FIT_EDGES,
     MAX_SAMPLES,
     MIN_FORCE_LEN,
-    minForceExtent,
     nextForce,
-    clearForceTangentSide,
-    destroyForce,
-    forceCarried,
-    restoreForcePoint,
     readProvenance,
     reheadOnDrag,
     removeTrailingHandle,
@@ -85,11 +72,9 @@ import {
     spawnForce,
     stationTaken,
     splitForce,
-    splitGeo,
     geoSplitStripsRefused,
     geoSplitAtStripsRefused,
     seedTangent,
-    setForceCarried,
     setForceEase,
     setForcePoint,
     setForceTangent,
@@ -117,7 +102,6 @@ import {
     trackFriction,
     trackResistance,
     TrackPlugin,
-    V0,
     validCoefficient,
 } from "../src/track";
 import {
@@ -138,14 +122,11 @@ import {
     undo,
     addStripKeyframe,
 } from "../src/history";
-import { trackMapping } from "../src/cart";
-import { convertDomain } from "../src/domain";
 import { DEFAULT_G, Easing } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { LENGTH_MIN } from "../src/magnet";
 import { Domain, evalGeo } from "../src/section";
 import { editTangent, type Node, sampleChain, type Tangent, TangentMode } from "../src/spline";
-import { dToU } from "../src/timeline";
 import { GOLDEN } from "./helpers/golden";
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
@@ -989,23 +970,15 @@ describe("the sample budget", () => {
     });
 });
 
-// the lens's NATIVE side (kex2d-time-domain stage 4): `Track.domain` says what unit the force
-// store carries, and `entryU`/`lenU` + `toGlobalU`/`toLocalU` address it. `Distance` makes the
-// native axis the arclength axis (the same numbers, so every existing path is byte-identical);
-// `Time` makes it global march time, read straight off `bakeOut.t` — the force store's own clock,
-// so the map is an exact affine with no table in the path. What still projects through a table is
-// the other direction: a distance-authored geo quantity drawn on a time chart (`timeline.dToU`).
-describe("coordinate lens — the native axis", () => {
-    /** geo (flat) then a force section, on a track in `domain`. In `Time` the force section's
-     *  extent is a DURATION (its sticky default, `DEFAULT_FORCE_LEN / V0`) and its interior
-     *  keyframe is authored in seconds — the store the conversion op leaves behind. */
-    function nativeChain(domain: Domain): {
-        state: State;
-        eid: number;
-        g: number;
-        f: number;
-        kf: number;
-    } {
+// the lens's "native" pair (`entryU`/`lenU`, `toGlobalU`/`toLocalU`) retired the second,
+// domain-varying axis it used to switch between arclength and march time (S6): a force
+// keyframe's stored `s` is arclength always, so there is nothing left to address on a second
+// axis. `entryU`/`lenU`/`toGlobalU`/`toLocalU` are `offset`/`len`/`toGlobal`/`toLocal` now,
+// regardless of `Track.domain` — a Time-domain DISPLAY projection is a separate seam
+// (`timeline.ts`'s `dToU`/`uToD`), never a second address space here.
+describe("coordinate lens — the native pair is the arclength pair (S6)", () => {
+    /** geo (flat) then a force section with an interior keyframe, on a track in `domain`. */
+    function chain(domain: Domain): { state: State; eid: number; g: number; f: number } {
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
@@ -1014,127 +987,26 @@ describe("coordinate lens — the native axis", () => {
         addNode(state, g, 0, 0);
         addNode(state, g, EXTEND_DIST, 0);
         const f = appendSection(state, SectionKind.Force);
-        // an interior keyframe, in the section's own unit: 1 s into a 2.4 s section, or 10 m
-        // into a 24 m one. both land strictly inside, so no boundary tie is involved.
-        const kf = domain === Domain.Time ? 1 : 10;
-        createForcePoint(state, f, kf, 1.2);
+        createForcePoint(state, f, 10, 1.2); // 10 m into a 24 m section, strictly interior
         state.step(0);
-        return { state, eid, g, f, kf };
+        return { state, eid, g, f };
     }
 
-    /** the section's baked sample range on the current bake. */
-    function range(id: number): { start: number; end: number } {
-        const info = sectionInfo.get(id);
-        if (!info) throw new Error(`no bake for section ${id}`);
-        return { start: info.startSample, end: info.endSample };
+    for (const domain of [Domain.Distance, Domain.Time] as const) {
+        test(`${Domain[domain]}: entryU/lenU equal offset/len, number for number`, () => {
+            const { state, eid, g, f } = chain(domain);
+            const spans = sectionSpans(state, eid);
+            expect(spans.map((sp) => sp.id)).toEqual([g, f]);
+            for (const sp of spans) {
+                expect(sp.entryU).toBe(sp.offset);
+                expect(sp.lenU).toBe(sp.len);
+                const s = sp.len * 0.4;
+                expect(toGlobalU(spans, sp.id, s)).toBe(toGlobal(spans, sp.id, s));
+                const u = sp.offset + s;
+                expect(toLocalU(spans, u)).toEqual(toLocal(spans, u));
+            }
+        });
     }
-
-    test("Distance: the native axis IS the arclength axis, number for number", () => {
-        const { state, eid, g, f } = nativeChain(Domain.Distance);
-        const spans = sectionSpans(state, eid);
-        expect(spans.map((sp) => sp.id)).toEqual([g, f]);
-        for (const sp of spans) {
-            // not "close to": the same two f64 values, so every pre-domain path that reads
-            // `offset`/`len` and every new one that reads `entryU`/`lenU` agree bit for bit.
-            expect(sp.entryU).toBe(sp.offset);
-            expect(sp.lenU).toBe(sp.len);
-            const s = sp.len * 0.4;
-            expect(toGlobalU(spans, sp.id, s)).toBe(toGlobal(spans, sp.id, s));
-            const u = sp.offset + s;
-            expect(toLocalU(spans, u)).toEqual(toLocal(spans, u));
-        }
-    });
-
-    test("Time: a section's native entry is the baked march time at its entry sample", () => {
-        const { state, eid, g, f } = nativeChain(Domain.Time);
-        const out = bakeOut.get(eid);
-        if (!out) throw new Error("no bake");
-        const spans = sectionSpans(state, eid);
-        expect(spans.map((sp) => sp.id)).toEqual([g, f]);
-        for (const sp of spans) {
-            const { start, end } = range(sp.id);
-            // a table READ, not a derivation: `bakeOut.t` carries the march itself for a
-            // Time-domain force section (`track.computeTime`), which is the clock the stored
-            // keyframes are on.
-            expect(sp.entryU).toBe(out.t[start]);
-            expect(sp.lenU).toBe(out.t[end] - out.t[start]);
-        }
-        // the track opens at t = 0 and the sections tile the clock, in order.
-        expect(spans[0].entryU).toBe(0);
-        expect(spans[1].entryU).toBe(spans[0].entryU + spans[0].lenU);
-        // …and the arclength axis is still meters underneath, unchanged by the domain.
-        expect(spans[0].len).toBeGreaterThan(EXTEND_DIST - 1);
-    });
-
-    test("Time: a force keyframe's global time is entry time + stored t, exactly", () => {
-        const { state, eid, f, kf } = nativeChain(Domain.Time);
-        const spans = sectionSpans(state, eid);
-        const sp = spans.find((x) => x.id === f);
-        if (!sp) throw new Error("force span missing");
-        // the affine, not an interpolation: `toBe`, so swapping the native read for a table
-        // lookup (the projected path) fails here even where the two nearly agree.
-        expect(toGlobalU(spans, f, kf)).toBe(sp.entryU + kf);
-        const u = toGlobalU(spans, f, kf);
-        if (u === null) throw new Error("toGlobalU null for a live section");
-        const back = toLocalU(spans, u);
-        expect(back?.section).toBe(f);
-        expect(back?.s).toBeCloseTo(kf, 12); // f64 entry±entry noise only
-    });
-
-    test("Time: the native extent is the section's authored DURATION", () => {
-        const { state, eid, f } = nativeChain(Domain.Time);
-        const spans = sectionSpans(state, eid);
-        const sp = spans.find((x) => x.id === f);
-        const authored = sections(state).find((r) => r.id === f)?.length ?? Number.NaN;
-        if (!sp) throw new Error("force span missing");
-        // the extent is seconds, realized exactly bar the accumulation: `edges =
-        // round(length / DT_NOMINAL)` = 48 steps summed in the f32 `bakeOut.t`, so the bound is
-        // 48 · 2^-24 · 2.4 s ≈ 7e-6 s — not a quantization gap (the duration is a whole number of
-        // steps here), which is why one `DT_NOMINAL` would be a hundredfold too loose to pin it.
-        expect(Math.abs(sp.lenU - authored)).toBeLessThan(1e-5);
-        // and it is emphatically NOT the meters the same section would span.
-        expect(sp.len).toBeGreaterThan(5 * sp.lenU);
-    });
-
-    test("Time: a geo section's arclength projects onto the same clock through the d↔u seam", () => {
-        // geo stays position-authored in either domain, so its chart position is a PROJECTION:
-        // global distance → global time through the bake's arc↔time table. That table and the
-        // lens's native read must agree, or a geo clip and a force keyframe would draw on
-        // different clocks.
-        const { state, eid } = nativeChain(Domain.Time);
-        const m = trackMapping(eid);
-        if (!m) throw new Error("no mapping");
-        const spans = sectionSpans(state, eid);
-        // every span's entry AND exit, so the check lands at the shared boundary and the track
-        // end as well as the origin — the origin alone (d = 0 → u = 0) holds under any
-        // implementation, so it can't carry the claim by itself.
-        const stations = spans.flatMap((sp) => [
-            { d: sp.offset, u: sp.entryU },
-            { d: sp.offset + sp.len, u: sp.entryU + sp.lenU },
-        ]);
-        expect(stations.filter((st) => st.d > 0 && st.u > 0).length).toBeGreaterThanOrEqual(3);
-        for (const st of stations) {
-            // tolerance derivation: the two tables accumulate arclength differently — the lens
-            // sums the f32 per-edge `bakeOut.ds`, `trackMapping` re-hypots the f32 positions in
-            // f64 — so they disagree by ~1e-7 relative per edge over ~100 edges of ~60 m, i.e.
-            // ≲1e-4 m, which at dt/ds = 1/v ≈ 0.1 s/m is ≲1e-5 s. 1e-4 s is 10× that.
-            expect(dToU(m, Domain.Time, st.d)).toBeCloseTo(st.u, 4);
-        }
-    });
-
-    test("Time: the boundary policy holds on the native axis", () => {
-        const { state, eid, g, f } = nativeChain(Domain.Time);
-        const spans = sectionSpans(state, eid);
-        expect(toLocalU(spans, 0)).toEqual({ section: g, s: 0 });
-        // the shared boundary belongs to the UPSTREAM section's exit — the same
-        // left/upstream-inclusive rule the distance axis uses, now on the clock.
-        const boundary = spans[0].entryU + spans[0].lenU;
-        expect(toLocalU(spans, boundary)).toEqual({ section: g, s: spans[0].lenU });
-        const end = spans[1].entryU + spans[1].lenU;
-        expect(toLocalU(spans, end)).toEqual({ section: f, s: spans[1].lenU });
-        expect(toLocalU(spans, end + 100)).toEqual({ section: f, s: spans[1].lenU });
-        expect(toLocalU(spans, -50)).toEqual({ section: g, s: 0 });
-    });
 
     test("no bake: the native pair is null, like its distance twin", () => {
         const state = new State();
@@ -1489,7 +1361,11 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
         expect(readProvenance(sec)?.token).not.toBe(stamped);
     });
 
-    test("a Track.domain flip breaks the stamped token", () => {
+    test("a Track.domain flip does NOT break the stamped token (S6: domain is a display lens)", () => {
+        // `Track.domain` used to ride the token because a flip converted the section's own
+        // stored numbers — a payload stamped in the old unit could otherwise restore verbatim
+        // into a converted store. S6 retired that conversion entirely: a flip changes no
+        // authored component, so the token must stay stable across one.
         const { state, sec } = track();
         state.step(0);
         stampProvenance(state, sec, snapshotSection(state, sec));
@@ -1498,7 +1374,7 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
         setTrackDomain(state, Domain.Time);
         state.step(0);
         stampProvenance(state, sec, snapshotSection(state, sec));
-        expect(readProvenance(sec)?.token).not.toBe(stamped);
+        expect(readProvenance(sec)?.token).toBe(stamped);
     });
 
     test("stamping never touches bakeHash/authoredHash — no-churn", () => {
@@ -2125,7 +2001,7 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
      *  the way it does against `accumTol`'s single shared rounding, because every step both
      *  contributes a term AND re-rounds the accumulator carrying all the prior ones. Verified
      *  over the Time-domain sweep below (worst observed ratio to this bound ~0.23). */
-    function marchTol(edges: number, extent: number): number {
+    function _marchTol(edges: number, extent: number): number {
         return edges * 2 ** -24 * extent;
     }
 
@@ -2197,39 +2073,6 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
             }
         }
     });
-
-    // stage 2 — the seam (`profile.resolveStep`) now makes every force-payload pairing conform
-    // to the authored extent, on EITHER axis: the Distance-domain sweep above and this
-    // Time-domain twin. `sectionSpans`'s `lenU` is the native-axis reading — in `Time` that's
-    // the section's own realized march DURATION (`bakeOut.t` exit − entry) — so this is the
-    // exact other-axis form of the Distance sweep's `sp.len` check, never a claim about what a
-    // Distance→Time FLIP deviates by (that bound stays refused per the locked decision; a
-    // `Time`-domain track authored directly, with no flip anywhere in the picture, is what this
-    // isolates). A `Time`-domain track's force sections author duration directly (no geo
-    // sections, no conversion), so DT_NOMINAL replaces DS_NOMINAL as the nominal step swept.
-    // a Time-domain force section always bakes at `DT_NOMINAL` — there is no per-section
-    // step to override it away from (removed, stage 5), so this covers the
-    // off-grid case across authored durations at the one march step the domain has.
-    test("a Time-domain section's sectionSpans duration equals its authored duration, off-grid durations", () => {
-        const durations = [
-            1.2345, 2.37, 0.813, 4.007, 0.5555, 10.0001, 0.2222, 6.161, 0.39, 1.7017,
-        ];
-        for (const duration of durations) {
-            if (onGrid(duration, DT_NOMINAL)) continue;
-            const edges = Math.max(1, Math.round(duration / DT_NOMINAL));
-            const state = new State();
-            state.addSystem(BakeSystem);
-            const eid = createTrack(state);
-            setTrackDomain(state, Domain.Time);
-            const sec = createSection(state, 0, SectionKind.Force, duration);
-            state.step(0);
-            const spans = sectionSpans(state, eid);
-            const sp = spans.find((x) => x.id === sec);
-            if (!sp) throw new Error("section missing from spans");
-            const tol = marchTol(edges, duration);
-            expect(Math.abs(sp.lenU - duration)).toBeLessThan(tol);
-        }
-    });
 });
 
 // `Track.domain` (kex2d-time-domain stage 3) — the TRACK-GLOBAL unit every force section's
@@ -2237,19 +2080,17 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
 // bake hash only when it isn't the default `Distance` (so every existing track's hash is
 // byte-identical), threaded to `evalForce`'s step rule, and paired with a per-domain sticky
 // append length. The conversion op itself is `tests/domain.test.ts`.
-describe("Track.domain (document layer)", () => {
-    test("defaults to Distance — every pre-stage-3 call site reads a unit, not merely falsy", () => {
+describe("Track.domain (view lens, S6)", () => {
+    test("defaults to Distance", () => {
         const { state } = track();
         expect(trackDomain(state)).toBe(Domain.Distance);
     });
 
-    test("DT_NOMINAL and the extent floor are DERIVED from their distance twins, not tuned", () => {
-        expect(DT_NOMINAL).toBeCloseTo(DS_NOMINAL / V0, 12);
-        expect(minForceExtent(Domain.Distance)).toBe(MIN_FORCE_LEN);
-        expect(minForceExtent(Domain.Time)).toBeCloseTo(MIN_FORCE_LEN / V0, 12);
-    });
-
-    test("a non-default domain enters the bake hash; the Distance sentinel leaves it untouched", () => {
+    test("a flip is a pure view write: the bake hash never moves either direction", () => {
+        // arclength is the one store (`Track.domain` is a lens over the live bake's s↔t table,
+        // never a second march) — so unlike the retired document-conversion op, a domain flip
+        // must NOT enter the bake hash. RED FIRST on the pre-S6 tree: the old bake hash suffixed
+        // a non-Distance domain, so this assertion read `.not.toBe` there.
         const { state, eid, sec } = track();
         state.step(0);
         convertSection(state, sec); // → force
@@ -2258,123 +2099,16 @@ describe("Track.domain (document layer)", () => {
 
         setTrackDomain(state, Domain.Time);
         state.step(0);
-        expect(bakeOut.get(eid)?.hash).not.toBe(distanceHash); // a domain miss re-bakes
+        expect(bakeOut.get(eid)?.hash).toBe(distanceHash);
 
         setTrackDomain(state, Domain.Distance);
         state.step(0);
-        expect(bakeOut.get(eid)?.hash).toBe(distanceHash); // byte-identical to the Distance bake
+        expect(bakeOut.get(eid)?.hash).toBe(distanceHash);
     });
 
-    // the pinned literal in "the default flat track bakes to the pinned hash" (above) is this
-    // stage's byte-identity gate: it was captured pre-stage-3 and still matches verbatim, so no
-    // hand-authored Distance-domain track's `bakeHash` moved.
-
-    test("a Time-domain force section marches ds = v·Δt at the derived nominal", () => {
-        // a flat 1g profile over a level track holds v at the entry speed for the whole section
-        // (no elevation change), so every realized edge is exactly v·DT_NOMINAL — the document
-        // wiring of `evalForce`'s time step rule, not a rework of it.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        setTrackDomain(state, Domain.Time);
-        const duration = 2; // seconds
-        const sec = createSection(state, 0, SectionKind.Force, duration);
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, duration, 1);
-        state.step(0);
-
-        const out = bakeOut.get(eid);
-        const count = Track.count.get(eid);
-        if (!out) throw new Error("bakeOut missing");
-        const expected = V0 * DT_NOMINAL; // == DS_NOMINAL, by DT_NOMINAL's own derivation
-        expect(expected).toBeCloseTo(DS_NOMINAL, 10);
-        for (let i = 0; i < count - 1; i++) expect(out.ds[i]).toBeCloseTo(expected, 5);
-        expect(count - 1).toBe(Math.round(duration / DT_NOMINAL)); // edges = round(dur / Δt)
-    });
-
-    // `kex2d-correctness-fixes` — the Time nominal used to be the module constant `DT_NOMINAL`
-    // while Distance's was the per-track `Track.ds` knob, so a non-default `Track.ds` moved one
-    // domain's sampling density and left the other pinned. Nothing authors `Track.ds` today, so
-    // nothing was observable; these two arms are what make the pairing checkable at all.
-    test("forceNominal derives BOTH domains' quanta from the one authored trackDs", () => {
-        for (const ds of [DS_NOMINAL, 0.25, 1, 2.5]) {
-            expect(forceNominal(Domain.Distance, ds)).toBe(ds);
-            // the time twin of the SAME quantum: `ds = v·dt` at the V0 constant
-            expect(forceNominal(Domain.Time, ds)).toBeCloseTo(ds / V0, 12);
-        }
-        expect(forceNominal(Domain.Time, DS_NOMINAL)).toBe(DT_NOMINAL);
-    });
-
-    test("a non-default Track.ds moves the Time march's step, not just the Distance one", () => {
-        // the pairing's observable: a flat 1g profile over a level track holds v at the entry
-        // speed, so every realized Time edge is exactly `v·Δt = V0·(trackDs/V0) = trackDs` — a
-        // Time-domain section at `trackDs` samples at the same SPATIAL density a Distance one
-        // does at the same `trackDs`, which is the whole claim `ds = v·dt` makes. Under the old
-        // module-constant nominal the edges stayed at `DS_NOMINAL` and the count at
-        // `round(duration / DT_NOMINAL)` no matter what `Track.ds` said.
-        const ds = 1; // ×2 the default, and off `DS_NOMINAL`'s grid in the derived Δt
-        const duration = 2; // seconds
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        Track.ds.set(eid, ds);
-        setTrackDomain(state, Domain.Time);
-        const sec = createSection(state, 0, SectionKind.Force, duration);
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, duration, 1);
-        state.step(0);
-
-        const out = bakeOut.get(eid);
-        const count = Track.count.get(eid);
-        if (!out) throw new Error("bakeOut missing");
-        expect(count - 1).toBe(Math.round(duration / (ds / V0)));
-        for (let i = 0; i < count - 1; i++) expect(out.ds[i]).toBeCloseTo(ds, 5);
-    });
-
-    test("a stalled Time-domain section bakes finite force and seeds finite keyframes", () => {
-        // the ordinary authoring state that found this: one 6 s section at a sustained 1.2 g from
-        // the default v0 drains the energy and stalls, and a Time march's stalled edges are
-        // EXACTLY zero-length by design. The recovery must resolve a chordless edge as the
-        // stationary cart it is (F_n = cos θ at the carried heading) — dividing by a zero chord
-        // put −Infinity/NaN into `bakeOut.fN`, which the chart's y-fit read as its axis floor and
-        // `bakeEntryForce` stamped into a fresh section's authored keyframes.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        setTrackDomain(state, Domain.Time);
-        const sec = createSection(state, 0, SectionKind.Force, 6);
-        createForcePoint(state, sec, 0, 1.2); // one point holds its value: sustained 1.2 g
-        state.step(0);
-
-        const out = bakeOut.get(eid);
-        const s = samples.get(eid);
-        if (!out || !s) throw new Error("no bake");
-        const count = Track.count.get(eid);
-        expect(out.firstInfeasible).toBeGreaterThanOrEqual(0); // the stall is really there
-        let stall = -1;
-        for (let i = 0; i < count - 1; i++) {
-            if (out.ds[i] === 0) {
-                stall = i;
-                break;
-            }
-        }
-        expect(stall).toBeGreaterThan(0); // and it really does freeze the march
-
-        for (let i = 0; i < count - 1; i++) expect(Number.isFinite(out.fN[i])).toBe(true);
-        // θ across the plateau holds the heading the cart stopped with (measured ≈ 1.99 rad on
-        // this profile), never the `atan2(0, 0)` collapse to 0.
-        expect(Math.abs(s.theta[stall])).toBeGreaterThan(1);
-        for (let i = stall; i < count; i++) expect(s.theta[i]).toBe(s.theta[stall]);
-
-        // and a section appended onto that stalled exit seeds authored keyframes from
-        // `bakeEntryForce` — non-finite g would enter authored state.
-        const next = appendSection(state, SectionKind.Force);
-        const seeded = sectionForces(state, next);
-        expect(seeded.length).toBeGreaterThan(0);
-        for (const p of seeded) expect(Number.isFinite(p.g)).toBe(true);
-    });
-
-    test("the extent trim floors in the ACTIVE domain's unit", () => {
+    test("the extent trim floors at MIN_FORCE_LEN meters regardless of the active domain", () => {
+        // storage is domain-invariant: `minForceExtent` still accepts a domain argument (the
+        // Time-view snap floor still calls it), but no longer selects a seconds-native floor.
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
@@ -2383,82 +2117,45 @@ describe("Track.domain (document layer)", () => {
         expect(extentOf(state, sec)).toBe(MIN_FORCE_LEN);
 
         setTrackDomain(state, Domain.Time);
-        setSectionLength(state, sec, 0.5); // 0.5 s is well above the time floor, below the m one
-        expect(extentOf(state, sec)).toBe(0.5);
         setSectionLength(state, sec, 0.01);
-        expect(extentOf(state, sec)).toBeCloseTo(MIN_FORCE_LEN / V0, 6);
+        expect(extentOf(state, sec)).toBe(MIN_FORCE_LEN); // same floor, same unit, as Distance
     });
 
-    test("a destructive convert resets to the ACTIVE domain's default extent", () => {
-        // the reset extent is a literal default, and in Time it must be the seconds twin: stamping
-        // the 24 m meters constant on a Time-domain track makes a 24-SECOND, 480-edge section.
+    test("a destructive convert resets to the one default extent regardless of the active domain", () => {
         const { state, sec } = track();
         state.step(0);
         setTrackDomain(state, Domain.Time);
         convertSection(state, sec); // geo → force
-        expect(extentOf(state, sec)).toBeCloseTo(EXTEND_DIST / V0, 10);
-        // and the seed keyframes land at that extent, not at the meters one.
+        expect(extentOf(state, sec)).toBe(EXTEND_DIST);
         const seeds = sectionForces(state, sec).map((p) => p.s);
         expect(seeds[0]).toBe(0);
-        expect(seeds[1]).toBeCloseTo(EXTEND_DIST / V0, 6);
-
-        // the Distance path is unchanged.
-        const { state: d, sec: dsec } = track();
-        d.step(0);
-        convertSection(d, dsec);
-        expect(extentOf(d, dsec)).toBe(EXTEND_DIST);
+        expect(seeds[1]).toBe(EXTEND_DIST);
     });
 
-    describe("sticky append length, per domain", () => {
+    describe("sticky append length", () => {
         // module-level state in track.ts, shared across the whole run (not ECS, not undo) —
         // reset before each test here, mirroring `history.test.ts`'s convention, so no test in
         // this file or another can leak a committed value into the next.
         beforeEach(() => {
-            setStickyLen(SectionKind.Force, EXTEND_DIST, Domain.Distance);
-            setStickyLen(SectionKind.Force, EXTEND_DIST / V0, Domain.Time);
+            setStickyLen(SectionKind.Force, EXTEND_DIST);
             setStickyLen(SectionKind.Geo, EXTEND_DIST);
         });
 
-        test("Distance and Time hold separate slots — neither commit leaks into the other", () => {
+        test("force holds one scalar — a commit under either active domain reads back the same", () => {
             setStickyLen(SectionKind.Force, 40, Domain.Distance);
             expect(stickyLen(SectionKind.Force, Domain.Distance)).toBe(40);
-            expect(stickyLen(SectionKind.Force, Domain.Time)).toBeCloseTo(EXTEND_DIST / V0, 10);
+            expect(stickyLen(SectionKind.Force, Domain.Time)).toBe(40);
 
             setStickyLen(SectionKind.Force, 3, Domain.Time);
             expect(stickyLen(SectionKind.Force, Domain.Time)).toBe(3);
-            expect(stickyLen(SectionKind.Force, Domain.Distance)).toBe(40); // untouched
+            expect(stickyLen(SectionKind.Force, Domain.Distance)).toBe(3);
+            setStickyLen(SectionKind.Force, EXTEND_DIST); // don't leak past the file
         });
 
-        test("a Time append never inherits a Distance sticky; it starts at its own default", () => {
-            setStickyLen(SectionKind.Force, 99, Domain.Distance); // a large committed metres trim
-            const state = new State();
-            state.addSystem(BakeSystem);
-            createTrack(state);
-            setTrackDomain(state, Domain.Time);
-            const id = appendSection(state, SectionKind.Force);
-            // the Time slot's literal default, not the 99 m a single shared sticky would leak.
-            expect(extentOf(state, id)).toBeCloseTo(EXTEND_DIST / V0, 10);
-        });
-
-        test("a committed Time extent becomes the next Time append's default", () => {
-            setStickyLen(SectionKind.Force, 5, Domain.Time);
-            const state = new State();
-            state.addSystem(BakeSystem);
-            createTrack(state);
-            setTrackDomain(state, Domain.Time);
-            expect(extentOf(state, appendSection(state, SectionKind.Force))).toBe(5);
-
-            setTrackDomain(state, Domain.Distance);
-            const want = stickyLen(SectionKind.Force, Domain.Distance);
-            expect(extentOf(state, appendSection(state, SectionKind.Force))).toBe(want);
-        });
-
-        test("a degenerate Time commit floors at MIN_FORCE_LEN/V0, not the metres floor", () => {
+        test("a degenerate commit floors at MIN_FORCE_LEN, regardless of the active domain", () => {
             setStickyLen(SectionKind.Force, 0.0001, Domain.Time);
-            expect(stickyLen(SectionKind.Force, Domain.Time)).toBeCloseTo(MIN_FORCE_LEN / V0, 10);
-            expect(stickyLen(SectionKind.Force, Domain.Distance)).toBeGreaterThanOrEqual(
-                MIN_FORCE_LEN,
-            );
+            expect(stickyLen(SectionKind.Force)).toBe(MIN_FORCE_LEN);
+            setStickyLen(SectionKind.Force, EXTEND_DIST); // don't leak past the file
         });
 
         test("a degenerate geo commit floors at LENGTH_MIN, its own gesture's floor", () => {
@@ -2467,7 +2164,7 @@ describe("Track.domain (document layer)", () => {
             setStickyLen(SectionKind.Geo, EXTEND_DIST); // module state: don't leak past the file
         });
 
-        test("a geo append reads its one Distance slot in either domain", () => {
+        test("a geo append reads its one slot in either active domain", () => {
             setStickyLen(SectionKind.Geo, 17);
             const state = new State();
             state.addSystem(BakeSystem);
@@ -2681,11 +2378,11 @@ describe("sectionSolvable — invoked-solve enablement", () => {
     });
 });
 
-// ── viewport force markers (kex2d-idioms stage 3): the native-axis arc→sample placement
-// helper + the per-marker world projection the ForceDrawSystem/pickForce read. the helper
-// walks the bake's OWN tables (per-edge `ds` on Distance, the per-sample march clock `t` on
-// Time — the ds-convention law), so the reference here is an INDEPENDENTLY-summed f64 station
-// table built by the test, never the helper's own walk.
+// ── viewport force markers (kex2d-idioms stage 3): the arclength→sample placement helper +
+// the per-marker world projection the ForceDrawSystem/pickForce read. the helper walks the
+// bake's OWN per-edge `ds` (S6: `forceSample` has one table now, no `time` branch), so the
+// reference here is an INDEPENDENTLY-summed f64 station table built by the test, never the
+// helper's own walk.
 describe("forceSample", () => {
     // edges 3..6 of a synthetic bake: stations from the entry are 0, 2, 5, 5 (zero-length
     // edge — the freeze-gap / stall shape), 10.
@@ -2694,7 +2391,6 @@ describe("forceSample", () => {
     ds[4] = 3;
     ds[5] = 0;
     ds[6] = 5;
-    const t = new Float32Array(10);
     const info = { startSample: 3, endSample: 7 };
 
     /** the station a returned address maps back to — the inverse the helper must satisfy. */
@@ -2706,14 +2402,14 @@ describe("forceSample", () => {
 
     test("distance: the address maps back to the clamped station, zero edges skipped", () => {
         // hand table: s=0 → the entry sample; s=1 → half of edge 3; s=6 → 1 m into edge 6.
-        expect(forceSample({ ds, t }, info, 9, false, 0)).toEqual({ index: 3, frac: 0 });
-        expect(forceSample({ ds, t }, info, 9, false, 1)).toEqual({ index: 3, frac: 0.5 });
-        const at6 = forceSample({ ds, t }, info, 9, false, 6);
+        expect(forceSample({ ds }, info, 9, 0)).toEqual({ index: 3, frac: 0 });
+        expect(forceSample({ ds }, info, 9, 1)).toEqual({ index: 3, frac: 0.5 });
+        const at6 = forceSample({ ds }, info, 9, 6);
         expect(at6).not.toBeNull();
         expect(at6?.index).toBe(6); // past the zero edge, never ON it
         expect(station(at6 as { index: number; frac: number })).toBeCloseTo(6, 6);
         // landing exactly at the zero edge's station resolves finite (no divide-by-zero).
-        const at5 = forceSample({ ds, t }, info, 9, false, 5);
+        const at5 = forceSample({ ds }, info, 9, 5);
         expect(at5).not.toBeNull();
         expect(Number.isFinite((at5 as { frac: number }).frac)).toBe(true);
         expect(station(at5 as { index: number; frac: number })).toBeCloseTo(5, 6);
@@ -2734,7 +2430,7 @@ describe("forceSample", () => {
         const total = cum[cum.length - 1];
         for (let k = 0; k <= 20; k++) {
             const s = (k / 20) * total;
-            const addr = forceSample({ ds: rds, t }, rinfo, n - 1, false, s);
+            const addr = forceSample({ ds: rds }, rinfo, n - 1, s);
             expect(addr).not.toBeNull();
             const a = addr as { index: number; frac: number };
             // the independent station of the returned address (f64 partial sums of the table).
@@ -2747,38 +2443,14 @@ describe("forceSample", () => {
     });
 
     test("distance: clamps at both ends", () => {
-        expect(forceSample({ ds, t }, info, 9, false, -1)).toEqual({ index: 3, frac: 0 });
-        expect(forceSample({ ds, t }, info, 9, false, 99)).toEqual({ index: 7, frac: 0 });
-    });
-
-    test("time: the march clock table, stall plateau finite", () => {
-        // per-sample march times at samples 3..7: 1.0, 1.5, 2.5, 2.5 (stall plateau), 4.0.
-        const tt = new Float32Array(10);
-        tt[3] = 1.0;
-        tt[4] = 1.5;
-        tt[5] = 2.5;
-        tt[6] = 2.5;
-        tt[7] = 4.0;
-        expect(forceSample({ ds, t: tt }, info, 9, true, 0)).toEqual({ index: 3, frac: 0 });
-        expect(forceSample({ ds, t: tt }, info, 9, true, 0.25)).toEqual({ index: 3, frac: 0.5 });
-        // landing on the plateau value: finite, at the first sample reaching it.
-        const plateau = forceSample({ ds, t: tt }, info, 9, true, 1.5);
-        expect(plateau).not.toBeNull();
-        expect(Number.isFinite((plateau as { frac: number }).frac)).toBe(true);
-        // 1.5 s local = march clock 2.5 = samples 5 AND 6 — either address draws the same point.
-        const p = plateau as { index: number; frac: number };
-        expect(tt[p.index] + p.frac * (tt[p.index + 1] - tt[p.index])).toBeCloseTo(2.5, 6);
-        // past the plateau, interpolating the following live edge.
-        const after = forceSample({ ds, t: tt }, info, 9, true, 2.0);
-        expect(after).toEqual({ index: 6, frac: (2.0 - 1.5) / 1.5 });
-        // clamped at the exit.
-        expect(forceSample({ ds, t: tt }, info, 9, true, 9)).toEqual({ index: 7, frac: 0 });
+        expect(forceSample({ ds }, info, 9, -1)).toEqual({ index: 3, frac: 0 });
+        expect(forceSample({ ds }, info, 9, 99)).toEqual({ index: 7, frac: 0 });
     });
 
     test("an empty published range (past the sample budget) yields null", () => {
-        expect(forceSample({ ds, t }, { startSample: 8, endSample: 8 }, 9, false, 1)).toBeNull();
+        expect(forceSample({ ds }, { startSample: 8, endSample: 8 }, 9, 1)).toBeNull();
         // a range published past the buffer end too (the budget-less downstream shape).
-        expect(forceSample({ ds, t }, { startSample: 12, endSample: 12 }, 9, false, 1)).toBeNull();
+        expect(forceSample({ ds }, { startSample: 12, endSample: 12 }, 9, 1)).toBeNull();
     });
 });
 
@@ -3417,16 +3089,18 @@ describe("velocity strips — ECS layer (C3)", () => {
     });
 
     // ── the wrong-granularity headline: an INTERIOR-start, INTERIOR-end strip on a force
-    // section, both Distance and Time. a whole-section-spanning strip would pass even a
-    // broken edge-index conversion, since a boundary landing at 0 or `edges` is a degenerate
-    // case every off-by-one bug also gets right.
+    // section, checked under both ruler domains — a strip's edge range is arclength-resolved
+    // regardless of `Track.domain` (S6: the domain is a display lens, never a second march),
+    // so the two arms must land on the identical edge range. A whole-section-spanning strip
+    // would pass even a broken edge-index conversion, since a boundary landing at 0 or `edges`
+    // is a degenerate case every off-by-one bug also gets right.
     for (const domain of [Domain.Distance, Domain.Time] as const) {
         test(`an interior force strip forces v to its stored value across its own edge range, ${Domain[domain]} domain`, () => {
             const state = new State();
             state.addSystem(BakeSystem);
             const eid = createTrack(state);
             setTrackDomain(state, domain);
-            const length = domain === Domain.Time ? 4 : 20; // both land on the nominal grid
+            const length = 20; // meters, always — the active domain never changes storage
             const sec = createSection(state, 0, SectionKind.Force, length);
             // a non-flat authored profile — F_n = 1.3g curves the path, so v naturally
             // DIFFERS from the strip's stamped value; without the override it wouldn't hold.
@@ -3442,7 +3116,7 @@ describe("velocity strips — ECS layer (C3)", () => {
             if (!info) throw new Error("no bake");
             const out = bakeOut.get(eid);
             if (!out) throw new Error("no bakeOut");
-            const step = domain === Domain.Time ? DT_NOMINAL : DS_NOMINAL;
+            const step = DS_NOMINAL;
             const startEdge = Math.round(start / step);
             const endEdge = Math.round(end / step);
             // an edge's override lands on the SAMPLE it exits into (edge k forces v at
@@ -3563,19 +3237,20 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(maxV - minV).toBeGreaterThan(2);
     });
 
-    test("a strip with keyframes evaluates a velocity curve across its extent, Time domain", () => {
+    test("a strip with keyframes evaluates a velocity curve across its extent, Time-view track", () => {
         // The wrong-granularity headline arm for T2: an interior-start, interior-end strip
-        // on a force section in the Time domain, WITH keyframes.
+        // on a force section, checked with the ruler in the Time domain — a view lens only
+        // (S6), so the underlying edge resolution is identical to the Distance arm above.
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
         setTrackDomain(state, Domain.Time);
-        const length = 4; // 4 seconds at DT_NOMINAL
+        const length = 20;
         const sec = createSection(state, 0, SectionKind.Force, length);
         createForcePoint(state, sec, 0, 1.3);
         createForcePoint(state, sec, length, 1.3);
-        const start = 1;
-        const end = 3;
+        const start = 5;
+        const end = 15;
         const stripId = createStrip(state, sec, start, end, 4) as number;
         createStripKeyframe(state, stripId, start, 3);
         createStripKeyframe(state, stripId, end, 7);
@@ -3583,7 +3258,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         const info = sectionInfo.get(sec);
         const out = bakeOut.get(eid);
         if (!info || !out) throw new Error("no bake");
-        const step = DT_NOMINAL;
+        const step = DS_NOMINAL;
         const startEdge = Math.round(start / step);
         const endEdge = Math.round(end / step);
         // the curve ramps from 3 to 7; check that the endpoints match the keyframe values
@@ -3686,776 +3361,6 @@ describe("velocity strips — ECS layer (C3)", () => {
         redo(h, state);
         const redoState = stripKeyframeState(state, id);
         expect(redoState?.s).toBe(end); // must be 18, not 30
-    });
-});
-
-// `Force.carried` — the domain-carry provenance bit (D1). A conversion-inserted keyframe is tagged
-// so the reverse flip can DROP it exactly instead of simplifying the denser store heuristically,
-// and every live-authoring writer clears the bit, so a key the person has edited is authored and
-// survives the next flip. The carry itself is `domain.ts`'s (`tests/domain.test.ts`); what lives
-// here is the per-key field's own threading: the row read, the snapshot pair, the content hash,
-// `applyDomain`'s plant/drop, and the writers that clear — live-authoring AND structural. A Cut or a
-// Join that writes a key's station, handles or easing tag is an edit under the same law, so it
-// promotes that key to authored instead of leaving a tagged key holding the document's own new
-// structure; the keys a Cut merely REBASES onto the tail's axis keep their bit, since a rebase
-// re-expresses one station in a new frame and writes no shape.
-describe("force keyframe provenance (Force.carried, D1)", () => {
-    /** a force section with two authored keys, baked. */
-    function forceSec(): { state: State; eid: number; sec: number } {
-        const { state, eid, sec } = track();
-        convertSection(state, sec); // → force, extent EXTEND_DIST
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, EXTEND_DIST, 0.8);
-        state.step(0);
-        return { state, eid, sec };
-    }
-
-    test("an authored key reads carried false; a planted one reads true", () => {
-        const { state, sec } = forceSec();
-        const authored = sectionForces(state, sec);
-        expect(authored.length).toBeGreaterThan(1);
-        expect(authored.some((p) => p.carried)).toBe(false);
-        expect(authored.every((p) => !forceCarried(state, p.id))).toBe(true);
-
-        spawnForce(state, sec, 9001, 5, 0.9, undefined, undefined, true);
-        expect(forceCarried(state, 9001)).toBe(true);
-        expect(sectionForces(state, sec).find((p) => p.id === 9001)?.carried).toBe(true);
-    });
-
-    test("the snapshot pair round-trips the bit byte-identically, both values", () => {
-        const { state, sec } = forceSec();
-        spawnForce(state, sec, 9002, 5, 0.9, undefined, undefined, true);
-        const snap = snapshotSection(state, sec);
-        expect(snap.points.filter((p) => p.carried).map((p) => p.id)).toEqual([9002]);
-        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
-        restoreSection(state, snap);
-        expect(sectionForces(state, sec).map((p) => ({ id: p.id, carried: p.carried }))).toEqual(
-            snap.points.map((p) => ({ id: p.id, carried: p.carried })),
-        );
-    });
-
-    test("the bit rides the content hash like any other per-key field", () => {
-        // red before the hash carried it: clearing a tag left `bakeOut.hash` unchanged, so a
-        // provenance stamp taken before the edit would certify a document whose next reverse flip
-        // behaves differently (it keeps the key instead of dropping it).
-        const { state, eid, sec } = forceSec();
-        spawnForce(state, sec, 9003, 5, 0.9, undefined, undefined, true);
-        state.step(0);
-        const tagged = bakeOut.get(eid)?.hash;
-        const authoredTagged = authoredHash(state);
-        // the bit ALONE moves: `setForceCarried` writes no station, value, easing tag or handle, so
-        // the hash movement below is attributable to nothing else. (This arm used to clear through
-        // `setForcePoint(9003, 5, 0.9)` — the same numbers — which is exactly the zero-geometry
-        // promotion that writer no longer performs.)
-        setForceCarried(state, 9003, false);
-        expect(forceCarried(state, 9003)).toBe(false);
-        expect(authoredHash(state)).not.toBe(authoredTagged);
-        state.step(0);
-        expect(bakeOut.get(eid)?.hash).not.toBe(tagged);
-        // restoring the bit reproduces the earlier hash exactly.
-        restoreForcePoint(state, {
-            section: sec,
-            id: 9003,
-            s: 5,
-            g: 0.9,
-            ease: forceEase(state, 9003),
-            carried: true,
-        });
-        state.step(0);
-        expect(bakeOut.get(eid)?.hash).toBe(tagged);
-    });
-
-    test("every live-authoring writer clears the bit; the snapshot restore does not", () => {
-        const { state, sec } = forceSec();
-        const plant = (id: number): void => {
-            destroyForce(state, id);
-            spawnForce(
-                state,
-                sec,
-                id,
-                5,
-                0.9,
-                undefined,
-                { mode: TangentMode.Aligned, in: { ds: -1, dg: 0 }, out: { ds: 1, dg: 0 } },
-                true,
-            );
-            expect(forceCarried(state, id)).toBe(true);
-        };
-        plant(9010);
-        setForcePoint(state, 9010, 6, 0.9);
-        expect(forceCarried(state, 9010)).toBe(false);
-
-        plant(9010);
-        setForceEase(state, 9010, Easing.Linear);
-        expect(forceCarried(state, 9010)).toBe(false);
-
-        plant(9010);
-        setForceTangent(state, 9010, null);
-        expect(forceCarried(state, 9010)).toBe(false);
-
-        plant(9010);
-        clearForceTangentSide(state, 9010, "out");
-        expect(forceCarried(state, 9010)).toBe(false);
-
-        // the byte-identical paths must NOT clear it: undo of an edit has to put the bit back.
-        plant(9010);
-        const st = forcePointState(state, 9010);
-        if (!st) throw new Error("no point state");
-        expect(st.carried).toBe(true);
-        setForcePoint(state, 9010, 6, 0.9);
-        restoreForcePoint(state, st);
-        expect(forceCarried(state, 9010)).toBe(true);
-    });
-
-    test("a ZERO-GEOMETRY write promotes nothing — only a write that moves the key clears the bit", () => {
-        // Red before this repair, on every arm below: each writer cleared `Force.carried`
-        // unconditionally, and `forceMove`→`applyDrag` writes on EVERY pointermove — so pointer
-        // jitter inside one quantized station, or a click that lands a single no-move write,
-        // promoted a carried key. The recorded entry's only content was the provenance bit
-        // (`sameForcePoint` sees the bit move and correctly records), so the person's undo stack grew
-        // an entry that undoes a change they never made, and the next reverse flip kept an invented
-        // key. The comparison is at the store's own f32 precision, on the write that will LAND.
-        const { state, sec } = forceSec();
-        const plant = (id: number, s: number, g: number): void => {
-            destroyForce(state, id);
-            spawnForce(
-                state,
-                sec,
-                id,
-                s,
-                g,
-                Easing.Linear,
-                { mode: TangentMode.Aligned, in: { ds: -1, dg: 0 }, out: { ds: 1, dg: 0 } },
-                true,
-            );
-            expect(forceCarried(state, id)).toBe(true);
-        };
-
-        plant(9030, 5, 0.9);
-        setForcePoint(state, 9030, 5, 0.9); // the identical numbers — a jitter frame
-        expect(forceCarried(state, 9030)).toBe(true);
-        setForcePoint(state, 9030, 5.5, 0.9); // a real move, in `s` alone
-        expect(forceCarried(state, 9030)).toBe(false);
-
-        plant(9031, 5, 0.9);
-        setForcePoint(state, 9031, 5, 0.95); // a real move, in `g` alone
-        expect(forceCarried(state, 9031)).toBe(false);
-
-        // an `s` the station guard REFUSES cannot clear the bit either: the write does not land, so
-        // there is no geometry in it (the `g` half is unchanged here, or it would be a real move).
-        plant(9032, 5, 0.9);
-        plant(9033, 7, 0.9);
-        setForcePoint(state, 9033, 5, 0.9); // 5 is taken by 9032 — refused per-axis
-        expect(sectionForces(state, sec).find((p) => p.id === 9033)?.s).toBe(7);
-        expect(forceCarried(state, 9033)).toBe(true);
-
-        // the three sibling writers, treated the same way for the same reason.
-        plant(9034, 5, 0.9);
-        setForceEase(state, 9034, Easing.Linear); // the tag it already carries
-        expect(forceCarried(state, 9034)).toBe(true);
-        setForceEase(state, 9034, Easing.Cubic);
-        expect(forceCarried(state, 9034)).toBe(false);
-
-        plant(9035, 5, 0.9);
-        setForceTangent(state, 9035, {
-            mode: TangentMode.Aligned,
-            in: { ds: -1, dg: 0 },
-            out: { ds: 1, dg: 0 },
-        }); // the handles it already holds — a drag back to its origin
-        expect(forceCarried(state, 9035)).toBe(true);
-        setForceTangent(state, 9035, null);
-        expect(forceCarried(state, 9035)).toBe(false);
-
-        plant(9036, 5, 0.9);
-        clearForceTangentSide(state, 9036, "out");
-        expect(forceCarried(state, 9036)).toBe(false); // the side WAS explicit — a real clear
-        plant(9037, 5, 0.9);
-        clearForceTangentSide(state, 9037, "out");
-        clearForceTangentSide(state, 9037, "in"); // the in side is still explicit here
-        expect(forceCarried(state, 9037)).toBe(false);
-        spawnForce(
-            state,
-            sec,
-            9038,
-            9,
-            0.9,
-            Easing.Cubic,
-            { mode: TangentMode.Aligned, in: { ds: -1, dg: 0 } },
-            true,
-        );
-        clearForceTangentSide(state, 9038, "out"); // already derived: nothing to write
-        expect(forceCarried(state, 9038)).toBe(true);
-    });
-
-    test("setForceCarried is the one writer that changes droppability without writing shape", () => {
-        // the law's non-writer arm needs a writer of its own: `history.deleteForces` promotes the
-        // surviving carried keys of a section whose AUTHORED set it just changed, and its undo puts
-        // the bits back — neither direction writes a station, a value, an easing tag or a handle.
-        const { state, sec } = forceSec();
-        spawnForce(state, sec, 9040, 5, 0.9, Easing.Linear, undefined, true);
-        const before = forcePointState(state, 9040);
-        setForceCarried(state, 9040, false);
-        expect(forceCarried(state, 9040)).toBe(false);
-        setForceCarried(state, 9040, true);
-        expect(forcePointState(state, 9040)).toEqual(before); // every other column untouched
-        setForceCarried(state, 999999, false); // a gone id is a no-op, not a throw
-    });
-
-    test("applyDomain plants the snapshot's new keys and drops the ones it omits", () => {
-        // the carry's write path: `domain.convertDomain` computes a converted key SET (the authored
-        // keys plus the inserted ones, minus the previous flip's), so `applyDomain` is no longer a
-        // position-only write. What survives of its narrow claim is that no GEO entity is touched.
-        const { state, sec } = forceSec();
-        const before = snapshotSection(state, sec);
-        const planted = {
-            ...before,
-            points: [
-                ...before.points.map((p) => ({ ...p, s: p.s / 2 })),
-                { id: 9020, s: 3, g: 0.95, ease: Easing.Cubic, carried: true },
-            ],
-        };
-        const ids = (): number[] =>
-            sectionForces(state, sec)
-                .map((p) => p.id)
-                .sort((x, y) => x - y);
-        applyDomain(state, [planted]);
-        expect(ids()).toEqual([...before.points.map((p) => p.id), 9020].sort((x, y) => x - y));
-        expect(forceCarried(state, 9020)).toBe(true);
-
-        applyDomain(state, [before]); // the omitted key is dropped, not left behind
-        expect(ids()).toEqual(before.points.map((p) => p.id).sort((x, y) => x - y));
-        expect(sectionForces(state, sec).every((p) => !p.carried)).toBe(true);
-    });
-
-    // ── the structural writers ─────────────────────────────────────────────────────────────
-    //
-    // Witnessed RED before this repair, on all four arms below: every one of these keys came out of
-    // the op still tagged, and the end-to-end consequence is in `tests/domain.test.ts` ("a Cut at a
-    // carried key's station…") — flip, Cut, flip back, and the head was left holding a single
-    // keyframe with the authored dive flattened to 1 g while the tail kept an invented key that
-    // nothing can ever drop.
-
-    /** a bare force section of `len` carrying the given keys; `carried` keys are planted through
-     *  `spawnForce` (the conversion's own writer), authored ones through `createForcePoint`. Ids are
-     *  the caller's so an arm can name the key it is about after the op has renumbered sections. */
-    function keyed(
-        len: number,
-        keys: readonly { id: number; s: number; g: number; carried: boolean }[],
-    ): { state: State; sec: number } {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
-        setSectionLength(state, sec, len);
-        for (const k of keys)
-            spawnForce(state, sec, k.id, k.s, k.g, undefined, undefined, k.carried);
-        return { state, sec };
-    }
-
-    /** every live key's `(id, carried)` across the whole track, ascending by id. */
-    const tags = (state: State): [number, boolean][] =>
-        sections(state)
-            .flatMap((sec) => sectionForces(state, sec.id))
-            .map((p): [number, boolean] => [p.id, p.carried])
-            .sort((x, y) => x[0] - y[0]);
-
-    test("a Cut ON a carried key promotes it, and the boundary key it duplicates is authored", () => {
-        const { state, sec } = keyed(24, [
-            { id: 8001, s: 0, g: 1, carried: false },
-            { id: 8002, s: 12, g: 0.4, carried: true }, // the landmark the cut lands on
-            { id: 8003, s: 24, g: 1, carried: false },
-        ]);
-        const tail = splitForce(state, sec, 12);
-        if (tail === null) throw new Error("split refused");
-        // the landmark is authored now — the cut promoted the boundary it cut on — and so is the
-        // duplicate planted at the tail's entry (`createForcePoint` tags 0).
-        expect(forceCarried(state, 8002)).toBe(false);
-        expect(sectionForces(state, tail).map((p) => p.carried)).toEqual([false, false]);
-        expect(tags(state).filter(([, c]) => c)).toEqual([]);
-    });
-
-    test("a mid-segment Cut promotes the two keys whose handles it rewrites, and only those", () => {
-        const { state, sec } = keyed(24, [
-            { id: 8011, s: 0, g: 1, carried: false },
-            { id: 8012, s: 6, g: 0.6, carried: true }, // brackets the cut — handles rewritten
-            { id: 8013, s: 12, g: 0.5, carried: true }, // …and the other side
-            { id: 8014, s: 18, g: 0.9, carried: true }, // purely REBASED onto the tail's axis
-        ]);
-        const tail = splitForce(state, sec, 9);
-        if (tail === null) throw new Error("split refused");
-        expect(forceCarried(state, 8012)).toBe(false);
-        expect(forceCarried(state, 8013)).toBe(false);
-        // the rebase carve-out: 8014's station changed frame, its shape did not, and it is exactly
-        // as droppable as it was. A blanket "any station write clears" would author it here.
-        expect(forceCarried(state, 8014)).toBe(true);
-        expect(sectionForces(state, tail).find((p) => p.s === 9)?.carried).toBe(true); // 8014 at 18-9
-    });
-
-    test("either flat Cut branch promotes the key its planted boundary value comes from", () => {
-        // past the last keyframe: the tail opens on the held value, which is `a`'s.
-        const past = keyed(24, [
-            { id: 8021, s: 0, g: 1, carried: false },
-            { id: 8022, s: 6, g: 0.5, carried: true },
-        ]);
-        expect(splitForce(past.state, past.sec, 12)).not.toBeNull();
-        expect(forceCarried(past.state, 8022)).toBe(false);
-
-        // before the first keyframe: the head is flat at `b`'s value up to the boundary.
-        const before = keyed(24, [{ id: 8031, s: 12, g: 0.5, carried: true }]);
-        expect(splitForce(before.state, before.sec, 6)).not.toBeNull();
-        expect(forceCarried(before.state, 8031)).toBe(false);
-    });
-
-    test("a Join that MERGES a coincident boundary pair authors the surviving key", () => {
-        const { state, sec } = keyed(12, [
-            { id: 8041, s: 0, g: 1, carried: false },
-            { id: 8042, s: 12, g: 0.7, carried: true }, // A's tail — survives the merge, rewritten
-        ]);
-        const b = createSection(state, 1, SectionKind.Force, 12);
-        spawnForce(state, b, 8043, 0, 0.7, undefined, undefined, true); // B's head — destroyed
-        spawnForce(state, b, 8044, 12, 1, undefined, undefined, true); // rebased only
-        expect(joinNext(state, sec)).toBe(true);
-        expect(forceCarried(state, 8042)).toBe(false); // ease + both handles rewritten by the merge
-        expect(sectionForces(state, sec).map((p) => p.id)).not.toContain(8043);
-        expect(forceCarried(state, 8044)).toBe(true); // rebased only, still droppable
-    });
-
-    // ── C5's own additions: the field refusal, the neighbour-clamp bounds, and the
-    // creation-time seed read off the live bake.
-    test("validStripValue refuses non-finite and non-positive; accepts strictly positive", () => {
-        expect(validStripValue(5)).toBe(true);
-        expect(validStripValue(0)).toBe(false); // a held 0 is a stall, not a controlled span
-        expect(validStripValue(-1)).toBe(false);
-        expect(validStripValue(Number.NaN)).toBe(false);
-        expect(validStripValue(Number.POSITIVE_INFINITY)).toBe(false);
-    });
-
-    test("stripBoundsAt: no neighbours bounds to [0, sectionLength]", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        expect(stripBoundsAt(state, sec, -1, 20, 10)).toEqual({ lo: 0, hi: 20 });
-    });
-
-    test("stripBoundsAt: bounded by the nearest neighbour on each side, self-excluded", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        const a = createStrip(state, sec, 0, 5, 4) as number;
-        createStrip(state, sec, 15, 20, 8);
-        // querying between the two neighbours (excluding neither): bounded by both.
-        expect(stripBoundsAt(state, sec, -1, 20, 10)).toEqual({ lo: 5, hi: 15 });
-        // excluding `a` (as when resizing it FROM its own original position) drops its own
-        // bound but keeps the other neighbour's.
-        expect(stripBoundsAt(state, sec, a, 20, 3)).toEqual({ lo: 0, hi: 15 });
-    });
-
-    test("stripSeedValue reads the live bake's v at the given station, lerped between samples", () => {
-        const { state, eid, sec } = track();
-        state.step(0); // level track: v stays ~V0 everywhere (no loss, no climb)
-        const out = bakeOut.get(eid);
-        if (!out) throw new Error("no bakeOut");
-        expect(stripSeedValue(state, sec, 0)).toBeCloseTo(out.v[0], 3);
-        expect(stripSeedValue(state, sec, 0)).toBeCloseTo(V0, 1);
-    });
-
-    test("stripSeedValue falls back to V0 with no live bake", () => {
-        const state = new State();
-        const eid = createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Geo, 0);
-        void eid;
-        expect(stripSeedValue(state, sec, 0)).toBe(V0);
-    });
-
-    // ── the min-extent kernel arm. The property enforced is that the span's two ends
-    // round to DIFFERENT edge boundaries under `edgeStrips`'s round-to-nearest `boundary()`
-    // map (the span straddles an edge midpoint). A sub-edge span whose ends round together
-    // collapses to `start === end`, which the point convention re-maps to the PRECEDING edge
-    // `[start−1, start)` — displaced, not lost; genuinely inert only at station 0 where
-    // `lo = −1`. The guard refuses the collapse so a stored strip always covers ≥ 1 edge.
-    //
-    // WITNESSED RED before the guard was added to `createStrip`: a strip with a span of 0.1
-    // on a section baking at ds=0.5 (one edge covers [0, 0.5)) was accepted by `createStrip`,
-    // then mapped by `edgeStrips` to `start_edge === end_edge` — the point convention
-    // displaces this to the preceding edge rather than going inert, but the strip's override
-    // lands on the wrong edge. The guard now refuses it at the write op, so `createStrip`
-    // returns null. The same guard in `setStrip` prevents a trim from collapsing a strip's
-    // two ends onto the same edge boundary.
-    test("stripCoversOneEdge: a span covering one full edge is accepted", () => {
-        const { state, sec } = track();
-        convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
-        state.step(0); // bake so the edge structure exists
-        // a span of 0.5 covers exactly one edge (edge 0: [0, 0.5))
-        expect(stripCoversOneEdge(state, sec, 0, 0.5)).toBe(true);
-        // a span of 1.0 covers two edges
-        expect(stripCoversOneEdge(state, sec, 0, 1.0)).toBe(true);
-    });
-
-    test("stripCoversOneEdge: a span smaller than one edge is refused", () => {
-        const { state, sec } = track();
-        convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
-        state.step(0);
-        // a span of 0.1 on a 0.5-edge bake: both ends round to edge 0, collapsing
-        // to start === end — the point convention would displace to [−1, 0), so the
-        // guard refuses the collapse
-        expect(stripCoversOneEdge(state, sec, 0, 0.1)).toBe(false);
-        // a zero-length span (the degenerate point): both ends round together too
-        expect(stripCoversOneEdge(state, sec, 5, 5)).toBe(false);
-    });
-
-    test("createStrip refuses a span that covers no edge (the min-extent guard)", () => {
-        const { state, sec } = track();
-        convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
-        state.step(0);
-        // a span of 0.1 is smaller than one edge (0.5) — refused
-        expect(createStrip(state, sec, 0, 0.1, 5)).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(0);
-        // a span of 0.5 covers exactly one edge — accepted
-        expect(createStrip(state, sec, 0, 0.5, 5)).not.toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(1);
-    });
-
-    test("stripMinExtentAt returns the one-edge span at a station", () => {
-        const { state, sec } = track();
-        convertSection(state, sec); // → force, length 24, nominal ds 0.5 → 48 edges
-        state.step(0);
-        // station 0.3 falls on edge 0: [0, 0.5)
-        expect(stripMinExtentAt(state, sec, 0.3)).toEqual({ start: 0, end: 0.5 });
-        // station 1.2 falls on edge 2: [1.0, 1.5)
-        expect(stripMinExtentAt(state, sec, 1.2)).toEqual({ start: 1.0, end: 1.5 });
-    });
-
-    // ── W4: Time-domain and geo min-extent arms. The existing arms above are Distance-force-
-    // only — `sectionEdgeDs` branches on `forceNominal(domain, dsNom)` vs `geoChordDs`, and
-    // the mutation "replace `forceNominal(domain, dsNom)` with `dsNom`" leaves every arm
-    // green because no arm exercises the Time branch (where the edge is `ds/V0`, not `ds`).
-    // These arms pin both branches, and the interior-start/interior-end population the spec
-    // requires of every oracle set, in both Distance and Time.
-    for (const domain of [Domain.Distance, Domain.Time] as const) {
-        const nominal = domain === Domain.Time ? DT_NOMINAL : DS_NOMINAL;
-        const length = domain === Domain.Time ? 4 : 20;
-
-        test(`stripCoversOneEdge: a one-edge span is accepted, a sub-edge span refused, ${Domain[domain]} domain`, () => {
-            const state = new State();
-            state.addSystem(BakeSystem);
-            createTrack(state);
-            setTrackDomain(state, domain);
-            const sec = createSection(state, 0, SectionKind.Force, length);
-            state.step(0);
-            expect(stripCoversOneEdge(state, sec, 0, nominal)).toBe(true);
-            expect(stripCoversOneEdge(state, sec, 0, nominal * 0.4)).toBe(false);
-            expect(stripCoversOneEdge(state, sec, nominal, nominal)).toBe(false);
-        });
-
-        test(`createStrip refuses a sub-edge span and accepts a one-edge span, ${Domain[domain]} domain`, () => {
-            const state = new State();
-            state.addSystem(BakeSystem);
-            createTrack(state);
-            setTrackDomain(state, domain);
-            const sec = createSection(state, 0, SectionKind.Force, length);
-            state.step(0);
-            expect(createStrip(state, sec, 0, nominal * 0.4, 5)).toBeNull();
-            expect(sectionStrips(state, sec).length).toBe(0);
-            expect(createStrip(state, sec, 0, nominal, 5)).not.toBeNull();
-            expect(sectionStrips(state, sec).length).toBe(1);
-        });
-
-        test(`stripMinExtentAt returns the one-edge span at an interior station, ${Domain[domain]} domain`, () => {
-            const state = new State();
-            state.addSystem(BakeSystem);
-            createTrack(state);
-            setTrackDomain(state, domain);
-            const sec = createSection(state, 0, SectionKind.Force, length);
-            state.step(0);
-            const interior = length * 0.4; // well inside, not at a boundary
-            const span = stripMinExtentAt(state, sec, interior);
-            expect(span).not.toBeNull();
-            // the span must contain the station, cover exactly one edge, and be interior
-            expect(span!.start).toBeLessThanOrEqual(interior);
-            expect(span!.end).toBeGreaterThan(interior);
-            expect(span!.end - span!.start).toBeCloseTo(nominal, 6);
-            expect(span!.start).toBeGreaterThan(0); // interior-start
-            expect(span!.end).toBeLessThan(length); // interior-end
-        });
-    }
-
-    test("stripCoversOneEdge: a geo section's non-uniform edges are checked against the chord array", () => {
-        const { state, sec } = track();
-        addNode(state, sec, EXTEND_DIST, 10);
-        state.step(0);
-        const interior = EXTEND_DIST * 0.4;
-        const minSpan = stripMinExtentAt(state, sec, interior);
-        expect(minSpan).not.toBeNull();
-        expect(stripCoversOneEdge(state, sec, minSpan!.start, minSpan!.end)).toBe(true);
-        const subEdge = minSpan!.start + (minSpan!.end - minSpan!.start) * 0.1;
-        expect(stripCoversOneEdge(state, sec, minSpan!.start, subEdge)).toBe(false);
-    });
-
-    test("createStrip refuses a sub-edge span on a geo section", () => {
-        const { state, sec } = track();
-        addNode(state, sec, EXTEND_DIST, 10);
-        state.step(0);
-        const minSpan = stripMinExtentAt(state, sec, EXTEND_DIST * 0.4);
-        expect(minSpan).not.toBeNull();
-        const subEdge = minSpan!.start + (minSpan!.end - minSpan!.start) * 0.1;
-        expect(createStrip(state, sec, minSpan!.start, subEdge, 5)).toBeNull();
-        expect(createStrip(state, sec, minSpan!.start, minSpan!.end, 5)).not.toBeNull();
-    });
-
-    // ── B1/B2(a): Cut refuses inside a minimum-extent strip. WITNESSED RED before the
-    // pre-check was added: `splitForce` would succeed, the head's `Strip.end.set` would
-    // write a sub-edge inert span, and the tail's `createStrip` would return null (also
-    // sub-edge) with the return discarded — silent data loss of the tail's override.
-    //
-    // PASS-4 WITNESS: force section len 4.03 (8 edges of 0.50375), strip [1.76, 2.8),
-    // splitForce(…, 2.0) accepted with the old pre-split grid check (stripCoversOneEdge
-    // against 8 edges of 0.50375 read [1.76, 2.0) as covering 1 edge), but the post-split
-    // head has resolveStep(2.0, 0.5) = 4 edges of 0.5, where [1.76, 2.0) maps to edge 4
-    // at both endpoints — collapsed, displaced to the preceding edge by the point
-    // convention. Fix: resolve the head's POST-split grid and check spanCoversOneEdge
-    // against it, mirroring the tail branch.
-    test("splitForce refuses a cut that produces a sub-edge head half against the post-split grid (B1/B2(a))", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
-        setSectionLength(state, sec, 4.03);
-        state.step(0);
-        // strip [1.76, 2.8) covers 3 edges on the pre-split 8-edge grid (edges 3–5)
-        const id = createStrip(state, sec, 1.76, 2.8, 5);
-        expect(id).not.toBeNull();
-        // cut at 2.0 — head [1.76, 2.0) on the post-split head grid (4 edges of 0.5)
-        // maps both endpoints to edge 4 → zero edges → refused
-        expect(splitForce(state, sec, 2.0)).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(1);
-        expect(sectionStrips(state, sec)[0].start).toBe(1.76);
-        expect(sectionStrips(state, sec)[0].end).toBe(2.8);
-    });
-
-    // PASS-4: every strip stored after a split must cover ≥ 1 edge of its own half's
-    // resolved bake. This arm would fail with the old pre-split grid check (which accepted
-    // the split above, leaving a collapsed head strip displaced to the wrong edge).
-    test("every strip after a splitForce covers ≥ 1 edge of its own half's resolved bake", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        state.step(0);
-        // a strip that splits cleanly into two valid halves
-        createStrip(state, sec, 0, 2.0, 5); // 4-edge strip on 48-edge grid
-        const tail = splitForce(state, sec, 1.0);
-        expect(tail).not.toBeNull();
-        // head strip [0, 1.0) on resolveStep(1.0, 0.5) = 2 edges of 0.5
-        expect(stripCoversOneEdge(state, sec, 0, 1.0)).toBe(true);
-        // tail strip [0, 1.0) on resolveStep(23.0, 0.5) = 46 edges of 0.5
-        expect(stripCoversOneEdge(state, tail!, 0, 1.0)).toBe(true);
-    });
-
-    // PASS-4: the wholly-tail rebase branch shares the mechanism — a strip wholly in the
-    // tail is rebased to [start-s, end-s) on the tail's resolved grid, which may cover
-    // zero edges if the tail's ds differs from the original's.
-    test("splitForce refuses a cut that would rebase a wholly-tail strip to sub-edge (B1/B2(a))", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
-        setSectionLength(state, sec, 4.03);
-        state.step(0);
-        // strip [2.770, 2.771) covers 1 edge on the pre-split 8-edge grid
-        // (boundary(2.770)=5, boundary(2.771)=6) — a narrow strip straddling an edge midpoint
-        const id = createStrip(state, sec, 2.77, 2.771, 5);
-        expect(id).not.toBeNull();
-        // cut at 2.0 — strip is wholly tail, rebased to [0.770, 0.771) on the tail's
-        // 4-edge grid (ds=0.5075), where both endpoints map to edge 2 → zero edges → refused
-        expect(splitForce(state, sec, 2.0)).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(1);
-        expect(sectionStrips(state, sec)[0].start).toBe(2.77);
-    });
-
-    test("splitForce refuses a cut near a strip edge that would produce a sub-edge half (B1)", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        state.step(0);
-        createStrip(state, sec, 0, 2.0, 5); // 4-edge strip
-        // cut at 1.8 — head [0, 1.8) covers 4 edges (ok), tail [0, 0.2) is sub-edge → refused
-        expect(splitForce(state, sec, 1.8)).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(1);
-        expect(sectionStrips(state, sec)[0].end).toBe(2.0);
-    });
-
-    test("splitForce allows a cut that splits a strip into two valid halves", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        state.step(0);
-        createStrip(state, sec, 0, 2.0, 5); // 4-edge strip
-        const tail = splitForce(state, sec, 1.0); // both halves 2 edges → ok
-        expect(tail).not.toBeNull();
-        expect(sectionStrips(state, sec)[0].end).toBe(1.0);
-        expect(sectionStrips(state, tail!).length).toBe(1);
-        expect(sectionStrips(state, tail!)[0].end).toBe(1.0);
-    });
-
-    test("splitGeo refuses a cut inside a min-extent strip (B1/B2(a))", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, 12, 0);
-        addNode(state, sec, 24, 0);
-        state.step(0);
-        // a 1-edge strip straddling node 1's arc (12.0): [11.8, 12.3) maps to edge [24, 25)
-        const id = createStrip(state, sec, 11.8, 12.3, 5);
-        expect(id).not.toBeNull();
-        // cut at node 1 — head [11.8, 12.0) maps to [24, 24) = zero edges → refused
-        expect(splitGeo(state, sec, 1)).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(1);
-        expect(sectionStrips(state, sec)[0].start).toBe(11.8);
-    });
-
-    // ── setStrip min-extent arm: the docblock claims "The same guard in `setStrip` prevents
-    // a trim from shrinking a strip below one edge." This arm pins it.
-    test("setStrip refuses a trim that shrinks a strip below one edge (min-extent guard)", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        state.step(0);
-        const id = createStrip(state, sec, 0, 2.0, 5) as number; // 4-edge strip
-        setStrip(state, id, 0.1, 2.0, 5); // span 1.9 — fine
-        expect(sectionStrips(state, sec)[0].start).toBe(0.1);
-        setStrip(state, id, 1.9, 2.0, 5); // span 0.1 — sub-edge → refused
-        expect(sectionStrips(state, sec)[0].start).toBe(0.1); // not moved
-        expect(sectionStrips(state, sec)[0].end).toBe(2.0);
-        setStrip(state, id, 1.9, 2.0, 7); // value still lands
-        expect(sectionStrips(state, sec)[0].value).toBe(7);
-    });
-
-    // ── W5: restored C3 subjects under the new law.
-    test("a point at a span's start boundary is legal (point-vs-span boundary rule, grant direction)", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        createStrip(state, sec, 5, 15, 8);
-        expect(stripOverlapped(state, sec, 5, 5, -1)).toBe(false); // disjoint edge ranges
-    });
-
-    test("stripOverlapped catches duplicate point strips spawned outside the create guard (retired C3 subject)", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        spawnStrip(state, sec, 100, 10, 10, 5);
-        spawnStrip(state, sec, 101, 10, 10, 6);
-        expect(stripOverlapped(state, sec, 10, 10, 100)).toBe(true);
-        expect(stripOverlapped(state, sec, 10, 10, 101)).toBe(true);
-    });
-
-    test("createStrip refuses a span outside the section's extent (out-of-extent refusal, disclosed)", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        state.step(0);
-        expect(createStrip(state, sec, 25, 30, 5)).toBeNull();
-        expect(createStrip(state, sec, -5, -1, 5)).toBeNull();
-    });
-
-    // ── PASS-4 (2): a refused geo Cut must not permanently alter authored geometry.
-    // WITNESSED RED: 24 m geo section, strip [11.9, 12.6), splitSection(…, 0.5) → null,
-    // node count 2 → 3, undo a no-op, node still there. The refusal fires after
-    // insertGeoNode has already mutated the curve; splitSection returns before record(…).
-    // Fix: restoreAll(ecs, before) on null, undoing the partial mutation.
-    test("a refused splitSection does not alter node count or history (pass-4 deliverable 2)", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, 24, 0);
-        state.step(0);
-        // strip straddling the mid-segment — a cut at t=0.5 would split it into sub-edge halves
-        createStrip(state, sec, 11.9, 12.6, 5);
-        const h = createHistory();
-        const nodesBefore = sectionHandles(state, sec).length;
-        const entriesBefore = h.undo.length;
-        // splitSection with interior t — insertGeoNode runs, then splitGeo's strip pre-check refuses
-        const result = splitSection(h, state, sec, 0, 0.5);
-        expect(result).toBeNull();
-        // node count unchanged — the inserted node was undone
-        expect(sectionHandles(state, sec).length).toBe(nodesBefore);
-        // no history entry recorded — there was nothing to undo
-        expect(h.undo.length).toBe(entriesBefore);
-        // undo is a no-op because there was nothing to undo
-        undo(h, state);
-        expect(sectionHandles(state, sec).length).toBe(nodesBefore);
-    });
-
-    // ── PASS-4 (3): the min-extent floor on a domain flip must not write overlapping strips.
-    // WITNESSED RED: geo drop (30, −40) ahead of a 10 m force section, legally abutting
-    // min-extent strips [2, 2.5)/[2.5, 3), flip Distance→Time →
-    // [0.06654, 0.11654)/[0.09482, 0.18573), 0.02173 s of overlap, stripOverlapped true.
-    // Fix: clamp newEnd against the next strip's converted start and the section exit.
-    test("domain flip does not produce overlapping strips from abutting min-extent pairs (pass-4 deliverable 3)", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
-        setSectionLength(state, sec, 10);
-        state.step(0);
-        // two legally abutting min-extent strips (each 1 edge on the 20-edge Distance grid)
-        const id1 = createStrip(state, sec, 2, 2.5, 5);
-        const id2 = createStrip(state, sec, 2.5, 3, 5);
-        expect(id1).not.toBeNull();
-        expect(id2).not.toBeNull();
-        // flip to Time — the floor extends each strip to targetNominal, which may overlap
-        const h = createHistory();
-        convertDomain(h, state, Domain.Time);
-        state.step(0);
-        // no overlap after the flip
-        expect(
-            stripOverlapped(
-                state,
-                sec,
-                sectionStrips(state, sec)[0].start,
-                sectionStrips(state, sec)[0].end,
-                sectionStrips(state, sec)[0].id,
-            ),
-        ).toBe(false);
-        expect(
-            stripOverlapped(
-                state,
-                sec,
-                sectionStrips(state, sec)[1].start,
-                sectionStrips(state, sec)[1].end,
-                sectionStrips(state, sec)[1].id,
-            ),
-        ).toBe(false);
-        // each strip still covers ≥ 1 edge in the target domain
-        for (const st of sectionStrips(state, sec)) {
-            expect(stripCoversOneEdge(state, sec, st.start, st.end)).toBe(true);
-        }
-        // flip back — still no overlap (the clamp is one-way, but abutting strips stay abutting)
-        convertDomain(h, state, Domain.Distance);
-        state.step(0);
-        expect(
-            stripOverlapped(
-                state,
-                sec,
-                sectionStrips(state, sec)[0].start,
-                sectionStrips(state, sec)[0].end,
-                sectionStrips(state, sec)[0].id,
-            ),
-        ).toBe(false);
-    });
-
-    // PASS-4 (3) sub-item: the floor tests `< targetNominal` rather than spanCoversOneEdge.
-    // An arm starting at a non-zero boundary is owed — this one starts at 2 (not 0).
-    test("domain flip floor holds for strips starting at a non-zero boundary (pass-4 proof gap)", () => {
-        const { state, sec } = track();
-        convertSection(state, sec);
-        for (const p of sectionForces(state, sec)) destroyForce(state, p.id);
-        setSectionLength(state, sec, 10);
-        state.step(0);
-        // a single strip starting at a non-zero boundary (2, not 0)
-        createStrip(state, sec, 2, 2.5, 5);
-        const h = createHistory();
-        convertDomain(h, state, Domain.Time);
-        state.step(0);
-        // the strip covers ≥ 1 edge in the target domain
-        expect(
-            stripCoversOneEdge(
-                state,
-                sec,
-                sectionStrips(state, sec)[0].start,
-                sectionStrips(state, sec)[0].end,
-            ),
-        ).toBe(true);
     });
 });
 

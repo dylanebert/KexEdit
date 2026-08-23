@@ -151,23 +151,17 @@ function writeTangent(eid: number, tan: Tangent | undefined): void {
 
 /** an authored force keyframe on a FORCE section. `section` is the owning section's
  *  stable id; `id` is the point's stable identity (undo/redo address, eid-recycle
- *  safe); `s` its position measured from the section entry, in the TRACK-GLOBAL
- *  domain's unit (`Track.domain`: meters of arclength, or seconds of time — the field
- *  name stays `s`, since the unit rides the track, not the name); `g` the demanded
- *  normal force (g). the timeline places, drags, and deletes these; the bake gathers
- *  each section's points (sorted by s) into a dense profile (`profile.forceProfile`).
- *  `ease` is the keyframe's `Easing` tag (the convenient middle layer) — it governs
- *  the *following* segment's derived flat tangents (default `Easing.Cubic`, the "no
- *  stored state" convention). `tmode` mirrors geo's `Handle.tmode`: 0 = no explicit
- *  handles (derive from `ease`), else a `TangentMode` for the summoned inner layer, in
- *  which case `tin`/`tout` hold the explicit in/out handle **offsets** ((Δs, Δg) as
- *  x/y) the bake substitutes for the derived tangents. `carried` is the provenance
- *  bit: 1 marks a keyframe a **domain conversion inserted** to carry the authored
- *  curve's shape into the other unit, 0 an authored one. It is what makes the reverse
- *  flip exact — `domain.convertDomain` drops every carried key before converting,
- *  instead of simplifying the denser store heuristically — and every live-authoring
- *  writer clears it, so a key the person edits becomes authored and stops being
- *  droppable. */
+ *  safe); `s` its position measured from the section entry, in meters of arclength
+ *  always (`Track.domain` is a display lens, never a second unit the store holds);
+ *  `g` the demanded normal force (g). the timeline places, drags, and deletes these;
+ *  the bake gathers each section's points (sorted by s) into a dense profile
+ *  (`profile.forceProfile`). `ease` is the keyframe's `Easing` tag (the convenient
+ *  middle layer) — it governs the *following* segment's derived flat tangents
+ *  (default `Easing.Cubic`, the "no stored state" convention). `tmode` mirrors geo's
+ *  `Handle.tmode`: 0 = no explicit handles (derive from `ease`), else a `TangentMode`
+ *  for the summoned inner layer, in which case `tin`/`tout` hold the explicit in/out
+ *  handle **offsets** ((Δs, Δg) as x/y) the bake substitutes for the derived
+ *  tangents. */
 export const Force = {
     section: sparse(u32),
     id: sparse(u32),
@@ -177,7 +171,6 @@ export const Force = {
     tmode: sparse(u32),
     tin: sparse(vec2),
     tout: sparse(vec2),
-    carried: sparse(u32),
 };
 
 /** the easing tag a fresh force keyframe gets — the FVD++/Planet-Coaster S-transition
@@ -388,9 +381,7 @@ function sectionEdgeDs(
     const dsNom = trackDs(ecs);
     if (kind === SectionKind.Force) {
         const length = Section.length.get(eid);
-        const domain = trackDomain(ecs);
-        const step = forceNominal(domain, dsNom);
-        const resolved = resolveStep(length, step);
+        const resolved = resolveStep(length, dsNom);
         return { ds: new Float32Array(resolved.edges).fill(resolved.ds), edges: resolved.edges };
     }
     return geoChordDs(ecs, sectionId, dsNom);
@@ -441,11 +432,10 @@ export function forceSplitStripsRefused(ecs: State, sectionId: number, s: number
     const len = Section.length.get(secEid);
     if (s <= 0 || s >= len) return false;
     const dsNom = trackDs(ecs);
-    const nominal = forceNominal(trackDomain(ecs), dsNom);
-    const headResolved = resolveStep(s, nominal);
+    const headResolved = resolveStep(s, dsNom);
     const headDs = new Float32Array(headResolved.edges).fill(headResolved.ds);
     const tailLen = len - s;
-    const tailResolved = resolveStep(tailLen, nominal);
+    const tailResolved = resolveStep(tailLen, dsNom);
     const tailDs = new Float32Array(tailResolved.edges).fill(tailResolved.ds);
     for (const st of sectionStrips(ecs, sectionId)) {
         if (st.end <= s) continue;
@@ -830,7 +820,7 @@ export function stripBoundsAt(
 
 /** a new strip's seed value — "seeded at creation from the published bake's `v` at its first
  *  station" (Locked decision), a UI act reading the CURRENT bake, never a kernel mechanism. Reads
- *  `bakeOut.v` at the section-local native-axis station `s` (`forceSample`'s own address, the
+ *  `bakeOut.v` at the section-local arclength station `s` (`forceSample`'s own address, the
  *  same seam a force keyframe's world position reads), lerped between the bracketing samples.
  *  Falls back to `V0` when there's no live bake to read (an empty track, a placed-past-budget
  *  section) — the same neutral default an unauthored track's initial speed carries. */
@@ -840,9 +830,9 @@ export function stripSeedValue(ecs: State, sectionId: number, s: number): number
     const out = bakeOut.get(trackEid);
     const info = sectionInfo.get(sectionId);
     if (!out || !info) return V0;
-    const time = (Track.domain.get(trackEid) as Domain) === Domain.Time;
     const last = Math.max(0, Track.count.get(trackEid) - 1);
-    const addr = forceSample(out, info, last, time, s);
+    // `s` is arclength always (S6): `forceSample` has one table now, no `time` branch.
+    const addr = forceSample(out, info, last, s);
     if (!addr) return V0;
     const j = Math.min(addr.index + 1, last);
     return out.v[addr.index] + addr.frac * (out.v[j] - out.v[addr.index]);
@@ -1140,33 +1130,6 @@ export const DEFAULT_FRICTION = 0.021;
  *  terminal velocity (700 m/s) has no physical grounding. */
 export const DEFAULT_RESISTANCE = 2.5e-4;
 
-/** the nominal step a force section bakes at, in `domain`'s own unit: the track's own
- *  `trackDs` quantum for `Distance`, its time twin `trackDs / V0` for `Time` — a time march's
- *  nominal is never the track's meters quantum (`trackDs` is a distance scalar, not a step in
- *  seconds). derived, not tuned: `ds = v·dt`, so at the DEFAULT entry speed `V0` a time section
- *  samples at the same spatial density a distance section does at the same `trackDs`.
- *
- *  **Both branches read the ONE authored `trackDs`**, so the two domains' quanta are a single
- *  value with one derivation between them: a non-default `Track.ds` moves both or neither. A
- *  Time nominal pinned to `DS_NOMINAL` instead desynced the domains the moment `Track.ds` left
- *  its default (`kex2d-correctness-fixes`).
- *
- *  What it is deliberately NOT derived from is the track's authored `Track.v0`, matching
- *  `DS_NOMINAL`'s own constancy: an authored-v0-dependent quantum would make a section's edge
- *  count move whenever v0 is scrubbed. Accepted cost: a time section's realized SPATIAL density
- *  scales with the ride's actual speed, so a fast stretch samples coarser than the nominal and a
- *  slow one finer.
- *
- *  geo is position-authored in either domain, so its callers pass `trackDs` straight through
- *  without this. */
-export function forceNominal(domain: Domain, trackDs: number): number {
-    return domain === Domain.Time ? trackDs / V0 : trackDs;
-}
-
-/** the nominal sampling step (s) a force section bakes at in the `Time` domain at the DEFAULT
- *  `Track.ds` — {@link forceNominal}'s own reading there, never a second derivation beside it. */
-export const DT_NOMINAL = forceNominal(Domain.Time, DS_NOMINAL);
-
 /** how far `extend` lays the next node past the chain end, along the last edge's
  *  direction. it's a starting point you then drag, not a fixed length. */
 export const EXTEND_DIST = 24;
@@ -1185,29 +1148,22 @@ function startEntry(v0: number): Entry {
  *  geo and a fresh force section start the same size; the end handle then resizes it. */
 const DEFAULT_FORCE_LEN = EXTEND_DIST;
 
-/** the extent (s) a fresh force section gets in the `Time` domain — `DEFAULT_FORCE_LEN`'s
- *  time twin, derived the same way `DT_NOMINAL` is: the time a `V0`-speed cart takes to
- *  cover `DEFAULT_FORCE_LEN` meters, so a fresh time append spans the same edge count at
- *  `DT_NOMINAL` that a fresh distance append spans at `DS_NOMINAL`. */
-const DEFAULT_FORCE_DUR = DEFAULT_FORCE_LEN / V0;
-
-/** the extent a fresh force section gets in `domain` — what a destructive geo→force convert
- *  resets to (an append takes the domain's sticky instead). */
-function defaultForceExtent(domain: Domain): number {
-    return domain === Domain.Time ? DEFAULT_FORCE_DUR : DEFAULT_FORCE_LEN;
+/** the extent a fresh force section gets — what a destructive geo→force convert resets to
+ *  (an append takes the sticky instead). */
+function defaultForceExtent(): number {
+    return DEFAULT_FORCE_LEN;
 }
 
 /** the shortest a force section can be dragged — a couple of edges, so the profile
  *  never collapses below what `forceProfile` can sample. */
 export const MIN_FORCE_LEN = 2;
 
-/** `MIN_FORCE_LEN`'s time twin — the same couple-of-edges floor at `DT_NOMINAL` instead of
- *  `DS_NOMINAL`, which reduces to the identical `/V0` scaling. */
-const MIN_FORCE_DUR = MIN_FORCE_LEN / V0;
-
-/** the shortest a force section's extent can be, in a given domain's own unit. */
-export function minForceExtent(domain: Domain): number {
-    return domain === Domain.Time ? MIN_FORCE_DUR : MIN_FORCE_LEN;
+/** the shortest a force section's extent can be — always meters of arclength.
+ *  `domain` is accepted (and ignored) so the Time-view callers `minForceExtent` still
+ *  serves (the ruler snap floor) keep compiling unchanged; it no longer selects a
+ *  second, seconds-native floor. */
+export function minForceExtent(_domain: Domain = Domain.Distance): number {
+    return MIN_FORCE_LEN;
 }
 
 /** the session's sticky append length — what a freshly APPENDED piece starts at, echoing the
@@ -1216,40 +1172,34 @@ export function minForceExtent(domain: Domain): number {
  *  chord `extend` lays down (the polar length manipulator). Updated only when such a gesture
  *  COMMITS (`setStickyLen`, from `history.commitLength` / `history.commitChord`), never by a
  *  solve landing (a converted section's realized extent is the solve's own answer, not an
- *  authored trim) and never by a destructive convert (which resets to the literal defaults —
+ *  authored trim) and never by a destructive convert (which resets to the literal default —
  *  its shape has no "previous append" to echo). Session-level module state: not persisted
- *  across reloads, not threaded through undo, so undoing an append never rolls it back.
- *
- *  **Geo carries no domain** (it is position-authored in either), so it is one scalar in
- *  meters; force holds one slot per `Domain`, in that domain's own unit, so a time append never
- *  inherits a meters sticky or vice versa — each starts at its own literal default
- *  (`DEFAULT_FORCE_LEN` / `DEFAULT_FORCE_DUR`) until a commit in THAT domain lands. A domain
- *  flip never rewrites them: the sticky is a session memory of a gesture, not document state
- *  the conversion op owns. */
+ *  across reloads, not threaded through undo, so undoing an append never rolls it back. Both
+ *  kinds are one scalar in meters — force carries no domain either, since the store is
+ *  domain-invariant. */
 let stickyGeoChord = EXTEND_DIST;
-const stickyForceExtent: Record<Domain, number> = {
-    [Domain.Distance]: DEFAULT_FORCE_LEN,
-    [Domain.Time]: DEFAULT_FORCE_DUR,
-};
+let stickyForceExtent = DEFAULT_FORCE_LEN;
 
-/** read the session's current sticky append length for a section kind — force in `domain`'s own
- *  unit, geo in meters (its `domain` argument is ignored, it has none). */
-export function stickyLen(kind: SectionKind, domain: Domain = Domain.Distance): number {
-    return kind === SectionKind.Geo ? stickyGeoChord : stickyForceExtent[domain];
+/** read the session's current sticky append length for a section kind. `domain` is accepted
+ *  (and ignored) for the same reason `minForceExtent` still takes it: the view callers pass
+ *  `trackDomain(ecs)` and this stays a drop-in. */
+export function stickyLen(kind: SectionKind, _domain: Domain = Domain.Distance): number {
+    return kind === SectionKind.Geo ? stickyGeoChord : stickyForceExtent;
 }
 
-/** record a committed length gesture as that kind's (and, for force, that domain's) new sticky
- *  append default, clamped to the floor its own gesture holds — `LENGTH_MIN` for a geo chord,
- *  `minForceExtent` for an extent trim — so a degenerate commit can't poison the next append. A
- *  non-finite value is ignored (a degenerate frame has no length to remember). */
+/** record a committed length gesture as that kind's new sticky append default, clamped to the
+ *  floor its own gesture holds — `LENGTH_MIN` for a geo chord, `MIN_FORCE_LEN` for an extent
+ *  trim — so a degenerate commit can't poison the next append. A non-finite value is ignored
+ *  (a degenerate frame has no length to remember). `domain` is accepted (and ignored) so
+ *  callers passing `trackDomain(ecs)` still compile. */
 export function setStickyLen(
     kind: SectionKind,
     length: number,
-    domain: Domain = Domain.Distance,
+    _domain: Domain = Domain.Distance,
 ): void {
     if (!Number.isFinite(length)) return;
     if (kind === SectionKind.Geo) stickyGeoChord = Math.max(LENGTH_MIN, length);
-    else stickyForceExtent[domain] = Math.max(minForceExtent(domain), length);
+    else stickyForceExtent = Math.max(MIN_FORCE_LEN, length);
 }
 
 /** allocate an empty track entity + its sample / bake-output buffers, sized once
@@ -1328,17 +1278,17 @@ export function sectionAt(ecs: State, id: number): number | null {
     return null;
 }
 
-/** a section's place on the two global axes the editor addresses along.
- *
- *  `offset`/`len` are the **arclength** axis: the track-global distance `d` at the section's
+/** a section's place on the track-global arclength axis: the distance `d` at the section's
  *  entry (the cumulative baked arclength of every upstream section) and its own baked
  *  arclength, so it occupies the d-interval `[offset, offset + len]`. Geometry lives here — a
- *  geo node's landing, the cart's park, the viewport.
+ *  geo node's landing, the cart's park, the viewport, and (S6) every force keyframe/extent/strip
+ *  too, since arclength is the one canonical parameter every authored component stores.
  *
- *  `entryU`/`lenU` are the **native** axis: the same two readings in the unit the track's
- *  `Track.domain` stores force keyframes and extents in — identical numbers in `Distance`, and
- *  the baked march time at the entry/exit samples in `Time`. The force store is addressed here,
- *  and the timeline chart reads it. */
+ *  `entryU`/`lenU` carry the SAME reading as `offset`/`len` — the "native axis" this type used
+ *  to switch between arclength and march time by `Track.domain` retired with the domain-carry
+ *  op (S6): a force keyframe's stored `s` is arclength always, so there is no second unit here
+ *  to address. A Time-domain DISPLAY reading is a separate projection through the live bake's
+ *  s↔t table (`timeline.ts`'s `dToU`/`uToD`), never a second address space. */
 export interface SectionSpan {
     id: number;
     offset: number;
@@ -1347,33 +1297,20 @@ export interface SectionSpan {
     lenU: number;
 }
 
-/** one section's `(entry, extent)` on one of the two axes — the pair the affine and its inverse
- *  resolve over, so the boundary policy has a single home whichever axis is being read. */
+/** one section's `(entry, extent)` — the pair the affine and its inverse resolve over. */
 type Axis = (sp: SectionSpan) => { entry: number; extent: number };
 
 const arcAxis: Axis = (sp) => ({ entry: sp.offset, extent: sp.len });
-const nativeAxis: Axis = (sp) => ({ entry: sp.entryU, extent: sp.lenU });
 
-/** the coordinate lens — the ONE seam between the author-facing track-global coordinate and the
- *  section-local one the substrate stores. `sectionSpans` is its table (one accumulating pass
- *  over the baked ds, plus each section's entry/exit reading off the baked time table), and
- *  `toGlobal`/`toLocal` (arclength) and `toGlobalU`/`toLocalU` (the track's native unit) are the
- *  affine `global = entry + local` and its inverse over it. every readout — timeline
- *  clips/boundaries, force-keyframe placement, cart park — derives here; nothing walks the
- *  cumulative ds itself. sections are contiguous (each shares its entry sample with the prior
- *  exit), so one pass suffices.
- *
- *  **The native axis reads the store's own clock, never an interpolation.** A `Time`-domain force
- *  keyframe's stored `t` is accumulated march time by construction, and `bakeOut.t` carries that
- *  same march, so a section's entry time is a table READ (`t[startSample]`) and the keyframe's
- *  global time is the sum `entryU + t` — exact as arithmetic, and off the sampled clock only by
- *  `bakeOut.t`'s own f32 accumulation (~n·2^-24·t over the section's n steps). What projects
- *  through a table is the other axis — a distance-authored quantity displayed on a time chart
- *  (`timeline.dToU`, the geo path). */
+/** the coordinate lens — the ONE seam between the author-facing track-global arclength and the
+ *  section-local `s` the substrate stores. `sectionSpans` is its table (one accumulating pass
+ *  over the baked ds), and `toGlobal`/`toLocal` are the affine `global = entry + local` and its
+ *  inverse over it. every readout — timeline clips/boundaries, force-keyframe placement, cart
+ *  park — derives here; nothing walks the cumulative ds itself. sections are contiguous (each
+ *  shares its entry sample with the prior exit), so one pass suffices. */
 export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
     const out = bakeOut.get(eid);
     if (!out) return [];
-    const time = (Track.domain.get(eid) as Domain) === Domain.Time;
     const last = Math.max(0, Track.count.get(eid) - 1);
     const res: SectionSpan[] = [];
     let cum = 0;
@@ -1381,14 +1318,12 @@ export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
         const info = sectionInfo.get(sec.id);
         if (!info) continue;
         const offset = cum;
-        // clamped to the PUBLISHED buffer, like the time reads below: a section placed past the
-        // sample budget has a range pointing at edges that were never written, and summing those
-        // would put NaN into every span downstream of it. Its extent reads 0 there — which is what
-        // it has on the bake — so the strip and the guides describe the baked prefix honestly.
+        // clamped to the PUBLISHED buffer: a section placed past the sample budget has a range
+        // pointing at edges that were never written, and summing those would put NaN into every
+        // span downstream of it. Its extent reads 0 there — which is what it has on the bake —
+        // so the strip and the guides describe the baked prefix honestly.
         for (let i = info.startSample; i < Math.min(info.endSample, last); i++) cum += out.ds[i];
-        const entryU = time ? out.t[Math.min(info.startSample, last)] : offset;
-        const exitU = time ? out.t[Math.min(info.endSample, last)] : cum;
-        res.push({ id: sec.id, offset, len: cum - offset, entryU, lenU: exitU - entryU });
+        res.push({ id: sec.id, offset, len: cum - offset, entryU: offset, lenU: cum - offset });
     }
     return res;
 }
@@ -1427,54 +1362,36 @@ export function toLocal(spans: SectionSpan[], d: number): { section: number; s: 
     return toLocalOn(arcAxis, spans, d);
 }
 
-/** a force keyframe's stored section-local `s` → the track's native global coordinate `u`
- *  (`entryU + s`): global distance in the `Distance` domain, global march time in `Time`. The
- *  force store's own axis, so the map is an exact affine either way — no table interpolation.
+/** `toGlobal`'s own name kept for its call sites (S6 retired the second, domain-varying axis
+ *  this used to read — `toGlobalU`/`toLocalU` are `toGlobal`/`toLocal` now, since a force
+ *  keyframe's stored `s` is arclength always). A Time-domain DISPLAY value is a separate
+ *  projection through the live bake's s↔t table (`timeline.ts`), never a second address space.
  *  null when the section isn't on the current bake. */
 export function toGlobalU(spans: SectionSpan[], section: number, s: number): number | null {
-    return toGlobalOn(nativeAxis, spans, section, s);
+    return toGlobalOn(arcAxis, spans, section, s);
 }
 
-/** `toGlobalU`'s inverse: a native global `u` → the section it lands in plus its native local
- *  coordinate, under `toLocal`'s boundary policy (upstream-inclusive, clamped at both ends).
- *  A **force** section's `s` is its store's own unit, so a keyframe write goes straight through.
- *  A geo section resolves too — but geo is position-authored, so only the returned `section`
- *  means anything there; its stored nodes live on the arclength axis (`toLocal`). */
+/** `toGlobalU`'s inverse — see its own docblock. */
 export function toLocalU(spans: SectionSpan[], u: number): { section: number; s: number } | null {
-    return toLocalOn(nativeAxis, spans, u);
+    return toLocalOn(arcAxis, spans, u);
 }
 
-/** the baked sample address of a section-local native-axis coordinate — where a force
- *  keyframe's stored `s` lands on the flat SoA. Walks the bake's own tables within the
- *  section's published range (the ds-convention law: per-edge `out.ds` on the Distance
- *  axis, the per-sample march clock `out.t` on Time — never a chord re-derivation, never
- *  the cart's arc↔time detour), so a zero-length edge (a Time-domain stall, the pin
- *  freeze's gap) is stepped over rather than divided by. Returns the flat sample index
- *  plus the fraction toward `index + 1` (an exit landing reads `{endSample, 0}`), clamped
- *  to the section's range at both ends; null when the section published no edges (placed
- *  past the sample budget). */
+/** the baked sample address of a section-local arclength coordinate — where a force
+ *  keyframe's stored `s` lands on the flat SoA. Walks the bake's own per-edge `out.ds` within
+ *  the section's published range (never a chord re-derivation, never the cart's arc↔time
+ *  detour), so a zero-length edge (the pin freeze's gap) is stepped over rather than divided
+ *  by. Returns the flat sample index plus the fraction toward `index + 1` (an exit landing
+ *  reads `{endSample, 0}`), clamped to the section's range at both ends; null when the section
+ *  published no edges (placed past the sample budget). */
 export function forceSample(
-    out: { ds: Float32Array; t: Float32Array },
+    out: { ds: Float32Array },
     info: { startSample: number; endSample: number },
     last: number,
-    time: boolean,
     s: number,
 ): { index: number; frac: number } | null {
     const start = info.startSample;
     const end = Math.min(info.endSample, last);
     if (start >= end) return null; // an empty published range — nothing to place on
-    if (time) {
-        const t0 = out.t[start];
-        for (let i = start; i < end; i++) {
-            const hi = out.t[i + 1] - t0;
-            if (hi >= s) {
-                const lo = out.t[i] - t0;
-                const dt = hi - lo;
-                return { index: i, frac: dt > 0 ? Math.min(Math.max((s - lo) / dt, 0), 1) : 0 };
-            }
-        }
-        return { index: end, frac: 0 };
-    }
     let cum = 0;
     for (let i = start; i < end; i++) {
         const d = out.ds[i];
@@ -1508,7 +1425,6 @@ export function forceMarkers(ecs: State): ForceMarker[] {
     const s = samples.get(trackEid);
     const out = bakeOut.get(trackEid);
     if (!s || !out) return res;
-    const time = (Track.domain.get(trackEid) as Domain) === Domain.Time;
     const last = Math.max(0, Track.count.get(trackEid) - 1);
     for (const sec of sections(ecs)) {
         if (sec.kind !== SectionKind.Force) continue;
@@ -1516,7 +1432,8 @@ export function forceMarkers(ecs: State): ForceMarker[] {
         if (!info) continue;
         for (const p of sectionForces(ecs, sec.id)) {
             if (p.s > sec.length) continue; // trimmed past the extent: no track position
-            const addr = forceSample(out, info, last, time, p.s);
+            // `p.s` is arclength always (S6): `forceSample` has one table now, no `time` branch.
+            const addr = forceSample(out, info, last, p.s);
             if (!addr) continue;
             const j = Math.min(addr.index + 1, last);
             res.push({
@@ -1950,8 +1867,6 @@ export interface ForceRow {
     id: number;
     s: number;
     g: number;
-    /** whether a domain conversion inserted this keyframe (`Force.carried`). */
-    carried: boolean;
 }
 
 /** every force point on a section, sorted by arclength — the order `forceProfile`
@@ -1966,7 +1881,6 @@ export function sectionForces(ecs: State, sectionId: number): ForceRow[] {
             id: Force.id.get(eid),
             s: Force.s.get(eid),
             g: Force.g.get(eid),
-            carried: Force.carried.get(eid) !== 0,
         });
     }
     rows.sort((a, b) => a.s - b.s);
@@ -1985,12 +1899,10 @@ export function forceAt(ecs: State, id: number): number | null {
 // monotone id source — never reused, even after a delete (the section-id rationale).
 let nextForceId = 0;
 
-/** mint a force-keyframe id without creating the entity — what a PURE transform that has to
- *  name the keyframes it is about to plant needs (`domain.convertDomain` computes the whole
- *  converted store, carried keys included, before anything is written). Ids are monotone and
- *  never reused, so an id minted for a transform that then rejects is simply skipped.
+/** mint a force-keyframe id without creating the entity. Ids are monotone and never
+ *  reused, so an id minted for a transform that then rejects is simply skipped.
  *
- * @example const id = allocForceId(); // then plant it through `applyDomain`'s snapshot */
+ * @example const id = allocForceId(); // then plant it through `spawnForce` */
 export function allocForceId(): number {
     return nextForceId++;
 }
@@ -2016,7 +1928,6 @@ export function createForcePoint(
     Force.g.set(eid, g);
     Force.ease.set(eid, ease);
     writeForceTangent(eid, tan);
-    Force.carried.set(eid, 0);
     return id;
 }
 
@@ -2032,7 +1943,6 @@ export function spawnForce(
     g: number,
     ease: Easing = FORCE_EASE_DEFAULT,
     tan?: ForceTangent,
-    carried = false,
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Force);
@@ -2042,7 +1952,6 @@ export function spawnForce(
     Force.g.set(eid, g);
     Force.ease.set(eid, ease);
     writeForceTangent(eid, tan);
-    Force.carried.set(eid, carried ? 1 : 0);
 }
 
 /** destroy a force point by stable id (no-op if already gone). */
@@ -2063,13 +1972,6 @@ export interface ForcePointState {
     g: number;
     ease: Easing;
     tangent?: ForceTangent;
-    /** the conversion-provenance bit (`Force.carried`) — restored verbatim, since a gesture
-     *  restore must be byte-identical and undoing an edit must put the droppable bit back. Every
-     *  consumer of this row threads it: `restoreForcePoint` writes it, `history.deleteForces`'s
-     *  undo passes it to `spawnForce` (a carried key deleted and undone comes back carried, so the
-     *  next reverse flip still drops it and `authoredHash` still matches the pre-delete document),
-     *  and {@link sameForcePoint} compares it. */
-    carried: boolean;
 }
 
 /** snapshot one force point by id, or undefined if it's gone (the gesture opens
@@ -2084,7 +1986,6 @@ export function forcePointState(ecs: State, id: number): ForcePointState | undef
         g: Force.g.get(eid),
         ease: Force.ease.get(eid) as Easing,
         tangent: readForceTangent(eid),
-        carried: Force.carried.get(eid) !== 0,
     };
 }
 
@@ -2116,39 +2017,7 @@ const FORCE_POINT_EQ: {
     g: (a, b) => a.g === b.g,
     ease: (a, b) => a.ease === b.ease,
     tangent: (a, b) => sameForceTangent(a.tangent, b.tangent),
-    carried: (a, b) => a.carried === b.carried,
 };
-
-/** whether a domain conversion inserted this keyframe (`Force.carried`), by stable id — false
- *  for an authored key and for an id that is gone.
- *
- * @example if (forceCarried(ecs, id)) // the reverse flip will drop it */
-export function forceCarried(ecs: State, id: number): boolean {
-    const eid = forceAt(ecs, id);
-    return eid !== null && Force.carried.get(eid) !== 0;
-}
-
-/** write a force keyframe's provenance bit by stable id — the one writer that changes
- *  DROPPABILITY without writing any shape.
- *
- *  It exists for the law's non-writer arm: provenance is a claim about reconstructibility from the
- *  AUTHORED set (`carryForce` fits the authored keys alone and derives its tolerance from them), so
- *  an op that changes a section's authored set invalidates the carried keys fitted to it even when it
- *  writes none of their columns. `history.deleteForces` is that op — destroying an authored key
- *  leaves every carried key around it fitted to a curve the document no longer holds — and its undo
- *  is what needs the other direction, which is why this takes a boolean instead of clearing.
- *
- *  Authored INSERTION is deliberately not in that class and `createForce` does not call this:
- *  measured, an authored key added among carried ones round-trips with the curve's min/max preserved
- *  (0.4/3.5 g both sides), because a new key constrains the curve it is added to rather than
- *  removing the constraints the carry was fitted under.
- *
- * @example setForceCarried(ecs, id, false) // this key is authored data from here on */
-export function setForceCarried(ecs: State, id: number, carried: boolean): void {
-    const eid = forceAt(ecs, id);
-    if (eid === null) return;
-    Force.carried.set(eid, carried ? 1 : 0);
-}
 
 /** whether another keyframe in `sectionId` already occupies the station `s` — `exceptId` being
  *  the key asking (a key never collides with itself).
@@ -2192,33 +2061,16 @@ export function stationTaken(ecs: State, sectionId: number, s: number, exceptId:
  *  instead of stacking. The refusal is per-axis deliberately; refusing the whole write would
  *  freeze a diagonal drag against a neighbour it isn't trying to land on.
  *
- *  **Editing a conversion-inserted key clears its provenance bit** (`Force.carried`, the locked
- *  domain-carry decision): once the person has moved it, it is authored, and the next reverse flip
- *  must keep it instead of dropping it. Every live-authoring writer below does the same.
- *
- *  **Only a write that actually MOVES the key clears it.** `forceMove`→`applyDrag` writes on every
- *  pointermove, so an unconditional clear promoted a carried key on pointer jitter inside one
- *  quantized station — zero geometry, provenance changed, and the recorded entry's only content the
- *  bit itself. The comparison is against the columns as they are STORED (`Force.s`/`Force.g` keep the
- *  number they were handed; {@link stationTaken} reads at f32 because it asks the different question
- *  of whether two keys share one station) and only over the write that will actually LAND, so an `s`
- *  the station guard refuses cannot clear the bit either. A no-move write is then a real no-op
- *  recording nothing, which is the meaning {@link sameForcePoint}'s grant arm already claims. A drag
- *  that really did move the key and came back still promotes it — the intermediate write moved it, and
- *  putting the bit back at release is the gesture's question, not this writer's.
- *
- *  This is the live-authoring writer only. `restoreForcePoint`/`spawnForce` bypass it on purpose:
- *  a snapshot restore must be byte-identical, and a document that already holds a coincident pair
- *  (authored before this guard, or planted by a structural op) has to round-trip through undo
- *  unchanged rather than being silently repaired mid-history. */
+ *  **This is the live-authoring writer only.** `restoreForcePoint`/`spawnForce` bypass it on
+ *  purpose: a snapshot restore must be byte-identical, and a document that already holds a
+ *  coincident pair (authored before this guard, or planted by a structural op) has to
+ *  round-trip through undo unchanged rather than being silently repaired mid-history. */
 export function setForcePoint(ecs: State, id: number, s: number, g: number): void {
     const eid = forceAt(ecs, id);
     if (eid === null) return;
     const lands = !stationTaken(ecs, Force.section.get(eid), s, id);
-    const moved = (lands && s !== Force.s.get(eid)) || g !== Force.g.get(eid);
     if (lands) Force.s.set(eid, s);
     Force.g.set(eid, g);
-    if (moved) Force.carried.set(eid, 0);
 }
 
 /** write a force point's full state back — position, easing tag, and explicit handles
@@ -2230,7 +2082,6 @@ export function restoreForcePoint(ecs: State, st: ForcePointState): void {
     Force.g.set(eid, st.g);
     Force.ease.set(eid, st.ease);
     writeForceTangent(eid, st.tangent);
-    Force.carried.set(eid, st.carried ? 1 : 0);
 }
 
 /** a force keyframe's explicit handles by stable id, or undefined when it derives
@@ -2247,17 +2098,12 @@ export function forceEase(ecs: State, id: number): Easing {
 }
 
 /** set a force keyframe's easing tag (the convenient middle layer). the raw writer a
- *  history one-shot wraps; does not itself record history.
- *
- *  Clears `Force.carried` only when the tag actually changes — `setForcePoint`'s rule on this column,
- *  for the same reason: re-picking the easing a key already carries writes no shape, so it must not
- *  promote a carried key. */
+ *  history one-shot wraps; does not itself record history. */
 export function setForceEase(ecs: State, id: number, ease: Easing): void {
     const eid = forceAt(ecs, id);
     if (eid === null) return;
     if (Force.ease.get(eid) === ease) return; // the tag it already carries: nothing written
     Force.ease.set(eid, ease);
-    Force.carried.set(eid, 0);
 }
 
 /** set (or clear, with null) a force keyframe's explicit handles — the summon / handle-
@@ -2266,12 +2112,7 @@ export function setForceEase(ecs: State, id: number, ease: Easing): void {
 export function setForceTangent(ecs: State, id: number, tan: ForceTangent | null): void {
     const eid = forceAt(ecs, id);
     if (eid === null) return;
-    // `setForcePoint`'s rule on this column: a handle drag back to its origin, or a summon of the
-    // handles the key already holds, writes no shape and must not promote a carried key. The columns
-    // are still rewritten either way, so this is the provenance rule alone.
-    const moved = !sameForceTangent(readForceTangent(eid), tan ?? undefined);
     writeForceTangent(eid, tan ?? undefined);
-    if (moved) Force.carried.set(eid, 0);
 }
 
 /** clear ONE side (in/out) of a force keyframe's explicit handles back to derived,
@@ -2279,18 +2120,16 @@ export function setForceTangent(ecs: State, id: number, tan: ForceTangent | null
  *  keyframe clears the addressed segment's two bounding sides — this keyframe's out and
  *  the next keyframe's in — never the far sides, which belong to the neighbouring
  *  segments. no-op when the side is already derived — which now includes a keyframe holding the
- *  OTHER side only, so clearing an already-derived side writes no shape and cannot promote a carried
- *  key (`setForcePoint`'s rule on this column). */
+ *  OTHER side only, so clearing an already-derived side writes no shape. */
 export function clearForceTangentSide(ecs: State, id: number, side: "in" | "out"): void {
     const eid = forceAt(ecs, id);
     if (eid === null) return;
     const tan = readForceTangent(eid);
     if (!tan) return;
-    if (tan[side] === undefined) return; // already derived: nothing written, nothing promoted
+    if (tan[side] === undefined) return; // already derived: nothing written
     if (side === "in") tan.in = undefined;
     else tan.out = undefined;
     writeForceTangent(eid, tan);
-    Force.carried.set(eid, 0);
 }
 
 /** the next force keyframe after `id` in its own section (ascending s), or null when
@@ -2466,7 +2305,6 @@ export interface SectionSnapshot {
         g: number;
         ease: Easing;
         tangent?: ForceTangent;
-        carried: boolean;
     }[];
     strips: {
         id: number;
@@ -2495,7 +2333,6 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
             g: p.g,
             ease: Force.ease.get(p.eid) as Easing,
             tangent: readForceTangent(p.eid),
-            carried: p.carried,
         })),
         strips: sectionStrips(ecs, sectionId).map((st) => ({
             id: st.id,
@@ -2526,8 +2363,7 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
-    for (const p of snap.points)
-        spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent, p.carried);
+    for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
     for (const st of snap.strips) {
         spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
         for (const k of st.keyframes) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
@@ -2567,20 +2403,18 @@ const provenance = new Map<number, Provenance>();
  *  pre-solve `snapshotSection` (the same one `history.landSolve` already captures as the undo
  *  "before" — this is its second consumer, not a new capture); the token is computed over the
  *  LANDED (post-solve) section's own content (`sectionToken` — kind + length + rows, NOT
- *  `order`, plus `Track.domain`) and the entry is the section's own entry anchor at landing
- *  (`sectionInfo.entry`, f32-exact reproduction on an unchanged upstream). No-ops when the section
- *  hasn't baked yet (no `sectionInfo` entry to read an anchor from, or no live `Section` row) —
- *  there is nothing yet to certify a later reverse-invoke against. */
+ *  `order`) and the entry is the section's own entry anchor at landing (`sectionInfo.entry`,
+ *  f32-exact reproduction on an unchanged upstream). No-ops when the section hasn't baked yet
+ *  (no `sectionInfo` entry to read an anchor from, or no live `Section` row) — there is nothing
+ *  yet to certify a later reverse-invoke against. */
 export function stampProvenance(ecs: State, sectionId: number, payload: SectionSnapshot): void {
     const info = sectionInfo.get(sectionId);
     if (info === undefined) return;
     const row = sections(ecs).find((s) => s.id === sectionId);
     if (row === undefined) return;
-    const trackEid = trackEntity(ecs);
-    const domain = trackEid === null ? Domain.Distance : (Track.domain.get(trackEid) as Domain);
     provenance.set(sectionId, {
         payload,
-        token: sectionToken(ecs, row, domain),
+        token: sectionToken(ecs, row),
         entry: { x: info.entry.x, y: info.entry.y, theta: info.entry.theta, v: info.entry.v },
     });
 }
@@ -2590,65 +2424,6 @@ export function stampProvenance(ecs: State, sectionId: number, payload: SectionS
  *  (stage 2/3), not this read. */
 export function readProvenance(sectionId: number): Provenance | undefined {
     return provenance.get(sectionId);
-}
-
-/** write a domain conversion's converted force store in place: each force section's extent, each
- *  keyframe's position and explicit handles addressed by stable id, plus the keyframe set itself
- *  — the carry **plants** the conversion-inserted keys the target unit needs and **drops** the ones
- *  the source unit's own flip planted (`domain.convertDomain`, the tagged-subdivision carry). Geo
- *  payloads are still never touched and no geo node entity is created or destroyed, so a live
- *  selection **of a geo node** (which addresses it by eid) survives a domain flip. That promise is
- *  scoped to geo deliberately, and the carry is why: it DESTROYS force keyframes, so a selected
- *  CARRIED key the reverse flip drops leaves `editor.forces.ids` naming an id no entity holds.
- *  Measured as inert rather than repaired — every consumer resolves an id through `forceAt` and skips
- *  a miss, so a Delete on the phantom records 0 entries and nothing renders — and disclosed here
- *  because "a live selection survives" read as a whole-document claim before the carry existed.
- *  Everything a conversion leaves alone on a surviving key (`g`, the easing tag, orders, identities)
- *  is simply not written.
- *  Its input is already fully computed, so the write cannot fail part-way; `history.landDomain` is
- *  the one caller, and undo/redo goes back through the whole-track `restoreAll` pair instead. */
-export function applyDomain(ecs: State, snaps: readonly SectionSnapshot[]): void {
-    for (const snap of snaps) {
-        if (snap.kind !== SectionKind.Force) continue;
-        const eid = sectionAt(ecs, snap.id);
-        if (eid === null) continue;
-        Section.length.set(eid, snap.length);
-        const keep = new Set(snap.points.map((p) => p.id));
-        for (const row of sectionForces(ecs, snap.id)) if (!keep.has(row.id)) ecs.destroy(row.eid);
-        for (const p of snap.points) {
-            const pointEid = forceAt(ecs, p.id);
-            if (pointEid === null) {
-                spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent, p.carried);
-                continue;
-            }
-            Force.s.set(pointEid, p.s);
-            writeForceTangent(pointEid, p.tangent);
-            Force.carried.set(pointEid, p.carried ? 1 : 0);
-        }
-        // strips' `start`/`end` ride the same conversion as a keyframe's `s`; `value` (m/s) is
-        // domain-independent and is left untouched. Strip keyframes' `s` positions are also
-        // converted (domain.ts already converted them in the snapshot) and clipped to the
-        // converted extent.
-        for (const st of snap.strips) {
-            const stripEid = stripAt(ecs, st.id);
-            if (stripEid === null) continue;
-            Strip.start.set(stripEid, st.start);
-            Strip.end.set(stripEid, st.end);
-            // update keyframe positions to the converted values
-            const keepKf = new Set(st.keyframes.map((k) => k.id));
-            for (const kf of stripKeyframes(ecs, st.id))
-                if (!keepKf.has(kf.id)) ecs.destroy(kf.eid);
-            for (const k of st.keyframes) {
-                const kfEid = stripKeyframeAt(ecs, k.id);
-                if (kfEid === null) {
-                    spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
-                } else {
-                    StripKeyframe.s.set(kfEid, k.s);
-                    StripKeyframe.v.set(kfEid, k.v);
-                }
-            }
-        }
-    }
 }
 
 /** force the next `BakeSystem` pass to bake, whatever the authored state hashes to.
@@ -2768,9 +2543,7 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
         ecs.destroy(st.eid);
     }
     Section.kind.set(eid, SectionKind.Force);
-    // the default extent in the TRACK's active domain — a literal meters constant would be
-    // a 24-second, 480-edge section on a Time-domain track.
-    const extent = defaultForceExtent(trackDomain(ecs));
+    const extent = defaultForceExtent();
     Section.length.set(eid, extent); // reset to the default extent, not inherited
     seedForceKeyframes(ecs, sectionId, extent, gEntry);
 }
@@ -2887,10 +2660,9 @@ export function sectionSolvable(
  *  so the document layer reads a solve without depending on the solver — the invoked atoms stay
  *  off this module's graph.
  *
- *  **In the track's active domain unit**, like every other authored number here. Solves run
- *  distance-internal, so the landing seam converts before it reaches `applyConvert`
- *  (`domain.convertSolve`, driven by `geoforce.convertGeo`) — this module can't do it itself
- *  without importing the conversion, which reads back through it. */
+ *  **In meters of arclength**, like every other authored number here — solves run
+ *  distance-internal and the store never varies by `Track.domain` (a display lens, `domain.ts`),
+ *  so the landing needs no conversion. */
 export interface SolvedForce {
     points: readonly { s: number; g: number }[];
     length: number;
@@ -3005,8 +2777,7 @@ export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
     for (const snap of snaps) {
         spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length);
         for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
-        for (const p of snap.points)
-            spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent, p.carried);
+        for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
         for (const st of snap.strips) {
             spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
             for (const k of st.keyframes) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
@@ -3372,25 +3143,7 @@ export function sectionCutAt(
  *  (their old derived-from-`ease` sizing was scaled to the FULL span). Both new
  *  boundary keys read Custom (`profile.custom`): the visible cost of an exact
  *  mid-segment cut. no-op outside the interior. returns the new (tail) section id,
- *  or null.
- *
- *  **A cut is an edit of the keys whose geometry it writes, so it CLEARS their provenance bit**
- *  (`Force.carried`, the locked domain-carry law — the same law that makes editing an inserted key
- *  authored), and it promotes every key that DEFINES the boundary value it plants: the two
- *  bracketing keys of a mid-segment cut (whose handles this rewrites), the landmark key the cut
- *  lands ON, and the single held key either flat branch copies its planted value from. Leaving any
- *  of them tagged makes the
- *  reverse flip drop a key the document's structure now depends on — measured: cutting at a
- *  carried key's station and flipping back left the head with one keyframe (a 4 g dive gone flat)
- *  while the tail kept an invented authored key. The keys merely REBASED onto the tail's axis keep
- *  their bit: a rebase re-expresses the same station in the new section's own frame, writes no
- *  shape, and stays exactly as droppable as it was. **That carve-out is stated here for the Cut and
- *  covers {@link joinNext} verbatim** — the Join performs the identical untagged rebase (`Force.s =
- *  p.s + aLen`) on every key of the section it absorbs, for the identical reason, and writes no shape
- *  on any of them; the two are one law with two call sites, not a Cut-only exception. Every key this
- *  plants is authored by construction (`createForcePoint` tags 0), which is what makes a person's Cut
- *  promote the boundary it cut on into authored data — the intended consequence of the law, not a
- *  leak. */
+ *  or null. */
 export function splitForce(ecs: State, sectionId: number, s: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null || Section.kind.get(secEid) !== SectionKind.Force) return null;
@@ -3419,11 +3172,10 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     // tail (4 edges of 0.5075) both endpoints map to edge 2 — collapsed, displaced to the
     // preceding edge by the point convention.
     const dsNom = trackDs(ecs);
-    const nominal = forceNominal(trackDomain(ecs), dsNom);
-    const headResolved = resolveStep(s, nominal);
+    const headResolved = resolveStep(s, dsNom);
     const headDs = new Float32Array(headResolved.edges).fill(headResolved.ds);
     const tailLen = len - s;
-    const tailResolved = resolveStep(tailLen, nominal);
+    const tailResolved = resolveStep(tailLen, dsNom);
     const tailDs = new Float32Array(tailResolved.edges).fill(tailResolved.ds);
     for (const st of sectionStrips(ecs, sectionId)) {
         if (st.end <= s) continue; // wholly head, unchanged
@@ -3464,8 +3216,6 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
         // landmark: `a` is already the exact boundary value — duplicate it into the
         // tail's opening keyframe, carrying its own `out` half forward (its `in` stays
         // with the head, governing the segment arriving at it); no subdivision needed.
-        // the cut promotes `a` into that shared boundary, so it is authored from here on.
-        Force.carried.set(a.eid, 0);
         const tan = readForceTangent(a.eid);
         createForcePoint(
             ecs,
@@ -3495,12 +3245,9 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
         };
         const sub = subdivide(aPoint, bPoint, s);
 
-        // both bracketing keys get their handles rewritten by the subdivision — an edit, so the
-        // provenance bit goes with it (the docblock's law).
+        // both bracketing keys get their handles rewritten by the subdivision.
         writeForceTangent(a.eid, { mode: TangentMode.Free, in: aTan?.in, out: sub.outA });
-        Force.carried.set(a.eid, 0);
         writeForceTangent(b.eid, { mode: TangentMode.Free, in: sub.inB, out: bTan?.out });
-        Force.carried.set(b.eid, 0);
         createForcePoint(ecs, sectionId, s, sub.g, Easing.Cubic, {
             mode: TangentMode.Free,
             in: sub.inMid,
@@ -3512,16 +3259,12 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     } else if (a !== null && b === null) {
         // the cut lands past the last keyframe: the head keeps the whole (flat-tailed)
         // shape, the tail opens on that same held value (`sampleForce`'s hold-flat rule,
-        // extended across the new boundary). `a` is the key that DEFINES that planted
-        // boundary value, so the cut promotes it too — the law's other half.
-        Force.carried.set(a.eid, 0);
+        // extended across the new boundary).
         createForcePoint(ecs, bId, 0, a.g);
     } else if (a === null && b !== null) {
         // the cut lands before the first keyframe: the head is flat at that keyframe's
         // value up to the boundary; the tail carries the (unshifted-at-this-point)
-        // authored points unchanged. `b` defines the planted boundary value, so it is
-        // promoted for the same reason.
-        Force.carried.set(b.eid, 0);
+        // authored points unchanged.
         createForcePoint(ecs, sectionId, s, b.g);
     }
 
@@ -3652,22 +3395,7 @@ function mergeTangent(
 /** join a section with the next one in the chain (same-kind only). geo appends the
  *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
  *  geo split); force concatenates the extents and rebases the neighbor's points. the
- *  neighbor is removed and downstream orders close up. returns true when joined.
- *
- *  **Provenance** (`Force.carried`, the domain-carry law — argued in {@link splitForce}'s docblock):
- *  the merge of a coincident boundary pair rewrites the surviving key's easing tag and both handles,
- *  so that key is authored from here on. Every OTHER key of the absorbed section is rebased onto the
- *  head's axis (`Force.s = p.s + aLen`) and **keeps its bit** — the same rebase carve-out the Cut
- *  states, for the same reason: a rebase re-expresses one station in a new frame and writes no shape.
- *
- *  **"Collapsing to one keyframe is lossless" now carries a second meaning, and it is not lossless in
- *  that one** (disclosed, not repaired): the sentence is about the sampled PROFILE, which the collapse
- *  does preserve. It says nothing about provenance, and a Cut followed by a Join at a carried key's
- *  station is geometry-identical to the original while provenance-changed — the key comes back
- *  AUTHORED (the Cut promoted it), `authoredHash` differs from the pre-Cut document, and the next
- *  reverse flip keeps a key the carry invented instead of dropping it. That is the law working as
- *  locked (a Cut promotes the boundary it cut on), so the round trip is lossless in shape and
- *  one-way in droppability. */
+ *  neighbor is removed and downstream orders close up. returns true when joined. */
 export function joinNext(ecs: State, sectionId: number): boolean {
     const aEid = sectionAt(ecs, sectionId);
     const b = nextSection(ecs, sectionId);
@@ -3756,11 +3484,6 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             // explicit handle.
             Force.ease.set(aTail.eid, Force.ease.get(bHead.eid) as Easing);
             writeForceTangent(aTail.eid, { mode: TangentMode.Free, in: aTan?.in, out: bTan?.out });
-            // the merge REWRITES the surviving key's easing tag and both handles, so it is an edit
-            // under the domain-carry law and the merged key is authored from here on (`splitForce`'s
-            // own docblock carries the law). A merged key the reverse flip could still drop would
-            // take the join's own reconciliation with it.
-            Force.carried.set(aTail.eid, 0);
             ecs.destroy(bHead.eid);
         }
         for (const p of bForces) {
@@ -3906,24 +3629,16 @@ function forceDense(ecs: State, sectionId: number, step: Step): Float32Array {
 }
 
 /** a force section's payload: its dense profile + the step it bakes at (its own or the
- *  nominal), which sets both the edge count and the integrator's march, and the track's
- *  `domain` — the step rule `evalForce` (`section.ts`) consults. `step` conforms through
- *  {@link resolveStep} before either the profile or the payload's own `Step` sees it, so
- *  `forceDense`'s σ grid and `evalForce`'s march (which reads this payload's `step` in
- *  `chain`) always agree on the same exact pair — the pairing seam, applied once, here. */
-function forcePayload(
-    ecs: State,
-    sectionId: number,
-    length: number,
-    step: number,
-    domain: Domain,
-): SectionSpec {
+ *  nominal), which sets both the edge count and the integrator's march. `step` conforms
+ *  through {@link resolveStep} before either the profile or the payload's own `Step` sees
+ *  it, so `forceDense`'s σ grid and `evalForce`'s march (which reads this payload's `step`
+ *  in `chain`) always agree on the same exact pair — the pairing seam, applied once, here. */
+function forcePayload(ecs: State, sectionId: number, length: number, step: number): SectionSpec {
     const resolved = resolveStep(length, step);
     return {
         kind: "force",
         fN: forceDense(ecs, sectionId, resolved),
         step: resolved,
-        domain,
         strips: stripsForStep(ecs, sectionId, resolved),
     };
 }
@@ -3964,9 +3679,8 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     if (!info) throw new Error(`forceBake: no bake for section ${sectionId}`);
     if (Section.kind.get(eid) !== SectionKind.Force)
         throw new Error(`forceBake: section ${sectionId} is not force`);
-    const domain = trackDomain(ecs);
     const length = Section.length.get(eid);
-    const step = forceNominal(domain, trackDs(ecs));
+    const step = trackDs(ecs);
     // conform once (the pairing seam) so the dense profile's σ grid and evalForce's march
     // below agree on the same exact step, exactly what `forcePayload` does for the live bake.
     const resolved = resolveStep(length, step);
@@ -3989,7 +3703,6 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
         info.entry,
         clipped,
         clippedStep,
-        domain,
         trackFriction(ecs),
         trackResistance(ecs),
         strips,
@@ -4002,25 +3715,13 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
  *  content, so a reorder (a split/join, a reindex) doesn't change it. Factored out of
  *  `bakeHash`'s per-section loop so the bake gate and the provenance token (`sectionToken`,
  *  below) read this ONE reading of "has this section's own content changed" — `bakeHash` folds
- *  `order` back in itself, since a reorder still has to force a re-bake.
- *
- *  OWED: the `carried` provenance bit, strip extents, and strip keyframes all participate here
- *  → `bakeHash`, so clearing a tag invalidates the bake and re-marches a byte-identical profile.
- *  This widening of the `bakeHash` race window across every flow (including flows that never
- *  touch the domain) is UNTESTED — the cheap instrument is a per-flow bake counter before and
- *  after. Nobody may re-derive the hypothesis (that provenance does not belong in `bakeHash` at
- *  all) without running that counter. */
+ *  `order` back in itself, since a reorder still has to force a re-bake. */
 function sectionContentHash(ecs: State, sec: SectionRow): string {
     let h = `${sec.kind}`;
     if (sec.kind === SectionKind.Force) {
         h += `:L${sec.length}`;
         for (const p of sectionForces(ecs, sec.id)) {
             h += `,${p.id}=${p.s}:${p.g}:${Force.ease.get(p.eid)}`;
-            // the conversion-provenance bit rides the content hash like any other per-key field:
-            // a key whose bit an edit cleared is a different document (the next reverse flip keeps
-            // it instead of dropping it), so a stamp taken before that edit must not certify the
-            // state after it. Suffixed only when set, keeping the literal narrow.
-            if (p.carried) h += "+";
             const mode = Force.tmode.get(p.eid);
             if (mode !== 0) {
                 h += `~${mode}:${Force.tin.x.get(p.eid)}:${Force.tin.y.get(p.eid)}:${Force.tout.x.get(p.eid)}:${Force.tout.y.get(p.eid)}`;
@@ -4049,42 +3750,27 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
 /** input-state hash that gates the bake: the shared ds + initial speed + coefficients, then
  *  every section in order — its id/order/kind, and its authored payload (a geo section's
  *  node poses, a force section's extent + points). BakeSystem re-bakes on a miss (anything
- *  moved, added, removed, converted, reordered, re-domained, the v0 retimed, or a
- *  coefficient edited), skips otherwise. `friction`/`resistance` fold in unconditionally,
- *  beside `v0` — unlike `domain`'s conditional suffix, NOT because
- *  every track is nonzero (`createTrack` itself stays at the kernel's neutral 0; only `seed`'s
+ *  moved, added, removed, reordered, the v0 retimed, or a coefficient edited), skips
+ *  otherwise. `friction`/`resistance` fold in unconditionally, beside `v0`, NOT because every
+ *  track is nonzero (`createTrack` itself stays at the kernel's neutral 0; only `seed`'s
  *  genuinely NEW documents get `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`, so a zero-coefficient
- *  track is still the common case, every test fixture included). Unconditional is safe because
- *  this string crosses no restore or session boundary: `out.hash`/`authoredHash` are same-session
- *  runtime cache keys over the live `bakeOut`/`samples` maps, never serialized, and the
- *  provenance sidecar's own comparison key (`sectionToken`) is built from `sectionContentHash`
- *  alone — it never calls this function, so a shape change here can't desync a stamped restore.
- *  the track `domain` stays conditional purely to keep its own literal narrower, not for any
- *  compatibility this function's shape doesn't equally have. */
+ *  track is still the common case, every test fixture included). `Track.domain` never folds
+ *  in: it is a display lens over this same bake, never a second march, so flipping it must
+ *  leave the hash — and therefore the bake — untouched. */
 function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
-    const domain = Track.domain.get(trackEid) as Domain;
     let h = `ds${Track.ds.get(trackEid)}v0${Track.v0.get(trackEid)}mu${Track.friction.get(trackEid)}c${Track.resistance.get(trackEid)}`;
-    if (domain !== Domain.Distance) h += `^${domain}`;
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sectionContentHash(ecs, sec)}`;
     }
     return h;
 }
 
-/** a section's content-hash TOKEN (kex2d-provenance): `sectionContentHash` plus `Track.domain` —
- *  a ruler pick (`domain.convertDomain`) converts a force section's stored numbers without
- *  touching a geo section's own rows, so the domain must ride along or a payload stamped in the
- *  old unit could restore verbatim into a converted store (the one silent-corruption path). A
- *  domain flip invalidates every stamp — correct, since the conversion itself is lossy, so there
- *  is no unit to certify "unchanged" against. Deliberately excludes the track-global `Track.ds`
- *  (`Provenance`'s doc has the why — a ds change is benign, not a certification gap). Exported
- *  (stage 1 kept it private): a reverse-invoke
- *  (`forcegeo.convertForce`/stage 3's `geoforce.convertGeo`) recomputes it fresh off the LIVE
- *  section and compares to the stamp — the same reading, computed twice, never duplicated. */
-export function sectionToken(ecs: State, sec: SectionRow, domain: Domain): string {
-    let h = sectionContentHash(ecs, sec);
-    if (domain !== Domain.Distance) h += `^${domain}`;
-    return h;
+/** a section's content-hash TOKEN (kex2d-provenance): `sectionContentHash` alone —
+ *  `Track.domain` is a display lens, never a second unit the store holds, so it plays no part
+ *  in what "unchanged since the stamp" means. Deliberately excludes the track-global `Track.ds`
+ *  too (`Provenance`'s doc has the why — a ds change is benign, not a certification gap). */
+export function sectionToken(ecs: State, sec: SectionRow): string {
+    return sectionContentHash(ecs, sec);
 }
 
 /** f32-exact entry-anchor equality — the provenance consult's other half (`sectionToken` is the
@@ -4112,7 +3798,7 @@ export function consultProvenance(
     if (!prov) return undefined;
     const row = sections(ecs).find((s) => s.id === sectionId);
     if (!row) return undefined;
-    if (sectionToken(ecs, row, trackDomain(ecs)) !== prov.token) return undefined;
+    if (sectionToken(ecs, row) !== prov.token) return undefined;
     if (!entryExact(entry, prov.entry)) return undefined;
     return prov.payload;
 }
@@ -4141,31 +3827,23 @@ export function bakeLive(ecs: State): boolean {
 
 type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
 
-/** per-sample cumulative time plus the diagnostic feasibility flag.
- *
- *  **A section that MARCHED in time owns its own time.** `marched[i]` is the Δt an edge was
- *  integrated with (a `Time`-domain force section: its step); 0 means the edge has no marched
- *  time and its duration is derived instead, `ds_i / v̄_i` with v̄ floored at `V_FLOOR` so
- *  energy-depleted regions take long-but-finite time — the geo and `Distance`-domain path, and
- *  the original behaviour byte-for-byte. Deriving a marched edge's time would be a SECOND truth
- *  that diverges without bound at a stall (`ds → 0` and `v̄ → V_FLOOR` disagree wildly with the
- *  Δt actually integrated), and a `Time`-domain keyframe's stored `t` IS accumulated march time
- *  by construction — so the table, `evalForce`'s sampling, and the conversion op must all read
- *  the march.
+/** per-sample cumulative time plus the diagnostic feasibility flag. Arclength is the one
+ *  march (`Track.domain` is a display lens, never a second march), so a sample's duration is
+ *  always DERIVED from the distance march: `ds_i / v̄_i`, v̄ floored at `V_FLOOR` so
+ *  energy-depleted regions take long-but-finite time rather than dividing by zero. This IS
+ *  the `dToU`/`uToD` table's own source (`timeline.ts`) — the seam the Time-view ruler and
+ *  readouts read through, and geo already projects through unchanged.
  *
  *  `feasible[i] = |v[i]| ≥ V_WARN` drives the red-track UX (warning threshold above the
  *  numerical floor). */
-function computeTime(out: BakeOut, count: number, marched: Float64Array): void {
+function computeTime(out: BakeOut, count: number): void {
     out.t[0] = 0;
     out.feasible[0] = Math.abs(out.v[0]) >= V_WARN ? 1 : 0;
     let firstBad = out.feasible[0] === 0 ? 0 : -1;
     for (let i = 0; i < count - 1; i++) {
-        let dt = marched[i];
-        if (!(dt > 0)) {
-            const vA = Math.max(Math.abs(out.v[i]), V_FLOOR);
-            const vB = Math.max(Math.abs(out.v[i + 1]), V_FLOOR);
-            dt = out.ds[i] / (0.5 * (vA + vB));
-        }
+        const vA = Math.max(Math.abs(out.v[i]), V_FLOOR);
+        const vB = Math.max(Math.abs(out.v[i + 1]), V_FLOOR);
+        const dt = out.ds[i] / (0.5 * (vA + vB));
         out.t[i + 1] = out.t[i] + dt;
         const f = Math.abs(out.v[i + 1]) >= V_WARN ? 1 : 0;
         out.feasible[i + 1] = f;
@@ -4185,7 +3863,6 @@ function computeTime(out: BakeOut, count: number, marched: Float64Array): void {
 function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: SectionRow[]): void {
     const ds = Track.ds.get(trackEid);
     const v0 = Track.v0.get(trackEid);
-    const domain = Track.domain.get(trackEid) as Domain;
     const start = startEntry(v0);
     const friction = Track.friction.get(trackEid);
     const resistance = Track.resistance.get(trackEid);
@@ -4196,19 +3873,11 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         if (sec.kind === SectionKind.Geo && sectionHandles(ecs, sec.id).length < 2) return;
     }
 
-    // per section: its payload, and the Δt its edges MARCH with (0 = derive the time from ds/v̄
-    // — geo, and every Distance-domain force section). `computeTime` reads the latter.
-    const marchedStep = new Float64Array(secs.length);
-    const payloads = secs.map((sec, k) => {
-        if (sec.kind === SectionKind.Geo) return geoPayload(ecs, sec.id, ds);
-        const step = forceNominal(domain, ds);
-        const payload = forcePayload(ecs, sec.id, sec.length, step, domain);
-        // `payload.step.ds` is the CONFORMED step (`forcePayload`'s own `resolveStep` seam) — the
-        // exact value `evalForce`/`chain` marches this section at below, so `computeTime` must
-        // read the same number, never the pre-conform `step` this section's edges no longer use.
-        if (domain === Domain.Time && payload.kind === "force") marchedStep[k] = payload.step.ds;
-        return payload;
-    });
+    const payloads = secs.map((sec) =>
+        sec.kind === SectionKind.Geo
+            ? geoPayload(ecs, sec.id, ds)
+            : forcePayload(ecs, sec.id, sec.length, ds),
+    );
     // the downstream freeze (stage 7): with a live freeze on a non-terminal section, the chain
     // runs in TWO parts — start..pinning live, downstream seeded at the FROZEN entry — so
     // downstream holds its mode-entry placement while the pinning exit wanders. one part
@@ -4274,18 +3943,12 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     if (count < 2) return; // fully degenerate first section — keep the prior bake
 
     let truncatedAny = false;
-    const marched = new Float64Array(Math.max(1, count - 1));
     for (const p of parts) {
         for (let k = 0; k < p.c.results.length; k++) {
             const sk = p.at + k; // the section's global index
             const r = p.c.results[k];
             const range = p.c.ranges[k];
             const entry = k === 0 ? p.entry : p.c.exits[k - 1];
-            if (marchedStep[sk] > 0) {
-                const lo = range.start + p.offset;
-                const hi = Math.min(range.end + p.offset, p.offset + p.count - 1, count - 1);
-                for (let i = lo; i < hi; i++) marched[i] = marchedStep[sk];
-            }
 
             if (secs[sk].kind === SectionKind.Geo) {
                 const hs = sectionHandles(ecs, secs[sk].id);
@@ -4317,17 +3980,16 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         out.ds.set(p.c.ds.subarray(0, Math.max(0, p.count - 1)), p.offset);
     }
     if (parts.length === 2) {
-        // the SEAM between the parts is a gap, not an edge: zero length (the Time-domain stall
-        // edge's own degenerate-ds handling absorbs it) with the prior edge's force carried so
-        // the chart shows no invented spike. no section's range covers this edge index, so the
-        // kind-color stroke never draws a bridge across the gap.
+        // the SEAM between the parts is a gap, not an edge: zero length with the prior edge's
+        // force held so the chart shows no invented spike. no section's range covers this edge
+        // index, so the kind-color stroke never draws a bridge across the gap.
         const gi = parts[0].count - 1;
         out.ds[gi] = 0;
         out.fN[gi] = gi > 0 ? out.fN[gi - 1] : DEFAULT_G;
     }
     out.hash = bakeHash(ecs, trackEid, secs);
     Track.count.set(trackEid, count);
-    computeTime(out, count, marched);
+    computeTime(out, count);
 }
 
 export const BakeSystem: System = {
@@ -4392,7 +4054,6 @@ export const TrackPlugin: Plugin = {
                 tmode: 0,
                 tin: [0, 0],
                 tout: [0, 0],
-                carried: 0,
             }),
         },
         Strip: {

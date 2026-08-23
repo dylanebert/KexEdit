@@ -3,7 +3,6 @@ import { forces, replay } from "../src/bake";
 import { loss } from "../src/forward";
 import {
     chain,
-    Domain,
     type Entry,
     evalForce,
     evalGeo,
@@ -14,7 +13,6 @@ import {
 } from "../src/section";
 import type { Node } from "../src/spline";
 import { withThetas } from "./helpers/chain";
-import { rk4Time } from "./oracles/rk4";
 
 // the section substrate (kex2d/AGENTS.md, the section substrate): entry → sampled points
 // → exit, chained by anchor propagation. the two atoms wrap the oracle-gated
@@ -156,128 +154,6 @@ describe("evalForce", () => {
     });
 });
 
-describe("evalForce — time domain", () => {
-    test("distance-domain callers are untouched (default Domain.Distance, no 4th arg)", () => {
-        // the domain param must default to Distance so every existing call site
-        // (3 positional args, this file's own prior tests included) stays on the
-        // exact prior code path — no drive-by refactor of the distance branch.
-        const entry: Entry = { x: 3, y: 1, theta: 0.2, v: 12 };
-        const ds = 0.5;
-        const fN = Float32Array.from({ length: 20 }, (_, i) => 1 + 0.3 * Math.sin(i / 4));
-        const step = { edges: fN.length, ds };
-        const withDefault = evalForce(entry, fN, step);
-        const withExplicit = evalForce(entry, fN, step, Domain.Distance);
-        for (let i = 0; i <= 20; i++) {
-            expect(withDefault.posX[i]).toBe(withExplicit.posX[i]);
-            expect(withDefault.posY[i]).toBe(withExplicit.posY[i]);
-        }
-    });
-
-    test("positions match the time-parameterized RK4 oracle, gap shrinking with Δt", () => {
-        // rk4Time is an independent scheme in the SAME parameterization as the new
-        // path (time), so it's the strongest oracle for it — mirrors the
-        // collocate.test.ts "forward64 and rk4 agree" shape: gap at two step
-        // sizes, an absolute cap, and a ratio proving the gap actually shrinks
-        // with the step (derived from the scheme, not tuned).
-        const entry: Entry = { x: 2, y: -1, theta: 0.15, v: 14 };
-        const authored = (t: number): number => 1 + 0.3 * Math.sin(t * 2);
-        const duration = 2; // seconds
-
-        const gap = (dt: number): number => {
-            const edges = Math.round(duration / dt);
-            const fN = Float32Array.from({ length: edges }, (_, i) => authored(i * dt));
-            const r = evalForce(entry, fN, { edges, ds: dt }, Domain.Time);
-            const ref = rk4Time(entry.x, entry.y, entry.theta, entry.v, edges + 1, dt, authored);
-            const last = ref[edges];
-            return Math.hypot(r.posX[edges] - last[0], r.posY[edges] - last[1]);
-        };
-
-        const g0 = gap(0.02);
-        const g1 = gap(0.01);
-        expect(g0).toBeLessThan(0.5); // coarse absolute cap over a 2 s / ~28 m run
-        expect(g0 / g1).toBeGreaterThan(1.8); // shrinks with Δt (at least first order)
-    });
-
-    test("constant force: time domain converges to the distance domain's swept exit", () => {
-        // for a force authored as a constant (domain-agnostic: the same number
-        // regardless of whether it's indexed by σ or by t), both domains
-        // discretize the identical continuous arclength ODE, so they must
-        // converge to the SAME exit — but only over the SAME physical
-        // trajectory. duration and length aren't freely interchangeable via the
-        // entry speed alone: v drifts with height (energy), so `duration =
-        // length / v_entry` does NOT correspond to `length` meters once the
-        // climb bends v away from v_entry (measured: fixing both independently
-        // left an O(1) gap that never shrank — the wrong equivalence). the
-        // right correspondence is the trajectory's OWN elapsed time, so a fine
-        // distance-domain reference supplies it (midpoint-v quadrature over its
-        // own realized ds/v — the same energy-conservation form the atom
-        // itself uses), and time domain runs that exact duration.
-        const entry: Entry = { x: 0, y: 0, theta: 0, v: 12 };
-        const F = 1.2;
-        const length = 20; // meters
-
-        const dsFine = 0.01;
-        const edgesFine = Math.round(length / dsFine);
-        const fNFine = new Float32Array(edgesFine).fill(F);
-        const refFine = evalForce(entry, fNFine, { edges: edgesFine, ds: dsFine });
-        let duration = 0;
-        for (let i = 0; i < refFine.edges; i++) {
-            const vMid = 0.5 * (refFine.v[i] + refFine.v[i + 1]);
-            duration += refFine.ds[i] / vMid;
-        }
-
-        const gap = (ds: number): number => {
-            const edges = Math.round(length / ds);
-            const fND = new Float32Array(edges).fill(F);
-            const rD = evalForce(entry, fND, { edges, ds });
-
-            const dt = duration / edges;
-            const fNT = new Float32Array(edges).fill(F);
-            const rT = evalForce(entry, fNT, { edges, ds: dt }, Domain.Time);
-
-            return Math.hypot(rD.exit.x - rT.exit.x, rD.exit.y - rT.exit.y);
-        };
-
-        const g0 = gap(0.5);
-        const g1 = gap(0.25);
-        expect(g0).toBeLessThan(0.2); // coarse absolute cap over a 20 m run
-        expect(g0 / g1).toBeGreaterThan(1.8); // shrinks with the step (at least O(step))
-    });
-
-    test("O(Δt) convergence: halving Δt roughly halves the gap to a fine-Δt reference", () => {
-        // self-convergence, independent of the RK4 oracle: a much finer time
-        // step stands in for the continuum limit, and the gap from a coarser
-        // step to it should shrink at the scheme's own order as Δt halves
-        // (mirrors the "recovered display force converges as O(ds)" distance
-        // test's shape — halving, not quartering, since this measures the
-        // exit position of the SAME semi-implicit step rule applied on the
-        // time grid, whose F_n resampling — piecewise-constant per Δt — caps
-        // the observable order at first, same as the distance path's σ
-        // resampling).
-        const entry: Entry = { x: 0, y: 0, theta: 0.1, v: 15 };
-        const authored = (t: number): number => 1 + 0.4 * Math.sin(t * 1.5);
-        const duration = 3;
-
-        const fine = 0.001;
-        const edgesFine = Math.round(duration / fine);
-        const fNFine = Float32Array.from({ length: edgesFine }, (_, i) => authored(i * fine));
-        const ref = evalForce(entry, fNFine, { edges: edgesFine, ds: fine }, Domain.Time);
-        const refExit = { x: ref.exit.x, y: ref.exit.y };
-
-        const gap = (dt: number): number => {
-            const edges = Math.round(duration / dt);
-            const fN = Float32Array.from({ length: edges }, (_, i) => authored(i * dt));
-            const r = evalForce(entry, fN, { edges, ds: dt }, Domain.Time);
-            return Math.hypot(r.exit.x - refExit.x, r.exit.y - refExit.y);
-        };
-
-        const coarse = gap(0.04);
-        const finer = gap(0.02);
-        expect(finer).toBeLessThan(coarse); // it shrinks
-        expect(finer).toBeLessThan(0.65 * coarse); // ~halving → O(Δt)
-    });
-});
-
 describe("chain", () => {
     test("threads exit → entry with C0/C1 continuity and contiguous ranges", () => {
         const geo: Node[] = withThetas([
@@ -353,35 +229,6 @@ describe("chain", () => {
         const last = c.count - 1;
         const expected = Math.sqrt(Math.max(0, V0 * V0 - 2 * G * c.posY[last]));
         expect(c.v[last]).toBeCloseTo(expected, 3);
-    });
-
-    test("threads a force section's domain to evalForce (a time section's ds means Δt)", () => {
-        // an omitted `domain` (the geo/distance-force sections above) must stay
-        // on the Distance branch; a `domain: Domain.Time` section's `ds` field
-        // is consumed as Δt, so its per-edge ds is the variable v·Δt, not a
-        // fixed step — chain must pass the field through, not silently drop it.
-        const dt = 0.02;
-        const edges = 40;
-        const fN = new Float32Array(edges).fill(1.2);
-        const sections: Section[] = [
-            { kind: "force", fN, step: { edges, ds: dt }, domain: Domain.Time },
-        ];
-        const c = chain({ x: 0, y: 0, theta: 0, v: V0 }, sections);
-
-        const direct = evalForce(
-            { x: 0, y: 0, theta: 0, v: V0 },
-            fN,
-            { edges, ds: dt },
-            Domain.Time,
-        );
-        for (let i = 0; i <= edges; i++) {
-            expect(c.posX[i]).toBe(direct.posX[i]);
-            expect(c.posY[i]).toBe(direct.posY[i]);
-        }
-        // the time path's per-edge ds is v·Δt, not the fixed Δt — distinguishing
-        // it from a distance section threaded the same way.
-        expect(c.ds[0]).toBeCloseTo(V0 * dt, 5);
-        expect(c.ds[0]).not.toBeCloseTo(dt, 3);
     });
 
     test("clips a force section's copy at the sample budget, never writing past the flat SoA", () => {
@@ -519,21 +366,11 @@ describe("velocity strips — the kernel (section.Strip, stripOverride)", () => 
     const Mu = 0.021;
     const C = 2.5e-4;
 
-    test("wrong-granularity trap: interior strip on a force section — Distance domain", () => {
+    test("wrong-granularity trap: interior strip on a force section", () => {
         const step = { edges: ForceEdges, ds: 0.5 };
-        const absent = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C);
+        const absent = evalForce(forceEntry, forceFN, step, Mu, C);
         const strips: Strip[] = [{ start: 27, end: 63, value: 8 }];
-        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
-        expect(firstDivergence(absent, present, 27)).toBeUndefined();
-        expect(present.v[63]).toBe(8);
-        expect(present.v[63]).not.toBe(absent.v[63]);
-    });
-
-    test("wrong-granularity trap: interior strip on a force section — Time domain", () => {
-        const step = { edges: ForceEdges, ds: 0.02 };
-        const absent = evalForce(forceEntry, forceFN, step, Domain.Time, Mu, C);
-        const strips: Strip[] = [{ start: 27, end: 63, value: 8 }];
-        const present = evalForce(forceEntry, forceFN, step, Domain.Time, Mu, C, strips);
+        const present = evalForce(forceEntry, forceFN, step, Mu, C, strips);
         expect(firstDivergence(absent, present, 27)).toBeUndefined();
         expect(present.v[63]).toBe(8);
         expect(present.v[63]).not.toBe(absent.v[63]);
@@ -541,19 +378,19 @@ describe("velocity strips — the kernel (section.Strip, stripOverride)", () => 
 
     test("sweep: a strip starting at edge 1, adjacent to the entry", () => {
         const step = { edges: ForceEdges, ds: 0.5 };
-        const absent = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C);
+        const absent = evalForce(forceEntry, forceFN, step, Mu, C);
         const strips: Strip[] = [{ start: 1, end: 6, value: 9 }];
-        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
+        const present = evalForce(forceEntry, forceFN, step, Mu, C, strips);
         expect(firstDivergence(absent, present, 1)).toBeUndefined();
         expect(present.v[6]).toBe(9);
     });
 
     test("sweep: a strip ending at the last edge, start = edges − 1", () => {
         const step = { edges: ForceEdges, ds: 0.5 };
-        const absent = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C);
+        const absent = evalForce(forceEntry, forceFN, step, Mu, C);
         const start = ForceEdges - 1;
         const strips: Strip[] = [{ start, end: ForceEdges, value: 11 }];
-        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
+        const present = evalForce(forceEntry, forceFN, step, Mu, C, strips);
         expect(firstDivergence(absent, present, start)).toBeUndefined();
         expect(present.v[ForceEdges]).toBe(11);
         expect(present.exit.v).toBe(11);
@@ -561,10 +398,10 @@ describe("velocity strips — the kernel (section.Strip, stripOverride)", () => 
 
     test("point degenerate: a zero-length strip overrides exactly edge (k−1, k), IEEE-exact", () => {
         const step = { edges: ForceEdges, ds: 0.5 };
-        const absent = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C);
+        const absent = evalForce(forceEntry, forceFN, step, Mu, C);
         const k = 40;
         const strips: Strip[] = [{ start: k, end: k, value: 9 }];
-        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
+        const present = evalForce(forceEntry, forceFN, step, Mu, C, strips);
         // the guaranteed prefix is [0, k−1] inclusive — the single overridden
         // edge is (k−1 → k), so sample k−1 (its entry) is the last untouched one.
         expect(firstDivergence(absent, present, k - 1)).toBeUndefined();
@@ -583,7 +420,7 @@ describe("velocity strips — the kernel (section.Strip, stripOverride)", () => 
         // this test wants — measured, not assumed).
         const step = { edges: ForceEdges, ds: 0.5 };
         const strips: Strip[] = [{ start: 27, end: 63, value: 8 }];
-        const present = evalForce(forceEntry, forceFN, step, Domain.Distance, Mu, C, strips);
+        const present = evalForce(forceEntry, forceFN, step, Mu, C, strips);
         let vsq = present.v[63] * present.v[63];
         for (let i = 63; i < ForceEdges; i++) {
             const dy = present.posY[i + 1] - present.posY[i];
@@ -591,49 +428,6 @@ describe("velocity strips — the kernel (section.Strip, stripOverride)", () => 
                 2 * G * dy + loss(present.fN[i], present.v[i] * present.v[i], present.ds[i], Mu, C);
             expect(present.v[i + 1] * present.v[i + 1]).toBeCloseTo(Math.max(vsq, 0), 3);
         }
-    });
-
-    test("a Time-domain stall un-stalled by a strip", () => {
-        // steep, sustained fN demand against a modest entry v: the natural
-        // march genuinely stalls (v hits exactly 0 and freezes, A3's own
-        // mechanism) partway through — confirmed as a sanity arm before the
-        // strip is applied at all.
-        const edges = 60;
-        const dt = 0.05;
-        const fN = new Float32Array(edges).fill(1.9);
-        const entry: Entry = { x: 0, y: 0, theta: 0, v: 3 };
-        const step = { edges, ds: dt };
-        const absent = evalForce(entry, fN, step, Domain.Time, 0.3, 0.05);
-        expect(absent.v[5]).toBe(0); // sanity: the natural stall is real
-        expect(absent.v[10]).toBe(0); // and it's still frozen five edges later
-
-        const strips: Strip[] = [{ start: 5, end: 20, value: 6 }];
-        const present = evalForce(entry, fN, step, Domain.Time, 0.3, 0.05, strips);
-        expect(firstDivergence(absent, present, 5)).toBeUndefined();
-        for (let i = 6; i <= 20; i++) expect(present.v[i]).toBe(6);
-        expect(present.v[10]).not.toBe(absent.v[10]); // un-stalled — no longer frozen at 0
-    });
-
-    test("the injection accumulator only ever fires outside a strip: covering every edge clears it", () => {
-        // same stalling fixture as the un-stall arm. a strip covering only the
-        // first stall (edges [5, 20)) leaves the SECOND, uncovered natural
-        // stall (further downstream) to still trip the accumulator; widening
-        // the SAME strip to cover every edge from 0 removes every edge the
-        // clamp could ever fire on (`stripOverride`'s value is always ≥ 0, so
-        // an overridden edge's vSq can never go negative) — a differential on
-        // real coverage, not a re-derivation of `forces`'s own arithmetic.
-        const edges = 60;
-        const dt = 0.05;
-        const fN = new Float32Array(edges).fill(1.9);
-        const entry: Entry = { x: 0, y: 0, theta: 0, v: 3 };
-        const step = { edges, ds: dt };
-
-        const partial: Strip[] = [{ start: 5, end: 20, value: 6 }];
-        const whole: Strip[] = [{ start: 0, end: edges, value: 6 }];
-        const partialR = evalForce(entry, fN, step, Domain.Time, 0.3, 0.05, partial);
-        const wholeR = evalForce(entry, fN, step, Domain.Time, 0.3, 0.05, whole);
-        expect(partialR.injection).toBeGreaterThan(0);
-        expect(wholeR.injection).toBe(0);
     });
 
     test("evalGeo: a strip changes only v/fN, never the sampled positions (no march to couple through)", () => {

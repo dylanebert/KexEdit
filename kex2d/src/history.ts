@@ -16,7 +16,6 @@ import type { Domain, Entry as TrackEntry } from "./section";
 import {
     applyConvert,
     applyConvertGeo,
-    applyDomain,
     appendSection as appendSectionTrack,
     clearForceTangentSide,
     convertSection as flipSectionKind,
@@ -48,14 +47,12 @@ import {
     Section,
     SectionKind,
     sectionAt,
-    sectionForces,
     sections,
     type SectionSnapshot,
     seedTangent,
     setTangent,
     type SectionLengthState,
     sectionLengthState,
-    setForceCarried,
     setForceEase as writeForceEase,
     setForcePoint,
     setForceTangent,
@@ -464,31 +461,7 @@ export function createForce(h: History, ecs: State, section: number, s: number, 
 /** delete a SET of force points by id as ONE undoable entry (the bulk delete — force multi-delete
  *  is unconditional). undo re-spawns them all verbatim into their original sections; ids already
  *  gone are skipped, and nothing records when the set is empty. a single-id array (`[id]`) is the
- *  size-1 case — deleting one point.
- *
- *  "Verbatim" includes the conversion-provenance bit (`ForcePointState.carried`): deleting a
- *  conversion-inserted key and undoing puts a CARRIED key back, so the next reverse flip still
- *  drops it and `authoredHash` still matches the pre-delete document. Passing the 8th `spawnForce`
- *  argument is what makes that true — its default is `false`, so an omission silently promoted the
- *  restored key to authored.
- *
- *  **A delete also PROMOTES the surviving carried keys of every section it touches**
- *  (`track.setForceCarried`), and that is the provenance law reaching its one NON-writer. `carryForce`
- *  fits the AUTHORED keys alone and derives its tolerance from them, so a carried key is
- *  reconstructible only while the authored keys around it still describe the curve it was fitted to.
- *  This op destroys an authored key and writes no neighbour's station, value, easing or handle, so
- *  the writers-only reading of the law never reached it — and the invariant broke anyway: measured on
- *  dive-and-recover, flipping to Seconds, deleting the 0.4 g trough key and flipping back left the
- *  section holding TWO keys both at 1 g (flat), a 0.41630 g round-trip shape delta at t = 1.870
- *  against that fixture's 0.0225 g resolution floor (18.5×), with the guard blind to it — with the
- *  trough gone the authored set is `{1 g, 1 g}`, so `resolutionFloor` is 0.0 and the fit is exact.
- *  Deleting two of the three authored keys left ONE keyframe, flat at 1 g.
- *
- *  Undo puts the bits back with the keys, so the whole entry is still byte-identical either way.
- *  Authored INSERTION is deliberately NOT in this class — `createForce` promotes nothing (measured:
- *  an authored key inserted among carried ones round-trips with min/max preserved, 0.4/3.5 g both
- *  sides), because adding a key constrains the curve rather than removing what the carry was fitted
- *  under. */
+ *  size-1 case — deleting one point. */
 export function deleteForces(h: History, ecs: State, ids: readonly number[]): void {
     const pre = selHook?.snapshot(ecs); // the selected SET — captured before any point is destroyed
     const sts: ForcePointState[] = [];
@@ -497,16 +470,8 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
         if (st) sts.push(st);
     }
     if (sts.length === 0) return;
-    // the carried keys this delete invalidates: read BEFORE anything is destroyed, over the whole
-    // authored set of every section losing a key, and excluding the victims themselves.
-    const gone = new Set(sts.map((st) => st.id));
-    const promoted: number[] = [];
-    for (const sec of new Set(sts.map((st) => st.section)))
-        for (const row of sectionForces(ecs, sec))
-            if (!gone.has(row.id) && row.carried) promoted.push(row.id);
     const drop = (): void => {
         for (const st of sts) destroyForce(ecs, st.id);
-        for (const id of promoted) setForceCarried(ecs, id, false);
     };
     drop();
     record(
@@ -515,8 +480,7 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
             apply: drop,
             reverse: () => {
                 for (const st of sts)
-                    spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent, st.carried);
-                for (const id of promoted) setForceCarried(ecs, id, true);
+                    spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent);
             },
         },
         pre,
@@ -525,13 +489,8 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
 
 /** open a gesture on a force-point drag (or an inline field edit), snapshotting the
  *  point's full state. commit coalesces the live writes into one entry; the no-op test is
- *  {@link sameForcePoint}, field-wise over the whole snapshot rather than over the fields this
- *  gesture is nominally about — `setForcePoint` also clears `Force.carried`, so an `s`/`g`-only
- *  predicate read a drag returning to its origin as a no-op while the document had really changed,
- *  and recorded nothing to undo it with. `sameForcePoint` is exhaustive by type, so the next column
- *  added to `ForcePointState` cannot repeat that. OWED: a drag with real intermediate motion
- *  that returns to its origin still promotes a carried key and records a bit-only entry — closing
- *  it needs gesture-level restore-on-no-op in `commit`, not just an exhaustive predicate. */
+ *  {@link sameForcePoint}, field-wise over the whole snapshot — exhaustive by type, so the next
+ *  column added to `ForcePointState` can't be silently dropped from the comparison. */
 export function beginForceMove(ecs: State, id: number): void {
     begin(
         () => forcePointState(ecs, id),
@@ -1072,40 +1031,21 @@ export function restoreProvenance(
     record(h, restoreCommand(ecs, before, after, restoreSection), pre);
 }
 
-// ── track domain conversion ────────────────────────────────────────────────────
+// ── track domain (view) ─────────────────────────────────────────────────────────
 
-/** land a domain conversion as one undoable entry: the `Track.domain` flip paired with the whole
- *  converted store, so undo restores the unit and the numbers TOGETHER (either alone would
- *  re-interpret every keyframe in the wrong unit). `domain.convertDomain` computes `after` purely
- *  and calls this; **the document is touched exactly once, here** — so a conversion that throws
- *  while computing writes nothing, and there is no partial state to roll back (the `landSolve`
- *  shape).
- *
- *  The do-path writes in place (`applyDomain` — the changed columns, by stable id) so a live
- *  selection's eid survives the flip. Undo/redo replays the whole-track `restoreAll` pair, which
- *  destroys and respawns every node and keyframe; the eid allocator recycles LIFO, so that pair is
- *  why the selection snapshot rides along — without it a held selection would come back naming a
- *  DIFFERENT entity. */
-/** land a domain conversion: set the track domain, apply the converted snapshots, and
- *  record one undo entry. Called by `convertDomain`.
- *
- *  The min-extent floor applied in `convertDomain` is **one-way**: a strip floored to
- *  `targetNominal` in the target domain does not shrink back on the reverse flip, because
- *  the reverse flip sees the floored extent as authored and converts it through a table that
- *  moved. So strip extents no longer round-trip M→S→M — the floor is a ratchet, not a
- *  projection. This is the right trade (a sub-edge strip is silently inert; an overlapping
- *  strip is the state the spec refuses outright), but it is not a round-trip promise. */
-export function landDomain(h: History, ecs: State, target: Domain, after: SectionSnapshot[]): void {
+/** land a `Track.domain` flip as one undoable entry. Arclength is the one store every force
+ *  keyframe, extent, strip and strip keyframe lives in — the flip changes which unit the
+ *  ruler/readouts DISPLAY that store in, never the store itself (`domain.convertDomain`'s own
+ *  docblock has the why), so this writes exactly one column and nothing else. */
+export function landDomain(h: History, ecs: State, target: Domain): void {
     const pre = selHook?.snapshot(ecs);
     const source = trackDomain(ecs);
-    const before = snapshotAll(ecs);
     setTrackDomain(ecs, target);
-    applyDomain(ecs, after);
-    const restore = (domain: Domain, snaps: SectionSnapshot[]): void => {
-        setTrackDomain(ecs, domain);
-        restoreAll(ecs, snaps);
-    };
-    record(h, { apply: () => restore(target, after), reverse: () => restore(source, before) }, pre);
+    record(
+        h,
+        { apply: () => setTrackDomain(ecs, target), reverse: () => setTrackDomain(ecs, source) },
+        pre,
+    );
 }
 
 // ── structural ops (append / split / join / delete) ──────────────────────────

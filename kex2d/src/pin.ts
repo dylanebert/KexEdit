@@ -39,13 +39,12 @@ import {
 } from "./history";
 import type { OptimizeOpts, OptimizeResult } from "./optimize";
 import { type OptimizeRunOpts, runOptimize } from "./optimize-async";
-import { type Domain, type Entry, evalForce } from "./section";
+import { type Entry, evalForce } from "./section";
 import { forceProfile, type ForcePoint, resolveStep, type Step } from "./profile";
 import {
     authoredHash,
     bakeLive,
     forceEase,
-    forceNominal,
     forceTangent,
     Section,
     sectionAt,
@@ -53,7 +52,6 @@ import {
     sectionForces,
     sectionInfo,
     stripsForStep,
-    trackDomain,
     trackDs,
     trackFriction,
     trackResistance,
@@ -69,7 +67,6 @@ interface SectionSpec {
     entry: Entry;
     length: number;
     step: Step;
-    domain: Domain;
     friction: number;
     resistance: number;
 }
@@ -79,19 +76,16 @@ function sectionSpec(ecs: State, sectionId: number): SectionSpec | null {
     if (eid === null || Section.kind.get(eid) !== SectionKind.Force) return null;
     const info = sectionInfo.get(sectionId);
     if (!info) return null;
-    const domain = trackDomain(ecs);
-    const nominal = forceNominal(domain, trackDs(ecs));
     const length = Section.length.get(eid);
     // the pairing seam: conform once here so every downstream use of this spec's `step`
     // (this module's own `forceProfile`/`evalForce` call below, and `optimize.ts`'s kernel,
     // which reads `spec.step.ds` through `OptimizeOpts`) marches at the same exact step the
     // mode stamps its exit at.
-    const step = resolveStep(length, nominal);
+    const step = resolveStep(length, trackDs(ecs));
     return {
         entry: info.entry,
         length,
         step,
-        domain,
         friction: trackFriction(ecs),
         resistance: trackResistance(ecs),
     };
@@ -131,15 +125,7 @@ export function enterPin(ecs: State, sectionId: number): PinSession | null {
     // authored `Section.length`/`Track.ds`, never a bake read): the pin invariant's own
     // structural requirement, "no bake-read anywhere in the override construction path".
     const strips = stripsForStep(ecs, sectionId, spec.step);
-    const r = evalForce(
-        spec.entry,
-        dense,
-        spec.step,
-        spec.domain,
-        spec.friction,
-        spec.resistance,
-        strips,
-    );
+    const r = evalForce(spec.entry, dense, spec.step, spec.friction, spec.resistance, strips);
     // the session carries only the stamp + ghost + the downstream freeze seed (all frozen at
     // mode entry); the section's baking parameters are NOT cached here — `runPinSection`
     // re-reads them live off `sectionSpec` at every invoke, same as any other invoked command
@@ -270,7 +256,6 @@ export async function runPinSection(
         locked: lockedIdx,
         length: spec.length,
         ds: spec.step.ds,
-        domain: spec.domain,
         stamp: session.stamp,
         friction: spec.friction,
         resistance: spec.resistance,
