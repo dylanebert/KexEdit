@@ -1046,7 +1046,11 @@ export function edgeStrips(
             const points = r.keyframes.map((k) => ({ s: k.s, g: k.v }));
             const values = new Float32Array(end - lo);
             for (let k = lo; k < end; k++) {
-                const sigma = cum[k];
+                // a station-0 degenerate strip has lo = -1, so cum[-1] is undefined;
+                // sampleForce with its single boundary-pinned keyframe short-circuits
+                // past sigma today, but the ?? 0 keeps that inertness an invariant
+                // rather than a coincidence of the current branch order.
+                const sigma = cum[k] ?? 0;
                 const v = sampleForce(points, sigma);
                 values[k - lo] = v * v;
             }
@@ -2267,9 +2271,10 @@ export function entrySpeed(ecs: State, secs: SectionRow[] = sections(ecs)): numb
  *  (`section.ts`'s "prescription beats dissipation") — which broke feasibility on a
  *  hill/loop scenario tuned to the OLD scalar's exact energy budget, and made a
  *  document-layer solve chase a moving target it has no strip awareness of (the
- *  roadmap's own deferred "Solve ignores strips" gap, Out of scope for S5). Test/lab
- *  setup + the `__kex` dev hook only — the real UI authors a real, grabbable start
- *  strip through `seed`/the ordinary keyframe-drag gesture, never this shape. */
+ *  roadmap's own deferred "Solve ignores strips" gap, Out of scope for S5). Callers:
+ *  test/lab setup, the `__kex` dev hook, and `preserveEntrySpeedAcrossConvert` (live
+ *  UI-reachable: a section-0 kind-flip that destroyed the start strip); the ordinary
+ *  authoring path is a real, grabbable start strip via `seed`/the keyframe drag. */
 export function setStartSpeed(ecs: State, v: number): void {
     const clamped = Math.max(MIN_V0, v);
     const secs = sections(ecs);
