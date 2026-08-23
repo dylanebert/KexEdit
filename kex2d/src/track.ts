@@ -46,8 +46,9 @@ export { SectionKind } from "./section";
 /** per-track scalars. `count` is the total sample count over the whole chain (bake
  *  output, varies with the authored payload). `ds` is the nominal target spacing —
  *  one value shared by every section (per-edge actual ds lives in `bakeOut.ds`).
- *  `v0` is the authored initial speed (m/s) at the track start (the START handle's
- *  field; default `V0`, in the bake hash). the per-section kind + extent live on
+ *  the initial speed (m/s) at the track start is no longer stored here (S5): it is
+ *  DERIVED, {@link entrySpeed} — the value of the strip covering station 0 in the
+ *  first section, or `V0` when none exists. the per-section kind + extent live on
  *  `Section`, not here.
  *
  *  `domain` is the track-global `Domain` (`section.ts`) — the unit EVERY force
@@ -62,7 +63,6 @@ export { SectionKind } from "./section";
 export const Track = {
     count: sparse(u32),
     ds: sparse(f32),
-    v0: sparse(f32),
     domain: sparse(u32),
     /** Coulomb friction coefficient, threaded to `forward.loss` beside
      *  `resistance`. New-track default `DEFAULT_FRICTION`; an absent field (an old save)
@@ -1153,14 +1153,15 @@ export const MAX_SAMPLES = 4096;
 /** the track's nominal sampling step (m) — what every section bakes at. */
 export const DS_NOMINAL = 0.5;
 
-/** the DEFAULT initial speed (m/s) a fresh track's start anchor gets. it's now
- *  authored per-track (`Track.v0`, set via the START handle's field); this is only
- *  the seed until the user (or some upstream idiom — a launch, a lift hill) sets it.
- *  matches kexedit / FVD. */
+/** the fallback initial speed (m/s) when no strip covers station 0 (`entrySpeed`'s own
+ *  `else` — the same idiom `bakeEntryForce` uses for `DEFAULT_G`). `seed` authors a real
+ *  strip at this value, so a fresh document's own entry speed reads `V0` through the
+ *  ordinary strip-covers-station-0 path, not this fallback; the fallback fires once that
+ *  strip is deleted. matches kexedit / FVD. */
 export const V0 = 10;
 
-/** the slowest the authored initial speed can be set — a positive floor so the start
- *  is never zero/negative (which would make a level track take infinite time). */
+/** the slowest the start strip's authored speed can be set — a positive floor so the
+ *  start is never zero/negative (which would make a level track take infinite time). */
 const MIN_V0 = 0.1;
 
 /** a fresh track's default Coulomb friction coefficient — ported verbatim from the incumbent
@@ -1186,7 +1187,8 @@ export const EXTEND_DIST = 24;
 /** the track's initial anchor for a given initial speed: the entry to the first
  *  section, a level start at the origin. world position is cosmetic in this 2D
  *  prototype (the view auto-frames), so it's fixed — the authored variable is the
- *  initial speed `v` (`Track.v0`), which this threads into the entry frame. */
+ *  derived initial speed `v` ({@link entrySpeed}), which this threads into the entry
+ *  frame. */
 function startEntry(v0: number): Entry {
     return { x: 0, y: 0, theta: 0, v: v0 };
 }
@@ -1263,7 +1265,6 @@ export function createTrack(ecs: State): number {
     ecs.add(trackEid, Track);
     Track.count.set(trackEid, 0);
     Track.ds.set(trackEid, DS_NOMINAL);
-    Track.v0.set(trackEid, V0);
     Track.domain.set(trackEid, Domain.Distance);
     Track.friction.set(trackEid, 0);
     Track.resistance.set(trackEid, 0);
@@ -2216,23 +2217,80 @@ export function setSectionLength(ecs: State, id: number, length: number): void {
     Section.length.set(eid, Math.max(minForceExtent(trackDomain(ecs)), length));
 }
 
-// ── track initial speed (v0) ───────────────────────────────────────────────────
+// ── track initial speed (v0, S5: derived from the start strip) ─────────────────
 
-/** the track's undoable initial speed (m/s) — the START handle's scrub/type gesture
- *  snapshots this. */
-export interface TrackV0State {
-    v0: number;
+/** the strip covering station 0 in the track's first section (order 0), or undefined
+ *  when none exists (an unauthored track, or one whose start strip was deleted) —
+ *  {@link entrySpeed}/{@link setStartSpeed}'s shared lookup. A strip's half-open
+ *  `[start, end)` covers station 0 when `start <= 0 < end`, matching `stripOverride`'s
+ *  own edge convention (a strip landing exactly at `start === 0` claims the station); a
+ *  DEGENERATE point strip at exactly `[0, 0)` also counts — it is the one station-0
+ *  point `stripOverride`'s own edge convention reads as inert (`lo = start - 1 = -1`,
+ *  never matching a real `k >= 0`), which is exactly what {@link setStartSpeed}'s
+ *  test/lab-setup path relies on to carry a value with zero march side effect. */
+function startStrip(ecs: State, secs: SectionRow[]): StripRow | undefined {
+    const first = secs.find((s) => s.order === 0);
+    if (!first) return undefined;
+    return sectionStrips(ecs, first.id).find(
+        (st) => st.start <= 0 && (st.end > 0 || st.end === st.start),
+    );
 }
 
-/** snapshot a track's authored initial speed. */
-export function trackV0State(trackEid: number): TrackV0State {
-    return { v0: Track.v0.get(trackEid) };
+/** the track's derived entry speed (m/s): the value of the strip covering station 0 in
+ *  the first section, sampled at its own `s = 0` (`sampleForce` over the strip's
+ *  keyframes — the same evaluation `edgeStrips` uses to build the march's own edge-0
+ *  override, so a keyframe edit and the entry speed agree exactly), or `V0` when none
+ *  exists — the same fallback idiom as an emptied force profile falling to `DEFAULT_G`
+ *  (`bakeEntryForce`). The old sparse per-track speed field is retired; this is its
+ *  replacement, and there is no authored field left to snapshot for undo — the start
+ *  strip's own keyframe-drag gesture (`beginStripKeyframeMove`) already carries this
+ *  value through undo/redo. */
+export function entrySpeed(ecs: State, secs: SectionRow[] = sections(ecs)): number {
+    const st = startStrip(ecs, secs);
+    if (!st) return V0;
+    const kfs = stripKeyframes(ecs, st.id);
+    if (kfs.length === 0) return st.value;
+    return sampleForce(
+        kfs.map((k) => ({ s: k.s, g: k.v })),
+        0,
+    );
 }
 
-/** set the track's initial speed (m/s), floored at MIN_V0 — the field/scrub write +
- *  gesture restore. re-bakes on the next tick (v0 is in the bake hash). */
-export function setTrackV0(trackEid: number, v0: number): void {
-    Track.v0.set(trackEid, Math.max(MIN_V0, v0));
+/** author the track's initial speed by writing the strip covering station 0 in the
+ *  first section — moves both its boundary keyframes plus `Strip.value` when one
+ *  already exists (a real span, `seed`'s own shape, or this helper's own prior call).
+ *  Floored at `MIN_V0`, the old field-based setter's own floor. Otherwise spawns a
+ *  DEGENERATE `[0, 0)` point strip, bypassing the ordinary create path's min-extent
+ *  guard (`spawnStrip`, like a pre-guard document restore) on purpose: this helper's
+ *  callers want a scalar entry speed with no march side effect (the old field's own
+ *  shape), and a real, edge-covering span always overrides that edge's march too
+ *  (`section.ts`'s "prescription beats dissipation") — which broke feasibility on a
+ *  hill/loop scenario tuned to the OLD scalar's exact energy budget, and made a
+ *  document-layer solve chase a moving target it has no strip awareness of (the
+ *  roadmap's own deferred "Solve ignores strips" gap, Out of scope for S5). Test/lab
+ *  setup + the `__kex` dev hook only — the real UI authors a real, grabbable start
+ *  strip through `seed`/the ordinary keyframe-drag gesture, never this shape. */
+export function setStartSpeed(ecs: State, v: number): void {
+    const clamped = Math.max(MIN_V0, v);
+    const secs = sections(ecs);
+    const first = secs.find((s) => s.order === 0);
+    if (!first) return;
+    const st = startStrip(ecs, secs);
+    if (st) {
+        for (const kf of stripKeyframes(ecs, st.id)) setStripKeyframe(ecs, kf.id, kf.s, clamped);
+        const eid = stripAt(ecs, st.id);
+        if (eid !== null) Strip.value.set(eid, clamped);
+        return;
+    }
+    const eid = ecs.create();
+    ecs.add(eid, Strip);
+    const id = nextStripId++;
+    Strip.section.set(eid, first.id);
+    Strip.id.set(eid, id);
+    Strip.start.set(eid, 0);
+    Strip.end.set(eid, 0);
+    Strip.value.set(eid, clamped);
+    createStripKeyframe(ecs, id, 0, clamped);
 }
 
 // ── friction / drag ────────────────────────────────────────────────────────────
@@ -2585,32 +2643,36 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
     // the incoming force, stamped at creation.
     const info = sectionInfo.get(sectionId);
     const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
-    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    for (const st of sectionStrips(ecs, sectionId)) {
-        destroyStripKeyframes(ecs, st.id);
-        ecs.destroy(st.eid);
-    }
-    Section.kind.set(eid, SectionKind.Force);
-    const extent = defaultForceExtent();
-    Section.length.set(eid, extent); // reset to the default extent, not inherited
-    seedForceKeyframes(ecs, sectionId, extent, gEntry);
+    preserveEntrySpeedAcrossConvert(ecs, sectionId, () => {
+        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+        for (const st of sectionStrips(ecs, sectionId)) {
+            destroyStripKeyframes(ecs, st.id);
+            ecs.destroy(st.eid);
+        }
+        Section.kind.set(eid, SectionKind.Force);
+        const extent = defaultForceExtent();
+        Section.length.set(eid, extent); // reset to the default extent, not inherited
+        seedForceKeyframes(ecs, sectionId, extent, gEntry);
+    });
 }
 
 /** reset a section's payload to the GEO default: both row kinds cleared, the flat two-node
  *  seed. `resetToForce`'s twin — one body behind `convertSection`'s force → geo flip and
  *  `resetSection`'s geo-held reset. */
 function resetToGeo(ecs: State, eid: number, sectionId: number): void {
-    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    for (const st of sectionStrips(ecs, sectionId)) {
-        destroyStripKeyframes(ecs, st.id);
-        ecs.destroy(st.eid);
-    }
-    Section.kind.set(eid, SectionKind.Geo);
-    Section.length.set(eid, 0);
-    addNode(ecs, sectionId, 0, 0);
-    addNode(ecs, sectionId, EXTEND_DIST, 0);
+    preserveEntrySpeedAcrossConvert(ecs, sectionId, () => {
+        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+        for (const st of sectionStrips(ecs, sectionId)) {
+            destroyStripKeyframes(ecs, st.id);
+            ecs.destroy(st.eid);
+        }
+        Section.kind.set(eid, SectionKind.Geo);
+        Section.length.set(eid, 0);
+        addNode(ecs, sectionId, 0, 0);
+        addNode(ecs, sectionId, EXTEND_DIST, 0);
+    });
 }
 
 /** destructively flip a section's kind to its opposite, resetting to that kind's
@@ -2717,6 +2779,37 @@ export interface SolvedForce {
     length: number;
 }
 
+/** preserve the track's derived entry speed across a section-0 kind convert (S5 residue,
+ *  red-first witnessed twice: an invoked solve round-tripping force→geo→force diverged the
+ *  SECOND leg — "unreachable ... v0 = 10" — because the first leg's convert had already
+ *  cleared the launch strip; and a DESTRUCTIVE convert of a section authored with a strip
+ *  moved a later infeasibility onto the wrong section, `geo.pw.ts`'s "viewport infeasible
+ *  shot"). Every section-payload clearer that flips a section's kind — the two invoked-solve
+ *  landers (`applyConvert`/`applyConvertGeo`) and the two destructive resets
+ *  (`resetToForce`/`resetToGeo`) — already clears the converted section's strips
+ *  unconditionally, and the entry speed is now DERIVED from section 0's own strip
+ *  (`entrySpeed`) — so before S5, converting a section-0 shape between geo and force was a
+ *  no-op for launch speed (the old per-track speed field was track-global, survived any
+ *  convert); after S5 it silently resets it to `V0` instead, a routine everyday op quietly
+ *  re-timing the whole track. NOT the "start-pinned UX" the Locked Decision defers
+ *  (undeletable, unmovable): nothing here stops the resulting strip from being deleted or
+ *  edited afterward like any other — this only keeps the VALUE from vanishing under a
+ *  convert. `run` is the caller's destroy-then-rebuild; a no-op for any section that isn't
+ *  currently order 0 (a downstream section's convert never touches order 0's own strip, so
+ *  there is nothing to preserve), and re-authors through `setStartSpeed`'s own degenerate,
+ *  march-inert shape afterward. */
+function preserveEntrySpeedAcrossConvert(ecs: State, sectionId: number, run: () => void): void {
+    const secs = sections(ecs);
+    const isFirst = secs[0]?.id === sectionId;
+    // only when a strip is ACTUALLY there to lose — `entrySpeed` always returns a number (the
+    // `V0` fallback included), so gating on that alone would materialize a brand new strip on
+    // every convert of an unauthored section, the opposite of "no-op when nothing moved".
+    const hadStrip = isFirst && startStrip(ecs, secs) !== undefined;
+    const before = hadStrip ? entrySpeed(ecs, secs) : null;
+    run();
+    if (before !== null) setStartSpeed(ecs, before);
+}
+
 /** land an invoked geo→force solve's output on its section — the conversion's whole document
  *  write. the shape nodes go, the kind flips, and the section takes the solve's REALIZED
  *  extent (the march that closes the exit the solve pinned — `refine.ts`), then its `{s, g}`
@@ -2727,16 +2820,26 @@ export interface SolvedForce {
  *  distinct from `convertSection`: that one is the destructive *reset* to the kind's default
  *  (the two continuation keyframes at the default extent); this one replaces the section with a
  *  solved shape-preserving profile. does not itself record history — `history.solveForce`
- *  wraps it. */
+ *  wraps it. destroys a cleared strip's keyframes too (S5, red-first witnessed): every other
+ *  section-payload clearer in this file (`resetToForce`/`resetToGeo`/`restoreSection`) already
+ *  does, but this one left the keyframe entities orphaned (tagged with the destroyed strip's
+ *  id, `stripAt` no longer resolving it) — invisible before a section-0 strip was routine, since
+ *  `restoreSection`'s own undo respawn then created a SECOND keyframe sharing that id, sitting
+ *  beside the still-live orphan. */
 export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`applyConvert: no section ${sectionId}`);
-    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    for (const st of sectionStrips(ecs, sectionId)) ecs.destroy(st.eid);
-    Section.kind.set(eid, SectionKind.Force);
-    Section.length.set(eid, solved.length);
-    for (const p of solved.points) createForcePoint(ecs, sectionId, p.s, p.g);
+    preserveEntrySpeedAcrossConvert(ecs, sectionId, () => {
+        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+        for (const st of sectionStrips(ecs, sectionId)) {
+            destroyStripKeyframes(ecs, st.id);
+            ecs.destroy(st.eid);
+        }
+        Section.kind.set(eid, SectionKind.Force);
+        Section.length.set(eid, solved.length);
+        for (const p of solved.points) createForcePoint(ecs, sectionId, p.s, p.g);
+    });
 }
 
 /** an invoked force→geo fit's authored output: the sparse Auto node chain `geofit` emitted, in
@@ -2769,21 +2872,27 @@ export function applyConvertGeo(
 ): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`applyConvertGeo: no section ${sectionId}`);
-    // both row kinds go, mirroring `applyConvert`: a force section carries no nodes, so the
-    // handle sweep is defensive parity, not a live path — and the template is what a reader
-    // checks this against.
-    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    for (const st of sectionStrips(ecs, sectionId)) ecs.destroy(st.eid);
-    Section.kind.set(eid, SectionKind.Geo);
-    Section.length.set(eid, 0);
-    solved.nodes.forEach((n, i) => {
-        if (i === 0) {
-            spawnNode(ecs, sectionId, 0, 0, 0, 0);
-        } else {
-            const local = localize(entry, n);
-            spawnNode(ecs, sectionId, i, local.x, local.y, local.theta);
+    preserveEntrySpeedAcrossConvert(ecs, sectionId, () => {
+        // both row kinds go, mirroring `applyConvert`: a force section carries no nodes, so the
+        // handle sweep is defensive parity, not a live path — and the template is what a reader
+        // checks this against. destroys a cleared strip's keyframes too, `applyConvert`'s own S5
+        // fix.
+        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+        for (const st of sectionStrips(ecs, sectionId)) {
+            destroyStripKeyframes(ecs, st.id);
+            ecs.destroy(st.eid);
         }
+        Section.kind.set(eid, SectionKind.Geo);
+        Section.length.set(eid, 0);
+        solved.nodes.forEach((n, i) => {
+            if (i === 0) {
+                spawnNode(ecs, sectionId, 0, 0, 0, 0);
+            } else {
+                const local = localize(entry, n);
+                spawnNode(ecs, sectionId, i, local.x, local.y, local.theta);
+            }
+        });
     });
 }
 
@@ -3663,6 +3772,13 @@ function seed(ecs: State): void {
     const id = createSection(ecs, 0, SectionKind.Geo, 0);
     addNode(ecs, id, 0, 0);
     addNode(ecs, id, EXTEND_DIST, 0);
+    // the initial velocity IS the first strip (S5): a real strip at the minimum extent,
+    // through the ordinary create path (S4's seeded boundary keyframes included), rather
+    // than a dedicated field — deleting it falls the derived entry speed back to `V0`
+    // (`entrySpeed`'s own fallback), so this authors the same starting value the retired
+    // per-track speed field used to default to, just as an editable, deletable strip.
+    const ext = stripMinExtentAt(ecs, id, 0);
+    if (ext) createStrip(ecs, id, ext.start, ext.end, V0);
 }
 
 // ── bake ─────────────────────────────────────────────────────────────────────
@@ -3849,18 +3965,21 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
     return h;
 }
 
-/** input-state hash that gates the bake: the shared ds + initial speed + coefficients, then
- *  every section in order — its id/order/kind, and its authored payload (a geo section's
- *  node poses, a force section's extent + points). BakeSystem re-bakes on a miss (anything
- *  moved, added, removed, reordered, the v0 retimed, or a coefficient edited), skips
- *  otherwise. `friction`/`resistance` fold in unconditionally, beside `v0`, NOT because every
- *  track is nonzero (`createTrack` itself stays at the kernel's neutral 0; only `seed`'s
- *  genuinely NEW documents get `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`, so a zero-coefficient
- *  track is still the common case, every test fixture included). `Track.domain` never folds
- *  in: it is a display lens over this same bake, never a second march, so flipping it must
- *  leave the hash — and therefore the bake — untouched. */
+/** input-state hash that gates the bake: the shared ds + coefficients, then every section
+ *  in order — its id/order/kind, and its authored payload (a geo section's node poses, a
+ *  force section's extent + points, and EVERY section's strips + strip keyframes).
+ *  BakeSystem re-bakes on a miss (anything moved, added, removed, reordered, or a
+ *  coefficient edited), skips otherwise. the initial speed carries no term of its own here
+ *  (S5): it is DERIVED from the first section's own strip contribution below, already
+ *  folded into that section's hash, and its fallback (`V0`) is a constant, so nothing
+ *  authored governs it beyond the strip. `friction`/`resistance` fold in unconditionally,
+ *  NOT because every track is nonzero (`createTrack` itself stays at the kernel's neutral
+ *  0; only `seed`'s genuinely NEW documents get `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`, so
+ *  a zero-coefficient track is still the common case, every test fixture included).
+ *  `Track.domain` never folds in: it is a display lens over this same bake, never a second
+ *  march, so flipping it must leave the hash — and therefore the bake — untouched. */
 function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
-    let h = `ds${Track.ds.get(trackEid)}v0${Track.v0.get(trackEid)}mu${Track.friction.get(trackEid)}c${Track.resistance.get(trackEid)}`;
+    let h = `ds${Track.ds.get(trackEid)}mu${Track.friction.get(trackEid)}c${Track.resistance.get(trackEid)}`;
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sectionContentHash(ecs, sec)}`;
     }
@@ -3964,7 +4083,7 @@ function computeTime(out: BakeOut, count: number): void {
  *  bake) when a geo section is below its two-node floor or the chain degenerates. */
 function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: SectionRow[]): void {
     const ds = Track.ds.get(trackEid);
-    const v0 = Track.v0.get(trackEid);
+    const v0 = entrySpeed(ecs, secs);
     const start = startEntry(v0);
     const friction = Track.friction.get(trackEid);
     const resistance = Track.resistance.get(trackEid);
@@ -4123,7 +4242,6 @@ export const TrackPlugin: Plugin = {
             defaults: () => ({
                 count: 0,
                 ds: 0,
-                v0: V0,
                 domain: Domain.Distance,
                 // absent-in-a-document restores the KERNEL default (0, `forward.ts`'s own
                 // `friction`/`resistance` params), never `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`

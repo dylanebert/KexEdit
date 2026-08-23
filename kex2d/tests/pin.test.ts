@@ -36,7 +36,7 @@ import {
     setForcePoint,
     setTrackFriction,
     setTrackResistance,
-    setTrackV0,
+    setStartSpeed,
     snapshotAll,
     stripsForStep,
 } from "../src/track";
@@ -54,7 +54,6 @@ function forceTrack(coeffs?: { friction: number; resistance: number }): {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    setTrackV0(eid, 20);
     if (coeffs) {
         setTrackFriction(eid, coeffs.friction);
         setTrackResistance(eid, coeffs.resistance);
@@ -65,6 +64,7 @@ function forceTrack(coeffs?: { friction: number; resistance: number }): {
     createForcePoint(state, sec, 20, 1);
     createForcePoint(state, sec, 30, 0.8);
     createForcePoint(state, sec, 40, 1);
+    setStartSpeed(state, 20);
     state.step(0);
     return { state, eid, sec };
 }
@@ -1050,9 +1050,11 @@ describe("velocity strips — the pin invariant (C3)", () => {
         const step = resolveStep(40, 20 / 40); // an independently-resolved step (ds = 0.5)
         const specs = stripsForStep(state, sec, step);
         expect(specs).toBeDefined();
-        expect(specs?.[0].start).toBe(Math.round(15 / step.ds));
-        expect(specs?.[0].end).toBe(Math.round(25 / step.ds));
-        expect(specs?.[0].value).toBe(6);
+        // `forceTrack`'s own start strip (S5, `setStartSpeed`) sorts first (it sits at
+        // station 0); the authored one under test is the OTHER row, addressed by its value.
+        const authored = specs?.find((s) => s.value === 6);
+        expect(authored?.start).toBe(Math.round(15 / step.ds));
+        expect(authored?.end).toBe(Math.round(25 / step.ds));
 
         sectionInfo.set(sec, savedInfo);
         bakeOut.set(eid, savedOut);

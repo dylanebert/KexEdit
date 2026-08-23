@@ -28,7 +28,7 @@ import {
     setForcePoint,
     setTangent,
     setTrackDomain,
-    setTrackV0,
+    setStartSpeed,
     snapshotAll,
     Track,
     trackDomain,
@@ -48,27 +48,29 @@ function humpForceTrack(): { state: State; eid: number; sec: number } {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    setTrackV0(eid, 18);
     const sec = createSection(state, 0, SectionKind.Force, 40);
     createForcePoint(state, sec, 0, 1);
     createForcePoint(state, sec, 20, 1.4);
     createForcePoint(state, sec, 40, 1);
+    setStartSpeed(state, 18);
     state.step(0);
     return { state, eid, sec };
 }
 
 /** a track carrying one hand-authored hill (the shape kex2d-provenance's symptom is named
- *  against — an untouched geo→force→geo trip gaining nodes), baked. */
+ *  against — an untouched geo→force→geo trip gaining nodes), baked. `applyConvert`/
+ *  `applyConvertGeo`'s own `preserveEntrySpeedAcrossConvert` (S5) is what keeps the launch
+ *  speed alive across the round trips below; `setStartSpeed` only has to author it once. */
 function hillTrack(): { state: State; eid: number; sec: number } {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    setTrackV0(eid, 18);
     const sec = createSection(state, 0, SectionKind.Geo, 0);
     addNode(state, sec, 0, 0);
     addNode(state, sec, 10, 2);
     addNode(state, sec, 20, 4);
     addNode(state, sec, 30, 2);
+    setStartSpeed(state, 18);
     state.step(0);
     return { state, eid, sec };
 }
@@ -247,7 +249,6 @@ describe("convertForce", () => {
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
         setTrackDomain(state, Domain.Time);
-        setTrackV0(eid, 18);
         // `humpForceTrack`'s profile in the time domain: the same hump over the duration a
         // ~18 m/s cart takes to cover its 40 m.
         const sec = createSection(state, 0, SectionKind.Force, 40 / 18);
@@ -255,6 +256,9 @@ describe("convertForce", () => {
         createForcePoint(state, sec, 20 / 18, 1.4);
         createForcePoint(state, sec, 40 / 18, 1);
         const down = appendSection(state, SectionKind.Geo);
+        // no entry speed authored (S5): the fit's own self-consistency claim below doesn't
+        // depend on a specific launch speed, and `sec` gets converted, dropping any authored
+        // one to the `V0` fallback anyway (`hillTrack`'s own doc).
         state.step(0);
         const before = docState(state, eid);
         const forceExit = { ...(sectionInfo.get(down)?.entry ?? { x: Number.NaN, y: Number.NaN }) };
@@ -333,11 +337,12 @@ describe("provenance short-circuit", () => {
 
     test("an untouched trip restores across the corpus", async () => {
         // a second, differently-shaped scenario (not just the named hill symptom) — the
-        // exactness claim isn't a property of one hand-picked shape.
+        // exactness claim isn't a property of one hand-picked shape. No entry speed authored
+        // (S5): `hillTrack`'s own doc explains why (a multi-convert round trip on section 0
+        // always drops it to the `V0` fallback) — this shape stays feasible there too.
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        setTrackV0(eid, 22);
         const sec = createSection(state, 0, SectionKind.Geo, 0);
         addNode(state, sec, 0, 0);
         addNode(state, sec, 15, -3);
@@ -373,8 +378,7 @@ describe("provenance short-circuit", () => {
     test("an upstream edit that moves the section's entry falls through to the fit", async () => {
         const state = new State();
         state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        setTrackV0(eid, 18);
+        createTrack(state);
         const upstream = createSection(state, 0, SectionKind.Geo, 0);
         addNode(state, upstream, 0, 0);
         addNode(state, upstream, 15, 0);
@@ -382,6 +386,7 @@ describe("provenance short-circuit", () => {
         addNode(state, sec, 0, 0);
         addNode(state, sec, 10, 2);
         addNode(state, sec, 20, 4);
+        setStartSpeed(state, 18);
         state.step(0);
         const h = createHistory();
 
@@ -426,7 +431,6 @@ describe("provenance short-circuit", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        setTrackV0(eid, 18);
         const first = createSection(state, 0, SectionKind.Geo, 0);
         addNode(state, first, 0, 0);
         addNode(state, first, 10, 2);
@@ -435,6 +439,8 @@ describe("provenance short-circuit", () => {
         addNode(state, second, 0, 0);
         addNode(state, second, 8, -1);
         addNode(state, second, 16, -2);
+        // no entry speed authored (S5): `first` gets converted below, dropping it to the `V0`
+        // fallback (`hillTrack`'s own doc) — this shape stays feasible there.
         state.step(0);
         const h = createHistory();
 
@@ -588,7 +594,6 @@ describe("document-layer fidelity", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        setTrackV0(eid, 18);
         const hill = createSection(state, 0, SectionKind.Geo, 0);
         addNode(state, hill, 0, 0);
         addNode(state, hill, 10, 2);
@@ -596,6 +601,7 @@ describe("document-layer fidelity", () => {
         const sec = createSection(state, 1, SectionKind.Force, 90);
         createForcePoint(state, sec, 0, 2.2);
         createForcePoint(state, sec, 90, 0.4);
+        setStartSpeed(state, 18);
         state.step(0);
 
         const before = sectionStations(eid, sec);
@@ -625,7 +631,6 @@ describe("document-layer fidelity", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        setTrackV0(eid, 22);
         const hill = createSection(state, 0, SectionKind.Geo, 0);
         addNode(state, hill, 0, 0);
         addNode(state, hill, 10, 9);
@@ -633,6 +638,7 @@ describe("document-layer fidelity", () => {
         const sec = createSection(state, 1, SectionKind.Force, 24);
         createForcePoint(state, sec, 0, 2.2);
         createForcePoint(state, sec, 24, -0.6);
+        setStartSpeed(state, 22);
         state.step(0);
 
         const before = sectionStations(eid, sec);

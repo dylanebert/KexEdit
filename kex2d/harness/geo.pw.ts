@@ -1027,7 +1027,9 @@ test("context menu stays in the viewport near the bottom edge", async ({ page, b
     await expect.poll(tTotal).not.toBe(tFlat);
     await frameTimeline(page); // whole force section on-screen so every diamond has a DOM box
     const nPts = await forceCount();
-    await expect(page.locator(".fpt")).toHaveCount(nPts);
+    // `.fpt` is shared with velocity-strip keyframes; `seedForceBump`'s convert re-authors the
+    // launch speed as a degenerate one-keyframe strip across it (S5, `force.pw.ts`'s own note).
+    await expect(page.locator(".fpt")).toHaveCount(nPts + 1);
 
     const vp = page.viewportSize();
     if (!vp) throw new Error("no viewport size");
@@ -1177,7 +1179,10 @@ test("viewport infeasible shot", async ({ page, boot }) => {
     // node on top of it, so it picks cleanly (the v0 flow's framing).
     await expect.poll(tTotal).toBeGreaterThan(0);
 
-    // ── 1. Author the launch speed through the REAL START popover: 16 m/s. ──
+    // ── 1. Author the launch speed as test SETUP (S5: it's the first strip now, authored
+    // through the ordinary strip/keyframe gestures the strip flows already drive by real
+    // pointer — `section.pw.ts`'s "v0 authoring flow") — 16 m/s. Selecting the START still
+    // summons its (now coefficient-only) popover, so that affordance is exercised too. ──
     const canvas = page.locator("canvas.viewport");
     const cb = await canvas.boundingBox();
     if (!cb) throw new Error("viewport canvas not laid out");
@@ -1185,8 +1190,7 @@ test("viewport infeasible shot", async ({ page, boot }) => {
     const cy = cb.y + (cb.height - DOCK_RESERVE) / 2;
     await page.mouse.click(cx, cy);
     await expect(page.locator(".vtip")).toBeVisible();
-    await page.locator(".vtip .fld.v0 input").fill("16");
-    await page.keyboard.press("Enter");
+    await kexCall(page, "setV0", 16);
     await expect.poll(v0).toBeCloseTo(16, 3);
 
     // ── 2. Flip the seed section to force and author the pull-up: the convert seeds two

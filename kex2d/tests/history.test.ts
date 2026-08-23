@@ -20,7 +20,7 @@ import {
     beginMove,
     beginMoves,
     beginStripMove,
-    beginV0,
+    beginStripKeyframeMove,
     commit,
     commitChord,
     commitLength,
@@ -67,6 +67,7 @@ import {
     createSection,
     createStrip,
     createTrack,
+    entrySpeed,
     EXTEND_DIST,
     forceEase,
     Handle,
@@ -89,13 +90,16 @@ import {
     seedTangent,
     setForcePoint,
     setSectionLength,
+    setStartSpeed,
     setStickyLen,
     setStrip,
+    setStripKeyframe,
     setTangent,
-    setTrackV0,
     snapshotSection,
     stampProvenance,
     stickyLen,
+    stripKeyframes,
+    stripMinExtentAt,
     Track,
     V0,
 } from "../src/track";
@@ -1009,42 +1013,75 @@ test("commitChord armed=false leaves the sticky value untouched but still commit
     expect(poseOf(state, sec, 1).x).toBeCloseTo(EXTEND_DIST, 6); // undoable
 });
 
-// ── track initial speed (v0) — a per-track scalar on the same gesture substrate ──
+// ── track initial speed (v0, S5) — DERIVED from the strip covering station 0; there is
+// no dedicated v0 gesture left to test, since editing it now rides the strip-keyframe
+// drag's own generic undo (`beginStripKeyframeMove`) ──────────────────────────────────
 
-test("v0 scrub collapses to one entry; undo restores the speed, redo replays", () => {
-    const { state, eid } = nodes();
-    const h = createHistory();
-    expect(Track.v0.get(eid)).toBe(V0); // the default seed
-
-    beginV0(eid);
-    setTrackV0(eid, 14); // live preview frames — not recorded individually
-    setTrackV0(eid, 18);
-    commit(h);
-
-    expect(h.undo.length).toBe(1); // the whole scrub → one entry
-    expect(Track.v0.get(eid)).toBe(18);
-
-    undo(h, state);
-    expect(Track.v0.get(eid)).toBe(V0);
-
-    redo(h, state);
-    expect(Track.v0.get(eid)).toBe(18);
+test("with no strip covering station 0, the derived entry speed falls back to V0", () => {
+    const { state } = nodes();
+    expect(entrySpeed(state)).toBe(V0);
 });
 
-test("a no-change v0 release records nothing", () => {
-    const { eid } = nodes();
+test("editing the start strip's keyframe (the ordinary keyframe-drag gesture) moves the derived entry speed; undo/redo carry it", () => {
+    const { state, sec } = nodes();
     const h = createHistory();
-    beginV0(eid);
-    commit(h); // released without changing the speed
+    const ext = stripMinExtentAt(state, sec, 0);
+    if (!ext) throw new Error("no min extent");
+    const stripId = createStrip(state, sec, ext.start, ext.end, V0);
+    if (stripId === null) throw new Error("strip refused");
+    expect(entrySpeed(state)).toBe(V0);
+
+    const kf = stripKeyframes(state, stripId)[0];
+    beginStripKeyframeMove(state, kf.id);
+    setStripKeyframe(state, kf.id, kf.s, 14); // live preview frames — not recorded individually
+    setStripKeyframe(state, kf.id, kf.s, 18);
+    commit(h);
+
+    expect(h.undo.length).toBe(1); // the whole drag → one entry
+    expect(entrySpeed(state)).toBe(18);
+
+    undo(h, state);
+    expect(entrySpeed(state)).toBeCloseTo(V0, 6);
+
+    redo(h, state);
+    expect(entrySpeed(state)).toBeCloseTo(18, 6);
+});
+
+test("a no-move keyframe-drag release records nothing", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const ext = stripMinExtentAt(state, sec, 0);
+    if (!ext) throw new Error("no min extent");
+    const stripId = createStrip(state, sec, ext.start, ext.end, V0);
+    if (stripId === null) throw new Error("strip refused");
+    const kf = stripKeyframes(state, stripId)[0];
+    beginStripKeyframeMove(state, kf.id);
+    commit(h); // released without moving the keyframe
     expect(h.undo.length).toBe(0);
 });
 
-test("setTrackV0 floors a zero/negative speed off zero", () => {
-    const { eid } = nodes();
-    setTrackV0(eid, 0);
-    expect(Track.v0.get(eid)).toBeGreaterThan(0); // never a zero/infinite-time start
-    setTrackV0(eid, -5);
-    expect(Track.v0.get(eid)).toBeGreaterThan(0);
+test("deleting the start strip falls the derived entry speed back to V0; undo restores it", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const ext = stripMinExtentAt(state, sec, 0);
+    if (!ext) throw new Error("no min extent");
+    const stripId = createStrip(state, sec, ext.start, ext.end, 18);
+    if (stripId === null) throw new Error("strip refused");
+    expect(entrySpeed(state)).toBe(18);
+
+    deleteStrips(h, state, [stripId]);
+    expect(entrySpeed(state)).toBe(V0);
+
+    undo(h, state);
+    expect(entrySpeed(state)).toBe(18);
+});
+
+test("setStartSpeed floors a zero/negative speed off zero", () => {
+    const { state } = nodes();
+    setStartSpeed(state, 0);
+    expect(entrySpeed(state)).toBeGreaterThan(0); // never a zero/infinite-time start
+    setStartSpeed(state, -5);
+    expect(entrySpeed(state)).toBeGreaterThan(0);
 });
 
 test("convert force→geo undoes byte-identical to the authored force points", () => {
