@@ -1674,11 +1674,12 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     );
     expect(seededIds.size).toBe(2);
 
-    // Widen the strip via a REAL pointer edge-drag on its end (boundary ride carries the
-    // seeded end keyframe along, S4), so the midpoint below clears both diamonds by
-    // construction, not by tuning a smaller hit radius. `stripPx`'s x0/x1 are CANVAS-local
-    // (like `ghostPx`, unlike the page-absolute `stripKfPx`), so the chart canvas's own
-    // rect supplies the page offset.
+    // Widen the strip via a REAL pointer edge-drag on its end. Non-sticking (S4, boundary
+    // ride deleted): the resize does NOT carry the seeded end keyframe, but the strip's
+    // own extent records the new edge, so the midpoint below (computed from start/end)
+    // clears both diamonds by construction, not by tuning a smaller hit radius.
+    // `stripPx`'s x0/x1 are CANVAS-local (like `ghostPx`, unlike the page-absolute
+    // `stripKfPx`), so the chart canvas's own rect supplies the page offset.
     const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
     if (!chartCanvasBb) throw new Error("chart canvas not laid out");
     const spBefore = (
@@ -1830,8 +1831,10 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
     // rather than empty curve. `seededIds` names the two so the create step below can find
     // the genuinely-new keyframe among the (now three) rows. Widen the strip via a REAL
-    // pointer edge-drag on its end (boundary ride carries the seeded end keyframe along,
-    // S4) so the midpoint clears both diamonds by construction.
+    // pointer edge-drag on its end. Non-sticking (S4, boundary ride deleted): the resize
+    // does NOT carry the seeded end keyframe, but the strip's own extent records the new
+    // edge, so the midpoint below (computed from start/end) clears both diamonds by
+    // construction.
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
     if (!created) throw new Error("newly-created strip not found");
@@ -1984,8 +1987,9 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     );
     expect(seededIds.size).toBe(2);
 
-    // Widen the strip via a REAL pointer edge-drag on its end (boundary ride carries the
-    // seeded end keyframe along, S4) so the keyframes are well-separated and clickable.
+    // Widen the strip via a REAL pointer edge-drag on its end. Non-sticking (S4, boundary
+    // ride deleted): the resize does NOT carry the seeded end keyframe — the two seeded
+    // keyframes keep their positions and stay clickable on screen.
     const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
     if (!chartCanvasBb) throw new Error("chart canvas not laid out");
     const spBefore = (

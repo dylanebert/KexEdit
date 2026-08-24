@@ -990,7 +990,6 @@ export function stripKeyframeState(ecs: State, id: number): StripKeyframeState |
     };
 }
 
-/** write a strip keyframe's position and value (live drag preview + gesture restore). */
 /** whether a station another keyframe in this strip already holds — the strip-keyframe
  *  twin of {@link stationTaken}. Equality is at f32 via `Math.fround`, matching the force
  *  keyframe guard: `StripKeyframe.s` is `sparse(f32)` and a grid-quantized drag lands on the
@@ -1022,8 +1021,7 @@ export function keyframeTaken(
         : stripKeyframeTaken(ecs, ownerId, s, exceptId);
 }
 
-/** write a strip keyframe's position and value (live drag preview + gesture restore). the
- *  position writer only.
+/** write a strip keyframe's position and value (live drag preview + gesture restore).
  *
  *  A station another key in this strip already holds is REFUSED ({@link stripKeyframeTaken}):
  *  the key keeps its current `s` and the `v` write still lands, so a drag crossing a

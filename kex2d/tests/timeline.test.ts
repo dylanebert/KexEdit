@@ -1414,25 +1414,28 @@ describe("kex2d-event-substrate S1: behavior arms — both keyframe kinds ride o
     // already cleared `stripKf` at base — removing the fix (the `selectStripKf(null)` call in
     // `marqueeUp`) did not red it. The repaired arm arms the actual fix function: set a strip
     // keyframe selection, call `selectStripKf(null)`, verify it clears. The capture harness
-    // (force.pw.ts "one selection model — the S4 transition table") pins the production call
+    // (section.pw.ts "strip keyframe deselect on empty chart click") pins the production call
     // path through `marqueeUp`.
     // Witnessed red: mutated `selectStripKf` to no-op when `id === null` (skip the
     // `setMember` call) → `editor.stripKf` stayed 7 → exit 1.
     test("deselect: `selectStripKf(null)` clears the strip keyframe selection (the `marqueeUp` fix)", () => {
-        // set up a strip keyframe selection directly
-        setMember(editor.stripKfs, 7);
-        expect(editor.stripKf).toBe(7);
-        // the actual fix: `marqueeUp` calls `selectStripKf(null)` to clear the sub-selection
-        selectStripKf(null);
-        expect(editor.stripKf).toBeNull();
-        // the force side: `marqueeUp` also calls `selectForce(null)` — same observable
-        setMember(editor.forces, 42);
-        expect(editor.force).toBe(42);
-        // `selectForce(null)` is the force-side twin (already existed at base)
-        editor.force = null;
-        expect(editor.force).toBeNull();
-        // cleanup
-        deselectAll();
+        try {
+            // set up a strip keyframe selection directly
+            setMember(editor.stripKfs, 7);
+            expect(editor.stripKf).toBe(7);
+            // the actual fix: `marqueeUp` calls `selectStripKf(null)` to clear the sub-selection
+            selectStripKf(null);
+            expect(editor.stripKf).toBeNull();
+            // the force side: `marqueeUp` also calls `selectForce(null)` — same observable
+            setMember(editor.forces, 42);
+            expect(editor.force).toBe(42);
+            // `selectForce(null)` is the force-side twin (already existed at base)
+            editor.force = null;
+            expect(editor.force).toBeNull();
+        } finally {
+            // cleanup runs regardless of failure — the editor singleton is module-global
+            deselectAll();
+        }
     });
 
     // ── modifier-extend (shift-click) ── the fix is multi-member drag in `keyframeDown`
@@ -1443,38 +1446,40 @@ describe("kex2d-event-substrate S1: behavior arms — both keyframe kinds ride o
     // keyframe and drives the shared delta through `clampDelta` + `nudgeKeyframes`, verifying
     // offsets are preserved for both kinds. The strip side passes `lo: start` (the strip’s
     // own lower bound, not 0) — the `lo` parameter was added to `clampDelta` in this branch.
-    // The capture harness (force.pw.ts "one selection model — the S4 transition table") pins
-    // the production call path through `keyframeDown`.
+    // The capture harness (section.pw.ts "strip keyframe multi-member drag") pins the
+    // production call path through `keyframeDown`.
     // Witnessed red: mutated `clampDelta` to use `0` instead of `mLo` (revert the `lo` fix)
     // → strip member clamped to `s=0` instead of `s=start` → exit 1.
     test("modifier-extend: multi-member drag preserves offsets for both force and strip keyframe sets", () => {
-        // force: two members at s=3 and s=7, len=10, lo=0 (force keyframes clamp to [0, len])
-        const forceMembers = [
-            { id: 1, s: 3, v: 1, len: 10, lo: 0 },
-            { id: 2, s: 7, v: 1, len: 10, lo: 0 },
-        ];
-        // a +5 delta clamps to +3 (member at s=7 hits len=10)
-        const forceResult = nudgeKeyframes(forceMembers, 5, 0);
-        expect(forceResult[0].s).toBe(6); // 3 + 3
-        expect(forceResult[1].s).toBe(10); // 7 + 3, clamped
-        // offset preserved: both moved by the same delta (3)
-        expect(forceResult[1].s - forceResult[0].s).toBe(4); // original offset 7-3=4
+        try {
+            // force: two members at s=3 and s=7, len=10, lo=0 (force keyframes clamp to [0, len])
+            const forceMembers = [
+                { id: 1, s: 3, v: 1, len: 10, lo: 0 },
+                { id: 2, s: 7, v: 1, len: 10, lo: 0 },
+            ];
+            // a +5 delta clamps to +3 (member at s=7 hits len=10)
+            const forceResult = nudgeKeyframes(forceMembers, 5, 0);
+            expect(forceResult[0].s).toBe(6); // 3 + 3
+            expect(forceResult[1].s).toBe(10); // 7 + 3, clamped
+            // offset preserved: both moved by the same delta (3)
+            expect(forceResult[1].s - forceResult[0].s).toBe(4); // original offset 7-3=4
 
-        // strip: two members at s=8 and s=12, len=15, lo=5 (strip keyframes clamp to [start, end])
-        // — the `lo` parameter is the fix: strip keyframes have a non-zero lower bound (`start`).
-        const stripMembers = [
-            { id: 10, s: 8, v: 3, len: 15, lo: 5 },
-            { id: 11, s: 12, v: 5, len: 15, lo: 5 },
-        ];
-        // a -5 delta clamps to -3 (member at s=8 hits lo=5)
-        const stripResult = nudgeKeyframes(stripMembers, -5, 0);
-        expect(stripResult[0].s).toBe(5); // 8 - 3, clamped to lo=5
-        expect(stripResult[1].s).toBe(9); // 12 - 3
-        // offset preserved: both moved by the same delta (-3)
-        expect(stripResult[1].s - stripResult[0].s).toBe(4); // original offset 12-8=4
-
-        // cleanup
-        deselectAll();
+            // strip: two members at s=8 and s=12, len=15, lo=5 (strip keyframes clamp to [start, end])
+            // — the `lo` parameter is the fix: strip keyframes have a non-zero lower bound (`start`).
+            const stripMembers = [
+                { id: 10, s: 8, v: 3, len: 15, lo: 5 },
+                { id: 11, s: 12, v: 5, len: 15, lo: 5 },
+            ];
+            // a -5 delta clamps to -3 (member at s=8 hits lo=5)
+            const stripResult = nudgeKeyframes(stripMembers, -5, 0);
+            expect(stripResult[0].s).toBe(5); // 8 - 3, clamped to lo=5
+            expect(stripResult[1].s).toBe(9); // 12 - 3
+            // offset preserved: both moved by the same delta (-3)
+            expect(stripResult[1].s - stripResult[0].s).toBe(4); // original offset 12-8=4
+        } finally {
+            // cleanup runs regardless of failure — the editor singleton is module-global
+            deselectAll();
+        }
     });
 
     // ── overlap refusal ── both kinds refuse a taken station through `keyframeTaken`

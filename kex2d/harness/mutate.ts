@@ -1,9 +1,10 @@
 // kex2d's S1 mutation gate — the committed instrument that makes the gate exhaustive
 // rather than sampled. One (production strip-branch mutation, capture arm) pair per named
 // behavior: snap, deselect, modifier-extend, overlap refusal, nudge. For each pair, the gate
-// derives a mutated Timeline.svelte from a pristine copy held in /tmp, runs ONLY that pair's
-// capture flow (`bun run capture -- -g "<flow title>"`), records the verdict, and restores the
-// pristine copy in a `finally`. At the end it asserts the tracked tree is byte-identical to HEAD.
+// derives a mutated Timeline.svelte from a FRESH snapshot written at run start into a run-unique
+// directory, runs ONLY that pair's capture flow (`bun run capture -- -g "<flow title>"`), records
+// the verdict, and restores the snapshot in a `finally`. At the end it asserts the tracked tree
+// is byte-identical to HEAD.
 //
 // A named behavior carrying no pairing is a RED OF THE GATE ITSELF — that refusal is what makes
 // the gate exhaustive rather than sampled, and it is the property no sample arm can have. The
@@ -20,27 +21,30 @@
 // Usage: bun run mutate
 //
 // Hazards this gate handles:
-//  - The pristine copy is held OUTSIDE the tree (/tmp), so no intermediate state can be lost.
+//  - The snapshot is held OUTSIDE the tree (a run-unique /tmp directory), so no intermediate
+//    state can be lost.
+//  - A dirty `src/Timeline.svelte` at run start REFUSES the run — an uncommitted edit the gate
+//    would clobber is never silently overwritten.
+//  - The snapshot is always a FRESH copy written at run start into a run-unique directory, and
+//    that directory is removed when the run ends — a stale cache from an earlier session can
+//    never overwrite a later edit.
 //  - The tracked file is restored in a `finally`, so a crash mid-mutation never leaves the tree
 //    dirty.
-//  - The final assertion checks byte-identity against the pristine copy AND `git status` — the
+//  - The final assertion checks byte-identity against the snapshot AND `git status` — the
 //    prototype's own law, kept.
 //  - `KEX_WORKERS=1` (capture is display-gated and runs one-at-a-time).
 //  - `geo.pw.ts:61` is a `test.fail()` pin — Playwright prints its per-test line with the ✘
 //    mark on a GREEN run. This gate filters to one flow per mutation (`-g "<title>"`), so the
 //    pin is never collected; but the tally (tally.ts) must exclude it when scraping ✘ lines.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
 const harnessDir = import.meta.dir;
 const projectDir = join(harnessDir, "..");
 const tgt = join(projectDir, "src/Timeline.svelte");
-
-// The pristine copy lives outside the tree so no intermediate state can be lost.
-const pristineDir = "/tmp/kex2d-s1r3";
-const pristinePath = join(pristineDir, "Timeline.pristine.svelte");
 
 interface Pair {
     name: string;
@@ -113,14 +117,6 @@ const PAIRS: Pair[] = [
     },
 ];
 
-function ensurePristine(): string {
-    if (!existsSync(pristinePath)) {
-        mkdirSync(pristineDir, { recursive: true });
-        writeFileSync(pristinePath, readFileSync(tgt, "utf8"), "utf8");
-    }
-    return readFileSync(pristinePath, "utf8");
-}
-
 function applyMutations(pristine: string, mutations: { old: string; new: string }[]): string {
     let text = pristine;
     for (const m of mutations) {
@@ -171,7 +167,30 @@ for (const p of PAIRS) {
     }
 }
 
-const pristine = ensurePristine();
+// ── startup: refuse to run over a dirty target ────────────────────────────────────────────────
+// A dirty `src/Timeline.svelte` is an uncommitted edit the gate would clobber when it writes the
+// mutated copy and restores from the snapshot — a destructive write no gate can see. Refuse to
+// run rather than silently overwrite it.
+const targetDirt = spawnSync("git", ["status", "--porcelain", "src/Timeline.svelte"], {
+    cwd: projectDir,
+    encoding: "utf8",
+}).stdout.trim();
+if (targetDirt !== "") {
+    console.error(
+        `REFUSED: src/Timeline.svelte is dirty (${JSON.stringify(targetDirt)}) — an uncommitted edit the gate would clobber. Commit or revert it before running the mutation gate.`,
+    );
+    process.exit(1);
+}
+
+// ── snapshot: a FRESH copy per run, in a run-unique directory ─────────────────────────────────
+// Never reuse an earlier run's snapshot — a stale cache from a prior session silently overwrote
+// an uncommitted edit in this round. Always write a FRESH snapshot of the current file at run
+// start into a run-unique directory, and remove that directory when the run ends (a `finally`, so
+// a crash still cleans it up).
+const runDir = mkdtempSync(join(tmpdir(), "kex2d-s1r3-"));
+const pristinePath = join(runDir, "Timeline.pristine.svelte");
+writeFileSync(pristinePath, readFileSync(tgt, "utf8"), "utf8");
+const pristine = readFileSync(pristinePath, "utf8");
 
 // ── per-pair mutation ───────────────────────────────────────────────────────────
 interface Verdict {
@@ -181,56 +200,68 @@ interface Verdict {
     red: boolean;
 }
 
-const verdicts: Verdict[] = [];
+function runGate(): number {
+    const verdicts: Verdict[] = [];
 
-for (const p of PAIRS) {
-    let exitCode = 0;
-    try {
-        const mutated = applyMutations(pristine, p.mutations);
-        writeFileSync(tgt, mutated, "utf8");
-        const result = runCapture(p.flow);
-        exitCode = result.exitCode;
-    } finally {
-        writeFileSync(tgt, pristine, "utf8");
+    for (const p of PAIRS) {
+        let exitCode = 0;
+        try {
+            const mutated = applyMutations(pristine, p.mutations);
+            writeFileSync(tgt, mutated, "utf8");
+            const result = runCapture(p.flow);
+            exitCode = result.exitCode;
+        } finally {
+            writeFileSync(tgt, pristine, "utf8");
+        }
+        const red = exitCode !== 0;
+        verdicts.push({ name: p.name, flow: p.flow, exitCode, red });
+        console.log(
+            `MUTATED ${p.name}: exit=${exitCode} ${red ? "RED (coupled)" : "GREEN — NOT COUPLED"}`,
+        );
     }
-    const red = exitCode !== 0;
-    verdicts.push({ name: p.name, flow: p.flow, exitCode, red });
+
+    // ── restore + assert byte-identical ─────────────────────────────────────────────
+    writeFileSync(tgt, pristine, "utf8");
+
+    const cmpOk = spawnSync("cmp", ["-s", tgt, pristinePath]).status === 0;
+    const dirt = spawnSync("git", ["status", "--porcelain", "src/Timeline.svelte"], {
+        cwd: projectDir,
+        encoding: "utf8",
+    }).stdout.trim();
+
+    console.log("\n=== mutation gate summary ===");
+    for (const v of verdicts) {
+        console.log(
+            `${v.name.padEnd(20)} exit=${v.exitCode} ${v.red ? "RED (coupled)" : "GREEN — NOT COUPLED"}`,
+        );
+    }
     console.log(
-        `MUTATED ${p.name}: exit=${exitCode} ${red ? "RED (coupled)" : "GREEN — NOT COUPLED"}`,
+        `\nrestored byte-identical: ${cmpOk}; git dirt on Timeline.svelte: ${JSON.stringify(dirt)}`,
     );
+
+    const allRed = verdicts.every((v) => v.red);
+    if (!allRed) {
+        const notRed = verdicts.filter((v) => !v.red).map((v) => v.name);
+        console.error(
+            `\nGATE FAILED: ${notRed.join(", ")} did not red — the arm is not coupled to the production branch.`,
+        );
+        return 1;
+    }
+    if (!cmpOk || dirt !== "") {
+        console.error(
+            "\nGATE FAILED: tracked tree is not byte-identical to HEAD after restoration.",
+        );
+        return 1;
+    }
+
+    console.log("\nGATE PASSED: all five pairs red (coupled), tree restored byte-identical.");
+    return 0;
 }
 
-// ── restore + assert byte-identical ─────────────────────────────────────────────
-writeFileSync(tgt, pristine, "utf8");
-
-const cmpOk = spawnSync("cmp", ["-s", tgt, pristinePath]).status === 0;
-const dirt = spawnSync("git", ["status", "--porcelain", "src/Timeline.svelte"], {
-    cwd: projectDir,
-    encoding: "utf8",
-}).stdout.trim();
-
-console.log("\n=== mutation gate summary ===");
-for (const v of verdicts) {
-    console.log(
-        `${v.name.padEnd(20)} exit=${v.exitCode} ${v.red ? "RED (coupled)" : "GREEN — NOT COUPLED"}`,
-    );
+let code: number;
+try {
+    code = runGate();
+} finally {
+    rmSync(runDir, { recursive: true, force: true });
 }
-console.log(
-    `\nrestored byte-identical: ${cmpOk}; git dirt on Timeline.svelte: ${JSON.stringify(dirt)}`,
-);
-
-const allRed = verdicts.every((v) => v.red);
-if (!allRed) {
-    const notRed = verdicts.filter((v) => !v.red).map((v) => v.name);
-    console.error(
-        `\nGATE FAILED: ${notRed.join(", ")} did not red — the arm is not coupled to the production branch.`,
-    );
-    process.exit(1);
-}
-if (!cmpOk || dirt !== "") {
-    console.error("\nGATE FAILED: tracked tree is not byte-identical to HEAD after restoration.");
-    process.exit(1);
-}
-
-console.log("\nGATE PASSED: all five pairs red (coupled), tree restored byte-identical.");
-process.exit(0);
+process.exit(code);
