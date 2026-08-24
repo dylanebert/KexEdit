@@ -668,6 +668,27 @@ export function stripMinExtentAt(
     return null;
 }
 
+/** the span a summoned strip creation authors at a station: {@link stripMinExtentAt}'s edge
+ *  span, grown toward {@link STRIP_DEFAULT_LEN} and clamped so it neither overlaps a
+ *  neighboring strip on the section nor runs past the section's own length — the min-extent
+ *  span is the floor (never shrinks below it), the section and the next strip's start are the
+ *  ceiling. Returns null under the same condition {@link stripMinExtentAt} does. */
+export function stripDefaultExtentAt(
+    ecs: State,
+    sectionId: number,
+    s: number,
+): { start: number; end: number } | null {
+    const minExtent = stripMinExtentAt(ecs, sectionId, s);
+    if (minExtent === null) return null;
+    const eid = sectionAt(ecs, sectionId);
+    const sectionLen = eid === null ? minExtent.end : Section.length.get(eid);
+    let end = Math.min(minExtent.start + STRIP_DEFAULT_LEN, sectionLen);
+    for (const st of sectionStrips(ecs, sectionId)) {
+        if (st.start > minExtent.start && st.start < end) end = st.start;
+    }
+    return { start: minExtent.start, end: Math.max(end, minExtent.end) };
+}
+
 /** author a new velocity strip on a section over `[start, end)` at `value` — the create
  *  path, guarded by {@link stripOverlapped} (the ONE guard every write inherits: create,
  *  drag, nudge, and typed-field writes all route through this module's writers), by the
@@ -1182,6 +1203,14 @@ export const DEFAULT_RESISTANCE = 2.5e-4;
 /** how far `extend` lays the next node past the chain end, along the last edge's
  *  direction. it's a starting point you then drag, not a fixed length. */
 export const EXTEND_DIST = 24;
+
+/** the extent (m) a summoned strip creation grows to, from the station's min-extent edge
+ *  span up to a brake-section-typical length (Locked decision, findings 4/5/6, `Timeline.svelte`
+ *  `createStripAt`/`track.ts` `stripDefaultExtentAt`) — derived from `EXTEND_DIST`, the same
+ *  constant a fresh force section/geo chain seeds at just above, rather than a new tuned
+ *  literal: "how long is a section before someone resizes it" is the same question at either
+ *  substrate. */
+export const STRIP_DEFAULT_LEN = EXTEND_DIST;
 
 /** the track's initial anchor for a given initial speed: the entry to the first
  *  section, a level start at the origin. world position is cosmetic in this 2D

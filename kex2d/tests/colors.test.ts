@@ -267,31 +267,46 @@ describe("Timeline.svelte carries no false cursor-handler claim (S3)", () => {
 // one channel: a `.svelte` CSS `cursor:` declaration, and a canvas `style.cursor = "…"`
 // assignment in `.ts` (`controls.ts`'s pan-grabbing affordance — the single most on-point
 // instance of the law, and the one dialect a `.svelte`-only glob would never reach).
+//
+// `ew-resize` joins the value set (kex2d-event-lane S5, finding 2): a trim/resize affordance
+// names its axis with the cursor because nothing else does (root `ui.md` Fields — the field-row
+// scrub is the same idiom), and the class already had two static instances (the field-row key
+// scrub, the nav-window pan edge) plus one gesture-boundary instance (the force-section extent
+// trim) before this stage added the velocity-strip span-edge trim as a fourth — an argued
+// registry extension, not a widened value ad hoc: every `ew-resize` site in the tree is real
+// trim/scrub chrome, none of them a regression.
 
 interface CursorSite {
     file: string;
     selector: string;
-    value: "grab" | "grabbing" | "pointer";
+    value: "grab" | "grabbing" | "pointer" | "ew-resize";
 }
 
 // today's population, enumerated FROM THE SOURCE (`cursorSites()` below) — not hand-guessed: the
 // panning pair (`.nav-window` grab/grabbing, `.body.panning` grabbing while the drag is live), the
-// viewport's own pan-grabbing canvas assignment (`controls.ts`), and every plain clickable
-// affordance that carries `cursor: pointer` (the rail's snap toggle, the section clip strip, its
-// append tail, the transport play button, the global scrubber, the two modal buttons, and the
-// shared menu-item class every context menu renders through).
+// viewport's own pan-grabbing canvas assignment (`controls.ts`), every plain clickable affordance
+// that carries `cursor: pointer` (the rail's snap toggle, the section clip strip, its append
+// tail, the transport play button, the global scrubber, the two modal buttons, and the shared
+// menu-item class every context menu renders through), and every trim/scrub affordance that
+// carries `cursor: ew-resize` (the two field-row key scrubs, the nav-window pan edge, the
+// force-section extent trim, and the velocity-strip span-edge trim, S5).
 const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "App.svelte", selector: ".pinpanel button", value: "pointer" },
     { file: "App.svelte", selector: ".convert .cancel", value: "pointer" },
     { file: "App.svelte", selector: ":global(.menu-item)", value: "pointer" },
+    { file: "App.svelte", selector: ".vtip .key", value: "ew-resize" },
     { file: "Timeline.svelte", selector: ".rail-tool", value: "pointer" },
     { file: "Timeline.svelte", selector: ".body.panning, .body.panning *", value: "grabbing" },
     { file: "Timeline.svelte", selector: ".nav-window", value: "grab" },
     { file: "Timeline.svelte", selector: ".nav-window:active", value: "grabbing" },
+    { file: "Timeline.svelte", selector: ".nav-edge", value: "ew-resize" },
     { file: "Timeline.svelte", selector: ".clip", value: "pointer" },
     { file: "Timeline.svelte", selector: ".clip-add", value: "pointer" },
+    { file: "Timeline.svelte", selector: ".clip-trim", value: "ew-resize" },
     { file: "Timeline.svelte", selector: ".play", value: "pointer" },
     { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
+    { file: "Timeline.svelte", selector: ".fld .key", value: "ew-resize" },
+    { file: "Timeline.svelte", selector: ".hbandzone.edge-hover", value: "ew-resize" },
     { file: "controls.ts", selector: "canvas.style.cursor", value: "grabbing" },
 ];
 
@@ -323,7 +338,9 @@ function cursorSites(): CursorSite[] {
             const style = text.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "";
             const blocks = style.match(/[^{}]+\{[^{}]*\}/g) ?? [];
             for (const b of blocks) {
-                const m = b.match(/cursor:\s*(grab|grabbing|pointer)\s*(?:!important)?\s*[;}]/);
+                const m = b.match(
+                    /cursor:\s*(grab|grabbing|pointer|ew-resize)\s*(?:!important)?\s*[;}]/,
+                );
                 if (!m) continue;
                 const selector = b
                     .slice(0, b.indexOf("{"))
@@ -333,7 +350,8 @@ function cursorSites(): CursorSite[] {
                 out.push({ file, selector, value: m[1] as CursorSite["value"] });
             }
         } else {
-            const re = /([A-Za-z0-9_.]+\.style\.cursor)\s*=\s*["'](grab|grabbing|pointer)["']/g;
+            const re =
+                /([A-Za-z0-9_.]+\.style\.cursor)\s*=\s*["'](grab|grabbing|pointer|ew-resize)["']/g;
             for (const m of text.matchAll(re))
                 out.push({ file, selector: m[1], value: m[2] as CursorSite["value"] });
         }
@@ -385,7 +403,9 @@ describe("cursor allowlist — CSS declarations and canvas assignments, grab/gra
     test("scanner-level control: raw cursor declarations match the parsed site count exactly", () => {
         const raw = scannedFiles().reduce(
             (n, { text }) =>
-                n + (text.match(/cursor\s*[:=]\s*["']?(grab|grabbing|pointer)["']?/g) ?? []).length,
+                n +
+                (text.match(/cursor\s*[:=]\s*["']?(grab|grabbing|pointer|ew-resize)["']?/g) ?? [])
+                    .length,
             0,
         );
         expect(raw).toBe(cursorSites().length);
