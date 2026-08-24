@@ -1075,6 +1075,8 @@ interface StripKfPt {
     v: number; // velocity (m/s)
     u: number; // GLOBAL arclength projected onto the chart's axis (`uOf`) -- pixel math only
     startU: number; // the strip's section entry, likewise projected -- pixel math only
+    startD: number; // the strip's section entry in arclength (`ForcePt.startD`'s own twin) --
+    // the popover field's WRITE base (S3: value-shown parity, finding 10)
     start: number; // the strip's start (section-local, arclength)
     end: number; // the strip's end (section-local, arclength)
 }
@@ -1096,6 +1098,7 @@ const stripKfPts = $derived.by((): StripKfPt[] => {
                     return d === null ? s.startU : uOfLen(d);
                 })(),
                 startU: s.startU,
+                startD: s.startD,
                 start: s.start,
                 end: s.end,
             });
@@ -1170,6 +1173,22 @@ $effect(() => {
     if (editor.stripKf !== null && !stripKfPts.some((k) => k.id === editor.stripKf)) {
         selectStripKf(null);
     }
+});
+// the selected strip keyframe's own point — `selPoint`'s twin (S3, findings 10/3: value shown
+// on selection is part of the shared substrate, not just selectability). No multi-select
+// concept exists for strip keyframes (`editor.stripKf` is a single id, never a set), so there's
+// no `multiForce`-shaped guard here — the popover shows whenever one is selected.
+const selStripKfPt = $derived.by((): StripKfPt | null => {
+    void tick;
+    if (editor.stripKf === null) return null;
+    return stripKfPts.find((k) => k.id === editor.stripKf) ?? null;
+});
+// `selLocked`'s own twin — the pin-mode lockdown gates a strip keyframe's fields exactly like
+// a force keyframe's (`stripKfDown`'s own `sectionEditable` guard on the drag path).
+const selStripKfLocked = $derived.by((): boolean => {
+    void tick;
+    const k = selStripKfPt;
+    return k !== null && !sectionEditable(editor.pinning, k.section);
 });
 // a force keyframe's chart x — its global axis coordinate, straight off the lens's affine.
 const ptX = (p: ForcePt): number => uPx(p.u);
@@ -2809,6 +2828,33 @@ function onFieldG(e: Event): void {
     if (!selPoint) return;
     fieldEdit(selPoint.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
 }
+// ── the selected strip keyframe's typed s/v fields (S3, findings 10/3 — value shown on
+// selection mirrors `fieldEdit`'s own shape) ── clamps `s` to the STRIP's own bounds (its
+// `stripKfDown`/`stripKfMove` gesture's own clamp domain, not `[0, len]` like a force point:
+// a strip keyframe's substrate is the strip, not the section), and `v` at `V_FLOOR`
+// (`validStripValue`'s own floor, `setStripKeyframe`'s own guard). The unit label on `v` is
+// booked to S5 (Locked decision finding 11 "near half" — m/s on selection readouts); this
+// field shows the bare number today, matching the force `g` field's own unitless "F" row.
+function stripKfFieldEdit(s: number, v: number): void {
+    const k = selStripKfPt;
+    if (k === null || !Number.isFinite(s) || !Number.isFinite(v)) return; // guard a cleared field
+    if (!sectionEditable(editor.pinning, k.section)) return; // the lockdown (fields disabled too)
+    skipLanding();
+    beginStripKeyframeMove(ecs, k.id);
+    setStripKeyframe(ecs, k.id, clamp(s, k.start, k.end), Math.max(V_FLOOR, v));
+    commit(history);
+}
+// the position field speaks the chart's own domain, `onFieldPos`'s own shape — through `dOf`
+// before subtracting the strip's section entry (`startD`).
+function onFieldStripS(e: Event): void {
+    if (!selStripKfPt) return;
+    const u = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
+    stripKfFieldEdit(dOf(u) - selStripKfPt.startD, selStripKfPt.v);
+}
+function onFieldStripV(e: Event): void {
+    if (!selStripKfPt) return;
+    stripKfFieldEdit(selStripKfPt.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
+}
 // ── the selected handle's typed (Δs, Δg) fields ── mirrors the keyframe fields, but the
 // commit goes through the shared tangent write path (composeTangent — x-clamp + Aligned
 // coupling), history-bracketed as one entry. a typed value on a still-derived handle
@@ -4176,14 +4222,21 @@ onMount(() => {
             <!-- velocity-strip keyframes (T2: value in the graph): diamonds in the velocity
                  channel, drawn for every strip (Locked decision "Visibility"), the selected
                  strip's own keyframes brightening per the same `.sel` rung force keyframes use.
-                 Same diamond idiom as force keyframes but on the v-axis (vOf, not yOf). Clipped
-                 to the chart. -->
+                 `.active` marks the ONE individually-selected keyframe (`editor.stripKf`) —
+                 `selForceSet`/`selForce`'s own `.sel`/`.active` split, S3's parity fix (findings
+                 10/3): before, every keyframe on the selected strip read `.sel` alike, with no
+                 rung distinguishing the one actually grabbed. Same diamond idiom as force
+                 keyframes but on the v-axis (vOf, not yOf). Clipped to the chart. -->
             <g class="fmarkers" clip-path="url(#fclip)">
                 {#each stripKfPts as k (k.id)}
                     {@const mx = uPx(k.u)}
                     {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                         {@const my = vOf(k.v)}
-                        <g class="fpt" class:sel={selStrip !== null && k.strip === selStrip.id}>
+                        <g
+                            class="fpt"
+                            class:sel={selStrip !== null && k.strip === selStrip.id}
+                            class:active={selStripKfPt !== null && k.id === selStripKfPt.id}
+                        >
                             <circle
                                 class="fhit"
                                 cx={mx}
@@ -4369,6 +4422,54 @@ onMount(() => {
                             aria-label="Point force (g)"
                         />
                         <span class="unit">g</span>
+                    </div>
+                </div>
+            {/if}
+        <!-- the selected STRIP keyframe's own typed s/v popover — `selPoint`'s twin (S3, findings
+             10/3): selection alone isn't the whole substrate parity, the value has to be SHOWN
+             too. No scrub-drag on the labels (force's `scrubStart`) and no unit on `v` (that's
+             S5's m/s labeling, Locked decision finding 11) — the value-shown behavior itself is
+             this stage's, the label polish isn't. -->
+        {:else if selStripKfPt}
+            {@const mx = uPx(selStripKfPt.u)}
+            {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
+                {@const ax = clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
+                {@const ay = clamp(vOf(selStripKfPt.v), TOP, h - BOT_PAD)}
+                {@const posText = fmt(selStripKfPt.u, 1)}
+                {@const vText = fmt(selStripKfPt.v, 2)}
+                <div
+                    class="ptip"
+                    class:below={ay < TOP + TIP_FLIP}
+                    class:dragging={dragStripKf !== null}
+                    style="left: {ax}px; top: {ay}px"
+                >
+                    <div class="fld">
+                        <span class="key" role="presentation">{posLabel}</span>
+                        <input
+                            type="number"
+                            step={timeDomain ? 0.1 : 1}
+                            min={selStripKfPt.startU}
+                            value={posText}
+                            disabled={selStripKfLocked}
+                            onchange={onFieldStripS}
+                            onfocus={(e) => e.currentTarget.select()}
+                            onkeydown={(e) => fieldKeydown(e, posText)}
+                            aria-label={timeDomain ? "Keyframe time (s)" : "Keyframe distance (m)"}
+                        />
+                        <span class="unit">{posUnit}</span>
+                    </div>
+                    <div class="fld">
+                        <span class="key" role="presentation">v</span>
+                        <input
+                            type="number"
+                            step="0.1"
+                            value={vText}
+                            disabled={selStripKfLocked}
+                            onchange={onFieldStripV}
+                            onfocus={(e) => e.currentTarget.select()}
+                            onkeydown={(e) => fieldKeydown(e, vText)}
+                            aria-label="Keyframe velocity"
+                        />
                     </div>
                 </div>
             {/if}

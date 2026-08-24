@@ -1348,6 +1348,76 @@ describe("Timeline.svelte's strip band clamp reads ONE value for a section's ext
     });
 });
 
+// kex2d-event-lane S3's own oracle (Validation): "strip keyframe select/value flows mirror the
+// force keyframe arms one-for-one (enumerate the force arms, assert the strip twin exists — set
+// membership, not spot checks)". This is that enumeration — a table, not scattered asserts — so
+// a future force-only addition reds here until its strip twin lands too, rather than silently
+// drifting the substrate apart again.
+//
+// Findings 10/3's bar is FOUR properties: selectable, value shown, same hover/selection rungs,
+// non-sticking. Non-sticking is `track.ts`'s own mechanism (pinned in `track.test.ts`'s "S3: seed
+// keyframes + non-sticking" describe, not a Timeline.svelte arm) — excluded here on purpose, not
+// omitted by oversight. Multi-select (`selForceSet`, the chart marquee) has NO strip-keyframe
+// twin today: `editor.stripKf` is a single id, never a set, and giving it one is S4's own unit
+// ("one selection model... spanning segments, spans and keyframes") — also excluded on purpose,
+// not a gap this stage owns.
+describe("kex2d-event-lane S3: strip-keyframe select/value/hover arms mirror the force-keyframe ones one-for-one (Validation's oracle)", () => {
+    test("every enumerated force-keyframe arm has its strip-keyframe twin in Timeline.svelte", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        const arms: { force: string; strip: string }[] = [
+            // selectable: grab + drag + commit, the same three-function gesture shape.
+            {
+                force: "function forceDown(e: PointerEvent, p: ForcePt): void {",
+                strip: "function stripKfDown(e: PointerEvent, k: StripKfPt): void {",
+            },
+            {
+                force: "function forceMove(e: PointerEvent): void {",
+                strip: "function stripKfMove(e: PointerEvent): void {",
+            },
+            { force: "function forceUp(): void {", strip: "function stripKfUp(): void {" },
+            // selectable: the keyboard Escape/Delete ladder, one guard per kind.
+            { force: "if (editor.force !== null) {", strip: "if (editor.strip !== null) {" },
+            // same hover/selection rungs: the individually-active keyframe (not just its parent's
+            // membership) reads its OWN `.active` rung, `selForce`'s own single-subject shape.
+            {
+                force: "const selPoint = $derived.by((): ForcePt | null => {",
+                strip: "const selStripKfPt = $derived.by((): StripKfPt | null => {",
+            },
+            {
+                force: "class:active={p.id === selForce}",
+                strip: "class:active={selStripKfPt !== null && k.id === selStripKfPt.id}",
+            },
+            // same hover/selection rungs: the pin-mode lockdown gates the popover fields alike.
+            {
+                force: "const selLocked = $derived.by((): boolean => {",
+                strip: "const selStripKfLocked = $derived.by((): boolean => {",
+            },
+            // value shown: a typed s/value popover on selection, the position field routed the
+            // same way (`dOf`, the section's own arclength entry) and the value field the same
+            // way (a direct write through the substrate's own setter).
+            {
+                force: "function onFieldPos(e: Event): void {",
+                strip: "function onFieldStripS(e: Event): void {",
+            },
+            {
+                force: "function onFieldG(e: Event): void {",
+                strip: "function onFieldStripV(e: Event): void {",
+            },
+        ];
+        const missing = arms.filter((a) => !src.includes(a.strip)).map((a) => a.force);
+        expect(missing).toEqual([]);
+
+        // the popover is the SAME `.ptip` markup class, not a strip-only fork — a `.includes`
+        // membership check alone can't tell "reused once" from "reused twice," so this one
+        // counts the THREE branches that render it: the force keyframe's tangent-handle popover
+        // (force-only, no strip twin -- tangent handles are a force-substrate concept, S6, that
+        // never applied to strips), the force keyframe's own s/g popover, and the strip
+        // keyframe's s/v popover this stage adds.
+        const ptipCount = (src.match(/class="ptip"/g) ?? []).length;
+        expect(ptipCount).toBe(3);
+    });
+});
+
 // S3 (Affordances): the velocity band becomes a lane at the clip lane's own height, not a
 // re-tuned literal — pinned as a derivation (`STRIP_H = GAP_H`) rather than a numeric equality,
 // so a future change to either constant can't silently drift the two apart again. Source-text
