@@ -98,9 +98,7 @@ import {
     stampProvenance,
     stickyLen,
     toGlobal,
-    toGlobalU,
     toLocal,
-    toLocalU,
     Track,
     trackDomain,
     DEFAULT_FRICTION,
@@ -851,6 +849,17 @@ describe("coordinate lens (s ↔ d)", () => {
         expect(toLocal(spans, -50)).toEqual({ section: secs[0], s: 0 });
     });
 
+    test("no bake: an empty span table nulls both directions", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const f = createSection(state, 0, SectionKind.Force, 2);
+        const spans = sectionSpans(state, eid); // no state.step: nothing baked
+        expect(spans).toEqual([]);
+        expect(toGlobal(spans, f, 0.5)).toBeNull();
+        expect(toLocal(spans, 1)).toBeNull();
+    });
+
     test("a mid-track length change shifts downstream d but not downstream local s", () => {
         // the invariant that motivated the design: storage is section-local, so growing an
         // upstream section moves every downstream section's global offset (and its points'
@@ -923,7 +932,7 @@ describe("the sample budget", () => {
         expect(Number.isFinite(out.tTotal)).toBe(true);
         // the spans stay finite too — the lens is what the chart's axis total derives from.
         for (const sp of sectionSpans(state, eid))
-            expect(Number.isFinite(sp.entryU + sp.lenU + sp.offset + sp.len)).toBe(true);
+            expect(Number.isFinite(sp.offset + sp.len)).toBe(true);
         // …and the tail section really is off the buffer, not merely short: an EMPTY range at
         // the buffer's last index, never a start past `MAX_SAMPLES`.
         const info = sectionInfo.get(tail);
@@ -981,57 +990,6 @@ describe("the sample budget", () => {
             expect(r.fN[k]).toBe(out.fN[info.startSample + k]);
             expect(r.ds[k]).toBe(out.ds[info.startSample + k]);
         }
-    });
-});
-
-// the lens's "native" pair (`entryU`/`lenU`, `toGlobalU`/`toLocalU`) retired the second,
-// domain-varying axis it used to switch between arclength and march time (S6): a force
-// keyframe's stored `s` is arclength always, so there is nothing left to address on a second
-// axis. `entryU`/`lenU`/`toGlobalU`/`toLocalU` are `offset`/`len`/`toGlobal`/`toLocal` now,
-// regardless of `Track.domain` — a Time-domain DISPLAY projection is a separate seam
-// (`timeline.ts`'s `dToU`/`uToD`), never a second address space here.
-describe("coordinate lens — the native pair is the arclength pair (S6)", () => {
-    /** geo (flat) then a force section with an interior keyframe, on a track in `domain`. */
-    function chain(domain: Domain): { state: State; eid: number; g: number; f: number } {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        setTrackDomain(state, domain);
-        const g = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, g, 0, 0);
-        addNode(state, g, EXTEND_DIST, 0);
-        const f = appendSection(state, SectionKind.Force);
-        createForcePoint(state, f, 10, 1.2); // 10 m into a 24 m section, strictly interior
-        state.step(0);
-        return { state, eid, g, f };
-    }
-
-    for (const domain of [Domain.Distance, Domain.Time] as const) {
-        test(`${Domain[domain]}: entryU/lenU equal offset/len, number for number`, () => {
-            const { state, eid, g, f } = chain(domain);
-            const spans = sectionSpans(state, eid);
-            expect(spans.map((sp) => sp.id)).toEqual([g, f]);
-            for (const sp of spans) {
-                expect(sp.entryU).toBe(sp.offset);
-                expect(sp.lenU).toBe(sp.len);
-                const s = sp.len * 0.4;
-                expect(toGlobalU(spans, sp.id, s)).toBe(toGlobal(spans, sp.id, s));
-                const u = sp.offset + s;
-                expect(toLocalU(spans, u)).toEqual(toLocal(spans, u));
-            }
-        });
-    }
-
-    test("no bake: the native pair is null, like its distance twin", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        setTrackDomain(state, Domain.Time);
-        const f = createSection(state, 0, SectionKind.Force, 2);
-        const spans = sectionSpans(state, eid); // no state.step: nothing baked
-        expect(spans).toEqual([]);
-        expect(toGlobalU(spans, f, 0.5)).toBeNull();
-        expect(toLocalU(spans, 1)).toBeNull();
     });
 });
 
@@ -1960,7 +1918,7 @@ test("the nominal replay closes a solve's pinned exit — the conforming rule (k
 // `specs/kex2d-section-extent.md` stage 1 — red-first oracles for the extent-identity defect:
 // `profile.forceProfile` bakes `edges = round(length/ds)` and marches exactly that many
 // `ds`-sized steps, so the REALIZED extent (`sectionSpans`, a boundary keyframe's
-// `toGlobalU`) is `edges·ds` while the AUTHORED extent (`Section.length`) is `length` — the
+// `toGlobal`) is `edges·ds` while the AUTHORED extent (`Section.length`) is `length` — the
 // two disagree by the rounding residual whenever `length` isn't a whole multiple of `ds`.
 // Expected RED until stage 2 makes the bake conform to the authored length.
 describe("section extent identity (kex2d-section-extent stage 1)", () => {
@@ -1999,18 +1957,17 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
      *  instead of once total. Verified over the full ds × length sweep below (worst observed
      *  ratio to this bound ~0.49, so the derivation holds with margin, not just on average).
      *
-     *  This bound is for `sectionSpans`'s Distance-native reading (`sp.len`, and `lenU` when
-     *  `Track.domain` is `Distance` — both read off the same `cum`) ONLY. It does NOT cover
-     *  `sp.lenU` in the `Time` domain, whose accumulation is a genuinely different recurrence
-     *  (below, `marchTol`) — `sectionSpans` does not accumulate that reading the way this
-     *  derivation describes, so installing this same bound there is wrong, not merely loose:
-     *  measured up to ~47× this bound on the Time-domain sweep. */
+     *  This bound is for `sectionSpans`'s Distance-native reading (`sp.len`) ONLY — it does
+     *  NOT cover a Time-domain DISPLAY projection (below, `marchTol`), a genuinely different
+     *  recurrence: `sectionSpans` itself is arclength always (S6/S3), so installing this same
+     *  bound over a Time-domain reading is wrong, not merely loose: measured up to ~47× this
+     *  bound on the Time-domain sweep. */
     function accumTol(extent: number): number {
         return 2 * 2 ** -24 * extent;
     }
 
-    /** the TIME-domain f32-accumulation bound. Unlike `accumTol` above, `sp.lenU` in `Time`
-     *  reads `out.t` (`track.computeTime`), whose recurrence rounds the RUNNING sum itself at
+    /** the TIME-domain f32-accumulation bound. Unlike `accumTol` above, a Time-domain DISPLAY
+     *  projection reads `out.t` (`track.computeTime`), whose recurrence rounds the RUNNING sum itself at
      *  every step (`out.t[i+1] = out.t[i] + dt` written into a `Float32Array`, so each addition
      *  is rounded before the next reads it back) rather than summing `edges` copies of one
      *  pre-narrowed constant in f64. That is the textbook repeated-summation forward-error
@@ -2047,7 +2004,7 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
         }
     });
 
-    test("a boundary keyframe's toGlobalU equals the next section's entryU, off-grid cuts", () => {
+    test("a boundary keyframe's toGlobal equals the next section's offset, off-grid cuts", () => {
         for (const ds of dsList) {
             for (const length of lengths) {
                 if (onGrid(length, ds)) continue;
@@ -2060,8 +2017,8 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
                 if (tail === null) throw new Error("split refused");
                 state.step(0);
                 const spans = sectionSpans(state, eid);
-                const headU = toGlobalU(spans, sec, cut);
-                const tailEntryU = toGlobalU(spans, tail, 0);
+                const headU = toGlobal(spans, sec, cut);
+                const tailEntryU = toGlobal(spans, tail, 0);
                 if (headU === null || tailEntryU === null) throw new Error("section off the bake");
                 const tol = accumTol(length);
                 expect(Math.abs(headU - tailEntryU)).toBeLessThan(tol);
@@ -2080,12 +2037,12 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
                 const spans = sectionSpans(state, eid);
                 const sp = spans.find((x) => x.id === sec);
                 if (!sp) throw new Error("section missing from spans");
-                // the authored end (`toGlobalU` at s = length, exact affine over `entryU`) vs
-                // the section's own baked exit (`entryU + lenU`, the realized `edges·ds`) — the
+                // the authored end (`toGlobal` at s = length, exact affine over `offset`) vs
+                // the section's own baked exit (`offset + len`, the realized `edges·ds`) — the
                 // same disagreement as the cut case, with no cut anywhere in the picture.
-                const authoredEnd = toGlobalU(spans, sec, length);
+                const authoredEnd = toGlobal(spans, sec, length);
                 if (authoredEnd === null) throw new Error("section off the bake");
-                const bakedExit = sp.entryU + sp.lenU;
+                const bakedExit = sp.offset + sp.len;
                 const tol = accumTol(length);
                 expect(Math.abs(authoredEnd - bakedExit)).toBeLessThan(tol);
             }
@@ -3396,7 +3353,7 @@ describe("velocity strips — ECS layer (C3)", () => {
     });
 });
 
-describe("S4: seed keyframes + boundary ride", () => {
+describe("S3: seed keyframes + non-sticking (S4's boundary-ride deleted)", () => {
     test("createStrip seeds two keyframes at start/end; two equal keys bake matches the no-key constant path", () => {
         // RED-FIRST: reverting `createStrip`'s two `createStripKeyframe` calls leaves
         // `kfs.length` at 0 instead of 2 — witnessed by removing them before writing this
@@ -3432,10 +3389,10 @@ describe("S4: seed keyframes + boundary ride", () => {
         expect(seededV).toEqual(constantV);
     });
 
-    test("boundary ride: an edge resize moves the keyframe sitting on that boundary; an interior keyframe holds station", () => {
-        // RED-FIRST: reverting `setStrip`'s ride loop leaves the seeded boundary keyframe
-        // at its OLD station after a resize — witnessed by removing the loop and observing
-        // `startKfId`'s `s` stay at 5 instead of moving to 3.
+    test("non-sticking: an edge resize moves NO keyframe, boundary included — S4's boundary-ride is deleted", () => {
+        // RED-FIRST: reintroducing `setStrip`'s deleted ride loop moves `startKfId` to the
+        // new edge — witnessed by restoring the loop and observing this arm fail with
+        // `startKfId`'s `s` reading 3 instead of the held 5.
         const { state, sec } = track();
         convertSection(state, sec);
         const stripId = createStrip(state, sec, 5, 15, 8) as number;
@@ -3445,17 +3402,17 @@ describe("S4: seed keyframes + boundary ride", () => {
         const interiorId = createStripKeyframe(state, stripId, 10, 6);
 
         setStrip(state, stripId, 3, 15, 8); // resize the start edge inward: 5 → 3
-        expect(stripKeyframeState(state, startKfId)?.s).toBe(3);
+        expect(stripKeyframeState(state, startKfId)?.s).toBe(5); // held station, non-sticking
         expect(stripKeyframeState(state, interiorId)?.s).toBe(10); // held station
         expect(stripKeyframeState(state, endKfId)?.s).toBe(15); // untouched boundary
 
         setStrip(state, stripId, 3, 20, 8); // resize the end edge outward: 15 → 20
-        expect(stripKeyframeState(state, endKfId)?.s).toBe(20);
+        expect(stripKeyframeState(state, endKfId)?.s).toBe(15); // held station, non-sticking
         expect(stripKeyframeState(state, interiorId)?.s).toBe(10); // still holds
-        expect(stripKeyframeState(state, startKfId)?.s).toBe(3); // untouched boundary
+        expect(stripKeyframeState(state, startKfId)?.s).toBe(5); // still holds
     });
 
-    test("boundary ride: a body drag translates both boundary keyframes with their edges; an interior keyframe holds station", () => {
+    test("non-sticking: a body drag translates neither boundary keyframe — every keyframe holds station like a force keyframe", () => {
         const { state, sec } = track();
         convertSection(state, sec);
         const stripId = createStrip(state, sec, 5, 15, 8) as number;
@@ -3465,15 +3422,12 @@ describe("S4: seed keyframes + boundary ride", () => {
         const interiorId = createStripKeyframe(state, stripId, 10, 6);
 
         setStrip(state, stripId, 8, 18, 8); // body drag, +3
-        expect(stripKeyframeState(state, startKfId)?.s).toBe(8);
-        expect(stripKeyframeState(state, endKfId)?.s).toBe(18);
+        expect(stripKeyframeState(state, startKfId)?.s).toBe(5); // held
+        expect(stripKeyframeState(state, endKfId)?.s).toBe(15); // held
         expect(stripKeyframeState(state, interiorId)?.s).toBe(10); // held station (Locked decision)
     });
 
-    test("undo of a strip-move gesture is byte-identical, boundary ride included", () => {
-        // RED-FIRST: before `StripState`/`restoreStrip` carried `kfs`, undo restored only
-        // `start`/`end`/`value` — witnessed by reverting that widening and observing the
-        // post-undo snapshot still show the ridden keyframe at its POST-drag station.
+    test("undo of a strip-move gesture is byte-identical (no keyframe write to revert, non-sticking)", () => {
         const { state, sec } = track();
         convertSection(state, sec);
         const h = createHistory();
@@ -3481,7 +3435,7 @@ describe("S4: seed keyframes + boundary ride", () => {
         const before = snapshotAll(state);
 
         beginStripMove(state, id);
-        setStrip(state, id, 3, 15, 8); // moves the start-boundary keyframe live
+        setStrip(state, id, 3, 15, 8); // resize only -- no keyframe moves (non-sticking)
         commit(h);
         const after = snapshotAll(state);
         expect(after).not.toEqual(before);
@@ -3925,6 +3879,38 @@ describe("joinNext — min-extent strip floor across a coarser joined grid (S2, 
         expect(strips.length).toBe(1);
         expect(strips[0].end).toBeGreaterThan(strips[0].start);
         expect(strips[0].value).toBe(6);
+    });
+
+    test("RED-FIRST WITNESS (S3): a merge join rebases the surviving strip's Strip.end but leaves its own boundary keyframe stranded at the OLD end", () => {
+        // reproduces the booked map defect directly: A's strip touches A's own length
+        // (aLen), B's strip touches B's own start (0), and both carry the same value, so
+        // `joinNext`'s force branch MERGES them into one strip and moves `Strip.end` to
+        // `aLen + bHeadStrip.end` — but the surviving strip's OWN end-boundary keyframe
+        // (seeded by `createStrip` at its old end, `aLen`) is never told to follow. Red
+        // before the fix: `endKf.s` reads `aLen` (20) instead of the strip's new end (30).
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const a = createSection(state, 0, SectionKind.Force, 20);
+        const b = createSection(state, 1, SectionKind.Force, 20);
+        state.step(0);
+        const aId = createStrip(state, a, 10, 20, 8) as number; // touches A's own length (aLen = 20)
+        const bId = createStrip(state, b, 0, 10, 8) as number; // touches B's own start (0), same value
+        expect(aId).not.toBeNull();
+        expect(bId).not.toBeNull();
+        const endKfId = stripKeyframes(state, aId).find((k) => k.s === 20)?.id;
+        if (endKfId === undefined) throw new Error("no seeded end keyframe");
+
+        expect(joinNext(state, a)).toBe(true);
+        state.step(0);
+
+        const strips = sectionStrips(state, a);
+        expect(strips.length).toBe(1); // merged: values agreed
+        expect(strips[0].id).toBe(aId); // the surviving strip keeps A's own id
+        expect(strips[0].end).toBe(30); // 20 + 10, the merged strip's real new edge
+
+        // the strip's own boundary keyframe must ride the rebase, not strand at the old edge.
+        expect(stripKeyframeState(state, endKfId)?.s).toBe(30);
     });
 });
 

@@ -108,7 +108,7 @@ export function suffixRun(
 
 /** a Cut's resolved landing point — `at` is the target's own coordinate for a landmark call (a
  *  node's `order`, a keyframe's `s`); `t` is the geo free-position parameter within segment `at`
- *  (the cursor-anchored section row's own case — `editor-ui.md`'s toLocal/toLocalU lens resolves
+ *  (the cursor-anchored section row's own case — `editor-ui.md`'s toLocal lens resolves
  *  it, the no-proximity-magnet locked decision), omitted or `≤ 0` for every landmark call (the
  *  reduction `track.splitGeoAt` and `history.splitSection` already carry). Ignored on a force
  *  section — `splitForce` is exact at any interior `s` since stage 1, landmark or free alike. */
@@ -191,7 +191,7 @@ export function lockCandidates(ecs: State): number[] {
  *  — the menu derives null once the section is gone, so they carry no close.
  *
  *  `position` is Cut's own resolved landing point — genuinely CALLER-local (the menu's own screen
- *  cursor resolved through `editor-ui.md`'s toLocal/toLocalU lens, or `controls.ts`'s own read of
+ *  cursor resolved through `editor-ui.md`'s toLocal lens, or `controls.ts`'s own read of
  *  the playhead through `cart.playheadPosition` + the same `sectionCutAt` seam — two different
  *  resolutions of the same `CutPosition` shape), so it rides in as a third constructor argument
  *  rather than being derivable from `subject` alone the way a node's order or a keyframe's `s` is.

@@ -159,8 +159,7 @@ import {
     stripOverlapped,
     stripSeedValue,
     toGlobal,
-    toGlobalU,
-    toLocalU,
+    toLocal,
     trackDomain,
     validStripValue,
     V0,
@@ -684,16 +683,16 @@ const pyPerG = $derived.by((): number => {
 // chart's own axis (`uOf`), identity in Distance and through the live s↔t table in Time.
 //
 // the coordinate lens's span table (track.ts): each section's entry + extent in arclength
-// (`sectionSpans`, S6 — `entryU`/`lenU` are `offset`/`len` now, no second axis) — the ONE
-// source for every global readout on the chart — boundaries, clips, and force-keyframe
-// placement all derive from it, none re-walks the baked ds.
+// (`sectionSpans` — `offset`/`len`, no second axis, S3 retired the `entryU`/`lenU` alias
+// reading) — the ONE source for every global readout on the chart — boundaries, clips, and
+// force-keyframe placement all derive from it, none re-walks the baked ds.
 const spans = $derived.by(() => {
     void tick;
     return eid === null ? [] : sectionSpans(ecs, eid);
 });
 // the interior section boundaries on the chart's own axis — drawn as chart guides, and the
 // landmarks every s-axis snap resolves against. each non-last span's native exit
-// (`entryU + lenU`), so a boundary needs no projection in either domain. Reads through `uOfLen`
+// (`offset + len`), so a boundary needs no projection in either domain. Reads through `uOfLen`
 // (below `clips`, same reasoning) rather than plain `uOf`: an upstream lengthen crossing the
 // gesture-frozen table's end shifts every downstream boundary exactly like it shifts a downstream
 // clip's edges (finding 9's mechanism gap) — same seam, same fix.
@@ -710,8 +709,16 @@ interface Clip {
     s1: number; // cumulative arclength at the section exit
     u0: number; // the section entry projected onto the CHART's own axis (`uOf(s0)`) — where its
     u1: number; // clip and its keyframes draw, and its exit (`uOf(s1)`); identity in Distance
-    len: number; // authored extent (force `Section.length`, arclength ALWAYS) — the clamp domain
-    // for its keyframes and the subject of the extent trim
+    len: number; // authored extent (force `Section.length`, arclength ALWAYS) — the extent trim's
+    // own subject, kept distinct from `extent` below (finding 9: the two can disagree while the
+    // bake truncates) — never read as a clamp domain directly, that's what `extent` is for.
+    // the strip/keyframe clamp domain — a force section's AUTHORED extent (`len`, the same
+    // constant `setSectionLength` writes) or a geo section's BAKED span (`s1 − s0`, which has no
+    // authored twin). Two values that must agree travel as one (`coding.md`): every clamp-domain
+    // reader takes `extent`, not `len`/`s1 − s0` re-derived per call site (`bandStrips`' own
+    // former inline ternary collapses into this ONE place a strip keyframe's clamp bound reads
+    // too, S3's substrate unification).
+    extent: number;
 }
 // every clip edge, while a lengthen gesture is live, reads through the SAME extrapolating
 // projection `applyLen`'s write used (`uToDExtend`'s inverse, `dToUExtend` — finding 9's fix):
@@ -743,6 +750,7 @@ const clips = $derived.by((): Clip[] => {
             u0: uOfLen(sp.offset),
             u1: uOfLen(sp.offset + sp.len),
             len: sec.length,
+            extent: sec.kind === SectionKind.Force ? sec.length : sp.len,
         });
     }
     return res;
@@ -987,13 +995,13 @@ interface BandStrip {
     u1: number;
     startU: number; // the section's entry, likewise projected -- pixel math only
     startD: number; // the section's entry in arclength (`Clip.s0`) -- the WRITE base
-    // the clamp domain's outer bound — on a force section this IS `Clip.len` (`Section.length`,
-    // the same authored extent the trim handle writes through `setSectionLength`), so a strip's
-    // trim/drag bound and the section's own trim agree by construction (two values that must
-    // agree travel as one, not read from two places: the baked span `c.s1 − c.s0` can disagree
+    // the clamp domain's outer bound — `Clip.extent` (a force section's authored
+    // `Section.length`, the same constant the trim handle writes through `setSectionLength`, or
+    // a geo section's baked span `s1 − s0`, which has no authored twin) so a strip's trim/drag
+    // bound and the section's own trim agree by construction. Read straight off `Clip.extent`,
+    // never re-derived here (`coding.md`'s two-values-must-agree: the baked span can disagree
     // with `Section.length` when the bake truncates, `forceBake`'s own "what's on screen is the
-    // prefix"). A geo section has no authored extent (`Clip.len` reads 0 there), so a strip on
-    // one still bounds against the baked span, `c.s1 − c.s0`.
+    // prefix").
     len: number;
 }
 const bandStrips = $derived.by((): BandStrip[] => {
@@ -1001,7 +1009,7 @@ const bandStrips = $derived.by((): BandStrip[] => {
     if (eid === null) return [];
     const res: BandStrip[] = [];
     for (const c of clips) {
-        const extent = c.kind === SectionKind.Force ? c.len : c.s1 - c.s0;
+        const extent = c.extent;
         for (const st of sectionStrips(ecs, c.id)) {
             if (st.start >= extent) continue; // wholly past the extent — inert
             const d0 = toGlobal(spans, c.id, st.start);
@@ -1067,6 +1075,8 @@ interface StripKfPt {
     v: number; // velocity (m/s)
     u: number; // GLOBAL arclength projected onto the chart's axis (`uOf`) -- pixel math only
     startU: number; // the strip's section entry, likewise projected -- pixel math only
+    startD: number; // the strip's section entry in arclength (`ForcePt.startD`'s own twin) --
+    // the popover field's WRITE base (S3: value-shown parity, finding 10)
     start: number; // the strip's start (section-local, arclength)
     end: number; // the strip's end (section-local, arclength)
 }
@@ -1088,6 +1098,7 @@ const stripKfPts = $derived.by((): StripKfPt[] => {
                     return d === null ? s.startU : uOfLen(d);
                 })(),
                 startU: s.startU,
+                startD: s.startD,
                 start: s.start,
                 end: s.end,
             });
@@ -1162,6 +1173,22 @@ $effect(() => {
     if (editor.stripKf !== null && !stripKfPts.some((k) => k.id === editor.stripKf)) {
         selectStripKf(null);
     }
+});
+// the selected strip keyframe's own point — `selPoint`'s twin (S3, findings 10/3: value shown
+// on selection is part of the shared substrate, not just selectability). No multi-select
+// concept exists for strip keyframes (`editor.stripKf` is a single id, never a set), so there's
+// no `multiForce`-shaped guard here — the popover shows whenever one is selected.
+const selStripKfPt = $derived.by((): StripKfPt | null => {
+    void tick;
+    if (editor.stripKf === null) return null;
+    return stripKfPts.find((k) => k.id === editor.stripKf) ?? null;
+});
+// `selLocked`'s own twin — the pin-mode lockdown gates a strip keyframe's fields exactly like
+// a force keyframe's (`stripKfDown`'s own `sectionEditable` guard on the drag path).
+const selStripKfLocked = $derived.by((): boolean => {
+    void tick;
+    const k = selStripKfPt;
+    return k !== null && !sectionEditable(editor.pinning, k.section);
 });
 // a force keyframe's chart x — its global axis coordinate, straight off the lens's affine.
 const ptX = (p: ForcePt): number => uPx(p.u);
@@ -2610,7 +2637,6 @@ interface StripDrag {
     id: number;
     mode: "start" | "end" | "body";
     section: number;
-    entryU: number; // projected -- unused for the write now, kept for symmetry with the others
     entryD: number; // arclength entry -- the write base
     lo: number;
     hi: number;
@@ -2674,7 +2700,7 @@ function bandContext(e: MouseEvent): void {
     const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
     if (hit.kind === "empty") {
         // a create has no gesture to freeze a table for -- `dOf` reads the live mapping.
-        const loc = toLocalU(spans, dOf(uAtPx(px)));
+        const loc = toLocal(spans, dOf(uAtPx(px)));
         if (loc === null) return;
         if (!sectionEditable(editor.pinning, loc.section)) return;
         openStripMenu(e.clientX, e.clientY, loc.section, loc.s, -1);
@@ -2709,7 +2735,6 @@ function bandDown(e: PointerEvent): void {
             id: s.id,
             mode: hit.edge,
             section: s.section,
-            entryU: s.startU,
             entryD: s.startD,
             lo: hit.edge === "start" ? b.lo : s.start,
             hi: hit.edge === "end" ? b.hi : s.end,
@@ -2725,7 +2750,6 @@ function bandDown(e: PointerEvent): void {
             id: s.id,
             mode: "body",
             section: s.section,
-            entryU: s.startU,
             entryD: s.startD,
             lo: loB.lo,
             hi: hiB.hi,
@@ -2803,6 +2827,33 @@ function onFieldPos(e: Event): void {
 function onFieldG(e: Event): void {
     if (!selPoint) return;
     fieldEdit(selPoint.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
+}
+// ── the selected strip keyframe's typed s/v fields (S3, findings 10/3 — value shown on
+// selection mirrors `fieldEdit`'s own shape) ── clamps `s` to the STRIP's own bounds (its
+// `stripKfDown`/`stripKfMove` gesture's own clamp domain, not `[0, len]` like a force point:
+// a strip keyframe's substrate is the strip, not the section), and `v` at `V_FLOOR`
+// (`validStripValue`'s own floor, `setStripKeyframe`'s own guard). The unit label on `v` is
+// booked to S5 (Locked decision finding 11 "near half" — m/s on selection readouts); this
+// field shows the bare number today, matching the force `g` field's own unitless "F" row.
+function stripKfFieldEdit(s: number, v: number): void {
+    const k = selStripKfPt;
+    if (k === null || !Number.isFinite(s) || !Number.isFinite(v)) return; // guard a cleared field
+    if (!sectionEditable(editor.pinning, k.section)) return; // the lockdown (fields disabled too)
+    skipLanding();
+    beginStripKeyframeMove(ecs, k.id);
+    setStripKeyframe(ecs, k.id, clamp(s, k.start, k.end), Math.max(V_FLOOR, v));
+    commit(history);
+}
+// the position field speaks the chart's own domain, `onFieldPos`'s own shape — through `dOf`
+// before subtracting the strip's section entry (`startD`).
+function onFieldStripS(e: Event): void {
+    if (!selStripKfPt) return;
+    const u = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
+    stripKfFieldEdit(dOf(u) - selStripKfPt.startD, selStripKfPt.v);
+}
+function onFieldStripV(e: Event): void {
+    if (!selStripKfPt) return;
+    stripKfFieldEdit(selStripKfPt.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
 }
 // ── the selected handle's typed (Δs, Δg) fields ── mirrors the keyframe fields, but the
 // commit goes through the shared tangent write path (composeTangent — x-clamp + Aligned
@@ -4171,14 +4222,21 @@ onMount(() => {
             <!-- velocity-strip keyframes (T2: value in the graph): diamonds in the velocity
                  channel, drawn for every strip (Locked decision "Visibility"), the selected
                  strip's own keyframes brightening per the same `.sel` rung force keyframes use.
-                 Same diamond idiom as force keyframes but on the v-axis (vOf, not yOf). Clipped
-                 to the chart. -->
+                 `.active` marks the ONE individually-selected keyframe (`editor.stripKf`) —
+                 `selForceSet`/`selForce`'s own `.sel`/`.active` split, S3's parity fix (findings
+                 10/3): before, every keyframe on the selected strip read `.sel` alike, with no
+                 rung distinguishing the one actually grabbed. Same diamond idiom as force
+                 keyframes but on the v-axis (vOf, not yOf). Clipped to the chart. -->
             <g class="fmarkers" clip-path="url(#fclip)">
                 {#each stripKfPts as k (k.id)}
                     {@const mx = uPx(k.u)}
                     {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                         {@const my = vOf(k.v)}
-                        <g class="fpt" class:sel={selStrip !== null && k.strip === selStrip.id}>
+                        <g
+                            class="fpt"
+                            class:sel={selStrip !== null && k.strip === selStrip.id}
+                            class:active={selStripKfPt !== null && k.id === selStripKfPt.id}
+                        >
                             <circle
                                 class="fhit"
                                 cx={mx}
@@ -4364,6 +4422,54 @@ onMount(() => {
                             aria-label="Point force (g)"
                         />
                         <span class="unit">g</span>
+                    </div>
+                </div>
+            {/if}
+        <!-- the selected STRIP keyframe's own typed s/v popover — `selPoint`'s twin (S3, findings
+             10/3): selection alone isn't the whole substrate parity, the value has to be SHOWN
+             too. No scrub-drag on the labels (force's `scrubStart`) and no unit on `v` (that's
+             S5's m/s labeling, Locked decision finding 11) — the value-shown behavior itself is
+             this stage's, the label polish isn't. -->
+        {:else if selStripKfPt}
+            {@const mx = uPx(selStripKfPt.u)}
+            {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
+                {@const ax = clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
+                {@const ay = clamp(vOf(selStripKfPt.v), TOP, h - BOT_PAD)}
+                {@const posText = fmt(selStripKfPt.u, 1)}
+                {@const vText = fmt(selStripKfPt.v, 2)}
+                <div
+                    class="ptip"
+                    class:below={ay < TOP + TIP_FLIP}
+                    class:dragging={dragStripKf !== null}
+                    style="left: {ax}px; top: {ay}px"
+                >
+                    <div class="fld">
+                        <span class="key" role="presentation">{posLabel}</span>
+                        <input
+                            type="number"
+                            step={timeDomain ? 0.1 : 1}
+                            min={selStripKfPt.startU}
+                            value={posText}
+                            disabled={selStripKfLocked}
+                            onchange={onFieldStripS}
+                            onfocus={(e) => e.currentTarget.select()}
+                            onkeydown={(e) => fieldKeydown(e, posText)}
+                            aria-label={timeDomain ? "Keyframe time (s)" : "Keyframe distance (m)"}
+                        />
+                        <span class="unit">{posUnit}</span>
+                    </div>
+                    <div class="fld">
+                        <span class="key" role="presentation">v</span>
+                        <input
+                            type="number"
+                            step="0.1"
+                            value={vText}
+                            disabled={selStripKfLocked}
+                            onchange={onFieldStripV}
+                            onfocus={(e) => e.currentTarget.select()}
+                            onkeydown={(e) => fieldKeydown(e, vText)}
+                            aria-label="Keyframe velocity"
+                        />
                     </div>
                 </div>
             {/if}

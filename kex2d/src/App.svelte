@@ -872,7 +872,7 @@ const ctxKind = $derived.by((): SectionKind | null => {
 // `sectionOpsAllowed`. A geo position's interior-ness is already fully decided by
 // `track.geoCutAt`'s own null-ness (it refuses node 0 / the chain end); a force position still
 // needs the landmark's own interior bound (`acts.keyframeCuttable`) since `sectionCutAt` hands
-// back the raw `toLocalU` reading, entry/exit included, same shape as the node/keyframe menus'
+// back the raw `toLocal` reading, entry/exit included, same shape as the node/keyframe menus'
 // own `canCut` fields reusing the identical predicate.
 const canCut = $derived.by((): boolean => {
     void tick;
@@ -924,7 +924,7 @@ const canDelete = $derived.by((): boolean => {
 // run, `controls.ts`) plus the pin consent boundary Join shares with every structural row
 // (it reaches past its subject to destroy a neighbor, squarely inside the lockdown). computable
 // today straight off `editor.sections.ids` and `sections(ecs)` — unlike `canCut`, it needs no
-// `toLocal`/`toLocalU` cursor-resolution lens, so it isn't deferred to stage 6.
+// `toLocal` cursor-resolution lens, so it isn't deferred to stage 6.
 const canJoin = $derived.by((): boolean => {
     void tick;
     return (
