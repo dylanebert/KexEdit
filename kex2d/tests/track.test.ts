@@ -3604,6 +3604,67 @@ describe("initial velocity is the first strip (S5)", () => {
         expect(Array.from(absentAfter.fN)).toEqual(absentFN);
     });
 
+    // S6 (kex2d-event-lane, finding 8, option 1 — no point events): the degenerate `[0, 0)`
+    // strip a section-0 convert preserves is a UI-only presentation problem (a point rendered
+    // as a two-edge resizable clip); the kernel-facing write it drags out through is the SAME
+    // guarded `setStrip` a resize already uses (`Timeline.svelte`'s `bandDown`/`bandMove`, "end"
+    // mode). This oracle pins the bake side of that claim: expanding the glyph through `setStrip`
+    // must be indistinguishable, at the bake, from a span `createStrip` authored fresh at the
+    // same extent/value — the ONE thing "exactly as a hand-created span would" can mean at this
+    // layer, since the two differ only in keyframe count (1 vs `createStrip`'s seeded 2, both
+    // flat at the same value — `profile.sampleForce`'s single-point and equal-pair cases already
+    // agree, `section.ts`'s own docblock).
+    test("a glyph expanded via setStrip bakes byte-identical to a hand-created span at the same extent (S6)", () => {
+        const value = 22; // off V0 = 10 and off the flat-track natural march
+        const buildCurved = (state: State): number => {
+            const sec = createSection(state, 0, SectionKind.Geo, 0);
+            addNode(state, sec, 0, 0);
+            addNode(state, sec, 16, 27.7); // curved, so v feeds fN through the march
+            return sec;
+        };
+
+        // track A: the glyph, expanded through the SAME writer the drag-out gesture calls.
+        const a = new State();
+        a.addSystem(BakeSystem);
+        const eidA = createTrack(a);
+        const secA = buildCurved(a);
+        setStartSpeed(a, value); // spawns the degenerate [0, 0) point (no strip exists yet)
+        const glyphId = sectionStrips(a, secA)[0].id;
+        expect(sectionStrips(a, secA)[0].start).toBe(sectionStrips(a, secA)[0].end); // degenerate
+        setStrip(a, glyphId, 0, 6, value); // the drag-out: an "end"-mode extend, guarded
+        const grown = sectionStrips(a, secA)[0];
+        expect(grown.start).toBe(0);
+        expect(grown.end).toBe(6); // the guard admitted it — a real, edge-covering span now
+        a.step(0);
+        const outA = bakeOut.get(eidA);
+        if (!outA) throw new Error("no bake");
+
+        // track B: the same extent/value, hand-created through createStrip directly.
+        const b = new State();
+        b.addSystem(BakeSystem);
+        const eidB = createTrack(b);
+        const secB = buildCurved(b);
+        const handId = createStrip(b, secB, 0, 6, value);
+        expect(handId).not.toBeNull();
+        b.step(0);
+        const outB = bakeOut.get(eidB);
+        if (!outB) throw new Error("no bake");
+
+        expect(Array.from(outA.v)).toEqual(Array.from(outB.v));
+        expect(Array.from(outA.fN)).toEqual(Array.from(outB.fN));
+        expect(entrySpeed(a)).toBe(entrySpeed(b));
+
+        // the guard refuses a too-small drag the same way it refuses any other collapse: a
+        // target that rounds back to `start === end` is refused, not silently re-degenerated.
+        const c = new State();
+        c.addSystem(BakeSystem);
+        const secC = buildCurved(c);
+        setStartSpeed(c, value);
+        const stillGlyph = sectionStrips(c, secC)[0];
+        setStrip(c, stillGlyph.id, 0, 0, value); // no-op target — collapses right back
+        expect(sectionStrips(c, secC)[0]).toEqual(stillGlyph); // refused, unchanged
+    });
+
     test("with no strip covering station 0, the derived entry speed falls back to V0", () => {
         const { state } = track();
         expect(entrySpeed(state)).toBe(V0);
