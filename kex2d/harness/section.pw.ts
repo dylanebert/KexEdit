@@ -1741,9 +1741,19 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     let kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
     const kf0 = kfs.find((k) => !seededIds.has(k.id));
     if (!kf0) throw new Error("no newly-created keyframe found");
-    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
+    // poll for the SPECIFIC newly-created keyframe's diamond, not just any diamond — the
+    // seeded keyframes are already drawn, so a bare length > 0 passes before the new one's
+    // $derived (read through the per-RAF tick) has propagated to `stripKfPx` (the same race
+    // the sibling flow at line ~1883 fixed).
+    await expect
+        .poll(async () => {
+            const px = (await stripKfPx()) as { id: number; x: number; y: number }[];
+            return px.find((k) => k.id === kf0.id) ?? null;
+        })
+        .not.toBeNull();
     const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
-    const kf0Px = kfPx.find((k) => k.id === kf0.id)!;
+    const kf0Px = kfPx.find((k) => k.id === kf0.id);
+    if (!kf0Px) throw new Error("the created keyframe has no drawn diamond");
 
     // use the raw pixel position from the hook (projected exactly as drawn)
     await page.mouse.move(kf0Px.x, kf0Px.y);
