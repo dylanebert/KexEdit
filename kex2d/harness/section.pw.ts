@@ -2332,3 +2332,386 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     expect(sAfterLeft).toBeCloseTo(expectedSLeft, 5); // nudged left, on the 0.1 grid
     expect(sAfterLeft).toBeLessThan(sAfterRight); // it moved left
 });
+
+// S1 capture arm (B3): strip-keyframe SNAP. `applyKeyframeDrag`'s s-axis snap resolves through
+// `stripKfSTargets` (Timeline.svelte:1299, called at :1444) and v-axis through `vTargets`
+// (:1291, called at :1460) — both kind-specific target builders feeding the shared `snapAxis`.
+// Every other strip-keyframe flow holds Ctrl to bypass the snap magnet (the extent-trim flow at
+// :200, the drag-origin flow at :1893, the multi-member flow at :2155, the nudge flow at :2275);
+// `tests/timeline.test.ts:1391` calls `snapAxis` with hand-built arrays and cannot see the
+// production target builders. So neither `stripKfSTargets` nor `vTargets` had any arm reaching
+// them — killing both leaves `bun test` at 1654/0 and every capture flow green (verified by
+// mutation, verify-b3.py). This flow is the missing arm: it drags a strip keyframe WITHOUT Ctrl
+// and asserts the snapped landing — the v-axis snap to another keyframe's v value (a landmark
+// `vTargets` provides, killed by the mutation). Strips cannot overlap, so a keyframe in one
+// strip cannot reach another strip's s-axis station; the v-axis snap has no strip-extent
+// constraint, so it is the axis the arm can reach.
+//
+// RED-FIRST WITNESS: killed both strip snap target arms — replaced the `stripKfSTargets(...)`
+// call at :1444 with `[]` and the `vTargets(...)` call at :1460 with `[]`. The flow red at the
+// snapped-v assertion: the keyframe landed at the v-grid quantum (V_GRID 0.1), not at the
+// other keyframe's off-grid v landmark. Restored both arms; green.
+test("strip keyframe snap landing", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const stripKfPx = () => kexCall(page, "stripKfPx");
+    const xView = () => kexCall(page, "xView");
+    const vRange = () => kexCall(page, "vRange");
+
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
+    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    const beforeStrips = (await stripsOf()) as { id: number }[];
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.3;
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
+    await page.waitForTimeout(200); // let the per-RAF tick propagate selection to $derived reads
+
+    const beforeIds = new Set(beforeStrips.map((s) => s.id));
+    const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
+    if (!created) throw new Error("newly-created strip not found");
+    const stripId = created.id;
+    const seededIds = new Set(
+        ((await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[]).map(
+            (k) => k.id,
+        ),
+    );
+    expect(seededIds.size).toBe(2);
+
+    // Widen the strip via a REAL pointer edge-drag on its end.
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const spBefore = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId);
+    if (!spBefore) throw new Error("created strip has no band px");
+    const edgePx = chartCanvasBb.x + spBefore.x1;
+    await page.mouse.move(edgePx, bandY);
+    await page.mouse.down();
+    await page.mouse.move(edgePx + 120, bandY, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    // Separate the still-coincident seeded pair — drag the END keyframe (renders on top at the
+    // tie) toward the widened end, uncovering the start keyframe.
+    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
+    let kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const sharedPx = kfPxAll.find((k) => seededIds.has(k.id))!;
+    const widePx = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId)!;
+    const separateX = chartCanvasBb.x + widePx.x1 - 10;
+    await page.mouse.move(sharedPx.x, sharedPx.y);
+    await page.mouse.down();
+    await page.mouse.move(separateX, sharedPx.y, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    // Read the separated keyframes — identify start (smaller s) and end (larger s).
+    let kfs = (await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[];
+    const seededKfs = kfs.filter((k) => seededIds.has(k.id)).sort((a, b) => a.s - b.s);
+    const startKf = seededKfs[0]; // smaller s = start
+    const endKf = seededKfs[1]; // larger s = end
+    if (!startKf || !endKf) throw new Error("start/end keyframe not found after separation");
+
+    // Create a third keyframe at the strip's MIDPOINT.
+    const strip = (
+        (await stripsOf()) as { id: number; start: number; end: number; value: number }[]
+    ).find((s) => s.id === stripId)!;
+    const [, pxPerU] = await xView();
+    const [vLo, vHi] = await vRange();
+    const stripMidS = (strip.start + strip.end) / 2;
+    const stripCenterPx = clipBb.x + stripMidS * pxPerU;
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!dockBb) throw new Error("dock body not laid out");
+    const chartTop = dockBb.y + CHART_TOP;
+    const chartBot = dockBb.y + dockBb.height - CHART_BOT_PAD;
+    const vToY = (v: number): number =>
+        chartTop + (1 - (v - vLo) / (vHi - vLo)) * (chartBot - chartTop);
+    const stripValueY = vToY(strip.value);
+    await page.mouse.dblclick(stripCenterPx, stripValueY);
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(3);
+    kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
+    const midKf = kfs.find((k) => !seededIds.has(k.id));
+    if (!midKf) throw new Error("midpoint keyframe not found");
+
+    // Poll for the midpoint keyframe's diamond to be projected on screen.
+    await expect
+        .poll(async () => {
+            const px = (await stripKfPx()) as { id: number; x: number; y: number }[];
+            return px.find((k) => k.id === midKf.id) ?? null;
+        })
+        .not.toBeNull();
+    kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+
+    // Move the END keyframe to an OFF-GRID v value (with Ctrl to bypass snap). This makes the
+    // end keyframe's v a landmark snap target that is NOT on the V_GRID (0.1) quantum — so the
+    // landmark snap and the grid snap give DIFFERENT values, and the mutation (which kills
+    // `vTargets`, removing the landmark) would let the grid snap take over, yielding a
+    // different v.
+    kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const endKfPx = kfPxAll.find((k) => k.id === endKf.id)!;
+    // drag it DOWN (higher v) to an off-grid v value — 40px, well past SNAP_PX (8)
+    const offGridDyPx = 40;
+    await page.mouse.move(endKfPx.x, endKfPx.y);
+    await page.keyboard.down("Control");
+    await page.mouse.down();
+    await page.mouse.move(endKfPx.x, endKfPx.y + offGridDyPx, { steps: 5 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    await page.waitForTimeout(100);
+
+    // Read the end keyframe's new v — this is the snap landmark.
+    kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
+    const endKfAfter = kfs.find((k) => k.id === endKf.id)!;
+    const landmarkV = endKfAfter.v;
+    // verify it's off-grid (not a multiple of V_GRID = 0.1)
+    const vGrid = 0.1;
+    const remainder = Math.round((landmarkV / vGrid) * 1e6) % 100000;
+    expect(remainder).not.toBe(0); // off-grid — the landmark and grid snap diverge
+
+    // Now drag the MIDPOINT keyframe vertically (WITHOUT Ctrl) toward the end keyframe's v.
+    // The snap magnet is ACTIVE (no Ctrl), so `vTargets` provides the end keyframe's v as a
+    // landmark. When the cursor comes within SNAP_PX (8px) of vOf(landmarkV), the keyframe
+    // snaps to landmarkV. With the mutation (`vTargets` killed), no landmark is in the pool,
+    // so the keyframe falls to the V_GRID quantum — a DIFFERENT v.
+    //
+    // The landmark's pixel y is read from `stripKfPx` (the same projection the app's `vOf`
+    // uses to draw the diamond), NOT computed from `vToY` — the dock body's height may
+    // differ from the canvas's `h` (`vOf` uses `h`, `vToY` uses `dockBb.height`), so a
+    // `vToY`-computed y would be at a different canvas-local pixel than `vOf`'s, and the
+    // snap (which compares in canvas-local px) would not fire.
+    kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const midKfPxFresh = kfPxAll.find((k) => k.id === midKf.id)!;
+    const endKfPxFresh = kfPxAll.find((k) => k.id === endKf.id)!;
+    // drag toward the landmark v, stopping AT the target's exact pixel y (0px offset) so the
+    // snap must fire — the v-axis scale is steep enough that even a 4px offset puts the cursor
+    // outside SNAP_PX of the target in v-space
+    const dragTargetY = endKfPxFresh.y; // exactly on the target
+    await page.mouse.move(midKfPxFresh.x, midKfPxFresh.y);
+    await page.mouse.down();
+    await page.mouse.move(midKfPxFresh.x, dragTargetY, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    // Assert the keyframe SNAPPED to the end keyframe's v (the landmark). With the snap arms
+    // killed (the mutation), the keyframe would land at the V_GRID quantum (nearest 0.1),
+    // NOT at landmarkV — so the v would differ from landmarkV by up to 0.05, well outside
+    // the tolerance.
+    const kfsFinal = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
+    const midKfFinal = kfsFinal.find((k) => k.id === midKf.id)!;
+    const vDiff = Math.abs(midKfFinal.v - landmarkV);
+    expect(
+        vDiff,
+        `snap assertion: midKf v=${midKfFinal.v}, landmarkV=${landmarkV}, diff=${vDiff}, midKfBefore=${midKf.v}, endKfBefore=${endKf.v}`,
+    ).toBeLessThan(1e-5); // snapped to the landmark v
+});
+
+// S1 capture arm: strip-keyframe OVERLAP REFUSAL on a multi-member drag. `applyKeyframeDrag`'s
+// block-level overlap check (Timeline.svelte:1471-1477) calls `keyframeTaken` for every member
+// before committing the shared delta — if any member would land on an occupied station, the
+// BLOCK holds at the last landed delta (`dragKfLastDs`), preserving offsets. Without this
+// check, `setStripKeyframe`'s own per-keyframe refusal would still block the overlapping
+// member's s write, but the non-overlapping member would move freely — the block tears apart.
+// This flow constructs a multi-member set, drags it toward a non-selected keyframe's station
+// (so one member would overlap), and asserts the block held (both members moved by the same
+// delta). The drag is a single-step move to the end keyframe's station, so the
+// overlap check fires at the final position — without the block check, the
+// overlapping member's s write is refused by `setStripKeyframe` but the other
+// member moves, tearing the block.
+//
+// RED-FIRST WITNESS: replaced the `landed` check at Timeline.svelte:1473-1476 with
+// `const landed = true;` (overlap refusal disabled). The flow red at the offset-preserved
+// assert: the overlapping member stayed at its pre-drag s while the other moved — the delta
+// difference was the full drag distance, not within tolerance. Restored the check; green.
+test("strip keyframe overlap refusal", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const stripKfPx = () => kexCall(page, "stripKfPx");
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds");
+    const xView = () => kexCall(page, "xView");
+    const vRange = () => kexCall(page, "vRange");
+
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
+    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    const beforeStrips = (await stripsOf()) as { id: number }[];
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.3;
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
+    await page.waitForTimeout(200); // let the per-RAF tick propagate selection to $derived reads
+
+    const beforeIds = new Set(beforeStrips.map((s) => s.id));
+    const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
+    if (!created) throw new Error("newly-created strip not found");
+    const stripId = created.id;
+    const seededIds = new Set(
+        ((await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[]).map(
+            (k) => k.id,
+        ),
+    );
+    expect(seededIds.size).toBe(2);
+
+    // Widen the strip via a REAL pointer edge-drag on its end.
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const spBefore = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId);
+    if (!spBefore) throw new Error("created strip has no band px");
+    // Widen generously (+280px, not the sibling flows' +120px): the rigid group clamp
+    // (`clampDelta`) binds the shared delta to whichever selected member has the LEAST
+    // room to its own `len` (strip.end) — the overlap-target keyframe below is placed at
+    // ~30% of the widened extent and the third (selected) keyframe near the start, so the
+    // third keyframe's own room (strip.end minus its position) is generously larger than
+    // the drag distance (30% of the extent), and the clamp never binds before the anchor
+    // reaches the overlap station.
+    const edgePx = chartCanvasBb.x + spBefore.x1;
+    await page.mouse.move(edgePx, bandY);
+    await page.mouse.down();
+    await page.mouse.move(edgePx + 280, bandY, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    // Separate the still-coincident seeded pair — drag the END keyframe (renders on top at the
+    // tie) to ~30% of the WIDENED extent (never to the strip's own end — that would leave no
+    // room past it for the third selected keyframe's own clamp bound, the mechanism that
+    // silently absorbed this arm's overlap in earlier attempts: `clampDelta` shrank the shared
+    // delta to keep the OTHER member inside ITS OWN [lo, len] before the anchor ever reached
+    // the overlap station, so `keyframeTaken` never fired — for either tree).
+    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
+    let kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const sharedPx = kfPxAll.find((k) => seededIds.has(k.id))!;
+    const widePx = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId)!;
+    const separateX = chartCanvasBb.x + widePx.x0 + (widePx.x1 - widePx.x0) * 0.3;
+    await page.mouse.move(sharedPx.x, sharedPx.y);
+    await page.mouse.down();
+    await page.mouse.move(separateX, sharedPx.y, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    // Read the separated keyframes — identify start (smaller s) and end (larger s).
+    let kfs = (await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[];
+    const seededKfs = kfs.filter((k) => seededIds.has(k.id)).sort((a, b) => a.s - b.s);
+    const startKf = seededKfs[0]; // smaller s = start
+    const endKf = seededKfs[1]; // larger s = end (the NON-SELECTED keyframe — the overlap target)
+    if (!startKf || !endKf) throw new Error("start/end keyframe not found after separation");
+    // verify the separation actually worked (the start and end are at different s values)
+    expect(startKf.s).not.toBeCloseTo(endKf.s, 5);
+
+    // Create a third keyframe NEAR THE START (not the strip's geometric midpoint) — 10% into
+    // the strip's extent, off both the start keyframe's own hit circle and the overlap
+    // target's — so its OWN room to `strip.end` stays generously larger than the drag
+    // distance (see the widen/separate comments above).
+    const strip = (
+        (await stripsOf()) as { id: number; start: number; end: number; value: number }[]
+    ).find((s) => s.id === stripId)!;
+    const [, pxPerU] = await xView();
+    const [vLo, vHi] = await vRange();
+    const stripMidS = strip.start + (strip.end - strip.start) * 0.1;
+    const stripCenterPx = clipBb.x + stripMidS * pxPerU;
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!dockBb) throw new Error("dock body not laid out");
+    const chartTop = dockBb.y + CHART_TOP;
+    const chartBot = dockBb.y + dockBb.height - CHART_BOT_PAD;
+    const vToY = (v: number): number =>
+        chartTop + (1 - (v - vLo) / (vHi - vLo)) * (chartBot - chartTop);
+    const stripValueY = vToY(strip.value);
+    await page.mouse.dblclick(stripCenterPx, stripValueY);
+    await expect.poll(async () => (await stripKeyframesOf(strip.id)).length).toBe(3);
+    kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
+    const midKf = kfs.find((k) => !seededIds.has(k.id));
+    if (!midKf) throw new Error("midpoint keyframe not found");
+
+    // Poll for the start and midpoint keyframes' diamonds to be projected on screen.
+    await expect
+        .poll(async () => {
+            const px = (await stripKfPx()) as { id: number; x: number; y: number }[];
+            return px.find((k) => k.id === startKf.id) ?? null;
+        })
+        .not.toBeNull();
+    await expect
+        .poll(async () => {
+            const px = (await stripKfPx()) as { id: number; x: number; y: number }[];
+            return px.find((k) => k.id === midKf.id) ?? null;
+        })
+        .not.toBeNull();
+    kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const startKfPx = kfPxAll.find((k) => k.id === startKf.id)!;
+    const midKfPx = kfPxAll.find((k) => k.id === midKf.id)!;
+
+    // Select the start and midpoint keyframes (multi-member set). The END keyframe stays
+    // unselected — it's the overlap target.
+    await page.mouse.click(startKfPx.x, startKfPx.y);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    await page.keyboard.down("Shift");
+    await page.mouse.click(midKfPx.x, midKfPx.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(2);
+
+    // Record pre-drag s values for both selected keyframes.
+    kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
+    const startSBefore = kfs.find((k) => k.id === startKf.id)!.s;
+    const midSBefore = kfs.find((k) => k.id === midKf.id)!.s;
+
+    // Read the END keyframe's pixel position — the drag target. The start keyframe's new s
+    // would be `endS` (the end keyframe's station) if the block moved by `ds = endS - startS`.
+    // The end keyframe is NOT in the dragged set, so `keyframeTaken` would detect the overlap.
+    kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const endKfPx = kfPxAll.find((k) => k.id === endKf.id)!;
+
+    // Drag the start keyframe to the end keyframe's station, in ONE step. `endKfPx.x` is the
+    // exact page-absolute pixel the diamond is drawn at (`rect.left + uPx(k.u)`), so the
+    // cursor's canvas-local x round-trips through `uAtPx`/`dOf` back to `endKf.s` exactly.
+    // Ctrl held to bypass snap, so the s value is the raw cursor position.
+    const dragTargetX = endKfPx.x;
+    await page.mouse.move(startKfPx.x, startKfPx.y);
+    await page.keyboard.down("Control");
+    await page.mouse.down();
+    await page.mouse.move(dragTargetX, startKfPx.y, { steps: 1 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    await page.waitForTimeout(100);
+
+    // Assert the BLOCK held: both selected keyframes moved by the same delta (offset preserved).
+    // Without the mutation: `landed = false` (overlap at `endS`), `dsWrite = dragKfLastDs = 0`,
+    // both stay → deltas are both 0 → offset preserved.
+    // With the mutation: `landed = true`, `dsWrite = ds`. Start: `setStripKeyframe(endS)`
+    // refuses (overlap with end keyframe) → stays. Mid: `setStripKeyframe(midS + ds)` succeeds
+    // (not occupied) → moves. Deltas differ → offset NOT preserved → red.
+    kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
+    const startSAfter = kfs.find((k) => k.id === startKf.id)!.s;
+    const midSAfter = kfs.find((k) => k.id === midKf.id)!.s;
+    const startDelta = startSAfter - startSBefore;
+    const midDelta = midSAfter - midSBefore;
+    const tol = 0.5 / pxPerU; // sub-pixel tolerance — tight enough that a 1px drag reds
+    // the drag was real (the cursor moved a substantial distance) — the separation and the
+    // third keyframe's placement (see comments above) keep this well clear of any member's
+    // own [lo, len] clamp, so the shared delta reaches the overlap station unclamped.
+    const expectedDs = (endKfPx.x - startKfPx.x) / pxPerU;
+    expect(Math.abs(expectedDs)).toBeGreaterThan(tol);
+    // the block held: both members moved by the same delta (offset preserved)
+    expect(Math.abs(startDelta - midDelta)).toBeLessThan(tol);
+});
