@@ -16,10 +16,12 @@ import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { appendMenu, keyframeMenu, rulerMenu, stripMenu } from "./menus";
 import {
     activateForce,
+    activateStripKf,
     beginDrag,
     closeForceMenu,
     closeRulerMenu,
     closeStripMenu,
+    deselectAll,
     dismissNotice,
     editor,
     endDrag as endDragGesture,
@@ -58,7 +60,7 @@ import {
     commitLength,
     createForce,
     deleteStrips,
-    deleteStripKeyframe,
+    deleteStripKeyframes,
     history,
     materializeCustom,
     setForcesEase,
@@ -1163,11 +1165,13 @@ $effect(() => {
     void tick;
     if (editor.strip !== null && selStrip === null) selectStrip(null);
 });
-// strip-keyframe dismissal: clear a stale keyframe selection when the keyframe is gone
-// (undo/delete). Uses `void tick` (the strip dismissal's own pattern) to avoid the
-// dormant-`selPoint`-`$effect` defect — `editor.stripKf` is a plain property on a
-// non-reactive singleton, so reading it registers no dependency; `void tick` re-runs
-// every frame regardless, and `stripKfPts` (a `$derived`) provides the tracked read.
+// strip-keyframe dismissal: clear a stale ACTIVE keyframe selection when it's gone (undo/delete)
+// — `selPoint`'s own pattern (only the active member, never a live prune of the whole set: a
+// bulk delete already clears the set through its own caller). Uses `void tick` (the strip
+// dismissal's own pattern) to avoid the dormant-`selPoint`-`$effect` defect — `editor.stripKf`
+// is a plain property on a non-reactive singleton, so reading it registers no dependency;
+// `void tick` re-runs every frame regardless, and `stripKfPts` (a `$derived`) provides the
+// tracked read.
 $effect(() => {
     void tick;
     if (editor.stripKf !== null && !stripKfPts.some((k) => k.id === editor.stripKf)) {
@@ -1175,13 +1179,28 @@ $effect(() => {
     }
 });
 // the selected strip keyframe's own point — `selPoint`'s twin (S3, findings 10/3: value shown
-// on selection is part of the shared substrate, not just selectability). No multi-select
-// concept exists for strip keyframes (`editor.stripKf` is a single id, never a set), so there's
-// no `multiForce`-shaped guard here — the popover shows whenever one is selected.
+// on selection is part of the shared substrate, not just selectability); active is `editor.stripKf`
+// (the single subject, `editor.stripKfs`' own active member) — the popover binds to it exactly
+// like `selPoint` binds to `selForce`.
 const selStripKfPt = $derived.by((): StripKfPt | null => {
     void tick;
     if (editor.stripKf === null) return null;
     return stripKfPts.find((k) => k.id === editor.stripKf) ?? null;
+});
+// whether the strip-keyframe selection is a multi-set (S4's booked multi-select) — `multiForce`'s
+// twin: the single-keyframe popover hides on a multi-set exactly as the force keyframe's does
+// (editor-ui.md multi law). read `tick` directly, not `editor.stripKfs.ids` (`multiForce`'s own
+// in-place-mutation note applies identically here).
+const multiStripKf = $derived.by((): boolean => {
+    void tick;
+    return editor.stripKfs.ids.size > 1;
+});
+// the whole selected strip-keyframe SET (membership, for the diamond highlight) — `selForceSet`'s
+// twin. read through the tick like the rest of `editor`; the per-frame `stripKfPts` rebuild
+// re-evaluates the `.has` in the render loop.
+const selStripKfSet = $derived.by((): Set<number> => {
+    void tick;
+    return editor.stripKfs.ids;
 });
 // `selLocked`'s own twin — the pin-mode lockdown gates a strip keyframe's fields exactly like
 // a force keyframe's (`stripKfDown`'s own `sectionEditable` guard on the drag path).
@@ -1564,7 +1583,16 @@ function stripKfDown(e: PointerEvent, k: StripKfPt): void {
     // unselected strip must select that strip first — `selectStripKf`'s own invariant is that
     // the owning strip stays selected (its diamonds are drawn).
     if (editor.strip !== k.strip) selectStrip(k.strip);
-    selectStripKf(k.id);
+    // shift-click TOGGLES set membership (S4's booked multi-select, `forceDown`'s own grammar) —
+    // a selection gesture, not a drag.
+    if (e.shiftKey) {
+        selectStripKf(k.id, "toggle");
+        return;
+    }
+    // grabbing a MEMBER of a multi-set keeps the set and promotes it active (`forceDown`'s own
+    // clicked-selected-vs-unselected rule); grabbing a non-member replace-selects just it.
+    if (editor.stripKfs.ids.has(k.id)) activateStripKf(k.id);
+    else selectStripKf(k.id);
     dragStripKfS0 = k.s;
     dragStripKfV0 = k.v;
     dragStripKfStart = k.start;
@@ -1673,8 +1701,17 @@ function marqueeUp(): void {
     const shift = marqueeShift;
     marqueeCancel(); // detach listeners + clear rect/state
     if (!armed || !rect) {
+        // a plain click on empty chart deselects the force/section kinds (shift-click
+        // preserves) — the ORIGINAL, narrower deselect, kept narrow on purpose: the chart is
+        // not one of the S4 transition table's rows (`kex2d-event-lane` Validation names
+        // {segment, span, keyframe, empty-ruler, empty-lane} only), and a strip must SURVIVE
+        // this click — `chartCreate`'s T2 branch (double-click a strip's own curve to drop a
+        // velocity keyframe) reads `editor.strip` on the SECOND click of the pair, after this
+        // handler already ran once on the first. Widening this to `deselectAll()` silently
+        // broke that create path (discovered via `bun run capture`, section.pw.ts's own strip-
+        // keyframe flows reading 2 rows where 3 were expected).
         if (!shift) {
-            selectForce(null); // a plain click on empty chart deselects (shift-click preserves)
+            selectForce(null);
             selectSection(null);
         }
         return;
@@ -2712,19 +2749,31 @@ function bandContext(e: MouseEvent): void {
         openStripMenu(e.clientX, e.clientY, s.section, s.start, s.id);
     }
 }
-// left-click on the band: select + trim/body-drag. Empty space is inert (no create-drag).
+// left-click on the band: select + trim/body-drag. Empty space is inert for creation (no
+// create-drag, `bandContext`'s own law) but not for selection — a plain click deselects
+// everything (`kex2d-event-lane` S4's "one selection model", the empty-ruler/empty-lane law);
+// shift-click preserves (the chart's own empty-click precedent, `marqueeUp`).
 function bandDown(e: PointerEvent): void {
     if (e.button !== 0) return;
     if (eid === null) return;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
-    if (hit.kind === "empty") return; // inert — no create-drag, no modifier-drag
+    if (hit.kind === "empty") {
+        if (!e.shiftKey) deselectAll();
+        return; // inert — no create-drag, no modifier-drag
+    }
     const s = bandStrips.find((b) => b.id === hit.id);
     if (!s) return;
     if (!sectionEditable(editor.pinning, s.section)) return;
     e.preventDefault();
     e.stopPropagation();
+    // shift-click TOGGLES set membership (`forceDown`'s own grammar, generalized to spans) — a
+    // selection gesture, not a drag.
+    if (e.shiftKey) {
+        selectStrip(s.id, "toggle");
+        return;
+    }
     selectStrip(s.id);
     // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
     gestureMapping = mapping;
@@ -2791,14 +2840,15 @@ function deleteSelectedStrip(): void {
     if (!sectionEditable(editor.pinning, s.section)) return;
     deleteStrips(history, ecs, [...editor.strips.ids]);
 }
-// Delete removes the selected strip keyframe; the strip stays selected (the force
-// keyframe's own pattern — Delete acts on the innermost selection, not the strip).
+// Delete removes the WHOLE selected strip-keyframe SET (S4's booked multi-select, `deleteForces`'
+// own bulk shape); the strip stays selected (the force keyframe's own pattern — Delete acts on
+// the innermost selection, not the strip). single-select is the size-1 case.
 function deleteSelectedStripKf(): void {
     if (editor.stripKf === null) return;
     const s = selStrip;
     if (s === null) return;
     if (!sectionEditable(editor.pinning, s.section)) return;
-    deleteStripKeyframe(history, ecs, editor.stripKf);
+    deleteStripKeyframes(history, ecs, [...editor.stripKfs.ids]);
     selectStripKf(null);
 }
 
@@ -3517,6 +3567,10 @@ function startScrub(e: PointerEvent): void {
     if (e.button !== 0) return; // left-only scrub; right suppressed by the host
     const st = cartState.get(eid);
     if (!st) return;
+    // the ruler holds no selectable objects — every press is an empty-space click, so it
+    // deselects everything (`kex2d-event-lane` S4's "one selection model"); shift-click
+    // preserves (the chart/band's own empty-click precedent).
+    if (!e.shiftKey) deselectAll();
     e.preventDefault();
     scrubbing = true;
     st.held = true; // freeze playback while scrubbing
@@ -4225,8 +4279,11 @@ onMount(() => {
                  `.active` marks the ONE individually-selected keyframe (`editor.stripKf`) —
                  `selForceSet`/`selForce`'s own `.sel`/`.active` split, S3's parity fix (findings
                  10/3): before, every keyframe on the selected strip read `.sel` alike, with no
-                 rung distinguishing the one actually grabbed. Same diamond idiom as force
-                 keyframes but on the v-axis (vOf, not yOf). Clipped to the chart. -->
+                 rung distinguishing the one actually grabbed. `.msel` is S4's own addition — a
+                 non-active member of the multi-select set (`editor.stripKfs`) bumped one rung
+                 over the strip-context `.sel`, so a shift-click block reads distinctly from the
+                 rest of the strip's diamonds. Same diamond idiom as force keyframes but on the
+                 v-axis (vOf, not yOf). Clipped to the chart. -->
             <g class="fmarkers" clip-path="url(#fclip)">
                 {#each stripKfPts as k (k.id)}
                     {@const mx = uPx(k.u)}
@@ -4236,6 +4293,8 @@ onMount(() => {
                             class="fpt"
                             class:sel={selStrip !== null && k.strip === selStrip.id}
                             class:active={selStripKfPt !== null && k.id === selStripKfPt.id}
+                            class:msel={selStripKfSet.has(k.id) &&
+                                (selStripKfPt === null || k.id !== selStripKfPt.id)}
                         >
                             <circle
                                 class="fhit"
@@ -4430,7 +4489,7 @@ onMount(() => {
              too. No scrub-drag on the labels (force's `scrubStart`) and no unit on `v` (that's
              S5's m/s labeling, Locked decision finding 11) — the value-shown behavior itself is
              this stage's, the label polish isn't. -->
-        {:else if selStripKfPt}
+        {:else if selStripKfPt && !multiStripKf}
             {@const mx = uPx(selStripKfPt.u)}
             {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                 {@const ax = clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
@@ -5055,6 +5114,13 @@ onMount(() => {
     .fpt.active .fmarker {
         stroke: #fff;
         stroke-width: 1.8;
+    }
+    /* a non-active member of a strip-keyframe multi-select (S4) — one rung over the strip-context
+       `.sel` fill so a shift-clicked block reads distinctly from the rest of the strip's diamonds,
+       below `.active`'s brighter ring. */
+    .fpt.msel .fmarker {
+        stroke: var(--fg);
+        stroke-width: 1.6;
     }
     /* the pin-mode locked keyframe (kex2d-optimize-mode stage 4) — the CAD driven idiom
        (editor-ui.md constraint vocabulary): dashed + faded, still measures. the neutral guide

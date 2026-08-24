@@ -27,8 +27,10 @@ import {
     convertSection,
     createForce,
     createHistory,
+    addStripKeyframe,
     deleteForces,
     deleteStrips,
+    deleteStripKeyframes,
     extendTrack,
     joinSections,
     redo,
@@ -486,6 +488,51 @@ test("deleteStrips on an empty set records nothing", () => {
     const { state } = nodes();
     const h = createHistory();
     deleteStrips(h, state, []);
+    expect(h.undo.length).toBe(0);
+});
+
+// ── strip keyframes — `deleteStripKeyframes`, `deleteForces`' strip-keyframe twin
+// (`kex2d-event-lane` S4's booked multi-select: Delete acts on the whole selected set). ──
+
+test("deleteStripKeyframes: a size-1 set undoes re-spawning the removed keyframe verbatim", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const stripId = addStrip(h, state, sec, 2, 6, 7) as number;
+    const seeded = stripKeyframes(state, stripId);
+    const id = seeded[0].id;
+    deleteStripKeyframes(h, state, [id]);
+    expect(stripKeyframes(state, stripId).map((k) => k.id)).not.toContain(id);
+
+    undo(h, state);
+    const restored = stripKeyframes(state, stripId).find((k) => k.id === id);
+    expect(restored).toMatchObject({ id, s: seeded[0].s, v: seeded[0].v });
+});
+
+test("deleteStripKeyframes: the whole set deletes in ONE entry; undo restores every keyframe", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const stripId = addStrip(h, state, sec, 0, 10, 8) as number;
+    const extraId = addStripKeyframe(h, state, stripId, 5, 12);
+    const before = stripKeyframes(state, stripId);
+    expect(before.length).toBe(3); // the seeded start/end pair + the extra
+    const ids = before.map((k) => k.id);
+    const undoLenBefore = h.undo.length;
+    deleteStripKeyframes(h, state, ids);
+    expect(stripKeyframes(state, stripId)).toEqual([]);
+    expect(h.undo.length).toBe(undoLenBefore + 1); // ONE bulk delete entry, not three
+
+    undo(h, state);
+    const restoredIds = stripKeyframes(state, stripId)
+        .map((k) => k.id)
+        .sort((a, b) => a - b);
+    expect(restoredIds).toEqual([...ids].sort((a, b) => a - b));
+    expect(extraId).toBeGreaterThan(0);
+});
+
+test("deleteStripKeyframes on an empty set records nothing", () => {
+    const { state } = nodes();
+    const h = createHistory();
+    deleteStripKeyframes(h, state, []);
     expect(h.undo.length).toBe(0);
 });
 

@@ -402,6 +402,14 @@ if (import.meta.env.DEV) {
             sections(ecs).map((x) => sectionForces(ecs, x.id).length),
         selectedSection: (): number | null => editor.section,
         selectedStrip: (): number | null => editor.strip,
+        // the whole selected strip SET, by stable id (`kex2d-event-lane` S4) — `sectionSelIds`'s
+        // strip twin, the membership behind `selectedStrip`'s active member.
+        stripSelIds: (): number[] => [...editor.strips.ids].sort((a, b) => a - b),
+        // the selected strip-keyframe SET + active member (S4's booked multi-select) —
+        // `forceSelIds`/`forceSelActive`'s strip-keyframe twin. the transition-table capture flow
+        // reads both to assert a shift-click toggled membership rather than replacing it.
+        stripKfSelIds: (): number[] => [...editor.stripKfs.ids].sort((a, b) => a - b),
+        stripKfSelActive: (): number | null => editor.stripKf,
         stripsOf: (i: number): { id: number; start: number; end: number; value: number }[] =>
             sectionStrips(ecs, i).map((s) => ({
                 id: s.id,
