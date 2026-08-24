@@ -254,6 +254,10 @@ const GROW_CAP: [number, number] = [BAND[0] - GROW_HEADROOM, BAND[1] + GROW_HEAD
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
+// the degenerate-strip glyph's half-diagonal (S6, finding 8) — `FMARKER_R`'s own size, so the
+// point-strip marker reads at the same visual weight as the force-point diamond it sits beside
+// in the same band, not a bespoke size.
+const STRIP_GLYPH_R = FMARKER_R;
 const NODE_TICK_R = 3; // px; a geo section's read-only node-tick circle radius (visual)
 const FHIT_R = 12; // px; the invisible grab/hover radius around a force point (fat pick zone)
 const TIP_HALF = 52; // px; half the popover's width — clamps a knob/point-centred popover inside the chart
@@ -2778,16 +2782,23 @@ function bandDown(e: PointerEvent): void {
     selectStrip(s.id);
     // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
     gestureMapping = mapping;
-    if (hit.kind === "endpoint") {
-        const at = hit.edge === "start" ? s.start : s.end;
+    if (hit.kind === "endpoint" || hit.kind === "glyph") {
+        // a glyph (degenerate strip, S6 finding 8) drags out as an "end" extend ONLY — there is
+        // no "start" side to grab on a point, and growing forward from its own station through
+        // the same guarded writer (`setStrip`) an ordinary resize uses is what "the ordinary
+        // guarded create path" means for a point (`strip-hit.ts`'s own docblock): the write
+        // guard (`stripOverlapped`/`stripCoversOneEdge`) is identical either way, so a
+        // drag-out-completed glyph is indistinguishable from a hand-created span.
+        const edge = hit.kind === "endpoint" ? hit.edge : "end";
+        const at = edge === "start" ? s.start : s.end;
         const b = stripBoundsAt(ecs, s.section, s.id, s.len, at);
         stripDrag = {
             id: s.id,
-            mode: hit.edge,
+            mode: edge,
             section: s.section,
             entryD: s.startD,
-            lo: hit.edge === "start" ? b.lo : s.start,
-            hi: hit.edge === "end" ? b.hi : s.end,
+            lo: edge === "start" ? b.lo : s.start,
+            hi: edge === "end" ? b.hi : s.end,
             origStart: s.start,
             origEnd: s.end,
             origValue: s.value,
@@ -3245,6 +3256,36 @@ function render(ctx: CanvasRenderingContext2D): void {
         const x0 = uPx(s.u0);
         const x1 = uPx(s.u1);
         if (x1 < LEFT_GUT || x0 > w) continue;
+        const sel = editor.strip === s.id;
+        // S6 (finding 8, option 1 — no point events): the degenerate `[0, 0)` entry-speed strip
+        // draws as a marker glyph, never a resizable span — a small diamond at its one station,
+        // `FMARKER_R`'s own size so it reads at the force-point diamond's weight. No body fill,
+        // no resize-edge stroke: `classifyStripHit` never returns "endpoint" or "body" for it
+        // (`strip-hit.ts`), so there is no affordance here to draw that the hit test wouldn't
+        // honor. `bandHit.kind === "glyph"` is this marker's own hover rung, the body fill's
+        // `bodyHover` twin.
+        if (s.start === s.end) {
+            // `x0 === x1` for a degenerate strip, so the outer bounds check above already
+            // clipped it — no second clamp needed here.
+            const cy = RULER_H + GAP_H + STRIP_H / 2;
+            const glyphHover = !sel && bandHit.kind === "glyph" && bandHit.id === s.id;
+            ctx.globalAlpha = sel ? 0.95 : 0.7;
+            ctx.fillStyle = glyphHover ? hovered(COLOR_VELOCITY) : COLOR_VELOCITY;
+            ctx.beginPath();
+            ctx.moveTo(x0, cy - STRIP_GLYPH_R);
+            ctx.lineTo(x0 + STRIP_GLYPH_R, cy);
+            ctx.lineTo(x0, cy + STRIP_GLYPH_R);
+            ctx.lineTo(x0 - STRIP_GLYPH_R, cy);
+            ctx.closePath();
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            if (sel) {
+                ctx.strokeStyle = COLOR_VELOCITY;
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+            continue;
+        }
         // clamp the drawn width to ≥ 1px — a min-extent strip (the only kind the menu makes)
         // can draw sub-pixel or zero-width when zoomed out, the same clamp the ghost loop
         // above carries (S3's disclosed gap; the downstream freeze's own zero-length edge).
@@ -3255,7 +3296,6 @@ function render(ctx: CanvasRenderingContext2D): void {
         // cascade, so the CSS token had no effect and every unselected strip drew invisible
         // (S1 Visibility fix). `COLOR_VELOCITY` + `globalAlpha` is the canvas-side twin of the
         // same selected/unselected split the CSS token would have driven.
-        const sel = editor.strip === s.id;
         // S3 (Affordances): the hover rung, in kex2d's own channel — color, never the cursor
         // (editor-ui.md Affordance typing). An AREA lifts its fill one `hovered()` rung
         // (editor-ui.md Kind color); never on a stronger register (selection already reads

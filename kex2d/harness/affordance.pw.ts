@@ -365,3 +365,88 @@ test("selected strip suppresses the endpoint hover stroke (S3 review finding 1)"
             `a selected strip's edge must ignore hover: at-rest ${JSON.stringify(restSelected)}, hovered ${JSON.stringify(hoverSelectedEdge)}`,
         ).toBeLessThanOrEqual(SelHoverTol);
 });
+
+// ── S6 (kex2d-event-lane, finding 8, option 1 — no point events) ───────────────────────────────
+// the degenerate `[0, 0)` entry-speed strip a section-0 convert preserves
+// (`track.ts` `preserveEntrySpeedAcrossConvert`/`setStartSpeed`) drives the REAL pointer
+// drag-out end to end: before, it hits as its own "glyph" kind (never "endpoint"/"body",
+// `strip-hit.test.ts`'s own oracle) and reads apart from rest under hover the same way a body
+// does (S3's own hover-partition differential, reused here); after, the strip is a real,
+// non-degenerate span landed through the same guarded writer `track.test.ts`'s "glyph expanded
+// via setStrip bakes byte-identical to a hand-created span" pins at the bake layer.
+test("degenerate entry-speed strip drags out into a real span (S6, finding 8)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    // section-0 geo → force: clears seed()'s real start strip and re-authors it as the
+    // DEGENERATE [0, 0) point (`preserveEntrySpeedAcrossConvert`) — the exact scenario
+    // `force.pw.ts`'s own "addStrip" comment names.
+    await kexCall(page, "convert");
+    await frameTimeline(page);
+
+    const stripsBefore = (await kexCall(page, "stripsOf", 0)) as {
+        id: number;
+        start: number;
+        end: number;
+        value: number;
+    }[];
+    expect(stripsBefore.length).toBe(1);
+    const glyph = stripsBefore[0];
+    expect(glyph.start).toBe(glyph.end); // degenerate
+
+    const chartBox = await page.locator("canvas.chart").boundingBox();
+    if (!chartBox) throw new Error("chart canvas not laid out");
+    const glyphPx = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === glyph.id);
+    if (!glyphPx) throw new Error("glyph strip not projected on the band");
+    expect(glyphPx.x0).toBe(glyphPx.x1); // one screen station, not a span
+
+    const gx = chartBox.x + glyphPx.x0;
+    const gy = chartBox.y + bandY;
+
+    // hover the glyph — it reads apart from rest (the same body-hover differential S3's own
+    // hit-zone-partition arm uses), proving there IS a live affordance here, even though
+    // `strip-hit.ts` never returns "endpoint"/"body" for it.
+    await page.mouse.move(5, 5);
+    await frames(page, 1);
+    const rest = await probeChart(page, glyphPx.x0, bandY);
+    await page.mouse.move(gx, gy);
+    await frames(page, 1);
+    const hoverGlyph = await probeChart(page, glyphPx.x0, bandY);
+    expect(rest).not.toBeNull();
+    expect(hoverGlyph).not.toBeNull();
+    const HoverTol = 6;
+    if (rest && hoverGlyph)
+        expect(
+            dist(hoverGlyph, rest),
+            `the glyph should lift its fill under hover past rest ${JSON.stringify(rest)}, got ${JSON.stringify(hoverGlyph)}`,
+        ).toBeGreaterThan(HoverTol);
+
+    // the real drag-out: press on the glyph, drag right, release.
+    await page.mouse.down();
+    await page.mouse.move(gx + 200, gy, { steps: 10 });
+    await page.mouse.up();
+
+    await expect
+        .poll(async () => {
+            const after = (await kexCall(page, "stripsOf", 0)) as { id: number; end: number }[];
+            return after.find((s) => s.id === glyph.id)?.end ?? 0;
+        })
+        .toBeGreaterThan(0);
+
+    const after = (
+        (await kexCall(page, "stripsOf", 0)) as {
+            id: number;
+            start: number;
+            end: number;
+            value: number;
+        }[]
+    ).find((s) => s.id === glyph.id);
+    if (!after) throw new Error("the expanded strip vanished");
+    expect(after.start).toBe(0); // start stays pinned — the glyph only ever grows forward
+    expect(after.end).toBeGreaterThan(0);
+    expect(after.value).toBe(glyph.value); // the seeded value survives the expansion
+});
