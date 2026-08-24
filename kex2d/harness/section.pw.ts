@@ -1885,12 +1885,16 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     // a SMALL horizontal-only drag, held y fixed (the same client y throughout, so v holds and
     // only s is under test) — small enough that a correct drag stays well inside the strip's
     // own extent (widened to >60 px above, `stripWidthPx`'s reading in the sibling flow; a
-    // 2 px move from the strip's own MIDPOINT clears both edges by construction).
+    // 2 px move from the strip's own MIDPOINT clears both edges by construction). Ctrl is held
+    // to bypass snapping (S1: snapping is now applied to strip keyframe drags through the
+    // unified `applyKeyframeDrag`; this test checks the raw drag origin, not the snap).
     const DxPx = 2;
     await page.mouse.move(kf0Px.x, kf0Px.y);
+    await page.keyboard.down("Control"); // bypass snapping (S1: unified drag now snaps)
     await page.mouse.down();
     await page.mouse.move(kf0Px.x + DxPx, kf0Px.y, { steps: 3 });
     await page.mouse.up();
+    await page.keyboard.up("Control");
     await page.waitForTimeout(100);
 
     const kfs1 = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];

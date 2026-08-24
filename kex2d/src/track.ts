@@ -991,6 +991,44 @@ export function stripKeyframeState(ecs: State, id: number): StripKeyframeState |
 }
 
 /** write a strip keyframe's position and value (live drag preview + gesture restore). */
+/** whether a station another keyframe in this strip already holds — the strip-keyframe
+ *  twin of {@link stationTaken}. Equality is at f32 via `Math.fround`, matching the force
+ *  keyframe guard: `StripKeyframe.s` is `sparse(f32)` and a grid-quantized drag lands on the
+ *  same grid its neighbours sit on. Self-excluding (`exceptId`), so a key never collides
+ *  with itself. */
+export function stripKeyframeTaken(
+    ecs: State,
+    stripId: number,
+    s: number,
+    exceptId: number,
+): boolean {
+    const want = Math.fround(s);
+    for (const row of stripKeyframes(ecs, stripId))
+        if (row.id !== exceptId && Math.fround(row.s) === want) return true;
+    return false;
+}
+
+/** the shared overlap check both keyframe kinds ride — one named path (S1's substrate law).
+ *  `ownerId` is the section id for force keyframes, the strip id for strip keyframes. */
+export function keyframeTaken(
+    ecs: State,
+    kind: "force" | "strip",
+    ownerId: number,
+    s: number,
+    exceptId: number,
+): boolean {
+    return kind === "force"
+        ? stationTaken(ecs, ownerId, s, exceptId)
+        : stripKeyframeTaken(ecs, ownerId, s, exceptId);
+}
+
+/** write a strip keyframe's position and value (live drag preview + gesture restore). the
+ *  position writer only.
+ *
+ *  A station another key in this strip already holds is REFUSED ({@link stripKeyframeTaken}):
+ *  the key keeps its current `s` and the `v` write still lands, so a drag crossing a
+ *  neighbour slides in v while s pauses on the occupied slot and resumes past it — the
+ *  same per-axis refusal {@link setForcePoint} uses. */
 export function setStripKeyframe(ecs: State, id: number, s: number, v: number): void {
     const eid = stripKeyframeAt(ecs, id);
     if (eid === null) return;
@@ -999,7 +1037,8 @@ export function setStripKeyframe(ecs: State, id: number, s: number, v: number): 
     if (stripEid === null) return;
     const start = Strip.start.get(stripEid);
     const end = Strip.end.get(stripEid);
-    StripKeyframe.s.set(eid, Math.max(start, Math.min(end, s)));
+    const lands = !stripKeyframeTaken(ecs, stripId, s, id);
+    if (lands) StripKeyframe.s.set(eid, Math.max(start, Math.min(end, s)));
     StripKeyframe.v.set(eid, v);
 }
 

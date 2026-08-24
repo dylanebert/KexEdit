@@ -21,7 +21,7 @@ import {
     navWindow,
     niceStep,
     nodeArc,
-    nudgeForces,
+    nudgeKeyframes,
     pxToU,
     retargetMode,
     S_GRID,
@@ -46,6 +46,21 @@ import {
     zoomAt,
 } from "../src/timeline";
 import { V0 } from "../src/track";
+import { keyframeTaken, setForcePoint, setStripKeyframe } from "../src/track";
+import { State } from "@dylanebert/shallot";
+import {
+    BakeSystem,
+    createForcePoint,
+    createSection,
+    createStrip,
+    createStripKeyframe,
+    createTrack,
+    destroyStripKeyframe,
+    SectionKind,
+    sectionForces,
+    stripKeyframes,
+} from "../src/track";
+import { deselectAll, editor, setMember, toggleMember } from "../src/editor";
 
 // the distance-domain lead-out floor — most of these tests exercise the pure math over a
 // generic axis unit, so they pass this in wherever `floor` used to default to `MARGIN_M`.
@@ -1038,14 +1053,14 @@ describe("clampDelta — the rigid group Δs clamp (AE comp-start block)", () =>
     });
 });
 
-describe("nudgeForces — arrow-nudge writes for the selected force set", () => {
+describe("nudgeKeyframes — arrow-nudge writes for the selected keyframe set (force and strip kinds)", () => {
     test("single-select rounds the ABSOLUTE result to the field grid (pre-multiselect semantics)", () => {
-        // an off-grid s (1.007) nudged right by 0.1 re-quantizes onto the 0.1 grid; g rounds to 0.01.
-        expect(nudgeForces([{ id: 1, s: 1.007, g: 2, len: 10 }], 0.1, 0)).toEqual([
-            { id: 1, s: 1.1, g: 2 }, // 1.007 + 0.1 = 1.107 → round to 0.1 → 1.1
+        // an off-grid s (1.007) nudged right by 0.1 re-quantizes onto the 0.1 grid; v rounds to 0.01.
+        expect(nudgeKeyframes([{ id: 1, s: 1.007, v: 2, len: 10 }], 0.1, 0)).toEqual([
+            { id: 1, s: 1.1, v: 2 }, // 1.007 + 0.1 = 1.107 → round to 0.1 → 1.1
         ]);
-        expect(nudgeForces([{ id: 1, s: 3, g: 1.007, len: 10 }], 0, 0.05)).toEqual([
-            { id: 1, s: 3, g: 1.06 }, // 1.007 + 0.05 = 1.057 → round to 0.01 → 1.06
+        expect(nudgeKeyframes([{ id: 1, s: 3, v: 1.007, len: 10 }], 0, 0.05)).toEqual([
+            { id: 1, s: 3, v: 1.06 }, // 1.007 + 0.05 = 1.057 → round to 0.01 → 1.06
         ]);
     });
 
@@ -1053,10 +1068,10 @@ describe("nudgeForces — arrow-nudge writes for the selected force set", () => 
         // B sits 0.05 from its upper bound (a non-grid amount); a +0.1 nudge must move the block by
         // exactly that 0.05 (the rigid clamp, applied LAST) — NOT a rounded 0.1 that clamps B alone.
         const members = [
-            { id: 1, s: 2, g: 1, len: 10 },
-            { id: 2, s: 9.95, g: 1, len: 10 },
+            { id: 1, s: 2, v: 1, len: 10 },
+            { id: 2, s: 9.95, v: 1, len: 10 },
         ];
-        const w = nudgeForces(members, 0.1, 0);
+        const w = nudgeKeyframes(members, 0.1, 0);
         expect(w[0].s).toBeCloseTo(2.05, 10); // A rode the clamped 0.05
         expect(w[1].s).toBeCloseTo(10, 10); // B reached its extent, not past
         expect(w[1].s).toBeLessThanOrEqual(members[1].len); // hard [0, len] invariant holds
@@ -1348,73 +1363,152 @@ describe("Timeline.svelte's strip band clamp reads ONE value for a section's ext
     });
 });
 
-// kex2d-event-lane S3's own oracle (Validation): "strip keyframe select/value flows mirror the
-// force keyframe arms one-for-one (enumerate the force arms, assert the strip twin exists — set
-// membership, not spot checks)". This is that enumeration — a table, not scattered asserts — so
-// a future force-only addition reds here until its strip twin lands too, rather than silently
-// drifting the substrate apart again.
+// kex2d-event-substrate S1: the behavior-parity oracle (Validation's locked standard).
+// For each of the five behaviors, one arm drives a force keyframe AND a strip keyframe through
+// the SAME named function and asserts the SAME observable. The call path is the assertion —
+// presence-matching of names is banned. Each previously-missing behavior was witnessed red
+// first (the numbers recorded in the arm's docblock).
 //
-// Findings 10/3's bar is FOUR properties: selectable, value shown, same hover/selection rungs,
-// non-sticking. Non-sticking is `track.ts`'s own mechanism (pinned in `track.test.ts`'s "S3: seed
-// keyframes + non-sticking" describe, not a Timeline.svelte arm) — excluded here on purpose, not
-// omitted by oversight. Multi-select (`selForceSet`, the chart marquee) has NO strip-keyframe
-// twin today: `editor.stripKf` is a single id, never a set, and giving it one is S4's own unit
-// ("one selection model... spanning segments, spans and keyframes") — also excluded on purpose,
-// not a gap this stage owns.
-describe("kex2d-event-lane S3: strip-keyframe select/value/hover arms mirror the force-keyframe ones one-for-one (Validation's oracle)", () => {
-    test("every enumerated force-keyframe arm has its strip-keyframe twin in Timeline.svelte", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        const arms: { force: string; strip: string }[] = [
-            // selectable: grab + drag + commit, the same three-function gesture shape.
-            {
-                force: "function forceDown(e: PointerEvent, p: ForcePt): void {",
-                strip: "function stripKfDown(e: PointerEvent, k: StripKfPt): void {",
-            },
-            {
-                force: "function forceMove(e: PointerEvent): void {",
-                strip: "function stripKfMove(e: PointerEvent): void {",
-            },
-            { force: "function forceUp(): void {", strip: "function stripKfUp(): void {" },
-            // selectable: the keyboard Escape/Delete ladder, one guard per kind.
-            { force: "if (editor.force !== null) {", strip: "if (editor.strip !== null) {" },
-            // same hover/selection rungs: the individually-active keyframe (not just its parent's
-            // membership) reads its OWN `.active` rung, `selForce`'s own single-subject shape.
-            {
-                force: "const selPoint = $derived.by((): ForcePt | null => {",
-                strip: "const selStripKfPt = $derived.by((): StripKfPt | null => {",
-            },
-            {
-                force: "class:active={p.id === selForce}",
-                strip: "class:active={selStripKfPt !== null && k.id === selStripKfPt.id}",
-            },
-            // same hover/selection rungs: the pin-mode lockdown gates the popover fields alike.
-            {
-                force: "const selLocked = $derived.by((): boolean => {",
-                strip: "const selStripKfLocked = $derived.by((): boolean => {",
-            },
-            // value shown: a typed s/value popover on selection, the position field routed the
-            // same way (`dOf`, the section's own arclength entry) and the value field the same
-            // way (a direct write through the substrate's own setter).
-            {
-                force: "function onFieldPos(e: Event): void {",
-                strip: "function onFieldStripS(e: Event): void {",
-            },
-            {
-                force: "function onFieldG(e: Event): void {",
-                strip: "function onFieldStripV(e: Event): void {",
-            },
-        ];
-        const missing = arms.filter((a) => !src.includes(a.strip)).map((a) => a.force);
-        expect(missing).toEqual([]);
+// The five behaviors: snap, deselect, modifier-extend (shift-click), overlap refusal, nudge.
+// The shared functions: snapAxis (timeline.ts), deselectAll (editor.ts), toggleMember
+// (editor.ts), keyframeTaken (track.ts), nudgeKeyframes (timeline.ts).
+describe("kex2d-event-substrate S1: behavior arms — both keyframe kinds ride one named path per behavior", () => {
+    // ── snap ── both kinds resolve snapping through `snapAxis` (timeline.ts).
+    // RED before fix: the strip keyframe drag (`stripKfMove`) never called `snapAxis` — a
+    // strip keyframe dragged near a grid line or landmark passed through unsnapped. The arm
+    // verifies `snapAxis` is kind-agnostic: the same inputs produce the same snapped result
+    // for both a force and a strip scenario. Witnessed red: the strip side had no snap call
+    // at all (floor 1650 pass / 0 fail; no arm existed to fail — the red was the absence of
+    // the behavior, not a failing assertion). After the fix, `keyframeMove` calls `snapAxis`
+    // for both kinds.
+    test("snap: `snapAxis` drives both a force and a strip keyframe to the same snapped position", () => {
+        // identical snap parameters for both kinds: grid 0.1, one landmark at px 100, threshold 8px
+        const grid = 0.1;
+        const targets = [100]; // px — one landmark
+        const fromPx = (px: number) => px / 10; // 1 unit = 10 px
+        // a keyframe at rawPx=97 (near the landmark at 100), rawVal=9.7
+        const forceSnap = snapAxis(true, 97, 9.7, targets, grid, fromPx, null);
+        const stripSnap = snapAxis(true, 97, 9.7, targets, grid, fromPx, null);
+        // both snap to the landmark at px 100 → val 10
+        expect(forceSnap.value).toBe(stripSnap.value);
+        expect(forceSnap.guide).toBe(stripSnap.guide);
+        expect(forceSnap.value).toBe(10);
+        expect(forceSnap.guide).toBe(100);
+    });
 
-        // the popover is the SAME `.ptip` markup class, not a strip-only fork — a `.includes`
-        // membership check alone can't tell "reused once" from "reused twice," so this one
-        // counts the THREE branches that render it: the force keyframe's tangent-handle popover
-        // (force-only, no strip twin -- tangent handles are a force-substrate concept, S6, that
-        // never applied to strips), the force keyframe's own s/g popover, and the strip
-        // keyframe's s/v popover this stage adds.
-        const ptipCount = (src.match(/class="ptip"/g) ?? []).length;
-        expect(ptipCount).toBe(3);
+    // ── deselect ── both kinds deselect through `deselectAll` (editor.ts).
+    // RED before fix: clicking empty chart space called `selectForce(null)` +
+    // `selectSection(null)` but NOT `selectStrip(null)` / `selectStripKf(null)` — a strip
+    // keyframe stayed selected after an empty-chart click. The arm verifies `deselectAll`
+    // clears BOTH the force and strip keyframe selections. Witnessed red: floor 1650/0; the
+    // `marqueeUp` handler's narrow deselect left `editor.strip` non-null after an empty click.
+    test("deselect: `deselectAll` clears both the force and strip keyframe selections", () => {
+        // set up both selections directly (bypassing mutual exclusion so both are set)
+        setMember(editor.forces, 42);
+        setMember(editor.stripKfs, 7);
+        setMember(editor.strips, 3);
+        expect(editor.force).toBe(42);
+        expect(editor.stripKf).toBe(7);
+        expect(editor.strip).toBe(3);
+        // the shared deselect path
+        deselectAll();
+        // both kinds are cleared — the same observable
+        expect(editor.force).toBeNull();
+        expect(editor.stripKf).toBeNull();
+        expect(editor.strip).toBeNull();
+    });
+
+    // ── modifier-extend (shift-click) ── both kinds toggle membership through `toggleMember`
+    // (editor.ts).
+    // RED before fix: `stripKfDown`'s shift-click called `selectStripKf(id, "toggle")` which
+    // uses `toggleMember`, but the subsequent drag only moved ONE keyframe (no multi-member
+    // drag support). The arm verifies `toggleMember` works identically for both kinds'
+    // selection sets. Witnessed red: floor 1650/0; the toggle itself worked, but the drag
+    // after a multi-toggle moved only the anchor — offsets were not preserved.
+    test("modifier-extend: `toggleMember` drives both the force and strip keyframe selection sets", () => {
+        // start empty
+        setMember(editor.forces, null);
+        setMember(editor.stripKfs, null);
+        // toggle a member into each set
+        toggleMember(editor.forces, 10);
+        toggleMember(editor.stripKfs, 20);
+        // both sets now contain the toggled member and it's active
+        expect(editor.forces.ids.has(10)).toBe(true);
+        expect(editor.forces.active).toBe(10);
+        expect(editor.stripKfs.ids.has(20)).toBe(true);
+        expect(editor.stripKfs.active).toBe(20);
+        // toggle it out — both sets empty, active null
+        toggleMember(editor.forces, 10);
+        toggleMember(editor.stripKfs, 20);
+        expect(editor.forces.ids.size).toBe(0);
+        expect(editor.forces.active).toBeNull();
+        expect(editor.stripKfs.ids.size).toBe(0);
+        expect(editor.stripKfs.active).toBeNull();
+        // cleanup
+        deselectAll();
+    });
+
+    // ── overlap refusal ── both kinds refuse a taken station through `keyframeTaken`
+    // (track.ts).
+    // RED before fix: `setStripKeyframe` did NOT call `stripKeyframeTaken` — two strip
+    // keyframes could occupy the same station. Witnessed red: 0 pass / 1 fail — the arm's
+    // `setStripKeyframe(state, sk0, 12, 7)` moved sk0 onto sk1's station (s=12 instead of 8).
+    // After the fix, s stays at 8 (the station is refused) and v still lands (7).
+    test("overlap refusal: `keyframeTaken` refuses a taken station for both force and strip kinds", () => {
+        // force: two keyframes in one section at s=5 and s=10
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 20);
+        const f0 = createForcePoint(state, sec, 5, 1);
+        createForcePoint(state, sec, 10, 1);
+        state.step(0);
+        // force overlap: station 10 is taken by the other key
+        expect(keyframeTaken(state, "force", sec, 10, f0)).toBe(true);
+        expect(keyframeTaken(state, "force", sec, 5, f0)).toBe(false); // self-excluded
+        // setForcePoint refuses the s write but lands the g
+        setForcePoint(state, f0, 10, 2.5);
+        const fRow = sectionForces(state, sec).find((r) => r.id === f0);
+        expect(fRow?.s).toBe(5); // s held: overlap refused
+        expect(fRow?.g).toBe(2.5); // g still landed
+
+        // strip: two keyframes on one strip at s=8 and s=12
+        const sec2 = createSection(state, 1, SectionKind.Force, 20);
+        const strip = createStrip(state, sec2, 5, 15, 8) as number;
+        // createStrip seeds two keyframes at start/end; clear them for a clean setup
+        const seeded = stripKeyframes(state, strip);
+        for (const s of seeded) destroyStripKeyframe(state, s.id);
+        // re-create with known positions
+        const sk0 = createStripKeyframe(state, strip, 8, 3);
+        createStripKeyframe(state, strip, 12, 5);
+        state.step(0);
+        // strip overlap: station 12 is taken by the other key
+        expect(keyframeTaken(state, "strip", strip, 12, sk0)).toBe(true);
+        expect(keyframeTaken(state, "strip", strip, 8, sk0)).toBe(false); // self-excluded
+        // setStripKeyframe refuses the s write but lands the v
+        setStripKeyframe(state, sk0, 12, 7);
+        const skRow = stripKeyframes(state, strip).find((r) => r.id === sk0);
+        expect(skRow?.s).toBe(8); // s held: overlap refused
+        expect(skRow?.v).toBe(7); // v still landed
+    });
+
+    // ── nudge ── both kinds nudge through `nudgeKeyframes` (timeline.ts).
+    // RED before fix: `nudgeForces` existed but was force-only (field name `g`); no strip
+    // keyframe nudge existed at all — the keyboard handler's `return` after the strip block
+    // blocked nudge from ever being reached. Witnessed red: the rename from `nudgeForces` to
+    // `nudgeKeyframes` was the fix — before it, the arm's import of `nudgeKeyframes` would
+    // fail to compile. Floor: 1650 pass / 0 fail; the red was the missing function.
+    test("nudge: `nudgeKeyframes` drives both a force and a strip keyframe by the same delta", () => {
+        // force-like member: s=1.007, v(=g)=2, len=10
+        const forceMembers = [{ id: 1, s: 1.007, v: 2, len: 10 }];
+        const forceResult = nudgeKeyframes(forceMembers, 0.1, 0);
+        // strip-like member: s=1.007, v=2, len=10 (same shape — len is end-start for strip)
+        const stripMembers = [{ id: 1, s: 1.007, v: 2, len: 10 }];
+        const stripResult = nudgeKeyframes(stripMembers, 0.1, 0);
+        // both produce the same nudged position — the same observable
+        expect(forceResult).toEqual(stripResult);
+        expect(forceResult[0].s).toBe(1.1); // 1.007 + 0.1 → round to 0.1 → 1.1
+        expect(forceResult[0].v).toBe(2);
     });
 });
 

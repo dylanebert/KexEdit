@@ -690,6 +690,28 @@ export function beginStripKeyframeMove(ecs: State, id: number): void {
     );
 }
 
+/** open a gesture on a MULTI strip-keyframe move (the shared-delta bulk drag / arrow-nudge),
+ *  snapshotting every member's full state in `ids` order. commit coalesces the live writes into
+ *  one entry; the no-op test is per-member `s`/`v` equality. the size-1 case is
+ *  `beginStripKeyframeMove`. (`beginForceMoves`'s strip-keyframe twin.) */
+export function beginStripKeyframeMoves(ecs: State, ids: readonly number[]): void {
+    begin(
+        () => {
+            const sts: StripKeyframeState[] = [];
+            for (const id of ids) {
+                const st = stripKeyframeState(ecs, id);
+                if (st) sts.push(st);
+            }
+            return sts.length ? sts : undefined;
+        },
+        (sts: StripKeyframeState[]) => {
+            for (const st of sts) setStripKeyframe(ecs, st.id, st.s, st.v);
+        },
+        (a: StripKeyframeState[], b: StripKeyframeState[]) =>
+            a.length === b.length && a.every((s, i) => s.s === b[i].s && s.v === b[i].v),
+    );
+}
+
 /** record one undoable entry over the addressed segment's two bounding keyframes — the
  *  leading keyframe `id` and its successor `next` (if any) — after `mutate` has already
  *  run on the live data. the command restores both keyframes, so a single undo reverts
