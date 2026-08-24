@@ -1033,7 +1033,12 @@ write carries no march side effect the way a real edge-covering span would.
   ruler reads as re-labelled rather than jumped. Every subject on the chart is authored in
   arclength always (`Force.s`, `Strip`/`StripKeyframe`, geo node ticks, the cart's park) and
   projects onto the chart's picked axis through `dToU`/`uToD` — identity on Distance, the live
-  bake's arc↔time table on Time. That includes every FORCE path: keyframe placement
+  bake's arc↔time table on Time — EXCEPT a clip edge read while ANY section is under a lengthen
+  gesture (the dragged one or a downstream one shifted rigidly by it): there the writer already
+  extrapolates past the frozen table's end (`uToDExtend`), so every clip edge reads back through
+  its exact inverse (`dToUExtend`) for the gesture's duration, or the drawn edge freezes while the
+  authored extent keeps growing underneath it (finding 9, kex2d-event-lane S1) — outside a gesture
+  `dToUExtend` coincides with plain `dToU` exactly. That includes every FORCE path: keyframe placement
   (`track.toGlobal`), the drag (delta-from-grab resolved through `dOf`/`uOf`, frozen per gesture
   by `gestureMapping` so a returned gesture still writes bit-exact zero), the extent trim
   (`uToDExtend` extrapolates past the bake's end at frozen exit v in Time), the popover fields and

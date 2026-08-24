@@ -1708,6 +1708,185 @@ test("timeline domain flow — Time-view readouts project through t(s), and the 
     await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(len0, 3);
 });
 
+// finding 9 (kex2d-event-lane S1): a force-section lengthen not visualizing in Time view. S6b
+// above pins the STORE (`sectionLengths()` lands at the extrapolated extent) but never reads the
+// trim handle's own drawn x mid-gesture — so it stayed green across the defect this flow now
+// pins. RED on the pre-fix tree: `clips`' u1 read plain `dToU` (`uOf`) even while the write
+// (`applyLen`) went through `uToDExtend`, so once the drag crossed the gesture-frozen table's own
+// end the handle's screen x froze at that crossing point for the REST of the drag while
+// `sectionLengths()` kept growing underneath it — confirmed by temporarily reverting
+// `Timeline.svelte`'s `clips` to plain `uOf` and restoring after (`timeline.test.ts`'s own
+// red-first witness pins the pure function; this pins the wiring a real pointer drives).
+test("timeline domain flow — the trim handle's drawn edge tracks the pointer past the bake's own end, not just the store (finding 9, S1)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    const forceU = () => kexCall(page, "forceU");
+    const forceCount = () => kexCall(page, "forceCount");
+    const domain = () => kexCall(page, "domain");
+    const sectionLengths = () => kexCall(page, "sectionLengths");
+    const dOf = (u: number) => kexCall(page, "dOf", u);
+    const uOf = (d: number) => kexCall(page, "uOf", d);
+    const tTotal = () => kexCall(page, "tTotal");
+    const xView = () => kexCall(page, "xView");
+    const rulerZone = page.locator(".rulerzone");
+    const openRulerMenu = () => rulerZone.click({ button: "right", position: { x: 40, y: 10 } });
+
+    await kexCall(page, "seedForceBump");
+    await expect.poll(forceCount).toBe(5);
+    await kexCall(page, "setV0", 25); // a non-default speed, S6's own convention -- v(s) genuinely varies
+    await frameTimeline(page);
+
+    await openRulerMenu();
+    await clickMenuItem(page, ".rmenu", "Seconds");
+    await expect.poll(domain).toBe("time");
+    await frames(page, 2);
+
+    const lenStartU = (await forceU())[0].u; // the section's own entry (s = 0 seed)
+    const dLenStart = await dOf(lenStartU);
+    const len0 = (await sectionLengths())[0];
+    const trimU0 = await uOf(dLenStart + len0); // the handle's own current axis position
+    const uPastEnd = (await tTotal()) + 2; // 2s past the bake's own end, into the lead-out margin
+    const [, pxPerU] = await xView();
+    const dragPxToEnd = ((await tTotal()) - trimU0) * pxPerU; // crosses the bake's end exactly
+    const dragPxTotal = (uPastEnd - trimU0) * pxPerU; // well past it
+
+    const trim = page.locator(".clip-trim");
+    await expect(trim).toHaveCount(1);
+    const tb = await trim.boundingBox();
+    if (!tb) throw new Error("trim handle not laid out");
+    const tcy = tb.y + tb.height / 2;
+    const startX = tb.x + tb.width / 2;
+    await trim.hover();
+    await page.keyboard.down("Control"); // bypass the snap magnet -- deterministic px
+    await page.mouse.down();
+
+    // first move: exactly to the bake's own end -- the handle still tracks the pointer, and the
+    // store agrees (both sides of the crossing point coincide by construction, S1's own witness).
+    await page.mouse.move(startX + dragPxToEnd, tcy, { steps: 6 });
+    await frames(page, 1);
+    const atEnd = await trim.boundingBox();
+    if (!atEnd) throw new Error("trim handle vanished mid-drag");
+    expect(Math.abs(atEnd.x + atEnd.width / 2 - (startX + dragPxToEnd))).toBeLessThan(4);
+
+    // second move: 2s further, past the bake's own end and into the extrapolating regime -- the
+    // defect this flow pins is the handle freezing HERE while the store keeps advancing.
+    await page.mouse.move(startX + dragPxTotal, tcy, { steps: 6 });
+    await frames(page, 1);
+    const pastEnd = await trim.boundingBox();
+    if (!pastEnd) throw new Error("trim handle vanished mid-drag");
+    expect(Math.abs(pastEnd.x + pastEnd.width / 2 - (startX + dragPxTotal))).toBeLessThan(4);
+    // the positive control: a frozen handle would still read at `atEnd`'s own x, well short of
+    // this move's target -- the invisible lengthen, had the fix not landed.
+    expect(pastEnd.x - atEnd.x).toBeGreaterThan(4);
+
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    await expect.poll(async () => (await sectionLengths())[0]).toBeGreaterThan(len0);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(len0, 3);
+});
+
+// finding 9's mechanism gap (adversarial pass on 0f6335a): the FIRST fix conditioned the
+// extrapolating read on `sec.id === lenId` alone, but `sectionSpans` accumulates every
+// downstream section's `offset` from the LIVE bake — so once an upstream lengthen crosses the
+// gesture-frozen table's own end, a downstream section's cumulative offset exceeds it too, and
+// plain `dToU` clamps ITS clip edges exactly the same way. RED on the pre-fix (0f6335a) tree:
+// only the dragged clip's own edge read through `dToUExtend`; a downstream clip stayed on plain
+// `uOf` and froze in lockstep with the pre-first-fix defect — confirmed by temporarily reverting
+// the `lenId`-gated extrapolation to plain `uOf` for every clip and restoring after.
+test("timeline domain flow — a downstream clip's edge also tracks an upstream lengthen past the bake's own end (finding 9 mechanism gap, S1)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    const forceU = () => kexCall(page, "forceU");
+    const forceCount = () => kexCall(page, "forceCount");
+    const domain = () => kexCall(page, "domain");
+    const sectionCount = () => kexCall(page, "sectionCount");
+    const sectionLengths = () => kexCall(page, "sectionLengths");
+    const dOf = (u: number) => kexCall(page, "dOf", u);
+    const uOf = (d: number) => kexCall(page, "uOf", d);
+    const tTotal = () => kexCall(page, "tTotal");
+    const xView = () => kexCall(page, "xView");
+    const rulerZone = page.locator(".rulerzone");
+    const openRulerMenu = () => rulerZone.click({ button: "right", position: { x: 40, y: 10 } });
+
+    await kexCall(page, "seedForceBump");
+    await expect.poll(forceCount).toBe(5);
+    await kexCall(page, "setV0", 25); // a non-default speed, S6's own convention -- v(s) genuinely varies
+    await kexCall(page, "append", 1); // SectionKind.Force -- a second, DOWNSTREAM force section
+    await expect.poll(sectionCount).toBe(2);
+    await frameTimeline(page);
+
+    await openRulerMenu();
+    await clickMenuItem(page, ".rmenu", "Seconds");
+    await expect.poll(domain).toBe("time");
+    await frames(page, 2);
+
+    const lenStartU = (await forceU())[0].u; // section 0's own entry (s = 0 seed)
+    const dLenStart = await dOf(lenStartU);
+    const len0 = (await sectionLengths())[0];
+    const trimU0 = await uOf(dLenStart + len0); // section 0's own trim handle, its current axis position
+    const uPastEnd = (await tTotal()) + 2; // 2s past the bake's own end, into the lead-out margin
+    const [, pxPerU] = await xView();
+    const dragPxToEnd = ((await tTotal()) - trimU0) * pxPerU; // crosses the bake's end exactly
+    const dragPxTotal = (uPastEnd - trimU0) * pxPerU; // well past it
+
+    const trims = page.locator(".clip-trim");
+    await expect(trims).toHaveCount(2); // both sections are force, each carries its own trim
+    const trim = trims.first(); // section 0's own — the one this gesture drags
+    const clip1 = page.locator(".clip").nth(1); // section 1's own clip — NOT under this gesture
+
+    const tb = await trim.boundingBox();
+    if (!tb) throw new Error("trim handle not laid out");
+    const before1 = await clip1.boundingBox();
+    if (!before1) throw new Error("downstream clip not laid out");
+    const tcy = tb.y + tb.height / 2;
+    const startX = tb.x + tb.width / 2;
+    await trim.hover();
+    await page.keyboard.down("Control"); // bypass the snap magnet -- deterministic px
+    await page.mouse.down();
+
+    // first move: exactly to the bake's own end -- section 1 shifts rigidly with section 0's
+    // growing exit, same as it would at any point before the crossing.
+    await page.mouse.move(startX + dragPxToEnd, tcy, { steps: 6 });
+    await frames(page, 1);
+    const atEnd1 = await clip1.boundingBox();
+    if (!atEnd1) throw new Error("downstream clip vanished mid-drag");
+
+    // second move: 2s further, past the bake's own end -- the mechanism gap this flow pins is
+    // section 1's clip freezing HERE (in lockstep with section 0's own pre-first-fix freeze)
+    // while section 0's authored length, and section 1's rigidly-shifted offset, keep growing.
+    await page.mouse.move(startX + dragPxTotal, tcy, { steps: 6 });
+    await frames(page, 1);
+    const pastEnd1 = await clip1.boundingBox();
+    if (!pastEnd1) throw new Error("downstream clip vanished mid-drag");
+    expect(pastEnd1.x - atEnd1.x).toBeGreaterThan(4);
+    expect(pastEnd1.x + pastEnd1.width - (atEnd1.x + atEnd1.width)).toBeGreaterThan(4);
+    // section 1's OWN width (its authored length) IS invariant between these two reads: by
+    // construction of `dragPxToEnd` both of section 1's edges already sit past the frozen
+    // table's own end at `atEnd1` (section 0 alone was dragged out to the pre-drag WHOLE-TRACK
+    // total, which already pushed all of downstream section 1 past that same total) — so both
+    // `atEnd1` and `pastEnd1` read section 1 entirely inside `dToUExtend`'s AFFINE branch
+    // (Δu = Δd/vExit), where a rigid arclength shift changes only position, not width, exactly.
+    // Tolerance is float/layout noise, not a tuned value: two orders of magnitude above the
+    // read residual this same affine identity measures in practice (~3e-5 px) and four orders
+    // below the smallest regression this flow already proves it catches (the >4px assertions
+    // above) — `before1`, taken BEFORE the gesture (section 1 still in the finite, nonlinear
+    // t(s) region), is deliberately excluded from this comparison for exactly that reason.
+    expect(pastEnd1.width).toBeCloseTo(atEnd1.width, 3);
+    // over the WHOLE gesture, section 1 still shifted right of where it started.
+    expect(pastEnd1.x).toBeGreaterThan(before1.x);
+
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    await expect.poll(async () => (await sectionLengths())[0]).toBeGreaterThan(len0);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(len0, 3);
+});
+
 // S6, create-path instance: the double-click chart-insert and the summoned strip-creation
 // station both used to compute a section-local station as a raw chart-axis subtraction
 // (`u − c.u0` / `toLocalU(spans, uAtPx(px))`) — the same corruption class the gesture writers
