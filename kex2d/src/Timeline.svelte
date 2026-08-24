@@ -2846,9 +2846,15 @@ function deleteSelectedStrip(): void {
 // the innermost selection, not the strip). single-select is the size-1 case.
 function deleteSelectedStripKf(): void {
     if (editor.stripKf === null) return;
-    const s = selStrip;
-    if (s === null) return;
-    if (!sectionEditable(editor.pinning, s.section)) return;
+    // read the owning strip's section from the ECS directly — `selStrip` is a `$derived` behind
+    // `bandStrips` behind the RAF `void tick`, so a Delete pressed before the tick sees null and
+    // no-ops (the same F1 race `deleteSelectedStrip` above already repairs). `editor.strip !==
+    // null` is `stripKfs`'s own invariant (a non-empty sub-selection implies an owning strip);
+    // `stripAt` + `Strip.section.get` are synchronous.
+    if (editor.strip === null) return;
+    const eid = stripAt(ecs, editor.strip);
+    if (eid === null) return;
+    if (!sectionEditable(editor.pinning, Strip.section.get(eid))) return;
     deleteStripKeyframes(history, ecs, [...editor.stripKfs.ids]);
     selectStripKf(null);
 }

@@ -1042,6 +1042,25 @@ export function setStripKeyframe(ecs: State, id: number, s: number, v: number): 
     StripKeyframe.v.set(eid, v);
 }
 
+/** write a strip keyframe's full state back — position and value, direct, bypassing
+ *  {@link stripKeyframeTaken} (the gesture restore / undo path, symmetric with
+ *  {@link stripKeyframeState}, mirroring {@link restoreForcePoint}). **This is the
+ *  snapshot-restore writer only** — `setStripKeyframe` refuses a station another key in
+ *  the strip already holds, which is correct for LIVE authoring (a drag pauses at the
+ *  occupied slot) but wrong for undo: a multi-member gesture's restore can legitimately
+ *  re-park a member back onto a station another member is mid-transit through (or has
+ *  already vacated), and a refusal there silently drops that member's position from the
+ *  restore, so a multi-member undo is no longer byte-identical to the pre-gesture state.
+ *  A snapshot taken from the live document is by construction never in conflict with
+ *  itself, so bypassing the guard here never re-creates a coincidence the store didn't
+ *  already hold. */
+export function restoreStripKeyframe(ecs: State, st: StripKeyframeState): void {
+    const eid = stripKeyframeAt(ecs, st.id);
+    if (eid === null) return;
+    StripKeyframe.s.set(eid, st.s);
+    StripKeyframe.v.set(eid, st.v);
+}
+
 /** convert a section's authored strips from its own domain coordinate into the kernel's
  *  edge-index coordinate (`section.Strip`, "the SAME indexing `fN`/`ds` already carry") —
  *  the ONE seam between the ECS's domain-coordinate storage and the substrate's edge

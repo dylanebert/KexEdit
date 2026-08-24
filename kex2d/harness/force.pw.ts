@@ -345,6 +345,76 @@ test("force authoring flow", async ({ page, boot }) => {
     await expect.poll(forceCount).toBe(5);
 });
 
+// S1 capture arm (F3): the keyboard handler's FORCE-keyframe arrow-nudge branch
+// (Timeline.svelte:3862-3906) — the strip-keyframe nudge arm's parity twin, both riding the
+// SAME named `nudgeKeyframes` (`timeline.ts`) through the production handler (S1's locked
+// oracle standard: one arm per kind through the one named path, never presence). Converts to
+// force, seeds the airtime-bump profile (2 seeds + 3 authored = 5, the crest at index 2
+// sorted by s — identified by its unique g=0 rather than an id the `forces()` hook doesn't
+// carry), clicks it to select, presses ArrowRight and asserts it moved to the next 0.1 grid
+// station (NUDGE_S, `timeline.ts`'s single-member nudge: s -> round((s + 0.1) * 10) / 10),
+// then ArrowLeft to nudge back.
+test("force keyframe arrow-nudge", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const forces = () => kexCall(page, "forces") as Promise<{ s: number; g: number }[]>;
+    const forceCount = () => kexCall(page, "forceCount");
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
+    const gRange = () => kexCall(page, "gRange") as Promise<[number, number]>;
+
+    await kexCall(page, "convert");
+    await expect.poll(forceCount).toBe(2); // the two continuation seeds
+    await kexCall(page, "seedForceBump");
+    await expect.poll(forceCount).toBe(5); // + the airtime dip's 3 authored points
+    await frameTimeline(page); // re-frame — convert/seed changed the section's own extent
+
+    const rows = (await forces()).slice().sort((a, b) => a.s - b.s);
+    const crest = rows.find((p) => p.g === 0); // the airtime dip — g=0 is unique among the 5
+    if (!crest) throw new Error("airtime-dip crest not found");
+
+    const [, pxPerU] = await xView();
+    const [gLo, gHi] = await gRange();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!clipBb || !dockBb) throw new Error("clip / dock body not laid out");
+    const chartTop = dockBb.y + CHART_TOP;
+    const chartBot = dockBb.y + dockBb.height - CHART_BOT_PAD;
+    const gToY = (g: number): number =>
+        chartTop + (1 - (g - gLo) / (gHi - gLo)) * (chartBot - chartTop);
+    const crestX = clipBb.x + crest.s * pxPerU;
+    const crestY = gToY(crest.g);
+
+    // click the crest diamond to select it (a real pointer event through `keyframeDown`).
+    await page.mouse.click(crestX, crestY);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await frames(page, 1); // let the per-RAF tick propagate the selection to `forcePts`
+
+    // Press ArrowRight -> the crest must move by NUDGE_S (0.1), rounded to the 0.1 grid
+    // (the single-member nudge rounds the absolute result: s -> round((s + 0.1) * 10) / 10).
+    const sBefore = crest.s;
+    await page.keyboard.press("ArrowRight");
+    await frames(page, 1);
+    let after = (await forces()).find((p) => p.g === 0);
+    if (!after) throw new Error("crest lost after ArrowRight");
+    const expectedSRight = Math.round((sBefore + 0.1) * 10) / 10;
+    expect(after.s).toBeCloseTo(expectedSRight, 5);
+    expect(after.s).toBeGreaterThan(sBefore); // it moved right
+    const sAfterRight = after.s;
+
+    // Press ArrowLeft to nudge back — confirms the handler processes ArrowLeft too (the
+    // shared `nudgeKeyframes` call the strip-side arm already pins from its own handler).
+    await page.keyboard.press("ArrowLeft");
+    await frames(page, 1);
+    after = (await forces()).find((p) => p.g === 0);
+    if (!after) throw new Error("crest lost after ArrowLeft");
+    const expectedSLeft = Math.round((sAfterRight - 0.1) * 10) / 10;
+    expect(after.s).toBeCloseTo(expectedSLeft, 5); // nudged left, on the 0.1 grid
+    expect(after.s).toBeLessThan(sAfterRight); // it moved left
+});
+
 // Drive the FORCE EASING MENU + HANDLE-EDIT flow (kex2d-force-ux stage C, extended at stage
 // E): seed a force section with keyframes → RIGHT-CLICK a diamond for the keyframe menu →
 // open the Easing ▸ submenu and set Linear POINTER-TRUE (clickFlyout — the regression net for

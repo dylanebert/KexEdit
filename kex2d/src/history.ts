@@ -76,7 +76,7 @@ import {
     createStripKeyframe as createStripKf,
     destroyStripKeyframe,
     spawnStripKeyframe,
-    setStripKeyframe,
+    restoreStripKeyframe,
     stripKeyframeState,
     type StripKeyframeState,
     setTrackDomain,
@@ -677,15 +677,17 @@ export function deleteStripKeyframes(h: History, ecs: State, ids: readonly numbe
 
 /** open a gesture on a strip-keyframe drag, snapshotting the keyframe's full state.
  *  commit coalesces the live writes into one entry; a no-move release records nothing.
- *  Restores through `setStripKeyframe` (the live-write path itself, documented for
- *  exactly this "gesture restore" use) rather than `spawnStripKeyframe` — the dragged
- *  keyframe's entity is never destroyed mid-gesture, so re-creating it on undo left a
- *  duplicate (S5, red-first witnessed: undo produced two rows sharing one stable id,
- *  and `entrySpeed` read the wrong one off the pair). */
+ *  Restores through `restoreStripKeyframe` (the snapshot-restore writer, `setForcePoint`'s
+ *  overlap-refusal docblock at `track.ts:2165` states why the live writer is wrong for
+ *  restore: `setStripKeyframe` refuses a station another key already holds, which a
+ *  multi-member gesture's own members can legitimately occupy mid-restore) rather than
+ *  `spawnStripKeyframe` — the dragged keyframe's entity is never destroyed mid-gesture, so
+ *  re-creating it on undo left a duplicate (S5, red-first witnessed: undo produced two rows
+ *  sharing one stable id, and `entrySpeed` read the wrong one off the pair). */
 export function beginStripKeyframeMove(ecs: State, id: number): void {
     begin(
         () => stripKeyframeState(ecs, id),
-        (st: StripKeyframeState) => setStripKeyframe(ecs, st.id, st.s, st.v),
+        (st: StripKeyframeState) => restoreStripKeyframe(ecs, st),
         (a: StripKeyframeState, b: StripKeyframeState) => a.s === b.s && a.v === b.v,
     );
 }
@@ -693,7 +695,12 @@ export function beginStripKeyframeMove(ecs: State, id: number): void {
 /** open a gesture on a MULTI strip-keyframe move (the shared-delta bulk drag / arrow-nudge),
  *  snapshotting every member's full state in `ids` order. commit coalesces the live writes into
  *  one entry; the no-op test is per-member `s`/`v` equality. the size-1 case is
- *  `beginStripKeyframeMove`. (`beginForceMoves`'s strip-keyframe twin.) */
+ *  `beginStripKeyframeMove`. (`beginForceMoves`'s strip-keyframe twin.) Restores through
+ *  `restoreStripKeyframe`, not `setStripKeyframe`: the live writer's overlap refusal
+ *  (`track.ts:1039`) is correct for a drag pausing at an occupied slot but wrong for a
+ *  multi-member undo, whose members can be re-parking onto stations each other member is
+ *  mid-transit through — a refusal there silently drops a member's position and the undo is
+ *  no longer byte-identical (B2). */
 export function beginStripKeyframeMoves(ecs: State, ids: readonly number[]): void {
     begin(
         () => {
@@ -705,7 +712,7 @@ export function beginStripKeyframeMoves(ecs: State, ids: readonly number[]): voi
             return sts.length ? sts : undefined;
         },
         (sts: StripKeyframeState[]) => {
-            for (const st of sts) setStripKeyframe(ecs, st.id, st.s, st.v);
+            for (const st of sts) restoreStripKeyframe(ecs, st);
         },
         (a: StripKeyframeState[], b: StripKeyframeState[]) =>
             a.length === b.length && a.every((s, i) => s.s === b[i].s && s.v === b[i].v),

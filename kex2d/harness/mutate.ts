@@ -6,7 +6,11 @@
 // pristine copy in a `finally`. At the end it asserts the tracked tree is byte-identical to HEAD.
 //
 // A named behavior carrying no pairing is a RED OF THE GATE ITSELF — that refusal is what makes
-// the gate exhaustive rather than sampled, and it is the property no sample arm can have.
+// the gate exhaustive rather than sampled, and it is the property no sample arm can have. The
+// roster of named behaviors (`BEHAVIORS`, below) is declared INDEPENDENTLY of `PAIRS` — a
+// behavior deleted from `PAIRS` alone reads as absence from inside that same table, which is
+// exactly the silent shape this instrument exists to close, so the startup check reads BOTH
+// against the roster: every roster name has a pair, and every pair names a roster member.
 //
 // The arm of each pair is a capture flow (a `.pw.ts` test), and its red-first witness comes
 // from deleting the HANDLER's strip branch — never from mutating a shared helper, and never a
@@ -44,8 +48,14 @@ interface Pair {
     mutations: { old: string; new: string }[]; // string replacements in Timeline.svelte
 }
 
-// The five named behaviors — the gate's own declared data. A behavior with no `flow` is a red
-// of the gate itself (checked at startup).
+// The enumerated source of truth — INDEPENDENT of `PAIRS` below. This is what makes a behavior
+// deleted from `PAIRS` a red of the gate itself rather than silent: a roster entry with no pair
+// (checked at startup) and a pair naming no roster member are both refused, so `PAIRS` can
+// neither drop a name nor drift onto one the roster doesn't recognize without the gate itself
+// going red. Sourced from S1's own Validation bullet (`kex2d-event-substrate.md`), which names
+// these five and no others as the substrate's shared-path behaviors.
+const BEHAVIORS = ["snap", "deselect", "modifier-extend", "overlap refusal", "nudge"] as const;
+
 const PAIRS: Pair[] = [
     {
         name: "snap",
@@ -139,11 +149,23 @@ function runCapture(flow: string): { exitCode: number; stdout: string } {
     };
 }
 
-// ── startup: refuse a behavior with no pairing ──────────────────────────────────
-for (const p of PAIRS) {
-    if (!p.flow || p.flow.length === 0) {
+// ── startup: refuse a behavior with no pairing, and a pairing naming no behavior ───────────────
+// Both directions read against BEHAVIORS, never against PAIRS itself — a behavior silently
+// DELETED from PAIRS must still be caught, which checking PAIRS alone can never do (its own
+// absence and its own silence read the same from inside the table that dropped it).
+for (const name of BEHAVIORS) {
+    const p = PAIRS.find((p) => p.name === name);
+    if (!p?.flow || p.flow.length === 0) {
         console.error(
-            `RED OF THE GATE: behavior "${p.name}" has no paired arm — a named behavior carrying no pairing is a red of the gate itself.`,
+            `RED OF THE GATE: behavior "${name}" has no paired arm — a named behavior carrying no pairing is a red of the gate itself.`,
+        );
+        process.exit(1);
+    }
+}
+for (const p of PAIRS) {
+    if (!(BEHAVIORS as readonly string[]).includes(p.name)) {
+        console.error(
+            `RED OF THE GATE: pair "${p.name}" names no member of the enumerated roster (BEHAVIORS) — a pair naming no behavior is a red of the gate itself.`,
         );
         process.exit(1);
     }
