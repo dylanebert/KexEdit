@@ -234,10 +234,25 @@ export function pointerToCanvas(
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
-export function resize(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): void {
+/** size the canvas's device pixel buffer to its CSS box. `w`/`h` default to a live DOM read
+ *  (`canvas.clientWidth`/`clientHeight` — the nav minimap's own call, which owns no separate
+ *  reactive size) but a caller that already tracks the box through a reactive binding (the main
+ *  timeline chart: `Timeline.svelte`'s `w`/`h`, bound via `bind:clientWidth`/`clientHeight`) MUST
+ *  pass it explicitly instead (kex2d-event-lane S2, "distance-mode resize flicker" — finding 13).
+ *  The prior always-DOM-read form raced against that binding: `canvas.clientWidth` reflects the
+ *  layout truth the instant it's queried, while a `ResizeObserver`-driven binding lags it by at
+ *  least a frame, so a resize mid-drag could size the pixel BUFFER to the new box while `render`'s
+ *  own coordinate math (reading the still-stale reactive `w`/`h`) laid out content for the old
+ *  one — two different numbers for the same box, one frame apart, is the flicker. Passing the
+ *  SAME reactive value into both closes the race by construction: the buffer size and the draw
+ *  math can never disagree, because they're the same read. */
+export function resize(
+    canvas: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D,
+    w: number = canvas.clientWidth,
+    h: number = canvas.clientHeight,
+): void {
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
     if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
         canvas.width = w * dpr;
         canvas.height = h * dpr;

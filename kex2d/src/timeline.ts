@@ -691,6 +691,27 @@ export function dToUExtend(
 export const marginFloor = (domain: Domain): number =>
     domain === Domain.Time ? MARGIN_M / V0 : MARGIN_M;
 
+/** bounds the Time-lens addressable span at a stall (kex2d-event-lane S2, finding 13): the bake's
+ *  velocity is FLOORED (`V_FLOOR`, `forward.ts`), never zeroed, so past the first infeasible
+ *  sample the s↔t table keeps advancing at a finite but crawling rate — a long infeasible tail
+ *  makes `uTotal` (the plain `uOf(sTotal)` reading) balloon toward an effectively unbounded
+ *  time, stretching the ruler toward t→∞ exactly where the person's read named it. Clamps to the
+ *  stall's own time (`stallU`, the first-infeasible sample's `t` — already the cart's own
+ *  `loopTime`, `cart.ts`) plus a margin. The margin is NOT a new tuned constant: it's the SAME
+ *  lead-out floor every other axis already frames with (`marginFloor`, read in the active
+ *  domain), so a stalled Time view keeps exactly the lead-out a feasible one would have shown
+ *  past its own end — one constant, reused, never invented. Distance domain and a fully feasible
+ *  bake (`stallU === null`) pass `uTotal` through unclamped — there's nothing to bound. */
+export function stallClampU(
+    uTotal: number,
+    domain: Domain,
+    stallU: number | null,
+    margin: number,
+): number {
+    if (domain !== Domain.Time || stallU === null) return uTotal;
+    return Math.min(uTotal, stallU + margin);
+}
+
 function fmtTime(t: number, step: number): string {
     const decimals = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
     return `${t.toFixed(decimals)}s`;

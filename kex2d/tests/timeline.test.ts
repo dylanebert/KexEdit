@@ -29,6 +29,7 @@ import {
     snapAxis,
     snapCutToPlayhead,
     SNAP_PX,
+    stallClampU,
     uToPx,
     T_GRID,
     ticks,
@@ -1297,6 +1298,34 @@ describe("marginFloor — the lead-out floor in the active domain", () => {
         expect(
             clampView({ pan: 1e6, pxPerU: fitT.pxPerU }, w, 10, marginFloor(Domain.Time)).pan,
         ).toBeCloseTo(0, 6);
+    });
+});
+
+describe("stallClampU — the Time lens never stretches toward t→∞ past a stall (S2, finding 13)", () => {
+    test("Time domain, a stall present: clamps to the stall's own time plus the SAME lead-out floor every other axis reuses", () => {
+        // a ballooning raw reading (a long crawl-through tail at the velocity floor) — this is
+        // exactly what the person's own read named: the un-clamped `uOf(sTotal)` a caller would
+        // otherwise pass in.
+        const raw = 5000;
+        const stallU = 12;
+        const margin = marginFloor(Domain.Time);
+        expect(stallClampU(raw, Domain.Time, stallU, margin)).toBeCloseTo(stallU + margin, 9);
+    });
+
+    test("the clamp only BINDS when the raw reading actually exceeds it — never widens a short reading", () => {
+        const stallU = 12;
+        const margin = marginFloor(Domain.Time);
+        const shortRaw = stallU + margin - 1; // already inside the bound
+        expect(stallClampU(shortRaw, Domain.Time, stallU, margin)).toBe(shortRaw);
+    });
+
+    test("Distance domain passes uTotal through unclamped — a stall's arclength position never bounds arclength itself", () => {
+        expect(stallClampU(5000, Domain.Distance, 12, marginFloor(Domain.Time))).toBe(5000);
+    });
+
+    test("no stall (stallU null): the full reading passes through in either domain — nothing to bound", () => {
+        expect(stallClampU(5000, Domain.Time, null, marginFloor(Domain.Time))).toBe(5000);
+        expect(stallClampU(5000, Domain.Distance, null, marginFloor(Domain.Time))).toBe(5000);
     });
 });
 
