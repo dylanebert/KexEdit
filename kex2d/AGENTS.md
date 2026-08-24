@@ -196,7 +196,7 @@ not authoring.
   in seconds — every position readout and the agent contract address.
 
 The seam is the lens in `track.ts` (`sectionSpans` + `toGlobal`/`toLocal`, on arclength always —
-`toGlobalU`/`toLocalU` are the same pair under their old names, kept for their call sites): a
+the `toGlobalU`/`toLocalU` alias names retired at event-lane S3): a
 section's `offset` is the cumulative baked arclength upstream, `global = entry + local`, inverted
 back to `(section, local)` (a shared boundary resolves **upstream**). Every readout derives here
 — nothing re-walks the baked `ds`. **The domain pick IS a view change, exactly**:

@@ -576,10 +576,10 @@ write carries no march side effect the way a real edge-covering span would.
   `sections`/`sectionAt`/`createSection`, plus the session's per-kind **sticky append length**
   (`stickyLen`/`setStickyLen`: a force section's extent, a geo section's `extend` chord — module
   state, updated only from `history.commitLength`/`commitChord`, never by a solve or a convert). Coordinate lens (section-local `s` ↔ the track-global axis):
-  `sectionSpans` (the one span table — each section's arclength `offset`/`len`; `entryU`/`lenU`
-  carry the same reading, kept for their call sites' names — there is no second axis to switch
-  between since S6) + `toGlobal`/`toLocal` (`toGlobalU`/`toLocalU` are the same pair under their
-  old names) — the single seam every global readout derives from. `Force.s`, `Section.length`,
+  `sectionSpans` (the one span table — each section's arclength `offset`/`len`; there is no
+  second axis to switch between since S6) + `toGlobal`/`toLocal` — the single seam every global
+  readout derives from (the `entryU`/`lenU` and `toGlobalU`/`toLocalU` alias names retired at
+  event-lane S3). `Force.s`, `Section.length`,
   every strip and strip keyframe are addressed in meters of arclength always; a Time-domain
   reading is a display projection through the live bake's s↔t table (`timeline.ts`'s
   `dToU`/`uToD`), never a second address space, and a solve is distance-internal already, so
