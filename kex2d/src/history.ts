@@ -590,10 +590,10 @@ export function deleteStrips(h: History, ecs: State, ids: readonly number[]): vo
  *  edit), snapshotting the strip's full state. commit coalesces the live writes into
  *  one entry; a no-move release records nothing (`beginForceMove`'s span-shaped twin).
  *  the UI writes through `track.setStrip`, whose own overlap guard applies to every
- *  live write this gesture makes, including the boundary-ride keyframe writes (S4) —
- *  `stripState`/`restoreStrip` carry the strip's `kfs` now, so undo reverts a boundary
- *  ride along with the edge/body move that caused it; the no-op test stays position/value
- *  only, since a keyframe rides iff its edge moved (nothing to add to the comparison). */
+ *  live write this gesture makes. Non-sticking (S3): `setStrip` never moves a keyframe,
+ *  so `stripState`/`restoreStrip`'s `kfs` round-trip is a no-op over THIS gesture —
+ *  carried anyway because both are the shared snapshot shape `deleteStrips` also uses;
+ *  the no-op test stays position/value only, matching what a resize/body-drag can change. */
 export function beginStripMove(ecs: State, id: number): void {
     begin(
         () => stripState(ecs, id),

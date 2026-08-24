@@ -159,8 +159,7 @@ import {
     stripOverlapped,
     stripSeedValue,
     toGlobal,
-    toGlobalU,
-    toLocalU,
+    toLocal,
     trackDomain,
     validStripValue,
     V0,
@@ -684,16 +683,16 @@ const pyPerG = $derived.by((): number => {
 // chart's own axis (`uOf`), identity in Distance and through the live s↔t table in Time.
 //
 // the coordinate lens's span table (track.ts): each section's entry + extent in arclength
-// (`sectionSpans`, S6 — `entryU`/`lenU` are `offset`/`len` now, no second axis) — the ONE
-// source for every global readout on the chart — boundaries, clips, and force-keyframe
-// placement all derive from it, none re-walks the baked ds.
+// (`sectionSpans` — `offset`/`len`, no second axis, S3 retired the `entryU`/`lenU` alias
+// reading) — the ONE source for every global readout on the chart — boundaries, clips, and
+// force-keyframe placement all derive from it, none re-walks the baked ds.
 const spans = $derived.by(() => {
     void tick;
     return eid === null ? [] : sectionSpans(ecs, eid);
 });
 // the interior section boundaries on the chart's own axis — drawn as chart guides, and the
 // landmarks every s-axis snap resolves against. each non-last span's native exit
-// (`entryU + lenU`), so a boundary needs no projection in either domain. Reads through `uOfLen`
+// (`offset + len`), so a boundary needs no projection in either domain. Reads through `uOfLen`
 // (below `clips`, same reasoning) rather than plain `uOf`: an upstream lengthen crossing the
 // gesture-frozen table's end shifts every downstream boundary exactly like it shifts a downstream
 // clip's edges (finding 9's mechanism gap) — same seam, same fix.
@@ -710,8 +709,16 @@ interface Clip {
     s1: number; // cumulative arclength at the section exit
     u0: number; // the section entry projected onto the CHART's own axis (`uOf(s0)`) — where its
     u1: number; // clip and its keyframes draw, and its exit (`uOf(s1)`); identity in Distance
-    len: number; // authored extent (force `Section.length`, arclength ALWAYS) — the clamp domain
-    // for its keyframes and the subject of the extent trim
+    len: number; // authored extent (force `Section.length`, arclength ALWAYS) — the extent trim's
+    // own subject, kept distinct from `extent` below (finding 9: the two can disagree while the
+    // bake truncates) — never read as a clamp domain directly, that's what `extent` is for.
+    // the strip/keyframe clamp domain — a force section's AUTHORED extent (`len`, the same
+    // constant `setSectionLength` writes) or a geo section's BAKED span (`s1 − s0`, which has no
+    // authored twin). Two values that must agree travel as one (`coding.md`): every clamp-domain
+    // reader takes `extent`, not `len`/`s1 − s0` re-derived per call site (`bandStrips`' own
+    // former inline ternary collapses into this ONE place a strip keyframe's clamp bound reads
+    // too, S3's substrate unification).
+    extent: number;
 }
 // every clip edge, while a lengthen gesture is live, reads through the SAME extrapolating
 // projection `applyLen`'s write used (`uToDExtend`'s inverse, `dToUExtend` — finding 9's fix):
@@ -743,6 +750,7 @@ const clips = $derived.by((): Clip[] => {
             u0: uOfLen(sp.offset),
             u1: uOfLen(sp.offset + sp.len),
             len: sec.length,
+            extent: sec.kind === SectionKind.Force ? sec.length : sp.len,
         });
     }
     return res;
@@ -987,13 +995,13 @@ interface BandStrip {
     u1: number;
     startU: number; // the section's entry, likewise projected -- pixel math only
     startD: number; // the section's entry in arclength (`Clip.s0`) -- the WRITE base
-    // the clamp domain's outer bound — on a force section this IS `Clip.len` (`Section.length`,
-    // the same authored extent the trim handle writes through `setSectionLength`), so a strip's
-    // trim/drag bound and the section's own trim agree by construction (two values that must
-    // agree travel as one, not read from two places: the baked span `c.s1 − c.s0` can disagree
+    // the clamp domain's outer bound — `Clip.extent` (a force section's authored
+    // `Section.length`, the same constant the trim handle writes through `setSectionLength`, or
+    // a geo section's baked span `s1 − s0`, which has no authored twin) so a strip's trim/drag
+    // bound and the section's own trim agree by construction. Read straight off `Clip.extent`,
+    // never re-derived here (`coding.md`'s two-values-must-agree: the baked span can disagree
     // with `Section.length` when the bake truncates, `forceBake`'s own "what's on screen is the
-    // prefix"). A geo section has no authored extent (`Clip.len` reads 0 there), so a strip on
-    // one still bounds against the baked span, `c.s1 − c.s0`.
+    // prefix").
     len: number;
 }
 const bandStrips = $derived.by((): BandStrip[] => {
@@ -1001,7 +1009,7 @@ const bandStrips = $derived.by((): BandStrip[] => {
     if (eid === null) return [];
     const res: BandStrip[] = [];
     for (const c of clips) {
-        const extent = c.kind === SectionKind.Force ? c.len : c.s1 - c.s0;
+        const extent = c.extent;
         for (const st of sectionStrips(ecs, c.id)) {
             if (st.start >= extent) continue; // wholly past the extent — inert
             const d0 = toGlobal(spans, c.id, st.start);
@@ -2610,7 +2618,6 @@ interface StripDrag {
     id: number;
     mode: "start" | "end" | "body";
     section: number;
-    entryU: number; // projected -- unused for the write now, kept for symmetry with the others
     entryD: number; // arclength entry -- the write base
     lo: number;
     hi: number;
@@ -2674,7 +2681,7 @@ function bandContext(e: MouseEvent): void {
     const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
     if (hit.kind === "empty") {
         // a create has no gesture to freeze a table for -- `dOf` reads the live mapping.
-        const loc = toLocalU(spans, dOf(uAtPx(px)));
+        const loc = toLocal(spans, dOf(uAtPx(px)));
         if (loc === null) return;
         if (!sectionEditable(editor.pinning, loc.section)) return;
         openStripMenu(e.clientX, e.clientY, loc.section, loc.s, -1);
@@ -2709,7 +2716,6 @@ function bandDown(e: PointerEvent): void {
             id: s.id,
             mode: hit.edge,
             section: s.section,
-            entryU: s.startU,
             entryD: s.startD,
             lo: hit.edge === "start" ? b.lo : s.start,
             hi: hit.edge === "end" ? b.hi : s.end,
@@ -2725,7 +2731,6 @@ function bandDown(e: PointerEvent): void {
             id: s.id,
             mode: "body",
             section: s.section,
-            entryU: s.startU,
             entryD: s.startD,
             lo: loB.lo,
             hi: hiB.hi,

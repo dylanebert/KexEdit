@@ -636,12 +636,10 @@ test("v0 authoring flow", async ({ page, boot }) => {
     const startKf = kfs.find((k) => k.s === strips[0].start);
     if (!startKf) throw new Error("strip has no boundary keyframe at its own start");
 
-    // ── 1. Widen the strip via a REAL pointer edge-drag on its end (boundary ride carries
-    // the seeded end keyframe along, S4) — at its authored min extent the two seeded
-    // keyframes sit close enough (0.5 m over a whole-track zoomed-out view) that their fat
-    // hit circles overlap, so a pointerdown at the start keyframe's own position lands on
-    // whichever renders on top instead (T2's own "velocity strip keyframe editing flow"
-    // widens for the same reason). The start keyframe (`s = 0`) doesn't move under this. ──
+    // ── 1. Widen the strip via a REAL pointer edge-drag on its end. Non-sticking (S3, boundary
+    // ride deleted): the resize does NOT carry the seeded end keyframe along anymore — it makes
+    // room on the chart, but the two seeded keyframes stay exactly where `seed()` planted them
+    // (0.5 m apart at the min extent, their fat hit circles still overlapping). ──
     const bandBb = await page.locator(".hbandzone").boundingBox();
     if (!bandBb) throw new Error("header band not laid out");
     const bandY = bandBb.y + bandBb.height / 2;
@@ -661,9 +659,34 @@ test("v0 authoring flow", async ({ page, boot }) => {
         .poll(async () => ((await stripsOf()) as { id: number; end: number }[])[0]?.end)
         .toBeGreaterThan(strips[0].end);
 
-    // ── 2. Drag the (now well-separated) `s = 0` keyframe vertically by a real pointer →
-    // the derived entry speed moves with it, one undo entry. ──
+    // ── 2. Separate the still-coincident pair explicitly — the substrate's own way to move a
+    // keyframe now that a resize doesn't (non-sticking, matching a force keyframe): a
+    // pointerdown at the shared pixel grabs whichever diamond renders on top, which is the END
+    // keyframe (`stripKeyframes`' own s-ascending sort puts it last in the array, last in the
+    // SVG, on top of the start one at a tie) — drag it out toward the strip's freshly-widened
+    // end, uncovering the start keyframe for step 3. ──
     await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
+    const endKf = kfs.find((k) => k.s === strips[0].end);
+    if (!endKf) throw new Error("strip has no boundary keyframe at its own end");
+    const coincidentPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const startAtShared = coincidentPx.find((k) => k.id === startKf.id);
+    if (!startAtShared) throw new Error("start keyframe not projected on screen");
+    const widePx = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId);
+    if (!widePx) throw new Error("widened strip not projected on the chart");
+    const separateX = chartCanvasBbPre.x + widePx.x1 - 10; // just inside the new end
+    await page.mouse.move(startAtShared.x, startAtShared.y);
+    await page.mouse.down();
+    await page.mouse.move(separateX, startAtShared.y, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+    await expect
+        .poll(async () => (await stripKeyframesOf(stripId)).find((k) => k.id === endKf.id)?.s)
+        .toBeGreaterThan(strips[0].end);
+
+    // ── 3. Drag the (now well-separated) `s = 0` keyframe vertically by a real pointer →
+    // the derived entry speed moves with it, one undo entry. ──
     const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
     const startPx = kfPx.find((k) => k.id === startKf.id);
     if (!startPx) throw new Error("start keyframe not projected on screen");
@@ -677,14 +700,14 @@ test("v0 authoring flow", async ({ page, boot }) => {
     // specific direction — the chart's y↔v mapping is an implementation detail this flow
     // doesn't need to know.
     await expect.poll(v0).not.toBeCloseTo(v0Default, 3);
-    expect(await undoDepth()).toBe(2); // the widen + the value drag → two entries
+    expect(await undoDepth()).toBe(3); // the widen + the separation drag + the value drag
 
-    // undo restores the default speed (the value drag alone; the widen from step 1 stays).
+    // undo restores the default speed (the value drag alone; the widen and separation stay).
     await page.keyboard.press("Control+z");
     await expect.poll(v0).toBeCloseTo(v0Default, 3);
-    await expect.poll(undoDepth).toBe(1);
+    await expect.poll(undoDepth).toBe(2);
 
-    // ── 3. Delete the whole strip (Delete on its selected band) → the derived speed falls
+    // ── 4. Delete the whole strip (Delete on its selected band) → the derived speed falls
     // back to `V0`; undo restores the strip and its speed. ──
     const stripPx = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
     const chartCanvasBb = await page.locator("canvas.chart").boundingBox();

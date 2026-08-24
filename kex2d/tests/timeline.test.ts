@@ -1336,10 +1336,15 @@ describe("stallClampU — the Time lens never stretches toward t→∞ past a st
 // is the prefix"). Source-text arm, `colors.test.ts`'s own idiom for a Svelte-only surface with
 // no unit-testable runtime seam: the real invariant (the bake clips a strip past its extent, and
 // a strip wholly past it is inert) is pinned in `track.test.ts` against `edgeStrips` directly.
-describe("Timeline.svelte's strip band clamp reads ONE value for a force section's extent (S2)", () => {
-    test("bandStrips' `len` field derives from `Clip.len` (Section.length) on a force section, not the baked span alone", () => {
+describe("Timeline.svelte's strip band clamp reads ONE value for a section's extent (S2, collapsed onto `Clip.extent` at kex2d-event-lane S3)", () => {
+    test("Clip's own `extent` field derives from `Section.length` on a force section (the baked span otherwise) — the ONE place the clamp domain is computed", () => {
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("const extent = c.kind === SectionKind.Force ? c.len : c.s1 - c.s0;");
+        expect(src).toContain("extent: sec.kind === SectionKind.Force ? sec.length : sp.len,");
+    });
+
+    test("bandStrips reads the clamp domain straight off `Clip.extent`, never re-deriving it", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(src).toContain("const extent = c.extent;");
     });
 });
 

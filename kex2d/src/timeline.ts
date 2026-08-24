@@ -624,7 +624,7 @@ export const arcToTime = (m: Mapping, s: number): number => interpMono(m.arc, m.
  *
  *  This is the **projected** side of the chart's axis, for anything whose value is an arclength:
  *  the recovered force curve, a geo node tick, the cart's parked arclength. The force store is in
- *  the chart's own unit, so it never comes through here — `track.toGlobalU` is its affine. */
+ *  the chart's own unit, so it never comes through here — `track.toGlobal` is its affine. */
 export function dToU(mapping: Mapping | null, domain: Domain, d: number): number {
     return domain === Domain.Time && mapping ? arcToTime(mapping, d) : d;
 }

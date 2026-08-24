@@ -1621,7 +1621,7 @@ describe("sectionCutAt — the kind-fitted geo/force dispatch", () => {
         expect(sectionCutAt(state, a, spans, bSpan.offset + 1, 0)).toBeNull();
     });
 
-    test("force branch resolves the native `s` directly (`toLocalU` alone, no subdivision param)", () => {
+    test("force branch resolves the native `s` directly (`toLocal` alone, no subdivision param)", () => {
         const { state, eid, a } = forceFixture();
         const spans = sectionSpans(state, eid);
         // the force branch reads `u`, not `d` — feed a garbage `d` to prove it's never read.
@@ -1655,7 +1655,7 @@ describe("sectionCutAt — the kind-fitted geo/force dispatch", () => {
         const spans = sectionSpans(state, eid);
         const bSpan = spans.find((s) => s.id === b);
         if (!bSpan) throw new Error("no span for b");
-        expect(sectionCutAt(state, a, spans, 0, bSpan.entryU + 1)).toBeNull();
+        expect(sectionCutAt(state, a, spans, 0, bSpan.offset + 1)).toBeNull();
     });
 });
 

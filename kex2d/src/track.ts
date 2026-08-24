@@ -738,8 +738,8 @@ export function destroyStrip(ecs: State, id: number): void {
 
 /** a strip's undoable state, keyed by stable id — the drag/nudge/typed-field gesture
  *  snapshots this (`ForcePointState`'s own shape). `kfs` carries every child keyframe's
- *  `(id, s, v)` (S4): a strip-move gesture rides boundary keyframes along with the edge it
- *  moves (`setStrip`), so the gesture's own undo has to restore them too, and a delete/undo
+ *  `(id, s, v)`: a strip's keyframes never move through {@link setStrip} (S3, non-sticking),
+ *  so a strip-move gesture's own restore is a no-op over them today, but a delete/undo still
  *  has to respawn the strip's now-default-seeded keyframes rather than losing them. */
 export interface StripState {
     section: number;
@@ -767,9 +767,9 @@ export function stripState(ecs: State, id: number): StripState | undefined {
 /** write a strip's full state back (the gesture restore / undo path, symmetric with
  *  {@link stripState}) — bypasses the overlap guard, like {@link spawnStrip}: a restore
  *  reproduces exactly what was there, never re-validated against the live document. Also
- *  writes back every keyframe named in `kfs` (S4: undoes a boundary-ride side effect) —
- *  a keyframe id absent from the live document (already deleted by something else) is
- *  skipped rather than resurrected here; `restoreSection`/`spawnStripKeyframe` own that. */
+ *  writes back every keyframe named in `kfs` — a keyframe id absent from the live document
+ *  (already deleted by something else) is skipped rather than resurrected here;
+ *  `restoreSection`/`spawnStripKeyframe` own that. */
 export function restoreStrip(ecs: State, st: StripState): void {
     const eid = stripAt(ecs, st.id);
     if (eid === null) return;
@@ -791,24 +791,18 @@ export function restoreStrip(ecs: State, st: StripState): void {
  *  — the strip keeps its current value). The refusal is what "the guard lives inside the
  *  write op" (Locked decision) means for C3 — an actual drag CLAMPING at the neighbour's
  *  boundary is C5's gesture, built on top of this refusal (it computes a clamped target
- *  and calls this op with that instead), not a second guard here. Boundary ride (S4): a
- *  keyframe sitting exactly ON the strip's OLD `start` or `end` rides that edge to its NEW
- *  position — `bandMove`'s edge-resize and body-drag writers both fall through to this one
- *  op, so both gestures ride for free. An interior keyframe (not sitting on either old
- *  boundary) holds its station; a boundary that didn't move carries nothing to ride. */
+ *  and calls this op with that instead), not a second guard here. Non-sticking (S3): a
+ *  keyframe never follows an edge it happens to sit on — every keyframe, boundary included,
+ *  holds its station through a resize or a body drag, the same as a force keyframe never
+ *  stalks a `Section.length` trim. S4's boundary-ride (a keyframe riding the moved edge) is
+ *  deleted, not extended: consistency across the substrate is the locked law, and a strip
+ *  that wants its edge's value tracked keeps a keyframe there through explicit authoring,
+ *  same as force. */
 export function setStrip(ecs: State, id: number, start: number, end: number, value: number): void {
     const eid = stripAt(ecs, id);
     if (eid === null) return;
     const sec = Strip.section.get(eid);
     if (!stripOverlapped(ecs, sec, start, end, id) && stripCoversOneEdge(ecs, sec, start, end)) {
-        const oldStart = Strip.start.get(eid);
-        const oldEnd = Strip.end.get(eid);
-        if (oldStart !== start || oldEnd !== end) {
-            for (const kf of stripKeyframes(ecs, id)) {
-                if (kf.s === oldStart) StripKeyframe.s.set(kf.eid, start);
-                else if (kf.s === oldEnd) StripKeyframe.s.set(kf.eid, end);
-            }
-        }
         Strip.start.set(eid, start);
         Strip.end.set(eid, end);
     }
@@ -1339,17 +1333,15 @@ export function sectionAt(ecs: State, id: number): number | null {
  *  geo node's landing, the cart's park, the viewport, and (S6) every force keyframe/extent/strip
  *  too, since arclength is the one canonical parameter every authored component stores.
  *
- *  `entryU`/`lenU` carry the SAME reading as `offset`/`len` — the "native axis" this type used
- *  to switch between arclength and march time by `Track.domain` retired with the domain-carry
- *  op (S6): a force keyframe's stored `s` is arclength always, so there is no second unit here
- *  to address. A Time-domain DISPLAY reading is a separate projection through the live bake's
- *  s↔t table (`timeline.ts`'s `dToU`/`uToD`), never a second address space. */
+ *  There is no second, Time-domain axis here (S6 retired the `Track.domain`-carried switch a
+ *  force keyframe's stored `s` used to need — arclength always). A Time-domain DISPLAY reading
+ *  is a separate projection through the live bake's s↔t table (`timeline.ts`'s `dToU`/`uToD`),
+ *  never a second address space, so this type carries `offset`/`len` alone (S3 retired the
+ *  `entryU`/`lenU` reading that used to shadow them). */
 export interface SectionSpan {
     id: number;
     offset: number;
     len: number;
-    entryU: number;
-    lenU: number;
 }
 
 /** one section's `(entry, extent)` — the pair the affine and its inverse resolve over. */
@@ -1378,7 +1370,7 @@ export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
         // span downstream of it. Its extent reads 0 there — which is what it has on the bake —
         // so the strip and the guides describe the baked prefix honestly.
         for (let i = info.startSample; i < Math.min(info.endSample, last); i++) cum += out.ds[i];
-        res.push({ id: sec.id, offset, len: cum - offset, entryU: offset, lenU: cum - offset });
+        res.push({ id: sec.id, offset, len: cum - offset });
     }
     return res;
 }
@@ -1415,20 +1407,6 @@ export function toGlobal(spans: SectionSpan[], section: number, s: number): numb
  *  nearest end of the track. null when there's no bake. */
 export function toLocal(spans: SectionSpan[], d: number): { section: number; s: number } | null {
     return toLocalOn(arcAxis, spans, d);
-}
-
-/** `toGlobal`'s own name kept for its call sites (S6 retired the second, domain-varying axis
- *  this used to read — `toGlobalU`/`toLocalU` are `toGlobal`/`toLocal` now, since a force
- *  keyframe's stored `s` is arclength always). A Time-domain DISPLAY value is a separate
- *  projection through the live bake's s↔t table (`timeline.ts`), never a second address space.
- *  null when the section isn't on the current bake. */
-export function toGlobalU(spans: SectionSpan[], section: number, s: number): number | null {
-    return toGlobalOn(arcAxis, spans, section, s);
-}
-
-/** `toGlobalU`'s inverse — see its own docblock. */
-export function toLocalU(spans: SectionSpan[], u: number): { section: number; s: number } | null {
-    return toLocalOn(arcAxis, spans, u);
 }
 
 /** the baked sample address of a section-local arclength coordinate — where a force
@@ -3197,7 +3175,7 @@ export function splitGeoAt(ecs: State, sectionId: number, j: number, t: number):
 
 /** the interior geo segment + de Casteljau parameter a section-local arclength `s` (from the
  *  section entry) resolves to — the geo-side half of the free-position Cut's cursor resolution
- *  (`editor-ui.md`'s toLocal/toLocalU lens locates the SECTION and the arc; `splitGeoAt`
+ *  (`editor-ui.md`'s toLocal lens locates the SECTION and the arc; `splitGeoAt`
  *  addresses a segment index plus a curve parameter, never a raw arclength, so this is the
  *  seam between the two). Walks the section's own nodes' baked arclength (`Handle.sample`
  *  against the whole-track bake's own `out.ds`, never a chord re-derive) to bracket `s` between
@@ -3264,9 +3242,9 @@ export function geoCutAt(
 /** the free-position Cut's whole cursor resolution — a picked global arclength `d` and native
  *  coordinate `u` (the caller's own seam already resolved both: the viewport picks a world
  *  point, arc-length by construction; the timeline reads its chart axis, native by
- *  construction) through `toLocal`/`toLocalU` into the section-local address `splitSection`
+ *  construction) through `toLocal` into the section-local address `splitSection`
  *  wants for `sectionId`'s own kind — a geo section's segment + parameter (`geoCutAt`, off the
- *  arc reading) or a force section's native `s` (`toLocalU` alone, the force store's own axis,
+ *  arc reading) or a force section's native `s` (`toLocal` alone, the force store's own axis,
  *  no further conversion). null when the section can't be found or `d`/`u` don't land inside it
  *  (a stale span table, a picked point off the current bake). The returned force position may
  *  still be non-interior (`s` at 0 or the section's length) — the interior bound
@@ -3286,7 +3264,7 @@ export function sectionCutAt(
         if (loc === null || loc.section !== sectionId) return null;
         return geoCutAt(ecs, sectionId, loc.s);
     }
-    const loc = toLocalU(spans, u);
+    const loc = toLocal(spans, u);
     if (loc === null || loc.section !== sectionId) return null;
     return { at: loc.s };
 }
@@ -3717,7 +3695,17 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             bHeadStrip !== undefined &&
             aTailStrip.value === bHeadStrip.value;
         if (mergeStrip && aTailStrip !== undefined && bHeadStrip !== undefined) {
-            Strip.end.set(aTailStrip.eid, aLen + bHeadStrip.end);
+            const newEnd = aLen + bHeadStrip.end;
+            // the surviving strip's OWN boundary keyframe, seeded at its OLD end (aLen —
+            // `aTailStrip` is found BY that equality above), must ride the rebase too (the
+            // map's booked defect: `Strip.end` moved with nothing carrying its own boundary
+            // keyframe along). Absorbed keyframes from `bHeadStrip` are rebased below and can
+            // legitimately land coincident with this one at the old seam (aLen) or the new
+            // edge — the strip substrate doesn't dedupe keyframes on a join (Locked decision).
+            for (const k of stripKeyframes(ecs, aTailStrip.id)) {
+                if (k.s === aLen) StripKeyframe.s.set(k.eid, newEnd);
+            }
+            Strip.end.set(aTailStrip.eid, newEnd);
             // move the absorbed strip's keyframes to the surviving strip, rebased
             for (const k of stripKeyframes(ecs, bHeadStrip.id)) {
                 spawnStripKeyframe(ecs, aTailStrip.id, k.id, k.s + aLen, k.v);

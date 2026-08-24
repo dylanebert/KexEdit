@@ -44,7 +44,7 @@ export type SectionMenuState = {
     /** the resolved cursor position is an interior point AND `sectionOpsAllowed` — Cut's own
      *  enablement (`editor-ui.md`'s grays-never-hides law). Single-subject only: omitted
      *  entirely on a multi-set (below), never read there. OPTIONAL — the resolution wiring
-     *  (`editor-ui.md`'s toLocal/toLocalU lens) lands with `kex2d-structural-editing` stage 6;
+     *  (`editor-ui.md`'s toLocal lens) lands with `kex2d-structural-editing` stage 6;
      *  until a caller supplies it, Cut ships present but conservatively grayed (never `true` by
      *  default), the same shape the `structure` group itself shipped in at stage 3. */
     canCut?: boolean;
