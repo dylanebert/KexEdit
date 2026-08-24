@@ -649,6 +649,32 @@ export function deleteStripKeyframe(h: History, ecs: State, id: number): void {
     );
 }
 
+/** delete a SET of velocity keyframes by id as ONE undoable entry (`deleteForces`' strip-keyframe
+ *  twin — S4's multi-select for strip keyframes). undo re-spawns them all verbatim onto their
+ *  original strips; ids already gone are skipped, and nothing records when the set is empty. */
+export function deleteStripKeyframes(h: History, ecs: State, ids: readonly number[]): void {
+    const pre = selHook?.snapshot(ecs);
+    const sts: StripKeyframeState[] = [];
+    for (const id of ids) {
+        const st = stripKeyframeState(ecs, id);
+        if (st) sts.push(st);
+    }
+    if (sts.length === 0) return;
+    for (const st of sts) destroyStripKeyframe(ecs, st.id);
+    record(
+        h,
+        {
+            apply: () => {
+                for (const st of sts) destroyStripKeyframe(ecs, st.id);
+            },
+            reverse: () => {
+                for (const st of sts) spawnStripKeyframe(ecs, st.strip, st.id, st.s, st.v);
+            },
+        },
+        pre,
+    );
+}
+
 /** open a gesture on a strip-keyframe drag, snapshotting the keyframe's full state.
  *  commit coalesces the live writes into one entry; a no-move release records nothing.
  *  Restores through `setStripKeyframe` (the live-write path itself, documented for

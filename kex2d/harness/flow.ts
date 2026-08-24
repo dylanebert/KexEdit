@@ -188,6 +188,7 @@ export interface Kex {
     resistance(): number;
     sectionCount(): number;
     sectionForceCounts(): number[];
+    sectionSelIds(): number[];
     sectionIds(): number[];
     sectionKinds(): number[];
     sectionLengths(): number[];
@@ -201,6 +202,9 @@ export interface Kex {
     setV0(v: number): void;
     selectedSection(): number | null;
     selectedStrip(): number | null;
+    stripSelIds(): number[];
+    stripKfSelIds(): number[];
+    stripKfSelActive(): number | null;
     stripsOf(i: number): { id: number; start: number; end: number; value: number }[];
     stripKeyframesOf(stripId: number): { id: number; s: number; v: number }[];
     spanMidAt(i: number): { x: number; y: number } | null;

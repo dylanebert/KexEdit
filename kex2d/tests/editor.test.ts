@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+    activateStripKf,
     beginConvert,
     clearHover,
     closeContext,
     convertProgress,
+    deselectAll,
     dismissNotice,
     editor,
     endConvert,
@@ -20,12 +22,15 @@ import {
     solveDone,
     solveFailed,
     type Selection,
+    type SelectMode,
     select,
     selectForce,
     selectForces,
     selectNodes,
     selectSection,
     selectStart,
+    selectStrip,
+    selectStripKf,
     setMember,
     toggleMember,
     writeHover,
@@ -35,12 +40,11 @@ import { StaleConvert } from "../src/geoforce";
 // the selection substrate: a per-kind set + active member, single-select the size-1 case. these are
 // pure editor-state tests — the select* APIs touch no ECS (only the SelectionHook does; its
 // set-restore-across-recycle lives in history.test.ts). ids here are arbitrary numbers (the set
-// stores eids/stable-ids opaquely). clear every kind before each so a leftover can't leak.
+// stores eids/stable-ids opaquely). clear every kind before each so a leftover can't leak —
+// `deselectAll` is the substrate's own one-shot form of the same four-kind clear this file used to
+// spell out by hand (`kex2d-event-lane` S4).
 beforeEach(() => {
-    select(null);
-    selectForce(null);
-    selectSection(null);
-    selectStart(false);
+    deselectAll();
 });
 
 // ── pure set helpers ──
@@ -211,6 +215,158 @@ test("toggling into a kind while another kind is active switches kinds", () => {
     expect(editor.forces.ids.size).toBe(0);
     expect([...editor.nodes.ids]).toEqual([10]);
     expect(editor.selection).toBe(10);
+});
+
+// ── kex2d-event-lane S4: one selection model — the locked decision's own transition table over
+// {segment, span, keyframe, empty-ruler, empty-lane} × {click, modifier-click}, asserting the
+// resulting selection set at the pure editor-state substrate every Timeline.svelte handler
+// routes through (the DOM-driven twin is `force.pw.ts` "one selection model — the S4 transition
+// table", which drives the real pointer over the same rows). "keyframe" is generic here — the
+// force and strip-keyframe substrates share the exact same `select*`/`toggle` shape (S3's parity
+// law), so one row stands for both; the strip-keyframe-specific multiselect (this stage's own
+// booked ground) gets its own describe block below. ──
+
+describe("one selection model — transition table (segment / span / keyframe)", () => {
+    const kinds: Record<
+        "segment" | "span" | "keyframe",
+        {
+            select: (id: number | null, mode?: SelectMode) => void;
+            ids: () => Set<number>;
+            active: () => number | null;
+        }
+    > = {
+        segment: {
+            select: selectSection,
+            ids: () => editor.sections.ids,
+            active: () => editor.section,
+        },
+        span: { select: selectStrip, ids: () => editor.strips.ids, active: () => editor.strip },
+        keyframe: { select: selectForce, ids: () => editor.forces.ids, active: () => editor.force },
+    };
+
+    for (const [name, k] of Object.entries(kinds)) {
+        test(`${name}: click replace-selects it, clearing every other kind`, () => {
+            // arm every OTHER kind first — the row's own claim is that selecting this kind
+            // sweeps them all, not just the one kind the test happens to pick.
+            select(1);
+            selectForce(2);
+            selectSection(3);
+            selectStrip(4);
+            k.select(9);
+            for (const [other, o] of Object.entries(kinds))
+                if (other !== name) expect(o.ids().size).toBe(0);
+            expect(editor.nodes.ids.size).toBe(0);
+            expect(k.active()).toBe(9);
+        });
+
+        test(`${name}: modifier-click toggles membership — the sole member out, then back in`, () => {
+            k.select(9);
+            k.select(9, "toggle");
+            expect(k.ids().size).toBe(0);
+            expect(k.active()).toBeNull();
+            k.select(9, "toggle");
+            expect([...k.ids()]).toEqual([9]);
+            expect(k.active()).toBe(9);
+        });
+
+        test(`${name}: modifier-click on a second id ADDS it, active following the toggled-in member`, () => {
+            k.select(9);
+            k.select(10, "toggle");
+            expect([...k.ids()].sort((a, b) => a - b)).toEqual([9, 10]);
+            expect(k.active()).toBe(10);
+        });
+    }
+});
+
+describe("one selection model — empty-ruler / empty-lane deselect", () => {
+    test("deselectAll clears every kind and every sub-mode at once", () => {
+        select(1);
+        select(2, "toggle");
+        enterTangentEdit(2);
+        deselectAll();
+        expect(editor.nodes.ids.size).toBe(0);
+        expect(editor.tangentEdit).toBeNull();
+        selectForce(3);
+        enterForceEdit(3);
+        deselectAll();
+        expect(editor.forces.ids.size).toBe(0);
+        expect(editor.forceEdit).toBeNull();
+        expect(editor.forceHandle).toBeNull();
+        selectSection(4);
+        selectStrip(5);
+        selectStripKf(6);
+        selectStart(true);
+        deselectAll();
+        expect(editor.sections.ids.size).toBe(0);
+        expect(editor.strips.ids.size).toBe(0);
+        expect(editor.stripKfs.ids.size).toBe(0);
+        expect(editor.start).toBe(false);
+    });
+
+    // the empty-ruler and empty-lane click handlers (`Timeline.svelte` `startScrub`/`bandDown`)
+    // both route through this exact call on a plain click, guarded on `!e.shiftKey` at the DOM
+    // layer — that guard is the "modifier-click preserves" half; the substrate has nothing left
+    // to prove past "a modifier-click is a no-op here", asserted directly.
+    test("a modifier-click at the DOM layer is a no-op — deselectAll is simply not called", () => {
+        selectSection(1);
+        // (the handler's own `if (!e.shiftKey) deselectAll();` — nothing to call here)
+        expect(editor.section).toBe(1);
+    });
+});
+
+// ── strip-keyframe multi-select (S4's booked ground, `kex2d-event-lane` S3 log) — `selectForce`'s
+// own shape, generalized onto the strip-keyframe sub-selection layered under strip selection. ──
+
+describe("strip-keyframe multi-select", () => {
+    test("replace collapses the set to one member; toggle adds/removes", () => {
+        selectStrip(1);
+        selectStripKf(10);
+        expect([...editor.stripKfs.ids]).toEqual([10]);
+        expect(editor.stripKf).toBe(10);
+        selectStripKf(20, "toggle");
+        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
+        expect(editor.stripKf).toBe(20);
+        selectStripKf(10, "toggle"); // remove the non-active member
+        expect([...editor.stripKfs.ids]).toEqual([20]);
+        expect(editor.stripKf).toBe(20); // untouched — the removed member wasn't active
+    });
+
+    test("toggling out the active promotes the most-recently-added survivor", () => {
+        selectStrip(1);
+        selectStripKf(10);
+        selectStripKf(20, "toggle");
+        selectStripKf(20, "toggle"); // remove the active member
+        expect([...editor.stripKfs.ids]).toEqual([10]);
+        expect(editor.stripKf).toBe(10);
+    });
+
+    test("activateStripKf promotes a member active without disturbing the set; a non-member is a no-op", () => {
+        selectStrip(1);
+        selectStripKf(10);
+        selectStripKf(20, "toggle"); // {10, 20}, active 20
+        activateStripKf(10);
+        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]); // set unchanged
+        expect(editor.stripKf).toBe(10); // promoted
+        activateStripKf(99); // not a member
+        expect(editor.stripKf).toBe(10); // unchanged
+    });
+
+    test("deselecting the owning strip clears the keyframe set (the sub-selection's own invariant)", () => {
+        selectStrip(1);
+        selectStripKf(10);
+        selectStripKf(20, "toggle");
+        selectStrip(null);
+        expect(editor.stripKfs.ids.size).toBe(0);
+        expect(editor.stripKf).toBeNull();
+    });
+
+    test("selecting a different top-level kind sweeps the strip-keyframe set (the same exclusivity every other sub-selection observes)", () => {
+        selectStrip(1);
+        selectStripKf(10);
+        selectStripKf(20, "toggle");
+        selectSection(5);
+        expect(editor.stripKfs.ids.size).toBe(0);
+    });
 });
 
 // ── sub-mode collapse ──

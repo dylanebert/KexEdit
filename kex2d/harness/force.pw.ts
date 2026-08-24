@@ -26,6 +26,7 @@ import {
     SNAP_DEG_MAX,
     SAMPLE_BUDGET_M,
     frames,
+    type Page,
 } from "./flow";
 
 // Screenshot the TIMELINE TOOL RAIL (kex2d-authoring-surface): the thin icon-only strip on the
@@ -2104,4 +2105,248 @@ test("viewport force markers flow", async ({ page, boot }) => {
     await page.mouse.move(cb.x + 30, cb.y + 30); // park the pointer off the markers
     await page.waitForTimeout(SHOT_MS);
     await canvas.screenshot({ path: join(OUT, "viewport-force-markers.png") });
+});
+
+// summon a velocity strip via T1's creation gesture (right-click empty band → "Add velocity
+// strip", `affordance.pw.ts createStrip`'s own idiom) at a station clear of the auto-authored
+// launch strip (`seedForceBump`'s own degenerate entry-speed strip at station 0). Returns the
+// new strip's stable id — the creation seeds two keyframes (start/end), the S4 multiselect
+// flow's own fixture.
+async function addStrip(page: Page): Promise<number> {
+    const before = (await kexCall(page, "stripsOf", 0)) as { id: number }[];
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const y = bandBb.y + bandBb.height / 2;
+    const x = clipBb.x + clipBb.width * 0.6;
+    await page.mouse.click(x, y, { button: "right" });
+    await expect(page.locator(".smenu")).toHaveCount(1);
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect
+        .poll(async () => (await kexCall(page, "stripsOf", 0)).length)
+        .toBe(before.length + 1);
+    const beforeIds = new Set(before.map((s) => s.id));
+    const strips = (await kexCall(page, "stripsOf", 0)) as { id: number }[];
+    const created = strips.find((s) => !beforeIds.has(s.id));
+    if (!created) throw new Error("newly-created strip not found");
+    return created.id;
+}
+
+// kex2d-event-lane S4: ONE SELECTION MODEL — the locked decision's own transition table over
+// {segment, span, keyframe, empty-ruler, empty-lane} × {click, modifier-click}, driven by a REAL
+// pointer for every row (Validation's own requirement). "keyframe" covers BOTH substrates S3
+// unified (force + strip), since the locked decision generalizes the segment behavior across all
+// three kinds identically. Segment/span/force-keyframe already carried shift-toggle before this
+// stage (`selectSection`/`selectStrip`/`selectForce`); this flow's own new ground is the
+// strip-keyframe multiset (booked to S4 at S3's close) and the empty-ruler/empty-lane deselect.
+test("one selection model — the S4 transition table", async ({ page, boot }) => {
+    await boot();
+
+    const selectedSection = () => kexCall(page, "selectedSection");
+    const sectionSelIds = () => kexCall(page, "sectionSelIds");
+    const selectedStrip = () => kexCall(page, "selectedStrip");
+    const stripSelIds = () => kexCall(page, "stripSelIds");
+    const forceSelIds = () => kexCall(page, "forceSelIds");
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds");
+    const nothingSelected = async (): Promise<boolean> =>
+        (await selectedSection()) === null &&
+        (await selectedStrip()) === null &&
+        (await forceSelIds()).length === 0 &&
+        (await stripKfSelIds()).length === 0;
+
+    await seedHill(page);
+    await kexCall(page, "convert"); // → a force section, so the chart carries force keyframes
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => (await kexCall(page, "forces")).length).toBe(5);
+    await frameTimeline(page);
+
+    const stripId = await addStrip(page);
+    await frames(page, 2); // let the per-RAF tick propagate the new selection before reading it
+    await expect.poll(selectedStrip).toBe(stripId); // T1's creation selects the new strip
+
+    const chartCanvas = page.locator("canvas.chart");
+    const canvasBb = await chartCanvas.boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    if (!canvasBb || !clipBb || !bandBb) throw new Error("timeline surfaces not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+
+    // widen the strip via a REAL edge-drag (`section.pw.ts`'s own idiom) — created at
+    // minimum extent, its two seeded keyframes' fat hit-circles (FHIT_R) overlap, so a click
+    // aimed at one lands on whichever draws on top instead. widening clears the diamonds apart
+    // before either is addressed by pixel position.
+    const spBefore = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId);
+    if (!spBefore) throw new Error("created strip has no band px");
+    const edgePx = canvasBb.x + spBefore.x1;
+    await page.mouse.move(edgePx, bandY);
+    await page.mouse.down();
+    await page.mouse.move(edgePx + 80, bandY, { steps: 5 });
+    await page.mouse.up();
+    await expect
+        .poll(async () => {
+            const sp = (
+                (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+            ).find((s) => s.id === stripId);
+            return sp ? sp.x1 - sp.x0 : 0;
+        })
+        .toBeGreaterThan(60);
+
+    const kfs = (await kexCall(page, "stripKeyframesOf", stripId)) as { id: number }[];
+    expect(kfs.length).toBe(2); // the seeded start/end pair
+
+    // ── SEGMENT row: click replace-selects the clip, sweeping the span currently selected;
+    // shift-click TOGGLES it (the sole member, so it toggles OUT then back IN) — the grammar
+    // every other kind below generalizes from (`selectSection`'s own shape). ──
+    const clip = page.locator(".clip").first();
+    await clip.click();
+    await expect.poll(selectedStrip).toBeNull();
+    await expect.poll(selectedSection).not.toBeNull();
+    await page.keyboard.down("Shift");
+    await clip.click();
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await sectionSelIds()).length).toBe(0);
+    await page.keyboard.down("Shift");
+    await clip.click();
+    await page.keyboard.up("Shift");
+    await expect.poll(selectedSection).not.toBeNull();
+
+    // ── SPAN row: click replace-selects the strip, sweeping the segment; shift-click toggles
+    // it (S4's own generalization onto `bandDown` — `selectStrip`'s toggle form already existed,
+    // wiring the shift check to it is this stage's). ──
+    const stripPx = () =>
+        kexCall(page, "stripPx") as Promise<{ id: number; x0: number; x1: number }[]>;
+    const stripBody = async (): Promise<number> => {
+        const sp = (await stripPx()).find((s) => s.id === stripId);
+        if (!sp) throw new Error("created strip has no band px");
+        return canvasBb.x + (sp.x0 + sp.x1) / 2;
+    };
+    let sx = await stripBody();
+    await page.mouse.click(sx, bandY);
+    await expect.poll(selectedSection).toBeNull();
+    await expect.poll(selectedStrip).toBe(stripId);
+    sx = await stripBody();
+    await page.keyboard.down("Shift");
+    await page.mouse.click(sx, bandY);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await stripSelIds()).length).toBe(0);
+    sx = await stripBody();
+    await page.keyboard.down("Shift");
+    await page.mouse.click(sx, bandY);
+    await page.keyboard.up("Shift");
+    await expect.poll(selectedStrip).toBe(stripId);
+
+    // ── KEYFRAME row (force substrate): click replace-selects it, sweeping the strip; a second
+    // point shift-clicked toggles IN, then the first shift-clicked back OUT — the multiselect
+    // grammar this stage's strip-keyframe twin (below) mirrors. ──
+    const fhit = page.locator(".fhit").first();
+    await fhit.click();
+    await expect.poll(selectedStrip).toBeNull();
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    const fhit2 = page.locator(".fhit").nth(1);
+    await page.keyboard.down("Shift");
+    await fhit2.click();
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(2);
+    await page.keyboard.down("Shift");
+    await fhit.click();
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+
+    // ── KEYFRAME row (strip substrate, S4's booked multi-select): re-select the strip so its
+    // diamonds are the click target, then run the SAME click / shift-click / shift-click grammar
+    // over `editor.stripKfs` — the force keyframe arms above, mirrored one-for-one (S3's parity
+    // law) rather than a second, hand-built scheme. The seeded start/end pair (`kf0` unused below)
+    // sit close together — non-sticking (S3) means the edge-drag above widened the STRIP without
+    // carrying either along, so their fat hit-circles still overlap each other. Two FRESH
+    // keyframes, dropped by real double-click at well-separated stations across the now-widened
+    // strip (`section.pw.ts`'s own separation idiom, taken further — two new points, not one, so
+    // neither target's hit-circle can graze the seeded pair OR each other), give this row two
+    // genuinely distinct, unambiguous click targets. ──
+    sx = await stripBody();
+    await page.mouse.click(sx, bandY);
+    await expect.poll(selectedStrip).toBe(stripId);
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!dockBb) throw new Error("dock body not laid out");
+    const chartMidY = dockBb.y + CHART_TOP + (dockBb.height - CHART_TOP - CHART_BOT_PAD) / 2;
+    const spWide = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId);
+    if (!spWide) throw new Error("widened strip has no band px");
+    const dropKf = async (frac: number): Promise<number> => {
+        const before = (await kexCall(page, "stripKeyframesOf", stripId)) as { id: number }[];
+        const beforeIds = new Set(before.map((k) => k.id));
+        const x = canvasBb.x + spWide.x0 + (spWide.x1 - spWide.x0) * frac;
+        await page.mouse.dblclick(x, chartMidY);
+        await expect
+            .poll(async () => (await kexCall(page, "stripKeyframesOf", stripId)).length)
+            .toBe(before.length + 1);
+        const after = (await kexCall(page, "stripKeyframesOf", stripId)) as { id: number }[];
+        const created = after.find((k) => !beforeIds.has(k.id));
+        if (!created) throw new Error("the double-click's new strip keyframe not found");
+        return created.id;
+    };
+    const kfA = await dropKf(0.25);
+    const kfB = await dropKf(0.75);
+
+    const stripKfAt = async (id: number): Promise<{ x: number; y: number }> => {
+        const pts = (await kexCall(page, "stripKfPx")) as { id: number; x: number; y: number }[];
+        const p = pts.find((k) => k.id === id);
+        if (!p) throw new Error(`strip keyframe ${id} not laid out`);
+        return p;
+    };
+    let pA = await stripKfAt(kfA);
+    await page.mouse.click(pA.x, pA.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0); // the strip sweep clears it
+    await expect.poll(stripKfSelIds).toEqual([kfA]);
+    const pB = await stripKfAt(kfB);
+    await page.keyboard.down("Shift");
+    await page.mouse.click(pB.x, pB.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(2);
+    pA = await stripKfAt(kfA);
+    await page.keyboard.down("Shift");
+    await page.mouse.click(pA.x, pA.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(stripKfSelIds).toEqual([kfB]);
+
+    // ── EMPTY-RULER row: a plain click deselects EVERYTHING (the ruler holds no selectable
+    // objects, so every press is an empty-space click); shift-click preserves. ──
+    const rulerZone = page.locator(".rulerzone");
+    const rulerBb = await rulerZone.boundingBox();
+    if (!rulerBb) throw new Error("ruler zone not laid out");
+    const rulerPt = { x: rulerBb.x + rulerBb.width * 0.4, y: rulerBb.y + rulerBb.height / 2 };
+    expect(
+        await nothingSelected(),
+        "a strip keyframe is still selected before the ruler click",
+    ).toBe(false);
+    await page.mouse.click(rulerPt.x, rulerPt.y);
+    await expect.poll(nothingSelected).toBe(true);
+    await clip.click(); // re-arm a selection to prove the modifier preserves it
+    await expect.poll(selectedSection).not.toBeNull();
+    await page.keyboard.down("Shift");
+    await page.mouse.click(rulerPt.x, rulerPt.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(selectedSection).not.toBeNull();
+
+    // ── EMPTY-LANE row: the band's own empty-space click (S4's own new ground — `bandDown` was
+    // previously inert here, no selection change at all) deselects everything the same way;
+    // shift-click preserves. picked clear of both strips (the launch strip at station 0, this
+    // flow's own at ~0.6 · width, both minimum-extent). ──
+    const emptyBandX = clipBb.x + clipBb.width * 0.92;
+    await expect.poll(selectedSection).not.toBeNull(); // still armed from the ruler's own re-select
+    await page.mouse.click(emptyBandX, bandY);
+    await expect.poll(nothingSelected).toBe(true);
+    await clip.click();
+    await expect.poll(selectedSection).not.toBeNull();
+    await page.keyboard.down("Shift");
+    await page.mouse.click(emptyBandX, bandY);
+    await page.keyboard.up("Shift");
+    await expect.poll(selectedSection).not.toBeNull();
+
+    await page.waitForTimeout(SHOT_MS);
+    const strip = dockStrip(page);
+    if (strip)
+        await page.screenshot({ path: join(OUT, "select-transition-table.png"), clip: strip });
 });

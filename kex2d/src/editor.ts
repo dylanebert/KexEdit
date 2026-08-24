@@ -88,6 +88,12 @@ interface EditorState {
      *  takes a set, and a strip's own Cut/Join (`kex2d-map.md`'s Locked decision) is section-scoped
      *  bulk work a future stage may want to drive off a multi-set the same shape gives for free. */
     strips: Selection;
+    /** the selected velocity-strip keyframes (set + active), addressed by stable
+     *  `StripKeyframe.id` — the strip keyframe's own `forces`, layered under strip selection like
+     *  {@link stripKf} always was (`stripKfs.ids` non-empty implies `editor.strip !== null`).
+     *  S4's booked multi-select for strip keyframes (`kex2d-event-lane` S3 log): shift-click
+     *  toggles membership and Delete acts on the whole set, mirroring `forces` one-for-one. */
+    stripKfs: Selection;
     /** the active geo node eid, or null — the single-subject accessor over `nodes` (its active
      *  member). reading it is "the one subject" (readout, ring, manipulator, snap); assigning it is
      *  a replace-select (`select`). readers wanting the whole set read `nodes` directly. */
@@ -105,12 +111,12 @@ interface EditorState {
      *  `{tangentEdit}` with it active. entered by double-clicking a node (Figma vector edit);
      *  any selection change to a different subject (or the set growing past it), Esc, or click-away
      *  exits it. NOT a fifth mutually-exclusive selection — a refinement of the node-selection state. */
-    /** the selected velocity-strip keyframe's stable id, or null — a sub-selection layered
-     *  on strip selection (like `forceEdit` on force selection): `stripKf !== null` implies
-     *  `editor.strip !== null` (the owning strip is selected, so its keyframe diamonds are
-     *  drawn). Clicking a keyframe diamond selects it for Delete; Escape peels it before
-     *  clearing the strip selection (the force keyframe's own Escape ladder). NOT a
-     *  mutually-exclusive selection kind. */
+    /** the active velocity-strip keyframe's stable id, or null — the single-subject accessor over
+     *  `stripKfs` (its active member), mirroring `force` over `forces`. a sub-selection layered
+     *  on strip selection: non-empty `stripKfs` implies `editor.strip !== null` (the owning strip
+     *  is selected, so its keyframe diamonds are drawn). Clicking a diamond selects it for Delete
+     *  (shift-click toggles membership); Escape peels the set before clearing the strip selection
+     *  (the force keyframe's own Escape ladder). NOT a mutually-exclusive selection kind. */
     stripKf: number | null;
     tangentEdit: number | null;
     /** stable id of the force keyframe in handle-edit sub-mode (its in/out handles are
@@ -379,6 +385,7 @@ export const editor: EditorState = {
     forces: emptySel(),
     sections: emptySel(),
     strips: emptySel(),
+    stripKfs: emptySel(),
     get selection(): number | null {
         return this.nodes.active;
     },
@@ -403,7 +410,12 @@ export const editor: EditorState = {
     set strip(v: number | null) {
         selectStrip(v);
     },
-    stripKf: null,
+    get stripKf(): number | null {
+        return this.stripKfs.active;
+    },
+    set stripKf(v: number | null) {
+        selectStripKf(v);
+    },
     tangentEdit: null,
     forceEdit: null,
     forceHandle: null,
@@ -844,7 +856,7 @@ function exclusiveNode(): void {
     clearSel(editor.forces);
     clearSel(editor.sections);
     clearSel(editor.strips);
-    editor.stripKf = null;
+    clearSel(editor.stripKfs);
     editor.forceEdit = null;
     editor.forceHandle = null;
     editor.start = false;
@@ -854,7 +866,7 @@ function exclusiveForce(): void {
     clearSel(editor.nodes);
     clearSel(editor.sections);
     clearSel(editor.strips);
-    editor.stripKf = null;
+    clearSel(editor.stripKfs);
     editor.tangentEdit = null;
     editor.start = false;
 }
@@ -863,7 +875,7 @@ function exclusiveSection(): void {
     clearSel(editor.nodes);
     clearSel(editor.forces);
     clearSel(editor.strips);
-    editor.stripKf = null;
+    clearSel(editor.stripKfs);
     editor.tangentEdit = null;
     editor.forceEdit = null;
     editor.forceHandle = null;
@@ -874,7 +886,24 @@ function exclusiveStrip(): void {
     clearSel(editor.nodes);
     clearSel(editor.forces);
     clearSel(editor.sections);
-    editor.stripKf = null;
+    clearSel(editor.stripKfs);
+    editor.tangentEdit = null;
+    editor.forceEdit = null;
+    editor.forceHandle = null;
+    editor.start = false;
+}
+
+/** clear every selection kind at once — the empty-ruler / empty-lane deselect
+ *  (`kex2d-event-lane` S4, "one selection model": clicking empty space with no object under the
+ *  pointer clears segments, spans, keyframes, and nodes together). Unlike the `exclusive*`
+ *  sweeps above (which leave one kind standing for its own caller to populate), this leaves
+ *  nothing selected — the size-0 case every empty-space click lands on. */
+export function deselectAll(): void {
+    clearSel(editor.nodes);
+    clearSel(editor.forces);
+    clearSel(editor.sections);
+    clearSel(editor.strips);
+    clearSel(editor.stripKfs);
     editor.tangentEdit = null;
     editor.forceEdit = null;
     editor.forceHandle = null;
@@ -1022,15 +1051,24 @@ export function selectStrip(id: number | null, mode: SelectMode = "replace"): vo
     // clear the strip-keyframe sub-selection when the strip is deselected — the
     // keyframe diamonds are only drawn for the selected strip, so a stale keyframe
     // selection is dangling (the force keyframe's own `selPoint` dismissal law).
-    if (editor.strip === null) editor.stripKf = null;
+    if (editor.strip === null) clearSel(editor.stripKfs);
 }
 
-/** select a velocity-strip keyframe by its stable id, or clear it (null). a sub-selection
- *  layered on strip selection: the owning strip stays selected (its diamonds are drawn),
- *  and the keyframe becomes the Delete/Escape target. mirrors the force keyframe's own
- *  selection pattern — selection state in editor, Delete through the history wrapper. */
-export function selectStripKf(id: number | null): void {
-    editor.stripKf = id;
+/** select a velocity-strip keyframe by its stable id. "replace" (default) collapses the set to
+ *  `id` (or clears it when null); "toggle" adds/removes it (shift-click, S4's booked multi-select
+ *  — `selectForce`'s own two-form shape). a sub-selection layered on strip selection: the owning
+ *  strip stays selected (its diamonds are drawn), and the set becomes the Delete/Escape target.
+ *  selection state in editor, Delete through the history wrapper. */
+export function selectStripKf(id: number | null, mode: SelectMode = "replace"): void {
+    if (id === null || mode === "replace") setMember(editor.stripKfs, id);
+    else toggleMember(editor.stripKfs, id);
+}
+
+/** promote an already-selected strip keyframe to the ACTIVE member without disturbing set
+ *  membership — `activateForce`'s strip-keyframe twin: grabbing a member of a multi-set makes it
+ *  the single subject the popover binds to. no-op when `id` isn't a member. */
+export function activateStripKf(id: number): void {
+    if (editor.stripKfs.ids.has(id)) editor.stripKfs.active = id;
 }
 
 /** select (or clear) the track START anchor — the initial-speed handle. */
@@ -1041,7 +1079,7 @@ export function selectStart(on: boolean): void {
         clearSel(editor.forces);
         clearSel(editor.sections);
         clearSel(editor.strips);
-        editor.stripKf = null;
+        clearSel(editor.stripKfs);
         editor.tangentEdit = null;
         editor.forceEdit = null;
         editor.forceHandle = null;
@@ -1208,15 +1246,7 @@ export const selectionHook = {
         editor.stripMenu = null; // same — the strip menu's rows go stale on any restore
         const s = snap as SelSnapshot;
         if (s === null) {
-            clearSel(editor.nodes); // clears the selection + (below) the tangent-edit sub-mode
-            clearSel(editor.forces);
-            clearSel(editor.sections);
-            clearSel(editor.strips);
-            editor.stripKf = null;
-            editor.tangentEdit = null;
-            editor.forceEdit = null;
-            editor.forceHandle = null;
-            editor.start = false;
+            deselectAll(); // clears every kind + (below) every sub-mode
             return;
         }
         switch (s.kind) {
