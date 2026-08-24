@@ -91,6 +91,15 @@ export type { Page };
 export const HBAND_TOP = 46;
 export const HBAND_H = 20;
 export const CHART_TOP = HBAND_TOP + HBAND_H; // Timeline.svelte
+// the SEGMENT BAR (the marker lane / clip strip) sits directly above the event rack:
+// RULER_H (26) its top, GAP_H (20, same OWED mirror as HBAND_H above) its height — S2 moved the
+// infeasible-speed treatment here (finding 13), off HBAND_TOP/H below.
+export const SEG_TOP = 26;
+export const SEG_H = 20;
+// the Time-lens stall margin (S2, finding 13) — MIRRORS src/timeline.ts marginFloor(Domain.Time)
+// = MARGIN_M (50) / V0 (10), the SAME lead-out floor every axis reuses (`stallClampU`'s own
+// docblock), never a value invented for this file.
+export const TIME_MARGIN_S = 5;
 export const CHART_BOT_PAD = 8; // BOT_PAD — Timeline.svelte
 export const LEFT_GUT = 44; // Timeline.svelte — the chart's left inset, s=0's own screen x
 // The viewport's default framing centers the world origin in the region above the dock, not in the
@@ -202,6 +211,12 @@ export interface Kex {
     undoDepth(): number;
     // `dOf`'s inverse -- see its own doc.
     uOf(d: number): number;
+    // the chart's own addressable-span end on the active axis (bounded past a stall in Time, S2
+    // finding 13) -- distinct from `tTotal`, the bake's unbounded total.
+    uTotal(): number;
+    // the first-infeasible sample's own axis reading, or null off a feasible bake -- the stall
+    // `uTotal` clamps against in Time domain.
+    stallU(): number | null;
     v0(): number;
     xView(): [number, number];
 }

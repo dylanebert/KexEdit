@@ -8,9 +8,67 @@ import {
     MIN_ZOOM,
     panCamera,
     readoutFit,
+    resize,
     screenToWorld,
     zoomAt,
 } from "../src/view";
+
+// a stub `HTMLCanvasElement` + `CanvasRenderingContext2D`, plain objects — `resize` only reads
+// `clientWidth`/`clientHeight`/`width`/`height` and calls `ctx.setTransform`, none of which need
+// a real DOM (bun test runs no DOM). `devicePixelRatio` isn't defined outside a browser `window`,
+// so these tests stub `globalThis.window` for the call's duration and restore it after.
+function stubCanvas(clientWidth: number, clientHeight: number) {
+    const setTransformCalls: number[][] = [];
+    const canvas = {
+        clientWidth,
+        clientHeight,
+        width: 0,
+        height: 0,
+    } as unknown as HTMLCanvasElement;
+    const ctx = {
+        setTransform: (...args: number[]) => setTransformCalls.push(args),
+    } as unknown as CanvasRenderingContext2D;
+    return { canvas, ctx, setTransformCalls };
+}
+
+function withDpr<T>(dpr: number, fn: () => T): T {
+    const prev = (globalThis as { window?: { devicePixelRatio?: number } }).window;
+    (globalThis as { window?: { devicePixelRatio?: number } }).window = { devicePixelRatio: dpr };
+    try {
+        return fn();
+    } finally {
+        (globalThis as { window?: unknown }).window = prev;
+    }
+}
+
+describe("resize — the pixel buffer sizes off the SAME value the caller's draw math uses (S2, resize-flicker fix)", () => {
+    test("no explicit w/h: falls back to a live DOM read, same as before the fix", () => {
+        const { canvas, ctx } = stubCanvas(300, 150);
+        withDpr(2, () => resize(canvas, ctx));
+        expect(canvas.width).toBe(600);
+        expect(canvas.height).toBe(300);
+    });
+
+    test("explicit w/h WINS over a stale canvas.clientWidth — the race the fix closes", () => {
+        // `canvas.clientWidth`/`clientHeight` simulate the layout having already moved (the DOM
+        // read is always current) while the caller's reactive `w`/`h` (passed explicitly here)
+        // simulate a `ResizeObserver` binding that hasn't caught up yet. Pre-fix, `resize` read
+        // `canvas.clientWidth` unconditionally — this assertion is exactly what would have failed
+        // against that code (the buffer would have sized off 500, not 300).
+        const { canvas, ctx } = stubCanvas(500, 260);
+        withDpr(1, () => resize(canvas, ctx, 300, 150));
+        expect(canvas.width).toBe(300);
+        expect(canvas.height).toBe(150);
+    });
+
+    test("skips the write (and setTransform) when the buffer already matches — the existing early-out, unchanged by the fix", () => {
+        const { canvas, ctx, setTransformCalls } = stubCanvas(300, 150);
+        canvas.width = 300;
+        canvas.height = 150;
+        withDpr(1, () => resize(canvas, ctx, 300, 150));
+        expect(setTransformCalls.length).toBe(0);
+    });
+});
 
 // the world point that lands under a screen point, via the render-consumer transform —
 // the invariant every camera op is checked against.

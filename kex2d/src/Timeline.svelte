@@ -10,7 +10,7 @@ import {
     trackMapping,
     velocityCurve,
 } from "./cart";
-import { COLOR_INFEASIBLE, COLOR_VELOCITY, hovered, kindSegments } from "./colors";
+import { COLOR_VELOCITY, hovered, kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
 import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { appendMenu, keyframeMenu, rulerMenu, stripMenu } from "./menus";
@@ -91,6 +91,7 @@ import {
     snap,
     snapAxis,
     snapCutToPlayhead,
+    stallClampU,
     uToPx,
     T_GRID,
     ticks,
@@ -395,9 +396,19 @@ function exitSpeed(): number {
     const out = bakeOut.get(eid);
     return out ? Math.max(Math.abs(out.v[Math.max(0, curve.n - 1)]), V_FLOOR) : V0;
 }
-// the addressable span's end and the lead-out floor, both in axis units.
-const uTotal = $derived(uOf(sTotal));
 const mFloor = $derived(marginFloor(domain));
+// the first-infeasible sample's own Time-axis reading (`bakeOut.t`, the SAME array `cart.ts`
+// `loopTime` reads) — null off a fully feasible bake. Distance-domain callers never read this
+// (`stallClampU`'s own no-op branch), so it's cheap to derive unconditionally.
+const stallU = $derived.by((): number | null => {
+    void tick;
+    if (eid === null) return null;
+    const out = bakeOut.get(eid);
+    return out && out.firstInfeasible >= 0 ? out.t[out.firstInfeasible] : null;
+});
+// the addressable span's end, in axis units — bounded past a stall so the Time lens never
+// stretches toward t→∞ (S2, finding 13: `stallClampU`'s own docblock has the derivation).
+const uTotal = $derived(stallClampU(uOf(sTotal), domain, stallU, mFloor));
 // the x-axis placement quantum for a keyframe drag: metres of arclength, or seconds (`T_GRID`,
 // derived from `S_GRID` at the default entry speed).
 const GRID = $derived(timeDomain ? T_GRID : S_GRID);
@@ -3094,12 +3105,12 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
     ctx.fillRect(0, RULER_H, w, GAP_H);
 
-    // the velocity-strip HEADER band: a demarcated lane of its own, between the clip strip and
-    // the chart. This stage draws authored strips (solid, below) and the red ghost inside it —
-    // contiguous infeasible extents projected off the bake's own `feasible`
-    // (`render.infeasibleSpans`, `ghostSpans` above), the SAME visual register as the viewport's
-    // dashed-red pass (`COLOR_INFEASIBLE`, `colors.ts`). An all-feasible bake leaves the band
-    // showing only authored strips (no ghost spans).
+    // the velocity-strip HEADER band (the event rack): a demarcated lane of its own, between the
+    // clip strip and the chart. It draws authored strips only (solid, below) — the infeasible
+    // register moved to the segment bar itself (S2, finding 13: the person's own read named this
+    // band as the wrong surface for it; the SVG `.ghost-span` overlay in the clip strip carries
+    // the dashed-red treatment now, `ghostSpans` below still the one derivation both would read).
+    // An all-feasible bake leaves the band showing only authored strips, same as before.
     ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
     ctx.fillRect(0, RULER_H + GAP_H, w, STRIP_H);
     // on-surface naming (root ui.md gate 3's affordance clause, corrected at R): the lane
@@ -3115,18 +3126,6 @@ function render(ctx: CanvasRenderingContext2D): void {
     ctx.globalAlpha = 0.5;
     ctx.fillText("vel", 4, RULER_H + GAP_H + STRIP_H / 2);
     ctx.globalAlpha = 1;
-    for (const g of ghostSpans) {
-        const lo = Math.min(g.x0, g.x1);
-        const hi = Math.max(g.x0, g.x1);
-        if (hi < LEFT_GUT - 1 || lo > w) continue; // off-screen past the gutter or the right edge
-        const x0 = Math.max(LEFT_GUT, lo);
-        // a genuine sub-pixel or zero-width extent (S3's disclosed gap; the downstream freeze's
-        // own zero-length gap edge) must still read as PRESENT on screen — clamp the drawn width
-        // to 1px here, in the display only. `infeasibleSpans` itself stays exact.
-        const width = Math.max(1, Math.min(w, hi) - x0);
-        ctx.fillStyle = COLOR_INFEASIBLE;
-        ctx.fillRect(x0, RULER_H + GAP_H, width, STRIP_H);
-    }
 
     // authored velocity strips — solid fill, the strip's own kind color (the velocity hue,
     // `COLOR_VELOCITY`). Selected strips brighten. Boundary ticks disambiguate abutting strips.
@@ -3419,7 +3418,11 @@ $effect(() => {
     // render() reads view/data/size synchronously, so the effect tracks them.
     const ctx = canvas?.getContext("2d");
     if (!ctx) return;
-    resize(canvas, ctx);
+    // `w`/`h` explicitly — not a DOM re-read — closes the resize-flicker race (S2, `view.ts`
+    // `resize`'s own docblock): the canvas's pixel buffer and this frame's draw math must size
+    // off the exact same reactive value, or a mid-resize frame can size one off the new box and
+    // the other off the stale one.
+    resize(canvas, ctx, w, h);
     render(ctx);
     const nav = navCanvas;
     const nctx = nav?.getContext("2d");
@@ -3797,6 +3800,13 @@ onMount(() => {
             // REAL pointer at a strip's edge/body without re-deriving `uPx`'s projection.
             k.stripPx = (): { id: number; x0: number; x1: number }[] =>
                 bandStrips.map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
+            // the chart's own addressable-span end, on the ACTIVE axis (bounded past a stall in
+            // Time, S2, finding 13) — distinct from `tTotal` (main.ts, the bake's unbounded
+            // total) precisely so a flow can assert the chart clamps where the bake doesn't.
+            k.uTotal = (): number => uTotal;
+            // the first-infeasible sample's own axis reading, or null off a feasible bake — the
+            // stall the Time lens clamps against (`stallClampU`).
+            k.stallU = (): number | null => stallU;
         }
     }
     return () => {
@@ -3817,6 +3827,8 @@ onMount(() => {
                 delete k.ghostPx;
                 delete k.stripKfPx;
                 delete k.stripPx;
+                delete k.uTotal;
+                delete k.stallU;
             }
         }
         cancelAll(); // drop any in-flight gesture if we unmount mid-drag
@@ -4012,6 +4024,33 @@ onMount(() => {
                                     aria-label="Resize force section"
                                 />
                             {/if}
+                        {/if}
+                    {/each}
+                </g>
+            {/if}
+            <!-- the infeasible-speed treatment (S2, finding 13): drawn on the SEGMENT BAR itself,
+                 not the event rack below (the person's own read named the rack as the wrong
+                 surface) — over the clips, so it reads as a property of the section it falls in.
+                 `ghostSpans` is the SAME arclength→px projection the (retired) rack paint and the
+                 viewport's own dashed-red pass both read; drawn here as DOM so the dashed stroke
+                 comes free of a canvas dash-phase reset per span. Pointer-inert (a treatment, not
+                 a control — the clip beneath still picks), like `.clip-stripes`. -->
+            {#if eid !== null && sTotal > 0 && ghostSpans.length > 0}
+                <g class="ghost-spans" clip-path="url(#laneclip)">
+                    {#each ghostSpans as g, i (i)}
+                        {@const lo = Math.min(g.x0, g.x1)}
+                        {@const hi = Math.max(g.x0, g.x1)}
+                        {#if hi >= LEFT_GUT - 1 && lo <= w}
+                            {@const gx0 = Math.max(LEFT_GUT, lo)}
+                            {@const gw = Math.max(1, Math.min(w, hi) - gx0)}
+                            <rect
+                                class="ghost-span"
+                                x={gx0 + 0.5}
+                                y={RULER_H + CLIP_PAD}
+                                width={Math.max(1, gw - 1)}
+                                height={GAP_H - 2 * CLIP_PAD}
+                                rx="2"
+                            />
                         {/if}
                     {/each}
                 </g>
@@ -5022,6 +5061,17 @@ onMount(() => {
        practice — nodes live in geo sections. */
     .clip.geo.wash:not(:hover) {
         fill: color-mix(in srgb, var(--geo) 44%, transparent);
+    }
+    /* the infeasible-speed treatment (S2, finding 13): a dashed red border over a translucent
+       red wash, on the segment bar itself — `--danger` (#e26d5c) IS `colors.ts`'s
+       `COLOR_INFEASIBLE`, the canvas-side register the viewport's own dashed-red pass uses, so
+       this is the same red read on both surfaces. pointer-inert, over the clip fills. */
+    .ghost-span {
+        fill: color-mix(in srgb, var(--danger) 32%, transparent);
+        stroke: var(--danger);
+        stroke-width: 1.5;
+        stroke-dasharray: 4 3;
+        pointer-events: none;
     }
     /* geo node ticks: a small circle per interior node, distinct from the force
        diamond's shape (circle vs. polygon) AND its kind color (geo blue vs. accent

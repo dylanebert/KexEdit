@@ -27,7 +27,9 @@ import {
     frames,
     HBAND_H,
     HBAND_TOP,
-    LEFT_GUT,
+    SEG_H,
+    SEG_TOP,
+    TIME_MARGIN_S,
 } from "./flow";
 
 // The boot fixture's own pin — the one flow here whose subject is the HARNESS, not the app.
@@ -1271,12 +1273,11 @@ test("viewport infeasible shot", async ({ page, boot }) => {
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "infeasible-selected.png"), clip });
 
-    // ── 7. the timeline's own HEADER BAND ghost strip: the SAME
-    // infeasibility steps 5–6 just reported STRUCTURALLY (span/warning, no viewport pixel read),
-    // now projected into the new band above the chart. `ghostPx()` is the render's INPUT read back
-    // (the screen-projected arclength spans `Timeline.svelte` computed to draw with) — proving the
-    // band actually painted needs a LIVE pixel read off the real canvas, not a second look at the
-    // same derivation. ──
+    // ── 7. the infeasible-speed treatment lives on the SEGMENT BAR itself, not the event rack
+    // below it (S2, finding 13 — the person's own read named the rack as the wrong surface).
+    // `ghostPx()` is the render's INPUT read back (the screen-projected arclength spans
+    // `Timeline.svelte` computed to draw with) — proving the treatment landed on the RIGHT
+    // surface, and NOT the old one, needs a live read off each. ──
     const ghostPx = (): Promise<{ x0: number; x1: number }[]> => kexCall(page, "ghostPx");
     const seenGhost: { x0: number; x1: number }[][] = [];
     await expect
@@ -1288,8 +1289,31 @@ test("viewport infeasible shot", async ({ page, boot }) => {
     const ghost = seenGhost[0];
     if (!ghost[0]) throw new Error("no ghost span reported");
 
+    const canvasBox = await page.locator("canvas.chart").boundingBox();
+    if (!canvasBox) throw new Error("chart canvas not laid out");
     const bodyBox = await page.locator(".dock .body").boundingBox();
     if (!bodyBox) throw new Error("timeline body not laid out");
+
+    // 7(a). the segment bar: a `.ghost-span` element really landed at the SAME x-range
+    // `ghostPx()` reports — a page-absolute read of the real DOM the browser laid out, not a
+    // second look at the same derivation — over the clip strip's own row (SEG_TOP/H), and it
+    // resolves to the SAME red the viewport's own dashed-red pass paints (`--danger` IS
+    // `COLOR_INFEASIBLE`, `colors.ts`) with an actual dash pattern, not a solid fill.
+    const segSpan = page.locator(".ghost-span").first();
+    await expect(segSpan).toBeVisible();
+    const segBox = await segSpan.boundingBox();
+    if (!segBox) throw new Error("ghost span not laid out");
+    expect(Math.abs(segBox.x - (canvasBox.x + Math.min(ghost[0].x0, ghost[0].x1)))).toBeLessThan(3);
+    expect(segBox.y).toBeGreaterThanOrEqual(canvasBox.y + SEG_TOP - 1);
+    expect(segBox.y + segBox.height).toBeLessThanOrEqual(canvasBox.y + SEG_TOP + SEG_H + 1);
+    const segStroke = await segSpan.evaluate((el) => getComputedStyle(el).stroke);
+    expect(segStroke).toBe("rgb(226, 109, 92)"); // #e26d5c — `COLOR_INFEASIBLE`, `src/colors.ts`
+    const segDash = await segSpan.evaluate((el) => getComputedStyle(el).strokeDasharray);
+    expect(segDash).not.toBe("none"); // the "dashed" half of "dashed/red"
+
+    // 7(b). the event rack renders NO infeasible paint: probe the CANVAS (the rack's own draw
+    // surface, `HBAND_TOP`/`HBAND_H`) at the exact point the retired loop used to fill — dead
+    // center of the first ghost span, the old regression's own witness point.
     const probeChart = (x: number, y: number) =>
         page.evaluate(
             ({ x, y }) => {
@@ -1305,41 +1329,79 @@ test("viewport infeasible shot", async ({ page, boot }) => {
             },
             { x, y },
         );
-    // mid-span x, vertically centered in the header band — the SAME point Timeline.svelte's own
-    // draw loop fills opaque (`COLOR_INFEASIBLE`, no compositing over the band's own solid fill,
-    // so a tight tolerance — not the composited-alpha ProbeTol elsewhere — is warranted). y and
-    // color are independent of the draw path (y from this file's own hand-mirrored HBAND_TOP/H,
-    // color a hardcoded literal below); x is TRUSTED, not checked here — it comes from `ghostPx()`,
-    // the same `markerX` projection the draw loop itself consumes, so a broken projection moves
-    // both together and this probe alone can't see it. The negative probe below covers the gap: it
-    // catches the band painting solid regardless of `ghostSpans` (e.g. the per-span loop dropped).
-    const gx = (ghost[0].x0 + ghost[0].x1) / 2;
-    const gy = HBAND_TOP + HBAND_H / 2;
-    const pixel = await probeChart(gx, gy);
     const InfeasibleRgb = [226, 109, 92]; // #e26d5c — `COLOR_INFEASIBLE`, `src/colors.ts`
     const isInfeasible = (p: readonly number[] | null | undefined) =>
         !!p && p.every((c, i) => Math.abs(c - InfeasibleRgb[i]) <= 4);
-    expect(pixel).not.toBeNull();
-    expect(isInfeasible(pixel)).toBe(true);
-
-    // negative probe: a point INSIDE the header band row, provably OUTSIDE every ghost span — not
-    // assumed, checked below against the same `ghostPx()` read. `LEFT_GUT + 2` is the chart's own
-    // left edge (a couple px past the axis inset), which after `frameTimeline` above maps to
-    // s≈0 — the very start of the track, i.e. inside the pull-up, well before the ramp's onset.
-    // Without this probe, a draw loop that fills the WHOLE band solid regardless of `ghostSpans`
-    // (e.g. the per-span loop dropped) would still pass the positive probe above.
-    const negX = LEFT_GUT + 2;
-    expect(negX).toBeLessThan(ghost[0].x0); // confirm it really sits left of the first red span
-    const negPixel = await probeChart(negX, gy);
-    expect(negPixel).not.toBeNull();
-    expect(isInfeasible(negPixel)).toBe(false);
-    // witnessed red: with `Timeline.svelte`'s per-span loop replaced by one unconditional
-    // `ctx.fillRect(LEFT_GUT, RULER_H + GAP_H, w - LEFT_GUT, STRIP_H)`, this probe failed
-    // (`isInfeasible(negPixel)` came back `true`) while the positive probe above still passed —
-    // confirming this probe, and only this probe, catches that regression. Reverted after.
+    const gx = (ghost[0].x0 + ghost[0].x1) / 2;
+    const rackY = HBAND_TOP + HBAND_H / 2;
+    const rackPixel = await probeChart(gx, rackY);
+    expect(rackPixel).not.toBeNull();
+    expect(isInfeasible(rackPixel)).toBe(false);
+    // witnessed red: this exact probe (same x, the rack's own row) returned true against the
+    // pre-S2 tree — restoring the retired header-band ghost loop reproduces it. This arm pins
+    // the regression the other way now.
 
     await page.waitForTimeout(SHOT_MS);
     await page.screenshot({ path: join(OUT, "infeasible-ghost-band.png"), clip: bodyBox });
+
+    // ── 8. the Time lens never stretches toward t→∞ past this same stall (S2, finding 13):
+    // switch domain and read the chart's own addressable-span end (`uTotal()`, distinct from
+    // `tTotal()` — the bake's UNBOUNDED total, which this track's crawl-through tail inflates
+    // well past the clamp). Bounded to the stall's own time (`stallU()`) plus the named margin,
+    // never the raw unbounded reading. ──
+    const domain = () => kexCall(page, "domain");
+    const uTotal = () => kexCall(page, "uTotal");
+    const stallU = () => kexCall(page, "stallU");
+    const rulerZone = page.locator(".rulerzone");
+    await rulerZone.click({ button: "right", position: { x: 40, y: 10 } });
+    await clickMenuItem(page, ".rmenu", "Seconds");
+    await expect.poll(domain).toBe("time");
+    await frames(page, 2);
+
+    const [stall, bounded, raw] = await Promise.all([stallU(), uTotal(), tTotal()]);
+    if (stall === null) throw new Error("no stall reported in Time domain");
+    // the raw bake total is genuinely unbounded here — the positive control, without which a
+    // clamp that never binds would pass this arm vacuously.
+    expect(raw).toBeGreaterThan(stall + TIME_MARGIN_S + 1);
+    expect(bounded).toBeCloseTo(stall + TIME_MARGIN_S, 6);
+    expect(bounded).toBeLessThan(raw);
+
+    // ── 9. the distance-mode resize flicker (S2, finding 13): back to Distance (the reported
+    // domain) under the SAME stall, resize the dock repeatedly and confirm the canvas's own
+    // pixel buffer stays sized to the box it's laid out in, at several settled widths — a
+    // regression net over the fixed mechanism (`view.ts` `resize`'s own docblock: sizing the
+    // buffer and the draw math off two independently-read values, one of which lags a
+    // `ResizeObserver` frame, is what stretches/misplaces content for a frame). NOT a witness
+    // of the transient race itself: `page.setViewportSize` + a settle wait resolves past the
+    // one-frame window either fix or no fix, so this arm reads identically pre- and post-fix
+    // (confirmed by hand against the reverted `resize` call) — the race's own red-first proof
+    // is `tests/view.test.ts` ("explicit w/h WINS over a stale canvas.clientWidth"), a
+    // deterministic unit test that stubs the two readings apart. ──
+    await rulerZone.click({ button: "right", position: { x: 40, y: 10 } });
+    await clickMenuItem(page, ".rmenu", "Meters");
+    await expect.poll(domain).toBe("distance");
+    await frames(page, 2);
+
+    const chartCanvas = page.locator("canvas.chart");
+    for (const width of [900, 620, 1040, 760]) {
+        await page.setViewportSize({ width, height: 800 });
+        await frames(page, 2); // settle past the resize + re-bake reactivity
+        const box = await chartCanvas.boundingBox();
+        if (!box) throw new Error("chart canvas not laid out after resize");
+        const [bufW, bufH, dpr] = await page.evaluate(() => {
+            const c = document.querySelector<HTMLCanvasElement>("canvas.chart");
+            return [c?.width ?? -1, c?.height ?? -1, window.devicePixelRatio || 1] as [
+                number,
+                number,
+                number,
+            ];
+        });
+        // the pixel buffer sizes off the SAME box it's laid out in, at every width visited —
+        // the invariant `resize`'s fix makes true by construction (`w`/`h` feed both the CSS
+        // layout and the buffer size), and whose violation is the visible stretch/misplacement.
+        expect(Math.abs(bufW - box.width * dpr)).toBeLessThan(2);
+        expect(Math.abs(bufH - box.height * dpr)).toBeLessThan(2);
+    }
 });
 
 // Drive the VIEWPORT MULTISELECT flow (kex2d-multiselect stage 6): seed a shaped geo track →
