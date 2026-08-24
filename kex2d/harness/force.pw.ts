@@ -1865,10 +1865,19 @@ test("timeline domain flow — a downstream clip's edge also tracks an upstream 
     if (!pastEnd1) throw new Error("downstream clip vanished mid-drag");
     expect(pastEnd1.x - atEnd1.x).toBeGreaterThan(4);
     expect(pastEnd1.x + pastEnd1.width - (atEnd1.x + atEnd1.width)).toBeGreaterThan(4);
-    // over the WHOLE gesture, section 1 shifted right of where it started (no width invariant
-    // asserted here: Time-domain projection is nonlinear, so a rigid arclength shift across the
-    // extrapolating-regime boundary genuinely changes a downstream clip's own pixel width too —
-    // the crossing edges advancing is the defect this flow pins, not a fixed width).
+    // section 1's OWN width (its authored length) IS invariant between these two reads: by
+    // construction of `dragPxToEnd` both of section 1's edges already sit past the frozen
+    // table's own end at `atEnd1` (section 0 alone was dragged out to the pre-drag WHOLE-TRACK
+    // total, which already pushed all of downstream section 1 past that same total) — so both
+    // `atEnd1` and `pastEnd1` read section 1 entirely inside `dToUExtend`'s AFFINE branch
+    // (Δu = Δd/vExit), where a rigid arclength shift changes only position, not width, exactly.
+    // Tolerance is float/layout noise, not a tuned value: two orders of magnitude above the
+    // read residual this same affine identity measures in practice (~3e-5 px) and four orders
+    // below the smallest regression this flow already proves it catches (the >4px assertions
+    // above) — `before1`, taken BEFORE the gesture (section 1 still in the finite, nonlinear
+    // t(s) region), is deliberately excluded from this comparison for exactly that reason.
+    expect(pastEnd1.width).toBeCloseTo(atEnd1.width, 3);
+    // over the WHOLE gesture, section 1 still shifted right of where it started.
     expect(pastEnd1.x).toBeGreaterThan(before1.x);
 
     await page.mouse.up();

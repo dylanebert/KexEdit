@@ -809,7 +809,11 @@ const forcePts = $derived.by((): ForcePt[] => {
                 section: c.id,
                 s: p.s,
                 g: p.g,
-                u: uOf(d),
+                // finding 9's mechanism gap (adversarial round 2): `d` is a DOWNSTREAM section's
+                // own keyframe position, which shifts rigidly with an upstream lengthen exactly
+                // like a downstream clip's own edges do — same live-bake `spans` source, same
+                // frozen-table clamp risk. `uOfLen`, not plain `uOf` (`clips`' own fix, above).
+                u: uOfLen(d),
                 startU: c.u0,
                 startD: c.s0,
                 len: c.len,
@@ -998,8 +1002,11 @@ const bandStrips = $derived.by((): BandStrip[] => {
                 start: st.start,
                 end: st.end,
                 value: st.value,
-                u0: uOf(d0),
-                u1: uOf(d1),
+                // finding 9's mechanism gap: a strip on a downstream section shifts rigidly
+                // with an upstream lengthen, same as its owning clip's edges — `uOfLen`, not
+                // plain `uOf` (`forcePts`' own note, above, is the same reasoning).
+                u0: uOfLen(d0),
+                u1: uOfLen(d1),
                 startU: c.u0,
                 startD: c.s0,
                 len: extent,
@@ -1021,7 +1028,9 @@ const stripTicks = $derived.by((): number[] => {
         for (let i = 1; i < strips.length; i++) {
             if (strips[i].start !== strips[i - 1].end) continue;
             const d = toGlobal(spans, c.id, strips[i].start);
-            if (d !== null) res.push(uPx(uOf(d)));
+            // same seam as `bandStrips`/`forcePts`: a boundary notch on a downstream section
+            // shifts rigidly with an upstream lengthen too.
+            if (d !== null) res.push(uPx(uOfLen(d)));
         }
     }
     return res;
@@ -1063,7 +1072,9 @@ const stripKfPts = $derived.by((): StripKfPt[] => {
                 v: k.v,
                 u: (() => {
                     const d = toGlobal(spans, s.section, k.s);
-                    return d === null ? s.startU : uOf(d);
+                    // same seam again: a strip keyframe on a downstream section shifts rigidly
+                    // with an upstream lengthen (`bandStrips`/`forcePts`'s own note).
+                    return d === null ? s.startU : uOfLen(d);
                 })(),
                 startU: s.startU,
                 start: s.start,
