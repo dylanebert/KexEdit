@@ -1216,7 +1216,7 @@ const selStripKfSet = $derived.by((): Set<number> => {
     return editor.stripKfs.ids;
 });
 // `selLocked`'s own twin — the pin-mode lockdown gates a strip keyframe's fields exactly like
-// a force keyframe's (`stripKfDown`'s own `sectionEditable` guard on the drag path).
+// a force keyframe's (`keyframeDown`'s own `sectionEditable` guard on the drag path).
 const selStripKfLocked = $derived.by((): boolean => {
     void tick;
     const k = selStripKfPt;
@@ -1842,7 +1842,7 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
     tanMod = e.ctrlKey || e.metaKey;
     beginForceTangent(ecs, pt.id);
     dragTan = { id: pt.id, side: hnd.side };
-    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note; a handle
+    // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note; a handle
     // reshapes the curve between keys, which feeds back into v(s) same as a keyframe drag does.
     gestureMapping = mapping;
     beginDrag(canvas, e.pointerId);
@@ -2488,7 +2488,7 @@ const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-e
 // own exit and every downstream boundary MOVE with the resize (self-snap), and upstream
 // boundaries are unreachable (they'd floor the length). the reach guard (the domain's own
 // `minForceExtent` floor) skips a snap the floor won't honor, so no guide flashes on an edge
-// that can't get there — matching applyDrag's reach guard.
+// that can't get there — matching applyKeyframeDrag's reach guard.
 //
 // The extent is the section's authored length, arclength ALWAYS (S6) -- so in `Domain.Time`
 // this same gesture reads a cursor position on the PROJECTED (seconds) chart axis and must
@@ -2538,7 +2538,7 @@ function lenDown(e: PointerEvent, c: Clip): void {
     beginLength(ecs, c.id);
     lenId = c.id;
     uFrozen = uTotal; // freeze the pan-clamp span so the view holds still under the drag
-    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
+    // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note.
     gestureMapping = mapping;
     // freeze the extrapolation's own exit speed at the SAME instant -- see `exitSpeed`'s own note.
     lenVExit = exitSpeed();
@@ -2756,14 +2756,14 @@ function bandDown(e: PointerEvent): void {
     if (!sectionEditable(editor.pinning, s.section)) return;
     e.preventDefault();
     e.stopPropagation();
-    // shift-click TOGGLES set membership (`forceDown`'s own grammar, generalized to spans) — a
+    // shift-click TOGGLES set membership (`keyframeDown`'s own grammar, generalized to spans) — a
     // selection gesture, not a drag.
     if (e.shiftKey) {
         selectStrip(s.id, "toggle");
         return;
     }
     selectStrip(s.id);
-    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
+    // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note.
     gestureMapping = mapping;
     if (hit.kind === "endpoint" || hit.kind === "glyph") {
         // a glyph (degenerate strip, S6 finding 8) drags out as an "end" extend ONLY — there is
@@ -2833,9 +2833,12 @@ function createStripAt(section: number, station: number): void {
 // Delete removes the selected strip; Escape clears the selection.
 function deleteSelectedStrip(): void {
     if (editor.strip === null) return;
-    const s = selStrip;
-    if (s === null) return;
-    if (!sectionEditable(editor.pinning, s.section)) return;
+    // read the strip's section from the ECS directly — `selStrip` is a `$derived` behind
+    // `bandStrips` behind the RAF `void tick`, so a Delete pressed before the tick sees null
+    // and no-ops (section.pw.ts:1582). `stripAt` + `Strip.section.get` are synchronous.
+    const eid = stripAt(ecs, editor.strip);
+    if (eid === null) return;
+    if (!sectionEditable(editor.pinning, Strip.section.get(eid))) return;
     deleteStrips(history, ecs, [...editor.strips.ids]);
 }
 // Delete removes the WHOLE selected strip-keyframe SET (S4's booked multi-select, `deleteForces`'
@@ -2904,7 +2907,7 @@ function handleFieldEdit(ds: number, dg: number): void {
     if (!sectionEditable(editor.pinning, h.pt.section)) return; // the lockdown
     const tan = tangentFor(h.pt.id, h.side, ds, dg);
     if (!tan) return;
-    skipLanding(); // keyboard-committed keyframe mutation: same routing as fieldEdit above
+    skipLanding(); // keyboard-committed keyframe mutation: same routing as kfFieldEdit above
     beginForceTangent(ecs, h.pt.id);
     setForceTangent(ecs, h.pt.id, tan);
     commit(history);
@@ -3005,7 +3008,7 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
         // entry speed) — and inverts through the GESTURE-FROZEN table for the write (`dOf`,
         // identity in Distance; S6 fix -- `v`/`p.startU` are the chart's own axis, never the
         // metres store directly).
-        gestureMapping = mapping; // freeze -- see `forceDown`'s own note
+        gestureMapping = mapping; // freeze -- see `keyframeDown`'s own note
         labelScrub(e, {
             seed: p.u,
             rate: timeDomain ? SCRUB_T : SCRUB_S,

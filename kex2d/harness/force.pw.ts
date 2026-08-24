@@ -1103,7 +1103,7 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     // (0.2·len), so the bare clamp math lands it EXACTLY at the section's extent — precisely where
     // the untouched trailing seed already sits. But `setForcePoint` refuses a taken station PER KEY
     // (`track.ts stationTaken`, "refuse rather than overwrite"), and the block tests the whole
-    // shared step together before committing it (`Timeline.svelte applyDrag`'s own comment: "which
+    // shared step together before committing it (`Timeline.svelte applyKeyframeDrag`'s own comment: "which
     // would tear a multi-drag apart… the block holds at the last landed Δs") — so this drag
     // exercises the refusal APPLIED TO THE BLOCK, not just the raw clamp: the shoulder never
     // reaches the occupied station, and the group holds one step short instead (every member's
@@ -1548,7 +1548,7 @@ test("timeline domain flow — Time-view gesture writes arclength through the fr
     const DragPx = 60; // well past SNAP_PX, so no landmark/gesture-start magnet fires
     const uFinal = u0 + DragPx / pxPerU;
     // read the table BOTH values will be checked against — BEFORE the gesture starts, the same
-    // live snapshot `forceDown` freezes into `gestureMapping`.
+    // live snapshot `keyframeDown` freezes into `gestureMapping`.
     const dU0 = await dOf(u0);
     const dUFinal = await dOf(uFinal);
 

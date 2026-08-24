@@ -1198,7 +1198,7 @@ test("pin mode flow", async ({ page, boot }) => {
     expect(await sandboxDepth()).toBe(3); // one press = one sandbox entry
     // …and the SECOND press needs a frame between it and the first, because the force nudge
     // resolves its base value from `forcePts` — the per-RAF PROJECTION, not the authored `Force`
-    // component (`Timeline.svelte`'s `onKey`, the `nudgeForces(members, ds, dg)` arm). Back to back,
+    // component (`Timeline.svelte`'s `onKey`, the `nudgeKeyframes(members, ds, dv)` arm). Back to back,
     // press 2 reads press 1's pre-value, rounds to the same grid point, writes the value already
     // there, and `commit` records a no-op: measured g held at 0.05 with `sandboxDepth` stuck at 3
     // for 40 further frames (never late — absorbed), 1-in-4 to 7-in-8 of runs depending on pace,
@@ -1790,7 +1790,7 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
 });
 
 // S1: the strip keyframe drag ORIGIN. `stripKfMove` subtracted the section entry
-// (`BandStrip.startU`) where `forceDown`'s own pattern subtracts the GRAB POINT (`dragU0`) — so
+// (`BandStrip.startU`) where `keyframeDown`'s own pattern subtracts the GRAB POINT (`dragU0`) — so
 // the first move wrote `s ≈ 2·s0` and both clamps (the extent clamp here, `setStripKeyframe`'s
 // own) pinned it to `end`, regardless of how small the actual cursor delta was (the origin error
 // dominates, not the drag distance). This flow drives REAL POINTER EVENTS (checks.md: an
