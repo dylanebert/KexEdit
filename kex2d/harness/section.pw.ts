@@ -1877,22 +1877,33 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     );
     if (!kf0) throw new Error("no newly-created keyframe found");
 
-    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
+    // poll for the SPECIFIC newly-created keyframe's diamond, not just any diamond — the
+    // seeded keyframes are already drawn, so a bare length > 0 passes before the new one's
+    // $derived (read through the per-RAF tick) has propagated to `stripKfPx`.
+    await expect
+        .poll(async () => {
+            const px = (await stripKfPx()) as { id: number; x: number; y: number }[];
+            return px.find((k) => k.id === kf0.id) ?? null;
+        })
+        .not.toBeNull();
     const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
     const kf0Px = kfPx.find((k) => k.id === kf0.id);
     if (!kf0Px) throw new Error("the created keyframe has no drawn diamond");
 
-    // a SMALL horizontal-only drag, held y fixed (the same client y throughout, so v holds and
+    // a horizontal-only drag, held y fixed (the same client y throughout, so v holds and
     // only s is under test) — small enough that a correct drag stays well inside the strip's
-    // own extent (widened to >60 px above, `stripWidthPx`'s reading in the sibling flow; a
-    // 2 px move from the strip's own MIDPOINT clears both edges by construction). Ctrl is held
-    // to bypass snapping (S1: snapping is now applied to strip keyframe drags through the
-    // unified `applyKeyframeDrag`; this test checks the raw drag origin, not the snap).
-    const DxPx = 2;
+    // own extent (widened to >60 px above; a 20 px move from the strip's own MIDPOINT clears
+    // both edges by construction). Ctrl is held to bypass the grid/landmark snap (S1: snapping
+    // is now applied to strip keyframe drags through the unified `applyKeyframeDrag`). The
+    // drag is 20 px — well past SNAP_PX (8), so the per-axis gesture-start magnet that survives
+    // the bypass (`snapAxis`'s `startPx`, the same axis pin the force side tests at force.pw.ts
+    // 2b′) does not fire. The force side's own reference drag (force.pw.ts ~1539) uses the same
+    // convention: Ctrl + a drag "well past SNAP_PX, so no landmark/gesture-start magnet fires."
+    const DxPx = 20;
     await page.mouse.move(kf0Px.x, kf0Px.y);
-    await page.keyboard.down("Control"); // bypass snapping (S1: unified drag now snaps)
+    await page.keyboard.down("Control"); // bypass grid/landmark snap (S1: unified drag now snaps)
     await page.mouse.down();
-    await page.mouse.move(kf0Px.x + DxPx, kf0Px.y, { steps: 3 });
+    await page.mouse.move(kf0Px.x + DxPx, kf0Px.y, { steps: 5 });
     await page.mouse.up();
     await page.keyboard.up("Control");
     await page.waitForTimeout(100);
