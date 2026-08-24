@@ -2332,9 +2332,22 @@ test("one selection model — the S4 transition table", async ({ page, boot }) =
 
     // ── EMPTY-LANE row: the band's own empty-space click (S4's own new ground — `bandDown` was
     // previously inert here, no selection change at all) deselects everything the same way;
-    // shift-click preserves. picked clear of both strips (the launch strip at station 0, this
-    // flow's own at ~0.6 · width, both minimum-extent). ──
-    const emptyBandX = clipBb.x + clipBb.width * 0.92;
+    // shift-click preserves. Read clear of EVERY strip's real px from `stripPx` rather than a
+    // fixed fraction (kex2d-event-lane S5, findings 4/5/6: a summoned strip now grows to a
+    // brake-section-typical span, not the bare min-extent this flow's own strip used to sit at,
+    // so a hand-picked fraction can land back inside a strip whose width just changed). ──
+    const findEmptyBandX = async (): Promise<number> => {
+        const strips = await stripPx();
+        for (let frac = 0.98; frac >= 0.02; frac -= 0.02) {
+            const pageX = clipBb.x + clipBb.width * frac;
+            const local = pageX - canvasBb.x; // stripPx's x0/x1 are canvas-local, not clip-local
+            if (!strips.some((s) => local >= s.x0 - 4 && local <= s.x1 + 4)) {
+                return pageX;
+            }
+        }
+        throw new Error("no band x clear of every strip");
+    };
+    const emptyBandX = await findEmptyBandX();
     await expect.poll(selectedSection).not.toBeNull(); // still armed from the ruler's own re-select
     await page.mouse.click(emptyBandX, bandY);
     await expect.poll(nothingSelected).toBe(true);

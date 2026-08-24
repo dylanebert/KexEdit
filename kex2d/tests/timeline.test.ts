@@ -1418,6 +1418,54 @@ describe("kex2d-event-lane S3: strip-keyframe select/value/hover arms mirror the
     });
 });
 
+// kex2d-event-lane S5 (Locked decision findings 7, 4/5/6, 2, 11-near). Source-text arms —
+// `colors.test.ts`'s idiom for a Svelte-only claim with no unit-testable runtime seam; the real
+// rendered pixels/cursor are the capture flow's own job (`affordance.pw.ts`).
+describe("kex2d-event-lane S5: lane label retirement, default strip length, edge cursor, m/s unit (Validation's oracle)", () => {
+    // finding 7: the "vel" lane label retires — the lane is general, not typed. Typing moves to
+    // the item (the strip's own kind color below, and the "v" unit on its selected readout).
+    test('the retired "vel" lane label is gone; the general-lane label reads "events", untyped', () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(src).not.toContain('fillText("vel"');
+        expect(src).toContain('fillText("events"');
+    });
+
+    // findings 4/5/6: default created strip length rises from min-extent to a brake-section-
+    // typical span, derived from EXTEND_DIST (`track.ts`'s own "existing section-length
+    // constant" — a fresh force section/geo chain seeds at the same value), never a new tuned
+    // literal, and the summoned-creation path (`createStripAt`) is what carries it; `canCreateAt`
+    // stays on the bare min extent (W7's own overlap gate, unchanged by this stage).
+    test("STRIP_DEFAULT_LEN derives from EXTEND_DIST, not an independent literal", () => {
+        const src = readFileSync(new URL("../src/track.ts", import.meta.url), "utf8");
+        expect(src).toContain("export const STRIP_DEFAULT_LEN = EXTEND_DIST;");
+    });
+
+    test("createStripAt authors the grown default extent, not the bare min extent", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(src).toContain("function createStripAt(section: number, station: number): void {");
+        expect(src).toContain("const extent = stripDefaultExtentAt(ecs, section, station);");
+    });
+
+    // finding 2: an edge hit zone names the trim with a cursor — kept ALONGSIDE the hover-rung
+    // treatment (`bandHit`'s endpoint stroke), never instead of it. `colors.test.ts`'s cursor
+    // allowlist is the registry gate for the declared class + value; this pins the reactive
+    // binding that drives it off the same classifier the press path uses.
+    test("the band's edge cursor is driven by the same bandHit classifier the press/hover paths use", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(src).toContain('class:edge-hover={bandHit.kind === "endpoint"}');
+        expect(src).toContain(".hbandzone.edge-hover {");
+    });
+
+    // finding 11, near half: a selected strip keyframe's velocity readout carries its unit —
+    // the position field's own `.unit` span shape, matching `posUnit` two lines up. The far
+    // half (a second unit axis) is out of scope — untouched here.
+    test("the selected strip keyframe's v field carries the m/s unit", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(src).toContain('aria-label="Keyframe velocity (m/s)"');
+        expect(src).toContain('<span class="unit">m/s</span>');
+    });
+});
+
 // S3 (Affordances): the velocity band becomes a lane at the clip lane's own height, not a
 // re-tuned literal — pinned as a derivation (`STRIP_H = GAP_H`) rather than a numeric equality,
 // so a future change to either constant can't silently drift the two apart again. Source-text

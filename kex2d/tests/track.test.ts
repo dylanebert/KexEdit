@@ -25,6 +25,7 @@ import {
     spawnStripKeyframe,
     Strip,
     stripAt,
+    stripDefaultExtentAt,
     stripMinExtentAt,
     stripOverlapped,
     stripState,
@@ -2860,6 +2861,53 @@ describe("validCoefficient — the coefficient fields' negative/NaN refusal", ()
 // the overlap guard are pure ECS reads/writes (mirrors `Force`'s own shape); the
 // bake-time edge-index conversion (`edgeStrips`/`stripsForStep`) is the seam
 // between the ECS's domain-coordinate storage and the kernel's edge addressing.
+// kex2d-event-lane S5 (Locked decision findings 4/5/6): the summoned-creation span grows past
+// the bare min-extent edge toward a brake-section-typical length (`STRIP_DEFAULT_LEN`), clamped
+// to the section and to the nearest neighboring strip — three branches, each pinned by its own
+// boundary case rather than a single happy-path read.
+describe("stripDefaultExtentAt (S5)", () => {
+    test("grows from the min-extent edge span to the full section on an otherwise-empty section", () => {
+        const { state, sec } = track();
+        convertSection(state, sec); // → force, default extent EXTEND_DIST = 24 (= STRIP_DEFAULT_LEN)
+        expect(stripMinExtentAt(state, sec, 0)).toEqual({ start: 0, end: 0.5 });
+        expect(stripDefaultExtentAt(state, sec, 0)).toEqual({ start: 0, end: 24 });
+    });
+
+    test("clamps to a neighboring strip's start rather than overlapping it", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        createStrip(state, sec, 10, 15, 5);
+        expect(stripDefaultExtentAt(state, sec, 0)).toEqual({ start: 0, end: 10 });
+    });
+
+    test("clamps to the section's own length when it's shorter than the default", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        setSectionLength(state, sec, 8);
+        expect(stripDefaultExtentAt(state, sec, 0)).toEqual({ start: 0, end: 8 });
+    });
+
+    test("never shrinks below the min-extent floor even when the section is shorter than it", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        setSectionLength(state, sec, 0.1); // below minForceExtent's own floor, clamped there
+        const minExtent = stripMinExtentAt(state, sec, 0);
+        expect(minExtent).not.toBeNull();
+        const extent = stripDefaultExtentAt(state, sec, 0);
+        expect(extent).not.toBeNull();
+        expect((extent as { end: number }).end).toBeGreaterThanOrEqual(
+            (minExtent as { end: number }).end,
+        );
+    });
+
+    test("returns null under the same condition stripMinExtentAt does (no resolvable edge structure)", () => {
+        const { state, sec } = track();
+        const noSuchSection = sec + 999; // a stable id nothing resolves to
+        expect(stripMinExtentAt(state, noSuchSection, 0)).toBeNull();
+        expect(stripDefaultExtentAt(state, noSuchSection, 0)).toBeNull();
+    });
+});
+
 describe("velocity strips — ECS layer (C3)", () => {
     test("createStrip refuses an overlapping span; a non-overlapping write at the neighbour's boundary still lands", () => {
         // red before the guard existed: an overlapping createStrip silently succeeded, landing

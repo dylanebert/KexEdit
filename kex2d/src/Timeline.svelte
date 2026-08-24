@@ -156,6 +156,7 @@ import {
     stripAt,
     Strip,
     stripBoundsAt,
+    stripDefaultExtentAt,
     stripKeyframes,
     stripMinExtentAt,
     stripOverlapped,
@@ -2814,22 +2815,25 @@ function bandDown(e: PointerEvent): void {
     window.addEventListener("pointerup", bandUp);
     window.addEventListener("pointercancel", bandUp);
 }
-// summoned creation: the menu row's action — a strip appears at the clicked station at minimum
-// extent, selected, curve flattened and solid (Locked decision). The minimum extent is one
-// overridden edge (`stripMinExtentAt`), so the strip is never silently inert.
-// W7: `canCreateAt` gates the menu row's `enabled` — a station whose min-extent span overlaps
-// an existing strip (a neighbour's boundary sits mid-edge) would produce a silently inert
-// `createStrip` return, so the row is grayed instead.
+// summoned creation: the menu row's action — a strip appears at the clicked station, selected,
+// curve flattened and solid (Locked decision), sized to a brake-section-typical span
+// (`stripDefaultExtentAt`, S5 findings 4/5/6) rather than the bare min-extent edge — the
+// overridden edge (`stripMinExtentAt`) is still the floor a degenerate section falls back to,
+// so the strip is never silently inert.
+// W7: `canCreateAt` gates the menu row's `enabled` off the MIN extent, not the grown default —
+// a station whose min-extent span overlaps an existing strip (a neighbour's boundary sits
+// mid-edge) would produce a silently inert `createStrip` return, so the row is grayed instead;
+// the grown span only ever widens what the min extent already cleared.
 function canCreateAt(section: number, station: number): boolean {
     const minExtent = stripMinExtentAt(ecs, section, station);
     if (minExtent === null) return false;
     return !stripOverlapped(ecs, section, minExtent.start, minExtent.end, -1);
 }
 function createStripAt(section: number, station: number): void {
-    const minExtent = stripMinExtentAt(ecs, section, station);
-    if (minExtent === null) return;
-    const value = stripSeedValue(ecs, section, minExtent.start);
-    const id = addStrip(history, ecs, section, minExtent.start, minExtent.end, value);
+    const extent = stripDefaultExtentAt(ecs, section, station);
+    if (extent === null) return;
+    const value = stripSeedValue(ecs, section, extent.start);
+    const id = addStrip(history, ecs, section, extent.start, extent.end, value);
     if (id !== null) selectStrip(id);
 }
 // Delete removes the selected strip; Escape clears the selection.
@@ -3219,14 +3223,16 @@ function render(ctx: CanvasRenderingContext2D): void {
     // quiet governs the lane's CONTENTS (the strips), never its container, so this draws
     // whether or not a strip exists yet. Confined to the untouched left gutter: every strip and
     // ghost span below clamps its own draw to `LEFT_GUT`, so the label never collides with one
-    // regardless of playback position.
+    // regardless of playback position. The label reads "events", not the retired "vel" (S5,
+    // Locked decision finding 7): the LANE is general — FMOD's logic-track shape, velocity the
+    // only item type today — so its own name can't be a per-type word, and it wears the same
+    // neutral tone the untyped "1 g" baseline does rather than `COLOR_VELOCITY`. Typing moved
+    // to the ITEM: the strip's own fill color below, and the "v" unit on its selected readout.
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     ctx.font = "9px 'JetBrains Mono', ui-monospace, monospace";
-    ctx.fillStyle = COLOR_VELOCITY;
-    ctx.globalAlpha = 0.5;
-    ctx.fillText("vel", 4, RULER_H + GAP_H + STRIP_H / 2);
-    ctx.globalAlpha = 1;
+    ctx.fillStyle = "rgba(205, 197, 188, 0.6)";
+    ctx.fillText("events", 4, RULER_H + GAP_H + STRIP_H / 2);
 
     // authored velocity strips — solid fill, the strip's own kind color (the velocity hue,
     // `COLOR_VELOCITY`). Selected strips brighten. Boundary ticks disambiguate abutting strips.
@@ -4188,6 +4194,7 @@ onMount(() => {
             {#if eid !== null && sTotal > 0}
                 <rect
                     class="hbandzone"
+                    class:edge-hover={bandHit.kind === "endpoint"}
                     x={LEFT_GUT}
                     y={RULER_H + GAP_H}
                     width={Math.max(0, w - LEFT_GUT)}
@@ -4486,9 +4493,9 @@ onMount(() => {
             {/if}
         <!-- the selected STRIP keyframe's own typed s/v popover — `selPoint`'s twin (S3, findings
              10/3): selection alone isn't the whole substrate parity, the value has to be SHOWN
-             too. No scrub-drag on the labels (force's `scrubStart`) and no unit on `v` (that's
-             S5's m/s labeling, Locked decision finding 11) — the value-shown behavior itself is
-             this stage's, the label polish isn't. -->
+             too. No scrub-drag on the labels (force's `scrubStart`); `v` carries its m/s unit
+             (S5, Locked decision finding 11 near half) the same `.unit` span the position field
+             wears, never a second axis (that's the far half, out of scope). -->
         {:else if selStripKfPt && !multiStripKf}
             {@const mx = uPx(selStripKfPt.u)}
             {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
@@ -4527,8 +4534,9 @@ onMount(() => {
                             onchange={onFieldStripV}
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, vText)}
-                            aria-label="Keyframe velocity"
+                            aria-label="Keyframe velocity (m/s)"
                         />
+                        <span class="unit">m/s</span>
                     </div>
                 </div>
             {/if}
@@ -5294,14 +5302,20 @@ onMount(() => {
 
     /* the velocity-strip header band hit zone (T1): transparent, captures pointer events
        for the band-wide hit classifier. The visual strips are drawn on the canvas. Cursor
-       is `default`, always — empty band space is deliberately inert (no create-drag), and a
-       trim/body-drag hit stays `default` too (S3's premise correction: the hit zone names the
-       gesture in the hover rung — the canvas-drawn edge/body highlight above — never the
-       cursor; `editor-ui.md` Affordance typing). */
+       stays `default` over empty band space (deliberately inert, no create-drag) and over a
+       body drag (the hit zone names THAT gesture in the hover rung — the canvas-drawn body
+       highlight — never the cursor; S3's premise correction, `editor-ui.md` Affordance
+       typing). A span EDGE is the one exception (S5, finding 2): the resize affordance gets
+       its own cursor too, `.clip-trim`'s own treatment on the force-section extent trim,
+       kept alongside the hover-rung highlight rather than instead of it — `edge-hover`
+       mirrors `bandHit.kind === "endpoint"` live. */
     .hbandzone {
         fill: transparent;
         pointer-events: all;
         cursor: default;
+    }
+    .hbandzone.edge-hover {
+        cursor: ew-resize;
     }
 
     /* the append tail: a small `+` past the last clip that opens a two-choice geo/force
