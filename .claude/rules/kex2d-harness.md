@@ -117,8 +117,8 @@ validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-
   `counts` and `failedTitles` (parsed from run stdout in `args.ts`) for flake forensics.
 - **The wipe guard.** `RUN.json` is the shot set's provenance stamp AND its wipe permission
   slip: a full run refuses to wipe any `--out` that isn't absent, empty, or `RUN.json`-bearing.
-- **Standalone staging.** `flow.ts` + every `*.pw.ts` flow file (`geo.pw.ts`, `force.pw.ts`,
-  `section.pw.ts`, `lab.pw.ts`) + `capture.pw.config.ts` are staged to the Windows host as a set
+- **Standalone staging.** `flow.ts` + every `*.pw.ts` flow file (the set is `capture.ts`'s
+  `stage.files`, never a list quoted here) + `capture.pw.config.ts` are staged to the Windows host as a set
   and may import nothing *outside the staged set*. Shared validators are duplicated verbatim,
   pinned character-identical AND pinned reached by unit tests (hand-written copies drifted once);
   mirrored app constants live in the MIRRORED block, each naming its source. Staging is a file

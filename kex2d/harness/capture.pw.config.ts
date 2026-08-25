@@ -5,9 +5,9 @@ import { defineConfig } from "@playwright/test";
 //
 // Every flow owns its page and its screenshot names and shares nothing but the dev server, so the
 // suite runs `fullyParallel` — a worker can pick up any test from any of the staged flow files
-// (`geo.pw.ts`/`force.pw.ts`/`section.pw.ts`/`lab.pw.ts`, matched by the `*.pw.ts` glob below), and
+// (the staged set is `capture.ts`'s `stage.files`, matched by the `*.pw.ts` glob below), and
 // without it Playwright would serialize the tests within whichever file a worker is given, leaving
-// the rest idle. `fullyParallel` already schedules at the test level, so the four-file split below
+// the rest idle. `fullyParallel` already schedules at the test level, so the per-file split below
 // is an organizational move (staging, file size), not a new source of concurrency.
 //   KEX_WORKERS=n   → worker count (1 to serialize, e.g. when bisecting a cross-test suspicion)
 //   KEX_HEADED=1    → drive the host's visible Chrome instead of headless
