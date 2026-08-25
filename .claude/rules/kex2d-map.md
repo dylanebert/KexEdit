@@ -173,7 +173,14 @@ law, above).
 The carrier is a **velocity strip**: `section.Strip`, `{start, end, value, values?}` in section-local
 edge-index coordinates (the same indexing `fN`/`ds` already carry), threaded to
 `evalGeo`/`evalForce`/`chain` as a trailing, defaulted-`undefined` argument — an unauthored
-section threads no override at all, byte-identical to before strips existed. `section.stripOverride`
+section threads no override at all, byte-identical to before strips existed. This is the
+**resolved, per-section** form `edgeStrips` (`track.ts`) produces at bake time; the ECS's own
+authoring storage (`Strip.start`/`.end`, § Velocity strips below) is **track-global** arclength,
+never section-local — `edgeStrips` converts by subtracting the section's own in-pass entry offset
+(`sectionWindows`, a pure function of the live document, never a bake read) before the
+round-to-nearest `boundary()` map runs, so a track-global row wholly outside a section's window
+collapses to the inert `{0,0}` spec (or is dropped past the extent) rather than displacing onto a
+live edge. `section.stripOverride`
 builds the per-edge closure `(k) => values[k − lo]` when the strip carries a keyframed curve
 (pre-evaluated v² per edge, T2 on the force-curve machinery), falling back to `(k) => value²`
 when `values` is absent (the constant case — no keyframes means one constant across the span,
@@ -260,33 +267,47 @@ whose ends round together collapses to `start === end`, which the point conventi
 PRECEDING edge `[start−1, start)` — the override is displaced, not lost; it is genuinely inert
 only at station 0 where `lo = −1` (out of range). The guard refuses the collapse at the write op
 so a stored strip covers ≥ 1 edge of the current bake **on every path that carries the guard**.
-That writer set is: `createStrip`, `setStrip`, and the split head/tail pre-checks
-(`splitForce`/`splitGeo`, via `spanCoversOneEdge` against the would-be post-split grid). A domain
-flip carries no strip clamp at all — it is a pure `Track.domain` column write
-(`domain.convertDomain`/`history.landDomain`) and never touches a strip's stored span, so it isn't
-a writer of this floor. `joinNext` re-floors both halves' strips against the joined section's
-resolved grid (`refloorStrips`, called from both the geo and the force branch) rather than
-re-checking a pre-existing guard, so the min-extent half of the old booked defect is repaired.
-The surviving booked defect is the **keyframe-`s` rebase**: a join rebases `Strip.start`/`end`
-(+`aLen`) without moving a boundary `StripKeyframe.s` to match, left for the successor spec —
-the keyframe re-substrate that spec is scoping may moot the riding code. Where the ≥ 1-edge floor
-and the no-overlap clamp cannot both hold, **overlap loses** — disclosed in `refloorStrips`'s
-docblock. Cut refuses inside a minimum-extent strip.
+Since S2 (`kex2d-event-substrate`) a strip is track-global, so this checks against the WHOLE
+TRACK's own edge structure (`stripCoversOneEdge`, off `trackEdgeArray` — every section's own pure
+`sectionEdgeDs` concatenated in chain order, itself never a bake read), not one section's grid.
+That writer set is now just: `createStrip`, `setStrip` — the two guarded writers `stripOverlapped`/
+`stripCoversOneEdge` sit inside. **Split, join, delete, and convert are no longer writers of this
+floor at all**: a strip is span-blind to structural ops (Locked decision) — `splitForce`/`splitGeo`
+carry no strip pre-check (there is nothing left for a split to displace: the strip's own stored
+`[start, end)` never moves), `joinNext` carries no re-floor (`refloorStrips` retired with it — a
+join changes no section's own window in a way that could shrink a strip's *stored* span below one
+edge, since the span itself is untouched), and `deleteSection`/`convertSection` destroy or reset
+no strip. A domain flip carries no strip clamp either, unchanged — it is a pure `Track.domain`
+column write (`domain.convertDomain`/`history.landDomain`) and never touches a strip's stored
+span. `setStrip`/`createStrip` refuse the write outright when either guard fails (no repair, no
+displaced retry) — the old **"overlap loses"** self-correcting repair (`refloorStrips` growing a
+strip's `end` to clear the floor, then clamping it back against the neighbour's `start`) had no
+structural op left to run after: a section's own resolved grid no longer changes what a strip's
+*stored* span means, so there is nothing to re-floor. Cut no longer refuses on a strip's account
+(the old split-refusal pre-checks retired with the writer set above); a Cut lands wherever its own
+geometric interior bound allows, regardless of what strip, if any, currently windows over the cut
+station.
 
 **Guards live inside the writer, not at the call site.** The overlap guard (`stripOverlapped`)
 and the min-extent guard (`stripCoversOneEdge`/`spanCoversOneEdge`) are called from inside
-`createStrip` and `setStrip`, so every caller inherits them structurally rather than by convention.
+`createStrip` and `setStrip`, so every caller inherits them structurally rather than by convention
+— both now check TRACK-WIDE (§ Minimum-extent floor above), never a section's own subset.
 The one deliberate bypass is `spawnStrip`/`spawnStripKeyframe` under `restoreAll` (undo/redo): a
 snapshot restore must be byte-identical even for a document authored before the guard existed, so
-the spawn path writes without re-validating.
+the spawn path writes without re-validating. Neither writer takes a section id since S2 — a strip
+has none.
 
-**Authored components.** `Strip` (`section`, `id` stable, `start`, `end`, `value` — section-local
-edge-index coordinates, the same indexing `fN`/`ds` carry) and `StripKeyframe` (`strip`, `id`
-stable, `s`, `v` — the strip's own velocity curve on the force-curve machinery). Both
-participate in `sectionContentHash` → `bakeHash` (so adding, moving, or deleting a strip or
-keyframe invalidates the bake and re-marches). `Strip.values?` is the one kernel seam the velocity-value-in-graph stage added:
-when present, `stripOverride` returns `values[k − lo]` (pre-evaluated v² per edge); when absent,
-it returns `value²` (the constant case — no keyframes means one constant across the span).
+**Authored components.** `Strip` (`id` stable, `start`, `end`, `value` — TRACK-GLOBAL arclength
+meters, `toGlobal`/`toLocal`'s own coordinate, since S2/`kex2d-event-substrate`; no `section`
+field, span-blind by construction) and `StripKeyframe` (`strip`, `id` stable, `s`, `v` — also
+track-global — the strip's own velocity curve on the force-curve machinery). Neither participates
+in any one section's `sectionContentHash` — a section-blind span may overlap none, one, or several
+sections, so keying it to any one section's hash would miss or duplicate an edit; every strip and
+keyframe folds into `bakeHash` ONCE, track-wide (`stripsHash`), so adding, moving, or deleting one
+invalidates the bake and re-marches regardless of which section(s) its window currently touches.
+`Strip.values?` is the one kernel seam the velocity-value-in-graph stage added: when present,
+`stripOverride` returns `values[k − lo]` (pre-evaluated v² per edge); when absent, it returns
+`value²` (the constant case — no keyframes means one constant across the span).
 
 **No re-seed on upstream change.** The kernel never recaptures a strip's value mid-march
 (seeded once at creation from the published bake's `v` at its first station, per the
@@ -294,14 +315,19 @@ DOF-independence paragraph in the Physics section above), so the entry jump afte
 edit is the semantics, not a defect — and the creation seed is what makes a new strip visibly
 flatten velocity the moment it exists.
 
-**Same-type overlap refused, abutment legal.** Strips never claim the same edge by construction
-(`section.ts` `stripOverride`'s own comment), and strips attach to sections in section-local
-coordinates, so spanning a boundary is two abutting strips, not one.
+**Same-type overlap refused, track-wide; abutment and boundary-crossing are both legal.** Strips
+never claim the same edge by construction (`section.ts` `stripOverride`'s own comment,
+`stripOverlapped` checked against every OTHER strip track-wide, never scoped to a section since
+S2). A strip is span-blind (Locked decision): it may sit wholly inside one section, straddle a
+boundary as ONE span driving both sections' override continuously, or overlap several — there is
+no per-section ownership left to make a boundary-crossing span two abutting strips instead of one.
 
 **Clamp at the neighbour is the only boundary behaviour that neither destroys nor composes.**
 `stripOverride`'s first-match linear scan makes overlap semantically undefined, ripple rewrites a
 neighbour's authored extent, and replace is destructive — so clamp is the sole legal mode
-(implemented at `track.ts` `stripBoundsAt`, cited in its docblock).
+(implemented at `track.ts` `stripBoundsAt(ecs, excludeId, trackLength, at)`, cited in its
+docblock) — "neighbour" is now the nearest OTHER strip anywhere on the track, and the ceiling is
+the track's own live extent, not a section's.
 
 **Band carries extent, graph carries and edits value.** Extent and curve are one object:
 keyframes ride the force-curve machinery, no keyframes means one constant across the span (the
@@ -309,15 +335,18 @@ keyframes ride the force-curve machinery, no keyframes means one constant across
 (`Timeline.svelte` `STRIP_H` docblock and the band context-menu comment).
 
 **Initial speed is the first strip, not a separate field.** `seed()` authors a real,
-section-0 minimum-extent strip (the same object every other strip is), so the entry jump case
-resolves rather than being special-cased: the track's entry speed is DERIVED (`entrySpeed`) —
-the value of the strip covering station 0 in the first section, sampled at its own `s = 0`, or
-`V0` when none exists (the same fallback idiom as an emptied force profile falling to
-`DEFAULT_G`). `Track.v0` and `beginV0`/`setTrackV0` are retired; `setStartSpeed` is the scalar
-authoring surface non-UI callers (test/lab setup, the `__kex` dev hook, a section-0 kind-flip's
-entry-speed preservation) still need — it moves the start strip's keyframes/value, or spawns a
-degenerate `[0, 0)` point strip bypassing the ordinary min-extent guard on purpose, so a scalar
-write carries no march side effect the way a real edge-covering span would.
+minimum-extent strip at TRACK-GLOBAL station 0 (the same object every other strip is, no section
+ownership to name), so the entry jump case resolves rather than being special-cased: the track's
+entry speed is DERIVED (`entrySpeed`) — the value of the strip covering global station 0, sampled
+at its own `s = 0`, or `V0` when none exists (the same fallback idiom as an emptied force profile
+falling to `DEFAULT_G`). `Track.v0` and `beginV0`/`setTrackV0` are retired; `setStartSpeed` is the
+scalar authoring surface non-UI callers (test/lab setup, the `__kex` dev hook) still need — it
+moves the start strip's keyframes/value, or spawns a degenerate `[0, 0)` point strip bypassing the
+ordinary min-extent guard on purpose, so a scalar write carries no march side effect the way a
+real edge-covering span would. `preserveEntrySpeedAcrossConvert` — the S5 wrapper that snapshotted
+and re-authored the launch strip around a section-0 kind-flip, because a convert used to destroy
+whatever strip sat on the converted section — is retired with S2: a convert no longer touches any
+strip at all (below), so there is nothing left for a kind-flip to lose.
 
 ## Code map
 
@@ -560,14 +589,17 @@ write carries no march side effect the way a real edge-covering span would.
 
 - `track.ts` — `BakeSystem` walks `sections()` (by `Section.order`) → per-section payload → one
   `chain(startEntry(v0), payloads)` → the `samples`/`bakeOut` SoA + the `sectionInfo` map; skips on a
-  `bakeHash` match (over every section, ds + the section's own coefficients — `v0` is derived,
-  `entrySpeed`, and `Track.domain` is a view, so neither folds the hash). Components: `Track`
+  `bakeHash` match (over every section, ds + the section's own coefficients, THEN every track-global
+  strip + strip keyframe once — `stripsHash` — since S2/`kex2d-event-substrate`; `v0` is derived,
+  `entrySpeed`, and `Track.domain` is a view, so neither folds the hash separately from the strip
+  covering station 0). Components: `Track`
   (`count`, `ds`, `domain`, `friction`, `resistance`), `Section` (`id` stable,
   `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent), `Handle` (`section`, per-section
   `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`,
   `tmode`/`tin`/`tout` the explicit-tangent columns),
-  `Strip` (`section`, `id` stable, `start`/`end`/`value` — the velocity-strip span, § Velocity strips),
-  `StripKeyframe` (`strip`, `id` stable, `s`/`v` — the strip's keyframed velocity curve).
+  `Strip` (`id` stable, `start`/`end`/`value` — the velocity-strip span, TRACK-GLOBAL arclength, no
+  `section` field, § Velocity strips), `StripKeyframe` (`strip`, `id` stable, `s`/`v` — also
+  track-global — the strip's keyframed velocity curve).
   `bakeOut`: per-edge `fN`+`ds`, per-sample `v`+`t`/`feasible`, `firstInfeasible`, `hash` — `v` is the
   recovered speed (`ChainResult.v`, `forces`' own output threaded through `chain()`), the timeline's
   velocity channel (`cart.velocityCurve`, `Timeline.svelte`) and `computeTime`'s own read, both off
@@ -575,12 +607,19 @@ write carries no march side effect the way a real edge-covering span would.
   (by id): `entry`, `startSample`/`endSample`, `bakedNodes` (orphan cutoff). Section helpers:
   `sections`/`sectionAt`/`createSection`, plus the session's per-kind **sticky append length**
   (`stickyLen`/`setStickyLen`: a force section's extent, a geo section's `extend` chord — module
-  state, updated only from `history.commitLength`/`commitChord`, never by a solve or a convert). Coordinate lens (section-local `s` ↔ the track-global axis):
-  `sectionSpans` (the one span table — each section's arclength `offset`/`len`; there is no
-  second axis to switch between since S6) + `toGlobal`/`toLocal` — the single seam every global
-  readout derives from (the `entryU`/`lenU` and `toGlobalU`/`toLocalU` alias names retired at
-  event-lane S3). `Force.s`, `Section.length`,
-  every strip and strip keyframe are addressed in meters of arclength always; a Time-domain
+  state, updated only from `history.commitLength`/`commitChord`, never by a solve or a convert).
+  Coordinate lens (section-local `s` ↔ the track-global axis):
+  `sectionSpans` (the one span table — each section's arclength `offset`/`len`, read off the LIVE
+  bake; there is no second axis to switch between since S6) + `toGlobal`/`toLocal` — the single
+  seam every global DISPLAY readout derives from (the `entryU`/`lenU` and `toGlobalU`/`toLocalU`
+  alias names retired at event-lane S3). `sectionWindows` is its bake-read-free twin (S2): the same
+  per-section entry offset, computed PURELY from the live document (`sectionEdgeDs`'s chord sums /
+  resolved steps, never `bakeOut`) — what the chain bake's own strip-windowing and the pin
+  invariant's stamp/ghost construction both need before or without a live bake. `Force.s` and
+  `Section.length` stay SECTION-LOCAL meters of arclength, unchanged; `Strip`/`StripKeyframe` are
+  the one exception since S2 — TRACK-GLOBAL arclength, span-blind to any section, converted to a
+  section's own local edge-index form only at bake time (`edgeStrips`, via `sectionWindows`'
+  offset) or on read for display (`toGlobal`). A Time-domain
   reading is a display projection through the live bake's s↔t table (`timeline.ts`'s
   `dToU`/`uToD`), never a second address space, and a solve is distance-internal already, so
   nothing converts its landing. Geo: `addNode`/`extend`/`reheadOnDrag`/`removeTrailingHandle`/
@@ -621,8 +660,14 @@ write carries no march side effect the way a real edge-covering span would.
   typed on `SolvedGeo`), `forceBake` (a force section's dense bake as `geofit`
   reads it — `evalForce` at the track-nominal step, clipped to the sample budget `chain` leaves it,
   so the fit's input is the displayed prefix),
-  `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection`, `snapshotSection`/`restoreSection`
-  + whole-track `snapshotAll`/`restoreAll`. **Cut's position resolvers** sit one layer above the
+  `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection` — none of the four touch a
+  strip row since S2 (§ Velocity strips): a strip's own `[start, end)` never moves, splits, merges,
+  or gets destroyed on a structural op, so `snapshotSection`/`restoreSection`'s `SectionSnapshot`
+  carries no `strips` field at all (a section's own convert/reset payload is strip-free by
+  construction). Whole-track `snapshotAll`/`restoreAll` take the strip layer separately: their
+  `TrackSnapshot` is `{sections: SectionSnapshot[], strips: StripSnapshot[]}`, captured/restored
+  once, track-wide, alongside the per-section sweep — the structural-op undo unit for the ONE
+  authored layer sections don't own. **Cut's position resolvers** sit one layer above the
   splits: `splitGeoAt` (de Casteljau-subdivide segment `j` at bezier `t`, so the authored curve
   survives exactly — the stated cost is that subdivision produces explicit tangents, so both new
   boundary keys read `Custom` instead of their named easing), `geoCutAt` (a node order, or a
