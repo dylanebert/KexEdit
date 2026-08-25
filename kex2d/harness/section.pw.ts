@@ -1549,6 +1549,10 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     // edge-resize having missed the stale-cached strip); this `frames(page, 2)` greens under the
     // identical delay (exit 0). Both runs: `bun run capture -- -g "velocity strip keyframe
     // editing flow"`.
+    //
+    // RE-VERIFIED (kex2d-capture-deflake S2, 2026-08-25): `capture -g "velocity strip keyframe
+    // editing flow" --repeat-each 8` exits 0, 8/8 — the S1 witness above still holds on this
+    // tree; still constructs its scenario, not vacuous.
 
     // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
     // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
@@ -1801,6 +1805,14 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     // pre-fix `selStrip`-reading body and re-running with no settle reds 4/4 (the buggy no-op
     // leaves the clicked keyframe behind, `Received` carrying the extra id) — the settle was
     // never what made this test discriminate the buggy no-op from the fixed behavior.
+    //
+    // RE-VERIFIED (kex2d-capture-deflake S2, 2026-08-25): `capture -g "strip keyframe delete
+    // before the selection tick settles" --repeat-each 8` exits 0, 8/8 on this tree. Re-ran the
+    // mutation directly rather than trusting the prior claim: perturbed `deleteSelectedStripKf`
+    // back to the pre-fix `selStrip`-reading body (`if (selStrip === null) return`) and re-ran
+    // `--repeat-each 4` with no other change — reds 4/4 (`toEqual(seededIds)` timeout, `Received`
+    // carrying the clicked keyframe's id, exactly this comment's own claim), then reverted and
+    // reran green (exit 0). Still constructs the race, not vacuous.
     await page.keyboard.press("Escape");
     await expect.poll(async () => await kexCall(page, "selectedStrip")).toBe(null);
 
