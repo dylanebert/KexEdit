@@ -51,6 +51,7 @@ import {
     SectionKind,
     sectionForces,
     sectionInfo,
+    sectionWindows,
     stripsForStep,
     trackDs,
     trackFriction,
@@ -120,11 +121,13 @@ export function enterPin(ecs: State, sectionId: number): PinSession | null {
     if (!spec) return null;
     const { points } = sectionPoints(ecs, sectionId);
     const dense = forceProfile(points, spec.step);
-    // strips resolve through `stripsForStep` — a PURE function of the section's own stored
-    // {start, end, value} rows and the already-resolved `spec.step` (itself derived from
-    // authored `Section.length`/`Track.ds`, never a bake read): the pin invariant's own
-    // structural requirement, "no bake-read anywhere in the override construction path".
-    const strips = stripsForStep(ecs, sectionId, spec.step);
+    // strips are track-global (S2) — `stripsForStep` resolves every strip against this
+    // section's own track-global entry offset (`sectionWindows`, itself PURE: chord sums /
+    // authored extents, never a bake read) and the already-resolved `spec.step` (itself
+    // derived from authored `Section.length`/`Track.ds`): the pin invariant's own structural
+    // requirement, "no bake-read anywhere in the override construction path".
+    const offset = sectionWindows(ecs).find((w) => w.id === sectionId)?.offset ?? 0;
+    const strips = stripsForStep(ecs, offset, spec.step);
     const r = evalForce(spec.entry, dense, spec.step, spec.friction, spec.resistance, strips);
     // the session carries only the stamp + ghost + the downstream freeze seed (all frozen at
     // mode entry); the section's baking parameters are NOT cached here — `runPinSection`

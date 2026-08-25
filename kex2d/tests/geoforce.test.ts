@@ -24,7 +24,7 @@ import {
     sectionHandles,
     sectionInfo,
     SectionKind,
-    type SectionSnapshot,
+    type TrackSnapshot,
     setForceEase,
     setForceTangent,
     setTrackDomain,
@@ -80,7 +80,7 @@ function hillForceTrack(): { state: State; eid: number; sec: number } {
 /** the whole authored document plus the bake's own input hash — the two readings that
  *  together say "byte-identical": every stored value back where it was, and the bake gate
  *  agreeing nothing about its input moved. */
-function docState(state: State, eid: number): { snap: SectionSnapshot[]; hash: string } {
+function docState(state: State, eid: number): { snap: TrackSnapshot; hash: string } {
     return { snap: snapshotAll(state), hash: bakeOut.get(eid)?.hash ?? "" };
 }
 

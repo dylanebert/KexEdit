@@ -151,8 +151,8 @@ describe("a flip is a pure view write (§ Validation a)", () => {
 
     for (const [len, pts] of [DiveAndRecover, MultiGPull]) {
         test(`leaves every authored component byte-identical, len=${len}`, () => {
-            const { state, sec } = forceTrack(len, pts);
-            createStrip(state, sec, len * 0.1, len * 0.3, 5);
+            const { state } = forceTrack(len, pts);
+            createStrip(state, len * 0.1, len * 0.3, 5);
             state.step(0);
             const before = snapshotAll(state);
             const h = createHistory();
@@ -168,8 +168,8 @@ describe("a flip is a pure view write (§ Validation a)", () => {
         });
 
         test(`leaves the bake hash untouched, len=${len}`, () => {
-            const { state, eid, sec } = forceTrack(len, pts);
-            createStrip(state, sec, len * 0.1, len * 0.3, 5);
+            const { state, eid } = forceTrack(len, pts);
+            createStrip(state, len * 0.1, len * 0.3, 5);
             state.step(0);
             const distanceHash = bakeOut.get(eid)?.hash;
             const h = createHistory();
@@ -279,11 +279,11 @@ describe("degeneracies the old carry used to reject on", () => {
     });
 
     test("a strip keyframe still flips, untouched", () => {
-        const { state, sec } = forceTrack(40, [
+        const { state } = forceTrack(40, [
             [0, 1],
             [40, 1],
         ]);
-        const stripId = createStrip(state, sec, 5, 15, 8);
+        const stripId = createStrip(state, 5, 15, 8);
         if (stripId === null) throw new Error("strip refused");
         createStripKeyframe(state, stripId, 5, 6);
         createStripKeyframe(state, stripId, 15, 10);

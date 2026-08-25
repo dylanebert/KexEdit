@@ -31,7 +31,7 @@ import {
     samples,
     sectionForces,
     sectionInfo,
-    type SectionSnapshot,
+    type TrackSnapshot,
     SectionKind,
     setForcePoint,
     setTrackFriction,
@@ -69,7 +69,7 @@ function forceTrack(coeffs?: { friction: number; resistance: number }): {
     return { state, eid, sec };
 }
 
-function docState(state: State, eid: number): { snap: SectionSnapshot[]; hash: string } {
+function docState(state: State, eid: number): { snap: TrackSnapshot; hash: string } {
     return { snap: snapshotAll(state), hash: bakeOut.get(eid)?.hash ?? "" };
 }
 
@@ -1034,7 +1034,7 @@ describe("velocity strips — the pin invariant (C3)", () => {
         // ignored by the stamp/ghost (verified by reverting `pin.ts`'s `strips` argument and
         // observing the stamp arm below fail — see the next test).
         const { state, eid, sec } = forceTrack();
-        createStrip(state, sec, 15, 25, 6);
+        createStrip(state, 15, 25, 6);
         state.step(0);
 
         // corrupt the two bake-derived maps this construction path could reach — proving the
@@ -1048,7 +1048,7 @@ describe("velocity strips — the pin invariant (C3)", () => {
         bakeOut.set(eid, { ...savedOut, hash: "__corrupted__" });
 
         const step = resolveStep(40, 20 / 40); // an independently-resolved step (ds = 0.5)
-        const specs = stripsForStep(state, sec, step);
+        const specs = stripsForStep(state, 0, step);
         expect(specs).toBeDefined();
         // `forceTrack`'s own start strip (S5, `setStartSpeed`) sorts first (it sits at
         // station 0); the authored one under test is the OTHER row, addressed by its value.
@@ -1064,7 +1064,7 @@ describe("velocity strips — the pin invariant (C3)", () => {
         const { state, sec } = forceTrack(); // length 40, entry v0 = 20
         // reaches the section's own exit, so the stamp's v is exactly the strip's value —
         // the exit is the ONE state `enterPin`'s stamp exposes directly.
-        createStrip(state, sec, 30, 40, 7);
+        createStrip(state, 30, 40, 7);
         state.step(0);
         const session = enterPin(state, sec);
         expect(session).not.toBeNull();
@@ -1075,7 +1075,7 @@ describe("velocity strips — the pin invariant (C3)", () => {
 
     test("a strip on a pinned section's track: the solve still lands", async () => {
         const { state, sec } = forceTrack();
-        createStrip(state, sec, 15, 25, 9);
+        createStrip(state, 15, 25, 9);
         state.step(0);
         if (!enterPinMode(state, sec)) throw new Error("no session");
         const session = editor.pinning;

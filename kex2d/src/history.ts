@@ -67,7 +67,6 @@ import {
     spawnStrip,
     splitForce,
     splitGeoAt,
-    geoSplitAtStripsRefused,
     createStrip as createStripTrack,
     destroyStrip,
     type StripState,
@@ -522,7 +521,7 @@ export function beginForceMoves(ecs: State, ids: readonly number[]): void {
 
 // ── velocity strips ────────────────────────────────────────────────────────────
 
-/** author a velocity strip on a section over `[start, end)` at `value`, recording an
+/** author a track-global velocity strip over `[start, end)` at `value`, recording an
  *  undoable add — `createForce`'s span-shaped twin. The overlap guard lives in
  *  `track.createStrip` itself, so a refused (overlapping) span records nothing and
  *  returns `null`. The id is allocated once; undo destroys by it and redo re-spawns
@@ -532,20 +531,19 @@ export function beginForceMoves(ecs: State, ids: readonly number[]): void {
 export function addStrip(
     h: History,
     ecs: State,
-    section: number,
     start: number,
     end: number,
     value: number,
 ): number | null {
     const pre = selHook?.snapshot(ecs);
-    const id = createStripTrack(ecs, section, start, end, value);
+    const id = createStripTrack(ecs, start, end, value);
     if (id === null) return null;
     const st = stripState(ecs, id) as StripState;
     record(
         h,
         {
             apply: () => {
-                spawnStrip(ecs, section, id, start, end, value);
+                spawnStrip(ecs, id, start, end, value);
                 for (const k of st.kfs) spawnStripKeyframe(ecs, id, k.id, k.s, k.v);
             },
             reverse: () => destroyStrip(ecs, id),
@@ -556,10 +554,10 @@ export function addStrip(
 }
 
 /** delete a SET of velocity strips by id as ONE undoable entry — `deleteForces`' twin.
- *  undo re-spawns them all verbatim into their original sections, keyframes included
- *  (`StripState.kfs`, S4 — every strip now carries at least its two seeded keyframes, so
- *  losing them on undo is the common case, not an edge one); ids already gone are skipped,
- *  and nothing records when the set is empty. */
+ *  undo re-spawns them all verbatim, keyframes included (`StripState.kfs`, S4 — every
+ *  strip now carries at least its two seeded keyframes, so losing them on undo is the
+ *  common case, not an edge one); ids already gone are skipped, and nothing records when
+ *  the set is empty. */
 export function deleteStrips(h: History, ecs: State, ids: readonly number[]): void {
     const pre = selHook?.snapshot(ecs);
     const sts: StripState[] = [];
@@ -577,7 +575,7 @@ export function deleteStrips(h: History, ecs: State, ids: readonly number[]): vo
             },
             reverse: () => {
                 for (const st of sts) {
-                    spawnStrip(ecs, st.section, st.id, st.start, st.end, st.value);
+                    spawnStrip(ecs, st.id, st.start, st.end, st.value);
                     for (const k of st.kfs) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
                 }
             },
@@ -1139,22 +1137,9 @@ export function splitSection(
 ): number | null {
     const eid = sectionAt(ecs, section);
     if (eid === null) return null;
-    // Hoist the geo Cut refusal ABOVE the mutation: `splitGeoAt` with interior `t` calls
-    // `insertGeoNode` (mutating) before `splitGeo`'s strip pre-check may refuse, and the
-    // refusal path previously called `restoreAll(ecs, before)` — which respawns every
-    // entity with fresh eids, unpaired with `selHook.restore`, leaving a selected node's
-    // `Handle.section`/`Handle.order` pointing at a different section. A refusal that
-    // never mutates needs no snapshot, no restore, no selHook pairing. The pre-check
-    // builds the would-be node array (with the subdivided node and re-parented tangents)
-    // and runs the same straddling-strip head/tail check `splitGeo` would, without touching
-    // the ECS.
-    // RED-FIRST WITNESS: select a node in section A, refuse a Cut on unrelated section B
-    // (24 m geo, strip [11.9, 12.6), t=0.5) → at `bb9e638` the selected eid's
-    // Handle.section/Handle.order read section B's after the refusal; after the hoist
-    // they still read section A's.
-    if (Section.kind.get(eid) === SectionKind.Geo && geoSplitAtStripsRefused(ecs, section, at, t)) {
-        return null;
-    }
+    // Strips no longer refuse a split (S2, Locked decision: track-global, span-blind, so
+    // `splitGeo`/`splitForce` always mutate once their own range check passes) — the geo
+    // Cut hoist this comment used to document is retired with them.
     const pre = selHook?.snapshot(ecs);
     const before = snapshotAll(ecs);
     const id =
@@ -1162,12 +1147,8 @@ export function splitSection(
             ? splitGeoAt(ecs, section, at, t)
             : splitForce(ecs, section, at);
     if (id === null) {
-        // splitForce refuses without mutating (its strip pre-check is before any write).
-        // splitGeoAt with landmark t (≤0 or ≥1) delegates to splitGeo, which also refuses
-        // without mutating (its strip pre-check is before any write). The interior case
-        // was already guarded by geoSplitAtStripsRefused above, so insertGeoNode never
-        // runs on a refused path. A null here is a non-strip refusal (out-of-range k)
-        // that never mutated, so no restore is needed.
+        // an out-of-range split point (the only remaining refusal) never mutates, so no
+        // restore is needed.
         return null;
     }
     const after = snapshotAll(ecs);

@@ -442,10 +442,10 @@ test("force easing menu flow", async ({ page, boot }) => {
     const nPts = await forceCount();
     await frameTimeline(page); // bring the whole force section into view for the diamond DOM boxes
     // `.fpt` is shared with velocity-strip keyframes (Timeline.svelte draws both under the same
-    // class); `seedForceBump` converts section 0 to force, and `applyConvert`'s own
-    // `preserveEntrySpeedAcrossConvert` (S5) re-authors the launch speed as a DEGENERATE `[0, 0)`
-    // strip across that convert — one keyframe, not `seed()`'s own two.
-    await expect(page.locator(".fpt")).toHaveCount(nPts + 1);
+    // class); `seedForceBump` converts section 0 to force, and strips are untouched by a
+    // convert now (S2, Locked decision: track-global, span-blind) — the launch strip survives
+    // as its original real (min-extent, non-degenerate) span, `seed()`'s own two keyframes.
+    await expect(page.locator(".fpt")).toHaveCount(nPts + 2);
 
     // ── 1. Right-click the leading (first) keyframe → the force keyframe menu, in the grammar's
     // canonical row order Easing ▸ · Delete — modify before lifecycle, the destructive row
@@ -871,10 +871,10 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
     await expect.poll(forceCount).toBeGreaterThanOrEqual(5);
     const nPts = await forceCount();
     await frameTimeline(page);
-    // `.fpt` is shared with velocity-strip keyframes; `seedForceBump`'s convert re-authors the
-    // launch speed as a degenerate one-keyframe strip across it (S5, `force easing menu flow`'s
-    // own note).
-    await expect(page.locator(".fpt")).toHaveCount(nPts + 1);
+    // `.fpt` is shared with velocity-strip keyframes; strips are untouched by `seedForceBump`'s
+    // convert (S2, `force easing menu flow`'s own note) — the launch strip survives as its
+    // original real (min-extent, two-keyframe) span.
+    await expect(page.locator(".fpt")).toHaveCount(nPts + 2);
 
     // ── A. Chord-aligned derived-Linear ghost (feature 2). Set kf1's following segment to Linear,
     // enter handle edit (no drag → both sides stay derived ghosts), and assert the OUT ghost knob
@@ -1108,10 +1108,11 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     await frameTimeline(page); // the whole section on-screen for exact diamond boxes
 
     const fpt = page.locator(".fpt");
-    // `.fpt` is shared with velocity-strip keyframes; `seedForceBump`'s convert re-authors the
-    // launch speed as a degenerate one-keyframe strip across it (S5) — 5 force points + 1. Force
-    // points still render first in DOM order, so the `fhit.nth(0..4)` indices below stay correct.
-    await expect(fpt).toHaveCount(6);
+    // `.fpt` is shared with velocity-strip keyframes; strips are untouched by `seedForceBump`'s
+    // convert (S2) — 5 force points + the launch strip's own 2 (min-extent, unchanged from
+    // `seed()`). Force points still render first in DOM order, so the `fhit.nth(0..4)` indices
+    // below stay correct.
+    await expect(fpt).toHaveCount(7);
     const fhit = page.locator(".fhit");
     const fhitCenter = async (i: number): Promise<{ cx: number; cy: number }> => {
         const b = await fhit.nth(i).boundingBox();
@@ -1337,7 +1338,7 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     // ORIGINAL diamond index mapping (`fhitCenter`, established at the top of the test) is valid
     // again before re-locating the crest.
     await frameTimeline(page);
-    await expect(fhit).toHaveCount(6); // 5 force points + the degenerate launch-strip keyframe (S5)
+    await expect(fhit).toHaveCount(7); // 5 force points + the launch strip's own 2 (S2: untouched by convert)
     const b2now = await fhitCenter(2);
     await page.mouse.click(b2now.cx, b2now.cy);
     await expect(page.locator(".ptip")).toHaveCount(1);
@@ -2179,9 +2180,9 @@ test("viewport force markers flow", async ({ page, boot }) => {
 
 // summon a velocity strip via T1's creation gesture (right-click empty band → "Add velocity
 // strip", `affordance.pw.ts createStrip`'s own idiom) at a station clear of the auto-authored
-// launch strip (`seedForceBump`'s own degenerate entry-speed strip at station 0). Returns the
-// new strip's stable id — the creation seeds two keyframes (start/end), the S4 multiselect
-// flow's own fixture.
+// launch strip (`seed()`'s own real, min-extent entry-speed strip at station 0 — untouched by
+// `seedForceBump`'s convert, S2). Returns the new strip's stable id — the creation seeds two
+// keyframes (start/end), the S4 multiselect flow's own fixture.
 async function addStrip(page: Page): Promise<number> {
     const before = (await kexCall(page, "stripsOf", 0)) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();

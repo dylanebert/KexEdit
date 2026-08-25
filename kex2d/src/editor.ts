@@ -170,15 +170,16 @@ interface EditorState {
      *  subject, the timeline itself. A row's pick is a pure view write
      *  (`domain.convertDomain` writes `Track.domain` alone), so no basis state lives here. */
     rulerMenu: { x: number; y: number } | null;
-    /** the velocity-strip band context menu (Add / Delete): screen position + the target
-     *  section id and the clicked station (section-local, in meters of arclength — the
-     *  store's unit always), or null when closed. Summoned by right-clicking the band — on empty space for creation
-     *  (the row names the thing; the strip appears at the clicked station at minimum extent,
+    /** the velocity-strip band context menu (Add / Delete): screen position + the clicked
+     *  track-global station `d` (meters of arclength from track start — strips are
+     *  track-global, S2 Locked decision, so there is no owning section to carry), or null
+     *  when closed. Summoned by right-clicking the band — on empty space for creation (the
+     *  row names the thing; the strip appears at the clicked station at minimum extent,
      *  selected, curve flattened and solid), on an existing strip for deletion. Empty band
      *  space is inert — no plain-drag-on-empty, no modifier-drag, no standing mode toggle
      *  (Locked decision, the rescope that retired C5's create-drag). `strip` is the targeted
      *  strip's stable id, or -1 when the right-click landed on empty band (creation). */
-    stripMenu: { x: number; y: number; section: number; station: number; strip: number } | null;
+    stripMenu: { x: number; y: number; d: number; strip: number } | null;
     /** the snapping magnet toggle (AE model): a persistent editor preference, default
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
      *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
@@ -1153,17 +1154,11 @@ export function closeRulerMenu(): void {
     editor.rulerMenu = null;
 }
 
-/** open the velocity-strip band context menu at a screen point — `section` is the section
- *  the click resolved to, `station` the section-local station it landed at, `strip` the
- *  targeted strip's stable id (-1 for empty band, i.e. creation). */
-export function openStripMenu(
-    x: number,
-    y: number,
-    section: number,
-    station: number,
-    strip: number,
-): void {
-    editor.stripMenu = { x, y, section, station, strip };
+/** open the velocity-strip band context menu at a screen point — `d` is the track-global
+ *  station (arclength from track start) the click landed at, `strip` the targeted strip's
+ *  stable id (-1 for empty band, i.e. creation). */
+export function openStripMenu(x: number, y: number, d: number, strip: number): void {
+    editor.stripMenu = { x, y, d, strip };
 }
 
 /** close the strip band context menu. */

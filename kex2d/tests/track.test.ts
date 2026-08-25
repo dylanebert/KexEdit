@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
     addNode,
+    allStrips,
     appendSection,
     authoredHash,
     BakeSystem,
@@ -20,7 +21,6 @@ import {
     entrySpeed,
     edgeStrips,
     restoreStrip,
-    sectionStrips,
     spawnStrip,
     spawnStripKeyframe,
     Strip,
@@ -81,8 +81,6 @@ import {
     stationTaken,
     spanCoversOneEdge,
     splitForce,
-    geoSplitStripsRefused,
-    geoSplitAtStripsRefused,
     seedTangent,
     setForceEase,
     setForcePoint,
@@ -130,11 +128,10 @@ import {
     redo,
     setForcesEase,
     setForceTangentMode as setForceTangentModeCmd,
-    splitSection,
     trimTrack as trimTrackCmd,
     undo,
 } from "../src/history";
-import { DEFAULT_G, Easing, resolveStep } from "../src/profile";
+import { DEFAULT_G, Easing } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { LENGTH_MIN } from "../src/magnet";
 import { Domain, evalGeo } from "../src/section";
@@ -1377,7 +1374,6 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
             length: 0,
             nodes: [],
             points: [],
-            strips: [],
         });
         expect(readProvenance(sec)).toBeUndefined();
     });
@@ -1589,7 +1585,7 @@ describe("force easing + seeding (stage B)", () => {
         const seeded = snapshotAll(state);
 
         undo(h, state);
-        expect(sections(state).length).toBe(before.length); // the section is gone
+        expect(sections(state).length).toBe(before.sections.length); // the section is gone
         expect(snapshotAll(state)).toEqual(before);
 
         redo(h, state);
@@ -2869,31 +2865,31 @@ describe("stripDefaultExtentAt (S5)", () => {
     test("grows from the min-extent edge span to the full section on an otherwise-empty section", () => {
         const { state, sec } = track();
         convertSection(state, sec); // → force, default extent EXTEND_DIST = 24 (= STRIP_DEFAULT_LEN)
-        expect(stripMinExtentAt(state, sec, 0)).toEqual({ start: 0, end: 0.5 });
-        expect(stripDefaultExtentAt(state, sec, 0)).toEqual({ start: 0, end: 24 });
+        expect(stripMinExtentAt(state, 0)).toEqual({ start: 0, end: 0.5 });
+        expect(stripDefaultExtentAt(state, 0)).toEqual({ start: 0, end: 24 });
     });
 
     test("clamps to a neighboring strip's start rather than overlapping it", () => {
         const { state, sec } = track();
         convertSection(state, sec);
-        createStrip(state, sec, 10, 15, 5);
-        expect(stripDefaultExtentAt(state, sec, 0)).toEqual({ start: 0, end: 10 });
+        createStrip(state, 10, 15, 5);
+        expect(stripDefaultExtentAt(state, 0)).toEqual({ start: 0, end: 10 });
     });
 
     test("clamps to the section's own length when it's shorter than the default", () => {
         const { state, sec } = track();
         convertSection(state, sec);
         setSectionLength(state, sec, 8);
-        expect(stripDefaultExtentAt(state, sec, 0)).toEqual({ start: 0, end: 8 });
+        expect(stripDefaultExtentAt(state, 0)).toEqual({ start: 0, end: 8 });
     });
 
     test("never shrinks below the min-extent floor even when the section is shorter than it", () => {
         const { state, sec } = track();
         convertSection(state, sec);
         setSectionLength(state, sec, 0.1); // below minForceExtent's own floor, clamped there
-        const minExtent = stripMinExtentAt(state, sec, 0);
+        const minExtent = stripMinExtentAt(state, 0);
         expect(minExtent).not.toBeNull();
-        const extent = stripDefaultExtentAt(state, sec, 0);
+        const extent = stripDefaultExtentAt(state, 0);
         expect(extent).not.toBeNull();
         expect((extent as { end: number }).end).toBeGreaterThanOrEqual(
             (minExtent as { end: number }).end,
@@ -2901,10 +2897,22 @@ describe("stripDefaultExtentAt (S5)", () => {
     });
 
     test("returns null under the same condition stripMinExtentAt does (no resolvable edge structure)", () => {
-        const { state, sec } = track();
-        const noSuchSection = sec + 999; // a stable id nothing resolves to
-        expect(stripMinExtentAt(state, noSuchSection, 0)).toBeNull();
-        expect(stripDefaultExtentAt(state, noSuchSection, 0)).toBeNull();
+        // strips carry no section ownership (S2), so the only null condition left is the
+        // TRACK having no resolvable edges at all — `trackEdgeArray` returns null when every
+        // section's own `sectionEdgeDs` contributes zero edges. Two genuine cases: a track
+        // with no sections, and a track whose only geo section has no nodes.
+        const empty = new State();
+        empty.addSystem(BakeSystem);
+        createTrack(empty);
+        expect(stripMinExtentAt(empty, 0)).toBeNull();
+        expect(stripDefaultExtentAt(empty, 0)).toBeNull();
+
+        const nodeless = new State();
+        nodeless.addSystem(BakeSystem);
+        createTrack(nodeless);
+        createSection(nodeless, 0, SectionKind.Geo, 0); // no nodes: no chord array to resolve
+        expect(stripMinExtentAt(nodeless, 0)).toBeNull();
+        expect(stripDefaultExtentAt(nodeless, 0)).toBeNull();
     });
 });
 
@@ -2915,19 +2923,19 @@ describe("velocity strips — ECS layer (C3)", () => {
         // `stripOverlapped` check inline and observing both calls return non-null ids.
         const { state, sec } = track();
         convertSection(state, sec); // → force, default extent EXTEND_DIST = 24
-        const a = createStrip(state, sec, 5, 15, 8);
+        const a = createStrip(state, 5, 15, 8);
         expect(a).not.toBeNull();
         // strictly overlaps [5, 15): refused, nothing written.
-        expect(createStrip(state, sec, 10, 20, 6)).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(1);
+        expect(createStrip(state, 10, 20, 6)).toBeNull();
+        expect(allStrips(state).length).toBe(1);
         // abuts at the boundary (starts exactly where the first ends): legal.
-        const c = createStrip(state, sec, 15, 20, 6);
+        const c = createStrip(state, 15, 20, 6);
         expect(c).not.toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(2);
+        expect(allStrips(state).length).toBe(2);
         // abuts on the other side too (ends exactly where the first starts): legal.
-        const d = createStrip(state, sec, 0, 5, 4);
+        const d = createStrip(state, 0, 5, 4);
         expect(d).not.toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(3);
+        expect(allStrips(state).length).toBe(3);
     });
 
     // GRANT direction, pinned first (`checks.md`: a fail-closed rewrite's own over-refusal
@@ -2936,23 +2944,23 @@ describe("velocity strips — ECS layer (C3)", () => {
     test("grant direction: legitimate abutments and disjoint strips all still land", () => {
         const { state, sec } = track();
         convertSection(state, sec);
-        const span = createStrip(state, sec, 5, 15, 8);
+        const span = createStrip(state, 5, 15, 8);
         expect(span).not.toBeNull();
         // a one-edge span abutting the span's OWN start: reaches backward to edge [4.5, 5),
         // the span claims [5, 15) — abutting, legal (the reverse boundary, verified genuinely
         // non-colliding — this direction must not break).
-        expect(stripOverlapped(state, sec, 4.5, 5, -1)).toBe(false);
-        const atStart = createStrip(state, sec, 4.5, 5, 1);
+        expect(stripOverlapped(state, 4.5, 5, -1)).toBe(false);
+        const atStart = createStrip(state, 4.5, 5, 1);
         expect(atStart).not.toBeNull();
         // two spans abutting (one starts exactly where the other ends): legal.
-        const nextSpan = createStrip(state, sec, 15, 20, 6);
+        const nextSpan = createStrip(state, 15, 20, 6);
         expect(nextSpan).not.toBeNull();
         // a one-edge span past everything, and a genuinely disjoint span: both legal.
-        const farEdge = createStrip(state, sec, 23.5, 24, 2);
+        const farEdge = createStrip(state, 23.5, 24, 2);
         expect(farEdge).not.toBeNull();
-        const disjointSpan = createStrip(state, sec, 20.5, 23, 3);
+        const disjointSpan = createStrip(state, 20.5, 23, 3);
         expect(disjointSpan).not.toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(5);
+        expect(allStrips(state).length).toBe(5);
     });
 
     test("a point strip strictly inside another strip overlaps; one at its START boundary does not, one at its END boundary does", () => {
@@ -2964,11 +2972,11 @@ describe("velocity strips — ECS layer (C3)", () => {
         // symmetric test): this line read `false` where it must read `true`.
         const { state, sec } = track();
         convertSection(state, sec);
-        createStrip(state, sec, 5, 15, 8);
-        expect(stripOverlapped(state, sec, 10, 10, -1)).toBe(true); // strictly interior point
-        expect(stripOverlapped(state, sec, 5, 5, -1)).toBe(false); // at the start boundary — legal
-        expect(stripOverlapped(state, sec, 15, 15, -1)).toBe(true); // at the end boundary — SAME edge, refused
-        expect(stripOverlapped(state, sec, 20, 20, -1)).toBe(false); // free
+        createStrip(state, 5, 15, 8);
+        expect(stripOverlapped(state, 10, 10, -1)).toBe(true); // strictly interior point
+        expect(stripOverlapped(state, 5, 5, -1)).toBe(false); // at the start boundary — legal
+        expect(stripOverlapped(state, 15, 15, -1)).toBe(true); // at the end boundary — SAME edge, refused
+        expect(stripOverlapped(state, 20, 20, -1)).toBe(false); // free
     });
 
     test("createStrip refuses a point at a span's END boundary — the collision that used to land dead-on-arrival", () => {
@@ -2977,11 +2985,11 @@ describe("velocity strips — ECS layer (C3)", () => {
         // the span first, so the point's authored value never took effect at bake time.
         const { state, sec } = track();
         convertSection(state, sec); // → force, default extent EXTEND_DIST = 24
-        const span = createStrip(state, sec, 5, 15, 4);
+        const span = createStrip(state, 5, 15, 4);
         expect(span).not.toBeNull();
-        const point = createStrip(state, sec, 15, 15, 99); // refused: same kernel edge as the span's end
+        const point = createStrip(state, 15, 15, 99); // refused: same kernel edge as the span's end
         expect(point).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(1);
+        expect(allStrips(state).length).toBe(1);
     });
 
     test("createStrip refuses a zero-length span — the min-extent guard (points retire)", () => {
@@ -2992,11 +3000,11 @@ describe("velocity strips — ECS layer (C3)", () => {
         // same station are both refused, so no duplicate can land.
         const { state, sec } = track();
         convertSection(state, sec);
-        const p1 = createStrip(state, sec, 10, 10, 1);
+        const p1 = createStrip(state, 10, 10, 1);
         expect(p1).toBeNull(); // refused: zero-length span covers no edge
-        const p2 = createStrip(state, sec, 10, 10, 2);
+        const p2 = createStrip(state, 10, 10, 2);
         expect(p2).toBeNull(); // also refused
-        expect(sectionStrips(state, sec).length).toBe(0);
+        expect(allStrips(state).length).toBe(0);
     });
 
     test("setStrip refuses an overlapping move (keeps start/end) and still lands the value write; a non-colliding move lands both", () => {
@@ -3004,16 +3012,16 @@ describe("velocity strips — ECS layer (C3)", () => {
         // one strip onto another silently produced two overlapping ranges.
         const { state, sec } = track();
         convertSection(state, sec);
-        const a = createStrip(state, sec, 0, 5, 4) as number;
-        createStrip(state, sec, 10, 15, 8);
+        const a = createStrip(state, 0, 5, 4) as number;
+        createStrip(state, 10, 15, 8);
         setStrip(state, a, 8, 12, 9); // would overlap [10, 15)
-        let row = sectionStrips(state, sec).find((r) => r.id === a);
+        let row = allStrips(state).find((r) => r.id === a);
         expect(row?.start).toBe(0); // refused — position unchanged
         expect(row?.end).toBe(5);
         expect(row?.value).toBe(9); // value still lands
 
         setStrip(state, a, 5.5, 9.5, 3); // clear of the neighbour
-        row = sectionStrips(state, sec).find((r) => r.id === a);
+        row = allStrips(state).find((r) => r.id === a);
         expect(row?.start).toBe(5.5);
         expect(row?.end).toBe(9.5);
         expect(row?.value).toBe(3);
@@ -3022,17 +3030,17 @@ describe("velocity strips — ECS layer (C3)", () => {
     test("stripOverlapped is self-excluding (a strip never collides with itself)", () => {
         const { state, sec } = track();
         convertSection(state, sec);
-        const a = createStrip(state, sec, 5, 15, 8) as number;
-        expect(stripOverlapped(state, sec, 5, 15, a)).toBe(false);
-        expect(stripOverlapped(state, sec, 5, 15, -1)).toBe(true); // any OTHER caller collides
+        const a = createStrip(state, 5, 15, 8) as number;
+        expect(stripOverlapped(state, 5, 15, a)).toBe(false);
+        expect(stripOverlapped(state, 5, 15, -1)).toBe(true); // any OTHER caller collides
     });
 
     test("sectionStrips sorts by start; stripAt resolves by stable id", () => {
         const { state, sec } = track();
         convertSection(state, sec);
-        const b = createStrip(state, sec, 10, 15, 1) as number;
-        const a = createStrip(state, sec, 0, 5, 2) as number;
-        const rows = sectionStrips(state, sec);
+        const b = createStrip(state, 10, 15, 1) as number;
+        const a = createStrip(state, 0, 5, 2) as number;
+        const rows = allStrips(state);
         expect(rows.map((r) => r.id)).toEqual([a, b]);
         expect(Strip.id.get(stripAt(state, a) as number)).toBe(a);
     });
@@ -3040,15 +3048,15 @@ describe("velocity strips — ECS layer (C3)", () => {
     test("destroyStrip removes it; a stripState snapshot round-trips through restoreStrip byte-identical", () => {
         const { state, sec } = track();
         convertSection(state, sec);
-        const id = createStrip(state, sec, 2, 6, 5) as number;
+        const id = createStrip(state, 2, 6, 5) as number;
         const st = stripState(state, id);
         if (!st) throw new Error("no strip state");
         destroyStrip(state, id);
-        expect(sectionStrips(state, sec).length).toBe(0);
+        expect(allStrips(state).length).toBe(0);
         // spawnStrip is the bare respawn primitive (no children) — its own contract
         // (S4: StripState.kfs); the caller replants the keyframes separately, exactly as
         // `addStrip`'s redo does.
-        spawnStrip(state, st.section, st.id, st.start, st.end, st.value);
+        spawnStrip(state, st.id, st.start, st.end, st.value);
         for (const k of st.kfs) spawnStripKeyframe(state, st.id, k.id, k.s, k.v);
         expect(stripState(state, id)).toEqual(st);
         restoreStrip(state, { ...st, start: 3, end: 7, value: 9 });
@@ -3058,24 +3066,26 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(after?.value).toBe(9);
     });
 
-    test("snapshotSection/restoreSection round-trip strips byte-identical", () => {
+    test("a section snapshot carries no strips, and restoreSection leaves every strip untouched", () => {
+        // the new contract (S2, Locked decision): strips are track-global and span-blind, so a
+        // section's own snapshot/restore never reaches them. The old arm asserted the opposite
+        // (`SectionSnapshot.strips` round-tripping); that field is gone, and the positive form
+        // is that a full section restore is a no-op over the strip layer.
         const { state, sec } = track();
         convertSection(state, sec);
-        createStrip(state, sec, 0, 5, 4);
-        createStrip(state, sec, 10, 15, 8);
+        const a = createStrip(state, 0, 5, 4) as number;
+        const b = createStrip(state, 10, 15, 8) as number;
         const snap = snapshotSection(state, sec);
-        expect(snap.strips.length).toBe(2);
-        for (const st of sectionStrips(state, sec)) destroyStrip(state, st.id);
-        expect(sectionStrips(state, sec).length).toBe(0);
+        expect(Object.hasOwn(snap, "strips")).toBe(false);
+
+        const before = allStrips(state).map((r) => ({ ...r }));
+        expect(before.length).toBe(2);
+        const kfsBefore = [a, b].map((id) => stripKeyframes(state, id).map((k) => ({ ...k })));
+        expect(kfsBefore.map((k) => k.length)).toEqual([2, 2]); // the seeded boundary pair each
         restoreSection(state, snap);
-        const restored = sectionStrips(state, sec).map((r) => ({
-            id: r.id,
-            start: r.start,
-            end: r.end,
-            value: r.value,
-        }));
-        expect(restored).toEqual(
-            snap.strips.map((s) => ({ id: s.id, start: s.start, end: s.end, value: s.value })),
+        expect(allStrips(state).map((r) => ({ ...r }))).toEqual(before);
+        expect([a, b].map((id) => stripKeyframes(state, id).map((k) => ({ ...k })))).toEqual(
+            kfsBefore,
         );
     });
 
@@ -3085,7 +3095,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         const { state, eid, sec } = track();
         convertSection(state, sec);
         state.step(0);
-        const id = createStrip(state, sec, 2, 6, 5) as number;
+        const id = createStrip(state, 2, 6, 5) as number;
         state.step(0);
         const withStrip = bakeOut.get(eid)?.hash;
         setStrip(state, id, 2, 6, 9); // value edit only
@@ -3093,7 +3103,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         const afterEdit = bakeOut.get(eid)?.hash;
         expect(afterEdit).not.toBe(withStrip);
         // undoing the edit (byte-identical restore) reproduces the earlier hash exactly.
-        restoreStrip(state, { section: sec, id, start: 2, end: 6, value: 5, kfs: [] });
+        restoreStrip(state, { id, start: 2, end: 6, value: 5, kfs: [] });
         state.step(0);
         expect(bakeOut.get(eid)?.hash).toBe(withStrip);
     });
@@ -3137,7 +3147,7 @@ describe("velocity strips — ECS layer (C3)", () => {
             const start = length * 0.25;
             const end = length * 0.75;
             const value = 4; // well off the entry speed (V0 = 10) and off the natural march
-            createStrip(state, sec, start, end, value);
+            createStrip(state, start, end, value);
             state.step(0);
 
             const info = sectionInfo.get(sec);
@@ -3165,7 +3175,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         const { state, eid, sec } = track(); // flat 2-node, length EXTEND_DIST = 24
         addNode(state, sec, EXTEND_DIST, 10); // a bend, off-axis — v would naturally curve
         const value = 3;
-        createStrip(state, sec, 8, 16, value); // interior, well off both node endpoints
+        createStrip(state, 8, 16, value); // interior, well off both node endpoints
         state.step(0);
         const info = sectionInfo.get(sec);
         const out = bakeOut.get(eid);
@@ -3193,9 +3203,10 @@ describe("velocity strips — ECS layer (C3)", () => {
     test("stripsForStep resolves the section's own strips at an already-resolved Step, purely (no bake read)", () => {
         const { state, sec } = track();
         convertSection(state, sec); // → force, extent EXTEND_DIST
-        createStrip(state, sec, 6, 18, 5);
+        createStrip(state, 6, 18, 5);
         const step = { edges: 48, ds: EXTEND_DIST / 48 };
-        const specs = stripsForStep(state, sec, step);
+        // a single-section track: the section's own track-global entry offset is 0.
+        const specs = stripsForStep(state, 0, step);
         expect(specs).toBeDefined();
         expect(specs?.[0].start).toBe(Math.round(6 / step.ds));
         expect(specs?.[0].end).toBe(Math.round(18 / step.ds));
@@ -3214,7 +3225,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         createForcePoint(state, sec, 0, 1.3);
         createForcePoint(state, sec, EXTEND_DIST, 1.3);
         const value = 4;
-        createStrip(state, sec, 6, 18, value);
+        createStrip(state, 6, 18, value);
         state.step(0);
         const info = sectionInfo.get(sec);
         const out = bakeOut.get(eid);
@@ -3240,7 +3251,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         createForcePoint(state, sec, length, 1.3);
         const start = 5;
         const end = 15;
-        const stripId = createStrip(state, sec, start, end, 4) as number;
+        const stripId = createStrip(state, start, end, 4) as number;
         // createStrip seeds two flat keyframes at start/end (S4) — clear them so this arm
         // exercises an isolated two-keyframe ramp, not four stacked at the same stations.
         destroyStripKeyframes(state, stripId);
@@ -3282,7 +3293,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         createForcePoint(state, sec, length, 1.3);
         const start = 5;
         const end = 15;
-        const stripId = createStrip(state, sec, start, end, 4) as number;
+        const stripId = createStrip(state, start, end, 4) as number;
         // createStrip seeds two flat keyframes at start/end (S4) — clear them so this arm
         // exercises an isolated two-keyframe ramp, not four stacked at the same stations.
         destroyStripKeyframes(state, stripId);
@@ -3314,7 +3325,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         convertSection(state, sec);
         const start = 6;
         const end = 18;
-        const stripId = createStrip(state, sec, start, end, 4) as number;
+        const stripId = createStrip(state, start, end, 4) as number;
         // a keyframe before the strip's start should be clamped to `start`
         const kfBefore = createStripKeyframe(state, stripId, 2, 3);
         const stBefore = stripKeyframeState(state, kfBefore);
@@ -3329,21 +3340,23 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(stInside?.s).toBe(12);
     });
 
-    test("strip keyframes round-trip through snapshotSection/restoreSection byte-identical", () => {
+    test("strip keyframes round-trip through snapshotAll/restoreAll byte-identical", () => {
+        // strips left `SectionSnapshot` with S2 (they're track-global and span-blind), so the
+        // whole-track snapshot is the one that carries them — `TrackSnapshot.strips`.
         const { state, sec } = track();
         convertSection(state, sec);
-        const stripId = createStrip(state, sec, 4, 16, 5) as number;
+        const stripId = createStrip(state, 4, 16, 5) as number;
         // createStrip seeds two flat keyframes at start/end (S4) — clear them so this arm
         // checks the exact pair it authors, not the seeded pair plus these two.
         destroyStripKeyframes(state, stripId);
         createStripKeyframe(state, stripId, 6, 3);
         createStripKeyframe(state, stripId, 14, 7);
-        const snap = snapshotSection(state, sec);
+        const snap = snapshotAll(state);
         expect(snap.strips[0].keyframes.length).toBe(2);
         // destroy everything and restore
-        for (const st of sectionStrips(state, sec)) destroyStrip(state, st.id);
-        expect(sectionStrips(state, sec).length).toBe(0);
-        restoreSection(state, snap);
+        for (const st of allStrips(state)) destroyStrip(state, st.id);
+        expect(allStrips(state).length).toBe(0);
+        restoreAll(state, snap);
         const kfs = stripKeyframes(state, stripId);
         expect(kfs.length).toBe(2);
         expect(kfs[0].s).toBe(6);
@@ -3357,7 +3370,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         convertSection(state, sec);
         createForcePoint(state, sec, 0, 1.3);
         createForcePoint(state, sec, EXTEND_DIST, 1.3);
-        const stripId = createStrip(state, sec, 6, 18, 4) as number;
+        const stripId = createStrip(state, 6, 18, 4) as number;
         state.step(0);
         const before = bakeOut.get(eid)?.hash;
         createStripKeyframe(state, stripId, 10, 3);
@@ -3383,7 +3396,7 @@ describe("velocity strips — ECS layer (C3)", () => {
         convertSection(state, sec);
         const start = 6;
         const end = 18;
-        const stripId = createStrip(state, sec, start, end, 4) as number;
+        const stripId = createStrip(state, start, end, 4) as number;
         const h = createHistory();
         // construct an out-of-extent s (30, far past end=18)
         const outOfExtent = 30;
@@ -3411,7 +3424,7 @@ describe("S3: seed keyframes + non-sticking (S4's boundary-ride deleted)", () =>
         createForcePoint(state, sec, 0, 1.3);
         createForcePoint(state, sec, EXTEND_DIST, 1.3);
         const value = 4;
-        const stripId = createStrip(state, sec, 6, 18, value) as number;
+        const stripId = createStrip(state, 6, 18, value) as number;
         const kfs = stripKeyframes(state, stripId);
         expect(kfs.length).toBe(2);
         expect(kfs[0].s).toBe(6);
@@ -3443,7 +3456,7 @@ describe("S3: seed keyframes + non-sticking (S4's boundary-ride deleted)", () =>
         // `startKfId`'s `s` reading 3 instead of the held 5.
         const { state, sec } = track();
         convertSection(state, sec);
-        const stripId = createStrip(state, sec, 5, 15, 8) as number;
+        const stripId = createStrip(state, 5, 15, 8) as number;
         const seeded = stripKeyframes(state, stripId);
         const startKfId = seeded[0].id;
         const endKfId = seeded[1].id;
@@ -3463,7 +3476,7 @@ describe("S3: seed keyframes + non-sticking (S4's boundary-ride deleted)", () =>
     test("non-sticking: a body drag translates neither boundary keyframe — every keyframe holds station like a force keyframe", () => {
         const { state, sec } = track();
         convertSection(state, sec);
-        const stripId = createStrip(state, sec, 5, 15, 8) as number;
+        const stripId = createStrip(state, 5, 15, 8) as number;
         const seeded = stripKeyframes(state, stripId);
         const startKfId = seeded[0].id;
         const endKfId = seeded[1].id;
@@ -3479,7 +3492,7 @@ describe("S3: seed keyframes + non-sticking (S4's boundary-ride deleted)", () =>
         const { state, sec } = track();
         convertSection(state, sec);
         const h = createHistory();
-        const id = addStrip(h, state, sec, 5, 15, 8) as number;
+        const id = addStrip(h, state, 5, 15, 8) as number;
         const before = snapshotAll(state);
 
         beginStripMove(state, id);
@@ -3499,13 +3512,13 @@ describe("S3: seed keyframes + non-sticking (S4's boundary-ride deleted)", () =>
         convertSection(state, sec);
         const h = createHistory();
         const before = snapshotAll(state);
-        const id = addStrip(h, state, sec, 5, 15, 8) as number;
+        const id = addStrip(h, state, 5, 15, 8) as number;
         const afterCreate = snapshotAll(state);
         expect(stripKeyframes(state, id).length).toBe(2);
 
         undo(h, state);
         expect(snapshotAll(state)).toEqual(before);
-        expect(sectionStrips(state, sec).length).toBe(0);
+        expect(allStrips(state).length).toBe(0);
 
         redo(h, state);
         expect(snapshotAll(state)).toEqual(afterCreate);
@@ -3521,11 +3534,11 @@ describe("S3: seed keyframes + non-sticking (S4's boundary-ride deleted)", () =>
         const { state, sec } = track();
         convertSection(state, sec);
         const h = createHistory();
-        const id = addStrip(h, state, sec, 5, 15, 8) as number;
+        const id = addStrip(h, state, 5, 15, 8) as number;
         const before = snapshotAll(state);
 
         deleteStrips(h, state, [id]);
-        expect(sectionStrips(state, sec).length).toBe(0);
+        expect(allStrips(state).length).toBe(0);
 
         undo(h, state);
         expect(snapshotAll(state)).toEqual(before);
@@ -3536,10 +3549,10 @@ describe("S3: seed keyframes + non-sticking (S4's boundary-ride deleted)", () =>
 describe("initial velocity is the first strip (S5)", () => {
     /** the same min-extent span `seed()` authors — a real strip, through the ordinary
      *  create path, so it inherits S4's two seeded boundary keyframes. */
-    function seedStartStrip(state: State, sec: number, value: number): number {
-        const ext = stripMinExtentAt(state, sec, 0);
+    function seedStartStrip(state: State, value: number): number {
+        const ext = stripMinExtentAt(state, 0);
         if (!ext) throw new Error("no min extent");
-        const id = createStrip(state, sec, ext.start, ext.end, value);
+        const id = createStrip(state, ext.start, ext.end, value);
         if (id === null) throw new Error("strip refused");
         return id;
     }
@@ -3551,7 +3564,7 @@ describe("initial velocity is the first strip (S5)", () => {
         if (!plainOut) throw new Error("no bake");
 
         const seeded = track();
-        seedStartStrip(seeded.state, seeded.sec, V0);
+        seedStartStrip(seeded.state, V0);
         seeded.state.step(0);
         const seededOut = bakeOut.get(seeded.eid);
         if (!seededOut) throw new Error("no bake");
@@ -3585,7 +3598,7 @@ describe("initial velocity is the first strip (S5)", () => {
         // purpose (`setStartSpeed`'s own docblock) — at the same value the fallback already
         // reads, so entry.v is unchanged and any difference is the override's, not entry's.
         setStartSpeed(state, V0);
-        expect(sectionStrips(state, sec).length).toBe(1);
+        expect(allStrips(state).length).toBe(1);
         expect(entrySpeed(state)).toBe(V0);
         state.step(0);
         const presentOut = bakeOut.get(eid);
@@ -3594,9 +3607,9 @@ describe("initial velocity is the first strip (S5)", () => {
         expect(Array.from(presentOut.fN)).toEqual(absentFN);
 
         // reverse direction, same document: destroy the strip and re-bake.
-        const id = sectionStrips(state, sec)[0].id;
+        const id = allStrips(state)[0].id;
         destroyStrip(state, id);
-        expect(sectionStrips(state, sec).length).toBe(0);
+        expect(allStrips(state).length).toBe(0);
         state.step(0);
         const absentAfter = bakeOut.get(eid);
         if (!absentAfter) throw new Error("no bake");
@@ -3627,12 +3640,12 @@ describe("initial velocity is the first strip (S5)", () => {
         const a = new State();
         a.addSystem(BakeSystem);
         const eidA = createTrack(a);
-        const secA = buildCurved(a);
+        buildCurved(a);
         setStartSpeed(a, value); // spawns the degenerate [0, 0) point (no strip exists yet)
-        const glyphId = sectionStrips(a, secA)[0].id;
-        expect(sectionStrips(a, secA)[0].start).toBe(sectionStrips(a, secA)[0].end); // degenerate
+        const glyphId = allStrips(a)[0].id;
+        expect(allStrips(a)[0].start).toBe(allStrips(a)[0].end); // degenerate
         setStrip(a, glyphId, 0, 6, value); // the drag-out: an "end"-mode extend, guarded
-        const grown = sectionStrips(a, secA)[0];
+        const grown = allStrips(a)[0];
         expect(grown.start).toBe(0);
         expect(grown.end).toBe(6); // the guard admitted it — a real, edge-covering span now
         a.step(0);
@@ -3643,8 +3656,8 @@ describe("initial velocity is the first strip (S5)", () => {
         const b = new State();
         b.addSystem(BakeSystem);
         const eidB = createTrack(b);
-        const secB = buildCurved(b);
-        const handId = createStrip(b, secB, 0, 6, value);
+        buildCurved(b);
+        const handId = createStrip(b, 0, 6, value);
         expect(handId).not.toBeNull();
         b.step(0);
         const outB = bakeOut.get(eidB);
@@ -3658,11 +3671,11 @@ describe("initial velocity is the first strip (S5)", () => {
         // target that rounds back to `start === end` is refused, not silently re-degenerated.
         const c = new State();
         c.addSystem(BakeSystem);
-        const secC = buildCurved(c);
+        buildCurved(c);
         setStartSpeed(c, value);
-        const stillGlyph = sectionStrips(c, secC)[0];
+        const stillGlyph = allStrips(c)[0];
         setStrip(c, stillGlyph.id, 0, 0, value); // no-op target — collapses right back
-        expect(sectionStrips(c, secC)[0]).toEqual(stillGlyph); // refused, unchanged
+        expect(allStrips(c)[0]).toEqual(stillGlyph); // refused, unchanged
     });
 
     test("with no strip covering station 0, the derived entry speed falls back to V0", () => {
@@ -3671,8 +3684,8 @@ describe("initial velocity is the first strip (S5)", () => {
     });
 
     test("editing the start strip's keyframe moves the derived entry speed and v[0]", () => {
-        const { state, eid, sec } = track();
-        const id = seedStartStrip(state, sec, V0);
+        const { state, eid } = track();
+        const id = seedStartStrip(state, V0);
         state.step(0);
         expect(bakeOut.get(eid)?.v[0]).toBe(V0);
 
@@ -3685,8 +3698,8 @@ describe("initial velocity is the first strip (S5)", () => {
     });
 
     test("deleting the start strip falls the derived entry speed and v[0] back to V0", () => {
-        const { state, eid, sec } = track();
-        const id = seedStartStrip(state, sec, 18);
+        const { state, eid } = track();
+        const id = seedStartStrip(state, 18);
         state.step(0);
         expect(bakeOut.get(eid)?.v[0]).toBe(18);
 
@@ -3723,7 +3736,7 @@ describe("extent law: a section trim is non-destructive to strips (S2)", () => {
         const { state, sec } = track();
         convertSection(state, sec); // → force, default extent EXTEND_DIST = 24
         const value = 4; // well off V0 = 10 and off the natural march
-        createStrip(state, sec, 5, 20, value);
+        createStrip(state, 5, 20, value);
         setSectionLength(state, sec, 12); // trim below the strip's own end (20), above its start (5)
         state.step(0);
         const eid = trackEntity(state) as number;
@@ -3743,7 +3756,7 @@ describe("extent law: a section trim is non-destructive to strips (S2)", () => {
         control.addSystem(BakeSystem);
         const cEid = createTrack(control);
         const cSec = createSection(control, 0, SectionKind.Force, 12);
-        createStrip(control, cSec, 5, 12, value); // end clamped to the control's own extent
+        createStrip(control, 5, 12, value); // end clamped to the control's own extent
         control.step(0);
         const cOut = bakeOut.get(cEid);
         const cInfo = sectionInfo.get(cSec);
@@ -3765,7 +3778,7 @@ describe("extent law: a section trim is non-destructive to strips (S2)", () => {
         const { state, sec } = track();
         convertSection(state, sec); // → force, default extent EXTEND_DIST = 24
         const value = 4;
-        createStrip(state, sec, 18, 22, value);
+        createStrip(state, 18, 22, value);
         setSectionLength(state, sec, 10); // trim entirely below the strip's own start (18)
         state.step(0);
         const eid = trackEntity(state) as number;
@@ -3794,11 +3807,11 @@ describe("extent law: a section trim is non-destructive to strips (S2)", () => {
     test("re-lengthening restores the strip byte-identical — the trim never mutates strip data", () => {
         const { state, sec } = track();
         convertSection(state, sec);
-        createStrip(state, sec, 5, 20, 4);
-        const before = stripState(state, sectionStrips(state, sec)[0].id);
+        createStrip(state, 5, 20, 4);
+        const before = stripState(state, allStrips(state)[0].id);
         setSectionLength(state, sec, 8); // trim below the strip's own start — goes inert
         setSectionLength(state, sec, EXTEND_DIST); // re-lengthen back to the original extent
-        const after = stripState(state, sectionStrips(state, sec)[0].id);
+        const after = stripState(state, allStrips(state)[0].id);
         expect(after).toEqual(before); // never touched — non-destructive by construction
     });
 });
@@ -3818,10 +3831,10 @@ describe("width floor: the min-extent guard also requires the span's own raw wid
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 10); // 10 m / 0.5 m nominal -> ds = 0.5 exactly
-        expect(createStrip(state, sec, 0.24, 0.26, 5)).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(0);
-        expect(createStrip(state, sec, 0, 0.5, 5)).not.toBeNull();
+        createSection(state, 0, SectionKind.Force, 10); // 10 m / 0.5 m nominal -> ds = 0.5 exactly
+        expect(createStrip(state, 0.24, 0.26, 5)).toBeNull();
+        expect(allStrips(state).length).toBe(0);
+        expect(createStrip(state, 0, 0.5, 5)).not.toBeNull();
     });
 });
 
@@ -3840,10 +3853,10 @@ describe("validStripValue routing: createStrip's seed and setStrip's value (S2, 
         // `validStripValue` check: both calls below returned a non-null id.
         const { state, sec } = track();
         convertSection(state, sec);
-        expect(createStrip(state, sec, 5, 15, 0)).toBeNull();
-        expect(createStrip(state, sec, 5, 15, -3)).toBeNull();
-        expect(sectionStrips(state, sec).length).toBe(0);
-        expect(createStrip(state, sec, 5, 15, 3)).not.toBeNull();
+        expect(createStrip(state, 5, 15, 0)).toBeNull();
+        expect(createStrip(state, 5, 15, -3)).toBeNull();
+        expect(allStrips(state).length).toBe(0);
+        expect(createStrip(state, 5, 15, 3)).not.toBeNull();
     });
 
     test("setStrip refuses an invalid value write, keeping the strip's current value — position still lands independently", () => {
@@ -3851,301 +3864,84 @@ describe("validStripValue routing: createStrip's seed and setStrip's value (S2, 
         // unconditionally — confirmed red by reverting the guard: the row's value read 0.
         const { state, sec } = track();
         convertSection(state, sec);
-        const id = createStrip(state, sec, 5, 15, 4) as number;
+        const id = createStrip(state, 5, 15, 4) as number;
         setStrip(state, id, 6, 16, 0); // invalid value: refused, old value kept
-        const row = sectionStrips(state, sec).find((r) => r.id === id);
+        const row = allStrips(state).find((r) => r.id === id);
         expect(row?.value).toBe(4);
         expect(row?.start).toBe(6); // position still writes independently of the value refusal
         expect(row?.end).toBe(16);
     });
 });
 
-/** the roadmap's OWN witness property, decoupled from the width floor's stricter conjunct
- *  (`spanCoversOneEdge` now ALSO requires the raw width — a separately-tested fix, above): does
- *  the span straddle two DIFFERENT edge boundaries under `edgeStrips`'s own round-to-nearest map
- *  — the property whose failure is the degenerate `start === end` the point convention displaces
- *  onto the preceding edge. Two adjacent min-extent strips can legitimately end up too narrow for
- *  the STRICTER width floor once a join re-quantizes onto a coarser grid (the same "floor vs.
- *  no-overlap clamp" tradeoff the deleted `landDomain` code accepted — "the clamp wins"), so the
- *  join floor's own guarantee is straddle-only: never displaced, not necessarily edge-clean. */
-function coversStraddleOnly(
-    ds: ArrayLike<number>,
-    edges: number,
-    start: number,
-    end: number,
-): boolean {
-    const specs = edgeStrips(ds, edges, [{ start, end, value: 0 }]);
-    return !!specs && specs.length > 0 && specs[0].end > specs[0].start;
-}
+describe("joinNext leaves every strip row and keyframe byte-identical (S2)", () => {
+    /** every strip row plus every strip's keyframes, in a comparable plain form — the whole
+     *  strip layer's observable state, which a structural op must not move. */
+    function stripLayer(state: State) {
+        return allStrips(state).map((r) => ({
+            id: r.id,
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            kfs: stripKeyframes(state, r.id).map((k) => ({ id: k.id, s: k.s, v: k.v })),
+        }));
+    }
 
-describe("joinNext — min-extent strip floor across a coarser joined grid (S2, roadmap fold)", () => {
-    test("RED-FIRST WITNESS: 2.28 m + 2.26 m force sections — join re-floors both halves' min-extent strips instead of collapsing one onto the preceding edge", () => {
-        // measured on the roadmap: joining these two exact lengths, each carrying a min-extent
-        // strip at its own tail/head edge, re-quantizes onto a COARSER joined grid (5 + 5 edges
-        // -> 9, not 10) — B's rebased strip collapses to `start === end` (confirmed directly
-        // against `edgeStrips`: pre-floor, B's [2.28, 2.732) resolves to `{start: 5, end: 5}` on
-        // the joined grid), which the point convention then displaces onto the PRECEDING edge,
-        // landing dead on A's own surviving strip instead of covering nothing. Confirmed red by
-        // reverting the `refloorStrips` calls in `joinNext`.
+    test("the 2.28 m + 2.26 m coarser-joined-grid pair: both min-extent strips survive untouched", () => {
+        // this geometry used to be the join's own worst case — the joined grid is coarser
+        // (5 + 5 edges resolve to 9, not 10), so the old `refloorStrips` re-quantized both
+        // halves onto it. A join no longer reads or writes a strip at all (Locked decision),
+        // so the stored coordinates are the same numbers before and after, on any grid.
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
         const a = createSection(state, 0, SectionKind.Force, 2.28);
-        const b = createSection(state, 1, SectionKind.Force, 2.26);
+        createSection(state, 1, SectionKind.Force, 2.26);
         state.step(0);
-        const aExtent = stripMinExtentAt(state, a, 2.27); // A's own last edge
-        const bExtent = stripMinExtentAt(state, b, 0.01); // B's own first edge
+        // track-global stations: A's own last edge, then B's own first edge (past A's 2.28 m).
+        const aExtent = stripMinExtentAt(state, 2.27);
+        const bExtent = stripMinExtentAt(state, 2.29);
         if (!aExtent || !bExtent) throw new Error("no resolvable edge structure");
-        const aId = createStrip(state, a, aExtent.start, aExtent.end, 5);
-        const bId = createStrip(state, b, bExtent.start, bExtent.end, 7);
-        expect(aId).not.toBeNull();
-        expect(bId).not.toBeNull();
+        expect(bExtent.start).toBeGreaterThanOrEqual(aExtent.end); // one edge per side, not two in A
+        expect(createStrip(state, aExtent.start, aExtent.end, 5)).not.toBeNull();
+        expect(createStrip(state, bExtent.start, bExtent.end, 7)).not.toBeNull();
+
+        const before = stripLayer(state);
+        expect(before.length).toBe(2);
 
         expect(joinNext(state, a)).toBe(true);
+        expect(sections(state).length).toBe(1); // the join really landed
         state.step(0);
 
-        const strips = sectionStrips(state, a).sort((x, y) => x.start - y.start);
-        expect(strips.length).toBe(2);
-        const joinedStep = resolveStep(2.28 + 2.26, DS_NOMINAL);
-        const joinedDs = new Float32Array(joinedStep.edges).fill(joinedStep.ds);
-        for (let i = 0; i < strips.length; i++) {
-            expect(
-                coversStraddleOnly(joinedDs, joinedStep.edges, strips[i].start, strips[i].end),
-            ).toBe(true);
-            if (i + 1 < strips.length)
-                expect(strips[i].end).toBeLessThanOrEqual(strips[i + 1].start); // no overlap
-        }
-        // the floor extends `end`; it never rewrites the authored value.
-        expect(strips.find((r) => r.id === aId)?.value).toBe(5);
-        expect(strips.find((r) => r.id === bId)?.value).toBe(7);
+        expect(stripLayer(state)).toEqual(before);
     });
 
-    test("swept-grid probe: across a (headLen, tailLen, station) grid, a single min-extent strip on B's side survives the join straddling ≥1 edge, never displaced (the roadmap's own red-first witness — 12/400 combos read displaced before the fix, 0/400 after)", () => {
-        // `station` is B's OWN distance from the join boundary — a THIRD swept dimension
-        // independent of the two lengths, matching the roadmap's own (headLen, tailLen,
-        // station) grid. One strip per join (not two abutting ones — that pathological
-        // double-boxed construction runs into the SAME "floor vs. no-overlap clamp" tradeoff
-        // the deleted `landDomain` code accepted for two strips squeezed with zero slack; the
-        // roadmap's own measured witness names "a minimum-extent velocity strip", singular).
-        const headLens = [2.1, 2.28, 3.4, 5.05, 8.02, 1.5, 6.7, 9.9, 12.3, 3.0];
-        const tailLens = [1.9, 2.26, 3.6, 4.95, 7.98, 2.5, 5.1, 10.4, 8.8, 4.0];
-        const stations = [0.01, 0.1, 0.3, 0.7];
-        let checked = 0;
-        for (const headLen of headLens) {
-            for (const tailLen of tailLens) {
-                for (const station of stations) {
-                    if (station >= tailLen) continue;
-                    const state = new State();
-                    state.addSystem(BakeSystem);
-                    createTrack(state);
-                    const a = createSection(state, 0, SectionKind.Force, headLen);
-                    const b = createSection(state, 1, SectionKind.Force, tailLen);
-                    state.step(0);
-                    const bExtent = stripMinExtentAt(state, b, station);
-                    if (!bExtent) continue;
-                    createStrip(state, b, bExtent.start, bExtent.end, 7);
-                    expect(joinNext(state, a)).toBe(true);
-                    state.step(0);
-                    const strips = sectionStrips(state, a);
-                    expect(strips.length).toBe(1);
-                    const joinedStep = resolveStep(headLen + tailLen, DS_NOMINAL);
-                    const joinedDs = new Float32Array(joinedStep.edges).fill(joinedStep.ds);
-                    checked++;
-                    expect(
-                        coversStraddleOnly(
-                            joinedDs,
-                            joinedStep.edges,
-                            strips[0].start,
-                            strips[0].end,
-                        ),
-                    ).toBe(true);
-                }
-            }
-        }
-        expect(checked).toBeGreaterThan(300);
-    });
-
-    test("geo join: an existing straddling min-extent strip and a fresh cross-join one both still cover ≥1 edge of the merged chain (no regression from the force-side floor)", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, a, 0, 0);
-        addNode(state, a, 20, 0);
-        const b = createSection(state, 1, SectionKind.Geo, 0);
-        addNode(state, b, 0, 0);
-        addNode(state, b, 20, 0);
-        state.step(0);
-        const bExtent = stripMinExtentAt(state, b, 0.01);
-        if (!bExtent) throw new Error("no resolvable edge structure");
-        const bId = createStrip(state, b, bExtent.start, bExtent.end, 6);
-        expect(bId).not.toBeNull();
-
-        expect(joinNext(state, a)).toBe(true);
-        state.step(0);
-
-        const strips = sectionStrips(state, a);
-        expect(strips.length).toBe(1);
-        expect(strips[0].end).toBeGreaterThan(strips[0].start);
-        expect(strips[0].value).toBe(6);
-    });
-
-    test("RED-FIRST WITNESS (S3): a merge join rebases the surviving strip's Strip.end but leaves its own boundary keyframe stranded at the OLD end", () => {
-        // reproduces the booked map defect directly: A's strip touches A's own length
-        // (aLen), B's strip touches B's own start (0), and both carry the same value, so
-        // `joinNext`'s force branch MERGES them into one strip and moves `Strip.end` to
-        // `aLen + bHeadStrip.end` — but the surviving strip's OWN end-boundary keyframe
-        // (seeded by `createStrip` at its old end, `aLen`) is never told to follow. Red
-        // before the fix: `endKf.s` reads `aLen` (20) instead of the strip's new end (30).
+    test("the merge-join fixture (two abutting strips at the same value) no longer merges or rebases", () => {
+        // the S3 defect's own fixture: A's strip touched A's exit and B's touched B's entry at
+        // the SAME value, so the old force branch merged them into one strip whose rebased
+        // `Strip.end` stranded its own boundary keyframe. Nothing merges now — two rows in,
+        // two rows out, every keyframe on its authored station.
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
         const a = createSection(state, 0, SectionKind.Force, 20);
-        const b = createSection(state, 1, SectionKind.Force, 20);
+        createSection(state, 1, SectionKind.Force, 20);
         state.step(0);
-        const aId = createStrip(state, a, 10, 20, 8) as number; // touches A's own length (aLen = 20)
-        const bId = createStrip(state, b, 0, 10, 8) as number; // touches B's own start (0), same value
+        const aId = createStrip(state, 10, 20, 8) as number; // up to A's own exit (global 20)
+        const bId = createStrip(state, 20, 30, 8) as number; // from B's own entry, same value
         expect(aId).not.toBeNull();
         expect(bId).not.toBeNull();
         const endKfId = stripKeyframes(state, aId).find((k) => k.s === 20)?.id;
         if (endKfId === undefined) throw new Error("no seeded end keyframe");
 
+        const before = stripLayer(state);
+        expect(before.length).toBe(2);
+
         expect(joinNext(state, a)).toBe(true);
+        expect(sections(state).length).toBe(1); // the join really landed
         state.step(0);
 
-        const strips = sectionStrips(state, a);
-        expect(strips.length).toBe(1); // merged: values agreed
-        expect(strips[0].id).toBe(aId); // the surviving strip keeps A's own id
-        expect(strips[0].end).toBe(30); // 20 + 10, the merged strip's real new edge
-
-        // the strip's own boundary keyframe must ride the rebase, not strand at the old edge.
-        expect(stripKeyframeState(state, endKfId)?.s).toBe(30);
+        expect(stripLayer(state)).toEqual(before);
+        expect(allStrips(state).map((r) => r.id)).toEqual([aId, bId]); // no merge
+        expect(stripKeyframeState(state, endKfId)?.s).toBe(20); // no rebase to chase
     });
-});
-
-// PASS-5 (3): App.svelte's canCut geo pre-check must evaluate geoSplitStripsRefused on the
-// `t >= 1` landmark branch (which `splitGeoAt` reduces to `splitGeo(j+1)`), using `j+1` as
-// the node order — not `j`. At `bb9e638` the condition `ctx.cut.t === undefined || ctx.cut.t <= 0`
-// skipped the `t >= 1` branch entirely, and `ctx.cut.at` was `j` (wrong: should be `j+1`).
-// No data loss (the internal guard still refuses), but T1's "grayed before the click" claim
-// was false for that branch. This arm tests the underlying predicate: a cut at `t >= 1`
-// (node `j+1`) that would split a straddling strip into sub-edge halves must read
-// `geoSplitStripsRefused === true` at `j+1` and `geoSplitAtStripsRefused === true` at `(j, 1)`.
-test("geoSplitStripsRefused at j+1 catches a t>=1 landmark cut that the old canCut skipped (pass-5 deliverable 3)", () => {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 12, 0);
-    addNode(state, sec, 24, 0);
-    state.step(0);
-    // strip straddling node 1 (the segment boundary at 12 m) — a cut at node 1 splits it
-    createStrip(state, sec, 11.9, 12.6, 5);
-    state.step(0);
-    // a cut at t >= 1 of segment 0 reduces to splitGeo(j+1) = splitGeo(1)
-    // the old canCut checked geoSplitStripsRefused(ecs, sec, 0) (j, wrong) → false (not refused)
-    expect(geoSplitStripsRefused(state, sec, 0)).toBe(false); // j = 0: not a split point for this strip
-    // the fix checks geoSplitStripsRefused(ecs, sec, 1) (j+1, correct) → true (refused)
-    expect(geoSplitStripsRefused(state, sec, 1)).toBe(true);
-    // geoSplitAtStripsRefused delegates t >= 1 to geoSplitStripsRefused(j+1)
-    expect(geoSplitAtStripsRefused(state, sec, 0, 1)).toBe(true);
-    // and the actual split is refused (no mutation)
-    const nodesBefore = sectionHandles(state, sec).length;
-    const h = createHistory();
-    expect(splitSection(h, state, sec, 0, 1)).toBeNull();
-    expect(sectionHandles(state, sec).length).toBe(nodesBefore);
-    expect(h.undo.length).toBe(0);
-});
-
-// PASS-5 (3b): App.svelte's canCut geo pre-check must call geoSplitAtStripsRefused on the
-// interior branch (0 < t < 1), not just the landmark branches. At `f1ed612` the interior
-// branch fell through to `return true`, so T1's "grayed before the click" claim was false
-// for the interior case — the one the geoSplitAtStripsRefused pre-check exists for. The
-// testable seam is geoSplitAtStripsRefused itself (canCut is a Svelte $derived, not directly
-// testable). RED-FIRST: before the fix, canCut returned true for interior; after, it calls
-// geoSplitAtStripsRefused and grays.
-test("geoSplitAtStripsRefused catches an interior cut on a straddling strip (pass-5 deliverable 3b)", () => {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 24, 0);
-    state.step(0);
-    // strip straddling the interior cut point at ~12 m — a cut at t=0.5 of segment 0
-    // places the new node at ~12 m, splitting [11.9, 12.6) into a 0.1 m head and a 0.6 m
-    // tail. The head [11.9, 12.0) is sub-edge on the ~0.5 m grid (both endpoints map to
-    // edge 24), so the split is refused.
-    createStrip(state, sec, 11.9, 12.6, 5);
-    state.step(0);
-    // the interior pre-check reads true (refused) — canCut now calls this and grays
-    expect(geoSplitAtStripsRefused(state, sec, 0, 0.5)).toBe(true);
-    // and the actual split is refused (no mutation)
-    const nodesBefore = sectionHandles(state, sec).length;
-    const h = createHistory();
-    expect(splitSection(h, state, sec, 0, 0.5)).toBeNull();
-    expect(sectionHandles(state, sec).length).toBe(nodesBefore);
-    expect(h.undo.length).toBe(0);
-});
-
-// LAZY TAIL: the tail sampleChain in geoSplitAtStripsRefused is built lazily — only
-// when a strip straddles the cut AND its head half passes spanCoversOneEdge. Three
-// measured truths frame these arms:
-//
-// (a) At most one strip can straddle a cut, because createStrip refuses overlap
-//     (stripOverlapped, src/track.ts). So the tail is built at most once by
-//     construction, and the "reused for every later straddling strip" path is
-//     reachable only for a pre-guard document restored through spawnStrip (which
-//     bypasses the overlap guard deliberately, for byte-identical undo/redo).
-// (b) What the laziness actually buys is zero tail work on the no-strip,
-//     non-straddling and head-fail paths — the common case, since a geo section
-//     usually carries no strips.
-// (c) These arms pin verdicts, not laziness — they pass at 3f15da1^ too (where the
-//     tail was built unconditionally). The laziness itself (one sampleChain for the
-//     straddling path, zero for the others) is not directly witnessable without a
-//     spy on the pure sampleChain import.
-test("geoSplitAtStripsRefused reaches the tail check when the head half passes (head passes → tail built → tail check)", () => {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 24, 0);
-    state.step(0);
-    // one strip straddling the interior cut at ~12 m (t=0.5 of segment 0). The head
-    // half [11.0, 12.0) is 1.0 m — wider than the ~0.5 m grid — so spanCoversOneEdge
-    // passes and the tail is genuinely sampled (the lazy build fires). The tail
-    // [0, 0.1) is sub-edge, so the tail check refuses. Measured verdict: true.
-    // This is the branch 3f15da1 changed (head passes → tail built lazily → tail
-    // check runs) and no arm in the suite covered it before.
-    createStrip(state, sec, 11.0, 12.1, 5);
-    state.step(0);
-    expect(geoSplitAtStripsRefused(state, sec, 0, 0.5)).toBe(true);
-});
-
-test("geoSplitAtStripsRefused with zero strips returns false for interior t (no tail work)", () => {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 24, 0);
-    state.step(0);
-    // no strips → nothing to refuse
-    expect(geoSplitAtStripsRefused(state, sec, 0, 0.5)).toBe(false);
-});
-
-test("geoSplitAtStripsRefused with a non-straddling strip returns false for interior t", () => {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 24, 0);
-    state.step(0);
-    // strip entirely on one side of the cut at ~12 m — does not straddle
-    createStrip(state, sec, 0, 5, 5);
-    state.step(0);
-    expect(geoSplitAtStripsRefused(state, sec, 0, 0.5)).toBe(false);
 });

@@ -186,6 +186,8 @@ export interface Kex {
     placeForce(s: number, g: number): number;
     placeStripKf(stripId: number, s: number, v: number): number;
     widenStrip(stripId: number, start: number, end: number): void;
+    addStripAt(start: number, end: number, value: number): number | null;
+    deleteStripId(id: number): void;
     poses(): number[][];
     resistance(): number;
     sectionCount(): number;
@@ -209,6 +211,7 @@ export interface Kex {
     stripKfSelActive(): number | null;
     stripsOf(i: number): { id: number; start: number; end: number; value: number }[];
     stripKeyframesOf(stripId: number): { id: number; s: number; v: number }[];
+    vAtD(d: number): number;
     spanMidAt(i: number): { x: number; y: number } | null;
     startAt(): { x: number; y: number } | null;
     tTotal(): number;

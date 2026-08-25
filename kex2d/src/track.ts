@@ -29,7 +29,6 @@ import {
     autoTangent,
     collinearVec,
     COLLINEAR_TOL,
-    type ChainResult,
     type Node,
     reflect,
     sampleChain,
@@ -249,18 +248,18 @@ export function sameForceTangent(a?: ForceTangent, b?: ForceTangent): boolean {
     return a.mode === b.mode && sameOffset(a.in, b.in) && sameOffset(a.out, b.out);
 }
 
-/** an authored velocity strip — a child entity on either a geo or a force section, the
- *  `Force` child-entity pattern applied to the "velocity is controlled here" span
- *  (`kex2d-map.md`'s Velocity strips locked decision). `section` is the owning section's
- *  stable id; `id` is the strip's own stable identity (undo/redo address, eid-recycle
- *  safe). `start`/`end` are the span's boundaries in the section's own domain coordinate
- *  — the SAME axis `Force.s` is stored in (arclength for geo/Distance-force, march time
- *  for Time-force) — and `value` is the constant speed (m/s) the strip holds, the same
- *  unit `Entry.v` carries. A **point** is the degenerate `start === end` case (`section.ts`'s
- *  own edge convention). All three are stored constants, DOF-independent like `Force.s` —
- *  never derived from the live march (`kex2d-map.md`'s authored-control exception). */
+/** an authored velocity strip — track-global, span-blind to sections (person's verdict,
+ *  2026-08-25): a velocity span controls the velocity over its own extent regardless of
+ *  section type, may overlap multiple sections, and persists through segment resize and
+ *  structural ops (split/join/delete/convert never touch it). `id` is the strip's own
+ *  stable identity (undo/redo address, eid-recycle safe). `start`/`end` are the span's
+ *  boundaries in TRACK-GLOBAL arclength `d` (meters from track start — the `toGlobal`/
+ *  `toLocal` seam's own coordinate, R's lock 2026-08-25), and `value` is the constant
+ *  speed (m/s) the strip holds, the same unit `Entry.v` carries. A **point** is the
+ *  degenerate `start === end` case (`section.ts`'s own edge convention). All three are
+ *  stored constants, never derived from the live march (`kex2d-map.md`'s
+ *  authored-control exception). */
 export const Strip = {
-    section: sparse(u32),
     id: sparse(u32),
     start: sparse(f32),
     end: sparse(f32),
@@ -271,11 +270,11 @@ export const Strip = {
  *  pattern applied to the strip's own velocity curve (T2, "keyframes on the force-curve
  *  machinery"). `strip` is the owning strip's stable `Strip.id`; `id` is the keyframe's
  *  own stable identity (undo/redo address, eid-recycle safe). `s` is the keyframe's
- *  position in the section's own domain coordinate — the SAME axis `Strip.start`/`end`
- *  and `Force.s` are stored in — clipped to the strip's `[start, end]` extent. `v` is
- *  the velocity (m/s) the curve holds at that station, the same unit `Entry.v` carries.
- *  When a strip has no keyframes, the constant `Strip.value` is used (the After Effects
- *  stopwatch reading: no keyframes means one constant across the span). */
+ *  position in TRACK-GLOBAL arclength `d` — the SAME axis `Strip.start`/`end` are stored
+ *  in — clipped to the strip's `[start, end]` extent. `v` is the velocity (m/s) the curve
+ *  holds at that station, the same unit `Entry.v` carries. When a strip has no
+ *  keyframes, the constant `Strip.value` is used (the After Effects stopwatch reading:
+ *  no keyframes means one constant across the span). */
 export const StripKeyframe = {
     strip: sparse(u32),
     id: sparse(u32),
@@ -293,22 +292,20 @@ export interface StripKeyframeRow {
 
 export interface StripRow {
     eid: number;
-    section: number;
     id: number;
     start: number;
     end: number;
     value: number;
 }
 
-/** every velocity strip on a section, sorted by `start` — the order the bake's edge
- *  conversion and the overlap guard both read. */
-export function sectionStrips(ecs: State, sectionId: number): StripRow[] {
+/** every velocity strip, track-wide, sorted by `start` — the order the bake's edge
+ *  conversion and the overlap guard both read. Strips carry no section ownership
+ *  (Locked decision): there is no per-section filter to apply. */
+export function allStrips(ecs: State): StripRow[] {
     const rows: StripRow[] = [];
     for (const eid of ecs.query([Strip])) {
-        if (Strip.section.get(eid) !== sectionId) continue;
         rows.push({
             eid,
-            section: sectionId,
             id: Strip.id.get(eid),
             start: Strip.start.get(eid),
             end: Strip.end.get(eid),
@@ -341,25 +338,20 @@ function stripEdgeRange(start: number, end: number): [number, number] {
     return start === end ? [start - 1, start] : [start, end];
 }
 
-/** whether a candidate `[start, end)` span overlaps another strip already on `sectionId` —
- *  tested at the edge-index level (`stripEdgeRange`), the coordinate `stripOverride`
- *  (`section.ts`) actually resolves against, not station space: two ranges overlap iff
- *  `aLo < bHi && bLo < aHi` over their edge ranges. `exceptId` excludes the strip asking (a
- *  strip never collides with itself, `stationTaken`'s own self-exclusion shape) — pass -1
- *  from a create (no existing strip to except). A degenerate point (`start === end`) claims
- *  the single edge arriving at its station, `[start−1, start)` — so it overlaps a span at
- *  its OWN start boundary (their edge ranges are disjoint: `[start−1,start)` vs
- *  `[start,end)`) but collides at the span's END boundary (both claim the span's own last
- *  edge) — one guard, correct in both directions, matching `stripOverride` exactly. */
-export function stripOverlapped(
-    ecs: State,
-    sectionId: number,
-    start: number,
-    end: number,
-    exceptId: number,
-): boolean {
+/** whether a candidate `[start, end)` span overlaps another strip, track-wide (strips
+ *  carry no section ownership, Locked decision) — tested at the edge-index level
+ *  (`stripEdgeRange`), the coordinate `stripOverride` (`section.ts`) actually resolves
+ *  against, not station space: two ranges overlap iff `aLo < bHi && bLo < aHi` over their
+ *  edge ranges. `exceptId` excludes the strip asking (a strip never collides with itself,
+ *  `stationTaken`'s own self-exclusion shape) — pass -1 from a create (no existing strip
+ *  to except). A degenerate point (`start === end`) claims the single edge arriving at
+ *  its station, `[start−1, start)` — so it overlaps a span at its OWN start boundary
+ *  (their edge ranges are disjoint: `[start−1,start)` vs `[start,end)`) but collides at
+ *  the span's END boundary (both claim the span's own last edge) — one guard, correct in
+ *  both directions, matching `stripOverride` exactly. */
+export function stripOverlapped(ecs: State, start: number, end: number, exceptId: number): boolean {
     const [aLo, aHi] = stripEdgeRange(start, end);
-    for (const row of sectionStrips(ecs, sectionId)) {
+    for (const row of allStrips(ecs)) {
         if (row.id === exceptId) continue;
         const [bLo, bHi] = stripEdgeRange(row.start, row.end);
         if (aLo < bHi && bLo < aHi) return true;
@@ -368,11 +360,13 @@ export function stripOverlapped(
 }
 
 /** the section's own per-edge `ds` array — the same edge structure the live bake uses
- *  (`geoChordDs` for a geo section, the uniform resolved step for a force section), so the
- *  minimum-extent guard reads exactly the edge boundaries a strip's override would land on.
- *  Returns null when the section has no resolvable edge structure (no track, an empty geo
- *  section). */
-function sectionEdgeDs(
+ *  (`geoChordDs` for a geo section, the uniform resolved step for a force section), a PURE
+ *  derivation from the section's own authored payload, never a bake read (the pin
+ *  invariant's own structural requirement, `enterPin`'s docblock) — this is what lets
+ *  {@link sectionWindows} compute a section's track-global entry offset without reading
+ *  `bakeOut`. Returns null when the section has no resolvable edge structure (no track, an
+ *  empty geo section). */
+export function sectionEdgeDs(
     ecs: State,
     sectionId: number,
 ): { ds: ArrayLike<number>; edges: number } | null {
@@ -417,279 +411,106 @@ export function spanCoversOneEdge(
     return end - start >= ds[Math.min(specs[0].start, edges - 1)];
 }
 
-export function stripCoversOneEdge(
-    ecs: State,
-    sectionId: number,
-    start: number,
-    end: number,
-): boolean {
-    const edge = sectionEdgeDs(ecs, sectionId);
+/** one section's place on the track-global edge axis: the entry offset (the cumulative
+ *  arclength of every upstream section's OWN resolved extent) plus its own per-edge `ds`
+ *  array — computed PURELY from the live authored document via {@link sectionEdgeDs}
+ *  (chord sums for geo, resolved step for force), never a bake read. This is the ONE seam
+ *  both the chain bake (`geoPayload`/`forcePayload`, windowing a track-global strip
+ *  against a section's in-pass window per the Locked decision) and the pin invariant's
+ *  stamp/ghost construction (`enterPin`, "no bake-read anywhere in the override
+ *  construction path") window a track-global strip through — and what lets a strip be
+ *  authored before any bake has ever run (`seed`'s own initial-velocity strip). Offsets
+ *  are strip-independent: a section's own resolved extent (chord length, authored
+ *  `Section.length`) never depends on a velocity strip, only on geometry. */
+export interface SectionWindow {
+    id: number;
+    offset: number;
+    ds: ArrayLike<number>;
+    edges: number;
+    len: number;
+}
+
+const EMPTY_DS = new Float32Array(0);
+
+export function sectionWindows(ecs: State, secs: SectionRow[] = sections(ecs)): SectionWindow[] {
+    const out: SectionWindow[] = [];
+    let cum = 0;
+    for (const sec of secs) {
+        const edge = sectionEdgeDs(ecs, sec.id);
+        const ds = edge?.ds ?? EMPTY_DS;
+        const edges = edge?.edges ?? 0;
+        let len = 0;
+        for (let i = 0; i < edges; i++) len += ds[i];
+        out.push({ id: sec.id, offset: cum, ds, edges, len });
+        cum += len;
+    }
+    return out;
+}
+
+/** the whole track's per-edge `ds` array + edge count, concatenated from every section's
+ *  own pure {@link sectionEdgeDs} via {@link sectionWindows} — the edge structure a
+ *  track-global strip's authoring guards (min-extent, default-extent, overlap) validate
+ *  against. Bake-read-free (unlike reading `bakeOut` directly), so a strip can be created
+ *  before the first bake ever runs. Returns null when the track has no resolvable edges. */
+function trackEdgeArray(ecs: State): { ds: ArrayLike<number>; edges: number } | null {
+    const windows = sectionWindows(ecs);
+    let edges = 0;
+    for (const w of windows) edges += w.edges;
+    if (edges === 0) return null;
+    const ds = new Float32Array(edges);
+    let o = 0;
+    for (const w of windows) for (let i = 0; i < w.edges; i++) ds[o++] = w.ds[i];
+    return { ds, edges };
+}
+
+/** whether a track-global span `[start, end)` covers at least one edge of the current
+ *  bake — the minimum-extent guard, tested against the whole track's own edge structure
+ *  (strips are section-blind, Locked decision). */
+export function stripCoversOneEdge(ecs: State, start: number, end: number): boolean {
+    const edge = trackEdgeArray(ecs);
     if (edge === null) return false;
     return spanCoversOneEdge(edge.ds, edge.edges, start, end);
 }
 
-/** whether a force-section split at `s` would be refused by the strip pre-check —
- *  any strip (straddling or wholly-tail) that would cover zero edges of its own half's
- *  resolved post-split bake. Exposed so the menu's `canCut` predicate can gray the Cut
- *  row before the user clicks it, rather than silently returning null. */
-export function forceSplitStripsRefused(ecs: State, sectionId: number, s: number): boolean {
-    const secEid = sectionAt(ecs, sectionId);
-    if (secEid === null) return false;
-    const len = Section.length.get(secEid);
-    if (s <= 0 || s >= len) return false;
-    const dsNom = trackDs(ecs);
-    const headResolved = resolveStep(s, dsNom);
-    const headDs = new Float32Array(headResolved.edges).fill(headResolved.ds);
-    const tailLen = len - s;
-    const tailResolved = resolveStep(tailLen, dsNom);
-    const tailDs = new Float32Array(tailResolved.edges).fill(tailResolved.ds);
-    for (const st of sectionStrips(ecs, sectionId)) {
-        if (st.end <= s) continue;
-        if (st.start >= s) {
-            if (!spanCoversOneEdge(tailDs, tailResolved.edges, st.start - s, st.end - s))
-                return true;
-            continue;
-        }
-        if (!spanCoversOneEdge(headDs, headResolved.edges, st.start, s)) return true;
-        if (!spanCoversOneEdge(tailDs, tailResolved.edges, 0, st.end - s)) return true;
-    }
-    return false;
-}
-
-/** whether a geo-section split at node `k` would be refused by the strip pre-check —
- *  any straddling strip whose head or tail half would cover zero edges of its own
- *  resolved post-split bake. Exposed so the menu's `canCut` predicate can gray the
- *  Cut row before the user clicks it. */
-export function geoSplitStripsRefused(ecs: State, sectionId: number, k: number): boolean {
-    const secEid = sectionAt(ecs, sectionId);
-    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return false;
-    const handles = sectionHandles(ecs, sectionId);
-    const n = handles.length - 1;
-    if (k < 1 || k >= n) return false;
-    const dsNom = trackDs(ecs);
-    const cutArc = geoNodeArc(ecs, sectionId, dsNom, k);
-    for (const st of sectionStrips(ecs, sectionId)) {
-        if (st.start >= cutArc || st.end <= cutArc) continue;
-        if (!stripCoversOneEdge(ecs, sectionId, st.start, cutArc)) return true;
-        const tailNodes: Node[] = [];
-        for (let i = k; i <= n; i++) {
-            tailNodes.push({
-                x: Handle.pos.x.get(handles[i]),
-                y: Handle.pos.y.get(handles[i]),
-                theta: Handle.theta.get(handles[i]),
-                tangent: readTangent(handles[i]),
-            });
-        }
-        const tPosX = new Float32Array(MAX_SAMPLES);
-        const tPosY = new Float32Array(MAX_SAMPLES);
-        const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
-        const tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
-        if (!spanCoversOneEdge(tDs, tR.edges, 0, st.end - cutArc)) return true;
-    }
-    return false;
-}
-
-/** whether a geo-section Cut at bezier parameter `t` of segment `j` would be refused by
- *  the strip pre-check — the pre-mutation decision for the interior case. `splitGeoAt`
- *  delegates landmark cases (`t <= 0` → `splitGeo(j)`, `t >= 1` → `splitGeo(j+1)`) to
- *  {@link geoSplitStripsRefused}; the interior case (`0 < t < 1`) would call `insertGeoNode`
- *  (mutating: inserts a node, re-parents tangents) and then `splitGeo` at the new node's
- *  order, whose own strip pre-check may refuse — leaving the mutation to be undone. This
- *  function computes the same check `splitGeo` would run *after* `insertGeoNode`, without
- *  mutating: it builds the would-be node array (new node + re-parented tangents, exactly
- *  as `insertGeoNode` produces), samples it, and runs the same straddling-strip head/tail
- *  check. Returns `true` when the split would be refused.
- *
- *  RED-FIRST WITNESS: select a node in section A, refuse a Cut on unrelated section B
- *  (24 m geo, strip `[11.9, 12.6)`, `t=0.5`). At `bb9e638` the refusal path calls
- *  `restoreAll(ecs, before)`, respawning every entity with fresh eids; the selected eid
- *  still passes `ecs.has(eid, Handle)` but `Handle.section`/`Handle.order` now read
- *  section B's. After the hoist, `splitSection` calls this function before `splitGeoAt`,
- *  returns null on refusal without mutating, and the selected eid's `Handle.section`/
- *  `Handle.order` still read section A's. Mechanism: `restoreAll` destroys and respawns
- *  every entity track-wide with fresh eids; the selection hook (`selHook.restore`)
- *  re-resolves by stable `(section, order)` after this churn, but the refusal path was
- *  unpaired with it — a refusal that never mutates needs neither. */
-export function geoSplitAtStripsRefused(
-    ecs: State,
-    sectionId: number,
-    j: number,
-    t: number,
-): boolean {
-    if (t <= 0) return geoSplitStripsRefused(ecs, sectionId, j);
-    if (t >= 1) return geoSplitStripsRefused(ecs, sectionId, j + 1);
-
-    const secEid = sectionAt(ecs, sectionId);
-    if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return false;
-    const handles = sectionHandles(ecs, sectionId);
-    const n = handles.length - 1;
-    if (j < 0 || j >= n || !(t > 0 && t < 1)) return false;
-
-    // build the would-be node array exactly as insertGeoNode would produce it
-    const paEid = handles[j];
-    const pbEid = handles[j + 1];
-    const pa: Node = {
-        x: Handle.pos.x.get(paEid),
-        y: Handle.pos.y.get(paEid),
-        theta: Handle.theta.get(paEid),
-        tangent: readTangent(paEid),
-    };
-    const pb: Node = {
-        x: Handle.pos.x.get(pbEid),
-        y: Handle.pos.y.get(pbEid),
-        theta: Handle.theta.get(pbEid),
-        tangent: readTangent(pbEid),
-    };
-    const sub = subdivideGeo(pa, pb, t);
-
-    const aFar = pa.tangent ?? seedTangent(ecs, sectionId, j, TangentMode.Free);
-    const bFar = pb.tangent ?? seedTangent(ecs, sectionId, j + 1, TangentMode.Free);
-    if (aFar === null || bFar === null) return false;
-
-    const allNodes: Node[] = [];
-    for (let i = 0; i < j; i++) {
-        allNodes.push({
-            x: Handle.pos.x.get(handles[i]),
-            y: Handle.pos.y.get(handles[i]),
-            theta: Handle.theta.get(handles[i]),
-            tangent: readTangent(handles[i]),
-        });
-    }
-    // node j with re-parented out-tangent (the split's facing side)
-    allNodes.push({
-        x: pa.x,
-        y: pa.y,
-        theta: pa.theta,
-        tangent: {
-            mode: TangentMode.Free,
-            inX: aFar.inX,
-            inY: aFar.inY,
-            outX: sub.outA[0],
-            outY: sub.outA[1],
-        },
-    });
-    // the new subdivided node
-    allNodes.push({
-        x: sub.x,
-        y: sub.y,
-        theta: Math.atan2(sub.outMid[1], sub.outMid[0]),
-        tangent: {
-            mode: TangentMode.Free,
-            inX: sub.inMid[0],
-            inY: sub.inMid[1],
-            outX: sub.outMid[0],
-            outY: sub.outMid[1],
-        },
-    });
-    // old node j+1 (now j+2) with re-parented in-tangent
-    allNodes.push({
-        x: pb.x,
-        y: pb.y,
-        theta: pb.theta,
-        tangent: {
-            mode: TangentMode.Free,
-            inX: sub.inB[0],
-            inY: sub.inB[1],
-            outX: bFar.outX,
-            outY: bFar.outY,
-        },
-    });
-    // remaining nodes unchanged
-    for (let i = j + 2; i <= n; i++) {
-        allNodes.push({
-            x: Handle.pos.x.get(handles[i]),
-            y: Handle.pos.y.get(handles[i]),
-            theta: Handle.theta.get(handles[i]),
-            tangent: readTangent(handles[i]),
-        });
-    }
-
-    const dsNom = trackDs(ecs);
-    const posX = new Float32Array(MAX_SAMPLES);
-    const posY = new Float32Array(MAX_SAMPLES);
-    const dsArr = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
-    const r = sampleChain(allNodes, dsNom, posX, posY, dsArr, MAX_SAMPLES);
-
-    // the new node is at index j+1 in allNodes; its landing sample is r.offsets[j+1]
-    const landing = r.offsets[j + 1] ?? 0;
-    let cutArc = 0;
-    for (let i = 0; i < landing; i++) cutArc += dsArr[i];
-
-    // Tail sample built lazily on first need: a geo section typically carries zero
-    // strips (the common case), and a non-straddling strip never reaches the tail
-    // check, so both paths pay nothing. Only when a strip straddles the cut AND its
-    // head half passes spanCoversOneEdge is the tail sampled. At most one strip can
-    // straddle a cut, so the tail is built at most once by construction — and that
-    // rests on EVERY live writer, not just one: createStrip and setStrip both refuse
-    // overlap via stripOverlapped, and the domain flip clamps a converted end to the
-    // next strip's converted start (domain.ts, "overlap loses"). spawnStrip bypasses
-    // the guard deliberately, so a pre-guard document restored through it is the only
-    // way two strips share a station. A new strip-extent writer owes its own guard;
-    // the memo is correct and cheap regardless.
-    let tailNodes: Node[] | null = null;
-    let tPosX: Float32Array | null = null;
-    let tPosY: Float32Array | null = null;
-    let tDs: Float32Array | null = null;
-    let tR: ChainResult | null = null;
-
-    for (const st of sectionStrips(ecs, sectionId)) {
-        if (st.start >= cutArc || st.end <= cutArc) continue;
-        if (!spanCoversOneEdge(dsArr, r.edges, st.start, cutArc)) return true;
-        if (tailNodes === null) {
-            tailNodes = allNodes.slice(j + 1);
-            tPosX = new Float32Array(MAX_SAMPLES);
-            tPosY = new Float32Array(MAX_SAMPLES);
-            tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
-            tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
-        }
-        if (!spanCoversOneEdge(tDs!, tR!.edges, 0, st.end - cutArc)) return true;
-    }
-    return false;
-}
-
-/** the minimum-extent span at a station — the one edge of the current bake that the station
- *  falls on, in the section's own domain coordinate. Returns null when the section has no
- *  resolvable edge structure. This is the span the summoned-creation menu creates a strip at:
- *  the strip appears at the clicked station at minimum extent, selected, curve flattened and
- *  solid (Locked decision). */
-export function stripMinExtentAt(
-    ecs: State,
-    sectionId: number,
-    s: number,
-): { start: number; end: number } | null {
-    const edge = sectionEdgeDs(ecs, sectionId);
+/** the minimum-extent span at a track-global station — the one edge of the current bake
+ *  that the station falls on. Returns null when there's no live bake. This is the span
+ *  the summoned-creation menu creates a strip at: the strip appears at the clicked
+ *  station at minimum extent, selected, curve flattened and solid (Locked decision). */
+export function stripMinExtentAt(ecs: State, d: number): { start: number; end: number } | null {
+    const edge = trackEdgeArray(ecs);
     if (edge === null) return null;
     let cum = 0;
     for (let i = 0; i < edge.edges; i++) {
         const next = cum + edge.ds[i];
-        if (s < next || i === edge.edges - 1) return { start: cum, end: next };
+        if (d < next || i === edge.edges - 1) return { start: cum, end: next };
         cum = next;
     }
     return null;
 }
 
-/** the span a summoned strip creation authors at a station: {@link stripMinExtentAt}'s edge
- *  span, grown toward {@link STRIP_DEFAULT_LEN} and clamped so it neither overlaps a
- *  neighboring strip on the section nor runs past the section's own length — the min-extent
- *  span is the floor (never shrinks below it), the section and the next strip's start are the
- *  ceiling. Returns null under the same condition {@link stripMinExtentAt} does. */
-export function stripDefaultExtentAt(
-    ecs: State,
-    sectionId: number,
-    s: number,
-): { start: number; end: number } | null {
-    const minExtent = stripMinExtentAt(ecs, sectionId, s);
+/** the span a summoned strip creation authors at a track-global station:
+ *  {@link stripMinExtentAt}'s edge span, grown toward {@link STRIP_DEFAULT_LEN} and
+ *  clamped so it neither overlaps a neighboring strip nor runs past the track's own
+ *  live extent — the min-extent span is the floor (never shrinks below it), the track's
+ *  own end and the next strip's start are the ceiling. Returns null under the same
+ *  condition {@link stripMinExtentAt} does. */
+export function stripDefaultExtentAt(ecs: State, d: number): { start: number; end: number } | null {
+    const minExtent = stripMinExtentAt(ecs, d);
     if (minExtent === null) return null;
-    const eid = sectionAt(ecs, sectionId);
-    const sectionLen = eid === null ? minExtent.end : Section.length.get(eid);
-    let end = Math.min(minExtent.start + STRIP_DEFAULT_LEN, sectionLen);
-    for (const st of sectionStrips(ecs, sectionId)) {
+    const edge = trackEdgeArray(ecs);
+    let trackLen = minExtent.end;
+    if (edge !== null) {
+        trackLen = 0;
+        for (let i = 0; i < edge.edges; i++) trackLen += edge.ds[i];
+    }
+    let end = Math.min(minExtent.start + STRIP_DEFAULT_LEN, trackLen);
+    for (const st of allStrips(ecs)) {
         if (st.start > minExtent.start && st.start < end) end = st.start;
     }
     return { start: minExtent.start, end: Math.max(end, minExtent.end) };
 }
 
-/** author a new velocity strip on a section over `[start, end)` at `value` — the create
+/** author a new track-global velocity strip over `[start, end)` at `value` — the create
  *  path, guarded by {@link stripOverlapped} (the ONE guard every write inherits: create,
  *  drag, nudge, and typed-field writes all route through this module's writers), by the
  *  minimum-extent guard ({@link stripCoversOneEdge}: a span whose two ends round to the
@@ -702,23 +523,15 @@ export function stripDefaultExtentAt(
  *  append/convert idiom) — a bare span offers nothing to grab, so the graph's editability was
  *  invisible; two equal keys bake identically to the no-key constant path (both derive a flat
  *  zero-slope tangent, `autoTangent`), so this changes nothing the constant path already drew.
- *  Returns the new strip's stable id, or `null` when the span would overlap an existing strip
- *  on the same section, the span covers no edge, or the value isn't a controlled speed
- *  (refused, nothing written). */
-export function createStrip(
-    ecs: State,
-    sectionId: number,
-    start: number,
-    end: number,
-    value: number,
-): number | null {
-    if (stripOverlapped(ecs, sectionId, start, end, -1)) return null;
-    if (!stripCoversOneEdge(ecs, sectionId, start, end)) return null;
+ *  Returns the new strip's stable id, or `null` when the span would overlap an existing strip,
+ *  the span covers no edge, or the value isn't a controlled speed (refused, nothing written). */
+export function createStrip(ecs: State, start: number, end: number, value: number): number | null {
+    if (stripOverlapped(ecs, start, end, -1)) return null;
+    if (!stripCoversOneEdge(ecs, start, end)) return null;
     if (!validStripValue(value)) return null;
     const eid = ecs.create();
     ecs.add(eid, Strip);
     const id = nextStripId++;
-    Strip.section.set(eid, sectionId);
     Strip.id.set(eid, id);
     Strip.start.set(eid, start);
     Strip.end.set(eid, end);
@@ -728,13 +541,12 @@ export function createStrip(
     return id;
 }
 
-/** re-create a strip at an *exact* section / id / start / end / value — undo of a delete,
- *  redo of a create, or a snapshot restore. no id allocation, so it round-trips byte-
- *  identical; bypasses {@link stripOverlapped} on purpose (a snapshot restore must be
- *  byte-identical even for a document authored before the guard existed). */
+/** re-create a strip at an *exact* id / start / end / value — undo of a delete, redo of a
+ *  create, or a snapshot restore. no id allocation, so it round-trips byte-identical;
+ *  bypasses {@link stripOverlapped} on purpose (a snapshot restore must be byte-identical
+ *  even for a document authored before the guard existed). */
 export function spawnStrip(
     ecs: State,
-    sectionId: number,
     id: number,
     start: number,
     end: number,
@@ -742,7 +554,6 @@ export function spawnStrip(
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Strip);
-    Strip.section.set(eid, sectionId);
     Strip.id.set(eid, id);
     Strip.start.set(eid, start);
     Strip.end.set(eid, end);
@@ -763,7 +574,6 @@ export function destroyStrip(ecs: State, id: number): void {
  *  so a strip-move gesture's own restore is a no-op over them today, but a delete/undo still
  *  has to respawn the strip's now-default-seeded keyframes rather than losing them. */
 export interface StripState {
-    section: number;
     id: number;
     start: number;
     end: number;
@@ -776,7 +586,6 @@ export function stripState(ecs: State, id: number): StripState | undefined {
     const eid = stripAt(ecs, id);
     if (eid === null) return undefined;
     return {
-        section: Strip.section.get(eid),
         id,
         start: Strip.start.get(eid),
         end: Strip.end.get(eid),
@@ -822,8 +631,7 @@ export function restoreStrip(ecs: State, st: StripState): void {
 export function setStrip(ecs: State, id: number, start: number, end: number, value: number): void {
     const eid = stripAt(ecs, id);
     if (eid === null) return;
-    const sec = Strip.section.get(eid);
-    if (!stripOverlapped(ecs, sec, start, end, id) && stripCoversOneEdge(ecs, sec, start, end)) {
+    if (!stripOverlapped(ecs, start, end, id) && stripCoversOneEdge(ecs, start, end)) {
         Strip.start.set(eid, start);
         Strip.end.set(eid, end);
     }
@@ -848,22 +656,21 @@ export function validStripValue(v: number): boolean {
  *  legal span. `setStrip` also carries the min-extent guard (`stripCoversOneEdge`), which
  *  `bandMove` does NOT pre-compute — so a trim that crosses the one-edge floor is refused by
  *  `setStrip` itself, not by the bounds here. `lo` is the nearest OTHER strip's `end` at or
- *  before `at` (default 0, the section's own start); `hi` is the nearest OTHER strip's `start`
- *  at or after `at` (default `sectionLength`, the section's own exit). `excludeId` is the strip
- *  being moved (-1 for a create, nothing to exclude). Two calls — one at the moving strip's
- *  original `start`, one at its original `end` — cover a body drag (which needs both ends' bounds
- *  at once); a single call at the moved edge's own original position covers a resize; a call at
- *  the anchor covers create. */
+ *  before `at` (default 0, the track's own start); `hi` is the nearest OTHER strip's `start`
+ *  at or after `at` (default `trackLength`, the track's own live exit). `excludeId` is the
+ *  strip being moved (-1 for a create, nothing to exclude). Two calls — one at the moving
+ *  strip's original `start`, one at its original `end` — cover a body drag (which needs both
+ *  ends' bounds at once); a single call at the moved edge's own original position covers a
+ *  resize; a call at the anchor covers create. */
 export function stripBoundsAt(
     ecs: State,
-    sectionId: number,
     excludeId: number,
-    sectionLength: number,
+    trackLength: number,
     at: number,
 ): { lo: number; hi: number } {
     let lo = 0;
-    let hi = sectionLength;
-    for (const row of sectionStrips(ecs, sectionId)) {
+    let hi = trackLength;
+    for (const row of allStrips(ecs)) {
         if (row.id === excludeId) continue;
         if (row.end <= at && row.end > lo) lo = row.end;
         if (row.start >= at && row.start < hi) hi = row.start;
@@ -872,20 +679,25 @@ export function stripBoundsAt(
 }
 
 /** a new strip's seed value — "seeded at creation from the published bake's `v` at its first
- *  station" (Locked decision), a UI act reading the CURRENT bake, never a kernel mechanism. Reads
- *  `bakeOut.v` at the section-local arclength station `s` (`forceSample`'s own address, the
- *  same seam a force keyframe's world position reads), lerped between the bracketing samples.
- *  Falls back to `V0` when there's no live bake to read (an empty track, a placed-past-budget
- *  section) — the same neutral default an unauthored track's initial speed carries. */
-export function stripSeedValue(ecs: State, sectionId: number, s: number): number {
+ *  station" (Locked decision), a UI act reading the CURRENT bake, never a kernel mechanism. `d`
+ *  is track-global arclength — resolved to its owning section (`toLocal`) and then read off
+ *  `bakeOut.v` at that section-local station (`forceSample`'s own address, the same seam a
+ *  force keyframe's world position reads), lerped between the bracketing samples. Falls back
+ *  to `V0` when there's no live bake to read (an empty track, a placed-past-budget section, a
+ *  `d` past the live extent) — the same neutral default an unauthored track's initial speed
+ *  carries. */
+export function stripSeedValue(ecs: State, d: number): number {
     const trackEid = trackEntity(ecs);
     if (trackEid === null) return V0;
     const out = bakeOut.get(trackEid);
-    const info = sectionInfo.get(sectionId);
-    if (!out || !info) return V0;
+    if (!out) return V0;
+    const loc = toLocal(sectionSpans(ecs, trackEid), d);
+    if (loc === null) return V0;
+    const info = sectionInfo.get(loc.section);
+    if (!info) return V0;
     const last = Math.max(0, Track.count.get(trackEid) - 1);
     // `s` is arclength always (S6): `forceSample` has one table now, no `time` branch.
-    const addr = forceSample(out, info, last, s);
+    const addr = forceSample(out, info, last, loc.s);
     if (!addr) return V0;
     const j = Math.min(addr.index + 1, last);
     return out.v[addr.index] + addr.frac * (out.v[j] - out.v[addr.index]);
@@ -1149,19 +961,6 @@ function geoChordDs(
     const dsArr = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
     const r = sampleChain(nodes, dsNominal, posX, posY, dsArr, MAX_SAMPLES);
     return { ds: dsArr, edges: r.edges, offsets: r.offsets };
-}
-
-/** the arclength (meters) a geo section's own node `k` lands at, from the section's
- *  entry — sums the section's live chord array (`geoChordDs`) up to node `k`'s landing
- *  sample. the same station coordinate `Strip.start`/`end` are authored in, so a split
- *  or join can rebase a geo strip by this value the same way `splitForce` rebases by
- *  its cut's `s` (`kex2d-map.md`'s Cut/Join bullet drew no force-vs-geo distinction). */
-function geoNodeArc(ecs: State, sectionId: number, dsNominal: number, k: number): number {
-    const { ds, offsets } = geoChordDs(ecs, sectionId, dsNominal);
-    const landing = offsets[k] ?? 0;
-    let arc = 0;
-    for (let i = 0; i < landing; i++) arc += ds[i];
-    return arc;
 }
 
 type Samples = {
@@ -2287,34 +2086,31 @@ export function setSectionLength(ecs: State, id: number, length: number): void {
 
 // ── track initial speed (v0, S5: derived from the start strip) ─────────────────
 
-/** the strip covering station 0 in the track's first section (order 0), or undefined
- *  when none exists (an unauthored track, or one whose start strip was deleted) —
+/** the strip covering track-global station 0 (the track start), or undefined when none
+ *  exists (an unauthored track, or one whose start strip was deleted) —
  *  {@link entrySpeed}/{@link setStartSpeed}'s shared lookup. A strip's half-open
  *  `[start, end)` covers station 0 when `start <= 0 < end`, matching `stripOverride`'s
  *  own edge convention (a strip landing exactly at `start === 0` claims the station); a
  *  DEGENERATE point strip at exactly `[0, 0)` also counts — it is the one station-0
  *  point `stripOverride`'s own edge convention reads as inert (`lo = start - 1 = -1`,
  *  never matching a real `k >= 0`), which is exactly what {@link setStartSpeed}'s
- *  test/lab-setup path relies on to carry a value with zero march side effect. */
-function startStrip(ecs: State, secs: SectionRow[]): StripRow | undefined {
-    const first = secs.find((s) => s.order === 0);
-    if (!first) return undefined;
-    return sectionStrips(ecs, first.id).find(
-        (st) => st.start <= 0 && (st.end > 0 || st.end === st.start),
-    );
+ *  test/lab-setup path relies on to carry a value with zero march side effect. Strips
+ *  are track-global (Locked decision), so station 0 is unambiguous — no section lookup
+ *  needed. */
+function startStrip(ecs: State): StripRow | undefined {
+    return allStrips(ecs).find((st) => st.start <= 0 && (st.end > 0 || st.end === st.start));
 }
 
-/** the track's derived entry speed (m/s): the value of the strip covering station 0 in
- *  the first section, sampled at its own `s = 0` (`sampleForce` over the strip's
- *  keyframes — the same evaluation `edgeStrips` uses to build the march's own edge-0
- *  override, so a keyframe edit and the entry speed agree exactly), or `V0` when none
- *  exists — the same fallback idiom as an emptied force profile falling to `DEFAULT_G`
- *  (`bakeEntryForce`). The old sparse per-track speed field is retired; this is its
- *  replacement, and there is no authored field left to snapshot for undo — the start
- *  strip's own keyframe-drag gesture (`beginStripKeyframeMove`) already carries this
- *  value through undo/redo. */
-export function entrySpeed(ecs: State, secs: SectionRow[] = sections(ecs)): number {
-    const st = startStrip(ecs, secs);
+/** the track's derived entry speed (m/s): the value of the strip covering track-global
+ *  station 0, sampled at its own `s = 0` (`sampleForce` over the strip's keyframes — the
+ *  same evaluation `edgeStrips` uses to build the march's own edge-0 override, so a
+ *  keyframe edit and the entry speed agree exactly), or `V0` when none exists — the same
+ *  fallback idiom as an emptied force profile falling to `DEFAULT_G` (`bakeEntryForce`).
+ *  The old sparse per-track speed field is retired; this is its replacement, and there is
+ *  no authored field left to snapshot for undo — the start strip's own keyframe-drag
+ *  gesture (`beginStripKeyframeMove`) already carries this value through undo/redo. */
+export function entrySpeed(ecs: State): number {
+    const st = startStrip(ecs);
     if (!st) return V0;
     const kfs = stripKeyframes(ecs, st.id);
     if (kfs.length === 0) return st.value;
@@ -2324,27 +2120,24 @@ export function entrySpeed(ecs: State, secs: SectionRow[] = sections(ecs)): numb
     );
 }
 
-/** author the track's initial speed by writing the strip covering station 0 in the
- *  first section — moves both its boundary keyframes plus `Strip.value` when one
- *  already exists (a real span, `seed`'s own shape, or this helper's own prior call).
- *  Floored at `MIN_V0`, the old field-based setter's own floor. Otherwise spawns a
- *  DEGENERATE `[0, 0)` point strip, bypassing the ordinary create path's min-extent
- *  guard (`spawnStrip`, like a pre-guard document restore) on purpose: this helper's
- *  callers want a scalar entry speed with no march side effect (the old field's own
- *  shape), and a real, edge-covering span always overrides that edge's march too
- *  (`section.ts`'s "prescription beats dissipation") — which broke feasibility on a
- *  hill/loop scenario tuned to the OLD scalar's exact energy budget, and made a
- *  document-layer solve chase a moving target it has no strip awareness of (the
- *  roadmap's own deferred "Solve ignores strips" gap, Out of scope for S5). Callers:
- *  test/lab setup, the `__kex` dev hook, and `preserveEntrySpeedAcrossConvert` (live
- *  UI-reachable: a section-0 kind-flip that destroyed the start strip); the ordinary
- *  authoring path is a real, grabbable start strip via `seed`/the keyframe drag. */
+/** author the track's initial speed by writing the strip covering track-global station 0
+ *  — moves both its boundary keyframes plus `Strip.value` when one already exists (a
+ *  real span, `seed`'s own shape, or this helper's own prior call). Floored at `MIN_V0`,
+ *  the old field-based setter's own floor. Otherwise spawns a DEGENERATE `[0, 0)` point
+ *  strip, bypassing the ordinary create path's min-extent guard (`spawnStrip`, like a
+ *  pre-guard document restore) on purpose: this helper's callers want a scalar entry
+ *  speed with no march side effect (the old field's own shape), and a real, edge-covering
+ *  span always overrides that edge's march too (`section.ts`'s "prescription beats
+ *  dissipation") — which broke feasibility on a hill/loop scenario tuned to the OLD
+ *  scalar's exact energy budget, and made a document-layer solve chase a moving target it
+ *  has no strip awareness of (the roadmap's own deferred "Solve ignores strips" gap, Out
+ *  of scope for S5). Callers: test/lab setup, the `__kex` dev hook, and
+ *  `preserveEntrySpeedAcrossConvert` (live UI-reachable: a section-0 kind-flip that
+ *  destroyed the start strip); the ordinary authoring path is a real, grabbable start
+ *  strip via `seed`/the keyframe drag. */
 export function setStartSpeed(ecs: State, v: number): void {
     const clamped = Math.max(MIN_V0, v);
-    const secs = sections(ecs);
-    const first = secs.find((s) => s.order === 0);
-    if (!first) return;
-    const st = startStrip(ecs, secs);
+    const st = startStrip(ecs);
     if (st) {
         for (const kf of stripKeyframes(ecs, st.id)) setStripKeyframe(ecs, kf.id, kf.s, clamped);
         const eid = stripAt(ecs, st.id);
@@ -2354,7 +2147,6 @@ export function setStartSpeed(ecs: State, v: number): void {
     const eid = ecs.create();
     ecs.add(eid, Strip);
     const id = nextStripId++;
-    Strip.section.set(eid, first.id);
     Strip.id.set(eid, id);
     Strip.start.set(eid, 0);
     Strip.end.set(eid, 0);
@@ -2468,7 +2260,9 @@ export function setTrackDomain(ecs: State, domain: Domain): void {
 
 /** one section's full undoable state: its identity/order, kind, force extent, its geo
  *  nodes, and its force points. a destructive convert (or a structural op) snapshots
- *  this before/after so undo is byte-identical. */
+ *  this before/after so undo is byte-identical. Carries no strips: strips are
+ *  track-global and span-blind (Locked decision, S2) — a section's own convert/reset/
+ *  structural op never touches them, so they are outside this snapshot's own identity. */
 export interface SectionSnapshot {
     id: number;
     order: number;
@@ -2482,18 +2276,10 @@ export interface SectionSnapshot {
         ease: Easing;
         tangent?: ForceTangent;
     }[];
-    strips: {
-        id: number;
-        start: number;
-        end: number;
-        value: number;
-        keyframes: { id: number; s: number; v: number }[];
-    }[];
 }
 
 /** capture a section (both kinds' payloads — one is empty). a force point carries its
- *  easing tag + explicit handles, so a convert/structural-op undo restores them. strips
- *  apply to either kind. */
+ *  easing tag + explicit handles, so a convert/structural-op undo restores them. */
 export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`snapshotSection: no section ${sectionId}`);
@@ -2510,40 +2296,24 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
             ease: Force.ease.get(p.eid) as Easing,
             tangent: readForceTangent(p.eid),
         })),
-        strips: sectionStrips(ecs, sectionId).map((st) => ({
-            id: st.id,
-            start: st.start,
-            end: st.end,
-            value: st.value,
-            keyframes: stripKeyframes(ecs, st.id).map((k) => ({
-                id: k.id,
-                s: k.s,
-                v: k.v,
-            })),
-        })),
     };
 }
 
 /** clear a section's payload and rebuild it verbatim from a snapshot — restores a
  *  convert (either direction) or a structural op byte-identical. the Section entity
  *  is assumed to exist (its order/kind/length are rewritten); nodes respawn by
- *  order, points by id, strips by id, so eids recycle but identities don't. */
+ *  order, points by id, so eids recycle but identities don't. Strips are untouched
+ *  (track-global, outside this snapshot's identity). */
 export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     const eid = sectionAt(ecs, snap.id);
     if (eid === null) throw new Error(`restoreSection: no section ${snap.id}`);
     for (const h of sectionHandles(ecs, snap.id)) ecs.destroy(h);
     for (const p of sectionForces(ecs, snap.id)) ecs.destroy(p.eid);
-    for (const st of sectionStrips(ecs, snap.id)) destroyStripKeyframes(ecs, st.id);
-    for (const st of sectionStrips(ecs, snap.id)) ecs.destroy(st.eid);
     Section.order.set(eid, snap.order);
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
-    for (const st of snap.strips) {
-        spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
-        for (const k of st.keyframes) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
-    }
 }
 
 // ── provenance sidecar (kex2d-provenance) ──────────────────────────────────────
@@ -2712,36 +2482,24 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
     // the incoming force, stamped at creation.
     const info = sectionInfo.get(sectionId);
     const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
-    preserveEntrySpeedAcrossConvert(ecs, sectionId, () => {
-        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-        for (const st of sectionStrips(ecs, sectionId)) {
-            destroyStripKeyframes(ecs, st.id);
-            ecs.destroy(st.eid);
-        }
-        Section.kind.set(eid, SectionKind.Force);
-        const extent = defaultForceExtent();
-        Section.length.set(eid, extent); // reset to the default extent, not inherited
-        seedForceKeyframes(ecs, sectionId, extent, gEntry);
-    });
+    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    Section.kind.set(eid, SectionKind.Force);
+    const extent = defaultForceExtent();
+    Section.length.set(eid, extent); // reset to the default extent, not inherited
+    seedForceKeyframes(ecs, sectionId, extent, gEntry);
 }
 
 /** reset a section's payload to the GEO default: both row kinds cleared, the flat two-node
  *  seed. `resetToForce`'s twin — one body behind `convertSection`'s force → geo flip and
  *  `resetSection`'s geo-held reset. */
 function resetToGeo(ecs: State, eid: number, sectionId: number): void {
-    preserveEntrySpeedAcrossConvert(ecs, sectionId, () => {
-        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-        for (const st of sectionStrips(ecs, sectionId)) {
-            destroyStripKeyframes(ecs, st.id);
-            ecs.destroy(st.eid);
-        }
-        Section.kind.set(eid, SectionKind.Geo);
-        Section.length.set(eid, 0);
-        addNode(ecs, sectionId, 0, 0);
-        addNode(ecs, sectionId, EXTEND_DIST, 0);
-    });
+    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    Section.kind.set(eid, SectionKind.Geo);
+    Section.length.set(eid, 0);
+    addNode(ecs, sectionId, 0, 0);
+    addNode(ecs, sectionId, EXTEND_DIST, 0);
 }
 
 /** destructively flip a section's kind to its opposite, resetting to that kind's
@@ -2848,37 +2606,6 @@ export interface SolvedForce {
     length: number;
 }
 
-/** preserve the track's derived entry speed across a section-0 kind convert (S5 residue,
- *  red-first witnessed twice: an invoked solve round-tripping force→geo→force diverged the
- *  SECOND leg — "unreachable ... v0 = 10" — because the first leg's convert had already
- *  cleared the launch strip; and a DESTRUCTIVE convert of a section authored with a strip
- *  moved a later infeasibility onto the wrong section, `geo.pw.ts`'s "viewport infeasible
- *  shot"). Every section-payload clearer that flips a section's kind — the two invoked-solve
- *  landers (`applyConvert`/`applyConvertGeo`) and the two destructive resets
- *  (`resetToForce`/`resetToGeo`) — already clears the converted section's strips
- *  unconditionally, and the entry speed is now DERIVED from section 0's own strip
- *  (`entrySpeed`) — so before S5, converting a section-0 shape between geo and force was a
- *  no-op for launch speed (the old per-track speed field was track-global, survived any
- *  convert); after S5 it silently resets it to `V0` instead, a routine everyday op quietly
- *  re-timing the whole track. NOT the "start-pinned UX" the Locked Decision defers
- *  (undeletable, unmovable): nothing here stops the resulting strip from being deleted or
- *  edited afterward like any other — this only keeps the VALUE from vanishing under a
- *  convert. `run` is the caller's destroy-then-rebuild; a no-op for any section that isn't
- *  currently order 0 (a downstream section's convert never touches order 0's own strip, so
- *  there is nothing to preserve), and re-authors through `setStartSpeed`'s own degenerate,
- *  march-inert shape afterward. */
-function preserveEntrySpeedAcrossConvert(ecs: State, sectionId: number, run: () => void): void {
-    const secs = sections(ecs);
-    const isFirst = secs[0]?.id === sectionId;
-    // only when a strip is ACTUALLY there to lose — `entrySpeed` always returns a number (the
-    // `V0` fallback included), so gating on that alone would materialize a brand new strip on
-    // every convert of an unauthored section, the opposite of "no-op when nothing moved".
-    const hadStrip = isFirst && startStrip(ecs, secs) !== undefined;
-    const before = hadStrip ? entrySpeed(ecs, secs) : null;
-    run();
-    if (before !== null) setStartSpeed(ecs, before);
-}
-
 /** land an invoked geo→force solve's output on its section — the conversion's whole document
  *  write. the shape nodes go, the kind flips, and the section takes the solve's REALIZED
  *  extent (the march that closes the exit the solve pinned — `refine.ts`), then its `{s, g}`
@@ -2894,21 +2621,17 @@ function preserveEntrySpeedAcrossConvert(ecs: State, sectionId: number, run: () 
  *  does, but this one left the keyframe entities orphaned (tagged with the destroyed strip's
  *  id, `stripAt` no longer resolving it) — invisible before a section-0 strip was routine, since
  *  `restoreSection`'s own undo respawn then created a SECOND keyframe sharing that id, sitting
- *  beside the still-live orphan. */
+ *  beside the still-live orphan. Strips are untouched (S2: track-global, span-blind — a
+ *  section's own convert never reaches them, so the old S5 entry-speed-preservation wrapper
+ *  this function used is retired: there is no strip to lose). */
 export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`applyConvert: no section ${sectionId}`);
-    preserveEntrySpeedAcrossConvert(ecs, sectionId, () => {
-        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-        for (const st of sectionStrips(ecs, sectionId)) {
-            destroyStripKeyframes(ecs, st.id);
-            ecs.destroy(st.eid);
-        }
-        Section.kind.set(eid, SectionKind.Force);
-        Section.length.set(eid, solved.length);
-        for (const p of solved.points) createForcePoint(ecs, sectionId, p.s, p.g);
-    });
+    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    Section.kind.set(eid, SectionKind.Force);
+    Section.length.set(eid, solved.length);
+    for (const p of solved.points) createForcePoint(ecs, sectionId, p.s, p.g);
 }
 
 /** an invoked force→geo fit's authored output: the sparse Auto node chain `geofit` emitted, in
@@ -2941,27 +2664,20 @@ export function applyConvertGeo(
 ): void {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`applyConvertGeo: no section ${sectionId}`);
-    preserveEntrySpeedAcrossConvert(ecs, sectionId, () => {
-        // both row kinds go, mirroring `applyConvert`: a force section carries no nodes, so the
-        // handle sweep is defensive parity, not a live path — and the template is what a reader
-        // checks this against. destroys a cleared strip's keyframes too, `applyConvert`'s own S5
-        // fix.
-        for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-        for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-        for (const st of sectionStrips(ecs, sectionId)) {
-            destroyStripKeyframes(ecs, st.id);
-            ecs.destroy(st.eid);
+    // both row kinds go, mirroring `applyConvert`: a force section carries no nodes, so the
+    // handle sweep is defensive parity, not a live path — and the template is what a reader
+    // checks this against. Strips are untouched (`applyConvert`'s own S2 note).
+    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    Section.kind.set(eid, SectionKind.Geo);
+    Section.length.set(eid, 0);
+    solved.nodes.forEach((n, i) => {
+        if (i === 0) {
+            spawnNode(ecs, sectionId, 0, 0, 0, 0);
+        } else {
+            const local = localize(entry, n);
+            spawnNode(ecs, sectionId, i, local.x, local.y, local.theta);
         }
-        Section.kind.set(eid, SectionKind.Geo);
-        Section.length.set(eid, 0);
-        solved.nodes.forEach((n, i) => {
-            if (i === 0) {
-                spawnNode(ecs, sectionId, 0, 0, 0, 0);
-            } else {
-                const local = localize(entry, n);
-                spawnNode(ecs, sectionId, i, local.x, local.y, local.theta);
-            }
-        });
     });
 }
 
@@ -2987,28 +2703,59 @@ function nextSection(ecs: State, sectionId: number): SectionRow | null {
     return i >= 0 && i + 1 < secs.length ? secs[i + 1] : null;
 }
 
-/** capture the whole track — every section (order/kind/length) with its nodes and
- *  points. the structural-op undo unit: a snapshot pair round-trips byte-identical
- *  (respawns the stored f32 verbatim), which is what makes the ops safely reversible. */
-export function snapshotAll(ecs: State): SectionSnapshot[] {
-    return sections(ecs).map((s) => snapshotSection(ecs, s.id));
+/** the track-global strip layer of a whole-track snapshot — {@link snapshotAll}'s own
+ *  strip half, kept separate from `SectionSnapshot` because strips carry no section
+ *  ownership (S2, Locked decision). */
+export interface StripSnapshot {
+    id: number;
+    start: number;
+    end: number;
+    value: number;
+    keyframes: { id: number; s: number; v: number }[];
+}
+
+/** capture every track-global strip, keyframes included. */
+function snapshotStrips(ecs: State): StripSnapshot[] {
+    return allStrips(ecs).map((st) => ({
+        id: st.id,
+        start: st.start,
+        end: st.end,
+        value: st.value,
+        keyframes: stripKeyframes(ecs, st.id).map((k) => ({ id: k.id, s: k.s, v: k.v })),
+    }));
+}
+
+/** the structural-op undo unit: every section (order/kind/length, nodes, points) plus
+ *  every track-global strip — a snapshot pair round-trips byte-identical (respawns the
+ *  stored f32 verbatim), which is what makes the ops safely reversible. */
+export interface TrackSnapshot {
+    sections: SectionSnapshot[];
+    strips: StripSnapshot[];
+}
+
+/** capture the whole track. */
+export function snapshotAll(ecs: State): TrackSnapshot {
+    return {
+        sections: sections(ecs).map((s) => snapshotSection(ecs, s.id)),
+        strips: snapshotStrips(ecs),
+    };
 }
 
 /** clear the whole track and rebuild it from a snapshot (structural-op undo/redo). */
-export function restoreAll(ecs: State, snaps: SectionSnapshot[]): void {
+export function restoreAll(ecs: State, snap: TrackSnapshot): void {
     for (const e of [...ecs.query([Section])]) ecs.destroy(e);
     for (const e of [...ecs.query([Handle])]) ecs.destroy(e);
     for (const e of [...ecs.query([Force])]) ecs.destroy(e);
     for (const e of [...ecs.query([Strip])]) ecs.destroy(e);
     for (const e of [...ecs.query([StripKeyframe])]) ecs.destroy(e);
-    for (const snap of snaps) {
-        spawnSection(ecs, snap.id, snap.order, snap.kind, snap.length);
-        for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
-        for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
-        for (const st of snap.strips) {
-            spawnStrip(ecs, snap.id, st.id, st.start, st.end, st.value);
-            for (const k of st.keyframes) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
-        }
+    for (const s of snap.sections) {
+        spawnSection(ecs, s.id, s.order, s.kind, s.length);
+        for (const n of s.nodes) spawnNode(ecs, s.id, n.order, n.x, n.y, n.theta, n.tangent);
+        for (const p of s.points) spawnForce(ecs, s.id, p.id, p.s, p.g, p.ease, p.tangent);
+    }
+    for (const st of snap.strips) {
+        spawnStrip(ecs, st.id, st.start, st.end, st.value);
+        for (const k of st.keyframes) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
     }
 }
 
@@ -3074,51 +2821,16 @@ function headExit(ecs: State, handles: readonly number[], k: number): Entry {
  *  that compensates the recovered-vs-stored gap). node k stays the head's new tip.
  *  no-op at the entry or last node. returns the new (tail) section id, or null.
  *
- *  strips split at the same cut, `splitForce`'s own shape (the Locked decision's
- *  Cut/Join bullet draws no force-vs-geo distinction): a strip wholly on one side
- *  just stays put (head) or rebases (tail); a straddling strip splits into two
- *  strips holding the same value; a point strip AT the cut station stays with the
- *  HEAD (`section.ts`'s point convention — a point at station `s` overrides the
- *  edge ARRIVING at `s`, `[s−1, s)`, the head's own last edge, never the tail's
- *  first). the cut's own arclength is read off the section's LIVE chord array
- *  (`geoNodeArc`) BEFORE any node is moved or destroyed — a geo section's extent
- *  is a sampled reading, not an authored constant, so it must be read once, off
- *  the pre-split geometry, and reused for every strip. */
+ *  Strips are untouched (S2, Locked decision): they're track-global and span-blind,
+ *  so a split never rebases or refuses on their account — the strip keeps its own
+ *  global `[start, end)`, and the next bake's in-pass window resolution (`geoPayload`/
+ *  `forcePayload`) is what re-partitions it across the (now two) sections it overlaps. */
 export function splitGeo(ecs: State, sectionId: number, k: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null || Section.kind.get(secEid) !== SectionKind.Geo) return null;
     const handles = sectionHandles(ecs, sectionId);
     const n = handles.length - 1;
     if (k < 1 || k >= n) return null;
-
-    const dsNom = trackDs(ecs);
-    const cutArc = geoNodeArc(ecs, sectionId, dsNom, k);
-
-    // B1/B2(a): refuse the cut if it would split any straddling strip into a sub-edge half —
-    // the min-extent law is stated over stored spans under the current bake, and a split
-    // that produces a sub-edge half silently deletes that half's override (the tail's
-    // `createStrip` returns null and the head's `Strip.end.set` is unguarded). Check both
-    // halves BEFORE any modification; the head reads against the current section's own edge
-    // structure (nodes 0..k are unchanged), the tail against the would-be tail's (nodes k..n,
-    // chord-invariant so re-framing doesn't move the edges).
-    for (const st of sectionStrips(ecs, sectionId)) {
-        if (st.start >= cutArc || st.end <= cutArc) continue; // not straddling
-        if (!stripCoversOneEdge(ecs, sectionId, st.start, cutArc)) return null; // head sub-edge
-        const tailNodes: Node[] = [];
-        for (let i = k; i <= n; i++) {
-            tailNodes.push({
-                x: Handle.pos.x.get(handles[i]),
-                y: Handle.pos.y.get(handles[i]),
-                theta: Handle.theta.get(handles[i]),
-                tangent: readTangent(handles[i]),
-            });
-        }
-        const tPosX = new Float32Array(MAX_SAMPLES);
-        const tPosY = new Float32Array(MAX_SAMPLES);
-        const tDs = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
-        const tR = sampleChain(tailNodes, dsNom, tPosX, tPosY, tDs, MAX_SAMPLES);
-        if (!spanCoversOneEdge(tDs, tR.edges, 0, st.end - cutArc)) return null; // tail sub-edge
-    }
 
     // re-frame against the head's RECOVERED exit (the bake's downstream entry), not the
     // boundary node's stored heading — see `headExit`.
@@ -3136,41 +2848,6 @@ export function splitGeo(ecs: State, sectionId: number, k: number): number | nul
         spawnNode(ecs, bId, i - k, bl.x, bl.y, bl.theta, bl.tangent);
     }
     for (let i = k + 1; i <= n; i++) ecs.destroy(handles[i]); // trim the head to [0..k]
-
-    for (const st of sectionStrips(ecs, sectionId)) {
-        const point = st.start === st.end;
-        const kfs = stripKeyframes(ecs, st.id);
-        if (point ? st.start <= cutArc : st.end <= cutArc) continue; // wholly head, unchanged
-        if (st.start >= cutArc) {
-            // wholly tail: rebase strip + keyframes.
-            Strip.section.set(st.eid, bId);
-            Strip.start.set(st.eid, st.start - cutArc);
-            Strip.end.set(st.eid, st.end - cutArc);
-            for (const k of kfs) StripKeyframe.s.set(k.eid, k.s - cutArc);
-            continue;
-        }
-        // straddles cutArc (non-degenerate only — a point can't straddle): head keeps
-        // [start, cutArc), a new tail strip opens at [0, end - cutArc), both holding
-        // the same constant. The pre-check above guarantees both halves cover ≥ 1 edge,
-        // so `createStrip` cannot return null here; the guard is a safety net.
-        // Keyframes at s < cut stay with the head; keyframes at s >= cut move to the tail.
-        Strip.end.set(st.eid, cutArc);
-        const tailId = createStrip(ecs, bId, 0, st.end - cutArc, st.value);
-        if (tailId === null) {
-            // safety net: the pre-check should have refused this split already; if we
-            // reach here, undo the head trim to avoid leaving a sub-edge inert strip.
-            Strip.end.set(st.eid, st.end);
-        } else {
-            for (const k of kfs) {
-                if (k.s < cutArc) {
-                    // head keyframe: already within [start, cutArc), no clip needed
-                } else {
-                    spawnStripKeyframe(ecs, tailId, k.id, k.s - cutArc, k.v);
-                    ecs.destroy(k.eid);
-                }
-            }
-        }
-    }
     return bId;
 }
 
@@ -3369,53 +3046,17 @@ export function sectionCutAt(
  *  at `s = 0` — which also re-parents the bracketing keyframes' own facing tangent
  *  (their old derived-from-`ease` sizing was scaled to the FULL span). Both new
  *  boundary keys read Custom (`profile.custom`): the visible cost of an exact
- *  mid-segment cut. no-op outside the interior. returns the new (tail) section id,
- *  or null. */
+ *  mid-segment cut. no-op outside the interior.
+ *
+ *  Strips are untouched (S2, Locked decision): they're track-global and span-blind,
+ *  so a split never refuses or rebases on their account — the next bake's in-pass
+ *  window resolution repartitions any span across the (now two) sections it overlaps.
+ *  returns the new (tail) section id, or null. */
 export function splitForce(ecs: State, sectionId: number, s: number): number | null {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null || Section.kind.get(secEid) !== SectionKind.Force) return null;
     const len = Section.length.get(secEid);
     if (s <= 0 || s >= len) return null;
-
-    // B1/B2(a): refuse the cut if any strip would end up covering zero edges of its own
-    // half's resolved bake. The head's post-split grid is `resolveStep(s, nominal)`, NOT
-    // the pre-split `resolveStep(len, nominal)` — `Section.length.set` four lines below
-    // re-resolves the head at a different `ds`, and the head is written by an unguarded
-    // `Strip.end.set`. The tail's grid is `resolveStep(len - s, nominal)`. Both are checked
-    // BEFORE any modification. A wholly-tail strip is rebased to `[start-s, end-s)` on the
-    // tail's grid — the same mechanism (the tail's `ds` differs from the original's), so it
-    // is checked here too, not left as an unexamined residue.
-    //
-    // RED-FIRST WITNESS: force section len 4.03 (8 edges of 0.50375), strip [1.76, 2.8),
-    // splitForce(…, 2.0) accepted, head strip [1.76, 2.0) read stripCoversOneEdge === false
-    // against the pre-split grid (which has 8 edges of 0.50375) but the post-split head has
-    // resolveStep(2.0, 0.50375) = 4 edges of 0.5 — a stored override whose two ends round
-    // together, collapsing to the preceding edge by the point convention rather than covering
-    // the intended edge. Fix: resolve the head's post-split grid and check spanCoversOneEdge
-    // against it, mirroring the tail branch.
-    //
-    // WHOLLY-TAIL WITNESS: same section, strip [2.770, 2.771) covers 1 edge on the original
-    // grid (boundary(2.770)=5, boundary(2.771)=6) but after rebase to [0.770, 0.771) on the
-    // tail (4 edges of 0.5075) both endpoints map to edge 2 — collapsed, displaced to the
-    // preceding edge by the point convention.
-    const dsNom = trackDs(ecs);
-    const headResolved = resolveStep(s, dsNom);
-    const headDs = new Float32Array(headResolved.edges).fill(headResolved.ds);
-    const tailLen = len - s;
-    const tailResolved = resolveStep(tailLen, dsNom);
-    const tailDs = new Float32Array(tailResolved.edges).fill(tailResolved.ds);
-    for (const st of sectionStrips(ecs, sectionId)) {
-        if (st.end <= s) continue; // wholly head, unchanged
-        if (st.start >= s) {
-            // wholly tail: check the rebased strip covers ≥ 1 edge on the tail's resolved grid
-            if (!spanCoversOneEdge(tailDs, tailResolved.edges, st.start - s, st.end - s))
-                return null;
-            continue;
-        }
-        // straddling: check both halves against their POST-split grids
-        if (!spanCoversOneEdge(headDs, headResolved.edges, st.start, s)) return null; // head sub-edge
-        if (!spanCoversOneEdge(tailDs, tailResolved.edges, 0, st.end - s)) return null; // tail sub-edge
-    }
 
     const points = sectionForces(ecs, sectionId);
     const order = Section.order.get(secEid);
@@ -3495,47 +3136,6 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
         createForcePoint(ecs, sectionId, s, b.g);
     }
 
-    // strips split at the same cut, per the Locked decision: a strip splits into two
-    // strips holding the SAME value, and each half inherits the keyframes that fall inside
-    // its own extent (T2: keyframes on the force-curve machinery). a strip wholly on one
-    // side just rebases (or stays put); a point strip AT the cut station stays with the
-    // HEAD (`section.ts`'s point convention: a point at station k overrides the edge
-    // ARRIVING at k, `[k-1, k)` — the head's own last edge, never the tail's first).
-    for (const st of sectionStrips(ecs, sectionId)) {
-        const point = st.start === st.end;
-        const kfs = stripKeyframes(ecs, st.id);
-        if (point ? st.start <= s : st.end <= s) continue; // wholly head, unchanged
-        if (st.start >= s) {
-            // wholly tail: rebase strip + keyframes.
-            Strip.section.set(st.eid, bId);
-            Strip.start.set(st.eid, st.start - s);
-            Strip.end.set(st.eid, st.end - s);
-            for (const k of kfs) StripKeyframe.s.set(k.eid, k.s - s);
-            continue;
-        }
-        // straddles s (non-degenerate only — a point can't straddle): head keeps [start, s),
-        // a new tail strip opens at [0, end - s), both holding the same constant. The pre-check
-        // above guarantees both halves cover ≥ 1 edge, so `createStrip` cannot return null
-        // here; the guard is a safety net. Keyframes at s < cut stay with the head (clipped
-        // to [start, s)); keyframes at s >= cut move to the tail (rebased to s - cut).
-        Strip.end.set(st.eid, s);
-        const tailId = createStrip(ecs, bId, 0, st.end - s, st.value);
-        if (tailId === null) {
-            // safety net: the pre-check should have refused this split already; if we
-            // reach here, undo the head trim to avoid leaving a sub-edge inert strip.
-            Strip.end.set(st.eid, st.end);
-        } else {
-            for (const k of kfs) {
-                if (k.s < s) {
-                    // head keyframe: already within [start, s), no clip needed
-                } else {
-                    // tail keyframe: rebase to the tail's coordinate
-                    spawnStripKeyframe(ecs, tailId, k.id, k.s - s, k.v);
-                    ecs.destroy(k.eid);
-                }
-            }
-        }
-    }
     return bId;
 }
 
@@ -3622,46 +3222,11 @@ function mergeTangent(
 /** join a section with the next one in the chain (same-kind only). geo appends the
  *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
  *  geo split); force concatenates the extents and rebases the neighbor's points. the
- *  neighbor is removed and downstream orders close up. returns true when joined. */
-/** re-floor every strip on a section against its OWN just-changed resolved grid — the floor
- *  `landDomain`'s deleted strip clamp applied on a domain flip (S6a; `domain.ts`'s "the floor is
- *  clamped against the next strip's converted start and the section's converted exit"), needed
- *  again wherever a structural op changes a section's resolved grid out from under strips already
- *  on it. `joinNext` rebases both halves' strips onto the JOINED section's resolved grid, which
- *  can be coarser than either half's own — a strip that covered ≥ 1 edge on its own half can
- *  degenerate to a point on the joined grid, and the point convention would then displace it onto
- *  the PRECEDING edge rather than leaving it covering nothing (measured: 2.28 m + 2.26 m force
- *  sections, 0.52% of a swept (headLen, tailLen, station) grid). Extends a degenerate strip's
- *  `end` by the grid's own widest edge (a safe over-cover — the width floor only needs to clear
- *  the ONE edge the strip's `start` lands in, and the subsequent clamps below trim any excess),
- *  then clamps against the next strip's `start` and the section's own exit — the no-overlap
- *  invariant beats the floor exactly as it did in the deleted domain-flip code: an overlap is the
- *  state § Locked decision refuses outright, a sub-edge strip is merely inert. `strips` reads
- *  through `sectionStrips`, already sorted by `start`, so the neighbour clamp is just the next
- *  array entry. */
-function refloorStrips(
-    ecs: State,
-    sectionId: number,
-    ds: ArrayLike<number>,
-    edges: number,
-    sectionLen: number,
-): void {
-    if (edges === 0) return;
-    let maxDs = 0;
-    for (let i = 0; i < edges; i++) if (ds[i] > maxDs) maxDs = ds[i];
-    const strips = sectionStrips(ecs, sectionId);
-    for (let i = 0; i < strips.length; i++) {
-        const st = strips[i];
-        if (st.start === st.end) continue; // an authored POINT — never extend, the point
-        // convention's own preceding-edge override is intentional here, not a degenerate span.
-        let newEnd = st.end;
-        if (!spanCoversOneEdge(ds, edges, st.start, newEnd)) newEnd = st.start + maxDs;
-        if (i + 1 < strips.length) newEnd = Math.min(newEnd, strips[i + 1].start);
-        newEnd = Math.min(newEnd, sectionLen);
-        if (newEnd !== st.end) Strip.end.set(st.eid, newEnd);
-    }
-}
-
+ *  neighbor is removed and downstream orders close up. returns true when joined.
+ *
+ *  Strips are untouched (S2, Locked decision): they're track-global and span-blind, so
+ *  a join never rebases or merges them — the next bake's in-pass window resolution
+ *  reads whatever now occupies the joined section's (wider) global window. */
 export function joinNext(ecs: State, sectionId: number): boolean {
     const aEid = sectionAt(ecs, sectionId);
     const b = nextSection(ecs, sectionId);
@@ -3672,16 +3237,6 @@ export function joinNext(ecs: State, sectionId: number): boolean {
     if (aKind === SectionKind.Geo) {
         const aHandles = sectionHandles(ecs, sectionId);
         const aN = aHandles.length - 1;
-        const bStrips = sectionStrips(ecs, b.id);
-        // A's own pre-join arclength (the chord array, sampled off A's CURRENT nodes before
-        // the merge below appends B's) — the rebase offset for B's strips. Only computed when
-        // B actually carries strips (the common case has none), and read BEFORE the append
-        // loop mutates A's node set.
-        let aArc = 0;
-        if (bStrips.length > 0) {
-            const { ds } = geoChordDs(ecs, sectionId, trackDs(ecs));
-            for (let i = 0; i < ds.length; i++) aArc += ds[i];
-        }
         // place B against A's RECOVERED exit (the bake's downstream entry, the exact
         // inverse of a geo split), not A's stored tip heading — see `headExit`.
         const frame = headExit(ecs, aHandles, aN);
@@ -3704,24 +3259,6 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             spawnNode(ecs, sectionId, aN + j, w.x, w.y, w.theta, w.tangent);
         }
         for (const h of bHandles) ecs.destroy(h);
-        // rebase B's strips onto A's arclength axis, past A's own pre-join extent — no
-        // merge-on-agreement for geo (unlike force, a geo section's own extent is a SAMPLED
-        // reading, not an authored constant, so an exact boundary-tie test is fragile; a
-        // strip that lands exactly abutting the join simply stays two strips).
-        for (const st of bStrips) {
-            Strip.section.set(st.eid, sectionId);
-            Strip.start.set(st.eid, st.start + aArc);
-            Strip.end.set(st.eid, st.end + aArc);
-            for (const k of stripKeyframes(ecs, st.id)) StripKeyframe.s.set(k.eid, k.s + aArc);
-        }
-        // the join floor: re-resolve the MERGED chain's own chord array (post-append, above)
-        // and re-floor every surviving strip against it, A's own included — the merged
-        // sampling can re-quantize A's own portion too, not just the appended one
-        // (`refloorStrips`; a no-op when the section carries no strips).
-        const merged = geoChordDs(ecs, sectionId, trackDs(ecs));
-        let mergedLen = 0;
-        for (let i = 0; i < merged.edges; i++) mergedLen += merged.ds[i];
-        refloorStrips(ecs, sectionId, merged.ds, merged.edges, mergedLen);
     } else {
         const aLen = Section.length.get(aEid);
         const aForces = sectionForces(ecs, sectionId);
@@ -3766,51 +3303,6 @@ export function joinNext(ecs: State, sectionId: number): boolean {
             Force.s.set(p.eid, p.s + aLen);
         }
         Section.length.set(aEid, aLen + b.length);
-
-        // strips: merge two abutting strips (A's own last touching its length, B's own first
-        // touching 0) iff their values agree — the span-shaped analogue of the keyframe
-        // dedupe above; otherwise both survive rebased, spanning the join as distinct strips
-        // (the Locked decision's Cut/Join bullet).
-        const aStrips = sectionStrips(ecs, sectionId);
-        const bStrips = sectionStrips(ecs, b.id);
-        const aTailStrip = aStrips.find((r) => r.end === aLen);
-        const bHeadStrip = bStrips.find((r) => r.start === 0);
-        const mergeStrip =
-            aTailStrip !== undefined &&
-            bHeadStrip !== undefined &&
-            aTailStrip.value === bHeadStrip.value;
-        if (mergeStrip && aTailStrip !== undefined && bHeadStrip !== undefined) {
-            const newEnd = aLen + bHeadStrip.end;
-            // the surviving strip's OWN boundary keyframe, seeded at its OLD end (aLen —
-            // `aTailStrip` is found BY that equality above), must ride the rebase too (the
-            // map's booked defect: `Strip.end` moved with nothing carrying its own boundary
-            // keyframe along). Absorbed keyframes from `bHeadStrip` are rebased below and can
-            // legitimately land coincident with this one at the old seam (aLen) or the new
-            // edge — the strip substrate doesn't dedupe keyframes on a join (Locked decision).
-            for (const k of stripKeyframes(ecs, aTailStrip.id)) {
-                if (k.s === aLen) StripKeyframe.s.set(k.eid, newEnd);
-            }
-            Strip.end.set(aTailStrip.eid, newEnd);
-            // move the absorbed strip's keyframes to the surviving strip, rebased
-            for (const k of stripKeyframes(ecs, bHeadStrip.id)) {
-                spawnStripKeyframe(ecs, aTailStrip.id, k.id, k.s + aLen, k.v);
-                ecs.destroy(k.eid);
-            }
-            ecs.destroy(bHeadStrip.eid);
-        }
-        for (const st of bStrips) {
-            if (mergeStrip && bHeadStrip !== undefined && st.id === bHeadStrip.id) continue;
-            Strip.section.set(st.eid, sectionId);
-            Strip.start.set(st.eid, st.start + aLen);
-            Strip.end.set(st.eid, st.end + aLen);
-            for (const k of stripKeyframes(ecs, st.id)) StripKeyframe.s.set(k.eid, k.s + aLen);
-        }
-        // the join floor: re-resolve the JOINED length's own step (which can be coarser than
-        // either half's own step) and re-floor every surviving strip against it (`refloorStrips`).
-        const joinedLen = aLen + b.length;
-        const joinedStep = resolveStep(joinedLen, trackDs(ecs));
-        const joinedDs = new Float32Array(joinedStep.edges).fill(joinedStep.ds);
-        refloorStrips(ecs, sectionId, joinedDs, joinedStep.edges, joinedLen);
     }
     ecs.destroy(b.eid);
     provenance.delete(b.id);
@@ -3820,8 +3312,11 @@ export function joinNext(ecs: State, sectionId: number): boolean {
 
 /** delete a section and its payload; downstream sections close the gap and rebase
  *  rigidly (their nodes are section-local, so the bake re-places them at the new
- *  upstream exit). refuses to remove the last remaining section. returns true
- *  when deleted. */
+ *  upstream exit). refuses to remove the last remaining section. returns true when
+ *  deleted. Strips are untouched (S2, Locked decision): they're track-global and
+ *  span-blind, so deleting the section under a span leaves its stored rows in place —
+ *  the next bake's in-pass window resolution drives whatever now occupies that global
+ *  window. */
 export function deleteSection(ecs: State, sectionId: number): boolean {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null) return false;
@@ -3829,10 +3324,6 @@ export function deleteSection(ecs: State, sectionId: number): boolean {
     const order = Section.order.get(secEid);
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    for (const st of sectionStrips(ecs, sectionId)) {
-        destroyStripKeyframes(ecs, st.id);
-        ecs.destroy(st.eid);
-    }
     ecs.destroy(secEid);
     provenance.delete(sectionId);
     bumpOrders(ecs, order + 1, -1);
@@ -3856,8 +3347,8 @@ function seed(ecs: State): void {
     // than a dedicated field — deleting it falls the derived entry speed back to `V0`
     // (`entrySpeed`'s own fallback), so this authors the same starting value the retired
     // per-track speed field used to default to, just as an editable, deletable strip.
-    const ext = stripMinExtentAt(ecs, id, 0);
-    if (ext) createStrip(ecs, id, ext.start, ext.end, V0);
+    const ext = stripMinExtentAt(ecs, 0);
+    if (ext) createStrip(ecs, ext.start, ext.end, V0);
 }
 
 // ── bake ─────────────────────────────────────────────────────────────────────
@@ -3876,12 +3367,17 @@ export function geoNodes(ecs: State, sectionId: number): Node[] {
 }
 
 /** a geo section's payload: its section-local nodes (node 0 at {0,0,0}) + the step it
- *  bakes at. the substrate places them rigidly at the running chain entry. Strips (if
- *  any) resolve through the section's OWN chord array (`geoChordDs`, the same sampling
+ *  bakes at. the substrate places them rigidly at the running chain entry. Strips are
+ *  track-global (S2, Locked decision) — every strip converts to section-local by
+ *  subtracting `offset` (the section's own track-global entry, `sectionWindows`) and
+ *  threads through the section's OWN chord array (`geoChordDs`, the same sampling
  *  `evalGeo` will redo internally — chord length is entry-invariant, so the redundant
- *  pass agrees exactly) into edge-index form (`edgeStrips`). */
-function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
-    const strips = sectionStrips(ecs, sectionId);
+ *  pass agrees exactly) into edge-index form (`edgeStrips`); a strip wholly outside this
+ *  section's window collapses to an inert `{0,0}` spec or is dropped past the extent
+ *  (`edgeStrips`'s own boundary clamp), so passing every strip to every section is
+ *  correct, not just convenient. */
+function geoPayload(ecs: State, sectionId: number, ds: number, offset: number): SectionSpec {
+    const strips = allStrips(ecs);
     let edgeSpecs: StripSpec[] | undefined;
     if (strips.length > 0) {
         const { ds: chordDs, edges } = geoChordDs(ecs, sectionId, ds);
@@ -3889,8 +3385,10 @@ function geoPayload(ecs: State, sectionId: number, ds: number): SectionSpec {
             chordDs,
             edges,
             strips.map((st) => ({
-                ...st,
-                keyframes: stripKeyframes(ecs, st.id).map((k) => ({ s: k.s, v: k.v })),
+                start: st.start - offset,
+                end: st.end - offset,
+                value: st.value,
+                keyframes: stripKeyframes(ecs, st.id).map((k) => ({ s: k.s - offset, v: k.v })),
             })),
         );
     }
@@ -3930,33 +3428,44 @@ function forceDense(ecs: State, sectionId: number, step: Step): Float32Array {
  *  through {@link resolveStep} before either the profile or the payload's own `Step` sees
  *  it, so `forceDense`'s σ grid and `evalForce`'s march (which reads this payload's `step`
  *  in `chain`) always agree on the same exact pair — the pairing seam, applied once, here. */
-function forcePayload(ecs: State, sectionId: number, length: number, step: number): SectionSpec {
+function forcePayload(
+    ecs: State,
+    sectionId: number,
+    length: number,
+    step: number,
+    offset: number,
+): SectionSpec {
     const resolved = resolveStep(length, step);
     return {
         kind: "force",
         fN: forceDense(ecs, sectionId, resolved),
         step: resolved,
-        strips: stripsForStep(ecs, sectionId, resolved),
+        strips: stripsForStep(ecs, offset, resolved),
     };
 }
 
-/** a force section's strips, resolved from their stored domain-coordinate `{start, end,
- *  value}` into the kernel's edge-index form ({@link edgeStrips}) at the section's own
- *  RESOLVED {@link Step} — a force section's edges are uniform in its native axis, so the
- *  per-edge `ds` array is just `step.ds` repeated `step.edges` times, never a bake read.
- *  This is the ONE seam pin mode's override construction (`pin.ts`) shares with the live
- *  bake (`forcePayload`/`forceBake`): both call this with their own already-resolved
- *  `Step`, so the strip data behind the pin invariant is read directly off ECS state. */
-export function stripsForStep(ecs: State, sectionId: number, step: Step): StripSpec[] | undefined {
-    const rows = sectionStrips(ecs, sectionId);
+/** every track-global strip, resolved into the kernel's edge-index form ({@link edgeStrips})
+ *  at a section's own RESOLVED {@link Step} — a force section's edges are uniform in its
+ *  native axis, so the per-edge `ds` array is just `step.ds` repeated `step.edges` times,
+ *  never a bake read. `offset` is the section's own track-global entry
+ *  ({@link sectionWindows}), a PURE derivation from the live document, never a bake read
+ *  (the pin invariant's own structural requirement) — so a strip converts to section-local
+ *  by subtracting it. This is the ONE seam pin mode's override construction (`pin.ts`)
+ *  shares with the live bake (`forcePayload`/`forceBake`): both call this with their own
+ *  already-resolved `Step` and `offset`, so the strip data behind the pin invariant is read
+ *  directly off ECS state. */
+export function stripsForStep(ecs: State, offset: number, step: Step): StripSpec[] | undefined {
+    const rows = allStrips(ecs);
     if (rows.length === 0) return undefined;
     const ds = new Float32Array(step.edges).fill(step.ds);
     return edgeStrips(
         ds,
         step.edges,
         rows.map((st) => ({
-            ...st,
-            keyframes: stripKeyframes(ecs, st.id).map((k) => ({ s: k.s, v: k.v })),
+            start: st.start - offset,
+            end: st.end - offset,
+            value: st.value,
+            keyframes: stripKeyframes(ecs, st.id).map((k) => ({ s: k.s - offset, v: k.v })),
         })),
     );
 }
@@ -3988,10 +3497,13 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     // actually handed in, `resolved.ds` unchanged (the same per-edge step, fewer edges).
     const clipped = dense.length > avail ? dense.subarray(0, avail) : dense;
     const clippedStep: Step = { edges: clipped.length, ds: resolved.ds };
-    // strips resolved at the FULL resolved step, then clamped to the clipped edge count — a
-    // strip past the clipped prefix has no track position, the same non-destructive-trim law
-    // `forceMarkers` already applies to a keyframe past its section's baked span.
-    const strips = stripsForStep(ecs, sectionId, resolved)?.map((s) => ({
+    // this section's own track-global entry offset, the same PURE (bake-read-free) reading
+    // `forcePayload`'s own chain-bake caller uses — strips resolved at the FULL resolved
+    // step, then clamped to the clipped edge count — a strip past the clipped prefix has no
+    // track position, the same non-destructive-trim law `forceMarkers` already applies to a
+    // keyframe past its section's baked span.
+    const offset = sectionWindows(ecs).find((w) => w.id === sectionId)?.offset ?? 0;
+    const strips = stripsForStep(ecs, offset, resolved)?.map((s) => ({
         start: Math.min(s.start, clippedStep.edges),
         end: Math.min(s.end, clippedStep.edges),
         value: s.value,
@@ -4009,10 +3521,13 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
 
 /** one section's OWN content — kind, and its authored payload (a geo section's node poses, a
  *  force section's extent + points). Deliberately excludes `order`: chain position isn't
- *  content, so a reorder (a split/join, a reindex) doesn't change it. Factored out of
- *  `bakeHash`'s per-section loop so the bake gate and the provenance token (`sectionToken`,
- *  below) read this ONE reading of "has this section's own content changed" — `bakeHash` folds
- *  `order` back in itself, since a reorder still has to force a re-bake. */
+ *  content, so a reorder (a split/join, a reindex) doesn't change it. Deliberately excludes
+ *  strips too (S2): they're track-global, span-blind to any one section (Locked decision),
+ *  so they fold into {@link bakeHash} once, track-wide (`stripsHash`), never per section.
+ *  Factored out of `bakeHash`'s per-section loop so the bake gate and the provenance token
+ *  (`sectionToken`, below) read this ONE reading of "has this section's own content
+ *  changed" — `bakeHash` folds `order` back in itself, since a reorder still has to force a
+ *  re-bake. */
 function sectionContentHash(ecs: State, sec: SectionRow): string {
     let h = `${sec.kind}`;
     if (sec.kind === SectionKind.Force) {
@@ -4033,9 +3548,16 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
             }
         }
     }
-    // strips apply to either kind — a velocity control changes what the bake produces
-    // regardless of which authoring idiom the section uses (`kex2d-map.md`'s Velocity strips).
-    for (const st of sectionStrips(ecs, sec.id)) {
+    return h;
+}
+
+/** every track-global strip's own content, folded once (S2) rather than per section — a
+ *  velocity control changes what the bake produces regardless of which section(s) it
+ *  overlaps (`kex2d-map.md`'s Velocity strips), and a section-blind span may overlap none,
+ *  one, or several, so keying it to any one section's hash would miss or duplicate an edit. */
+function stripsHash(ecs: State): string {
+    let h = "";
+    for (const st of allStrips(ecs)) {
         h += `,V${st.id}=${st.start}:${st.end}:${st.value}`;
         for (const k of stripKeyframes(ecs, st.id)) {
             h += `;${k.id}=${k.s}:${k.v}`;
@@ -4044,17 +3566,17 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
     return h;
 }
 
-/** input-state hash that gates the bake: the shared ds + coefficients, then every section
- *  in order — its id/order/kind, and its authored payload (a geo section's node poses, a
- *  force section's extent + points, and EVERY section's strips + strip keyframes).
- *  BakeSystem re-bakes on a miss (anything moved, added, removed, reordered, or a
- *  coefficient edited), skips otherwise. the initial speed carries no term of its own here
- *  (S5): it is DERIVED from the first section's own strip contribution below, already
- *  folded into that section's hash, and its fallback (`V0`) is a constant, so nothing
- *  authored governs it beyond the strip. `friction`/`resistance` fold in unconditionally,
- *  NOT because every track is nonzero (`createTrack` itself stays at the kernel's neutral
- *  0; only `seed`'s genuinely NEW documents get `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`, so
- *  a zero-coefficient track is still the common case, every test fixture included).
+/** input-state hash that gates the bake: the shared ds + coefficients, every section in
+ *  order (its id/order/kind, and its authored payload — a geo section's node poses, a force
+ *  section's extent + points), then every track-global strip + strip keyframe once
+ *  (`stripsHash`). BakeSystem re-bakes on a miss (anything moved, added, removed, reordered,
+ *  or a coefficient edited), skips otherwise. the initial speed carries no term of its own
+ *  here (S5): it is DERIVED from the track-global strip covering station 0, already folded
+ *  into `stripsHash`, and its fallback (`V0`) is a constant, so nothing authored governs it
+ *  beyond the strip. `friction`/`resistance` fold in unconditionally, NOT because every
+ *  track is nonzero (`createTrack` itself stays at the kernel's neutral 0; only `seed`'s
+ *  genuinely NEW documents get `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`, so a
+ *  zero-coefficient track is still the common case, every test fixture included).
  *  `Track.domain` never folds in: it is a display lens over this same bake, never a second
  *  march, so flipping it must leave the hash — and therefore the bake — untouched. */
 function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
@@ -4062,6 +3584,7 @@ function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sectionContentHash(ecs, sec)}`;
     }
+    h += stripsHash(ecs);
     return h;
 }
 
@@ -4162,7 +3685,7 @@ function computeTime(out: BakeOut, count: number): void {
  *  bake) when a geo section is below its two-node floor or the chain degenerates. */
 function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: SectionRow[]): void {
     const ds = Track.ds.get(trackEid);
-    const v0 = entrySpeed(ecs, secs);
+    const v0 = entrySpeed(ecs);
     const start = startEntry(v0);
     const friction = Track.friction.get(trackEid);
     const resistance = Track.resistance.get(trackEid);
@@ -4173,10 +3696,17 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         if (sec.kind === SectionKind.Geo && sectionHandles(ecs, sec.id).length < 2) return;
     }
 
-    const payloads = secs.map((sec) =>
+    // each section's track-global entry offset, computed PURELY from the live document
+    // (chord sums / authored extents — `sectionWindows`) before any payload is built, per
+    // the locked contract: "section i's window is [offset_i, offset_i + len_i) with
+    // offset_i the cumulative arclength the chain pass has already computed." Offsets are
+    // strip-independent (a section's own resolved extent never depends on a velocity
+    // strip), so this single pre-pass is exact — no fixed-point iteration needed.
+    const windows = sectionWindows(ecs, secs);
+    const payloads = secs.map((sec, i) =>
         sec.kind === SectionKind.Geo
-            ? geoPayload(ecs, sec.id, ds)
-            : forcePayload(ecs, sec.id, sec.length, ds),
+            ? geoPayload(ecs, sec.id, ds, windows[i].offset)
+            : forcePayload(ecs, sec.id, sec.length, ds, windows[i].offset),
     );
     // the downstream freeze (stage 7): with a live freeze on a non-terminal section, the chain
     // runs in TWO parts — start..pinning live, downstream seeded at the FROZEN entry — so

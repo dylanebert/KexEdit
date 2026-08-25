@@ -148,7 +148,7 @@ import {
     sectionInfo,
     sections,
     sectionSpans,
-    sectionStrips,
+    allStrips,
     setForcePoint,
     setForceTangent,
     setSectionLength,
@@ -1017,35 +1017,32 @@ const ghostSpans = $derived.by((): { x0: number; x1: number }[] => {
     }));
 });
 
-// ── velocity strips (T1, the header band's own authoring surface): every strip on every
-// section, flattened across the whole track like `forcePts`. The band carries extent (Locked
-// decision: "band carries extent, graph carries and edits value"), so a strip can attach to a
-// geo section too — a geo lift authored at a flat speed is exactly the shape the substrate
-// exists for. `u0`/`u1` are the strip's `start`/`end` projected onto the chart's own axis
-// (`uOf`) -- pixel math only, CLAMPED to the section's own extent (below) so a trim draws the
-// strip clipped rather than overflowing into the next clip; `start`/`end`/`len` stay arclength
-// (`Strip.start`/`.end`'s own unit -- S6, unclamped -- the drag gestures need the strip's real
-// authored bounds), the base every WRITE (`bandMove`) adds a `dOf`-converted delta to. A strip
-// wholly past the extent (`st.start >= extent`) is skipped entirely (the extent law's "inert,
-// never displaced onto the preceding edge" — the bake's own `edgeStrips` mirrors this).
+// ── velocity strips (T1, the header band's own authoring surface): every strip is
+// track-global and section-blind (S2, Locked decision — may overlap multiple sections,
+// persists through segment resize and structural ops), so this projects EVERY strip once,
+// never per-clip. `u0`/`u1` are the strip's `start`/`end` projected onto the chart's own
+// axis (`uOfLen` — finding 9's own extrapolating projection, so a strip drawn past a live
+// lengthen gesture's frozen table still tracks) -- pixel math only; `start`/`end` stay
+// track-global arclength (`Strip.start`/`.end`'s own unit), the coordinate every WRITE
+// (`bandMove`) computes its target in directly via `dOf`. A strip wholly past the track's
+// own live extent (`st.start >= len`) is skipped entirely (the extent law's "inert, never
+// displaced onto the preceding edge" — the bake's own `edgeStrips` mirrors this).
 interface BandStrip {
     id: number;
-    section: number;
-    start: number; // section-local, arclength ALWAYS
+    start: number; // track-global, arclength ALWAYS
     end: number;
     value: number;
     u0: number; // global chart axis (pixel math only)
     u1: number;
-    startU: number; // the section's entry, likewise projected -- pixel math only
-    startD: number; // the section's entry in arclength (`Clip.s0`) -- the WRITE base
-    // the clamp domain's outer bound — `Clip.extent` (a force section's authored
-    // `Section.length`, the same constant the trim handle writes through `setSectionLength`, or
-    // a geo section's baked span `s1 − s0`, which has no authored twin) so a strip's trim/drag
-    // bound and the section's own trim agree by construction. Read straight off `Clip.extent`,
-    // never re-derived here (`coding.md`'s two-values-must-agree: the baked span can disagree
-    // with `Section.length` when the bake truncates, `forceBake`'s own "what's on screen is the
-    // prefix").
+    // the track's own live extent (the last span's `offset + len`) — the clamp domain's
+    // outer bound every strip shares, since a span is section-blind.
     len: number;
+}
+// the track's own live extent off a span table — 0 with no live bake.
+function trackLen(spanTable: SectionSpan[]): number {
+    if (spanTable.length === 0) return 0;
+    const last = spanTable[spanTable.length - 1];
+    return last.offset + last.len;
 }
 // One projection for strip bands from the ECS — the shared computation both the `bandStrips`
 // `$derived` (paced by `void tick` for the render) and the `stripKfPx`/`stripPx` `__kex` hooks
@@ -1054,62 +1051,42 @@ interface BandStrip {
 // read a stale `$derived` that hasn't re-evaluated this frame — the strip layout (`bandStrips`)
 // and the span table (`spans`) are both `$derived` behind `void tick`, and a strip move/widen
 // changes the bake (which changes `sectionSpans`), so their cached values can be stale. The
-// hook passes FRESH `computeClips`/`sectionSpans` results instead, so strips and keyframes are
-// projected against the SAME fresh snapshot — never one fresh and one stale.
-function computeBandStrips(
-    clipList: Clip[],
-    spanTable: SectionSpan[],
-    world: State,
-): BandStrip[] {
+// hook passes a FRESH `sectionSpans` result instead, so strips and keyframes are projected
+// against the SAME fresh snapshot — never one fresh and one stale.
+function computeBandStrips(spanTable: SectionSpan[], world: State): BandStrip[] {
     if (eid === null) return [];
+    const len = trackLen(spanTable);
     const res: BandStrip[] = [];
-    for (const c of clipList) {
-        const extent = c.extent;
-        for (const st of sectionStrips(world, c.id)) {
-            if (st.start >= extent) continue; // wholly past the extent — inert
-            const d0 = toGlobal(spanTable, c.id, st.start);
-            const d1 = toGlobal(spanTable, c.id, Math.min(st.end, extent)); // drawn clipped
-            if (d0 === null || d1 === null) continue; // a stale span, `forcePts`' own guard
-            res.push({
-                id: st.id,
-                section: c.id,
-                start: st.start,
-                end: st.end,
-                value: st.value,
-                // finding 9's mechanism gap: a strip on a downstream section shifts rigidly
-                // with an upstream lengthen, same as its owning clip's edges — `uOfLen`, not
-                // plain `uOf` (`forcePts`' own note, above, is the same reasoning).
-                u0: uOfLen(d0),
-                u1: uOfLen(d1),
-                startU: c.u0,
-                startD: c.s0,
-                len: extent,
-            });
-        }
+    for (const st of allStrips(world)) {
+        if (st.start >= len) continue; // wholly past the track's own live extent — inert
+        res.push({
+            id: st.id,
+            start: st.start,
+            end: st.end,
+            value: st.value,
+            u0: uOfLen(st.start),
+            u1: uOfLen(Math.min(st.end, len)), // drawn clipped
+            len,
+        });
     }
     return res;
 }
 const bandStrips = $derived.by((): BandStrip[] => {
     void tick;
-    return computeBandStrips(clips, spans, ecs);
+    return computeBandStrips(spans, ecs);
 });
 // boundary ticks: the disambiguator for two abutting strips (Locked decision) — a strip's start
-// exactly equal to its section-mate's end, drawn as a small notch so the shared boundary reads
-// as two controlled spans meeting, not one. `sectionStrips` is already start-sorted, so adjacent
-// members are adjacent in station order.
+// exactly equal to another's end, drawn as a small notch so the shared boundary reads as two
+// controlled spans meeting, not one. `allStrips` is already start-sorted, so adjacent members
+// are adjacent in station order.
 const stripTicks = $derived.by((): number[] => {
     void tick;
     if (eid === null) return [];
     const res: number[] = [];
-    for (const c of clips) {
-        const strips = sectionStrips(ecs, c.id);
-        for (let i = 1; i < strips.length; i++) {
-            if (strips[i].start !== strips[i - 1].end) continue;
-            const d = toGlobal(spans, c.id, strips[i].start);
-            // same seam as `bandStrips`/`forcePts`: a boundary notch on a downstream section
-            // shifts rigidly with an upstream lengthen too.
-            if (d !== null) res.push(uPx(uOfLen(d)));
-        }
+    const strips = allStrips(ecs);
+    for (let i = 1; i < strips.length; i++) {
+        if (strips[i].start !== strips[i - 1].end) continue;
+        res.push(uPx(uOfLen(strips[i].start)));
     }
     return res;
 });
@@ -1123,21 +1100,25 @@ const selStrip = $derived.by((): BandStrip | null => {
 // every strip's keyframes, projected to screen coordinates — the value-surface diamonds
 // drawn in the velocity channel (T2: value in the graph), for every strip (Locked decision
 // "Visibility": solid where a strip AUTHORS it, not where one is selected). Each keyframe
-// carries its section-local `s`, its velocity `v`, and its global chart-axis `u` (for the x
+// carries its track-global `s`, its velocity `v`, and its global chart-axis `u` (for the x
 // pixel), plus the id of the strip it belongs to (`strip`) — the selected strip's own
 // keyframes brighten in the markup below, the same rung force keyframes use.
 interface StripKfPt {
     id: number;
     strip: number;
+    // the REPRESENTATIVE section the owning strip's own `start` resolves to
+    // (`stripEditableAt`'s own reading) — strips carry no section ownership (S2, Locked
+    // decision), so this is a read for the pin-lockdown gate alone, not storage identity.
     section: number;
-    s: number; // section-local, arclength ALWAYS
+    s: number; // track-global, arclength ALWAYS
     v: number; // velocity (m/s)
     u: number; // GLOBAL arclength projected onto the chart's axis (`uOf`) -- pixel math only
-    startU: number; // the strip's section entry, likewise projected -- pixel math only
-    startD: number; // the strip's section entry in arclength (`ForcePt.startD`'s own twin) --
-    // the popover field's WRITE base (S3: value-shown parity, finding 10)
-    start: number; // the strip's start (section-local, arclength)
-    end: number; // the strip's end (section-local, arclength)
+    startU: number; // always `uOf(0)` now (S2: strips store global `d` directly, no
+    // section-entry offset to project) -- kept as a field so the shared force/strip drag and
+    // typed-field write paths (`ForcePt.startU`'s own twin) stay one shape.
+    startD: number; // always 0 (S2's own write-base retirement, `ForcePt.startD`'s twin)
+    start: number; // the strip's start (track-global, arclength)
+    end: number; // the strip's end (track-global, arclength)
 }
 // One projection for strip-keyframe points from the ECS — the shared computation both the
 // `stripKfPts` `$derived` (paced by `void tick` for the render) and the `stripKfPx` `__kex`
@@ -1156,21 +1137,21 @@ function computeStripKfPts(
 ): StripKfPt[] {
     const out: StripKfPt[] = [];
     for (const s of strips) {
+        // the REPRESENTATIVE section for the pin-lockdown gate (`stripEditableAt`'s own
+        // reading) — computed once per strip, not per keyframe.
+        const section = toLocal(spanTable, s.start)?.section ?? -1;
         for (const k of stripKeyframes(world, s.id)) {
             out.push({
                 id: k.id,
                 strip: s.id,
-                section: s.section,
+                section,
                 s: k.s,
                 v: k.v,
-                u: (() => {
-                    const d = toGlobal(spanTable, s.section, k.s);
-                    // same seam again: a strip keyframe on a downstream section shifts rigidly
-                    // with an upstream lengthen (`bandStrips`/`forcePts`'s own note).
-                    return d === null ? s.startU : uOfLen(d);
-                })(),
-                startU: s.startU,
-                startD: s.startD,
+                // `k.s` is track-global already (S2: no section-entry offset to project
+                // through) -- `uOfLen`'s own extrapolating projection, matching `bandStrips`.
+                u: uOfLen(k.s),
+                startU: uOf(0),
+                startD: 0,
                 start: s.start,
                 end: s.end,
             });
@@ -1398,26 +1379,22 @@ function chartCreate(e: MouseEvent): void {
     if (stripId !== null) {
         const stripEid = stripAt(ecs, stripId);
         if (stripEid !== null) {
-            const sectionId = Strip.section.get(stripEid);
             const stripStart = Strip.start.get(stripEid);
             const stripEnd = Strip.end.get(stripEid);
-            const c = clips.find((cl) => cl.id === sectionId);
-            if (c) {
-                // a create has no gesture to freeze a table for — `dOf`/`uOf` read the LIVE
-                // mapping here, same as `gestureMapping` would fall back to outside a drag.
-                const d0 = toGlobal(spans, sectionId, stripStart);
-                const d1 = toGlobal(spans, sectionId, stripEnd);
-                const u0 = d0 === null ? null : uOf(d0);
-                const u1 = d1 === null ? null : uOf(d1);
-                if (u0 !== null && u1 !== null && u >= u0 && u <= u1) {
-                    if (!sectionEditable(editor.pinning, sectionId)) return;
-                    const rect = canvas.getBoundingClientRect();
-                    const cy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
-                    const v = vView.lo + (1 - (cy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
-                    const sLocal = clamp(dOf(u) - c.s0, stripStart, stripEnd);
-                    addStripKeyframe(history, ecs, stripId, sLocal, Math.max(V_FLOOR, v));
-                    return;
-                }
+            // strips are track-global (S2): `stripStart`/`stripEnd` ARE the storage
+            // coordinate, no section to resolve. a create has no gesture to freeze a table
+            // for — `dOf`/`uOf` read the LIVE mapping here, same as `gestureMapping` would
+            // fall back to outside a drag.
+            const u0 = uOf(stripStart);
+            const u1 = uOf(stripEnd);
+            if (u >= u0 && u <= u1) {
+                if (!stripEditableAt(stripStart)) return;
+                const rect = canvas.getBoundingClientRect();
+                const cy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
+                const v = vView.lo + (1 - (cy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
+                const d = clamp(dOf(u), stripStart, stripEnd);
+                addStripKeyframe(history, ecs, stripId, d, Math.max(V_FLOOR, v));
+                return;
             }
         }
     }
@@ -2302,12 +2279,12 @@ const smenu = $derived.by((): { x: number; y: number } | null => {
 const stripMenuItems = $derived.by((): MenuItem[] => {
     void tick;
     if (editor.stripMenu === null) return [];
-    const { section, station, strip } = editor.stripMenu;
+    const { d, strip } = editor.stripMenu;
     return stripMenu(
-        { strip, editable: sectionEditable(editor.pinning, section), canCreate: canCreateAt(section, station) },
+        { strip, editable: stripEditableAt(d), canCreate: canCreateAt(d) },
         {
             addStrip: () => {
-                createStripAt(section, station);
+                createStripAt(d);
                 closeStripMenu();
             },
             remove: () => {
@@ -2722,8 +2699,6 @@ $effect(() => {
 interface StripDrag {
     id: number;
     mode: "start" | "end" | "body";
-    section: number;
-    entryD: number; // arclength entry -- the write base
     lo: number;
     hi: number;
     origStart: number;
@@ -2733,6 +2708,20 @@ interface StripDrag {
 }
 let stripDrag: StripDrag | null = $state(null);
 
+/** whether the section a track-global station currently resolves to is editable (not under
+ *  a pin-session lockdown, `sectionEditable`) — strips are track-global and span-blind (S2,
+ *  Locked decision), so there's no single owning section to gate on; this resolves the
+ *  REPRESENTATIVE section the station currently lands in (`toLocal`), the same edit-lockdown
+ *  reading a force keyframe's own `.section` gives. A span straddling a pin session's
+ *  boundary is gated by its OWN queried station — the common case (a strip wholly inside or
+ *  outside the session) is exact; a straddling span during an open pin session is residue
+ *  this stage doesn't fully resolve (out of S2's own footprint). No live bake (`loc === null`)
+ *  reads editable, matching "nothing to lock against". */
+function stripEditableAt(d: number): boolean {
+    const loc = toLocal(spans, d);
+    return loc === null || sectionEditable(editor.pinning, loc.section);
+}
+
 function bandMove(e: PointerEvent): void {
     if (stripDrag === null) return;
     const rect = canvas.getBoundingClientRect();
@@ -2741,9 +2730,9 @@ function bandMove(e: PointerEvent): void {
     // rect, so its `onpointermove` never fires -- keep the hover read live from here instead
     // (S3's own edge/body affordance while the gesture is in flight).
     bandHoverX = px;
-    // through the gesture-frozen table -- `station` is arclength, never a raw (seconds-scaled
-    // in Time view) axis delta (S6 fix).
-    const station = dOf(uAtPx(px)) - stripDrag.entryD;
+    // through the gesture-frozen table -- `station` is track-global arclength (strips are
+    // track-global, S2), never a raw (seconds-scaled in Time view) axis delta (S6 fix).
+    const station = dOf(uAtPx(px));
     const { mode, lo, hi, origStart, origEnd, origValue, id } = stripDrag;
     if (mode === "start") {
         setStrip(ecs, id, clamp(station, lo, hi), origEnd, origValue);
@@ -2786,16 +2775,17 @@ function bandContext(e: MouseEvent): void {
     const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
     if (hit.kind === "empty") {
         // a create has no gesture to freeze a table for -- `dOf` reads the live mapping.
-        const loc = toLocal(spans, dOf(uAtPx(px)));
-        if (loc === null) return;
-        if (!sectionEditable(editor.pinning, loc.section)) return;
-        openStripMenu(e.clientX, e.clientY, loc.section, loc.s, -1);
+        // strips are track-global (S2): the click's own station IS the storage coordinate,
+        // no section to resolve.
+        const d = dOf(uAtPx(px));
+        if (!stripEditableAt(d)) return;
+        openStripMenu(e.clientX, e.clientY, d, -1);
     } else {
         const s = bandStrips.find((b) => b.id === hit.id);
         if (!s) return;
-        if (!sectionEditable(editor.pinning, s.section)) return;
+        if (!stripEditableAt(s.start)) return;
         selectStrip(s.id);
-        openStripMenu(e.clientX, e.clientY, s.section, s.start, s.id);
+        openStripMenu(e.clientX, e.clientY, s.start, s.id);
     }
 }
 // left-click on the band: select + trim/body-drag. Empty space is inert for creation (no
@@ -2814,7 +2804,7 @@ function bandDown(e: PointerEvent): void {
     }
     const s = bandStrips.find((b) => b.id === hit.id);
     if (!s) return;
-    if (!sectionEditable(editor.pinning, s.section)) return;
+    if (!stripEditableAt(s.start)) return;
     e.preventDefault();
     e.stopPropagation();
     // shift-click TOGGLES set membership (`keyframeDown`'s own grammar, generalized to spans) — a
@@ -2835,12 +2825,10 @@ function bandDown(e: PointerEvent): void {
         // drag-out-completed glyph is indistinguishable from a hand-created span.
         const edge = hit.kind === "endpoint" ? hit.edge : "end";
         const at = edge === "start" ? s.start : s.end;
-        const b = stripBoundsAt(ecs, s.section, s.id, s.len, at);
+        const b = stripBoundsAt(ecs, s.id, s.len, at);
         stripDrag = {
             id: s.id,
             mode: edge,
-            section: s.section,
-            entryD: s.startD,
             lo: edge === "start" ? b.lo : s.start,
             hi: edge === "end" ? b.hi : s.end,
             origStart: s.start,
@@ -2849,19 +2837,17 @@ function bandDown(e: PointerEvent): void {
             grabStation: at,
         };
     } else {
-        const loB = stripBoundsAt(ecs, s.section, s.id, s.len, s.start);
-        const hiB = stripBoundsAt(ecs, s.section, s.id, s.len, s.end);
+        const loB = stripBoundsAt(ecs, s.id, s.len, s.start);
+        const hiB = stripBoundsAt(ecs, s.id, s.len, s.end);
         stripDrag = {
             id: s.id,
             mode: "body",
-            section: s.section,
-            entryD: s.startD,
             lo: loB.lo,
             hi: hiB.hi,
             origStart: s.start,
             origEnd: s.end,
             origValue: s.value,
-            grabStation: dOf(uAtPx(px)) - s.startD,
+            grabStation: dOf(uAtPx(px)),
         };
     }
     beginStripMove(ecs, s.id);
@@ -2879,27 +2865,27 @@ function bandDown(e: PointerEvent): void {
 // a station whose min-extent span overlaps an existing strip (a neighbour's boundary sits
 // mid-edge) would produce a silently inert `createStrip` return, so the row is grayed instead;
 // the grown span only ever widens what the min extent already cleared.
-function canCreateAt(section: number, station: number): boolean {
-    const minExtent = stripMinExtentAt(ecs, section, station);
+function canCreateAt(d: number): boolean {
+    const minExtent = stripMinExtentAt(ecs, d);
     if (minExtent === null) return false;
-    return !stripOverlapped(ecs, section, minExtent.start, minExtent.end, -1);
+    return !stripOverlapped(ecs, minExtent.start, minExtent.end, -1);
 }
-function createStripAt(section: number, station: number): void {
-    const extent = stripDefaultExtentAt(ecs, section, station);
+function createStripAt(d: number): void {
+    const extent = stripDefaultExtentAt(ecs, d);
     if (extent === null) return;
-    const value = stripSeedValue(ecs, section, extent.start);
-    const id = addStrip(history, ecs, section, extent.start, extent.end, value);
+    const value = stripSeedValue(ecs, extent.start);
+    const id = addStrip(history, ecs, extent.start, extent.end, value);
     if (id !== null) selectStrip(id);
 }
 // Delete removes the selected strip; Escape clears the selection.
 function deleteSelectedStrip(): void {
     if (editor.strip === null) return;
-    // read the strip's section from the ECS directly — `selStrip` is a `$derived` behind
-    // `bandStrips` behind the RAF `void tick`, so a Delete pressed before the tick sees null
-    // and no-ops (section.pw.ts:1582). `stripAt` + `Strip.section.get` are synchronous.
+    // read the strip directly from the ECS — `selStrip` is a `$derived` behind `bandStrips`
+    // behind the RAF `void tick`, so a Delete pressed before the tick sees null and no-ops
+    // (section.pw.ts:1582). `stripAt` + `Strip.start.get` are synchronous.
     const eid = stripAt(ecs, editor.strip);
     if (eid === null) return;
-    if (!sectionEditable(editor.pinning, Strip.section.get(eid))) return;
+    if (!stripEditableAt(Strip.start.get(eid))) return;
     deleteStrips(history, ecs, [...editor.strips.ids]);
 }
 // Delete removes the WHOLE selected strip-keyframe SET (S4's booked multi-select, `deleteForces`'
@@ -2907,15 +2893,15 @@ function deleteSelectedStrip(): void {
 // the innermost selection, not the strip). single-select is the size-1 case.
 function deleteSelectedStripKf(): void {
     if (editor.stripKf === null) return;
-    // read the owning strip's section from the ECS directly — `selStrip` is a `$derived` behind
+    // read the owning strip directly from the ECS — `selStrip` is a `$derived` behind
     // `bandStrips` behind the RAF `void tick`, so a Delete pressed before the tick sees null and
     // no-ops (the same F1 race `deleteSelectedStrip` above already repairs). `editor.strip !==
     // null` is `stripKfs`'s own invariant (a non-empty sub-selection implies an owning strip);
-    // `stripAt` + `Strip.section.get` are synchronous.
+    // `stripAt` + `Strip.start.get` are synchronous.
     if (editor.strip === null) return;
     const eid = stripAt(ecs, editor.strip);
     if (eid === null) return;
-    if (!sectionEditable(editor.pinning, Strip.section.get(eid))) return;
+    if (!stripEditableAt(Strip.start.get(eid))) return;
     deleteStripKeyframes(history, ecs, [...editor.stripKfs.ids]);
     selectStripKf(null);
 }
@@ -3887,7 +3873,7 @@ onMount(() => {
                     editor.stripKfs.ids.has(k.id),
                 );
                 if (members.length === 0) return;
-                if (!sectionEditable(editor.pinning, Strip.section.get(stripEid))) return;
+                if (!stripEditableAt(Strip.start.get(stripEid))) return;
                 e.preventDefault();
                 skipLanding();
                 const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
@@ -4043,8 +4029,7 @@ onMount(() => {
             k.stripKfPx = (): { id: number; x: number; y: number }[] => {
                 const rect = canvas.getBoundingClientRect();
                 const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
-                const freshClips = computeClips(freshSpans, ecs);
-                const freshStrips = computeBandStrips(freshClips, freshSpans, ecs);
+                const freshStrips = computeBandStrips(freshSpans, ecs);
                 return computeStripKfPts(freshStrips, freshSpans, ecs).map((k) => ({
                     id: k.id,
                     x: rect.left + uPx(k.u),
@@ -4059,8 +4044,7 @@ onMount(() => {
             // the stale `$derived`.
             k.stripPx = (): { id: number; x0: number; x1: number }[] => {
                 const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
-                const freshClips = computeClips(freshSpans, ecs);
-                return computeBandStrips(freshClips, freshSpans, ecs).map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
+                return computeBandStrips(freshSpans, ecs).map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
             };
             // the chart's own addressable-span end, on the ACTIVE axis (bounded past a stall in
             // Time, S2, finding 13) — distinct from `tTotal` (main.ts, the bake's unbounded

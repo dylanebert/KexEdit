@@ -59,9 +59,6 @@ import {
     bakeLive,
     bakeOut,
     exitWorld,
-    forceSplitStripsRefused,
-    geoSplitAtStripsRefused,
-    geoSplitStripsRefused,
     Handle,
     handleTangent,
     lastHandle,
@@ -882,23 +879,11 @@ const canCut = $derived.by((): boolean => {
         const secEid = sectionAt(ecs, ctx.section);
         if (secEid === null) return false;
         if (!keyframeCuttable(ctx.cut.at, Section.length.get(secEid))) return false;
-        // strip pre-check: gray the row if the split would be refused by B1/B2(a)
-        if (forceSplitStripsRefused(ecs, ctx.section, ctx.cut.at)) return false;
         return true;
     }
-    // geo: `ctx.cut` already came back null for a non-interior point; check the strip pre-check
-    // for the landmark cases. `splitGeoAt` reduces `t <= 0` to `splitGeo(j)` and `t >= 1` to
-    // `splitGeo(j+1)`, so the node order to check is `ctx.cut.at` for `t <= 0` and
-    // `ctx.cut.at + 1` for `t >= 1`. Interior t grays on the same predicate splitSection's
-    // pre-mutation check calls (`geoSplitAtStripsRefused`), so all three branches gray and
-    // none of them mutates — the refusal is decided before `insertGeoNode` in every case.
-    if (ctx.cut.t === undefined || ctx.cut.t <= 0) {
-        if (geoSplitStripsRefused(ecs, ctx.section, ctx.cut.at)) return false;
-    } else if (ctx.cut.t >= 1) {
-        if (geoSplitStripsRefused(ecs, ctx.section, ctx.cut.at + 1)) return false;
-    } else {
-        if (geoSplitAtStripsRefused(ecs, ctx.section, ctx.cut.at, ctx.cut.t)) return false;
-    }
+    // geo: `ctx.cut` already came back null for a non-interior point (`geoCutAt`'s own
+    // null-ness) — no further strip pre-check (S2, Locked decision: strips are
+    // track-global and span-blind, so a split never refuses on their account).
     return true;
 });
 // whether the section selection is a multi-set — a right-click keeps the set (`openContext`

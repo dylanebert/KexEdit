@@ -18,11 +18,11 @@ import {
     createForcePoint,
     createSection,
     createTrack,
-    type SectionSnapshot,
     SectionKind,
     setStartSpeed,
     snapshotAll,
     spawnNode,
+    type TrackSnapshot,
 } from "../../src/track";
 import { withThetas } from "./chain";
 
@@ -49,7 +49,7 @@ export function sweepCorpus(scenarios: readonly Scenario[]): Scenario[] {
 }
 
 export interface DocState {
-    snap: SectionSnapshot[];
+    snap: TrackSnapshot;
     hash: string;
 }
 
