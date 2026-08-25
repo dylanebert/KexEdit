@@ -1540,7 +1540,7 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
     // quantity has no readable condition). Forced-race witness (2026-08-25, this test, the
     // `:1582` roster member 7/8 base): armed a 150ms-per-rAF-callback `requestAnimationFrame`
     // delay (via a temporary `page.addInitScript`, scoped to the 6 callbacks right after this
@@ -1718,7 +1718,7 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
     // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
     // editing flow"'s own docblock at its matching line, same mechanism.
 
@@ -1790,11 +1790,27 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     // DESELECT fully, and let the deselection ITSELF settle — `selStrip`'s cache must read the
     // null selection at least once before the race-constructing click below, or the click's
     // fresh write races a stale NON-null cache instead of the stale-null one the fix closes.
+    // This settles the OPPOSITE transition from every other `frames(page, 2)` in this file
+    // (those wait for a non-null selection to reach the cache before a hit-test; this waits
+    // for the cache to reach null before the click below re-writes it non-null) and needs no
+    // witness of its own borrowed from theirs: this TEST is the roster's own deliberately-raced
+    // fixture (`kex2d-event-substrate` Validation, `section.pw.ts:1791` 6/8 base) — the race it
+    // constructs three lines below (the click writes `editor.strip`/`editor.stripKf` and Delete
+    // fires with no settle) is this test's whole point, and the assert at the bottom (exactly
+    // the two SEEDED keyframes survive) is already the discriminating witness against the
+    // buggy no-op. Checked in the code, not assumed: `selStrip` (`Timeline.svelte`) is a
+    // `$derived.by` gated on `void tick`, reading `editor.strip` and re-deriving off
+    // `bandStrips`, while the `selectedStrip` `__kex` hook (`main.ts`) returns the raw,
+    // untracked `editor.strip` directly — so `expect.poll(selectedStrip)` above proves the ECS
+    // write landed, never that `selStrip`'s per-tick cache caught up to it, which is exactly why
+    // this settle is still owed after that poll passes.
     await page.keyboard.press("Escape"); // clears the strip (no stripKf sub-selection is active)
     await expect.poll(async () => await kexCall(page, "selectedStrip")).toBe(null);
     await frames(page, 2); // selStrip's cache must read the null selection at least once
     // before the race-constructing click below (this test's own point) -- selStrip has no
-    // __kex hook, so there is no readable condition to poll; settle by frame count.
+    // __kex hook, so there is no readable condition to poll; settle by frame count
+    // (kex2d-harness.md: frames(page,N) is lawful only where the awaited quantity has no
+    // readable condition).
 
     // THE RACE: a single click on the created diamond flips `editor.strip` null → `stripId` and
     // `editor.stripKf` null → `created3.id`, both plain synchronous writes — then Delete fires
@@ -1853,7 +1869,7 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
     // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
     // editing flow"'s own docblock at its matching line, same mechanism.
 
@@ -2004,7 +2020,7 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
     // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
     // editing flow"'s own docblock at its matching line, same mechanism.
 
@@ -2100,7 +2116,7 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
     // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
     // editing flow"'s own docblock at its matching line, same mechanism.
 
@@ -2249,7 +2265,7 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
     // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
     // editing flow"'s own docblock at its matching line, same mechanism.
 
@@ -2392,7 +2408,7 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
     // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
     // editing flow"'s own docblock at its matching line, same mechanism.
 
@@ -2577,7 +2593,7 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
     // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
     // editing flow"'s own docblock at its matching line, same mechanism.
 
