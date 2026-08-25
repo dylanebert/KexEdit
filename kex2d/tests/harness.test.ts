@@ -637,6 +637,61 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
     // scanned text and the file holding this comment are disjoint by construction.
 });
 
+describe("kex2d-harness.md's Cost levers section carries no pasted measurement", () => {
+    // kex2d-capture-deflake S3a: the three cost levers (worker count, aggregate SHOT_MS spend,
+    // the behavior-only-mode ceiling) are recorded as DERIVATIONS — the command that reads each
+    // factor and the structural relation between them, never a frozen wall-clock or count
+    // (`doc-hygiene.md` §9: a quoted count is drift by construction). The surrounding doc
+    // legitimately carries numbers (the port, the worker/SHOT_MS defaults quoted verbatim from
+    // source), so this scan is section-scoped to "## Cost levers" by heading boundary, never the
+    // whole file — an unscoped literal gate over this doc is unreachable and stops being evidence
+    // (`doc-hygiene.md` §9's own "per file, not per sweep" point).
+    const docPath = join(import.meta.dir, "..", "..", ".claude", "rules", "kex2d-harness.md");
+
+    function costLeversSection(): string {
+        const text = readFileSync(docPath, "utf8");
+        const heading = "## Cost levers";
+        const start = text.indexOf(heading);
+        if (start === -1) throw new Error(`${heading} not found in ${docPath}`);
+        const rest = text.slice(start + heading.length);
+        const next = rest.indexOf("\n## ");
+        return next === -1 ? rest : rest.slice(0, next);
+    }
+
+    // a wall-clock figure: a number immediately followed by a time unit — "60.8s", "134.2s",
+    // "2.2m" all match. A source-quoted default (the `4` in `intEnv(..., "KEX_WORKERS", 4, 1,
+    // 64)`, `300` in `KEX_SHOT_MS`'s default) never matches: nothing in this section follows one
+    // of those digits directly with a time-unit word.
+    const WallClock = /\d[\d.,_]*\s*(?:s|sec|secs|second|seconds|ms|m|min|mins|minute|minutes)\b/i;
+    // a pasted run/call-site count — "63 passed", "1653 pass", "49 call sites" — the shape a
+    // `bun test` / `bun run capture` summary line prints.
+    const RunCount = /\d[\d,]*\s*(?:passed|pass|failed|fail|call sites?|flows?|tests?)\b/i;
+
+    test("carries no wall-clock figure", () => {
+        const section = costLeversSection();
+        const hit = WallClock.exec(section);
+        expect(
+            hit?.[0] ?? null,
+            hit ? `"${hit[0]}" reads as a pasted wall-clock figure` : "none",
+        ).toBeNull();
+    });
+
+    test("carries no pasted run/call-site count", () => {
+        const section = costLeversSection();
+        const hit = RunCount.exec(section);
+        expect(hit?.[0] ?? null, hit ? `"${hit[0]}" reads as a pasted count` : "none").toBeNull();
+    });
+
+    // RED-FIRST WITNESS, both directions (run by hand, not shipped as a mutation the suite
+    // re-runs): seeded the sentence "measured 60.8s at default workers vs 134.2s at
+    // KEX_WORKERS=1, 49 call sites total" into the Cost levers section's worker-count bullet and
+    // re-ran `bun test ./tests/harness.test.ts -t "Cost levers"` — 2 fail, 0 pass: the wall-clock
+    // arm reported `"60.8s" reads as a pasted wall-clock figure` and the count arm reported
+    // `"49 call sites" reads as a pasted count`, exit code 1. Deleted the seed (never
+    // `git checkout`/`restore` on a file with other live edits, `git.md`) and re-ran the same
+    // filter — 2 pass, 0 fail, exit code 0. Both directions witnessed 2026-08-25.
+});
+
 describe("provisionKey / provisioned — when the host reinstalls", () => {
     const pkg = { dependencies: { "@playwright/test": "^1.59.1", playwright: "^1.59.1" } };
     const lock =
