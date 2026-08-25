@@ -5,10 +5,12 @@ import App from "./App.svelte";
 import { cartArc, cartState, CartPlugin } from "./cart";
 import { editor, sandbox, select, selectionHook } from "./editor";
 import {
+    addStrip,
     appendSection,
     convertSection,
     addStripKeyframe,
     createForce,
+    deleteStrips,
     history,
     removeSection,
     setSelectionHook,
@@ -34,9 +36,10 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
-    sectionStrips,
+    allStrips,
     setStrip,
     stripKeyframes,
+    stripSeedValue,
     entrySpeed,
     setSectionLength,
     setStartSpeed,
@@ -346,6 +349,19 @@ if (import.meta.env.DEV) {
         // create, mirroring `placeForce`'s shape so the arm can create and read in one evaluate.
         placeStripKf: (stripId: number, s: number, v: number): number =>
             addStripKeyframe(history, ecs, stripId, s, v),
+        // author a track-global velocity strip at an EXACT `[start, end)` (undo-recorded, real
+        // guarded write — `history.addStrip`), the substrate-precision setup twin of
+        // `placeForce`: the S2 oracle's boundary/delete/split/join arms need a span positioned
+        // exactly across a known section boundary, which the pointer-driven "Add velocity
+        // strip" menu (min-extent-anchored, grown toward a default length) can't guarantee.
+        addStripAt: (start: number, end: number, value: number): number | null =>
+            addStrip(history, ecs, start, end, value),
+        // delete a strip by id (undo-recorded, real guarded write — `history.deleteStrips`), the
+        // test-setup twin of `addStripAt`: some flows need a KNOWN prior strip gone (rather than
+        // reachable only through a real pointer select+Delete) before re-authoring the entry
+        // speed (`setV0`) to construct the degenerate `[0, 0)` point (`setStartSpeed`'s own
+        // no-strip branch).
+        deleteStripId: (id: number): void => deleteStrips(history, ecs, [id]),
         // synchronously widen/move a strip (direct ECS write, no history entry) — the freshness
         // arm's state construction: a widen changes the bake (which changes `sectionSpans`), so
         // the tick-gated `bandStrips`/`spans` `$derived` values go stale until the next RAF.
@@ -423,13 +439,21 @@ if (import.meta.env.DEV) {
         // reads both to assert a shift-click toggled membership rather than replacing it.
         stripKfSelIds: (): number[] => [...editor.stripKfs.ids].sort((a, b) => a - b),
         stripKfSelActive: (): number | null => editor.stripKf,
-        stripsOf: (i: number): { id: number; start: number; end: number; value: number }[] =>
-            sectionStrips(ecs, i).map((s) => ({
+        // `i` is retained for wire compatibility with existing capture flows (always called
+        // with 0) but ignored: strips are track-global now (S2, Locked decision), so there
+        // is no per-section subset to return.
+        stripsOf: (_i: number): { id: number; start: number; end: number; value: number }[] =>
+            allStrips(ecs).map((s) => ({
                 id: s.id,
                 start: s.start,
                 end: s.end,
                 value: s.value,
             })),
+        // the bake's own recovered velocity at a track-global station `d` (`stripSeedValue`'s
+        // own read, exposed directly — the S2 oracle's boundary-continuity witness reads it
+        // just past and just before a section boundary a span straddles, asserting no seam
+        // step in the readback).
+        vAtD: (d: number): number => stripSeedValue(ecs, d),
         stripKeyframesOf: (stripId: number): { id: number; s: number; v: number }[] =>
             stripKeyframes(ecs, stripId).map((k) => ({
                 id: k.id,

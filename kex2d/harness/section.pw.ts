@@ -2193,7 +2193,12 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
     await page.waitForTimeout(200); // let the per-RAF tick propagate selection to $derived reads
 
-    // Get the new strip's seeded keyframes (2 at start/end, 0.5 m apart at min extent).
+    // Get the new strip's seeded keyframes — one at its own start, one at its own end (S4's
+    // seeded-boundary-keyframes idiom). `stripDefaultExtentAt` (S2: track-global, no longer
+    // clamped to a single section's own authored `Section.length`, which reads 0 for a geo
+    // section) grows the created span toward the default length off the click's min-extent
+    // edge, so on this hill (a geo section) the two seeded keyframes land well apart already —
+    // no separate widen/separate-the-coincident-pair choreography needed to spread them.
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
     if (!created) throw new Error("newly-created strip not found");
@@ -2205,30 +2210,10 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     );
     expect(seededIds.size).toBe(2);
 
-    // Widen the strip via a REAL pointer edge-drag on its end. Non-sticking (S3, boundary
-    // ride deleted): the resize makes room on the chart but does NOT carry the seeded end
-    // keyframe — the two seeded keyframes stay 0.5 m apart, their fat hit circles overlapping.
-    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
-    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
-    const spBefore = (
-        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-    ).find((s) => s.id === stripId);
-    if (!spBefore) throw new Error("created strip has no band px");
-    const edgePx = chartCanvasBb.x + spBefore.x1;
-    await page.mouse.move(edgePx, bandY);
-    await page.mouse.down();
-    await page.mouse.move(edgePx + 120, bandY, { steps: 5 });
-    await page.mouse.up();
-    await page.waitForTimeout(100);
-
-    // Separate the still-coincident pair explicitly — a pointerdown at the shared pixel grabs
-    // whichever diamond renders on top, which is the END keyframe (`stripKeyframes`' own
-    // s-ascending sort puts it last in the array, last in the SVG, on top at a tie). Drag it
-    // toward the strip's freshly-widened end, uncovering the start keyframe for selection.
     const strip = (
         (await stripsOf()) as { id: number; start: number; end: number; value: number }[]
     ).find((s) => s.id === stripId);
-    if (!strip) throw new Error("widened strip not found");
+    if (!strip) throw new Error("created strip not found");
     const [, pxPerU] = await xView();
     const [vLo, vHi] = await vRange();
     const dockBb = await page.locator(".dock .body").boundingBox();
@@ -2238,27 +2223,12 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     const vToY = (v: number): number =>
         chartTop + (1 - (v - vLo) / (vHi - vLo)) * (chartBot - chartTop);
 
-    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
-    let kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
-    // The end keyframe (larger s) renders on top at the tie — grab it by clicking at the shared
-    // pixel and dragging it toward the widened end.
-    const sharedPx = kfPxAll.find((k) => seededIds.has(k.id))!;
-    const widePx = (
-        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-    ).find((s) => s.id === stripId)!;
-    const separateX = chartCanvasBb.x + widePx.x1 - 10;
-    await page.mouse.move(sharedPx.x, sharedPx.y);
-    await page.mouse.down();
-    await page.mouse.move(separateX, sharedPx.y, { steps: 8 });
-    await page.mouse.up();
-    await page.waitForTimeout(100);
-
-    // Read the separated keyframes — identify start (smaller s) and end (larger s) by s value.
+    // identify start (smaller s) and end (larger s) among the two seeded keyframes.
     let kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
     const seededKfs = kfs.filter((k) => seededIds.has(k.id)).sort((a, b) => a.s - b.s);
     const startKf = seededKfs[0]; // smaller s = start
-    const endKf = seededKfs[1]; // larger s = end (now separated)
-    if (!startKf || !endKf) throw new Error("start/end keyframe not found after separation");
+    const endKf = seededKfs[1]; // larger s = end
+    if (!startKf || !endKf) throw new Error("start/end keyframe not found");
 
     // Create a third keyframe at the strip's MIDPOINT — off both edges.
     const stripMidS = (strip.start + strip.end) / 2;
@@ -2283,7 +2253,7 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
             return px.find((k) => k.id === midKf.id) ?? null;
         })
         .not.toBeNull();
-    kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
     const startKfPx = kfPxAll.find((k) => k.id === startKf.id)!;
     const midKfPx = kfPxAll.find((k) => k.id === midKf.id)!;
 

@@ -11,6 +11,7 @@ import {
 } from "../src/history";
 import {
     addNode,
+    allStrips,
     appendSection,
     BakeSystem,
     convertSection,
@@ -41,7 +42,6 @@ import {
     sectionInfo,
     sections,
     sectionSpans,
-    sectionStrips,
     seedTangent,
     setTangent,
     setTrackDomain,
@@ -544,7 +544,7 @@ describe("split", () => {
     // sample lines up index-for-index with the pre-cut bake (`profile.resolveStep`'s own
     // fixed-point law) — the same shape the force-profile exactness oracle above uses,
     // read off `bakeOut.v` instead of the sampled g profile.
-    test("Cut is lossless for a velocity strip: pre-cut v samples across the whole extent reproduce across both post-cut halves", () => {
+    test("Cut is lossless for a velocity strip: pre-cut v samples across the whole extent reproduce across both post-cut halves, and the strip's own row is byte-identical (Locked decision: split never touches strips)", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         const trackEid = createTrack(state);
@@ -553,11 +553,15 @@ describe("split", () => {
         // strip; a broken split would either lose that variation or the strip's own hold.
         createForcePoint(state, a, 0, 1.3);
         createForcePoint(state, a, 20, 1.3);
-        // the strip straddles the cut point (5, 15) ⊃ 10 — the case a boundary-aligned strip
-        // (start/end exactly on the cut) can't exercise: the split half's own strip.
-        const stripId = createStrip(state, a, 5, 15, 6);
+        // the strip straddles the cut point at global station 10 — a track-global strip,
+        // segment-independent (Locked decision), so the split never touches it.
+        const stripId = createStrip(state, 5, 15, 6);
         expect(stripId).not.toBeNull();
+        if (stripId === null) return;
         state.step(0);
+
+        const rowBefore = allStrips(state).find((s) => s.id === stripId);
+        if (!rowBefore) throw new Error("strip missing before split");
 
         const infoBefore = sectionInfo.get(a);
         if (!infoBefore) throw new Error("no pre-cut bake");
@@ -573,14 +577,10 @@ describe("split", () => {
         if (b === null) return;
         state.step(0);
 
-        // the strip itself split: head keeps [5, 10), a new strip on the tail opens at
-        // [0, 5) — both holding the SAME constant value.
-        const headStrips = sectionStrips(state, a);
-        const tailStrips = sectionStrips(state, b);
-        expect(headStrips.length).toBe(1);
-        expect(headStrips[0]).toMatchObject({ start: 5, end: 10, value: 6 });
-        expect(tailStrips.length).toBe(1);
-        expect(tailStrips[0]).toMatchObject({ start: 0, end: 5, value: 6 });
+        // split is span-blind (S2 Locked decision): the strip's row survives untouched,
+        // still addressed by its own stable id — no head/tail division.
+        const rowAfter = allStrips(state).find((s) => s.id === stripId);
+        expect(rowAfter).toEqual(rowBefore);
 
         const infoHead = sectionInfo.get(a);
         const infoTail = sectionInfo.get(b);
@@ -612,15 +612,12 @@ describe("split", () => {
         }
     });
 
-    // C3 review, finding 2: `splitGeo` (reached by `splitGeoAt`) had ZERO strip handling
-    // while `splitForce` correctly split a straddling strip into two — a cut inside a
-    // geo section silently dropped the tail half's authored hold. Red before the fix:
-    // `sectionStrips(b)` came back `[]` and the tail's `v` decayed under friction
-    // (5 → 4.59 → 4.14 → 3.64...) instead of holding the authored 5 through its own
-    // local [0, 4). Witnessed by reverting `splitGeo`'s strip loop and re-running this
-    // test — `tailStrips.length` read 0 and the tail-side `toBeCloseTo` assertions below
-    // failed by the friction-decay magnitude, not float noise.
-    test("Cut is lossless for a velocity strip on a geo section: the tail half holds its value under friction, not decays", () => {
+    // C3 review, finding 2 (superseded by S2's track-global migration): `splitGeo`
+    // (reached by `splitGeoAt`) once needed its own strip-splitting loop because strips
+    // were section-owned; S2 deletes strip section-ownership entirely, so a geo split
+    // is span-blind by construction now (Locked decision) — the row below asserts that
+    // directly rather than a head/tail division.
+    test("Cut is lossless for a velocity strip on a geo section: the tail half holds its value under friction, not decays, and the strip's own row is byte-identical (Locked decision: split never touches strips)", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
@@ -628,9 +625,13 @@ describe("split", () => {
         addNode(state, a, 0, 0);
         addNode(state, a, 24, 0); // flat, straight, 24 m
         setTrackFriction(eid, 0.05);
-        const stripId = createStrip(state, a, 8, 16, 5);
+        const stripId = createStrip(state, 8, 16, 5);
         expect(stripId).not.toBeNull();
+        if (stripId === null) return;
         state.step(0);
+
+        const rowBefore = allStrips(state).find((s) => s.id === stripId);
+        if (!rowBefore) throw new Error("strip missing before split");
 
         const infoBefore = sectionInfo.get(a);
         if (!infoBefore) throw new Error("no pre-cut bake");
@@ -649,18 +650,10 @@ describe("split", () => {
         if (b === null) return;
         state.step(0);
 
-        const headStrips = sectionStrips(state, a);
-        const tailStrips = sectionStrips(state, b);
-        expect(headStrips.length).toBe(1);
-        expect(tailStrips.length).toBe(1); // was 0 before the fix
-        expect(headStrips[0].start).toBe(8);
-        expect(headStrips[0].value).toBe(5);
-        expect(headStrips[0].end).toBeGreaterThan(8);
-        expect(headStrips[0].end).toBeLessThan(16);
-        expect(tailStrips[0].start).toBe(0);
-        expect(tailStrips[0].value).toBe(5);
-        expect(tailStrips[0].end).toBeCloseTo(16 - headStrips[0].end, 3);
-        expect(headStrips[0].end).toBeCloseTo(12, 1); // the symmetric-midpoint arclength
+        // split is span-blind (S2 Locked decision): the strip's row survives untouched,
+        // still addressed by its own stable id — no head/tail division.
+        const rowAfter = allStrips(state).find((s) => s.id === stripId);
+        expect(rowAfter).toEqual(rowBefore);
 
         const infoHead = sectionInfo.get(a);
         const infoTail = sectionInfo.get(b);
@@ -1141,13 +1134,15 @@ describe("join", () => {
     });
 });
 
-// C3 review, finding 3: `joinNext`'s ~50-line strip merge/rebase (both the geo
-// rebase-only branch and the force merge-on-agreement branch) was reached by NO test
-// anywhere in the suite before this — grep confirmed zero hits for `createStrip` inside
-// a join fixture. Arithmetically correct by hand-inspection (the reviewer's own probe);
-// these arms are the missing gate, not a fix for wrong behavior.
+// C3 review, finding 3 (superseded by S2's track-global migration): `joinNext`'s
+// ~50-line strip merge/rebase (the geo rebase-only branch and the force
+// merge-on-agreement branch) was reached by NO test anywhere in the suite before
+// this. S2 deletes that whole code path — strips are track-global and
+// segment-independent (Locked decision), so join is span-blind by construction and
+// every strip row (and its keyframes) survives a join byte-identical, addressed by
+// its own stable id, never rebased or merged.
 describe("joinNext — velocity strip merge/rebase (C3 review, coverage)", () => {
-    test("geo join rebases the neighbor's strips past A's own arclength; A's own strips stay put", () => {
+    test("geo join leaves every strip byte-identical — join never touches strips (Locked decision)", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
@@ -1157,77 +1152,72 @@ describe("joinNext — velocity strip merge/rebase (C3 review, coverage)", () =>
         const b = createSection(state, 1, SectionKind.Geo, 0);
         addNode(state, b, 0, 0);
         addNode(state, b, 10, 0);
-        createStrip(state, a, 20, 24, 5); // A's own, near its tail
-        createStrip(state, b, 2, 6, 7); // B's own, interior
+        createStrip(state, 20, 24, 5); // near A's own tail
+        createStrip(state, 26, 30, 7); // inside B's own extent (B opens at global 24)
         state.step(0);
 
+        const before = allStrips(state);
+
         expect(joinNext(state, a)).toBe(true);
 
-        const strips = sectionStrips(state, a);
-        expect(strips.length).toBe(2);
-        const aStrip = strips.find((r) => r.value === 5);
-        const bStrip = strips.find((r) => r.value === 7);
-        expect(aStrip?.start).toBeCloseTo(20, 2); // A's own strip: unchanged
-        expect(aStrip?.end).toBeCloseTo(24, 2);
-        expect(bStrip?.start).toBeCloseTo(26, 2); // B's own strip: rebased by A's 24 m
-        expect(bStrip?.end).toBeCloseTo(30, 2);
+        // span-blind (S2 Locked decision): no rebase, no merge — both rows unchanged.
+        expect(allStrips(state)).toEqual(before);
     });
 
-    test("force join merges two abutting strips into one when their values agree at the boundary", () => {
+    test("force join leaves abutting strips byte-identical even when their values agree at the boundary — no merge", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
         const a = createSection(state, 0, SectionKind.Force, 20);
-        createStrip(state, a, 15, 20, 5); // touches A's own length — aTailStrip
-        const b = createSection(state, 1, SectionKind.Force, 10);
-        createStrip(state, b, 0, 4, 5); // touches B's own start — bHeadStrip, SAME value
+        createStrip(state, 15, 20, 5); // touches A's own length
+        createSection(state, 1, SectionKind.Force, 10);
+        createStrip(state, 20, 24, 5); // touches B's own start (global), SAME value
+
+        const before = allStrips(state);
 
         expect(joinNext(state, a)).toBe(true);
 
-        const strips = sectionStrips(state, a);
-        expect(strips.length).toBe(1); // merged: B's strip destroyed, A's extended
-        expect(strips[0]).toMatchObject({ start: 15, end: 24, value: 5 });
+        const after = allStrips(state);
+        expect(after.length).toBe(2); // no merge — span-blind join leaves both rows
+        expect(after).toEqual(before);
     });
 
-    test("force join refuses to merge when the abutting strips' values disagree — both survive", () => {
-        // the Locked decision's Cut/Join bullet: "Join merges abutting strips iff values
-        // agree at the boundary" — a positional-only merge would silently overwrite one
-        // author's value with the other's, the same discontinuity-hiding class the
-        // keyframe dedupe guard above already refuses.
+    test("force join leaves abutting strips byte-identical when their values disagree — no merge, no rebase", () => {
+        // the Locked decision: sections are span-blind, join stops touching strips
+        // entirely — the old merge-on-agreement / rebase-on-disagreement fork retires
+        // along with it, so agreeing and disagreeing values behave identically now.
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
         const a = createSection(state, 0, SectionKind.Force, 20);
-        createStrip(state, a, 15, 20, 5);
-        const b = createSection(state, 1, SectionKind.Force, 10);
-        createStrip(state, b, 0, 4, 9); // disagrees
+        createStrip(state, 15, 20, 5);
+        createSection(state, 1, SectionKind.Force, 10);
+        createStrip(state, 20, 24, 9); // disagrees
+
+        const before = allStrips(state);
 
         expect(joinNext(state, a)).toBe(true);
 
-        const strips = sectionStrips(state, a);
-        expect(strips.length).toBe(2);
-        expect(strips.find((r) => r.value === 5)).toMatchObject({ start: 15, end: 20 });
-        expect(strips.find((r) => r.value === 9)).toMatchObject({ start: 20, end: 24 });
+        expect(allStrips(state)).toEqual(before);
     });
 
-    test("force join's degenerate-point-survivor case: two disagreeing point strips at the shared boundary both survive, unmerged", () => {
+    test("force join's degenerate-point case: two point strips at the shared boundary both survive byte-identical", () => {
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
         const a = createSection(state, 0, SectionKind.Force, 20);
-        // points retire (Locked decision) — `createStrip` now refuses zero-length spans, so
-        // use `spawnStrip` (the restore path, bypassing the guard) to set up the pre-existing
-        // point strips this join scenario tests.
-        spawnStrip(state, a, 1001, 20, 20, 5); // a point exactly at A's own end
-        const b = createSection(state, 1, SectionKind.Force, 10);
-        spawnStrip(state, b, 1002, 0, 0, 9); // a point exactly at B's own start — disagrees
+        // `createStrip` refuses zero-length spans, so use `spawnStrip` (the restore
+        // path, bypassing the guard) to set up the pre-existing point strips this
+        // scenario tests.
+        spawnStrip(state, 1001, 20, 20, 5); // a point exactly at A's own end
+        createSection(state, 1, SectionKind.Force, 10);
+        spawnStrip(state, 1002, 20, 20, 9); // a point at the same global boundary — disagrees
+
+        const before = allStrips(state);
 
         expect(joinNext(state, a)).toBe(true);
 
-        const strips = sectionStrips(state, a);
-        expect(strips.length).toBe(2);
-        expect(strips.find((r) => r.value === 5)).toMatchObject({ start: 20, end: 20 });
-        expect(strips.find((r) => r.value === 9)).toMatchObject({ start: 20, end: 20 });
+        expect(allStrips(state)).toEqual(before);
     });
 });
 

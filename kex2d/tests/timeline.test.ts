@@ -1344,22 +1344,23 @@ describe("stallClampU — the Time lens never stretches toward t→∞ past a st
     });
 });
 
-// S2: the strip band's clamp domain and a force section's own trim used to read two DIFFERENT
-// values for the same quantity — the band clamp (`bandStrips`'s `len` field) read the baked
-// span `c.s1 - c.s0`, while the trim itself (`setSectionLength`) writes `Section.length`
-// (`Clip.len`), which can disagree once the bake truncates (`forceBake`'s own "what's on screen
-// is the prefix"). Source-text arm, `colors.test.ts`'s own idiom for a Svelte-only surface with
-// no unit-testable runtime seam: the real invariant (the bake clips a strip past its extent, and
-// a strip wholly past it is inert) is pinned in `track.test.ts` against `edgeStrips` directly.
-describe("Timeline.svelte's strip band clamp reads ONE value for a section's extent (S2, collapsed onto `Clip.extent` at kex2d-event-lane S3)", () => {
-    test("Clip's own `extent` field derives from `Section.length` on a force section (the baked span otherwise) — the ONE place the clamp domain is computed", () => {
+// S2 (kex2d-event-substrate): strips are track-global and section-blind (Locked decision),
+// so the band's own clamp domain is no longer any one section's extent (`Clip.extent`,
+// kex2d-event-lane S3's fix for the section-owned model) — it's the TRACK's own live extent,
+// derived once (`trackLen`) and threaded through every strip the same way (`BandStrip.len`),
+// never re-derived per section or per strip. Source-text arm, `colors.test.ts`'s own idiom for
+// a Svelte-only surface with no unit-testable runtime seam: the real invariant (the bake clips
+// a strip past the track's own extent, and a strip wholly past it is inert) is pinned in
+// `track.test.ts` against `edgeStrips` directly.
+describe("Timeline.svelte's strip band clamp reads ONE value for the track's own live extent (S2)", () => {
+    test("trackLen derives the track's own live extent off the span table's last offset+len — the ONE place the clamp domain is computed", () => {
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("extent: sec.kind === SectionKind.Force ? sec.length : sp.len,");
+        expect(src).toContain("function trackLen(spanTable: SectionSpan[]): number {");
     });
 
-    test("bandStrips reads the clamp domain straight off `Clip.extent`, never re-deriving it", () => {
+    test("computeBandStrips reads every strip's clamp domain straight off trackLen(spanTable), never re-deriving it per strip", () => {
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("const extent = c.extent;");
+        expect(src).toContain("const len = trackLen(spanTable);");
     });
 });
 
@@ -1507,8 +1508,8 @@ describe("kex2d-event-substrate S1: behavior arms — both keyframe kinds ride o
         expect(fRow?.g).toBe(2.5); // g still landed
 
         // strip: two keyframes on one strip at s=8 and s=12
-        const sec2 = createSection(state, 1, SectionKind.Force, 20);
-        const strip = createStrip(state, sec2, 5, 15, 8) as number;
+        const _sec2 = createSection(state, 1, SectionKind.Force, 20);
+        const strip = createStrip(state, 5, 15, 8) as number;
         // createStrip seeds two keyframes at start/end; clear them for a clean setup
         const seeded = stripKeyframes(state, strip);
         for (const s of seeded) destroyStripKeyframe(state, s.id);
@@ -1585,8 +1586,8 @@ describe("kex2d-event-lane S5: lane label retirement, default strip length, edge
 
     test("createStripAt authors the grown default extent, not the bare min extent", () => {
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("function createStripAt(section: number, station: number): void {");
-        expect(src).toContain("const extent = stripDefaultExtentAt(ecs, section, station);");
+        expect(src).toContain("function createStripAt(d: number): void {");
+        expect(src).toContain("const extent = stripDefaultExtentAt(ecs, d);");
     });
 
     // finding 2: an edge hit zone names the trim with a cursor — kept ALONGSIDE the hover-rung

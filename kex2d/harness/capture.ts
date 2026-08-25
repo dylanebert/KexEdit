@@ -128,6 +128,7 @@ const launch = (args: string[]): ReturnType<typeof runPlaywright> =>
                 "lab.pw.ts",
                 "affordance.pw.ts",
                 "freshness.pw.ts",
+                "substrate.pw.ts",
             ],
             clean: ["shots", "test-results"],
             // the config collects by glob, so a flow file this repo deleted must not survive in the

@@ -43,7 +43,6 @@ import {
     setSelectionHook,
     setTangentModes,
     solveForce,
-    splitSection,
     trimSuffix,
     trimTrack,
     undo,
@@ -89,7 +88,7 @@ import {
     sectionHandles,
     sectionInfo,
     sections,
-    sectionStrips,
+    allStrips,
     seedTangent,
     setForcePoint,
     setSectionLength,
@@ -412,20 +411,20 @@ test("setForcesEase on an all-terminal set records nothing (no applicable keyfra
 // first get driven by something other than a test calling them straight).
 
 test("addStrip: undo removes it, redo re-spawns it verbatim", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const id = addStrip(h, state, sec, 5, 10, 12) as number;
+    const id = addStrip(h, state, 5, 10, 12) as number;
     expect(id).not.toBeNull();
-    expect(sectionStrips(state, sec)).toEqual([
-        { eid: expect.any(Number), section: sec, id, start: 5, end: 10, value: 12 },
+    expect(allStrips(state)).toEqual([
+        { eid: expect.any(Number), id, start: 5, end: 10, value: 12 },
     ]);
 
     undo(h, state);
-    expect(sectionStrips(state, sec)).toEqual([]);
+    expect(allStrips(state)).toEqual([]);
 
     redo(h, state);
     expect(
-        sectionStrips(state, sec).map((r) => ({
+        allStrips(state).map((r) => ({
             id: r.id,
             start: r.start,
             end: r.end,
@@ -435,26 +434,26 @@ test("addStrip: undo removes it, redo re-spawns it verbatim", () => {
 });
 
 test("addStrip refuses an overlapping span — no record, nothing lands", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    addStrip(h, state, sec, 5, 15, 8);
+    addStrip(h, state, 5, 15, 8);
     const before = h.undo.length;
-    const refused = addStrip(h, state, sec, 10, 20, 4); // overlaps [5, 15)
+    const refused = addStrip(h, state, 10, 20, 4); // overlaps [5, 15)
     expect(refused).toBeNull();
     expect(h.undo.length).toBe(before); // nothing recorded for the refusal
-    expect(sectionStrips(state, sec).length).toBe(1);
+    expect(allStrips(state).length).toBe(1);
 });
 
 test("deleteStrips: a size-1 set undoes re-spawning the removed strip verbatim", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const id = addStrip(h, state, sec, 2, 6, 7) as number;
+    const id = addStrip(h, state, 2, 6, 7) as number;
     deleteStrips(h, state, [id]);
-    expect(sectionStrips(state, sec)).toEqual([]);
+    expect(allStrips(state)).toEqual([]);
 
     undo(h, state);
     expect(
-        sectionStrips(state, sec).map((r) => ({
+        allStrips(state).map((r) => ({
             id: r.id,
             start: r.start,
             end: r.end,
@@ -464,16 +463,16 @@ test("deleteStrips: a size-1 set undoes re-spawning the removed strip verbatim",
 });
 
 test("deleteStrips: the whole set deletes in ONE entry; undo restores every strip", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const a = addStrip(h, state, sec, 0, 4, 3) as number;
-    const b = addStrip(h, state, sec, 6, 10, 5) as number;
+    const a = addStrip(h, state, 0, 4, 3) as number;
+    const b = addStrip(h, state, 6, 10, 5) as number;
     deleteStrips(h, state, [a, b]);
-    expect(sectionStrips(state, sec)).toEqual([]);
+    expect(allStrips(state)).toEqual([]);
     expect(h.undo.length).toBe(3); // two adds + ONE bulk delete
 
     undo(h, state);
-    const rows = sectionStrips(state, sec).map((r) => ({
+    const rows = allStrips(state).map((r) => ({
         id: r.id,
         start: r.start,
         end: r.end,
@@ -496,9 +495,9 @@ test("deleteStrips on an empty set records nothing", () => {
 // (`kex2d-event-lane` S4's booked multi-select: Delete acts on the whole selected set). ──
 
 test("deleteStripKeyframes: a size-1 set undoes re-spawning the removed keyframe verbatim", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const stripId = addStrip(h, state, sec, 2, 6, 7) as number;
+    const stripId = addStrip(h, state, 2, 6, 7) as number;
     const seeded = stripKeyframes(state, stripId);
     const id = seeded[0].id;
     deleteStripKeyframes(h, state, [id]);
@@ -510,9 +509,9 @@ test("deleteStripKeyframes: a size-1 set undoes re-spawning the removed keyframe
 });
 
 test("deleteStripKeyframes: the whole set deletes in ONE entry; undo restores every keyframe", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const stripId = addStrip(h, state, sec, 0, 10, 8) as number;
+    const stripId = addStrip(h, state, 0, 10, 8) as number;
     const extraId = addStripKeyframe(h, state, stripId, 5, 12);
     const before = stripKeyframes(state, stripId);
     expect(before.length).toBe(3); // the seeded start/end pair + the extra
@@ -538,9 +537,9 @@ test("deleteStripKeyframes on an empty set records nothing", () => {
 });
 
 test("beginStripMove: a drag (resize + reposition) collapses to one entry; undo restores start/end/value", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const id = addStrip(h, state, sec, 5, 10, 8) as number;
+    const id = addStrip(h, state, 5, 10, 8) as number;
 
     beginStripMove(state, id);
     setStrip(state, id, 6, 11, 9); // live preview frame — not recorded on its own
@@ -548,16 +547,16 @@ test("beginStripMove: a drag (resize + reposition) collapses to one entry; undo 
     commit(h);
 
     expect(h.undo.length).toBe(2); // the add + the whole drag → one entry
-    expect(sectionStrips(state, sec)[0]).toMatchObject({ start: 7, end: 12, value: 10 });
+    expect(allStrips(state)[0]).toMatchObject({ start: 7, end: 12, value: 10 });
 
     undo(h, state);
-    expect(sectionStrips(state, sec)[0]).toMatchObject({ start: 5, end: 10, value: 8 });
+    expect(allStrips(state)[0]).toMatchObject({ start: 5, end: 10, value: 8 });
 });
 
 test("a no-move strip-gesture release records nothing", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const id = addStrip(h, state, sec, 5, 10, 8) as number;
+    const id = addStrip(h, state, 5, 10, 8) as number;
     beginStripMove(state, id);
     commit(h); // released without moving
     expect(h.undo.length).toBe(1); // only the add
@@ -1071,11 +1070,11 @@ test("with no strip covering station 0, the derived entry speed falls back to V0
 });
 
 test("editing the start strip's keyframe (the ordinary keyframe-drag gesture) moves the derived entry speed; undo/redo carry it", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const ext = stripMinExtentAt(state, sec, 0);
+    const ext = stripMinExtentAt(state, 0);
     if (!ext) throw new Error("no min extent");
-    const stripId = createStrip(state, sec, ext.start, ext.end, V0);
+    const stripId = createStrip(state, ext.start, ext.end, V0);
     if (stripId === null) throw new Error("strip refused");
     expect(entrySpeed(state)).toBe(V0);
 
@@ -1096,11 +1095,11 @@ test("editing the start strip's keyframe (the ordinary keyframe-drag gesture) mo
 });
 
 test("a no-move keyframe-drag release records nothing", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const ext = stripMinExtentAt(state, sec, 0);
+    const ext = stripMinExtentAt(state, 0);
     if (!ext) throw new Error("no min extent");
-    const stripId = createStrip(state, sec, ext.start, ext.end, V0);
+    const stripId = createStrip(state, ext.start, ext.end, V0);
     if (stripId === null) throw new Error("strip refused");
     const kf = stripKeyframes(state, stripId)[0];
     beginStripKeyframeMove(state, kf.id);
@@ -1115,9 +1114,9 @@ test("a no-move keyframe-drag release records nothing", () => {
 // (B2's fix, `track.ts`, mirroring `restoreForcePoint`) bypasses the guard for undo, matching
 // the force side.
 test("beginStripKeyframeMoves: undo restores byte-identical when a nudge leapfrogs members exactly one grid step apart (B2)", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const stripId = addStrip(h, state, sec, 0, 10, 8) as number;
+    const stripId = addStrip(h, state, 0, 10, 8) as number;
     const a = addStripKeyframe(h, state, stripId, 5, 3); // members 0.1 apart —
     const b = addStripKeyframe(h, state, stripId, 5.1, 4); // the arm's own grid step
 
@@ -1140,11 +1139,11 @@ test("beginStripKeyframeMoves: undo restores byte-identical when a nudge leapfro
 });
 
 test("deleting the start strip falls the derived entry speed back to V0; undo restores it", () => {
-    const { state, sec } = nodes();
+    const { state } = nodes();
     const h = createHistory();
-    const ext = stripMinExtentAt(state, sec, 0);
+    const ext = stripMinExtentAt(state, 0);
     if (!ext) throw new Error("no min extent");
-    const stripId = createStrip(state, sec, ext.start, ext.end, 18);
+    const stripId = createStrip(state, ext.start, ext.end, 18);
     if (stripId === null) throw new Error("strip refused");
     expect(entrySpeed(state)).toBe(18);
 
@@ -1682,47 +1681,4 @@ test("bulk tangent-mode: sets every member's mode in one entry; picking Aligned 
     setTangentModes(h2, s2, [{ section: sec2, order: 1 }], TangentMode.Aligned);
     expect(h2.undo.length).toBe(0);
     expect(handleTangent(s2, sec2, 1)).toBeUndefined();
-});
-
-// PASS-5 (1): a refused geo Cut must not corrupt a live node selection on an unrelated section.
-// RED-FIRST WITNESS: at `bb9e638`, the refusal path called `restoreAll(ecs, before)` after
-// `insertGeoNode` had mutated, which respawns every entity track-wide with fresh eids. Unpaired
-// with `selHook.restore`, the selected eid still passes `ecs.has(eid, Handle)` but
-// `Handle.section`/`Handle.order` now read the WRONG section (section B, order 0 instead of
-// section A). After the hoist, `splitSection` calls `geoSplitAtStripsRefused` before
-// `splitGeoAt` — a refusal never mutates, so no `restoreAll`, no eid churn, and the selected
-// eid's `Handle.section`/`Handle.order` still read section A's.
-test("a refused geo Cut does not corrupt a live node selection on an unrelated section (pass-5 deliverable 1)", () => {
-    clearSelection();
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    // section A (order 0): a simple 24 m geo section
-    const secA = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, secA, 0, 0);
-    addNode(state, secA, 24, 0);
-    // section B (order 1): another 24 m geo section with a straddling strip
-    const secB = createSection(state, 1, SectionKind.Geo, 0);
-    addNode(state, secB, 0, 0);
-    addNode(state, secB, 24, 0);
-    state.step(0);
-    // strip straddling the mid-segment of section B — a cut at t=0.5 would split it into sub-edge halves
-    createStrip(state, secB, 11.9, 12.6, 5);
-    state.step(0);
-    // select a node in section A
-    const selectedEid = handleAt(state, secA, 1) as number;
-    select(selectedEid);
-    expect(Handle.section.get(selectedEid)).toBe(secA);
-    expect(Handle.order.get(selectedEid)).toBe(1);
-    const h = createHistory();
-    // refuse a Cut on section B at t=0.5 (interior, straddling the strip)
-    const result = splitSection(h, state, secB, 0, 0.5);
-    expect(result).toBeNull();
-    // the selected eid's Handle.section/Handle.order must still read section A's
-    expect(Handle.section.get(selectedEid)).toBe(secA);
-    expect(Handle.order.get(selectedEid)).toBe(1);
-    // editor.selection is unchanged
-    expect(editor.selection).toBe(selectedEid);
-    // no history entry recorded
-    expect(h.undo.length).toBe(0);
 });

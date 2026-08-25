@@ -367,9 +367,9 @@ test("selected strip suppresses the endpoint hover stroke (S3 review finding 1)"
 });
 
 // ── S6 (kex2d-event-lane, finding 8, option 1 — no point events) ───────────────────────────────
-// the degenerate `[0, 0)` entry-speed strip a section-0 convert preserves
-// (`track.ts` `preserveEntrySpeedAcrossConvert`/`setStartSpeed`) drives the REAL pointer
-// drag-out end to end: before, it hits as its own "glyph" kind (never "endpoint"/"body",
+// the degenerate `[0, 0)` entry-speed strip `setStartSpeed`'s own no-strip branch spawns
+// (`track.ts`) drives the REAL pointer drag-out end to end: before, it hits as its own
+// "glyph" kind (never "endpoint"/"body",
 // `strip-hit.test.ts`'s own oracle) and reads apart from rest under hover the same way a body
 // does (S3's own hover-partition differential, reused here); after, the strip is a real,
 // non-degenerate span landed through the same guarded writer `track.test.ts`'s "glyph expanded
@@ -380,10 +380,16 @@ test("degenerate entry-speed strip drags out into a real span (S6, finding 8)", 
 }) => {
     await boot();
     await seedHill(page);
-    // section-0 geo → force: clears seed()'s real start strip and re-authors it as the
-    // DEGENERATE [0, 0) point (`preserveEntrySpeedAcrossConvert`) — the exact scenario
-    // `force.pw.ts`'s own "addStrip" comment names.
-    await kexCall(page, "convert");
+    await kexCall(page, "convert"); // section-0 geo → force; strips are untouched (S2)
+    // delete `seed()`'s real (non-degenerate, min-extent) start strip, then re-author the
+    // entry speed with none present — `setStartSpeed`'s own no-strip branch spawns the
+    // DEGENERATE `[0, 0)` point (S6's own convention). Strips are track-global and survive a
+    // convert untouched now (S2, Locked decision), so a convert alone no longer produces this
+    // scenario the way it used to (`preserveEntrySpeedAcrossConvert`, retired with S2).
+    const seeded = (await kexCall(page, "stripsOf", 0)) as { id: number }[];
+    expect(seeded.length).toBe(1);
+    await kexCall(page, "deleteStripId", seeded[0].id);
+    await kexCall(page, "setV0", 10);
     await frameTimeline(page);
 
     const stripsBefore = (await kexCall(page, "stripsOf", 0)) as {
