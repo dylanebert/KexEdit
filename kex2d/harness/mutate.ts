@@ -110,8 +110,8 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe arrow-nudge",
         mutations: [
             {
-                old: "                const members = stripKfPts.filter((k) => editor.stripKfs.ids.has(k.id));",
-                new: "                const members = stripKfPts.filter(() => false); // MUTATED: nudge branch disabled",
+                old: "                const members = stripKeyframes(ecs, editor.strip).filter((k) =>\n                    editor.stripKfs.ids.has(k.id),\n                );",
+                new: "                const members: ReturnType<typeof stripKeyframes> = []; // MUTATED: nudge branch disabled",
             },
         ],
     },
