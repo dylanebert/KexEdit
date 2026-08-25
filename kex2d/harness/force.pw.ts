@@ -1964,6 +1964,26 @@ test("timeline domain flow — a downstream clip's edge also tracks an upstream 
 // had, on the CREATE path rather than an edit of an existing entity. RED on the pre-fix tree:
 // a double-click in Time view landed the new keyframe at the raw seconds-scaled delta added to
 // the section's own axis-projected entry, not the arclength the click implies.
+//
+// VERIFIED GREEN (kex2d-capture-deflake S2, 2026-08-25): `kex2d-event-substrate.md`
+// recorded this test (cited by its own declaration line, "force.pw.ts:1897") as a standing
+// deterministic red — `Expected: 6 / Received: 5` on the closing `forceCount` poll, 8/8 at
+// `6b88280`, 4/4 on a same-day re-read — owned by no stage. Re-run on the current tree:
+// `capture -g "S6c2" --repeat-each 8` exits 0, 8/8 (2026-08-25), and the full `force.pw.ts`
+// suite (20 tests) ran clean 4 consecutive times. This test's own body is byte-identical
+// between `6b88280` and this diff's base (`git diff 6b88280 HEAD -- harness/force.pw.ts` shows
+// no change to it); `kex2d-event-substrate` S1's "keyframe interaction substrate" unification
+// (landed after the roster reading, three commits ending `be44bd3`) is the only candidate
+// cause found — the force-keyframe branch of `chartCreate` this test exercises
+// (`Timeline.svelte`'s `const s = clamp(dOf(u) - c.s0, 0, c.len)`) is itself byte-identical
+// across the same range, so the fix, if any, is not in the line this test's own header names.
+// No mechanism-level line or branch was identified as the cause, and no predictive check
+// (a re-mutation isolating which S1 change flips this test) was run — this entry records only
+// that the standing red is gone, not why. A future stage that needs the mechanism owes that
+// isolation fresh, not this comment's say-so.
+// Owner: kex2d-capture-deflake. Expires on S3's N=20 full-run acceptance — if the test
+// fails during that run, this entry reopens as a defect needing mechanism isolation; if the
+// acceptance passes clean, the entry retires with the spec.
 test("timeline domain flow — Time-view double-click create writes arclength (S6c2)", async ({
     page,
     boot,

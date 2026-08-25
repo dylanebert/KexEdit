@@ -4132,6 +4132,16 @@ onMount(() => {
             // right-click lands on.
             k.oneShotPx = (): number => oneShotGlyphX();
             k.oneShotSelected = (): boolean => editor.oneShot;
+            // the header band's own hit-classification reads (S3 on-surface naming's own hover
+            // partition), exposed so a capture flow can await the geometric PARTITION a pointer
+            // move resolves to — never rendered pixels — before probing the fill it paints. Both
+            // are plain functions computed fresh from the live `$derived.by` values, not cached
+            // behind a settle: `bandHit`'s own kind ("endpoint"/"body"/"empty") is what
+            // `render()` reads to choose the fill, so polling THIS is the condition that
+            // determines when the paint has anything new to show, immune to a later
+            // colour/height re-scheme of the paint itself.
+            k.bandHit = (): StripHit => bandHit;
+            k.oneShotHover = (): boolean => oneShotHover;
             // the chart's own addressable-span end, on the ACTIVE axis (bounded past a stall in
             // Time, S2, finding 13) — distinct from `tTotal` (main.ts, the bake's unbounded
             // total) precisely so a flow can assert the chart clamps where the bake doesn't.
@@ -4161,6 +4171,8 @@ onMount(() => {
                 delete k.stripPx;
                 delete k.oneShotPx;
                 delete k.oneShotSelected;
+                delete k.bandHit;
+                delete k.oneShotHover;
                 delete k.uTotal;
                 delete k.stallU;
             }

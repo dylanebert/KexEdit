@@ -214,6 +214,16 @@ export interface Kex {
     oneShot(): { id: number; value: number } | null;
     oneShotPx(): number;
     oneShotSelected(): boolean;
+    // the velocity-strip header band's own hit-classification, mirrored verbatim from
+    // `strip-hit.ts`'s `StripHit` (a type-only shape, no runtime import — the standalone-staging
+    // law above): the geometric PARTITION a pointer position resolves to, the condition
+    // `render()` itself reads to choose the fill. Await this rather than a fixed frame count
+    // before probing pixels for the visual differential.
+    bandHit():
+        | { kind: "endpoint"; id: number; edge: "start" | "end" }
+        | { kind: "body"; id: number }
+        | { kind: "empty" };
+    oneShotHover(): boolean;
     vAtD(d: number): number;
     spanMidAt(i: number): { x: number; y: number } | null;
     startAt(): { x: number; y: number } | null;
