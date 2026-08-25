@@ -5,9 +5,9 @@ import { defineConfig } from "@playwright/test";
 //
 // Every flow owns its page and its screenshot names and shares nothing but the dev server, so the
 // suite runs `fullyParallel` — a worker can pick up any test from any of the staged flow files
-// (`geo.pw.ts`/`force.pw.ts`/`section.pw.ts`/`lab.pw.ts`, matched by the `*.pw.ts` glob below), and
+// (the staged set is `capture.ts`'s `stage.files`, matched by the `*.pw.ts` glob below), and
 // without it Playwright would serialize the tests within whichever file a worker is given, leaving
-// the rest idle. `fullyParallel` already schedules at the test level, so the four-file split below
+// the rest idle. `fullyParallel` already schedules at the test level, so the per-file split below
 // is an organizational move (staging, file size), not a new source of concurrency.
 //   KEX_WORKERS=n   → worker count (1 to serialize, e.g. when bisecting a cross-test suspicion)
 //   KEX_HEADED=1    → drive the host's visible Chrome instead of headless
@@ -60,13 +60,12 @@ export default defineConfig({
     // green — the same class of dishonesty the collected-vs-executed count oracle closes in
     // `capture.ts`. Fail the run instead.
     forbidOnly: true,
-    // A wedge backstop, not a budget: it must clear the whole suite with room to grow, or it silently
-    // truncates the run (at 120s it killed the last test and still reported the rest green). The
-    // worst case is serial-per-worker: the collected suite × the 60s per-test timeout ÷ the worker
-    // count, so this clears ~28 flows at the default 4 (27 today, split across the four staged flow
-    // files — `kex2d-harness.md` "Growth"; `fullyParallel` already schedules every flow at the test
-    // level regardless of which file it lives in, so the split changes file size, not this budget).
-    // `capture.ts`'s spawn ceiling (480s) sits above this one.
+    // A wedge backstop, not a budget: it must clear a healthy full run with room to grow, or it
+    // silently truncates the run (at 120s it killed the last test and still reported the rest
+    // green). Derive against a measured healthy full-run wall clock, never against the collected
+    // count × per-test timeout — the suite population lives in `capture.ts`'s `stage.files` and a
+    // count quoted here drifts (`fullyParallel` schedules at the test level, so the file split
+    // changes file size, not this budget). `capture.ts`'s spawn ceiling (480s) sits above this one.
     globalTimeout: 420_000,
 
     expect: { timeout: 5_000 },

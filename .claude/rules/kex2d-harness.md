@@ -33,12 +33,15 @@ validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-
 
 ## Iteration discipline
 
-- Iterate selective: `bun run capture -- -g "<pattern>"` (~5s). Full suite at commit (~20s at
-  the default 4 headless workers).
+- Iterate selective: `bun run capture -- -g "<pattern>"` (~5s). Full suite at commit runs at
+  whatever `KEX_WORKERS` resolves to (default 4) — its wall clock is a function of flow count
+  and worker count, so time it locally (`KEX_WORKERS=1 bun run capture` for the worst case)
+  rather than trust a quoted figure, which rots as flows are added.
 - One capture at a time per port: `KEX_PORT`/`KEX_STAGE` isolate a concurrent session; the
   default port is first-come.
-- Prefer extending an existing flow over booting a new page (~3–5s per boot). The full suite
-  stays inside the 45s budget as it grows.
+- Prefer extending an existing flow over booting a new page (~3–5s per boot). The full suite's
+  budget is the `globalTimeout` ceiling below ("Growth landed"), not a fixed wall-clock number —
+  re-time it as flows grow rather than quoting one.
 - Selective iterations write to a separate `--out` dir; the reference shot set
   (`harness/shots/`, `RUN.json` `reference: true`) comes only from full default-knob runs.
   A selective run into the default dir merges shots over the set and honestly demotes it to
@@ -91,10 +94,19 @@ validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-
   in `bun test` because none of it had met a browser since the last capture. A gate whose cost
   defers it is a gate whose *fixtures* drift, and the drift always points backward at the law the
   diff just retired.
+- **A `.svelte` module has no importable export, so production handlers are reachable only from
+  capture flows:** a unit arm over a shared pure helper is a legitimate pin and never discharges a
+  handler-path criterion — that criterion's arm is a capture flow whose red-first witness mutates
+  the *handler's* branch, not the helper.
 - **A multi-flow red is presumptively host-level.** Unrelated flows failing together in one
   full run (observed ~1/18; never reproduced in isolation or ×12 consecutive) is a run-level
   signature on the shared GPU bridge — re-run once before debugging any flow; if it recurs,
   keep `RUN.json` + the reporter output.
+- **A *single*-flow red recurring across runs is a defect with an owner, never weather:** triage
+  by where it died (a timeout is load, an assertion is a race), then deflake by awaiting the
+  condition. A per-test failure rate is a measurement of the defect, not a baseline to inherit —
+  the roster it produces is a punch list, and any N-run ship protocol retires when the roster
+  empties.
 
 ## Verifier integrity
 
@@ -105,8 +117,8 @@ validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-
   `counts` and `failedTitles` (parsed from run stdout in `args.ts`) for flake forensics.
 - **The wipe guard.** `RUN.json` is the shot set's provenance stamp AND its wipe permission
   slip: a full run refuses to wipe any `--out` that isn't absent, empty, or `RUN.json`-bearing.
-- **Standalone staging.** `flow.ts` + every `*.pw.ts` flow file (`geo.pw.ts`, `force.pw.ts`,
-  `section.pw.ts`, `lab.pw.ts`) + `capture.pw.config.ts` are staged to the Windows host as a set
+- **Standalone staging.** `flow.ts` + every `*.pw.ts` flow file (the set is `capture.ts`'s
+  `stage.files`, never a list quoted here) + `capture.pw.config.ts` are staged to the Windows host as a set
   and may import nothing *outside the staged set*. Shared validators are duplicated verbatim,
   pinned character-identical AND pinned reached by unit tests (hand-written copies drifted once);
   mirrored app constants live in the MIRRORED block, each naming its source. Staging is a file
@@ -138,10 +150,13 @@ validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-
   the host) and this one (an old file leaves it).
 - **Growth landed.** Past ~28 flows (the 420 s `globalTimeout` ceiling at 4 workers — the binding
   number), the single `shot.pw.ts` split into `flow.ts` (the one staged helpers module: the
-  MIRRORED guards/constants, the boot fixture, every shared pointer-true helper) plus four staged
+  MIRRORED guards/constants, the boot fixture, every shared pointer-true helper) plus the staged
   flow files grouped by area — `geo.pw.ts` (geo authoring + viewport, the boot-pin included),
   `force.pw.ts` (force authoring + the timeline), `section.pw.ts` (the section chain + invoked
-  solves), `lab.pw.ts` (the atom-page labs). `capture.pw.config.ts`'s `testMatch` is the `*.pw.ts`
+  solves), `lab.pw.ts` (the atom-page labs), `affordance.pw.ts` (popover/hover/hit-zone
+  affordances), `freshness.pw.ts` (the `__kex` hook's ECS-direct read freshness),
+  `substrate.pw.ts` (section-boundary and split/join structural invariants) — the count lives in
+  `capture.ts`'s `stage.files`, not this prose. `capture.pw.config.ts`'s `testMatch` is the `*.pw.ts`
   glob; `capture.ts`'s `stage.files` names each file explicitly (a list, not a glob, so the
   staging-list pin above is what keeps a future flow file honest). The `__kex` DEV surface got a
   typed `Kex` interface in `flow.ts` (a hand-written mirror of `src/main.ts`'s hook object +
