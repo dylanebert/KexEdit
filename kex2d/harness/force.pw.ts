@@ -1981,6 +1981,9 @@ test("timeline domain flow — a downstream clip's edge also tracks an upstream 
 // (a re-mutation isolating which S1 change flips this test) was run — this entry records only
 // that the standing red is gone, not why. A future stage that needs the mechanism owes that
 // isolation fresh, not this comment's say-so.
+// Owner: kex2d-capture-deflake. Expires on S3's N=20 full-run acceptance — if the test
+// fails during that run, this entry reopens as a defect needing mechanism isolation; if the
+// acceptance passes clean, the entry retires with the spec.
 test("timeline domain flow — Time-view double-click create writes arclength (S6c2)", async ({
     page,
     boot,
