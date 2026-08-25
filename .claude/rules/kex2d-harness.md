@@ -52,7 +52,11 @@ validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-
 - **The settle idiom.** Exactly one fixed wait exists: `SHOT_MS`, on the line immediately
   before a screenshot. Everything else is a condition (`expect.poll`, locator asserts) — and
   where a value is projected by the per-RAF tick, the honest wait is awaiting *frames in the
-  page* (a double-rAF per frame), not milliseconds.
+  page* (a double-rAF per frame), not milliseconds. Enforced: `tests/harness.test.ts`
+  ("no raw waitForTimeout except the SHOT_MS settle before a screenshot") walks every staged
+  flow file and reds on a `waitForTimeout` call whose argument is not exactly `SHOT_MS`.
+  A `frames(page, N)` settle is itself lawful only where the awaited quantity has no readable
+  condition — no `__kex` hook exposes it — and the comment at the call site must name why.
 - **A count is never bake-readiness.** A `__kex` poke and every snapshot restore write authored
   components synchronously, but the bake's node→sample map rebuilds on the *next* frame —
   `nodeCount` and `tTotal > 0` are satisfied pre-bake, so a gesture placed on that evidence
