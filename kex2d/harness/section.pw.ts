@@ -1541,7 +1541,14 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
     // registered root property (checks.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition).
+    // quantity has no readable condition). Forced-race witness (2026-08-25, this test, the
+    // `:1582` roster member 7/8 base): armed a 150ms-per-rAF-callback `requestAnimationFrame`
+    // delay (via a temporary `page.addInitScript`, scoped to the 6 callbacks right after this
+    // line so unrelated reactivity downstream stays unperturbed) — the pre-fix 200ms
+    // fixed-time sleep reds under it (exit 1, timeout on the drag-changed-v poll, the bandDown
+    // edge-resize having missed the stale-cached strip); this `frames(page, 2)` greens under the
+    // identical delay (exit 0). Both runs: `bun run capture -- -g "velocity strip keyframe
+    // editing flow"`.
 
     // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
     // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
@@ -1712,7 +1719,8 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
     // registered root property (checks.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition).
+    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
+    // editing flow"'s own docblock at its matching line, same mechanism.
 
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
@@ -1846,7 +1854,8 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
     // registered root property (checks.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition).
+    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
+    // editing flow"'s own docblock at its matching line, same mechanism.
 
     // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
     // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
@@ -1996,7 +2005,8 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
     // registered root property (checks.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition).
+    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
+    // editing flow"'s own docblock at its matching line, same mechanism.
 
     // Get the new strip's seeded keyframes (2 at start/end).
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
@@ -2091,7 +2101,8 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
     // registered root property (checks.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition).
+    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
+    // editing flow"'s own docblock at its matching line, same mechanism.
 
     // Get the new strip's seeded keyframes — one at its own start, one at its own end (S4's
     // seeded-boundary-keyframes idiom). `stripDefaultExtentAt` (S2: track-global, no longer
@@ -2239,7 +2250,8 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
     // registered root property (checks.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition).
+    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
+    // editing flow"'s own docblock at its matching line, same mechanism.
 
     // Get the new strip's seeded keyframes (2 at start/end).
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
@@ -2381,7 +2393,8 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
     // registered root property (checks.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition).
+    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
+    // editing flow"'s own docblock at its matching line, same mechanism.
 
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
@@ -2565,7 +2578,8 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
     // no readable condition exists for either, so this settles by frame count, never a
     // registered root property (checks.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition).
+    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
+    // editing flow"'s own docblock at its matching line, same mechanism.
 
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));

@@ -590,9 +590,8 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
         const violations = nonShotSleeps();
         expect(
             violations,
-            violations
-                .map((v) => `${v.file}:${v.line} waitForTimeout(${v.arg})`)
-                .join("\n") || "no violations",
+            violations.map((v) => `${v.file}:${v.line} waitForTimeout(${v.arg})`).join("\n") ||
+                "no violations",
         ).toEqual([]);
     });
 
