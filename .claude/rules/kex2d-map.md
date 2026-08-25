@@ -1281,10 +1281,11 @@ is a package script rather than a `bun test` entry point.
 **A `.svelte` file has no plain module export** (a pre-existing recorded fact,
 `tests/menu.test.ts:1530`), so `marqueeUp`, `keyframeDown`, and the keyboard handler are
 unreachable from `bun test` and reachable only from the capture harness, which already drives
-them through real force-keyframe drags (`harness/force.pw.ts`, `harness/section.pw.ts`). A unit
-arm over a shared helper is a legitimate pure-function pin and never this substrate's parity arm;
-the parity arm is a capture flow whose red-first witness comes from deleting the *handler's* own
-branch, never from mutating the helper it calls.
+them through real force-keyframe drags (`harness/force.pw.ts`) and real strip-keyframe drags
+(`harness/section.pw.ts` — its force-keyframe flows create/delete by menu and cursor position,
+never drag one). A unit arm over a shared helper is a legitimate pure-function pin and never
+this substrate's parity arm; the parity arm is a capture flow whose red-first witness comes from
+deleting the *handler's* own branch, never from mutating the helper it calls.
 
 **A test touching a structural op re-resolves its sections by stable `order`/`id`, never by a
 held eid.** A domain flip no longer churns eids at all — `convertDomain`'s forward land

@@ -1790,6 +1790,132 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await expect.poll(undoDepth).toBe(before - 1);
 });
 
+// F1 repair (round 3, `Timeline.svelte`'s `deleteSelectedStripKf`): the RAF-tick race the fix
+// closes, shipped with no arm — `selStrip` is a `$derived.by` gated on `void tick`, so its
+// cached value only catches up to a fresh `editor.strip` write on the NEXT tick; a Delete
+// pressed in the SAME tick-period as a selecting click races that cache. Constructed the same
+// way `deleteSelectedStrip`'s own sibling repair was witnessed (58fa676, P5): settle a NULL
+// selection first (so the cache's own "nothing selected" reading is the stale value the race
+// needs), then a single real click that flips `editor.strip` null → non-null (and sets
+// `editor.stripKf`), then Delete with NO settle in between. Pre-fix, `deleteSelectedStripKf`
+// read that stale `selStrip`, saw null, and no-opped — post-fix it reads the strip's section
+// off the ECS directly (`stripAt` + `Strip.section.get`), never depending on the cache.
+test("strip keyframe delete before the selection tick settles", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const stripKfPx = () => kexCall(page, "stripKfPx");
+
+    // create a strip (the T1 idiom) — seeded with two keyframes at start/end (S4), close
+    // together at this zoom (the whole-track fit) to be reliable click targets on their own.
+    const beforeStrips = (await stripsOf()) as { id: number }[];
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.3;
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
+    await page.waitForTimeout(200);
+
+    const beforeIds = new Set(beforeStrips.map((s) => s.id));
+    const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
+    if (!created) throw new Error("newly-created strip not found");
+    const stripId = created.id;
+    const seededIds = new Set(
+        ((await stripKeyframesOf(stripId)) as { id: number }[]).map((k) => k.id),
+    );
+    expect(seededIds.size).toBe(2);
+
+    // widen the strip via a real pointer edge-drag (the sibling flows' own idiom) so a THIRD
+    // keyframe, created at its midpoint, sits well clear of both seeded diamonds — the two
+    // seeded ones alone sit only a few px apart at this zoom (whole-track fit), too close for
+    // an unambiguous click target.
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const spBefore = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId);
+    if (!spBefore) throw new Error("created strip has no band px");
+    const edgePx = chartCanvasBb.x + spBefore.x1;
+    await page.mouse.move(edgePx, bandY);
+    await page.mouse.down();
+    await page.mouse.move(edgePx + 80, bandY, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    const strip = (
+        (await stripsOf()) as { id: number; start: number; end: number; value: number }[]
+    ).find((s) => s.id === stripId);
+    if (!strip) throw new Error("widened strip not found");
+    const [, pxPerU] = (await kexCall(page, "xView")) as [number, number];
+    const [vLo, vHi] = (await kexCall(page, "vRange")) as [number, number];
+    const stripMidS = (strip.start + strip.end) / 2;
+    const stripCenterPx = clipBb.x + stripMidS * pxPerU;
+    const stripWidthPx = (strip.end - strip.start) * pxPerU;
+    expect(stripWidthPx).toBeGreaterThan(60);
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!dockBb) throw new Error("dock body not laid out");
+    const chartTop = dockBb.y + CHART_TOP;
+    const chartBot = dockBb.y + dockBb.height - CHART_BOT_PAD;
+    const vToY = (v: number): number =>
+        chartTop + (1 - (v - vLo) / (vHi - vLo)) * (chartBot - chartTop);
+    const stripValueY = vToY(strip.value);
+
+    // CREATE the third keyframe (`chartCreate` reads `editor.strip` off the ECS directly, not a
+    // tick-gated `$derived` — its own repair, same class as F1 — so this create is not itself
+    // racy).
+    await page.mouse.dblclick(stripCenterPx, stripValueY);
+    await expect.poll(async () => (await stripKeyframesOf(stripId)).length).toBe(3);
+    const created3 = (
+        (await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[]
+    ).find((k) => !seededIds.has(k.id));
+    if (!created3) throw new Error("no newly-created keyframe found");
+
+    // locate the new keyframe's diamond — settled, a real, unambiguous hit target (well clear
+    // of both seeded diamonds by construction, per `stripWidthPx` above).
+    await expect
+        .poll(async () => {
+            const px = (await stripKfPx()) as { id: number; x: number; y: number }[];
+            return px.find((k) => k.id === created3.id) ?? null;
+        })
+        .not.toBeNull();
+    const px = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const kfPx = px.find((k) => k.id === created3.id);
+    if (!kfPx) throw new Error("created keyframe has no drawn diamond");
+
+    // DESELECT fully, and let the deselection ITSELF settle — `selStrip`'s cache must read the
+    // null selection at least once before the race-constructing click below, or the click's
+    // fresh write races a stale NON-null cache instead of the stale-null one the fix closes.
+    await page.keyboard.press("Escape"); // clears the strip (no stripKf sub-selection is active)
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).toBe(null);
+    await page.waitForTimeout(200);
+
+    // THE RACE: a single click on the created diamond flips `editor.strip` null → `stripId` and
+    // `editor.stripKf` null → `created3.id`, both plain synchronous writes — then Delete fires
+    // with NO settle in between.
+    await page.mouse.move(kfPx.x, kfPx.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.keyboard.press("Delete");
+
+    // the clicked (third) keyframe is gone; the strip survives with exactly the two SEEDED
+    // keyframes — the discriminating half against the buggy no-op (which would leave all three).
+    await expect
+        .poll(
+            async () =>
+                new Set(((await stripKeyframesOf(stripId)) as { id: number }[]).map((k) => k.id)),
+        )
+        .toEqual(seededIds);
+    expect(await stripsOf()).toHaveLength(beforeStrips.length + 1);
+});
+
 // S1: the strip keyframe drag ORIGIN. `stripKfMove` subtracted the section entry
 // (`BandStrip.startU`) where `keyframeDown`'s own pattern subtracts the GRAB POINT (`dragU0`) — so
 // the first move wrote `s ≈ 2·s0` and both clamps (the extent clamp here, `setStripKeyframe`'s
