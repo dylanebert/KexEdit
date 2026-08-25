@@ -58,13 +58,17 @@ witnessed in its docblock.
 - **Worker count.** `capture.pw.config.ts`'s mirrored `intEnv(process.env, "KEX_WORKERS", 4, 1,
   64)` (and `capture.ts`'s own `intEnv(..., DEFAULT_WORKERS, ...)`, the two guards pinned
   character-identical, Verifier integrity below) is the sole resolution. `fullyParallel: true`
-  schedules concurrency at the TEST level, so the worker count is a real lever — but it competes
-  with "one capture at a time per port" (above) and the WSL→Windows bridge's single real-GPU
-  Chrome, so the scaling a reader should expect is sub-linear, not the naive 1/N the knob alone
-  suggests: don't assume a 4x-workers run resolves in a quarter of a 1-worker run's time. Read it
-  by timing `bun run capture` back to back against `KEX_WORKERS=1 bun run capture` on the same
-  tree — the Iteration discipline bullet above already refuses a quoted figure for this reason;
-  this entry adds the relation, not a number.
+  schedules concurrency at the TEST level, so the worker count is a real lever, and it reads
+  sub-linear against the knob — don't assume a 4x-workers run resolves in a quarter of a
+  1-worker run's time. The mechanism is open, not derived: "one capture at a time per port"
+  (above) governs concurrent separate `bun run capture` invocations, not intra-run worker
+  parallelism (every worker in one run already shares the one dev server and port), so it is
+  not the explanation by itself; the WSL→Windows bridge's single real-GPU Chrome, per-test boot
+  cost (Iteration discipline above already prices a page boot), WSL-side CPU contention, and the
+  dev server's own concurrency are all live candidates, none confirmed against the other. Read
+  the relation by timing `bun run capture` back to back against `KEX_WORKERS=1 bun run capture`
+  on the same tree — the Iteration discipline bullet above already refuses a quoted figure for
+  this reason; this entry adds the relation, not a number or a settled cause.
 - **Aggregate `SHOT_MS` spend.** The settle idiom's one lawful fixed wait, `flow.ts`'s
   `SHOT_MS = intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000)`, fires once per screenshot. Read
   the call-site count with `grep -c "waitForTimeout(SHOT_MS)" harness/*.pw.ts` — the same
@@ -74,9 +78,13 @@ witnessed in its docblock.
   run screenshots concurrently — the wall-clock share divides by whatever `KEX_WORKERS` resolves
   to, same as the worker-count lever above.
 - **Behavior-only gating mode.** None exists — no flag or env knob skips a screenshot while
-  keeping its `expect.poll`/locator assertions; the harness's whole env-knob surface is `args.ts`'s
-  `intEnv`/`boolEnv` call sites, and none of them name one. Its saving ceiling IS the aggregate
-  `SHOT_MS` spend above: a behavior-only mode could remove at most that total, never more, so the
+  keeping its `expect.poll`/locator assertions. Checked: `args.ts`'s `intEnv`/`boolEnv` call
+  sites, the harness's declared knob surface, name no such mode; `grep -rn "process\.env\."
+  harness/*.ts harness/*.pw.ts` finds three more knobs read directly, outside that guard —
+  `capture.ts`'s `KEX_STAGE`, `flow.ts`'s `KEX_OUT`, `server.ts`'s `SERVER_STARTUP_TIMEOUT_MS` —
+  and none of the three gates screenshot behavior either (a stage name, an output dir, a
+  server-boot timeout). Its saving ceiling IS the aggregate `SHOT_MS` spend above: a
+  behavior-only mode could remove at most that total, never more, so the
   two levers are one measurement read twice, not two independent ones.
 
 ## Flow-authoring laws
