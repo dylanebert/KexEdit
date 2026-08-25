@@ -3950,12 +3950,28 @@ onMount(() => {
             // the selected strip's keyframe diamonds' screen px, projected exactly as drawn
             // (the capture flow's pixel probe reads these to drive real pointer events).
             k.stripKfPx = (): { id: number; x: number; y: number }[] => {
+                // Read the ECS directly, not the `stripKfPts` `$derived`: the derived is paced by
+                // `void tick` (one re-eval per RAF frame), but a capture flow that creates a
+                // keyframe (via `chartCreate`'s synchronous ECS write) and then immediately reads
+                // pixel positions can do so before a single RAF frame fires — so `stripKfPts`
+                // is stale and the freshly-created keyframe is absent from the pixel probe.
+                // `bandStrips` (the strip list) is also a `$derived` behind `void tick`, but the
+                // strip set does not change on a keyframe create, so its cached value is still
+                // correct; `stripKeyframes(ecs, s.id)` is a direct ECS query and always fresh.
                 const rect = canvas.getBoundingClientRect();
-                return stripKfPts.map((k) => ({
-                    id: k.id,
-                    x: rect.left + uPx(k.u),
-                    y: rect.top + vOf(k.v),
-                }));
+                const out: { id: number; x: number; y: number }[] = [];
+                for (const s of bandStrips) {
+                    for (const k of stripKeyframes(ecs, s.id)) {
+                        const d = toGlobal(spans, s.section, k.s);
+                        const u = d === null ? s.startU : uOfLen(d);
+                        out.push({
+                            id: k.id,
+                            x: rect.left + uPx(u),
+                            y: rect.top + vOf(k.v),
+                        });
+                    }
+                }
+                return out;
             };
             // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
             // page-absolute like `stripKfPx`) — S3's own capture flow reads these to drive a

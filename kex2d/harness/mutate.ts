@@ -1,6 +1,6 @@
 // kex2d's S1 mutation gate — the committed instrument that makes the gate exhaustive
 // rather than sampled. One (production strip-branch mutation, capture arm) pair per named
-// behavior: snap, deselect, modifier-extend, overlap refusal, nudge. For each pair, the gate
+// behavior: snap, deselect, modifier-extend, overlap refusal, nudge, keyframe-visibility. For each pair, the gate
 // derives a mutated Timeline.svelte from a FRESH snapshot written at run start into a run-unique
 // directory, runs ONLY that pair's capture flow (`bun run capture -- -g "<flow title>"`), records
 // the verdict, and restores the snapshot in a `finally`. At the end it asserts the tracked tree
@@ -50,6 +50,7 @@ interface Pair {
     name: string;
     flow: string; // the -g pattern (flow title) for `bun run capture`
     mutations: { old: string; new: string }[]; // string replacements in Timeline.svelte
+    repeatEach?: number; // --repeat-each=N for intermittent-failure arms (default 1)
 }
 
 // The enumerated source of truth — INDEPENDENT of `PAIRS` below. This is what makes a behavior
@@ -57,8 +58,18 @@ interface Pair {
 // (checked at startup) and a pair naming no roster member are both refused, so `PAIRS` can
 // neither drop a name nor drift onto one the roster doesn't recognize without the gate itself
 // going red. Sourced from S1's own Validation bullet (`kex2d-event-substrate.md`), which names
-// these five and no others as the substrate's shared-path behaviors.
-const BEHAVIORS = ["snap", "deselect", "modifier-extend", "overlap refusal", "nudge"] as const;
+// five shared-path behaviors; the sixth ("keyframe-visibility") is the $derived-staleness
+// defect this gate's roster was extended to cover — a capture flow that creates a strip
+// keyframe and immediately reads its pixel position can do so before a RAF frame advances
+// `void tick`, so the `stripKfPts` $derived is stale and the keyframe is absent from the probe.
+const BEHAVIORS = [
+    "snap",
+    "deselect",
+    "modifier-extend",
+    "overlap refusal",
+    "nudge",
+    "keyframe-visibility",
+] as const;
 
 const PAIRS: Pair[] = [
     {
@@ -115,6 +126,33 @@ const PAIRS: Pair[] = [
             },
         ],
     },
+    {
+        name: "keyframe-visibility",
+        flow: "one selection model — the S4 transition table",
+        repeatEach: 40,
+        mutations: [
+            {
+                old: `                const out: { id: number; x: number; y: number }[] = [];
+                for (const s of bandStrips) {
+                    for (const k of stripKeyframes(ecs, s.id)) {
+                        const d = toGlobal(spans, s.section, k.s);
+                        const u = d === null ? s.startU : uOfLen(d);
+                        out.push({
+                            id: k.id,
+                            x: rect.left + uPx(u),
+                            y: rect.top + vOf(k.v),
+                        });
+                    }
+                }
+                return out;`,
+                new: `                return stripKfPts.map((k) => ({ // MUTATED: stripKfPx reads stale $derived
+                    id: k.id,
+                    x: rect.left + uPx(k.u),
+                    y: rect.top + vOf(k.v),
+                }));`,
+            },
+        ],
+    },
 ];
 
 function applyMutations(pristine: string, mutations: { old: string; new: string }[]): string {
@@ -131,9 +169,11 @@ function applyMutations(pristine: string, mutations: { old: string; new: string 
     return text;
 }
 
-function runCapture(flow: string): { exitCode: number; stdout: string } {
+function runCapture(flow: string, repeatEach?: number): { exitCode: number; stdout: string } {
     const env = { ...process.env, KEX_WORKERS: "1" };
-    const result = spawnSync("bun", ["run", "capture", "--", "-g", flow], {
+    const args = ["run", "capture", "--", "-g", flow];
+    if (repeatEach && repeatEach > 1) args.push("--repeat-each", String(repeatEach));
+    const result = spawnSync("bun", args, {
         cwd: projectDir,
         env,
         encoding: "utf8",
@@ -208,7 +248,7 @@ function runGate(): number {
         try {
             const mutated = applyMutations(pristine, p.mutations);
             writeFileSync(tgt, mutated, "utf8");
-            const result = runCapture(p.flow);
+            const result = runCapture(p.flow, p.repeatEach);
             exitCode = result.exitCode;
         } finally {
             writeFileSync(tgt, pristine, "utf8");
@@ -254,7 +294,9 @@ function runGate(): number {
         return 1;
     }
 
-    console.log("\nGATE PASSED: all five pairs red (coupled), tree restored byte-identical.");
+    console.log(
+        `\nGATE PASSED: all ${verdicts.length} pairs red (coupled), tree restored byte-identical.`,
+    );
     return 0;
 }
 
