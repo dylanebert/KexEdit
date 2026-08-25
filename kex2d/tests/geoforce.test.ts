@@ -60,8 +60,10 @@ function humpTrack(): { state: State; eid: number; sec: number } {
  *  restore that dropped either would be caught — baked. kex2d-provenance stage 3's own oracle
  *  for the reverse trip (force→geo→force), the twin of `forcegeo.test.ts`'s `hillTrack`. This
  *  shape genuinely needs its 18 m/s (a shallower launch diverges the force→geo fit outright) —
- *  `applyConvert`/`applyConvertGeo`'s own `preserveEntrySpeedAcrossConvert` (S5) is what keeps
- *  it alive across the round trip below; `setStartSpeed` only has to author it once, here. */
+ *  `setStartSpeed` authors the track-start one-shot (S3, its own point kind) once, here; a
+ *  section kind-flip never touches it, so it carries through the round trip below with no
+ *  special-case code (`preserveEntrySpeedAcrossConvert`, the pre-S3 mechanism this needed,
+ *  retired at S2). */
 function hillForceTrack(): { state: State; eid: number; sec: number } {
     const state = new State();
     state.addSystem(BakeSystem);

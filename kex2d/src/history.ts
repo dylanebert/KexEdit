@@ -72,6 +72,10 @@ import {
     type StripState,
     stripState,
     restoreStrip,
+    createOneShot as createOneShotTrack,
+    destroyOneShot,
+    entryOneShot,
+    spawnOneShot,
     createStripKeyframe as createStripKf,
     destroyStripKeyframe,
     spawnStripKeyframe,
@@ -579,6 +583,46 @@ export function deleteStrips(h: History, ecs: State, ids: readonly number[]): vo
                     for (const k of st.kfs) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
                 }
             },
+        },
+        pre,
+    );
+}
+
+// ── the track-start one-shot (S3, its own structurally distinct point kind) ────────────
+
+/** author the track-start one-shot, recording an undoable add — `addStrip`'s point-kind
+ *  twin. The id is allocated once; undo destroys by it and redo re-spawns verbatim. Real
+ *  UI callers never take this when one already exists (`entryOneShot`'s "first hit wins"
+ *  reading) — a right-click "Add initial velocity" row is only enabled when none does. */
+export function addOneShot(h: History, ecs: State, value: number): number {
+    const pre = selHook?.snapshot(ecs);
+    const id = createOneShotTrack(ecs, value);
+    const v = entryOneShot(ecs)?.value ?? value; // read back the floored (MIN_V0) value
+    record(
+        h,
+        {
+            apply: () => spawnOneShot(ecs, id, v),
+            reverse: () => destroyOneShot(ecs, id),
+        },
+        pre,
+    );
+    return id;
+}
+
+/** delete the track-start one-shot by id, recording an undoable entry — `deleteStrips`'
+ *  single-subject twin (there is only ever one to delete). a no-op (nothing recorded) when
+ *  `id` is already gone. */
+export function deleteOneShot(h: History, ecs: State, id: number): void {
+    const pre = selHook?.snapshot(ecs);
+    const os = entryOneShot(ecs);
+    if (!os || os.id !== id) return;
+    const value = os.value;
+    destroyOneShot(ecs, id);
+    record(
+        h,
+        {
+            apply: () => destroyOneShot(ecs, id),
+            reverse: () => spawnOneShot(ecs, id, value),
         },
         pre,
     );

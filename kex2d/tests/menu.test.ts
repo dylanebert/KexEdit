@@ -845,16 +845,54 @@ describe("rulerMenu / appendMenu — the flat two-row menus", () => {
     // inert) when canCreate is false — a station whose min-extent span overlaps an existing strip.
     // This arm fails if `canCreate` is stubbed to constant `true` in the builder.
     test("stripMenu grays Add when canCreate is false (W7 refusal arm)", () => {
-        const sa = recorder("addStrip", "remove");
-        const rows = stripMenu({ strip: -1, editable: true, canCreate: false }, sa);
+        const sa = recorder("addStrip", "remove", "addOneShot", "removeOneShot");
+        const rows = stripMenu(
+            { strip: -1, editable: true, canCreate: false, oneShotExists: true },
+            sa,
+        );
         expect(rows.length).toBe(1);
         expect(rows[0].label).toBe("Add velocity strip");
         expect(rows[0].enabled).toBe(false);
     });
     test("stripMenu enables Add when canCreate is true and editable", () => {
-        const sa = recorder("addStrip", "remove");
-        const rows = stripMenu({ strip: -1, editable: true, canCreate: true }, sa);
+        const sa = recorder("addStrip", "remove", "addOneShot", "removeOneShot");
+        const rows = stripMenu(
+            { strip: -1, editable: true, canCreate: true, oneShotExists: true },
+            sa,
+        );
         expect(rows[0].enabled).toBe(true);
+    });
+    // S3 (Locked decision): the empty-band menu's "Add initial velocity" row shows only while
+    // the track-start one-shot doesn't already exist — a singleton, never a second row/second
+    // one-shot once one lives.
+    test("stripMenu offers Add initial velocity on empty band only while none exists", () => {
+        const sa = recorder("addStrip", "remove", "addOneShot", "removeOneShot");
+        const withNone = stripMenu(
+            { strip: -1, editable: true, canCreate: true, oneShotExists: false },
+            sa,
+        );
+        expect(withNone.map((r) => r.label)).toEqual([
+            "Add velocity strip",
+            "Add initial velocity",
+        ]);
+        const withOne = stripMenu(
+            { strip: -1, editable: true, canCreate: true, oneShotExists: true },
+            sa,
+        );
+        expect(withOne.map((r) => r.label)).toEqual(["Add velocity strip"]);
+    });
+    // S3: the one-shot's own glyph (`strip: -2`) carries a single Delete row, routed to
+    // `removeOneShot` rather than `remove` (the strip's own deletion action).
+    test("stripMenu on the one-shot glyph (-2) offers Delete, routed to removeOneShot", () => {
+        const sa = recorder("addStrip", "remove", "addOneShot", "removeOneShot");
+        const rows = stripMenu(
+            { strip: -2, editable: true, canCreate: true, oneShotExists: true },
+            sa,
+        );
+        expect(rows.length).toBe(1);
+        expect(rows[0].label).toBe("Delete");
+        rows[0].action?.();
+        expect(sa.log).toEqual(["removeOneShot()"]);
     });
 });
 
@@ -970,6 +1008,8 @@ describe("the menu grammar — every builder, every state", () => {
                 "cutAt",
                 "join",
                 "addStrip",
+                "addOneShot",
+                "removeOneShot",
             );
         for (const s of sectionStates) {
             const a = acts();
@@ -989,18 +1029,22 @@ describe("the menu grammar — every builder, every state", () => {
         }
         const a = acts();
         all.push({ name: "appendMenu", rows: appendMenu(a), state: {}, acts: a });
-        // stripMenu: creation (strip < 0) and deletion (strip >= 0), editable and not,
-        // canCreate true and false (W7's refusal must be swept, not pinned to true).
-        for (const strip of [-1, 0] as const) {
+        // stripMenu: creation (strip -1) and deletion (strip 0 for a strip, -2 for the S3
+        // one-shot glyph), editable and not, canCreate true and false (W7's refusal must be
+        // swept, not pinned to true), oneShotExists true and false (governs the empty-band
+        // "Add initial velocity" row, S3).
+        for (const strip of [-1, -2, 0] as const) {
             for (const editable of [true, false] as const) {
                 for (const canCreate of [true, false] as const) {
-                    const sa = acts();
-                    all.push({
-                        name: "stripMenu",
-                        rows: stripMenu({ strip, editable, canCreate }, sa),
-                        state: { strip, editable, canCreate },
-                        acts: sa,
-                    });
+                    for (const oneShotExists of [true, false] as const) {
+                        const sa = acts();
+                        all.push({
+                            name: "stripMenu",
+                            rows: stripMenu({ strip, editable, canCreate, oneShotExists }, sa),
+                            state: { strip, editable, canCreate, oneShotExists },
+                            acts: sa,
+                        });
+                    }
                 }
             }
         }
@@ -1322,6 +1366,8 @@ describe("the menu grammar — every builder, every state", () => {
         cutAt: "cut",
         join: "join",
         addStrip: null,
+        addOneShot: null,
+        removeOneShot: "remove",
     };
 
     test("`Acts` censuses every act name the corpus recorder declares", () => {

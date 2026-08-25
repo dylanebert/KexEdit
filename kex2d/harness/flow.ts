@@ -211,6 +211,9 @@ export interface Kex {
     stripKfSelActive(): number | null;
     stripsOf(i: number): { id: number; start: number; end: number; value: number }[];
     stripKeyframesOf(stripId: number): { id: number; s: number; v: number }[];
+    oneShot(): { id: number; value: number } | null;
+    oneShotPx(): number;
+    oneShotSelected(): boolean;
     vAtD(d: number): number;
     spanMidAt(i: number): { x: number; y: number } | null;
     startAt(): { x: number; y: number } | null;

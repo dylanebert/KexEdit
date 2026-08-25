@@ -32,10 +32,10 @@ test("velocity span crosses a section boundary continuously", async ({ page, boo
     const sectionCount = () => kexCall(page, "sectionCount");
     const vAtD = (d: number) => kexCall(page, "vAtD", d);
 
-    // the default seed: one geo section with its own start strip at [0, minExtent). Convert to
-    // force (strips are untouched by convert, S2) then append a second force section — both take
-    // the sticky default extent (24 m, `DEFAULT_FORCE_LEN`), so the shared boundary lands at
-    // exactly `sectionLengths()[0]`.
+    // the default seed: one geo section, no strip authored (the track-start one-shot, S3, is a
+    // distinct point kind that carries no `Strip` row). Convert to force (strips are untouched
+    // by convert, S2) then append a second force section — both take the sticky default extent
+    // (24 m, `DEFAULT_FORCE_LEN`), so the shared boundary lands at exactly `sectionLengths()[0]`.
     await kexCall(page, "convertAt", 0);
     await kexCall(page, "append", 1);
     await expect.poll(sectionCount).toBe(2);
@@ -43,8 +43,7 @@ test("velocity span crosses a section boundary continuously", async ({ page, boo
     const boundary = lens[0];
     expect(boundary).toBeGreaterThan(4); // straddling room on both sides
 
-    // a span straddling the boundary, well clear of the start strip at [0, ~0.5) and the track's
-    // own far end.
+    // a span straddling the boundary, well clear of the track's own far end.
     const value = 11;
     const id = await kexCall(page, "addStripAt", boundary - 4, boundary + 4, value);
     expect(id).not.toBe(null);

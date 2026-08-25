@@ -1029,10 +1029,9 @@ test("context menu stays in the viewport near the bottom edge", async ({ page, b
     await expect.poll(tTotal).not.toBe(tFlat);
     await frameTimeline(page); // whole force section on-screen so every diamond has a DOM box
     const nPts = await forceCount();
-    // `.fpt` is shared with velocity-strip keyframes; strips are untouched by `seedForceBump`'s
-    // convert (S2, `force.pw.ts`'s own note) — the launch strip survives as its original real
-    // (min-extent, two-keyframe) span.
-    await expect(page.locator(".fpt")).toHaveCount(nPts + 2);
+    // `.fpt` is shared with velocity-strip keyframes; `seed()` (S3) carries no strip of its own
+    // (`force.pw.ts`'s own note), so `.fpt` is force points only.
+    await expect(page.locator(".fpt")).toHaveCount(nPts);
 
     const vp = page.viewportSize();
     if (!vp) throw new Error("no viewport size");

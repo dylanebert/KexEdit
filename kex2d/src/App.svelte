@@ -1109,8 +1109,9 @@ $effect(() => {
 
 // the track START anchor: selectable in the viewport, it summons the dissipation-
 // coefficient popover (μ/c) at its screen point — the world origin under the camera. the
-// initial speed used to live here too (a v0 field row) — it's now the first strip (S5),
-// authored through the ordinary strip/keyframe gestures instead. the anchor recomputes
+// initial speed used to live here too (a v0 field row) — it's now the track-start one-shot
+// (S3, its own structurally distinct point kind), authored through the header-band glyph and
+// `setStartSpeed` instead. the anchor recomputes
 // per tick (`startPos`), so it tracks a viewport pan/zoom; it holds still during a
 // coefficient scrub only because that gesture never moves the camera (root ui.md "nothing
 // moves under its own gesture"), so no anchor-freeze is needed here.

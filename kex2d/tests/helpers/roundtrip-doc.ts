@@ -67,16 +67,12 @@ export function docState(state: State, eid: number): DocState {
  *  corpus's nodes are already in that final, bake-ready form. Every corpus scenario's `ds` is
  *  `DS_NOMINAL` (0.5), and every geo section bakes at the track-nominal quantum (no per-section
  *  step exists to override it, stage 5) — exactly what every other document-layer test does —
- *  so this reproduces `scenario.ds` exactly. `scenario.v0` is authored via `setStartSpeed`
- *  (S5): a destructive kind convert already clears a section's strips unconditionally
- *  (`resetToForce`/`resetToGeo`, pre-S5), and the entry speed is now DERIVED from section 0's
- *  own strip (`entrySpeed`), so an untouched geo→force→geo round trip would otherwise lose it
- *  at the first convert and never get it back — `applyConvert`/`applyConvertGeo`'s own
- *  `preserveEntrySpeedAcrossConvert` (S5) is what keeps it alive instead. The re-authored strip
- *  DOES get a new id each convert (`nextStripId` never reuses one), but that never reaches
- *  `before`/`after`'s hash comparison below: the leg that actually restores does so via
- *  PROVENANCE (`consultProvenance`), a verbatim replay of the pre-convert stamp — id included —
- *  never a fresh solve landing a fresh strip. */
+ *  so this reproduces `scenario.ds` exactly. `scenario.v0` is authored via `setStartSpeed`,
+ *  which authors the track-start one-shot (S3, its own structurally distinct point kind, never
+ *  a `Strip` row) — a section kind-flip (`resetToForce`/`resetToGeo`) never touches `OneShot`
+ *  at all, so a geo→force→geo round trip carries `v0` through every convert with no special-case
+ *  code (`preserveEntrySpeedAcrossConvert`, the pre-S3 provenance-replay mechanism this needed,
+ *  retired at S2 once the mechanism it patched around no longer existed). */
 export function buildGeoSection(scenario: Scenario | { name: string; nodes: Node[]; v0: number }): {
     state: State;
     eid: number;

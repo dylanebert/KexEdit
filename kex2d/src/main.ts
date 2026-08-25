@@ -40,6 +40,7 @@ import {
     setStrip,
     stripKeyframes,
     stripSeedValue,
+    entryOneShot,
     entrySpeed,
     setSectionLength,
     setStartSpeed,
@@ -97,13 +98,13 @@ if (import.meta.env.DEV) {
             angle: snapGuides.angleLabel,
             length: snapGuides.lengthLabel,
         }),
-        // the DERIVED initial speed (S5): the value of the strip covering station 0, or `V0` —
-        // the flow drives the real strip keyframe drag and asserts it here.
+        // the DERIVED initial speed (S3): the track-start one-shot's own `value`, or `V0` when
+        // none exists — the flow reads it back after driving the real pointer create/delete
+        // (`oneShotPx`, `Timeline.svelte`).
         v0: (): number => entrySpeed(ecs),
         // author it directly, as test SETUP: the domain flow needs the ride off the default speed
         // (at exactly `V0` metres and seconds are proportional by one constant, so the two units
-        // are indistinguishable), and the strip drag itself is already driven pointer-true by its
-        // own flow.
+        // are indistinguishable).
         setV0: (v: number): void => setStartSpeed(ecs, v),
         // v0's two dissipation-coefficient siblings — the refusal flow asserts a refused typed
         // commit leaves the model untouched (read-only, like v0()).
@@ -357,10 +358,8 @@ if (import.meta.env.DEV) {
         addStripAt: (start: number, end: number, value: number): number | null =>
             addStrip(history, ecs, start, end, value),
         // delete a strip by id (undo-recorded, real guarded write — `history.deleteStrips`), the
-        // test-setup twin of `addStripAt`: some flows need a KNOWN prior strip gone (rather than
-        // reachable only through a real pointer select+Delete) before re-authoring the entry
-        // speed (`setV0`) to construct the degenerate `[0, 0)` point (`setStartSpeed`'s own
-        // no-strip branch).
+        // test-setup twin of `addStripAt`: some flows need a KNOWN prior strip gone rather than
+        // reachable only through a real pointer select+Delete.
         deleteStripId: (id: number): void => deleteStrips(history, ecs, [id]),
         // synchronously widen/move a strip (direct ECS write, no history entry) — the freshness
         // arm's state construction: a widen changes the bake (which changes `sectionSpans`), so
@@ -449,6 +448,13 @@ if (import.meta.env.DEV) {
                 end: s.end,
                 value: s.value,
             })),
+        // the track-start one-shot (S3, its own structurally distinct point kind), or null when
+        // none exists — the capture flow's own readback after driving the real pointer
+        // create/select/delete (`Timeline.svelte`'s `oneShotPx`/`oneShotSelected`).
+        oneShot: (): { id: number; value: number } | null => {
+            const os = entryOneShot(ecs);
+            return os ? { id: os.id, value: os.value } : null;
+        },
         // the bake's own recovered velocity at a track-global station `d` (`stripSeedValue`'s
         // own read, exposed directly — the S2 oracle's boundary-continuity witness reads it
         // just past and just before a section boundary a span straddles, asserting no seam

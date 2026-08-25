@@ -27,6 +27,7 @@ import {
     selectForce,
     selectForces,
     selectNodes,
+    selectOneShot,
     selectSection,
     selectStart,
     selectStrip,
@@ -204,8 +205,18 @@ test("selecting into one kind clears the others (a multi-member set included)", 
     selectStart(true);
     expect(editor.sections.ids.size).toBe(0);
     expect(editor.start).toBe(true);
+    // S3: the track-start one-shot is the sixth mutually-exclusive kind (`editor.ts`'s own
+    // header comment) — a boolean like `start`, so it gets the same round-trip.
+    selectStrip(7);
+    expect(editor.start).toBe(false);
+    expect(editor.strip).toBe(7);
+    selectOneShot(true);
+    expect(editor.strips.ids.size).toBe(0);
+    expect(editor.strip).toBeNull();
+    expect(editor.oneShot).toBe(true);
     select(10);
     expect(editor.start).toBe(false);
+    expect(editor.oneShot).toBe(false);
 });
 
 test("toggling into a kind while another kind is active switches kinds", () => {

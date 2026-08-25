@@ -13,6 +13,7 @@ import {
 } from "../src/editor";
 import {
     appendSection,
+    addOneShot,
     addStrip,
     beginForceMove,
     beginForceMoves,
@@ -30,6 +31,7 @@ import {
     createHistory,
     addStripKeyframe,
     deleteForces,
+    deleteOneShot,
     deleteStrips,
     deleteStripKeyframes,
     extendTrack,
@@ -69,6 +71,7 @@ import {
     createSection,
     createStrip,
     createTrack,
+    entryOneShot,
     entrySpeed,
     EXTEND_DIST,
     forceEase,
@@ -1060,37 +1063,30 @@ test("commitChord armed=false leaves the sticky value untouched but still commit
     expect(poseOf(state, sec, 1).x).toBeCloseTo(EXTEND_DIST, 6); // undoable
 });
 
-// ── track initial speed (v0, S5) — DERIVED from the strip covering station 0; there is
-// no dedicated v0 gesture left to test, since editing it now rides the strip-keyframe
-// drag's own generic undo (`beginStripKeyframeMove`) ──────────────────────────────────
+// ── track initial speed (v0, S3) — DERIVED from the track-start one-shot, its own
+// structurally distinct point kind (never a `Strip`): `addOneShot`/`deleteOneShot`
+// (`history.ts`) are its create/delete undo entries — there is no drag gesture (fixed at
+// `d = 0`, no keyframe curve to sample) ──────────────────────────────────
 
-test("with no strip covering station 0, the derived entry speed falls back to V0", () => {
+test("with no one-shot, the derived entry speed falls back to V0", () => {
     const { state } = nodes();
     expect(entrySpeed(state)).toBe(V0);
 });
 
-test("editing the start strip's keyframe (the ordinary keyframe-drag gesture) moves the derived entry speed; undo/redo carry it", () => {
+test("addOneShot authors the one-shot and records an undoable create; undo/redo carry the derived entry speed", () => {
     const { state } = nodes();
     const h = createHistory();
-    const ext = stripMinExtentAt(state, 0);
-    if (!ext) throw new Error("no min extent");
-    const stripId = createStrip(state, ext.start, ext.end, V0);
-    if (stripId === null) throw new Error("strip refused");
-    expect(entrySpeed(state)).toBe(V0);
-
-    const kf = stripKeyframes(state, stripId)[0];
-    beginStripKeyframeMove(state, kf.id);
-    setStripKeyframe(state, kf.id, kf.s, 14); // live preview frames — not recorded individually
-    setStripKeyframe(state, kf.id, kf.s, 18);
-    commit(h);
-
-    expect(h.undo.length).toBe(1); // the whole drag → one entry
+    const id = addOneShot(h, state, 18);
+    expect(entryOneShot(state)?.id).toBe(id);
     expect(entrySpeed(state)).toBe(18);
+    expect(h.undo.length).toBe(1);
 
     undo(h, state);
+    expect(entryOneShot(state)).toBeUndefined();
     expect(entrySpeed(state)).toBeCloseTo(V0, 6);
 
     redo(h, state);
+    expect(entryOneShot(state)?.id).toBe(id);
     expect(entrySpeed(state)).toBeCloseTo(18, 6);
 });
 
@@ -1138,19 +1134,18 @@ test("beginStripKeyframeMoves: undo restores byte-identical when a nudge leapfro
     expect(byId(b)?.s).toBeCloseTo(5.1, 6);
 });
 
-test("deleting the start strip falls the derived entry speed back to V0; undo restores it", () => {
+test("deleteOneShot falls the derived entry speed back to V0; undo restores it", () => {
     const { state } = nodes();
     const h = createHistory();
-    const ext = stripMinExtentAt(state, 0);
-    if (!ext) throw new Error("no min extent");
-    const stripId = createStrip(state, ext.start, ext.end, 18);
-    if (stripId === null) throw new Error("strip refused");
+    const id = addOneShot(h, state, 18);
     expect(entrySpeed(state)).toBe(18);
 
-    deleteStrips(h, state, [stripId]);
+    deleteOneShot(h, state, id);
+    expect(entryOneShot(state)).toBeUndefined();
     expect(entrySpeed(state)).toBe(V0);
 
     undo(h, state);
+    expect(entryOneShot(state)?.id).toBe(id);
     expect(entrySpeed(state)).toBe(18);
 });
 
