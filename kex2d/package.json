@@ -10,6 +10,9 @@
         "test": "bun test",
         "capture": "bun run harness/capture.ts",
         "harness:deps": "[ -d harness/node_modules/@playwright/test ] || bun install --cwd harness --frozen-lockfile",
+        "mutate": "bun run harness/mutate.ts",
+        "freshness": "bun run harness/capture.ts -- -g \"__kex hook freshness\"",
+        "tally": "bun run harness/tally.ts",
         "check": "bun run harness:deps && bun run format && tsc && svelte-check && biome check",
         "format": "biome check --write"
     },

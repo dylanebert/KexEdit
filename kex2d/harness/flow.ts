@@ -184,6 +184,8 @@ export interface Kex {
     pinning(): boolean;
     parked(): boolean;
     placeForce(s: number, g: number): number;
+    placeStripKf(stripId: number, s: number, v: number): number;
+    widenStrip(stripId: number, start: number, end: number): void;
     poses(): number[][];
     resistance(): number;
     sectionCount(): number;
