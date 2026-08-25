@@ -3872,22 +3872,36 @@ onMount(() => {
                 // through `nudgeKeyframes` (S1: both kinds ride one nudge function). only while a
                 // strip keyframe is selected and the pointer is over the timeline. Shift coarse;
                 // one press = one undo entry.
-                const members = stripKfPts.filter((k) => editor.stripKfs.ids.has(k.id));
+                //
+                // read the strip + its keyframes from the ECS directly, not `stripKfPts` (a
+                // `$derived` behind the RAF `void tick`, same class `deleteSelectedStrip`'s own
+                // note documents and the GEO nudge's `nodeLocal` already fixed, `controls.ts`):
+                // a second nudge fired before `tick` has advanced since the first nudge's write
+                // reads the PRE-write `s` as its base, rounds to the same grid point one step
+                // short, and commits a wrong value (section.pw.ts:2344, witnessed:
+                // `toBeCloseTo` Expected 11.1, Received 11 with no frame between the two
+                // presses). `stripAt`/`stripKeyframes` are synchronous ECS queries.
+                const stripEid = stripAt(ecs, editor.strip);
+                if (stripEid === null) return;
+                const members = stripKeyframes(ecs, editor.strip).filter((k) =>
+                    editor.stripKfs.ids.has(k.id),
+                );
                 if (members.length === 0) return;
-                const k0 = members[0];
-                if (!sectionEditable(editor.pinning, k0.section)) return;
+                if (!sectionEditable(editor.pinning, Strip.section.get(stripEid))) return;
                 e.preventDefault();
                 skipLanding();
                 const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
                 const stepV = e.shiftKey ? NUDGE_V_COARSE : NUDGE_V;
                 const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
                 const dv = e.key === "ArrowUp" ? stepV : e.key === "ArrowDown" ? -stepV : 0;
+                const lo = Strip.start.get(stripEid);
+                const len = Strip.end.get(stripEid);
                 beginStripKeyframeMoves(
                     ecs,
                     members.map((m) => m.id),
                 );
                 for (const w of nudgeKeyframes(
-                    members.map((m) => ({ id: m.id, s: m.s, v: m.v, len: m.end, lo: m.start })),
+                    members.map((m) => ({ id: m.id, s: m.s, v: m.v, len, lo })),
                     ds,
                     dv,
                 ))
