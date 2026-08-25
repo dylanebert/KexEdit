@@ -35,6 +35,7 @@ import {
     sectionInfo,
     sections,
     sectionStrips,
+    setStrip,
     stripKeyframes,
     entrySpeed,
     setSectionLength,
@@ -345,6 +346,13 @@ if (import.meta.env.DEV) {
         // create, mirroring `placeForce`'s shape so the arm can create and read in one evaluate.
         placeStripKf: (stripId: number, s: number, v: number): number =>
             addStripKeyframe(history, ecs, stripId, s, v),
+        // synchronously widen/move a strip (direct ECS write, no history entry) — the freshness
+        // arm's state construction: a widen changes the bake (which changes `sectionSpans`), so
+        // the tick-gated `bandStrips`/`spans` `$derived` values go stale until the next RAF.
+        // The arm creates a keyframe and reads the hook in the SAME synchronous evaluate, so
+        // it witnesses the mixed-freshness snapshot on the unfixed hook.
+        widenStrip: (stripId: number, start: number, end: number): void =>
+            setStrip(ecs, stripId, start, end, 8),
         // lay an airtime bump in force mode: dip below 1g mid-track, back to 1g.
         seedForceBump: (): void => {
             const id = sec();

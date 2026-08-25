@@ -751,11 +751,19 @@ interface Clip {
 // coincides with plain `dToU` wherever `d` never exceeds the live bake's own arc range.
 const uOfLen = (d: number): number =>
     lenId !== null && gestureMapping ? dToUExtend(gestureMapping, domain, d, lenVExit) : uOf(d);
-const clips = $derived.by((): Clip[] => {
-    void tick;
-    const byId = new Map(spans.map((sp) => [sp.id, sp]));
+// One projection for section clips from the ECS — the shared computation both the `clips`
+// `$derived` (paced by `void tick` for the render) and the `forceU`/`stripKfPx` `__kex` hooks
+// call. The hooks call it directly for freshness: a capture flow that creates a keyframe via a
+// synchronous ECS write and immediately reads pixel positions must not read a stale `$derived`
+// that hasn't re-evaluated this frame. `spans` is also a `$derived` behind `void tick`, and a
+// strip move/widen changes the bake (which changes `sectionSpans`), so the cached `spans` can
+// be stale after such a write — the hook passes a FRESH `sectionSpans(ecs, eid)` call's result
+// instead. `uOfLen` reads `$state` (`lenId`/`gestureMapping`), not a `$derived`, so it is always
+// current — no frame-bound quantity enters this computation.
+function computeClips(spanTable: SectionSpan[], world: State): Clip[] {
+    const byId = new Map(spanTable.map((sp) => [sp.id, sp]));
     const res: Clip[] = [];
-    for (const sec of sections(ecs)) {
+    for (const sec of sections(world)) {
         const sp = byId.get(sec.id);
         if (!sp) continue;
         res.push({
@@ -770,6 +778,10 @@ const clips = $derived.by((): Clip[] => {
         });
     }
     return res;
+}
+const clips = $derived.by((): Clip[] => {
+    void tick;
+    return computeClips(spans, ecs);
 });
 // ── geo node ticks (read-only, kex2d-geo-ux stage 2): a small circle in the marker
 // lane per INTERIOR node of a geo section, positioned via the section's own span
@@ -830,12 +842,12 @@ interface ForcePt {
 }
 // One projection for force-keyframe points from the ECS — the shared computation both the
 // `forcePts` `$derived` (paced by `void tick` for the render) and the `forceU` `__kex` hook
-// call. The hook calls it directly for freshness: a capture flow that creates a force keyframe
-// via `placeForce`'s synchronous ECS write and immediately reads `forceU` must not read a
-// stale `$derived` that hasn't re-evaluated this frame. `clips` and `spans` are also `$derived`
-// behind `void tick`, but neither changes on a keyframe create — the clip set and the span
-// table are stable — so their cached values are still correct; only `sectionForces(ecs, c.id)`
-// (a direct ECS query) reflects the new keyframe.
+// call. The hook calls it with FRESH `computeClips`/`sectionSpans` results (not the stale
+// `$derived` values) so the keyframe positions are projected against the current bake's span
+// table. A keyframe create alone does not change the clip set or span table, but a strip
+// move/widen DOES change the bake (which changes `sectionSpans`), so the cached `$derived`
+// values can be stale after such a write — the hook passes fresh values to avoid a
+// mixed-freshness snapshot. `sectionForces(world, c.id)` is always a direct ECS query.
 function computeForcePts(
     clipList: Clip[],
     spanTable: SectionSpan[],
@@ -1035,16 +1047,28 @@ interface BandStrip {
     // prefix").
     len: number;
 }
-const bandStrips = $derived.by((): BandStrip[] => {
-    void tick;
+// One projection for strip bands from the ECS — the shared computation both the `bandStrips`
+// `$derived` (paced by `void tick` for the render) and the `stripKfPx`/`stripPx` `__kex` hooks
+// call. The hooks call it directly for freshness: a capture flow that widens or moves a strip
+// via a synchronous ECS write and then creates a keyframe and reads pixel positions must not
+// read a stale `$derived` that hasn't re-evaluated this frame — the strip layout (`bandStrips`)
+// and the span table (`spans`) are both `$derived` behind `void tick`, and a strip move/widen
+// changes the bake (which changes `sectionSpans`), so their cached values can be stale. The
+// hook passes FRESH `computeClips`/`sectionSpans` results instead, so strips and keyframes are
+// projected against the SAME fresh snapshot — never one fresh and one stale.
+function computeBandStrips(
+    clipList: Clip[],
+    spanTable: SectionSpan[],
+    world: State,
+): BandStrip[] {
     if (eid === null) return [];
     const res: BandStrip[] = [];
-    for (const c of clips) {
+    for (const c of clipList) {
         const extent = c.extent;
-        for (const st of sectionStrips(ecs, c.id)) {
+        for (const st of sectionStrips(world, c.id)) {
             if (st.start >= extent) continue; // wholly past the extent — inert
-            const d0 = toGlobal(spans, c.id, st.start);
-            const d1 = toGlobal(spans, c.id, Math.min(st.end, extent)); // drawn clipped
+            const d0 = toGlobal(spanTable, c.id, st.start);
+            const d1 = toGlobal(spanTable, c.id, Math.min(st.end, extent)); // drawn clipped
             if (d0 === null || d1 === null) continue; // a stale span, `forcePts`' own guard
             res.push({
                 id: st.id,
@@ -1064,6 +1088,10 @@ const bandStrips = $derived.by((): BandStrip[] => {
         }
     }
     return res;
+}
+const bandStrips = $derived.by((): BandStrip[] => {
+    void tick;
+    return computeBandStrips(clips, spans, ecs);
 });
 // boundary ticks: the disambiguator for two abutting strips (Locked decision) — a strip's start
 // exactly equal to its section-mate's end, drawn as a small notch so the shared boundary reads
@@ -1113,12 +1141,14 @@ interface StripKfPt {
 }
 // One projection for strip-keyframe points from the ECS — the shared computation both the
 // `stripKfPts` `$derived` (paced by `void tick` for the render) and the `stripKfPx` `__kex`
-// hook call. The hook calls it directly for freshness: a capture flow that creates a keyframe
-// via `chartCreate`'s synchronous ECS write and immediately reads pixel positions must not
-// read a stale `$derived` that hasn't re-evaluated this frame. `bandStrips` and `spans` are
-// also `$derived` behind `void tick`, but neither changes on a keyframe create — the strip set
-// and the span table are stable — so their cached values are still correct; only
-// `stripKeyframes(ecs, s.id)` (a direct ECS query) reflects the new keyframe.
+// hook call. The hook calls it with FRESH `computeBandStrips`/`computeClips`/`sectionSpans`
+// results (not the stale `$derived` values) so strips and keyframes are projected against the
+// SAME fresh span table. A keyframe create alone does not change the strip set or span table,
+// but a strip move/widen DOES change the bake (which changes `sectionSpans`), so the cached
+// `$derived` values can be stale after such a write — the previous shape (passing the stale
+// `bandStrips`/`spans` `$derived`) read fresh keyframes projected against a stale strip
+// layout, a mixed-freshness snapshot where the returned pixel was not where the diamond was
+// drawn. `stripKeyframes(world, s.id)` is always a direct ECS query.
 function computeStripKfPts(
     strips: BandStrip[],
     spanTable: SectionSpan[],
@@ -3961,8 +3991,17 @@ onMount(() => {
             // halves apart — `main.ts`'s `forces()` only ever reads section 0 (`sec()`), so it
             // can't see a split's tail — without re-deriving `forcePts`' own grouping by hand.
             k.domain = (): string => (domain === Domain.Time ? "time" : "distance");
-            k.forceU = (): { id: number; section: number; s: number; g: number; u: number }[] =>
-                computeForcePts(clips, spans, ecs).map((p) => ({ id: p.id, section: p.section, s: p.s, g: p.g, u: p.u }));
+            // `forceU` computes its whole snapshot fresh from the ECS: a FRESH `sectionSpans`
+            // call (not the stale `spans` `$derived`) feeds a FRESH `computeClips` call (not the
+            // stale `clips` `$derived`), so the keyframe positions are projected against the
+            // current bake's span table — never a mix of fresh keyframes and stale clips/spans.
+            // A strip move/widen changes the bake (which changes `sectionSpans`), so the cached
+            // `$derived` values can be stale after such a write.
+            k.forceU = (): { id: number; section: number; s: number; g: number; u: number }[] => {
+                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+                const freshClips = computeClips(freshSpans, ecs);
+                return computeForcePts(freshClips, freshSpans, ecs).map((p) => ({ id: p.id, section: p.section, s: p.s, g: p.g, u: p.u }));
+            };
             // the chart's axis<->arclength lens, both directions, at the LIVE (or, mid-gesture,
             // gesture-frozen) s↔t table — S6's own oracle: a capture flow calls these BEFORE
             // starting a drag to read the table the gesture will freeze, so it can verify a write
@@ -3979,15 +4018,20 @@ onMount(() => {
             // than re-deriving the arclength→px projection a second time (the ctxCut precedent).
             k.ghostPx = (): { x0: number; x1: number }[] => ghostSpans;
             // the selected strip's keyframe diamonds' screen px, projected exactly as drawn
-            // (the capture flow's pixel probe reads these to drive real pointer events). Calls
-            // `computeStripKfPts` directly (not the `stripKfPts` `$derived`) for freshness: the
-            // derived is paced by `void tick` (one re-eval per RAF frame), but a capture flow
-            // that creates a keyframe via `chartCreate`'s synchronous ECS write and then
-            // immediately reads pixel positions can do so before a RAF frame fires — so
-            // `stripKfPts` is stale and the freshly-created keyframe is absent from the probe.
+            // (the capture flow's pixel probe reads these to drive real pointer events). Computes
+            // its WHOLE snapshot fresh from the ECS: a FRESH `sectionSpans` call feeds FRESH
+            // `computeClips` and `computeBandStrips` calls, so strips and keyframes are projected
+            // against the SAME fresh span table — never one fresh and one stale. The previous
+            // shape (calling `computeStripKfPts` with the stale `bandStrips`/`spans` `$derived`)
+            // read fresh keyframes projected against a stale strip layout — a mixed-freshness
+            // snapshot where the returned pixel was not where the diamond was drawn after a strip
+            // move/widen changed the bake.
             k.stripKfPx = (): { id: number; x: number; y: number }[] => {
                 const rect = canvas.getBoundingClientRect();
-                return computeStripKfPts(bandStrips, spans, ecs).map((k) => ({
+                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+                const freshClips = computeClips(freshSpans, ecs);
+                const freshStrips = computeBandStrips(freshClips, freshSpans, ecs);
+                return computeStripKfPts(freshStrips, freshSpans, ecs).map((k) => ({
                     id: k.id,
                     x: rect.left + uPx(k.u),
                     y: rect.top + vOf(k.v),
@@ -3996,8 +4040,14 @@ onMount(() => {
             // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
             // page-absolute like `stripKfPx`) — S3's own capture flow reads these to drive a
             // REAL pointer at a strip's edge/body without re-deriving `uPx`'s projection.
-            k.stripPx = (): { id: number; x0: number; x1: number }[] =>
-                bandStrips.map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
+            // Computes fresh from the ECS (same shared `computeBandStrips` call as `stripKfPx`)
+            // so a capture flow that just moved/widened a strip reads the current layout, not
+            // the stale `$derived`.
+            k.stripPx = (): { id: number; x0: number; x1: number }[] => {
+                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+                const freshClips = computeClips(freshSpans, ecs);
+                return computeBandStrips(freshClips, freshSpans, ecs).map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
+            };
             // the chart's own addressable-span end, on the ACTIVE axis (bounded past a stall in
             // Time, S2, finding 13) — distinct from `tTotal` (main.ts, the bake's unbounded
             // total) precisely so a flow can assert the chart clamps where the bake doesn't.
