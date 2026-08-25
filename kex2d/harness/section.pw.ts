@@ -1684,15 +1684,14 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
 });
 
 // F1 repair (round 3, `Timeline.svelte`'s `deleteSelectedStripKf`): the RAF-tick race the fix
-// closes, shipped with no arm — `selStrip` is a `$derived.by` gated on `void tick`, so its
+// closed, shipped with no arm — `selStrip` is a `$derived.by` gated on `void tick`, so its
 // cached value only catches up to a fresh `editor.strip` write on the NEXT tick; a Delete
-// pressed in the SAME tick-period as a selecting click races that cache. Constructed the same
-// way `deleteSelectedStrip`'s own sibling repair was witnessed (58fa676, P5): settle a NULL
-// selection first (so the cache's own "nothing selected" reading is the stale value the race
-// needs), then a single real click that flips `editor.strip` null → non-null (and sets
-// `editor.stripKf`), then Delete with NO settle in between. Pre-fix, `deleteSelectedStripKf`
-// read that stale `selStrip`, saw null, and no-opped — post-fix it reads the strip's section
-// off the ECS directly (`stripAt` + `Strip.section.get`), never depending on the cache.
+// pressed in the SAME tick-period as a selecting click used to race that cache. Pre-fix,
+// `deleteSelectedStripKf` read that stale `selStrip`, saw null, and no-opped — post-fix it
+// reads the strip directly off the ECS (`stripAt` + `Strip.start.get`), never depending on the
+// cache, so there is no `selStrip` read left in this function for a click to race (checked
+// below, not assumed). This test is the regression guard for that fix, single real click then
+// Delete with no settle in between — see below for why no settle precedes the click either.
 test("strip keyframe delete before the selection tick settles", async ({ page, boot }) => {
     await boot();
     await seedHill(page);
@@ -1787,30 +1786,23 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     const kfPx = px.find((k) => k.id === created3.id);
     if (!kfPx) throw new Error("created keyframe has no drawn diamond");
 
-    // DESELECT fully, and let the deselection ITSELF settle — `selStrip`'s cache must read the
-    // null selection at least once before the race-constructing click below, or the click's
-    // fresh write races a stale NON-null cache instead of the stale-null one the fix closes.
-    // This settles the OPPOSITE transition from every other `frames(page, 2)` in this file
-    // (those wait for a non-null selection to reach the cache before a hit-test; this waits
-    // for the cache to reach null before the click below re-writes it non-null) and needs no
-    // witness of its own borrowed from theirs: this TEST is the roster's own deliberately-raced
-    // fixture (`kex2d-event-substrate` Validation, `section.pw.ts:1791` 6/8 base) — the race it
-    // constructs three lines below (the click writes `editor.strip`/`editor.stripKf` and Delete
-    // fires with no settle) is this test's whole point, and the assert at the bottom (exactly
-    // the two SEEDED keyframes survive) is already the discriminating witness against the
-    // buggy no-op. Checked in the code, not assumed: `selStrip` (`Timeline.svelte`) is a
-    // `$derived.by` gated on `void tick`, reading `editor.strip` and re-deriving off
-    // `bandStrips`, while the `selectedStrip` `__kex` hook (`main.ts`) returns the raw,
-    // untracked `editor.strip` directly — so `expect.poll(selectedStrip)` above proves the ECS
-    // write landed, never that `selStrip`'s per-tick cache caught up to it, which is exactly why
-    // this settle is still owed after that poll passes.
-    await page.keyboard.press("Escape"); // clears the strip (no stripKf sub-selection is active)
+    // DESELECT fully (no stripKf sub-selection is active, so Escape clears the strip in one
+    // rung). `expect.poll(selectedStrip)` proves the ECS write landed — the `__kex` hook returns
+    // the raw, untracked `editor.strip` directly — never that `selStrip`'s per-tick `$derived.by`
+    // cache caught up to it. No settle follows, on measurement rather than argument: a prior
+    // version of this comment claimed the click below would otherwise race a stale NON-null
+    // `selStrip` cache, but `deleteSelectedStripKf` (checked above) never reads `selStrip` at
+    // all, so there is no such mechanism to construct — deleting the settle here held green
+    // three consecutive runs, and stayed green under a forced 150ms-per-rAF-callback delay
+    // armed on the six callbacks right after this line (`page.addInitScript`, temporary,
+    // confirmed to have fired, removed before commit). This test is still the roster's own
+    // regression guard for the F1 fix ("strip keyframe delete before the selection tick
+    // settles", `kex2d-event-substrate` Validation): reverting `deleteSelectedStripKf` to its
+    // pre-fix `selStrip`-reading body and re-running with no settle reds 4/4 (the buggy no-op
+    // leaves the clicked keyframe behind, `Received` carrying the extra id) — the settle was
+    // never what made this test discriminate the buggy no-op from the fixed behavior.
+    await page.keyboard.press("Escape");
     await expect.poll(async () => await kexCall(page, "selectedStrip")).toBe(null);
-    await frames(page, 2); // selStrip's cache must read the null selection at least once
-    // before the race-constructing click below (this test's own point) -- selStrip has no
-    // __kex hook, so there is no readable condition to poll; settle by frame count
-    // (kex2d-harness.md: frames(page,N) is lawful only where the awaited quantity has no
-    // readable condition).
 
     // THE RACE: a single click on the created diamond flips `editor.strip` null → `stripId` and
     // `editor.stripKf` null → `created3.id`, both plain synchronous writes — then Delete fires

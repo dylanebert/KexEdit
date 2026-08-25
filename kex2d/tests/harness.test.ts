@@ -565,7 +565,11 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
     // The reported `line` is where the call's `(` opens, matching what a per-line scan reported
     // for the single-line shapes this replaces. Paren-depth tracking (not `[^)]*`) is what lets
     // a nested-paren or computed arg (`SHOT_MS * 2`, `someFn(x)`) resolve to its real closing
-    // paren rather than the first one encountered.
+    // paren rather than the first one encountered. This is a text scan, not an AST parse, so a
+    // `waitForTimeout(200)` spelled inside a COMMENT or a string literal within a scanned
+    // `harness/*.pw.ts` file false-positives identically to a real call — a shape the scan
+    // cannot distinguish from the one it exists to catch. The population is empty today (no
+    // scanned file quotes the call as text), so this is latent, not live.
     function nonShotSleeps(): { file: string; line: number; arg: string }[] {
         const violations: { file: string; line: number; arg: string }[] = [];
         for (const name of real) {
