@@ -21,6 +21,7 @@ import {
     beginMoves,
     beginStripMove,
     beginStripKeyframeMove,
+    beginStripKeyframeMoves,
     commit,
     commitChord,
     commitLength,
@@ -1105,6 +1106,37 @@ test("a no-move keyframe-drag release records nothing", () => {
     beginStripKeyframeMove(state, kf.id);
     commit(h); // released without moving the keyframe
     expect(h.undo.length).toBe(0);
+});
+
+// B2: a multi-member nudge whose members are exactly one grid step (0.1) apart leapfrogs on
+// undo when the restore writer refuses overlaps (`setStripKeyframe`, `track.ts:1039`) — member
+// B's post-nudge station lands exactly on member A's PRE-nudge station, so restoring A first
+// (still live-writing) sees B "already there" and refuses A's restore. `restoreStripKeyframe`
+// (B2's fix, `track.ts`, mirroring `restoreForcePoint`) bypasses the guard for undo, matching
+// the force side.
+test("beginStripKeyframeMoves: undo restores byte-identical when a nudge leapfrogs members exactly one grid step apart (B2)", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const stripId = addStrip(h, state, sec, 0, 10, 8) as number;
+    const a = addStripKeyframe(h, state, stripId, 5, 3); // members 0.1 apart —
+    const b = addStripKeyframe(h, state, stripId, 5.1, 4); // the arm's own grid step
+
+    // the shared-delta nudge: both members step back by exactly the grid quantum (-0.1), so
+    // b's post-nudge station (5.0) lands exactly on a's PRE-nudge station (5).
+    beginStripKeyframeMoves(state, [a, b]);
+    setStripKeyframe(state, a, 4.9, 3);
+    setStripKeyframe(state, b, 5.0, 4);
+    commit(h);
+
+    const byId = (id: number) => stripKeyframes(state, stripId).find((k) => k.id === id);
+    expect(byId(a)?.s).toBeCloseTo(4.9, 6);
+    expect(byId(b)?.s).toBeCloseTo(5.0, 6);
+
+    undo(h, state);
+    // byte-identical restore: BOTH members land back on their pre-nudge stations, never one
+    // stuck at its nudged position because the other was "in the way" mid-restore.
+    expect(byId(a)?.s).toBeCloseTo(5, 6); // this is the assertion the live-writer restore reds
+    expect(byId(b)?.s).toBeCloseTo(5.1, 6);
 });
 
 test("deleting the start strip falls the derived entry speed back to V0; undo restores it", () => {

@@ -55,6 +55,7 @@ import {
     beginLength,
     beginStripMove,
     beginStripKeyframeMove,
+    beginStripKeyframeMoves,
     cancel,
     commit,
     commitLength,
@@ -87,7 +88,7 @@ import {
     navDragView,
     navWindow,
     nodeArc,
-    nudgeForces,
+    nudgeKeyframes,
     pxToU,
     S_GRID,
     snap,
@@ -140,6 +141,7 @@ import {
     Handle,
     minForceExtent,
     SectionKind,
+    type SectionSpan,
     sectionCutAt,
     sectionForces,
     sectionHandles,
@@ -152,7 +154,7 @@ import {
     setSectionLength,
     setStrip,
     setStripKeyframe,
-    stationTaken,
+    keyframeTaken,
     stripAt,
     Strip,
     stripBoundsAt,
@@ -274,6 +276,13 @@ const NUDGE_S = 0.1;
 const NUDGE_S_COARSE = 1;
 const NUDGE_G = 0.05;
 const NUDGE_G_COARSE = 0.5;
+// the velocity twin of NUDGE_G — the same step size (0.05 m/s, 0.5 with Shift), so a strip
+// keyframe nudge moves the same on-screen distance as a force keyframe nudge.
+const NUDGE_V = 0.05;
+const NUDGE_V_COARSE = 0.5;
+// the velocity-axis snap grid — the v-twin of G_GRID (0.1), so a strip keyframe drag snaps
+// to the same resolution as a force keyframe drag.
+const V_GRID = 0.1;
 const THANDLE_R = 4; // px; the summoned tangent-handle knob radius (visual)
 const THIT_R = 10; // px; the invisible grab radius around a handle knob (fat pick zone)
 
@@ -511,9 +520,9 @@ $effect(() => {
         // never re-fit the view under the held cursor — until the cursor is dragged PAST the
         // chart edge, where the shared edge-grow (growValueAxis) scrolls the value axis to
         // follow. auto-fit resumes on release and eases to the new curve's range.
-        if (dragForce !== null || draggingLen || dragTan !== null) {
+        if (dragKf !== null || draggingLen || dragTan !== null) {
             yHeld = true;
-            if (dragForce !== null) growValueAxis(dragCy, applyDrag);
+            if (dragKf !== null) growValueAxis(dragKfCy, applyKeyframeDrag);
             // a handle drag edge-pans through the SAME mechanism (F3d) — only once it's a real
             // drag (tanMoved), so a mere handle click, whose tanCx/tanCy are unset, never pans.
             else if (dragTan !== null && tanMoved)
@@ -742,11 +751,19 @@ interface Clip {
 // coincides with plain `dToU` wherever `d` never exceeds the live bake's own arc range.
 const uOfLen = (d: number): number =>
     lenId !== null && gestureMapping ? dToUExtend(gestureMapping, domain, d, lenVExit) : uOf(d);
-const clips = $derived.by((): Clip[] => {
-    void tick;
-    const byId = new Map(spans.map((sp) => [sp.id, sp]));
+// One projection for section clips from the ECS — the shared computation both the `clips`
+// `$derived` (paced by `void tick` for the render) and the `forceU`/`stripKfPx` `__kex` hooks
+// call. The hooks call it directly for freshness: a capture flow that creates a keyframe via a
+// synchronous ECS write and immediately reads pixel positions must not read a stale `$derived`
+// that hasn't re-evaluated this frame. `spans` is also a `$derived` behind `void tick`, and a
+// strip move/widen changes the bake (which changes `sectionSpans`), so the cached `spans` can
+// be stale after such a write — the hook passes a FRESH `sectionSpans(ecs, eid)` call's result
+// instead. `uOfLen` reads `$state` (`lenId`/`gestureMapping`), not a `$derived`, so it is always
+// current — no frame-bound quantity enters this computation.
+function computeClips(spanTable: SectionSpan[], world: State): Clip[] {
+    const byId = new Map(spanTable.map((sp) => [sp.id, sp]));
     const res: Clip[] = [];
-    for (const sec of sections(ecs)) {
+    for (const sec of sections(world)) {
         const sp = byId.get(sec.id);
         if (!sp) continue;
         res.push({
@@ -761,6 +778,10 @@ const clips = $derived.by((): Clip[] => {
         });
     }
     return res;
+}
+const clips = $derived.by((): Clip[] => {
+    void tick;
+    return computeClips(spans, ecs);
 });
 // ── geo node ticks (read-only, kex2d-geo-ux stage 2): a small circle in the marker
 // lane per INTERIOR node of a geo section, positioned via the section's own span
@@ -819,14 +840,25 @@ interface ForcePt {
     // (drag/field/scrub) adds a `dOf`-converted delta to; never mix with `startU`.
     len: number; // the section's authored extent, arclength ALWAYS (drag/field clamp domain)
 }
-const forcePts = $derived.by((): ForcePt[] => {
-    void tick;
+// One projection for force-keyframe points from the ECS — the shared computation both the
+// `forcePts` `$derived` (paced by `void tick` for the render) and the `forceU` `__kex` hook
+// call. The hook calls it with FRESH `computeClips`/`sectionSpans` results (not the stale
+// `$derived` values) so the keyframe positions are projected against the current bake's span
+// table. A keyframe create alone does not change the clip set or span table, but a strip
+// move/widen DOES change the bake (which changes `sectionSpans`), so the cached `$derived`
+// values can be stale after such a write — the hook passes fresh values to avoid a
+// mixed-freshness snapshot. `sectionForces(world, c.id)` is always a direct ECS query.
+function computeForcePts(
+    clipList: Clip[],
+    spanTable: SectionSpan[],
+    world: State,
+): ForcePt[] {
     if (eid === null) return [];
     const res: ForcePt[] = [];
-    for (const c of clips) {
+    for (const c of clipList) {
         if (c.kind !== SectionKind.Force) continue;
-        for (const p of sectionForces(ecs, c.id)) {
-            const d = toGlobal(spans, c.id, p.s);
+        for (const p of sectionForces(world, c.id)) {
+            const d = toGlobal(spanTable, c.id, p.s);
             // unreachable today (`clips` is built from the same `spans`), but a stale span
             // dropping a point for one frame beats painting it at NaN.
             if (d === null) continue;
@@ -847,6 +879,10 @@ const forcePts = $derived.by((): ForcePt[] => {
         }
     }
     return res;
+}
+const forcePts = $derived.by((): ForcePt[] => {
+    void tick;
+    return computeForcePts(clips, spans, ecs);
 });
 // the whole selected section SET (membership, for the clip highlight) — single-select is the
 // size-1 case. read through the tick like the rest of `editor`; the per-frame `clips` rebuild
@@ -1011,16 +1047,28 @@ interface BandStrip {
     // prefix").
     len: number;
 }
-const bandStrips = $derived.by((): BandStrip[] => {
-    void tick;
+// One projection for strip bands from the ECS — the shared computation both the `bandStrips`
+// `$derived` (paced by `void tick` for the render) and the `stripKfPx`/`stripPx` `__kex` hooks
+// call. The hooks call it directly for freshness: a capture flow that widens or moves a strip
+// via a synchronous ECS write and then creates a keyframe and reads pixel positions must not
+// read a stale `$derived` that hasn't re-evaluated this frame — the strip layout (`bandStrips`)
+// and the span table (`spans`) are both `$derived` behind `void tick`, and a strip move/widen
+// changes the bake (which changes `sectionSpans`), so their cached values can be stale. The
+// hook passes FRESH `computeClips`/`sectionSpans` results instead, so strips and keyframes are
+// projected against the SAME fresh snapshot — never one fresh and one stale.
+function computeBandStrips(
+    clipList: Clip[],
+    spanTable: SectionSpan[],
+    world: State,
+): BandStrip[] {
     if (eid === null) return [];
     const res: BandStrip[] = [];
-    for (const c of clips) {
+    for (const c of clipList) {
         const extent = c.extent;
-        for (const st of sectionStrips(ecs, c.id)) {
+        for (const st of sectionStrips(world, c.id)) {
             if (st.start >= extent) continue; // wholly past the extent — inert
-            const d0 = toGlobal(spans, c.id, st.start);
-            const d1 = toGlobal(spans, c.id, Math.min(st.end, extent)); // drawn clipped
+            const d0 = toGlobal(spanTable, c.id, st.start);
+            const d1 = toGlobal(spanTable, c.id, Math.min(st.end, extent)); // drawn clipped
             if (d0 === null || d1 === null) continue; // a stale span, `forcePts`' own guard
             res.push({
                 id: st.id,
@@ -1040,6 +1088,10 @@ const bandStrips = $derived.by((): BandStrip[] => {
         }
     }
     return res;
+}
+const bandStrips = $derived.by((): BandStrip[] => {
+    void tick;
+    return computeBandStrips(clips, spans, ecs);
 });
 // boundary ticks: the disambiguator for two abutting strips (Locked decision) — a strip's start
 // exactly equal to its section-mate's end, drawn as a small notch so the shared boundary reads
@@ -1087,11 +1139,24 @@ interface StripKfPt {
     start: number; // the strip's start (section-local, arclength)
     end: number; // the strip's end (section-local, arclength)
 }
-const stripKfPts = $derived.by((): StripKfPt[] => {
-    void tick;
+// One projection for strip-keyframe points from the ECS — the shared computation both the
+// `stripKfPts` `$derived` (paced by `void tick` for the render) and the `stripKfPx` `__kex`
+// hook call. The hook calls it with FRESH `computeBandStrips`/`computeClips`/`sectionSpans`
+// results (not the stale `$derived` values) so strips and keyframes are projected against the
+// SAME fresh span table. A keyframe create alone does not change the strip set or span table,
+// but a strip move/widen DOES change the bake (which changes `sectionSpans`), so the cached
+// `$derived` values can be stale after such a write — the previous shape (passing the stale
+// `bandStrips`/`spans` `$derived`) read fresh keyframes projected against a stale strip
+// layout, a mixed-freshness snapshot where the returned pixel was not where the diamond was
+// drawn. `stripKeyframes(world, s.id)` is always a direct ECS query.
+function computeStripKfPts(
+    strips: BandStrip[],
+    spanTable: SectionSpan[],
+    world: State,
+): StripKfPt[] {
     const out: StripKfPt[] = [];
-    for (const s of bandStrips) {
-        for (const k of stripKeyframes(ecs, s.id)) {
+    for (const s of strips) {
+        for (const k of stripKeyframes(world, s.id)) {
             out.push({
                 id: k.id,
                 strip: s.id,
@@ -1099,7 +1164,7 @@ const stripKfPts = $derived.by((): StripKfPt[] => {
                 s: k.s,
                 v: k.v,
                 u: (() => {
-                    const d = toGlobal(spans, s.section, k.s);
+                    const d = toGlobal(spanTable, s.section, k.s);
                     // same seam again: a strip keyframe on a downstream section shifts rigidly
                     // with an upstream lengthen (`bandStrips`/`forcePts`'s own note).
                     return d === null ? s.startU : uOfLen(d);
@@ -1112,6 +1177,10 @@ const stripKfPts = $derived.by((): StripKfPt[] => {
         }
     }
     return out;
+}
+const stripKfPts = $derived.by((): StripKfPt[] => {
+    void tick;
+    return computeStripKfPts(bandStrips, spans, ecs);
 });
 // every strip's own authored velocity curve, sampled over its extent for the solid draw —
 // either the constant `value` (no keyframes) or the keyframed curve (profile.sampleForce),
@@ -1208,7 +1277,7 @@ const selStripKfSet = $derived.by((): Set<number> => {
     return editor.stripKfs.ids;
 });
 // `selLocked`'s own twin — the pin-mode lockdown gates a strip keyframe's fields exactly like
-// a force keyframe's (`stripKfDown`'s own `sectionEditable` guard on the drag path).
+// a force keyframe's (`keyframeDown`'s own `sectionEditable` guard on the drag path).
 const selStripKfLocked = $derived.by((): boolean => {
     void tick;
     const k = selStripKfPt;
@@ -1275,6 +1344,35 @@ function sTargets(opts: {
 function gTargets(exclude?: Set<number>): number[] {
     const out: number[] = [yOf(Y_BASE)];
     for (const p of forcePts) if (!exclude?.has(p.id)) out.push(yOf(p.g));
+    return out;
+}
+// the v-axis snap targets in chart py (the vertical magnet for strip keyframes): content
+// landmarks only — the 0 m/s baseline (V_BASE, the velocity twin of Y_BASE) + every other
+// strip keyframe's v. the v-twin of `gTargets`.
+function vTargets(exclude?: Set<number>): number[] {
+    const out: number[] = [vOf(V_BASE)];
+    for (const k of stripKfPts) if (!exclude?.has(k.id)) out.push(vOf(k.v));
+    return out;
+}
+// the s-axis snap targets for a strip-keyframe drag: section boundaries + other strip
+// keyframes (excluding the dragged set and the same strip's keys — a station one of them
+// occupies is a landing the write refuses). the s-twin of `sTargets` for strip keyframes.
+function stripKfSTargets(opts: {
+    exclude?: Set<number>;
+    sameStrip?: number | null;
+    playhead: boolean;
+    trackEnd: boolean;
+}): number[] {
+    const v = clamped;
+    const out: number[] = [uToPx(v, 0)];
+    for (const b of bounds) out.push(uToPx(v, b));
+    if (opts.trackEnd) out.push(uToPx(v, uTotal));
+    for (const k of stripKfPts) {
+        if (opts.exclude?.has(k.id)) continue;
+        if (opts.sameStrip != null && k.strip === opts.sameStrip) continue;
+        out.push(uToPx(v, k.u));
+    }
+    if (opts.playhead && paused && cartS !== null) out.push(uToPx(v, uOf(cartS)));
     return out;
 }
 
@@ -1351,119 +1449,102 @@ function chartCreate(e: MouseEvent): void {
     selectForce(createForce(history, ecs, c.id, s, sampleForce(sectionForces(ecs, c.id), s)));
 }
 
-// drag a diamond in both axes (horizontal = s, vertical = g), one undo entry. the
-// last cursor position is kept in canvas space so the per-frame edge-grow (the
-// yView effect's drag branch) can re-map it through a grown axis. Shift is a no-op on a
-// force-keyframe drag: the per-axis gesture-start magnet is the "change just one axis"
-// affordance, so a dominant-axis lock is redundant here (removed 2026-07-23).
-let dragForce: number | null = $state(null); // the ANCHOR point id (snap resolves on it)
+// ── keyframe drag (unified: force and strip keyframes ride ONE code path — S1's substrate law).
+// drag a diamond in both axes (horizontal = s, vertical = g or v), one undo entry. the
+// last cursor position is kept in canvas space so the per-frame edge-grow (the yView/vView
+// effect's drag branch) can re-map it through a grown axis. Shift is a no-op on a keyframe
+// drag: the per-axis gesture-start magnet is the "change just one axis" affordance, so a
+// dominant-axis lock is redundant here.
+type KfKind = "force" | "strip";
+let dragKf: { kind: KfKind; id: number } | null = $state(null); // the ANCHOR keyframe
 // the cursor's axis coordinate at pointerdown -- the grab origin the anchor's arclength is
 // measured DELTA-FROM, projected through the GESTURE-FROZEN s↔t table (`s = s0 + (dOf(u) -
 // dOf(u0))`, never a raw axis delta -- that is seconds-scaled in Time view and would corrupt
 // this metres store, S6). `dOf` is identity in Distance, so a return-to-grab-pixel drag still
 // writes its start value back bit-exactly there.
-let dragU0 = 0;
-let dragStartU = 0; // the ANCHOR's section entry, projected -- pixel/snap-target math only
-let dragStartD = 0; // the ANCHOR's section entry in arclength -- the WRITE base
-let dragSection = -1; // the ANCHOR's section — the scope its own keys are unreachable within
-let dragLen = 0; // the ANCHOR's section extent (the anchor's own s clamp domain)
-let dragCx = 0; // last cursor, canvas-local px
-let dragCy = 0;
-let dragMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
-let dragS0 = 0; // the grab s / g — each axis's gesture-start landmark (always-on magnet)
-let dragG0 = 0;
-// the dragged SET, captured at gesture start: every selected member's start s/g + its own section
-// extent (the rigid-clamp bounds). single-select is the size-1 case (just the anchor). the whole
-// set moves by ONE shared (Δs, Δg) — relative offsets preserved exactly — resolved on the anchor.
-let dragMembers: { id: number; s0: number; g0: number; len: number; section: number }[] = [];
-// the last shared Δs that LANDED — what the block holds at when the next step would put a member
-// on an occupied station, so the group stops as one instead of tearing (the rigid-clamp law).
-let dragLastDs = 0;
-let dragMemberSet: Set<number> = new Set(); // the member ids, so the snap excludes every moving point
-function applyDrag(): void {
-    if (dragForce === null) return;
-    // both axes clamp the cursor to the chart: the view never moves under a drag,
-    // so past an edge the point rides it (y follows only as the edge-grow expands).
-    const cx = clamp(dragCx, LEFT_GUT, Math.max(LEFT_GUT, w));
-    // resolve the ANCHOR through the snap first (grid + landmarks + the gesture-start axis magnet),
-    // exactly as a single drag does — the shared delta then derives from where the anchor lands and
-    // the OTHER members follow it. the cursor's axis delta from the grab origin IS the anchor's
-    // delta (one axis, one unit), clamped to the anchor's own [0, len].
-    // the cursor's axis delta from the grab origin, projected through the GESTURE-FROZEN table
-    // into arclength (`dOf`, identity in Distance) -- the store's own axis -- never a raw axis
-    // (pixel) delta, which is seconds-scaled in Time view (S6 fix: this used to add a chart-axis
-    // delta straight to a metres value).
-    let sAnchor = clamp(dragS0 + (dOf(uAtPx(cx)) - dOf(dragU0)), 0, dragLen);
-    let gAnchor = yToG(clamp(dragCy, TOP, h - BOT_PAD));
+let dragKfU0 = 0;
+let dragKfStartD = 0; // the ANCHOR's section entry in arclength -- the WRITE base
+let dragKfSection = -1; // the ANCHOR's section — the scope its own keys are unreachable within
+let dragKfStrip = -1; // the ANCHOR's strip id (strip kind only — for overlap check scope)
+let dragKfLen = 0; // the ANCHOR's clamp upper bound (section extent or strip end)
+let dragKfLo = 0; // the ANCHOR's clamp lower bound (0 for force, strip.start for strip)
+let dragKfCx = 0; // last cursor, canvas-local px
+let dragKfCy = 0;
+let dragKfMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
+let dragKfS0 = 0; // the grab s / v — each axis's gesture-start landmark (always-on magnet)
+let dragKfV0 = 0;
+// the dragged SET, captured at gesture start: every selected member's start s/v + its own
+// clamp bounds (the rigid-clamp bounds). single-select is the size-1 case (just the anchor).
+// the whole set moves by ONE shared (Δs, Δv) — relative offsets preserved exactly.
+let dragKfMembers: { id: number; s0: number; v0: number; len: number; lo: number; section: number }[] = [];
+let dragKfLastDs = 0;
+let dragKfMemberSet: Set<number> = new Set();
+// the v-to-pixel and pixel-to-v projections, kind-specific: force uses yOf/yToG (g axis),
+// strip uses vOf/its inverse (v axis). set at drag start.
+let dragKfValToY: (v: number) => number = yOf;
+let dragKfYToVal: (py: number) => number = yToG;
+let dragKfVGrid = G_GRID;
+let dragKfValFloor: number | null = null; // null for force, V_FLOOR for strip
+function applyKeyframeDrag(): void {
+    if (dragKf === null) return;
+    const kind = dragKf.kind;
+    // both axes clamp the cursor to the chart
+    const cx = clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w));
+    // s-axis: same projection for both kinds (arclength through the gesture-frozen table)
+    let sAnchor = clamp(dragKfS0 + (dOf(uAtPx(cx)) - dOf(dragKfU0)), dragKfLo, dragKfLen);
+    // v-axis: kind-specific mapping
+    let vAnchor = dragKfYToVal(clamp(dragKfCy, TOP, h - BOT_PAD));
     snapX = null;
     snapY = null;
-    const active = snapActive(dragMod);
+    const active = snapActive(dragKfMod);
+    // s-axis snap — same `snapAxis` call for both kinds, kind-specific targets
     {
-        // the candidate and every landmark resolve on the chart's own PIXEL axis (`uOf`-projected,
-        // identity in Distance), so the grid quantum is the domain's own (`GRID` — metres of
-        // arclength, or `T_GRID` seconds); `dOf`/`uOf` translate every crossing between that axis
-        // and the arclength store below.
-        const uAnchor = uOf(dragStartD + sAnchor);
-        const targets = sTargets({
-            exclude: dragMemberSet,
-            sameSection: dragSection,
-            playhead: true,
-            trackEnd: true,
-        });
-        const startPx = uToPx(clamped, uOf(dragStartD + dragS0)); // gesture-start landmark
+        const uAnchor = uOf(dragKfStartD + sAnchor);
+        const targets = kind === "force"
+            ? sTargets({ exclude: dragKfMemberSet, sameSection: dragKfSection, playhead: true, trackEnd: true })
+            : stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });
+        const startPx = uToPx(clamped, uOf(dragKfStartD + dragKfS0));
         const r = snapAxis(active, uToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
             pxToU(clamped, px), startPx);
         if (r.guide !== null) {
-            // the gesture-start magnet resolves to the GRAB VALUE, never a px round-trip: the
-            // round-trip drops the last ulp, so a gesture returned to its start has to land on
-            // exactly the s it began at — else a zero-delta drag writes a difference and records
-            // an undo entry.
-            const local = r.guide === startPx ? dragS0 : dOf(r.value) - dragStartD;
-            // a landmark: only latch one the anchor can actually reach in its own section
-            if (local >= 0 && local <= dragLen) {
+            const local = r.guide === startPx ? dragKfS0 : dOf(r.value) - dragKfStartD;
+            if (local >= dragKfLo && local <= dragKfLen) {
                 sAnchor = local;
                 snapX = r.guide;
             }
         } else {
-            // grid (or bypass) — quantized on the chart's own axis, projected back to arclength
-            sAnchor = clamp(dOf(r.value) - dragStartD, 0, dragLen);
+            sAnchor = clamp(dOf(r.value) - dragKfStartD, dragKfLo, dragKfLen);
         }
     }
+    // v-axis snap — same `snapAxis` call, kind-specific targets and grid
     {
-        const targets = gTargets(dragMemberSet);
-        const startPy = yOf(dragG0); // gesture-start landmark
-        const r = snapAxis(active, yOf(gAnchor), gAnchor, targets, G_GRID, (py) => yToG(py), startPy);
-        // the same exact-grab rule as the s axis above: the start magnet resolves to the grabbed
-        // g, not `yToG(yOf(g))` — that round-trip loses the last ulp, so a gesture returned to its
-        // start wrote a g one ulp off its own and recorded an undo entry for a no-op.
-        gAnchor = r.guide === startPy ? dragG0 : r.value;
+        const targets = kind === "force" ? gTargets(dragKfMemberSet) : vTargets(dragKfMemberSet);
+        const startPy = dragKfValToY(dragKfV0);
+        const r = snapAxis(active, dragKfValToY(vAnchor), vAnchor, targets, dragKfVGrid, dragKfYToVal, startPy);
+        vAnchor = r.guide === startPy ? dragKfV0 : r.value;
         snapY = r.guide;
     }
-    // the shared delta from the anchor's resolved position, then the RIGID group clamp: Δs shrinks
-    // so every member stays in its own [0, len] (the tightest binds — AE comp-start block). when the
-    // clamp overrides the anchor's own s-snap the block has hit a wall, so drop the guide. g is
-    // unbounded, so its shared delta and guide pass through. the single-member case never clamps
-    // (the anchor already sits in its own bounds), so it stays byte-identical to today.
-    const dsRaw = sAnchor - dragS0;
-    const dg = gAnchor - dragG0;
-    const ds = clampDelta(
-        dragMembers.map((m) => ({ s: m.s0, len: m.len })),
-        dsRaw,
-    );
+    // shared delta + rigid group clamp
+    const dsRaw = sAnchor - dragKfS0;
+    const dv = vAnchor - dragKfV0;
+    const ds = clampDelta(dragKfMembers.map((m) => ({ s: m.s0, len: m.len, lo: m.lo })), dsRaw);
     if (ds !== dsRaw) snapX = null;
-    // the station refusal, applied to the BLOCK: `setForcePoint` refuses a taken station per key,
-    // which would tear a multi-drag apart (one member holding while the rest move breaks the
-    // offsets-preserved-exactly law). So the whole step is tested first and the block holds at the
-    // last landed Δs — the tightest member stops the block, exactly as the rigid clamp does. A
-    // single-member drag degenerates to the same thing: its one member IS the tightest.
-    const landed = dragMembers.every(
-        (m) => !stationTaken(ecs, m.section, clamp(m.s0 + ds, 0, m.len), m.id),
+    // overlap refusal (applied to the BLOCK): `keyframeTaken` checks both kinds through one path
+    const owner = kind === "force" ? -1 : dragKfStrip;
+    const landed = dragKfMembers.every(
+        (m) => !keyframeTaken(ecs, kind, kind === "force" ? m.section : owner, clamp(m.s0 + ds, m.lo, m.len), m.id),
     );
-    if (landed) dragLastDs = ds;
-    else snapX = null; // the block is against an occupied slot, not on a landmark
-    const dsWrite = landed ? ds : dragLastDs;
-    for (const m of dragMembers)
-        setForcePoint(ecs, m.id, clamp(m.s0 + dsWrite, 0, m.len), m.g0 + dg);
+    if (landed) dragKfLastDs = ds;
+    else snapX = null;
+    const dsWrite = landed ? ds : dragKfLastDs;
+    for (const m of dragKfMembers) {
+        const s = clamp(m.s0 + dsWrite, m.lo, m.len);
+        const v = m.v0 + dv;
+        if (kind === "force")
+            setForcePoint(ecs, m.id, s, v);
+        else
+            setStripKeyframe(ecs, m.id, s, dragKfValFloor !== null ? Math.max(dragKfValFloor, v) : v);
+    }
 }
 // double-press detection for the diamond summon: a keyframe drag captures the pointer on
 // pointerdown, which retargets the compatibility `dblclick` off the diamond (onto the canvas),
@@ -1472,177 +1553,136 @@ function applyDrag(): void {
 const FDBL_MS = 300;
 let lastFdownT = 0;
 let lastFdownId = -1;
-function forceDown(e: PointerEvent, p: ForcePt): void {
-    if (e.button !== 0) return; // left-only drag; right opens the keyframe menu
-    e.preventDefault();
-    e.stopPropagation(); // don't also deselect via the chartzone below
-    // shift-click TOGGLES set membership (the consensus grammar) — a selection gesture, not a drag.
-    if (e.shiftKey) {
-        selectForce(p.id, "toggle");
-        return;
-    }
-    if (lastFdownId === p.id && e.timeStamp - lastFdownT < FDBL_MS) {
-        lastFdownT = 0;
-        lastFdownId = -1;
-        // second press on the same diamond → summon its handles (single-subject). handle edit
-        // is an editing surface, so the lockdown gates the summon like every other edit.
-        if (sectionEditable(editor.pinning, p.section)) enterForceEdit(p.id);
-        return;
-    }
-    lastFdownT = e.timeStamp;
-    lastFdownId = p.id;
-    // grabbing a MEMBER of a multi-set keeps the set and drags the whole block (p becomes the active
-    // anchor); grabbing a non-member replace-selects just it (single drag) — the standard
-    // clicked-selected-vs-unselected rule.
-    if (editor.forces.ids.has(p.id)) activateForce(p.id);
-    else selectForce(p.id);
-    // the lockdown: another section's keys still SELECT (selection is a read) but never drag.
-    if (!sectionEditable(editor.pinning, p.section)) return;
-    // the drag set: every selected member's start s/g + its own extent (size-1 for a single drag).
-    const set = editor.forces.ids;
-    const members = set.size > 1 ? forcePts.filter((fp) => set.has(fp.id)) : [p];
-    dragMembers = members.map((fp) => ({
-        id: fp.id,
-        s0: fp.s,
-        g0: fp.g,
-        len: fp.len,
-        section: fp.section,
-    }));
-    dragLastDs = 0;
-    dragMemberSet = new Set(dragMembers.map((m) => m.id));
-    const rect = canvas.getBoundingClientRect();
-    dragCx = e.clientX - rect.left;
-    dragCy = e.clientY - rect.top;
-    dragMod = e.ctrlKey || e.metaKey;
-    dragS0 = p.s; // the anchor's start s/g — each axis's gesture-start magnet
-    dragG0 = p.g;
-    dragStartU = p.startU; // the anchor's section is fixed while its s is dragged inside it
-    dragStartD = p.startD; // the arclength twin -- the write base
-    dragSection = p.section;
-    dragLen = p.len;
-    // freeze the s↔t table for the whole gesture (S6): the dragged point's own g/s feeds back
-    // into v(s), so an unfrozen table would drift under its own gesture. Cleared in forceUp /
-    // cancelForceDrag.
-    gestureMapping = mapping;
-    // the grab origin: the cursor's axis coordinate read through the SAME chart clamp `applyDrag`
-    // resolves against, so returning to the grab pixel subtracts one value from itself exactly —
-    // a diamond sitting past the addressable span (its fat hit zone reaches `FHIT_R` outside the
-    // chart) would otherwise start the gesture with a phantom delta.
-    dragU0 = uAtPx(clamp(dragCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
-    beginForceMoves(
-        ecs,
-        dragMembers.map((m) => m.id),
-    );
-    dragForce = p.id;
-    beginDrag(canvas, e.pointerId);
-    window.addEventListener("pointermove", forceMove);
-    window.addEventListener("pointerup", forceUp);
-    // a real pointercancel (system gesture takeover) must finalize the gesture the same
-    // way a pointerup does — else the open history gesture never commits and corrupts undo
-    // grouping. beginDrag recovers the `dragging` flag on its own; this is the history close.
-    window.addEventListener("pointercancel", forceUp);
-}
-function forceMove(e: PointerEvent): void {
-    if (dragForce === null) return;
-    const rect = canvas.getBoundingClientRect();
-    dragCx = e.clientX - rect.left;
-    dragCy = e.clientY - rect.top;
-    dragMod = e.ctrlKey || e.metaKey; // live: bypass can be toggled mid-drag
-    applyDrag();
-}
-function forceUp(): void {
-    if (dragForce === null) return;
-    dragForce = null;
-    snapX = null;
-    snapY = null;
-    gestureMapping = null; // release the gesture-frozen table
-    commit(history); // one drag → one entry; a no-move click drops via the `same` guard
-    window.removeEventListener("pointermove", forceMove);
-    window.removeEventListener("pointerup", forceUp);
-    window.removeEventListener("pointercancel", forceUp);
-}
-
-// ── velocity-strip keyframe drag (T2: value in the graph): drag a diamond in both axes
-// (horizontal = s, vertical = v), one undo entry. The drag is clamped to the strip's
-// extent (clip-to-extent). The velocity value is floored at V_FLOOR (a held speed of 0
-// is a stall, not a controlled span — validStripValue's own shape).
-let dragStripKf: number | null = $state(null); // the dragged keyframe's stable id
-// the cursor's axis coordinate at pointerdown -- the grab origin the keyframe's arclength is
-// measured DELTA-FROM through the GESTURE-FROZEN table (`s = s0 + (dOf(u) - dOf(u0))`, the
-// force keyframe's own pattern -- `dragU0`). NOT the strip's section entry (`k.startU`) --
-// that's a different quantity, off by a whole section width, and was the S1 "keyframe drag
-// origin" bug (`s ≈ 2·s0`, both clamps pinning it to `end`).
-let dragStripKfGrabU0 = 0;
-let dragStripKfS0 = 0; // the keyframe's start s
-let dragStripKfV0 = 0; // the keyframe's start v
-let dragStripKfStart = 0; // the strip's start (section-local)
-let dragStripKfEnd = 0; // the strip's end (section-local)
-let dragStripKfCx = 0; // last cursor, canvas-local px
-let dragStripKfCy = 0;
-function stripKfDown(e: PointerEvent, k: StripKfPt): void {
+// the unified keyframe pointerdown — both force and strip keyframes ride this one path (S1).
+// `pt` carries the kind-specific fields; `kind` selects the value-axis mapping, snap targets,
+// overlap scope, setter, and clamp domain.
+function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    if (!sectionEditable(editor.pinning, k.section)) return;
-    // a keyframe now draws for every strip (S1 Visibility), so grabbing one owned by an
-    // unselected strip must select that strip first — `selectStripKf`'s own invariant is that
-    // the owning strip stays selected (its diamonds are drawn).
-    if (editor.strip !== k.strip) selectStrip(k.strip);
-    // shift-click TOGGLES set membership (S4's booked multi-select, `forceDown`'s own grammar) —
-    // a selection gesture, not a drag.
-    if (e.shiftKey) {
-        selectStripKf(k.id, "toggle");
-        return;
+    if (kind === "force") {
+        const p = pt as ForcePt;
+        // shift-click TOGGLES set membership — a selection gesture, not a drag.
+        if (e.shiftKey) {
+            selectForce(p.id, "toggle");
+            return;
+        }
+        // double-click → summon handles (force-only; strip keyframes have no tangent handles).
+        if (lastFdownId === p.id && e.timeStamp - lastFdownT < FDBL_MS) {
+            lastFdownT = 0;
+            lastFdownId = -1;
+            if (sectionEditable(editor.pinning, p.section)) enterForceEdit(p.id);
+            return;
+        }
+        lastFdownT = e.timeStamp;
+        lastFdownId = p.id;
+        // clicked-selected-vs-unselected rule
+        if (editor.forces.ids.has(p.id)) activateForce(p.id);
+        else selectForce(p.id);
+        // lockdown: another section's keys SELECT but never drag
+        if (!sectionEditable(editor.pinning, p.section)) return;
+        // drag set: every selected member (multi-member support)
+        const set = editor.forces.ids;
+        const members = set.size > 1 ? forcePts.filter((fp) => set.has(fp.id)) : [p];
+        dragKfMembers = members.map((fp) => ({
+            id: fp.id, s0: fp.s, v0: fp.g, len: fp.len, lo: 0, section: fp.section,
+        }));
+        dragKfS0 = p.s;
+        dragKfV0 = p.g;
+        dragKfStartD = p.startD;
+        dragKfSection = p.section;
+        dragKfLen = p.len;
+        dragKfLo = 0;
+        dragKfValToY = yOf;
+        dragKfYToVal = yToG;
+        dragKfVGrid = G_GRID;
+        dragKfValFloor = null;
+    } else {
+        const k = pt as StripKfPt;
+        // lockdown check
+        if (!sectionEditable(editor.pinning, k.section)) return;
+        // a keyframe draws for every strip, so grabbing one owned by an unselected strip must
+        // select that strip first (its diamonds are drawn).
+        if (editor.strip !== k.strip) selectStrip(k.strip);
+        // shift-click TOGGLES set membership — a selection gesture, not a drag.
+        if (e.shiftKey) {
+            selectStripKf(k.id, "toggle");
+            return;
+        }
+        // clicked-selected-vs-unselected rule
+        if (editor.stripKfs.ids.has(k.id)) activateStripKf(k.id);
+        else selectStripKf(k.id);
+        // drag set: every selected member (multi-member support — the fix for the broken modifier
+        // grammar: shift-click toggles into the set, then the drag moves ALL members by one delta)
+        const set = editor.stripKfs.ids;
+        const members = set.size > 1 ? stripKfPts.filter((sp) => set.has(sp.id)) : [k];
+        dragKfMembers = members.map((sp) => ({
+            id: sp.id, s0: sp.s, v0: sp.v, len: sp.end, lo: sp.start, section: sp.section,
+        }));
+        dragKfS0 = k.s;
+        dragKfV0 = k.v;
+        dragKfStartD = k.startD;
+        dragKfSection = k.section;
+        dragKfStrip = k.strip;
+        dragKfLen = k.end;
+        dragKfLo = k.start;
+        dragKfValToY = vOf;
+        dragKfYToVal = (py: number) =>
+            vView.lo + (1 - (py - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
+        dragKfVGrid = V_GRID;
+        dragKfValFloor = V_FLOOR;
     }
-    // grabbing a MEMBER of a multi-set keeps the set and promotes it active (`forceDown`'s own
-    // clicked-selected-vs-unselected rule); grabbing a non-member replace-selects just it.
-    if (editor.stripKfs.ids.has(k.id)) activateStripKf(k.id);
-    else selectStripKf(k.id);
-    dragStripKfS0 = k.s;
-    dragStripKfV0 = k.v;
-    dragStripKfStart = k.start;
-    dragStripKfEnd = k.end;
+    // common drag setup
+    dragKfMemberSet = new Set(dragKfMembers.map((m) => m.id));
+    dragKfLastDs = 0;
     const rect = canvas.getBoundingClientRect();
-    dragStripKfCx = e.clientX - rect.left;
-    dragStripKfCy = e.clientY - rect.top;
-    dragStripKfGrabU0 = uAtPx(clamp(dragStripKfCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
-    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
+    dragKfCx = e.clientX - rect.left;
+    dragKfCy = e.clientY - rect.top;
+    dragKfMod = e.ctrlKey || e.metaKey;
+    // freeze the s↔t table for the whole gesture (S6)
     gestureMapping = mapping;
-    beginStripKeyframeMove(ecs, k.id);
-    dragStripKf = k.id;
+    // the grab origin
+    dragKfU0 = uAtPx(clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
+    // begin the history gesture (kind-specific)
+    if (kind === "force")
+        beginForceMoves(ecs, dragKfMembers.map((m) => m.id));
+    else
+        beginStripKeyframeMoves(ecs, dragKfMembers.map((m) => m.id));
+    dragKf = { kind, id: dragKfMembers[0].id };
     beginDrag(canvas, e.pointerId);
-    window.addEventListener("pointermove", stripKfMove);
-    window.addEventListener("pointerup", stripKfUp);
-    window.addEventListener("pointercancel", stripKfUp);
+    window.addEventListener("pointermove", keyframeMove);
+    window.addEventListener("pointerup", keyframeUp);
+    window.addEventListener("pointercancel", keyframeUp);
 }
-function stripKfMove(e: PointerEvent): void {
-    if (dragStripKf === null) return;
+function keyframeMove(e: PointerEvent): void {
+    if (dragKf === null) return;
     const rect = canvas.getBoundingClientRect();
-    dragStripKfCx = clamp(e.clientX - rect.left, LEFT_GUT, Math.max(LEFT_GUT, w));
-    dragStripKfCy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
-    // the same gesture-frozen projection `applyDrag` uses -- `ds` is arclength, never a raw
-    // (seconds-scaled-in-Time-view) axis delta (S6 fix).
-    const ds = dOf(uAtPx(dragStripKfCx)) - dOf(dragStripKfGrabU0);
-    const dv = vView.lo + (1 - (dragStripKfCy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
-    setStripKeyframe(ecs, dragStripKf, clamp(dragStripKfS0 + ds, dragStripKfStart, dragStripKfEnd), Math.max(V_FLOOR, dv));
+    dragKfCx = e.clientX - rect.left;
+    dragKfCy = e.clientY - rect.top;
+    dragKfMod = e.ctrlKey || e.metaKey;
+    applyKeyframeDrag();
 }
-function stripKfUp(): void {
-    if (dragStripKf === null) return;
-    dragStripKf = null;
-    gestureMapping = null; // release the gesture-frozen table
+function keyframeUp(): void {
+    if (dragKf === null) return;
+    dragKf = null;
+    snapX = null;
+    snapY = null;
+    gestureMapping = null;
     commit(history);
-    window.removeEventListener("pointermove", stripKfMove);
-    window.removeEventListener("pointerup", stripKfUp);
-    window.removeEventListener("pointercancel", stripKfUp);
+    window.removeEventListener("pointermove", keyframeMove);
+    window.removeEventListener("pointerup", keyframeUp);
+    window.removeEventListener("pointercancel", keyframeUp);
 }
-function cancelStripKfDrag(): void {
-    if (dragStripKf === null) return;
-    dragStripKf = null;
-    gestureMapping = null; // release the gesture-frozen table
+function cancelKfDrag(): void {
+    if (dragKf === null) return;
+    dragKf = null;
+    snapX = null;
+    snapY = null;
+    gestureMapping = null;
     cancel();
-    window.removeEventListener("pointermove", stripKfMove);
-    window.removeEventListener("pointerup", stripKfUp);
-    window.removeEventListener("pointercancel", stripKfUp);
+    window.removeEventListener("pointermove", keyframeMove);
+    window.removeEventListener("pointerup", keyframeUp);
+    window.removeEventListener("pointercancel", keyframeUp);
 }
 
 // ── marquee (box-select) on the chart: a left-drag begun on empty chart space (the chartzone,
@@ -1718,6 +1758,9 @@ function marqueeUp(): void {
         if (!shift) {
             selectForce(null);
             selectSection(null);
+            selectStripKf(null); // also clear the strip-keyframe sub-selection (S1: the broken
+            // deselect — a strip keyframe stayed selected after an empty-chart click). the strip
+            // selection survives so `chartCreate`'s T2 branch can still read `editor.strip`.
         }
         return;
     }
@@ -1726,6 +1769,7 @@ function marqueeUp(): void {
     if (!shift && res.ids.length === 0) {
         selectForce(null);
         selectSection(null);
+        selectStripKf(null);
     } else {
         selectForces(res.ids, res.active);
     }
@@ -1859,7 +1903,7 @@ function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
     tanMod = e.ctrlKey || e.metaKey;
     beginForceTangent(ecs, pt.id);
     dragTan = { id: pt.id, side: hnd.side };
-    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note; a handle
+    // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note; a handle
     // reshapes the curve between keys, which feeds back into v(s) same as a keyframe drag does.
     gestureMapping = mapping;
     beginDrag(canvas, e.pointerId);
@@ -2505,7 +2549,7 @@ const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-e
 // own exit and every downstream boundary MOVE with the resize (self-snap), and upstream
 // boundaries are unreachable (they'd floor the length). the reach guard (the domain's own
 // `minForceExtent` floor) skips a snap the floor won't honor, so no guide flashes on an edge
-// that can't get there — matching applyDrag's reach guard.
+// that can't get there — matching applyKeyframeDrag's reach guard.
 //
 // The extent is the section's authored length, arclength ALWAYS (S6) -- so in `Domain.Time`
 // this same gesture reads a cursor position on the PROJECTED (seconds) chart axis and must
@@ -2555,7 +2599,7 @@ function lenDown(e: PointerEvent, c: Clip): void {
     beginLength(ecs, c.id);
     lenId = c.id;
     uFrozen = uTotal; // freeze the pan-clamp span so the view holds still under the drag
-    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
+    // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note.
     gestureMapping = mapping;
     // freeze the extrapolation's own exit speed at the SAME instant -- see `exitSpeed`'s own note.
     lenVExit = exitSpeed();
@@ -2773,14 +2817,14 @@ function bandDown(e: PointerEvent): void {
     if (!sectionEditable(editor.pinning, s.section)) return;
     e.preventDefault();
     e.stopPropagation();
-    // shift-click TOGGLES set membership (`forceDown`'s own grammar, generalized to spans) — a
+    // shift-click TOGGLES set membership (`keyframeDown`'s own grammar, generalized to spans) — a
     // selection gesture, not a drag.
     if (e.shiftKey) {
         selectStrip(s.id, "toggle");
         return;
     }
     selectStrip(s.id);
-    // freeze the s↔t table for the whole gesture (S6) -- see `forceDown`'s own note.
+    // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note.
     gestureMapping = mapping;
     if (hit.kind === "endpoint" || hit.kind === "glyph") {
         // a glyph (degenerate strip, S6 finding 8) drags out as an "end" extend ONLY — there is
@@ -2850,9 +2894,12 @@ function createStripAt(section: number, station: number): void {
 // Delete removes the selected strip; Escape clears the selection.
 function deleteSelectedStrip(): void {
     if (editor.strip === null) return;
-    const s = selStrip;
-    if (s === null) return;
-    if (!sectionEditable(editor.pinning, s.section)) return;
+    // read the strip's section from the ECS directly — `selStrip` is a `$derived` behind
+    // `bandStrips` behind the RAF `void tick`, so a Delete pressed before the tick sees null
+    // and no-ops (section.pw.ts:1582). `stripAt` + `Strip.section.get` are synchronous.
+    const eid = stripAt(ecs, editor.strip);
+    if (eid === null) return;
+    if (!sectionEditable(editor.pinning, Strip.section.get(eid))) return;
     deleteStrips(history, ecs, [...editor.strips.ids]);
 }
 // Delete removes the WHOLE selected strip-keyframe SET (S4's booked multi-select, `deleteForces`'
@@ -2860,65 +2907,62 @@ function deleteSelectedStrip(): void {
 // the innermost selection, not the strip). single-select is the size-1 case.
 function deleteSelectedStripKf(): void {
     if (editor.stripKf === null) return;
-    const s = selStrip;
-    if (s === null) return;
-    if (!sectionEditable(editor.pinning, s.section)) return;
+    // read the owning strip's section from the ECS directly — `selStrip` is a `$derived` behind
+    // `bandStrips` behind the RAF `void tick`, so a Delete pressed before the tick sees null and
+    // no-ops (the same F1 race `deleteSelectedStrip` above already repairs). `editor.strip !==
+    // null` is `stripKfs`'s own invariant (a non-empty sub-selection implies an owning strip);
+    // `stripAt` + `Strip.section.get` are synchronous.
+    if (editor.strip === null) return;
+    const eid = stripAt(ecs, editor.strip);
+    if (eid === null) return;
+    if (!sectionEditable(editor.pinning, Strip.section.get(eid))) return;
     deleteStripKeyframes(history, ecs, [...editor.stripKfs.ids]);
     selectStripKf(null);
 }
 
-// ── the selected point's typed s/g fields ──
+// ── the selected keyframe's typed s/v fields (unified — force and strip ride one path) ──
 // each field commits one undo entry through the drag gesture (begin → set → commit).
-function fieldEdit(s: number, g: number): void {
+function kfFieldEdit(s: number, v: number): void {
     const p = selPoint;
-    if (p === null || !Number.isFinite(s) || !Number.isFinite(g)) return; // guard a cleared field
-    if (!sectionEditable(editor.pinning, p.section)) return; // the lockdown (fields disabled too)
-    // a keyboard-committed mutation skips a live landing first, like undo/redo (`onKey`): the
-    // pointer paths skip via App's capture listener, but Enter reaches here with no pointerdown.
-    skipLanding();
-    beginForceMove(ecs, p.id);
-    setForcePoint(ecs, p.id, clamp(s, 0, p.len), g);
-    commit(history);
+    const k = selStripKfPt;
+    if (p === null && k === null) return;
+    if (!Number.isFinite(s) || !Number.isFinite(v)) return;
+    if (p !== null) {
+        if (!sectionEditable(editor.pinning, p.section)) return;
+        skipLanding();
+        beginForceMove(ecs, p.id);
+        setForcePoint(ecs, p.id, clamp(s, 0, p.len), v);
+        commit(history);
+    } else if (k !== null) {
+        if (!sectionEditable(editor.pinning, k.section)) return;
+        skipLanding();
+        beginStripKeyframeMove(ecs, k.id);
+        setStripKeyframe(ecs, k.id, clamp(s, k.start, k.end), Math.max(V_FLOOR, v));
+        commit(history);
+    }
 }
 // the position field speaks the chart's own domain (global d, or global t — label and unit
 // follow, `posLabel`/`posUnit`), never the store's (arclength ALWAYS -- S6), so the write goes
 // through `dOf` (identity in Distance) before subtracting the section's arclength entry.
-// fieldEdit clamps into [0, len].
-function onFieldPos(e: Event): void {
-    if (!selPoint) return;
-    const u = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    fieldEdit(dOf(u) - selPoint.startD, selPoint.g);
-}
-function onFieldG(e: Event): void {
-    if (!selPoint) return;
-    fieldEdit(selPoint.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
-}
-// ── the selected strip keyframe's typed s/v fields (S3, findings 10/3 — value shown on
-// selection mirrors `fieldEdit`'s own shape) ── clamps `s` to the STRIP's own bounds (its
-// `stripKfDown`/`stripKfMove` gesture's own clamp domain, not `[0, len]` like a force point:
-// a strip keyframe's substrate is the strip, not the section), and `v` at `V_FLOOR`
-// (`validStripValue`'s own floor, `setStripKeyframe`'s own guard). The unit label on `v` is
-// booked to S5 (Locked decision finding 11 "near half" — m/s on selection readouts); this
-// field shows the bare number today, matching the force `g` field's own unitless "F" row.
-function stripKfFieldEdit(s: number, v: number): void {
+function onFieldKfS(e: Event): void {
+    const p = selPoint;
     const k = selStripKfPt;
-    if (k === null || !Number.isFinite(s) || !Number.isFinite(v)) return; // guard a cleared field
-    if (!sectionEditable(editor.pinning, k.section)) return; // the lockdown (fields disabled too)
-    skipLanding();
-    beginStripKeyframeMove(ecs, k.id);
-    setStripKeyframe(ecs, k.id, clamp(s, k.start, k.end), Math.max(V_FLOOR, v));
-    commit(history);
+    if (p !== null) {
+        const u = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
+        kfFieldEdit(dOf(u) - p.startD, p.g);
+    } else if (k !== null) {
+        const u = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
+        kfFieldEdit(dOf(u) - k.startD, k.v);
+    }
 }
-// the position field speaks the chart's own domain, `onFieldPos`'s own shape — through `dOf`
-// before subtracting the strip's section entry (`startD`).
-function onFieldStripS(e: Event): void {
-    if (!selStripKfPt) return;
-    const u = Number.parseFloat((e.currentTarget as HTMLInputElement).value);
-    stripKfFieldEdit(dOf(u) - selStripKfPt.startD, selStripKfPt.v);
-}
-function onFieldStripV(e: Event): void {
-    if (!selStripKfPt) return;
-    stripKfFieldEdit(selStripKfPt.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
+function onFieldKfV(e: Event): void {
+    const p = selPoint;
+    const k = selStripKfPt;
+    if (p !== null) {
+        kfFieldEdit(p.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
+    } else if (k !== null) {
+        kfFieldEdit(k.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
+    }
 }
 // ── the selected handle's typed (Δs, Δg) fields ── mirrors the keyframe fields, but the
 // commit goes through the shared tangent write path (composeTangent — x-clamp + Aligned
@@ -2930,7 +2974,7 @@ function handleFieldEdit(ds: number, dg: number): void {
     if (!sectionEditable(editor.pinning, h.pt.section)) return; // the lockdown
     const tan = tangentFor(h.pt.id, h.side, ds, dg);
     if (!tan) return;
-    skipLanding(); // keyboard-committed keyframe mutation: same routing as fieldEdit above
+    skipLanding(); // keyboard-committed keyframe mutation: same routing as kfFieldEdit above
     beginForceTangent(ecs, h.pt.id);
     setForceTangent(ecs, h.pt.id, tan);
     commit(history);
@@ -3031,7 +3075,7 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
         // entry speed) — and inverts through the GESTURE-FROZEN table for the write (`dOf`,
         // identity in Distance; S6 fix -- `v`/`p.startU` are the chart's own axis, never the
         // metres store directly).
-        gestureMapping = mapping; // freeze -- see `forceDown`'s own note
+        gestureMapping = mapping; // freeze -- see `keyframeDown`'s own note
         labelScrub(e, {
             seed: p.u,
             rate: timeDomain ? SCRUB_T : SCRUB_S,
@@ -3121,15 +3165,7 @@ function fieldKeydown(e: KeyboardEvent, reset: string): void {
     }
 }
 function cancelForceDrag(): void {
-    if (dragForce === null) return;
-    dragForce = null;
-    snapX = null;
-    snapY = null;
-    gestureMapping = null; // release the gesture-frozen table
-    cancel(); // interrupted (unmount mid-drag): revert to the pre-gesture s/g
-    window.removeEventListener("pointermove", forceMove);
-    window.removeEventListener("pointerup", forceUp);
-    window.removeEventListener("pointercancel", forceUp);
+    cancelKfDrag();
 }
 
 // ── middle-button drag pans the view. intercepted at the host's capture phase so it
@@ -3713,13 +3749,12 @@ function cancelAll(): void {
     sliderUp(); // and any in-flight player-slider drag
     panUp(); // and any in-flight middle-drag pan
     navUp(); // and any in-flight navigator drag
-    cancelForceDrag(); // and any in-flight force-point drag
+    cancelForceDrag(); // and any in-flight keyframe drag (unified — force or strip)
     marqueeCancel(); // and any in-flight chart marquee (its listeners live on window)
     cancelTanDrag(); // and any in-flight handle drag
     cancelLenDrag(); // and any in-flight extent drag
     cancelLabelScrub(); // and any in-flight label scrub (its listeners live on the label, not window)
     cancelStripDrag(); // and any in-flight strip resize/body drag
-    cancelStripKfDrag(); // and any in-flight strip-keyframe drag
     endDragGesture(); // clear the drag flag (no release event tore it down)
 }
 onMount(() => {
@@ -3825,6 +3860,53 @@ onMount(() => {
                 e.preventDefault();
                 if (editor.stripKf !== null) deleteSelectedStripKf();
                 else deleteSelectedStrip();
+            } else if (
+                editor.stripKf !== null &&
+                editor.hover === "timeline" &&
+                (e.key === "ArrowLeft" ||
+                    e.key === "ArrowRight" ||
+                    e.key === "ArrowUp" ||
+                    e.key === "ArrowDown")
+            ) {
+                // arrow-nudge the selected strip-keyframe set — the force keyframe's own path
+                // through `nudgeKeyframes` (S1: both kinds ride one nudge function). only while a
+                // strip keyframe is selected and the pointer is over the timeline. Shift coarse;
+                // one press = one undo entry.
+                //
+                // read the strip + its keyframes from the ECS directly, not `stripKfPts` (a
+                // `$derived` behind the RAF `void tick`, same class `deleteSelectedStrip`'s own
+                // note documents and the GEO nudge's `nodeLocal` already fixed, `controls.ts`):
+                // a second nudge fired before `tick` has advanced since the first nudge's write
+                // reads the PRE-write `s` as its base, rounds to the same grid point one step
+                // short, and commits a wrong value (section.pw.ts:2344, witnessed:
+                // `toBeCloseTo` Expected 11.1, Received 11 with no frame between the two
+                // presses). `stripAt`/`stripKeyframes` are synchronous ECS queries.
+                const stripEid = stripAt(ecs, editor.strip);
+                if (stripEid === null) return;
+                const members = stripKeyframes(ecs, editor.strip).filter((k) =>
+                    editor.stripKfs.ids.has(k.id),
+                );
+                if (members.length === 0) return;
+                if (!sectionEditable(editor.pinning, Strip.section.get(stripEid))) return;
+                e.preventDefault();
+                skipLanding();
+                const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
+                const stepV = e.shiftKey ? NUDGE_V_COARSE : NUDGE_V;
+                const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
+                const dv = e.key === "ArrowUp" ? stepV : e.key === "ArrowDown" ? -stepV : 0;
+                const lo = Strip.start.get(stripEid);
+                const len = Strip.end.get(stripEid);
+                beginStripKeyframeMoves(
+                    ecs,
+                    members.map((m) => m.id),
+                );
+                for (const w of nudgeKeyframes(
+                    members.map((m) => ({ id: m.id, s: m.s, v: m.v, len, lo })),
+                    ds,
+                    dv,
+                ))
+                    setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
+                commit(history);
             }
             return;
         }
@@ -3874,7 +3956,7 @@ onMount(() => {
                     // timeline (the hovered-surface router — a node nudge in the viewport must not
                     // also move a force point). single-select rounds the absolute result to the
                     // field grid (pre-multiselect semantics); a multi-set moves by one shared delta
-                    // under the rigid clamp, offsets preserved (`nudgeForces`, timeline.ts). Shift
+                    // under the rigid clamp, offsets preserved (`nudgeKeyframes`, timeline.ts). Shift
                     // coarse; one press = one undo entry.
                     const members = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
                     if (members.length === 0) return;
@@ -3889,8 +3971,12 @@ onMount(() => {
                         ecs,
                         members.map((m) => m.id),
                     );
-                    for (const w of nudgeForces(members, ds, dg))
-                        setForcePoint(ecs, w.id, w.s, w.g);
+                    for (const w of nudgeKeyframes(
+                        members.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
+                        ds,
+                        dg,
+                    ))
+                        setForcePoint(ecs, w.id, w.s, w.v);
                     commit(history);
                 }
             }
@@ -3919,8 +4005,17 @@ onMount(() => {
             // halves apart — `main.ts`'s `forces()` only ever reads section 0 (`sec()`), so it
             // can't see a split's tail — without re-deriving `forcePts`' own grouping by hand.
             k.domain = (): string => (domain === Domain.Time ? "time" : "distance");
-            k.forceU = (): { id: number; section: number; s: number; g: number; u: number }[] =>
-                forcePts.map((p) => ({ id: p.id, section: p.section, s: p.s, g: p.g, u: p.u }));
+            // `forceU` computes its whole snapshot fresh from the ECS: a FRESH `sectionSpans`
+            // call (not the stale `spans` `$derived`) feeds a FRESH `computeClips` call (not the
+            // stale `clips` `$derived`), so the keyframe positions are projected against the
+            // current bake's span table — never a mix of fresh keyframes and stale clips/spans.
+            // A strip move/widen changes the bake (which changes `sectionSpans`), so the cached
+            // `$derived` values can be stale after such a write.
+            k.forceU = (): { id: number; section: number; s: number; g: number; u: number }[] => {
+                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+                const freshClips = computeClips(freshSpans, ecs);
+                return computeForcePts(freshClips, freshSpans, ecs).map((p) => ({ id: p.id, section: p.section, s: p.s, g: p.g, u: p.u }));
+            };
             // the chart's axis<->arclength lens, both directions, at the LIVE (or, mid-gesture,
             // gesture-frozen) s↔t table — S6's own oracle: a capture flow calls these BEFORE
             // starting a drag to read the table the gesture will freeze, so it can verify a write
@@ -3937,10 +4032,20 @@ onMount(() => {
             // than re-deriving the arclength→px projection a second time (the ctxCut precedent).
             k.ghostPx = (): { x0: number; x1: number }[] => ghostSpans;
             // the selected strip's keyframe diamonds' screen px, projected exactly as drawn
-            // (the capture flow's pixel probe reads these to drive real pointer events).
+            // (the capture flow's pixel probe reads these to drive real pointer events). Computes
+            // its WHOLE snapshot fresh from the ECS: a FRESH `sectionSpans` call feeds FRESH
+            // `computeClips` and `computeBandStrips` calls, so strips and keyframes are projected
+            // against the SAME fresh span table — never one fresh and one stale. The previous
+            // shape (calling `computeStripKfPts` with the stale `bandStrips`/`spans` `$derived`)
+            // read fresh keyframes projected against a stale strip layout — a mixed-freshness
+            // snapshot where the returned pixel was not where the diamond was drawn after a strip
+            // move/widen changed the bake.
             k.stripKfPx = (): { id: number; x: number; y: number }[] => {
                 const rect = canvas.getBoundingClientRect();
-                return stripKfPts.map((k) => ({
+                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+                const freshClips = computeClips(freshSpans, ecs);
+                const freshStrips = computeBandStrips(freshClips, freshSpans, ecs);
+                return computeStripKfPts(freshStrips, freshSpans, ecs).map((k) => ({
                     id: k.id,
                     x: rect.left + uPx(k.u),
                     y: rect.top + vOf(k.v),
@@ -3949,8 +4054,14 @@ onMount(() => {
             // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
             // page-absolute like `stripKfPx`) — S3's own capture flow reads these to drive a
             // REAL pointer at a strip's edge/body without re-deriving `uPx`'s projection.
-            k.stripPx = (): { id: number; x0: number; x1: number }[] =>
-                bandStrips.map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
+            // Computes fresh from the ECS (same shared `computeBandStrips` call as `stripKfPx`)
+            // so a capture flow that just moved/widened a strip reads the current layout, not
+            // the stale `$derived`.
+            k.stripPx = (): { id: number; x0: number; x1: number }[] => {
+                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+                const freshClips = computeClips(freshSpans, ecs);
+                return computeBandStrips(freshClips, freshSpans, ecs).map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
+            };
             // the chart's own addressable-span end, on the ACTIVE axis (bounded past a stall in
             // Time, S2, finding 13) — distinct from `tTotal` (main.ts, the bake's unbounded
             // total) precisely so a flow can assert the chart clamps where the bake doesn't.
@@ -4306,7 +4417,7 @@ onMount(() => {
                                 cx={mx}
                                 cy={my}
                                 r={FHIT_R}
-                                onpointerdown={(e) => forceDown(e, p)}
+                                onpointerdown={(e) => keyframeDown(e, "force", p)}
                                 oncontextmenu={(e) => forceCtx(e, p)}
                                 role="button"
                                 tabindex="-1"
@@ -4348,7 +4459,7 @@ onMount(() => {
                                 cx={mx}
                                 cy={my}
                                 r={FHIT_R}
-                                onpointerdown={(e) => stripKfDown(e, k)}
+                                onpointerdown={(e) => keyframeDown(e, "strip", k)}
                                 role="button"
                                 tabindex="-1"
                                 aria-label="Velocity keyframe"
@@ -4489,7 +4600,7 @@ onMount(() => {
                 <div
                     class="ptip"
                     class:below={ay < TOP + TIP_FLIP}
-                    class:dragging={dragForce !== null}
+                    class:dragging={dragKf !== null}
                     style="left: {ax}px; top: {ay}px"
                 >
                     <div class="fld">
@@ -4504,7 +4615,7 @@ onMount(() => {
                             min={selPoint.startU}
                             value={posText}
                             disabled={selLocked}
-                            onchange={onFieldPos}
+                            onchange={onFieldKfS}
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, posText)}
                             aria-label={timeDomain ? "Point time (s)" : "Point distance (m)"}
@@ -4522,7 +4633,7 @@ onMount(() => {
                             step="0.1"
                             value={gText}
                             disabled={selLocked}
-                            onchange={onFieldG}
+                            onchange={onFieldKfV}
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, gText)}
                             aria-label="Point force (g)"
@@ -4546,7 +4657,7 @@ onMount(() => {
                 <div
                     class="ptip"
                     class:below={ay < TOP + TIP_FLIP}
-                    class:dragging={dragStripKf !== null}
+                    class:dragging={dragKf !== null && dragKf.kind === "strip"}
                     style="left: {ax}px; top: {ay}px"
                 >
                     <div class="fld">
@@ -4557,7 +4668,7 @@ onMount(() => {
                             min={selStripKfPt.startU}
                             value={posText}
                             disabled={selStripKfLocked}
-                            onchange={onFieldStripS}
+                            onchange={onFieldKfS}
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, posText)}
                             aria-label={timeDomain ? "Keyframe time (s)" : "Keyframe distance (m)"}
@@ -4571,7 +4682,7 @@ onMount(() => {
                             step="0.1"
                             value={vText}
                             disabled={selStripKfLocked}
-                            onchange={onFieldStripV}
+                            onchange={onFieldKfV}
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, vText)}
                             aria-label="Keyframe velocity (m/s)"
