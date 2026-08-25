@@ -255,18 +255,18 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
     await page.mouse.down();
     await page.mouse.move(endPageX + 250, endPageY, { steps: 10 });
     await page.mouse.up();
-    // the CONDITION, never a frame count: what the rest of this arm actually needs is a genuine
-    // body region (more than `STRIP_HIT_R` from either edge) — poll THAT (never rendered
-    // pixels), not a growth claim the ceiling clamp can legitimately refuse. Replaces
-    // `frames(page, 1)`.
-    await expect
-        .poll(async () => {
-            const s = (
-                (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-            ).find((r) => r.id === created.id);
-            return s ? s.x1 - s.x0 : null;
-        })
-        .toBeGreaterThan(4 * STRIP_HIT_R);
+    // NOT a settle (kex2d-capture-deflake S2 finding F4): the pre-drag strip is already
+    // ~278px wide at this zoom, far past `4 * STRIP_HIT_R` (24px), so a poll gated on that
+    // same threshold is satisfied on its very first check regardless of whether the drag has
+    // landed — it buys no synchronization over the `frames(page, 1)` it replaced. `stripPx` is
+    // read fresh off the ECS (`freshness.pw.ts`'s MUST-READ-FRESH set), so there is no
+    // propagation race here to poll for in the first place — a plain read is honest. The arm's
+    // real synchronization point is the `expect.poll(selectedStrip)` below, after Escape: that
+    // is what the pixel probes further down actually wait on.
+    const stripPxAfterWiden = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((r) => r.id === created.id);
+    if (!stripPxAfterWiden) throw new Error("widened strip not found");
 
     // deselect — the general (unselected) case, since a selected strip already wears its own
     // brighter stroke+fill and would make the edge/body split trivial for the wrong reason.
@@ -363,6 +363,14 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
 // re-mutating confirmed exactly that (both directions green). The `$effect` guard is still in
 // `Timeline.svelte`, kept as a zero-cost hardening rather than a demonstrated fix.
 
+// RED-FIRST WITNESS (kex2d-capture-deflake S2, 2026-08-25): deleting the `!sel &&` guard on
+// `Timeline.svelte`'s endpoint-hover stroke (so the resize stroke draws unconditionally, the
+// exact bug this test guards against) reds this arm — `capture -g "selected strip suppresses
+// the endpoint hover stroke"` exits 1 ("a selected strip's edge must ignore hover", the
+// SelHoverTol assert) — reverted and reran green (exit 0). The two `frames(page, 1)` settles
+// are replaced by polling `bandHit` (the same classification-state reader the hit-zone
+// partition arm above already uses) — the PARTITION a pointer position resolves to, never a
+// frame count, so this arm survives a later in-scheme colour change to the stroke itself.
 test("selected strip suppresses the endpoint hover stroke (S3 review finding 1)", async ({
     page,
     boot,
@@ -385,16 +393,22 @@ test("selected strip suppresses the endpoint hover stroke (S3 review finding 1)"
     if (!selected) throw new Error("selected strip not found");
     const { x0 } = selected;
 
-    // rest, still selected: no hover anywhere near the band.
+    // rest, still selected: no hover anywhere near the band. Await the PARTITION reaching
+    // "empty" (`bandHit`, the classification `render()` reads), never a frame count — the
+    // condition the rest of this arm actually needs, same idiom as the hit-zone partition arm.
     await page.mouse.move(5, 5);
-    await frames(page, 1);
+    await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
     const restSelected = await probeChart(page, x0, bandY);
     expect(restSelected).not.toBeNull();
 
-    // hover the SELECTED strip's own start edge with a real pointer move.
+    // hover the SELECTED strip's own start edge with a real pointer move. Await the
+    // classification reaching the endpoint kind for this strip's start edge — the condition
+    // `bandHit.kind === "endpoint"`'s `!sel` guard reads before the stroke draws (or doesn't).
     const [edgePageX, edgePageY] = toPage(x0);
     await page.mouse.move(edgePageX, edgePageY);
-    await frames(page, 1);
+    await expect
+        .poll(() => kexCall(page, "bandHit"))
+        .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
     const hoverSelectedEdge = await probeChart(page, x0, bandY);
     expect(hoverSelectedEdge).not.toBeNull();
 

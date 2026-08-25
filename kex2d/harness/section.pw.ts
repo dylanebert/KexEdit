@@ -1806,13 +1806,16 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     // leaves the clicked keyframe behind, `Received` carrying the extra id) — the settle was
     // never what made this test discriminate the buggy no-op from the fixed behavior.
     //
-    // RE-VERIFIED (kex2d-capture-deflake S2, 2026-08-25): `capture -g "strip keyframe delete
-    // before the selection tick settles" --repeat-each 8` exits 0, 8/8 on this tree. Re-ran the
-    // mutation directly rather than trusting the prior claim: perturbed `deleteSelectedStripKf`
-    // back to the pre-fix `selStrip`-reading body (`if (selStrip === null) return`) and re-ran
-    // `--repeat-each 4` with no other change — reds 4/4 (`toEqual(seededIds)` timeout, `Received`
-    // carrying the clicked keyframe's id, exactly this comment's own claim), then reverted and
-    // reran green (exit 0). Still constructs the race, not vacuous.
+    // ADDITIONAL CONFIRMATION (2026-08-25) — NOT an S2 roster member (`kex2d-event-substrate`
+    // Validation owns this test; it does not appear in the S2 roster readings this spec's
+    // Approach names): `capture -g "strip keyframe delete before the selection tick settles"
+    // --repeat-each 8` exits 0, 8/8 on this tree. Re-ran the mutation directly rather than
+    // trusting the prior claim: perturbed `deleteSelectedStripKf` back to the pre-fix
+    // `selStrip`-reading body (`if (selStrip === null) return`) and re-ran `--repeat-each 4`
+    // with no other change — reds 4/4 (`toEqual(seededIds)` timeout, `Received` carrying the
+    // clicked keyframe's id, exactly this comment's own claim), then reverted and reran green
+    // (exit 0). Still constructs the race, not vacuous — recorded here as extra rigor, not as
+    // discharging any obligation this spec's S2 stage owes.
     await page.keyboard.press("Escape");
     await expect.poll(async () => await kexCall(page, "selectedStrip")).toBe(null);
 
@@ -1876,6 +1879,15 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
     // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
     // editing flow"'s own docblock at its matching line, same mechanism.
+    //
+    // RE-VERIFIED (kex2d-capture-deflake S2, 2026-08-25, roster member `section.pw.ts:1791` at
+    // base `6b88280`): `capture -g "velocity strip keyframe drag origin flow" --repeat-each 8`
+    // exits 0, 8/8 on this tree — the no-readable-condition claim above still holds (checked
+    // against source, not inherited: neither `bandStrips` nor `selStrip` is exposed on `__kex`,
+    // and this edge-drag widen goes through `bandDown` → `bandCandidates` → `bandStrips`, the
+    // identical mechanism S1 verified and forced-race-witnessed on the sibling arm this comment
+    // cites), so the settle stays lawful. This is a `-g`-scoped rerun, not full-suite-load
+    // evidence — a full `bun run capture` acceptance sweep is S3's one-time spend, not owed here.
 
     // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
     // width — a dblclick at the strip's midpoint would land on a diamond's own hit area

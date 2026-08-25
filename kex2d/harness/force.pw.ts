@@ -1965,22 +1965,22 @@ test("timeline domain flow — a downstream clip's edge also tracks an upstream 
 // a double-click in Time view landed the new keyframe at the raw seconds-scaled delta added to
 // the section's own axis-projected entry, not the arclength the click implies.
 //
-// VERIFIED RESOLVED (kex2d-capture-deflake S2, 2026-08-25): `kex2d-event-substrate.md`
+// VERIFIED GREEN (kex2d-capture-deflake S2, 2026-08-25): `kex2d-event-substrate.md`
 // recorded this test (cited by its own declaration line, "force.pw.ts:1897") as a standing
 // deterministic red — `Expected: 6 / Received: 5` on the closing `forceCount` poll, 8/8 at
-// `6b88280`, 4/4 on a same-day re-read — owned by no stage. This test's own body is
-// byte-identical between `6b88280` and this diff's base (`git diff 6b88280 HEAD --
-// harness/force.pw.ts` shows no change to it), while `src/Timeline.svelte`'s keyframe
-// interaction path was substantially rewritten by `kex2d-event-substrate` S1's "keyframe
-// interaction substrate" unification (landed after the roster reading, three commits ending
-// `be44bd3`) — one shared path for force- and strip-keyframe gestures replacing the prior
-// bespoke double-click handling this test's own header describes fixing once already. Re-run
-// on the current tree: `capture -g "S6c2" --repeat-each 8` exits 0, 8/8 (2026-08-25), and the
-// full `force.pw.ts` suite (20 tests) ran clean 4 consecutive times. Root-caused to the
-// substrate unification rather than to any change in this stage's own diff — recorded here
-// because a green re-read with no red-first arm of this stage's own authorship is not
-// self-evidence, and the next person hitting this docblock needs the citation trail rather
-// than a bare "seems fine now."
+// `6b88280`, 4/4 on a same-day re-read — owned by no stage. Re-run on the current tree:
+// `capture -g "S6c2" --repeat-each 8` exits 0, 8/8 (2026-08-25), and the full `force.pw.ts`
+// suite (20 tests) ran clean 4 consecutive times. This test's own body is byte-identical
+// between `6b88280` and this diff's base (`git diff 6b88280 HEAD -- harness/force.pw.ts` shows
+// no change to it); `kex2d-event-substrate` S1's "keyframe interaction substrate" unification
+// (landed after the roster reading, three commits ending `be44bd3`) is the only candidate
+// cause found — the force-keyframe branch of `chartCreate` this test exercises
+// (`Timeline.svelte`'s `const s = clamp(dOf(u) - c.s0, 0, c.len)`) is itself byte-identical
+// across the same range, so the fix, if any, is not in the line this test's own header names.
+// No mechanism-level line or branch was identified as the cause, and no predictive check
+// (a re-mutation isolating which S1 change flips this test) was run — this entry records only
+// that the standing red is gone, not why. A future stage that needs the mechanism owes that
+// isolation fresh, not this comment's say-so.
 test("timeline domain flow — Time-view double-click create writes arclength (S6c2)", async ({
     page,
     boot,
