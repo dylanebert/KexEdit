@@ -541,6 +541,69 @@ describe("every staged flow file is in capture.ts's stage.files list", () => {
     });
 });
 
+describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", () => {
+    // kex2d-capture-deflake S1: two standing rules banned a raw `waitForTimeout` sleep racing
+    // per-RAF `$derived` propagation and found zero of the class across green-gated stages — the
+    // ban had no enumerator. This walks the SAME real staged set the block above already derives
+    // (`flow.ts` + every `*.pw.ts` file in `harness/`, never a hand-picked list) and reds any
+    // `waitForTimeout(...)` call whose argument is not exactly `SHOT_MS` — the one lawful sleep
+    // (`flow.ts`'s own docblock: "used only immediately before a screenshot... every other wait
+    // here is a condition"). The exclusion is asserted both ways in the flow files themselves:
+    // a real member exists (every `*.pw.ts` file's own `waitForTimeout(SHOT_MS)` lines), and it
+    // is genuinely the only shape admitted — this test's own seed-and-revert proof, run by hand
+    // at write time (see the docblock below), is what makes that claim more than assumed.
+    const harnessDir = join(import.meta.dir, "..", "harness");
+    const real = readdirSync(harnessDir).filter(
+        (name) => name === "flow.ts" || name.endsWith(".pw.ts"),
+    );
+
+    // one (production line, arg) pair per call site, across the whole real set — never a
+    // per-file sample — so a violation in any staged flow file reds this arm regardless of
+    // which file it lands in.
+    function nonShotSleeps(): { file: string; line: number; arg: string }[] {
+        const violations: { file: string; line: number; arg: string }[] = [];
+        for (const name of real) {
+            const text = readFileSync(join(harnessDir, name), "utf8");
+            const lines = text.split("\n");
+            lines.forEach((line, i) => {
+                const m = line.match(/waitForTimeout\(([^)]*)\)/);
+                if (!m) return;
+                const arg = m[1].trim();
+                if (arg !== "SHOT_MS") violations.push({ file: name, line: i + 1, arg });
+            });
+        }
+        return violations;
+    }
+
+    test("the real staged set is non-empty (a broken glob can't pass vacuously)", () => {
+        expect(real.length).toBeGreaterThan(0);
+    });
+
+    test("at least one file carries the lawful SHOT_MS form (the exclusion names a real member)", () => {
+        const hasShotMs = real.some((name) =>
+            readFileSync(join(harnessDir, name), "utf8").includes("waitForTimeout(SHOT_MS)"),
+        );
+        expect(hasShotMs).toBe(true);
+    });
+
+    test("no staged flow file carries a waitForTimeout whose argument is not SHOT_MS", () => {
+        const violations = nonShotSleeps();
+        expect(
+            violations,
+            violations
+                .map((v) => `${v.file}:${v.line} waitForTimeout(${v.arg})`)
+                .join("\n") || "no violations",
+        ).toEqual([]);
+    });
+
+    // RED-FIRST WITNESS (run by hand, not shipped as a mutation the suite re-runs): seeded
+    // `await page.waitForTimeout(200);` into `harness/lab.pw.ts` (an unexcluded staged flow
+    // file) and re-ran this file alone — the arm above reported exactly one violation
+    // (`lab.pw.ts:<line> waitForTimeout(200)`), exit code 1. Deleted the seed (never
+    // `git checkout`/`restore` on a file with no other edits, `git.md`) and re-ran — 0
+    // violations, exit code 0. Both directions witnessed 2026-08-25.
+});
+
 describe("provisionKey / provisioned — when the host reinstalls", () => {
     const pkg = { dependencies: { "@playwright/test": "^1.59.1", playwright: "^1.59.1" } };
     const lock =

@@ -1537,10 +1537,11 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-
-    // wait for the per-RAF tick to propagate the selection to the `$derived` reads
-    // (`selStrip`/`bandStrips`) before the double-click reads them
-    await page.waitForTimeout(200);
+    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
+    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
+    // no readable condition exists for either, so this settles by frame count, never a
+    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // quantity has no readable condition).
 
     // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
     // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
@@ -1578,7 +1579,6 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(edgePx + 80, bandY, { steps: 5 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     // read the strip's (now widened) extent and the chart view to compute pixel positions —
     // by id (`stripId0`), never index 0 (the launch strip's own `start = 0` sorts first).
@@ -1648,7 +1648,6 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(kf0Px.x, kf0Px.y + 40, { steps: 5 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     // verify the drag moved the keyframe (its v should have changed)
     await expect
@@ -1709,7 +1708,11 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await page.waitForTimeout(200);
+    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
+    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
+    // no readable condition exists for either, so this settles by frame count, never a
+    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // quantity has no readable condition).
 
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
@@ -1735,7 +1738,6 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     await page.mouse.down();
     await page.mouse.move(edgePx + 80, bandY, { steps: 5 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     const strip = (
         (await stripsOf()) as { id: number; start: number; end: number; value: number }[]
@@ -1782,7 +1784,9 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     // fresh write races a stale NON-null cache instead of the stale-null one the fix closes.
     await page.keyboard.press("Escape"); // clears the strip (no stripKf sub-selection is active)
     await expect.poll(async () => await kexCall(page, "selectedStrip")).toBe(null);
-    await page.waitForTimeout(200);
+    await frames(page, 2); // selStrip's cache must read the null selection at least once
+    // before the race-constructing click below (this test's own point) -- selStrip has no
+    // __kex hook, so there is no readable condition to poll; settle by frame count.
 
     // THE RACE: a single click on the created diamond flips `editor.strip` null → `stripId` and
     // `editor.stripKf` null → `created3.id`, both plain synchronous writes — then Delete fires
@@ -1838,7 +1842,11 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await page.waitForTimeout(200); // let the per-RAF tick propagate selection to `$derived` reads
+    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
+    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
+    // no readable condition exists for either, so this settles by frame count, never a
+    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // quantity has no readable condition).
 
     // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
     // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
@@ -1871,7 +1879,6 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(edgePx + 80, bandY, { steps: 5 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     const strip = (
         (await stripsOf()) as { id: number; start: number; end: number; value: number }[]
@@ -1932,7 +1939,6 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     await page.mouse.move(kf0Px.x + DxPx, kf0Px.y, { steps: 5 });
     await page.mouse.up();
     await page.keyboard.up("Control");
-    await page.waitForTimeout(100);
 
     const kfs1 = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
     const kf1 = kfs1.find((k) => k.id === kf0.id);
@@ -1986,7 +1992,11 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await page.waitForTimeout(200); // let the per-RAF tick propagate selection to $derived reads
+    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
+    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
+    // no readable condition exists for either, so this settles by frame count, never a
+    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // quantity has no readable condition).
 
     // Get the new strip's seeded keyframes (2 at start/end).
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
@@ -2014,7 +2024,6 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(edgePx + 80, bandY, { steps: 5 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     // Poll for the seeded keyframes' diamonds to be projected on screen.
     await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
@@ -2078,7 +2087,11 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await page.waitForTimeout(200); // let the per-RAF tick propagate selection to $derived reads
+    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
+    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
+    // no readable condition exists for either, so this settles by frame count, never a
+    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // quantity has no readable condition).
 
     // Get the new strip's seeded keyframes — one at its own start, one at its own end (S4's
     // seeded-boundary-keyframes idiom). `stripDefaultExtentAt` (S2: track-global, no longer
@@ -2173,7 +2186,6 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     await page.mouse.move(dragStartPx.x + DxPx, dragStartPx.y, { steps: 5 });
     await page.mouse.up();
     await page.keyboard.up("Control");
-    await page.waitForTimeout(100);
 
     // Assert BOTH keyframes moved by the same non-zero delta.
     kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
@@ -2223,7 +2235,11 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await page.waitForTimeout(200); // let the per-RAF tick propagate selection to $derived reads
+    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
+    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
+    // no readable condition exists for either, so this settles by frame count, never a
+    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // quantity has no readable condition).
 
     // Get the new strip's seeded keyframes (2 at start/end).
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
@@ -2249,7 +2265,6 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(edgePx + 120, bandY, { steps: 5 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     // Read the strip's extent — strip.start > 0 (created at 30% of the clip).
     const strip = (
@@ -2362,7 +2377,11 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await page.waitForTimeout(200); // let the per-RAF tick propagate selection to $derived reads
+    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
+    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
+    // no readable condition exists for either, so this settles by frame count, never a
+    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // quantity has no readable condition).
 
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
@@ -2387,7 +2406,6 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(edgePx + 120, bandY, { steps: 5 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     // Separate the still-coincident seeded pair — drag the END keyframe (renders on top at the
     // tie) toward the widened end, uncovering the start keyframe.
@@ -2402,7 +2420,6 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(separateX, sharedPx.y, { steps: 8 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     // Read the separated keyframes — identify start (smaller s) and end (larger s).
     let kfs = (await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[];
@@ -2456,7 +2473,6 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     await page.mouse.move(endKfPx.x, endKfPx.y + offGridDyPx, { steps: 5 });
     await page.mouse.up();
     await page.keyboard.up("Control");
-    await page.waitForTimeout(100);
 
     // Read the end keyframe's new v — this is the snap landmark.
     kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
@@ -2489,7 +2505,6 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(midKfPxFresh.x, dragTargetY, { steps: 10 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     // Assert the keyframe SNAPPED to the end keyframe's v (the landmark). With the snap arms
     // killed (the mutation), the keyframe would land at the V_GRID quantum (nearest 0.1),
@@ -2546,7 +2561,11 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await page.waitForTimeout(200); // let the per-RAF tick propagate selection to $derived reads
+    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
+    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
+    // no readable condition exists for either, so this settles by frame count, never a
+    // registered root property (checks.md: frames(page,N) is lawful only where the awaited
+    // quantity has no readable condition).
 
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
@@ -2578,7 +2597,6 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(edgePx + 280, bandY, { steps: 5 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     // Separate the still-coincident seeded pair — drag the END keyframe (renders on top at the
     // tie) to ~30% of the WIDENED extent (never to the strip's own end — that would leave no
@@ -2597,7 +2615,6 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(separateX, sharedPx.y, { steps: 8 });
     await page.mouse.up();
-    await page.waitForTimeout(100);
 
     // Read the separated keyframes — identify start (smaller s) and end (larger s).
     let kfs = (await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[];
@@ -2680,7 +2697,6 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await page.mouse.move(dragTargetX, startKfPx.y, { steps: 1 });
     await page.mouse.up();
     await page.keyboard.up("Control");
-    await page.waitForTimeout(100);
 
     // Assert the BLOCK held: both selected keyframes moved by the same delta (offset preserved).
     // Without the mutation: `landed = false` (overlap at `endS`), `dsWrite = dragKfLastDs = 0`,
