@@ -605,126 +605,12 @@ test("invoked force→geo fit flow", async ({ page, boot }) => {
     expect(await undoDepth()).toBe(appended);
 });
 
-// Drive the V0 AUTHORING flow (S5: "the initial velocity is the first strip" — no dedicated
-// field left; `seed()` authors a real min-extent start strip on section 0 and the derived
-// entry speed (`entrySpeed`) reads it like any other strip). Drag the strip's own `s = 0`
-// keyframe diamond by a REAL pointer — the same gesture "velocity strip keyframe editing
-// flow" drives, just against the strip `seed()` already authors rather than a summoned one —
-// then delete the whole strip and watch the derived speed fall back to `V0`. __kex is read
-// only for assertions (checks.md: an interaction affordance is only visible to an instrument
-// that performs the interaction).
-test("v0 authoring flow", async ({ page, boot }) => {
-    await boot();
-    await frameTimeline(page);
-
-    const v0 = () => kexCall(page, "v0");
-    const undoDepth = () => kexCall(page, "undoDepth");
-    const tTotal = () => kexCall(page, "tTotal");
-    const stripsOf = () => kexCall(page, "stripsOf", 0);
-    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
-    const stripKfPx = () => kexCall(page, "stripKfPx");
-
-    // the default flat seed bakes on load and already carries its own start strip (`seed()`).
-    await expect.poll(tTotal).toBeGreaterThan(0);
-    const v0Default = await v0();
-    expect(v0Default).toBeGreaterThan(0);
-
-    const strips = (await stripsOf()) as { id: number; start: number; end: number }[];
-    expect(strips.length).toBe(1);
-    const stripId = strips[0].id;
-    const kfs = (await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[];
-    const startKf = kfs.find((k) => k.s === strips[0].start);
-    if (!startKf) throw new Error("strip has no boundary keyframe at its own start");
-
-    // ── 1. Widen the strip via a REAL pointer edge-drag on its end. Non-sticking (S3, boundary
-    // ride deleted): the resize does NOT carry the seeded end keyframe along anymore — it makes
-    // room on the chart, but the two seeded keyframes stay exactly where `seed()` planted them
-    // (0.5 m apart at the min extent, their fat hit circles still overlapping). ──
-    const bandBb = await page.locator(".hbandzone").boundingBox();
-    if (!bandBb) throw new Error("header band not laid out");
-    const bandY = bandBb.y + bandBb.height / 2;
-    const chartCanvasBbPre = await page.locator("canvas.chart").boundingBox();
-    if (!chartCanvasBbPre) throw new Error("chart canvas not laid out");
-    const spPre = (
-        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-    ).find((s) => s.id === stripId);
-    if (!spPre) throw new Error("strip not projected on the chart");
-    const edgePx = chartCanvasBbPre.x + spPre.x1;
-    await page.mouse.move(edgePx, bandY);
-    await page.mouse.down();
-    await page.mouse.move(edgePx + 120, bandY, { steps: 5 });
-    await page.mouse.up();
-    await page.waitForTimeout(100);
-    await expect
-        .poll(async () => ((await stripsOf()) as { id: number; end: number }[])[0]?.end)
-        .toBeGreaterThan(strips[0].end);
-
-    // ── 2. Separate the still-coincident pair explicitly — the substrate's own way to move a
-    // keyframe now that a resize doesn't (non-sticking, matching a force keyframe): a
-    // pointerdown at the shared pixel grabs whichever diamond renders on top, which is the END
-    // keyframe (`stripKeyframes`' own s-ascending sort puts it last in the array, last in the
-    // SVG, on top of the start one at a tie) — drag it out toward the strip's freshly-widened
-    // end, uncovering the start keyframe for step 3. ──
-    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
-    const endKf = kfs.find((k) => k.s === strips[0].end);
-    if (!endKf) throw new Error("strip has no boundary keyframe at its own end");
-    const coincidentPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
-    const startAtShared = coincidentPx.find((k) => k.id === startKf.id);
-    if (!startAtShared) throw new Error("start keyframe not projected on screen");
-    const widePx = (
-        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-    ).find((s) => s.id === stripId);
-    if (!widePx) throw new Error("widened strip not projected on the chart");
-    const separateX = chartCanvasBbPre.x + widePx.x1 - 10; // just inside the new end
-    await page.mouse.move(startAtShared.x, startAtShared.y);
-    await page.mouse.down();
-    await page.mouse.move(separateX, startAtShared.y, { steps: 8 });
-    await page.mouse.up();
-    await page.waitForTimeout(100);
-    await expect
-        .poll(async () => (await stripKeyframesOf(stripId)).find((k) => k.id === endKf.id)?.s)
-        .toBeGreaterThan(strips[0].end);
-
-    // ── 3. Drag the (now well-separated) `s = 0` keyframe vertically by a real pointer →
-    // the derived entry speed moves with it, one undo entry. ──
-    const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
-    const startPx = kfPx.find((k) => k.id === startKf.id);
-    if (!startPx) throw new Error("start keyframe not projected on screen");
-    await page.mouse.move(startPx.x, startPx.y);
-    await page.mouse.down();
-    await page.mouse.move(startPx.x, startPx.y + 40, { steps: 12 }); // a real vertical drag
-    await page.mouse.up();
-    await page.waitForTimeout(SHOT_MS);
-    await page.screenshot({ path: join(OUT, "v0-1-dragged.png") });
-    // the claim is that the derived speed MOVES with the keyframe (S5's own criterion), not a
-    // specific direction — the chart's y↔v mapping is an implementation detail this flow
-    // doesn't need to know.
-    await expect.poll(v0).not.toBeCloseTo(v0Default, 3);
-    expect(await undoDepth()).toBe(3); // the widen + the separation drag + the value drag
-
-    // undo restores the default speed (the value drag alone; the widen and separation stay).
-    await page.keyboard.press("Control+z");
-    await expect.poll(v0).toBeCloseTo(v0Default, 3);
-    await expect.poll(undoDepth).toBe(2);
-
-    // ── 4. Delete the whole strip (Delete on its selected band) → the derived speed falls
-    // back to `V0`; undo restores the strip and its speed. ──
-    const stripPx = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
-    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
-    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
-    const sp = stripPx.find((s) => s.id === stripId);
-    if (!sp) throw new Error("strip not projected on the chart");
-    const midX = chartCanvasBb.x + (sp.x0 + sp.x1) / 2;
-    await page.mouse.click(midX, bandBb.y + bandBb.height / 2);
-    await page.keyboard.press("Delete");
-    // `seed()` authors the strip at exactly `V0` (the Locked Decision), so the fallback the
-    // derived speed lands on once it's gone reads the SAME number `v0Default` captured above.
-    await expect.poll(v0).toBeCloseTo(v0Default, 3);
-    await page.screenshot({ path: join(OUT, "v0-2-deleted.png") });
-
-    await page.keyboard.press("Control+z");
-    await expect.poll(v0).toBeCloseTo(v0Default, 3);
-});
+// RETIRED (S3, "one-shot events are a structurally distinct kind"): "v0 authoring flow" drove
+// the entry speed by dragging `seed()`'s own real min-extent start STRIP's `s = 0` keyframe —
+// that strip no longer exists (the track-start one-shot is a distinct point kind, no `Strip`
+// row, no keyframe curve to drag). The one-shot's own lifecycle — delete, create, select,
+// through the real pointer — is driven end to end in `affordance.pw.ts`'s "the track-start
+// one-shot: delete, create, and select through the real pointer (S3)".
 
 // Drive the START popover's REFUSAL path across its two remaining fields (μ, c) — the v0
 // row retired (S5, the initial velocity is a strip now, no field left to refuse into): type
@@ -815,12 +701,12 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     // ride (the bake's total time shifts). five points now sort by x as: entry seed, the two
     // 1g shoulders flanking the crest, the crest itself, exit seed — the crest is the MIDDLE
     // of the five, not the middle of the three authored points. `.fhit` is shared with
-    // velocity-strip keyframes, and `seed()` (S5) carries its own 2-keyframe start strip on
-    // section 0 (the geo lead-in), sorting leftmost of ALL seven on the page — scope the
-    // locator to the force clip's own x-range so the five under test stay the only five.
+    // velocity-strip keyframes, and `seed()` (S3) carries no strip of its own (the track-start
+    // one-shot is a distinct point kind) — the five under test are the only five on the page,
+    // still scoped to the force clip's own x-range for the same reason a future strip would need it.
     const tBefore = await tTotal();
     const hits = page.locator(".fhit");
-    await expect(hits).toHaveCount(7);
+    await expect(hits).toHaveCount(5);
     const centers = await hits.evaluateAll(
         (els, range) =>
             els
@@ -1600,20 +1486,21 @@ test("velocity strip creation flow", async ({ page, boot }) => {
     ).toBeEnabled();
     await clickMenuItem(page, ".smenu", "Add velocity strip");
 
-    // the strip appears at minimum extent, selected — `seed()` (S5) already carries its own
-    // start strip on this section, so the count goes 1 → 2, not 0 → 1.
-    await expect.poll(async () => (await stripsOf()).length).toBe(2);
+    // the strip appears at minimum extent, selected — `seed()` (S3) no longer carries its own
+    // start strip on this section (the track-start one-shot is a distinct point kind, no
+    // `Strip` row), so the count goes 0 → 1.
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
 
-    // Delete on selection removes it — the launch strip survives, so 2 → 1.
+    // Delete on selection removes it — 1 → 0.
     const before = await undoDepth();
     await page.keyboard.press("Delete");
-    await expect.poll(async () => (await stripsOf()).length).toBe(1);
+    await expect.poll(async () => (await stripsOf()).length).toBe(0);
     await expect.poll(undoDepth).toBe(before + 1);
 
     // undo restores it
     await page.keyboard.press("Control+z");
-    await expect.poll(async () => (await stripsOf()).length).toBe(2);
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
 });
 
 // T2: velocity strip keyframe editing in the graph. A selected strip's velocity curve

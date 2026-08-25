@@ -4,13 +4,15 @@
  *
  *  there are no tools or modes: you select a node and drag it in the viewport, a
  *  force point on the timeline curve, a whole section, a velocity strip in the header
- *  band, or the track START anchor — five mutually-exclusive selections (below), so a
- *  contextual action never fights over its target. */
+ *  band, the track START anchor, or the track-start one-shot (S3, its own point kind) —
+ *  six mutually-exclusive selections (below), so a contextual action never fights over
+ *  its target. */
 
 import type { State } from "@dylanebert/shallot";
 import { createHistory, type History, redirectHistory } from "./history";
 import type { OptimizeOutcome, UnreachableReason } from "./optimize";
 import {
+    entryOneShot,
     forceAt,
     Handle,
     handleAt,
@@ -132,9 +134,15 @@ interface EditorState {
      *  re-selecting the keyframe (or Esc) clears it back. NOT a mutually-exclusive selection. */
     forceHandle: "in" | "out" | null;
     /** whether the track START anchor is selected. there's one START per track, so a
-     *  boolean; selecting it summons the field popover — initial speed (v0) plus the
-     *  friction/drag coefficients (`Track.friction`/`.resistance`'s own authoring surface). */
+     *  boolean; selecting it summons the field popover for the friction/drag coefficients
+     *  (`Track.friction`/`.resistance`'s own authoring surface) — initial speed (v0) moved
+     *  out (S5, now the track-start one-shot, S3's own point kind, `oneShot` below). */
     start: boolean;
+    /** whether the track-start one-shot (S3, Locked decision — its own structurally
+     *  distinct point kind, never a degenerate `Strip`) is selected. there's at most one
+     *  `OneShot` entity per track, so a boolean, mirroring `start`'s own shape — selecting
+     *  it is the header-band glyph's own select/delete target (T1's own point kind). */
+    oneShot: boolean;
     /** the section right-click menu (Convert / Delete): screen position + target
      *  section id, or null when closed. shared so the clip strip and the viewport span both
      *  open the same menu, rendered once at the app root — the graph never opens it at all (the
@@ -178,7 +186,11 @@ interface EditorState {
      *  selected, curve flattened and solid), on an existing strip for deletion. Empty band
      *  space is inert — no plain-drag-on-empty, no modifier-drag, no standing mode toggle
      *  (Locked decision, the rescope that retired C5's create-drag). `strip` is the targeted
-     *  strip's stable id, or -1 when the right-click landed on empty band (creation). */
+     *  strip's stable id, -1 when the right-click landed on empty band (creation of a strip
+     *  or — S3's own row, when none exists — the one-shot), or -2 when the right-click
+     *  landed on the track-start one-shot's own glyph (its Delete row, `menus.stripMenu`'s
+     *  own `-2` branch — a sentinel, not a `Strip.id`, since the one-shot is never a strip
+     *  row, S3 Locked decision). */
     stripMenu: { x: number; y: number; d: number; strip: number } | null;
     /** the snapping magnet toggle (AE model): a persistent editor preference, default
      *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
@@ -421,6 +433,7 @@ export const editor: EditorState = {
     forceEdit: null,
     forceHandle: null,
     start: false,
+    oneShot: false,
     context: null,
     nodeMenu: null,
     forceMenu: null,
@@ -861,6 +874,7 @@ function exclusiveNode(): void {
     editor.forceEdit = null;
     editor.forceHandle = null;
     editor.start = false;
+    editor.oneShot = false;
 }
 
 function exclusiveForce(): void {
@@ -870,6 +884,7 @@ function exclusiveForce(): void {
     clearSel(editor.stripKfs);
     editor.tangentEdit = null;
     editor.start = false;
+    editor.oneShot = false;
 }
 
 function exclusiveSection(): void {
@@ -881,12 +896,29 @@ function exclusiveSection(): void {
     editor.forceEdit = null;
     editor.forceHandle = null;
     editor.start = false;
+    editor.oneShot = false;
 }
 
 function exclusiveStrip(): void {
     clearSel(editor.nodes);
     clearSel(editor.forces);
     clearSel(editor.sections);
+    clearSel(editor.stripKfs);
+    editor.tangentEdit = null;
+    editor.forceEdit = null;
+    editor.forceHandle = null;
+    editor.start = false;
+    editor.oneShot = false;
+}
+
+/** clear every selection kind but the one-shot — `exclusiveStrip`'s own point-kind twin,
+ *  called by {@link selectOneShot} rather than reused via `exclusiveStrip` since the
+ *  one-shot isn't a member of `editor.strips`. */
+function exclusiveOneShot(): void {
+    clearSel(editor.nodes);
+    clearSel(editor.forces);
+    clearSel(editor.sections);
+    clearSel(editor.strips);
     clearSel(editor.stripKfs);
     editor.tangentEdit = null;
     editor.forceEdit = null;
@@ -909,6 +941,7 @@ export function deselectAll(): void {
     editor.forceEdit = null;
     editor.forceHandle = null;
     editor.start = false;
+    editor.oneShot = false;
 }
 
 /** drop tangent edit unless the node selection is exactly its subject (a set that grew past one, or
@@ -1072,7 +1105,8 @@ export function activateStripKf(id: number): void {
     if (editor.stripKfs.ids.has(id)) editor.stripKfs.active = id;
 }
 
-/** select (or clear) the track START anchor — the initial-speed handle. */
+/** select (or clear) the track START anchor — the friction/drag coefficient popover's
+ *  own target (v0 moved out, S5/S3: see `oneShot`). */
 export function selectStart(on: boolean): void {
     editor.start = on;
     if (on) {
@@ -1084,7 +1118,16 @@ export function selectStart(on: boolean): void {
         editor.tangentEdit = null;
         editor.forceEdit = null;
         editor.forceHandle = null;
+        editor.oneShot = false;
     }
+}
+
+/** select (or clear) the track-start one-shot (S3, Locked decision — its own structurally
+ *  distinct point kind). mirrors `selectStart`'s own shape: a boolean, since there's at
+ *  most one `OneShot` entity per track. */
+export function selectOneShot(on: boolean): void {
+    editor.oneShot = on;
+    if (on) exclusiveOneShot();
 }
 
 /** open the section context menu at a screen point, targeting a section. a right-click on a
@@ -1184,6 +1227,7 @@ type SelSnapshot =
     | { kind: "section"; ids: number[]; active: number }
     | { kind: "strip"; ids: number[]; active: number }
     | { kind: "start" }
+    | { kind: "oneShot" }
     | null;
 
 /** rebuild a selection set from restored members, re-anchoring the active (or promoting the
@@ -1233,6 +1277,7 @@ export const selectionHook = {
                 active: editor.strips.active,
             };
         if (editor.start) return { kind: "start" };
+        if (editor.oneShot) return { kind: "oneShot" };
         return null;
     },
     restore(ecs: State, snap: unknown): void {
@@ -1289,6 +1334,12 @@ export const selectionHook = {
                 break;
             case "start":
                 selectStart(true);
+                break;
+            case "oneShot":
+                // the one-shot may have been deleted by whatever the undo/redo just replayed —
+                // `stripAt`'s own filter-before-select reading, singleton-shaped: select only
+                // when it survived.
+                if (entryOneShot(ecs)) selectOneShot(true);
                 break;
         }
     },

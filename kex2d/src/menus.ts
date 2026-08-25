@@ -613,18 +613,26 @@ export function appendMenu(a: { append: (kind: SectionKind) => void }): MenuItem
 }
 
 /** the velocity-strip band context menu's state. `strip` is the targeted strip's stable id,
- *  or -1 when the right-click landed on empty band (creation). `canCreate` is whether a
+ *  -1 when the right-click landed on empty band (creation), or -2 when it landed on the
+ *  track-start one-shot's own glyph (S3, Locked decision — its own structurally distinct
+ *  point kind, `-2` a sentinel since it's never a `Strip.id`). `canCreate` is whether a
  *  strip CAN be created at the clicked station — the min-extent span exists and doesn't
  *  overlap an existing strip — so the "Add" row is grayed (not silently inert) when it
- *  can't. */
+ *  can't. `oneShotExists` governs the empty-band row set (below) — the one-shot's own
+ *  "Add" row shows there only while none exists, since it's a singleton (`entryOneShot`'s
+ *  "at most one" reading). */
 export type StripMenuState = {
-    /** the targeted strip's stable id, or -1 for creation (empty band). */
+    /** the targeted strip's stable id, -1 for creation (empty band), or -2 for the
+     *  track-start one-shot's own glyph. */
     strip: number;
     /** whether the section is editable (not under a pin session lockdown). */
     editable: boolean;
     /** whether a new strip can be created at the clicked station (min-extent span exists
      *  and doesn't overlap an existing strip). */
     canCreate: boolean;
+    /** whether the track-start one-shot already exists — governs the empty-band "Add
+     *  initial velocity" row (S3): shown only while it doesn't. */
+    oneShotExists: boolean;
 };
 
 /** the velocity-strip band context menu's actions. */
@@ -633,16 +641,35 @@ export type StripMenuActions = {
     addStrip: () => void;
     /** delete the targeted strip (deletion). */
     remove: () => void;
+    /** create the track-start one-shot (S3) — the empty-band row shown only while
+     *  `oneShotExists` is false. */
+    addOneShot: () => void;
+    /** delete the track-start one-shot (S3) — the `-2` sentinel's own row. */
+    removeOneShot: () => void;
 };
 
 /** the velocity-strip band context menu as data — one instance of the shared menu language.
- *  On empty band: a single "Add velocity strip" row (the summoned, named creation act —
- *  Locked decision). On an existing strip: a single "Delete" row (the same menu's deletion
- *  path). Empty band space is inert — no plain-drag-on-empty, no modifier-drag, no standing
- *  mode toggle (the rescope that retired C5's rejected idiom). */
+ *  On empty band: "Add velocity strip" (the summoned, named creation act — Locked
+ *  decision), plus "Add initial velocity" when the track-start one-shot doesn't already
+ *  exist (S3). On an existing strip, or on the one-shot's own glyph: a single "Delete" row
+ *  (the same menu's deletion path, routed to the matching subject). Empty band space is
+ *  otherwise inert — no plain-drag-on-empty, no modifier-drag, no standing mode toggle
+ *  (the rescope that retired C5's rejected idiom). */
 export function stripMenu(s: StripMenuState, a: StripMenuActions): MenuItem[] {
-    if (s.strip < 0) {
+    if (s.strip === -2) {
         return [
+            {
+                label: "Delete",
+                group: "lifecycle",
+                danger: true,
+                enabled: s.editable,
+                shortcut: BINDINGS.remove.hint,
+                action: a.removeOneShot,
+            },
+        ];
+    }
+    if (s.strip < 0) {
+        const rows: MenuItem[] = [
             {
                 label: "Add velocity strip",
                 group: "create",
@@ -650,6 +677,15 @@ export function stripMenu(s: StripMenuState, a: StripMenuActions): MenuItem[] {
                 action: a.addStrip,
             },
         ];
+        if (!s.oneShotExists) {
+            rows.push({
+                label: "Add initial velocity",
+                group: "create",
+                enabled: s.editable,
+                action: a.addOneShot,
+            });
+        }
+        return rows;
     }
     return [
         {

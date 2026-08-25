@@ -442,10 +442,10 @@ test("force easing menu flow", async ({ page, boot }) => {
     const nPts = await forceCount();
     await frameTimeline(page); // bring the whole force section into view for the diamond DOM boxes
     // `.fpt` is shared with velocity-strip keyframes (Timeline.svelte draws both under the same
-    // class); `seedForceBump` converts section 0 to force, and strips are untouched by a
-    // convert now (S2, Locked decision: track-global, span-blind) — the launch strip survives
-    // as its original real (min-extent, non-degenerate) span, `seed()`'s own two keyframes.
-    await expect(page.locator(".fpt")).toHaveCount(nPts + 2);
+    // class); `seedForceBump` converts section 0 to force, and `seed()` (S3) carries no strip of
+    // its own (the track-start one-shot is a distinct point kind, no `Strip`/keyframe row), so
+    // `.fpt` is force points only.
+    await expect(page.locator(".fpt")).toHaveCount(nPts);
 
     // ── 1. Right-click the leading (first) keyframe → the force keyframe menu, in the grammar's
     // canonical row order Easing ▸ · Delete — modify before lifecycle, the destructive row
@@ -871,10 +871,9 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
     await expect.poll(forceCount).toBeGreaterThanOrEqual(5);
     const nPts = await forceCount();
     await frameTimeline(page);
-    // `.fpt` is shared with velocity-strip keyframes; strips are untouched by `seedForceBump`'s
-    // convert (S2, `force easing menu flow`'s own note) — the launch strip survives as its
-    // original real (min-extent, two-keyframe) span.
-    await expect(page.locator(".fpt")).toHaveCount(nPts + 2);
+    // `.fpt` is shared with velocity-strip keyframes; `seed()` (S3) carries no strip of its own
+    // (`force easing menu flow`'s own note), so `.fpt` is force points only.
+    await expect(page.locator(".fpt")).toHaveCount(nPts);
 
     // ── A. Chord-aligned derived-Linear ghost (feature 2). Set kf1's following segment to Linear,
     // enter handle edit (no drag → both sides stay derived ghosts), and assert the OUT ghost knob
@@ -1108,11 +1107,10 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     await frameTimeline(page); // the whole section on-screen for exact diamond boxes
 
     const fpt = page.locator(".fpt");
-    // `.fpt` is shared with velocity-strip keyframes; strips are untouched by `seedForceBump`'s
-    // convert (S2) — 5 force points + the launch strip's own 2 (min-extent, unchanged from
-    // `seed()`). Force points still render first in DOM order, so the `fhit.nth(0..4)` indices
-    // below stay correct.
-    await expect(fpt).toHaveCount(7);
+    // `.fpt` is shared with velocity-strip keyframes; `seed()` (S3) carries no strip of its own
+    // (the track-start one-shot is a distinct point kind) — 5 force points, nothing else. Force
+    // points still render first in DOM order, so the `fhit.nth(0..4)` indices below stay correct.
+    await expect(fpt).toHaveCount(5);
     const fhit = page.locator(".fhit");
     const fhitCenter = async (i: number): Promise<{ cx: number; cy: number }> => {
         const b = await fhit.nth(i).boundingBox();
@@ -1338,7 +1336,7 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     // ORIGINAL diamond index mapping (`fhitCenter`, established at the top of the test) is valid
     // again before re-locating the crest.
     await frameTimeline(page);
-    await expect(fhit).toHaveCount(7); // 5 force points + the launch strip's own 2 (S2: untouched by convert)
+    await expect(fhit).toHaveCount(5); // 5 force points, no strip of its own (S3: seed() carries no strip)
     const b2now = await fhitCenter(2);
     await page.mouse.click(b2now.cx, b2now.cy);
     await expect(page.locator(".ptip")).toHaveCount(1);
@@ -1440,12 +1438,13 @@ test("playhead parking flow", async ({ page, boot }) => {
     // ── 3. Drag the keyframe's g (vertical drag on its fat hit circle) → the force
     // profile changes, the bake re-times (tTotal shifts). `.fhit` is shared with velocity-
     // strip keyframes (Timeline.svelte draws force points first, strip keyframes after, in
-    // that DOM order), and `seed()` (S5) always carries its own 2-keyframe start strip on
-    // section 0 — so 5 total, the first 3 still the force points. three points now exist
-    // among them (the two seeds + the authored one); grab the AUTHORED one — the middle by s
-    // (and so by x), sorted between the entry seed (s=0) and the exit seed (s=length). ──
+    // that DOM order), and `seed()` (S3) no longer carries its own strip on section 0 — the
+    // track-start one-shot is a distinct point kind, no `Strip`/`StripKeyframe` row — so 3
+    // total, all force points. three points now exist (the two seeds + the authored one);
+    // grab the AUTHORED one — the middle by s (and so by x), sorted between the entry seed
+    // (s=0) and the exit seed (s=length). ──
     const fhit = page.locator(".fhit");
-    await expect(fhit).toHaveCount(5);
+    await expect(fhit).toHaveCount(3);
     const hb = await fhit.nth(1).boundingBox();
     if (!hb) throw new Error("force point hit target not laid out");
     await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);

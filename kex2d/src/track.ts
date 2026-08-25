@@ -46,9 +46,9 @@ export { SectionKind } from "./section";
  *  output, varies with the authored payload). `ds` is the nominal target spacing —
  *  one value shared by every section (per-edge actual ds lives in `bakeOut.ds`).
  *  the initial speed (m/s) at the track start is no longer stored here (S5): it is
- *  DERIVED, {@link entrySpeed} — the value of the strip covering station 0 in the
- *  first section, or `V0` when none exists. the per-section kind + extent live on
- *  `Section`, not here.
+ *  DERIVED, {@link entrySpeed} — the track-start one-shot's own `value` (S3, its own
+ *  structurally distinct point kind, `OneShot`), or `V0` when none exists. the
+ *  per-section kind + extent live on `Section`, not here.
  *
  *  `domain` is the track-global `Domain` (`section.ts`) — a VIEW, not a second
  *  storage unit: every force section's keyframes and extent are stored in meters of
@@ -568,6 +568,80 @@ export function destroyStrip(ecs: State, id: number): void {
     destroyStripKeyframes(ecs, id);
 }
 
+// ── the track-start one-shot (S3, Locked decision: "one-shot events are a structurally
+// distinct kind") ────────────────────────────────────────────────────────────────────
+
+/** the track's initial-velocity one-shot event — a POINT, structurally distinct from
+ *  `Strip` (Locked decision, finding 6: FMOD markers vs regions, Unity signals vs clips —
+ *  no surveyed tool models a point as a degenerate span). Always anchored at track-global
+ *  `d = 0` (person's verdict, 2026-08-23: track start only — mid-track one-shot is out of
+ *  scope, so there is no station column to store); `id` is the stable identity (undo/redo
+ *  address, eid-recycle safe, `Strip.id`'s own convention), `value` the entry speed (m/s,
+ *  `Entry.v`'s own unit). At most one entity ever carries this component — `seed` creates
+ *  it, a delete can remove it, {@link setStartSpeed}'s no-one-shot branch re-creates it. */
+export const OneShot = {
+    id: sparse(u32),
+    value: sparse(f32),
+};
+
+export interface OneShotRow {
+    eid: number;
+    id: number;
+    value: number;
+}
+
+let nextOneShotId = 0;
+
+/** the track's one-shot, or undefined when none exists (deleted, or a document authored
+ *  before `seed` ran). At most one entity ever carries `OneShot` (above), so the first hit
+ *  is the only one. */
+export function entryOneShot(ecs: State): OneShotRow | undefined {
+    for (const eid of ecs.query([OneShot])) {
+        return { eid, id: OneShot.id.get(eid), value: OneShot.value.get(eid) };
+    }
+    return undefined;
+}
+
+/** resolve the one-shot by its stable `id` to its eid, or null. */
+export function oneShotAt(ecs: State, id: number): number | null {
+    for (const eid of ecs.query([OneShot])) {
+        if (OneShot.id.get(eid) === id) return eid;
+    }
+    return null;
+}
+
+/** author the one-shot at `value` (floored at `MIN_V0`, {@link setStartSpeed}'s own floor)
+ *  — the create path, undo-recorded by `history.addOneShot`. Returns the new stable id. At
+ *  most one is ever meant to exist; a caller that creates a second while one already lives
+ *  produces two entities (no guard) — `entryOneShot`'s "first hit wins" reading, and
+ *  {@link setStartSpeed} never takes this branch when one already exists, so a real UI
+ *  gesture never exercises the two-entity case. */
+export function createOneShot(ecs: State, value: number): number {
+    const eid = ecs.create();
+    ecs.add(eid, OneShot);
+    const id = nextOneShotId++;
+    OneShot.id.set(eid, id);
+    OneShot.value.set(eid, Math.max(MIN_V0, value));
+    return id;
+}
+
+/** re-create the one-shot at an *exact* id/value — undo of a delete, redo of a create, or
+ *  a snapshot restore. No id allocation, so it round-trips byte-identical. Mirrors
+ *  {@link spawnStrip}. */
+export function spawnOneShot(ecs: State, id: number, value: number): void {
+    const eid = ecs.create();
+    ecs.add(eid, OneShot);
+    OneShot.id.set(eid, id);
+    OneShot.value.set(eid, value);
+}
+
+/** destroy the one-shot by stable id (no-op if already gone). Mirrors {@link destroyStrip}
+ *  minus the child-keyframe cleanup — a one-shot carries no keyframes. */
+export function destroyOneShot(ecs: State, id: number): void {
+    const eid = oneShotAt(ecs, id);
+    if (eid !== null) ecs.destroy(eid);
+}
+
 /** a strip's undoable state, keyed by stable id — the drag/nudge/typed-field gesture
  *  snapshots this (`ForcePointState`'s own shape). `kfs` carries every child keyframe's
  *  `(id, s, v)`: a strip's keyframes never move through {@link setStrip} (S3, non-sticking),
@@ -1028,15 +1102,15 @@ export const MAX_SAMPLES = 4096;
 /** the track's nominal sampling step (m) — what every section bakes at. */
 export const DS_NOMINAL = 0.5;
 
-/** the fallback initial speed (m/s) when no strip covers station 0 (`entrySpeed`'s own
- *  `else` — the same idiom `bakeEntryForce` uses for `DEFAULT_G`). `seed` authors a real
- *  strip at this value, so a fresh document's own entry speed reads `V0` through the
- *  ordinary strip-covers-station-0 path, not this fallback; the fallback fires once that
- *  strip is deleted. matches kexedit / FVD. */
+/** the fallback initial speed (m/s) when no one-shot exists (`entrySpeed`'s own `else` —
+ *  the same idiom `bakeEntryForce` uses for `DEFAULT_G`). `seed` authors a one-shot at
+ *  this value, so a fresh document's own entry speed reads `V0` through the ordinary
+ *  one-shot path, not this fallback; the fallback fires once that one-shot is deleted.
+ *  matches kexedit / FVD. */
 export const V0 = 10;
 
-/** the slowest the start strip's authored speed can be set — a positive floor so the
- *  start is never zero/negative (which would make a level track take infinite time). */
+/** the slowest the track-start one-shot's authored speed can be set — a positive floor so
+ *  the start is never zero/negative (which would make a level track take infinite time). */
 const MIN_V0 = 0.1;
 
 /** a fresh track's default Coulomb friction coefficient — ported verbatim from the incumbent
@@ -2084,74 +2158,39 @@ export function setSectionLength(ecs: State, id: number, length: number): void {
     Section.length.set(eid, Math.max(minForceExtent(trackDomain(ecs)), length));
 }
 
-// ── track initial speed (v0, S5: derived from the start strip) ─────────────────
+// ── track initial speed (v0, S3: derived from the track-start one-shot) ─────────────
 
-/** the strip covering track-global station 0 (the track start), or undefined when none
- *  exists (an unauthored track, or one whose start strip was deleted) —
- *  {@link entrySpeed}/{@link setStartSpeed}'s shared lookup. A strip's half-open
- *  `[start, end)` covers station 0 when `start <= 0 < end`, matching `stripOverride`'s
- *  own edge convention (a strip landing exactly at `start === 0` claims the station); a
- *  DEGENERATE point strip at exactly `[0, 0)` also counts — it is the one station-0
- *  point `stripOverride`'s own edge convention reads as inert (`lo = start - 1 = -1`,
- *  never matching a real `k >= 0`), which is exactly what {@link setStartSpeed}'s
- *  test/lab-setup path relies on to carry a value with zero march side effect. Strips
- *  are track-global (Locked decision), so station 0 is unambiguous — no section lookup
- *  needed. */
-function startStrip(ecs: State): StripRow | undefined {
-    return allStrips(ecs).find((st) => st.start <= 0 && (st.end > 0 || st.end === st.start));
-}
-
-/** the track's derived entry speed (m/s): the value of the strip covering track-global
- *  station 0, sampled at its own `s = 0` (`sampleForce` over the strip's keyframes — the
- *  same evaluation `edgeStrips` uses to build the march's own edge-0 override, so a
- *  keyframe edit and the entry speed agree exactly), or `V0` when none exists — the same
- *  fallback idiom as an emptied force profile falling to `DEFAULT_G` (`bakeEntryForce`).
- *  The old sparse per-track speed field is retired; this is its replacement, and there is
- *  no authored field left to snapshot for undo — the start strip's own keyframe-drag
- *  gesture (`beginStripKeyframeMove`) already carries this value through undo/redo. */
+/** the track's derived entry speed (m/s): the track-start one-shot's own `value`
+ *  ({@link entryOneShot}), or `V0` when none exists — the same fallback idiom as an
+ *  emptied force profile falling to `DEFAULT_G` (`bakeEntryForce`). The old sparse
+ *  per-track speed field is retired (S5); this is its replacement. S3 retired the S5-era
+ *  "value of the strip covering station 0" reading (a real span OR a degenerate `[0, 0)`
+ *  point strip) — the one-shot is a structurally distinct kind now (Locked decision,
+ *  finding 6), never a `Strip` row, so there is no keyframe curve to sample here: a point
+ *  event carries one scalar, not a curve. */
 export function entrySpeed(ecs: State): number {
-    const st = startStrip(ecs);
-    if (!st) return V0;
-    const kfs = stripKeyframes(ecs, st.id);
-    if (kfs.length === 0) return st.value;
-    return sampleForce(
-        kfs.map((k) => ({ s: k.s, g: k.v })),
-        0,
-    );
+    const os = entryOneShot(ecs);
+    return os ? os.value : V0;
 }
 
-/** author the track's initial speed by writing the strip covering track-global station 0
- *  — moves both its boundary keyframes plus `Strip.value` when one already exists (a
- *  real span, `seed`'s own shape, or this helper's own prior call). Floored at `MIN_V0`,
- *  the old field-based setter's own floor. Otherwise spawns a DEGENERATE `[0, 0)` point
- *  strip, bypassing the ordinary create path's min-extent guard (`spawnStrip`, like a
- *  pre-guard document restore) on purpose: this helper's callers want a scalar entry
- *  speed with no march side effect (the old field's own shape), and a real, edge-covering
- *  span always overrides that edge's march too (`section.ts`'s "prescription beats
- *  dissipation") — which broke feasibility on a hill/loop scenario tuned to the OLD
- *  scalar's exact energy budget, and made a document-layer solve chase a moving target it
- *  has no strip awareness of (the roadmap's own deferred "Solve ignores strips" gap, Out
- *  of scope for S5). Callers: test/lab setup, the `__kex` dev hook, and
- *  `preserveEntrySpeedAcrossConvert` (live UI-reachable: a section-0 kind-flip that
- *  destroyed the start strip); the ordinary authoring path is a real, grabbable start
- *  strip via `seed`/the keyframe drag. */
+/** author the track's initial speed by writing the track-start one-shot's `value` — moves
+ *  its existing value when one already exists ({@link entryOneShot}), or authors a new
+ *  one-shot at `value` (floored at `MIN_V0`) when none does — `seed`'s own shape, or this
+ *  helper's own prior call, or a real pointer delete having removed it. Callers: test/lab
+ *  setup, the `__kex` dev hook; the ordinary authoring path is `seed`'s own creation
+ *  (a real, undo-recorded `history.addOneShot`/`deleteOneShot` reach the same writers this
+ *  does — this function is the direct-write, no-undo-entry twin, like `setSectionLength`
+ *  is to a trim gesture). No march side effect: the one-shot carries no `Strip` row, so
+ *  `stripOverride`/`edgeStrips` never see it — it feeds only {@link entrySpeed}'s own
+ *  `v0` into `startEntry` (the bake's own march seed). */
 export function setStartSpeed(ecs: State, v: number): void {
     const clamped = Math.max(MIN_V0, v);
-    const st = startStrip(ecs);
-    if (st) {
-        for (const kf of stripKeyframes(ecs, st.id)) setStripKeyframe(ecs, kf.id, kf.s, clamped);
-        const eid = stripAt(ecs, st.id);
-        if (eid !== null) Strip.value.set(eid, clamped);
+    const os = entryOneShot(ecs);
+    if (os) {
+        OneShot.value.set(os.eid, clamped);
         return;
     }
-    const eid = ecs.create();
-    ecs.add(eid, Strip);
-    const id = nextStripId++;
-    Strip.id.set(eid, id);
-    Strip.start.set(eid, 0);
-    Strip.end.set(eid, 0);
-    Strip.value.set(eid, clamped);
-    createStripKeyframe(ecs, id, 0, clamped);
+    createOneShot(ecs, clamped);
 }
 
 // ── friction / drag ────────────────────────────────────────────────────────────
@@ -2725,12 +2764,27 @@ function snapshotStrips(ecs: State): StripSnapshot[] {
     }));
 }
 
+/** the track-start one-shot layer of a whole-track snapshot — {@link snapshotAll}'s own
+ *  one-shot half, one row (or none) since at most one `OneShot` entity ever exists. */
+export interface OneShotSnapshot {
+    id: number;
+    value: number;
+}
+
+/** capture the track's one-shot, or an empty array when none exists. */
+function snapshotOneShot(ecs: State): OneShotSnapshot[] {
+    const os = entryOneShot(ecs);
+    return os ? [{ id: os.id, value: os.value }] : [];
+}
+
 /** the structural-op undo unit: every section (order/kind/length, nodes, points) plus
- *  every track-global strip — a snapshot pair round-trips byte-identical (respawns the
- *  stored f32 verbatim), which is what makes the ops safely reversible. */
+ *  every track-global strip plus the track-start one-shot — a snapshot pair round-trips
+ *  byte-identical (respawns the stored f32 verbatim), which is what makes the ops safely
+ *  reversible. */
 export interface TrackSnapshot {
     sections: SectionSnapshot[];
     strips: StripSnapshot[];
+    oneShot: OneShotSnapshot[];
 }
 
 /** capture the whole track. */
@@ -2738,6 +2792,7 @@ export function snapshotAll(ecs: State): TrackSnapshot {
     return {
         sections: sections(ecs).map((s) => snapshotSection(ecs, s.id)),
         strips: snapshotStrips(ecs),
+        oneShot: snapshotOneShot(ecs),
     };
 }
 
@@ -2748,6 +2803,7 @@ export function restoreAll(ecs: State, snap: TrackSnapshot): void {
     for (const e of [...ecs.query([Force])]) ecs.destroy(e);
     for (const e of [...ecs.query([Strip])]) ecs.destroy(e);
     for (const e of [...ecs.query([StripKeyframe])]) ecs.destroy(e);
+    for (const e of [...ecs.query([OneShot])]) ecs.destroy(e);
     for (const s of snap.sections) {
         spawnSection(ecs, s.id, s.order, s.kind, s.length);
         for (const n of s.nodes) spawnNode(ecs, s.id, n.order, n.x, n.y, n.theta, n.tangent);
@@ -2757,6 +2813,7 @@ export function restoreAll(ecs: State, snap: TrackSnapshot): void {
         spawnStrip(ecs, st.id, st.start, st.end, st.value);
         for (const k of st.keyframes) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
     }
+    for (const os of snap.oneShot) spawnOneShot(ecs, os.id, os.value);
 }
 
 /** append a new section of `kind` at the end of the chain. geo gets the flat
@@ -3342,13 +3399,12 @@ function seed(ecs: State): void {
     const id = createSection(ecs, 0, SectionKind.Geo, 0);
     addNode(ecs, id, 0, 0);
     addNode(ecs, id, EXTEND_DIST, 0);
-    // the initial velocity IS the first strip (S5): a real strip at the minimum extent,
-    // through the ordinary create path (S4's seeded boundary keyframes included), rather
-    // than a dedicated field — deleting it falls the derived entry speed back to `V0`
-    // (`entrySpeed`'s own fallback), so this authors the same starting value the retired
-    // per-track speed field used to default to, just as an editable, deletable strip.
-    const ext = stripMinExtentAt(ecs, 0);
-    if (ext) createStrip(ecs, ext.start, ext.end, V0);
+    // the initial velocity IS the track-start one-shot (S3, Locked decision — a
+    // structurally distinct point kind, never a span): deleting it falls the derived
+    // entry speed back to `V0` (`entrySpeed`'s own fallback), so this authors the same
+    // starting value the retired per-track speed field used to default to, just as a
+    // selectable, deletable point.
+    createOneShot(ecs, V0);
 }
 
 // ── bake ─────────────────────────────────────────────────────────────────────
@@ -3566,25 +3622,32 @@ function stripsHash(ecs: State): string {
     return h;
 }
 
+/** the track-start one-shot's own content, folded once (S3) — it feeds `bake`'s `v0` seed
+ *  directly (`entrySpeed`), not through any section or strip, so a value edit needs its own
+ *  hash term or the bake's own gate never sees it move (`bakeHash`'s own miss condition). */
+function oneShotHash(ecs: State): string {
+    const os = entryOneShot(ecs);
+    return os ? `,O${os.id}=${os.value}` : "";
+}
+
 /** input-state hash that gates the bake: the shared ds + coefficients, every section in
  *  order (its id/order/kind, and its authored payload — a geo section's node poses, a force
- *  section's extent + points), then every track-global strip + strip keyframe once
- *  (`stripsHash`). BakeSystem re-bakes on a miss (anything moved, added, removed, reordered,
- *  or a coefficient edited), skips otherwise. the initial speed carries no term of its own
- *  here (S5): it is DERIVED from the track-global strip covering station 0, already folded
- *  into `stripsHash`, and its fallback (`V0`) is a constant, so nothing authored governs it
- *  beyond the strip. `friction`/`resistance` fold in unconditionally, NOT because every
- *  track is nonzero (`createTrack` itself stays at the kernel's neutral 0; only `seed`'s
- *  genuinely NEW documents get `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`, so a
- *  zero-coefficient track is still the common case, every test fixture included).
- *  `Track.domain` never folds in: it is a display lens over this same bake, never a second
- *  march, so flipping it must leave the hash — and therefore the bake — untouched. */
+ *  section's extent + points), every track-global strip + strip keyframe once (`stripsHash`),
+ *  then the track-start one-shot's own value (`oneShotHash`, S3). BakeSystem re-bakes on a
+ *  miss (anything moved, added, removed, reordered, or a coefficient edited), skips
+ *  otherwise. `friction`/`resistance` fold in unconditionally, NOT because every track is
+ *  nonzero (`createTrack` itself stays at the kernel's neutral 0; only `seed`'s genuinely NEW
+ *  documents get `DEFAULT_FRICTION`/`DEFAULT_RESISTANCE`, so a zero-coefficient track is
+ *  still the common case, every test fixture included). `Track.domain` never folds in: it is
+ *  a display lens over this same bake, never a second march, so flipping it must leave the
+ *  hash — and therefore the bake — untouched. */
 function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
     let h = `ds${Track.ds.get(trackEid)}mu${Track.friction.get(trackEid)}c${Track.resistance.get(trackEid)}`;
     for (const sec of secs) {
         h += `|S${sec.id}:${sec.order}:${sectionContentHash(ecs, sec)}`;
     }
     h += stripsHash(ecs);
+    h += oneShotHash(ecs);
     return h;
 }
 

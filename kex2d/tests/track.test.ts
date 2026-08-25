@@ -13,11 +13,14 @@ import {
     convertSection,
     createForcePoint,
     createSection,
+    createOneShot,
     createStrip,
     createStripKeyframe,
     createTrack,
+    destroyOneShot,
     destroyStrip,
     destroyStripKeyframes,
+    entryOneShot,
     entrySpeed,
     edgeStrips,
     restoreStrip,
@@ -32,7 +35,6 @@ import {
     stripKeyframeState,
     stripKeyframes,
     setStrip,
-    setStripKeyframe,
     stripsForStep,
     setBakeFreeze,
     setBakeLanding,
@@ -3546,25 +3548,15 @@ describe("S3: seed keyframes + non-sticking (S4's boundary-ride deleted)", () =>
     });
 });
 
-describe("initial velocity is the first strip (S5)", () => {
-    /** the same min-extent span `seed()` authors — a real strip, through the ordinary
-     *  create path, so it inherits S4's two seeded boundary keyframes. */
-    function seedStartStrip(state: State, value: number): number {
-        const ext = stripMinExtentAt(state, 0);
-        if (!ext) throw new Error("no min extent");
-        const id = createStrip(state, ext.start, ext.end, value);
-        if (id === null) throw new Error("strip refused");
-        return id;
-    }
-
-    test("a start strip valued at V0 bakes byte-identical to the V0 fallback (no strip)", () => {
+describe("initial velocity is the track-start one-shot (S3, its own structurally distinct point kind)", () => {
+    test("a one-shot valued at V0 bakes byte-identical to the V0 fallback (no one-shot)", () => {
         const plain = track();
         plain.state.step(0);
         const plainOut = bakeOut.get(plain.eid);
         if (!plainOut) throw new Error("no bake");
 
         const seeded = track();
-        seedStartStrip(seeded.state, V0);
+        createOneShot(seeded.state, V0);
         seeded.state.step(0);
         const seededOut = bakeOut.get(seeded.eid);
         if (!seededOut) throw new Error("no bake");
@@ -3574,13 +3566,15 @@ describe("initial velocity is the first strip (S5)", () => {
         expect(Array.from(seededOut.fN)).toEqual(Array.from(plainOut.fN));
     });
 
-    test("a degenerate [0,0) point strip is genuinely march-inert: bake === strip-absent, both directions", () => {
-        // guards the point convention's own station-0 exception (`lo = start - 1 = -1`, out of
-        // range): a curved section, so a broken inertness that let the override reach edge 0
-        // would force v[1] to the strip's value instead of the physically integrated one —
-        // the flat-track fixture above can't see this (F_n = 1g regardless of v). ONE document,
-        // both directions: present → absent, so a stray difference between two separately built
-        // tracks can't be mistaken for the strip's own effect.
+    test("the one-shot is genuinely march-inert beyond its own v0 seed: bake === one-shot-absent, both directions", () => {
+        // guards the structural claim (Locked decision: a point event carries no `Strip` row at
+        // all, so it can never reach `stripOverride`/`edgeStrips`) with a runtime witness, not
+        // just a type-system reading: a curved section, so a broken inertness that let some
+        // override reach edge 0 would force v[1] to the one-shot's value instead of the
+        // physically integrated one — the flat-track fixture above can't see this (F_n = 1g
+        // regardless of v). ONE document, both directions: present → absent, so a stray
+        // difference between two separately built tracks can't be mistaken for the one-shot's
+        // own effect.
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
@@ -3593,12 +3587,12 @@ describe("initial velocity is the first strip (S5)", () => {
         const absentV = Array.from(absentBefore.v);
         const absentFN = Array.from(absentBefore.fN);
 
-        // setStartSpeed's own spawn path: no strip exists yet, so this authors the
-        // DEGENERATE `[0, 0)` point strip — bypassing the ordinary min-extent guard on
-        // purpose (`setStartSpeed`'s own docblock) — at the same value the fallback already
-        // reads, so entry.v is unchanged and any difference is the override's, not entry's.
+        // setStartSpeed's own spawn path: no one-shot exists yet, so this authors one — at the
+        // same value the fallback already reads, so entry.v is unchanged and any difference
+        // would be the march's, not entry's.
         setStartSpeed(state, V0);
-        expect(allStrips(state).length).toBe(1);
+        expect(allStrips(state).length).toBe(0); // never a Strip row (Locked decision)
+        expect(entryOneShot(state)?.value).toBe(V0);
         expect(entrySpeed(state)).toBe(V0);
         state.step(0);
         const presentOut = bakeOut.get(eid);
@@ -3606,10 +3600,11 @@ describe("initial velocity is the first strip (S5)", () => {
         expect(Array.from(presentOut.v)).toEqual(absentV);
         expect(Array.from(presentOut.fN)).toEqual(absentFN);
 
-        // reverse direction, same document: destroy the strip and re-bake.
-        const id = allStrips(state)[0].id;
-        destroyStrip(state, id);
-        expect(allStrips(state).length).toBe(0);
+        // reverse direction, same document: destroy the one-shot and re-bake.
+        const id = entryOneShot(state)?.id;
+        if (id === undefined) throw new Error("no one-shot to destroy");
+        destroyOneShot(state, id);
+        expect(entryOneShot(state)).toBeUndefined();
         state.step(0);
         const absentAfter = bakeOut.get(eid);
         if (!absentAfter) throw new Error("no bake");
@@ -3617,97 +3612,80 @@ describe("initial velocity is the first strip (S5)", () => {
         expect(Array.from(absentAfter.fN)).toEqual(absentFN);
     });
 
-    // S6 (kex2d-event-lane, finding 8, option 1 — no point events): the degenerate `[0, 0)`
-    // strip a section-0 convert preserves is a UI-only presentation problem (a point rendered
-    // as a two-edge resizable clip); the kernel-facing write it drags out through is the SAME
-    // guarded `setStrip` a resize already uses (`Timeline.svelte`'s `bandDown`/`bandMove`, "end"
-    // mode). This oracle pins the bake side of that claim: expanding the glyph through `setStrip`
-    // must be indistinguishable, at the bake, from a span `createStrip` authored fresh at the
-    // same extent/value — the ONE thing "exactly as a hand-created span would" can mean at this
-    // layer, since the two differ only in keyframe count (1 vs `createStrip`'s seeded 2, both
-    // flat at the same value — `profile.sampleForce`'s single-point and equal-pair cases already
-    // agree, `section.ts`'s own docblock).
-    test("a glyph expanded via setStrip bakes byte-identical to a hand-created span at the same extent (S6)", () => {
-        const value = 22; // off V0 = 10 and off the flat-track natural march
-        const buildCurved = (state: State): number => {
-            const sec = createSection(state, 0, SectionKind.Geo, 0);
-            addNode(state, sec, 0, 0);
-            addNode(state, sec, 16, 27.7); // curved, so v feeds fN through the march
-            return sec;
-        };
-
-        // track A: the glyph, expanded through the SAME writer the drag-out gesture calls.
-        const a = new State();
-        a.addSystem(BakeSystem);
-        const eidA = createTrack(a);
-        buildCurved(a);
-        setStartSpeed(a, value); // spawns the degenerate [0, 0) point (no strip exists yet)
-        const glyphId = allStrips(a)[0].id;
-        expect(allStrips(a)[0].start).toBe(allStrips(a)[0].end); // degenerate
-        setStrip(a, glyphId, 0, 6, value); // the drag-out: an "end"-mode extend, guarded
-        const grown = allStrips(a)[0];
-        expect(grown.start).toBe(0);
-        expect(grown.end).toBe(6); // the guard admitted it — a real, edge-covering span now
-        a.step(0);
-        const outA = bakeOut.get(eidA);
-        if (!outA) throw new Error("no bake");
-
-        // track B: the same extent/value, hand-created through createStrip directly.
-        const b = new State();
-        b.addSystem(BakeSystem);
-        const eidB = createTrack(b);
-        buildCurved(b);
-        const handId = createStrip(b, 0, 6, value);
-        expect(handId).not.toBeNull();
-        b.step(0);
-        const outB = bakeOut.get(eidB);
-        if (!outB) throw new Error("no bake");
-
-        expect(Array.from(outA.v)).toEqual(Array.from(outB.v));
-        expect(Array.from(outA.fN)).toEqual(Array.from(outB.fN));
-        expect(entrySpeed(a)).toBe(entrySpeed(b));
-
-        // the guard refuses a too-small drag the same way it refuses any other collapse: a
-        // target that rounds back to `start === end` is refused, not silently re-degenerated.
-        const c = new State();
-        c.addSystem(BakeSystem);
-        buildCurved(c);
-        setStartSpeed(c, value);
-        const stillGlyph = allStrips(c)[0];
-        setStrip(c, stillGlyph.id, 0, 0, value); // no-op target — collapses right back
-        expect(allStrips(c)[0]).toEqual(stillGlyph); // refused, unchanged
-    });
-
-    test("with no strip covering station 0, the derived entry speed falls back to V0", () => {
+    test("with no one-shot, the derived entry speed falls back to V0", () => {
         const { state } = track();
         expect(entrySpeed(state)).toBe(V0);
     });
 
-    test("editing the start strip's keyframe moves the derived entry speed and v[0]", () => {
+    test("setStartSpeed moves the derived entry speed and v[0]", () => {
         const { state, eid } = track();
-        const id = seedStartStrip(state, V0);
+        createOneShot(state, V0);
         state.step(0);
         expect(bakeOut.get(eid)?.v[0]).toBe(V0);
 
-        const kf = stripKeyframes(state, id)[0];
-        setStripKeyframe(state, kf.id, kf.s, 18);
+        setStartSpeed(state, 18);
         state.step(0);
 
         expect(entrySpeed(state)).toBe(18);
         expect(bakeOut.get(eid)?.v[0]).toBe(18);
     });
 
-    test("deleting the start strip falls the derived entry speed and v[0] back to V0", () => {
+    test("deleting the one-shot falls the derived entry speed and v[0] back to V0", () => {
         const { state, eid } = track();
-        const id = seedStartStrip(state, 18);
+        const id = createOneShot(state, 18);
         state.step(0);
         expect(bakeOut.get(eid)?.v[0]).toBe(18);
 
-        destroyStrip(state, id);
+        destroyOneShot(state, id);
         state.step(0);
 
         expect(entrySpeed(state)).toBe(V0);
         expect(bakeOut.get(eid)?.v[0]).toBe(V0);
+    });
+
+    // red-first against `preserveEntrySpeedAcrossConvert`'s own retirement (S2, moot — convert
+    // never destroys strips now) AND against S3's own new writer: a section-0 kind-flip
+    // (`convertSection`) touches only `Section`/`Handle`/`Force` entities (`resetToForce`/
+    // `resetToGeo`), never `OneShot`, so the one-shot's stored value naturally survives a
+    // retype with no special-case code — this is a structural fact of the new component
+    // (no `section` field to invalidate), witnessed here rather than merely asserted. MUTATION
+    // WITNESS (2026-08-25, this session): a one-line mutant in `track.ts convertSection`
+    // (`for (const e of ecs.query([OneShot])) ecs.destroy(e);`, inserted right after the
+    // section-lookup guard) reds this exact arm — `bun test tests/track.test.ts -t "entry
+    // speed survives a section-0 retype"` exits 1, `expect(entryOneShot(state)?.id).toBe(before)`
+    // at line 3663 receiving `undefined` — confirming the arm discriminates; reverted
+    // immediately after (`bun test`'s own next run back at exit 0), never shipped.
+    test("entry speed survives a section-0 retype (geo -> force -> geo)", () => {
+        const { state, sec } = track();
+        setStartSpeed(state, 23);
+        const before = entryOneShot(state)?.id;
+        expect(before).toBeDefined();
+
+        convertSection(state, sec); // geo -> force
+        expect(entryOneShot(state)?.id).toBe(before);
+        expect(entryOneShot(state)?.value).toBe(23);
+        expect(entrySpeed(state)).toBe(23);
+
+        convertSection(state, sec); // force -> geo
+        expect(entryOneShot(state)?.id).toBe(before);
+        expect(entryOneShot(state)?.value).toBe(23);
+        expect(entrySpeed(state)).toBe(23);
+    });
+
+    // a reference differential over the refactor itself (S3's own oracle line): the pre-refactor
+    // contract was "entrySpeed reads V0 on a document with no start strip, and setStartSpeed(v)
+    // then makes it read back v" — this is that exact contract, unchanged in shape, now over the
+    // one-shot instead of a degenerate strip. A fresh document (no `seed()`, `track()`'s own
+    // bare `createTrack`) starts with no one-shot at all, matching the pre-refactor "no strip"
+    // floor exactly.
+    test("entry-speed readback is identical pre/post refactor: V0 floor, then setStartSpeed round-trips", () => {
+        const { state } = track();
+        expect(entryOneShot(state)).toBeUndefined();
+        expect(entrySpeed(state)).toBe(V0);
+        setStartSpeed(state, 31);
+        expect(entrySpeed(state)).toBe(31);
+        setStartSpeed(state, 5); // below MIN_V0's floor is a separate arm elsewhere; this is a plain re-set
+        expect(entrySpeed(state)).toBe(5);
     });
 
     test("Track.v0 is retired: no reference survives in src/ (grep arm)", () => {

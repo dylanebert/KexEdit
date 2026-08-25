@@ -5,6 +5,7 @@ import {
     HBAND_H,
     HBAND_TOP,
     LEFT_GUT,
+    clickMenuItem,
     kexCall,
     type Page,
     seedHill,
@@ -223,7 +224,9 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
     // precedence), which would make the body/edge split trivially fail for the wrong reason.
     // Widen it with a REAL end-edge drag (the same gesture `bandDown`'s "end" mode drives) so a
     // genuine body region — more than `STRIP_HIT_R` from either edge — exists to hover. `seed()`
-    // (S5) carries its own start strip too, so address the CREATED one by id, never index 0.
+    // (S3) carries no strip of its own (the track-start one-shot is a distinct point kind), so
+    // this is the only strip — addressed by id anyway, never index 0, matching every sibling
+    // flow's own convention.
     const createdPx = (
         (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
     ).find((s) => s.id === created.id);
@@ -241,7 +244,7 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
     await expect.poll(() => kexCall(page, "selectedStrip")).toBeNull();
 
     const strips = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
-    expect(strips.length).toBe(2);
+    expect(strips.length).toBe(1);
     const widened = strips.find((s) => s.id === created.id);
     if (!widened) throw new Error("widened strip not found");
     const { x0, x1 } = widened;
@@ -335,9 +338,9 @@ test("selected strip suppresses the endpoint hover stroke (S3 review finding 1)"
 
     await expect.poll(() => kexCall(page, "selectedStrip")).toBe(created.id);
     const strips = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
-    // `seed()` (S5) carries its own start strip too, so the count is 2, not 1; address the
-    // SELECTED (created) one by id.
-    expect(strips.length).toBe(2);
+    // `seed()` (S3) carries no strip of its own — the created one is the only one, addressed
+    // by id anyway (the SELECTED one is the review's own subject).
+    expect(strips.length).toBe(1);
     const selected = strips.find((s) => s.id === created.id);
     if (!selected) throw new Error("selected strip not found");
     const { x0 } = selected;
@@ -366,62 +369,43 @@ test("selected strip suppresses the endpoint hover stroke (S3 review finding 1)"
         ).toBeLessThanOrEqual(SelHoverTol);
 });
 
-// ── S6 (kex2d-event-lane, finding 8, option 1 — no point events) ───────────────────────────────
-// the degenerate `[0, 0)` entry-speed strip `setStartSpeed`'s own no-strip branch spawns
-// (`track.ts`) drives the REAL pointer drag-out end to end: before, it hits as its own
-// "glyph" kind (never "endpoint"/"body",
-// `strip-hit.test.ts`'s own oracle) and reads apart from rest under hover the same way a body
-// does (S3's own hover-partition differential, reused here); after, the strip is a real,
-// non-degenerate span landed through the same guarded writer `track.test.ts`'s "glyph expanded
-// via setStrip bakes byte-identical to a hand-created span" pins at the bake layer.
-test("degenerate entry-speed strip drags out into a real span (S6, finding 8)", async ({
+// ── S3 (kex2d-event-substrate, "one-shot events are a structurally distinct kind") ─────────────
+// the track-start one-shot (`track.OneShot`) is never a `Strip` row — the degenerate `[0, 0)`
+// point-as-span convention S6 built (drag-out into a real span, `classifyStripHit`'s "glyph"
+// kind) retires along with it (`strip-hit.ts` no longer has a glyph branch at all). This arm
+// drives the one-shot's own lifecycle — delete, create, select — through the REAL pointer end
+// to end, replacing the retired drag-out arm: `__kex` is read only for assertions
+// (checks.md: an interaction affordance is only visible to an instrument that performs the
+// interaction).
+test("the track-start one-shot: delete, create, and select through the real pointer (S3)", async ({
     page,
     boot,
 }) => {
     await boot();
     await seedHill(page);
-    await kexCall(page, "convert"); // section-0 geo → force; strips are untouched (S2)
-    // delete `seed()`'s real (non-degenerate, min-extent) start strip, then re-author the
-    // entry speed with none present — `setStartSpeed`'s own no-strip branch spawns the
-    // DEGENERATE `[0, 0)` point (S6's own convention). Strips are track-global and survive a
-    // convert untouched now (S2, Locked decision), so a convert alone no longer produces this
-    // scenario the way it used to (`preserveEntrySpeedAcrossConvert`, retired with S2).
-    const seeded = (await kexCall(page, "stripsOf", 0)) as { id: number }[];
-    expect(seeded.length).toBe(1);
-    await kexCall(page, "deleteStripId", seeded[0].id);
-    await kexCall(page, "setV0", 10);
     await frameTimeline(page);
 
-    const stripsBefore = (await kexCall(page, "stripsOf", 0)) as {
-        id: number;
-        start: number;
-        end: number;
-        value: number;
-    }[];
-    expect(stripsBefore.length).toBe(1);
-    const glyph = stripsBefore[0];
-    expect(glyph.start).toBe(glyph.end); // degenerate
+    // `seed()` (S3) authors the one-shot directly — never a `Strip` row — so it's already live.
+    const seeded = (await kexCall(page, "oneShot")) as { id: number; value: number } | null;
+    expect(seeded).not.toBeNull();
+    if (!seeded) throw new Error("unreachable");
 
     const chartBox = await page.locator("canvas.chart").boundingBox();
     if (!chartBox) throw new Error("chart canvas not laid out");
-    const glyphPx = (
-        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-    ).find((s) => s.id === glyph.id);
-    if (!glyphPx) throw new Error("glyph strip not projected on the band");
-    expect(glyphPx.x0).toBe(glyphPx.x1); // one screen station, not a span
-
-    const gx = chartBox.x + glyphPx.x0;
+    const glyphLocalX = (await kexCall(page, "oneShotPx")) as number;
+    const gx = chartBox.x + glyphLocalX;
     const gy = chartBox.y + bandY;
 
     // hover the glyph — it reads apart from rest (the same body-hover differential S3's own
-    // hit-zone-partition arm uses), proving there IS a live affordance here, even though
-    // `strip-hit.ts` never returns "endpoint"/"body" for it.
+    // hit-zone-partition arm uses for a real strip's body), proving there IS a live affordance
+    // here even though the glyph has no `endpoint`/`body` kind of its own (`classifyOneShotHit`
+    // is a single-point predicate, `strip-hit.ts`).
     await page.mouse.move(5, 5);
     await frames(page, 1);
-    const rest = await probeChart(page, glyphPx.x0, bandY);
+    const rest = await probeChart(page, glyphLocalX, bandY);
     await page.mouse.move(gx, gy);
     await frames(page, 1);
-    const hoverGlyph = await probeChart(page, glyphPx.x0, bandY);
+    const hoverGlyph = await probeChart(page, glyphLocalX, bandY);
     expect(rest).not.toBeNull();
     expect(hoverGlyph).not.toBeNull();
     const HoverTol = 6;
@@ -431,28 +415,39 @@ test("degenerate entry-speed strip drags out into a real span (S6, finding 8)", 
             `the glyph should lift its fill under hover past rest ${JSON.stringify(rest)}, got ${JSON.stringify(hoverGlyph)}`,
         ).toBeGreaterThan(HoverTol);
 
-    // the real drag-out: press on the glyph, drag right, release.
-    await page.mouse.down();
-    await page.mouse.move(gx + 200, gy, { steps: 10 });
-    await page.mouse.up();
+    // SELECT: a real left-click on the glyph.
+    await page.mouse.click(gx, gy);
+    await expect.poll(async () => kexCall(page, "oneShotSelected")).toBe(true);
 
+    // DELETE: a real Delete keypress on the selection — no drag-out, no extent to grow (fixed
+    // at `d = 0`); the derived entry speed falls back to `V0` — read as the seed's own value
+    // (`seed()` authors the one-shot at exactly `V0`, the Locked Decision), never imported: this
+    // file stages standalone and can import nothing beyond `./flow` (its own header comment).
+    await page.keyboard.press("Delete");
+    await expect.poll(async () => kexCall(page, "oneShot")).toBeNull();
+    await expect.poll(async () => kexCall(page, "v0")).toBeCloseTo(seeded.value, 3);
+
+    // CREATE: right-click on the (now empty) band → the summoned menu offers "Add initial
+    // velocity" only because none exists (`menus.stripMenu`'s own `oneShotExists` branch) —
+    // the same right-click-on-empty grammar "Add velocity strip" already uses.
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    if (!bandBb) throw new Error("header band not laid out");
+    const emptyY = bandBb.y + bandBb.height / 2;
+    const emptyX = bandBb.x + bandBb.width * 0.6; // well clear of the glyph's own station
+    await page.mouse.click(emptyX, emptyY, { button: "right" });
+    await expect(page.locator(".smenu")).toHaveCount(1);
+    await expect(
+        page.locator(".smenu").getByRole("menuitem", { name: "Add initial velocity" }),
+    ).toBeEnabled();
+    await clickMenuItem(page, ".smenu", "Add initial velocity");
+
+    // it appears at V0 (the seed value — a point event carries no live-bake `v` to read,
+    // unlike a summoned strip's `stripSeedValue`), selected.
     await expect
-        .poll(async () => {
-            const after = (await kexCall(page, "stripsOf", 0)) as { id: number; end: number }[];
-            return after.find((s) => s.id === glyph.id)?.end ?? 0;
-        })
-        .toBeGreaterThan(0);
-
-    const after = (
-        (await kexCall(page, "stripsOf", 0)) as {
-            id: number;
-            start: number;
-            end: number;
-            value: number;
-        }[]
-    ).find((s) => s.id === glyph.id);
-    if (!after) throw new Error("the expanded strip vanished");
-    expect(after.start).toBe(0); // start stays pinned — the glyph only ever grows forward
-    expect(after.end).toBeGreaterThan(0);
-    expect(after.value).toBe(glyph.value); // the seeded value survives the expansion
+        .poll(async () => (await kexCall(page, "oneShot")) as { id: number; value: number } | null)
+        .not.toBeNull();
+    const created = (await kexCall(page, "oneShot")) as { id: number; value: number };
+    expect(created.id).not.toBe(seeded.id); // a fresh id — never resurrected
+    expect(created.value).toBeCloseTo(seeded.value, 3);
+    await expect.poll(async () => kexCall(page, "oneShotSelected")).toBe(true);
 });

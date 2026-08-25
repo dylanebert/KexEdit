@@ -39,6 +39,7 @@ import {
     selectForce,
     selectForceHandle,
     selectForces,
+    selectOneShot,
     selectSection,
     selectStrip,
     selectStripKf,
@@ -47,6 +48,7 @@ import {
 } from "./editor";
 import {
     appendSection,
+    addOneShot,
     addStrip,
     addStripKeyframe,
     beginForceMove,
@@ -60,6 +62,7 @@ import {
     commit,
     commitLength,
     createForce,
+    deleteOneShot,
     deleteStrips,
     deleteStripKeyframes,
     history,
@@ -68,7 +71,7 @@ import {
     setForceTangentMode,
 } from "./history";
 import { forceKeyAct } from "./keys";
-import { classifyStripHit, type StripHit, type StripHitCandidate } from "./strip-hit";
+import { classifyOneShotHit, classifyStripHit, type StripHit, type StripHitCandidate } from "./strip-hit";
 import { V_FLOOR } from "./bake";
 import { redoRouted, undoRouted } from "./pin";
 import { convertDomain, convertFailed, pickable } from "./domain";
@@ -135,6 +138,7 @@ import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segment
 import { TangentMode } from "./spline";
 import {
     bakeOut,
+    entryOneShot,
     forceEase,
     type ForceTangent,
     forceTangent,
@@ -256,9 +260,9 @@ const GROW_CAP: [number, number] = [BAND[0] - GROW_HEADROOM, BAND[1] + GROW_HEAD
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
-// the degenerate-strip glyph's half-diagonal (S6, finding 8) — `FMARKER_R`'s own size, so the
-// point-strip marker reads at the same visual weight as the force-point diamond it sits beside
-// in the same band, not a bespoke size.
+// the track-start one-shot's own glyph half-diagonal (S3, its own structurally distinct point
+// kind, `track.OneShot`) — `FMARKER_R`'s own size, so the one-shot marker reads at the same
+// visual weight as the force-point diamond it sits beside in the same band, not a bespoke size.
 const STRIP_GLYPH_R = FMARKER_R;
 const NODE_TICK_R = 3; // px; a geo section's read-only node-tick circle radius (visual)
 const FHIT_R = 12; // px; the invisible grab/hover radius around a force point (fat pick zone)
@@ -2281,7 +2285,12 @@ const stripMenuItems = $derived.by((): MenuItem[] => {
     if (editor.stripMenu === null) return [];
     const { d, strip } = editor.stripMenu;
     return stripMenu(
-        { strip, editable: stripEditableAt(d), canCreate: canCreateAt(d) },
+        {
+            strip,
+            editable: stripEditableAt(d),
+            canCreate: canCreateAt(d),
+            oneShotExists: entryOneShot(ecs) !== undefined,
+        },
         {
             addStrip: () => {
                 createStripAt(d);
@@ -2289,6 +2298,14 @@ const stripMenuItems = $derived.by((): MenuItem[] => {
             },
             remove: () => {
                 deleteStrips(history, ecs, [...editor.strips.ids]);
+                closeStripMenu();
+            },
+            addOneShot: () => {
+                createOneShotAt();
+                closeStripMenu();
+            },
+            removeOneShot: () => {
+                deleteSelectedOneShot();
                 closeStripMenu();
             },
         },
@@ -2679,6 +2696,25 @@ const bandHit = $derived.by((): StripHit => {
     if (bandHoverX === null) return { kind: "empty" };
     return classifyStripHit(bandHoverX, bandCandidates(), STRIP_HIT_R);
 });
+// the track-start one-shot's own glyph x (S3) — always `uPx(uOf(0))`, independent of whether
+// the one-shot currently exists (a right-click there offers "Add initial velocity" when it
+// doesn't, "Delete" when it does — `bandContext`'s own routing). A plain function, not
+// `$derived`, matching `bandCandidates`' own shape: called fresh from event handlers and the
+// canvas `render()` pass alike, never cached behind the RAF tick.
+function oneShotGlyphX(): number {
+    return uPx(uOf(0));
+}
+// the one-shot glyph's own hover read — `bandHit`'s point-kind twin, checked FIRST wherever
+// both could coincide (a real strip authored to start exactly at `d = 0` would otherwise share
+// screen space with the glyph): the one-shot is a distinct kind, so it gets its own hit-test
+// pass rather than folding into `classifyStripHit`'s candidate list (`strip-hit.ts`'s own
+// Locked-decision split).
+const oneShotHover = $derived.by((): boolean => {
+    if (eid === null) return false;
+    if (editor.dragging && stripDrag === null) return false;
+    if (bandHoverX === null) return false;
+    return classifyOneShotHit(bandHoverX, oneShotGlyphX(), STRIP_HIT_R);
+});
 // removing the unknown state rather than managing it: the theorized failure was a FOREIGN
 // gesture capturing the pointer on `canvas` so `.hbandzone`'s own `onpointermove`/
 // `onpointerleave` never fire when it ends off the band, leaving `bandHoverX` stale at its
@@ -2772,6 +2808,16 @@ function bandContext(e: MouseEvent): void {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
+    // the one-shot glyph takes precedence (S3): checked first, at its own fixed station,
+    // regardless of where on the band the click landed — it's only present when the
+    // one-shot already exists (`entryOneShot`'s own "delete-only glyph" law; the empty-band
+    // "Add initial velocity" row below is the create path).
+    if (entryOneShot(ecs) && classifyOneShotHit(px, oneShotGlyphX(), STRIP_HIT_R)) {
+        if (!stripEditableAt(0)) return;
+        selectOneShot(true);
+        openStripMenu(e.clientX, e.clientY, 0, -2);
+        return;
+    }
     const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
     if (hit.kind === "empty") {
         // a create has no gesture to freeze a table for -- `dOf` reads the live mapping.
@@ -2797,6 +2843,15 @@ function bandDown(e: PointerEvent): void {
     if (eid === null) return;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
+    // the one-shot glyph takes precedence (S3), select-only — it has no extent to trim/drag
+    // (fixed at `d = 0`, no drag-out; that machinery retired with the point-as-span model).
+    if (entryOneShot(ecs) && classifyOneShotHit(px, oneShotGlyphX(), STRIP_HIT_R)) {
+        if (!stripEditableAt(0)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        selectOneShot(true);
+        return;
+    }
     const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
     if (hit.kind === "empty") {
         if (!e.shiftKey) deselectAll();
@@ -2816,14 +2871,8 @@ function bandDown(e: PointerEvent): void {
     selectStrip(s.id);
     // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note.
     gestureMapping = mapping;
-    if (hit.kind === "endpoint" || hit.kind === "glyph") {
-        // a glyph (degenerate strip, S6 finding 8) drags out as an "end" extend ONLY — there is
-        // no "start" side to grab on a point, and growing forward from its own station through
-        // the same guarded writer (`setStrip`) an ordinary resize uses is what "the ordinary
-        // guarded create path" means for a point (`strip-hit.ts`'s own docblock): the write
-        // guard (`stripOverlapped`/`stripCoversOneEdge`) is identical either way, so a
-        // drag-out-completed glyph is indistinguishable from a hand-created span.
-        const edge = hit.kind === "endpoint" ? hit.edge : "end";
+    if (hit.kind === "endpoint") {
+        const edge = hit.edge;
         const at = edge === "start" ? s.start : s.end;
         const b = stripBoundsAt(ecs, s.id, s.len, at);
         stripDrag = {
@@ -2877,6 +2926,12 @@ function createStripAt(d: number): void {
     const id = addStrip(history, ecs, extent.start, extent.end, value);
     if (id !== null) selectStrip(id);
 }
+// summoned creation, the one-shot's own twin (S3): always seeds at `V0` — a distinct point
+// kind carries no curve to read a live bake `v` from, unlike `stripSeedValue`'s station read.
+function createOneShotAt(): void {
+    addOneShot(history, ecs, V0);
+    selectOneShot(true); // there's only ever one — `selectOneShot`'s own boolean shape
+}
 // Delete removes the selected strip; Escape clears the selection.
 function deleteSelectedStrip(): void {
     if (editor.strip === null) return;
@@ -2887,6 +2942,16 @@ function deleteSelectedStrip(): void {
     if (eid === null) return;
     if (!stripEditableAt(Strip.start.get(eid))) return;
     deleteStrips(history, ecs, [...editor.strips.ids]);
+}
+// Delete removes the one-shot; Escape clears the selection (`deleteSelectedStrip`'s own
+// point-kind twin).
+function deleteSelectedOneShot(): void {
+    if (!editor.oneShot) return;
+    if (!stripEditableAt(0)) return;
+    const os = entryOneShot(ecs);
+    if (!os) return;
+    deleteOneShot(history, ecs, os.id);
+    selectOneShot(false);
 }
 // Delete removes the WHOLE selected strip-keyframe SET (S4's booked multi-select, `deleteForces`'
 // own bulk shape); the strip stays selected (the force keyframe's own pattern — Delete acts on
@@ -3279,35 +3344,6 @@ function render(ctx: CanvasRenderingContext2D): void {
         const x1 = uPx(s.u1);
         if (x1 < LEFT_GUT || x0 > w) continue;
         const sel = editor.strip === s.id;
-        // S6 (finding 8, option 1 — no point events): the degenerate `[0, 0)` entry-speed strip
-        // draws as a marker glyph, never a resizable span — a small diamond at its one station,
-        // `FMARKER_R`'s own size so it reads at the force-point diamond's weight. No body fill,
-        // no resize-edge stroke: `classifyStripHit` never returns "endpoint" or "body" for it
-        // (`strip-hit.ts`), so there is no affordance here to draw that the hit test wouldn't
-        // honor. `bandHit.kind === "glyph"` is this marker's own hover rung, the body fill's
-        // `bodyHover` twin.
-        if (s.start === s.end) {
-            // `x0 === x1` for a degenerate strip, so the outer bounds check above already
-            // clipped it — no second clamp needed here.
-            const cy = RULER_H + GAP_H + STRIP_H / 2;
-            const glyphHover = !sel && bandHit.kind === "glyph" && bandHit.id === s.id;
-            ctx.globalAlpha = sel ? 0.95 : 0.7;
-            ctx.fillStyle = glyphHover ? hovered(COLOR_VELOCITY) : COLOR_VELOCITY;
-            ctx.beginPath();
-            ctx.moveTo(x0, cy - STRIP_GLYPH_R);
-            ctx.lineTo(x0 + STRIP_GLYPH_R, cy);
-            ctx.lineTo(x0, cy + STRIP_GLYPH_R);
-            ctx.lineTo(x0 - STRIP_GLYPH_R, cy);
-            ctx.closePath();
-            ctx.fill();
-            ctx.globalAlpha = 1;
-            if (sel) {
-                ctx.strokeStyle = COLOR_VELOCITY;
-                ctx.lineWidth = 1;
-                ctx.stroke();
-            }
-            continue;
-        }
         // clamp the drawn width to ≥ 1px — a min-extent strip (the only kind the menu makes)
         // can draw sub-pixel or zero-width when zoomed out, the same clamp the ghost loop
         // above carries (S3's disclosed gap; the downstream freeze's own zero-length edge).
@@ -3358,6 +3394,36 @@ function render(ctx: CanvasRenderingContext2D): void {
         ctx.moveTo(tx, RULER_H + GAP_H);
         ctx.lineTo(tx, RULER_H + GAP_H + STRIP_H);
         ctx.stroke();
+    }
+
+    // the track-start one-shot (S3, Locked decision — its own structurally distinct point
+    // kind, never a degenerate `Strip`): one glyph, always at `d = 0`, independent of
+    // `bandStrips` — a small diamond at the track's own start station, `FMARKER_R`'s own
+    // size so it reads at the force-point diamond's weight. No body fill, no resize-edge
+    // stroke: it has no extent to resize (fixed at `d = 0`, no drag-out — S3 retires that
+    // machinery along with the point-as-span model).
+    if (entryOneShot(ecs)) {
+        const gx = oneShotGlyphX();
+        if (gx >= LEFT_GUT && gx <= w) {
+            const cy = RULER_H + GAP_H + STRIP_H / 2;
+            const selOs = editor.oneShot;
+            const glyphHover = !selOs && oneShotHover;
+            ctx.globalAlpha = selOs ? 0.95 : 0.7;
+            ctx.fillStyle = glyphHover ? hovered(COLOR_VELOCITY) : COLOR_VELOCITY;
+            ctx.beginPath();
+            ctx.moveTo(gx, cy - STRIP_GLYPH_R);
+            ctx.lineTo(gx + STRIP_GLYPH_R, cy);
+            ctx.lineTo(gx, cy + STRIP_GLYPH_R);
+            ctx.lineTo(gx - STRIP_GLYPH_R, cy);
+            ctx.closePath();
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            if (selOs) {
+                ctx.strokeStyle = COLOR_VELOCITY;
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+        }
     }
 
     ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
@@ -3832,6 +3898,18 @@ onMount(() => {
             snapPop = null;
             return;
         }
+        // the track-start one-shot's own select/delete — Escape/Delete only, `editor.strip`'s
+        // point-kind twin (S3): no drag, no keyframe sub-selection to peel first.
+        if (editor.oneShot) {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                selectOneShot(false);
+            } else if (bound(BINDINGS.remove, e.key)) {
+                e.preventDefault();
+                deleteSelectedOneShot();
+            }
+            return;
+        }
         // velocity-strip select/delete — Escape/Delete only (a strip has no handle/tangent
         // sub-mode to peel, unlike a force keyframe's Escape ladder above). A selected
         // strip keyframe (a sub-selection layered on the strip) peels first: Delete removes
@@ -4046,6 +4124,14 @@ onMount(() => {
                 const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
                 return computeBandStrips(freshSpans, ecs).map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
             };
+            // the track-start one-shot's own glyph screen x (S3), canvas-local like `stripPx` —
+            // the capture flow's pixel probe reads this to drive a REAL pointer at the glyph
+            // without re-deriving `uPx(uOf(0))`. Always defined regardless of whether the
+            // one-shot currently exists (`oneShotGlyphX`'s own reading), so a flow can drive a
+            // right-click "Add initial velocity" at the same screen point a later "Delete"
+            // right-click lands on.
+            k.oneShotPx = (): number => oneShotGlyphX();
+            k.oneShotSelected = (): boolean => editor.oneShot;
             // the chart's own addressable-span end, on the ACTIVE axis (bounded past a stall in
             // Time, S2, finding 13) — distinct from `tTotal` (main.ts, the bake's unbounded
             // total) precisely so a flow can assert the chart clamps where the bake doesn't.
@@ -4073,6 +4159,8 @@ onMount(() => {
                 delete k.ghostPx;
                 delete k.stripKfPx;
                 delete k.stripPx;
+                delete k.oneShotPx;
+                delete k.oneShotSelected;
                 delete k.uTotal;
                 delete k.stallU;
             }

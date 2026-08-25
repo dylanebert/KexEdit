@@ -58,9 +58,11 @@ function humpForceTrack(): { state: State; eid: number; sec: number } {
 }
 
 /** a track carrying one hand-authored hill (the shape kex2d-provenance's symptom is named
- *  against — an untouched geo→force→geo trip gaining nodes), baked. `applyConvert`/
- *  `applyConvertGeo`'s own `preserveEntrySpeedAcrossConvert` (S5) is what keeps the launch
- *  speed alive across the round trips below; `setStartSpeed` only has to author it once. */
+ *  against — an untouched geo→force→geo trip gaining nodes), baked. `setStartSpeed` authors
+ *  the track-start one-shot (S3, its own point kind, never a `Strip` row) once — a section
+ *  kind-flip never touches it, so it carries through every round trip below with no
+ *  special-case code (`preserveEntrySpeedAcrossConvert`, the pre-S3 mechanism this needed,
+ *  retired at S2). */
 function hillTrack(): { state: State; eid: number; sec: number } {
     const state = new State();
     state.addSystem(BakeSystem);

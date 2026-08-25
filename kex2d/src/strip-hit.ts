@@ -12,46 +12,48 @@
  *  `sectionStrips`'), so an adjacent pair's shared boundary — the abutment `stripEdgeRange`
  *  disambiguates in edge space (`track.ts`) — resolves to whichever strip's own edge the caller
  *  listed first; the boundary tick is the visual disambiguator, this classifier just has to be
- *  deterministic, not "correct" about which of two coincident edges wins. */
+ *  deterministic, not "correct" about which of two coincident edges wins.
+ *
+ *  A strip is never degenerate (S3, Locked decision: one-shot events are their own structurally
+ *  distinct point kind, `track.OneShot` — the old `[0, 0)` point-as-span convention retired), so
+ *  every candidate here has a real `x0 < x1` span. The track-start one-shot's own glyph hit-test
+ *  is {@link classifyOneShotHit}, a separate function over a single point — never a
+ *  `StripHitCandidate`, since it carries no `id` set to search. */
 
 export interface StripHitCandidate {
     id: number;
     x0: number; // the strip's start edge, screen px
-    x1: number; // the strip's end edge, screen px (equal to x0 for a degenerate point strip)
+    x1: number; // the strip's end edge, screen px
 }
 
 export type StripHit =
     | { kind: "endpoint"; id: number; edge: "start" | "end" }
-    | { kind: "glyph"; id: number }
     | { kind: "body"; id: number }
     | { kind: "empty" };
 
 /** classify a band-local pointer x against a set of already-projected strips, within a pixel
  *  `radius` of an endpoint. `strips` need not be sorted — the caller's own draw order picks the
- *  tie when two candidates' hit zones overlap. A degenerate candidate (`x0 === x1`, the point
- *  strip a section-0 convert preserves) never reads as an "endpoint" — a point has one edge, not
- *  two to resize between, and no surveyed tool drags a point into a span by grabbing an edge
- *  handle (kex2d-event-lane finding 8's research, option 1: no point events). It reads as its own
- *  kind, `"glyph"`, so the caller can render and gesture it as a marker rather than a resizable
- *  span — inert to the march (`kex2d-map.md`'s station-0 inertness), not inert to the pointer:
- *  the caller's drag-out grows it into a real span through the same guarded writer a resize
- *  already uses. */
+ *  tie when two candidates' hit zones overlap. */
 export function classifyStripHit(
     bandX: number,
     strips: readonly StripHitCandidate[],
     radius: number,
 ): StripHit {
     for (const s of strips) {
-        if (s.x0 === s.x1) {
-            if (Math.abs(bandX - s.x0) <= radius) return { kind: "glyph", id: s.id };
-            continue;
-        }
         if (Math.abs(bandX - s.x0) <= radius) return { kind: "endpoint", id: s.id, edge: "start" };
         if (Math.abs(bandX - s.x1) <= radius) return { kind: "endpoint", id: s.id, edge: "end" };
     }
     for (const s of strips) {
-        if (s.x0 === s.x1) continue; // a glyph has no body to hit
         if (bandX >= s.x0 && bandX <= s.x1) return { kind: "body", id: s.id };
     }
     return { kind: "empty" };
+}
+
+/** classify a band-local pointer x against the track-start one-shot's own glyph x (S3) — a
+ *  single point, never a span: no endpoint/body split, just within-`radius` or not. Takes
+ *  the glyph's projected x directly (not a `StripHitCandidate[]`) because there is at most
+ *  one one-shot per track, so there's no set to search — mirrors `classifyStripHit`'s
+ *  radius convention exactly (same `STRIP_HIT_R` the caller passes both functions). */
+export function classifyOneShotHit(bandX: number, glyphX: number, radius: number): boolean {
+    return Math.abs(bandX - glyphX) <= radius;
 }
