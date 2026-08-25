@@ -141,6 +141,7 @@ import {
     Handle,
     minForceExtent,
     SectionKind,
+    type SectionSpan,
     sectionCutAt,
     sectionForces,
     sectionHandles,
@@ -827,14 +828,25 @@ interface ForcePt {
     // (drag/field/scrub) adds a `dOf`-converted delta to; never mix with `startU`.
     len: number; // the section's authored extent, arclength ALWAYS (drag/field clamp domain)
 }
-const forcePts = $derived.by((): ForcePt[] => {
-    void tick;
+// One projection for force-keyframe points from the ECS — the shared computation both the
+// `forcePts` `$derived` (paced by `void tick` for the render) and the `forceU` `__kex` hook
+// call. The hook calls it directly for freshness: a capture flow that creates a force keyframe
+// via `placeForce`'s synchronous ECS write and immediately reads `forceU` must not read a
+// stale `$derived` that hasn't re-evaluated this frame. `clips` and `spans` are also `$derived`
+// behind `void tick`, but neither changes on a keyframe create — the clip set and the span
+// table are stable — so their cached values are still correct; only `sectionForces(ecs, c.id)`
+// (a direct ECS query) reflects the new keyframe.
+function computeForcePts(
+    clipList: Clip[],
+    spanTable: SectionSpan[],
+    world: State,
+): ForcePt[] {
     if (eid === null) return [];
     const res: ForcePt[] = [];
-    for (const c of clips) {
+    for (const c of clipList) {
         if (c.kind !== SectionKind.Force) continue;
-        for (const p of sectionForces(ecs, c.id)) {
-            const d = toGlobal(spans, c.id, p.s);
+        for (const p of sectionForces(world, c.id)) {
+            const d = toGlobal(spanTable, c.id, p.s);
             // unreachable today (`clips` is built from the same `spans`), but a stale span
             // dropping a point for one frame beats painting it at NaN.
             if (d === null) continue;
@@ -855,6 +867,10 @@ const forcePts = $derived.by((): ForcePt[] => {
         }
     }
     return res;
+}
+const forcePts = $derived.by((): ForcePt[] => {
+    void tick;
+    return computeForcePts(clips, spans, ecs);
 });
 // the whole selected section SET (membership, for the clip highlight) — single-select is the
 // size-1 case. read through the tick like the rest of `editor`; the per-frame `clips` rebuild
@@ -1095,11 +1111,22 @@ interface StripKfPt {
     start: number; // the strip's start (section-local, arclength)
     end: number; // the strip's end (section-local, arclength)
 }
-const stripKfPts = $derived.by((): StripKfPt[] => {
-    void tick;
+// One projection for strip-keyframe points from the ECS — the shared computation both the
+// `stripKfPts` `$derived` (paced by `void tick` for the render) and the `stripKfPx` `__kex`
+// hook call. The hook calls it directly for freshness: a capture flow that creates a keyframe
+// via `chartCreate`'s synchronous ECS write and immediately reads pixel positions must not
+// read a stale `$derived` that hasn't re-evaluated this frame. `bandStrips` and `spans` are
+// also `$derived` behind `void tick`, but neither changes on a keyframe create — the strip set
+// and the span table are stable — so their cached values are still correct; only
+// `stripKeyframes(ecs, s.id)` (a direct ECS query) reflects the new keyframe.
+function computeStripKfPts(
+    strips: BandStrip[],
+    spanTable: SectionSpan[],
+    world: State,
+): StripKfPt[] {
     const out: StripKfPt[] = [];
-    for (const s of bandStrips) {
-        for (const k of stripKeyframes(ecs, s.id)) {
+    for (const s of strips) {
+        for (const k of stripKeyframes(world, s.id)) {
             out.push({
                 id: k.id,
                 strip: s.id,
@@ -1107,7 +1134,7 @@ const stripKfPts = $derived.by((): StripKfPt[] => {
                 s: k.s,
                 v: k.v,
                 u: (() => {
-                    const d = toGlobal(spans, s.section, k.s);
+                    const d = toGlobal(spanTable, s.section, k.s);
                     // same seam again: a strip keyframe on a downstream section shifts rigidly
                     // with an upstream lengthen (`bandStrips`/`forcePts`'s own note).
                     return d === null ? s.startU : uOfLen(d);
@@ -1120,6 +1147,10 @@ const stripKfPts = $derived.by((): StripKfPt[] => {
         }
     }
     return out;
+}
+const stripKfPts = $derived.by((): StripKfPt[] => {
+    void tick;
+    return computeStripKfPts(bandStrips, spans, ecs);
 });
 // every strip's own authored velocity curve, sampled over its extent for the solid draw —
 // either the constant `value` (no keyframes) or the keyframed curve (profile.sampleForce),
@@ -3931,7 +3962,7 @@ onMount(() => {
             // can't see a split's tail — without re-deriving `forcePts`' own grouping by hand.
             k.domain = (): string => (domain === Domain.Time ? "time" : "distance");
             k.forceU = (): { id: number; section: number; s: number; g: number; u: number }[] =>
-                forcePts.map((p) => ({ id: p.id, section: p.section, s: p.s, g: p.g, u: p.u }));
+                computeForcePts(clips, spans, ecs).map((p) => ({ id: p.id, section: p.section, s: p.s, g: p.g, u: p.u }));
             // the chart's axis<->arclength lens, both directions, at the LIVE (or, mid-gesture,
             // gesture-frozen) s↔t table — S6's own oracle: a capture flow calls these BEFORE
             // starting a drag to read the table the gesture will freeze, so it can verify a write
@@ -3948,30 +3979,19 @@ onMount(() => {
             // than re-deriving the arclength→px projection a second time (the ctxCut precedent).
             k.ghostPx = (): { x0: number; x1: number }[] => ghostSpans;
             // the selected strip's keyframe diamonds' screen px, projected exactly as drawn
-            // (the capture flow's pixel probe reads these to drive real pointer events).
+            // (the capture flow's pixel probe reads these to drive real pointer events). Calls
+            // `computeStripKfPts` directly (not the `stripKfPts` `$derived`) for freshness: the
+            // derived is paced by `void tick` (one re-eval per RAF frame), but a capture flow
+            // that creates a keyframe via `chartCreate`'s synchronous ECS write and then
+            // immediately reads pixel positions can do so before a RAF frame fires — so
+            // `stripKfPts` is stale and the freshly-created keyframe is absent from the probe.
             k.stripKfPx = (): { id: number; x: number; y: number }[] => {
-                // Read the ECS directly, not the `stripKfPts` `$derived`: the derived is paced by
-                // `void tick` (one re-eval per RAF frame), but a capture flow that creates a
-                // keyframe (via `chartCreate`'s synchronous ECS write) and then immediately reads
-                // pixel positions can do so before a single RAF frame fires — so `stripKfPts`
-                // is stale and the freshly-created keyframe is absent from the pixel probe.
-                // `bandStrips` (the strip list) is also a `$derived` behind `void tick`, but the
-                // strip set does not change on a keyframe create, so its cached value is still
-                // correct; `stripKeyframes(ecs, s.id)` is a direct ECS query and always fresh.
                 const rect = canvas.getBoundingClientRect();
-                const out: { id: number; x: number; y: number }[] = [];
-                for (const s of bandStrips) {
-                    for (const k of stripKeyframes(ecs, s.id)) {
-                        const d = toGlobal(spans, s.section, k.s);
-                        const u = d === null ? s.startU : uOfLen(d);
-                        out.push({
-                            id: k.id,
-                            x: rect.left + uPx(u),
-                            y: rect.top + vOf(k.v),
-                        });
-                    }
-                }
-                return out;
+                return computeStripKfPts(bandStrips, spans, ecs).map((k) => ({
+                    id: k.id,
+                    x: rect.left + uPx(k.u),
+                    y: rect.top + vOf(k.v),
+                }));
             };
             // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
             // page-absolute like `stripKfPx`) — S3's own capture flow reads these to drive a

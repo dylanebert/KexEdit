@@ -7,6 +7,7 @@ import { editor, sandbox, select, selectionHook } from "./editor";
 import {
     appendSection,
     convertSection,
+    addStripKeyframe,
     createForce,
     history,
     removeSection,
@@ -340,6 +341,10 @@ if (import.meta.env.DEV) {
         convert: (): void => convertSection(history, ecs, sec()),
         // author a force point at (s, g) — the "place a point on the curve" step.
         placeForce: (s: number, g: number): number => createForce(history, ecs, sec(), s, g),
+        // author a strip keyframe at (s, v) on the given strip — the freshness arm's synchronous
+        // create, mirroring `placeForce`'s shape so the arm can create and read in one evaluate.
+        placeStripKf: (stripId: number, s: number, v: number): number =>
+            addStripKeyframe(history, ecs, stripId, s, v),
         // lay an airtime bump in force mode: dip below 1g mid-track, back to 1g.
         seedForceBump: (): void => {
             const id = sec();
