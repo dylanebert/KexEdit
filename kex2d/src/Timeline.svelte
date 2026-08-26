@@ -2554,15 +2554,18 @@ let lenVExit = V0;
 const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-eye feel constant
 // resolve the held cursor to a section extent through the *current* view (recomputed
 // inline so an edge-pan this frame is already reflected — the edge never lags the pan).
-// snaps the trimmed edge (the AE magnet) to content landmarks that are BOTH stable under
-// the resize AND reachable (editor-ui.md): the section's own force points (section-local,
-// so fixed while its extent changes) and the playhead (the Premiere trim-to-playhead
-// idiom, only while parked). ruler ticks are excluded — the zoom-dependent 1-2-5 raster
-// is display, not content. section boundaries are excluded too — the dragged section's
-// own exit and every downstream boundary MOVE with the resize (self-snap), and upstream
-// boundaries are unreachable (they'd floor the length). the reach guard (the domain's own
-// `minForceExtent` floor) skips a snap the floor won't honor, so no guide flashes on an edge
-// that can't get there — matching applyKeyframeDrag's reach guard.
+// snaps the trimmed edge (the AE magnet) through the SAME shared resolver a keyframe drag
+// rides (`snapAxis`, F4) to content landmarks that are BOTH stable under the resize AND
+// reachable (editor-ui.md): the section's own force points (section-local, so fixed while
+// its extent changes) and the playhead (the Premiere trim-to-playhead idiom, only while
+// parked). ruler ticks are excluded — the zoom-dependent 1-2-5 raster is display, not
+// content. section boundaries are excluded too — the dragged section's own exit and every
+// downstream boundary MOVE with the resize (self-snap), and upstream boundaries are
+// unreachable (they'd floor the length). the reach guard (the domain's own `minForceExtent`
+// floor) skips a landmark the floor won't honor, falling back to the grid quantum instead
+// of the raw cursor value (F4: the trim gesture snaps to increments the same as a keyframe
+// drag whenever no reachable landmark is in range) — matching applyKeyframeDrag's reach
+// guard, generalized past a guide-flash cosmetic.
 //
 // The extent is the section's authored length, arclength ALWAYS (S6) -- so in `Domain.Time`
 // this same gesture reads a cursor position on the PROJECTED (seconds) chart axis and must
@@ -2572,20 +2575,21 @@ const EDGE_PAN = 0.4; // px pan per px past the chart edge, per frame — a by-e
 function applyLen(): void {
     if (lenId === null) return;
     const cv = clampView(view, chartW, uFrozen ?? uTotal, mFloor);
-    let cumU = pxToU(cv, lenCx - LEFT_GUT);
+    const rawPx = lenCx - LEFT_GUT;
+    const rawU = pxToU(cv, rawPx);
     snapX = null;
-    if (snapActive(lenMod)) {
-        const ownU: number[] = [];
-        for (const p of forcePts) if (p.section === lenId) ownU.push(p.u);
-        const targets = trimTargets(cv, ownU, paused && cartS !== null ? uOf(cartS) : null);
-        const hit = snap(lenCx - LEFT_GUT, targets);
-        if (hit !== null) {
-            const cand = pxToU(cv, hit);
-            if (dOf(cand) - lenStartD >= minForceExtent(domain)) {
-                cumU = cand; // only latch a target the extent floor will actually honor
-                snapX = hit;
-            }
-        }
+    const active = snapActive(lenMod);
+    const ownU: number[] = [];
+    for (const p of forcePts) if (p.section === lenId) ownU.push(p.u);
+    const targets = trimTargets(cv, ownU, paused && cartS !== null ? uOf(cartS) : null);
+    const r = snapAxis(active, rawPx, rawU, targets, GRID, (px) => pxToU(cv, px), null);
+    let cumU = r.value;
+    if (r.guide !== null && dOf(cumU) - lenStartD < minForceExtent(domain)) {
+        // the floor won't honor this landmark — fall back to the grid quantum (matching
+        // snapAxis's own empty-target grid branch) rather than the raw cursor value.
+        cumU = active ? Math.round(rawU / GRID) * GRID : rawU;
+    } else if (r.guide !== null) {
+        snapX = r.guide;
     }
     // the extent trim is the one place a chart-axis cursor legitimately reads PAST the bake's
     // own end (the lead-out margin sits right there): `uToDExtend`, not `dOf`, so lengthening a
@@ -2766,6 +2770,7 @@ interface StripDrag {
     kfs: { id: number; s: number; v: number }[];
 }
 let stripDrag: StripDrag | null = $state(null);
+let bandMod = false; // Ctrl/Cmd held (live) during a strip move/resize — snap bypass (F4)
 
 /** whether the section a track-global station currently resolves to is editable (not under
  *  a pin-session lockdown, `sectionEditable`) — strips are track-global and span-blind (S2,
@@ -2781,6 +2786,12 @@ function stripEditableAt(d: number): boolean {
     return loc === null || sectionEditable(editor.pinning, loc.section);
 }
 
+// resolves the RESULTING position (an edge's own station, or a body drag's own rigidly-
+// translated start) through the SAME shared resolver a keyframe drag rides (`snapAxis`, F4)
+// — snap the candidate write, not the raw cursor, the same order `applyKeyframeDrag`'s own
+// anchor snap uses. Landmarks: the nearest sibling strip's flush boundary for an edge resize
+// (`lo`/`hi`, already the drag's own room), the parked playhead for every mode; the grid
+// quantum otherwise. Ctrl/Cmd bypasses exactly like every other drag on this chart.
 function bandMove(e: PointerEvent): void {
     if (stripDrag === null) return;
     const rect = canvas.getBoundingClientRect();
@@ -2789,18 +2800,38 @@ function bandMove(e: PointerEvent): void {
     // rect, so its `onpointermove` never fires -- keep the hover read live from here instead
     // (S3's own edge/body affordance while the gesture is in flight).
     bandHoverX = px;
-    // through the gesture-frozen table -- `station` is track-global arclength (strips are
-    // track-global, S2), never a raw (seconds-scaled in Time view) axis delta (S6 fix).
-    const station = dOf(uAtPx(px));
-    const { mode, lo, hi, origStart, origEnd, origValue, id, kfs } = stripDrag;
+    bandMod = e.ctrlKey || e.metaKey; // live: bypass can be toggled mid-drag
+    const { mode, lo, hi, origStart, origEnd, origValue, id, kfs, grabStation } = stripDrag;
+    snapX = null;
+    const active = snapActive(bandMod);
+    const playheadU = paused && cartS !== null ? uOf(cartS) : null;
+    const width = origEnd - origStart;
+    // through the gesture-frozen table -- track-global arclength (strips are track-global,
+    // S2), never a raw (seconds-scaled in Time view) axis delta (S6 fix).
+    const rawStation = dOf(uAtPx(px));
+    const candidate =
+        mode === "body"
+            ? clamp(origStart + (rawStation - grabStation), lo, hi - width)
+            : clamp(rawStation, lo, hi);
+    const edgeTarget = mode === "start" ? lo : mode === "end" ? hi : null;
+    const targets = trimTargets(clamped, edgeTarget !== null ? [uOf(edgeTarget)] : [], playheadU);
+    const candidateU = uOf(candidate);
+    const r = snapAxis(
+        active,
+        uToPx(clamped, candidateU),
+        candidateU,
+        targets,
+        GRID,
+        (p) => pxToU(clamped, p),
+        null,
+    );
+    if (r.guide !== null) snapX = r.guide;
     if (mode === "start") {
-        setStrip(ecs, id, clamp(station, lo, hi), origEnd, origValue);
+        setStrip(ecs, id, clamp(dOf(r.value), lo, hi), origEnd, origValue);
     } else if (mode === "end") {
-        setStrip(ecs, id, origStart, clamp(station, lo, hi), origValue);
+        setStrip(ecs, id, origStart, clamp(dOf(r.value), lo, hi), origValue);
     } else {
-        const width = origEnd - origStart;
-        const delta = station - stripDrag.grabStation;
-        const ns = clamp(origStart + delta, lo, hi - width);
+        const ns = clamp(dOf(r.value), lo, hi - width);
         setStrip(ecs, id, ns, ns + width, origValue);
         // S5, F1: a BODY drag carries its keyframes — the SAME Δd the strip's own edges just
         // moved by, applied to every keyframe's gesture-start `s`. Relative order is preserved
@@ -2813,6 +2844,7 @@ function bandMove(e: PointerEvent): void {
 function bandUp(): void {
     if (stripDrag === null) return;
     stripDrag = null;
+    snapX = null;
     gestureMapping = null; // release the gesture-frozen table
     window.removeEventListener("pointermove", bandMove);
     window.removeEventListener("pointerup", bandUp);
@@ -2822,6 +2854,7 @@ function bandUp(): void {
 function cancelStripDrag(): void {
     if (stripDrag === null) return;
     stripDrag = null;
+    snapX = null;
     gestureMapping = null; // release the gesture-frozen table
     window.removeEventListener("pointermove", bandMove);
     window.removeEventListener("pointerup", bandUp);
@@ -2898,6 +2931,7 @@ function bandDown(e: PointerEvent): void {
         return;
     }
     selectStrip(s.id);
+    bandMod = e.ctrlKey || e.metaKey;
     // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note.
     gestureMapping = mapping;
     if (hit.kind === "endpoint") {
