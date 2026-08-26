@@ -695,13 +695,16 @@ export function restoreStrip(ecs: State, st: StripState): void {
  *  — the strip keeps its current value). The refusal is what "the guard lives inside the
  *  write op" (Locked decision) means for C3 — an actual drag CLAMPING at the neighbour's
  *  boundary is C5's gesture, built on top of this refusal (it computes a clamped target
- *  and calls this op with that instead), not a second guard here. Non-sticking (S3): a
- *  keyframe never follows an edge it happens to sit on — every keyframe, boundary included,
- *  holds its station through a resize or a body drag, the same as a force keyframe never
- *  stalks a `Section.length` trim. S4's boundary-ride (a keyframe riding the moved edge) is
- *  deleted, not extended: consistency across the substrate is the locked law, and a strip
- *  that wants its edge's value tracked keeps a keyframe there through explicit authoring,
- *  same as force. */
+ *  and calls this op with that instead), not a second guard here. Non-sticking on a RESIZE
+ *  (S3): a keyframe never follows an edge it happens to sit on — every keyframe, boundary
+ *  included, holds its station through a `start`/`end` resize, the same as a force keyframe
+ *  never stalks a `Section.length` trim. S4's boundary-ride (a keyframe riding the moved edge)
+ *  is deleted, not extended: a strip that wants its edge's value tracked keeps a keyframe
+ *  there through explicit authoring, same as force. **A BODY drag is the one exception (S5,
+ *  F1): the whole strip translates, so every keyframe on it carries with it by the SAME Δd**
+ *  — "the container carries its contents," the feel-gate's own generalizing rule — applied by
+ *  the caller (`Timeline.svelte`'s `bandMove`) alongside this write, never inside `setStrip`
+ *  itself (this op only ever writes `start`/`end`/`value`). */
 export function setStrip(ecs: State, id: number, start: number, end: number, value: number): void {
     const eid = stripAt(ecs, id);
     if (eid === null) return;
@@ -893,18 +896,37 @@ export function stripKeyframeTaken(
     return false;
 }
 
-/** the shared overlap check both keyframe kinds ride — one named path (S1's substrate law).
- *  `ownerId` is the section id for force keyframes, the strip id for strip keyframes. */
-export function keyframeTaken(
+/** the Δd-cap overlap refusal both keyframe kinds ride — one named path (S1's substrate law,
+ *  S5b's Locked decision). `ownerId` is the section id for force keyframes, the strip id for
+ *  strip keyframes.
+ *
+ *  **Directional room, never an equality test.** Pre-S5b this dispatched to
+ *  {@link stationTaken}/{@link stripKeyframeTaken} — a bit-exact `Math.fround` collision test
+ *  that only ever fired by accident, when the (now-deleted) extent clamp saturated a group
+ *  drag to exactly a boundary sibling's station. With that clamp gone (F2), discrete pointer
+ *  sampling sweeps past the collision value and equality refusal is unreachable. This reads
+ *  the nearest OCCUPIED sibling station in the direction `dir` from `s0` and returns the
+ *  distance to it (`Infinity` when nothing occupies that direction) — the caller caps the
+ *  group's shared Δd strictly short of the tightest member's room, so the write never lands
+ *  ON a sibling in the first place. `exceptIds` excludes the WHOLE dragged group (never just
+ *  the asking member) — a member never caps against its own group-mate; only a sibling
+ *  outside the group can bound the drag. */
+export function keyframeRoom(
     ecs: State,
     kind: "force" | "strip",
     ownerId: number,
-    s: number,
-    exceptId: number,
-): boolean {
-    return kind === "force"
-        ? stationTaken(ecs, ownerId, s, exceptId)
-        : stripKeyframeTaken(ecs, ownerId, s, exceptId);
+    s0: number,
+    exceptIds: ReadonlySet<number>,
+    dir: 1 | -1,
+): number {
+    const rows = kind === "force" ? sectionForces(ecs, ownerId) : stripKeyframes(ecs, ownerId);
+    let room = Infinity;
+    for (const row of rows) {
+        if (exceptIds.has(row.id)) continue;
+        const d = dir > 0 ? row.s - s0 : s0 - row.s;
+        if (d >= 0 && d < room) room = d;
+    }
+    return room;
 }
 
 /** write a strip keyframe's position and value (live drag preview + gesture restore).
@@ -912,17 +934,20 @@ export function keyframeTaken(
  *  A station another key in this strip already holds is REFUSED ({@link stripKeyframeTaken}):
  *  the key keeps its current `s` and the `v` write still lands, so a drag crossing a
  *  neighbour slides in v while s pauses on the occupied slot and resumes past it — the
- *  same per-axis refusal {@link setForcePoint} uses. */
+ *  same per-axis refusal {@link setForcePoint} uses.
+ *
+ *  **No extent clamp (S5, F2).** A keyframe drags freely outside its strip's `[start, end]`
+ *  — the write is unclamped, matching {@link setForcePoint}'s own shape exactly (that writer
+ *  never clamped to its section's window either). The one shared interaction path (S1) is
+ *  what enforces — or doesn't — a container bound; a per-kind clamp inside the pure writer
+ *  is the twin this stage retires. `createStripKeyframe`'s own clip-to-extent is unrelated:
+ *  that's the CREATE path's deliberate floor, never this LIVE-drag writer's. */
 export function setStripKeyframe(ecs: State, id: number, s: number, v: number): void {
     const eid = stripKeyframeAt(ecs, id);
     if (eid === null) return;
     const stripId = StripKeyframe.strip.get(eid);
-    const stripEid = stripAt(ecs, stripId);
-    if (stripEid === null) return;
-    const start = Strip.start.get(stripEid);
-    const end = Strip.end.get(stripEid);
     const lands = !stripKeyframeTaken(ecs, stripId, s, id);
-    if (lands) StripKeyframe.s.set(eid, Math.max(start, Math.min(end, s)));
+    if (lands) StripKeyframe.s.set(eid, s);
     StripKeyframe.v.set(eid, v);
 }
 

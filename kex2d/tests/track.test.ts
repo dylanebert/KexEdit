@@ -3128,6 +3128,39 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(edgeStrips(ds, 10, [])).toBeUndefined();
     });
 
+    test("out-of-extent keyframes shape the interior curve without ever being sampled as an edge value", () => {
+        // locked S5 decision: a strip's full sorted keyframe set are curve control points,
+        // so a keyframe outside the strip's own window still bends the curve inside it.
+        // window [2,6) with keyframes at s=1 (v=0) and s=8 (v=10) — both outside the window.
+        const ds = new Float32Array(10).fill(1);
+        const out = edgeStrips(ds, 10, [
+            {
+                start: 2,
+                end: 6,
+                value: -1,
+                keyframes: [
+                    { s: 1, v: 0 },
+                    { s: 8, v: 10 },
+                ],
+            },
+        ]);
+        const values = out?.[0].values;
+        expect(values).toBeDefined();
+        // rises across the window (v² of 0..10 rising, not the flat fallback value).
+        for (let i = 1; i < values!.length; i++) expect(values![i]).toBeGreaterThan(values![i - 1]);
+        // no interior edge samples either out-of-extent keyframe's own value (0² or 10²).
+        for (const v of values!) {
+            expect(v).not.toBeCloseTo(0, 5);
+            expect(v).not.toBeCloseTo(100, 5);
+        }
+
+        // RED-FIRST: witnessed red by transiently filtering `edgeStrips`'s keyframes to the
+        // strip's own [start, end] extent before interpolating (`k.s >= r.start && k.s <=
+        // r.end`) — with both keyframes outside [2,6) the filtered set is empty, `values`
+        // was undefined, and this arm failed at `expect(values).toBeDefined()` (`bun test
+        // ./tests/track.test.ts` exit 1). Restored byte-identical via `git show HEAD:src/track.ts`.
+    });
+
     // ── the wrong-granularity headline: an INTERIOR-start, INTERIOR-end strip on a force
     // section, checked under both ruler domains — a strip's edge range is arclength-resolved
     // regardless of `Track.domain` (S6: the domain is a display lens, never a second march),
