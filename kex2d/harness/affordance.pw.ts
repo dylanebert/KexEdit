@@ -4,7 +4,6 @@ import {
     frameTimeline,
     HBAND_H,
     HBAND_TOP,
-    LEFT_GUT,
     clickMenuItem,
     kexCall,
     type Page,
@@ -153,10 +152,12 @@ test("popover key scrub affordance — force keyframe control", async ({ page, b
 
 // ── S3 (Affordances) ─────────────────────────────────────────────────────────────────────────
 // The header band declares its gestures before engagement (root ui.md gate 3, corrected at R):
-// a lane visibly present + NAMED even when empty, and a hover rung — never the cursor, which
-// stays `default` throughout — that reads edge/body/empty apart. Driven with REAL pointer
-// moves (`page.mouse.move`), never `__kex` calls: a hook-driven flow proves the model updated,
-// not that a person could ever land the gesture (T2's own lesson, this file's header comment).
+// a lane visibly present even when empty (S4, finding 4 retired the lane's own label — typing
+// lives on the item, never a per-lane word), and a hover rung that reads edge/body/empty apart,
+// each carrying its own declared cursor (S4 finding 1's body pointer, S5 finding 2's edge
+// ew-resize) — empty band space alone stays `default`. Driven with REAL pointer moves
+// (`page.mouse.move`), never `__kex` calls: a hook-driven flow proves the model updated, not
+// that a person could ever land the gesture (T2's own lesson, this file's header comment).
 
 /** a pixel off the real `canvas.chart`, at CANVAS-LOCAL CSS coordinates (device-px scaled) —
  *  the same idiom `geo.pw.ts`'s `probeChart` uses for the header band's ghost-strip probe. */
@@ -182,39 +183,6 @@ const STRIP_HIT_R = 6;
 const dist = (a: readonly number[], b: readonly number[]): number =>
     Math.max(...a.map((v, i) => Math.abs(v - b[i])));
 const bandY = HBAND_TOP + HBAND_H / 2;
-
-// RED-FIRST WITNESS (kex2d-capture-deflake S2, 2026-08-25): commenting out `Timeline.svelte`'s
-// `ctx.fillText("events", ...)` call reds this arm — `capture -g "S3 on-surface naming"` exits 1
-// ("expected at least one gutter pixel to differ ... got [[0,0,0]x5]") — reverted and reran green
-// (exit 0). LabelTol's derivation sits at its declaration below.
-test("velocity band names itself even with no strip authored (S3 on-surface naming)", async ({
-    page,
-    boot,
-}) => {
-    await boot();
-    await seedHill(page);
-    await frameTimeline(page);
-    // no strip exists yet — the whole band is the plain header-band fill, so ANY pixel past
-    // the gutter is a valid background reading for the differential below.
-    const bg = await probeChart(page, LEFT_GUT + 80, bandY);
-    expect(bg).not.toBeNull();
-    // the label sits in the untouched left gutter (`x < LEFT_GUT`), where a strip or ghost span
-    // never draws (both clamp to `LEFT_GUT`) — sampled at a few x across its glyphs since a
-    // single-pixel probe can land between anti-aliased strokes.
-    const labelXs = [5, 9, 13, 17, 21];
-    const labelPixels = await Promise.all(labelXs.map((x) => probeChart(page, x, bandY)));
-    // DERIVED (not tuned): a background-only sweep at 5 x's past the gutter reads a noise floor
-    // of exactly 0 (Chromium's canvas 2D fill is deterministic — no dithering — reproduced
-    // bit-identical across 3 runs), and a dense per-pixel scan of the label's own glyph region
-    // (this y row ± 2, x 0–39) reads a weakest anti-aliased edge pixel of 11 against the same
-    // background, full-stroke pixels running 77–183. LabelTol sits strictly between the
-    // deterministic floor and the weakest real edge pixel, with margin either side.
-    const LabelTol = 5;
-    expect(
-        labelPixels.some((p) => p !== null && bg !== null && dist(p, bg) > LabelTol),
-        `expected at least one gutter pixel to differ from the plain band background ${JSON.stringify(bg)}, got ${JSON.stringify(labelPixels)}`,
-    ).toBe(true);
-});
 
 // RED-FIRST WITNESS (kex2d-capture-deflake S2, 2026-08-25): stubbing `Timeline.svelte`'s
 // `bandHoverMove` to drop its `bandHoverX` write reds this arm — `capture -g "hit-zone
